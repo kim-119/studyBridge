@@ -1,0 +1,48 @@
+services:
+  react:
+    build: ./frontend
+    container_name: capstone-react
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - spring
+
+  spring:
+    build: ./backend
+    container_name: capstone-spring
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/capstone
+      SPRING_DATASOURCE_USERNAME: capstone
+      SPRING_DATASOURCE_PASSWORD: 1234
+      FASTAPI_SERVER_URL: http://fastapi:8000
+    depends_on:
+      - db
+      - fastapi
+
+  fastapi:
+    build: ./fastapi
+    container_name: capstone-fastapi
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./fastapi:/app
+
+  db:
+    image: postgres:16
+    container_name: capstone-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: capstone
+      POSTGRES_USER: capstone
+      POSTGRES_PASSWORD: 1234
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
