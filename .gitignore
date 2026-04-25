@@ -1,0 +1,17 @@
+node_modules/
+dist/
+
+build/
+.gradle/
+out/
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+.env
+.idea/
+.vscode/
+
+*.log
