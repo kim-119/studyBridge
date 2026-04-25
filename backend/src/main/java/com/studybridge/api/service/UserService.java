@@ -13,7 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class UserService {
 
     private final UserRepository userRepository;
-
+    // 회원 가입
     @Transactional
     public UserDTO.Response register(UserDTO.RegisterRequest request) {
         if (userRepository.existsByEmail(request.getEmail())) {
@@ -41,7 +41,7 @@ public class UserService {
                 .status(savedUser.getStatus())
                 .build();
     }
-
+    // 로그인 검사    
     public UserDTO.Response login(UserDTO.LoginRequest request) {
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> new IllegalArgumentException("가입되지 않은 이메일이거나 비밀번호가 틀렸습니다."));
