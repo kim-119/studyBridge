@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - feature/**
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Show project structure
+        run: |
+          echo "Project structure:"
+          ls -la
+
+      - name: Check backend folder
+        run: |
+          if [ -d "backend" ]; then
+            echo "backend exists"
+          else
+            echo "backend missing"
+            exit 1
+          fi
+
+      - name: Check frontend folder
+        run: |
+          if [ -d "frontend" ]; then
+            echo "frontend exists"
+          else
+            echo "frontend missing"
+            exit 1
+          fi
+
+      - name: Check fastapi folder
+        run: |
+          if [ -d "fastapi" ]; then
+            echo "fastapi exists"
+          else
+            echo "fastapi missing"
+            exit 1
+          fi
