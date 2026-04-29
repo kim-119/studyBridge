@@ -1,6 +1,5 @@
 import axios from 'axios';
 
-// 공통 API 설정 (백엔드 서버 주소)
 const api = axios.create({
   baseURL: 'http://localhost:8080',
   headers: {
@@ -8,7 +7,6 @@ const api = axios.create({
   },
 });
 
-// 응답 에러 공통 처리
 api.interceptors.response.use(
   (res) => res,
   (err) => {
@@ -17,9 +15,7 @@ api.interceptors.response.use(
   }
 );
 
-// 인증 관련 API
 export const authService = {
-  // 회원가입
   register: async (userData) => {
     try {
       const res = await api.post('/api/users/register', userData);
@@ -29,14 +25,36 @@ export const authService = {
     }
   },
 
+  login: async (credentials) => {
+    try {
+      const res = await api.post('/api/users/login', credentials);
+      return res.data;
+    } catch (err) {
+      throw err.response?.data || { message: '로그인 실패' };
+    }
+  },
+};
 
-  // 로그인
-login: async (credentials) => {
-  // 백엔드 로그인 API 완성 전까지 사용하는 임시 로그인
-  return {
-    email: credentials.email,
-  };
-}
+export const todoService = {
+  getTodos: async (userId) => {
+    const res = await api.get(`/api/users/${userId}/todos`);
+    return res.data;
+  },
+
+  createTodo: async (userId, todoData) => {
+    const res = await api.post(`/api/users/${userId}/todos`, todoData);
+    return res.data;
+  },
+
+  toggleTodo: async (todoId) => {
+    const res = await api.patch(`/api/todos/${todoId}/toggle`);
+    return res.data;
+  },
+
+  deleteTodo: async (todoId) => {
+    const res = await api.delete(`/api/todos/${todoId}`);
+    return res.data;
+  },
 };
 
 export default api;

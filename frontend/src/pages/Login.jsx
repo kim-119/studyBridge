@@ -14,7 +14,6 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // 입력값 변경 처리
   const handleChange = (e) => {
     const { name, value } = e.target;
 
@@ -26,7 +25,6 @@ export default function Login() {
     if (error) setError('');
   };
 
-  // 로그인 처리
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -36,159 +34,226 @@ export default function Login() {
     }
 
     setLoading(true);
+    setError('');
 
     try {
-      await authService.login(formData);
+      const result = await authService.login({
+        email: formData.email,
+        password: formData.password,
+      });
 
-      // 백엔드 인증 API 완성 전까지 임시 로그인 상태 저장
-      localStorage.setItem('userEmail', formData.email);
+      console.log('로그인 응답:', result);
 
-      navigate('/');
+      const userId = result.id || result.userId || result.user?.id;
+      const userEmail = result.email || result.user?.email || formData.email;
+
+      if (!userId) {
+        console.error('로그인 응답에 userId가 없습니다:', result);
+        setError('로그인 응답에 사용자 ID가 없습니다.');
+        return;
+      }
+
+      localStorage.setItem('userId', String(userId));
+      localStorage.setItem('userEmail', userEmail);
+
+      navigate('/dashboard');
     } catch (err) {
-      setError(err.message || '로그인 실패');
+      console.error('로그인 실패:', err);
+      setError(err.message || '로그인에 실패했습니다.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div style={styles.pageWrap}>
-      <div className="glass-panel" style={styles.card}>
-        <div style={styles.header}>
-          <div style={styles.iconBox}>
-            <LogIn size={28} color="white" />
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div
+        className="glass-panel animate-fade-in"
+        style={{
+          width: '100%',
+          maxWidth: '420px',
+          padding: '36px',
+        }}
+      >
+        <div style={{ textAlign: 'center', marginBottom: '28px' }}>
+          <div
+            style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: '18px',
+              background: 'var(--color-primary)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 16px',
+              color: '#fff',
+            }}
+          >
+            <LogIn size={32} />
           </div>
-          <h2>Welcome back</h2>
-          <p style={styles.subtitle}>StudyBridge에 다시 오신 것을 환영합니다.</p>
+
+          <h1
+            style={{
+              fontSize: '28px',
+              fontWeight: '700',
+              color: 'var(--color-text)',
+              margin: 0,
+            }}
+          >
+            로그인
+          </h1>
+
+          <p
+            style={{
+              color: 'var(--color-text-muted)',
+              marginTop: '8px',
+            }}
+          >
+            계정에 로그인하여 서비스를 이용하세요.
+          </p>
         </div>
 
-        <form onSubmit={handleSubmit} style={styles.form}>
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>이메일</label>
-            <div style={styles.inputIconWrap}>
-              <Mail size={18} style={styles.inputIcon} />
+        {error && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '12px',
+              borderRadius: '10px',
+              background: '#fee2e2',
+              color: '#dc2626',
+              marginBottom: '18px',
+              fontSize: '14px',
+            }}
+          >
+            <AlertCircle size={18} />
+            <span>{error}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: '16px' }}>
+            <label
+              style={{
+                display: 'block',
+                marginBottom: '8px',
+                color: 'var(--color-text)',
+                fontWeight: '600',
+              }}
+            >
+              이메일
+            </label>
+
+            <div style={{ position: 'relative' }}>
+              <Mail
+                size={20}
+                style={{
+                  position: 'absolute',
+                  left: '14px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  color: 'var(--color-text-muted)',
+                }}
+              />
+
               <input
                 type="email"
                 name="email"
-                className="input-field"
-                style={{ paddingLeft: '40px' }}
-                placeholder="name@example.com"
                 value={formData.email}
                 onChange={handleChange}
+                placeholder="이메일을 입력하세요"
+                style={{
+                  width: '100%',
+                  padding: '13px 14px 13px 44px',
+                  borderRadius: '10px',
+                  border: '1px solid var(--color-border)',
+                  outline: 'none',
+                }}
               />
             </div>
           </div>
 
-          <div style={styles.inputGroup}>
-            <label style={styles.label}>비밀번호</label>
-            <div style={styles.inputIconWrap}>
-              <Lock size={18} style={styles.inputIcon} />
+          <div style={{ marginBottom: '22px' }}>
+            <label
+              style={{
+                display: 'block',
+                marginBottom: '8px',
+                color: 'var(--color-text)',
+                fontWeight: '600',
+              }}
+            >
+              비밀번호
+            </label>
+
+            <div style={{ position: 'relative' }}>
+              <Lock
+                size={20}
+                style={{
+                  position: 'absolute',
+                  left: '14px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  color: 'var(--color-text-muted)',
+                }}
+              />
+
               <input
                 type="password"
                 name="password"
-                className="input-field"
-                style={{ paddingLeft: '40px' }}
-                placeholder="••••••••"
                 value={formData.password}
                 onChange={handleChange}
+                placeholder="비밀번호를 입력하세요"
+                style={{
+                  width: '100%',
+                  padding: '13px 14px 13px 44px',
+                  borderRadius: '10px',
+                  border: '1px solid var(--color-border)',
+                  outline: 'none',
+                }}
               />
             </div>
           </div>
 
-          {error && (
-            <div className="error-text">
-              <AlertCircle size={16} />
-              {error}
-            </div>
-          )}
-
           <button
             type="submit"
-            className="btn-primary"
-            style={{ marginTop: '12px' }}
             disabled={loading}
+            style={{
+              width: '100%',
+              padding: '14px',
+              borderRadius: '10px',
+              border: 'none',
+              background: 'var(--color-primary)',
+              color: '#fff',
+              fontWeight: '700',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              opacity: loading ? 0.7 : 1,
+            }}
           >
             {loading ? '로그인 중...' : '로그인'}
           </button>
         </form>
 
-        <div style={styles.footer}>
-          <span>계정이 없으신가요?</span>
-          <Link to="/register" style={{ fontWeight: '600' }}>
+        <p
+          style={{
+            textAlign: 'center',
+            marginTop: '20px',
+            color: 'var(--color-text-muted)',
+          }}
+        >
+          계정이 없으신가요?{' '}
+          <Link
+            to="/signup"
+            style={{
+              color: 'var(--color-primary)',
+              fontWeight: '600',
+              textDecoration: 'none',
+            }}
+          >
             회원가입
           </Link>
-        </div>
+        </p>
       </div>
     </div>
   );
 }
-
-const styles = {
-  pageWrap: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    minHeight: 'calc(100vh - 120px)',
-  },
-  card: {
-    width: '100%',
-    maxWidth: '420px',
-    padding: '40px',
-    boxSizing: 'border-box',
-  },
-  header: {
-    textAlign: 'center',
-    marginBottom: '32px',
-  },
-  iconBox: {
-    width: '56px',
-    height: '56px',
-    backgroundColor: 'var(--color-primary)',
-    borderRadius: '16px',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    margin: '0 auto 16px auto',
-    boxShadow: '0 8px 16px rgba(99, 136, 97, 0.25)',
-  },
-  subtitle: {
-    color: 'var(--color-text-muted)',
-    fontSize: '0.95rem',
-    marginTop: '4px',
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '20px',
-  },
-  inputGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px',
-  },
-  label: {
-    fontSize: '0.9rem',
-    fontWeight: '500',
-    color: 'var(--color-text-main)',
-  },
-  inputIconWrap: {
-    position: 'relative',
-    display: 'flex',
-    alignItems: 'center',
-  },
-  inputIcon: {
-    position: 'absolute',
-    left: '14px',
-    color: 'var(--color-text-muted)',
-    opacity: 0.7,
-  },
-  footer: {
-    marginTop: '32px',
-    textAlign: 'center',
-    fontSize: '0.9rem',
-    color: 'var(--color-text-muted)',
-    display: 'flex',
-    justifyContent: 'center',
-    gap: '8px',
-  },
-};
