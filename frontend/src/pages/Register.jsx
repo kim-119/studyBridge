@@ -131,6 +131,8 @@ const styles = {
     justifyContent: 'center',
     alignItems: 'center',
     minHeight: 'calc(100vh - 120px)',
+    padding: '24px',
+    boxSizing: 'border-box'
   },
   card: {
     width: '100%',
