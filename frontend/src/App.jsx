@@ -1,5 +1,6 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { useAuth } from './hooks/useAuth';
 
 import Navbar from './components/Navbar';
 import Login from './pages/Login';
@@ -9,9 +10,9 @@ import MyPage from './pages/MyPage';
 import GroupBoard from './pages/GroupBoard';
 
 function PrivateRoute({ children }) {
-  const isLogin = localStorage.getItem('userEmail');
+  const { userEmail } = useAuth();
 
-  return isLogin ? children : <Navigate to="/login" replace />;
+  return userEmail ? children : <Navigate to="/login" replace />;
 }
 
 function App() {

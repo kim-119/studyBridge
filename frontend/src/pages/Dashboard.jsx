@@ -5,11 +5,11 @@ import interactionPlugin from '@fullcalendar/interaction';
 
 import StudyTimer from '../components/StudyTimer';
 import { todoService } from '../services/api';
+import { useAuth } from '../hooks/useAuth';
 
 export default function Dashboard() {
-  const userEmail = localStorage.getItem('userEmail') || 'guest';
-  const userId = localStorage.getItem('userId');
-  const userName = userEmail.includes('@') ? userEmail.split('@')[0] : userEmail;
+  const { userId, userEmail } = useAuth();
+  const userName = userEmail ? (userEmail.includes('@') ? userEmail.split('@')[0] : userEmail) : 'guest';
 
   const [todayStudySeconds, setTodayStudySeconds] = useState(0);
   const [selectedDate, setSelectedDate] = useState('');
@@ -40,9 +40,7 @@ export default function Dashboard() {
   };
 
   const fetchTodos = async () => {
-    const savedUserId = localStorage.getItem('userId');
-
-    if (!savedUserId) {
+    if (!userId) {
       setTodos({});
       setSelectedDate('');
       setTodoText('');
@@ -50,7 +48,7 @@ export default function Dashboard() {
     }
 
     try {
-      const data = await todoService.getTodos(savedUserId);
+      const data = await todoService.getTodos(userId);
       setTodos(groupTodosByDate(data));
     } catch (err) {
       console.error('Todo 조회 실패:', err);
@@ -59,9 +57,7 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    const savedUserId = localStorage.getItem('userId');
-
-    if (!savedUserId) {
+    if (!userId) {
       setTodos({});
       setSelectedDate('');
       setTodoText('');
@@ -85,9 +81,7 @@ export default function Dashboard() {
   };
 
   const handleAddTodo = async () => {
-    const savedUserId = localStorage.getItem('userId');
-
-    if (!savedUserId) {
+    if (!userId) {
       alert('로그인이 필요합니다.');
       setTodos({});
       setSelectedDate('');
@@ -106,7 +100,7 @@ export default function Dashboard() {
     }
 
     try {
-      await todoService.createTodo(savedUserId, {
+      await todoService.createTodo(userId, {
         text: todoText.trim(),
         startDate: `${selectedDate}T00:00:00`,
         endDate: `${selectedDate}T23:59:59`,
