@@ -4,9 +4,11 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 
 import StudyTimer from '../components/StudyTimer';
+import { todoService } from '../services/api';
 
 export default function Dashboard() {
-  const userEmail = localStorage.getItem('userEmail') || '게스트';
+  const userEmail = localStorage.getItem('userEmail') || 'guest';
+  const userId = localStorage.getItem('userId');
   const userName = userEmail.includes('@') ? userEmail.split('@')[0] : userEmail;
 
   const [todayStudySeconds, setTodayStudySeconds] = useState(0);
@@ -14,10 +16,60 @@ export default function Dashboard() {
   const [todoText, setTodoText] = useState('');
   const [todos, setTodos] = useState({});
 
+  const groupTodosByDate = (todoList) => {
+    const grouped = {};
+
+    todoList.forEach((todo) => {
+      if (!todo.startDate) return;
+
+      const date = todo.startDate.split('T')[0];
+
+      if (!grouped[date]) grouped[date] = [];
+
+      grouped[date].push({
+        id: todo.id,
+        text: todo.text,
+        done: todo.completed,
+        startDate: todo.startDate,
+        endDate: todo.endDate,
+        viewType: todo.viewType,
+      });
+    });
+
+    return grouped;
+  };
+
+  const fetchTodos = async () => {
+    const savedUserId = localStorage.getItem('userId');
+
+    if (!savedUserId) {
+      setTodos({});
+      setSelectedDate('');
+      setTodoText('');
+      return;
+    }
+
+    try {
+      const data = await todoService.getTodos(savedUserId);
+      setTodos(groupTodosByDate(data));
+    } catch (err) {
+      console.error('Todo 조회 실패:', err);
+      setTodos({});
+    }
+  };
+
   useEffect(() => {
-    const savedTodos = JSON.parse(localStorage.getItem('calendarTodos')) || {};
-    setTodos(savedTodos);
-  }, []);
+    const savedUserId = localStorage.getItem('userId');
+
+    if (!savedUserId) {
+      setTodos({});
+      setSelectedDate('');
+      setTodoText('');
+      return;
+    }
+
+    fetchTodos();
+  }, [userId]);
 
   const formatStudyTime = (seconds) => {
     const h = Math.floor(seconds / 3600);
@@ -32,7 +84,17 @@ export default function Dashboard() {
     setTodoText('');
   };
 
-  const handleAddTodo = () => {
+  const handleAddTodo = async () => {
+    const savedUserId = localStorage.getItem('userId');
+
+    if (!savedUserId) {
+      alert('로그인이 필요합니다.');
+      setTodos({});
+      setSelectedDate('');
+      setTodoText('');
+      return;
+    }
+
     if (!selectedDate) {
       alert('날짜를 먼저 선택하세요.');
       return;
@@ -43,60 +105,53 @@ export default function Dashboard() {
       return;
     }
 
-    const nextTodos = {
-      ...todos,
-      [selectedDate]: [
-        ...(todos[selectedDate] || []),
-        {
-          id: Date.now(),
-          text: todoText.trim(),
-          done: false,
-        },
-      ],
-    };
+    try {
+      await todoService.createTodo(savedUserId, {
+        text: todoText.trim(),
+        startDate: `${selectedDate}T00:00:00`,
+        endDate: `${selectedDate}T23:59:59`,
+        viewType: 'MONTH',
+        completed: false,
+      });
 
-    setTodos(nextTodos);
-    localStorage.setItem('calendarTodos', JSON.stringify(nextTodos));
-    setTodoText('');
-  };
-
-  const handleDeleteTodo = (date, todoId) => {
-    const updatedList = todos[date].filter((todo) => todo.id !== todoId);
-
-    const nextTodos = {
-      ...todos,
-      [date]: updatedList,
-    };
-
-    if (updatedList.length === 0) {
-      delete nextTodos[date];
+      setTodoText('');
+      await fetchTodos();
+    } catch (err) {
+      console.error('Todo 생성 실패:', err);
+      setTodoText('');
+      alert(err.message || 'Todo 생성에 실패했습니다.');
     }
-
-    setTodos(nextTodos);
-    localStorage.setItem('calendarTodos', JSON.stringify(nextTodos));
   };
 
-  const handleToggleTodo = (date, todoId) => {
-    const updatedList = todos[date].map((todo) =>
-      todo.id === todoId ? { ...todo, done: !todo.done } : todo
-    );
-
-    const nextTodos = {
-      ...todos,
-      [date]: updatedList,
-    };
-
-    setTodos(nextTodos);
-    localStorage.setItem('calendarTodos', JSON.stringify(nextTodos));
+  const handleDeleteTodo = async (todoId) => {
+    try {
+      await todoService.deleteTodo(todoId);
+      await fetchTodos();
+    } catch (err) {
+      console.error('Todo 삭제 실패:', err);
+      alert(err.message || 'Todo 삭제에 실패했습니다.');
+    }
   };
 
-  const calendarEvents = Object.entries(todos).flatMap(([date, todoList]) =>
-    todoList.map((todo) => ({
-      id: String(todo.id),
-      title: todo.done ? `완료: ${todo.text}` : todo.text,
-      date,
-    }))
-  );
+  const handleToggleTodo = async (todoId) => {
+    try {
+      await todoService.toggleTodo(todoId);
+      await fetchTodos();
+    } catch (err) {
+      console.error('Todo 상태 변경 실패:', err);
+      alert(err.message || 'Todo 상태 변경에 실패했습니다.');
+    }
+  };
+
+  const calendarEvents = userId
+    ? Object.entries(todos).flatMap(([date, todoList]) =>
+        todoList.map((todo) => ({
+          id: String(todo.id),
+          title: todo.done ? `완료: ${todo.text}` : todo.text,
+          date,
+        }))
+      )
+    : [];
 
   const summaryCards = [
     {
@@ -174,13 +229,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '24px',
-        }}
-      >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
         <div className="glass-panel animate-fade-in" style={{ padding: '20px' }}>
           <style>
             {`
@@ -196,20 +245,27 @@ export default function Dashboard() {
                 border-color: var(--color-primary-hover);
               }
               .fc-event {
-                background-color: rgba(96, 201, 90, 0.15);
-                border: 1px solid var(--color-primary);
-                color: var(--color-text-main);
-                border-radius: 4px;
-                padding: 2px 4px;
+                background-color: #E8F5E9 !important;
+                border: 1px solid var(--color-primary) !important;
+                color: #1B5E20 !important;
+                border-radius: 6px !important;
+                padding: 3px 6px !important;
+                font-size: 13px !important;
+                font-weight: 700 !important;
               }
-              .fc-day-today { background-color: rgba(96, 201, 90, 0.05) !important; }
+              .fc-event-title {
+                color: #1B5E20 !important;
+                font-weight: 700 !important;
+              }
+              .fc-day-today { background-color: rgba(96, 201, 90, 0.08) !important; }
             `}
           </style>
 
           <FullCalendar
+            key={userId || 'guest'}
             plugins={[dayGridPlugin, interactionPlugin]}
             initialView="dayGridMonth"
-            events={calendarEvents}
+            events={userId ? calendarEvents : []}
             dateClick={handleDateClick}
             headerToolbar={{
               left: 'prev,next today',
@@ -233,20 +289,20 @@ export default function Dashboard() {
               value={todoText}
               onChange={(e) => setTodoText(e.target.value)}
               placeholder="할 일을 입력하세요"
-              disabled={!selectedDate}
+              disabled={!selectedDate || !userId}
             />
             <button
               className="btn-primary"
               onClick={handleAddTodo}
               style={{ width: '80px', flexShrink: 0 }}
-              disabled={!selectedDate}
+              disabled={!selectedDate || !userId}
             >
               추가
             </button>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {selectedDate && todos[selectedDate]?.length > 0 ? (
+            {userId && selectedDate && todos[selectedDate]?.length > 0 ? (
               todos[selectedDate].map((todo) => (
                 <div
                   key={todo.id}
@@ -263,7 +319,7 @@ export default function Dashboard() {
                   <input
                     type="checkbox"
                     checked={todo.done}
-                    onChange={() => handleToggleTodo(selectedDate, todo.id)}
+                    onChange={() => handleToggleTodo(todo.id)}
                   />
                   <span
                     style={{
@@ -278,7 +334,7 @@ export default function Dashboard() {
                   </span>
                   <button
                     className="btn-outline"
-                    onClick={() => handleDeleteTodo(selectedDate, todo.id)}
+                    onClick={() => handleDeleteTodo(todo.id)}
                     style={{
                       width: '50px',
                       height: '30px',
