@@ -35,18 +35,11 @@ public class User {
     @Column(name = "major", length = 50)
     private String major; // 전공 (학과)
 
+    @Builder.Default
     @Column(name = "status", length = 20)
-    private String status; // 사용자 상태 (신고에 관한)
+    private String status = "ACTIVE"; // 사용자 상태 (신고에 관한)
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt; // 계정 생성일
-    
-    // 엔티티가 데이터베이스에 저장되기 직전에 기본값 설정 (디폴트 값이라고 생각하면 됨요)
-    @PrePersist
-    public void prePersist() {
-        if (this.status == null) {
-            this.status = "ACTIVE";
-        }
-    }
 }
