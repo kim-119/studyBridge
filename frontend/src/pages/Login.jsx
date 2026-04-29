@@ -171,7 +171,7 @@ export default function Login() {
                 onChange={handleChange}
                 placeholder="이메일을 입력하세요"
                 style={{
-                  width: '100%',
+                  width: '80%',
                   padding: '13px 14px 13px 44px',
                   borderRadius: '10px',
                   border: '1px solid var(--color-border)',
@@ -212,7 +212,7 @@ export default function Login() {
                 onChange={handleChange}
                 placeholder="비밀번호를 입력하세요"
                 style={{
-                  width: '100%',
+                  width: '80%',
                   padding: '13px 14px 13px 44px',
                   borderRadius: '10px',
                   border: '1px solid var(--color-border)',
@@ -250,7 +250,7 @@ export default function Login() {
         >
           계정이 없으신가요?{' '}
           <Link
-            to="/signup"
+            to="/register"
             style={{
               color: 'var(--color-primary)',
               fontWeight: '600',

@@ -161,7 +161,7 @@ export default function Dashboard() {
     },
     {
       title: '진행 중인 스터디',
-      value: '3개',
+      value: '0개',
       desc: '참여 중인 그룹 스터디',
     },
     {
