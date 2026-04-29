@@ -40,8 +40,8 @@ else:
 # =========================
 
 @app.get("/")
-def frontend():
-    return FileResponse("index.html")
+def root():
+    return {"message": "FastAPI running"}
 
 
 @app.get("/health")
