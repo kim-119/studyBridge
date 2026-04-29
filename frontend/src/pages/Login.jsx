@@ -66,13 +66,20 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4">
+    <div style={{
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      minHeight: 'calc(100vh - 120px)',
+      padding: '24px'
+    }}>
       <div
         className="glass-panel animate-fade-in"
         style={{
           width: '100%',
           maxWidth: '420px',
           padding: '36px',
+          boxSizing: 'border-box'
         }}
       >
         <div style={{ textAlign: 'center', marginBottom: '28px' }}>
