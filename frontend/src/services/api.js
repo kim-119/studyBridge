@@ -57,4 +57,27 @@ export const todoService = {
   },
 };
 
+export const agentService = {
+  getAgents: async (userId) => {
+    const res = await api.get(`/api/users/${userId}/agents`);
+    return res.data;
+  },
+  createAgent: async (userId, agentData) => {
+    const res = await api.post(`/api/users/${userId}/agents`, agentData);
+    return res.data;
+  },
+  deleteAgent: async (userId, agentId) => {
+    const res = await api.delete(`/api/users/${userId}/agents/${agentId}`);
+    return res.data;
+  },
+  sendMessage: async (userId, agentId, message) => {
+    const res = await api.post(`/api/users/${userId}/agents/${agentId}/chat`, { message });
+    return res.data;
+  },
+  getChatHistory: async (userId, agentId) => {
+    const res = await api.get(`/api/users/${userId}/agents/${agentId}/chat/history`);
+    return res.data;
+  }
+};
+
 export default api;
