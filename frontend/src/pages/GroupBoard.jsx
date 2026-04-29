@@ -14,7 +14,7 @@ export default function GroupBoard() {
   const [showModal, setShowModal] = useState(false);
   
   const [newAgent, setNewAgent] = useState({
-    name: '',
+    name: '', 
     role: '',
     persona: '',
     tone: '친절하고 전문적인 말투',
