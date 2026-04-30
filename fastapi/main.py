@@ -8,14 +8,34 @@ from PIL import Image
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from google import genai
+from openai import OpenAI
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
-load_dotenv()
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# =========================
+# 환경변수 로드
+# =========================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+
+load_dotenv(dotenv_path=ENV_PATH)
+
+
+# =========================
+# Tesseract 설정
+# =========================
+
+if os.name == "nt":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+else:
+    pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
+
+
+# =========================
+# FastAPI 앱 생성
+# =========================
 
 app = FastAPI(title="StudyBridge FastAPI Server")
 
@@ -27,12 +47,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if GEMINI_API_KEY:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+# =========================
+# OpenAI 설정
+# =========================
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "700"))
+OPENAI_MAX_INPUT_CHARS = int(os.getenv("OPENAI_MAX_INPUT_CHARS", "12000"))
+
+if OPENAI_API_KEY:
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
 else:
-    gemini_client = None
+    openai_client = None
+
+
+def check_openai_client():
+    if openai_client is None:
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY가 설정되지 않았습니다. fastapi/.env 파일을 확인하세요."
+        )
+
+
+def trim_prompt(prompt: str) -> str:
+    if len(prompt) > OPENAI_MAX_INPUT_CHARS:
+        return prompt[:OPENAI_MAX_INPUT_CHARS] + "\n\n[안내] 입력이 너무 길어 일부 내용이 잘렸습니다."
+    return prompt
+
+
+def generate_ai_text(prompt: str) -> str:
+    check_openai_client()
+
+    try:
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            input=trim_prompt(prompt),
+            max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS
+        )
+
+        if not response.output_text:
+            raise HTTPException(
+                status_code=500,
+                detail="OpenAI 응답 텍스트가 비어 있습니다."
+            )
+
+        return response.output_text
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"OpenAI 호출 실패: {type(e).__name__}: {str(e)}"
+        )
 
 
 # =========================
@@ -40,8 +110,8 @@ else:
 # =========================
 
 @app.get("/")
-def frontend():
-    return FileResponse("index.html")
+def root():
+    return {"message": "FastAPI running"}
 
 
 @app.get("/health")
@@ -52,36 +122,53 @@ def health():
     }
 
 
-def check_gemini_client():
-    if gemini_client is None:
-        raise HTTPException(
-            status_code=500,
-            detail="GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
-        )
+@app.get("/debug/openai-key")
+def debug_openai_key():
+    return {
+        "has_key": OPENAI_API_KEY is not None,
+        "key_start": OPENAI_API_KEY[:7] if OPENAI_API_KEY else None,
+        "model": OPENAI_MODEL,
+        "max_output_tokens": OPENAI_MAX_OUTPUT_TOKENS,
+        "max_input_chars": OPENAI_MAX_INPUT_CHARS,
+        "env_path": ENV_PATH,
+        "env_exists": os.path.exists(ENV_PATH)
+    }
+
+
+@app.get("/debug/gemini-key")
+def debug_gemini_key_legacy():
+    return {
+        "message": "Gemini는 제거되었고 OpenAI API를 사용 중입니다.",
+        "openai_has_key": OPENAI_API_KEY is not None,
+        "openai_key_start": OPENAI_API_KEY[:7] if OPENAI_API_KEY else None,
+        "model": OPENAI_MODEL,
+        "env_path": ENV_PATH,
+        "env_exists": os.path.exists(ENV_PATH)
+    }
 
 
 # =========================
-# 기본 Gemini 질문 API
+# 기본 AI 질문 API
 # =========================
 
-class GeminiRequest(BaseModel):
+class AiRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
 
 
-class GeminiResponse(BaseModel):
+class AiResponse(BaseModel):
     result: str
 
 
-@app.post("/ai/gemini", response_model=GeminiResponse)
-def ask_gemini(request: GeminiRequest):
-    check_gemini_client()
+@app.post("/ai/chat", response_model=AiResponse)
+def ask_ai(request: AiRequest):
+    result = generate_ai_text(request.prompt)
+    return AiResponse(result=result)
 
-    response = gemini_client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=request.prompt
-    )
 
-    return GeminiResponse(result=response.text)
+@app.post("/ai/gemini", response_model=AiResponse)
+def ask_ai_legacy_gemini_route(request: AiRequest):
+    result = generate_ai_text(request.prompt)
+    return AiResponse(result=result)
 
 
 # =========================
@@ -123,6 +210,30 @@ class AgentChatResponse(BaseModel):
     answer: str
 
 
+def get_or_create_agent(agent_id: int) -> dict:
+    """
+    Spring DB에는 agent_id가 있는데 FastAPI 메모리에는 없는 경우를 대비.
+    FastAPI 서버가 재시작되어 agents 딕셔너리가 비어 있어도,
+    채팅 요청이 들어오면 해당 agent_id로 기본 에이전트를 자동 생성한다.
+    """
+    global agent_id_sequence
+
+    if agent_id not in agents:
+        agents[agent_id] = {
+            "id": agent_id,
+            "name": f"AI 에이전트 {agent_id}",
+            "role": "학습 도우미",
+            "persona": "대학생의 질문을 쉽고 구조적으로 설명하는 AI 튜터",
+            "tone": "친절하고 전문적인 말투",
+            "goal": "사용자의 학습 이해를 돕는다"
+        }
+
+        if agent_id >= agent_id_sequence:
+            agent_id_sequence = agent_id + 1
+
+    return agents[agent_id]
+
+
 @app.post("/agents", response_model=AgentResponse)
 def create_agent(request: AgentCreateRequest):
     global agent_id_sequence
@@ -132,6 +243,9 @@ def create_agent(request: AgentCreateRequest):
             status_code=400,
             detail="AI 에이전트는 최대 3개까지만 생성할 수 있습니다."
         )
+
+    while agent_id_sequence in agents:
+        agent_id_sequence += 1
 
     agent_id = agent_id_sequence
     agent_id_sequence += 1
@@ -157,13 +271,8 @@ def get_agents():
 
 @app.get("/agents/{agent_id}", response_model=AgentResponse)
 def get_agent(agent_id: int):
-    if agent_id not in agents:
-        raise HTTPException(
-            status_code=404,
-            detail="해당 AI 에이전트를 찾을 수 없습니다."
-        )
-
-    return AgentResponse(**agents[agent_id])
+    agent = get_or_create_agent(agent_id)
+    return AgentResponse(**agent)
 
 
 @app.delete("/agents/{agent_id}")
@@ -184,15 +293,7 @@ def delete_agent(agent_id: int):
 
 @app.post("/agents/{agent_id}/chat", response_model=AgentChatResponse)
 def chat_with_agent(agent_id: int, request: AgentChatRequest):
-    check_gemini_client()
-
-    if agent_id not in agents:
-        raise HTTPException(
-            status_code=404,
-            detail="해당 AI 에이전트를 찾을 수 없습니다."
-        )
-
-    agent = agents[agent_id]
+    agent = get_or_create_agent(agent_id)
 
     prompt = f"""
 너는 StudyBridge 플랫폼의 사용자 커스텀 AI 에이전트다.
@@ -219,17 +320,24 @@ def chat_with_agent(agent_id: int, request: AgentChatRequest):
 답변은 너무 길게 늘어놓지 말고, 학습자가 바로 이해할 수 있게 구조화해라.
 """
 
-    response = gemini_client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    answer = generate_ai_text(prompt)
 
     return AgentChatResponse(
         agent_id=agent["id"],
         agent_name=agent["name"],
         role=agent["role"],
-        answer=response.text
+        answer=answer
     )
+
+
+# Spring Boot 경로 호환용
+@app.post("/api/users/{user_id}/agents/{agent_id}/chat", response_model=AgentChatResponse)
+def chat_with_agent_for_spring(
+        user_id: int,
+        agent_id: int,
+        request: AgentChatRequest
+):
+    return chat_with_agent(agent_id=agent_id, request=request)
 
 
 # =========================
@@ -292,8 +400,6 @@ class RoadmapResponse(BaseModel):
 
 @app.post("/ai/roadmap", response_model=RoadmapResponse)
 def create_roadmap(request: RoadmapRequest):
-    check_gemini_client()
-
     prompt = f"""
 너는 대학생 전용 AI 학습 로드맵 튜터다.
 
@@ -317,14 +423,11 @@ def create_roadmap(request: RoadmapRequest):
 6. 마지막에 추천 학습 순서 요약
 """
 
-    response = gemini_client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    message = generate_ai_text(prompt)
 
     return RoadmapResponse(
         role="assistant",
-        message=response.text
+        message=message
     )
 
 
@@ -398,12 +501,10 @@ def extract_text_from_file(file: UploadFile, content: bytes) -> str:
 
 @app.post("/ai/roadmap-file", response_model=RoadmapResponse)
 async def create_roadmap_from_file(
-    subject: str = Form(...),
-    level: str = Form(...),
-    file: UploadFile = File(...)
+        subject: str = Form(...),
+        level: str = Form(...),
+        file: UploadFile = File(...)
 ):
-    check_gemini_client()
-
     if level not in ["초급자", "중급자", "마스터"]:
         raise HTTPException(
             status_code=400,
@@ -443,12 +544,9 @@ async def create_roadmap_from_file(
 7. 너무 딱딱한 보고서 말투가 아니라 학습 도우미 챗봇처럼 작성
 """
 
-    response = gemini_client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    message = generate_ai_text(prompt)
 
     return RoadmapResponse(
         role="assistant",
-        message=response.text
+        message=message
     )
