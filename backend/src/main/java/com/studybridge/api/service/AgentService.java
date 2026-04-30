@@ -5,6 +5,7 @@ import com.studybridge.api.entity.Agent;
 import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.AgentRepository;
 import com.studybridge.api.repository.UserRepository;
+import com.studybridge.api.repository.ChatMessageRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,6 +20,7 @@ public class AgentService {
 
     private final AgentRepository agentRepository;
     private final UserRepository userRepository;
+    private final ChatMessageRepository chatMessageRepository;
 
     private static final int MAX_AGENT_COUNT = 3;
 
@@ -59,6 +61,10 @@ public class AgentService {
             throw new RuntimeException("해당 에이전트를 삭제할 권한이 없습니다.");
         }
 
+        // 핵심: 채팅 메시지부터 삭제하여 외래 키 제약 조건 해결
+        chatMessageRepository.deleteByAgentId(agentId);
+        
+        // 그 다음 에이전트 삭제
         agentRepository.delete(agent);
     }
 
