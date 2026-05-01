@@ -172,26 +172,7 @@ export default function Dashboard() {
   ];
 
   return (
-    <div
-      style={{
-        width: '100%',
-        maxWidth: '1280px',
-        margin: '0 auto',
-        padding: '24px',
-        boxSizing: 'border-box',
-      }}
-    >
-      <div
-        className="glass-panel animate-fade-in"
-        style={{ padding: '30px', marginBottom: '24px' }}
-      >
-        <h2 style={{ margin: 0, color: 'var(--color-primary)' }}>
-          환영합니다, {userName}님!
-        </h2>
-        <p style={{ color: 'var(--color-text-muted)', marginTop: '8px' }}>
-          오늘의 학습 현황을 확인하고 스터디 일정을 관리해 보세요.
-        </p>
-      </div>
+    <div className="container-main">
 
       <StudyTimer onTimeUpdate={setTodayStudySeconds} />
 
@@ -272,7 +253,11 @@ export default function Dashboard() {
               center: 'title',
               right: 'dayGridMonth,dayGridWeek',
             }}
-            height={600}
+            contentHeight="auto"
+            views={{
+              dayGridMonth: { dayMaxEvents: 3 },
+              dayGridWeek: { dayMaxEvents: false }
+            }}
           />
         </div>
 
