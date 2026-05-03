@@ -33,10 +33,10 @@ public class Agent {
     @Column(nullable = false, length = 1000)
     private String persona;
 
-    @Column(nullable = false, length = 100)
+    @Column(length = 100)
     private String tone;
 
-    @Column(nullable = false, length = 200)
+    @Column(length = 200)
     private String goal;
 
     @CreationTimestamp

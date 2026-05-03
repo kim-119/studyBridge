@@ -36,8 +36,8 @@ public class AgentService {
                 .name(request.getName())
                 .role(request.getRole())
                 .persona(request.getPersona())
-                .tone(request.getTone() != null ? request.getTone() : "친절하고 전문적인 말투")
-                .goal(request.getGoal() != null ? request.getGoal() : "사용자의 학습을 돕는다")
+                .tone(request.getTone())
+                .goal(request.getGoal())
                 .build();
 
         Agent savedAgent = agentRepository.save(agent);
