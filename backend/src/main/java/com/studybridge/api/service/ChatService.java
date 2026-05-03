@@ -39,27 +39,15 @@ public class ChatService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("사용자를 찾을 수 없습니다."));
 
-        // FastAPI 서버의 프롬프트 양식 구성
-        String prompt = String.format(
-                "너는 StudyBridge 플랫폼의 사용자 커스텀 AI 에이전트다.\n\n" +
-                "[에이전트 이름]\n%s\n\n" +
-                "[에이전트 역할]\n%s\n\n" +
-                "[페르소나]\n%s\n\n" +
-                "[말투]\n%s\n\n" +
-                "[목표]\n%s\n\n" +
-                "[사용자 질문]\n%s\n\n" +
-                "위 설정을 반드시 반영해서 한국어로 답변해라.\n" +
-                "답변은 너무 길게 늘어놓지 말고, 학습자가 바로 이해할 수 있게 구조화해라.",
-                agent.getName(), agent.getRole(), agent.getPersona(),
-                agent.getTone(), agent.getGoal(), request.getMessage()
-        );
+        // FastAPI 서버에 보낼 프롬프트 생성
+        String prompt = buildPrompt(agent, request.getMessage());
 
         Map<String, String> requestBody = Map.of("prompt", prompt);
 
         Map<String, Object> response;
         try {
             response = fastApiWebClient.post()
-                    .uri("/ai/gemini")
+                    .uri("/ai/chat")
                     .bodyValue(requestBody)
                     .retrieve()
                     .bodyToMono(Map.class)
@@ -94,6 +82,28 @@ public class ChatService {
                         .createdAt(msg.getCreatedAt())
                         .build())
                 .collect(Collectors.toList());
+    }
+
+    private String buildPrompt(Agent agent, String userMessage) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("당신은 다음 설정에 따라 사용자를 돕는 커스텀 AI 에이전트입니다.\n");
+        
+        sb.append("[에이전트 정보]\n");
+        sb.append("- 이름: ").append(agent.getName()).append("\n");
+        sb.append("- 역할: ").append(agent.getRole()).append("\n");
+        sb.append("- 페르소나: ").append(agent.getPersona()).append("\n");
+
+        if (agent.getTone() != null && !agent.getTone().isBlank()) {
+            sb.append("- 말투: ").append(agent.getTone()).append("\n");
+        }
+        if (agent.getGoal() != null && !agent.getGoal().isBlank()) {
+            sb.append("- 목표: ").append(agent.getGoal()).append("\n");
+        }
+
+        sb.append("\n[사용자 질문]\n").append(userMessage).append("\n");
+        sb.append("위 설정을 반드시 반영해서 한국어로 답변해 주세요.");
+
+        return sb.toString();
     }
 
     private void saveMessage(Agent agent, User user, String content, String sender) {

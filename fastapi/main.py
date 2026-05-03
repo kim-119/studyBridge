@@ -72,7 +72,7 @@ class GeminiResponse(BaseModel):
     result: str
 
 
-@app.post("/ai/gemini", response_model=GeminiResponse)
+@app.post("/ai/chat", response_model=GeminiResponse)
 def ask_gemini(request: GeminiRequest):
     check_gemini_client()
 

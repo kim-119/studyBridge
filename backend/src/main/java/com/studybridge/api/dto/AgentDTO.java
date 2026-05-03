@@ -24,10 +24,10 @@ public class AgentDTO {
         private String persona;
 
         @Size(max = 100)
-        private String tone = "친절하고 전문적인 말투";
+        private String tone;
 
         @Size(max = 200)
-        private String goal = "사용자의 학습을 돕는다";
+        private String goal;
     }
 
     @Getter
