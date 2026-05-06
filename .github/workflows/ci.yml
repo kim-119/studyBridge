@@ -1,51 +1,271 @@
-name: CI
+name: StudyBridge CI Pipeline
 
 on:
   push:
     branches:
       - main
       - develop
-      - feature/**
+      - backend
+      - frontend
+      - fastapi
+      - "feature/**"
   pull_request:
     branches:
       - main
+      - develop
+      - backend
+      - frontend
+      - fastapi
 
 jobs:
-  build-check:
+  backend-ci:
+    name: Backend Spring Boot Gradle Build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
+      - name: 소스코드 체크아웃
         uses: actions/checkout@v4
 
-      - name: Show project structure
-        run: |
-          echo "Project structure:"
-          ls -la
+      - name: Java 21 설정
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "temurin"
+          cache: gradle
 
-      - name: Check backend folder
+      - name: 백엔드 폴더 및 Gradle Wrapper 확인
         run: |
-          if [ -d "backend" ]; then
-            echo "backend exists"
-          else
-            echo "backend missing"
+          if [ ! -d "backend" ]; then
+            echo "backend 폴더가 없습니다."
             exit 1
           fi
 
-      - name: Check frontend folder
-        run: |
-          if [ -d "frontend" ]; then
-            echo "frontend exists"
-          else
-            echo "frontend missing"
+          if [ ! -f "backend/gradlew" ]; then
+            echo "backend/gradlew 파일이 없습니다."
             exit 1
           fi
 
-      - name: Check fastapi folder
-        run: |
-          if [ -d "fastapi" ]; then
-            echo "fastapi exists"
-          else
-            echo "fastapi missing"
+          if [ ! -f "backend/build.gradle" ] && [ ! -f "backend/build.gradle.kts" ]; then
+            echo "backend Gradle 빌드 파일이 없습니다."
             exit 1
           fi
+
+      - name: Gradle Wrapper 실행 권한 부여
+        run: chmod +x backend/gradlew
+
+      - name: Java 버전 확인
+        run: java -version
+
+      - name: Spring Boot Gradle 빌드 테스트 제외
+        run: |
+          cd backend
+          ./gradlew clean build -x test
+
+  frontend-ci:
+    name: Frontend React Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 소스코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 프론트엔드 폴더 및 package.json 확인
+        run: |
+          if [ ! -d "frontend" ]; then
+            echo "frontend 폴더가 없습니다."
+            exit 1
+          fi
+
+          if [ ! -f "frontend/package.json" ]; then
+            echo "frontend/package.json 파일이 없습니다."
+            exit 1
+          fi
+
+      - name: Node 및 NPM 버전 확인
+        run: |
+          node -v
+          npm -v
+
+      - name: React 의존성 설치 및 빌드
+        run: |
+          cd frontend
+
+          if [ -f "package-lock.json" ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+          npm run build
+
+  fastapi-ci:
+    name: FastAPI Python 3.12 Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 소스코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.12 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: FastAPI 폴더 및 requirements.txt 확인
+        run: |
+          if [ ! -d "fastapi" ]; then
+            echo "fastapi 폴더가 없습니다."
+            exit 1
+          fi
+
+          if [ ! -f "fastapi/requirements.txt" ]; then
+            echo "fastapi/requirements.txt 파일이 없습니다."
+            exit 1
+          fi
+
+      - name: Python 및 pip 버전 확인
+        run: |
+          python --version
+          pip --version
+
+      - name: FastAPI 라이브러리 설치
+        run: |
+          cd fastapi
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: FastAPI 문법 검사
+        run: |
+          cd fastapi
+          python -m compileall .
+
+  docker-ci:
+    name: Dockerfile Build And Version Check
+    runs-on: ubuntu-latest
+    needs:
+      - backend-ci
+      - frontend-ci
+      - fastapi-ci
+
+    steps:
+      - name: 소스코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Docker 버전 확인
+        run: |
+          docker --version
+
+      - name: Backend Dockerfile 확인
+        run: |
+          if [ ! -f "backend/Dockerfile" ]; then
+            echo "backend/Dockerfile 파일이 없습니다."
+            exit 1
+          fi
+
+          echo "Backend Dockerfile FROM:"
+          grep -i "^FROM" backend/Dockerfile
+
+      - name: Frontend Dockerfile 확인
+        run: |
+          if [ ! -f "frontend/Dockerfile" ]; then
+            echo "frontend/Dockerfile 파일이 없습니다."
+            exit 1
+          fi
+
+          echo "Frontend Dockerfile FROM:"
+          grep -i "^FROM" frontend/Dockerfile
+
+      - name: FastAPI Dockerfile 확인
+        run: |
+          if [ ! -f "fastapi/Dockerfile" ]; then
+            echo "fastapi/Dockerfile 파일이 없습니다."
+            exit 1
+          fi
+
+          echo "FastAPI Dockerfile FROM:"
+          grep -i "^FROM" fastapi/Dockerfile
+
+      - name: Backend Docker 이미지 빌드
+        run: |
+          docker build -t studybridge-backend:ci ./backend
+
+      - name: Frontend Docker 이미지 빌드
+        run: |
+          docker build -t studybridge-frontend:ci ./frontend
+
+      - name: FastAPI Docker 이미지 빌드
+        run: |
+          docker build -t studybridge-fastapi:ci ./fastapi
+
+      - name: Backend Docker Java 버전 확인
+        run: |
+          docker run --rm --entrypoint sh studybridge-backend:ci -c "java -version"
+
+      - name: Frontend Docker 런타임 버전 확인
+        run: |
+          docker run --rm --entrypoint sh studybridge-frontend:ci -c '
+            if command -v nginx >/dev/null 2>&1; then
+              nginx -v
+            elif command -v node >/dev/null 2>&1; then
+              node -v
+            else
+              echo "frontend 이미지 안에서 nginx 또는 node를 찾을 수 없습니다."
+              exit 1
+            fi
+          '
+
+      - name: FastAPI Docker Python 버전 확인
+        run: |
+          docker run --rm --entrypoint sh studybridge-fastapi:ci -c "python --version && pip --version"
+
+      - name: Docker 이미지 목록 확인
+        run: |
+          docker images | grep studybridge
+
+  build-check:
+    name: Final Build Check
+    runs-on: ubuntu-latest
+    needs:
+      - backend-ci
+      - frontend-ci
+      - fastapi-ci
+      - docker-ci
+    if: always()
+
+    steps:
+      - name: 전체 CI 결과 확인
+        run: |
+          echo "backend-ci result: ${{ needs.backend-ci.result }}"
+          echo "frontend-ci result: ${{ needs.frontend-ci.result }}"
+          echo "fastapi-ci result: ${{ needs.fastapi-ci.result }}"
+          echo "docker-ci result: ${{ needs.docker-ci.result }}"
+
+          if [ "${{ needs.backend-ci.result }}" != "success" ]; then
+            echo "backend-ci 실패"
+            exit 1
+          fi
+
+          if [ "${{ needs.frontend-ci.result }}" != "success" ]; then
+            echo "frontend-ci 실패"
+            exit 1
+          fi
+
+          if [ "${{ needs.fastapi-ci.result }}" != "success" ]; then
+            echo "fastapi-ci 실패"
+            exit 1
+          fi
+
+          if [ "${{ needs.docker-ci.result }}" != "success" ]; then
+            echo "docker-ci 실패"
+            exit 1
+          fi
+
+          echo "전체 CI 통과"
