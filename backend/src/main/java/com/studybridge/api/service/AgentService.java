@@ -4,8 +4,8 @@ import com.studybridge.api.dto.AgentDTO;
 import com.studybridge.api.entity.Agent;
 import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.AgentRepository;
-import com.studybridge.api.repository.UserRepository;
 import com.studybridge.api.repository.ChatMessageRepository;
+import com.studybridge.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,8 +38,8 @@ public class AgentService {
                 .name(request.getName())
                 .role(request.getRole())
                 .persona(request.getPersona())
-                .tone(request.getTone() != null ? request.getTone() : "친절하고 전문적인 말투")
-                .goal(request.getGoal() != null ? request.getGoal() : "사용자의 학습을 돕는다")
+                .tone(request.getTone())
+                .goal(request.getGoal())
                 .build();
 
         Agent savedAgent = agentRepository.save(agent);
@@ -61,10 +61,7 @@ public class AgentService {
             throw new RuntimeException("해당 에이전트를 삭제할 권한이 없습니다.");
         }
 
-        // 핵심: 채팅 메시지부터 삭제하여 외래 키 제약 조건 해결
         chatMessageRepository.deleteByAgentId(agentId);
-        
-        // 그 다음 에이전트 삭제
         agentRepository.delete(agent);
     }
 
