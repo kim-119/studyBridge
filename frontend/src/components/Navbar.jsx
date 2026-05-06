@@ -6,8 +6,8 @@ export default function Navbar() {
   const userEmail = localStorage.getItem('userEmail');
 
   const handleLogout = () => {
-    localStorage.removeItem('userEmail');
-    navigate('/');
+    localStorage.clear();
+    window.location.href = '/';
   };
 
   return (

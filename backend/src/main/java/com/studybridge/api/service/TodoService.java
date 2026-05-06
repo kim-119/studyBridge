@@ -20,7 +20,7 @@ public class TodoService {
     private final TodoRepository todoRepository;
     private final UserRepository userRepository;
 
-    // 1. 할일 추가
+    // 할일 추가
     @Transactional
     public TodoDTO.Response createTodo(TodoDTO.Request request) {
         User user = userRepository.findById(request.getUserId())
@@ -39,14 +39,14 @@ public class TodoService {
         return convertToResponse(savedTodo);
     }
 
-    // 2. 사용자별 할 일 목록 조회
+    // 사용자별 할 일 목록 조회
     public List<TodoDTO.Response> getTodosByUserId(Long userId) {
         return todoRepository.findByUserId(userId).stream()
                 .map(this::convertToResponse)
                 .collect(Collectors.toList());
     }
 
-    // 3. 할 일 상태 토글 (완료/미완료)
+    // 할 일 상태 토글 (완료/미완료)
     @Transactional
     public TodoDTO.Response toggleTodo(Long todoId) {
         Todo todo = todoRepository.findById(todoId)
@@ -56,7 +56,7 @@ public class TodoService {
         return convertToResponse(todo);
     }
 
-    // 4. 할 일 삭제
+    // 할 일 삭제
     @Transactional
     public void deleteTodo(Long todoId) {
         todoRepository.deleteById(todoId);

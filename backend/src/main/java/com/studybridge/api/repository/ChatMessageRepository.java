@@ -8,6 +8,6 @@ import java.util.List;
 
 @Repository
 public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> {
-    // 특정 에이전트와의 채팅 내역을 시간순으로 조회
     List<ChatMessage> findByAgentIdOrderByCreatedAtAsc(Long agentId);
+    void deleteByAgentId(Long agentId);
 }
