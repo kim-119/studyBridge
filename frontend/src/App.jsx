@@ -6,7 +6,8 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import MyPage from './pages/MyPage';
-import GroupBoard from './pages/GroupBoard';
+import StudyMate from './pages/StudyMate';
+import GroupStudy from './pages/GroupStudy';
 
 function PrivateRoute({ children }) {
   const isLogin = localStorage.getItem('userEmail');
@@ -39,10 +40,19 @@ function App() {
           />
 
           <Route
-            path="/group"
+            path="/studymate"
             element={
               <PrivateRoute>
-                <GroupBoard />
+                <StudyMate />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
+            path="/groupstudy"
+            element={
+              <PrivateRoute>
+                <GroupStudy />
               </PrivateRoute>
             }
           />
