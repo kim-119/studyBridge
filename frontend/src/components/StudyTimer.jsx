@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 
 export default function StudyTimer({ onTimeUpdate }) {
-  const DAILY_GOAL_SECONDS = 2 * 60 * 60;
 
   const todayKey = new Date().toISOString().slice(0, 10);
   const totalKey = `studyTotal_${todayKey}`;
@@ -96,62 +95,26 @@ export default function StudyTimer({ onTimeUpdate }) {
     onTimeUpdate?.(nextTotal);
   };
 
-  const progress = Math.min((sessionSeconds / DAILY_GOAL_SECONDS) * 100, 100);
   const isFinishDisabled = sessionSeconds === 0 && !isRunning;
 
   return (
-    <div className="glass-panel animate-fade-in" style={{ padding: '24px' }}>
+    <div className="glass-panel animate-fade-in" style={{ padding: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>현재 공부 시간</h3>
-
-        <button
-          className="btn-outline"
-          style={{
-            width: 'auto',
-            height: '32px',
-            padding: '0 10px',
-            fontSize: '12px',
-          }}
-        >
-          설정
-        </button>
       </div>
 
-      <div style={{ marginTop: '18px', fontSize: '26px', fontWeight: 700 }}>
+      <div style={{ marginTop: '16px', fontSize: '28px', fontWeight: 700, color: 'var(--color-primary)' }}>
         {formatTime(sessionSeconds)}
-        <span style={{ color: 'var(--color-text-muted)', fontWeight: 500 }}>
-          {' '} / 2시간 0분
-        </span>
       </div>
 
       <div
         style={{
-          marginTop: '8px',
-          fontSize: '14px',
+          marginTop: '6px',
+          fontSize: '13px',
           color: 'var(--color-text-muted)',
         }}
       >
         종료를 누르면 오늘의 학습 시간에 누적됩니다.
-      </div>
-
-      <div
-        style={{
-          height: '10px',
-          backgroundColor: 'var(--color-border)',
-          borderRadius: '999px',
-          marginTop: '14px',
-          overflow: 'hidden',
-        }}
-      >
-        <div
-          style={{
-            width: `${progress}%`,
-            height: '100%',
-            backgroundColor: 'var(--color-primary)',
-            borderRadius: '999px',
-            transition: 'width 0.2s ease',
-          }}
-        />
       </div>
 
       <div
