@@ -4,6 +4,7 @@ import com.studybridge.api.dto.AgentDTO;
 import com.studybridge.api.entity.Agent;
 import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.AgentRepository;
+import com.studybridge.api.repository.ChatMessageRepository;
 import com.studybridge.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -19,6 +20,7 @@ public class AgentService {
 
     private final AgentRepository agentRepository;
     private final UserRepository userRepository;
+    private final ChatMessageRepository chatMessageRepository;
 
     private static final int MAX_AGENT_COUNT = 3;
 
@@ -59,6 +61,7 @@ public class AgentService {
             throw new RuntimeException("해당 에이전트를 삭제할 권한이 없습니다.");
         }
 
+        chatMessageRepository.deleteByAgentId(agentId);
         agentRepository.delete(agent);
     }
 
