@@ -12,28 +12,28 @@ import java.util.List;
 
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/api/users/{userId}/agents/{agentId}/chat")
+@RequestMapping("/api/users/{userId}/chat")
 @CrossOrigin(origins = "http://localhost:3000")
 public class ChatController {
 
     private final ChatService chatService;
 
-    // 특정 에이전트와 채팅하기
-    @PostMapping
-    public ResponseEntity<AgentDTO.ChatResponse> chatWithAgent(
+    // 멀티 에이전트 채팅방에서 채팅하기
+    @PostMapping("/rooms/{roomId}")
+    public ResponseEntity<ChatDTO.MultiChatResponse> chatWithRoom(
             @PathVariable Long userId,
-            @PathVariable Long agentId,
-            @Valid @RequestBody AgentDTO.ChatRequest request) {
+            @PathVariable Long roomId,
+            @Valid @RequestBody ChatDTO.MultiChatRequest request) {
         
-        return ResponseEntity.ok(chatService.chatWithAgent(userId, agentId, request));
+        return ResponseEntity.ok(chatService.chatWithRoom(userId, roomId, request));
     }
 
-    // 채팅 내역 조회
-    @GetMapping("/history")
-    public ResponseEntity<List<ChatDTO.MessageResponse>> getChatHistory(
+    // 채팅방 내역 조회
+    @GetMapping("/rooms/{roomId}/history")
+    public ResponseEntity<List<ChatDTO.MessageResponse>> getRoomChatHistory(
             @PathVariable Long userId,
-            @PathVariable Long agentId) {
+            @PathVariable Long roomId) {
         
-        return ResponseEntity.ok(chatService.getChatHistory(agentId));
+        return ResponseEntity.ok(chatService.getRoomChatHistory(roomId));
     }
 }

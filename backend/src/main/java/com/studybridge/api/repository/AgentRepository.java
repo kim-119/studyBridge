@@ -8,6 +8,4 @@ import java.util.List;
 
 @Repository
 public interface AgentRepository extends JpaRepository<Agent, Long> {
-    List<Agent> findByUserId(Long userId);
-    int countByUserId(Long userId);
 }
