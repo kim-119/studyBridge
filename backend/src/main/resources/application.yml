@@ -7,7 +7,7 @@ spring:
     username: ${DB_USER:capstone}
     password: ${DB_PASSWORD:1234}
     driver-class-name: org.postgresql.Driver
-
+  
   jpa:
     hibernate:
       ddl-auto: update
@@ -19,5 +19,4 @@ spring:
 
 ai:
   server:
-    fastapi:
-      base-url: ${FASTAPI_BASE_URL:http://localhost:8000}
+    url: http://${AI_HOST:localhost}:8000

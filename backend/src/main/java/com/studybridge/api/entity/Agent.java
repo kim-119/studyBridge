@@ -5,7 +5,6 @@ import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 
 import java.time.LocalDateTime;
-import java.util.List;
 
 @Entity
 @Table(name = "agents")
@@ -34,16 +33,13 @@ public class Agent {
     @Column(nullable = false, length = 1000)
     private String persona;
 
-    @Column(nullable = false, length = 100)
+    @Column(length = 100)
     private String tone;
 
-    @Column(nullable = false, length = 200)
+    @Column(length = 200)
     private String goal;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
-
-    @OneToMany(mappedBy = "agent", cascade = CascadeType.ALL, orphanRemoval = true)
-    private List<ChatMessage> chatMessages;
 }
