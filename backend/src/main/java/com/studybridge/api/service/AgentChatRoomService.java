@@ -29,6 +29,10 @@ public class AgentChatRoomService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("사용자를 찾을 수 없습니다."));
 
+        if (request.getAgents() != null && request.getAgents().size() > 3) {
+            throw new RuntimeException("에이전트는 최대 3명까지 생성할 수 있습니다.");
+        }
+
         AgentChatRoom room = AgentChatRoom.builder()
                 .user(user)
                 .roomName(request.getRoomName())
