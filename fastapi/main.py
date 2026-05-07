@@ -117,7 +117,7 @@ class ChatResponse(BaseModel):
 
 
 class MultiAgentChatRequest(BaseModel):
-    agents: List[AgentPersona] = Field(..., min_length=3, max_length=3)
+    agents: List[AgentPersona] = Field(..., min_length=1, max_length=MAX_AGENT_COUNT)
     message: str = Field(..., min_length=1, max_length=4000)
 
 
@@ -534,7 +534,7 @@ def chat_with_custom_agent(request: ChatRequest) -> ChatResponse:
 
 
 @app.post("/api/ai/multi-chat", response_model=MultiAgentChatResponse)
-def chat_with_three_custom_agents(request: MultiAgentChatRequest) -> MultiAgentChatResponse:
+def chat_with_custom_agents(request: MultiAgentChatRequest) -> MultiAgentChatResponse:
     answers: List[MultiAgentAnswer] = []
 
     for agent in request.agents:
