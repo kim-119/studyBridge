@@ -44,4 +44,16 @@ public class UserController {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
+
+    @PutMapping("/{userId}/profile")
+    public ResponseEntity<?> updateProfile(
+            @PathVariable Long userId,
+            @Valid @RequestBody UserDTO.UpdateProfileRequest request) {
+        try {
+            UserDTO.Response response = userService.updateProfile(userId, request);
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
 }
