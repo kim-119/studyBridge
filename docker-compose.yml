@@ -1,6 +1,7 @@
 services:
   react:
-    build: ./frontend
+    build:
+      context: ./frontend
     container_name: capstone-react
     ports:
       - "3000:3000"
@@ -11,26 +12,35 @@ services:
       - spring
 
   spring:
-    build: ./backend
     container_name: capstone-spring
+    build:
+      context: ./backend
     ports:
       - "8080:8080"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/capstone
-      SPRING_DATASOURCE_USERNAME: capstone
-      SPRING_DATASOURCE_PASSWORD: 1234
-      FASTAPI_SERVER_URL: http://fastapi:8000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: capstone
+      DB_USER: capstone
+      DB_PASSWORD: 1234
+      FASTAPI_BASE_URL: http://fastapi:8000
     depends_on:
       - db
       - fastapi
 
   fastapi:
-    build: ./fastapi
+    build:
+      context: ./fastapi
     container_name: capstone-fastapi
     ports:
       - "8000:8000"
     volumes:
       - ./fastapi:/app
+    env_file:
+      - ./fastapi/.env
+    environment:
+      PYTHONUNBUFFERED: 1
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   db:
     image: postgres:16

@@ -11,27 +11,29 @@ export default function Navbar() {
   };
 
   return (
-    <nav style={styles.nav}>
-      <div style={styles.inner}>
+    <nav className="nav-container">
+      <div className="nav-inner">
         {/* 🔹 좌측 */}
-        <div style={styles.left}>
-          <Link to="/" style={styles.logo}>
+        <div className="nav-left">
+          <Link to="/" className="nav-logo">
             StudyBridge
           </Link>
-
-          {userEmail && (
-            <Link to="/group" style={styles.link}>
-              그룹게시판
+          <div style={{ display: 'flex', gap: '16px', marginLeft: '16px' }}>
+            <Link to="/studymate" className="nav-link">
+              학습메이트
             </Link>
-          )}
+            <Link to="/groupstudy" className="nav-link">
+              그룹스터디
+            </Link>
+          </div>
         </div>
 
         {/* 🔹 우측 */}
-        <div style={styles.right}>
+        <div className="nav-right">
           {userEmail ? (
             <>
               {/* 🔥 이메일 클릭 → 마이페이지 */}
-              <Link to="/mypage" style={styles.user}>
+              <Link to="/mypage" className="nav-user">
                 {userEmail}
               </Link>
 
@@ -45,7 +47,7 @@ export default function Navbar() {
             </>
           ) : (
             <>
-              <Link to="/login" style={styles.link}>로그인</Link>
+              <Link to="/login" className="nav-link">로그인</Link>
               <Link
                 to="/register"
                 className="btn-primary"
@@ -60,60 +62,3 @@ export default function Navbar() {
     </nav>
   );
 }
-
-const styles = {
-  nav: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    width: '100%',
-    height: '64px',
-    background: '#fff',
-    borderBottom: '1px solid var(--color-border)',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 1000,
-  },
-  inner: {
-    width: '100%',
-    maxWidth: '1200px',
-    padding: '0 24px',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-
-  left: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '20px',
-  },
-
-  right: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-  },
-
-  logo: {
-    fontSize: '18px',
-    fontWeight: '700',
-    color: 'var(--color-text-main)',
-    textDecoration: 'none',
-  },
-
-  link: {
-    fontSize: '14px',
-    color: 'var(--color-text-main)',
-    textDecoration: 'none',
-    fontWeight: 500,
-  },
-
-  user: {
-    fontSize: '14px',
-    color: 'var(--color-text-muted)',
-    textDecoration: 'none',
-    cursor: 'pointer',
-  },
-};
