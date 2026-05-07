@@ -5,6 +5,7 @@ import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Entity
 @Table(name = "agents")
@@ -21,8 +22,8 @@ public class Agent {
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
-    private User user;
+    @JoinColumn(name = "agent_room_id", nullable = false)
+    private AgentChatRoom agentChatRoom;
 
     @Column(nullable = false, length = 30)
     private String name;
@@ -42,4 +43,7 @@ public class Agent {
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
+
+    @OneToMany(mappedBy = "agent", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<ChatMessage> chatMessages;
 }
