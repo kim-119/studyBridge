@@ -21,12 +21,12 @@ public class ChatMessage {
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "agent_id", nullable = false)
-    private Agent agent;
+    @JoinColumn(name = "agent_room_id", nullable = false)
+    private AgentChatRoom agentChatRoom;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
-    private User user;
+    @JoinColumn(name = "agent_id") // nullable = true (유저가 보낸 메시지는 null)
+    private Agent agent;
 
     @Column(columnDefinition = "TEXT", nullable = false)
     private String content; // 메시지 내용
