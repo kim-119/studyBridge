@@ -2,9 +2,11 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { authService } from '../services/api';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
+import { useAuth } from '../hooks/useAuth';
 
 export default function Login() {
   const navigate = useNavigate();
+  const { login } = useAuth();
 
   const [formData, setFormData] = useState({
     email: '',
@@ -53,8 +55,24 @@ export default function Login() {
         return;
       }
 
-      localStorage.setItem('userId', String(userId));
-      localStorage.setItem('userEmail', userEmail);
+      let profile = {};
+      try {
+        profile = await authService.getProfile(userId);
+      } catch (e) {
+        console.warn('프로필 조회 실패, 로그인 응답 값 사용:', e);
+      }
+
+      const normalizedUser = {
+        ...result,
+        ...profile,
+        id: profile.userId || profile.id || userId,
+        userId: profile.userId || profile.id || userId,
+        displayName: profile.displayName || profile.display_name || profile.name || profile.nickname || result.displayName || '',
+        email: profile.email || userEmail,
+        major: profile.major || result.major || ''
+      };
+
+      login(normalizedUser);
 
       navigate('/dashboard');
     } catch (err) {
