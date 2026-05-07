@@ -1,12 +1,15 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '../hooks/useAuth';
 
 export default function Navbar() {
   const navigate = useNavigate();
-  const userEmail = localStorage.getItem('userEmail');
+  const { user, userEmail, logout } = useAuth();
+  
+  const displayText = user?.displayName || user?.display_name || user?.name || user?.nickname || user?.email || userEmail;
 
   const handleLogout = () => {
-    localStorage.clear();
+    logout();
     window.location.href = '/';
   };
 
@@ -32,9 +35,8 @@ export default function Navbar() {
         <div className="nav-right">
           {userEmail ? (
             <>
-              {/* 🔥 이메일 클릭 → 마이페이지 */}
               <Link to="/mypage" className="nav-user">
-                {userEmail}
+                {displayText}
               </Link>
 
               <button
