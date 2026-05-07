@@ -79,4 +79,22 @@ public class UserService {
 
         user.setPassword(passwordEncoder.encode(request.getNewPassword()));
     }
+
+    @Transactional
+    public UserDTO.Response updateProfile(Long userId, UserDTO.UpdateProfileRequest request) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
+
+        user.setDisplayName(request.getDisplayName());
+        user.setMajor(request.getMajor());
+
+        return UserDTO.Response.builder()
+                .id(user.getId())
+                .email(user.getEmail())
+                .displayName(user.getDisplayName())
+                .major(user.getMajor())
+                .photoUrl(user.getPhotoUrl())
+                .status(user.getStatus())
+                .build();
+    }
 }

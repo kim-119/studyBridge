@@ -1,6 +1,5 @@
 package com.studybridge.api.controller;
 
-import com.studybridge.api.dto.AgentDTO;
 import com.studybridge.api.dto.ChatDTO;
 import com.studybridge.api.service.ChatService;
 import jakarta.validation.Valid;
@@ -24,7 +23,7 @@ public class ChatController {
             @PathVariable Long userId,
             @PathVariable Long roomId,
             @Valid @RequestBody ChatDTO.MultiChatRequest request) {
-        
+
         return ResponseEntity.ok(chatService.chatWithRoom(userId, roomId, request));
     }
 
@@ -33,7 +32,7 @@ public class ChatController {
     public ResponseEntity<List<ChatDTO.MessageResponse>> getRoomChatHistory(
             @PathVariable Long userId,
             @PathVariable Long roomId) {
-        
+
         return ResponseEntity.ok(chatService.getRoomChatHistory(roomId));
     }
 }

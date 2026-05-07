@@ -24,9 +24,7 @@ import java.util.stream.Collectors;
 @Transactional(readOnly = true)
 public class ChatService {
 
-    private final AgentRepository agentRepository;
     private final AgentChatRoomRepository agentChatRoomRepository;
-    private final UserRepository userRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final WebClient fastApiWebClient;
 
