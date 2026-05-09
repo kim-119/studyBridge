@@ -4,6 +4,7 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 
 import StudyTimer from '../components/StudyTimer';
+import StudyStatistics from '../components/StudyStatistics';
 import { todoService } from '../services/api';
 
 export default function Dashboard() {
@@ -451,6 +452,8 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      <StudyStatistics />
     </div>
   );
 }
