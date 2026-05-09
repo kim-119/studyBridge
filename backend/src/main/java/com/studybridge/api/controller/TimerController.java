@@ -12,13 +12,14 @@ import java.util.NoSuchElementException;
 
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/api/users/{userId}/timers")
+@RequestMapping("/api/users/{userId}") // 상위 경로를 /api/users/{userId}로 변경
 @CrossOrigin(origins = "http://localhost:3000")
 public class TimerController {
 
     private final TimerService timerService;
 
-    @PostMapping("/start")
+    // 기존 타이머 관리 API들은 /api/users/{userId}/timers 로 매핑
+    @PostMapping("/timers/start")
     public ResponseEntity<TimerDTO.Response> startTimer(
             @PathVariable Long userId,
             @RequestBody TimerDTO.StartRequest request) {
@@ -34,7 +35,7 @@ public class TimerController {
         }
     }
 
-    @PostMapping("/end")
+    @PostMapping("/timers/end")
     public ResponseEntity<TimerDTO.Response> endTimer(
             @PathVariable Long userId,
             @RequestBody TimerDTO.EndRequest request) {
@@ -46,7 +47,7 @@ public class TimerController {
         }
     }
 
-    @GetMapping("/current")
+    @GetMapping("/timers/current")
     public ResponseEntity<TimerDTO.Response> getCurrentTimer(@PathVariable Long userId) {
         TimerDTO.Response response = timerService.getCurrentTimer(userId);
         if (response != null) {
@@ -56,9 +57,23 @@ public class TimerController {
         }
     }
 
-    @GetMapping
+    @GetMapping("/timers")
     public ResponseEntity<List<TimerDTO.Response>> getUserTimers(@PathVariable Long userId) {
         List<TimerDTO.Response> response = timerService.getUserTimers(userId);
+        return ResponseEntity.ok(response);
+    }
+
+    // --- 추가된 study-time 집계 API ---
+
+    @GetMapping("/study-time/today")
+    public ResponseEntity<TimerDTO.TodayStudyTimeResponse> getTodayStudyTime(@PathVariable Long userId) {
+        TimerDTO.TodayStudyTimeResponse response = timerService.getTodayStudyTime(userId);
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/study-time/weekly")
+    public ResponseEntity<TimerDTO.WeeklyStudyTimeResponse> getWeeklyStudyTime(@PathVariable Long userId) {
+        TimerDTO.WeeklyStudyTimeResponse response = timerService.getWeeklyStudyTime(userId);
         return ResponseEntity.ok(response);
     }
 }
