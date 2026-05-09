@@ -37,7 +37,7 @@ public class ChatService {
             throw new RuntimeException("해당 채팅방에 접근할 권한이 없습니다.");
         }
 
-        // 1. 사용자의 메시지 저장
+        // 사용자의 메시지 저장
         saveRoomMessage(room, null, request.getMessage(), "USER");
 
         // FastAPI의 /api/ai/multi-chat 요구사항에 맞춰 데이터 구성
@@ -46,8 +46,8 @@ public class ChatService {
                         "name", agent.getName(),
                         "role", agent.getRole(),
                         "personality", agent.getPersona(),
-                        "tone", agent.getTone() != null ? agent.getTone() : "친절하게",
-                        "goal", agent.getGoal() != null ? agent.getGoal() : "학습 도움"
+                        "tone", agent.getTone(),
+                        "goal", agent.getGoal()
                 ))
                 .collect(Collectors.toList());
 
@@ -82,11 +82,12 @@ public class ChatService {
                         .findFirst()
                         .orElse(room.getAgents().get(Math.min(i, room.getAgents().size() - 1)));
 
-                // 2. 각 AI의 응답 저장
+                // 각 AI의 응답 저장
                 saveRoomMessage(room, targetAgent, aiAnswer, "AI");
 
                 replies.add(ChatDTO.AgentReply.builder()
                         .agentId(targetAgent.getId())
+                        .agentName(targetAgent.getName())
                         .answer(aiAnswer)
                         .build());
             }
@@ -103,6 +104,7 @@ public class ChatService {
                         .id(msg.getId())
                         .content(msg.getContent())
                         .sender(msg.getSender())
+                        .senderName(msg.getAgent() != null ? msg.getAgent().getName() : null)
                         .agentId(msg.getAgent() != null ? msg.getAgent().getId() : null)
                         .createdAt(msg.getCreatedAt())
                         .build())
