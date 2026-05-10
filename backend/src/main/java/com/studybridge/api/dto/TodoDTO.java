@@ -11,12 +11,10 @@ public class TodoDTO {
     @AllArgsConstructor
     @Builder
     public static class Request {
-        private Long userId;
         private String text;
         private Boolean completed;
         private LocalDateTime startDate;
         private LocalDateTime endDate;
-        private String viewType;
     }
 
     @Getter
@@ -30,7 +28,6 @@ public class TodoDTO {
         private Boolean completed;
         private LocalDateTime startDate;
         private LocalDateTime endDate;
-        private String viewType;
         private LocalDateTime createdAt;
     }
 }
