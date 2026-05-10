@@ -4,6 +4,7 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 
 import StudyTimer from '../components/StudyTimer';
+import StudyStatistics from '../components/StudyStatistics';
 import { todoService } from '../services/api';
 
 export default function Dashboard() {
@@ -14,36 +15,17 @@ export default function Dashboard() {
   const [todayStudySeconds, setTodayStudySeconds] = useState(0);
   const [selectedDate, setSelectedDate] = useState('');
   const [todoText, setTodoText] = useState('');
-  const [todos, setTodos] = useState({});
+  const [todos, setTodos] = useState([]);
+  const [selectedEndDate, setSelectedEndDate] = useState('');
 
-  const groupTodosByDate = (todoList) => {
-    const grouped = {};
-
-    todoList.forEach((todo) => {
-      if (!todo.startDate) return;
-
-      const date = todo.startDate.split('T')[0];
-
-      if (!grouped[date]) grouped[date] = [];
-
-      grouped[date].push({
-        id: todo.id,
-        text: todo.text,
-        done: todo.completed,
-        startDate: todo.startDate,
-        endDate: todo.endDate,
-        viewType: todo.viewType,
-      });
-    });
-
-    return grouped;
-  };
+  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [isEventModalOpen, setIsEventModalOpen] = useState(false);
 
   const fetchTodos = async () => {
     const savedUserId = localStorage.getItem('userId');
 
     if (!savedUserId) {
-      setTodos({});
+      setTodos([]);
       setSelectedDate('');
       setTodoText('');
       return;
@@ -51,10 +33,10 @@ export default function Dashboard() {
 
     try {
       const data = await todoService.getTodos(savedUserId);
-      setTodos(groupTodosByDate(data));
+      setTodos(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('Todo 조회 실패:', err);
-      setTodos({});
+      setTodos([]);
     }
   };
 
@@ -62,7 +44,7 @@ export default function Dashboard() {
     const savedUserId = localStorage.getItem('userId');
 
     if (!savedUserId) {
-      setTodos({});
+      setTodos([]);
       setSelectedDate('');
       setTodoText('');
       return;
@@ -80,6 +62,7 @@ export default function Dashboard() {
   };
 
   const handleDateClick = (arg) => {
+    setSelectedEndDate(arg.dateStr);
     setSelectedDate(arg.dateStr);
     setTodoText('');
   };
@@ -89,7 +72,7 @@ export default function Dashboard() {
 
     if (!savedUserId) {
       alert('로그인이 필요합니다.');
-      setTodos({});
+      setTodos([]);
       setSelectedDate('');
       setTodoText('');
       return;
@@ -106,15 +89,17 @@ export default function Dashboard() {
     }
 
     try {
+      const endDate = selectedEndDate || selectedDate;
       await todoService.createTodo(savedUserId, {
         text: todoText.trim(),
         startDate: `${selectedDate}T00:00:00`,
-        endDate: `${selectedDate}T23:59:59`,
+        endDate: `${endDate}T23:59:59`,
         viewType: 'MONTH',
         completed: false,
       });
 
       setTodoText('');
+      setSelectedEndDate('');
       await fetchTodos();
     } catch (err) {
       console.error('Todo 생성 실패:', err);
@@ -143,15 +128,56 @@ export default function Dashboard() {
     }
   };
 
-  const calendarEvents = userId
-    ? Object.entries(todos).flatMap(([date, todoList]) =>
-        todoList.map((todo) => ({
+  const eventColors = [
+    "#DDF5E3",
+    "#D9F0FF",
+    "#FDF0D5",
+    "#EEE3FF",
+    "#E6FFF4"
+  ];
+
+  const calendarEvents = userId && Array.isArray(todos)
+    ? todos.map((todo) => {
+        // endDate가 있으면 사용, 없으면 startDate 기준으로 하루
+        const startDate = todo.startDate ? todo.startDate.split('T')[0] : '';
+        const endDate = todo.endDate 
+          ? new Date(todo.endDate.split('T')[0])
+          : startDate ? new Date(startDate) : new Date();
+        // FullCalendar는 end 날짜의 다음날까지 표시하므로, endDate에 1일 추가
+        const adjustedEndDate = new Date(endDate);
+        adjustedEndDate.setDate(adjustedEndDate.getDate() + 1);
+        
+        return {
           id: String(todo.id),
-          title: todo.done ? `완료: ${todo.text}` : todo.text,
-          date,
-        }))
-      )
+          title: todo.text,
+          start: startDate,
+          end: adjustedEndDate.toISOString().split('T')[0],
+          backgroundColor: eventColors[(todo.id || 0) % eventColors.length],
+          borderColor: 'rgba(0,0,0,0.05)',
+          textColor: '#1F2937',
+          extendedProps: {
+            completed: todo.completed,
+          },
+        };
+      }).filter(e => e.start)
     : [];
+
+  const isDateInTodoRange = (selectedDate, todo) => {
+    if (!selectedDate || !todo.startDate) return false;
+    const selected = new Date(selectedDate);
+    const start = new Date(todo.startDate.split('T')[0]);
+    const end = new Date((todo.endDate || todo.startDate).split('T')[0]);
+
+    selected.setHours(0, 0, 0, 0);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(0, 0, 0, 0);
+
+    return selected >= start && selected <= end;
+  };
+
+  const filteredTodos = Array.isArray(todos) ? todos.filter((todo) =>
+    isDateInTodoRange(selectedDate, todo)
+  ) : [];
 
   const summaryCards = [
     {
@@ -166,7 +192,7 @@ export default function Dashboard() {
     },
     {
       title: '등록된 Todo',
-      value: `${Object.values(todos).flat().length}개`,
+      value: `${Array.isArray(todos) ? todos.length : 0}개`,
       desc: '캘린더에 등록된 전체 할 일',
     },
   ];
@@ -210,8 +236,8 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        <div className="glass-panel animate-fade-in" style={{ padding: '20px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '24px', marginTop: '24px' }}>
+        <div className="glass-panel animate-fade-in" style={{ padding: '20px', gridColumn: 'span 2' }}>
           <style>
             {`
               .fc-theme-standard .fc-scrollgrid { border-color: var(--color-border); }
@@ -226,17 +252,25 @@ export default function Dashboard() {
                 border-color: var(--color-primary-hover);
               }
               .fc-event {
-                background-color: #E8F5E9 !important;
-                border: 1px solid var(--color-primary) !important;
-                color: #1B5E20 !important;
                 border-radius: 6px !important;
                 padding: 3px 6px !important;
                 font-size: 13px !important;
-                font-weight: 700 !important;
+                font-weight: 600 !important;
+                transition: all 0.2s ease;
+                overflow: hidden !important;
+              }
+              .fc-event:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                filter: brightness(0.95);
               }
               .fc-event-title {
-                color: #1B5E20 !important;
-                font-weight: 700 !important;
+                color: #1F2937 !important;
+                font-weight: 600 !important;
+                overflow: hidden !important;
+                white-space: nowrap !important;
+                text-overflow: ellipsis !important;
+                display: block !important;
               }
               .fc-day-today { background-color: rgba(96, 201, 90, 0.08) !important; }
             `}
@@ -248,6 +282,26 @@ export default function Dashboard() {
             initialView="dayGridMonth"
             events={userId ? calendarEvents : []}
             dateClick={handleDateClick}
+            eventClick={(info) => {
+              setSelectedEvent(info.event);
+              setIsEventModalOpen(true);
+            }}
+            eventContent={(arg) => {
+              const isCompleted = arg.event.extendedProps.completed;
+              return (
+                <div style={{
+                  width: '100%',
+                  textDecoration: isCompleted ? 'line-through' : 'none',
+                  color: isCompleted ? '#9CA3AF' : 'inherit',
+                  overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                  textOverflow: 'ellipsis',
+                  display: 'block'
+                }}>
+                  {arg.event.title}
+                </div>
+              );
+            }}
             headerToolbar={{
               left: 'prev,next today',
               center: 'title',
@@ -265,8 +319,24 @@ export default function Dashboard() {
           <h3 style={{ marginBottom: '12px' }}>날짜별 Todo</h3>
 
           <p style={{ color: 'var(--color-text-muted)', marginTop: 0 }}>
-            {selectedDate ? `선택 날짜: ${selectedDate}` : '캘린더에서 날짜를 선택하세요.'}
+            {selectedDate ? `시작 날짜: ${selectedDate}` : '캘린더에서 날짜를 선택하세요.'}
           </p>
+
+          {selectedDate && (
+            <div style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: '1px solid var(--color-border)' }}>
+              <label style={{ fontSize: '13px', color: 'var(--color-text-muted)', display: 'block', marginBottom: '4px' }}>
+                종료 날짜:
+              </label>
+              <input
+                type="date"
+                value={selectedEndDate}
+                onChange={(e) => setSelectedEndDate(e.target.value)}
+                min={selectedDate}
+                className="input-field"
+                style={{ marginBottom: 0 }}
+              />
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
             <input
@@ -287,8 +357,8 @@ export default function Dashboard() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {userId && selectedDate && todos[selectedDate]?.length > 0 ? (
-              todos[selectedDate].map((todo) => (
+            {userId && selectedDate && filteredTodos.length > 0 ? (
+              filteredTodos.map((todo) => (
                 <div
                   key={todo.id}
                   style={{
@@ -303,16 +373,16 @@ export default function Dashboard() {
                 >
                   <input
                     type="checkbox"
-                    checked={todo.done}
+                    checked={todo.completed}
                     onChange={() => handleToggleTodo(todo.id)}
                   />
                   <span
                     style={{
                       flex: 1,
-                      color: todo.done
+                      color: todo.completed
                         ? 'var(--color-text-muted)'
                         : 'var(--color-text-main)',
-                      textDecoration: todo.done ? 'line-through' : 'none',
+                      textDecoration: todo.completed ? 'line-through' : 'none',
                     }}
                   >
                     {todo.text}
@@ -338,6 +408,52 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {isEventModalOpen && selectedEvent && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', 
+          backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000
+        }} onClick={() => setIsEventModalOpen(false)}>
+          <div className="glass-panel animate-fade-in" style={{ width: '90%', maxWidth: '400px', padding: '30px' }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 16px 0', color: 'var(--color-primary)', borderBottom: '1px solid var(--color-border)', paddingBottom: '12px' }}>
+              Todo 상세
+            </h3>
+            <div style={{ display: 'grid', gap: '12px', fontSize: '0.95rem', color: 'var(--color-text-main)' }}>
+              <div>
+                <span style={{ fontWeight: 600, color: 'var(--color-text-muted)', display: 'inline-block', width: '80px', verticalAlign: 'top' }}>할 일:</span>
+                <span style={{ display: 'inline-block', width: 'calc(100% - 85px)', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>{selectedEvent.title}</span>
+              </div>
+              <div>
+                <span style={{ fontWeight: 600, color: 'var(--color-text-muted)', display: 'inline-block', width: '80px' }}>시작 날짜:</span>
+                <span>{selectedEvent.startStr.split('T')[0]}</span>
+              </div>
+              <div>
+                <span style={{ fontWeight: 600, color: 'var(--color-text-muted)', display: 'inline-block', width: '80px' }}>종료 날짜:</span>
+                <span>
+                  {(() => {
+                    const endDate = new Date(selectedEvent.endStr || selectedEvent.startStr);
+                    if (selectedEvent.endStr) {
+                      endDate.setDate(endDate.getDate() - 1);
+                    }
+                    return endDate.toISOString().split('T')[0];
+                  })()}
+                </span>
+              </div>
+              <div>
+                <span style={{ fontWeight: 600, color: 'var(--color-text-muted)', display: 'inline-block', width: '80px' }}>상태:</span>
+                <span style={{ color: selectedEvent.extendedProps.completed ? 'var(--color-text-muted)' : 'var(--color-primary)', fontWeight: 600 }}>
+                  {selectedEvent.extendedProps.completed ? '완료' : '미완료'}
+                </span>
+              </div>
+            </div>
+            <div style={{ marginTop: '24px', textAlign: 'right' }}>
+              <button className="btn-primary" style={{ width: 'auto', padding: '8px 24px' }} onClick={() => setIsEventModalOpen(false)}>닫기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <StudyStatistics />
     </div>
   );
 }

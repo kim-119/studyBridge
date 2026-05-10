@@ -22,8 +22,8 @@ public class Agent {
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
-    private User user;
+    @JoinColumn(name = "agent_room_id", nullable = false)
+    private AgentChatRoom agentChatRoom;
 
     @Column(nullable = false, length = 30)
     private String name;
