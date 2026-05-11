@@ -6,6 +6,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.LocalDate; // LocalDate import 추가
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -45,8 +46,6 @@ public class TimerDTO {
         private LocalDateTime updatedAt;
     }
 
-    // --- 추가된 DTO ---
-
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
@@ -62,15 +61,19 @@ public class TimerDTO {
     @Builder
     public static class WeeklyStudyTimeResponse {
         private Long userId;
-        private List<DailyStudyTime> data;
+        private Long totalMinutes; // 총 공부 시간 추가
+        private Long averageMinutes; // 평균 공부 시간 추가
+        private Integer attendanceDays; // 출석일 수 추가
+        private List<DailyStudyStats> dailyStats; // data 필드명을 dailyStats로 변경 (클래스명도 변경)
     }
 
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
-    public static class DailyStudyTime {
-        private String day; // 요일 (월, 화, 수...)
+    public static class DailyStudyStats { // 클래스명 DailyStudyTime -> DailyStudyStats로 변경
+        private LocalDate date; // 날짜 추가 (LocalDate 타입)
+        private String day; // 요일 (MONDAY, TUESDAY...)
         private Long minutes; // 해당 요일의 학습 시간 (분)
     }
 }
