@@ -687,6 +687,60 @@ a {
   line-height: 1.8;
 }
 
+/* Statistics Summary Cards Grid */
+.stats-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.stats-card {
+  background-color: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+  min-height: 120px;
+}
+
+.stats-card:hover {
+  border-color: #d9f5dc;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(96, 201, 90, 0.08);
+}
+
+.stats-card .label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  font-weight: 500;
+  margin-bottom: 0;
+}
+
+.stats-card .value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--color-primary);
+  line-height: 1.2;
+}
+
+@media (max-width: 1024px) {
+  .stats-cards-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .stats-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* =========================================
    Navbar Styles
    ========================================= */
