@@ -4,9 +4,7 @@ WORKDIR /app
 
 COPY . .
 
-RUN sed -i 's/\r$//' gradlew
-RUN chmod +x gradlew
-
+RUN chmod +x gradlew || true
 RUN ./gradlew clean build -x test
 
 EXPOSE 8080
