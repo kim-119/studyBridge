@@ -12,7 +12,7 @@ import java.util.NoSuchElementException;
 
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/api/users/{userId}") // 상위 경로를 /api/users/{userId}로 변경
+@RequestMapping("/api/users/{userId}") // 상위 경로를 /api/users/{userId}로 유지
 @CrossOrigin(origins = "http://localhost:3000")
 public class TimerController {
 
@@ -64,15 +64,17 @@ public class TimerController {
     }
 
     // --- 추가된 study-time 집계 API ---
+    // 요청하신 /api/timers/weekly?userId={userId} 형식에 맞추기 위해 @GetMapping에 전체 경로 명시
+    // userId는 @RequestParam으로 받음
 
-    @GetMapping("/study-time/today")
-    public ResponseEntity<TimerDTO.TodayStudyTimeResponse> getTodayStudyTime(@PathVariable Long userId) {
+    @GetMapping("/api/timers/today") // 전체 경로 명시
+    public ResponseEntity<TimerDTO.TodayStudyTimeResponse> getTodayStudyTime(@RequestParam Long userId) {
         TimerDTO.TodayStudyTimeResponse response = timerService.getTodayStudyTime(userId);
         return ResponseEntity.ok(response);
     }
 
-    @GetMapping("/study-time/weekly")
-    public ResponseEntity<TimerDTO.WeeklyStudyTimeResponse> getWeeklyStudyTime(@PathVariable Long userId) {
+    @GetMapping("/api/timers/weekly") // 전체 경로 명시
+    public ResponseEntity<TimerDTO.WeeklyStudyTimeResponse> getWeeklyStudyTime(@RequestParam Long userId) {
         TimerDTO.WeeklyStudyTimeResponse response = timerService.getWeeklyStudyTime(userId);
         return ResponseEntity.ok(response);
     }

@@ -62,7 +62,10 @@ public class TimerDTO {
     @Builder
     public static class WeeklyStudyTimeResponse {
         private Long userId;
-        private List<DailyStudyTime> data;
+        private Long totalMinutes; // 총 공부 시간 추가
+        private Long averageMinutes; // 평균 공부 시간 추가
+        private Integer attendanceDays; // 출석일 수 추가
+        private List<DailyStudyTime> dailyStats; // data 필드명을 dailyStats로 변경
     }
 
     @Data
@@ -70,7 +73,8 @@ public class TimerDTO {
     @AllArgsConstructor
     @Builder
     public static class DailyStudyTime {
-        private String day; // 요일 (월, 화, 수...)
+        private String date; // 날짜 추가 (YYYY-MM-DD)
+        private String day; // 요일 (MONDAY, TUESDAY...)
         private Long minutes; // 해당 요일의 학습 시간 (분)
     }
 }
