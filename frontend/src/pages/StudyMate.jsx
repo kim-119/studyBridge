@@ -5,6 +5,7 @@ import { Bot, Plus, Trash2, Send, AlertCircle, X, Sparkles, Users, ChevronRight 
 
 export default function StudyMate() {
   const { userId } = useAuth();
+  const MAX_ROOMS = 3;
 
   const [rooms, setRooms] = useState([]);
   const [selectedRoom, setSelectedRoom] = useState(null);
@@ -14,6 +15,8 @@ export default function StudyMate() {
   const [showModal, setShowModal] = useState(false);
   const [currentAgentIndex, setCurrentAgentIndex] = useState(0);
   const [deleteModal, setDeleteModal] = useState({ show: false, roomId: null });
+
+  const isLimitReached = rooms.length >= MAX_ROOMS;
 
   const [newRoom, setNewRoom] = useState({
     roomName: '',
@@ -236,11 +239,40 @@ export default function StudyMate() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', fontSize: '18px' }}>
               <Users size={20} color="var(--color-primary)" /> 내 채팅방
+              <span style={{ 
+                fontSize: '11px', 
+                padding: '2px 8px', 
+                borderRadius: '10px', 
+                backgroundColor: isLimitReached ? 'rgba(239, 68, 68, 0.1)' : '#F3F4F6', 
+                color: isLimitReached ? '#EF4444' : '#6B7280',
+                fontWeight: '600',
+                marginLeft: '4px',
+                transition: 'all 0.3s ease'
+              }}>
+                {rooms.length} / {MAX_ROOMS}
+              </span>
             </h2>
             <button
               className="btn-outline"
-              style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
+              style={{ 
+                width: 'auto', 
+                height: '28px', 
+                padding: '0 10px', 
+                fontSize: '12px', 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '4px',
+                transition: 'all 0.2s ease',
+                ...(isLimitReached ? { 
+                  opacity: 0.6, 
+                  cursor: 'not-allowed', 
+                  backgroundColor: '#F9FAFB',
+                  color: '#9CA3AF'
+                } : {})
+              }}
               onClick={() => setShowModal(true)}
+              disabled={isLimitReached}
+              title={isLimitReached ? "채팅방은 최대 3개까지 생성 가능합니다." : ""}
             >
               <Plus size={16} /> 방 만들기
             </button>
@@ -261,11 +293,17 @@ export default function StudyMate() {
                 return (
                   <div
                     key={rId || index}
-                    className="room-card"
+                    className={`room-card ${isActive ? 'active' : ''}`}
                     style={{
-                      padding: '16px', borderRadius: '12px', border: '1px solid var(--color-border)', backgroundColor: 'var(--color-bg-base)', cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: '12px', transition: 'all 0.2s ease',
+                      padding: '16px', 
+                      borderRadius: '12px', 
+                      backgroundColor: isActive ? 'rgba(96, 201, 90, 0.05)' : 'var(--color-bg-base)', 
+                      cursor: 'pointer', 
+                      display: 'flex', 
+                      alignItems: 'flex-start', 
+                      gap: '12px', 
+                      transition: 'all 0.2s ease',
                       position: 'relative',
-                      ...(isActive ? { borderColor: 'var(--color-primary)', backgroundColor: 'rgba(96, 201, 90, 0.05)', boxShadow: '0 2px 8px rgba(96, 201, 90, 0.1)' } : {})
                     }}
                     onClick={() => selectRoom(room)}
                   >
@@ -543,6 +581,27 @@ export default function StudyMate() {
       {/* 스타일 */}
       <style>
         {`
+          .room-card {
+            border: 1px solid transparent !important;
+            outline: none !important;
+            box-shadow: none !important;
+          }
+          .room-card:hover {
+            border: 1px solid #d9f5dc !important;
+          }
+          .room-card.active {
+            border: 1px solid #59c85b !important;
+            box-shadow: none !important;
+          }
+          .room-card:focus, .room-card:focus-within, .room-card:active, .room-card:focus-visible {
+            outline: none !important;
+            border-color: transparent;
+            box-shadow: none !important;
+          }
+          .room-card.active:focus, .room-card.active:focus-within, .room-card.active:active, .room-card.active:focus-visible {
+            border-color: #59c85b !important;
+            outline: none !important;
+          }
           .room-actions {
             position: absolute;
             top: 8px;
