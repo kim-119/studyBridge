@@ -117,17 +117,28 @@ export default function StudyStatistics() {
       </section>
 
       {weeklyStats && (
-        <section className="stats-section animate-fade-in">
-          <div className="summary-box">
-            <h3 className="summary-title">학습 요약</h3>
-            <ul className="summary-list">
-              <li>총 학습 시간: {formatHoursReadable(weeklyStats.total_hours)}</li>
-              <li>평균 학습 시간: {formatHoursReadable(weeklyStats.average_hours)}</li>
-              <li>출석일: {weeklyStats.attendance_days || 0} 일</li>
-              <li>가장 많이 공부한 날: {weeklyStats.max_study_day ? `${weeklyStats.max_study_day} / ${formatHoursReadable(weeklyStats.max_study_hours)}` : "없음"}</li>
-            </ul>
+        <div className="stats-cards-grid animate-fade-in">
+          <div className="stats-card">
+            <span className="label">총 학습 시간</span>
+            <span className="value">{formatHoursReadable(weeklyStats.total_hours)}</span>
           </div>
-        </section>
+          <div className="stats-card">
+            <span className="label">평균 학습 시간</span>
+            <span className="value">{formatHoursReadable(weeklyStats.average_hours)}</span>
+          </div>
+          <div className="stats-card">
+            <span className="label">출석일</span>
+            <span className="value">{weeklyStats.attendance_days || 0} 일</span>
+          </div>
+          <div className="stats-card">
+            <span className="label">가장 많이 공부한 날</span>
+            <span className="value">
+              {weeklyStats.max_study_day 
+                ? `${weeklyStats.max_study_day} (${formatHoursReadable(weeklyStats.max_study_hours)})` 
+                : "없음"}
+            </span>
+          </div>
+        </div>
       )}
     </>
   );
