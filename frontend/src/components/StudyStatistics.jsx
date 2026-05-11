@@ -93,8 +93,8 @@ export default function StudyStatistics() {
 
   return (
     <>
-      <section className="glass-panel animate-fade-in" style={{ padding: "30px", background: "#fff", borderRadius: "12px", marginTop: "24px" }}>
-        <h2 style={{ fontSize: "20px", fontWeight: "bold", margin: "0 0 20px 0", color: "#333" }}>학습통계</h2>
+      <section className="stats-section animate-fade-in">
+        <h2>학습통계</h2>
 
         {!effectiveUserId ? (
           <p style={{ color: "#666" }}>로그인 후 주간 학습 통계를 확인할 수 있습니다.</p>
@@ -105,18 +105,11 @@ export default function StudyStatistics() {
         ) : isEmpty ? (
           <p style={{ color: "#666" }}>이번 주 학습 데이터가 없습니다.</p>
         ) : graphBase64 ? (
-          <div style={{ textAlign: "center", background: "#f9f9f9", padding: "16px", borderRadius: "8px" }}>
+          <div className="graph-container">
             <img
               src={imageSrc}
               alt="주간 학습 시간 그래프"
-              style={{
-                display: "block",
-                width: "100%",
-                maxWidth: "700px",
-                height: "auto",
-                margin: "0 auto",
-                border: "1px solid #e5e7eb"
-              }}
+              className="graph-image"
               onLoad={(e) => console.log("img rendered:", e.currentTarget.naturalWidth, "x", e.currentTarget.naturalHeight)}
             />
           </div>
@@ -124,10 +117,10 @@ export default function StudyStatistics() {
       </section>
 
       {weeklyStats && (
-        <section className="glass-panel animate-fade-in" style={{ padding: "30px", background: "#fff", borderRadius: "12px", marginTop: "24px" }}>
-          <div style={{ padding: "20px", background: "#f0fdf4", borderRadius: "8px" }}>
-            <h3 style={{ color: "#22c55e", margin: "0 0 15px 0", fontSize: "16px", fontWeight: "bold" }}>학습 요약</h3>
-            <ul style={{ margin: 0, paddingLeft: "24px", fontSize: "14px", color: "#374151", lineHeight: "1.8" }}>
+        <section className="stats-section animate-fade-in">
+          <div className="summary-box">
+            <h3 className="summary-title">학습 요약</h3>
+            <ul className="summary-list">
               <li>총 학습 시간: {formatHoursReadable(weeklyStats.total_hours)}</li>
               <li>평균 학습 시간: {formatHoursReadable(weeklyStats.average_hours)}</li>
               <li>출석일: {weeklyStats.attendance_days || 0} 일</li>

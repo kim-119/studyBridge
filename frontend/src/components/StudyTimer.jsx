@@ -116,33 +116,20 @@ export default function StudyTimer({ onTimeUpdate }) {
   const isFinishDisabled = !isRunning;
 
   return (
-    <div className="glass-panel animate-fade-in" style={{ padding: '20px' }}>
+    <div className="glass-panel timer-container animate-fade-in">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>현재 공부 시간</h3>
       </div>
 
-      <div style={{ marginTop: '16px', fontSize: '28px', fontWeight: 700, color: 'var(--color-primary)' }}>
+      <div className="timer-display">
         {formatTime(sessionSeconds)}
       </div>
 
-      <div
-        style={{
-          marginTop: '6px',
-          fontSize: '13px',
-          color: 'var(--color-text-muted)',
-        }}
-      >
+      <div className="timer-hint">
         종료를 누르면 오늘의 학습 시간에 누적됩니다.
       </div>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: '10px',
-          marginTop: '18px',
-        }}
-      >
+      <div className="timer-controls">
         <button 
           className="btn-primary" 
           onClick={handleStart}
@@ -153,10 +140,9 @@ export default function StudyTimer({ onTimeUpdate }) {
         </button>
 
         <button
-          className="btn-primary"
+          className="btn-primary btn-timer-finish"
           onClick={handleFinish}
           disabled={isFinishDisabled}
-          style={{ backgroundColor: isFinishDisabled ? '#ccc' : 'var(--color-danger)', border: 'none' }}
         >
           종료
         </button>
