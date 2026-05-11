@@ -135,42 +135,12 @@ export default function MyPage() {
   };
 
   return (
-    <div
-      style={{
-        width: '100%',
-        maxWidth: '900px',
-        margin: '0 auto',
-        padding: '24px',
-        boxSizing: 'border-box',
-      }}
-    >
+    <div className="mypage-page">
       <div className="glass-panel animate-fade-in" style={{ padding: '30px' }}>
-        <div
-          style={{
-            display: 'flex',
-            gap: '24px',
-            alignItems: 'center',
-            marginBottom: '28px',
-          }}
-        >
-          <div
-            style={{
-              width: '88px',
-              height: '88px',
-              borderRadius: '50%',
-              backgroundColor: 'rgba(96, 201, 90, 0.15)',
-              color: 'var(--color-primary)',
-              display: 'flex',
-              justifyContent: 'center',
-              alignItems: 'center',
-              fontSize: '32px',
-              fontWeight: 700,
-              flexShrink: 0,
-            }}
-          >
+        <div className="profile-header">
+          <div className="profile-avatar">
             {name ? name.charAt(0).toUpperCase() : '?'}
           </div>
-
           <div>
             <h3 style={{ margin: 0 }}>{name || '이름 없음'}</h3>
             <p style={{ margin: '6px 0 0', color: 'var(--color-text-muted)' }}>
@@ -179,11 +149,9 @@ export default function MyPage() {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gap: '18px' }}>
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>
-              이름
-            </label>
+        <div className="form-grid">
+          <div className="form-group">
+            <label>이름</label>
             <input
               className="input-field"
               value={name}
@@ -193,10 +161,8 @@ export default function MyPage() {
             />
           </div>
 
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>
-              전공
-            </label>
+          <div className="form-group">
+            <label>전공</label>
             <input
               className="input-field"
               value={major}
@@ -206,15 +172,13 @@ export default function MyPage() {
             />
           </div>
 
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>
-              이메일
-            </label>
+          <div className="form-group">
+            <label>이메일</label>
             <input className="input-field" value={email} disabled />
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px', marginTop: '24px' }}>
+        <div className="btn-group">
           {isEditing ? (
             <>
               <button className="btn-primary" onClick={handleSave}>
@@ -265,9 +229,9 @@ export default function MyPage() {
             </div>
           </div>
         ) : (
-          <div style={{ display: 'grid', gap: '18px' }}>
-            <div>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>새 비밀번호</label>
+          <div className="form-grid">
+            <div className="form-group">
+              <label>새 비밀번호</label>
               <input
                 type="password"
                 className="input-field"
@@ -276,8 +240,8 @@ export default function MyPage() {
                 placeholder="새 비밀번호 입력"
               />
             </div>
-            <div>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>새 비밀번호 확인</label>
+            <div className="form-group">
+              <label>새 비밀번호 확인</label>
               <input
                 type="password"
                 className="input-field"
@@ -288,7 +252,7 @@ export default function MyPage() {
             </div>
             {passwordError && <div style={{ color: 'red', marginTop: '10px' }}>{passwordError}</div>}
             {passwordSuccess && <div style={{ color: 'green', marginTop: '10px' }}>{passwordSuccess}</div>}
-            <div style={{ display: 'flex', gap: '10px', marginTop: '24px' }}>
+            <div className="btn-group">
               <button className="btn-primary" onClick={handleFinalPasswordChange} style={{ width: 'auto', minWidth: '120px' }}>
                 비밀번호 변경
               </button>

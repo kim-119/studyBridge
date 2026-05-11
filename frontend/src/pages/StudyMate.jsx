@@ -232,44 +232,20 @@ export default function StudyMate() {
   }
 
   return (
-    <div className="container-main">
+    <div className="container-main studymate-page">
       <div className="layout-split">
         {/* 좌측: 채팅방 리스트 패널 */}
         <div className="glass-panel layout-pane-left animate-fade-in">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <div className="room-list-header">
             <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', fontSize: '18px' }}>
               <Users size={20} color="var(--color-primary)" /> 내 채팅방
-              <span style={{ 
-                fontSize: '11px', 
-                padding: '2px 8px', 
-                borderRadius: '10px', 
-                backgroundColor: isLimitReached ? 'rgba(239, 68, 68, 0.1)' : '#F3F4F6', 
-                color: isLimitReached ? '#EF4444' : '#6B7280',
-                fontWeight: '600',
-                marginLeft: '4px',
-                transition: 'all 0.3s ease'
-              }}>
+              <span className={`limit-badge ${isLimitReached ? 'reached' : ''}`}>
                 {rooms.length} / {MAX_ROOMS}
               </span>
             </h2>
             <button
-              className="btn-outline"
-              style={{ 
-                width: 'auto', 
-                height: '28px', 
-                padding: '0 10px', 
-                fontSize: '12px', 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: '4px',
-                transition: 'all 0.2s ease',
-                ...(isLimitReached ? { 
-                  opacity: 0.6, 
-                  cursor: 'not-allowed', 
-                  backgroundColor: '#F9FAFB',
-                  color: '#9CA3AF'
-                } : {})
-              }}
+              className={`btn-outline btn-create-room ${isLimitReached ? 'disabled' : ''}`}
+              style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', transition: 'all 0.2s ease' }}
               onClick={() => setShowModal(true)}
               disabled={isLimitReached}
               title={isLimitReached ? "채팅방은 최대 3개까지 생성 가능합니다." : ""}
@@ -294,17 +270,6 @@ export default function StudyMate() {
                   <div
                     key={rId || index}
                     className={`room-card ${isActive ? 'active' : ''}`}
-                    style={{
-                      padding: '16px', 
-                      borderRadius: '12px', 
-                      backgroundColor: isActive ? 'rgba(96, 201, 90, 0.05)' : 'var(--color-bg-base)', 
-                      cursor: 'pointer', 
-                      display: 'flex', 
-                      alignItems: 'flex-start', 
-                      gap: '12px', 
-                      transition: 'all 0.2s ease',
-                      position: 'relative',
-                    }}
                     onClick={() => selectRoom(room)}
                   >
                     <div className="avatar" style={{ backgroundColor: avatarColor.bg, color: avatarColor.text }}>
@@ -372,14 +337,14 @@ export default function StudyMate() {
                     const isUser = msg.sender === 'USER';
                     const msgKey = msg.messageId ?? msg.id ?? idx;
                     return (
-                      <div key={msgKey} style={{ display: 'flex', flexDirection: 'column', maxWidth: '75%', alignSelf: isUser ? 'flex-end' : 'flex-start' }}>
-                        <div style={{ fontSize: '12px', marginBottom: '4px', marginLeft: '4px', color: 'var(--color-text-muted)', textAlign: isUser ? 'right' : 'left' }}>
+                      <div key={msgKey} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
+                        <div className="chat-bubble-sender">
                           {!isUser && (msg.senderName || msg.sender)}
                         </div>
                         <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`}>
                           {msg.content}
                         </div>
-                        <div style={{ fontSize: '11px', color: '#9CA3AF', marginTop: '4px', textAlign: isUser ? 'right' : 'left' }}>
+                        <div className="chat-bubble-time">
                           {formatTime(msg.createdAt)}
                         </div>
                       </div>
@@ -387,7 +352,7 @@ export default function StudyMate() {
                   })
                 )}
                 {isTyping && (
-                  <div style={{ display: 'flex', flexDirection: 'column', maxWidth: '75%', alignSelf: 'flex-start' }}>
+                  <div className="chat-bubble-container ai">
                     <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', minHeight: '20px' }}>
                       <span className="dot"></span><span className="dot"></span><span className="dot"></span>
                     </div>
@@ -418,21 +383,21 @@ export default function StudyMate() {
       {/* 채팅방 생성 모달 (가로 슬라이더 개편) */}
       {showModal && (
         <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ maxWidth: '550px', width: '95%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
-            <div className="modal-header" style={{ paddingBottom: '16px', borderBottom: '1px solid var(--color-border)', marginBottom: '20px' }}>
+          <div className="glass-panel modal-content">
+            <div className="modal-header">
               <h3 style={{ margin: 0 }}>새로운 채팅방 생성</h3>
-              <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)' }} onClick={() => { setShowModal(false); setCurrentAgentIndex(0); }}><X size={20} /></button>
+              <button className="btn-close" onClick={() => { setShowModal(false); setCurrentAgentIndex(0); }}><X size={20} /></button>
             </div>
 
-            <div style={{ overflowY: 'auto', flex: 1, paddingRight: '4px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div className="modal-body">
+              <div className="agent-setup-section">
                 {/* 1. 채팅방 정보 */}
                 <div style={{ padding: '4px' }}>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)', marginBottom: '10px' }}>채팅방 이름</label>
                   <input type="text" className="input-field" value={newRoom.roomName} onChange={e => setNewRoom({ ...newRoom, roomName: e.target.value })} placeholder="예: 수학 문제 풀이 스터디" />
                 </div>
 
-                <div style={{ width: '100%', height: '1px', backgroundColor: 'var(--color-border)' }} />
+                <div className="divider" />
 
                 {/* 2. 에이전트 섹션 헤더 */}
                 <div>
@@ -452,7 +417,7 @@ export default function StudyMate() {
                   </div>
 
                   {/* 에이전트 슬라이더 네비게이션 */}
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '20px', marginBottom: '20px', backgroundColor: 'var(--color-bg-base)', padding: '12px', borderRadius: '8px' }}>
+                  <div className="agent-nav">
                     <button
                       type="button"
                       onClick={() => setCurrentAgentIndex(prev => Math.max(0, prev - 1))}
@@ -497,19 +462,13 @@ export default function StudyMate() {
 
                       <div>
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>말투 (Tone)</label>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                        <div className="agent-tone-group">
                           {['친절한', '엄격한', '코치형', '논리형', '동기부여형', '짧고 간결한'].map(t => (
                             <button
                               key={t}
                               type="button"
+                              className={`btn-tone ${newRoom.agents[currentAgentIndex].tone === t ? 'active' : ''}`}
                               onClick={() => handleAgentChange(currentAgentIndex, 'tone', t)}
-                              style={{
-                                padding: '4px 10px', fontSize: '11px', borderRadius: '16px', border: '1px solid',
-                                borderColor: newRoom.agents[currentAgentIndex].tone === t ? 'var(--color-primary)' : 'var(--color-border)',
-                                backgroundColor: newRoom.agents[currentAgentIndex].tone === t ? 'rgba(96, 201, 90, 0.1)' : 'white',
-                                color: newRoom.agents[currentAgentIndex].tone === t ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                                cursor: 'pointer'
-                              }}
                             >
                               {t}
                             </button>
@@ -538,7 +497,7 @@ export default function StudyMate() {
               </div>
             </div>
 
-            <div style={{ paddingTop: '20px', borderTop: '1px solid var(--color-border)', marginTop: '20px' }}>
+            <div className="modal-footer">
               <button className="btn-primary" style={{ width: '100%', height: '44px' }} onClick={handleCreateRoom}>채팅방 생성하기</button>
             </div>
           </div>
@@ -578,56 +537,6 @@ export default function StudyMate() {
         </div>
       )}
 
-      {/* 스타일 */}
-      <style>
-        {`
-          .room-card {
-            border: 1px solid transparent !important;
-            outline: none !important;
-            box-shadow: none !important;
-          }
-          .room-card:hover {
-            border: 1px solid #d9f5dc !important;
-          }
-          .room-card.active {
-            border: 1px solid #59c85b !important;
-            box-shadow: none !important;
-          }
-          .room-card:focus, .room-card:focus-within, .room-card:active, .room-card:focus-visible {
-            outline: none !important;
-            border-color: transparent;
-            box-shadow: none !important;
-          }
-          .room-card.active:focus, .room-card.active:focus-within, .room-card.active:active, .room-card.active:focus-visible {
-            border-color: #59c85b !important;
-            outline: none !important;
-          }
-          .room-actions {
-            position: absolute;
-            top: 8px;
-            right: 8px;
-            opacity: 0;
-            transition: opacity 0.2s ease;
-          }
-          .room-card:hover .room-actions {
-            opacity: 1;
-          }
-          @keyframes typing {
-            0%, 100% { transform: translateY(0); opacity: 0.5; }
-            50% { transform: translateY(-3px); opacity: 1; }
-          }
-          .dot {
-            display: inline-block;
-            width: 4px; height: 4px;
-            background-color: #6B7280;
-            border-radius: 50%;
-            margin: 0 2px;
-            animation: typing 1s infinite;
-          }
-          .dot:nth-child(2) { animation-delay: 0.2s; }
-          .dot:nth-child(3) { animation-delay: 0.4s; }
-        `}
-      </style>
     </div>
   );
 }
