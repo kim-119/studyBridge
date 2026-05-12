@@ -14,12 +14,6 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
-from study_graph import router as study_graph_router
-
-
-# =========================
-# 환경변수 설정
-# =========================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
@@ -32,10 +26,6 @@ else:
     pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 
-# =========================
-# FastAPI 앱 설정
-# =========================
-
 app = FastAPI(title="StudyBridge FastAPI Server")
 
 app.add_middleware(
@@ -46,12 +36,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(study_graph_router)
-
-
-# =========================
-# OpenAI 설정
-# =========================
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -137,10 +121,6 @@ def generate_ai_text(prompt: str, clean_markdown: bool = True) -> str:
         )
 
 
-# =========================
-# JSON 응답 파싱
-# =========================
-
 def extract_json_object(text: str) -> str:
     if not text:
         raise ValueError("응답이 비어 있습니다.")
@@ -190,10 +170,6 @@ def parse_multi_chat_response(raw_text: str) -> dict:
 
     return parsed
 
-
-# =========================
-# 검증 키워드
-# =========================
 
 BLOCKED_PERSONALITY_KEYWORDS = [
     "ignore previous",
@@ -340,10 +316,6 @@ def validate_user_message(message: Optional[str]) -> str:
 
     return value
 
-
-# =========================
-# 사용자 의도 감지
-# =========================
 
 def detect_user_intent(message: str) -> str:
     text = safe_strip(message, default="", max_len=3000).lower()
@@ -512,10 +484,6 @@ def get_user_intent_rule(intent: str) -> str:
 """
 
 
-# =========================
-# 에이전트 스타일
-# =========================
-
 STYLE_ALIASES = {
     "친절": "친절형",
     "친절형": "친절형",
@@ -610,12 +578,12 @@ def normalize_agent_style(style: Optional[str]) -> Optional[str]:
 
 
 def infer_agent_style(
-    index: int,
-    name: str,
-    role: str,
-    persona_text: str,
-    tone: str,
-    goal: str
+        index: int,
+        name: str,
+        role: str,
+        persona_text: str,
+        tone: str,
+        goal: str
 ) -> str:
     combined_text = f"{name} {role} {persona_text} {tone} {goal}".lower()
 
@@ -764,10 +732,6 @@ def get_agent_style_rule(style: str) -> str:
 """
 
 
-# =========================
-# 기본 API
-# =========================
-
 @app.get("/")
 def root():
     return {"message": "FastAPI running"}
@@ -806,10 +770,6 @@ def debug_gemini_key_legacy():
     }
 
 
-# =========================
-# 기본 AI 질문 API
-# =========================
-
 class AiRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
 
@@ -831,11 +791,6 @@ def ask_ai_legacy_gemini_route(request: AiRequest):
     result = generate_ai_text(user_message)
     return AiResponse(result=result)
 
-
-# =========================
-# 사용자 커스텀 AI 에이전트 기능
-# 최대 3개
-# =========================
 
 MAX_AGENT_COUNT = 3
 
@@ -1070,16 +1025,12 @@ def chat_with_agent(agent_id: int, request: AgentChatRequest):
 
 @app.post("/api/users/{user_id}/agents/{agent_id}/chat", response_model=AgentChatResponse)
 def chat_with_agent_for_spring(
-    user_id: int,
-    agent_id: int,
-    request: AgentChatRequest
+        user_id: int,
+        agent_id: int,
+        request: AgentChatRequest
 ):
     return chat_with_agent(agent_id=agent_id, request=request)
 
-
-# =========================
-# 멀티 에이전트 채팅 API
-# =========================
 
 class MultiChatAgent(BaseModel):
     name: Optional[str] = Field(default=None, max_length=30)
@@ -1279,10 +1230,6 @@ def multi_agent_chat(request: MultiChatRequest):
     return MultiChatResponse(answers=final_answers)
 
 
-# =========================
-# 주간 활동 API
-# =========================
-
 class DailyStudyTime(BaseModel):
     day: str
     hours: float = Field(..., ge=0)
@@ -1321,10 +1268,6 @@ def weekly_activity(request: WeeklyActivityRequest):
         data=request.data
     )
 
-
-# =========================
-# 로드맵 생성 API
-# =========================
 
 class RoadmapRequest(BaseModel):
     subject: str = Field(..., min_length=1)
@@ -1371,10 +1314,6 @@ def create_roadmap(request: RoadmapRequest):
         message=message
     )
 
-
-# =========================
-# 파일 텍스트 추출
-# =========================
 
 def extract_text_from_file(file: UploadFile, content: bytes) -> str:
     filename = file.filename.lower()
@@ -1442,9 +1381,9 @@ def extract_text_from_file(file: UploadFile, content: bytes) -> str:
 
 @app.post("/ai/roadmap-file", response_model=RoadmapResponse)
 async def create_roadmap_from_file(
-    subject: str = Form(...),
-    level: str = Form(...),
-    file: UploadFile = File(...)
+        subject: str = Form(...),
+        level: str = Form(...),
+        file: UploadFile = File(...)
 ):
     if level not in ["초급자", "중급자", "마스터"]:
         raise HTTPException(
