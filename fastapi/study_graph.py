@@ -64,34 +64,25 @@ def calculate_study_stats(data: List[DailyStudyTime]) -> dict:
 
 
 def create_study_time_graph(data: List[DailyStudyTime]) -> str:
-    # 한글 폰트 문제 방지: 영문 요일명으로 매핑
-    day_map = {
-        "월": "Mon", "화": "Tue", "수": "Wed",
-        "목": "Thu", "금": "Fri", "토": "Sat", "일": "Sun"
-    }
-    days = [day_map.get(item.day, item.day) for item in data]
+    days = [item.day for item in data]
     minutes = [item.minutes for item in data]
 
-    fig, ax = plt.subplots(figsize=(9, 5), facecolor='white')
-    ax.set_facecolor('white')
-
-    ax.bar(days, minutes, color='#1f77b4', alpha=0.85, zorder=2)
-    ax.plot(days, minutes, marker='o', color='#1f77b4', linewidth=1.5, zorder=3)
-
-    ax.set_title("Daily Study Time", fontsize=14, pad=12)
-    ax.set_xlabel("Day", fontsize=11)
-    ax.set_ylabel("Study Minutes", fontsize=11)
-    ax.set_ylim(0, max(minutes) + max(minutes) * 0.2 + 1 if max(minutes) > 0 else 10)
-    ax.grid(axis='y', linestyle='--', alpha=0.5, zorder=1)
-
-    fig.tight_layout()
+    plt.figure(figsize=(9, 5))
+    plt.bar(days, minutes)
+    plt.plot(days, minutes, marker="o")
+    plt.title("Daily Study Time")
+    plt.xlabel("Day")
+    plt.ylabel("Study Minutes")
+    plt.ylim(0, max(minutes) + 10 if max(minutes) > 0 else 10)
+    plt.grid(axis="y", linestyle="--", alpha=0.5)
+    plt.tight_layout()
 
     image_buffer = io.BytesIO()
-    fig.savefig(image_buffer, format='png', dpi=150, facecolor='white', bbox_inches='tight')
-    plt.close(fig)
+    plt.savefig(image_buffer, format="png", dpi=150)
+    plt.close()
 
     image_buffer.seek(0)
-    image_base64 = base64.b64encode(image_buffer.read()).decode('utf-8')
+    image_base64 = base64.b64encode(image_buffer.read()).decode("utf-8")
 
     return image_base64
 
