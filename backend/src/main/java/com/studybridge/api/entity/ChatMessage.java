@@ -25,14 +25,14 @@ public class ChatMessage {
     private AgentChatRoom agentChatRoom;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "agent_id") // nullable = true (유저가 보낸 메시지는 null)
+    @JoinColumn(name = "agent_id")
     private Agent agent;
 
     @Column(columnDefinition = "TEXT", nullable = false)
-    private String content; // 메시지 내용
+    private String content;
 
     @Column(nullable = false)
-    private String sender; // "USER" 또는 "AI"
+    private String sender;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
