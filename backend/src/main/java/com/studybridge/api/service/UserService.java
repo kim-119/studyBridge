@@ -36,7 +36,14 @@ public class UserService {
 
         User savedUser = userRepository.save(user);
 
-        return convertToResponse(savedUser);
+        return UserDTO.Response.builder()
+                .id(savedUser.getId())
+                .email(savedUser.getEmail())
+                .displayName(savedUser.getDisplayName())
+                .major(savedUser.getMajor())
+                .photoUrl(savedUser.getPhotoUrl())
+                .status(savedUser.getStatus())
+                .build();
     }
     // 로그인
     public UserDTO.Response login(UserDTO.LoginRequest request) {
@@ -47,7 +54,14 @@ public class UserService {
             throw new IllegalArgumentException("가입되지 않은 이메일이거나 비밀번호가 틀렸습니다.");
         }
 
-        return convertToResponse(user);
+        return UserDTO.Response.builder()
+                .id(user.getId())
+                .email(user.getEmail())
+                .displayName(user.getDisplayName())
+                .major(user.getMajor())
+                .photoUrl(user.getPhotoUrl())
+                .status(user.getStatus())
+                .build();
     }
 
     @Transactional
@@ -74,19 +88,7 @@ public class UserService {
         user.setDisplayName(request.getDisplayName());
         user.setMajor(request.getMajor());
 
-        return convertToResponse(user);
-    }
-
-    // 프로필 조회
-    public UserDTO.Response getProfile(Long userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
-
-        return convertToResponse(user);
-    }
-
-    private UserDTO.Response convertToResponse(User user) {
-        UserDTO.Response response = UserDTO.Response.builder()
+        return UserDTO.Response.builder()
                 .id(user.getId())
                 .email(user.getEmail())
                 .displayName(user.getDisplayName())
@@ -94,6 +96,5 @@ public class UserService {
                 .photoUrl(user.getPhotoUrl())
                 .status(user.getStatus())
                 .build();
-        return response;
     }
 }
