@@ -16,3 +16,7 @@ fastapi/.env
 
 backend/build/
 *.class
+backend/.gradle/
+backend/bin/
+.gradle/
+bin/
