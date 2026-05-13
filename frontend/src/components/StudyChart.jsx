@@ -121,7 +121,6 @@ export default function StudyChart({ rawData }) {
                 grid: {
                     display: false,
                 },
-                beginAtZero: true,
                 suggestedMax: 1,
                 ticks: {
                     color: '#000000',
