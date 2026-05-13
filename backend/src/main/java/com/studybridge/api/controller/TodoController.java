@@ -21,8 +21,7 @@ public class TodoController {
             @PathVariable Long userId,
             @RequestBody TodoDTO.Request request) {
 
-        request.setUserId(userId);
-        return ResponseEntity.ok(todoService.createTodo(request));
+        return ResponseEntity.ok(todoService.createTodo(userId, request));
     }
 
     // 사용자별 할 일 목록 조회
