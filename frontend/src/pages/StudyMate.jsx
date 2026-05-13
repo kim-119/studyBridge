@@ -25,8 +25,7 @@ export default function StudyMate() {
       name: '',
       role: '',
       persona: '',
-      tone: '친절한',
-      goal: ''
+      tone: '친절한'
     }]
   });
 
@@ -76,7 +75,7 @@ export default function StudyMate() {
         alert('최대 3명의 에이전트까지 추가할 수 있습니다.');
         return prev;
       }
-      const newAgent = { name: '', role: '', persona: '', tone: '친절한', goal: '' };
+      const newAgent = { name: '', role: '', persona: '', tone: '친절한' };
       const nextAgents = [...prev.agents, newAgent];
       setCurrentAgentIndex(nextAgents.length - 1);
       return { ...prev, agents: nextAgents };
@@ -119,7 +118,7 @@ export default function StudyMate() {
       setNewRoom({
         roomName: '',
         roomDescription: '',
-        agents: [{ name: '', role: '', persona: '', tone: '친절한', goal: '' }]
+        agents: [{ name: '', role: '', persona: '', tone: '친절한' }]
       });
       loadRooms();
     } catch (err) {
@@ -453,11 +452,6 @@ export default function StudyMate() {
                           <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>역할 (Role)</label>
                           <input type="text" className="input-field" value={newRoom.agents[currentAgentIndex].role} onChange={e => handleAgentChange(currentAgentIndex, 'role', e.target.value)} placeholder="예: 힌트형" />
                         </div>
-                      </div>
-
-                      <div>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>학습 목표 (Goal)</label>
-                        <input type="text" className="input-field" value={newRoom.agents[currentAgentIndex].goal} onChange={e => handleAgentChange(currentAgentIndex, 'goal', e.target.value)} placeholder="예: 사용자의 수학 학습을 돕는다" />
                       </div>
 
                       <div>
