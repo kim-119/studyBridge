@@ -77,23 +77,8 @@ function App() {
             }
           />
 
-          <Route
-            path="/studymate"
-            element={
-              <PrivateRoute>
-                <StudyMate />
-              </PrivateRoute>
-            }
-          />
-
-          <Route
-            path="/groupstudy"
-            element={
-              <PrivateRoute>
-                <GroupStudy />
-              </PrivateRoute>
-            }
-          />
+          <Route path="/studymate" element={<StudyMate />} />
+          <Route path="/groupstudy" element={<GroupStudy />} />
 
           {/* 잘못된 주소는 메인으로 이동 */}
           <Route path="*" element={<Navigate to="/" replace />} />
