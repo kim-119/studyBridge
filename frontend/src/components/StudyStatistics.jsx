@@ -1,25 +1,42 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { studyTimeService, activityService } from '../services/api';
+import { studyTimeService, activityService, timerService } from '../services/api';
+import StudyChart from '../components/StudyChart';
 
-const formatHoursReadable = (hours) => {
-  const h = Number(hours || 0);
-  return `${h.toFixed(2)} 시간`;
+const formatDuration = (seconds) => {
+  const totalSeconds = Math.max(0, Math.round(seconds || 0));
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  const parts = [];
+
+  if (h) parts.push(`${h}시간`);
+  if (m) parts.push(`${m}분`);
+  if (s || parts.length === 0) parts.push(`${s}초`);
+
+  return parts.join(' ');
 };
 
-export default function StudyStatistics() {
-  const { user, userId } = useAuth();
-  
-  const [graphBase64, setGraphBase64] = useState(null);
+const minutesToDuration = (minutes) => {
+  return formatDuration(Math.round((minutes || 0) * 60));
+};
+
+export default function StudyStatistics({ todayStudySeconds = 0 }) {
+  // ✅ 1. 모든 Hook은 반드시 여기(최상단)에 모여 있어야 함!
+  const { user, userId } = useAuth(); // 👈 함수 밖으로 절대 나가면 안 됨
+
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isEmpty, setIsEmpty] = useState(false);
   const [weeklyStats, setWeeklyStats] = useState(null);
+  const [graphData, setGraphData] = useState([]);
 
+  // ✅ 2. 유저 ID 계산 로직
   const effectiveUserId = useMemo(() => {
     return user?.id || userId || localStorage.getItem("userId");
   }, [user?.id, userId]);
 
+  // ✅ 3. 데이터 로딩 함수 (내부에서 Hook 호출 금지!)
   const loadData = useCallback(async () => {
     if (!effectiveUserId) return;
 
@@ -28,118 +45,163 @@ export default function StudyStatistics() {
       setError(null);
       setIsEmpty(false);
 
+      // Spring Boot 데이터 호출
       const weeklyResult = await studyTimeService.getWeekly(effectiveUserId);
-      const weeklyData = weeklyResult.data || [];
+      
+      // ✨ 프론트엔드 정밀 교정 2탄: 과거 요일의 '초' 데이터도 정확하게 반영하기 위해 모든 타이머 히스토리를 불러와서 주간 초를 직접 계산합니다.
+      const timerHistory = await timerService.getTimerHistory(effectiveUserId);
+      
+      // 이번 주 월요일 ~ 일요일 범위 계산
+      const now = new Date();
+      const currentDay = now.getDay();
+      const diffToMonday = now.getDate() - currentDay + (currentDay === 0 ? -6 : 1);
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(diffToMonday);
+      startOfWeek.setHours(0, 0, 0, 0);
 
-      if (weeklyData.length === 0) {
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6);
+      endOfWeek.setHours(23, 59, 59, 999);
+
+      const weeklySecondsMap = {};
+      const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+
+      if (Array.isArray(timerHistory)) {
+          timerHistory.forEach(timer => {
+              if (timer.status === 'COMPLETED' && timer.startTime && timer.endTime) {
+                  const sTime = new Date(timer.startTime);
+                  const eTime = new Date(timer.endTime);
+                  if (eTime >= startOfWeek && eTime <= endOfWeek) {
+                      const diffSeconds = (eTime.getTime() - sTime.getTime()) / 1000;
+                      const dayName = dayNames[eTime.getDay()];
+                      weeklySecondsMap[dayName] = (weeklySecondsMap[dayName] || 0) + diffSeconds;
+                  }
+              }
+          });
+      }
+
+      console.log("StudyStatistics loadData weeklyResult:", weeklyResult);
+      let rawData = Array.isArray(weeklyResult)
+        ? weeklyResult
+        : weeklyResult?.data || [];
+
+      // ✨ 프론트엔드 정밀 교정 1 & 2 통합 적용
+      const todayDayName = new Date().toLocaleDateString('ko-KR', { weekday: 'short' });
+      if (Array.isArray(rawData)) {
+          rawData = rawData.map(item => {
+              let exactSeconds = weeklySecondsMap[item.day] || 0;
+              // 오늘은 진행 중인 타이머가 포함된 가장 정확한 todayStudySeconds를 우선 사용
+              if (item.day === todayDayName && todayStudySeconds > 0) {
+                  exactSeconds = todayStudySeconds;
+              }
+              return {
+                  ...item,
+                  seconds: exactSeconds,
+                  minutes: exactSeconds / 60
+              };
+          });
+      }
+
+      if (!Array.isArray(rawData) || rawData.length === 0) {
+        setGraphData([]);
+        setWeeklyStats(null);
         setIsEmpty(true);
         return;
       }
 
-      let totalMinutes = 0;
-      const graphData = weeklyData.map((item) => {
-        totalMinutes += item.minutes || 0;
-        return {
-          day: item.day,
-          minutes: Number(item.minutes || 0)  // Spring 원본 minutes 그대로 전달 → 막대 높이 정상 렌더링
-        };
-      });
+      setGraphData(rawData);
 
-      if (totalMinutes === 0) {
-        setIsEmpty(true);
-        return;
-      }
-
+      // FastAPI 데이터 호출
       const payload = {
         user_id: Number(effectiveUserId),
-        data: graphData,
+        data: rawData,
       };
-
       const graphResult = await activityService.getWeeklyGraph(payload);
-      console.log("FastAPI response keys:", Object.keys(graphResult || {}));
-      console.log("graph_base64 type:", typeof graphResult?.graph_base64, "length:", graphResult?.graph_base64?.length);
+      console.log("StudyStatistics loadData graphResult:", graphResult);
 
-      const base64 = 
-        graphResult?.graph_base64 || 
-        graphResult?.graphBase64 || 
-        graphResult?.image_base64 || 
-        graphResult?.image;
-
-      setWeeklyStats(graphResult);
-
-      if (!base64) {
-        console.error("base64 not found in response", graphResult);
-        setError("그래프 응답 데이터가 올바르지 않습니다.");
-        return;
+      if (graphResult && Object.keys(graphResult).length > 0) {
+        setWeeklyStats(graphResult);
+      } else {
+        setWeeklyStats(null);
       }
 
-      setGraphBase64(base64);
     } catch (err) {
       console.error("StudyStatistics loadData error:", err);
       setError("학습 통계를 불러오지 못했습니다.");
     } finally {
       setIsLoading(false);
     }
-  }, [effectiveUserId]);
+  }, [effectiveUserId, todayStudySeconds]);
 
+  // ✅ 4. 실행
   useEffect(() => {
-    if (!effectiveUserId) return;
-    loadData();
+    if (effectiveUserId) {
+      loadData();
+    }
   }, [effectiveUserId, loadData]);
 
-  const imageSrc = graphBase64
-    ? `data:image/png;base64,${graphBase64}`
-    : "";
-
   return (
-    <>
-      <section className="stats-section animate-fade-in">
-        <h2>학습통계</h2>
+      <div className="statistics-page-container">
+        <section className="stats-section animate-fade-in glass-panel" style={{ padding: '24px', borderRadius: '16px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          
+          <h2 style={{ margin: 0 }}>주간 학습 리포트</h2>
+          
+          {!effectiveUserId ? (
+              <p>로그인 후 이용 가능합니다.</p>
+          ) : isLoading ? (
+              <p>로딩 중...</p>
+          ) : error ? (
+              <p style={{ color: "red" }}>{error}</p>
+          ) : isEmpty ? (
+              <p>이번 주 데이터가 없습니다.</p>
+          ) : (
+              <>
+                  {/* 동그라미 친 영역: 상단 가로 배치 (통계 요약) */}
+                  {weeklyStats && (
+                      <div style={{ display: 'flex', gap: '16px', padding: '16px', backgroundColor: '#F9FAFB', borderRadius: '12px', flexWrap: 'wrap' }}>
+                          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px', minWidth: '150px' }}>
+                              <div style={{ padding: '10px', backgroundColor: '#E0F2FE', borderRadius: '8px', color: '#0284C7' }}>
+                                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                              </div>
+                              <div>
+                                  <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>총 학습 시간</div>
+                                  <div style={{ fontSize: '18px', fontWeight: 'bold', color: 'var(--color-text-main)' }}>{minutesToDuration(weeklyStats.total_minutes)}</div>
+                              </div>
+                          </div>
+                          
+                          <div style={{ width: '1px', backgroundColor: '#E5E7EB', display: 'block' }}></div>
+                          
+                          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px', paddingLeft: '8px', minWidth: '150px' }}>
+                              <div style={{ padding: '10px', backgroundColor: '#FEF3C7', borderRadius: '8px', color: '#D97706' }}>
+                                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+                              </div>
+                              <div>
+                                  <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>평균 학습 시간</div>
+                                  <div style={{ fontSize: '18px', fontWeight: 'bold', color: 'var(--color-text-main)' }}>{minutesToDuration(weeklyStats.average_minutes)}</div>
+                              </div>
+                          </div>
+                          
+                          <div style={{ width: '1px', backgroundColor: '#E5E7EB', display: 'block' }}></div>
+                          
+                          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px', paddingLeft: '8px', minWidth: '150px' }}>
+                              <div style={{ padding: '10px', backgroundColor: '#DCFCE7', borderRadius: '8px', color: '#16A34A' }}>
+                                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
+                              </div>
+                              <div>
+                                  <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>가장 집중한 요일</div>
+                                  <div style={{ fontSize: '18px', fontWeight: 'bold', color: 'var(--color-text-main)' }}>{weeklyStats.max_study_day || "없음"}</div>
+                              </div>
+                          </div>
+                      </div>
+                  )}
 
-        {!effectiveUserId ? (
-          <p style={{ color: "#666" }}>로그인 후 주간 학습 통계를 확인할 수 있습니다.</p>
-        ) : isLoading ? (
-          <p style={{ color: "#666" }}>로딩 중...</p>
-        ) : error ? (
-          <p style={{ color: "red" }}>{error}</p>
-        ) : isEmpty ? (
-          <p style={{ color: "#666" }}>이번 주 학습 데이터가 없습니다.</p>
-        ) : graphBase64 ? (
-          <div className="graph-container">
-            <img
-              src={imageSrc}
-              alt="주간 학습 시간 그래프"
-              className="graph-image"
-              onLoad={(e) => console.log("img rendered:", e.currentTarget.naturalWidth, "x", e.currentTarget.naturalHeight)}
-            />
-          </div>
-        ) : null}
-      </section>
-
-      {weeklyStats && (
-        <div className="stats-cards-grid animate-fade-in">
-          <div className="stats-card">
-            <span className="label">총 학습 시간</span>
-            <span className="value">{formatHoursReadable(weeklyStats.total_hours)}</span>
-          </div>
-          <div className="stats-card">
-            <span className="label">평균 학습 시간</span>
-            <span className="value">{formatHoursReadable(weeklyStats.average_hours)}</span>
-          </div>
-          <div className="stats-card">
-            <span className="label">출석일</span>
-            <span className="value">{weeklyStats.attendance_days || 0} 일</span>
-          </div>
-          <div className="stats-card">
-            <span className="label">가장 많이 공부한 날</span>
-            <span className="value">
-              {weeklyStats.max_study_day 
-                ? `${weeklyStats.max_study_day} (${formatHoursReadable(weeklyStats.max_study_hours)})` 
-                : "없음"}
-            </span>
-          </div>
-        </div>
-      )}
-    </>
+                  {/* 차트 영역: 전체 너비 사용 */}
+                  <div style={{ height: '350px', width: '100%', position: 'relative' }}>
+                    <StudyChart rawData={graphData} />
+                  </div>
+              </>
+          )}
+        </section>
+      </div>
   );
 }
