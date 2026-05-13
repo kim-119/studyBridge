@@ -76,7 +76,5 @@ public class TimerDTO {
         private String date; // 날짜 추가 (YYYY-MM-DD)
         private String day; // 요일 (MONDAY, TUESDAY...)
         private Long seconds; // 해당 요일의 학습 시간 (초)
-        private Long minutes; // 프론트엔드 호환용 (분)
-        private Double hours; // FastAPI 연동용 (시간)
     }
 }
