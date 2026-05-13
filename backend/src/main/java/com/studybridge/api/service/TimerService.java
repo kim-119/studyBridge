@@ -28,152 +28,159 @@ import java.util.stream.IntStream;
 @Transactional(readOnly = true)
 public class TimerService {
 
-    private final TimerRepository timerRepository;
-    private final UserRepository userRepository; // UserRepository 주입
+        private final TimerRepository timerRepository;
+        private final UserRepository userRepository; // UserRepository 주입
 
-    @Transactional
-    public TimerDTO.Response startTimer(TimerDTO.StartRequest request) {
-        // userId로 User 엔티티 조회
-        User user = userRepository.findById(request.getUserId())
-                .orElseThrow(() -> new NoSuchElementException("User not found with ID: " + request.getUserId()));
+        @Transactional
+        public TimerDTO.Response startTimer(TimerDTO.StartRequest request) {
+                // userId로 User 엔티티 조회
+                User user = userRepository.findById(request.getUserId())
+                                .orElseThrow(() -> new NoSuchElementException(
+                                                "User not found with ID: " + request.getUserId()));
 
-        timerRepository.findByUserIdAndStatus(request.getUserId(), TimerStatus.STARTED)
-                .ifPresent(timer -> {
-                    throw new IllegalStateException("User " + request.getUserId() + " already has an active timer.");
-                });
+                timerRepository.findByUserIdAndStatus(request.getUserId(), TimerStatus.STARTED)
+                                .ifPresent(timer -> {
+                                        throw new IllegalStateException("User " + request.getUserId()
+                                                        + " already has an active timer.");
+                                });
 
-        Timer timer = Timer.builder()
-                .user(user) // User 엔티티 설정
-                .startTime(request.getStartTime() != null ? request.getStartTime() : LocalDateTime.now())
-                .status(TimerStatus.STARTED)
-                .build();
+                Timer timer = Timer.builder()
+                                .user(user) // User 엔티티 설정
+                                .startTime(request.getStartTime() != null ? request.getStartTime()
+                                                : LocalDateTime.now())
+                                .status(TimerStatus.STARTED)
+                                .build();
 
-        Timer savedTimer = timerRepository.save(timer);
-        return toResponseDTO(savedTimer);
-    }
-
-    @Transactional
-    public TimerDTO.Response endTimer(Long userId, TimerDTO.EndRequest request) {
-        return timerRepository.findByUserIdAndStatus(userId, TimerStatus.STARTED)
-                .map(timer -> {
-                    timer.setEndTime(request.getEndTime() != null ? request.getEndTime() : LocalDateTime.now());
-                    timer.setDurationSeconds(request.getDurationSeconds());
-                    timer.setStatus(TimerStatus.COMPLETED);
-                    Timer savedTimer = timerRepository.save(timer);
-                    return toResponseDTO(savedTimer);
-                })
-                .orElseThrow(() -> new NoSuchElementException("No active timer found for user " + userId));
-    }
-
-    public TimerDTO.Response getCurrentTimer(Long userId) {
-        return timerRepository.findByUserIdAndStatus(userId, TimerStatus.STARTED)
-                .map(this::toResponseDTO)
-                .orElse(null);
-    }
-
-    public List<TimerDTO.Response> getUserTimers(Long userId) {
-        return timerRepository.findByUserIdOrderByStartTimeDesc(userId)
-                .stream()
-                .map(this::toResponseDTO)
-                .collect(Collectors.toList());
-    }
-
-    // --- 추가된 서비스 로직 ---
-
-    /**
-     * 오늘 공부 시간을 조회합니다.
-     * @param userId 사용자 ID
-     * @return 오늘 공부 시간 (분)
-     */
-    public TimerDTO.TodayStudyTimeResponse getTodayStudyTime(Long userId) {
-        LocalDateTime startOfDay = LocalDate.now().atStartOfDay();
-        LocalDateTime endOfDay = LocalDate.now().atTime(LocalTime.MAX);
-
-        List<Timer> completedTimers = timerRepository.findByUserIdAndStatusAndEndTimeBetween(
-                userId, TimerStatus.COMPLETED, startOfDay, endOfDay);
-
-        Long totalSeconds = completedTimers.stream()
-                .mapToLong(timer -> timer.getDurationSeconds() != null ? timer.getDurationSeconds() : 0L)
-                .sum();
-
-        return TimerDTO.TodayStudyTimeResponse.builder()
-                .userId(userId)
-                .todaySeconds(totalSeconds)
-                .build();
-    }
-
-    /**
-     * 주간 공부 시간을 조회합니다. (월요일부터 일요일까지)
-     * @param userId 사용자 ID
-     * @return 주간 공부 시간 데이터
-     */
-    public TimerDTO.WeeklyStudyTimeResponse getWeeklyStudyTime(Long userId) {
-        LocalDate today = LocalDate.now();
-        LocalDate startOfWeek = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
-        LocalDate endOfWeek = today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY));
-
-        LocalDateTime startOfWeekDateTime = startOfWeek.atStartOfDay();
-        LocalDateTime endOfWeekDateTime = endOfWeek.atTime(LocalTime.MAX);
-
-        List<Timer> completedTimers = timerRepository.findByUserIdAndStatusAndEndTimeBetween(
-                userId, TimerStatus.COMPLETED, startOfWeekDateTime, endOfWeekDateTime);
-
-        // 요일별로 그룹화 및 합산
-        Map<LocalDate, Long> dailySecondsMap = completedTimers.stream()
-                .collect(Collectors.groupingBy(
-                        timer -> timer.getEndTime().toLocalDate(),
-                        Collectors.summingLong(timer -> timer.getDurationSeconds() != null ? timer.getDurationSeconds() : 0L)
-                ));
-
-        // 총 공부 시간
-        Long totalSeconds = completedTimers.stream()
-                .mapToLong(timer -> timer.getDurationSeconds() != null ? timer.getDurationSeconds() : 0L)
-                .sum();
-
-        // 출석일 수 (공부 시간이 0초 초과인 날)
-        Set<LocalDate> attendanceDaysSet = completedTimers.stream()
-                .filter(timer -> timer.getDurationSeconds() != null && timer.getDurationSeconds() > 0)
-                .map(timer -> timer.getEndTime().toLocalDate())
-                .collect(Collectors.toSet());
-        Integer attendanceDays = attendanceDaysSet.size();
-
-        // 평균 공부 시간 (출석일 기준으로 계산)
-        Long averageSeconds = (attendanceDays > 0) ? (totalSeconds / attendanceDays) : 0L;
-
-
-        List<TimerDTO.DailyStudyTime> dailyStudyTimes = new ArrayList<>();
-        LocalDate currentDay = startOfWeek;
-        while (!currentDay.isAfter(endOfWeek)) {
-            Long seconds = dailySecondsMap.getOrDefault(currentDay, 0L);
-            dailyStudyTimes.add(TimerDTO.DailyStudyTime.builder()
-                    .date(currentDay.toString()) // YYYY-MM-DD 형식
-                    .day(currentDay.getDayOfWeek().toString()) // MONDAY, TUESDAY...
-                    .seconds(seconds)
-                    .minutes(seconds / 60)
-                    .hours(Math.round((seconds / 3600.0) * 100.0) / 100.0) // 소수점 둘째자리까지
-                    .build());
-            currentDay = currentDay.plusDays(1);
+                Timer savedTimer = timerRepository.save(timer);
+                return toResponseDTO(savedTimer);
         }
 
-        return TimerDTO.WeeklyStudyTimeResponse.builder()
-                .userId(userId)
-                .totalSeconds(totalSeconds)
-                .averageSeconds(averageSeconds)
-                .attendanceDays(attendanceDays)
-                .dailyStats(dailyStudyTimes)
-                .build();
-    }
+        @Transactional
+        public TimerDTO.Response endTimer(Long userId, TimerDTO.EndRequest request) {
+                return timerRepository.findByUserIdAndStatus(userId, TimerStatus.STARTED)
+                                .map(timer -> {
+                                        timer.setEndTime(request.getEndTime() != null ? request.getEndTime()
+                                                        : LocalDateTime.now());
+                                        timer.setDurationSeconds(request.getDurationSeconds());
+                                        timer.setStatus(TimerStatus.COMPLETED);
+                                        Timer savedTimer = timerRepository.save(timer);
+                                        return toResponseDTO(savedTimer);
+                                })
+                                .orElseThrow(() -> new NoSuchElementException(
+                                                "No active timer found for user " + userId));
+        }
 
-    private TimerDTO.Response toResponseDTO(Timer timer) {
-        return TimerDTO.Response.builder()
-                .id(timer.getId())
-                .userId(timer.getUser().getId()) // User 엔티티에서 ID 가져오기
-                .startTime(timer.getStartTime())
-                .endTime(timer.getEndTime())
-                .durationSeconds(timer.getDurationSeconds())
-                .status(timer.getStatus())
-                .createdAt(timer.getCreatedAt())
-                .updatedAt(timer.getUpdatedAt())
-                .build();
-    }
+        public TimerDTO.Response getCurrentTimer(Long userId) {
+                return timerRepository.findByUserIdAndStatus(userId, TimerStatus.STARTED)
+                                .map(this::toResponseDTO)
+                                .orElse(null);
+        }
+
+        public List<TimerDTO.Response> getUserTimers(Long userId) {
+                return timerRepository.findByUserIdOrderByStartTimeDesc(userId)
+                                .stream()
+                                .map(this::toResponseDTO)
+                                .collect(Collectors.toList());
+        }
+
+        // --- 추가된 서비스 로직 ---
+
+        /**
+         * 오늘 공부 시간을 조회합니다.
+         * 
+         * @param userId 사용자 ID
+         * @return 오늘 공부 시간 (분)
+         */
+        public TimerDTO.TodayStudyTimeResponse getTodayStudyTime(Long userId) {
+                LocalDateTime startOfDay = LocalDate.now().atStartOfDay();
+                LocalDateTime endOfDay = LocalDate.now().atTime(LocalTime.MAX);
+
+                List<Timer> completedTimers = timerRepository.findByUserIdAndStatusAndEndTimeBetween(
+                                userId, TimerStatus.COMPLETED, startOfDay, endOfDay);
+
+                Long totalSeconds = completedTimers.stream()
+                                .mapToLong(timer -> timer.getDurationSeconds() != null ? timer.getDurationSeconds()
+                                                : 0L)
+                                .sum();
+
+                return TimerDTO.TodayStudyTimeResponse.builder()
+                                .userId(userId)
+                                .todaySeconds(totalSeconds)
+                                .build();
+        }
+
+        /**
+         * 주간 공부 시간을 조회합니다. (월요일부터 일요일까지)
+         * 
+         * @param userId 사용자 ID
+         * @return 주간 공부 시간 데이터
+         */
+        public TimerDTO.WeeklyStudyTimeResponse getWeeklyStudyTime(Long userId) {
+                LocalDate today = LocalDate.now();
+                LocalDate startOfWeek = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+                LocalDate endOfWeek = today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY));
+
+                LocalDateTime startOfWeekDateTime = startOfWeek.atStartOfDay();
+                LocalDateTime endOfWeekDateTime = endOfWeek.atTime(LocalTime.MAX);
+
+                List<Timer> completedTimers = timerRepository.findByUserIdAndStatusAndEndTimeBetween(
+                                userId, TimerStatus.COMPLETED, startOfWeekDateTime, endOfWeekDateTime);
+
+                // 요일별로 그룹화 및 합산
+                Map<LocalDate, Long> dailySecondsMap = completedTimers.stream()
+                                .collect(Collectors.groupingBy(
+                                                timer -> timer.getEndTime().toLocalDate(),
+                                                Collectors.summingLong(timer -> timer.getDurationSeconds() != null
+                                                                ? timer.getDurationSeconds()
+                                                                : 0L)));
+
+                // 총 공부 시간
+                Long totalSeconds = completedTimers.stream()
+                                .mapToLong(timer -> timer.getDurationSeconds() != null ? timer.getDurationSeconds()
+                                                : 0L)
+                                .sum();
+
+                // 출석일 수 (공부 시간이 0초 초과인 날)
+                Set<LocalDate> attendanceDaysSet = completedTimers.stream()
+                                .filter(timer -> timer.getDurationSeconds() != null && timer.getDurationSeconds() > 0)
+                                .map(timer -> timer.getEndTime().toLocalDate())
+                                .collect(Collectors.toSet());
+                Integer attendanceDays = attendanceDaysSet.size();
+
+                // 평균 공부 시간 (출석일 기준으로 계산)
+                Long averageSeconds = (attendanceDays > 0) ? (totalSeconds / attendanceDays) : 0L;
+
+                List<TimerDTO.DailyStudyTime> dailyStudyTimes = new ArrayList<>();
+                LocalDate currentDay = startOfWeek;
+                while (!currentDay.isAfter(endOfWeek)) {
+                        Long seconds = dailySecondsMap.getOrDefault(currentDay, 0L);
+                        dailyStudyTimes.add(TimerDTO.DailyStudyTime.builder()
+                                        .date(currentDay.toString()) // YYYY-MM-DD 형식
+                                        .day(currentDay.getDayOfWeek().toString()) // MONDAY, TUESDAY...
+                                        .seconds(seconds)
+                                        .build());
+                        currentDay = currentDay.plusDays(1);
+                }
+
+                return TimerDTO.WeeklyStudyTimeResponse.builder()
+                                .userId(userId)
+                                .totalSeconds(totalSeconds)
+                                .averageSeconds(averageSeconds)
+                                .attendanceDays(attendanceDays)
+                                .dailyStats(dailyStudyTimes)
+                                .build();
+        }
+
+        private TimerDTO.Response toResponseDTO(Timer timer) {
+                return TimerDTO.Response.builder()
+                                .id(timer.getId())
+                                .userId(timer.getUser().getId()) // User 엔티티에서 ID 가져오기
+                                .startTime(timer.getStartTime())
+                                .endTime(timer.getEndTime())
+                                .durationSeconds(timer.getDurationSeconds())
+                                .status(timer.getStatus())
+                                .createdAt(timer.getCreatedAt())
+                                .updatedAt(timer.getUpdatedAt())
+                                .build();
+        }
 }
