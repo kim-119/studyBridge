@@ -31,7 +31,7 @@ public class Timer {
 
     private LocalDateTime endTime;
 
-    private Long durationMinutes;
+    private Long durationSeconds;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)

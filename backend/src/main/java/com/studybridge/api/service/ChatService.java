@@ -42,13 +42,15 @@ public class ChatService {
 
         // FastAPI의 /api/ai/multi-chat 요구사항에 맞춰 데이터 구성
         List<Map<String, String>> agentsList = room.getAgents().stream()
-                .map(agent -> Map.of(
-                        "name", agent.getName(),
-                        "role", agent.getRole(),
-                        "personality", agent.getPersona(),
-                        "tone", agent.getTone(),
-                        "goal", agent.getGoal()
-                ))
+                .map(agent -> {
+                    Map<String, String> agentMap = new java.util.HashMap<>();
+                    agentMap.put("name", agent.getName() != null ? agent.getName() : "Unknown");
+                    agentMap.put("role", agent.getRole() != null ? agent.getRole() : "Assistant");
+                    agentMap.put("personality", agent.getPersona() != null ? agent.getPersona() : "Helpful");
+                    agentMap.put("tone", agent.getTone() != null ? agent.getTone() : "친절하게");
+                    agentMap.put("goal", agent.getGoal() != null ? agent.getGoal() : "학습 도움");
+                    return agentMap;
+                })
                 .collect(Collectors.toList());
 
         Map<String, Object> requestBody = Map.of(
