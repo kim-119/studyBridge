@@ -456,11 +456,6 @@ export default function StudyMate() {
                       </div>
 
                       <div>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>학습 목표 (Goal)</label>
-                        <input type="text" className="input-field" value={newRoom.agents[currentAgentIndex].goal} onChange={e => handleAgentChange(currentAgentIndex, 'goal', e.target.value)} placeholder="예: 사용자의 수학 학습을 돕는다" />
-                      </div>
-
-                      <div>
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>말투 (Tone)</label>
                         <div className="agent-tone-group">
                           {['친절한', '엄격한', '코치형', '논리형', '동기부여형', '짧고 간결한'].map(t => (
