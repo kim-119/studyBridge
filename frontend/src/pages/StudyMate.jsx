@@ -25,7 +25,8 @@ export default function StudyMate() {
       name: '',
       role: '',
       persona: '',
-      tone: '친절한'
+      tone: '친절한',
+      goal: ''
     }]
   });
 
@@ -75,7 +76,7 @@ export default function StudyMate() {
         alert('최대 3명의 에이전트까지 추가할 수 있습니다.');
         return prev;
       }
-      const newAgent = { name: '', role: '', persona: '', tone: '친절한' };
+      const newAgent = { name: '', role: '', persona: '', tone: '친절한', goal: '' };
       const nextAgents = [...prev.agents, newAgent];
       setCurrentAgentIndex(nextAgents.length - 1);
       return { ...prev, agents: nextAgents };
@@ -118,7 +119,7 @@ export default function StudyMate() {
       setNewRoom({
         roomName: '',
         roomDescription: '',
-        agents: [{ name: '', role: '', persona: '', tone: '친절한' }]
+        agents: [{ name: '', role: '', persona: '', tone: '친절한', goal: '' }]
       });
       loadRooms();
     } catch (err) {
