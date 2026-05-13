@@ -54,11 +54,17 @@ export default function Dashboard() {
   }, [userId]);
 
   const formatStudyTime = (seconds) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
+    const totalSeconds = Math.max(0, Math.round(seconds || 0));
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    const parts = [];
 
-    if (h > 0) return `${h}시간 ${m}분`;
-    return `${m}분`;
+    if (h) parts.push(`${h}시간`);
+    if (m) parts.push(`${m}분`);
+    if (s || parts.length === 0) parts.push(`${s}초`);
+
+    return parts.join(' ');
   };
 
   const handleDateClick = (arg) => {
@@ -375,7 +381,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <StudyStatistics />
+      <StudyStatistics todayStudySeconds={todayStudySeconds} />
     </div>
   );
 }
