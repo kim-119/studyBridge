@@ -27,7 +27,7 @@ public class TimerDTO {
     public static class EndRequest {
         private Long userId;
         private LocalDateTime endTime;
-        private Long durationMinutes;
+        private Long durationSeconds;
     }
 
     @Data
@@ -39,7 +39,7 @@ public class TimerDTO {
         private Long userId;
         private LocalDateTime startTime;
         private LocalDateTime endTime;
-        private Long durationMinutes;
+        private Long durationSeconds;
         private TimerStatus status;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
@@ -53,7 +53,7 @@ public class TimerDTO {
     @Builder
     public static class TodayStudyTimeResponse {
         private Long userId;
-        private Long todayMinutes;
+        private Long todaySeconds;
     }
 
     @Data
@@ -62,7 +62,10 @@ public class TimerDTO {
     @Builder
     public static class WeeklyStudyTimeResponse {
         private Long userId;
-        private List<DailyStudyTime> data;
+        private Long totalSeconds; // 총 공부 시간 (초)
+        private Long averageSeconds; // 평균 공부 시간 (초)
+        private Integer attendanceDays; // 출석일 수 추가
+        private List<DailyStudyTime> dailyStats; // data 필드명을 dailyStats로 변경
     }
 
     @Data
@@ -70,7 +73,10 @@ public class TimerDTO {
     @AllArgsConstructor
     @Builder
     public static class DailyStudyTime {
-        private String day; // 요일 (월, 화, 수...)
-        private Long minutes; // 해당 요일의 학습 시간 (분)
+        private String date; // 날짜 추가 (YYYY-MM-DD)
+        private String day; // 요일 (MONDAY, TUESDAY...)
+        private Long seconds; // 해당 요일의 학습 시간 (초)
+        private Long minutes; // 프론트엔드 호환용 (분)
+        private Double hours; // FastAPI 연동용 (시간)
     }
 }
