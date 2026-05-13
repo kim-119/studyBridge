@@ -8,8 +8,6 @@ venv/
 .venv/
 frontend/node_modules/
 node_modules/
-index.html
-
 .env
 
 fastapi/.env
