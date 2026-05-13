@@ -1,5 +1,6 @@
 services:
   react:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-frontend:latest
     build:
       context: ./frontend
     container_name: capstone-react
@@ -12,6 +13,7 @@ services:
       - spring
 
   spring:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-backend:latest
     container_name: capstone-spring
     build:
       context: ./backend
@@ -30,6 +32,7 @@ services:
       - fastapi
 
   fastapi:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-fastapi:latest
     build:
       context: ./fastapi
     container_name: capstone-fastapi

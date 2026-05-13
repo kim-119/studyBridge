@@ -159,15 +159,11 @@ export default function StudyChart({ rawData }) {
             <div style={{
                 height: '350px',
                 width: '100%',
-                padding: '20px',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                color: '#9ca3af',
+                color: 'var(--color-text-muted)',
                 fontSize: '14px',
-                borderRadius: '16px',
-                backgroundColor: '#ffffff',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)',
             }}>
                 주간 학습 기록이 없습니다.
             </div>
