@@ -9,6 +9,10 @@ import java.util.List;
 @Repository
 public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> {
     List<ChatMessage> findByAgentIdOrderByCreatedAtAsc(Long agentId);
+
     List<ChatMessage> findByAgentChatRoomIdOrderByCreatedAtAsc(Long roomId);
+
+    List<ChatMessage> findTop10ByAgentChatRoomIdAndSenderOrderByCreatedAtDesc(Long roomId, String sender);
+
     void deleteByAgentId(Long agentId);
 }
