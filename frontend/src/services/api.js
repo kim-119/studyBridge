@@ -163,7 +163,7 @@ export const studyTimeService = {
 
 export const activityService = {
   getWeeklyGraph: async (payload) => {
-    const res = await fastApi.post('/activity/weekly-graph', payload);
+    const res = await fastApi.post('/activity/weekly', payload);
     return res.data;
   }
 };
