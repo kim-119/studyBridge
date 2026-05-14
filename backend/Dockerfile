@@ -1,18 +1,14 @@
-FROM eclipse-temurin:21-jdk-alpine AS build
+FROM eclipse-temurin:21-jdk
 
 WORKDIR /app
 
 COPY . .
 
 RUN sed -i 's/\r$//' gradlew
-RUN chmod +x gradlew && ./gradlew clean build -x test
+RUN chmod +x gradlew
 
-FROM eclipse-temurin:21-jre-alpine
-
-WORKDIR /app
-
-COPY --from=build /app/build/libs/*.jar app.jar
+RUN ./gradlew clean build -x test
 
 EXPOSE 8080
 
-CMD ["java", "-jar", "app.jar"]
+CMD ["sh", "-c", "java -jar build/libs/*.jar"]
