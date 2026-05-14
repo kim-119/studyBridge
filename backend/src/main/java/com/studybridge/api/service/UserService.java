@@ -7,13 +7,17 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.springframework.security.crypto.password.PasswordEncoder;
+
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class UserService {
 
     private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
 
+    // 회원 가입
     @Transactional
     public UserDTO.Response register(UserDTO.RegisterRequest request) {
         if (userRepository.existsByEmail(request.getEmail())) {
@@ -25,39 +29,25 @@ public class UserService {
 
         User user = User.builder()
                 .email(request.getEmail())
-                .password(request.getPassword()) // 생글자로 저장
+                .password(passwordEncoder.encode(request.getPassword()))
                 .displayName(request.getDisplayName())
                 .major(request.getMajor())
                 .build();
 
         User savedUser = userRepository.save(user);
 
-        return UserDTO.Response.builder()
-                .id(savedUser.getId())
-                .email(savedUser.getEmail())
-                .displayName(savedUser.getDisplayName())
-                .major(savedUser.getMajor())
-                .photoUrl(savedUser.getPhotoUrl())
-                .status(savedUser.getStatus())
-                .build();
+        return convertToResponse(savedUser);
     }
-
+    // 로그인
     public UserDTO.Response login(UserDTO.LoginRequest request) {
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> new IllegalArgumentException("가입되지 않은 이메일이거나 비밀번호가 틀렸습니다."));
 
-        if (!user.getPassword().equals(request.getPassword())) {
+        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
             throw new IllegalArgumentException("가입되지 않은 이메일이거나 비밀번호가 틀렸습니다.");
         }
 
-        return UserDTO.Response.builder()
-                .id(user.getId())
-                .email(user.getEmail())
-                .displayName(user.getDisplayName())
-                .major(user.getMajor())
-                .photoUrl(user.getPhotoUrl())
-                .status(user.getStatus())
-                .build();
+        return convertToResponse(user);
     }
 
     @Transactional
@@ -65,7 +55,7 @@ public class UserService {
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
 
-        if (!user.getPassword().equals(request.getCurrentPassword())) {
+        if (!passwordEncoder.matches(request.getCurrentPassword(), user.getPassword())) {
             throw new IllegalArgumentException("기존 비밀번호가 일치하지 않습니다.");
         }
 
@@ -73,6 +63,37 @@ public class UserService {
             throw new IllegalArgumentException("새 비밀번호 확인이 일치하지 않습니다.");
         }
 
-        user.setPassword(request.getNewPassword());
+        user.setPassword(passwordEncoder.encode(request.getNewPassword()));
+    }
+
+    @Transactional
+    public UserDTO.Response updateProfile(Long userId, UserDTO.UpdateProfileRequest request) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
+
+        user.setDisplayName(request.getDisplayName());
+        user.setMajor(request.getMajor());
+
+        return convertToResponse(user);
+    }
+
+    // 프로필 조회
+    public UserDTO.Response getProfile(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
+
+        return convertToResponse(user);
+    }
+
+    private UserDTO.Response convertToResponse(User user) {
+        UserDTO.Response response = UserDTO.Response.builder()
+                .id(user.getId())
+                .email(user.getEmail())
+                .displayName(user.getDisplayName())
+                .major(user.getMajor())
+                .photoUrl(user.getPhotoUrl())
+                .status(user.getStatus())
+                .build();
+        return response;
     }
 }
