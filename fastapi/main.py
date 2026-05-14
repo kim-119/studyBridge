@@ -13,11 +13,6 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
-
-# =========================
-# 환경 설정
-# =========================
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
 
@@ -49,12 +44,6 @@ if OPENAI_API_KEY:
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
 else:
     openai_client = None
-
-
-# =========================
-# 공통 유틸
-# =========================
-
 def check_openai_client():
     if openai_client is None:
         raise HTTPException(
@@ -84,6 +73,44 @@ def safe_strip(value: Optional[str], default: str = "", max_len: int = 1000) -> 
     return text
 
 
+def improve_answer_readability(text: str) -> str:
+    if not text:
+        return ""
+
+    labels = [
+        "1차 답변",
+        "핵심 근거",
+        "다음 에이전트가 검토하면 좋은 지점",
+        "피드백",
+        "보완할 점",
+        "피드백 반영 답변",
+        "최종 판단",
+        "종합 답변",
+        "다음 학습 방향",
+        "판단",
+        "평가",
+        "검토",
+        "보완점",
+        "수정 답변",
+        "피드백 반영 답변"
+    ]
+
+    result = text.strip()
+
+    for label in labels:
+        result = re.sub(
+            rf"\s*{re.escape(label)}\s*:",
+            f"\n\n{label}\n",
+            result
+        )
+
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    result = re.sub(r"(?<!\n)(\d+\.\s)", r"\n\1", result)
+    result = re.sub(r"(?<!\n)(-\s)", r"\n- ", result)
+
+    return result.strip()
+
+
 def clean_ai_answer(text: str) -> str:
     if not text:
         return ""
@@ -94,7 +121,10 @@ def clean_ai_answer(text: str) -> str:
     text = re.sub(r"(?m)^\s*```[a-zA-Z0-9_-]*\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
 
-    return text.strip()
+    text = text.strip()
+    text = improve_answer_readability(text)
+
+    return text
 
 
 def generate_ai_text(prompt: str, clean_markdown: bool = True) -> str:
@@ -138,11 +168,6 @@ def generate_ai_text_safely(prompt: str) -> str:
 
     except Exception as e:
         return f"AI 응답 생성 중 알 수 없는 오류가 발생했습니다. 원인: {type(e).__name__}: {str(e)}"
-
-
-# =========================
-# 검증 키워드
-# =========================
 
 BLOCKED_PERSONALITY_KEYWORDS = [
     "ignore previous",
@@ -388,11 +413,6 @@ def validate_feedback_output(text: str) -> str:
 
     return answer
 
-
-# =========================
-# 의도 분석
-# =========================
-
 def detect_user_intent(message: str) -> str:
     text = safe_strip(message, default="", max_len=3000).lower()
 
@@ -596,11 +616,6 @@ def get_user_intent_rule(intent: str) -> str:
 - 필요하면 예시, 질문, 핵심 정리를 포함해라.
 """
 
-
-# =========================
-# 스타일 / 페르소나 규칙
-# =========================
-
 STYLE_ALIASES = {
     "친절": "친절형",
     "친절형": "친절형",
@@ -720,6 +735,17 @@ GLOBAL_DOMAIN_RULE = """
 - 같은 문제출제형이라도 간호학, 회계학, 생명과학, 전기전자, 유아교육, 사회복지, 경영학, 법학, 컴퓨터공학 등 사용자가 묻는 과목에 맞춰 문제를 구성한다.
 - 질문 주제가 에이전트의 전공/과목과 완전히 다르면 무조건 거절만 하지 말고, 가능한 경우 자기 역할 관점에서 도움 되는 방향으로 연결한다.
 - 단, 안전하지 않거나 학습 범위를 명백히 벗어난 요청은 짧게 제한하고 올바른 학습 질문 방향을 제안한다.
+"""
+
+
+GROUP_STUDY_RULE = """
+[멀티 에이전트 그룹스터디 규칙]
+- 이 대화는 한 명의 사용자와 여러 AI 에이전트가 함께 학습하는 그룹스터디다.
+- 모든 에이전트가 동시에 같은 답변을 반복하면 안 된다.
+- 1번 에이전트는 사용자 질문에 대한 1차 답변을 담당한다.
+- 2번 에이전트는 사용자 질문과 1번 에이전트 답변을 함께 보고, 1번 답변에 대한 피드백과 피드백이 반영된 개선 답변을 담당한다.
+- 3번 에이전트는 사용자 질문, 1번 답변, 2번 피드백/개선 답변을 모두 보고 최종 정리와 학습 방향 제시를 담당한다.
+- 각 에이전트는 자신의 페르소나를 유지하되, 이전 에이전트의 답변을 참고해서 상호작용해야 한다.
 """
 
 
@@ -1050,11 +1076,6 @@ def get_agent_style_rule(style: str, simple_greeting: bool = False) -> str:
 - 다른 에이전트와 문장 구조가 겹치지 않게 답해라.
 """
 
-
-# =========================
-# 이름 매칭 / 피드백 유틸
-# =========================
-
 FEEDBACK_KEYWORDS = [
     "답변에 대해",
     "의견",
@@ -1146,15 +1167,6 @@ def choose_feedback_agents(message: str, mentioned_names: List[str]) -> Tuple[Op
     return mentioned_names[0], mentioned_names[1]
 
 
-def is_feedback_like_message(message: str) -> bool:
-    normalized = normalize_text_for_match(message)
-
-    return any(
-        normalize_text_for_match(keyword) in normalized
-        for keyword in FEEDBACK_KEYWORDS
-    )
-
-
 def is_simple_greeting_message(message: str, agent_names: Optional[List[str]] = None) -> bool:
     normalized = normalize_text_for_match(message)
 
@@ -1192,10 +1204,6 @@ def is_simple_greeting_message(message: str, agent_names: Optional[List[str]] = 
 
     return False
 
-
-# =========================
-# 기본 API
-# =========================
 
 @app.get("/")
 def root():
@@ -1237,10 +1245,6 @@ def ask_ai(request: AiRequest):
     result = generate_ai_text(user_message)
     return AiResponse(result=result)
 
-
-# =========================
-# 에이전트 단일 채팅
-# =========================
 
 MAX_AGENT_COUNT = 3
 
@@ -1454,12 +1458,17 @@ def chat_with_agent(agent_id: int, request: AgentChatRequest):
         )
 
     simple_greeting = is_simple_greeting_message(user_message, [agent["name"]])
+
     persona_boundary_rule = get_persona_boundary_rule(
         selected_style,
         user_intent,
         simple_greeting=simple_greeting
     )
-    style_rule = get_agent_style_rule(selected_style, simple_greeting=simple_greeting)
+
+    style_rule = get_agent_style_rule(
+        selected_style,
+        simple_greeting=simple_greeting
+    )
 
     prompt = f"""
 너는 StudyBridge 플랫폼의 사용자 커스텀 AI 에이전트다.
@@ -1507,6 +1516,12 @@ def chat_with_agent(agent_id: int, request: AgentChatRequest):
 6. 한국어로 답변해라.
 7. 답변에는 마크다운 문법을 사용하지 마라.
 8. 특히 마크다운 제목, 굵게 표시, 코드블록 기호를 사용하지 마라.
+9. 답변은 반드시 섹션별로 줄바꿈해서 작성해라.
+10. 각 섹션 제목은 한 줄에 단독으로 작성해라.
+11. 섹션 제목 다음에는 내용을 새 줄에 작성해라.
+12. 서로 다른 섹션 사이에는 빈 줄을 1줄 넣어라.
+13. 긴 문장은 2~3문장 단위로 끊어라.
+14. 목록은 번호 또는 하이픈으로 나눠서 작성해라.
 """
 
     answer = generate_ai_text(prompt)
@@ -1526,11 +1541,6 @@ def chat_with_agent_for_spring(
         request: AgentChatRequest
 ):
     return chat_with_agent(agent_id=agent_id, request=request)
-
-
-# =========================
-# 에이전트 간 피드백 단독 API
-# =========================
 
 @app.post("/agents/{reviewer_agent_id}/feedback", response_model=AgentFeedbackResponse)
 def feedback_between_agents(
@@ -1612,12 +1622,22 @@ def feedback_between_agents(
 10. 특정 학과나 컴퓨터공학 중심으로 고정하지 말고 원래 질문의 과목/전공 맥락에 맞춰 평가해라.
 11. 한국어로 답변해라.
 12. 답변에는 마크다운 제목, 굵게 표시, 코드블록 기호를 사용하지 마라.
+13. 답변은 반드시 섹션별로 줄바꿈해서 작성해라.
+14. 서로 다른 섹션 사이에는 빈 줄을 1줄 넣어라.
 
 출력 형식:
-판단: 동의/부분 동의/반대 중 하나
-검토: 핵심 검토 내용
-보완점: 고쳐야 할 점 또는 추가하면 좋은 점
-수정 답변: 학습자에게 더 적절한 답변 예시
+
+판단
+- 동의/부분 동의/반대 중 하나를 말한다.
+
+검토
+- 핵심 검토 내용을 정리한다.
+
+보완점
+- 고쳐야 할 점 또는 추가하면 좋은 점을 정리한다.
+
+수정 답변
+- 학습자에게 더 적절한 답변 예시를 제시한다.
 """
 
     feedback = generate_ai_text(prompt)
@@ -1656,11 +1676,6 @@ def feedback_between_agents_for_spring(
         reviewer_agent_id=reviewer_agent_id,
         request=request
     )
-
-
-# =========================
-# 멀티 에이전트 채팅
-# =========================
 
 class MultiChatAgent(BaseModel):
     name: Optional[str] = Field(default=None, max_length=30)
@@ -1717,9 +1732,9 @@ def format_previous_answers(previous_answers: Optional[List[PreviousAgentAnswer]
 
     lines = []
 
-    for item in previous_answers[-6:]:
+    for item in previous_answers[-8:]:
         agent_name = safe_strip(item.agentName, default="알 수 없는 에이전트", max_len=50)
-        answer = safe_strip(item.answer, default="", max_len=1200)
+        answer = safe_strip(item.answer, default="", max_len=1500)
 
         if answer:
             lines.append(f"[{agent_name}]\n{answer}")
@@ -1730,7 +1745,93 @@ def format_previous_answers(previous_answers: Optional[List[PreviousAgentAnswer]
     return "\n\n".join(lines)
 
 
-def build_single_agent_prompt(
+def build_group_study_stage_rule(
+        stage_index: int,
+        total_agents: int,
+        current_agent_name: str
+) -> str:
+    if stage_index == 0:
+        return """
+[현재 단계: 1차 답변자]
+- 너는 이번 그룹스터디의 1차 답변자다.
+- 사용자 질문에 대해 네 페르소나와 역할에 맞는 첫 답변을 제공한다.
+- 뒤의 에이전트들이 네 답변을 검토하고 보완할 수 있도록 핵심 근거와 판단 기준을 분명히 제시한다.
+- 다른 에이전트의 피드백 역할이나 최종 정리 역할을 미리 대신하지 마라.
+
+출력 형식:
+
+1차 답변
+- 핵심 내용을 2~4문장으로 설명한다.
+
+핵심 근거
+- 왜 그렇게 설명하는지 근거를 짧게 정리한다.
+
+다음 에이전트가 검토하면 좋은 지점
+- 보완하거나 확인하면 좋은 부분을 1~2개 제시한다.
+"""
+
+    if stage_index == 1:
+        return """
+[현재 단계: 피드백 및 개선 답변자]
+- 너는 이번 그룹스터디의 2차 에이전트다.
+- 사용자 질문과 앞선 에이전트의 답변을 함께 검토한다.
+- 앞선 답변의 좋은 점, 부족한 점, 보완할 점을 말한다.
+- 그 피드백을 반영해서 네 페르소나와 역할에 맞는 개선 답변을 제시한다.
+- 단순히 같은 답변을 반복하지 마라.
+- 네가 문제출제형이 아니라면 직접 문제 세트를 만들지 말고 네 역할 관점으로 개선 답변을 작성한다.
+
+출력 형식:
+
+피드백
+- 앞선 답변에서 좋은 점과 부족한 점을 나누어 말한다.
+
+보완할 점
+- 빠진 개념, 헷갈릴 수 있는 부분, 수정할 부분을 정리한다.
+
+피드백 반영 답변
+- 피드백을 반영한 개선 답변을 작성한다.
+"""
+
+    if stage_index == total_agents - 1 and total_agents >= 3:
+        return """
+[현재 단계: 최종 종합자]
+- 너는 이번 그룹스터디의 최종 종합자다.
+- 사용자 질문, 1차 답변, 2차 피드백 및 개선 답변을 모두 참고한다.
+- 앞선 답변들의 중복을 줄이고 핵심 결론을 정리한다.
+- 틀린 내용이 있으면 바로잡고, 부족한 내용이 있으면 보완한다.
+- 마지막에는 사용자가 다음에 무엇을 하면 되는지 학습 방향을 제시한다.
+- 단, 네 페르소나와 역할을 벗어나서 모든 역할을 대신 수행하지 마라.
+
+출력 형식:
+
+최종 판단
+- 앞선 답변들을 종합해 핵심 판단을 짧게 말한다.
+
+종합 답변
+- 최종 설명을 2~4문단으로 나누어 작성한다.
+- 필요한 경우 번호 목록을 사용한다.
+
+다음 학습 방향
+- 사용자가 다음에 할 일을 2~3개로 제시한다.
+"""
+
+    return """
+[현재 단계: 추가 검토자]
+- 너는 이번 그룹스터디의 추가 검토자다.
+- 앞선 답변들을 검토하고 네 페르소나 관점에서 빠진 부분을 보완한다.
+- 같은 내용을 반복하지 말고 새로운 관점이나 오류 수정 중심으로 답변한다.
+
+출력 형식:
+
+검토
+- 앞선 답변의 핵심을 검토한다.
+
+보완 답변
+- 빠진 부분을 보완한다.
+"""
+
+
+def build_group_study_prompt(
         agent_name: str,
         agent_role: str,
         agent_persona: str,
@@ -1743,38 +1844,16 @@ def build_single_agent_prompt(
         user_intent: str,
         user_intent_rule: str,
         previous_answers_text: str,
-        is_critic: bool,
-        is_final_summarizer: bool
+        stage_rule: str
 ) -> str:
-    critic_rule = ""
-
-    if is_critic:
-        critic_rule = """
-[비판자 역할]
-- 너는 이번 순서에서 앞선 에이전트의 답변을 참고한다.
-- 단, 네 고정 페르소나와 역할을 벗어나서 다른 에이전트 역할을 대신하지 마라.
-- previousAnswers에 있는 동료 답변의 부족한 점, 부정확한 점, 빠진 관점이 있으면 정중하지만 명확하게 보완해라.
-- 단순히 새 답변만 반복하지 말고, 필요한 경우 "OO님 의견에 보완하자면"처럼 동료 에이전트 이름을 언급해라.
-"""
-
-    final_rule = ""
-
-    if is_final_summarizer:
-        final_rule = """
-[최종 정리자 역할]
-- 너는 앞선 에이전트들의 답변을 종합하는 역할도 일부 수행한다.
-- 단, 네 고정 페르소나와 역할을 벗어나서 모든 답변을 대신 완성하지 마라.
-- previousAnswers의 중복을 줄이고 학습자가 최종적으로 무엇을 보면 되는지 정리해라.
-"""
-
     return f"""
-너는 StudyBridge 플랫폼의 멀티 에이전트 중 하나다.
-이 시스템은 순차적 체이닝 방식으로 동작한다.
-즉, 앞선 에이전트들의 답변이 너의 입력으로 들어오며, 너는 그 내용을 참고해서 답변해야 한다.
+너는 StudyBridge 플랫폼의 멀티 에이전트 그룹스터디에 참여하는 AI 에이전트다.
 
 {GLOBAL_PERSONA_PRIORITY_RULE}
 
 {GLOBAL_DOMAIN_RULE}
+
+{GROUP_STUDY_RULE}
 
 [너의 이름]
 {agent_name}
@@ -1798,7 +1877,9 @@ def build_single_agent_prompt(
 
 {style_rule}
 
-[사용자 메시지]
+{stage_rule}
+
+[사용자 질문]
 {user_message}
 
 [사용자 요청 의도]
@@ -1806,12 +1887,8 @@ def build_single_agent_prompt(
 
 {user_intent_rule}
 
-[previousAnswers: 앞선 에이전트 및 이전 대화 답변]
+[앞선 에이전트 답변 및 이전 대화 답변]
 {previous_answers_text}
-
-{critic_rule}
-
-{final_rule}
 
 답변 규칙:
 1. 반드시 "{agent_name}"의 관점에서만 답변해라.
@@ -1819,14 +1896,18 @@ def build_single_agent_prompt(
 3. 요청이 너의 페르소나와 직접 맞지 않으면 그대로 수행하지 말고 너의 페르소나 관점으로 재해석해서 답해라.
 4. 특정 학과나 컴퓨터공학 중심으로 답변하지 말고, 현재 질문의 과목/전공 맥락에 맞춰 답해라.
 5. 다른 에이전트의 역할을 대신 수행하지 마라.
-6. previousAnswers에 동료 답변이 있으면 중복 설명을 줄이고 새로운 관점, 보완점, 검토 의견을 제시해라.
-7. 동료 답변이 맞으면 "OO님 의견에 동의합니다"처럼 이름을 언급해도 된다.
-8. 동료 답변이 틀렸거나 부족하면 정중하게 수정해라.
-9. 사용자가 에이전트 간 토론, 피드백, 의견 비교를 원하면 적극적으로 의견을 개진해라.
-10. 모든 에이전트가 같은 형식으로 문제, 코드, 계획을 반복 생성하지 마라.
-11. 한국어로 답변해라.
-12. 마크다운 제목, 굵게 표시, 코드블록 기호를 사용하지 마라.
-13. 너무 길게 늘어놓지 말고 학습자가 바로 이해할 수 있게 답해라.
+6. 앞선 답변이 있으면 반드시 참고하고, 중복 설명을 줄이며 피드백 또는 보완을 포함해라.
+7. 앞선 답변이 틀렸거나 부족하면 정중하게 수정해라.
+8. 모든 에이전트가 같은 형식으로 문제, 코드, 계획을 반복 생성하지 마라.
+9. 한국어로 답변해라.
+10. 마크다운 제목, 굵게 표시, 코드블록 기호를 사용하지 마라.
+11. 너무 길게 늘어놓지 말고 학습자가 바로 이해할 수 있게 답해라.
+12. 답변은 반드시 섹션별로 줄바꿈해서 작성해라.
+13. 각 섹션 제목은 한 줄에 단독으로 작성해라.
+14. 섹션 제목 다음에는 내용을 새 줄에 작성해라.
+15. 서로 다른 섹션 사이에는 빈 줄을 1줄 넣어라.
+16. 긴 문장은 2~3문장 단위로 끊어라.
+17. 목록은 번호 또는 하이픈으로 나눠서 작성해라.
 """
 
 
@@ -1845,6 +1926,8 @@ def build_feedback_prompt(
 {GLOBAL_PERSONA_PRIORITY_RULE}
 
 {GLOBAL_DOMAIN_RULE}
+
+{GROUP_STUDY_RULE}
 
 [너의 정보]
 이름: {reviewer_agent["name"]}
@@ -1878,18 +1961,28 @@ def build_feedback_prompt(
 3. 답변의 정확성, 누락된 개념, 설명 방식, 학습 도움 정도를 평가해라.
 4. 틀린 부분이 있으면 무엇이 틀렸는지 정확히 말해라.
 5. 부족한 부분이 있으면 어떻게 보완해야 하는지 말해라.
-6. 필요하면 더 나은 수정 답변을 짧게 제시해라.
+6. 피드백이 반영된 개선 답변을 짧게 제시해라.
 7. 이전 답변이 없는 척하지 마라. 위의 이전 답변을 반드시 근거로 평가해라.
 8. 특정 전공 개념을 새로 길게 강의하지 말고, 반드시 대상 답변에 대한 평가를 중심으로 말해라.
 9. 가능하면 "{target_agent["name"]}님 의견에 대해"처럼 동료 이름을 언급해라.
 10. 한국어로 답변해라.
 11. 마크다운 제목, 굵게 표시, 코드블록 기호를 사용하지 마라.
+12. 답변은 반드시 섹션별로 줄바꿈해서 작성해라.
+13. 서로 다른 섹션 사이에는 빈 줄을 1줄 넣어라.
 
 출력 형식:
-판단: 동의/부분 동의/반대 중 하나
-평가: 대상 답변에 대한 핵심 평가
-보완점: 고쳐야 할 점 또는 추가하면 좋은 점
-수정 답변: 더 나은 답변 예시
+
+판단
+- 동의/부분 동의/반대 중 하나를 말한다.
+
+평가
+- 대상 답변에 대한 핵심 평가를 정리한다.
+
+보완점
+- 고쳐야 할 점 또는 추가하면 좋은 점을 정리한다.
+
+피드백 반영 답변
+- 더 나은 답변 예시를 제시한다.
 """
 
 
@@ -1956,10 +2049,6 @@ def multi_agent_chat(request: MultiChatRequest):
     previous_answers = request.previousAnswers or []
     previous_answers_text = format_previous_answers(previous_answers)
 
-    # =========================
-    # 1. 명시적 에이전트 간 피드백 요청 처리
-    # 예: "3번 에이전트는 2번 에이전트 답변에 대해 어떻게 생각해?"
-    # =========================
     if is_feedback_message(user_message, mentioned_names):
         reviewer_name, target_name = choose_feedback_agents(user_message, mentioned_names)
 
@@ -2017,9 +2106,6 @@ def multi_agent_chat(request: MultiChatRequest):
             ]
         )
 
-    # =========================
-    # 2. 특정 에이전트만 호출한 경우
-    # =========================
     if mentioned_names:
         target_agents = [
             agent_by_name[normalize_text_for_match(name)]
@@ -2029,11 +2115,10 @@ def multi_agent_chat(request: MultiChatRequest):
     else:
         target_agents = prepared_agents
 
-    # =========================
-    # 3. 일반 멀티 에이전트 순차 체이닝
-    # =========================
     final_answers: List[MultiChatAnswer] = []
     chained_answers: List[PreviousAgentAnswer] = list(previous_answers)
+
+    total_agents = len(target_agents)
 
     for idx, agent in enumerate(target_agents):
         style_rule = get_agent_style_rule(
@@ -2049,10 +2134,13 @@ def multi_agent_chat(request: MultiChatRequest):
 
         previous_context_for_this_agent = format_previous_answers(chained_answers)
 
-        is_critic = idx > 0
-        is_final_summarizer = len(target_agents) >= 3 and idx == len(target_agents) - 1
+        stage_rule = build_group_study_stage_rule(
+            stage_index=idx,
+            total_agents=total_agents,
+            current_agent_name=agent["name"]
+        )
 
-        prompt = build_single_agent_prompt(
+        prompt = build_group_study_prompt(
             agent_name=agent["name"],
             agent_role=agent["role"],
             agent_persona=agent["persona"],
@@ -2065,8 +2153,7 @@ def multi_agent_chat(request: MultiChatRequest):
             user_intent=user_intent,
             user_intent_rule=user_intent_rule,
             previous_answers_text=previous_context_for_this_agent,
-            is_critic=is_critic,
-            is_final_summarizer=is_final_summarizer
+            stage_rule=stage_rule
         )
 
         answer = clean_ai_answer(generate_ai_text_safely(prompt))
@@ -2087,10 +2174,6 @@ def multi_agent_chat(request: MultiChatRequest):
 
     return MultiChatResponse(answers=final_answers)
 
-
-# =========================
-# 주간 활동 API
-# =========================
 
 class DailyStudyTime(BaseModel):
     day: str
