@@ -9,6 +9,7 @@ import com.studybridge.api.repository.ChatMessageRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.List;
@@ -23,6 +24,7 @@ public class ChatService {
     private final AgentChatRoomRepository agentChatRoomRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final WebClient fastApiWebClient;
+    private final TransactionTemplate transactionTemplate;
 
     @Transactional
     public ChatDTO.MultiChatResponse chatWithRoom(Long userId, Long roomId, ChatDTO.MultiChatRequest request) {
@@ -33,8 +35,22 @@ public class ChatService {
             throw new RuntimeException("해당 채팅방에 접근할 권한이 없습니다.");
         }
 
-        // 사용자의 메시지 저장
-        saveRoomMessage(room, null, request.getMessage(), "USER");
+        // 사용자의 메시지 저장 (즉시 커밋을 위해 TransactionTemplate 사용)
+        transactionTemplate.execute(status -> {
+            saveRoomMessage(room, null, request.getMessage(), "USER");
+            return null;
+        });
+
+        // 에이전트 간 상호 피드백을 위해 최근 10개의 AI 답변 가져오기
+        List<ChatMessage> lastAiMessages = chatMessageRepository.findTop10ByAgentChatRoomIdAndSenderOrderByCreatedAtDesc(roomId, "AI");
+        java.util.Collections.reverse(lastAiMessages);
+
+        List<Map<String, String>> previousAnswers = lastAiMessages.stream()
+                .map(msg -> Map.of(
+                        "agentName", msg.getAgent() != null ? msg.getAgent().getName() : "AI",
+                        "answer", msg.getContent()
+                ))
+                .collect(Collectors.toList());
 
         // FastAPI의 /api/ai/multi-chat 요구사항에 맞춰 데이터 구성
         List<Map<String, String>> agentsList = room.getAgents().stream()
@@ -49,7 +65,8 @@ public class ChatService {
 
         Map<String, Object> requestBody = Map.of(
                 "message", request.getMessage(),
-                "agents", agentsList
+                "agents", agentsList,
+                "previousAnswers", previousAnswers
         );
 
         Map<String, Object> response;
