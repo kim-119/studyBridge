@@ -84,10 +84,10 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
       setWeeklySecondsMap(tempWeeklySecondsMap);
 
       console.log("StudyStatistics loadData weeklyResult:", weeklyResult);
-      let rawData = Array.isArray(weeklyResult) 
-        ? weeklyResult 
-        : (weeklyResult?.dailyStats || []);
-        
+      let rawData = Array.isArray(weeklyResult)
+        ? weeklyResult
+        : (weeklyResult?.data || weeklyResult?.dailyStats || []);
+
       setBaseRawData(rawData);
 
       if (!Array.isArray(rawData) || rawData.length === 0) {
@@ -139,18 +139,18 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
     }
 
     const todayDayName = new Date().toLocaleDateString('ko-KR', { weekday: 'short' });
-    const dayMap = {'MONDAY':'월', 'TUESDAY':'화', 'WEDNESDAY':'수', 'THURSDAY':'목', 'FRIDAY':'금', 'SATURDAY':'토', 'SUNDAY':'일'};
+    const dayMap = { 'MONDAY': '월', 'TUESDAY': '화', 'WEDNESDAY': '수', 'THURSDAY': '목', 'FRIDAY': '금', 'SATURDAY': '토', 'SUNDAY': '일' };
 
     const updatedData = baseRawData.map(item => {
       // item.day가 MONDAY 같은 영어일 경우 한글로 매핑, 이미 한글이면 그대로 사용
       const koreanDay = dayMap[item.day] || item.day;
       let exactSeconds = weeklySecondsMap[koreanDay] || 0;
-      
+
       // 오늘은 진행 중인 타이머가 포함된 가장 정확한 todayStudySeconds를 우선 사용
       if (koreanDay === todayDayName && todayStudySeconds > 0) {
         exactSeconds = Math.max(exactSeconds, todayStudySeconds); // 혹은 todayStudySeconds 자체를 사용
       }
-      
+
       return {
         ...item,
         day: koreanDay,
@@ -204,7 +204,7 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
               // ✅ 실시간 통계 계산 (FastAPI 결과를 기다리지 않고 graphData 기준으로 계산)
               const totalMinutes = graphData.reduce((acc, cur) => acc + (cur.minutes || 0), 0);
               const avgMinutes = totalMinutes / 7;
-              
+
               // 집중 요일 계산
               let maxMin = -1;
               let maxDay = "없음";
