@@ -22,15 +22,16 @@ public class Timer {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false)
-    private Long userId;
+    @ManyToOne(fetch = FetchType.LAZY) // User 엔티티와의 다대일 관계 설정
+    @JoinColumn(name = "user_id", nullable = false) // 외래 키 컬럼 지정
+    private User user; // User 엔티티 참조
 
     @Column(nullable = false)
     private LocalDateTime startTime;
 
     private LocalDateTime endTime;
 
-    private Long durationMinutes;
+    private Long durationSeconds;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)

@@ -12,7 +12,7 @@ import java.util.NoSuchElementException;
 
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/api/users/{userId}") // 상위 경로를 /api/users/{userId}로 변경
+@RequestMapping("/api/users/{userId}") // 상위 경로를 /api/users/{userId}로 유지
 @CrossOrigin(origins = "http://localhost:3000")
 public class TimerController {
 
@@ -62,8 +62,6 @@ public class TimerController {
         List<TimerDTO.Response> response = timerService.getUserTimers(userId);
         return ResponseEntity.ok(response);
     }
-
-    // --- 추가된 study-time 집계 API ---
 
     @GetMapping("/study-time/today")
     public ResponseEntity<TimerDTO.TodayStudyTimeResponse> getTodayStudyTime(@PathVariable Long userId) {
