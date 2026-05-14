@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { roomService } from '../services/api';
 import { Bot, Plus, Trash2, Send, AlertCircle, X, Sparkles, Users, ChevronRight } from 'lucide-react';
 
 export default function StudyMate() {
   const { userId } = useAuth();
+  const navigate = useNavigate();
   const MAX_ROOMS = 3;
 
   const [rooms, setRooms] = useState([]);
@@ -41,6 +43,16 @@ export default function StudyMate() {
       setChatHistory([]);
     }
   }, [userId]);
+
+  const checkAuth = (e) => {
+    if (!userId) {
+      if (e) e.preventDefault();
+      alert('로그인이 필요한 기능입니다. 로그인 페이지로 이동합니다.');
+      navigate('/login');
+      return false;
+    }
+    return true;
+  };
 
   useEffect(() => {
     scrollToBottom();
@@ -148,6 +160,7 @@ export default function StudyMate() {
 
   const sendMessage = async (e) => {
     e.preventDefault();
+    if (!checkAuth()) return;
     if (!message.trim() || !selectedRoom || isTyping) return;
 
     const roomId = getRoomId(selectedRoom);
@@ -219,17 +232,7 @@ export default function StudyMate() {
     return colors[index % colors.length];
   };
 
-  if (!userId) {
-    return (
-      <div className="container-main">
-        <div className="glass-panel empty-state" style={{ padding: '40px' }}>
-          <AlertCircle size={48} color="var(--color-text-muted)" style={{ margin: '0 auto 16px' }} />
-          <h3>로그인이 필요합니다</h3>
-          <p style={{ color: 'var(--color-text-muted)' }}>AI 학습메이트 기능은 로그인 후 이용 가능합니다.</p>
-        </div>
-      </div>
-    );
-  }
+
 
   return (
     <div className="container-main studymate-page">
@@ -246,7 +249,7 @@ export default function StudyMate() {
             <button
               className={`btn-outline btn-create-room ${isLimitReached ? 'disabled' : ''}`}
               style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', transition: 'all 0.2s ease' }}
-              onClick={() => setShowModal(true)}
+              onClick={() => checkAuth() && setShowModal(true)}
               disabled={isLimitReached}
               title={isLimitReached ? "채팅방은 최대 3개까지 생성 가능합니다." : ""}
             >
@@ -368,6 +371,7 @@ export default function StudyMate() {
                   style={{ flex: 1, borderRadius: '24px', paddingLeft: '20px', backgroundColor: '#F3F4F6', border: 'none' }}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
+                  onFocus={checkAuth}
                   placeholder="메시지 보내기..."
                   disabled={isTyping}
                 />
@@ -472,10 +476,10 @@ export default function StudyMate() {
                         <input type="text" className="input-field" value={newRoom.agents[currentAgentIndex].tone} onChange={e => handleAgentChange(currentAgentIndex, 'tone', e.target.value)} placeholder="예: 설명형, 리뷰어형 등 직접 입력" />
                       </div>
 
-                    <div>
-                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>성격 및 설명</label>
-                      <textarea className="input-field" style={{ height: '80px', paddingTop: '12px', resize: 'none' }} value={newRoom.agents[currentAgentIndex].persona} onChange={e => handleAgentChange(currentAgentIndex, 'persona', e.target.value)} placeholder="예: 풀이 과정을 중심으로 차근차근 설명해주는 AI" />
-                    </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>성격 및 설명</label>
+                        <textarea className="input-field" style={{ height: '80px', paddingTop: '12px', resize: 'none' }} value={newRoom.agents[currentAgentIndex].persona} onChange={e => handleAgentChange(currentAgentIndex, 'persona', e.target.value)} placeholder="예: 풀이 과정을 중심으로 차근차근 설명해주는 AI" />
+                      </div>
 
                       {newRoom.agents.length > 1 && (
                         <button
