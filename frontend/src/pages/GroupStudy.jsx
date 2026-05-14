@@ -1,10 +1,21 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Users, Plus, Search, Calendar, User, ChevronRight } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
 export default function GroupStudy() {
   const { userId } = useAuth();
-  
+  const navigate = useNavigate();
+
+  const checkAuth = () => {
+    if (!userId) {
+      alert('로그인이 필요한 기능입니다. 로그인 페이지로 이동합니다.');
+      navigate('/login');
+      return false;
+    }
+    return true;
+  };
+
   // 임시 데이터
   const [studies] = useState([
     {
@@ -42,11 +53,8 @@ export default function GroupStudy() {
   const [appliedStudies, setAppliedStudies] = useState([]); // 신청한 스터디 ID 목록 (임시)
 
   const handleApply = (studyId) => {
-    if (!userId) {
-      alert('로그인이 필요합니다.');
-      return;
-    }
-    
+    if (!checkAuth()) return;
+
     if (appliedStudies.includes(studyId)) {
       alert('이미 신청한 스터디입니다.');
       return;
@@ -79,16 +87,16 @@ export default function GroupStudy() {
       {/* 검색 바 (UI 개선) */}
       <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 20px', marginBottom: '32px', borderRadius: '12px' }}>
         <Search size={20} color="#9CA3AF" />
-        <input 
-          type="text" 
-          placeholder="관심있는 스터디나 기술 스택을 검색해보세요" 
+        <input
+          type="text"
+          placeholder="관심있는 스터디나 기술 스택을 검색해보세요"
           style={{ flex: 1, border: 'none', outline: 'none', backgroundColor: 'transparent', fontSize: '15px', color: 'var(--color-text-main)' }}
         />
         <button className="btn-outline" style={{ width: 'auto', height: '36px', padding: '0 20px', fontSize: '13px' }}>
           검색
         </button>
         <div style={{ width: '1px', height: '24px', backgroundColor: 'var(--color-border)', margin: '0 4px' }} />
-        <button className="btn-primary" style={{ width: 'auto', height: '36px', padding: '0 16px', fontSize: '13px' }} onClick={() => alert('스터디 생성 기능은 준비 중입니다.')}>
+        <button className="btn-primary" style={{ width: 'auto', height: '36px', padding: '0 16px', fontSize: '13px' }} onClick={() => checkAuth() && alert('스터디 생성 기능은 준비 중입니다.')}>
           <Plus size={16} /> 스터디 만들기
         </button>
       </div>
@@ -103,21 +111,21 @@ export default function GroupStudy() {
                 <User size={14} /> {study.currentMembers} / {study.maxMembers}
               </div>
             </div>
-            
+
             <h3 style={{ margin: '0 0 12px 0', fontSize: '18px', fontWeight: '700', color: 'var(--color-text-main)', lineHeight: '1.4' }}>
               {study.title}
             </h3>
-            
+
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '16px' }}>
               {study.tags.map((tag, idx) => (
                 <span key={idx} className="tag">#{tag}</span>
               ))}
             </div>
-            
+
             <p style={{ margin: '0 0 24px 0', fontSize: '14px', color: 'var(--color-text-muted)', lineHeight: '1.5', flex: 1 }}>
               {study.description}
             </p>
-            
+
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '16px', borderTop: '1px solid var(--color-border)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--color-text-main)', fontWeight: '500' }}>
                 <div className="avatar-sm" style={{ backgroundColor: 'rgba(96, 201, 90, 0.15)', color: 'var(--color-primary)' }}>
@@ -125,9 +133,9 @@ export default function GroupStudy() {
                 </div>
                 <span>{study.leader}</span>
               </div>
-              
-              <button 
-                className={study.status === 'CLOSED' ? 'btn-outline' : 'btn-primary'} 
+
+              <button
+                className={study.status === 'CLOSED' ? 'btn-outline' : 'btn-primary'}
                 style={{
                   width: 'auto',
                   height: '32px',
@@ -151,4 +159,3 @@ export default function GroupStudy() {
     </div>
   );
 }
-
