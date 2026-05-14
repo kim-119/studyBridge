@@ -7,7 +7,6 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.Setter;
 
-
 public class UserDTO {
 
     @Getter
@@ -22,7 +21,7 @@ public class UserDTO {
         private String password;
 
         @NotBlank(message = "비밀번호 확인은 필수 입력값입니다.")
-        private String passwordConfirm; // 비밀번호 일치 검증용
+        private String passwordConfirm;
 
         @NotBlank(message = "닉네임은 필수 입력값입니다.")
         @Size(min = 2, max = 10, message = "닉네임은 2~10자여야 합니다.")
@@ -60,6 +59,17 @@ public class UserDTO {
 
         @NotBlank(message = "새 비밀번호 확인을 입력해주세요.")
         private String newPasswordConfirm;
+    }
+
+    // 프로필 정보 수정 요청 시 사용하는 DTO
+    @Getter
+    @Setter
+    public static class UpdateProfileRequest {
+        @NotBlank(message = "닉네임은 필수 입력값입니다.")
+        @Size(min = 2, max = 10, message = "닉네임은 2~10자여야 합니다.")
+        private String displayName;
+
+        private String major;
     }
 
     // 클라이언트에게 사용자 정보를 반환할 때 사용하는 DTO

@@ -1,10 +1,11 @@
 fastapi
 uvicorn[standard]
 python-dotenv
-google-genai
+openai
 pydantic
-python-multipart
 pypdf
 PyMuPDF
 pytesseract
 Pillow
+python-multipart
+matplotlib
