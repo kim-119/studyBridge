@@ -29,11 +29,13 @@ export default function MyPage() {
   }, [userId, userEmail]);
 
   // 비밀번호 변경 관련 상태
+  const [verifyEmail, setVerifyEmail] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [passwordSuccess, setPasswordSuccess] = useState('');
+  const [isVerified, setIsVerified] = useState(false);
 
   const handleSave = async () => {
     const finalName = name.trim() || email.split('@')[0] || '';
@@ -70,12 +72,46 @@ export default function MyPage() {
     setIsEditing(false);
   };
 
-  const handlePasswordChange = async () => {
+  const handleVerifyPassword = async () => {
     setPasswordError('');
     setPasswordSuccess('');
 
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      setPasswordError('모든 필드를 입력해주세요.');
+    if (!verifyEmail || !currentPassword) {
+      setPasswordError('이메일과 현재 비밀번호를 입력해주세요.');
+      return;
+    }
+
+    try {
+      const res = await authService.verifyPassword({ 
+        email: verifyEmail, 
+        password: currentPassword 
+      });
+      
+      if (res.verified) {
+        setIsVerified(true);
+        setPasswordSuccess('본인 확인이 완료되었습니다. 새 비밀번호를 입력해주세요.');
+      }
+    } catch (error) {
+      setPasswordError('이메일 또는 현재 비밀번호가 일치하지 않습니다.');
+    }
+  };
+
+  const handleCancelPasswordChange = () => {
+    setIsVerified(false);
+    setVerifyEmail('');
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+    setPasswordSuccess('');
+  };
+
+  const handleFinalPasswordChange = async () => {
+    setPasswordError('');
+    setPasswordSuccess('');
+
+    if (!newPassword || !confirmPassword) {
+      setPasswordError('새 비밀번호를 입력해주세요.');
       return;
     }
 
@@ -86,57 +122,25 @@ export default function MyPage() {
 
     try {
       await authService.updatePassword({ 
-        email: email, 
+        email: verifyEmail,
         currentPassword: currentPassword, 
-        newPassword: newPassword, 
-        newPasswordConfirm: confirmPassword 
+        newPassword: newPassword,
+        newPasswordConfirm: confirmPassword
       });
-      setPasswordSuccess('비밀번호가 성공적으로 변경되었습니다.');
-      setCurrentPassword('');
-      setNewPassword('');
-      setConfirmPassword('');
+      alert('비밀번호가 성공적으로 변경되었습니다.');
+      handleCancelPasswordChange();
     } catch (error) {
       setPasswordError(error.message || '비밀번호 변경에 실패했습니다.');
     }
   };
 
   return (
-    <div
-      style={{
-        width: '100%',
-        maxWidth: '900px',
-        margin: '0 auto',
-        padding: '24px',
-        boxSizing: 'border-box',
-      }}
-    >
+    <div className="mypage-page">
       <div className="glass-panel animate-fade-in" style={{ padding: '30px' }}>
-        <div
-          style={{
-            display: 'flex',
-            gap: '24px',
-            alignItems: 'center',
-            marginBottom: '28px',
-          }}
-        >
-          <div
-            style={{
-              width: '88px',
-              height: '88px',
-              borderRadius: '50%',
-              backgroundColor: 'rgba(96, 201, 90, 0.15)',
-              color: 'var(--color-primary)',
-              display: 'flex',
-              justifyContent: 'center',
-              alignItems: 'center',
-              fontSize: '32px',
-              fontWeight: 700,
-              flexShrink: 0,
-            }}
-          >
+        <div className="profile-header">
+          <div className="profile-avatar">
             {name ? name.charAt(0).toUpperCase() : '?'}
           </div>
-
           <div>
             <h3 style={{ margin: 0 }}>{name || '이름 없음'}</h3>
             <p style={{ margin: '6px 0 0', color: 'var(--color-text-muted)' }}>
@@ -145,11 +149,9 @@ export default function MyPage() {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gap: '18px' }}>
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>
-              이름
-            </label>
+        <div className="form-grid">
+          <div className="form-group">
+            <label>이름</label>
             <input
               className="input-field"
               value={name}
@@ -159,10 +161,8 @@ export default function MyPage() {
             />
           </div>
 
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>
-              전공
-            </label>
+          <div className="form-group">
+            <label>전공</label>
             <input
               className="input-field"
               value={major}
@@ -172,15 +172,13 @@ export default function MyPage() {
             />
           </div>
 
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>
-              이메일
-            </label>
+          <div className="form-group">
+            <label>이메일</label>
             <input className="input-field" value={email} disabled />
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px', marginTop: '24px' }}>
+        <div className="btn-group">
           {isEditing ? (
             <>
               <button className="btn-primary" onClick={handleSave}>
@@ -201,47 +199,69 @@ export default function MyPage() {
       <div className="glass-panel animate-fade-in" style={{ padding: '30px', marginTop: '24px' }}>
         <h3 style={{ margin: '0 0 20px 0', color: 'var(--color-primary)' }}>비밀번호 변경</h3>
         
-        <div style={{ display: 'grid', gap: '18px' }}>
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>현재 비밀번호</label>
-            <input
-              type="password"
-              className="input-field"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              placeholder="현재 비밀번호"
-            />
+        {!isVerified ? (
+          <div style={{ display: 'grid', gap: '18px' }}>
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>이메일</label>
+              <input
+                type="email"
+                className="input-field"
+                value={verifyEmail}
+                onChange={(e) => setVerifyEmail(e.target.value)}
+                placeholder="가입 시 사용한 이메일"
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>현재 비밀번호</label>
+              <input
+                type="password"
+                className="input-field"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                placeholder="현재 비밀번호를 입력하세요"
+              />
+            </div>
+            {passwordError && <div style={{ color: 'red', marginTop: '10px' }}>{passwordError}</div>}
+            <div style={{ display: 'flex', gap: '10px', marginTop: '24px' }}>
+              <button className="btn-primary" onClick={handleVerifyPassword} style={{ width: 'auto', minWidth: '120px' }}>
+                본인 확인
+              </button>
+            </div>
           </div>
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>새 비밀번호</label>
-            <input
-              type="password"
-              className="input-field"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="새 비밀번호"
-            />
+        ) : (
+          <div className="form-grid">
+            <div className="form-group">
+              <label>새 비밀번호</label>
+              <input
+                type="password"
+                className="input-field"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="새 비밀번호 입력"
+              />
+            </div>
+            <div className="form-group">
+              <label>새 비밀번호 확인</label>
+              <input
+                type="password"
+                className="input-field"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="새 비밀번호 다시 입력"
+              />
+            </div>
+            {passwordError && <div style={{ color: 'red', marginTop: '10px' }}>{passwordError}</div>}
+            {passwordSuccess && <div style={{ color: 'green', marginTop: '10px' }}>{passwordSuccess}</div>}
+            <div className="btn-group">
+              <button className="btn-primary" onClick={handleFinalPasswordChange} style={{ width: 'auto', minWidth: '120px' }}>
+                비밀번호 변경
+              </button>
+              <button className="btn-outline" onClick={handleCancelPasswordChange} style={{ width: 'auto', minWidth: '80px' }}>
+                취소
+              </button>
+            </div>
           </div>
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>새 비밀번호 확인</label>
-            <input
-              type="password"
-              className="input-field"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="새 비밀번호 확인"
-            />
-          </div>
-        </div>
-
-        {passwordError && <div style={{ color: 'red', marginTop: '15px' }}>{passwordError}</div>}
-        {passwordSuccess && <div style={{ color: 'green', marginTop: '15px' }}>{passwordSuccess}</div>}
-
-        <div style={{ marginTop: '24px' }}>
-          <button className="btn-primary" onClick={handlePasswordChange}>
-            비밀번호 변경
-          </button>
-        </div>
+        )}
       </div>
     </div>
   );

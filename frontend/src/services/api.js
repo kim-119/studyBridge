@@ -15,6 +15,21 @@ api.interceptors.response.use(
   }
 );
 
+const fastApi = axios.create({
+  baseURL: 'http://localhost:8000',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+fastApi.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    console.error('FastAPI 에러:', err.response || err.message);
+    return Promise.reject(err);
+  }
+);
+
 export const authService = {
   register: async (userData) => {
     try {
@@ -60,6 +75,15 @@ export const authService = {
       throw err.response?.data || { message: '비밀번호 변경 실패' };
     }
   },
+
+  verifyPassword: async (credentials) => {
+    try {
+      const res = await api.post('/api/users/login', credentials);
+      return { verified: true, data: res.data };
+    } catch (err) {
+      throw err.response?.data || { message: '본인 확인 실패' };
+    }
+  },
 };
 
 export const todoService = {
@@ -100,6 +124,10 @@ export const roomService = {
   getChatHistory: async (userId, roomId) => {
     const res = await api.get(`/api/users/${userId}/chat/rooms/${roomId}/history`);
     return res.data;
+  },
+  deleteRoom: async (userId, roomId) => {
+    const res = await api.delete(`/api/users/${userId}/agent-rooms/${roomId}`);
+    return res.data;
   }
 };
 
@@ -118,6 +146,24 @@ export const timerService = {
   },
   getTimerHistory: async (userId) => {
     const res = await api.get(`/api/users/${userId}/timers`);
+    return res.data;
+  }
+};
+
+export const studyTimeService = {
+  getToday: async (userId) => {
+    const res = await api.get(`/api/users/${userId}/study-time/today`);
+    return res.data;
+  },
+  getWeekly: async (userId) => {
+    const res = await api.get(`/api/users/${userId}/study-time/weekly`);
+    return res.data;
+  }
+};
+
+export const activityService = {
+  getWeeklyGraph: async (payload) => {
+    const res = await fastApi.post('/activity/weekly', payload);
     return res.data;
   }
 };

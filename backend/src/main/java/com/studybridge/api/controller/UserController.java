@@ -45,6 +45,16 @@ public class UserController {
         }
     }
 
+    @GetMapping("/{userId}/profile")
+    public ResponseEntity<?> getProfile(@PathVariable Long userId) {
+        try {
+            UserDTO.Response response = userService.getProfile(userId);
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
     @PutMapping("/{userId}/profile")
     public ResponseEntity<?> updateProfile(
             @PathVariable Long userId,

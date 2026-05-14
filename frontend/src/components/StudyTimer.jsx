@@ -26,11 +26,16 @@ export default function StudyTimer({ onTimeUpdate }) {
     onTimeUpdate?.(totalSeconds);
   }, [totalSeconds]);
 
+  const toSeoulLocalDateTime = (date) => {
+    const seoulString = date.toLocaleString('sv', { timeZone: 'Asia/Seoul' });
+    return seoulString.replace(' ', 'T');
+  };
+
   const loadTimerData = async () => {
     try {
       // 1. 당일 총 공부 시간 계산
       const history = await timerService.getTimerHistory(userId);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = new Date().toLocaleString('sv', { timeZone: 'Asia/Seoul' }).slice(0, 10);
       let total = 0;
       
       if (history && Array.isArray(history)) {
@@ -48,9 +53,8 @@ export default function StudyTimer({ onTimeUpdate }) {
       const current = await timerService.getCurrentSession(userId);
       if (current && current.startTime && !current.endTime) {
         setIsRunning(true);
-        // 서버에서 온 startTime(KST 등 timezone offset이 없는 UTC 형태) 파싱 시 발생하는 9시간 오차 방지
         const serverTimeStr = current.startTime;
-        const parsedTime = new Date(serverTimeStr.endsWith('Z') ? serverTimeStr : serverTimeStr + 'Z').getTime();
+        const parsedTime = new Date(serverTimeStr).getTime();
         setSessionStartTime(parsedTime);
         setSessionSeconds(Math.floor((Date.now() - parsedTime) / 1000));
       } else {
@@ -74,21 +78,26 @@ export default function StudyTimer({ onTimeUpdate }) {
   }, [isRunning, sessionStartTime]);
 
   const formatTime = (seconds) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = seconds % 60;
+    const totalSeconds = Math.max(0, Math.round(seconds || 0));
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    const parts = [];
 
-    return `${h}시간 ${m}분 ${s}초`;
+    if (h) parts.push(`${h}시간`);
+    if (m) parts.push(`${m}분`);
+    if (s || parts.length === 0) parts.push(`${s}초`);
+
+    return parts.join(' ');
   };
 
   const handleStart = async () => {
     if (isRunning || !userId) return;
 
     try {
-      const startTime = new Date().toISOString();
+      const startTime = toSeoulLocalDateTime(new Date());
       const res = await timerService.startTimer(userId, startTime);
       setIsRunning(true);
-      // 클라이언트에서 바로 시작 누른 시점을 Date.now()로 기록 (9시간 파싱 오류 원천 차단)
       setSessionStartTime(Date.now());
       setSessionSeconds(0);
     } catch (err) {
@@ -100,7 +109,7 @@ export default function StudyTimer({ onTimeUpdate }) {
     if (!isRunning || !userId) return;
 
     try {
-      const endTime = new Date().toISOString();
+      const endTime = toSeoulLocalDateTime(new Date());
       const durationMinutes = Math.floor(sessionSeconds / 60);
       await timerService.endTimer(userId, endTime, durationMinutes);
       setIsRunning(false);
@@ -116,33 +125,20 @@ export default function StudyTimer({ onTimeUpdate }) {
   const isFinishDisabled = !isRunning;
 
   return (
-    <div className="glass-panel animate-fade-in" style={{ padding: '20px' }}>
+    <div className="glass-panel timer-container animate-fade-in">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>현재 공부 시간</h3>
       </div>
 
-      <div style={{ marginTop: '16px', fontSize: '28px', fontWeight: 700, color: 'var(--color-primary)' }}>
+      <div className="timer-display">
         {formatTime(sessionSeconds)}
       </div>
 
-      <div
-        style={{
-          marginTop: '6px',
-          fontSize: '13px',
-          color: 'var(--color-text-muted)',
-        }}
-      >
+      <div className="timer-hint">
         종료를 누르면 오늘의 학습 시간에 누적됩니다.
       </div>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: '10px',
-          marginTop: '18px',
-        }}
-      >
+      <div className="timer-controls">
         <button 
           className="btn-primary" 
           onClick={handleStart}
@@ -153,10 +149,9 @@ export default function StudyTimer({ onTimeUpdate }) {
         </button>
 
         <button
-          className="btn-primary"
+          className="btn-primary btn-timer-finish"
           onClick={handleFinish}
           disabled={isFinishDisabled}
-          style={{ backgroundColor: isFinishDisabled ? '#ccc' : 'var(--color-danger)', border: 'none' }}
         >
           종료
         </button>

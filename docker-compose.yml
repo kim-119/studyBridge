@@ -1,5 +1,6 @@
 services:
   react:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-frontend:latest
     build:
       context: ./frontend
     container_name: capstone-react
@@ -12,6 +13,7 @@ services:
       - spring
 
   spring:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-backend:latest
     container_name: capstone-spring
     build:
       context: ./backend
@@ -24,11 +26,13 @@ services:
       DB_USER: capstone
       DB_PASSWORD: 1234
       FASTAPI_BASE_URL: http://fastapi:8000
+      TZ: Asia/Seoul
     depends_on:
       - db
       - fastapi
 
   fastapi:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-fastapi:latest
     build:
       context: ./fastapi
     container_name: capstone-fastapi
@@ -40,6 +44,7 @@ services:
       - ./fastapi/.env
     environment:
       PYTHONUNBUFFERED: 1
+      TZ: Asia/Seoul
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   db:
@@ -51,6 +56,7 @@ services:
       POSTGRES_DB: capstone
       POSTGRES_USER: capstone
       POSTGRES_PASSWORD: 1234
+      TZ: Asia/Seoul
     volumes:
       - postgres_data:/var/lib/postgresql/data
 

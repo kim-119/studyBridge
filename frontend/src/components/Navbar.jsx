@@ -21,7 +21,7 @@ export default function Navbar() {
           <Link to="/" className="nav-logo">
             StudyBridge
           </Link>
-          <div style={{ display: 'flex', gap: '16px', marginLeft: '16px' }}>
+          <div className="nav-links">
             <Link to="/studymate" className="nav-link">
               학습메이트
             </Link>

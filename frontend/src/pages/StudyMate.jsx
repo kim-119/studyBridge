@@ -1,30 +1,44 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { roomService } from '../services/api';
-import { Bot, Plus, Trash2, Send, AlertCircle, X, Sparkles, Users } from 'lucide-react';
+import { Bot, Plus, Trash2, Send, AlertCircle, X, Sparkles, Users, ChevronRight } from 'lucide-react';
 
 export default function StudyMate() {
   const { userId } = useAuth();
-  
+  const navigate = useNavigate();
+  const MAX_ROOMS = 3;
+
   const [rooms, setRooms] = useState([]);
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
   const [message, setMessage] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
+  const [typingStatus, setTypingStatus] = useState({}); // { [roomId]: boolean }
   const [showModal, setShowModal] = useState(false);
-  
+  const [currentAgentIndex, setCurrentAgentIndex] = useState(0);
+  const [deleteModal, setDeleteModal] = useState({ show: false, roomId: null });
+
+  const isLimitReached = rooms.length >= MAX_ROOMS;
+
   const [newRoom, setNewRoom] = useState({
     roomName: '',
+    roomDescription: '',
     agents: [{
-      name: '', 
+      name: '',
       role: '',
       persona: '',
-      tone: '친절하고 전문적인 말투',
-      goal: '사용자의 학습을 돕는다'
+      tone: '친절한',
+      goal: ''
     }]
   });
 
   const chatEndRef = useRef(null);
+  const selectedRoomRef = useRef(null);
+
+  // 현재 선택된 방을 ref에 동기화 (비동기 콜백에서 최신값 참조용)
+  useEffect(() => {
+    selectedRoomRef.current = selectedRoom;
+  }, [selectedRoom]);
 
   useEffect(() => {
     if (userId) {
@@ -36,9 +50,21 @@ export default function StudyMate() {
     }
   }, [userId]);
 
+  const checkAuth = (e) => {
+    if (!userId) {
+      if (e) e.preventDefault();
+      alert('로그인이 필요한 기능입니다. 로그인 페이지로 이동합니다.');
+      navigate('/login');
+      return false;
+    }
+    return true;
+  };
+
+  const getRoomId = (room) => room?.agentRoomId ?? room?.roomId ?? room?.id;
+
   useEffect(() => {
     scrollToBottom();
-  }, [chatHistory, isTyping]);
+  }, [chatHistory, typingStatus, selectedRoom]);
 
   const loadRooms = async () => {
     try {
@@ -49,28 +75,41 @@ export default function StudyMate() {
     }
   };
 
-  const handleAddAgentToNewRoom = () => {
-    if (newRoom.agents.length >= 3) {
-      alert('한 방에 최대 3명의 에이전트만 추가할 수 있습니다.');
-      return;
+  const handleDeleteRoom = async () => {
+    if (!deleteModal.roomId) return;
+    try {
+      await roomService.deleteRoom(userId, deleteModal.roomId);
+      setDeleteModal({ show: false, roomId: null });
+      if (getRoomId(selectedRoom) === deleteModal.roomId) {
+        setSelectedRoom(null);
+        setChatHistory([]);
+      }
+      loadRooms();
+    } catch (err) {
+      alert('채팅방 삭제에 실패했습니다.');
     }
-    setNewRoom(prev => ({
-      ...prev,
-      agents: [...prev.agents, {
-        name: '', role: '', persona: '', tone: '친절하고 전문적인 말투', goal: '사용자의 학습을 돕는다'
-      }]
-    }));
   };
 
-  const handleRemoveAgentFromNewRoom = (index) => {
-    if (newRoom.agents.length <= 1) {
-      alert('최소 1명의 에이전트가 필요합니다.');
-      return;
+  const handleAddAgent = () => {
+    setNewRoom(prev => {
+      if (prev.agents.length >= 3) {
+        alert('최대 3명의 에이전트까지 추가할 수 있습니다.');
+        return prev;
+      }
+      const newAgent = { name: '', role: '', persona: '', tone: '친절한', goal: '' };
+      const nextAgents = [...prev.agents, newAgent];
+      setCurrentAgentIndex(nextAgents.length - 1);
+      return { ...prev, agents: nextAgents };
+    });
+  };
+
+  const handleRemoveAgent = (index) => {
+    if (newRoom.agents.length <= 1) return;
+    const updatedAgents = newRoom.agents.filter((_, i) => i !== index);
+    setNewRoom(prev => ({ ...prev, agents: updatedAgents }));
+    if (currentAgentIndex >= updatedAgents.length) {
+      setCurrentAgentIndex(updatedAgents.length - 1);
     }
-    setNewRoom(prev => ({
-      ...prev,
-      agents: prev.agents.filter((_, i) => i !== index)
-    }));
   };
 
   const handleAgentChange = (index, field, value) => {
@@ -80,18 +119,27 @@ export default function StudyMate() {
   };
 
   const handleCreateRoom = async (e) => {
-    e.preventDefault();
-    if (newRoom.agents.some(a => a.persona.length < 5)) {
-      alert('각 에이전트의 성격/특징은 최소 5자 이상 입력해야 합니다.');
+    if (e) e.preventDefault();
+
+    if (!newRoom.roomName) return alert('채팅방 이름을 입력해주세요.');
+    if (newRoom.agents.some(a => !a.name || !a.role || a.persona.length < 5)) {
+      alert('모든 에이전트의 정보를 올바르게 입력해주세요. (성격 5자 이상)');
       return;
     }
 
     try {
-      await roomService.createRoom(userId, newRoom);
+      const payload = {
+        roomName: newRoom.roomName,
+        agents: newRoom.agents
+      };
+      console.log('채팅방 생성 요청 페이로드:', JSON.stringify(payload, null, 2));
+      await roomService.createRoom(userId, payload);
       setShowModal(false);
+      setCurrentAgentIndex(0);
       setNewRoom({
         roomName: '',
-        agents: [{ name: '', role: '', persona: '', tone: '친절하고 전문적인 말투', goal: '사용자의 학습을 돕는다' }]
+        roomDescription: '',
+        agents: [{ name: '', role: '', persona: '', tone: '친절한', goal: '' }]
       });
       loadRooms();
     } catch (err) {
@@ -99,15 +147,13 @@ export default function StudyMate() {
     }
   };
 
-  const getRoomId = (room) => room?.agentRoomId ?? room?.roomId ?? room?.id;
-
   const selectRoom = async (room) => {
     const roomId = getRoomId(room);
     if (!roomId) {
       console.error("roomId 없음:", room);
       return;
     }
-    
+
     setSelectedRoom({ ...room, roomId });
     try {
       const history = await roomService.getChatHistory(userId, roomId);
@@ -120,13 +166,10 @@ export default function StudyMate() {
 
   const sendMessage = async (e) => {
     e.preventDefault();
-    if (!message.trim() || !selectedRoom || isTyping) return;
-
+    if (!checkAuth()) return;
+    
     const roomId = getRoomId(selectedRoom);
-    if (!roomId) {
-      alert("채팅방 ID를 찾을 수 없습니다.");
-      return;
-    }
+    if (!message.trim() || !roomId || typingStatus[roomId]) return;
 
     const userMsg = {
       id: Date.now(),
@@ -139,22 +182,29 @@ export default function StudyMate() {
     setChatHistory(prev => [...prev, userMsg]);
     const inputMsg = message;
     setMessage('');
-    setIsTyping(true);
+    
+    // 해당 방의 타이핑 상태 활성화
+    setTypingStatus(prev => ({ ...prev, [roomId]: true }));
 
     try {
       const res = await roomService.sendMessage(userId, roomId, inputMsg);
-      // res는 MultiChatResponse 형태이며, replies 필드에 답변 배열이 존재함
+      
+      // [정합성 검사] 응답이 왔을 때 사용자가 여전히 같은 방에 있는지 확인
+      if (getRoomId(selectedRoomRef.current) !== roomId) {
+        console.log(`방 이동 감지: ${roomId} 응답을 무시합니다.`);
+        return;
+      }
+
       if (res && res.replies) {
         const newMessages = res.replies.map((reply, idx) => ({
           id: Date.now() + idx + 1,
           content: reply.answer,
-          sender: 'AI', 
+          sender: 'AI',
           senderName: selectedRoom.agents?.find(a => a.id === reply.agentId)?.name || '에이전트',
           createdAt: new Date().toISOString()
         }));
         setChatHistory(prev => [...prev, ...newMessages]);
       } else {
-        // 단일 응답 fallback (혹시 구조가 다를 경우 대비)
         const aiMsg = {
           id: Date.now() + 1,
           content: res.answer || '응답이 없습니다.',
@@ -164,11 +214,15 @@ export default function StudyMate() {
         setChatHistory(prev => [...prev, aiMsg]);
       }
     } catch (err) {
-      alert('메시지 전송에 실패했습니다.');
-      setChatHistory(prev => prev.filter(m => m.id !== userMsg.id));
-      setMessage(inputMsg);
+      // 에러 시에도 현재 방이면 복구 로직 실행
+      if (getRoomId(selectedRoomRef.current) === roomId) {
+        alert('메시지 전송에 실패했습니다.');
+        setChatHistory(prev => prev.filter(m => m.id !== userMsg.id));
+        setMessage(inputMsg);
+      }
     } finally {
-      setIsTyping(false);
+      // 해당 방의 타이핑 상태 해제
+      setTypingStatus(prev => ({ ...prev, [roomId]: false }));
     }
   };
 
@@ -191,31 +245,26 @@ export default function StudyMate() {
     return colors[index % colors.length];
   };
 
-  if (!userId) {
-    return (
-      <div className="container-main">
-        <div className="glass-panel empty-state" style={{ padding: '40px' }}>
-          <AlertCircle size={48} color="var(--color-text-muted)" style={{ margin: '0 auto 16px' }} />
-          <h3>로그인이 필요합니다</h3>
-          <p style={{ color: 'var(--color-text-muted)' }}>AI 학습메이트 기능은 로그인 후 이용 가능합니다.</p>
-        </div>
-      </div>
-    );
-  }
+  const isCurrentRoomTyping = typingStatus[getRoomId(selectedRoom)];
 
   return (
-    <div className="container-main">
+    <div className="container-main studymate-page">
       <div className="layout-split">
         {/* 좌측: 채팅방 리스트 패널 */}
         <div className="glass-panel layout-pane-left animate-fade-in">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <div className="room-list-header">
             <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', fontSize: '18px' }}>
               <Users size={20} color="var(--color-primary)" /> 내 채팅방
+              <span className={`limit-badge ${isLimitReached ? 'reached' : ''}`}>
+                {rooms.length} / {MAX_ROOMS}
+              </span>
             </h2>
-            <button 
-              className="btn-outline" 
-              style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
-              onClick={() => setShowModal(true)}
+            <button
+              className={`btn-outline btn-create-room ${isLimitReached ? 'disabled' : ''}`}
+              style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', transition: 'all 0.2s ease' }}
+              onClick={() => checkAuth() && setShowModal(true)}
+              disabled={isLimitReached}
+              title={isLimitReached ? "채팅방은 최대 3개까지 생성 가능합니다." : ""}
             >
               <Plus size={16} /> 방 만들기
             </button>
@@ -232,27 +281,36 @@ export default function StudyMate() {
                 const rId = getRoomId(room);
                 const isActive = getRoomId(selectedRoom) === rId;
                 const avatarColor = getAvatarColor(index);
-                
+
                 return (
-                  <div 
-                    key={rId || index} 
-                    style={{
-                      padding: '16px', borderRadius: '12px', border: '1px solid var(--color-border)', backgroundColor: 'var(--color-bg-base)', cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: '12px', transition: 'all 0.2s ease',
-                      ...(isActive ? { borderColor: 'var(--color-primary)', backgroundColor: 'rgba(96, 201, 90, 0.05)', boxShadow: '0 2px 8px rgba(96, 201, 90, 0.1)' } : {})
-                    }}
+                  <div
+                    key={rId || index}
+                    className={`room-card ${isActive ? 'active' : ''}`}
                     onClick={() => selectRoom(room)}
                   >
                     <div className="avatar" style={{ backgroundColor: avatarColor.bg, color: avatarColor.text }}>
                       <Users size={20} />
                     </div>
-                    
+
                     <div style={{ flex: 1, overflow: 'hidden' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <div style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)', marginBottom: '4px' }}>{room.roomName || `채팅방 ${index+1}`}</div>
+                        <div style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)', marginBottom: '4px' }}>{room.roomName || `채팅방 ${index + 1}`}</div>
                       </div>
                       <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: '1.4' }}>
                         {room.agents?.map(a => a.name).join(', ')} ({room.agents?.length || 0}명)
                       </div>
+                    </div>
+
+                    <div className="room-actions">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteModal({ show: true, roomId: rId });
+                        }}
+                        style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </div>
                   </div>
                 )
@@ -284,7 +342,7 @@ export default function StudyMate() {
                   </div>
                 </div>
               </div>
-              
+
               <div className="chat-history">
                 {chatHistory.length === 0 ? (
                   <div className="empty-state" style={{ marginTop: '40px' }}>
@@ -295,22 +353,22 @@ export default function StudyMate() {
                     const isUser = msg.sender === 'USER';
                     const msgKey = msg.messageId ?? msg.id ?? idx;
                     return (
-                      <div key={msgKey} style={{ display: 'flex', flexDirection: 'column', maxWidth: '75%', alignSelf: isUser ? 'flex-end' : 'flex-start' }}>
-                        <div style={{ fontSize: '12px', marginBottom: '4px', marginLeft: '4px', color: 'var(--color-text-muted)', textAlign: isUser ? 'right' : 'left' }}>
+                      <div key={msgKey} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
+                        <div className="chat-bubble-sender">
                           {!isUser && (msg.senderName || msg.sender)}
                         </div>
                         <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`}>
                           {msg.content}
                         </div>
-                        <div style={{ fontSize: '11px', color: '#9CA3AF', marginTop: '4px', textAlign: isUser ? 'right' : 'left' }}>
+                        <div className="chat-bubble-time">
                           {formatTime(msg.createdAt)}
                         </div>
                       </div>
                     );
                   })
                 )}
-                {isTyping && (
-                  <div style={{ display: 'flex', flexDirection: 'column', maxWidth: '75%', alignSelf: 'flex-start' }}>
+                {isCurrentRoomTyping && (
+                  <div className="chat-bubble-container ai">
                     <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', minHeight: '20px' }}>
                       <span className="dot"></span><span className="dot"></span><span className="dot"></span>
                     </div>
@@ -320,16 +378,17 @@ export default function StudyMate() {
               </div>
 
               <form onSubmit={sendMessage} className="chat-input-wrapper">
-                <input 
-                  type="text" 
-                  className="input-field" 
+                <input
+                  type="text"
+                  className="input-field"
                   style={{ flex: 1, borderRadius: '24px', paddingLeft: '20px', backgroundColor: '#F3F4F6', border: 'none' }}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
+                  onFocus={checkAuth}
                   placeholder="메시지 보내기..."
-                  disabled={isTyping}
+                  disabled={isCurrentRoomTyping}
                 />
-                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={isTyping || !message.trim()}>
+                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={isCurrentRoomTyping || !message.trim()}>
                   <Send size={18} />
                 </button>
               </form>
@@ -341,79 +400,138 @@ export default function StudyMate() {
       {/* 채팅방 생성 모달 */}
       {showModal && (
         <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ maxWidth: '600px', width: '90%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
-            <div className="modal-header" style={{ paddingBottom: '16px', borderBottom: '1px solid var(--color-border)', marginBottom: '16px' }}>
+          <div className="glass-panel modal-content">
+            <div className="modal-header">
               <h3 style={{ margin: 0 }}>새로운 채팅방 생성</h3>
-              <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)' }} onClick={() => setShowModal(false)}><X size={20} /></button>
+              <button className="btn-close" onClick={() => { setShowModal(false); setCurrentAgentIndex(0); }}><X size={20} /></button>
             </div>
-            
-            <div style={{ overflowY: 'auto', flex: 1, paddingRight: '8px' }}>
-              <form id="create-room-form" onSubmit={handleCreateRoom} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+            <div className="modal-body">
+              <div className="agent-setup-section">
+                <div style={{ padding: '4px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)', marginBottom: '10px' }}>채팅방 이름</label>
+                  <input type="text" className="input-field" value={newRoom.roomName} onChange={e => setNewRoom({ ...newRoom, roomName: e.target.value })} placeholder="예: 수학 문제 풀이 스터디" />
+                </div>
+
+                <div className="divider" />
+
                 <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>채팅방 이름</label>
-                  <input type="text" className="input-field" required value={newRoom.roomName} onChange={e => setNewRoom({...newRoom, roomName: e.target.value})} placeholder="예: 코딩 스터디" />
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
-                  <label style={{ fontSize: '14px', fontWeight: '600', color: 'var(--color-text-main)' }}>에이전트 목록 ({newRoom.agents.length}/3)</label>
-                  <button type="button" className="btn-outline" onClick={handleAddAgentToNewRoom} disabled={newRoom.agents.length >= 3} style={{ padding: '6px 12px', fontSize: '12px' }}>
-                    + 에이전트 추가
-                  </button>
-                </div>
-
-                {newRoom.agents.map((agent, index) => (
-                  <div key={index} style={{ padding: '16px', border: '1px solid var(--color-border)', borderRadius: '8px', position: 'relative' }}>
-                    {newRoom.agents.length > 1 && (
-                      <button type="button" onClick={() => handleRemoveAgentFromNewRoom(index)} style={{ position: 'absolute', top: '10px', right: '10px', background: 'none', border: 'none', color: 'red', cursor: 'pointer' }}>
-                        <X size={16} />
-                      </button>
-                    )}
-                    <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: 'var(--color-primary)' }}>에이전트 {index + 1}</h4>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '4px' }}>이름</label>
-                        <input type="text" className="input-field" required value={agent.name} onChange={e => handleAgentChange(index, 'name', e.target.value)} placeholder="예: 알고리즘 코치" />
-                      </div>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '4px' }}>역할</label>
-                        <input type="text" className="input-field" required value={agent.role} onChange={e => handleAgentChange(index, 'role', e.target.value)} placeholder="예: 힌트형" />
-                      </div>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '4px' }}>성격 및 설명</label>
-                        <textarea className="input-field" style={{ height: '60px', paddingTop: '8px', resize: 'none' }} minLength="5" required value={agent.persona} onChange={e => handleAgentChange(index, 'persona', e.target.value)} placeholder="예: 풀이 과정을 중심으로 도와주는 AI" />
-                      </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--color-text-main)' }}>
+                      에이전트 설정 ({newRoom.agents.length}/3)
                     </div>
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      onClick={handleAddAgent}
+                      disabled={newRoom.agents.length >= 3}
+                      style={{ width: 'auto', height: '32px', padding: '0 12px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    >
+                      <Plus size={14} /> 에이전트 추가
+                    </button>
                   </div>
-                ))}
-              </form>
+
+                  <div className="agent-nav">
+                    <button
+                      type="button"
+                      onClick={() => setCurrentAgentIndex(prev => Math.max(0, prev - 1))}
+                      disabled={currentAgentIndex === 0}
+                      style={{ background: 'none', border: 'none', cursor: currentAgentIndex === 0 ? 'default' : 'pointer', color: currentAgentIndex === 0 ? '#D1D5DB' : 'var(--color-primary)' }}
+                    >
+                      <ChevronRight size={24} style={{ transform: 'rotate(180deg)' }} />
+                    </button>
+
+                    <div style={{ fontSize: '15px', fontWeight: 'bold', color: 'var(--color-primary)', minWidth: '100px', textAlign: 'center' }}>
+                      에이전트 {currentAgentIndex + 1}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setCurrentAgentIndex(prev => Math.min(newRoom.agents.length - 1, prev + 1))}
+                      disabled={currentAgentIndex === newRoom.agents.length - 1}
+                      style={{ background: 'none', border: 'none', cursor: currentAgentIndex === newRoom.agents.length - 1 ? 'default' : 'pointer', color: currentAgentIndex === newRoom.agents.length - 1 ? '#D1D5DB' : 'var(--color-primary)' }}
+                    >
+                      <ChevronRight size={24} />
+                    </button>
+                  </div>
+
+                  {newRoom.agents[currentAgentIndex] && (
+                    <div key={currentAgentIndex} className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '4px' }}>
+                      <div style={{ display: 'flex', gap: '12px' }}>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>이름</label>
+                          <input type="text" className="input-field" value={newRoom.agents[currentAgentIndex].name} onChange={e => handleAgentChange(currentAgentIndex, 'name', e.target.value)} placeholder="예: 수학 선생님" />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>역할 (Role)</label>
+                          <input type="text" className="input-field" value={newRoom.agents[currentAgentIndex].role} onChange={e => handleAgentChange(currentAgentIndex, 'role', e.target.value)} placeholder="예: 힌트형" />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>말투 (Tone)</label>
+                        <div className="agent-tone-group">
+                          {['친절한', '엄격한', '코치형', '논리형', '동기부여형', '짧고 간결한'].map(t => (
+                            <button
+                              key={t}
+                              type="button"
+                              className={`btn-tone ${newRoom.agents[currentAgentIndex].tone === t ? 'active' : ''}`}
+                              onClick={() => handleAgentChange(currentAgentIndex, 'tone', t)}
+                            >
+                              {t}
+                            </button>
+                          ))}
+                        </div>
+                        <input type="text" className="input-field" value={newRoom.agents[currentAgentIndex].tone} onChange={e => handleAgentChange(currentAgentIndex, 'tone', e.target.value)} placeholder="예: 설명형, 리뷰어형 등 직접 입력" />
+                      </div>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>성격 및 설명</label>
+                        <textarea className="input-field" style={{ height: '80px', paddingTop: '12px', resize: 'none' }} value={newRoom.agents[currentAgentIndex].persona} onChange={e => handleAgentChange(currentAgentIndex, 'persona', e.target.value)} placeholder="예: 풀이 과정을 중심으로 차근차근 설명해주는 AI" />
+                      </div>
+
+                      {newRoom.agents.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveAgent(currentAgentIndex)}
+                          style={{ alignSelf: 'flex-end', color: '#EF4444', fontSize: '12px', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '8px' }}
+                        >
+                          <Trash2 size={14} /> 현재 에이전트 삭제
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
-            
-            <div style={{ paddingTop: '16px', borderTop: '1px solid var(--color-border)', marginTop: '16px' }}>
-              <button type="submit" form="create-room-form" className="btn-primary" style={{ width: '100%' }}>채팅방 생성하기</button>
+
+            <div className="modal-footer">
+              <button className="btn-primary" style={{ width: '100%', height: '44px' }} onClick={handleCreateRoom}>채팅방 생성하기</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 타이핑 애니메이션 CSS */}
-      <style>
-        {`
-          @keyframes typing {
-            0%, 100% { transform: translateY(0); opacity: 0.5; }
-            50% { transform: translateY(-3px); opacity: 1; }
-          }
-          .dot {
-            display: inline-block;
-            width: 4px; height: 4px;
-            background-color: #6B7280;
-            border-radius: 50%;
-            margin: 0 2px;
-            animation: typing 1s infinite;
-          }
-          .dot:nth-child(2) { animation-delay: 0.2s; }
-          .dot:nth-child(3) { animation-delay: 0.4s; }
-        `}
-      </style>
+      {/* 삭제 확인 모달 */}
+      {deleteModal.show && (
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content" style={{ maxWidth: '400px' }}>
+            <div style={{ textAlign: 'center', padding: '20px 0' }}>
+              <Trash2 size={48} color="#EF4444" style={{ marginBottom: '16px' }} />
+              <h3 style={{ marginBottom: '12px' }}>정말 삭제하시겠습니까?</h3>
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '14px', lineHeight: '1.5' }}>
+                채팅방을 삭제하면 해당 채팅방의<br />
+                <strong>에이전트 설정 및 모든 대화 내역</strong>이<br />
+                함께 삭제되며 복구할 수 없습니다.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
+              <button className="btn-outline" onClick={() => setDeleteModal({ show: false, roomId: null })} style={{ flex: 1 }}>취소</button>
+              <button className="btn-primary" onClick={handleDeleteRoom} style={{ flex: 1, backgroundColor: '#EF4444' }}>삭제하기</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

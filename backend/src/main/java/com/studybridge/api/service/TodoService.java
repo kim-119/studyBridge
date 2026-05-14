@@ -22,8 +22,8 @@ public class TodoService {
 
     // 할일 추가
     @Transactional
-    public TodoDTO.Response createTodo(TodoDTO.Request request) {
-        User user = userRepository.findById(request.getUserId())
+    public TodoDTO.Response createTodo(Long userId, TodoDTO.Request request) {
+        User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("사용자를 찾을 수 없습니다."));
 
         Todo todo = Todo.builder()
@@ -31,7 +31,6 @@ public class TodoService {
                 .text(request.getText())
                 .startDate(request.getStartDate())
                 .endDate(request.getEndDate())
-                .viewType(request.getViewType())
                 .completed(request.getCompleted() != null && request.getCompleted())
                 .build();
 
@@ -70,7 +69,6 @@ public class TodoService {
                 .completed(todo.getCompleted())
                 .startDate(todo.getStartDate())
                 .endDate(todo.getEndDate())
-                .viewType(todo.getViewType())
                 .createdAt(todo.getCreatedAt())
                 .build();
     }
