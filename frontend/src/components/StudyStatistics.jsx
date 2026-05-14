@@ -86,7 +86,7 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
       console.log("StudyStatistics loadData weeklyResult:", weeklyResult);
       let rawData = Array.isArray(weeklyResult)
         ? weeklyResult
-        : (weeklyResult?.dailyStats || []);
+        : (weeklyResult?.data || weeklyResult?.dailyStats || []);
 
       setBaseRawData(rawData);
 
