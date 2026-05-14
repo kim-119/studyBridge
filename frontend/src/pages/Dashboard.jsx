@@ -4,6 +4,7 @@ import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 
 import StudyTimer from '../components/StudyTimer';
+import StudyStatistics from '../components/StudyStatistics';
 import { todoService } from '../services/api';
 
 export default function Dashboard() {
@@ -53,11 +54,17 @@ export default function Dashboard() {
   }, [userId]);
 
   const formatStudyTime = (seconds) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
+    const totalSeconds = Math.max(0, Math.round(seconds || 0));
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    const parts = [];
 
-    if (h > 0) return `${h}시간 ${m}분`;
-    return `${m}분`;
+    if (h) parts.push(`${h}시간`);
+    if (m) parts.push(`${m}분`);
+    if (s || parts.length === 0) parts.push(`${s}초`);
+
+    return parts.join(' ');
   };
 
   const handleDateClick = (arg) => {
@@ -197,83 +204,25 @@ export default function Dashboard() {
   ];
 
   return (
-    <div className="container-main">
+    <div className="container-main dashboard-page">
 
       <StudyTimer onTimeUpdate={setTodayStudySeconds} />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, 1fr)',
-          gap: '16px',
-          marginTop: '24px',
-          marginBottom: '24px',
-        }}
-      >
+      <div className="summary-grid">
         {summaryCards.map((card, index) => (
           <div
             key={index}
-            className="glass-panel animate-fade-in"
-            style={{ padding: '22px' }}
+            className="glass-panel summary-card animate-fade-in"
           >
-            <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>
-              {card.title}
-            </p>
-            <h3
-              style={{
-                margin: '10px 0 6px',
-                fontSize: '26px',
-                color: 'var(--color-primary)',
-              }}
-            >
-              {card.value}
-            </h3>
-            <p style={{ margin: 0, fontSize: '13px', color: 'var(--color-text-muted)' }}>
-              {card.desc}
-            </p>
+            <p>{card.title}</p>
+            <h3>{card.value}</h3>
+            <p>{card.desc}</p>
           </div>
         ))}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '24px', marginTop: '24px' }}>
-        <div className="glass-panel animate-fade-in" style={{ padding: '20px', gridColumn: 'span 2' }}>
-          <style>
-            {`
-              .fc-theme-standard .fc-scrollgrid { border-color: var(--color-border); }
-              .fc-theme-standard td, .fc-theme-standard th { border-color: var(--color-border); }
-              .fc-col-header-cell-cushion { color: var(--color-text-main); font-weight: 600; padding: 12px 0 !important; }
-              .fc-daygrid-day-number { color: var(--color-text-main); font-weight: 500; }
-              .fc .fc-button-primary { background-color: var(--color-primary); border-color: var(--color-primary); }
-              .fc .fc-button-primary:hover { background-color: var(--color-primary-hover); border-color: var(--color-primary-hover); }
-              .fc .fc-button-primary:not(:disabled):active,
-              .fc .fc-button-primary:not(:disabled).fc-button-active {
-                background-color: var(--color-primary-hover);
-                border-color: var(--color-primary-hover);
-              }
-              .fc-event {
-                border-radius: 6px !important;
-                padding: 3px 6px !important;
-                font-size: 13px !important;
-                font-weight: 600 !important;
-                transition: all 0.2s ease;
-                overflow: hidden !important;
-              }
-              .fc-event:hover {
-                transform: translateY(-1px);
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                filter: brightness(0.95);
-              }
-              .fc-event-title {
-                color: #1F2937 !important;
-                font-weight: 600 !important;
-                overflow: hidden !important;
-                white-space: nowrap !important;
-                text-overflow: ellipsis !important;
-                display: block !important;
-              }
-              .fc-day-today { background-color: rgba(96, 201, 90, 0.08) !important; }
-            `}
-          </style>
+      <div className="main-grid">
+        <div className="glass-panel calendar-container animate-fade-in">
 
           <FullCalendar
             key={userId || 'guest'}
@@ -314,7 +263,7 @@ export default function Dashboard() {
           />
         </div>
 
-        <div className="glass-panel animate-fade-in" style={{ padding: '20px' }}>
+        <div className="glass-panel todo-section animate-fade-in">
           <h3 style={{ marginBottom: '12px' }}>날짜별 Todo</h3>
 
           <p style={{ color: 'var(--color-text-muted)', marginTop: 0 }}>
@@ -360,40 +309,20 @@ export default function Dashboard() {
               filteredTodos.map((todo) => (
                 <div
                   key={todo.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    padding: '10px',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: '8px',
-                    backgroundColor: 'var(--color-bg-card)',
-                  }}
+                  className={`todo-item ${todo.completed ? 'completed' : ''}`}
                 >
                   <input
                     type="checkbox"
                     checked={todo.completed}
                     onChange={() => handleToggleTodo(todo.id)}
                   />
-                  <span
-                    style={{
-                      flex: 1,
-                      color: todo.completed
-                        ? 'var(--color-text-muted)'
-                        : 'var(--color-text-main)',
-                      textDecoration: todo.completed ? 'line-through' : 'none',
-                    }}
-                  >
+                  <span className="todo-text">
                     {todo.text}
                   </span>
                   <button
                     className="btn-outline"
                     onClick={() => handleDeleteTodo(todo.id)}
-                    style={{
-                      width: '50px',
-                      height: '30px',
-                      fontSize: '12px',
-                    }}
+                    style={{ width: '50px', height: '30px', fontSize: '12px' }}
                   >
                     삭제
                   </button>
@@ -451,6 +380,8 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      <StudyStatistics todayStudySeconds={todayStudySeconds} />
     </div>
   );
 }

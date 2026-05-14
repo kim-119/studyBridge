@@ -23,20 +23,17 @@ public class Todo {
     private User user;
 
     @Column(nullable = false, length = 255)
-    private String text; // 할 일 내용 (캘린더의 title 역할)
+    private String text; // 할 일 내용
 
     @Builder.Default
     @Column(nullable = false)
     private Boolean completed = false; // 완료 여부
 
     @Column(name = "start_date")
-    private LocalDateTime startDate; // 시작 일시 (캘린더 연동용)
+    private LocalDateTime startDate; // 시작 일시
 
     @Column(name = "end_date")
-    private LocalDateTime endDate; // 종료/마감 일시 (캘린더 연동용)
-
-    @Column(name = "view_type")
-    private String viewType; // month 또는 week 구분
+    private LocalDateTime endDate; // 종료 일시
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)

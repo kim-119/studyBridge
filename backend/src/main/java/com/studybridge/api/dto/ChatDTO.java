@@ -17,8 +17,9 @@ public class ChatDTO {
     public static class MessageResponse {
         private Long id;
         private String content;
-        private String sender; // "USER" or "AI"
-        private Long agentId; // 어떤 AI가 보냈는지 식별 (USER인 경우 null)
+        private String sender;
+        private String senderName;
+        private Long agentId;
         private LocalDateTime createdAt;
     }
 
@@ -44,6 +45,7 @@ public class ChatDTO {
     @Builder
     public static class AgentReply {
         private Long agentId;
+        private String agentName;
         private String answer;
     }
 }
