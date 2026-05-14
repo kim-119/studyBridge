@@ -1,15 +1,11 @@
 package com.studybridge.api.service;
 
-import com.studybridge.api.dto.AgentDTO;
 import com.studybridge.api.dto.ChatDTO;
 import com.studybridge.api.entity.Agent;
 import com.studybridge.api.entity.ChatMessage;
-import com.studybridge.api.entity.User;
 import com.studybridge.api.entity.AgentChatRoom;
 import com.studybridge.api.repository.AgentChatRoomRepository;
-import com.studybridge.api.repository.AgentRepository;
 import com.studybridge.api.repository.ChatMessageRepository;
-import com.studybridge.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
