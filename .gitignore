@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 .env
 .env.*
 !.env.example
@@ -18,3 +19,24 @@ backend/.gradle/
 backend/bin/
 .gradle/
 bin/
+=======
+.env
+.env.*
+!.env.example
+pycache/
+*.pyc
+.idea/
+venv/
+.venv/
+frontend/node_modules/
+node_modules/
+
+fastapi/.env
+
+backend/build/
+*.class
+backend/.gradle/
+backend/bin/
+.gradle/
+bin/
+>>>>>>> origin/backend
