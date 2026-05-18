@@ -136,8 +136,8 @@ export const timerService = {
     const res = await api.post(`/api/users/${userId}/timers/start`, { userId: Number(userId), startTime });
     return res.data;
   },
-  endTimer: async (userId, endTime, durationMinutes) => {
-    const res = await api.post(`/api/users/${userId}/timers/end`, { userId: Number(userId), endTime, durationMinutes });
+  endTimer: async (userId, endTime, durationSeconds) => {
+    const res = await api.post(`/api/users/${userId}/timers/end`, { userId: Number(userId), endTime, durationSeconds });
     return res.data;
   },
   getCurrentSession: async (userId) => {
