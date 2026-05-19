@@ -52,7 +52,14 @@ export default function StudyChart({ rawData }) {
         datasets: [
             {
                 label: '학습 시간 (시간)',
-                data: values.map(m => Number((m / 60).toFixed(2))), // 분을 시간으로 변환
+                data: values.map(m => {
+                    const hours = m / 60;
+                    // 짧은 학습 시간이라도 그래프에 최소한으로 표시될 수 있도록 보장 (약 1.8분 미만인 경우 최소 0.03시간으로 강제 설정)
+                    if (hours > 0 && hours < 0.03) {
+                        return 0.03;
+                    }
+                    return Number(hours.toFixed(4));
+                }),
                 backgroundColor: 'rgba(74, 222, 128, 0.85)',
                 borderColor: '#4ade80',
                 borderWidth: 0,
