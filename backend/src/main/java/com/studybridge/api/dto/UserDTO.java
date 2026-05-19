@@ -83,5 +83,8 @@ public class UserDTO {
         private String major;
         private String photoUrl;
         private String status;
+        private Boolean isSubscribed;
+        private String accessToken;
+        private String refreshToken;
     }
 }
