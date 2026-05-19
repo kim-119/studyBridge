@@ -40,9 +40,8 @@ public class User {
     private String status = "ACTIVE"; // 사용자 상태 (신고에 관한)
 
     @Builder.Default
-    @Column(name = "is_subscribed", nullable = false)
-    private Boolean isSubscribed = false; // 구독 여부 (기본값: false)
-
+    @Column(name = "is_subscribed", nullable = false, columnDefinition = "boolean default false")
+    private Boolean isSubscribed = false; // 구독 여부
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt; // 계정 생성일
