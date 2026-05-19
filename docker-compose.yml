@@ -5,7 +5,7 @@ services:
       context: ./frontend
     container_name: capstone-react
     ports:
-      - "3000:3000"
+      - "80:3000"
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -20,11 +20,11 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: capstone
-      DB_USER: capstone
-      DB_PASSWORD: 1234
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-capstone}
+      DB_USER: ${DB_USER:-capstone}
+      DB_PASSWORD: ${DB_PASSWORD:-1234}
       FASTAPI_BASE_URL: http://fastapi:8000
       TZ: Asia/Seoul
     depends_on:
