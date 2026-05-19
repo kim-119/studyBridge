@@ -59,7 +59,7 @@ public class UserService {
         String accessToken = jwtTokenProvider.createToken(user.getId(), user.getEmail());
         String refreshToken = jwtTokenProvider.createRefreshToken(user.getId(), user.getEmail());
 
-        // Refresh Token DB 저장 혹은 업데이트
+        // Refresh Token DB 저장 또는 업데이트
         RefreshToken tokenEntity = refreshTokenRepository.findByEmail(user.getEmail())
                 .orElse(new RefreshToken());
 
@@ -74,7 +74,7 @@ public class UserService {
         return response;
     }
 
-    // 토큰 리프레시 (재발급)
+    // 토큰 리프레시
     @Transactional
     public UserDTO.Response refreshToken(String refreshToken) {
         if (!jwtTokenProvider.validateToken(refreshToken)) {
@@ -105,6 +105,13 @@ public class UserService {
         return response;
     }
 
+    // 로그아웃 (DB에서 리프레시 토큰 삭제)
+    @Transactional
+    public void logout(String email) {
+        refreshTokenRepository.deleteByEmail(email);
+    }
+
+    // 비밀번호 변경
     @Transactional
     public void changePassword(UserDTO.ChangePasswordRequest request) {
         User user = userRepository.findByEmail(request.getEmail())
@@ -121,6 +128,7 @@ public class UserService {
         user.setPassword(passwordEncoder.encode(request.getNewPassword()));
     }
 
+    // 프로필 수정
     @Transactional
     public UserDTO.Response updateProfile(Long userId, UserDTO.UpdateProfileRequest request) {
         User user = userRepository.findById(userId)

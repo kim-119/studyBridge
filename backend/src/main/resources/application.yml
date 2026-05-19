@@ -24,5 +24,4 @@ ai:
 
 jwt:
   secret: ${JWT_SECRET:studybridge_super_secret_key_for_jwt_token_generation_2026_spring_boot_3_security_6}
-  expiration-ms: ${JWT_EXPIRATION_MS:1800000} # 30분 (30 * 60 * 1000)
-  refresh-expiration-ms: ${JWT_REFRESH_EXPIRATION_MS:604800000} # 7일 (7 * 24 * 60 * 60 * 1000)
+  expiration-ms: ${JWT_EXPIRATION_MS:1800000}

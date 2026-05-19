@@ -24,9 +24,6 @@ public class JwtTokenProvider {
     @Value("${jwt.expiration-ms}")
     private long tokenValidityInMilliseconds;
 
-    @Value("${jwt.refresh-expiration-ms}")
-    private long refreshTokenValidityInMilliseconds;
-
     private SecretKey key;
     private final UserDetailsService userDetailsService;
 
@@ -65,7 +62,7 @@ public class JwtTokenProvider {
                 .build();
 
         Date now = new Date();
-        Date validity = new Date(now.getTime() + refreshTokenValidityInMilliseconds);
+        Date validity = new Date(now.getTime() + 604800000L); // 7일 (7 * 24 * 60 * 60 * 1000)
 
         return Jwts.builder()
                 .claims(claims)
@@ -75,12 +72,7 @@ public class JwtTokenProvider {
                 .compact();
     }
 
-    public long getRefreshTokenValidityInMilliseconds() {
-        return refreshTokenValidityInMilliseconds;
-    }
-
-
-    // 토큰으로부터 인증 정보(Authentication) 추출
+    // 토큰으로부터 인증 정보 추출
     public Authentication getAuthentication(String token) {
         String email = getClaims(token).getSubject();
         UserDetails userDetails = userDetailsService.loadUserByUsername(email);
