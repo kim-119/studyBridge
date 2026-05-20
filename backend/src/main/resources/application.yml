@@ -22,6 +22,21 @@ ai:
     fastapi:
       base-url: ${FASTAPI_BASE_URL:http://localhost:8000}
 
+cloud:
+  aws:
+    credentials:
+      access-key: ${AWS_ACCESS_KEY_ID:}
+      secret-key: ${AWS_SECRET_ACCESS_KEY:}
+    region:
+      static: ${AWS_REGION:eu-west-3}
+    s3:
+      bucket: ${AWS_S3_BUCKET:studybridge-materials}
+
+external-api:
+  fastapi:
+    url: ${FASTAPI_EXTRACTION_URL:http://localhost:8000/api/extract}
+    timeout: ${FASTAPI_TIMEOUT:30000}
+
 jwt:
   secret: ${JWT_SECRET:studybridge_super_secret_key_for_jwt_token_generation_2026_spring_boot_3_security_6}
   expiration-ms: ${JWT_EXPIRATION_MS:1800000}
