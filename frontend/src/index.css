@@ -935,3 +935,348 @@ a {
 .btn-close:hover {
   color: var(--color-danger);
 }
+
+/* =========================================
+   Archive Page Styles
+   ========================================= */
+.archive-page {
+  padding-bottom: 60px;
+}
+
+.archive-control-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.btn-add-material {
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 8px;
+  width: max-content;
+  flex: none;
+  white-space: nowrap;
+}
+
+.archive-tabs {
+  display: inline-flex;
+  background-color: #F3F4F6;
+  padding: 4px;
+  border-radius: 12px;
+  gap: 0;
+}
+
+.archive-tab {
+  background: transparent;
+  border: none;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  padding: 10px 24px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.archive-tab.active {
+  background-color: white;
+  color: var(--color-primary);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.archive-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+}
+
+.archive-card {
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  min-height: 250px;
+}
+
+.archive-card .card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.icon-wrapper {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  color: white;
+}
+
+.journal-icon { background-color: var(--color-primary); }
+.pdf-icon { background-color: #EF4444; }
+
+.archive-card .card-date {
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.archive-card .card-title {
+  margin: 0 0 12px 0;
+  font-size: 18px;
+  line-height: 1.4;
+  color: var(--color-text-main);
+}
+
+.archive-card .card-tags {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.card-tag {
+  background-color: #F0FDF4;
+  color: var(--color-primary);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+}
+
+.archive-card .card-desc {
+  margin: 0 0 24px 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-text-muted);
+  flex: 1;
+}
+
+.archive-card .card-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.archive-card .card-actions button {
+  flex: 1;
+  height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+/* PDF Card Action row constraint */
+.archive-card .pdf-actions-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 100%;
+}
+
+.pdf-actions-grid button {
+  padding: 0 8px;
+  font-size: 13px;
+  height: 38px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+}
+
+.btn-soft-primary {
+  background-color: #ECFDF5;
+  color: #059669;
+  border: none;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.btn-soft-primary:hover {
+  background-color: #D1FAE5;
+}
+
+.btn-soft-gray {
+  background-color: #F3F4F6;
+  color: #4B5563;
+  border: none;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.btn-soft-gray:hover {
+  background-color: #E5E7EB;
+  color: #111827;
+}
+
+/* Roadmap Visual Flow */
+.roadmap-section {
+  margin-top: 32px;
+}
+
+.roadmap-visual {
+  padding: 20px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-x: auto;
+}
+
+.roadmap-row {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 32px;
+}
+
+.roadmap-row.reverse {
+  flex-direction: row-reverse;
+  margin-bottom: 0;
+}
+
+.roadmap-visual-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 90px;
+  text-align: center;
+  gap: 12px;
+}
+
+.node-circle {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  color: white;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-weight: 700;
+  font-size: 14px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+.node-title {
+  font-size: 12px;
+  color: var(--color-text-main);
+  word-break: keep-all;
+  line-height: 1.4;
+  font-weight: 500;
+}
+
+.node-arrow {
+  color: #CBD5E1;
+  font-size: 18px;
+  margin-top: 15px;
+  font-weight: 300;
+}
+
+/* Roadmap Timeline List */
+.timeline-title {
+  margin: 40px 0 24px;
+  font-size: 18px;
+  color: var(--color-text-main);
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.roadmap-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.timeline-item {
+  display: flex;
+  gap: 20px;
+}
+
+.timeline-left {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 32px;
+}
+
+.timeline-circle {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: white;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-weight: 700;
+  font-size: 13px;
+  z-index: 1;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.timeline-line {
+  width: 2px;
+  background-color: #E2E8F0;
+  flex: 1;
+  margin-top: 4px;
+  margin-bottom: -16px; /* Connects to the next circle */
+}
+
+.timeline-card {
+  flex: 1;
+  padding: 24px;
+  border-left-width: 4px;
+  border-left-style: solid;
+  margin-bottom: 24px;
+  border-radius: 8px;
+}
+
+.timeline-card-title {
+  margin: 0 0 16px;
+  font-size: 16px;
+  color: var(--color-text-main);
+}
+
+.timeline-card-info {
+  font-size: 13px;
+  margin-bottom: 8px;
+  color: var(--color-text-muted);
+  display: flex;
+  gap: 16px;
+}
+
+.info-label {
+  font-weight: 700;
+  color: var(--color-text-main);
+  min-width: 60px;
+}
+
+.timeline-card-check {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+  font-size: 13px;
+  color: var(--color-text-main);
+  font-weight: 600;
+}
+
+@media (max-width: 1024px) {
+  .archive-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .archive-grid {
+    grid-template-columns: 1fr;
+  }
+  .archive-control-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+}
