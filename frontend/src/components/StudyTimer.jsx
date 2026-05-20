@@ -110,8 +110,8 @@ export default function StudyTimer({ onTimeUpdate }) {
 
     try {
       const endTime = toSeoulLocalDateTime(new Date());
-      const durationMinutes = Math.floor(sessionSeconds / 60);
-      await timerService.endTimer(userId, endTime, durationMinutes);
+      const durationSeconds = sessionSeconds;
+      await timerService.endTimer(userId, endTime, durationSeconds);
       setIsRunning(false);
       setSessionStartTime(null);
       setSessionSeconds(0);

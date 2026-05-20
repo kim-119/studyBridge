@@ -1,7 +1,10 @@
 import axios from 'axios';
 
+// 현재 브라우저가 접속 중인 호스트 주소(IP 혹은 localhost)를 동적으로 알아냅니다!
+const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+
 const api = axios.create({
-  baseURL: 'http://localhost:8080',
+  baseURL: `http://${hostname}:8080`,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -16,7 +19,7 @@ api.interceptors.response.use(
 );
 
 const fastApi = axios.create({
-  baseURL: 'http://localhost:8000',
+  baseURL: `http://${hostname}:8000`,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -136,8 +139,8 @@ export const timerService = {
     const res = await api.post(`/api/users/${userId}/timers/start`, { userId: Number(userId), startTime });
     return res.data;
   },
-  endTimer: async (userId, endTime, durationMinutes) => {
-    const res = await api.post(`/api/users/${userId}/timers/end`, { userId: Number(userId), endTime, durationMinutes });
+  endTimer: async (userId, endTime, durationSeconds) => {
+    const res = await api.post(`/api/users/${userId}/timers/end`, { userId: Number(userId), endTime, durationSeconds });
     return res.data;
   },
   getCurrentSession: async (userId) => {
@@ -163,7 +166,7 @@ export const studyTimeService = {
 
 export const activityService = {
   getWeeklyGraph: async (payload) => {
-    const res = await fastApi.post('/activity/weekly-graph', payload);
+    const res = await fastApi.post('/activity/weekly', payload);
     return res.data;
   }
 };

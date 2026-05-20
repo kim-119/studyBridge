@@ -1,17 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { roomService } from '../services/api';
 import { Bot, Plus, Trash2, Send, AlertCircle, X, Sparkles, Users, ChevronRight } from 'lucide-react';
 
 export default function StudyMate() {
   const { userId } = useAuth();
+  const navigate = useNavigate();
   const MAX_ROOMS = 3;
 
   const [rooms, setRooms] = useState([]);
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
   const [message, setMessage] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
+  const [typingStatus, setTypingStatus] = useState({}); // { [roomId]: boolean }
   const [showModal, setShowModal] = useState(false);
   const [currentAgentIndex, setCurrentAgentIndex] = useState(0);
   const [deleteModal, setDeleteModal] = useState({ show: false, roomId: null });
@@ -31,6 +33,12 @@ export default function StudyMate() {
   });
 
   const chatEndRef = useRef(null);
+  const selectedRoomRef = useRef(null);
+
+  // 현재 선택된 방을 ref에 동기화 (비동기 콜백에서 최신값 참조용)
+  useEffect(() => {
+    selectedRoomRef.current = selectedRoom;
+  }, [selectedRoom]);
 
   useEffect(() => {
     if (userId) {
@@ -42,9 +50,21 @@ export default function StudyMate() {
     }
   }, [userId]);
 
+  const checkAuth = (e) => {
+    if (!userId) {
+      if (e) e.preventDefault();
+      alert('로그인이 필요한 기능입니다. 로그인 페이지로 이동합니다.');
+      navigate('/login');
+      return false;
+    }
+    return true;
+  };
+
+  const getRoomId = (room) => room?.agentRoomId ?? room?.roomId ?? room?.id;
+
   useEffect(() => {
     scrollToBottom();
-  }, [chatHistory, isTyping]);
+  }, [chatHistory, typingStatus, selectedRoom]);
 
   const loadRooms = async () => {
     try {
@@ -127,8 +147,6 @@ export default function StudyMate() {
     }
   };
 
-  const getRoomId = (room) => room?.agentRoomId ?? room?.roomId ?? room?.id;
-
   const selectRoom = async (room) => {
     const roomId = getRoomId(room);
     if (!roomId) {
@@ -148,13 +166,10 @@ export default function StudyMate() {
 
   const sendMessage = async (e) => {
     e.preventDefault();
-    if (!message.trim() || !selectedRoom || isTyping) return;
-
+    if (!checkAuth()) return;
+    
     const roomId = getRoomId(selectedRoom);
-    if (!roomId) {
-      alert("채팅방 ID를 찾을 수 없습니다.");
-      return;
-    }
+    if (!message.trim() || !roomId || typingStatus[roomId]) return;
 
     const userMsg = {
       id: Date.now(),
@@ -167,11 +182,19 @@ export default function StudyMate() {
     setChatHistory(prev => [...prev, userMsg]);
     const inputMsg = message;
     setMessage('');
-    setIsTyping(true);
+    
+    // 해당 방의 타이핑 상태 활성화
+    setTypingStatus(prev => ({ ...prev, [roomId]: true }));
 
     try {
       const res = await roomService.sendMessage(userId, roomId, inputMsg);
-      // res는 MultiChatResponse 형태이며, replies 필드에 답변 배열이 존재함
+      
+      // [정합성 검사] 응답이 왔을 때 사용자가 여전히 같은 방에 있는지 확인
+      if (getRoomId(selectedRoomRef.current) !== roomId) {
+        console.log(`방 이동 감지: ${roomId} 응답을 무시합니다.`);
+        return;
+      }
+
       if (res && res.replies) {
         const newMessages = res.replies.map((reply, idx) => ({
           id: Date.now() + idx + 1,
@@ -182,7 +205,6 @@ export default function StudyMate() {
         }));
         setChatHistory(prev => [...prev, ...newMessages]);
       } else {
-        // 단일 응답 fallback (혹시 구조가 다를 경우 대비)
         const aiMsg = {
           id: Date.now() + 1,
           content: res.answer || '응답이 없습니다.',
@@ -192,11 +214,15 @@ export default function StudyMate() {
         setChatHistory(prev => [...prev, aiMsg]);
       }
     } catch (err) {
-      alert('메시지 전송에 실패했습니다.');
-      setChatHistory(prev => prev.filter(m => m.id !== userMsg.id));
-      setMessage(inputMsg);
+      // 에러 시에도 현재 방이면 복구 로직 실행
+      if (getRoomId(selectedRoomRef.current) === roomId) {
+        alert('메시지 전송에 실패했습니다.');
+        setChatHistory(prev => prev.filter(m => m.id !== userMsg.id));
+        setMessage(inputMsg);
+      }
     } finally {
-      setIsTyping(false);
+      // 해당 방의 타이핑 상태 해제
+      setTypingStatus(prev => ({ ...prev, [roomId]: false }));
     }
   };
 
@@ -219,17 +245,7 @@ export default function StudyMate() {
     return colors[index % colors.length];
   };
 
-  if (!userId) {
-    return (
-      <div className="container-main">
-        <div className="glass-panel empty-state" style={{ padding: '40px' }}>
-          <AlertCircle size={48} color="var(--color-text-muted)" style={{ margin: '0 auto 16px' }} />
-          <h3>로그인이 필요합니다</h3>
-          <p style={{ color: 'var(--color-text-muted)' }}>AI 학습메이트 기능은 로그인 후 이용 가능합니다.</p>
-        </div>
-      </div>
-    );
-  }
+  const isCurrentRoomTyping = typingStatus[getRoomId(selectedRoom)];
 
   return (
     <div className="container-main studymate-page">
@@ -246,7 +262,7 @@ export default function StudyMate() {
             <button
               className={`btn-outline btn-create-room ${isLimitReached ? 'disabled' : ''}`}
               style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', transition: 'all 0.2s ease' }}
-              onClick={() => setShowModal(true)}
+              onClick={() => checkAuth() && setShowModal(true)}
               disabled={isLimitReached}
               title={isLimitReached ? "채팅방은 최대 3개까지 생성 가능합니다." : ""}
             >
@@ -351,7 +367,7 @@ export default function StudyMate() {
                     );
                   })
                 )}
-                {isTyping && (
+                {isCurrentRoomTyping && (
                   <div className="chat-bubble-container ai">
                     <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', minHeight: '20px' }}>
                       <span className="dot"></span><span className="dot"></span><span className="dot"></span>
@@ -368,10 +384,11 @@ export default function StudyMate() {
                   style={{ flex: 1, borderRadius: '24px', paddingLeft: '20px', backgroundColor: '#F3F4F6', border: 'none' }}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
+                  onFocus={checkAuth}
                   placeholder="메시지 보내기..."
-                  disabled={isTyping}
+                  disabled={isCurrentRoomTyping}
                 />
-                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={isTyping || !message.trim()}>
+                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={isCurrentRoomTyping || !message.trim()}>
                   <Send size={18} />
                 </button>
               </form>
@@ -380,7 +397,7 @@ export default function StudyMate() {
         </div>
       </div>
 
-      {/* 채팅방 생성 모달 (가로 슬라이더 개편) */}
+      {/* 채팅방 생성 모달 */}
       {showModal && (
         <div className="modal-overlay">
           <div className="glass-panel modal-content">
@@ -391,7 +408,6 @@ export default function StudyMate() {
 
             <div className="modal-body">
               <div className="agent-setup-section">
-                {/* 1. 채팅방 정보 */}
                 <div style={{ padding: '4px' }}>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)', marginBottom: '10px' }}>채팅방 이름</label>
                   <input type="text" className="input-field" value={newRoom.roomName} onChange={e => setNewRoom({ ...newRoom, roomName: e.target.value })} placeholder="예: 수학 문제 풀이 스터디" />
@@ -399,7 +415,6 @@ export default function StudyMate() {
 
                 <div className="divider" />
 
-                {/* 2. 에이전트 섹션 헤더 */}
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--color-text-main)' }}>
@@ -416,7 +431,6 @@ export default function StudyMate() {
                     </button>
                   </div>
 
-                  {/* 에이전트 슬라이더 네비게이션 */}
                   <div className="agent-nav">
                     <button
                       type="button"
@@ -441,8 +455,7 @@ export default function StudyMate() {
                     </button>
                   </div>
 
-                  {/* 현재 선택된 에이전트 폼 */}
-                  {newRoom.agents[currentAgentIndex] ? (
+                  {newRoom.agents[currentAgentIndex] && (
                     <div key={currentAgentIndex} className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '4px' }}>
                       <div style={{ display: 'flex', gap: '12px' }}>
                         <div style={{ flex: 1 }}>
@@ -472,10 +485,10 @@ export default function StudyMate() {
                         <input type="text" className="input-field" value={newRoom.agents[currentAgentIndex].tone} onChange={e => handleAgentChange(currentAgentIndex, 'tone', e.target.value)} placeholder="예: 설명형, 리뷰어형 등 직접 입력" />
                       </div>
 
-                    <div>
-                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>성격 및 설명</label>
-                      <textarea className="input-field" style={{ height: '80px', paddingTop: '12px', resize: 'none' }} value={newRoom.agents[currentAgentIndex].persona} onChange={e => handleAgentChange(currentAgentIndex, 'persona', e.target.value)} placeholder="예: 풀이 과정을 중심으로 차근차근 설명해주는 AI" />
-                    </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>성격 및 설명</label>
+                        <textarea className="input-field" style={{ height: '80px', paddingTop: '12px', resize: 'none' }} value={newRoom.agents[currentAgentIndex].persona} onChange={e => handleAgentChange(currentAgentIndex, 'persona', e.target.value)} placeholder="예: 풀이 과정을 중심으로 차근차근 설명해주는 AI" />
+                      </div>
 
                       {newRoom.agents.length > 1 && (
                         <button
@@ -487,7 +500,7 @@ export default function StudyMate() {
                         </button>
                       )}
                     </div>
-                  ) : null}
+                  )}
                 </div>
               </div>
             </div>
@@ -513,25 +526,12 @@ export default function StudyMate() {
               </p>
             </div>
             <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
-              <button
-                className="btn-outline"
-                onClick={() => setDeleteModal({ show: false, roomId: null })}
-                style={{ flex: 1 }}
-              >
-                취소
-              </button>
-              <button
-                className="btn-primary"
-                onClick={handleDeleteRoom}
-                style={{ flex: 1, backgroundColor: '#EF4444' }}
-              >
-                삭제하기
-              </button>
+              <button className="btn-outline" onClick={() => setDeleteModal({ show: false, roomId: null })} style={{ flex: 1 }}>취소</button>
+              <button className="btn-primary" onClick={handleDeleteRoom} style={{ flex: 1, backgroundColor: '#EF4444' }}>삭제하기</button>
             </div>
           </div>
         </div>
       )}
-
     </div>
   );
 }

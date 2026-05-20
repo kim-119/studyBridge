@@ -1,9 +1,20 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Users, Plus, Search, Calendar, User, ChevronRight } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
 export default function GroupStudy() {
   const { userId } = useAuth();
+  const navigate = useNavigate();
+
+  const checkAuth = () => {
+    if (!userId) {
+      alert('로그인이 필요한 기능입니다. 로그인 페이지로 이동합니다.');
+      navigate('/login');
+      return false;
+    }
+    return true;
+  };
   
   // 임시 데이터
   const [studies] = useState([
@@ -42,10 +53,7 @@ export default function GroupStudy() {
   const [appliedStudies, setAppliedStudies] = useState([]); // 신청한 스터디 ID 목록 (임시)
 
   const handleApply = (studyId) => {
-    if (!userId) {
-      alert('로그인이 필요합니다.');
-      return;
-    }
+    if (!checkAuth()) return;
     
     if (appliedStudies.includes(studyId)) {
       alert('이미 신청한 스터디입니다.');
@@ -88,7 +96,7 @@ export default function GroupStudy() {
           검색
         </button>
         <div style={{ width: '1px', height: '24px', backgroundColor: 'var(--color-border)', margin: '0 4px' }} />
-        <button className="btn-primary" style={{ width: 'auto', height: '36px', padding: '0 16px', fontSize: '13px' }} onClick={() => alert('스터디 생성 기능은 준비 중입니다.')}>
+        <button className="btn-primary" style={{ width: 'auto', height: '36px', padding: '0 16px', fontSize: '13px' }} onClick={() => checkAuth() && alert('스터디 생성 기능은 준비 중입니다.')}>
           <Plus size={16} /> 스터디 만들기
         </button>
       </div>
