@@ -42,6 +42,7 @@ public class User {
     @Builder.Default
     @Column(name = "is_subscribed", nullable = false, columnDefinition = "boolean default false")
     private Boolean isSubscribed = false; // 구독 여부
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt; // 계정 생성일
