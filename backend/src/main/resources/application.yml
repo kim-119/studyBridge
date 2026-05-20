@@ -21,3 +21,7 @@ ai:
   server:
     fastapi:
       base-url: ${FASTAPI_BASE_URL:http://localhost:8000}
+
+jwt:
+  secret: ${JWT_SECRET:studybridge_super_secret_key_for_jwt_token_generation_2026_spring_boot_3_security_6}
+  expiration-ms: ${JWT_EXPIRATION_MS:1800000}
