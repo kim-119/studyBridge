@@ -15,6 +15,6 @@ public class MaterialDTO {
     private ExtractionStatus extractionStatus;
     private String s3PresignedUrl;
     private LocalDateTime uploadedAt;
-    private String extractedText; // DDL에 명시된 extracted_text 필드 추가
-    private LocalDateTime updatedAt; // DDL에 명시된 updated_at 필드 추가
+    private String extractedText;
+    private LocalDateTime updatedAt;
 }
