@@ -20,7 +20,7 @@ spring:
 ai:
   server:
     fastapi:
-      base-url: ${FASTAPI_BASE_URL:http://localhost:8000}
+      base-url: ${FASTAPI_BASE_URL:http://fastapi:8000}
 
 cloud:
   aws:
@@ -41,9 +41,9 @@ jwt:
   secret: ${JWT_SECRET:studybridge_super_secret_key_for_jwt_token_generation_2026_spring_boot_3_security_6}
   expiration-ms: ${JWT_EXPIRATION_MS:1800000}
 
-# 초기 관리자 계정 설정
-admin:
-  super-email: ${ADMIN_SUPER_EMAIL:admin@studybridge.com} # 이 이메일로 가입 시 자동 관리자 권한 부여
+# 루트 계정 설정 (우리 팀만 아는 계정)
+root:
+  email: ${ROOT_EMAIL:root@studybridge.com} # 이 이메일로 가입 시 루트 권한 부여
   default:
-    email: ${ADMIN_DEFAULT_EMAIL:admin@studybridge.com}
-    password: ${ADMIN_DEFAULT_PASSWORD:admin1234}
+    email: ${ROOT_DEFAULT_EMAIL:root@studybridge.com}
+    password: ${ROOT_DEFAULT_PASSWORD:root1234!}

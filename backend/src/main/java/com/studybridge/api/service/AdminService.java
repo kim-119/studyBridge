@@ -1,7 +1,6 @@
 package com.studybridge.api.service;
 
 import com.studybridge.api.dto.AdminDashboardDTO;
-import com.studybridge.api.dto.MaterialDTO;
 import com.studybridge.api.dto.UserDTO;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.repository.MaterialRepository;
@@ -12,7 +11,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -24,7 +22,7 @@ public class AdminService {
     private final UserRepository userRepository;
     private final MaterialRepository materialRepository;
     private final TodoRepository todoRepository;
-    private final S3Service s3Service; // For deleting material from S3
+    private final S3Service s3Service;
 
     /**
      * 관리자 대시보드 통계 정보를 조회합니다.
@@ -45,17 +43,7 @@ public class AdminService {
     }
 
     /**
-     * 모든 사용자의 학습 자료를 조회합니다.
-     * @return 학습 자료 DTO 리스트
-     */
-    public List<MaterialDTO> getAllMaterials() {
-        return materialRepository.findAll().stream()
-                .map(this::convertMaterialToDTO)
-                .collect(Collectors.toList());
-    }
-
-    /**
-     * 관리자가 특정 학습 자료를 삭제합니다.
+     * 관리자가 신고된 특정 학습 자료를 삭제합니다.
      * @param materialId 삭제할 학습 자료 ID
      */
     @Transactional
@@ -63,7 +51,7 @@ public class AdminService {
         Material material = materialRepository.findById(materialId)
                 .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 학습 자료입니다."));
 
-        // S3에서도 파일 삭제 (저장된 파일명이 S3 키 역할을 함)
+        // S3에서도 파일 삭제
         s3Service.deleteFile(material.getStoredFileName());
         
         // DB에서 자료 삭제
@@ -89,18 +77,5 @@ public class AdminService {
                         .admin(user.getAdmin())
                         .build())
                 .collect(Collectors.toList());
-    }
-
-    private MaterialDTO convertMaterialToDTO(Material material) {
-        return MaterialDTO.builder()
-                .materialId(material.getMaterialId())
-                .originalFileName(material.getOriginalFileName())
-                .fileSize(material.getFileSize())
-                .extractionStatus(material.getExtractionStatus())
-                // 관리자가 조회할 때도 다운로드/확인할 수 있도록 Presigned URL 발급
-                .s3PresignedUrl(s3Service.getPresignedUrl(material.getStoredFileName()))
-                .uploadedAt(material.getUploadedAt())
-                .updatedAt(material.getUpdatedAt())
-                .build();
     }
 }

@@ -18,37 +18,40 @@ public class User {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(name = "user_id")
-    private Long id; // 사용자 고유 식별자
+    private Long id;
 
     @Column(name = "email", nullable = false, unique = true, length = 100)
-    private String email; // 아이디(이메일)
+    private String email;
 
     @Column(name = "password", nullable = false)
-    private String password; // 비밀번호
+    private String password;
 
     @Column(name = "display_name", nullable = false, length = 50)
-    private String displayName; // 닉네임 (표시 이름)
+    private String displayName;
 
     @Column(name = "photo_url")
-    private String photoUrl; // 프로필 이미지
+    private String photoUrl;
 
     @Column(name = "major", length = 50)
-    private String major; // 전공 (학과)
-
-    @Builder.Default
-    @Column(name = "status", length = 20)
-    private String status = "ACTIVE"; // 사용자 상태 (신고에 관한)
+    private String major;
 
     @Builder.Default
     @Column(name = "is_subscribed", nullable = false, columnDefinition = "boolean default false")
-    private Boolean isSubscribed = false; // 구독 여부
+    private Boolean isSubscribed = false;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
-    private LocalDateTime createdAt; // 계정 생성일
+    private LocalDateTime createdAt;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "admin", nullable = false)
+    @Column(name = "role", nullable = false)
     @Builder.Default
-    private Admin admin = Admin.USER;
+    private AdminRole role = AdminRole.USER;
+
+    @Column(name = "banned", nullable = false)
+    @Builder.Default
+    private boolean banned = false;
+
+    @Column(name = "banned_until")
+    private LocalDateTime bannedUntil;
 }

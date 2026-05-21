@@ -1,7 +1,7 @@
 package com.studybridge.api.service;
 
 import com.studybridge.api.dto.UserDTO;
-import com.studybridge.api.entity.Admin;
+import com.studybridge.api.entity.AdminRole;
 import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.UserRepository;
 import com.studybridge.api.security.jwt.JwtTokenProvider;
@@ -28,8 +28,8 @@ public class UserService {
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenRepository refreshTokenRepository;
 
-    @Value("${admin.super-email:}")
-    private String superAdminEmail;
+    @Value("${root.email:}")
+    private String rootEmail;
 
     // 회원 가입
     @Transactional
@@ -41,10 +41,9 @@ public class UserService {
             throw new IllegalArgumentException("비밀번호가 일치하지 않습니다.");
         }
 
-        Admin role = Admin.USER;
-        // 관리자 이메일이 설정되어 있고, 가입 이메일이 그와 완전히 일치하는지 확인
-        if (StringUtils.hasText(superAdminEmail) && request.getEmail().equalsIgnoreCase(superAdminEmail)) {
-            role = Admin.ADMIN;
+        AdminRole role = AdminRole.USER;
+        if (StringUtils.hasText(rootEmail) && request.getEmail().equalsIgnoreCase(rootEmail)) {
+            role = AdminRole.ADMIN;
         }
 
         User user = User.builder()
@@ -52,7 +51,7 @@ public class UserService {
                 .password(passwordEncoder.encode(request.getPassword()))
                 .displayName(request.getDisplayName())
                 .major(request.getMajor())
-                .admin(role) // 결정된 권한으로 설정
+                .role(role)
                 .build();
 
         User savedUser = userRepository.save(user);
@@ -66,21 +65,28 @@ public class UserService {
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> new IllegalArgumentException("가입되지 않은 이메일이거나 비밀번호가 틀렸습니다."));
 
+        if (user.isBanned()) {
+            if (user.getBannedUntil() == null) {
+                throw new IllegalStateException("영구적으로 정지된 계정입니다.");
+            }
+            if (user.getBannedUntil().isAfter(LocalDateTime.now())) {
+                throw new IllegalStateException("일시적으로 정지된 계정입니다. 정지 만료: " + user.getBannedUntil());
+            }
+        }
+        
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
             throw new IllegalArgumentException("가입되지 않은 이메일이거나 비밀번호가 틀렸습니다.");
         }
 
-        // Access Token & Refresh Token 생성
         String accessToken = jwtTokenProvider.createToken(user.getId(), user.getEmail());
         String refreshToken = jwtTokenProvider.createRefreshToken(user.getId(), user.getEmail());
 
-        // Refresh Token DB 저장 또는 업데이트
         RefreshToken tokenEntity = refreshTokenRepository.findByEmail(user.getEmail())
                 .orElse(new RefreshToken());
 
         tokenEntity.setEmail(user.getEmail());
         tokenEntity.setToken(refreshToken);
-        tokenEntity.setExpiryDate(LocalDateTime.now().plusWeeks(1)); // 7일 유효
+        tokenEntity.setExpiryDate(LocalDateTime.now().plusWeeks(1));
         refreshTokenRepository.save(tokenEntity);
 
         UserDTO.Response response = convertToResponse(user);
@@ -120,7 +126,7 @@ public class UserService {
         return response;
     }
 
-    // 로그아웃 (DB에서 리프레시 토큰 삭제)
+    // 로그아웃
     @Transactional
     public void logout(String email) {
         refreshTokenRepository.deleteByEmail(email);
@@ -170,14 +176,19 @@ public class UserService {
                 .collect(Collectors.toList());
     }
 
-    // (관리자) 사용자 정보 수정 (역할, 상태 등)
+    // (관리자) 사용자 정지/해제
     @Transactional
-    public UserDTO.Response updateUserByAdmin(Long userId, UserDTO.AdminUpdateUserRequest request) {
+    public UserDTO.Response banUser(Long userId, UserDTO.UserBanRequest request) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
         
-        user.setAdmin(request.getAdmin());
-        user.setStatus(request.getStatus());
+        user.setBanned(request.isBanned());
+        user.setBannedUntil(request.isBanned() ? request.getBannedUntil() : null);
+        
+        // 사용자를 정지시킬 때, 강제 로그아웃을 위해 리프레시 토큰을 삭제
+        if (request.isBanned()) {
+            refreshTokenRepository.deleteByEmail(user.getEmail());
+        }
         
         return convertToResponse(user);
     }
@@ -189,9 +200,10 @@ public class UserService {
                 .displayName(user.getDisplayName())
                 .major(user.getMajor())
                 .photoUrl(user.getPhotoUrl())
-                .status(user.getStatus())
                 .isSubscribed(user.getIsSubscribed())
-                .admin(user.getAdmin())
+                .role(user.getRole())
+                .banned(user.isBanned())
+                .bannedUntil(user.getBannedUntil())
                 .build();
     }
 }

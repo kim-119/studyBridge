@@ -1,6 +1,6 @@
 package com.studybridge.api.security.domain;
 
-import com.studybridge.api.entity.Admin;
+import com.studybridge.api.entity.AdminRole;
 import com.studybridge.api.entity.User;
 import lombok.Getter;
 import org.springframework.security.core.GrantedAuthority;
@@ -22,8 +22,7 @@ public class CustomUserDetails implements UserDetails {
         this.id = user.getId();
         this.email = user.getEmail();
         this.password = user.getPassword();
-        // User 엔티티의 Admin 정보를 바탕으로 권한 설정 ("ROLE_USER" 또는 "ROLE_ADMIN")
-        this.authorities = List.of(new SimpleGrantedAuthority("ROLE_" + user.getAdmin().name()));
+        this.authorities = List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()));
     }
 
     @Override
@@ -45,7 +44,10 @@ public class CustomUserDetails implements UserDetails {
     public boolean isAccountNonExpired() { return true; }
 
     @Override
-    public boolean isAccountNonLocked() { return true; }
+    public boolean isAccountNonLocked() { 
+        // 정지된 계정은 잠긴 것으로 처리
+        return !user.isBanned(); 
+    }
 
     @Override
     public boolean isCredentialsNonExpired() { return true; }

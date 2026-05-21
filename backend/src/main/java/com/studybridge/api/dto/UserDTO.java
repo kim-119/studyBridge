@@ -1,13 +1,15 @@
 package com.studybridge.api.dto;
 
-import com.studybridge.api.entity.Admin;
+import com.studybridge.api.entity.AdminRole;
 import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.Future;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.Setter;
+
+import java.time.LocalDateTime;
 
 public class UserDTO {
 
@@ -32,7 +34,6 @@ public class UserDTO {
         private String major;
     }
 
-    // 로그인 요청 시 사용하는 DTO
     @Getter
     @Setter
     public static class LoginRequest {
@@ -44,7 +45,6 @@ public class UserDTO {
         private String password;
     }
 
-    // 비밀번호 변경 요청 시 사용하는 DTO
     @Getter
     @Setter
     public static class ChangePasswordRequest {
@@ -53,7 +53,7 @@ public class UserDTO {
         private String email;
 
         @NotBlank(message = "기존 비밀번호를 입력해주세요.")
-        private String currentPassword; // 현재 비밀번호 인증용
+        private String currentPassword;
 
         @NotBlank(message = "새 비밀번호를 입력해주세요.")
         @Size(min = 8, max = 16, message = "새 비밀번호는 8~16자여야 합니다.")
@@ -63,7 +63,6 @@ public class UserDTO {
         private String newPasswordConfirm;
     }
 
-    // 프로필 정보 수정 요청 시 사용하는 DTO
     @Getter
     @Setter
     public static class UpdateProfileRequest {
@@ -74,17 +73,15 @@ public class UserDTO {
         private String major;
     }
 
-    // 관리자가 사용자 정보 변경 시 사용하는 DTO
     @Getter
     @Setter
-    public static class AdminUpdateUserRequest {
-        @NotNull(message = "권한은 필수 입력값입니다.")
-        private Admin admin;
-        @NotBlank(message = "상태는 필수 입력값입니다.")
-        private String status;
+    public static class UserBanRequest {
+        private boolean banned; // true: 정지, false: 정지 해제
+
+        @Future(message = "정지 기간은 현재 시간 이후여야 합니다.")
+        private LocalDateTime bannedUntil; // null일 경우 영구 정지
     }
 
-    // 클라이언트에게 사용자 정보를 반환할 때 사용하는 DTO
     @Getter
     @Setter
     @Builder
@@ -94,10 +91,11 @@ public class UserDTO {
         private String displayName;
         private String major;
         private String photoUrl;
-        private String status;
         private Boolean isSubscribed;
         private String accessToken;
         private String refreshToken;
-        private Admin admin;
+        private AdminRole role;
+        private boolean banned;
+        private LocalDateTime bannedUntil;
     }
 }
