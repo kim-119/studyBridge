@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard';
 import MyPage from './pages/MyPage';
 import StudyMate from './pages/StudyMate';
 import GroupStudy from './pages/GroupStudy';
+import Materials from './pages/Materials';
 
 function PrivateRoute({ children }) {
   const { isLoggedIn } = useAuth();
@@ -79,6 +80,8 @@ function App() {
 
           <Route path="/studymate" element={<StudyMate />} />
           <Route path="/groupstudy" element={<GroupStudy />} />
+
+          <Route path="/materials" element={<Materials />} />
 
           {/* 잘못된 주소는 메인으로 이동 */}
           <Route path="*" element={<Navigate to="/" replace />} />
