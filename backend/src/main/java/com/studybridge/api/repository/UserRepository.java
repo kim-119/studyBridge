@@ -1,6 +1,5 @@
 package com.studybridge.api.repository;
 
-import com.studybridge.api.entity.Admin;
 import com.studybridge.api.entity.User;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
@@ -15,8 +14,6 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     boolean existsByEmail(String email);
 
-    boolean existsByAdmin(Admin admin);
-    
     long countByCreatedAtAfter(LocalDateTime date);
     
     List<User> findByEmailContainingIgnoreCaseOrDisplayNameContainingIgnoreCase(String email, String displayName);

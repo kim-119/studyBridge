@@ -16,12 +16,14 @@ public class CustomUserDetails implements UserDetails {
     private final Long id;
     private final String email;
     private final String password;
+    private final boolean banned;
     private final Collection<? extends GrantedAuthority> authorities;
 
     public CustomUserDetails(User user) {
         this.id = user.getId();
         this.email = user.getEmail();
         this.password = user.getPassword();
+        this.banned = user.isBanned();
         this.authorities = List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()));
     }
 
@@ -46,7 +48,7 @@ public class CustomUserDetails implements UserDetails {
     @Override
     public boolean isAccountNonLocked() { 
         // 정지된 계정은 잠긴 것으로 처리
-        return !user.isBanned(); 
+        return !banned; 
     }
 
     @Override

@@ -26,7 +26,7 @@ public class ChatService {
         private final WebClient fastApiWebClient;
         private final TransactionTemplate transactionTemplate;
 
-        @Transactional
+        // 트랜잭션 안티패턴 해소: 외부 HTTP API 호출 시 커넥션 풀 고갈을 방지하기 위해 @Transactional 어노테이션 제거
         public ChatDTO.MultiChatResponse chatWithRoom(Long userId, Long roomId, ChatDTO.MultiChatRequest request) {
                 AgentChatRoom room = agentChatRoomRepository.findById(roomId)
                                 .orElseThrow(() -> new RuntimeException("해당 채팅방을 찾을 수 없습니다."));
@@ -35,7 +35,7 @@ public class ChatService {
                         throw new RuntimeException("해당 채팅방에 접근할 권한이 없습니다.");
                 }
 
-                // 사용자의 메시지 저장
+                // 1. 사용자의 입력 메시지를 즉시 트랜잭션으로 저장 및 물리 커밋 수행 (외부 API 장애 시에도 유실 방지)
                 transactionTemplate.execute(status -> {
                         saveRoomMessage(room, null, request.getMessage(), "USER");
                         return null;
@@ -67,14 +67,15 @@ public class ChatService {
                                 "agents", agentsList,
                                 "previousAnswers", previousAnswers);
 
+                // 2. 트랜잭션이 전혀 없는 상태(No-transaction)로 블로킹 API 호출 대기 (커넥션 점유 완전 해결)
                 Map<String, Object> response;
                 try {
                         response = fastApiWebClient.post()
-                                        .uri("/api/ai/multi-chat")
-                                        .bodyValue(requestBody)
-                                        .retrieve()
-                                        .bodyToMono(Map.class)
-                                        .block();
+                                         .uri("/api/ai/multi-chat")
+                                         .bodyValue(requestBody)
+                                         .retrieve()
+                                         .bodyToMono(Map.class)
+                                         .block();
                 } catch (Exception e) {
                         throw new RuntimeException("AI 서버와 통신 중 오류가 발생했습니다: " + e.getMessage());
                 }
@@ -93,8 +94,13 @@ public class ChatService {
                                                 .findFirst()
                                                 .orElse(room.getAgents().get(Math.min(i, room.getAgents().size() - 1)));
 
-                                // 각 AI의 응답 저장
-                                saveRoomMessage(room, targetAgent, aiAnswer, "AI");
+                                // 3. 각 AI의 응답을 독립된 트랜잭션으로 즉시 커밋하여 영속화
+                                final Agent finalTargetAgent = targetAgent;
+                                final String finalAiAnswer = aiAnswer;
+                                transactionTemplate.execute(status -> {
+                                        saveRoomMessage(room, finalTargetAgent, finalAiAnswer, "AI");
+                                        return null;
+                                });
 
                                 replies.add(ChatDTO.AgentReply.builder()
                                                 .agentId(targetAgent.getId())
@@ -134,3 +140,4 @@ public class ChatService {
                 chatMessageRepository.save(message);
         }
 }
+
