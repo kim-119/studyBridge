@@ -6,7 +6,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
@@ -43,20 +45,12 @@ public class S3Service {
         this.secretKey = secretKey;
     }
 
-    /**
-     * AWS 자격 증명 및 버킷 이름 세팅 여부 판별
-     */
     private boolean isAwsConfigured() {
         return bucket != null && !bucket.trim().isEmpty() 
             && accessKey != null && !accessKey.trim().isEmpty() 
             && secretKey != null && !secretKey.trim().isEmpty();
     }
 
-    /**
-     * S3에 PDF 원본 저장
-     * 경로: materials/user_{userId}/uuid.pdf
-     * AWS 자격 증명이 주입되지 않은 개발용 환경에서는 로컬 임시 디렉토리(temp-materials/)로 저장 우회(Fallback) 처리합니다.
-     */
     public String uploadFile(MultipartFile file, Long userId) throws IOException {
         if (file.getContentType() == null || !file.getContentType().equals("application/pdf")) {
             throw new IllegalArgumentException("PDF 파일만 업로드 가능합니다.");
@@ -87,10 +81,6 @@ public class S3Service {
         }
     }
 
-    /**
-     * Private 객체에 접근하기 위한 임시 서명 URL 발급
-     * S3 미설정 상황에서는 로컬 가짜 조회 경로를 반환합니다.
-     */
     public String getPresignedUrl(String s3Key) {
         if (s3Key == null || s3Key.isEmpty()) return null;
 
@@ -110,6 +100,39 @@ public class S3Service {
         } catch (Exception e) {
             log.error("[S3 Presign 에러] 임시 URL 발급 오류로 가짜 로컬 경로를 반환합니다: ", e);
             return "http://localhost:8080/temp-materials/" + s3Key.replace("materials/", "").replace("/", "_");
+        }
+    }
+
+    public void deleteFile(String s3Key) {
+        if (s3Key == null || s3Key.isEmpty()) return;
+
+        if (!isAwsConfigured()) {
+            log.warn("[S3 폴백 가동] 로컬 임시 저장소에서 파일을 삭제합니다: {}", s3Key);
+            deleteFromLocalFile(s3Key);
+            return;
+        }
+
+        try {
+            DeleteObjectRequest deleteObjectRequest = DeleteObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(s3Key)
+                    .build();
+            s3Client.deleteObject(deleteObjectRequest);
+            log.info("[S3 삭제 완료] 파일이 S3 버킷에서 정상 삭제되었습니다: {}", s3Key);
+        } catch (Exception e) {
+            log.error("[S3 삭제 에러] S3 삭제 중 오류가 발생했습니다: ", e);
+        }
+    }
+
+    private void deleteFromLocalFile(String s3Key) {
+        String cleanFileName = s3Key.replace("materials/", "").replace("/", "_");
+        File file = new File(LOCAL_UPLOAD_DIR, cleanFileName);
+        if (file.exists()) {
+            if (file.delete()) {
+                log.info("[로컬 파일 삭제 성공] 삭제된 물리 경로: {}", file.getAbsolutePath());
+            } else {
+                log.error("[로컬 파일 삭제 실패] 파일 삭제에 실패했습니다: {}", file.getAbsolutePath());
+            }
         }
     }
 

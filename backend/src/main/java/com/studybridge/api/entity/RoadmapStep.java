@@ -35,13 +35,4 @@ public class RoadmapStep {
     @Builder.Default
     private List<RoadmapTask> tasks = new ArrayList<>();
 
-    /**
-     * 태스크를 추가할 때 연관관계를 동시에 설정해주는 편의 메서드입니다.
-     */
-    public void addTask(RoadmapTask task) {
-        this.tasks.add(task);
-        if (task.getStep() != this) {
-            task.setStep(this);
-        }
-    }
 }

@@ -40,10 +40,6 @@ public class PdfExtractionService {
                 .build();
     }
 
-    /**
-     * 비동기 스레드에서 FastAPI로 PDF를 전달합니다.
-     * MultipartFile 대신 byte[]를 받아 파일 소멸 문제를 방지합니다.
-     */
     @Async
     public void sendToFastApiForExtraction(Long materialId, byte[] fileBytes, String originalFilename) {
         try {
