@@ -40,3 +40,10 @@ external-api:
 jwt:
   secret: ${JWT_SECRET:studybridge_super_secret_key_for_jwt_token_generation_2026_spring_boot_3_security_6}
   expiration-ms: ${JWT_EXPIRATION_MS:1800000}
+
+# 초기 관리자 계정 설정
+admin:
+  super-email: ${ADMIN_SUPER_EMAIL:admin@studybridge.com} # 이 이메일로 가입 시 자동 관리자 권한 부여
+  default:
+    email: ${ADMIN_DEFAULT_EMAIL:admin@studybridge.com}
+    password: ${ADMIN_DEFAULT_PASSWORD:admin1234}

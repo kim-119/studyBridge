@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
@@ -86,6 +87,31 @@ public class S3Service {
             return fileName;
         }
     }
+    
+    /**
+     * S3에서 파일을 삭제합니다.
+     * @param s3Key 삭제할 파일의 키
+     */
+    public void deleteFile(String s3Key) {
+        if (s3Key == null || s3Key.isEmpty()) return;
+
+        if (!isAwsConfigured()) {
+            log.warn("[S3 폴백 가동] AWS S3 자격 증명이 없어 로컬 파일 삭제를 시도합니다: {}", s3Key);
+            deleteLocalFile(s3Key);
+            return;
+        }
+
+        try {
+            DeleteObjectRequest deleteObjectRequest = DeleteObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(s3Key)
+                    .build();
+            s3Client.deleteObject(deleteObjectRequest);
+            log.info("[S3 삭제 완료] 파일이 S3 버킷에서 정상 삭제되었습니다: {}", s3Key);
+        } catch (Exception e) {
+            log.error("[S3 삭제 에러] S3 파일 삭제 중 예상치 못한 예외가 발생했습니다: ", e);
+        }
+    }
 
     /**
      * Private 객체에 접근하기 위한 임시 서명 URL 발급
@@ -125,5 +151,19 @@ public class S3Service {
             fos.write(file.getBytes());
         }
         log.info("[로컬 파일 임시 백업 성공] 저장된 물리 경로: {}", localFile.getAbsolutePath());
+    }
+    
+    private void deleteLocalFile(String s3Key) {
+        String cleanFileName = s3Key.replace("materials/", "").replace("/", "_");
+        File fileToDelete = new File(LOCAL_UPLOAD_DIR, cleanFileName);
+        if (fileToDelete.exists()) {
+            if (fileToDelete.delete()) {
+                log.info("[로컬 파일 삭제 성공] 삭제된 물리 경로: {}", fileToDelete.getAbsolutePath());
+            } else {
+                log.error("[로컬 파일 삭제 실패] 파일 삭제에 실패했습니다: {}", fileToDelete.getAbsolutePath());
+            }
+        } else {
+            log.warn("[로컬 파일 삭제 시도] 삭제할 파일이 존재하지 않습니다: {}", fileToDelete.getAbsolutePath());
+        }
     }
 }

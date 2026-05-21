@@ -1,5 +1,6 @@
 package com.studybridge.api.security.domain;
 
+import com.studybridge.api.entity.Admin;
 import com.studybridge.api.entity.User;
 import lombok.Getter;
 import org.springframework.security.core.GrantedAuthority;
@@ -21,7 +22,8 @@ public class CustomUserDetails implements UserDetails {
         this.id = user.getId();
         this.email = user.getEmail();
         this.password = user.getPassword();
-        this.authorities = List.of(new SimpleGrantedAuthority("ROLE_USER"));
+        // User 엔티티의 Admin 정보를 바탕으로 권한 설정 ("ROLE_USER" 또는 "ROLE_ADMIN")
+        this.authorities = List.of(new SimpleGrantedAuthority("ROLE_" + user.getAdmin().name()));
     }
 
     @Override

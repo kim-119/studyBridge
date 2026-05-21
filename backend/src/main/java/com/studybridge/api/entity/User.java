@@ -46,4 +46,9 @@ public class User {
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt; // 계정 생성일
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "admin", nullable = false)
+    @Builder.Default
+    private Admin admin = Admin.USER;
 }

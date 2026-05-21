@@ -1,17 +1,22 @@
 package com.studybridge.api.service;
 
 import com.studybridge.api.dto.UserDTO;
+import com.studybridge.api.entity.Admin;
 import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.UserRepository;
 import com.studybridge.api.security.jwt.JwtTokenProvider;
 import com.studybridge.api.entity.RefreshToken;
 import com.studybridge.api.repository.RefreshTokenRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -23,6 +28,9 @@ public class UserService {
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenRepository refreshTokenRepository;
 
+    @Value("${admin.super-email:}")
+    private String superAdminEmail;
+
     // 회원 가입
     @Transactional
     public UserDTO.Response register(UserDTO.RegisterRequest request) {
@@ -33,11 +41,18 @@ public class UserService {
             throw new IllegalArgumentException("비밀번호가 일치하지 않습니다.");
         }
 
+        Admin role = Admin.USER;
+        // 관리자 이메일이 설정되어 있고, 가입 이메일이 그와 완전히 일치하는지 확인
+        if (StringUtils.hasText(superAdminEmail) && request.getEmail().equalsIgnoreCase(superAdminEmail)) {
+            role = Admin.ADMIN;
+        }
+
         User user = User.builder()
                 .email(request.getEmail())
                 .password(passwordEncoder.encode(request.getPassword()))
                 .displayName(request.getDisplayName())
                 .major(request.getMajor())
+                .admin(role) // 결정된 권한으로 설정
                 .build();
 
         User savedUser = userRepository.save(user);
@@ -147,9 +162,28 @@ public class UserService {
 
         return convertToResponse(user);
     }
+    
+    // (관리자) 모든 사용자 조회
+    public List<UserDTO.Response> getAllUsers() {
+        return userRepository.findAll().stream()
+                .map(this::convertToResponse)
+                .collect(Collectors.toList());
+    }
+
+    // (관리자) 사용자 정보 수정 (역할, 상태 등)
+    @Transactional
+    public UserDTO.Response updateUserByAdmin(Long userId, UserDTO.AdminUpdateUserRequest request) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
+        
+        user.setAdmin(request.getAdmin());
+        user.setStatus(request.getStatus());
+        
+        return convertToResponse(user);
+    }
 
     private UserDTO.Response convertToResponse(User user) {
-        UserDTO.Response response = UserDTO.Response.builder()
+        return UserDTO.Response.builder()
                 .id(user.getId())
                 .email(user.getEmail())
                 .displayName(user.getDisplayName())
@@ -157,7 +191,7 @@ public class UserService {
                 .photoUrl(user.getPhotoUrl())
                 .status(user.getStatus())
                 .isSubscribed(user.getIsSubscribed())
+                .admin(user.getAdmin())
                 .build();
-        return response;
     }
 }

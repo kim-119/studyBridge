@@ -1,7 +1,9 @@
 package com.studybridge.api.dto;
 
+import com.studybridge.api.entity.Admin;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Builder;
 import lombok.Getter;
@@ -72,6 +74,16 @@ public class UserDTO {
         private String major;
     }
 
+    // 관리자가 사용자 정보 변경 시 사용하는 DTO
+    @Getter
+    @Setter
+    public static class AdminUpdateUserRequest {
+        @NotNull(message = "권한은 필수 입력값입니다.")
+        private Admin admin;
+        @NotBlank(message = "상태는 필수 입력값입니다.")
+        private String status;
+    }
+
     // 클라이언트에게 사용자 정보를 반환할 때 사용하는 DTO
     @Getter
     @Setter
@@ -86,5 +98,6 @@ public class UserDTO {
         private Boolean isSubscribed;
         private String accessToken;
         private String refreshToken;
+        private Admin admin;
     }
 }
