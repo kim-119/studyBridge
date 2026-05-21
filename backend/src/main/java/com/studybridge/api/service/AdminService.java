@@ -93,7 +93,7 @@ public class AdminService {
 
     private MaterialDTO convertMaterialToDTO(Material material) {
         return MaterialDTO.builder()
-                .materialId(material.getId())
+                .materialId(material.getMaterialId())
                 .originalFileName(material.getOriginalFileName())
                 .fileSize(material.getFileSize())
                 .extractionStatus(material.getExtractionStatus())
