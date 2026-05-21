@@ -1,22 +1,15 @@
 import React, { useState } from 'react';
-import { FileText, File as FileIcon, Plus, X, Download, Send, CheckCircle2, Circle, Map, AlignLeft, HelpCircle, MessageSquare } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { FileText, File as FileIcon, Plus, X, AlignLeft, MessageSquare } from 'lucide-react';
 
 export default function Archive() {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('journal');
-  const [isRoadmapVisible, setIsRoadmapVisible] = useState(false);
-  const [isJournalDetailVisible, setIsJournalDetailVisible] = useState(false);
-  const [openedModalType, setOpenedModalType] = useState(null); // 'aiFeedback', 'pdfSummary', 'pdfQuiz', 'pdfChat', 'addMaterial'
-  const [selectedItem, setSelectedItem] = useState(null);
-  const [selectedJournal, setSelectedJournal] = useState(null);
-  
-  // 자료 추가 모달에서의 유형 상태 ('journal', 'syllabus', 'pdf')
+  const [openedModalType, setOpenedModalType] = useState(null); // 'addMaterial'
   const [addMaterialType, setAddMaterialType] = useState('journal');
-  
-  // 채팅 입력창 (PDF Chat Modal용)
-  const [chatInput, setChatInput] = useState('');
-
-  // 표시할 카드 개수 관리 (더보기 기능)
   const [visibleCount, setVisibleCount] = useState(6);
+  const [selectedJournal, setSelectedJournal] = useState(null);
+  const [isJournalEditMode, setIsJournalEditMode] = useState(false);
 
   // ---------------- 더미 데이터 ----------------
   const journals = [
@@ -46,45 +39,22 @@ export default function Archive() {
     { id: 11, title: '알고리즘_기출문제_해설집.pdf', date: '2026.04.28', tag: '학습PDF' }
   ];
 
-  const roadmapData = [
-    { week: 1, topic: '원격교육의 이해와 기본 개념', goal: '원격교육의 정의와 특징 이해', act: '강의 수강 및 개념 요약', done: true },
-    { week: 2, topic: '원격수업 유형과 운영 방식', goal: '동기/비동기 수업의 차이점 이해', act: '사례 분석', done: true },
-    { week: 3, topic: '학습관리시스템 LMS의 역할', goal: 'LMS의 주요 기능 파악', act: '주요 LMS 플랫폼 비교', done: false },
-    { week: 4, topic: '온라인 학습 참여 전략', goal: '자기주도적 참여 방법 학습', act: '토론 게시판 활동', done: false },
-    { week: 5, topic: '원격수업 만족도 요인 분석', goal: '만족도에 영향을 미치는 핵심 요인 파악', act: '관련 논문 리뷰', done: false },
-    { week: 6, topic: '자기주도 학습 방법', goal: '스스로 학습 계획 수립 및 실천', act: '학습 플래너 작성', done: false },
-    { week: 7, topic: '중간 점검 및 핵심 개념 복습', goal: '1~6주차 내용 총정리', act: '요약 노트 작성', done: false },
-    { week: 8, topic: '학습 데이터 기반 피드백', goal: '학습 분석학의 기초 이해', act: '데이터 활용 사례 조사', done: false },
-    { week: 9, topic: '협업 도구와 온라인 토론', goal: '온라인 협업 역량 강화', act: '조별 과제 수행', done: false },
-    { week: 10, topic: '학습 성과 평가 방식', goal: '온라인 평가의 특징과 방법 이해', act: '평가 루브릭 제작', done: false },
-    { week: 11, topic: '학습 계획 보완', goal: '개인별 취약점 파악 및 보완', act: '피드백 반영', done: false },
-    { week: 12, topic: '최종 정리 및 시험 대비', goal: '전체 내용 종합적 이해', act: '모의 퀴즈 풀이', done: false },
-  ];
-
-  const getNodeColor = (week) => {
-    if (week === 7) return '#F59E0B'; // Orange
-    if ([3, 4, 8, 9].includes(week)) return '#06B6D4'; // Cyan
-    return '#10B981'; // Green
-  };
-
   // ---------------- 핸들러 ----------------
   const handleTabChange = (tab) => {
     setActiveTab(tab);
-    setIsRoadmapVisible(false);
-    setIsJournalDetailVisible(false);
-    setVisibleCount(6); // 탭 변경 시 더보기 초기화
+    setVisibleCount(6); 
   };
 
-  const handleOpenJournalDetail = (journal) => {
-    setSelectedJournal(journal);
-    setIsJournalDetailVisible(true);
-    setTimeout(() => {
-      document.getElementById('journal-detail-section')?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
+  const handleOpenDetail = (type, item) => {
+    if (type === 'journal') {
+      setSelectedJournal(item);
+      setIsJournalEditMode(false);
+    } else {
+      navigate(`/archive/${type}/${item.id}`, { state: { item } });
+    }
   };
 
-  const openModal = (type, item) => {
-    setSelectedItem(item);
+  const openModal = (type) => {
     setOpenedModalType(type);
     if (type === 'addMaterial') {
       setAddMaterialType('journal');
@@ -93,20 +63,11 @@ export default function Archive() {
 
   const closeModal = () => {
     setOpenedModalType(null);
-    setSelectedItem(null);
-  };
-
-  const handleGenerateRoadmap = () => {
-    setIsRoadmapVisible(true);
-    // 스크롤 이동용으로 timeout 설정
-    setTimeout(() => {
-      document.getElementById('roadmap-section')?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
   };
 
   return (
     <div className="container-main archive-page">
-      {/* 1. 상단 헤더 구조 변경 (컨트롤 바) */}
+      {/* 1. 상단 헤더 영역 */}
       <div className="archive-control-bar">
         <div className="archive-tabs">
           <button 
@@ -116,13 +77,19 @@ export default function Archive() {
             학습일지
           </button>
           <button 
+            className={`archive-tab ${activeTab === 'syllabus' ? 'active' : ''}`}
+            onClick={() => handleTabChange('syllabus')}
+          >
+            강의계획서
+          </button>
+          <button 
             className={`archive-tab ${activeTab === 'pdf' ? 'active' : ''}`}
             onClick={() => handleTabChange('pdf')}
           >
-            강의계획서 / 학습 PDF
+            학습 PDF
           </button>
         </div>
-        <button className="btn-primary btn-add-material" onClick={() => openModal('addMaterial', null)}>
+        <button className="btn-primary btn-add-material" onClick={() => openModal('addMaterial')}>
           <Plus size={16} /> 자료 추가
         </button>
       </div>
@@ -130,7 +97,12 @@ export default function Archive() {
       {/* 2. 카드 목록 영역 */}
       <div className="archive-grid">
         {activeTab === 'journal' && journals.slice(0, visibleCount).map((journal) => (
-          <div key={journal.id} className="glass-panel archive-card animate-fade-in">
+          <div 
+            key={journal.id} 
+            className="glass-panel archive-card animate-fade-in"
+            style={{ cursor: 'pointer' }}
+            onClick={() => handleOpenDetail('journal', journal)}
+          >
             <div className="card-header">
               <div className="icon-wrapper journal-icon">
                 <FileText size={22} color="rgba(255,255,255,0.8)" />
@@ -142,15 +114,16 @@ export default function Archive() {
               <span className="card-tag">#{journal.tag}</span>
             </div>
             <p className="card-desc">{journal.description}</p>
-            <div className="card-actions">
-              <button className="btn-outline" onClick={() => handleOpenJournalDetail(journal)}>자세히 보기</button>
-              <button className="btn-primary" onClick={() => openModal('aiFeedback', journal)}>AI 피드백 받기</button>
-            </div>
           </div>
         ))}
 
-        {activeTab === 'pdf' && pdfs.slice(0, visibleCount).map((pdf) => (
-          <div key={pdf.id} className="glass-panel archive-card animate-fade-in">
+        {activeTab === 'syllabus' && pdfs.filter(p => p.tag === '강의계획서').slice(0, visibleCount).map((pdf) => (
+          <div 
+            key={pdf.id} 
+            className="glass-panel archive-card animate-fade-in"
+            style={{ cursor: 'pointer' }}
+            onClick={() => handleOpenDetail('syllabus', pdf)}
+          >
             <div className="card-header">
               <div className="icon-wrapper pdf-icon">
                 <FileIcon size={22} color="rgba(255,255,255,0.8)" />
@@ -161,20 +134,25 @@ export default function Archive() {
             <div className="card-tags" style={{ marginBottom: 'auto' }}>
               <span className="card-tag">#{pdf.tag}</span>
             </div>
-            {/* PDF 카드 버튼들 (2x2 그리드) */}
-            <div className="card-actions pdf-actions-grid">
-              <button className="btn-soft-primary" onClick={handleGenerateRoadmap}>
-                <Map size={14} /> AI 로드맵
-              </button>
-              <button className="btn-soft-gray" onClick={() => openModal('pdfSummary', pdf)}>
-                <AlignLeft size={14} /> 요약
-              </button>
-              <button className="btn-soft-gray" onClick={() => openModal('pdfQuiz', pdf)}>
-                <HelpCircle size={14} /> 문제 생성
-              </button>
-              <button className="btn-primary" onClick={() => openModal('pdfChat', pdf)} style={{ border: 'none' }}>
-                <MessageSquare size={14} /> AI 질문
-              </button>
+          </div>
+        ))}
+
+        {activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').slice(0, visibleCount).map((pdf) => (
+          <div 
+            key={pdf.id} 
+            className="glass-panel archive-card animate-fade-in"
+            style={{ cursor: 'pointer' }}
+            onClick={() => handleOpenDetail('pdf', pdf)}
+          >
+            <div className="card-header">
+              <div className="icon-wrapper pdf-icon">
+                <FileIcon size={22} color="rgba(255,255,255,0.8)" />
+              </div>
+              <span className="card-date">{pdf.date}</span>
+            </div>
+            <h3 className="card-title">{pdf.title}</h3>
+            <div className="card-tags" style={{ marginBottom: 'auto' }}>
+              <span className="card-tag">#{pdf.tag}</span>
             </div>
           </div>
         ))}
@@ -182,287 +160,16 @@ export default function Archive() {
 
       {/* 3. 더보기(Load More) 버튼 */}
       {((activeTab === 'journal' && visibleCount < journals.length) || 
-        (activeTab === 'pdf' && visibleCount < pdfs.length)) && (
+        (activeTab === 'syllabus' && visibleCount < pdfs.filter(p => p.tag === '강의계획서').length) ||
+        (activeTab === 'pdf' && visibleCount < pdfs.filter(p => p.tag === '학습PDF').length)) && (
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: '40px' }}>
           <button 
             className="btn-outline" 
             style={{ width: 'max-content', flex: 'none', padding: '12px 32px', borderRadius: '30px', fontWeight: '600', backgroundColor: 'white', border: '1px solid var(--color-border)', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}
             onClick={() => setVisibleCount(prev => prev + 6)}
           >
-            + 더보기 ({(activeTab === 'journal' ? visibleCount : visibleCount)}/{(activeTab === 'journal' ? journals.length : pdfs.length)})
+            + 더보기 ({(activeTab === 'journal' ? visibleCount : visibleCount)}/{(activeTab === 'journal' ? journals.length : activeTab === 'syllabus' ? pdfs.filter(p => p.tag === '강의계획서').length : pdfs.filter(p => p.tag === '학습PDF').length)})
           </button>
-        </div>
-      )}
-
-      {/* 4. 학습일지 상세/수정 영역 */}
-      {activeTab === 'journal' && isJournalDetailVisible && selectedJournal && (
-        <div id="journal-detail-section" className="roadmap-section animate-fade-in" style={{ marginBottom: '60px' }}>
-          <div className="glass-panel" style={{ padding: '32px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
-              <div>
-                <h2 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>학습일지 상세 및 수정</h2>
-                <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px' }}>학습일지 내용을 확인하고 수정할 수 있습니다.</p>
-              </div>
-              <button className="btn-close" onClick={() => setIsJournalDetailVisible(false)}><X size={24} /></button>
-            </div>
-            
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '20px' }}>
-              <div>
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>제목</label>
-                <input type="text" className="input-field" defaultValue={selectedJournal.title} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
-              </div>
-              <div>
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>날짜</label>
-                <input type="text" className="input-field" defaultValue={selectedJournal.date} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
-              </div>
-            </div>
-
-            <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>통계 (학습 시간 / 푼 문제 수 / 자기평가)</label>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
-                <input type="text" className="input-field" defaultValue={selectedJournal.stats.time} placeholder="학습 시간 (예: 2h 30m)" style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
-                <input type="number" className="input-field" defaultValue={selectedJournal.stats.solved} placeholder="푼 문제 수" style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
-                <input type="text" className="input-field" defaultValue={selectedJournal.stats.score} placeholder="자기평가 (예: 85%)" style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
-              </div>
-            </div>
-
-            <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>핵심 키워드 (쉼표로 구분)</label>
-              <input type="text" className="input-field" defaultValue={selectedJournal.keywords.join(', ')} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
-            </div>
-
-            <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>학습 내용</label>
-              <textarea className="input-field" defaultValue={selectedJournal.content} style={{ width: '100%', minHeight: '120px', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', resize: 'vertical', backgroundColor: '#F9FAFB', fontFamily: 'inherit', lineHeight: '1.5' }} />
-            </div>
-
-            <div style={{ marginBottom: '24px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>다음 학습 계획</label>
-              <textarea className="input-field" defaultValue={selectedJournal.nextPlan} style={{ width: '100%', minHeight: '80px', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', resize: 'vertical', backgroundColor: '#F9FAFB', fontFamily: 'inherit', lineHeight: '1.5' }} />
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-              <button className="btn-outline" style={{ padding: '10px 24px' }} onClick={() => setIsJournalDetailVisible(false)}>취소</button>
-              <button className="btn-primary" style={{ padding: '10px 24px' }} onClick={() => { alert('성공적으로 수정되었습니다.'); setIsJournalDetailVisible(false); }}>저장하기</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 5. 로드맵 영역 */}
-      {activeTab === 'pdf' && isRoadmapVisible && (
-        <div id="roadmap-section" className="roadmap-section animate-fade-in">
-          <div className="glass-panel" style={{ padding: '24px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <h2 style={{ margin: 0, color: 'var(--color-primary)' }}>AI 학습 로드맵</h2>
-              <button className="btn-outline" style={{ display: 'inline-flex', width: 'max-content', flex: 'none', alignItems: 'center', gap: '6px', height: '32px', fontSize: '13px', padding: '0 12px' }}>
-                <Download size={14} /> 다운로드
-              </button>
-            </div>
-            <p style={{ color: 'var(--color-text-muted)', marginBottom: '24px' }}>
-              업로드한 강의계획서를 기반으로 주차별 학습 계획을 생성했습니다.
-            </p>
-
-            <div className="roadmap-visual">
-              <div className="roadmap-row">
-                {roadmapData.slice(0, 6).map((item, idx) => (
-                  <React.Fragment key={item.week}>
-                    <div className="roadmap-visual-node">
-                      <div className="node-circle" style={{ backgroundColor: getNodeColor(item.week) }}>{item.week}주</div>
-                      <div className="node-title">{item.topic}</div>
-                    </div>
-                    {idx < 5 && <div className="node-arrow">&gt;</div>}
-                  </React.Fragment>
-                ))}
-              </div>
-              <div className="roadmap-row reverse">
-                {roadmapData.slice(6, 12).reverse().map((item, idx) => (
-                  <React.Fragment key={item.week}>
-                    <div className="roadmap-visual-node">
-                      <div className="node-circle" style={{ backgroundColor: getNodeColor(item.week) }}>{item.week}주</div>
-                      <div className="node-title">{item.topic}</div>
-                    </div>
-                    {idx < 5 && <div className="node-arrow">&lt;</div>}
-                  </React.Fragment>
-                ))}
-              </div>
-            </div>
-
-            <h3 className="timeline-title">주차별 세부 계획</h3>
-            <div className="roadmap-timeline">
-              {roadmapData.map((item, idx) => (
-                <div key={item.week} className="timeline-item">
-                  <div className="timeline-left">
-                    <div className="timeline-circle" style={{ backgroundColor: getNodeColor(item.week) }}>{item.week}</div>
-                    {idx < roadmapData.length - 1 && <div className="timeline-line"></div>}
-                  </div>
-                  <div className="timeline-card glass-panel" style={{ borderLeftColor: getNodeColor(item.week) }}>
-                    <h4 className="timeline-card-title">{item.topic}</h4>
-                    <div className="timeline-card-info">
-                      <span className="info-label">학습 목표</span> <span>{item.goal}</span>
-                    </div>
-                    <div className="timeline-card-info">
-                      <span className="info-label">학습 활동</span> <span>{item.act}</span>
-                    </div>
-                    <div className="timeline-card-check">
-                       <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', width: 'fit-content' }}>
-                         <input type="checkbox" checked={item.done} readOnly /> 완료
-                       </label>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ---------------- 모달 영역 ---------------- */}
-
-      {/* AI 피드백 모달 */}
-      {openedModalType === 'aiFeedback' && (
-        <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ maxWidth: '800px', padding: '32px' }}>
-            <div className="modal-header" style={{ marginBottom: '24px' }}>
-              <h3 style={{ margin: 0, fontSize: '22px' }}>AI 피드백</h3>
-              <button className="btn-close" onClick={closeModal}><X size={24} /></button>
-            </div>
-            <div className="modal-body">
-              <p style={{ color: 'var(--color-text-muted)', fontSize: '15px', marginBottom: '24px' }}>
-                AI가 분석한 학습일지 피드백입니다.
-              </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
-                  <div style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '14px', fontWeight: 'bold', flexShrink: 0 }}>1</div>
-                  <p style={{ margin: 0, fontSize: '16px', lineHeight: '1.6' }}>BFS/DFS 알고리즘에 대한 이해가 잘 정리되어 있습니다.</p>
-                </div>
-                <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
-                  <div style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '14px', fontWeight: 'bold', flexShrink: 0 }}>2</div>
-                  <p style={{ margin: 0, fontSize: '16px', lineHeight: '1.6' }}>더 심화 학습하려면 플로이드-워셜, 벨만-포드 알고리즘도 함께 정리하면 좋습니다.</p>
-                </div>
-                <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
-                  <div style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '14px', fontWeight: 'bold', flexShrink: 0 }}>3</div>
-                  <p style={{ margin: 0, fontSize: '16px', lineHeight: '1.6' }}>백준 10문제 풀이는 충분한 실습량입니다. 다음 단계로 다이나믹 프로그래밍을 권장합니다.</p>
-                </div>
-              </div>
-            </div>
-            <div className="modal-footer" style={{ justifyContent: 'flex-end', display: 'flex', marginTop: '32px' }}>
-              <button className="btn-primary" style={{ padding: '12px 32px', fontSize: '16px' }} onClick={closeModal}>확인</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 요약 생성 모달 */}
-      {openedModalType === 'pdfSummary' && (
-        <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ maxWidth: '900px', padding: '32px' }}>
-            <div className="modal-header" style={{ marginBottom: '24px' }}>
-              <h3 style={{ margin: 0, fontSize: '22px' }}>요약 생성</h3>
-              <button className="btn-close" onClick={closeModal}><X size={24} /></button>
-            </div>
-            <div className="modal-body">
-              <p style={{ color: 'var(--color-text-muted)', fontSize: '15px', marginBottom: '24px' }}>
-                업로드된 PDF의 핵심 내용 5줄 요약입니다.
-              </p>
-              <ul style={{ paddingLeft: '24px', margin: 0, display: 'flex', flexDirection: 'column', gap: '16px', fontSize: '16px', lineHeight: '1.6' }}>
-                <li>원격교육은 시공간 제약 없이 다양한 학습자에게 교육 기회를 제공하는 방식이다.</li>
-                <li>LMS는 강의 콘텐츠 관리, 학습 이력 추적, 평가 기능을 통합 제공한다.</li>
-                <li>원격수업 만족도에는 콘텐츠 품질, 상호작용 수준, 기술적 안정성이 영향을 미친다.</li>
-                <li>자기주도 학습 역량은 온라인 학습 성과와 강한 관계가 있다.</li>
-                <li>향후 원격교육은 AI 기반 개인화 학습과 결합될 가능성이 높다.</li>
-              </ul>
-            </div>
-            <div className="modal-footer" style={{ justifyContent: 'flex-end', display: 'flex', marginTop: '32px' }}>
-              <button className="btn-primary" style={{ padding: '12px 32px', fontSize: '16px' }} onClick={closeModal}>확인</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 퀴즈 풀기 모달 */}
-      {openedModalType === 'pdfQuiz' && (
-        <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ maxWidth: '1000px', maxHeight: '85vh', display: 'flex', flexDirection: 'column', padding: '32px' }}>
-            <div className="modal-header" style={{ flexShrink: 0, marginBottom: '24px' }}>
-              <h3 style={{ margin: 0, fontSize: '22px' }}>퀴즈 풀기</h3>
-              <button className="btn-close" onClick={closeModal}><X size={24} /></button>
-            </div>
-            <div className="modal-body" style={{ overflowY: 'auto', paddingRight: '24px', marginRight: '-8px' }}>
-              <div className="quiz-container" style={{ display: 'flex', flexDirection: 'column', gap: '40px' }}>
-                <div>
-                  <h4 style={{ margin: '0 0 16px', fontSize: '18px' }}>Q1. 원격교육에서 LMS의 핵심 기능이 아닌 것은?</h4>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', fontSize: '16px', padding: '16px' }}>1) 강의 콘텐츠 업로드 및 관리</button>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', backgroundColor: '#FEE2E2', borderColor: '#FCA5A5', color: '#991B1B', fontSize: '16px', padding: '16px' }}>2) 오프라인 강의실 자동 배정 (오답)</button>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', fontSize: '16px', padding: '16px' }}>3) 학습자 성적 및 이력 관리</button>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', fontSize: '16px', padding: '16px' }}>4) 과제 제출 및 피드백 시스템</button>
-                  </div>
-                </div>
-                <div>
-                  <h4 style={{ margin: '0 0 16px', fontSize: '18px' }}>Q2. 원격수업 만족도에 가장 큰 영향을 미치는 요인은?</h4>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', fontSize: '16px', padding: '16px' }}>1) 수강료</button>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', fontSize: '16px', padding: '16px' }}>2) 강의 시간대</button>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', backgroundColor: '#DCFCE7', borderColor: '#86EFAC', color: '#166534', fontSize: '16px', padding: '16px' }}>3) 콘텐츠 품질과 상호작용 (정답)</button>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', fontSize: '16px', padding: '16px' }}>4) 인터넷 속도</button>
-                  </div>
-                </div>
-                <div>
-                  <h4 style={{ margin: '0 0 16px', fontSize: '18px' }}>Q3. 자기주도 학습에서 가장 중요한 역량은?</h4>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', fontSize: '16px', padding: '16px' }}>1) 목표 설정 및 자기 조절 능력</button>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', fontSize: '16px', padding: '16px' }}>2) 타이핑 속도</button>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', fontSize: '16px', padding: '16px' }}>3) 교수자 의존도</button>
-                    <button className="btn-outline" style={{ width: '100%', height: 'auto', display: 'flex', alignItems: 'center', textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start', fontSize: '16px', padding: '16px' }}>4) 수강 과목 수</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="modal-footer" style={{ flexShrink: 0, justifyContent: 'flex-end', display: 'flex', marginTop: '24px' }}>
-              <button className="btn-primary" style={{ padding: '12px 32px', fontSize: '16px' }} onClick={closeModal}>확인</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* AI 질문하기 모달 (채팅형) */}
-      {openedModalType === 'pdfChat' && (
-        <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ maxWidth: '1000px', height: '80vh', padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            <div className="modal-header" style={{ padding: '24px 32px', borderBottom: '1px solid var(--color-border)' }}>
-              <h3 style={{ margin: 0, fontSize: '22px' }}>AI 질문하기</h3>
-              <button className="btn-close" onClick={closeModal}><X size={24} /></button>
-            </div>
-            <div className="modal-body" style={{ flex: 1, padding: '32px', backgroundColor: '#F9FAFB', overflowY: 'auto' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                <div style={{ alignSelf: 'flex-start', backgroundColor: 'white', padding: '16px 24px', borderRadius: '20px', borderTopLeftRadius: '4px', maxWidth: '80%', boxShadow: '0 1px 4px rgba(0,0,0,0.05)', fontSize: '16px', lineHeight: '1.6' }}>
-                  안녕하세요. 업로드한 자료에 대해 궁금한 점을 질문해주세요.
-                </div>
-                <div style={{ alignSelf: 'flex-end', backgroundColor: 'var(--color-primary)', color: 'white', padding: '16px 24px', borderRadius: '20px', borderTopRightRadius: '4px', maxWidth: '80%', boxShadow: '0 1px 4px rgba(0,0,0,0.05)', fontSize: '16px', lineHeight: '1.6' }}>
-                  원격교육에서 LMS가 왜 중요한지 설명해줘.
-                </div>
-                <div style={{ alignSelf: 'flex-start', backgroundColor: 'white', padding: '16px 24px', borderRadius: '20px', borderTopLeftRadius: '4px', maxWidth: '80%', boxShadow: '0 1px 4px rgba(0,0,0,0.05)', fontSize: '16px', lineHeight: '1.6' }}>
-                  LMS는 원격교육의 핵심 인프라입니다. 강의 콘텐츠 배포, 진도 추적, 성적 관리를 한 곳에서 처리해 교수자와 학습자 모두의 부담을 줄여줍니다.
-                </div>
-              </div>
-            </div>
-            <div style={{ padding: '24px 32px', backgroundColor: 'white', borderTop: '1px solid var(--color-border)' }}>
-              <form onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: '16px' }}>
-                <input 
-                  type="text" 
-                  className="input-field" 
-                  style={{ margin: 0, borderRadius: '30px', backgroundColor: '#F3F4F6', border: 'none', padding: '16px 24px', fontSize: '16px' }}
-                  placeholder="자료 내용에 대해 궁금한 점을 입력하세요."
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                />
-                <button type="submit" className="btn-primary" style={{ width: '54px', height: '54px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-                  <Send size={24} />
-                </button>
-              </form>
-            </div>
-          </div>
         </div>
       )}
 
@@ -506,15 +213,6 @@ export default function Archive() {
                   </div>
 
                   <div>
-                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>통계 (학습 시간 / 푼 문제 수 / 자기평가)</label>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
-                      <input type="text" className="input-field" placeholder="학습 시간 (예: 2h 30m)" style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
-                      <input type="number" className="input-field" placeholder="푼 문제 수" style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
-                      <input type="text" className="input-field" placeholder="자기평가 (예: 85%)" style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
-                    </div>
-                  </div>
-
-                  <div>
                     <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>핵심 키워드 (쉼표로 구분)</label>
                     <input type="text" className="input-field" placeholder="키워드 입력" style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
                   </div>
@@ -535,6 +233,12 @@ export default function Archive() {
                     <label style={{ display: 'block', fontSize: '16px', fontWeight: 'bold', marginBottom: '12px' }}>제목</label>
                     <input type="text" className="input-field" placeholder="자료의 제목을 입력하세요" style={{ width: '100%', fontSize: '16px', padding: '16px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
                   </div>
+                  
+                  <div>
+                    <label style={{ display: 'block', fontSize: '16px', fontWeight: 'bold', marginBottom: '12px' }}>핵심 키워드 (쉼표로 구분)</label>
+                    <input type="text" className="input-field" placeholder="키워드 입력" style={{ width: '100%', fontSize: '16px', padding: '16px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
+                  </div>
+
                   <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
                     <label style={{ display: 'block', fontSize: '16px', fontWeight: 'bold', marginBottom: '12px' }}>파일 업로드</label>
                     <div style={{ flex: 1, border: '2px dashed var(--color-border)', borderRadius: '12px', padding: '40px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', color: 'var(--color-text-muted)', backgroundColor: '#F9FAFB', cursor: 'pointer', transition: 'all 0.2s', minHeight: '200px' }}>
@@ -554,6 +258,116 @@ export default function Archive() {
         </div>
       )}
 
+      {/* 학습일지 모달 */}
+      {selectedJournal && (
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content" style={{ maxWidth: '1100px', width: '90%', height: '85vh', padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-header" style={{ padding: '24px 32px', borderBottom: '1px solid var(--color-border)', margin: 0, flexShrink: 0 }}>
+              <h3 style={{ margin: 0, fontSize: '22px' }}>{selectedJournal.title}</h3>
+              <button className="btn-close" onClick={() => setSelectedJournal(null)}><X size={24} /></button>
+            </div>
+            
+            <div className="modal-body" style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: 0 }}>
+              {/* 왼쪽: 내용 / 수정폼 */}
+              <div style={{ flex: 1, padding: '32px', overflowY: 'auto', borderRight: '1px solid var(--color-border)' }}>
+                {isJournalEditMode ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>제목</label>
+                        <input type="text" className="input-field" defaultValue={selectedJournal.title} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>날짜</label>
+                        <input type="text" className="input-field" defaultValue={selectedJournal.date} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>키워드</label>
+                      <input type="text" className="input-field" defaultValue={selectedJournal.keywords.join(', ')} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>학습 내용</label>
+                      <textarea className="input-field" defaultValue={selectedJournal.content} style={{ width: '100%', minHeight: '120px', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', resize: 'vertical', backgroundColor: '#F9FAFB', fontFamily: 'inherit', lineHeight: '1.5' }} />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>다음 학습 계획</label>
+                      <textarea className="input-field" defaultValue={selectedJournal.nextPlan} style={{ width: '100%', minHeight: '80px', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', resize: 'vertical', backgroundColor: '#F9FAFB', fontFamily: 'inherit', lineHeight: '1.5' }} />
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: 'auto', paddingTop: '12px' }}>
+                      <button className="btn-outline" style={{ padding: '10px 24px', width: 'auto' }} onClick={() => setIsJournalEditMode(false)}>취소</button>
+                      <button className="btn-primary" style={{ padding: '10px 24px', width: 'auto' }} onClick={() => { alert('수정되었습니다.'); setIsJournalEditMode(false); }}>저장하기</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
+                    <div>
+                      <span style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{selectedJournal.date} • {selectedJournal.tag}</span>
+                    </div>
+                    <div>
+                      <h4 style={{ margin: '0 0 8px', fontSize: '15px', color: 'var(--color-text-muted)' }}>키워드</h4>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                        {selectedJournal.keywords.map(kw => <span key={kw} className="tag">#{kw}</span>)}
+                      </div>
+                    </div>
+                    <div>
+                      <h4 style={{ margin: '0 0 8px', fontSize: '15px', color: 'var(--color-text-muted)' }}>학습 내용</h4>
+                      <p style={{ margin: 0, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: 'var(--color-text-main)' }}>{selectedJournal.content}</p>
+                    </div>
+                    <div>
+                      <h4 style={{ margin: '0 0 8px', fontSize: '15px', color: 'var(--color-text-muted)' }}>다음 학습 계획</h4>
+                      <p style={{ margin: 0, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: 'var(--color-text-main)' }}>{selectedJournal.nextPlan}</p>
+                    </div>
+                    <div style={{ marginTop: 'auto', paddingTop: '16px' }}>
+                      <button className="btn-outline" style={{ width: '100%', padding: '12px', fontWeight: 'bold' }} onClick={() => setIsJournalEditMode(true)}>수정하기</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 오른쪽: 요약 & 피드백 */}
+              <div style={{ flex: 1, padding: '32px', overflowY: 'auto', backgroundColor: 'var(--color-bg-base)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                  <div className="glass-panel" style={{ padding: '24px' }}>
+                    <h3 style={{ margin: '0 0 16px', fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <AlignLeft size={18} color="var(--color-primary)" /> AI 요약
+                    </h3>
+                    <p style={{ margin: 0, fontSize: '15px', lineHeight: '1.6', color: 'var(--color-text-main)' }}>
+                      {selectedJournal.description}
+                    </p>
+                  </div>
+
+                  <div className="glass-panel" style={{ padding: '24px' }}>
+                    <h3 style={{ margin: '0 0 16px', fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <MessageSquare size={18} color="var(--color-primary)" /> AI 피드백
+                    </h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                        <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '12px', fontWeight: 'bold', flexShrink: 0 }}>1</div>
+                        <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5', color: 'var(--color-text-main)' }}>
+                          학습 목표에 맞게 핵심 개념을 잘 파악했습니다. {selectedJournal.keywords[0]}, {selectedJournal.keywords[1]}에 대한 이해가 잘 정리되어 있습니다.
+                        </p>
+                      </div>
+                      <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                        <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '12px', fontWeight: 'bold', flexShrink: 0 }}>2</div>
+                        <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5', color: 'var(--color-text-main)' }}>
+                          더 심화 학습하려면 연관된 추가 개념도 함께 정리하면 좋습니다. 다음 학습 계획이 구체적으로 잘 수립되었습니다.
+                        </p>
+                      </div>
+                      <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                        <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '12px', fontWeight: 'bold', flexShrink: 0 }}>3</div>
+                        <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5', color: 'var(--color-text-main)' }}>
+                          {selectedJournal.stats.solved > 0 ? `현재 ${selectedJournal.stats.solved}문제를 풀이하셨습니다. 충분한 실습량입니다.` : '실습 및 문제 풀이 경험을 추가하면 학습 효과를 더 높일 수 있습니다.'} 다음 단계 학습을 권장합니다.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
