@@ -16,7 +16,6 @@ public class TimerDTO {
     @AllArgsConstructor
     @Builder
     public static class StartRequest {
-        private Long userId;
         private LocalDateTime startTime;
     }
 
@@ -25,7 +24,6 @@ public class TimerDTO {
     @AllArgsConstructor
     @Builder
     public static class EndRequest {
-        private Long userId;
         private LocalDateTime endTime;
         private Long durationSeconds;
     }
