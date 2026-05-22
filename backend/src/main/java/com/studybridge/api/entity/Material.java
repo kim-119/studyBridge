@@ -24,15 +24,33 @@ public class Material {
     private Long userId;
 
     @Column(nullable = false)
+    private String title;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private MaterialType materialType;
+
+    @Column(length = 1000)
+    private String keywords;
+
+    private java.time.LocalDate studyDate;
+
+    @Column(columnDefinition = "TEXT")
+    private String learningContent;
+
+    @Column(columnDefinition = "TEXT")
+    private String nextPlan;
+
+    @Column(name = "original_file_name")
     private String originalFileName;
 
-    @Column(nullable = false)
+    @Column(name = "stored_file_name")
     private String storedFileName;
 
-    @Column(nullable = false, length = 500)
+    @Column(name = "s3_file_url", length = 500)
     private String s3FileUrl;
 
-    @Column(nullable = false)
+    @Column(name = "file_size")
     private Long fileSize;
 
     @Column(columnDefinition = "TEXT")
@@ -47,4 +65,24 @@ public class Material {
 
     @UpdateTimestamp
     private LocalDateTime updatedAt;
+
+    @OneToOne(mappedBy = "material", cascade = CascadeType.ALL, orphanRemoval = true)
+    private MaterialSummary summary;
+
+    @OneToOne(mappedBy = "material", cascade = CascadeType.ALL, orphanRemoval = true)
+    private MaterialFeedback feedback;
+
+    @OneToOne(mappedBy = "material", cascade = CascadeType.ALL, orphanRemoval = true)
+    private MaterialMemo memo;
+
+    @OneToOne(mappedBy = "material", cascade = CascadeType.ALL, orphanRemoval = true)
+    private Roadmap roadmap;
+
+    @Builder.Default
+    @OneToMany(mappedBy = "material", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<MaterialQuiz> quizzes = new java.util.ArrayList<>();
+
+    @Builder.Default
+    @OneToMany(mappedBy = "material", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<MaterialQuestion> questions = new java.util.ArrayList<>();
 }
