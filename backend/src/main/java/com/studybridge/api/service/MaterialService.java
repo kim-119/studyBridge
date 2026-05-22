@@ -62,6 +62,7 @@ public class MaterialService {
                 .studyDate(studyDate)
                 .learningContent(learningContent)
                 .nextPlan(nextPlan)
+                .fileSize(0L)
                 .extractionStatus(ExtractionStatus.SUCCESS) // 텍스트만 있으므로 추출 성공(완료)으로 간주
                 .build();
 
