@@ -7,5 +7,5 @@ import java.util.Optional;
 
 @Repository
 public interface RoadmapRepository extends JpaRepository<Roadmap, Long> {
-    Optional<Roadmap> findByMaterialMaterialId(Long materialId);
+    Optional<Roadmap> findByMaterial_MaterialId(Long materialId);
 }

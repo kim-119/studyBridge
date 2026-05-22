@@ -55,6 +55,14 @@ export default function Login() {
         return;
       }
 
+      // JWT 토큰을 로컬스토리지에 선제적으로 저장 (프로필 및 기타 API 요청 시 헤더에 자동 포함)
+      if (result.accessToken) {
+        localStorage.setItem('token', result.accessToken);
+      }
+      if (result.refreshToken) {
+        localStorage.setItem('refreshToken', result.refreshToken);
+      }
+
       let profile = {};
       try {
         profile = await authService.getProfile(userId);

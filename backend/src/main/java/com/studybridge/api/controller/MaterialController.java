@@ -1,12 +1,13 @@
 package com.studybridge.api.controller;
 
 import com.studybridge.api.dto.MaterialDTO;
+import com.studybridge.api.entity.MaterialType;
 import com.studybridge.api.security.domain.CustomUserDetails;
 import com.studybridge.api.service.MaterialService;
-import com.studybridge.api.service.S3Service;
 import com.studybridge.api.service.PdfExtractionService;
+import com.studybridge.api.service.AiIntegrationService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -14,6 +15,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/materials")
@@ -21,8 +23,76 @@ import java.util.List;
 public class MaterialController {
 
     private final MaterialService materialService;
-    private final S3Service s3Service;
+    private final AiIntegrationService aiIntegrationService;
     private final PdfExtractionService pdfExtractionService;
+
+    // 학습일지 생성
+    @PostMapping("/log")
+    public ResponseEntity<MaterialDTO> createStudyLog(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestBody MaterialDTO.StudyLogRequest request) {
+        
+        MaterialDTO savedMaterial = materialService.saveStudyLog(
+                userDetails.getId(),
+                request.getTitle(),
+                request.getKeywords(),
+                request.getStudyDate(),
+                request.getLearningContent(),
+                request.getNextPlan()
+        );
+        return ResponseEntity.ok(savedMaterial);
+    }
+
+    // 자료 업로드 및 비동기 텍스트 추출 파이프라인 위임
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<MaterialDTO> uploadMaterial(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestParam("title") String title,
+            @RequestParam("materialType") MaterialType materialType,
+            @RequestParam(value = "keywords", required = false) String keywords,
+            @RequestParam("file") MultipartFile file) throws IOException {
+        
+        MaterialDTO savedMaterial = materialService.uploadAndSaveMaterial(
+                userDetails.getId(),
+                title,
+                materialType,
+                keywords,
+                file
+        );
+
+        // 비동기 텍스트 추출 파이프라인 위임 (MultipartFile 바이트 복사본 전달)
+        try {
+            pdfExtractionService.sendToFastApiForExtraction(
+                    savedMaterial.getMaterialId(), 
+                    file.getBytes(), 
+                    file.getOriginalFilename()
+            );
+        } catch (Exception e) {
+            // 비동기 처리에 실패하더라도 업로드 자체 응답은 지장없도록 예외 격리
+        }
+
+        return ResponseEntity.ok(savedMaterial);
+    }
+
+    // 자료 정보 수정 (제목, 키워드 등)
+    @PutMapping("/{materialId}")
+    public ResponseEntity<MaterialDTO> updateMaterial(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @RequestBody MaterialDTO.UpdateRequest request) {
+        
+        MaterialDTO updatedMaterial = materialService.updateMaterial(userDetails.getId(), materialId, request);
+        return ResponseEntity.ok(updatedMaterial);
+    }
+
+    // 자료 삭제
+    @DeleteMapping("/{materialId}")
+    public ResponseEntity<Void> deleteMaterial(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId) {
+        materialService.deleteMaterial(userDetails.getId(), materialId);
+        return ResponseEntity.ok().build();
+    }
 
     // 자료보관함 조회
     @GetMapping
@@ -38,49 +108,70 @@ public class MaterialController {
         return ResponseEntity.ok(materialService.getMaterial(userDetails.getId(), materialId));
     }
 
-    // PDF 학습 자료 업로드 및 비동기 텍스트 추출 체인 연동
-    @PostMapping("/upload")
-    public ResponseEntity<?> uploadMaterial(
+    @GetMapping("/{materialId}/summary")
+    public ResponseEntity<com.studybridge.api.dto.SummaryDTO> getSummary(
             @AuthenticationPrincipal CustomUserDetails userDetails,
-            @RequestParam("file") MultipartFile file) {
-        
-        if (userDetails == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("로그인이 필요한 서비스입니다.");
-        }
-        
-        if (file == null || file.isEmpty()) {
-            return ResponseEntity.badRequest().body("업로드할 파일이 비어 있습니다.");
-        }
-
-        try {
-            // 1. S3 서비스 가동 (S3Config 자격 증명이 부재할 시 로컬 temp-materials/ 폴백으로 안전하게 가동)
-            String storedFileName = s3Service.uploadFile(file, userDetails.getId());
-            String s3Url = s3Service.getPresignedUrl(storedFileName);
-
-            // 2. DB에 기본 자료 엔티티 메타데이터 저장 (PENDING 상태로 등록)
-            MaterialDTO savedMaterial = materialService.saveMaterial(
-                    userDetails.getId(), 
-                    file.getOriginalFilename(), 
-                    storedFileName, 
-                    storedFileName, // s3Key로도 사용
-                    file.getSize()
-            );
-
-            // 3. 비동기 텍스트 추출 파이프라인 위임 (MultipartFile 소멸 방지를 위해 바이트 어레이 복사본 전달)
-            pdfExtractionService.sendToFastApiForExtraction(
-                    savedMaterial.getMaterialId(), 
-                    file.getBytes(), 
-                    file.getOriginalFilename()
-            );
-
-            // 202 Accepted 반환: 업로드 접수 완료 및 백그라운드 파싱 처리 중임을 의미
-            return ResponseEntity.status(HttpStatus.ACCEPTED).body(savedMaterial);
-
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
-        } catch (IOException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("파일 처리 중 오류가 발생했습니다: " + e.getMessage());
-        }
+            @PathVariable Long materialId) {
+        return ResponseEntity.ok(aiIntegrationService.getSummary(userDetails.getId(), materialId));
     }
-}
+
+    @GetMapping("/{materialId}/feedback")
+    public ResponseEntity<com.studybridge.api.dto.FeedbackDTO> getFeedback(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId) {
+        return ResponseEntity.ok(aiIntegrationService.getFeedback(userDetails.getId(), materialId));
+    }
+
+    @GetMapping("/{materialId}/memo")
+    public ResponseEntity<com.studybridge.api.dto.MemoDTO> getMemo(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId) {
+        return ResponseEntity.ok(aiIntegrationService.getMemo(userDetails.getId(), materialId));
+    }
+
+    @PutMapping("/{materialId}/memo")
+    public ResponseEntity<com.studybridge.api.dto.MemoDTO> saveMemo(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @RequestBody Map<String, String> request) {
+        return ResponseEntity.ok(aiIntegrationService.saveMemo(userDetails.getId(), materialId, request.get("content")));
+    }
+
+    @GetMapping("/{materialId}/quiz")
+    public ResponseEntity<List<com.studybridge.api.dto.QuizDTO.Response>> getQuizzes(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId) {
+        return ResponseEntity.ok(aiIntegrationService.getQuizzes(userDetails.getId(), materialId));
+    }
+
+    @PostMapping("/{materialId}/quiz")
+    public ResponseEntity<com.studybridge.api.dto.QuizDTO.Response> generateQuiz(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @RequestBody com.studybridge.api.dto.QuizDTO.Request request) {
+        return ResponseEntity.ok(aiIntegrationService.generateQuiz(userDetails.getId(), materialId, request));
+    }
+
+    @PostMapping("/{materialId}/question")
+    public ResponseEntity<com.studybridge.api.dto.QuestionDTO.Response> askQuestion(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @RequestBody com.studybridge.api.dto.QuestionDTO.Request request) {
+        return ResponseEntity.ok(aiIntegrationService.askQuestion(userDetails.getId(), materialId, request));
+    }
+
+    @GetMapping("/{materialId}/roadmap")
+    public ResponseEntity<com.studybridge.api.dto.RoadmapDTO> getRoadmap(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId) {
+        return ResponseEntity.ok(aiIntegrationService.getRoadmap(userDetails.getId(), materialId));
+    }
+
+    @PutMapping("/{materialId}/roadmap/tasks/{taskId}/toggle")
+    public ResponseEntity<com.studybridge.api.dto.RoadmapDTO.RoadmapTaskDTO> toggleRoadmapTask(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @PathVariable Long taskId) {
+        return ResponseEntity.ok(aiIntegrationService.toggleRoadmapTask(userDetails.getId(), materialId, taskId));
+    }
+}

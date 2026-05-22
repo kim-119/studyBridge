@@ -6,8 +6,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
@@ -44,20 +45,12 @@ public class S3Service {
         this.secretKey = secretKey;
     }
 
-    /**
-     * AWS 자격 증명 및 버킷 이름 세팅 여부 판별
-     */
     private boolean isAwsConfigured() {
         return bucket != null && !bucket.trim().isEmpty() 
             && accessKey != null && !accessKey.trim().isEmpty() 
             && secretKey != null && !secretKey.trim().isEmpty();
     }
 
-    /**
-     * S3에 PDF 원본 저장
-     * 경로: materials/user_{userId}/uuid.pdf
-     * AWS 자격 증명이 주입되지 않은 개발용 환경에서는 로컬 임시 디렉토리(temp-materials/)로 저장 우회(Fallback) 처리합니다.
-     */
     public String uploadFile(MultipartFile file, Long userId) throws IOException {
         if (file.getContentType() == null || !file.getContentType().equals("application/pdf")) {
             throw new IllegalArgumentException("PDF 파일만 업로드 가능합니다.");
@@ -96,7 +89,7 @@ public class S3Service {
         if (s3Key == null || s3Key.isEmpty()) return;
 
         if (!isAwsConfigured()) {
-            log.warn("[S3 폴백 가동] AWS S3 자격 증명이 없어 로컬 파일 삭제를 시도합니다: {}", s3Key);
+            log.warn("[S3 폴백 가동] 로컬 임시 저장소에서 파일을 삭제합니다: {}", s3Key);
             deleteLocalFile(s3Key);
             return;
         }
@@ -113,10 +106,6 @@ public class S3Service {
         }
     }
 
-    /**
-     * Private 객체에 접근하기 위한 임시 서명 URL 발급
-     * S3 미설정 상황에서는 로컬 가짜 조회 경로를 반환합니다.
-     */
     public String getPresignedUrl(String s3Key) {
         if (s3Key == null || s3Key.isEmpty()) return null;
 
