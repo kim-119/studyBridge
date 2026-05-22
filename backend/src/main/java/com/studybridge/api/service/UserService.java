@@ -184,6 +184,7 @@ public class UserService {
         
         user.setBanned(request.isBanned());
         user.setBannedUntil(request.isBanned() ? request.getBannedUntil() : null);
+        user.setStatus(request.isBanned() ? "BANNED" : "ACTIVE");
         
         // 사용자를 정지시킬 때, 강제 로그아웃을 위해 리프레시 토큰을 삭제
         if (request.isBanned()) {
@@ -194,6 +195,9 @@ public class UserService {
     }
 
     private UserDTO.Response convertToResponse(User user) {
+        boolean actualBanned = user.isBanned() && 
+                (user.getBannedUntil() == null || user.getBannedUntil().isAfter(LocalDateTime.now()));
+
         return UserDTO.Response.builder()
                 .id(user.getId())
                 .email(user.getEmail())
@@ -202,7 +206,7 @@ public class UserService {
                 .photoUrl(user.getPhotoUrl())
                 .isSubscribed(user.getIsSubscribed())
                 .role(user.getRole())
-                .banned(user.isBanned())
+                .banned(actualBanned)
                 .bannedUntil(user.getBannedUntil())
                 .build();
     }

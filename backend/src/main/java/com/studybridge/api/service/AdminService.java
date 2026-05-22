@@ -35,9 +35,10 @@ public class AdminService {
         long totalUserCount = userRepository.count();
         long todayNewUserCount = userRepository.countByCreatedAtAfter(LocalDate.now().atStartOfDay());
 
-        // 정지 유저 수 계산
+        // 정지 유저 수 계산 (임시 정지가 만료된 유저는 제외)
         long bannedUserCount = userRepository.findAll().stream()
-                .filter(User::isBanned)
+                .filter(user -> user.isBanned() && 
+                        (user.getBannedUntil() == null || user.getBannedUntil().isAfter(java.time.LocalDateTime.now())))
                 .count();
 
         // 전공별 유저 수 분포 통계 생성
@@ -167,6 +168,9 @@ public class AdminService {
     }
 
     private UserDTO.Response convertToResponse(User user) {
+        boolean actualBanned = user.isBanned() && 
+                (user.getBannedUntil() == null || user.getBannedUntil().isAfter(java.time.LocalDateTime.now()));
+
         return UserDTO.Response.builder()
                 .id(user.getId())
                 .email(user.getEmail())
@@ -175,7 +179,7 @@ public class AdminService {
                 .photoUrl(user.getPhotoUrl())
                 .isSubscribed(user.getIsSubscribed())
                 .role(user.getRole())
-                .banned(user.isBanned())
+                .banned(actualBanned)
                 .bannedUntil(user.getBannedUntil())
                 .build();
     }
