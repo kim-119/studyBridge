@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, Circle, Settings, ChevronRight, X } from 'lucide-react';
+import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, Circle, Settings, ChevronRight, X, MoreHorizontal } from 'lucide-react';
 
 export default function ArchiveDetail() {
   const { type, id } = useParams();
@@ -8,8 +8,12 @@ export default function ArchiveDetail() {
   const navigate = useNavigate();
   const item = location.state?.item;
 
-  const [activePdfTool, setActivePdfTool] = useState('summary');
+  const [activePdfTool, setActivePdfTool] = useState(type === 'syllabus' ? 'roadmap' : 'summary');
   const [chatInput, setChatInput] = useState('');
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showDifficultyModal, setShowDifficultyModal] = useState(false);
+  const [showWeekModal, setShowWeekModal] = useState(false);
+  const [syllabusSettings, setSyllabusSettings] = useState({ difficulty: '보통', weeks: 12 });
 
   // 퀴즈 상태
   const [isQuizSettingsOpen, setIsQuizSettingsOpen] = useState(false);
@@ -307,11 +311,23 @@ export default function ArchiveDetail() {
 
         return (
           <div className="animate-fade-in">
+            {showMoreMenu && <div onClick={() => setShowMoreMenu(false)} style={{ position: 'fixed', inset: 0, zIndex: 99 }} />}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
               <h2 style={{ margin: 0, color: 'var(--color-text-main)' }}>주차별 학습 로드맵</h2>
-              <button className="btn-outline" style={{ display: 'inline-flex', width: 'max-content', flex: 'none', alignItems: 'center', gap: '6px', height: '32px', fontSize: '13px', padding: '0 12px' }}>
-                <Download size={14} /> 12주차
-              </button>
+              <div style={{ position: 'relative' }}>
+                <button className="btn-outline" onClick={() => setShowMoreMenu(v => !v)} style={{ display: 'inline-flex', width: 'max-content', flex: 'none', alignItems: 'center', gap: '6px', height: '32px', fontSize: '13px', padding: '0 12px' }}>
+                  <MoreHorizontal size={14} /> 더보기
+                </button>
+                {showMoreMenu && (
+                  <div style={{ position: 'absolute', right: 0, top: '36px', backgroundColor: 'white', border: '1px solid var(--color-border)', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', zIndex: 100, minWidth: '160px', overflow: 'hidden' }}>
+                    <button onClick={() => { setShowDifficultyModal(true); setShowMoreMenu(false); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 16px', border: 'none', background: 'none', cursor: 'pointer', fontSize: '14px', color: 'var(--color-text-main)' }}>🎯 난이도 설정</button>
+                    <div style={{ height: '1px', backgroundColor: 'var(--color-border)', margin: '0 12px' }} />
+                    <button onClick={() => { setShowWeekModal(true); setShowMoreMenu(false); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 16px', border: 'none', background: 'none', cursor: 'pointer', fontSize: '14px', color: 'var(--color-text-main)' }}>📅 주차 설정</button>
+                    <div style={{ height: '1px', backgroundColor: 'var(--color-border)', margin: '0 12px' }} />
+                    <button onClick={() => { window.print(); setShowMoreMenu(false); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 16px', border: 'none', background: 'none', cursor: 'pointer', fontSize: '14px', color: 'var(--color-text-main)' }}><Download size={14} /> PDF 다운로드</button>
+                  </div>
+                )}
+              </div>
             </div>
             <p style={{ color: 'var(--color-text-muted)', marginBottom: '24px' }}>
               업로드한 강의계획서를 기반으로 주차별 학습 계획을 생성했습니다.
@@ -360,6 +376,65 @@ export default function ArchiveDetail() {
                 </div>
               ))}
             </div>
+
+          {/* 난이도 설정 모달 */}
+          {showDifficultyModal && (
+            <div className="modal-overlay" style={{ zIndex: 1000 }}>
+              <div className="glass-panel modal-content animate-fade-in" style={{ width: '420px', maxWidth: '95vw' }}>
+                <div className="modal-header">
+                  <h3 style={{ margin: 0 }}>🎯 난이도 설정</h3>
+                  <button className="btn-close" onClick={() => setShowDifficultyModal(false)}><X size={20} /></button>
+                </div>
+                <div className="modal-body" style={{ padding: '20px' }}>
+                  <p style={{ color: 'var(--color-text-muted)', marginBottom: '20px', fontSize: '14px' }}>로드맵의 난이도를 선택하면 학습 목표와 활동 수준이 조정됩니다.</p>
+                  <div style={{ display: 'flex', gap: '12px' }}>
+                    {[{ label: '쉬움', desc: '핵심 개념 위주', color: '#10B981' }, { label: '보통', desc: '균형 잡힌 학습', color: '#F59E0B' }, { label: '어려움', desc: '심화 탐구 중심', color: '#EF4444' }].map(({ label, desc, color }) => (
+                      <button key={label} onClick={() => setSyllabusSettings(s => ({ ...s, difficulty: label }))}
+                        style={{ flex: 1, padding: '16px 10px', borderRadius: '14px', border: `2px solid ${syllabusSettings.difficulty === label ? color : 'var(--color-border)'}`, background: syllabusSettings.difficulty === label ? `${color}15` : 'white', cursor: 'pointer', transition: 'all 0.2s' }}>
+                        <div style={{ fontSize: '20px', marginBottom: '6px' }}>{label === '쉬움' ? '🟢' : label === '보통' ? '🟡' : '🔴'}</div>
+                        <div style={{ fontWeight: 'bold', fontSize: '14px', color: syllabusSettings.difficulty === label ? color : 'var(--color-text-main)' }}>{label}</div>
+                        <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '4px' }}>{desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="modal-footer">
+                  <button className="btn-primary" style={{ width: '100%', height: '44px' }} onClick={() => setShowDifficultyModal(false)}>적용하기</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 주차 설정 모달 */}
+          {showWeekModal && (
+            <div className="modal-overlay" style={{ zIndex: 1000 }}>
+              <div className="glass-panel modal-content animate-fade-in" style={{ width: '420px', maxWidth: '95vw' }}>
+                <div className="modal-header">
+                  <h3 style={{ margin: 0 }}>📅 주차 설정</h3>
+                  <button className="btn-close" onClick={() => setShowWeekModal(false)}><X size={20} /></button>
+                </div>
+                <div className="modal-body" style={{ padding: '20px' }}>
+                  <p style={{ color: 'var(--color-text-muted)', marginBottom: '20px', fontSize: '14px' }}>학습 로드맵의 총 주차 수를 설정하세요.</p>
+                  <label style={{ display: 'block', fontWeight: '600', marginBottom: '8px' }}>총 주차 수</label>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                    {[8, 10, 12, 14, 16].map(w => (
+                      <button key={w} onClick={() => setSyllabusSettings(s => ({ ...s, weeks: w }))}
+                        style={{ padding: '10px 18px', borderRadius: '20px', border: `2px solid ${syllabusSettings.weeks === w ? 'var(--color-primary)' : 'var(--color-border)'}`, background: syllabusSettings.weeks === w ? 'rgba(96,201,90,0.1)' : 'white', color: syllabusSettings.weeks === w ? 'var(--color-primary)' : 'var(--color-text-main)', fontWeight: syllabusSettings.weeks === w ? 'bold' : 'normal', cursor: 'pointer', transition: 'all 0.2s', fontSize: '14px' }}>
+                        {w}주
+                      </button>
+                    ))}
+                  </div>
+                  <input type="number" className="input-field" value={syllabusSettings.weeks} min={1} max={20}
+                    onChange={e => setSyllabusSettings(s => ({ ...s, weeks: parseInt(e.target.value) || 12 }))}
+                    style={{ width: '100%', padding: '12px', borderRadius: '10px' }} />
+                  <p style={{ marginTop: '6px', fontSize: '12px', color: 'var(--color-text-muted)' }}>1~20 주차 직접 입력 가능</p>
+                </div>
+                <div className="modal-footer">
+                  <button className="btn-primary" style={{ width: '100%', height: '44px' }} onClick={() => setShowWeekModal(false)}>적용하기</button>
+                </div>
+              </div>
+            </div>
+          )}
           </div>
         );
       }
@@ -409,23 +484,25 @@ export default function ArchiveDetail() {
               <ArrowLeft size={18} /> 목록
             </button>
           </div>
-          <div style={{ flex: 1, padding: '0 24px', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
-            <button className={`archive-action-btn ${activePdfTool === 'summary' ? 'active' : ''}`} onClick={() => setActivePdfTool('summary')}>
-              <AlignLeft size={16} /> 요약
-            </button>
-            <button className={`archive-action-btn ${activePdfTool === 'quiz' ? 'active' : ''}`} onClick={() => setActivePdfTool('quiz')}>
-              <HelpCircle size={16} /> 퀴즈/문제 생성
-            </button>
-            <button className={`archive-action-btn ${activePdfTool === 'roadmap' ? 'active' : ''}`} onClick={() => setActivePdfTool('roadmap')}>
-              <Map size={16} /> 주차별 로드맵 생성
-            </button>
-            <button className={`archive-action-btn ${activePdfTool === 'memo' ? 'active' : ''}`} onClick={() => setActivePdfTool('memo')}>
-              <Edit3 size={16} /> 메모
-            </button>
-            <button className={`archive-action-btn ${activePdfTool === 'chat' ? 'active' : ''}`} onClick={() => setActivePdfTool('chat')}>
-              <MessageSquare size={16} /> AI 질문
-            </button>
-          </div>
+          {type === 'pdf' && (
+            <div style={{ flex: 1, padding: '0 24px', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+              <button className={`archive-action-btn ${activePdfTool === 'summary' ? 'active' : ''}`} onClick={() => setActivePdfTool('summary')}>
+                <AlignLeft size={16} /> 요약
+              </button>
+              <button className={`archive-action-btn ${activePdfTool === 'quiz' ? 'active' : ''}`} onClick={() => setActivePdfTool('quiz')}>
+                <HelpCircle size={16} /> 퀴즈/문제 생성
+              </button>
+              <button className={`archive-action-btn ${activePdfTool === 'roadmap' ? 'active' : ''}`} onClick={() => setActivePdfTool('roadmap')}>
+                <Map size={16} /> 주차별 로드맵 생성
+              </button>
+              <button className={`archive-action-btn ${activePdfTool === 'memo' ? 'active' : ''}`} onClick={() => setActivePdfTool('memo')}>
+                <Edit3 size={16} /> 메모
+              </button>
+              <button className={`archive-action-btn ${activePdfTool === 'chat' ? 'active' : ''}`} onClick={() => setActivePdfTool('chat')}>
+                <MessageSquare size={16} /> AI 질문
+              </button>
+            </div>
+          )}
         </div>
       )}
 
