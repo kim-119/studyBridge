@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "studybridge-roadmap-tool"
+version = "0.1.0"
+description = "StudyBridge roadmap generation and PDF builder"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.40.0",
+    "pydantic>=2.7.0",
+    "reportlab>=4.2.0"
+]
+
+[tool.setuptools]
+py-modules = ["roadmap"]
