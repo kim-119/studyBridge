@@ -32,6 +32,12 @@ export function useAuth() {
     localStorage.setItem('user', JSON.stringify(userData));
     localStorage.setItem('userId', userData.userId || userData.id);
     localStorage.setItem('userEmail', userData.email);
+    if (userData.accessToken) {
+      localStorage.setItem('token', userData.accessToken);
+    }
+    if (userData.refreshToken) {
+      localStorage.setItem('refreshToken', userData.refreshToken);
+    }
     window.dispatchEvent(new Event('auth-change'));
   };
 
@@ -42,6 +48,7 @@ export function useAuth() {
     localStorage.removeItem('userName');
     localStorage.removeItem('userMajor');
     localStorage.removeItem('token');
+    localStorage.removeItem('refreshToken');
     sessionStorage.clear();
     window.dispatchEvent(new Event('auth-change'));
   };

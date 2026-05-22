@@ -31,15 +31,15 @@ public class TimerService {
         private final UserRepository userRepository; // UserRepository 주입
 
         @Transactional
-        public TimerDTO.Response startTimer(TimerDTO.StartRequest request) {
+        public TimerDTO.Response startTimer(Long userId, TimerDTO.StartRequest request) {
                 // userId로 User 엔티티 조회
-                User user = userRepository.findById(request.getUserId())
+                User user = userRepository.findById(userId)
                                 .orElseThrow(() -> new NoSuchElementException(
-                                                "User not found with ID: " + request.getUserId()));
+                                                "User not found with ID: " + userId));
 
-                timerRepository.findByUserIdAndStatus(request.getUserId(), TimerStatus.STARTED)
+                timerRepository.findByUserIdAndStatus(userId, TimerStatus.STARTED)
                                 .ifPresent(timer -> {
-                                        throw new IllegalStateException("User " + request.getUserId()
+                                        throw new IllegalStateException("User " + userId
                                                         + " already has an active timer.");
                                 });
 

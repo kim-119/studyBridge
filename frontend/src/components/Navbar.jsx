@@ -28,6 +28,9 @@ export default function Navbar() {
             <Link to="/groupstudy" className="nav-link">
               그룹스터디
             </Link>
+            <Link to="/archive" className="nav-link">
+              자료보관함
+            </Link>
           </div>
         </div>
 
