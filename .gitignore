@@ -17,3 +17,7 @@ backend/.gradle/
 backend/bin/
 .gradle/
 bin/
+
+# Python cache
+__pycache__/
+*.pyc

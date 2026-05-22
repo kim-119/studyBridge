@@ -9,3 +9,6 @@ pytesseract
 Pillow
 python-multipart
 matplotlib
+boto3
+reportlab
+-e .
