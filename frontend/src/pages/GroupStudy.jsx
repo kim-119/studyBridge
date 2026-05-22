@@ -16,39 +16,7 @@ export default function GroupStudy() {
     return true;
   };
   
-  // 임시 데이터
-  const [studies] = useState([
-    {
-      id: 1,
-      title: '더미 데이터1',
-      leader: '개발자킴',
-      status: 'RECRUITING', // RECRUITING, CLOSED
-      currentMembers: 3,
-      maxMembers: 6,
-      tags: ['Spring', 'React', 'Project'],
-      description: '매주 토요일 오후 2시 강남역에서 진행하는 사이드 프로젝트 스터디입니다.',
-    },
-    {
-      id: 2,
-      title: '더미 데이터2',
-      leader: 'algo_master',
-      status: 'RECRUITING',
-      currentMembers: 2,
-      maxMembers: 4,
-      tags: ['Algorithm', 'Python', '코딩테스트'],
-      description: '백준 골드 달성을 목표로 주 2회 온라인으로 진행합니다.',
-    },
-    {
-      id: 3,
-      title: '더미 데이터3',
-      leader: '취준생A',
-      status: 'CLOSED',
-      currentMembers: 5,
-      maxMembers: 5,
-      tags: ['CS', '면접', '운영체제'],
-      description: '비대면으로 진행되는 CS 전공지식 정리 스터디입니다. (모집 마감)',
-    }
-  ]);
+  const [studies] = useState([]);
 
   const [appliedStudies, setAppliedStudies] = useState([]); // 신청한 스터디 ID 목록 (임시)
 
