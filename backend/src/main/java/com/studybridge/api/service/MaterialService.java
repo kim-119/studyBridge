@@ -22,10 +22,11 @@ public class MaterialService {
     private final PdfExtractionService pdfExtractionService;
 
     @Transactional
-    public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords, org.springframework.web.multipart.MultipartFile file) throws java.io.IOException {
+    public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords,
+            org.springframework.web.multipart.MultipartFile file) throws java.io.IOException {
         // S3에 파일 업로드
         String s3Key = s3Service.uploadFile(file, userId);
-        
+
         // DB에 데이터 저장
         Material material = Material.builder()
                 .userId(userId)
@@ -38,20 +39,21 @@ public class MaterialService {
                 .fileSize(file.getSize())
                 .extractionStatus(ExtractionStatus.PENDING)
                 .build();
-        
+
         Material savedMaterial = materialRepository.save(material);
-        
+
         // FastAPI로 텍스트 추출
         pdfExtractionService.sendToFastApiForExtraction(
-                savedMaterial.getMaterialId(), 
-                file.getBytes(), 
-                file.getOriginalFilename()
-        );
-        
+                savedMaterial.getMaterialId(),
+                file.getBytes(),
+                file.getOriginalFilename());
+
         return convertToDTO(savedMaterial);
     }
+
     @Transactional
-    public MaterialDTO saveStudyLog(Long userId, String title, String keywords, java.time.LocalDate studyDate, String learningContent, String nextPlan) {
+    public MaterialDTO saveStudyLog(Long userId, String title, String keywords, java.time.LocalDate studyDate,
+            String learningContent, String nextPlan) {
         Material material = Material.builder()
                 .userId(userId)
                 .title(title)
@@ -95,7 +97,7 @@ public class MaterialService {
             throw new SecurityException("해당 자료에 대한 삭제 권한이 없습니다.");
         }
 
-        // 학습일지가 아니고 실제 파일이 존재하는 경우 S3에서 삭제
+        // S3에서 삭제
         if (material.getMaterialType() != MaterialType.STUDY_LOG && material.getStoredFileName() != null) {
             s3Service.deleteFile(material.getStoredFileName());
         }
@@ -117,7 +119,7 @@ public class MaterialService {
         if (!material.getUserId().equals(userId)) {
             throw new SecurityException("해당 자료에 대한 조회 권한이 없습니다.");
         }
-        
+
         return convertToDTO(material);
     }
 
