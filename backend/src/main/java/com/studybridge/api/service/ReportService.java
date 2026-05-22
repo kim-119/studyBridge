@@ -2,7 +2,7 @@ package com.studybridge.api.service;
 
 import com.studybridge.api.dto.ReportDTO;
 import com.studybridge.api.entity.*;
-import com.studybridge.api.repository.MaterialRepository;
+import com.studybridge.api.repository.AgentChatRoomRepository;
 import com.studybridge.api.repository.ReportRepository;
 import com.studybridge.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -19,8 +19,7 @@ public class ReportService {
 
     private final ReportRepository reportRepository;
     private final UserRepository userRepository;
-    private final MaterialRepository materialRepository;
-    private final S3Service s3Service;
+    private final AgentChatRoomRepository agentChatRoomRepository;
 
     /**
      * 사용자가 대상을 신고합니다.
@@ -31,13 +30,13 @@ public class ReportService {
                 .orElseThrow(() -> new IllegalArgumentException("신고하는 사용자를 찾을 수 없습니다."));
 
         // 신고 대상의 유효성 검사
-        if (request.getTargetType() == ReportTargetType.MATERIAL) {
-            if (!materialRepository.existsById(request.getTargetId())) {
-                throw new IllegalArgumentException("신고 대상 학습 자료를 찾을 수 없습니다.");
-            }
-        } else if (request.getTargetType() == ReportTargetType.USER) {
+        if (request.getTargetType() == ReportTargetType.USER) {
             if (!userRepository.existsById(request.getTargetId())) {
                 throw new IllegalArgumentException("신고 대상 사용자를 찾을 수 없습니다.");
+            }
+        } else if (request.getTargetType() == ReportTargetType.STUDY_GROUP) {
+            if (!agentChatRoomRepository.existsById(request.getTargetId())) {
+                throw new IllegalArgumentException("신고 대상 학습 그룹을 찾을 수 없습니다.");
             }
         }
 
@@ -107,18 +106,17 @@ public class ReportService {
         String targetContent = "N/A";
         String targetUrl = null;
         
-        if (report.getTargetType() == ReportTargetType.MATERIAL) {
-            Material material = materialRepository.findById(report.getTargetId())
-                    .orElse(null); // 신고 대상이 삭제되었을 수도 있음
-            if (material != null) {
-                targetContent = material.getOriginalFileName();
-                targetUrl = s3Service.getPresignedUrl(material.getStoredFileName());
-            }
-        } else if (report.getTargetType() == ReportTargetType.USER) {
+        if (report.getTargetType() == ReportTargetType.USER) {
             User user = userRepository.findById(report.getTargetId())
                     .orElse(null); // 신고 대상이 삭제되었을 수도 있음
             if (user != null) {
                 targetContent = user.getDisplayName() + " (" + user.getEmail() + ")";
+            }
+        } else if (report.getTargetType() == ReportTargetType.STUDY_GROUP) {
+            AgentChatRoom room = agentChatRoomRepository.findById(report.getTargetId())
+                    .orElse(null); // 신고 대상이 삭제되었을 수도 있음
+            if (room != null) {
+                targetContent = room.getRoomName() + " (개설자: " + room.getUser().getDisplayName() + ")";
             }
         }
 

@@ -20,14 +20,11 @@ import java.util.stream.Collectors;
 public class AdminService {
 
     private final UserRepository userRepository;
-    private final MaterialRepository materialRepository;
-    private final TodoRepository todoRepository;
-    private final S3Service s3Service;
     private final ReportRepository reportRepository;
     private final UserService userService;
     private final ReportService reportService;
     private final AgentRepository agentRepository;
-    private final RoadmapRepository roadmapRepository;
+    private final AgentChatRoomRepository agentChatRoomRepository;
 
     /**
      * 관리자 대시보드 통계 정보를 조회합니다.
@@ -37,13 +34,6 @@ public class AdminService {
     public AdminDashboardDTO getDashboardStatistics() {
         long totalUserCount = userRepository.count();
         long todayNewUserCount = userRepository.countByCreatedAtAfter(LocalDate.now().atStartOfDay());
-        long totalMaterialCount = materialRepository.count();
-        long totalTodoCount = todoRepository.count();
-
-        // 구독 유저 수 계산
-        long subscribedUserCount = userRepository.findAll().stream()
-                .filter(user -> Boolean.TRUE.equals(user.getIsSubscribed()))
-                .count();
 
         // 정지 유저 수 계산
         long bannedUserCount = userRepository.findAll().stream()
@@ -58,45 +48,13 @@ public class AdminService {
         return AdminDashboardDTO.builder()
                 .totalUserCount(totalUserCount)
                 .todayNewUserCount(todayNewUserCount)
-                .totalMaterialCount(totalMaterialCount)
-                .totalTodoCount(totalTodoCount)
-                .subscribedUserCount(subscribedUserCount)
                 .bannedUserCount(bannedUserCount)
                 .majorDistribution(majorDistribution)
                 .build();
     }
 
     /**
-     * 관리자가 신고된 특정 학습 자료를 삭제합니다.
-     * 
-     * @param materialId 삭제할 학습 자료 ID
-     */
-    @Transactional
-    public void deleteMaterialByAdmin(Long materialId) {
-        Material material = materialRepository.findById(materialId)
-                .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 학습 자료입니다."));
-
-        // 외래키 무결성을 위해 학습 자료와 연관된 로드맵 수동 선행 삭제
-        roadmapRepository.findByMaterialMaterialId(materialId)
-                .ifPresent(roadmapRepository::delete);
-
-        // S3에서도 파일 삭제
-        s3Service.deleteFile(material.getStoredFileName());
-
-        // DB에서 자료 삭제
-        materialRepository.delete(material);
-
-        // 해당 학습 자료에 대한 모든 대기 중(PENDING)인 신고 승인 완료 처리
-        List<Report> reports = reportRepository.findByStatus(ReportStatus.PENDING);
-        for (Report report : reports) {
-            if (report.getTargetType() == ReportTargetType.MATERIAL && report.getTargetId().equals(materialId)) {
-                report.setStatus(ReportStatus.APPROVED);
-            }
-        }
-    }
-
-    /**
-     * 관리자가 신고를 승인하고, 해당 대상(학습 자료)을 자동으로 삭제합니다.
+     * 관리자가 신고를 승인하고, 해당 대상(스터디 그룹)을 자동으로 삭제합니다.
      * 
      * @param reportId 승인할 신고 ID
      * @return 처리된 신고 응답 DTO
@@ -109,16 +67,11 @@ public class AdminService {
         // 기존 ReportService를 사용하여 PENDING 검사 및 APPROVED 상태 변경 진행
         ReportDTO.ReportResponse response = reportService.approveReport(reportId);
 
-        // 신고 대상이 학습 자료(MATERIAL)인 경우, 해당 자료를 자동으로 S3 및 DB에서 영구 삭제
-        if (report.getTargetType() == ReportTargetType.MATERIAL) {
-            Material material = materialRepository.findById(report.getTargetId()).orElse(null);
-            if (material != null) {
-                // 외래키 무결성을 위해 학습 자료와 연관된 로드맵 수동 선행 삭제
-                roadmapRepository.findByMaterialMaterialId(material.getMaterialId())
-                        .ifPresent(roadmapRepository::delete);
-
-                s3Service.deleteFile(material.getStoredFileName());
-                materialRepository.delete(material);
+        // 신고 대상이 학습 그룹(STUDY_GROUP)인 경우, 해당 그룹을 자동으로 데이터베이스에서 삭제 (Cascading Delete)
+        if (report.getTargetType() == ReportTargetType.STUDY_GROUP) {
+            AgentChatRoom room = agentChatRoomRepository.findById(report.getTargetId()).orElse(null);
+            if (room != null) {
+                agentChatRoomRepository.delete(room);
             }
         }
 
@@ -178,18 +131,6 @@ public class AdminService {
     }
 
     /**
-     * 특정 사용자가 업로드한 모든 학습 자료 목록을 조회합니다.
-     * 
-     * @param userId 유저 ID
-     * @return 학습 자료 목록
-     */
-    public List<Material> getUserMaterials(Long userId) {
-        return materialRepository.findAll().stream()
-                .filter(material -> material.getUserId().equals(userId))
-                .collect(Collectors.toList());
-    }
-
-    /**
      * 특정 사용자가 제기했거나, 특정 사용자를 대상으로 제기된 모든 신고 내역을 조회합니다.
      * 
      * @param userId 유저 ID
@@ -243,16 +184,15 @@ public class AdminService {
         String targetContent = "N/A";
         String targetUrl = null;
 
-        if (report.getTargetType() == ReportTargetType.MATERIAL) {
-            Material material = materialRepository.findById(report.getTargetId()).orElse(null);
-            if (material != null) {
-                targetContent = material.getOriginalFileName();
-                targetUrl = s3Service.getPresignedUrl(material.getStoredFileName());
-            }
-        } else if (report.getTargetType() == ReportTargetType.USER) {
+        if (report.getTargetType() == ReportTargetType.USER) {
             User user = userRepository.findById(report.getTargetId()).orElse(null);
             if (user != null) {
                 targetContent = user.getDisplayName() + " (" + user.getEmail() + ")";
+            }
+        } else if (report.getTargetType() == ReportTargetType.STUDY_GROUP) {
+            AgentChatRoom room = agentChatRoomRepository.findById(report.getTargetId()).orElse(null);
+            if (room != null) {
+                targetContent = room.getRoomName() + " (개설자: " + room.getUser().getDisplayName() + ")";
             }
         }
 
