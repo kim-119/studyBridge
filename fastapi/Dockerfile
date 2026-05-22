@@ -14,7 +14,6 @@ COPY requirements.txt .
 COPY pyproject.toml .
 COPY roadmap.py .
 COPY main.py .
-COPY .env .
 
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
