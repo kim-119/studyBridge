@@ -70,7 +70,8 @@ const fastApi = axios.create({
 fastApi.interceptors.response.use(
   (res) => res,
   (err) => {
-    console.error('FastAPI 에러:', err.response || err.message);
+    // 404 Not Found 에러 등 불필요한 로그 출력 방지
+    // console.error('FastAPI 에러:', err.response || err.message);
     return Promise.reject(err);
   }
 );

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, Circle, Settings, ChevronRight, X } from 'lucide-react';
+import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, Circle, Settings, ChevronRight, X, Trash2 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { materialService } from '../services/api';
 
@@ -34,6 +34,44 @@ export default function ArchiveDetail() {
   const [userAnswers, setUserAnswers] = useState({});
 
   const chatEndRef = useRef(null);
+
+  // ✅ 패널 너비 조절 및 리사이즈 관련 상태 & Ref
+  const [leftWidth, setLeftWidth] = useState(50); // 기본값 50%
+  const isResizing = useRef(false);
+
+  const startResizing = (e) => {
+    isResizing.current = true;
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', stopResizing);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isResizing.current) return;
+    const container = document.querySelector('.archive-split-view');
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    const newLeftWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+    if (newLeftWidth >= 20 && newLeftWidth <= 80) {
+      setLeftWidth(newLeftWidth);
+    }
+  };
+
+  const stopResizing = () => {
+    isResizing.current = false;
+    document.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', stopResizing);
+    document.body.style.cursor = 'default';
+    document.body.style.userSelect = 'auto';
+  };
+
+  useEffect(() => {
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', stopResizing);
+    };
+  }, []);
 
   // ---------------- 인증 체크 ----------------
   useEffect(() => {
@@ -207,6 +245,20 @@ export default function ArchiveDetail() {
     }
   };
 
+  // 자료 삭제
+  const handleDeleteMaterial = async () => {
+    if (window.confirm('정말로 이 자료를 삭제하시겠습니까? 삭제 후에는 복구할 수 없습니다.')) {
+      try {
+        await materialService.deleteMaterial(id);
+        alert('자료가 삭제되었습니다.');
+        navigate('/archive');
+      } catch (e) {
+        console.error('자료 삭제 실패:', e);
+        alert('자료 삭제 중 오류가 발생했습니다.');
+      }
+    }
+  };
+
   // AI 챗봇 메시지 전송
   const handleSendChat = async (e) => {
     if (e) e.preventDefault();
@@ -330,12 +382,12 @@ export default function ArchiveDetail() {
         return (
           <div className="animate-fade-in" style={{ paddingBottom: '24px', display: 'flex', flexDirection: 'column', height: '100%' }}>
             {/* 상단 액션 영역 */}
-            <div className="glass-panel" style={{ padding: '24px', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
+            <div className="glass-panel" style={{ padding: '24px', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+              <div style={{ flex: '1 1 auto', minWidth: '200px' }}>
                 <h3 style={{ margin: '0 0 8px', fontSize: '20px', color: 'var(--color-text-main)' }}>퀴즈 생성</h3>
-                <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px' }}>원하는 문제 유형, 난이도 등으로 퀴즈 세트를 만들어보세요.</p>
+                <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px', wordBreak: 'keep-all' }}>원하는 문제 유형, 난이도 등으로 퀴즈 세트를 만들어보세요.</p>
               </div>
-              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flex: '0 0 auto' }}>
                 <button
                   className="btn-outline"
                   style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 20px', borderRadius: '30px', whiteSpace: 'nowrap', flexShrink: 0, width: 'auto' }}
@@ -661,11 +713,11 @@ export default function ArchiveDetail() {
               <div ref={chatEndRef} />
             </div>
             <div style={{ marginTop: '16px' }}>
-              <form onSubmit={handleSendChat} style={{ display: 'flex', gap: '12px' }}>
+              <form onSubmit={handleSendChat} style={{ display: 'flex', gap: '12px', width: '100%' }}>
                 <input
                   type="text"
                   className="input-field"
-                  style={{ margin: 0, borderRadius: '30px', backgroundColor: '#F3F4F6', border: 'none', padding: '16px 24px', fontSize: '15px', height: '50px' }}
+                  style={{ flex: 1, minWidth: 0, margin: 0, borderRadius: '30px', backgroundColor: '#F3F4F6', border: 'none', padding: '16px 24px', fontSize: '15px', height: '50px' }}
                   placeholder="자료 내용에 대해 궁금한 점을 입력하세요."
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
@@ -725,11 +777,19 @@ export default function ArchiveDetail() {
 
   return (
     <div className="archive-detail-container animate-fade-in">
+      <style dangerouslySetInnerHTML={{__html: `
+        .archive-detail-container, .archive-detail-container * {
+          box-sizing: border-box;
+        }
+      `}} />
       {(type === 'pdf' || type === 'syllabus') && (
         <div className="archive-action-bar" style={{ padding: '16px 0', borderBottom: '1px solid var(--color-border)', backgroundColor: 'white' }}>
-          <div style={{ flex: 1, padding: '0 24px', display: 'flex', alignItems: 'center' }}>
+          <div style={{ flex: 1, padding: '0 24px', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none' }} onClick={() => navigate('/archive')}>
               <ArrowLeft size={18} /> 목록
+            </button>
+            <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none', color: '#EF4444' }} onClick={handleDeleteMaterial}>
+              <Trash2 size={18} /> 삭제
             </button>
           </div>
           <div style={{ flex: 1, padding: '0 24px', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
@@ -757,6 +817,9 @@ export default function ArchiveDetail() {
           <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none' }} onClick={() => navigate('/archive')}>
             <ArrowLeft size={18} /> 목록
           </button>
+          <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none', color: '#EF4444' }} onClick={handleDeleteMaterial}>
+            <Trash2 size={18} /> 삭제
+          </button>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <h2 style={{ margin: 0, fontSize: '18px' }}>{material.title}</h2>
             <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
@@ -767,18 +830,37 @@ export default function ArchiveDetail() {
       )}
 
       <div className="archive-split-view">
-        <div className="archive-left-panel">
+        <div className="archive-left-panel" style={{ width: (type === 'pdf' || type === 'syllabus') ? `${leftWidth}%` : '50%', flex: 'none', overflowY: 'auto' }}>
           {(type === 'pdf' || type === 'syllabus') ? (
             <div style={{ width: '100%', height: '100%', backgroundColor: 'white', borderRadius: '12px', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
               {material.s3PresignedUrl ? (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
                   <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F9FAFB' }}>
-                    <span style={{ fontWeight: '600', fontSize: '14px', color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>
-                      {material.originalFileName || material.title}
+                    <span style={{ fontWeight: '600', fontSize: '14px', color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }} title={material.title || material.originalFileName}>
+                      {material.title || material.originalFileName}
                     </span>
-                    <a href={material.s3PresignedUrl} target="_blank" rel="noopener noreferrer" className="btn-outline" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', fontSize: '12px', width: 'auto', height: 'auto' }}>
-                      <Download size={14} /> 다운로드
-                    </a>
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
+                      <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginRight: '4px' }}>뷰어 너비:</span>
+                      {[30, 50, 70].map(pct => (
+                        <button
+                          key={pct}
+                          onClick={() => setLeftWidth(pct)}
+                          style={{
+                            padding: '4px 8px',
+                            fontSize: '11px',
+                            borderRadius: '4px',
+                            border: '1px solid var(--color-border)',
+                            backgroundColor: leftWidth === pct ? 'var(--color-primary)' : 'white',
+                            color: leftWidth === pct ? 'white' : 'var(--color-text-main)',
+                            cursor: 'pointer',
+                            fontWeight: leftWidth === pct ? 'bold' : 'normal',
+                            transition: 'all 0.15s'
+                          }}
+                        >
+                          {pct}%
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <div style={{ flex: 1, position: 'relative' }}>
                     <iframe src={material.s3PresignedUrl} style={{ width: '100%', height: '100%', border: 'none' }} title="Document Viewer" />
@@ -840,7 +922,32 @@ export default function ArchiveDetail() {
             </div>
           )}
         </div>
-        <div className="archive-right-panel" style={{ backgroundColor: type === 'journal' ? 'var(--color-bg-base)' : 'white', borderLeft: (type === 'pdf' || type === 'syllabus') ? 'none' : '1px solid var(--color-border)' }}>
+        {(type === 'pdf' || type === 'syllabus') && (
+          <div 
+            onMouseDown={startResizing}
+            className="panel-resizer-bar"
+            style={{
+              width: '10px',
+              cursor: 'col-resize',
+              backgroundColor: '#F3F4F6',
+              borderLeft: '1px solid var(--color-border)',
+              borderRight: '1px solid var(--color-border)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 10,
+              userSelect: 'none',
+              transition: 'background-color 0.2s',
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              <div style={{ width: '4px', height: '4px', borderRadius: '50%', backgroundColor: '#9CA3AF' }}></div>
+              <div style={{ width: '4px', height: '4px', borderRadius: '50%', backgroundColor: '#9CA3AF' }}></div>
+              <div style={{ width: '4px', height: '4px', borderRadius: '50%', backgroundColor: '#9CA3AF' }}></div>
+            </div>
+          </div>
+        )}
+        <div className="archive-right-panel" style={{ width: (type === 'pdf' || type === 'syllabus') ? `${100 - leftWidth}%` : '50%', flex: 'none', overflowY: 'auto', overflowX: 'hidden', boxSizing: 'border-box', backgroundColor: type === 'journal' ? 'var(--color-bg-base)' : 'white', borderLeft: (type === 'pdf' || type === 'syllabus') ? 'none' : '1px solid var(--color-border)' }}>
           {(type === 'pdf' || type === 'syllabus') ? (
             renderPdfRightPanel()
           ) : (

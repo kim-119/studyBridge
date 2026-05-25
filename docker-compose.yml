@@ -26,7 +26,12 @@ services:
       DB_USER: ${DB_USER:-capstone}
       DB_PASSWORD: ${DB_PASSWORD:-1234}
       FASTAPI_BASE_URL: http://fastapi:8000
+      FASTAPI_EXTRACTION_URL: http://fastapi:8000/api/extract
       TZ: Asia/Seoul
+      AWS_REGION: ${AWS_REGION:-ap-northeast-2}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-studybridge-materials}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
     depends_on:
       - db
       - fastapi

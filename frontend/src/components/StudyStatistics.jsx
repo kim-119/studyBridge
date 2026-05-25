@@ -88,18 +88,25 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
         ? weeklyResult
         : (weeklyResult?.data || weeklyResult?.dailyStats || []);
 
+      if (!Array.isArray(rawData) || rawData.length === 0) {
+        const daysEnglish = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+        rawData = daysEnglish.map(dayName => ({
+          day: dayName,
+          seconds: 0
+        }));
+      }
+
       setBaseRawData(rawData);
 
-      if (!Array.isArray(rawData) || rawData.length === 0) {
-        setGraphData([]);
-        setWeeklyStats(null);
-        setIsEmpty(true);
-        return;
-      }
+      // 실제 백엔드 또는 로컬 타이머 통계 중 공부한 기록이 단 1초라도 있는지 판별
+      const hasAnyTime = rawData.some(item => (item.seconds || 0) > 0) || 
+                         (tempWeeklySecondsMap && Object.values(tempWeeklySecondsMap).some(sec => sec > 0));
+      setIsEmpty(!hasAnyTime);
 
       setGraphData(rawData); // 초기값 설정
 
-      // FastAPI 데이터 호출 (백엔드 DailyStudyTime DTO의 hours 필드에 맞춰 변환)
+      // FastAPI 데이터 호출 (현재 백엔드 통계로 충분하므로 404 에러 방지를 위해 호출 제외)
+      /*
       const payload = {
         user_id: Number(effectiveUserId),
         data: rawData.map(item => ({
@@ -107,14 +114,14 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
           hours: Number((item.minutes || 0) / 60)
         })),
       };
-      const graphResult = await activityService.getWeeklyGraph(payload);
-      console.log("StudyStatistics loadData graphResult:", graphResult);
-
-      if (graphResult && Object.keys(graphResult).length > 0) {
-        setWeeklyStats(graphResult);
-      } else {
-        setWeeklyStats(null);
+      let graphResult = null;
+      try {
+        graphResult = await activityService.getWeeklyGraph(payload);
+      } catch (fastApiErr) {
+        console.warn("FastAPI 통계 처리 중 오류 발생 (무시됨):", fastApiErr.message);
       }
+      */
+      setWeeklyStats(null);
 
     } catch (err) {
       console.error("StudyStatistics loadData error:", err);
@@ -144,7 +151,12 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
     const updatedData = baseRawData.map(item => {
       // item.day가 MONDAY 같은 영어일 경우 한글로 매핑, 이미 한글이면 그대로 사용
       const koreanDay = dayMap[item.day] || item.day;
-      let exactSeconds = weeklySecondsMap[koreanDay] || 0;
+      
+      // 기본적으로 백엔드에서 온 초 데이터를 사용하고, 로컬 계산 초가 더 크다면 그것을 사용합니다 (과거 타이머 히스토리 보완)
+      let exactSeconds = Number(item.seconds || 0);
+      if (weeklySecondsMap[koreanDay] > exactSeconds) {
+        exactSeconds = weeklySecondsMap[koreanDay];
+      }
 
       // 오늘은 진행 중인 타이머가 포함된 가장 정확한 todayStudySeconds를 우선 사용
       if (koreanDay === todayDayName && todayStudySeconds > 0) {

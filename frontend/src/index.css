@@ -1346,3 +1346,22 @@ a {
   padding: 24px;
 }
 
+/* Panel Resizer Drag Bar styling */
+.panel-resizer-bar {
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.panel-resizer-bar:hover {
+  background-color: rgba(96, 201, 90, 0.15) !important;
+  border-left-color: var(--color-primary) !important;
+  border-right-color: var(--color-primary) !important;
+}
+
+.panel-resizer-bar:hover div div {
+  background-color: var(--color-primary) !important;
+}
+
+.panel-resizer-bar:active {
+  background-color: rgba(96, 201, 90, 0.25) !important;
+}
+
