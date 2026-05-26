@@ -21,3 +21,7 @@ bin/
 # Python cache
 __pycache__/
 *.pyc
+
+*.egg-info/
+__pycache__/
+.env
