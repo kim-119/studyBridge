@@ -70,7 +70,8 @@ const fastApi = axios.create({
 fastApi.interceptors.response.use(
   (res) => res,
   (err) => {
-    console.error('FastAPI 에러:', err.response || err.message);
+    // 404 Not Found 에러 등 불필요한 로그 출력 방지
+    // console.error('FastAPI 에러:', err.response || err.message);
     return Promise.reject(err);
   }
 );
@@ -222,16 +223,68 @@ export const materialService = {
     const res = await api.get(`/api/materials/${materialId}`);
     return res.data;
   },
-  uploadMaterial: async (file) => {
+  createStudyLog: async (studyLogData) => {
+    const res = await api.post('/api/materials/log', studyLogData);
+    return res.data;
+  },
+  uploadMaterial: async (title, materialType, keywords, file) => {
     const formData = new FormData();
+    formData.append('title', title);
+    formData.append('materialType', materialType);
+    if (keywords) {
+      formData.append('keywords', keywords);
+    }
     formData.append('file', file);
     
-    // 파일 업로드 시에는 Content-Type을 multipart/form-data로 오버라이드
-    const res = await api.post('/api/materials', formData, {
+    const res = await api.post('/api/materials/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
     });
+    return res.data;
+  },
+  updateMaterial: async (materialId, updateData) => {
+    const res = await api.put(`/api/materials/${materialId}`, updateData);
+    return res.data;
+  },
+  deleteMaterial: async (materialId) => {
+    const res = await api.delete(`/api/materials/${materialId}`);
+    return res.data;
+  },
+  getSummary: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/summary`);
+    return res.data;
+  },
+  getFeedback: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/feedback`);
+    return res.data;
+  },
+  getMemo: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/memo`);
+    return res.data;
+  },
+  saveMemo: async (materialId, content) => {
+    const res = await api.put(`/api/materials/${materialId}/memo`, { content });
+    return res.data;
+  },
+  getQuizzes: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/quiz`);
+    return res.data;
+  },
+  generateQuiz: async (materialId, quizRequest) => {
+    const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest);
+    return res.data;
+  },
+  askQuestion: async (materialId, questionRequest) => {
+    const res = await api.post(`/api/materials/${materialId}/question`, questionRequest);
+    return res.data;
+  },
+  getRoadmap: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/roadmap`);
+    return res.data;
+  },
+  toggleRoadmapTask: async (materialId, taskId) => {
+    const res = await api.put(`/api/materials/${materialId}/roadmap/tasks/${taskId}/toggle`);
     return res.data;
   }
 };

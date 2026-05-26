@@ -1,12 +1,15 @@
 import os
 import re
-from typing import List, Dict, Optional, Tuple
+import json
+from typing import Any, List, Dict, Optional, Tuple
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from pydantic import BaseModel, Field
+
+import fitz
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
@@ -1210,10 +1213,7 @@ def root():
 @app.get("/health")
 def health():
     """헬스 체크"""
-    return {
-        "status": "ok",
-        "message": "FastAPI server is running"
-    }
+    return {"status": "ok"}
 
 
 @app.get("/debug/openai-key")
@@ -2026,3 +2026,373 @@ def multi_agent_chat(request: MultiChatRequest):
         )
 
     return MultiChatResponse(answers=final_answers)
+
+
+# =========================================================
+# Spring Boot AI API contract endpoints
+# =========================================================
+
+CONTRACT_MAX_TEXT_CHARS = 20000
+ALLOWED_QUIZ_DIFFICULTIES = {"쉬움", "보통", "어려움"}
+
+
+class ExtractTextResponse(BaseModel):
+    extracted_text: str
+
+
+class SummaryRequest(BaseModel):
+    text: str
+
+
+class SummaryResponse(BaseModel):
+    overview: str
+    coreContents: str
+
+
+class QuizRequest(BaseModel):
+    text: str
+    difficulty: str
+    questionCount: int = Field(..., ge=1, le=20)
+
+
+class QuizResponse(BaseModel):
+    quizData: str
+
+
+class RoadmapContractRequest(BaseModel):
+    text: str
+
+
+class RoadmapTaskContract(BaseModel):
+    taskOrder: int
+    content: str
+
+
+class RoadmapStepContract(BaseModel):
+    stepOrder: int
+    title: str
+    description: str
+    tasks: List[RoadmapTaskContract]
+
+
+class RoadmapContractResponse(BaseModel):
+    title: str
+    steps: List[RoadmapStepContract]
+
+
+class FeedbackRequest(BaseModel):
+    content: str
+
+
+class FeedbackResponse(BaseModel):
+    feedbackData: str
+
+
+class QuestionRequest(BaseModel):
+    text: str
+    question: str
+
+
+class QuestionResponse(BaseModel):
+    answer: str
+
+
+def _require_non_empty(value: str, field_name: str) -> str:
+    if value is None or not value.strip():
+        raise HTTPException(status_code=400, detail=f"{field_name}가 비어 있습니다.")
+    return value.strip()
+
+
+def _contract_text(text: str) -> str:
+    return _require_non_empty(text, "text")[:CONTRACT_MAX_TEXT_CHARS]
+
+
+def _call_openai_contract(prompt: str, *, expect_json: bool = False, max_output_tokens: int = 2000) -> str:
+    """Spring 연동 API에서 공통으로 사용하는 OpenAI 호출 함수."""
+    check_openai_client()
+
+    try:
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            input=prompt,
+            max_output_tokens=max_output_tokens,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"OpenAI API 호출 실패: {type(e).__name__}: {str(e)}",
+        )
+
+    output_text = getattr(response, "output_text", None)
+    if not output_text or not output_text.strip():
+        raise HTTPException(status_code=500, detail="OpenAI 응답이 비어 있습니다.")
+
+    cleaned = output_text.strip()
+    if expect_json:
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+    return cleaned
+
+
+def _load_ai_json(raw_text: str) -> Any:
+    """모델 응답에서 JSON 본문만 추출해 파싱한다."""
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        pass
+
+    start_candidates = [idx for idx in (raw_text.find("{"), raw_text.find("[")) if idx >= 0]
+    end_candidates = [idx for idx in (raw_text.rfind("}"), raw_text.rfind("]")) if idx >= 0]
+
+    if not start_candidates or not end_candidates:
+        raise HTTPException(status_code=500, detail="AI 응답 JSON 파싱 실패")
+
+    start = min(start_candidates)
+    end = max(end_candidates)
+
+    try:
+        return json.loads(raw_text[start:end + 1])
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"AI 응답 JSON 파싱 실패: {str(e)}")
+
+
+def _dump_json_string(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return dict(value)
+
+
+def _normalize_roadmap(data: Dict[str, Any]) -> RoadmapContractResponse:
+    raw_steps = data.get("steps") or []
+    steps: List[RoadmapStepContract] = []
+
+    for step_index, raw_step in enumerate(raw_steps, start=1):
+        step = _as_dict(raw_step)
+        raw_tasks = step.get("tasks") or []
+        tasks: List[RoadmapTaskContract] = []
+
+        for task_index, raw_task in enumerate(raw_tasks, start=1):
+            task = _as_dict(raw_task)
+            content = str(task.get("content") or "").strip()
+            if content:
+                tasks.append(RoadmapTaskContract(taskOrder=task_index, content=content))
+
+        while len(tasks) < 2:
+            tasks.append(
+                RoadmapTaskContract(
+                    taskOrder=len(tasks) + 1,
+                    content=f"{step.get('title') or f'{step_index}주차'} 핵심 내용을 정리하기",
+                )
+            )
+
+        steps.append(
+            RoadmapStepContract(
+                stepOrder=step_index,
+                title=str(step.get("title") or f"{step_index}주차 학습").strip(),
+                description=str(step.get("description") or step.get("overview") or "핵심 개념을 학습합니다.").strip(),
+                tasks=tasks,
+            )
+        )
+
+    if not steps:
+        raise HTTPException(status_code=500, detail="AI 로드맵 생성 실패: steps가 비어 있습니다.")
+
+    return RoadmapContractResponse(
+        title=str(data.get("title") or data.get("subject") or "문서 기반 학습 로드맵").strip(),
+        steps=steps,
+    )
+
+
+@app.post("/api/extract", response_model=ExtractTextResponse)
+async def extract_pdf_text(file: UploadFile = File(...)):
+    try:
+        pdf_bytes = await file.read()
+        extracted_pages: List[str] = []
+
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+            for page in document:
+                extracted_pages.append(page.get_text() or "")
+
+        return ExtractTextResponse(extracted_text="\n".join(extracted_pages).strip())
+    except Exception:
+        raise HTTPException(status_code=500, detail="PDF 텍스트 추출 실패")
+
+
+@app.post("/api/ai/summary", response_model=SummaryResponse)
+def summarize_document(request: SummaryRequest):
+    text = _contract_text(request.text)
+    prompt = f"""
+너는 StudyBridge의 문서 요약 AI다.
+아래 문서를 한국어로 요약하고 JSON만 반환해라.
+
+반환 형식:
+{{
+  "overview": "문서 전체 개요를 2~4문장으로 작성",
+  "coreContents": ["핵심 내용1", "핵심 내용2", "핵심 내용3"]
+}}
+
+문서:
+{text}
+"""
+    result = _load_ai_json(_call_openai_contract(prompt, expect_json=True, max_output_tokens=1500))
+    core_contents = result.get("coreContents")
+    if not isinstance(core_contents, list):
+        raise HTTPException(status_code=500, detail="AI 요약 응답 형식 오류: coreContents")
+
+    return SummaryResponse(
+        overview=str(result.get("overview") or "").strip(),
+        coreContents=_dump_json_string([str(item).strip() for item in core_contents if str(item).strip()]),
+    )
+
+
+@app.post("/api/ai/quiz", response_model=QuizResponse)
+def create_quiz(request: QuizRequest):
+    text = _contract_text(request.text)
+    difficulty = _require_non_empty(request.difficulty, "difficulty")
+    if difficulty not in ALLOWED_QUIZ_DIFFICULTIES:
+        raise HTTPException(status_code=400, detail="difficulty는 쉬움/보통/어려움 중 하나여야 합니다.")
+
+    prompt = f"""
+너는 StudyBridge의 퀴즈 출제 AI다.
+아래 문서만 근거로 {difficulty} 난이도의 객관식 문제를 정확히 {request.questionCount}개 생성해라.
+JSON 배열만 반환해라.
+
+각 문제 형식:
+{{
+  "question": "문제",
+  "options": ["선택지1", "선택지2", "선택지3", "선택지4"],
+  "answer": 0,
+  "explanation": "해설"
+}}
+
+규칙:
+- options는 최소 4개다.
+- answer는 정답 options의 0부터 시작하는 숫자 index다.
+- 문서에 없는 내용으로 문제를 만들지 마라.
+
+문서:
+{text}
+"""
+    quiz_items = _load_ai_json(_call_openai_contract(prompt, expect_json=True, max_output_tokens=3000))
+    if not isinstance(quiz_items, list):
+        raise HTTPException(status_code=500, detail="AI 퀴즈 응답 형식 오류")
+
+    normalized = []
+    for item in quiz_items[:request.questionCount]:
+        if not isinstance(item, dict):
+            continue
+        options = item.get("options")
+        answer = item.get("answer")
+        if not isinstance(options, list) or len(options) < 4 or not isinstance(answer, int):
+            raise HTTPException(status_code=500, detail="AI 퀴즈 응답 형식 오류: options 또는 answer")
+        normalized.append(
+            {
+                "question": str(item.get("question") or "").strip(),
+                "options": [str(option).strip() for option in options],
+                "answer": answer,
+                "explanation": str(item.get("explanation") or "").strip(),
+            }
+        )
+
+    if len(normalized) != request.questionCount:
+        raise HTTPException(status_code=500, detail="AI 퀴즈 문제 수가 요청과 일치하지 않습니다.")
+
+    return QuizResponse(quizData=_dump_json_string(normalized))
+
+
+@app.post("/api/ai/roadmap", response_model=RoadmapContractResponse)
+def create_roadmap(request: RoadmapContractRequest):
+    text = _contract_text(request.text)
+
+    # roadmap.py의 기존 생성기가 사용 가능하면 먼저 재사용하고, 계약 응답으로 변환한다.
+    try:
+        from roadmap import create_default_roadmap_tool
+
+        tool = create_default_roadmap_tool()
+        frontend_response = tool.generate_frontend_response(
+            source_text=text,
+            subject="문서 기반 학습",
+            level="학사 수준",
+            week_count=4,
+            material_id=None,
+        )
+        return _normalize_roadmap(_as_dict(frontend_response))
+    except Exception:
+        pass
+
+    prompt = f"""
+너는 StudyBridge의 학습 로드맵 생성 AI다.
+아래 문서를 기반으로 4주 학습 로드맵을 만들고 JSON만 반환해라.
+
+반환 형식:
+{{
+  "title": "문서 주제 기반 4주 완성 로드맵",
+  "steps": [
+    {{
+      "stepOrder": 1,
+      "title": "1주차: 학습 주제",
+      "description": "학습 설명",
+      "tasks": [
+        {{"taskOrder": 1, "content": "학습 과제"}},
+        {{"taskOrder": 2, "content": "학습 과제"}}
+      ]
+    }}
+  ]
+}}
+
+규칙:
+- steps는 반드시 배열이다.
+- stepOrder는 1부터 순서대로 증가한다.
+- 각 step의 tasks는 최소 2개다.
+- taskOrder는 각 step 내부에서 1부터 시작한다.
+
+문서:
+{text}
+"""
+    result = _load_ai_json(_call_openai_contract(prompt, expect_json=True, max_output_tokens=3000))
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=500, detail="AI 로드맵 응답 형식 오류")
+    return _normalize_roadmap(result)
+
+
+@app.post("/api/ai/feedback", response_model=FeedbackResponse)
+def create_feedback(request: FeedbackRequest):
+    content = _require_non_empty(request.content, "content")[:CONTRACT_MAX_TEXT_CHARS]
+    prompt = f"""
+너는 StudyBridge의 학습 피드백 AI다.
+아래 학습일지를 읽고 한국어로 피드백을 작성해라.
+반드시 칭찬, 보완점, 다음 학습 방향을 포함해라.
+마크다운 제목이나 코드블록은 사용하지 마라.
+
+학습일지:
+{content}
+"""
+    return FeedbackResponse(feedbackData=_call_openai_contract(prompt, max_output_tokens=1200))
+
+
+@app.post("/api/ai/question", response_model=QuestionResponse)
+def answer_question(request: QuestionRequest):
+    text = _contract_text(request.text)
+    question = _require_non_empty(request.question, "question")
+    prompt = f"""
+너는 StudyBridge의 문서 기반 질의응답 AI다.
+아래 문서 내용만 근거로 질문에 답해라.
+문서 내용만으로 답을 명확히 확인할 수 없으면 정확히 다음 문장으로 답해라:
+문서 내용만으로는 명확히 확인하기 어렵습니다
+
+문서:
+{text}
+
+질문:
+{question}
+"""
+    return QuestionResponse(answer=_call_openai_contract(prompt, max_output_tokens=1200))

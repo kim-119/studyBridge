@@ -68,7 +68,7 @@ public class AiIntegrationService {
                                 .build();
         }
 
-        // 요약 가져오기
+        // 요약 가져오기 (없으면 FastAPI 호출하여 생성)
         @Transactional
         public SummaryDTO getSummary(Long userId, Long materialId) {
                 Material material = getMaterialSafely(userId, materialId);
@@ -83,10 +83,6 @@ public class AiIntegrationService {
         }
 
         private SummaryDTO generateSummary(Material material) {
-                if (material.getMaterialType() == MaterialType.STUDY_LOG) {
-                        throw new IllegalArgumentException("학습 일지에서는 요약을 생성할 수 없습니다.");
-                }
-
                 if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
                         throw new IllegalArgumentException("텍스트가 아직 추출되지 않아 요약을 생성할 수 없습니다.");
                 }
@@ -134,10 +130,6 @@ public class AiIntegrationService {
         }
 
         private FeedbackDTO generateFeedback(Material material) {
-                if (material.getMaterialType() != MaterialType.STUDY_LOG) {
-                        throw new IllegalArgumentException("피드백은 학습 일지에서만 생성할 수 있습니다.");
-                }
-
                 if (material.getLearningContent() == null || material.getLearningContent().isBlank()) {
                         throw new IllegalArgumentException("학습 내용이 없어 피드백을 생성할 수 없습니다.");
                 }
@@ -188,10 +180,6 @@ public class AiIntegrationService {
         @Transactional
         public QuizDTO.Response generateQuiz(Long userId, Long materialId, QuizDTO.Request request) {
                 Material material = getMaterialSafely(userId, materialId);
-
-                if (material.getMaterialType() == MaterialType.STUDY_LOG) {
-                        throw new IllegalArgumentException("학습 일지에서는 퀴즈를 생성할 수 없습니다.");
-                }
 
                 if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
                         throw new IllegalArgumentException("텍스트가 아직 추출되지 않아 퀴즈를 생성할 수 없습니다.");
@@ -244,10 +232,6 @@ public class AiIntegrationService {
         @Transactional
         public QuestionDTO.Response askQuestion(Long userId, Long materialId, QuestionDTO.Request request) {
                 Material material = getMaterialSafely(userId, materialId);
-
-                if (material.getMaterialType() == MaterialType.STUDY_LOG) {
-                        throw new IllegalArgumentException("학습 일지에서는 질문을 할 수 없습니다.");
-                }
 
                 if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
                         throw new IllegalArgumentException("자료의 텍스트가 없어 질문할 수 없습니다.");
@@ -325,10 +309,6 @@ public class AiIntegrationService {
 
         // 로드맵 생성
         private RoadmapDTO generateRoadmap(Material material) {
-                if (material.getMaterialType() == MaterialType.STUDY_LOG) {
-                        throw new IllegalArgumentException("학습 일지에서는 로드맵을 생성할 수 없습니다.");
-                }
-
                 if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
                         throw new IllegalArgumentException("텍스트가 아직 추출되지 않아 로드맵을 생성할 수 없습니다.");
                 }
@@ -419,7 +399,7 @@ public class AiIntegrationService {
         public RoadmapDTO.RoadmapTaskDTO toggleRoadmapTask(Long userId, Long materialId, Long taskId) {
                 // 권한 체크
                 getMaterialSafely(userId, materialId);
-
+                
                 RoadmapTask task = roadmapTaskRepository.findById(taskId)
                                 .orElseThrow(() -> new IllegalArgumentException("해당 할 일을 찾을 수 없습니다."));
 
@@ -439,6 +419,4 @@ public class AiIntegrationService {
                                 .isCompleted(task.getIsCompleted())
                                 .build();
         }
-
-
 }
