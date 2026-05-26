@@ -4,10 +4,18 @@ import json
 import os
 import re
 from io import BytesIO
-from typing import Any, List
+from typing import Any, List, Optional
 
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
+
+try:
+    from fastapi import APIRouter, HTTPException
+    from fastapi.responses import StreamingResponse
+except Exception:  # FastAPI가 없는 환경에서도 유틸 클래스로 import 가능하게 처리
+    APIRouter = None
+    HTTPException = None
+    StreamingResponse = None
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -26,7 +34,7 @@ from reportlab.platypus import (
 
 
 # =========================================================
-# 1. 데이터 스키마
+# 1. AI 로드맵 생성 스키마
 # =========================================================
 
 class RoadmapWeek(BaseModel):
@@ -72,8 +80,90 @@ class GeneratedRoadmapBundle(BaseModel):
 
 
 # =========================================================
-# 2. 입력값 검증 및 마크다운 제거
+# 2. 프론트엔드 반환 스키마
+#    ArchiveDetail.jsx는 roadmap.steps를 읽으므로 반드시 steps를 내려준다.
 # =========================================================
+
+class RoadmapTask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    taskId: int
+    content: str
+    isCompleted: bool = False
+
+
+class RoadmapStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stepId: int
+    stepOrder: int
+    title: str
+    description: str
+    coreConcepts: List[str] = Field(default_factory=list)
+    studyFlow: List[str] = Field(default_factory=list)
+    checkpoint: str = ""
+    tasks: List[RoadmapTask] = Field(default_factory=list)
+
+
+class FrontendRoadmapResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    materialId: Optional[int] = None
+    subject: str
+    level: str
+    overview: str
+    steps: List[RoadmapStep]
+    finalSummary: str
+    validationScore: int
+    validationPassed: bool
+    judgeSummary: str
+    aiGenerated: bool = True
+    source: str = "OPENAI_ROADMAP_AI"
+    modelName: str
+
+
+class RoadmapGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_text: str
+    subject: str
+    level: str = "학사 수준"
+    week_count: int = 15
+    material_id: Optional[int] = None
+
+
+# =========================================================
+# 3. 입력값 검증 및 마크다운 제거
+# =========================================================
+
+class AiRoadmapRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+
+
+class AiRoadmapTaskResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    taskOrder: int = Field(..., ge=1)
+    content: str
+
+
+class AiRoadmapStepResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stepOrder: int = Field(..., ge=1)
+    title: str
+    description: str
+    tasks: List[AiRoadmapTaskResponse] = Field(..., min_length=2)
+
+
+class AiRoadmapResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    steps: List[AiRoadmapStepResponse] = Field(..., min_length=4, max_length=15)
+
 
 ALLOWED_LEVELS = [
     "입문 수준",
@@ -288,7 +378,7 @@ def deterministic_validate_result(
 
 
 # =========================================================
-# 3. 프롬프트
+# 4. 프롬프트
 # =========================================================
 
 def build_roadmap_prompt(
@@ -412,7 +502,7 @@ def build_repair_prompt(
 
 
 # =========================================================
-# 4. 한글 PDF 폰트 자동 탐색 및 PDF 생성
+# 5. 한글 PDF 폰트 자동 탐색 및 PDF 생성
 # =========================================================
 
 def find_korean_font_path(font_path: str | None = None) -> str | None:
@@ -640,7 +730,88 @@ def build_roadmap_pdf_bytes(
 
 
 # =========================================================
-# 5. 로드맵 생성 도구
+# 6. 프론트엔드 steps 변환
+# =========================================================
+
+def convert_roadmap_to_frontend_response(
+        bundle: GeneratedRoadmapBundle,
+        material_id: int | None = None,
+        model_name: str = "gpt-4o-mini",
+) -> FrontendRoadmapResponse:
+    steps: list[RoadmapStep] = []
+
+    for week in bundle.result.roadmap:
+        tasks: list[RoadmapTask] = []
+
+        # 프론트 체크리스트는 실제 실행 과제 중심으로 구성한다.
+        # DB 저장 전이라 taskId가 없을 때도 화면 렌더링이 가능하도록 결정적 임시 ID를 부여한다.
+        for idx, task in enumerate(week.practice_tasks):
+            content = strip_markdown(str(task))
+            if not content:
+                continue
+            tasks.append(
+                RoadmapTask(
+                    taskId=week.week * 1000 + idx + 1,
+                    content=content,
+                    isCompleted=False,
+                )
+            )
+
+        # practice_tasks가 비어 있으면 학습 흐름을 체크리스트로 보강한다.
+        if not tasks:
+            for idx, flow in enumerate(week.study_flow):
+                content = strip_markdown(str(flow))
+                if not content:
+                    continue
+                tasks.append(
+                    RoadmapTask(
+                        taskId=week.week * 1000 + idx + 1,
+                        content=f"학습 흐름 수행: {content}",
+                        isCompleted=False,
+                    )
+                )
+
+        # 점검 기준을 마지막 체크리스트로 추가한다.
+        if week.checkpoint.strip():
+            tasks.append(
+                RoadmapTask(
+                    taskId=week.week * 1000 + 900,
+                    content=f"점검 기준 확인: {week.checkpoint}",
+                    isCompleted=False,
+                )
+            )
+
+        steps.append(
+            RoadmapStep(
+                stepId=week.week,
+                stepOrder=week.week,
+                title=week.title,
+                description=week.learning_goal,
+                coreConcepts=week.core_concepts,
+                studyFlow=week.study_flow,
+                checkpoint=week.checkpoint,
+                tasks=tasks,
+            )
+        )
+
+    return FrontendRoadmapResponse(
+        materialId=material_id,
+        subject=bundle.result.subject,
+        level=bundle.result.level,
+        overview=bundle.result.overview,
+        steps=steps,
+        finalSummary=bundle.result.final_summary,
+        validationScore=bundle.validation_report.score,
+        validationPassed=bundle.validation_report.passed,
+        judgeSummary=bundle.validation_report.judge_summary,
+        aiGenerated=True,
+        source="OPENAI_ROADMAP_AI",
+        modelName=model_name,
+    )
+
+
+# =========================================================
+# 7. AI 로드맵 생성 도구
 # =========================================================
 
 class StudyBridgeRoadmapTool:
@@ -827,6 +998,45 @@ class StudyBridgeRoadmapTool:
             validation_report=validation_report,
         )
 
+    def generate_frontend_response(
+            self,
+            source_text: str,
+            subject: str,
+            level: str = "학사 수준",
+            week_count: int = 15,
+            material_id: int | None = None,
+    ) -> FrontendRoadmapResponse:
+        bundle = self.generate(
+            source_text=source_text,
+            subject=subject,
+            level=level,
+            week_count=week_count,
+        )
+
+        return convert_roadmap_to_frontend_response(
+            bundle=bundle,
+            material_id=material_id,
+            model_name=self.model,
+        )
+
+    def generate_frontend_json(
+            self,
+            source_text: str,
+            subject: str,
+            level: str = "학사 수준",
+            week_count: int = 15,
+            material_id: int | None = None,
+    ) -> dict[str, Any]:
+        response = self.generate_frontend_response(
+            source_text=source_text,
+            subject=subject,
+            level=level,
+            week_count=week_count,
+            material_id=material_id,
+        )
+
+        return response.model_dump()
+
     def cross_validate(
             self,
             source_text: str,
@@ -903,3 +1113,218 @@ class StudyBridgeRoadmapTool:
             validation_report=bundle.validation_report,
             font_path=font_path,
         )
+
+
+# =========================================================
+# 8. FastAPI 라우터
+#    main.py에서 app.include_router(router)로 연결하면 AI 로드맵 API가 활성화된다.
+# =========================================================
+
+
+def create_default_roadmap_tool() -> StudyBridgeRoadmapTool:
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY 환경변수가 설정되어 있지 않습니다.")
+
+    return StudyBridgeRoadmapTool(
+        openai_api_key=api_key,
+        model=os.getenv("ROADMAP_OPENAI_MODEL", "gpt-4o-mini"),
+        validator_model=os.getenv("ROADMAP_VALIDATOR_MODEL", "gpt-4o-mini"),
+        max_source_chars=int(os.getenv("ROADMAP_MAX_SOURCE_CHARS", "25000")),
+    )
+
+
+def validate_ai_roadmap_text(text: str) -> str:
+    cleaned = (text or "").strip()
+
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="text가 비어 있습니다.")
+
+    if len(cleaned) < 100:
+        raise HTTPException(
+            status_code=400,
+            detail="PDF 추출 텍스트가 너무 짧아 로드맵을 생성할 수 없습니다.",
+        )
+
+    broken_ratio = cleaned.count("�") / max(len(cleaned), 1)
+    if broken_ratio > 0.03:
+        raise HTTPException(
+            status_code=400,
+            detail="PDF 추출 텍스트 품질이 낮아 로드맵을 생성할 수 없습니다.",
+        )
+
+    return cleaned[: int(os.getenv("ROADMAP_MAX_SOURCE_CHARS", "25000"))]
+
+
+def build_ai_roadmap_prompt(source_text: str) -> str:
+    return f"""
+너는 StudyBridge의 대학생 학습 로드맵 설계 AI다.
+PDF 내용을 기반으로 실제 학생이 따라갈 수 있는 주차별 학습 계획을 만든다.
+PDF에 없는 내용을 과도하게 지어내지 않는다.
+쉬운 개념에서 어려운 개념으로 배치한다.
+텍스트가 강의계획서처럼 주차 구성이 있으면 해당 주차 흐름을 따른다.
+일반 학습 PDF라면 내용 흐름 기준으로 4~8주 로드맵을 생성한다.
+steps는 최소 4개, 최대 15개 범위에서 생성한다.
+각 주차는 title, description, tasks를 포함한다.
+각 step의 tasks는 최소 2개 이상 생성한다.
+stepOrder는 1부터 순서대로 부여한다.
+taskOrder는 각 step 내부에서 1부터 순서대로 부여한다.
+모든 문장은 자연스러운 한국어 평서문으로 작성한다.
+마크다운 문법을 사용하지 않는다.
+JSON 이외의 설명을 출력하지 않는다.
+응답에는 title과 steps만 포함하고 taskId, stepId, coreConcepts, validationScore 같은 추가 필드는 넣지 않는다.
+
+PDF 텍스트:
+{source_text}
+""".strip()
+
+
+def ai_roadmap_schema() -> dict[str, Any]:
+    return {
+        "name": "studybridge_ai_roadmap_contract",
+        "strict": True,
+        "schema": AiRoadmapResponse.model_json_schema(),
+    }
+
+
+def normalize_ai_roadmap(raw: dict[str, Any]) -> AiRoadmapResponse:
+    steps: list[AiRoadmapStepResponse] = []
+
+    for step_index, raw_step in enumerate(raw.get("steps") or [], start=1):
+        if not isinstance(raw_step, dict):
+            continue
+
+        tasks: list[AiRoadmapTaskResponse] = []
+        for task_index, raw_task in enumerate(raw_step.get("tasks") or [], start=1):
+            if not isinstance(raw_task, dict):
+                continue
+
+            content = strip_markdown(str(raw_task.get("content") or "")).strip()
+            if content:
+                tasks.append(
+                    AiRoadmapTaskResponse(
+                        taskOrder=task_index,
+                        content=content,
+                    )
+                )
+
+        if len(tasks) < 2:
+            raise ValueError("각 step의 tasks는 최소 2개 이상이어야 합니다.")
+
+        steps.append(
+            AiRoadmapStepResponse(
+                stepOrder=step_index,
+                title=strip_markdown(str(raw_step.get("title") or f"{step_index}주차 학습")).strip(),
+                description=strip_markdown(str(raw_step.get("description") or "핵심 개념을 학습합니다.")).strip(),
+                tasks=tasks,
+            )
+        )
+
+    if len(steps) < 4 or len(steps) > 15:
+        raise ValueError("steps는 최소 4개, 최대 15개여야 합니다.")
+
+    return AiRoadmapResponse(
+        title=strip_markdown(str(raw.get("title") or "문서 기반 학습 로드맵")).strip(),
+        steps=steps,
+    )
+
+
+def generate_ai_roadmap_contract(source_text: str) -> AiRoadmapResponse:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY 환경변수가 설정되어 있지 않습니다.")
+
+    client = OpenAI(api_key=api_key)
+    model = os.getenv("ROADMAP_OPENAI_MODEL", "gpt-4o-mini")
+
+    response = client.chat.completions.create(
+        model=model,
+        temperature=0.2,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "너는 StudyBridge의 대학생 학습 로드맵 설계 AI다. "
+                    "마크다운 없이 JSON만 반환한다."
+                ),
+            },
+            {
+                "role": "user",
+                "content": build_ai_roadmap_prompt(source_text),
+            },
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": ai_roadmap_schema(),
+        },
+    )
+
+    content = response.choices[0].message.content
+    if not content:
+        raise ValueError("AI 로드맵 응답이 비어 있습니다.")
+
+    return normalize_ai_roadmap(json.loads(content))
+
+
+if APIRouter is not None:
+    router = APIRouter(prefix="/api/ai", tags=["ai-roadmap"])
+    legacy_router = APIRouter(prefix="/api/roadmap", tags=["roadmap"])
+
+    @router.post("/roadmap", response_model=AiRoadmapResponse)
+    def generate_ai_roadmap_api(request: AiRoadmapRequest) -> AiRoadmapResponse:
+        source_text = validate_ai_roadmap_text(request.text)
+
+        try:
+            return generate_ai_roadmap_contract(source_text)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"AI 로드맵 생성 실패: {str(e)}")
+
+    @legacy_router.post("/generate", response_model=FrontendRoadmapResponse)
+    def generate_roadmap_api(request: RoadmapGenerateRequest) -> FrontendRoadmapResponse:
+        try:
+            tool = create_default_roadmap_tool()
+            return tool.generate_frontend_response(
+                source_text=request.source_text,
+                subject=request.subject,
+                level=request.level,
+                week_count=request.week_count,
+                material_id=request.material_id,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"AI 로드맵 생성 실패: {str(e)}")
+
+    @legacy_router.post("/generate-pdf")
+    def generate_roadmap_pdf_api(request: RoadmapGenerateRequest):
+        try:
+            tool = create_default_roadmap_tool()
+            pdf_bytes = tool.generate_pdf_bytes(
+                source_text=request.source_text,
+                subject=request.subject,
+                level=request.level,
+                week_count=request.week_count,
+            )
+
+            return StreamingResponse(
+                BytesIO(pdf_bytes),
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": "attachment; filename=studybridge-roadmap.pdf"
+                },
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"AI 로드맵 PDF 생성 실패: {str(e)}")
+else:
+    router = None
+    legacy_router = None
+
+
+# main.py 연결 예시:
+# from roadmap import router as roadmap_router
+# app.include_router(roadmap_router)
