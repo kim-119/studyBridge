@@ -346,6 +346,7 @@ public class AiIntegrationService {
                 // 엔티티 생성
                 Roadmap roadmap = Roadmap.builder()
                                 .material(material)
+                                .userId(material.getUserId())
                                 .title(roadmapTitle)
                                 .build();
 
