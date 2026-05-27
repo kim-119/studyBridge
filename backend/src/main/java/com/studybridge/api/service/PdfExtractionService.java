@@ -45,6 +45,9 @@ public class PdfExtractionService {
         try {
             log.info("Material ID: {} - FastAPI로 PDF 전달 시작", materialId);
 
+            String imageHash = calculateSHA256(fileBytes);
+            log.info("Material ID: {} - 계산된 파일 Hash: {}", materialId, imageHash);
+
             ByteArrayResource fileResource = new ByteArrayResource(fileBytes) {
                 @Override
                 public String getFilename() {
@@ -57,6 +60,8 @@ public class PdfExtractionService {
 
             MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
             body.add("file", fileResource);
+            body.add("material_id", materialId.toString());
+            body.add("image_hash", imageHash);
 
             HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
 
@@ -73,6 +78,26 @@ public class PdfExtractionService {
         } catch (Exception e) {
             log.error("Material ID: {} - FastAPI 연동 중 에러 발생: ", materialId, e);
             updateMaterialFailure(materialId);
+        }
+    }
+
+    // 파일 SHA-256 해시값 계산
+    private String calculateSHA256(byte[] bytes) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(bytes);
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) {
+                    hexString.append('0');
+                }
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (Exception e) {
+            log.error("해시 계산 실패", e);
+            return "default_hash_" + System.currentTimeMillis();
         }
     }
 
