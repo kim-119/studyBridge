@@ -41,25 +41,36 @@ public class ChatService {
                         return null;
                 });
 
-                // 에이전트 간 상호 피드백을 위해 최근 10개의 AI 답변 가져오기
-                List<ChatMessage> lastAiMessages = chatMessageRepository
-                                .findTop10ByAgentChatRoomIdAndSenderOrderByCreatedAtDesc(roomId, "AI");
-                java.util.Collections.reverse(lastAiMessages);
+                // 에이전트의 이전 대화 기억(Context) 및 상호 피드백을 위해 최근 15개 메시지(사용자 질문 + AI 답변 전체) 가져오기
+                List<ChatMessage> allMessages = chatMessageRepository
+                                .findByAgentChatRoomIdOrderByCreatedAtAsc(roomId);
+                
+                int totalMsgs = allMessages.size();
+                List<ChatMessage> recentMsgs = totalMsgs > 15
+                                ? allMessages.subList(totalMsgs - 15, totalMsgs)
+                                : allMessages;
 
-                List<Map<String, String>> previousAnswers = lastAiMessages.stream()
-                                .map(msg -> Map.of(
-                                                "agentName", msg.getAgent() != null ? msg.getAgent().getName() : "AI",
-                                                "answer", msg.getContent()))
+                List<Map<String, String>> previousAnswers = recentMsgs.stream()
+                                .map(msg -> {
+                                        Map<String, String> m = new java.util.HashMap<>();
+                                        m.put("agentName", "USER".equals(msg.getSender()) ? "사용자" : (msg.getAgent() != null ? msg.getAgent().getName() : "AI"));
+                                        m.put("answer", msg.getContent() != null ? msg.getContent() : "");
+                                        return m;
+                                })
                                 .collect(Collectors.toList());
 
                 // FastAPI의 /api/ai/multi-chat 요구사항에 맞춰 데이터 구성
                 List<Map<String, String>> agentsList = room.getAgents().stream()
-                                .map(agent -> Map.of(
-                                                "name", agent.getName(),
-                                                "role", agent.getRole(),
-                                                "personality", agent.getPersona(),
-                                                "tone", agent.getTone(),
-                                                "goal", agent.getGoal()))
+                                .map(agent -> {
+                                        Map<String, String> m = new java.util.HashMap<>();
+                                        m.put("name", agent.getName() != null ? agent.getName() : "");
+                                        m.put("role", agent.getRole() != null ? agent.getRole() : "");
+                                        m.put("personality", agent.getPersona() != null ? agent.getPersona() : "");
+                                        m.put("persona", agent.getPersona() != null ? agent.getPersona() : "");
+                                        m.put("tone", agent.getTone() != null ? agent.getTone() : "");
+                                        m.put("goal", agent.getGoal() != null ? agent.getGoal() : "");
+                                        return m;
+                                })
                                 .collect(Collectors.toList());
 
                 Map<String, Object> requestBody = Map.of(

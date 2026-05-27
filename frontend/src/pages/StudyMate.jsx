@@ -68,7 +68,10 @@ export default function StudyMate() {
   const [message, setMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showModal, setShowModal] = useState(false);
-  const [newAgent, setNewAgent] = useState(DEFAULT_AGENT);
+  
+  // 멀티 에이전트 동적 추가를 위해 상태를 배열로 정의
+  const [createdAgents, setCreatedAgents] = useState([{ ...DEFAULT_AGENT }]);
+  const [roomName, setRoomName] = useState('');
 
   const chatEndRef = useRef(null);
 
@@ -95,39 +98,54 @@ export default function StudyMate() {
     }
   };
 
+  const handleOpenModal = () => {
+    setCreatedAgents([{ ...DEFAULT_AGENT }]);
+    setRoomName('');
+    setShowModal(true);
+  };
+
   const handleCreateAgent = async (e) => {
     e.preventDefault();
     if (agents.length >= 3) {
-      alert('AI 에이전트는 최대 3개까지 생성할 수 있습니다.');
+      alert('생성된 학습방은 최대 3개까지 가질 수 있습니다.');
       return;
     }
 
-    const payload = buildCanonicalAgentPayload(newAgent);
-    if (!payload.name || !payload.role) {
-      alert('이름과 역할을 입력해야 합니다.');
-      return;
+    for (const agent of createdAgents) {
+      if (!agent.name.trim() || !agent.role.trim()) {
+        alert('모든 에이전트의 이름과 역할을 입력해야 합니다.');
+        return;
+      }
+      if (agent.customInstruction && agent.customInstruction.trim().length < 5 && agent.customInstruction.trim().length > 0) {
+        alert('에이전트 설명 또는 추가 요구사항은 공백이거나 최소 5자 이상이어야 합니다.');
+        return;
+      }
     }
 
-    if (payload.persona.length < 5) {
-      alert('에이전트 설명 또는 추가 요구사항을 최소 5자 이상 입력해야 합니다.');
-      return;
-    }
+    const payloadAgents = createdAgents.map(agent => buildCanonicalAgentPayload(agent));
+    const finalRoomName = roomName.trim() || createdAgents.map(a => a.name.trim()).join(' & ') + '의 그룹 스터디';
+
+    const payload = {
+      roomName: finalRoomName,
+      agents: payloadAgents
+    };
 
     try {
-      console.debug('[StudyMate] create agent payload', payload);
+      console.debug('[StudyMate] create agent room payload', payload);
       await agentService.createAgent(userId, payload);
       setShowModal(false);
-      setNewAgent(DEFAULT_AGENT);
+      setCreatedAgents([{ ...DEFAULT_AGENT }]);
+      setRoomName('');
       await loadAgents();
     } catch (err) {
-      console.error('에이전트 생성 실패:', err);
-      alert(err.message || '에이전트 생성에 실패했습니다.');
+      console.error('에이전트 스터디방 생성 실패:', err);
+      alert(err.message || '에이전트 스터디방 생성에 실패했습니다.');
     }
   };
 
   const handleDeleteAgent = async (e, agentId) => {
     e.stopPropagation();
-    if (!window.confirm('정말 이 에이전트를 삭제하시겠습니까? 대화 내용도 함께 삭제될 수 있습니다.')) return;
+    if (!window.confirm('정말 이 에이전트 스터디방을 삭제하시겠습니까? 모든 대화 내용이 완전히 삭제됩니다.')) return;
 
     try {
       await agentService.deleteAgent(userId, agentId);
@@ -182,13 +200,27 @@ export default function StudyMate() {
       });
       const res = await agentService.sendMessage(userId, agentId, inputMsg);
       console.debug('[StudyMate] chat response', res);
-      const aiMsg = {
-        id: Date.now() + 1,
-        content: res.answer,
-        sender: 'AI',
-        createdAt: new Date().toISOString()
-      };
-      setChatHistory((prev) => [...prev, aiMsg]);
+      
+      if (res.replies && res.replies.length > 0) {
+        const newMsgs = res.replies.map((reply, index) => ({
+          id: Date.now() + 1 + index,
+          content: reply.answer || reply.content,
+          sender: 'AI',
+          senderName: reply.agentName || reply.agent_name,
+          agentId: reply.agentId,
+          createdAt: new Date().toISOString()
+        }));
+        setChatHistory((prev) => [...prev, ...newMsgs]);
+      } else {
+        const aiMsg = {
+          id: Date.now() + 1,
+          content: res.answer,
+          sender: 'AI',
+          senderName: selectedAgent.name,
+          createdAt: new Date().toISOString()
+        };
+        setChatHistory((prev) => [...prev, aiMsg]);
+      }
     } catch (err) {
       console.error('메시지 전송 실패:', err);
       alert('메시지 전송에 실패했습니다.');
@@ -241,7 +273,7 @@ export default function StudyMate() {
             <button
               className="btn-outline"
               style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
-              onClick={() => setShowModal(true)}
+              onClick={handleOpenModal}
               disabled={agents.length >= 3}
             >
               <Plus size={16} /> 생성 ({agents.length}/3)
@@ -268,24 +300,28 @@ export default function StudyMate() {
                     style={{
                       padding: '16px',
                       borderRadius: '12px',
-                      border: '1px solid var(--color-border)',
-                      backgroundColor: 'var(--color-bg-base)',
+                      borderWidth: '1px',
+                      borderStyle: 'solid',
+                      borderColor: isActive ? 'var(--color-primary)' : 'var(--color-border)',
+                      backgroundColor: isActive ? 'rgba(96, 201, 90, 0.05)' : 'var(--color-bg-base)',
+                      boxShadow: isActive ? '0 2px 8px rgba(96, 201, 90, 0.1)' : 'none',
                       cursor: 'pointer',
                       display: 'flex',
                       alignItems: 'flex-start',
                       gap: '12px',
-                      transition: 'all 0.2s ease',
-                      ...(isActive ? { borderColor: 'var(--color-primary)', backgroundColor: 'rgba(96, 201, 90, 0.05)', boxShadow: '0 2px 8px rgba(96, 201, 90, 0.1)' } : {})
+                      transition: 'all 0.2s ease'
                     }}
                     onClick={() => selectAgent(agent)}
                   >
                     <div className="avatar" style={{ backgroundColor: avatarColor.bg, color: avatarColor.text }}>
-                      {agent.name?.charAt(0)}
+                      {(agent.roomName || agent.name)?.charAt(0)}
                     </div>
 
                     <div style={{ flex: 1, overflow: 'hidden' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <div style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)', marginBottom: '4px' }}>{agent.name}</div>
+                        <div style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {agent.roomName || agent.name}
+                        </div>
                         <button
                           style={{ background: 'none', border: 'none', color: '#D1D5DB', cursor: 'pointer', padding: '2px' }}
                           onClick={(e) => handleDeleteAgent(e, agentId)}
@@ -295,9 +331,17 @@ export default function StudyMate() {
                         </button>
                       </div>
                       <div style={{ marginBottom: '6px', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                        <span className="tag">#{agent.role}</span>
-                        <span className="tag">#{knowledgeLevel}</span>
-                        <span className="tag">#{personality}</span>
+                        {agent.agents && agent.agents.length > 0 ? (
+                          agent.agents.map((ag, idx) => (
+                            <span key={idx} className="tag">#{ag.name}</span>
+                          ))
+                        ) : (
+                          <>
+                            <span className="tag">#{agent.role}</span>
+                            <span className="tag">#{knowledgeLevel}</span>
+                            <span className="tag">#{personality}</span>
+                          </>
+                        )}
                       </div>
                       <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: '1.4' }}>
                         {String(agent.persona || agent.goal || '').length > 35
@@ -323,17 +367,55 @@ export default function StudyMate() {
             </div>
           ) : (
             <div className="chat-container">
-              <div className="chat-header">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div className="avatar-sm" style={{ backgroundColor: 'var(--color-primary)', color: 'white' }}>
-                    {selectedAgent.name?.charAt(0)}
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 'bold', fontSize: '15px' }}>{selectedAgent.name}</div>
-                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
-                      {selectedAgent.role} · {getAgentKnowledgeLevel(selectedAgent)} · {getAgentPersonality(selectedAgent)}
+              <div className="chat-header" style={{ paddingBottom: '16px', borderBottom: '1px solid var(--color-border)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div className="avatar-sm" style={{ backgroundColor: 'var(--color-primary)', color: 'white', fontWeight: 'bold' }}>
+                      {(selectedAgent.roomName || selectedAgent.name)?.charAt(0)}
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 'bold', fontSize: '16px', color: 'var(--color-text-main)' }}>
+                        {selectedAgent.roomName || `${selectedAgent.name}의 그룹 스터디`}
+                      </div>
                     </div>
                   </div>
+                  
+                  {/* 스터디방 에이전트 목록 표시 */}
+                  {selectedAgent.agents && selectedAgent.agents.length > 0 && (
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
+                      {selectedAgent.agents.map((ag, idx) => {
+                        const avatarColor = getAvatarColor(idx);
+                        return (
+                          <div
+                            key={ag.id || idx}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '4px 10px',
+                              backgroundColor: 'rgba(96, 201, 90, 0.04)',
+                              border: '1px solid rgba(96, 201, 90, 0.15)',
+                              borderRadius: '16px',
+                              fontSize: '11px',
+                              color: 'var(--color-text-main)'
+                            }}
+                          >
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                width: '6px',
+                                height: '6px',
+                                borderRadius: '50%',
+                                backgroundColor: avatarColor.text
+                              }}
+                            />
+                            <span style={{ fontWeight: '600' }}>{ag.name}</span>
+                            <span style={{ color: 'var(--color-text-muted)', fontSize: '10px' }}>({ag.role})</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -345,10 +427,15 @@ export default function StudyMate() {
                 ) : (
                   chatHistory.map((msg, idx) => {
                     const isUser = msg.sender === 'USER';
+                    const senderName = isUser ? '나' : (msg.senderName || msg.sender_name || selectedAgent.name);
+                    
                     return (
-                      <div key={msg.id || idx} style={{ display: 'flex', flexDirection: 'column', maxWidth: '75%', alignSelf: isUser ? 'flex-end' : 'flex-start' }}>
-                        <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`}>{msg.content}</div>
-                        <div style={{ fontSize: '11px', color: '#9CA3AF', marginTop: '4px', textAlign: isUser ? 'right' : 'left' }}>
+                      <div key={msg.id || idx} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
+                        <div className="chat-bubble-sender">{senderName}</div>
+                        <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap' }}>
+                          {msg.content}
+                        </div>
+                        <div className="chat-bubble-time">
                           {formatTime(msg.createdAt)}
                         </div>
                       </div>
@@ -356,7 +443,8 @@ export default function StudyMate() {
                   })
                 )}
                 {isTyping && (
-                  <div style={{ display: 'flex', flexDirection: 'column', maxWidth: '75%', alignSelf: 'flex-start' }}>
+                  <div className="chat-bubble-container ai">
+                    <div className="chat-bubble-sender">AI 에이전트들이 검토 중...</div>
                     <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', minHeight: '20px' }}>
                       <span className="dot"></span><span className="dot"></span><span className="dot"></span>
                     </div>
@@ -372,7 +460,7 @@ export default function StudyMate() {
                   style={{ flex: 1, borderRadius: '24px', paddingLeft: '20px', backgroundColor: '#F3F4F6', border: 'none' }}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  placeholder={`${selectedAgent.name}에게 메시지 보내기...`}
+                  placeholder="메시지를 입력해보세요..."
                   disabled={isTyping}
                 />
                 <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={isTyping || !message.trim()}>
@@ -386,41 +474,217 @@ export default function StudyMate() {
 
       {showModal && (
         <div className="modal-overlay">
-          <div className="glass-panel modal-content">
+          <div className="glass-panel modal-content" style={{ width: '95%', maxWidth: '600px', maxHeight: '85vh', overflow: 'hidden' }}>
             <div className="modal-header">
-              <h3 style={{ margin: 0 }}>새 AI 에이전트 생성</h3>
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Sparkles size={20} color="var(--color-primary)" /> 새 AI 그룹 스터디 생성
+              </h3>
               <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)' }} onClick={() => setShowModal(false)} aria-label="닫기"><X size={20} /></button>
             </div>
-            <form onSubmit={handleCreateAgent} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>이름</label>
-                <input type="text" className="input-field" maxLength="30" required value={newAgent.name} onChange={(e) => setNewAgent({ ...newAgent, name: e.target.value })} placeholder="예: 영어 선생님" />
+            
+            <form onSubmit={handleCreateAgent} style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+              <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px', display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '16px' }}>
+                
+                {/* 스터디방 이름 설정 */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)', marginBottom: '6px' }}>
+                    그룹 스터디방 이름
+                  </label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    maxLength="50"
+                    value={roomName}
+                    onChange={(e) => setRoomName(e.target.value)}
+                    placeholder={roomName ? "" : createdAgents.map(a => a.name.trim() || '새 에이전트').join(' & ') + '의 그룹 스터디'}
+                  />
+                </div>
+
+                <div className="divider" style={{ margin: '8px 0' }} />
+
+                {/* 에이전트 동적 폼 리스트 */}
+                {createdAgents.map((agent, index) => (
+                  <div
+                    key={index}
+                    style={{
+                      border: '1px solid var(--color-border)',
+                      borderRadius: '12px',
+                      padding: '16px',
+                      backgroundColor: 'rgba(249, 250, 251, 0.7)',
+                      position: 'relative',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '12px'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <h4 style={{ margin: 0, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', fontWeight: '700' }}>
+                        <Bot size={18} /> AI 학습메이트 #{index + 1}
+                      </h4>
+                      {createdAgents.length > 1 && (
+                        <button
+                          type="button"
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: '#EF4444',
+                            cursor: 'pointer',
+                            fontSize: '12px',
+                            fontWeight: '600',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
+                          onClick={() => {
+                            setCreatedAgents(createdAgents.filter((_, i) => i !== index));
+                          }}
+                        >
+                          <X size={14} /> 제거
+                        </button>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>이름</label>
+                        <input
+                          type="text"
+                          className="input-field"
+                          maxLength="30"
+                          required
+                          value={agent.name}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].name = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                          placeholder="예: 김도끼"
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>역할</label>
+                        <input
+                          type="text"
+                          className="input-field"
+                          maxLength="20"
+                          required
+                          value={agent.role}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].role = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                          placeholder="예: 자바 전공교수"
+                        />
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>성격/말투</label>
+                        <select
+                          className="input-field"
+                          value={agent.personality}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].personality = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                        >
+                          {PERSONALITY_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>지식수준</label>
+                        <select
+                          className="input-field"
+                          value={agent.knowledgeLevel}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].knowledgeLevel = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                        >
+                          {KNOWLEDGE_LEVEL_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>목표</label>
+                      <input
+                        type="text"
+                        className="input-field"
+                        maxLength="100"
+                        value={agent.goal}
+                        onChange={(e) => {
+                          const list = [...createdAgents];
+                          list[index].goal = e.target.value;
+                          setCreatedAgents(list);
+                        }}
+                        placeholder="예: 자바 개념에 대해 알기 쉽게 설명하기"
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>사용자 추가 요구사항</label>
+                      <textarea
+                        className="input-field"
+                        style={{ height: '50px', paddingTop: '6px', resize: 'none' }}
+                        maxLength="1000"
+                        value={agent.customInstruction}
+                        onChange={(e) => {
+                          const list = [...createdAgents];
+                          list[index].customInstruction = e.target.value;
+                          setCreatedAgents(list);
+                        }}
+                        placeholder="예: 원어민처럼 영어로만 답변해줘"
+                      />
+                    </div>
+                  </div>
+                ))}
+
+                {/* 에이전트 동적 추가 버튼 */}
+                {createdAgents.length < 3 && (
+                  <button
+                    type="button"
+                    className="btn-outline"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      width: '100%',
+                      padding: '10px',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      borderStyle: 'dashed'
+                    }}
+                    onClick={() => setCreatedAgents([...createdAgents, { ...DEFAULT_AGENT }])}
+                  >
+                    <Plus size={16} /> AI 학습메이트 추가 ({createdAgents.length}/3)
+                  </button>
+                )}
               </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>역할</label>
-                <input type="text" className="input-field" maxLength="20" required value={newAgent.role} onChange={(e) => setNewAgent({ ...newAgent, role: e.target.value })} placeholder="예: 학습 도우미" />
+
+              <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid var(--color-border)' }}>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  style={{ flex: 1 }}
+                  onClick={() => setShowModal(false)}
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ flex: 2 }}
+                >
+                  스터디방 생성하기
+                </button>
               </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>성격/말투</label>
-                <select className="input-field" value={newAgent.personality} onChange={(e) => setNewAgent({ ...newAgent, personality: e.target.value })}>
-                  {PERSONALITY_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>지식수준</label>
-                <select className="input-field" value={newAgent.knowledgeLevel} onChange={(e) => setNewAgent({ ...newAgent, knowledgeLevel: e.target.value })}>
-                  {KNOWLEDGE_LEVEL_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>목표</label>
-                <input type="text" className="input-field" maxLength="100" value={newAgent.goal} onChange={(e) => setNewAgent({ ...newAgent, goal: e.target.value })} placeholder="예: 사용자가 알기 쉽게 설명하기" />
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>사용자 추가 요구사항</label>
-                <textarea className="input-field" style={{ height: '80px', paddingTop: '10px', resize: 'none' }} maxLength="1000" value={newAgent.customInstruction} onChange={(e) => setNewAgent({ ...newAgent, customInstruction: e.target.value })} placeholder="예: 원어민 선생님처럼 영어로 대답해" />
-              </div>
-              <button type="submit" className="btn-primary" style={{ marginTop: '8px' }}>에이전트 생성하기</button>
             </form>
           </div>
         </div>

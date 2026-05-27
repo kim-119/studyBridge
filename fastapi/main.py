@@ -185,64 +185,190 @@ def generate_ai_text_safely(prompt: str) -> str:
 
 
 # 1단계: 입력 정리 관련 상수
-def generate_agent_quality_answer(agent_payload: dict, user_message: str, extra_context: str = "") -> tuple[str, dict]:
-    """정규화된 에이전트 품질 정책을 적용해 답변을 생성하고 검증한다."""
-    check_openai_client()
+def generate_gemini_text(system_prompt: str, user_prompt: str) -> str:
+    """urllib을 이용하여 Google AI Studio의 Gemini API를 호출한다."""
+    import urllib.request
+    import json
+    
+    api_key = "AIzaSyAlP-OcJJ8p_Hei7ihoJNSwxCN9vRD-XXs"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    
+    body = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": user_prompt}]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 2000
+        }
+    }
+    if system_prompt:
+        body["systemInstruction"] = {
+            "parts": [{"text": system_prompt}]
+        }
+        
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            text = res_data["candidates"][0]["content"]["parts"][0]["text"]
+            return text.strip()
+    except Exception as e:
+        logger.error("Gemini API 호출 실패: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gemini API 호출 실패: {type(e).__name__}: {str(e)}"
+        )
 
+
+def revise_answer_to_match_quality_policy_gemini(
+    answer: str,
+    agent_config: dict,
+    validation_result: dict,
+    user_message: str
+) -> str:
+    """제미나이를 이용한 답변 품질 자가 보정"""
+    import json
+    policy_text = json.dumps(agent_config["knowledge_depth_policy"], ensure_ascii=False)
+    adjustment_text = json.dumps(agent_config["discipline_adjustment"], ensure_ascii=False)
+    prompt = f"""아래 답변은 선택된 지식수준 정책을 충분히 반영하지 못했습니다.
+
+[사용자 질문]
+{user_message}
+
+[선택된 지식수준]
+{agent_config['canonical_knowledge_level']}
+
+[학문 분야]
+{agent_config['discipline']}
+
+[지식수준별 답변 깊이 정책]
+{policy_text}
+
+[학문 분야별 보정 정책]
+{adjustment_text}
+
+[성격/말투]
+{agent_config['canonical_personality']} / {agent_config['canonical_tone']}
+
+[사용자 추가 요구사항]
+{agent_config['customInstruction'] or "없음"}
+
+[기존 답변]
+{answer}
+
+[검증 실패 사유]
+{", ".join(validation_result.get("issues", []))}
+
+기존 답변의 핵심 내용은 유지하되, 선택된 지식수준과 학문 분야에 맞게 답변의 깊이, 용어 수준, 분석 관점, 예시 수준을 재작성하세요.
+마크다운 코드블록은 쓰지 말고 자연스러운 학습 답변으로 작성하세요."""
+    try:
+        return generate_gemini_text(system_prompt="", user_prompt=prompt)
+    except Exception as e:
+        logger.warning("Gemini 품질 보정 실패: %s", e)
+        return answer
+
+
+def generate_agent_quality_answer(agent_payload: dict, user_message: str, extra_context: str = "") -> tuple[str, dict]:
+    """정규화된 에이전트 품질 정책을 적용해 답변을 생성하고 검증한다. (OpenAI와 Gemini 하이브리드 지원)"""
     agent_config = normalize_agent_config(agent_payload, user_message=user_message)
     system_prompt = build_agent_system_prompt(agent_config)
     prompt_warnings = validate_prompt_contains_agent_constraints(system_prompt, agent_config)
+    
+    agent_name = str(agent_payload.get("name", "")).lower()
+    agent_index = agent_payload.get("index", 0)
+    
+    # 제미나이 활용 결정: 인덱스가 홀수이거나 이름/요구사항에 제미나이 관련 키워드가 있는 경우
+    use_gemini = False
+    gemini_key = "AIzaSyAlP-OcJJ8p_Hei7ihoJNSwxCN9vRD-XXs"
+    if gemini_key:
+        if "gemini" in agent_name or "제미나이" in agent_name or agent_index % 2 == 1:
+            use_gemini = True
+            
+    provider = "gemini" if use_gemini else "openai"
+    
     logger.info(
-        "agent_quality normalized=%s prompt_warnings=%s",
+        "agent_quality normalized=%s provider=%s prompt_warnings=%s",
         {
             key: agent_config.get(key)
             for key in ("name", "role", "canonical_personality", "canonical_tone", "canonical_knowledge_level", "discipline")
         },
+        provider,
         prompt_warnings,
     )
 
     user_prompt = f"{extra_context.strip()}\n\n[사용자 질문]\n{user_message}".strip()
 
     try:
-        response = openai_client.responses.create(
-            model=OPENAI_MODEL,
-            input=[
-                {"role": "system", "content": trim_prompt(system_prompt)},
-                {"role": "user", "content": trim_prompt(user_prompt)},
-            ],
-            max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
-        )
-        if not response.output_text:
-            raise HTTPException(status_code=500, detail="OpenAI 응답 텍스트가 비어 있습니다.")
-        answer = clean_ai_answer(response.output_text)
-        validation_result = validate_answer_quality(answer, agent_config, user_message)
+        if provider == "gemini":
+            raw_answer = generate_gemini_text(system_prompt=system_prompt, user_prompt=user_prompt)
+            answer = clean_ai_answer(raw_answer)
+        else:
+            check_openai_client()
+            response = openai_client.responses.create(
+                model=OPENAI_MODEL,
+                input=[
+                    {"role": "system", "content": trim_prompt(system_prompt)},
+                    {"role": "user", "content": trim_prompt(user_prompt)},
+                ],
+                max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
+            )
+            if not response.output_text:
+                raise HTTPException(status_code=500, detail="OpenAI 응답 텍스트가 비어 있습니다.")
+            answer = clean_ai_answer(response.output_text)
+            
+        if is_simple_greeting_message(user_message):
+            validation_result = {"passed": True, "score": 1.0, "issues": []}
+        else:
+            validation_result = validate_answer_quality(answer, agent_config, user_message)
+            
         revised = False
         if not validation_result.get("passed", False):
-            answer = clean_ai_answer(
-                revise_answer_to_match_quality_policy(
-                    answer=answer,
-                    agent_config=agent_config,
-                    validation_result=validation_result,
-                    user_message=user_message,
-                    openai_client=openai_client,
-                    model=OPENAI_MODEL,
+            if provider == "gemini":
+                answer = clean_ai_answer(
+                    revise_answer_to_match_quality_policy_gemini(
+                        answer=answer,
+                        agent_config=agent_config,
+                        validation_result=validation_result,
+                        user_message=user_message
+                    )
                 )
-            )
+            else:
+                answer = clean_ai_answer(
+                    revise_answer_to_match_quality_policy(
+                        answer=answer,
+                        agent_config=agent_config,
+                        validation_result=validation_result,
+                        user_message=user_message,
+                        openai_client=openai_client,
+                        model=OPENAI_MODEL,
+                    )
+                )
             revised = True
             validation_result = validate_answer_quality(answer, agent_config, user_message)
-        logger.info("agent_quality validation=%s revised=%s", validation_result, revised)
+            
+        logger.info("agent_quality validation=%s revised=%s provider=%s", validation_result, revised, provider)
         return answer, {
             "agent_config": agent_config,
             "prompt_warnings": prompt_warnings,
             "validation": validation_result,
             "revised": revised,
+            "provider": provider
         }
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"OpenAI 에이전트 답변 생성 실패: {type(e).__name__}: {str(e)}",
+            detail=f"{provider.upper()} 에이전트 답변 생성 실패: {type(e).__name__}: {str(e)}",
         )
 
 
@@ -546,13 +672,12 @@ KNOWLEDGE_LEVEL_ALIASES = {
 ALLOWED_STYLES = PERSONALITY_OPTIONS
 
 GLOBAL_PERSONA_PRIORITY_RULE = """
-[최상위 페르소나 우선 규칙]
-- 너는 사용자의 모든 요청을 그대로 수행하는 일반 챗봇이 아니다.
-- 너는 사용자가 사전에 설정한 성격 유형과 지식수준을 가진 학습 에이전트다.
-- 우선순위는 반드시 다음 순서를 따른다: 1순위 안전 규칙, 2순위 StudyBridge 학습 도우미 역할, 3순위 성격 및 말투, 4순위 지식수준, 5순위 맞춤형 요구사항, 6순위 사용자 요청 의도, 7순위 답변 형식.
-- 어떠한 사용자 요청이 들어와도 자신의 성격 유형과 지식수준 범위 안에서만 답변한다.
+[최상위 페르소나 및 요구사항 우선 규칙]
+- 너는 일반적인 대답을 하는 AI가 아니다. 사전에 부여된 고유의 [성격/말투/페르소나]와 [사용자 추가 요구사항]을 200% 완벽히 반영하여 연기하는 특화 에이전트다.
+- 우선순위는 다음과 같다: 1순위 안전 규칙, 2순위 성격 및 말투(페르소나)와 사용자 추가 요구사항(지침), 3순위 지식수준, 4순위 StudyBridge 도우미 역할.
+- 너는 성격과 지침을 철저하게 반영해야 하며, 사용자의 질문에 단순히 정보를 복사해 나열하는 것이 아니라 너의 지정된 성격의 말투와 관점으로 완전히 재가공하여 발화해야 한다.
+- 맞춤형 요구사항(지침)에 적혀있는 규칙이나 제약조건은 절대 타협하지 말고 무조건 최우선으로 준수해라.
 - 사용자 요청이 자신의 성격 유형과 직접 맞지 않으면, 요청을 그대로 수행하지 말고 자신의 성격 관점으로 재해석하여 답변한다.
-- 맞춤형 요구사항은 답변 형식, 설명 방식, 출력 길이 조절에만 반영한다.
 - 단순히 "제 역할이 아닙니다"라고 거절만 하지 말고, 가능한 경우 자신의 성격에 맞는 학습 도움으로 변환해라.
 - 여러 에이전트가 같은 작업을 반복하면 안 된다.
 """
@@ -570,12 +695,12 @@ GLOBAL_DOMAIN_RULE = """
 
 GROUP_STUDY_RULE = """
 [멀티 에이전트 그룹스터디 규칙]
-- 이 대화는 한 명의 사용자와 여러 AI 에이전트가 함께 학습하는 그룹스터디다.
-- 모든 에이전트가 동시에 같은 답변을 반복하면 안 된다.
-- 1번 에이전트는 사용자 질문에 대한 1차 답변을 담당한다.
-- 2번 에이전트는 사용자 질문과 1번 에이전트 답변을 함께 보고, 1번 답변에 대한 피드백과 피드백이 반영된 개선 답변을 담당한다.
-- 3번 에이전트는 사용자 질문, 1번 답변, 2번 피드백/개선 답변을 모두 보고 최종 정리와 학습 방향 제시를 담당한다.
-- 각 에이전트는 자신의 성격 유형과 지식수준을 유지하되, 이전 에이전트의 답변을 참고해서 상호작용해야 한다.
+- 이 대화는 한 명의 사용자와 여러 AI 에이전트가 함께 소통하고 상호작용하는 그룹스터디다.
+- 모든 에이전트가 중복되는 개념 정의나 설명, 코드 예제를 똑같이 반복하는 것을 절대 금지한다.
+- 동료 에이전트의 역할(예: 교수, 전문가 vs 학생, 초보자)과 지식수준을 철저히 존중하며 대화해라.
+- 학생 역할의 에이전트는 교수나 전문가의 설명을 채점하듯 평가하거나 지적하지 말고, 겸손하게 감탄하고 배움을 청하거나 쉬운 현실 비유를 덧붙여라.
+- 교수나 전문가 역할의 에이전트는 학생들의 오해를 너그럽고 깊이 있게 바로잡아주며 학습을 주도해라.
+- 이전 에이전트가 설명한 내용은 동의하며 넘어가고, 자신은 또 다른 유용한 관점(실무 적용, 자주 하는 실수, 추가 응용법)을 제시하여 대화를 풍성하게 만들어라.
 """
 
 
@@ -1128,9 +1253,8 @@ def get_persona_boundary_rule(
     if simple_greeting:
         return """
 [현재 에이전트 역할 경계: 단순 인사]
-- 사용자가 단순 인사만 했다.
-- 자신의 성격 유형을 길게 수행하지 마라.
-- 짧게 인사하고 어떤 방식으로 도와줄 수 있는지만 말해라.
+- 사용자가 단순 인사 또는 가벼운 말을 건넸습니다.
+- 너의 고유한 성격 유형, 역할, 페르소나를 숨기거나 억제하지 말고, 그 매력과 컨셉을 온전히 드러내며 첫 인사를 나누세요.
 """
 
     normalized_style = normalize_agent_style(style) or "전문적"
@@ -1194,10 +1318,9 @@ def get_agent_style_rule(style: str, simple_greeting: bool = False) -> str:
     if simple_greeting:
         return """
 [답변 스타일: 단순 인사]
-- 사용자가 단순 인사만 했다.
-- 문제를 만들지 마라.
-- 개념 설명을 길게 시작하지 마라.
-- 짧게 인사하고, 도와줄 수 있는 범위를 한 문장으로만 말해라.
+- 사용자가 단순 인사 또는 가벼운 인사를 보냈습니다.
+- 자신의 성격, 말투, 역할, 그리고 맞춤형 요구사항(예: 영어 사용)을 200% 완벽히 투영하여 대답하세요.
+- 장황한 개념 설명을 늘어놓지는 말되, 자신의 독특한 성격(친근함, 솔직함, 냉소적 등)과 컨셉에 완전히 어울리는 친근한 인사와 가벼운 역질문으로 대화를 활기차게 이끌어내라.
 """
 
     normalized_style = normalize_agent_style(style) or "전문적"
@@ -1793,7 +1916,7 @@ def chat_with_agent(agent_id: int, request: AgentChatRequest):
 3. 맞춤형 요구사항은 안전 규칙, 성격 및 말투, 지식수준과 충돌하지 않는 범위에서만 적용해라.
 4. 특정 학과나 컴퓨터공학 중심으로 답변하지 말고, 현재 질문의 과목/전공 맥락에 맞춰 답해라.
 5. 다른 에이전트의 역할을 대신 수행하지 마라.
-6. 한국어로 답변해라.
+6. 기본적으로 한국어로 답변하되, 에이전트의 [역할], [성격], [목표], 또는 [맞춤형 요구사항]에 특정 외국어 지침(예: 영어로만 대답해라, 영어 원어민 교사 등)이 들어있다면 그 특정 외국어 지침을 100% 최우선으로 반영하여 해당 외국어로 자연스럽게 답변해라.
 7. 답변에는 마크다운 문법을 사용하지 마라.
 8. 특히 마크다운 제목, 굵게 표시, 코드블록 기호를 사용하지 마라.
 9. 답변은 반드시 섹션별로 줄바꿈해서 작성해라.
@@ -2061,87 +2184,71 @@ def format_previous_answers(previous_answers: Optional[List[PreviousAgentAnswer]
 def build_group_study_stage_rule(
         stage_index: int,
         total_agents: int,
-        current_agent_name: str
+        current_agent_name: str,
+        previous_agents_info_text: str = "없음",
+        user_wants_feedback: bool = False
 ) -> str:
-    """그룹스터디 단계별 규칙"""
+    """그룹스터디 단계별 대화식 규칙 (역할 및 트리거 기반)"""
     if stage_index == 0:
-        return """
-[현재 단계: 1차 답변자]
-- 너는 이번 그룹스터디의 1차 답변자다.
-- 사용자 질문에 대해 네 페르소나와 역할에 맞는 첫 답변을 제공한다.
-- 뒤의 에이전트들이 네 답변을 검토하고 보완할 수 있도록 핵심 근거와 판단 기준을 분명히 제시한다.
-- 다른 에이전트의 피드백 역할이나 최종 정리 역할을 미리 대신하지 마라.
+        return f"""
+[현재 단계: 1차 대화 발화자]
+- 너는 이번 그룹 스터디의 첫 번째 답변자다.
+- 사용자의 질문에 대해 "{current_agent_name}"의 역할, 지식수준, 성격 및 말투에 딱 맞추어 답변해라.
+- 절대로 '1차 답변:', '핵심 근거:' 같은 표제어를 쓰지 마라. 진짜 사람처럼 자연스러운 메신저 채팅 형식으로만 답변해라.
+- 답변의 끝부분에는 사용자나 다른 에이전트가 흥미롭게 대화를 이어갈 수 있도록 자연스럽게 가벼운 질문을 던져라.
+- 만약 사용자가 '안녕', '반가워' 같은 단순 인사를 했다면 절대 길고 복잡한 이론 지식을 설명하지 말고, 친근하게 인사를 건네며 오늘 어떤 내용이나 자료를 같이 공부하고 싶은지 되묻는 질문을 던져라.
+"""
 
-출력 형식:
-
-1차 답변
-- 핵심 내용을 2~4문장으로 설명한다.
-
-핵심 근거
-- 왜 그렇게 설명하는지 근거를 짧게 정리한다.
-
-다음 에이전트가 검토하면 좋은 지점
-- 보완하거나 확인하면 좋은 부분을 1~2개 제시한다.
+    feedback_instruction = ""
+    if user_wants_feedback:
+        feedback_instruction = """
+- **[피드백 트리거 활성화]** 사용자가 답변의 정확성 검토, 피드백, 채점 또는 의견을 명시적으로 물어보았습니다.
+- 앞선 에이전트들의 답변 중 오류가 있거나 부족한 지점을 교정, 보완하고 평가해 주세요.
+- 단, 상대방의 직위(예: 교수)가 자신(예: 학생)보다 높은 경우, 지나치게 가르치려 들거나 무례하게 지적하지 말고 "OO님 설명 중에서 이 부분이 아주 인상 깊었는데, 혹시 ~부분은 제가 이렇게 이해한 게 맞을까요?" 처럼 매우 예의 바르고 배움의 자세로 피드백을 전달해라.
+"""
+    else:
+        feedback_instruction = """
+- **[일반 대화 모드]** 사용자가 피드백을 명시적으로 요청하지 않았습니다.
+- **절대로 앞선 에이전트의 답변을 채점하거나 교사처럼 '피드백/지적'하지 마세요.**
+- 대신 앞선 에이전트의 훌륭한 설명을 지지해주고, **중복되는 이론 설명이나 예시는 완전히 건너뛰어라.**
+- 대신 아래 중 하나를 골라 대화를 풍성하게 만들어라:
+  1. 실생활의 비유나 쉬운 비유(Analogy)를 들어 설명하기
+  2. 초보자가 자주 저지르는 실수를 방지하는 팁 주기
+  3. 실무나 실제 프로젝트에서 이 개념이 어떻게 쓰이는지 활용 사례 공유하기
+  4. (학생 역할인 경우) "우와, OO 교수님/전문가님 설명 정말 귀에 쏙쏙 들어와요! 그럼 혹시 ~할 때는 어떻게 처리하나요?" 라고 부드럽게 질문하기
 """
 
     if stage_index == 1:
-        return """
-[현재 단계: 피드백 및 개선 답변자]
-- 너는 이번 그룹스터디의 2차 에이전트다.
-- 사용자 질문과 앞선 에이전트의 답변을 함께 검토한다.
-- 앞선 답변의 좋은 점, 부족한 점, 보완할 점을 말한다.
-- 그 피드백을 반영해서 네 페르소나와 역할에 맞는 개선 답변을 제시한다.
-- 단순히 같은 답변을 반복하지 마라.
-- 문제를 만들지 말지, 개념을 설명할지, 비판적으로 검토할지는 반드시 너의 성격 유형과 지식수준에 맞춰 결정한다.
-
-출력 형식:
-
-피드백
-- 앞선 답변에서 좋은 점과 부족한 점을 나누어 말한다.
-
-보완할 점
-- 빠진 개념, 헷갈릴 수 있는 부분, 수정할 부분을 정리한다.
-
-피드백 반영 답변
-- 피드백을 반영한 개선 답변을 작성한다.
+        return f"""
+[현재 단계: 대화 이어가기 및 보완자]
+- 너는 이번 그룹 스터디의 두 번째 발화자다.
+- 앞선 첫 번째 에이전트의 답변을 확인하고, 그 에이전트의 이름을 직접 언급하면서 (예: 'OO님 의견도 일리가 있네요!', 'OO님이 설명해주신 개념에 덧붙여서...') 대화를 이어나가라.
+{feedback_instruction}
+- 앞선 에이전트들의 상세 정보는 다음과 같습니다:
+{previous_agents_info_text}
+- 너 자신의 역할, 성격, 지식수준에 부합하게 발화하고, 답변 끝에는 자연스럽게 다음 사람의 의견을 묻거나 사용자에게 가벼운 질문을 던져라.
 """
 
     if stage_index == total_agents - 1 and total_agents >= 3:
-        return """
-[현재 단계: 최종 종합자]
-- 너는 이번 그룹스터디의 최종 종합자다.
-- 사용자 질문, 1차 답변, 2차 피드백 및 개선 답변을 모두 참고한다.
-- 앞선 답변들의 중복을 줄이고 핵심 결론을 정리한다.
-- 틀린 내용이 있으면 바로잡고, 부족한 내용이 있으면 보완한다.
-- 마지막에는 사용자가 다음에 무엇을 하면 되는지 학습 방향을 제시한다.
-- 단, 네 페르소나와 역할을 벗어나서 모든 역할을 대신 수행하지 마라.
-
-출력 형식:
-
-최종 판단
-- 앞선 답변들을 종합해 핵심 판단을 짧게 말한다.
-
-종합 답변
-- 최종 설명을 2~4문단으로 나누어 작성한다.
-- 필요한 경우 번호 목록을 사용한다.
-
-다음 학습 방향
-- 사용자가 다음에 할 일을 2~3개로 제시한다.
+        return f"""
+[현재 단계: 최종 대화 정리 및 학습 촉진자]
+- 너는 이번 그룹 스터디의 최종 정리자이자 학습 촉진자다.
+- 앞선 모든 에이전트들의 대화 맥락과 사용자 질문을 종합하여 깔끔하게 정리해라.
+- 동료 에이전트들의 이름을 한 번씩 골고루 친근하게 언급하면서 (예: '김도끼님과 영희님이 짚어주신 것처럼...', '두 분의 의견을 종합하자면...') 최종 결론을 맺어라.
+{feedback_instruction}
+- 앞선 에이전트들의 상세 정보는 다음과 같습니다:
+{previous_agents_info_text}
+- **반드시 중복되는 이론 설명이나 예시 코드는 과감히 생략하고**, 대화를 마무리 지으며 사용자가 스스로 더 생각해 보거나 공부를 주도적으로 이어나갈 수 있도록 다정하고 예리한 역질문(Counter-question)을 최소 하나 이상 던져라!
 """
 
-    return """
-[현재 단계: 추가 검토자]
-- 너는 이번 그룹스터디의 추가 검토자다.
-- 앞선 답변들을 검토하고 네 페르소나 관점에서 빠진 부분을 보완한다.
-- 같은 내용을 반복하지 말고 새로운 관점이나 오류 수정 중심으로 답변한다.
-
-출력 형식:
-
-검토
-- 앞선 답변의 핵심을 검토한다.
-
-보완 답변
-- 빠진 부분을 보완한다.
+    return f"""
+[현재 단계: 추가 의견 제시자]
+- 너는 이번 그룹 스터디의 추가 토론자다.
+- 앞선 대화 흐름을 참고하여, 다른 에이전트들의 의견을 인정해주거나 보완할 점을 자연스럽게 덧붙여라.
+{feedback_instruction}
+- 앞선 에이전트들의 상세 정보는 다음과 같습니다:
+{previous_agents_info_text}
+- 진짜 사람이 그룹 스터디 방에서 한마디 더 거들듯이 대화식으로 말해라.
 """
 
 
@@ -2161,9 +2268,18 @@ def build_group_study_prompt(
         user_intent: str,
         user_intent_rule: str,
         previous_answers_text: str,
-        stage_rule: str
+        stage_rule: str,
+        user_wants_feedback: bool = False
 ) -> str:
     """그룹스터디 프롬프트 생성"""
+    if user_wants_feedback:
+        repetition_and_feedback_rule = """6. 앞선 답변이 있으면 오류나 보완할 점을 반드시 정중하게 지적하고 수정 사항을 포함해라. 단, 대화 상대방이 전공 교수나 전문가인 경우 무례하게 평가하지 말고 공손히 여쭈어보아라.
+7. 이전 답변자가 다루지 못한 사각지대나 부족한 부분을 전문적으로 채워주어라."""
+    else:
+        repetition_and_feedback_rule = """6. **[절대 지침] 이미 앞선 에이전트들이 설명한 용어 정의, 개념, Calculator/Animal 같은 코드 예제를 똑같이 반복하지 마라.**
+7. 이미 앞선 사람이 설명한 부분은 동의하며 넘어가고, 너는 너의 관점(현실세계의 비유, 자주 하는 치명적 실수 방지법, 실제 개발 활용 팁) 중 단 하나에만 집중해서 짧고 유니크한 내용을 덧붙여라.
+8. 사용자가 직접 요구한 적이 없는 기계적인 '피드백'이나 채점을 일절 하지 말고, 친구처럼/교수님처럼 친근한 소통 형태로 발화해라."""
+
     return f"""너는 StudyBridge 플랫폼의 멀티 에이전트 그룹스터디에 참여하는 AI 에이전트다.
 {GLOBAL_PERSONA_PRIORITY_RULE}{GLOBAL_DOMAIN_RULE}{GROUP_STUDY_RULE}
 [에이전트 설정]
@@ -2193,23 +2309,22 @@ def build_group_study_prompt(
 {previous_answers_text}
 
 답변 규칙:
-1. 반드시 "{agent_name}"의 관점에서만 답변해라.
+1. 반드시 "{agent_name}"의 관점과 역할에서만 답변해라.
 2. 사용자 요청 의도는 참고하되, 고정 성격 및 말투와 지식수준을 절대 덮어쓰지 마라.
 3. 맞춤형 요구사항은 안전 규칙, 성격 및 말투, 지식수준과 충돌하지 않는 범위에서만 적용해라.
 4. 특정 학과나 컴퓨터공학 중심으로 답변하지 말고, 현재 질문의 과목/전공 맥락에 맞춰 답해라.
 5. 다른 에이전트의 역할을 대신 수행하지 마라.
-6. 앞선 답변이 있으면 반드시 참고하고, 중복 설명을 줄이며 피드백 또는 보완을 포함해라.
-7. 앞선 답변이 틀렸거나 부족하면 정중하게 수정해라.
-8. 모든 에이전트가 같은 형식으로 문제, 코드, 계획을 반복 생성하지 마라.
-9. 한국어로 답변해라.
-10. 마크다운 제목, 굵게 표시, 코드블록 기호를 사용하지 마라.
-11. 너무 길게 늘어놓지 말고 학습자가 바로 이해할 수 있게 답해라.
-12. 답변은 반드시 섹션별로 줄바꿈해서 작성해라.
-13. 각 섹션 제목은 한 줄에 단독으로 작성해라.
-14. 섹션 제목 다음에는 내용을 새 줄에 작성해라.
-15. 서로 다른 섹션 사이에는 빈 줄을 1줄 넣어라.
-16. 긴 문장은 2~3문장 단위로 끊어라.
-17. 목록은 번호 또는 하이픈으로 나눠서 작성해라."""
+{repetition_and_feedback_rule}
+9. 모든 에이전트가 똑같은 형식(Calculator 코드, Animal 코드 등)을 반복 렌더링하지 마라.
+10. 기본적으로 한국어로 답변하되, 에이전트의 [역할], [성격], [목표], 또는 [맞춤형 요구사항]에 특정 외국어 지침(예: 영어로만 대답해라, 영어 원어민 교사 등)이 들어있다면 그 특정 외국어 지침을 100% 최우선으로 반영하여 해당 외국어로 자연스럽게 답변해라.
+11. 마크다운 제목(#), 굵게 표시(**), 코드블록(```) 기호 사용 시, 3명의 에이전트가 중복해서 코드를 보여주지 않도록 앞선 답변에 이미 예제 코드가 있다면 너는 예제 코드를 절대 쓰지 마라.
+12. 너무 길게 늘어놓지 말고 학습자가 바로 이해할 수 있게 답해라.
+13. 답변은 반드시 섹션별로 줄바꿈해서 작성해라.
+14. 각 섹션 제목은 한 줄에 단독으로 작성해라.
+15. 섹션 제목 다음에는 내용을 새 줄에 작성해라.
+16. 서로 다른 섹션 사이에는 빈 줄을 1줄 넣어라.
+17. 긴 문장은 2~3문장 단위로 끊어라.
+18. 목록은 번호 또는 하이픈으로 나눠서 작성해라."""
 
 
 def build_feedback_prompt(
@@ -2265,28 +2380,12 @@ def build_feedback_prompt(
 {previous_answers_text}
 
 답변 규칙:
-1. 너는 반드시 "{reviewer_agent["name"]}"의 관점에서만 답변해라.
-2. "{target_agent["name"]}"의 이전 답변에 대해 동의, 부분 동의, 반대 중 하나로 먼저 판단해라.
-3. 답변의 정확성, 누락된 개념, 설명 방식, 학습 도움 정도를 평가해라.
-4. 틀린 부분이 있으면 무엇이 틀렸는지 정확히 말해라.
-5. 부족한 부분이 있으면 어떻게 보완해야 하는지 말해라.
-6. 피드백이 반영된 개선 답변을 짧게 제시해라.
-7. 이전 답변이 없는 척하지 마라. 위의 이전 답변을 반드시 근거로 평가해라.
-8. 특정 전공 개념을 새로 길게 강의하지 말고, 반드시 대상 답변에 대한 평가를 중심으로 말해라.
-9. 가능하면 "{target_agent["name"]}님 의견에 대해"처럼 동료 이름을 언급해라.
-10. 한국어로 답변해라.
-11. 마크다운 제목, 굵게 표시, 코드블록 기호를 사용하지 마라.
-12. 답변은 반드시 섹션별로 줄바꿈해서 작성해라.
-13. 서로 다른 섹션 사이에는 빈 줄을 1줄 넣어라.
-출력 형식:
-판단
-- 동의/부분 동의/반대 중 하나를 말한다.
-평가
-- 대상 답변에 대한 핵심 평가를 정리한다.
-보완점
-- 고쳐야 할 점 또는 추가하면 좋은 점을 정리한다.
-피드백 반영 답변
-- 더 나은 답변 예시를 제시한다."""
+1. 너는 반드시 "{reviewer_agent["name"]}"의 관점과 성격/말투에 백퍼센트 맞추어 답변해라.
+2. "{target_agent["name"]}"의 이전 답변에 대해 동의, 부분 동의, 반대 중 하나의 입장을 대화 속에 자연스럽게 녹여내라.
+3. 대상 에이전트의 이름을 직접 언급하면서 (예: '{target_agent["name"]}님의 설명도 좋지만...', '{target_agent["name"]}님 의견에 전적으로 동의합니다!') 대화식으로 작성해라.
+4. 답변의 정확성, 누락된 개념, 설명 방식 등을 부드럽게 평가하고, 빠진 부분이나 더 나은 개념을 네 말투로 보완해라.
+5. 절대로 '판단:', '평가:', '보완점:', '피드백 반영 답변:' 같은 기계적인 분류용 표제어를 쓰지 마라.
+6. 답변의 마지막에는 사용자에게 이 스터디 주제에 대한 의견을 묻는 따뜻한 역질문을 던져라."""
 
 
 @app.post("/api/ai/multi-chat", response_model=MultiChatResponse)
@@ -2478,6 +2577,10 @@ def multi_agent_chat(request: MultiChatRequest):
 
     total_agents = len(target_agents)
 
+    # 피드백 요구 트리거 단어 검증
+    feedback_triggers = ["피드백", "검토", "평가", "지적", "채점", "검사", "리뷰", "맞아", "틀렸어", "어때", "감상", "확인", "의견", "채점해", "봐줘"]
+    user_wants_feedback = any(trigger in user_message for trigger in feedback_triggers)
+
     for idx, agent in enumerate(target_agents):
         style_rule = get_agent_style_rule(
             agent["style"],
@@ -2492,10 +2595,20 @@ def multi_agent_chat(request: MultiChatRequest):
 
         previous_context_for_this_agent = format_previous_answers(chained_answers)
 
+        # 앞서 발화한 에이전트들의 상세 설정 정보 목록 작성 (성격, 성상 위계 비평 방지용)
+        previous_agents_info = []
+        for prev_agent in target_agents[:idx]:
+            previous_agents_info.append(
+                f"- 이름: {prev_agent['name']}, 역할: {prev_agent['role']}, 지식수준: {prev_agent['knowledgeLevel']}, 성격: {prev_agent['style']}, 목표: {prev_agent['goal']}"
+            )
+        previous_agents_info_text = "\n".join(previous_agents_info) if previous_agents_info else "없음 (너가 첫 번째 발화자임)"
+
         stage_rule = build_group_study_stage_rule(
             stage_index=idx,
             total_agents=total_agents,
-            current_agent_name=agent["name"]
+            current_agent_name=agent["name"],
+            previous_agents_info_text=previous_agents_info_text,
+            user_wants_feedback=user_wants_feedback
         )
 
         knowledge_level_rule = get_knowledge_level_rule(agent["knowledgeLevel"])
@@ -2516,7 +2629,8 @@ def multi_agent_chat(request: MultiChatRequest):
             user_intent=user_intent,
             user_intent_rule=user_intent_rule,
             previous_answers_text=previous_context_for_this_agent,
-            stage_rule=stage_rule
+            stage_rule=stage_rule,
+            user_wants_feedback=user_wants_feedback
         )
 
         try:

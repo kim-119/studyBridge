@@ -15,75 +15,6 @@ DEFAULT_KNOWLEDGE_LEVEL = "학사 수준"
 DEFAULT_PERSONALITY = "전문적"
 DEFAULT_TONE = "전문적"
 
-KNOWLEDGE_ALIASES = {
-    "입문 수준": "입문 수준",
-    "입문": "입문 수준",
-    "초보": "입문 수준",
-    "초급": "입문 수준",
-    "기초": "입문 수준",
-    "beginner": "입문 수준",
-    "basic": "입문 수준",
-    "학사 수준": "학사 수준",
-    "학사": "학사 수준",
-    "대학생": "학사 수준",
-    "전공기초": "학사 수준",
-    "전공 기본": "학사 수준",
-    "bachelor": "학사 수준",
-    "undergraduate": "학사 수준",
-    "석사 수준": "석사 수준",
-    "석사": "석사 수준",
-    "대학원": "석사 수준",
-    "연구 기초": "석사 수준",
-    "고급 이론": "석사 수준",
-    "master": "석사 수준",
-    "graduate": "석사 수준",
-    "박사 수준": "박사 수준",
-    "박사": "박사 수준",
-    "연구자": "박사 수준",
-    "이론 연구": "박사 수준",
-    "학술 연구": "박사 수준",
-    "phd": "박사 수준",
-    "doctoral": "박사 수준",
-    "전문가 수준": "전문가 수준",
-    "전문가": "전문가 수준",
-    "실무자": "전문가 수준",
-    "시니어": "전문가 수준",
-    "아키텍트": "전문가 수준",
-    "현업 전문가": "전문가 수준",
-    "expert": "전문가 수준",
-    "senior": "전문가 수준",
-    "architect": "전문가 수준",
-}
-
-PERSONALITY_ALIASES = {
-    "전문적": "전문적",
-    "전문": "전문적",
-    "논리적 탐구형": "전문적",
-    "professional": "전문적",
-    "formal": "전문적",
-    "친근함": "친근함",
-    "친근": "친근함",
-    "친절한 설명형": "친근함",
-    "friendly": "친근함",
-    "솔직함": "솔직함",
-    "솔직": "솔직함",
-    "비판적 분석형": "솔직함",
-    "honest": "솔직함",
-    "critical": "솔직함",
-    "독특함": "독특함",
-    "독특": "독특함",
-    "창의적 확장형": "독특함",
-    "creative": "독특함",
-    "효율적": "효율적",
-    "효율": "효율적",
-    "간결한 요약형": "효율적",
-    "efficient": "효율적",
-    "concise": "효율적",
-    "냉소적": "냉소적",
-    "냉소": "냉소적",
-    "cynical": "냉소적",
-}
-
 DISCIPLINE_KEYWORDS = {
     "computer_science": [
         "java", "python", "알고리즘", "oop", "객체지향", "네트워크", "데이터베이스", "컴퓨터공학",
@@ -91,7 +22,7 @@ DISCIPLINE_KEYWORDS = {
     ],
     "linguistics": ["음운론", "통사론", "의미론", "형태소", "언어학", "화용론", "음성학", "담화", "구문"],
     "mathematics": ["미분", "적분", "대수", "확률", "통계", "기하", "미분방정식", "정리", "행렬", "위상"],
-    "psychology": ["인지", "행동주의", "프로이트", "심리", "상담", "기억", "학습이론", "성격", "동기"],
+    "psychology": ["인지", "행동주의", "프로이트", "심리", "상담", "기억", "학습이론", "동기", "지능", "정신분석"],
     "philosophy": ["칸트", "존재론", "윤리학", "인식론", "형이상학", "공리주의", "철학", "헤겔", "데카르트"],
     "biology": ["세포", "유전자", "단백질", "생명과학", "세포호흡", "효소", "dna", "rna", "대사"],
     "medicine": ["의학", "진단", "질환", "임상", "치료", "병리", "약물", "환자", "수술"],
@@ -102,18 +33,15 @@ DISCIPLINE_KEYWORDS = {
     "social_science": ["사회학", "정치", "경제", "문화", "정책", "제도", "불평등", "국제관계"],
 }
 
-
 def normalize_knowledge_level(value: str | None, fallback_text: str = "") -> tuple[str, list[str]]:
     warnings: list[str] = []
-    candidates = [value or "", fallback_text or ""]
-    for candidate in candidates:
-        normalized = _normalize_space(candidate).lower()
-        if not normalized:
-            continue
-        for alias, canonical in KNOWLEDGE_ALIASES.items():
-            if alias.lower().replace(" ", "") in normalized.replace(" ", ""):
-                return canonical, warnings
-    warnings.append(f"지식수준을 정규화할 수 없어 기본값 '{DEFAULT_KNOWLEDGE_LEVEL}'을 사용함")
+    val = str(value or "").strip()
+    if val in ALLOWED_KNOWLEDGE_LEVELS:
+        return val, warnings
+    # UI에서 전달받은 값 중 정규화 대상 매칭
+    for canonical in ALLOWED_KNOWLEDGE_LEVELS:
+        if canonical in val or canonical.replace(" ", "") in val.replace(" ", ""):
+            return canonical, warnings
     return DEFAULT_KNOWLEDGE_LEVEL, warnings
 
 
@@ -245,29 +173,21 @@ def get_discipline_depth_adjustment(discipline: str, level: str) -> dict:
 
 def normalize_personality_tone(agent: dict) -> tuple[str, str, list[str]]:
     warnings: list[str] = []
-    values = [
-        ("personality", agent.get("personality")),
-        ("style", agent.get("style")),
-        ("tone", agent.get("tone")),
-        ("persona", _extract_tag_value(str(agent.get("persona") or ""), "성격")),
-    ]
-    chosen = None
-    chosen_source = ""
-    normalized_values = []
-    for source, value in values:
-        normalized = _normalize_personality(value)
-        if normalized:
-            normalized_values.append((source, normalized))
-            if chosen is None:
-                chosen = normalized
-                chosen_source = source
-    if chosen is None:
-        chosen = DEFAULT_PERSONALITY
-        chosen_source = "default"
-    for source, normalized in normalized_values[1:]:
-        if normalized != chosen:
-            warnings.append(f"성격/말투 충돌: {chosen_source}={chosen} 우선, {source}={normalized} 보정")
-    return chosen, chosen, warnings
+    raw_val = (
+        agent.get("personality")
+        or agent.get("style")
+        or agent.get("tone")
+        or str(agent.get("persona") or "")
+    )
+    val = str(raw_val or "").strip()
+    if val in ALLOWED_PERSONALITIES:
+        return val, val, warnings
+        
+    for canonical in ALLOWED_PERSONALITIES:
+        if canonical in val or canonical.replace(" ", "") in val.replace(" ", ""):
+            return canonical, canonical, warnings
+            
+    return DEFAULT_PERSONALITY, DEFAULT_TONE, warnings
 
 
 def normalize_agent_config(agent: dict, user_message: str = "") -> dict:
@@ -475,19 +395,6 @@ def _keywords_for_level(level: str) -> list[str]:
 def _contains_any(text: str, keywords: list[str]) -> bool:
     lowered = text.lower()
     return any(str(keyword).lower() in lowered for keyword in keywords)
-
-
-def _normalize_personality(value: Any) -> str | None:
-    text = _normalize_space(str(value or ""))
-    if not text:
-        return None
-    if text == "직접 입력":
-        return None
-    compact = text.lower().replace(" ", "")
-    for alias, canonical in PERSONALITY_ALIASES.items():
-        if alias.lower().replace(" ", "") in compact:
-            return canonical
-    return None
 
 
 def _merge_custom_instruction(agent: dict) -> str:
