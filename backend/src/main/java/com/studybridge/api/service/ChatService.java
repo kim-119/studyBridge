@@ -7,17 +7,22 @@ import com.studybridge.api.entity.AgentChatRoom;
 import com.studybridge.api.repository.AgentChatRoomRepository;
 import com.studybridge.api.repository.ChatMessageRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 @Transactional(readOnly = true)
 public class ChatService {
 
@@ -52,20 +57,96 @@ public class ChatService {
                                                 "answer", msg.getContent()))
                                 .collect(Collectors.toList());
 
+                String requestKnowledgeLevel = firstNonBlank(request.getKnowledgeLevel(), request.getKnowledge_level());
+                String requestPersonality = firstNonBlank(request.getPersonality(), request.getStyle(), request.getTone());
+                String requestCustomInstruction = firstNonBlank(
+                                request.getCustomInstruction(),
+                                request.getCustom_instruction(),
+                                stripPersonaTags(request.getPersona()));
+
+                log.info(
+                                "chat settings received roomId={} personality={} knowledgeLevel={} customInstructionPresent={}",
+                                roomId,
+                                requestPersonality,
+                                requestKnowledgeLevel,
+                                requestCustomInstruction != null && !requestCustomInstruction.isBlank());
+
                 // FastAPI의 /api/ai/multi-chat 요구사항에 맞춰 데이터 구성
-                List<Map<String, String>> agentsList = room.getAgents().stream()
-                                .map(agent -> Map.of(
-                                                "name", agent.getName(),
-                                                "role", agent.getRole(),
-                                                "personality", agent.getPersona(),
-                                                "tone", agent.getTone(),
-                                                "goal", agent.getGoal()))
+                List<Map<String, Object>> agentsList = room.getAgents().stream()
+                                .map(agent -> {
+                                        String persona = nullToEmpty(agent.getPersona());
+                                        String agentKnowledgeLevel = firstNonBlank(
+                                                        extractPersonaTag(persona, "지식수준"),
+                                                        requestKnowledgeLevel,
+                                                        "학사 수준");
+                                        String agentPersonality = firstNonBlank(
+                                                        agent.getTone(),
+                                                        extractPersonaTag(persona, "성격"),
+                                                        requestPersonality,
+                                                        "전문적");
+                                        String agentCustomInstruction = firstNonBlank(
+                                                        stripPersonaTags(persona),
+                                                        requestCustomInstruction,
+                                                        agent.getGoal(),
+                                                        "");
+
+                                        Map<String, Object> agentMap = new LinkedHashMap<>();
+                                        agentMap.put("id", agent.getId());
+                                        agentMap.put("agentId", agent.getId());
+                                        agentMap.put("name", agent.getName());
+                                        agentMap.put("role", agent.getRole());
+                                        agentMap.put("personality", agentPersonality);
+                                        agentMap.put("style", agentPersonality);
+                                        agentMap.put("tone", agentPersonality);
+                                        agentMap.put("knowledgeLevel", agentKnowledgeLevel);
+                                        agentMap.put("knowledge_level", agentKnowledgeLevel);
+                                        agentMap.put("customInstruction", agentCustomInstruction);
+                                        agentMap.put("custom_instruction", agentCustomInstruction);
+                                        agentMap.put("persona", persona);
+                                        agentMap.put("goal", agent.getGoal());
+                                        return agentMap;
+                                })
                                 .collect(Collectors.toList());
 
-                Map<String, Object> requestBody = Map.of(
-                                "message", request.getMessage(),
-                                "agents", agentsList,
-                                "previousAnswers", previousAnswers);
+                if (request.getAgents() != null && !request.getAgents().isEmpty()) {
+                        agentsList = request.getAgents().stream()
+                                        .map(agent -> mapRequestAgent(agent, requestKnowledgeLevel, requestPersonality))
+                                        .collect(Collectors.toList());
+                }
+
+                log.info("[CHAT REQUEST] mode={} message={} agents.size={}",
+                                firstNonBlank(request.getMode(), agentsList.size() > 1 ? "multi_agent_discussion" : "single_answer"),
+                                request.getMessage(),
+                                agentsList.size());
+                for (int i = 0; i < agentsList.size(); i++) {
+                        Map<String, Object> agent = agentsList.get(i);
+                        log.info("[AGENT {}] name={} personality={} knowledgeLevel={}",
+                                        i + 1,
+                                        agent.get("name"),
+                                        agent.get("personality"),
+                                        agent.get("knowledgeLevel"));
+                }
+
+                Map<String, Object> requestBody = new LinkedHashMap<>();
+                requestBody.put("message", request.getMessage());
+                requestBody.put("agentId", request.getAgentId());
+                requestBody.put("roomId", request.getRoomId() != null ? request.getRoomId() : roomId);
+                requestBody.put("mode", firstNonBlank(
+                                request.getMode(),
+                                agentsList.size() > 1 ? "multi_agent_discussion" : "single_answer"));
+                requestBody.put("rounds", request.getRounds() != null ? Math.min(Math.max(request.getRounds(), 1), 3) : 3);
+                requestBody.put("showFinalSynthesis", request.getShowFinalSynthesis() != null ? request.getShowFinalSynthesis() : false);
+                requestBody.put("personality", requestPersonality);
+                requestBody.put("style", firstNonBlank(request.getStyle(), requestPersonality));
+                requestBody.put("tone", firstNonBlank(request.getTone(), requestPersonality));
+                requestBody.put("knowledgeLevel", requestKnowledgeLevel);
+                requestBody.put("knowledge_level", requestKnowledgeLevel);
+                requestBody.put("customInstruction", requestCustomInstruction);
+                requestBody.put("custom_instruction", requestCustomInstruction);
+                requestBody.put("persona", request.getPersona());
+                requestBody.put("agents", agentsList);
+                requestBody.put("previousAnswers", previousAnswers);
+                log.info("chat fastapi payload roomId={} payload={}", roomId, requestBody);
 
                 Map<String, Object> response;
                 try {
@@ -80,7 +161,50 @@ public class ChatService {
                 }
 
                 List<ChatDTO.AgentReply> replies = new java.util.ArrayList<>();
-                if (response != null && response.containsKey("answers")) {
+                List<ChatDTO.DiscussionMessage> discussionMessages = new java.util.ArrayList<>();
+                String responseMode = response != null && response.get("mode") != null ? response.get("mode").toString() : null;
+                String finalSynthesis = response != null && response.get("finalSynthesis") != null
+                                ? response.get("finalSynthesis").toString()
+                                : null;
+
+                if (response != null && response.containsKey("messages") && response.get("messages") instanceof List) {
+                        List<Map<String, Object>> messages = (List<Map<String, Object>>) response.get("messages");
+
+                        for (Map<String, Object> messageMap : messages) {
+                                String aiContent = String.valueOf(messageMap.getOrDefault("content", ""));
+                                String agentName = String.valueOf(messageMap.getOrDefault("agentName", "AI"));
+                                String responseAgentId = String.valueOf(messageMap.getOrDefault("agentId", ""));
+
+                                Agent targetAgent = room.getAgents().stream()
+                                                .filter(a -> String.valueOf(a.getId()).equals(responseAgentId) || a.getName().equals(agentName))
+                                                .findFirst()
+                                                .orElse(room.getAgents().get(0));
+
+                                saveRoomMessage(room, targetAgent, aiContent, "AI");
+
+                                ChatDTO.DiscussionMessage discussionMessage = ChatDTO.DiscussionMessage.builder()
+                                                .id(String.valueOf(messageMap.getOrDefault("id", "")))
+                                                .round(asInteger(messageMap.get("round")))
+                                                .agentId(responseAgentId)
+                                                .agentName(agentName)
+                                                .role(String.valueOf(messageMap.getOrDefault("role", "")))
+                                                .personality(String.valueOf(messageMap.getOrDefault("personality", "")))
+                                                .knowledgeLevel(String.valueOf(messageMap.getOrDefault("knowledgeLevel", "")))
+                                                .speechType(String.valueOf(messageMap.getOrDefault("speechType", "")))
+                                                .targetAgentId(messageMap.get("targetAgentId") != null
+                                                                ? messageMap.get("targetAgentId").toString()
+                                                                : null)
+                                                .content(aiContent)
+                                                .build();
+                                discussionMessages.add(discussionMessage);
+
+                                replies.add(ChatDTO.AgentReply.builder()
+                                                .agentId(targetAgent.getId())
+                                                .agentName(targetAgent.getName())
+                                                .answer(aiContent)
+                                                .build());
+                        }
+                } else if (response != null && response.containsKey("answers")) {
                         List<Map<String, Object>> answers = (List<Map<String, Object>>) response.get("answers");
 
                         for (int i = 0; i < answers.size(); i++) {
@@ -105,6 +229,9 @@ public class ChatService {
                 }
 
                 return ChatDTO.MultiChatResponse.builder()
+                                .mode(responseMode)
+                                .messages(discussionMessages.isEmpty() ? null : discussionMessages)
+                                .finalSynthesis(finalSynthesis)
                                 .replies(replies)
                                 .build();
         }
@@ -132,5 +259,93 @@ public class ChatService {
                                 .sender(sender)
                                 .build();
                 chatMessageRepository.save(message);
+        }
+
+        private Map<String, Object> mapRequestAgent(
+                        ChatDTO.RequestAgent agent,
+                        String requestKnowledgeLevel,
+                        String requestPersonality) {
+                String persona = nullToEmpty(agent.getPersona());
+                String agentId = firstNonBlank(agent.getAgentId(), agent.getId());
+                String agentKnowledgeLevel = firstNonBlank(
+                                agent.getKnowledgeLevel(),
+                                agent.getKnowledge_level(),
+                                requestKnowledgeLevel,
+                                "학사 수준");
+                String agentPersonality = firstNonBlank(
+                                agent.getPersonality(),
+                                agent.getStyle(),
+                                agent.getTone(),
+                                requestPersonality,
+                                "전문적");
+                String agentCustomInstruction = firstNonBlank(
+                                stripPersonaTags(agent.getCustomInstruction()),
+                                stripPersonaTags(agent.getCustom_instruction()),
+                                stripPersonaTags(persona),
+                                "");
+
+                Map<String, Object> agentMap = new LinkedHashMap<>();
+                agentMap.put("id", agentId);
+                agentMap.put("agentId", agentId);
+                agentMap.put("name", firstNonBlank(agent.getName(), "AI 학습 도우미"));
+                agentMap.put("role", firstNonBlank(agent.getRole(), "AI 학습 도우미"));
+                agentMap.put("personality", agentPersonality);
+                agentMap.put("style", agentPersonality);
+                agentMap.put("tone", agentPersonality);
+                agentMap.put("knowledgeLevel", agentKnowledgeLevel);
+                agentMap.put("knowledge_level", agentKnowledgeLevel);
+                agentMap.put("customInstruction", agentCustomInstruction);
+                agentMap.put("custom_instruction", agentCustomInstruction);
+                agentMap.put("persona", persona);
+                return agentMap;
+        }
+
+        private String firstNonBlank(String... values) {
+                if (values == null) {
+                        return null;
+                }
+                for (String value : values) {
+                        if (value != null && !value.isBlank()) {
+                                return value.trim();
+                        }
+                }
+                return null;
+        }
+
+        private String nullToEmpty(String value) {
+                return value == null ? "" : value;
+        }
+
+        private String extractPersonaTag(String persona, String tagName) {
+                if (persona == null || persona.isBlank()) {
+                        return null;
+                }
+                Pattern pattern = Pattern.compile("\\[" + Pattern.quote(tagName) + ":\\s*([^\\]]+)\\]");
+                Matcher matcher = pattern.matcher(persona);
+                return matcher.find() ? matcher.group(1).trim() : null;
+        }
+
+        private String stripPersonaTags(String persona) {
+                if (persona == null || persona.isBlank()) {
+                        return "";
+                }
+                return persona.replaceAll("\\[[^\\]]+\\]", "").trim();
+        }
+
+        private Integer asInteger(Object value) {
+                if (value instanceof Integer) {
+                        return (Integer) value;
+                }
+                if (value instanceof Number) {
+                        return ((Number) value).intValue();
+                }
+                if (value != null) {
+                        try {
+                                return Integer.parseInt(value.toString());
+                        } catch (NumberFormatException ignored) {
+                                return null;
+                        }
+                }
+                return null;
         }
 }

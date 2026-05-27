@@ -37,6 +37,14 @@ public class AiIntegrationService {
                 return material;
         }
 
+        private String getTextToAnalyze(Material material) {
+                if (material.getMaterialType() == MaterialType.STUDY_LOG) {
+                        return material.getLearningContent();
+                } else {
+                        return material.getExtractedText();
+                }
+        }
+
         // 메모 가져오기
         public MemoDTO getMemo(Long userId, Long materialId) {
                 getMaterialSafely(userId, materialId);
@@ -83,11 +91,20 @@ public class AiIntegrationService {
         }
 
         private SummaryDTO generateSummary(Material material) {
+<<<<<<< HEAD
                 if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
                         throw new IllegalArgumentException("텍스트가 아직 추출되지 않아 요약을 생성할 수 없습니다.");
                 }
 
                 Map<String, Object> requestBody = Map.of("text", material.getExtractedText());
+=======
+                String textToAnalyze = getTextToAnalyze(material);
+                if (textToAnalyze == null || textToAnalyze.isBlank()) {
+                        throw new IllegalArgumentException("학습 일지 또는 추출된 텍스트 내용이 비어 있어 요약을 생성할 수 없습니다.");
+                }
+
+                Map<String, Object> requestBody = Map.of("text", textToAnalyze);
+>>>>>>> 45414b3 (update fastapi)
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/summary")
@@ -130,11 +147,20 @@ public class AiIntegrationService {
         }
 
         private FeedbackDTO generateFeedback(Material material) {
+<<<<<<< HEAD
                 if (material.getLearningContent() == null || material.getLearningContent().isBlank()) {
                         throw new IllegalArgumentException("학습 내용이 없어 피드백을 생성할 수 없습니다.");
                 }
 
                 Map<String, Object> requestBody = Map.of("content", material.getLearningContent());
+=======
+                String textToAnalyze = getTextToAnalyze(material);
+                if (textToAnalyze == null || textToAnalyze.isBlank()) {
+                        throw new IllegalArgumentException("학습 내용 또는 추출된 텍스트가 없어 피드백을 생성할 수 없습니다.");
+                }
+
+                Map<String, Object> requestBody = Map.of("content", textToAnalyze);
+>>>>>>> 45414b3 (update fastapi)
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/feedback")
@@ -181,12 +207,18 @@ public class AiIntegrationService {
         public QuizDTO.Response generateQuiz(Long userId, Long materialId, QuizDTO.Request request) {
                 Material material = getMaterialSafely(userId, materialId);
 
+<<<<<<< HEAD
                 if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
                         throw new IllegalArgumentException("텍스트가 아직 추출되지 않아 퀴즈를 생성할 수 없습니다.");
+=======
+                String textToAnalyze = getTextToAnalyze(material);
+                if (textToAnalyze == null || textToAnalyze.isBlank()) {
+                        throw new IllegalArgumentException("자료의 텍스트가 비어 있어 퀴즈를 생성할 수 없습니다.");
+>>>>>>> 45414b3 (update fastapi)
                 }
 
                 Map<String, Object> requestBody = Map.of(
-                                "text", material.getExtractedText(),
+                                "text", textToAnalyze,
                                 "difficulty", request.getDifficulty(),
                                 "questionCount", request.getQuestionCount());
 
@@ -233,12 +265,18 @@ public class AiIntegrationService {
         public QuestionDTO.Response askQuestion(Long userId, Long materialId, QuestionDTO.Request request) {
                 Material material = getMaterialSafely(userId, materialId);
 
+<<<<<<< HEAD
                 if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
                         throw new IllegalArgumentException("자료의 텍스트가 없어 질문할 수 없습니다.");
+=======
+                String textToAnalyze = getTextToAnalyze(material);
+                if (textToAnalyze == null || textToAnalyze.isBlank()) {
+                        throw new IllegalArgumentException("자료의 텍스트가 비어 있어 질문할 수 없습니다.");
+>>>>>>> 45414b3 (update fastapi)
                 }
 
                 Map<String, Object> requestBody = Map.of(
-                                "text", material.getExtractedText(),
+                                "text", textToAnalyze,
                                 "question", request.getUserQuestion());
 
                 Map response;
@@ -309,11 +347,27 @@ public class AiIntegrationService {
 
         // 로드맵 생성
         private RoadmapDTO generateRoadmap(Material material) {
+<<<<<<< HEAD
                 if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
                         throw new IllegalArgumentException("텍스트가 아직 추출되지 않아 로드맵을 생성할 수 없습니다.");
+=======
+                String textToAnalyze = getTextToAnalyze(material);
+                if (textToAnalyze == null || textToAnalyze.isBlank()) {
+                        throw new IllegalArgumentException("자료의 텍스트가 비어 있어 로드맵을 생성할 수 없습니다.");
                 }
 
-                Map<String, Object> requestBody = Map.of("text", material.getExtractedText());
+                String userGoal = "학습 목표 달성";
+                if (material.getTitle() != null && !material.getTitle().isBlank()) {
+                        userGoal = material.getTitle() + " 학습 및 핵심 목표 달성";
+>>>>>>> 45414b3 (update fastapi)
+                }
+
+                Map<String, Object> requestBody = Map.of(
+                        "material_id", material.getMaterialId(),
+                        "pdf_text", textToAnalyze,
+                        "user_goal", userGoal
+                );
+
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/roadmap")
@@ -322,16 +376,26 @@ public class AiIntegrationService {
                         throw new RuntimeException("AI 서버에서 로드맵 생성 중 오류가 발생했습니다: " + e.getMessage());
                 }
 
-                // FastAPI 응답 파싱 및 엔티티 생성
+                // roadmap 오브젝트 파싱
+                Map<String, Object> roadmapMap = null;
+                if (response != null && response.containsKey("roadmap")) {
+                        roadmapMap = (Map<String, Object>) response.get("roadmap");
+                }
+
+                String roadmapTitle = "AI 생성 학습 로드맵";
+                if (roadmapMap != null && roadmapMap.containsKey("title")) {
+                        roadmapTitle = roadmapMap.get("title").toString();
+                }
+
+                // 엔티티 생성
                 Roadmap roadmap = Roadmap.builder()
                                 .material(material)
-                                .title(response != null && response.containsKey("title")
-                                                ? response.get("title").toString()
-                                                : "AI 생성 학습 로드맵")
+                                .userId(material.getUserId())
+                                .title(roadmapTitle)
                                 .build();
 
-                if (response != null && response.containsKey("steps")) {
-                        java.util.List<Map<String, Object>> stepMaps = (java.util.List<Map<String, Object>>) response
+                if (roadmapMap != null && roadmapMap.containsKey("steps")) {
+                        java.util.List<Map<String, Object>> stepMaps = (java.util.List<Map<String, Object>>) roadmapMap
                                         .get("steps");
                         for (Map<String, Object> stepMap : stepMaps) {
                                 RoadmapStep step = RoadmapStep.builder()

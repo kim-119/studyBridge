@@ -49,6 +49,45 @@ FEEDBACK_ACTION_KEYWORDS = [
     "리뷰",
 ]
 
+<<<<<<< HEAD
+=======
+FEEDBACK_NEGATION_PATTERNS = [
+    "피드백 기능이 왜",
+    "피드백이 왜",
+    "피드백을 요청하지",
+    "피드백 요청하지",
+    "왜 피드백",
+    "feedback why",
+    "why feedback",
+]
+
+EXPLICIT_FEEDBACK_PATTERNS = [
+    "피드백해줘",
+    "피드백 해줘",
+    "평가해줘",
+    "평가 해줘",
+    "첨삭해줘",
+    "첨삭 해줘",
+    "검토해줘",
+    "검토 해줘",
+    "개선점 알려줘",
+    "보완점 알려줘",
+    "채점해줘",
+    "채점 해줘",
+    "내 답변 어때",
+    "이 답변 수준 어때",
+    "문제점 알려줘",
+]
+
+EXPLICIT_IMPROVE_PATTERNS = [
+    "피드백 반영해서 다시 써줘",
+    "개선해서 최종본 줘",
+    "수정본 만들어줘",
+    "보완해서 다시 작성해줘",
+    "최종 답안으로 정리해줘",
+]
+
+>>>>>>> 45414b3 (update fastapi)
 ANSWER_TARGET_KEYWORDS = [
     "답변",
     "대답",
@@ -121,6 +160,35 @@ def detect_feedback_intent(message: str) -> dict:
             "matched_keywords": [],
         }
 
+<<<<<<< HEAD
+=======
+    if any(pattern in text for pattern in FEEDBACK_NEGATION_PATTERNS):
+        return {
+            "is_feedback_request": False,
+            "feedback_type": "general",
+            "confidence": 0.05,
+            "matched_keywords": [],
+        }
+
+    improve_matches = [pattern for pattern in EXPLICIT_IMPROVE_PATTERNS if pattern in text]
+    if improve_matches:
+        return {
+            "is_feedback_request": True,
+            "feedback_type": "improve_answer",
+            "confidence": 0.95,
+            "matched_keywords": improve_matches,
+        }
+
+    explicit_matches = [pattern for pattern in EXPLICIT_FEEDBACK_PATTERNS if pattern in text]
+    if explicit_matches:
+        return {
+            "is_feedback_request": True,
+            "feedback_type": "answer_review",
+            "confidence": 0.95,
+            "matched_keywords": explicit_matches,
+        }
+
+>>>>>>> 45414b3 (update fastapi)
     for pattern in GENERAL_QUESTION_PATTERNS:
         if re.search(pattern, text):
             return {

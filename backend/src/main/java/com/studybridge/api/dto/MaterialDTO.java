@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
 @Getter
 @Builder
 public class MaterialDTO {
-    
+
     @Getter
     @NoArgsConstructor
     public static class StudyLogRequest {
@@ -32,7 +32,7 @@ public class MaterialDTO {
     private String title;
     private com.studybridge.api.entity.MaterialType materialType;
     private String keywords;
-    
+
     // 학습일지
     private java.time.LocalDate studyDate;
     private String learningContent;

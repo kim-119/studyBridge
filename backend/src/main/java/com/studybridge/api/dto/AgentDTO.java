@@ -5,6 +5,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.Setter;
+import lombok.ToString;
 
 public class AgentDTO {
 
@@ -44,9 +45,20 @@ public class AgentDTO {
 
     @Getter
     @Setter
+    @ToString
     public static class ChatRequest {
         @NotBlank(message = "메시지를 입력해주세요.")
         private String message;
+        private Long agentId;
+        private Long roomId;
+        private String personality;
+        private String style;
+        private String tone;
+        private String knowledgeLevel;
+        private String knowledge_level;
+        private String customInstruction;
+        private String custom_instruction;
+        private String persona;
     }
 
     @Getter
