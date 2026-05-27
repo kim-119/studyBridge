@@ -37,6 +37,14 @@ public class AiIntegrationService {
                 return material;
         }
 
+        private String getTextToAnalyze(Material material) {
+                if (material.getMaterialType() == MaterialType.STUDY_LOG) {
+                        return material.getLearningContent();
+                } else {
+                        return material.getExtractedText();
+                }
+        }
+
         // 메모 가져오기
         public MemoDTO getMemo(Long userId, Long materialId) {
                 getMaterialSafely(userId, materialId);
@@ -83,11 +91,12 @@ public class AiIntegrationService {
         }
 
         private SummaryDTO generateSummary(Material material) {
-                if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
-                        throw new IllegalArgumentException("텍스트가 아직 추출되지 않아 요약을 생성할 수 없습니다.");
+                String textToAnalyze = getTextToAnalyze(material);
+                if (textToAnalyze == null || textToAnalyze.isBlank()) {
+                        throw new IllegalArgumentException("학습 일지 또는 추출된 텍스트 내용이 비어 있어 요약을 생성할 수 없습니다.");
                 }
 
-                Map<String, Object> requestBody = Map.of("text", material.getExtractedText());
+                Map<String, Object> requestBody = Map.of("text", textToAnalyze);
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/summary")
@@ -130,11 +139,12 @@ public class AiIntegrationService {
         }
 
         private FeedbackDTO generateFeedback(Material material) {
-                if (material.getLearningContent() == null || material.getLearningContent().isBlank()) {
-                        throw new IllegalArgumentException("학습 내용이 없어 피드백을 생성할 수 없습니다.");
+                String textToAnalyze = getTextToAnalyze(material);
+                if (textToAnalyze == null || textToAnalyze.isBlank()) {
+                        throw new IllegalArgumentException("학습 내용 또는 추출된 텍스트가 없어 피드백을 생성할 수 없습니다.");
                 }
 
-                Map<String, Object> requestBody = Map.of("content", material.getLearningContent());
+                Map<String, Object> requestBody = Map.of("content", textToAnalyze);
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/feedback")
@@ -181,12 +191,13 @@ public class AiIntegrationService {
         public QuizDTO.Response generateQuiz(Long userId, Long materialId, QuizDTO.Request request) {
                 Material material = getMaterialSafely(userId, materialId);
 
-                if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
-                        throw new IllegalArgumentException("텍스트가 아직 추출되지 않아 퀴즈를 생성할 수 없습니다.");
+                String textToAnalyze = getTextToAnalyze(material);
+                if (textToAnalyze == null || textToAnalyze.isBlank()) {
+                        throw new IllegalArgumentException("자료의 텍스트가 비어 있어 퀴즈를 생성할 수 없습니다.");
                 }
 
                 Map<String, Object> requestBody = Map.of(
-                                "text", material.getExtractedText(),
+                                "text", textToAnalyze,
                                 "difficulty", request.getDifficulty(),
                                 "questionCount", request.getQuestionCount());
 
@@ -233,12 +244,13 @@ public class AiIntegrationService {
         public QuestionDTO.Response askQuestion(Long userId, Long materialId, QuestionDTO.Request request) {
                 Material material = getMaterialSafely(userId, materialId);
 
-                if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
-                        throw new IllegalArgumentException("자료의 텍스트가 없어 질문할 수 없습니다.");
+                String textToAnalyze = getTextToAnalyze(material);
+                if (textToAnalyze == null || textToAnalyze.isBlank()) {
+                        throw new IllegalArgumentException("자료의 텍스트가 비어 있어 질문할 수 없습니다.");
                 }
 
                 Map<String, Object> requestBody = Map.of(
-                                "text", material.getExtractedText(),
+                                "text", textToAnalyze,
                                 "question", request.getUserQuestion());
 
                 Map response;
@@ -309,8 +321,9 @@ public class AiIntegrationService {
 
         // 로드맵 생성
         private RoadmapDTO generateRoadmap(Material material) {
-                if (material.getExtractedText() == null || material.getExtractedText().isBlank()) {
-                        throw new IllegalArgumentException("텍스트가 아직 추출되지 않아 로드맵을 생성할 수 없습니다.");
+                String textToAnalyze = getTextToAnalyze(material);
+                if (textToAnalyze == null || textToAnalyze.isBlank()) {
+                        throw new IllegalArgumentException("자료의 텍스트가 비어 있어 로드맵을 생성할 수 없습니다.");
                 }
 
                 String userGoal = "학습 목표 달성";
@@ -320,7 +333,7 @@ public class AiIntegrationService {
 
                 Map<String, Object> requestBody = Map.of(
                         "material_id", material.getMaterialId(),
-                        "pdf_text", material.getExtractedText(),
+                        "pdf_text", textToAnalyze,
                         "user_goal", userGoal
                 );
 

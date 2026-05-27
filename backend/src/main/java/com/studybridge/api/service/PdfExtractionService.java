@@ -67,12 +67,45 @@ public class PdfExtractionService {
 
             ResponseEntity<Map> response = restTemplate.postForEntity(fastApiUrl, requestEntity, Map.class);
 
+            String extractedText = null;
             if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
-                String extractedText = (String) response.getBody().get("extracted_text");
+                extractedText = (String) response.getBody().get("extracted_text");
+            }
+
+            // 만약 추출된 텍스트가 너무 짧거나 비어있으면 이미지 PDF로 간주하고 Vision OCR 추출 시도
+            if (extractedText == null || extractedText.trim().length() < 50) {
+                log.warn("Material ID: {} - 일반 텍스트 추출 결과가 너무 짧거나 없음 (길이: {}). Vision OCR 추출을 시도합니다.", 
+                        materialId, extractedText != null ? extractedText.trim().length() : 0);
+                
+                String visionUrl = fastApiUrl.replace("/api/extract", "") + "/api/ai/pdf/extract-vision-text/upload";
+                
+                MultiValueMap<String, Object> visionBody = new LinkedMultiValueMap<>();
+                visionBody.add("file", fileResource);
+                visionBody.add("material_id", materialId.toString());
+                visionBody.add("user_goal", "자료 기반 질문 답변");
+                
+                HttpEntity<MultiValueMap<String, Object>> visionRequestEntity = new HttpEntity<>(visionBody, headers);
+                
+                try {
+                    log.info("Material ID: {} - Vision OCR API 호출 시작 ({})", materialId, visionUrl);
+                    ResponseEntity<Map> visionResponse = restTemplate.postForEntity(visionUrl, visionRequestEntity, Map.class);
+                    
+                    if (visionResponse.getStatusCode() == HttpStatus.OK && visionResponse.getBody() != null) {
+                        extractedText = (String) visionResponse.getBody().get("extracted_text");
+                        log.info("Material ID: {} - Vision OCR 텍스트 추출 성공!", materialId);
+                    } else {
+                        log.error("Material ID: {} - Vision OCR API 응답 오류: {}", materialId, visionResponse.getStatusCode());
+                    }
+                } catch (Exception ve) {
+                    log.error("Material ID: {} - Vision OCR API 호출 중 예외 발생: ", materialId, ve);
+                }
+            }
+
+            if (extractedText != null && !extractedText.trim().isEmpty()) {
                 updateMaterialSuccess(materialId, extractedText);
-                log.info("Material ID: {} - 텍스트 추출 및 DB 저장 완료", materialId);
+                log.info("Material ID: {} - 최종 텍스트 저장 완료 (길이: {})", materialId, extractedText.length());
             } else {
-                log.error("Material ID: {} - FastAPI 응답 오류: {}", materialId, response.getStatusCode());
+                log.error("Material ID: {} - 텍스트 추출 최종 실패", materialId);
                 updateMaterialFailure(materialId);
             }
         } catch (Exception e) {
