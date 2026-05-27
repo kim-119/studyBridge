@@ -135,7 +135,12 @@ export default function StudyMate() {
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
   const [message, setMessage] = useState('');
-  const [typingRoomId, setTypingRoomId] = useState(null);
+  
+  // 개별 채팅방별 캐시 및 상태 관리
+  const [roomHistories, setRoomHistories] = useState({}); // { [roomId]: messages[] }
+  const [typingRooms, setTypingRooms] = useState({});     // { [roomId]: boolean }
+  const [roomDrafts, setRoomDrafts] = useState({});       // { [roomId]: string }
+
   const [showModal, setShowModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
 
@@ -157,12 +162,15 @@ export default function StudyMate() {
       setAgents([]);
       setSelectedAgent(null);
       setChatHistory([]);
+      setRoomHistories({});
+      setTypingRooms({});
+      setRoomDrafts({});
     }
   }, [userId]);
 
   useEffect(() => {
     scrollToBottom();
-  }, [chatHistory, typingRoomId]);
+  }, [chatHistory, typingRooms]);
 
   const loadAgents = async () => {
     try {
@@ -240,20 +248,36 @@ export default function StudyMate() {
     setSelectedAgent(agent);
     console.debug('[StudyMate] selected agent', agent);
 
+    // 1. 이전 방의 질문이 보이지 않도록 즉각적으로 해당 방의 캐시된 기록을 UI에 노출 (없으면 빈 리스트)
+    const cachedHistory = roomHistories[agentId] || [];
+    setChatHistory(cachedHistory);
+
+    // 2. 해당 방의 드래프트가 존재하면 입력 폼에 로드
+    setMessage(roomDrafts[agentId] || '');
+
+    // 3. 최신 채팅 이력을 비동기 조회하여 동기화
     try {
       const history = await agentService.getChatHistory(userId, agentId);
-      setChatHistory(history || []);
+      // 캐시 갱신
+      setRoomHistories(prev => ({ ...prev, [agentId]: history || [] }));
+      
+      // 비동기 복귀 시점에도 여전히 이 방이 활성화되어 있을 때만 UI에 반영하여 다른 방 간섭 방지
+      if (selectedAgentIdRef.current === agentId) {
+        setChatHistory(history || []);
+      }
     } catch (err) {
       console.error('채팅 이력 조회 실패:', err);
-      setChatHistory([]);
+      if (selectedAgentIdRef.current === agentId) {
+        // 에러가 발생해도 이전 캐시를 그대로 보여줍니다.
+      }
     }
   };
 
   const sendMessage = async (e) => {
     e.preventDefault();
-    if (!message.trim() || !selectedAgent || typingRoomId) return;
-
     const agentId = getAgentId(selectedAgent);
+    if (!message.trim() || !selectedAgent || typingRooms[agentId]) return;
+
     const inputMsg = message.trim();
     const userMsg = {
       id: Date.now(),
@@ -262,9 +286,18 @@ export default function StudyMate() {
       createdAt: new Date().toISOString()
     };
 
+    // 1. 현재 화면에 즉시 사용자 메시지 추가
     setChatHistory((prev) => [...prev, userMsg]);
+    // 2. 해당 방의 캐시된 히스토리에도 사용자 메시지 추가
+    setRoomHistories((prev) => ({
+      ...prev,
+      [agentId]: [...(prev[agentId] || []), userMsg]
+    }));
+    // 3. 입력 폼 비우기 및 드래프트 캐시 비우기
     setMessage('');
-    setTypingRoomId(agentId);
+    setRoomDrafts((prev) => ({ ...prev, [agentId]: '' }));
+    // 4. 해당 방의 타이핑/로딩 상태 활성화 (전체 방 블로킹 X)
+    setTypingRooms((prev) => ({ ...prev, [agentId]: true }));
 
     try {
       console.debug('[StudyMate] chat request', {
@@ -276,37 +309,66 @@ export default function StudyMate() {
       const res = await agentService.sendMessage(userId, agentId, inputMsg);
       console.debug('[StudyMate] chat response', res);
 
+      let newMsgs = [];
+      if (res.replies && res.replies.length > 0) {
+        newMsgs = res.replies.map((reply, index) => ({
+          id: Date.now() + 1 + index,
+          content: reply.answer || reply.content,
+          sender: 'AI',
+          senderName: reply.agentName || reply.agent_name,
+          agentId: reply.agentId,
+          createdAt: new Date().toISOString()
+        }));
+      } else {
+        newMsgs = [{
+          id: Date.now() + 1,
+          content: res.answer,
+          sender: 'AI',
+          senderName: selectedAgent.name,
+          createdAt: new Date().toISOString()
+        }];
+      }
+
+      // 5. 해당 방의 캐시 갱신 (사용자가 다른 방에 있더라도 백그라운드 캐시에 완벽히 반영)
+      setRoomHistories((prev) => {
+        const currentList = prev[agentId] || [];
+        const hasUserMsg = currentList.some(m => m.id === userMsg.id);
+        const baseList = hasUserMsg ? currentList : [...currentList, userMsg];
+        return {
+          ...prev,
+          [agentId]: [...baseList, ...newMsgs]
+        };
+      });
+
+      // 6. 현재 여전히 이 방을 보고 있는 경우에만 실시간 UI 업데이트 실행
       if (selectedAgentIdRef.current === agentId) {
-        if (res.replies && res.replies.length > 0) {
-          const newMsgs = res.replies.map((reply, index) => ({
-            id: Date.now() + 1 + index,
-            content: reply.answer || reply.content,
-            sender: 'AI',
-            senderName: reply.agentName || reply.agent_name,
-            agentId: reply.agentId,
-            createdAt: new Date().toISOString()
-          }));
-          setChatHistory((prev) => [...prev, ...newMsgs]);
-        } else {
-          const aiMsg = {
-            id: Date.now() + 1,
-            content: res.answer,
-            sender: 'AI',
-            senderName: selectedAgent.name,
-            createdAt: new Date().toISOString()
-          };
-          setChatHistory((prev) => [...prev, aiMsg]);
-        }
+        setChatHistory((prev) => {
+          const hasUserMsg = prev.some(m => m.id === userMsg.id);
+          const baseList = hasUserMsg ? prev : [...prev, userMsg];
+          return [...baseList, ...newMsgs];
+        });
       }
     } catch (err) {
       console.error('메시지 전송 실패:', err);
       alert('메시지 전송에 실패했습니다.');
+
+      // 7. 실패 시, 해당 방의 캐시 및 UI에서 에러 메시지만 복구
+      setRoomHistories((prev) => ({
+        ...prev,
+        [agentId]: (prev[agentId] || []).filter((m) => m.id !== userMsg.id)
+      }));
+
       if (selectedAgentIdRef.current === agentId) {
         setChatHistory((prev) => prev.filter((m) => m.id !== userMsg.id));
+        setMessage(inputMsg);
+        setRoomDrafts((prev) => ({ ...prev, [agentId]: inputMsg }));
+      } else {
+        // 다른 방에 있는 경우, 그 방의 드래프트로 실패한 메시지를 복구해줌
+        setRoomDrafts((prev) => ({ ...prev, [agentId]: inputMsg }));
       }
-      setMessage(inputMsg);
     } finally {
-      setTypingRoomId(null);
+      // 8. 해당 방의 타이핑/로딩 상태만 해제
+      setTypingRooms((prev) => ({ ...prev, [agentId]: false }));
     }
   };
 
@@ -477,7 +539,7 @@ export default function StudyMate() {
                         cursor: 'pointer'
                       }}
                     >
-                      <Info size={14} /> 에이전트 상세보기
+                      에이전트 상세보기
                     </button>
                   </div>
 
@@ -619,7 +681,7 @@ export default function StudyMate() {
                     );
                   })
                 )}
-                {typingRoomId === getAgentId(selectedAgent) && (
+                {typingRooms[getAgentId(selectedAgent)] && (
                   <div className="chat-bubble-container ai">
                     <div className="chat-bubble-sender">AI 에이전트들이 검토 중...</div>
                     <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', minHeight: '20px' }}>
@@ -636,11 +698,18 @@ export default function StudyMate() {
                   className="input-field"
                   style={{ flex: 1, borderRadius: '24px', paddingLeft: '20px', backgroundColor: '#F3F4F6', border: 'none' }}
                   value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setMessage(val);
+                    const activeId = getAgentId(selectedAgent);
+                    if (activeId) {
+                      setRoomDrafts((prev) => ({ ...prev, [activeId]: val }));
+                    }
+                  }}
                   placeholder="메시지를 입력해보세요..."
-                  disabled={typingRoomId === getAgentId(selectedAgent)}
+                  disabled={typingRooms[getAgentId(selectedAgent)]}
                 />
-                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={typingRoomId === getAgentId(selectedAgent) || !message.trim()}>
+                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={typingRooms[getAgentId(selectedAgent)] || !message.trim()}>
                   <Send size={18} />
                 </button>
               </form>
@@ -1072,24 +1141,32 @@ export default function StudyMate() {
                         </div>
                       </div>
 
-                      {(ag.customInstruction || ag.custom_instruction || ag.persona) && (
-                        <div style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--color-text-main)' }}>
-                          <div style={{ fontWeight: '600', marginBottom: '4px', color: 'var(--color-text-muted)' }}>사용자 지침 / 페르소나 설정</div>
-                          <div
-                            style={{
-                              padding: '10px 12px',
-                              backgroundColor: '#F9FAFB',
-                              borderRadius: '8px',
-                              border: '1px solid var(--color-border)',
-                              fontStyle: 'normal',
-                              whiteSpace: 'pre-wrap',
-                              color: 'var(--color-text-main)'
-                            }}
-                          >
-                            {ag.customInstruction || ag.custom_instruction || ag.persona}
+                      {(() => {
+                        const basePersona = ag.customInstruction || ag.custom_instruction || ag.persona || '';
+                        const cleanedPersona = basePersona.replace('사용자의 학습을 돕는다', '').trim();
+                        // 대괄호 태그들만 남고 알맹이가 없는 경우 노출하지 않음
+                        const hasRealContent = ag.customInstruction || ag.custom_instruction || (cleanedPersona.replace(/\[지식수준:[^\]]+\]/, '').replace(/\[성격:[^\]]+\]/, '').trim().length > 0);
+                        if (!hasRealContent) return null;
+
+                        return (
+                          <div style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--color-text-main)' }}>
+                            <div style={{ fontWeight: '600', marginBottom: '4px', color: 'var(--color-text-muted)' }}>사용자 지침 / 페르소나 설정</div>
+                            <div
+                              style={{
+                                padding: '10px 12px',
+                                backgroundColor: '#F9FAFB',
+                                borderRadius: '8px',
+                                border: '1px solid var(--color-border)',
+                                fontStyle: 'normal',
+                                whiteSpace: 'pre-wrap',
+                                color: 'var(--color-text-main)'
+                              }}
+                            >
+                              {ag.customInstruction || ag.custom_instruction || cleanedPersona}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        );
+                      })()}
                     </div>
                   );
                 })}

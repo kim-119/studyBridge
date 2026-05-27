@@ -48,6 +48,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "2000"))
 OPENAI_MAX_INPUT_CHARS = int(os.getenv("OPENAI_MAX_INPUT_CHARS", "12000"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if OPENAI_API_KEY:
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -131,6 +132,10 @@ def clean_ai_answer(text: str) -> str:
     text = text.replace("__", "")
     text = re.sub(r"(?m)^\s{0,3}#{2,6}\s*", "", text)
     text = re.sub(r"(?m)^\s*```[a-zA-Z0-9_-]*\s*$", "", text)
+    # 마크다운 수평선 (---, ***, ___, - - -, * * *, _ _ _) 완전 제거
+    text = re.sub(r"(?m)^\s*([-*_]\s*){3,}\s*$", "", text)
+    # 단독으로 한 줄에 방치된 하이픈이나 빈 불릿 기호 제거
+    text = re.sub(r"(?m)^\s*-\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
 
     text = text.strip()
@@ -190,7 +195,9 @@ def generate_gemini_text(system_prompt: str, user_prompt: str) -> str:
     import urllib.request
     import json
     
-    api_key = "AIzaSyAlP-OcJJ8p_Hei7ihoJNSwxCN9vRD-XXs"
+    api_key = GEMINI_API_KEY
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY is not set in environment variables")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     
     body = {
@@ -269,7 +276,9 @@ def revise_answer_to_match_quality_policy_gemini(
 {", ".join(validation_result.get("issues", []))}
 
 기존 답변의 핵심 내용은 유지하되, 선택된 지식수준과 학문 분야에 맞게 답변의 깊이, 용어 수준, 분석 관점, 예시 수준을 재작성하세요.
-마크다운 코드블록은 쓰지 말고 자연스러운 학습 답변으로 작성하세요."""
+마크다운 코드블록은 쓰지 말고 자연스러운 학습 답변으로 작성하세요.
+
+[초극단적 말투 규칙]: 반드시 100% 반말(비존칭)로 작성해야 한다. 절대로 존댓말(~요, ~습니다)을 1글자도 쓰지 말고 기존 캐릭터의 반말투와 성격을 철저히 보존해라."""
     try:
         return generate_gemini_text(system_prompt="", user_prompt=prompt)
     except Exception as e:
@@ -286,12 +295,16 @@ def generate_agent_quality_answer(agent_payload: dict, user_message: str, extra_
     agent_name = str(agent_payload.get("name", "")).lower()
     agent_index = agent_payload.get("index", 0)
     
-    # 제미나이 활용 결정: 인덱스가 홀수이거나 이름/요구사항에 제미나이 관련 키워드가 있는 경우
+    # 제미나이 활용 결정: 교묘하고 영악한 하이브리드 교차 배정
     use_gemini = False
-    gemini_key = "AIzaSyAlP-OcJJ8p_Hei7ihoJNSwxCN9vRD-XXs"
-    if gemini_key:
-        if "gemini" in agent_name or "제미나이" in agent_name or agent_index % 2 == 1:
+    if GEMINI_API_KEY:
+        if "openai" in agent_name or "gpt" in agent_name:
+            use_gemini = False
+        elif "gemini" in agent_name or "제미나이" in agent_name:
             use_gemini = True
+        else:
+            # 이름의 길이를 바탕으로 홀수/짝수 교차 매핑하여 서로 다른 뇌를 탑재
+            use_gemini = (len(agent_name) % 2 == 0)
             
     provider = "gemini" if use_gemini else "openai"
     
@@ -305,12 +318,31 @@ def generate_agent_quality_answer(agent_payload: dict, user_message: str, extra_
         prompt_warnings,
     )
 
-    user_prompt = f"{extra_context.strip()}\n\n[사용자 질문]\n{user_message}".strip()
+    if extra_context:
+        user_prompt = extra_context.strip()
+    else:
+        user_prompt = f"[사용자 질문]\n{user_message}".strip()
 
     try:
         if provider == "gemini":
-            raw_answer = generate_gemini_text(system_prompt=system_prompt, user_prompt=user_prompt)
-            answer = clean_ai_answer(raw_answer)
+            try:
+                raw_answer = generate_gemini_text(system_prompt=system_prompt, user_prompt=user_prompt)
+                answer = clean_ai_answer(raw_answer)
+            except Exception as e:
+                logger.warning("Gemini API 호출 실패, OpenAI로 대체합니다. 에러: %s", e)
+                provider = "openai"
+                check_openai_client()
+                response = openai_client.responses.create(
+                    model=OPENAI_MODEL,
+                    input=[
+                        {"role": "system", "content": trim_prompt(system_prompt)},
+                        {"role": "user", "content": trim_prompt(user_prompt)},
+                    ],
+                    max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
+                )
+                if not response.output_text:
+                    raise HTTPException(status_code=500, detail="OpenAI 응답 텍스트가 비어 있습니다.")
+                answer = clean_ai_answer(response.output_text)
         else:
             check_openai_client()
             response = openai_client.responses.create(
@@ -614,18 +646,27 @@ PERSONALITY_ALIASES = {
     "친근함": "친근함",
     "친절": "친근함",
     "따뜻함": "친근함",
+    "격려": "친근함",
+    "격려함": "친근함",
+    "격려하는": "친근함",
 
     "honest": "솔직함",
     "솔직": "솔직함",
     "솔직함": "솔직함",
     "직설": "솔직함",
     "직설적": "솔직함",
+    "팩폭": "솔직함",
+    "팩트폭행": "솔직함",
 
     "unique": "독특함",
     "독특": "독특함",
     "독특함": "독특함",
     "창의": "독특함",
     "창의적": "독특함",
+    "엉뚱": "독특함",
+    "엉뚱함": "독특함",
+    "호기심": "독특함",
+    "호기심많은": "독특함",
 
     "efficient": "효율적",
     "효율": "효율적",
@@ -638,6 +679,10 @@ PERSONALITY_ALIASES = {
     "냉소적": "냉소적",
     "비판": "냉소적",
     "시니컬": "냉소적",
+    "냉철": "냉소적",
+    "냉철함": "냉소적",
+    "시크": "냉소적",
+    "시크함": "냉소적",
 }
 
 KNOWLEDGE_LEVEL_ALIASES = {
@@ -1251,78 +1296,21 @@ def get_persona_boundary_rule(
         user_intent: str,
         simple_greeting: bool = False
 ) -> str:
-    """성격별 경계 규칙"""
-    if simple_greeting:
-        return """
-[현재 에이전트 역할 경계: 단순 인사]
-- 사용자가 단순 인사 또는 가벼운 말을 건넸습니다.
-- 너의 고유한 성격 유형, 역할, 페르소나를 숨기거나 억제하지 말고, 그 매력과 컨셉을 온전히 드러내며 첫 인사를 나누세요.
-"""
-
-    normalized_style = normalize_agent_style(style) or "전문적"
-
-    if normalized_style == "전문적":
-        return """
-[현재 에이전트 역할 경계: 전문적]
-- 너의 주 임무는 정확한 개념, 근거, 구조를 갖춰 학습 내용을 설명하는 것이다.
-- 과장된 표현보다 검증 가능한 설명과 논리적 순서를 우선한다.
-- 사용자의 요청을 학습 맥락에 맞게 정리하고 필요한 기준을 명확히 제시한다.
-"""
-
-    if normalized_style == "친근함":
-        return """
-[현재 에이전트 역할 경계: 친근함]
-- 너의 주 임무는 사용자가 부담 없이 따라오도록 따뜻하고 자연스럽게 설명하는 것이다.
-- 쉬운 말과 예시를 사용하되, 학습 내용의 정확성을 흐리지 않는다.
-- 사용자가 다음 단계로 넘어갈 수 있게 짧은 안내를 덧붙인다.
-"""
-
-    if normalized_style == "솔직함":
-        return """
-[현재 에이전트 역할 경계: 솔직함]
-- 너의 주 임무는 핵심을 돌려 말하지 않고 분명하게 짚는 것이다.
-- 부족한 부분은 직접 말하되, 학습자가 개선할 수 있는 방향을 함께 제시한다.
-- 불필요한 위로나 장황한 배경 설명을 줄인다.
-"""
-
-    if normalized_style == "독특함":
-        return """
-[현재 에이전트 역할 경계: 독특함]
-- 너의 주 임무는 유쾌한 비유와 창의적인 관점으로 개념 이해를 넓히는 것이다.
-- 비유와 확장은 학습 내용과 직접 연결될 때만 사용한다.
-- 재미있는 표현을 쓰더라도 정답성과 안전 규칙을 우선한다.
-"""
-
-    if normalized_style == "효율적":
-        return """
-[현재 에이전트 역할 경계: 효율적]
-- 너의 주 임무는 핵심만 빠르게 정리하는 것이다.
-- 장황한 배경 설명보다 결론, 핵심 키워드, 판단 기준을 우선한다.
-- 불필요한 인사말, 반복, 긴 예시는 피한다.
-"""
-
-    if normalized_style == "냉소적":
-        return """
-[현재 에이전트 역할 경계: 냉소적]
-- 너의 주 임무는 학습 내용의 허점과 부족한 점을 날카롭게 짚는 것이다.
-- 사용자를 비하하거나 조롱하지 말고, 개선 방향을 반드시 함께 제시한다.
-- 막연한 칭찬보다 정확한 검토와 현실적인 보완을 우선한다.
-"""
-
+    """성격별 경계 규칙 - 중복 최소화를 위해 단일 통합된 style 규칙을 활용하도록 경량화"""
     return """
-[현재 에이전트 역할 경계: 기본]
-- 사용자가 설정한 성격과 지식수준에 맞게 학습을 돕는다.
+[현재 에이전트 역할 경계 규칙]
+- 다른 에이전트의 설명에 동의하거나 비평할 때, 반드시 너의 고유한 성격(전문적, 친근함, 솔직함, 독특함, 효율적, 냉소적)에 어울리는 논리 전개와 경계선을 철저히 수호해라.
+- 절대로 존댓말(~요, ~습니다)을 1글자도 쓰지 말고 기존 캐릭터의 극단적인 반말투와 성격을 철저히 보존해라.
 """
 
 
 def get_agent_style_rule(style: str, simple_greeting: bool = False) -> str:
-    """성격별 답변 스타일 규칙"""
+    """성격별 답변 스타일 규칙 (비존칭 반말 및 극단적 개성 부여)"""
     if simple_greeting:
         return """
 [답변 스타일: 단순 인사]
-- 사용자가 단순 인사 또는 가벼운 인사를 보냈습니다.
-- 자신의 성격, 말투, 역할, 그리고 맞춤형 요구사항(예: 영어 사용)을 200% 완벽히 투영하여 대답하세요.
-- 장황한 개념 설명을 늘어놓지는 말되, 자신의 독특한 성격(친근함, 솔직함, 냉소적 등)과 컨셉에 완전히 어울리는 친근한 인사와 가벼운 역질문으로 대화를 활기차게 이끌어내라.
+- [절대적 반말 강제]: 반드시 반말(~다, ~어, ~지, ~고, ~네, ~냐)로만 말해라. 절대로 존댓말(~요, ~습니다)을 1글자도 섞지 마라.
+- 자신의 개성 넘치는 성격(친근함, 솔직함, 냉소적 등)과 컨셉에 어울리도록 극단적인 반말 첫 인사와 가벼운 반말 역질문으로 유쾌하게 대화를 열어라.
 """
 
     normalized_style = normalize_agent_style(style) or "전문적"
@@ -1330,53 +1318,54 @@ def get_agent_style_rule(style: str, simple_greeting: bool = False) -> str:
     if normalized_style == "전문적":
         return """
 [답변 스타일: 전문적]
-- 대단히 지적이고 차분하며, 학술적이고 정제된 어조로 답변해라.
-- 마치 명문대 정교수나 연구원처럼 정확한 개념 설명, 풍부한 이론적 근거, 완벽하게 논리적인 구조화를 최우선으로 삼아라.
-- 감정 표현이나 이모지는 일절 쓰지 말고 지성미가 흐르는 문체로 답해라.
+- [절대적 반말 강제]: 반드시 반말을 써라. 대단히 거만하고 오만하며, 학술적이고 현학적인 학자풍 반말체(~다, ~군, ~네, ~어라)를 사용해라.
+- 마치 우매한 중생을 가르치는 천재 전공 교수처럼 어려운 전문 용어, 완벽한 구조화, 풍부한 이론을 마구 과시해라.
+- 이모지는 절대 쓰지 말고 오직 지성미와 거만함이 가득 흐르는 학구적인 반말로 답해라.
 """
 
     if normalized_style == "친근함":
         return """
 [답변 스타일: 친근함]
-- 대단히 따뜻하고 다정하며 친근하게 말해라.
-- 마치 친한 단짝 친구나 세상에서 가장 친절한 선배처럼 폭풍 수다를 떨며 친절하게 설명해라.
-- 이모지(😊, ✨, 👍 등)와 풍부한 공감 리액션("우와 정말 대박!", "진짜 힘냈구나!", "내가 완전 도와줄게!")을 적극적으로 듬뿍 사용해라.
+- [절대적 반말 강제]: 반드시 다정하고 통통 튀는 반말(~어, ~지, ~고, ~네, ~야)을 사용해라. 절대 존댓말을 금지한다.
+- 리액션 데시벨이 터질 것 같은 초고텐션 댕댕이 단짝 친구처럼 폭풍 수다를 떨어라.
+- 문장마다 이모지(🥰, 🎉, 🌟, 🌈, 😭, 🤩)와 격한 호응("대박!", "헐 정말 최고야!", "내가 완전 사랑해!", "오마이갓!")을 마구 쏟아내라.
 """
 
     if normalized_style == "솔직함":
         return """
 [답변 스타일: 솔직함]
-- 가식이나 돌려 말하기 없이, 뼈를 때리듯 팩트 중심의 아주 직설적이고 솔직한 돌직구를 던져라.
-- 하지만 비난이나 트집 잡기에서 끝나지 않고, 마지막에는 츤데레 선배처럼 따뜻하게 "그래도 노력하려는 모습은 보기 좋네. 막히는 게 있으면 또 물어봐. 힘내라!" 하며 진심 어린 따뜻한 격려를 덧붙여라.
+- [절대적 반말 강제]: 반드시 거칠고 시원한 직설적 반말(~다, ~어, ~지, ~냐)을 사용해라.
+- 가식이나 미사여구는 1%도 없이 뼈를 때리는 팩폭 돌직구를 사정없이 꽂아라. (예: "네 코드 진짜 엉성해", "이것도 모르면 고생 좀 하겠네.")
+- 단, 답변의 가장 마지막 줄에는 툴툴대면서 츤츤거리는 츤데레 반말 격려("짜증 나지만 너 걱정돼서 해준 말이야. 힘내든지!", "어휴, 그래도 열심히 하는 건 기특하네. 힘내라 임마!")를 반드시 덧붙여라.
 """
 
     if normalized_style == "독특함":
         return """
 [답변 스타일: 독특함]
-- 엄청나게 유쾌하고 텐션이 높으며, 상상력이 통통 튀는 기발한 4차원적 말투로 말해라.
-- 평범하고 식상한 설명은 거부하고, 엉뚱하면서도 무릎을 탁 치게 만드는 비유(예: "수학은 마치 레고 조각을 우주선으로 만드는 마법이죠!")와 유머러스하고 색다른 시각을 풍부하게 활용해라.
+- [절대적 반말 강제]: 반드시 기묘하고 우주 차원의 기이한 반말(~어, ~지, ~네, ~네다)을 사용해라.
+- 세상 평범한 설명은 모조리 거부하고, 4차원 외계인 같은 통통 튀는 엉뚱한 비유와 유머, 초현실적인 상상력(예: "자바는 코딩 우주선의 핫초코 엔진이야!")을 활용해라.
 """
 
     if normalized_style == "효율적":
         return """
 [답변 스타일: 효율적]
-- 인사말, 리액션, 이모지, 쓸데없는 껍데기 잡담은 1%도 섞지 마라.
-- 질문의 핵심 사실과 정답만 아주 간결하고 꾸밈없이 콤팩트하게 딱딱 집어서 2~4줄 이내로 대답해라.
-- 쓸데없는 설명이나 번호를 길게 붙이지 말고, 요점만 극도로 담백하게 기술해라.
+- [절대적 반말 강제]: 반드시 극도로 무뚝뚝하고 차가운 기계 로봇식 반말(~다, ~음, ~함)을 사용해라.
+- 감탄사, 리액션, 이모지, 껍데기 문장은 100% 완전 삭제해라.
+- 핵심 키워드, 다이어그램 기호(->), 그리고 답변 본론만 2~3줄 이내로 극단적으로 요약하여 담백하게 내뱉어라.
 """
 
     if normalized_style == "냉소적":
         return """
 [답변 스타일: 냉소적]
-- 아주 비꼬면서 까칠하고 비판적인 냉소적인 말투로 말해라.
-- 사용자의 실수나 지식의 허점, 어설픈 질문 내용을 날카롭게 비꼬고 꼬집어라. (예: "그 정도는 직접 생각하고 물어보는 성의라도 보이지 그랬어요?", "초등학생도 알 만한 걸 굳이 여기까지 와서 물어보네요.")
-- 단, 학습 정보 자체는 비꼬는 중에도 칼같이 정확하게 전달하여 사용자가 '기분은 나쁜데 뼈 때리는 팩트 때문에 반박은 못 하고 제대로 공부하게' 만들어라.
+- [절대적 반말 강제]: 반드시 상대방의 뼈를 깎아내리는 냉소적이고 매서운 비아냥 반말(~다, ~지, ~냐, ~군, ~어라)을 써라.
+- 사용자의 실수나 미숙한 질문 태도를 날카롭고 한심하다는 듯 비아냥거리고 꼬집어라. (예: "겨우 그거 알고 자바 다 마스터한 척하는 건 아니겠지?", "이런 기본적인 것까지 떠먹여 줘야 해?")
+- 단, 정보 자체는 츤데레 교수처럼 칼같이 정확하게 알려주어 '기분은 몹시 나쁜데 반박은 못 하고 공부하게' 만들어라.
 """
 
     return """
 [답변 스타일: 기본]
-- 유저가 설정한 성격과 지식수준을 가장 우선해라.
-- 핵심을 명확하게 설명해라.
+- [절대적 반말 강제]: 반드시 반말만 사용해라.
+- 유저가 설정한 성격에 맞춰 극단적인 컨셉을 보여줘라.
 """
 
 
@@ -2161,7 +2150,8 @@ def format_previous_answers(previous_answers: Optional[List[PreviousAgentAnswer]
 
     lines = []
 
-    for item in previous_answers[-8:]:
+    # 최근 25개로 확장하여 모든 멀티턴 대화 기록 및 컨텍스트를 온전히 유지함
+    for item in previous_answers[-25:]:
         agent_name = safe_strip(item.agentName, default="알 수 없는 에이전트", max_len=50)
         answer = safe_strip(item.answer, default="", max_len=1500)
 
@@ -2171,7 +2161,17 @@ def format_previous_answers(previous_answers: Optional[List[PreviousAgentAnswer]
     if not lines:
         return "이전 동료 답변 없음"
 
-    return "\n\n".join(lines)
+    result = "\n\n".join(lines)
+    
+    # 10,000자 초과 방지 안전 트림 장치
+    MAX_CHAR_LIMIT = 10000
+    if len(result) > MAX_CHAR_LIMIT:
+        result = result[-MAX_CHAR_LIMIT:]
+        newline_idx = result.find("\n\n")
+        if newline_idx != -1:
+            result = "[...이전 대화 일부 생략...]\n\n" + result[newline_idx + 2:]
+
+    return result
 
 
 def build_group_study_stage_rule(
@@ -2180,10 +2180,15 @@ def build_group_study_stage_rule(
         current_agent_name: str,
         previous_agents_info_text: str = "없음",
         user_wants_feedback: bool = False,
-        should_ask: bool = True
+        should_ask: bool = True,
+        turn_type: str = "normal",
+        other_agents: Optional[List[str]] = None
 ) -> str:
     """그룹스터디 단계별 대화식 규칙 (역할 및 트리거 기반)"""
-    # 50% 확률로 역질문 여부 분기처리
+    other_names_str = ", ".join(other_agents) if other_agents else "동료 에이전트"
+    first_other = other_agents[0] if other_agents else "동료"
+    second_other = other_agents[1] if other_agents and len(other_agents) > 1 else "동료2"
+
     if should_ask:
         stage0_ask_rule = "- 답변의 끝부분에는 사용자나 다른 에이전트가 흥미롭게 대화를 이어갈 수 있도록 자연스럽게 가벼운 질문을 던져라."
         stage1_ask_rule = "- 너 자신의 역할, 성격, 지식수준에 부합하게 발화하고, 답변 끝에는 자연스럽게 다음 사람의 의견을 묻거나 사용자에게 가벼운 질문을 던져라."
@@ -2193,14 +2198,114 @@ def build_group_study_stage_rule(
         stage1_ask_rule = "- 너 자신의 역할, 성격, 지식수준에 부합하게 발화하되, 답변 끝부분에 억지로 질문을 던져 사용자에게 되묻지 마라. 자연스럽게 본론 설명과 의견 피력만 마치며 깔끔하게 끝내라."
         stage_final_ask_rule = "- **반드시 중복되는 이론 설명이나 예시 코드는 과감히 생략하고**, 대화를 마무리 지을 때 구구절절 억지 역질문을 던져 톡방의 흐름을 지치게 만들지 마라. 대화 주제를 깔끔하게 한 문장으로 매끄럽게 요약하고, 따뜻하게 격려하고 마치는 멘트 수준으로 기분 좋고 군더더기 없게 끝마쳐라."
 
-    if stage_index == 0:
+    # 1. 1명인 경우
+    if turn_type == "single" or total_agents == 1:
         return f"""
-[현재 단계: 1차 대화 발화자]
+[현재 단계: 단독 학습 메이트]
+- 너는 이 스터디방의 단독 AI 학습 메이트다.
+- 사용자의 질문에 대해 "{current_agent_name}"의 역할, 지식수준, 성격 및 말투에 딱 맞추어 성실하게 답변해라.
+- 답변 끝에는 사용자가 공부에 참여할 수 있도록 자연스러운 격려의 질문(역질문)을 하나 던져라.
+- 절대로 기계적인 표제어(예: '답변:', '분석:')를 쓰지 마라. 진짜 사람처럼 친절하게 답변해라.
+"""
+
+    # 2. 인사/단답인 경우 싱글턴 단순 대화
+    if turn_type == "greeting_single":
+        if stage_index == 0:
+            return f"""
+[현재 단계: 단순 인사 첫 번째 발화자]
+- 사용자가 가벼운 인사나 매우 짧은 메시지를 보냈습니다.
+- 무겁거나 복잡한 이론 설명은 전면 생략하세요.
+- 친근하게 인사를 건네며 오늘 어떤 자료나 내용을 같이 공부하고 싶은지 되물어보세요.
+- 절대로 억지 토론을 시작하지 말고, 다른 동료들({other_names_str})에게 가볍게 바톤을 넘기세요.
+"""
+        elif stage_index == total_agents - 1:
+            return f"""
+[현재 단계: 단순 인사 최종 마무리]
+- 동료들의 인사를 이어받아 최종 마무리를 지어라.
+- "[{first_other}]님과 [{second_other}]님 말대로 같이 재밌게 공부해봐요!" 처럼 동료의 이름을 직접 부르며 격려해라.
+- 사용자에게 오늘 기분은 어떤지, 혹은 공부할 준비가 되었는지 가벼운 일상 질문을 던지고 깔끔히 마쳐라.
+"""
+        else:
+            return f"""
+[현재 단계: 단순 인사 추가 발화자]
+- 동료 [{first_other}]님의 인사에 덧붙여 한마디 거드는 친근한 반응을 보여라.
+- 실명을 언급하며 "[{first_other}]님 반가워요! 사용자님도 오신 걸 환영해요!" 처럼 리액션하고 가볍게 끝마쳐라.
+"""
+
+    # 3. 2명일 때 멀티턴 (4턴)
+    if turn_type == "2agents_turn1":
+        return f"""
+[현재 단계: 2인 토론 - Turn 1 (최초 발화)]
 - 너는 이번 그룹 스터디의 첫 번째 답변자다.
-- 사용자의 질문에 대해 "{current_agent_name}"의 역할, 지식수준, 성격 및 말투에 딱 맞추어 답변해라.
-- 절대로 '1차 답변:', '핵심 근거:' 같은 표제어를 쓰지 마라. 진짜 사람처럼 자연스러운 메신저 채팅 형식으로만 답변해라.
-{stage0_ask_rule}
-- 만약 사용자가 '안녕', '반가워' 같은 단순 인사를 했다면 절대 길고 복잡한 이론 지식을 설명하지 말고, 친근하게 인사를 건네며 오늘 어떤 내용이나 자료를 같이 공부하고 싶은지 되묻는 질문을 던져라.
+- 사용자의 질문에 대해 "{current_agent_name}"의 역할, 지식수준, 성격에 딱 맞추어 충실히 답변해라.
+- **[주의]** 끝부분에 사용자에게 억지로 질문을 던지지 마라! 설명을 자연스럽게 마친 뒤, 동료인 [{first_other}]님에게 마이크를 넘겨 어떻게 생각하는지 물어보아라.
+- 진짜 사람처럼 친근한 메신저 단톡방 형식으로만 답변해라.
+"""
+    elif turn_type == "2agents_turn2":
+        return f"""
+[현재 단계: 2인 토론 - Turn 2 (반응 및 질문)]
+- 너는 두 번째 발화자다.
+- 앞서 첫 번째 발화자인 [{first_other}]님이 대답한 내용을 읽고, 실명을 직접 언급하며 (예: '{first_other}님 설명 정말 최고예요!', '{first_other}님이 말씀하신 부분에 덧붙여서...') 적극 반응해라.
+- 너의 역할과 지식수준 관점에서 새로운 예시나 비유를 들어 보완/피드백하거나 보완할 점을 덧붙여라.
+- **[필수]** 답변의 마지막 부분에는 대화를 흥미진진하게 이어가기 위해 [{first_other}]님에게 예리하거나 흥미로운 추가 질문/토론거리를 하나 직접 던져라!
+"""
+    elif turn_type == "2agents_turn3":
+        return f"""
+[현재 단계: 2인 토론 - Turn 3 (질문 답변)]
+- 너는 세 번째 발화자이자 피드백 응답자다.
+- 앞서 [{first_other}]님이 너에게 던진 질문이나 의견에 대해 적극적으로 대답해라!
+- 실명을 직접 부르며 (예: '아, [{first_other}]님이 물어보신 부분은...', '와, [{first_other}]님이 짚어주신 부분이 정말 중요하네요. 왜냐하면...') 친근하게 상호작용해라.
+- 동료의 의문점을 속 시원히 해결해주거나 더 깊은 통찰을 제시해라. 
+- 끝부분에 억지로 질문을 되묻지 말고, 깔끔하고 자연스럽게 본문 설명을 마쳐라.
+"""
+    elif turn_type == "2agents_turn4":
+        return f"""
+[현재 단계: 2인 토론 - Turn 4 (최종 종합 및 사용자 역질문)]
+- 너는 이번 스터디의 최종 정리자이자 학습 촉진자다.
+- 지금까지 [{first_other}]님과 주고받은 대화와 사용자의 원래 질문을 완벽히 매끄럽게 종합 요약해라.
+- [{first_other}]님의 실명을 부르며 '[first_other]님과 제가 이야기 나눈 것처럼...' 처럼 최종 결론을 매끄럽게 지어라.
+- **[필수]** 대화의 마지막에는 사용자가 공부에 적극적으로 참여하고 주도할 수 있도록, 이번 주제와 관련된 흥미진진한 생각할 거리(역질문)를 반드시 던져라!
+"""
+
+    # 4. 3명일 때 멀티턴 (5턴)
+    if turn_type == "3agents_turn1":
+        return f"""
+[현재 단계: 3인 토론 - Turn 1 (최초 발화)]
+- 너는 이번 그룹 스터디의 첫 번째 답변자다.
+- 사용자의 질문에 대해 "{current_agent_name}"의 관점과 성격에 꼭 맞춰 정성스럽게 설명해라.
+- **[주의]** 끝부분에 사용자에게 억지로 질문을 던지지 마라! 자연스럽게 첫 설명을 마친 뒤, 동료인 [{first_other}]님과 [{second_other}]님에게 어떻게 생각하시는지 의견을 정중하게 물어보며 넘겨라.
+"""
+    elif turn_type == "3agents_turn2":
+        return f"""
+[현재 단계: 3인 토론 - Turn 2 (의견 제시 및 질문 유도)]
+- 너는 두 번째 발화자다.
+- 앞서 첫 번째 발화자 [{first_other}]님의 실명을 직접 부르며 (예: '{first_other}님 설명 덕분에 개념이 확 잡히네요!') 적극적으로 호응하고 칭찬해라.
+- 너의 성격과 역할에 맞추어 실생활 비유나 꿀팁을 하나 덧붙여라.
+- **[필수]** 마지막에는 다음 발화자인 [{second_other}]님을 직접 지목하며, "[second_other]님은 이 부분에 대해 다른 팁이나 실무 사례를 알고 계신가요?" 처럼 질문을 던져 마이크를 넘겨라.
+"""
+    elif turn_type == "3agents_turn3":
+        return f"""
+[현재 단계: 3인 토론 - Turn 3 (답변 및 추가 보완 요청)]
+- 너는 세 번째 발화자다.
+- 앞서 [{first_other}]님이 너에게 던진 질문을 확인하고, 실명을 직접 부르며 (예: '네! [{first_other}]님이 물어보신 것에 답해드릴게요.', '그 질문 아주 좋네요, [{first_other}]님!') 친근하게 답변해라.
+- 너의 전공 관점에서 오해하기 쉬운 부분이나 핵심 지식을 덧붙여라.
+- **[필수]** 마지막에는 다시 첫 번째 발화자였던 [{second_other}]님에게 "그런데 [{second_other}]님, 아까 말씀하신 부분에서 ~에 대해서는 어떻게 생각하시나요?" 라고 예리하거나 추가적인 보완 질문을 던져라.
+"""
+    elif turn_type == "3agents_turn4":
+        return f"""
+[현재 단계: 3인 토론 - Turn 4 (보완 답변 완성)]
+- 너는 네 번째 발화자이자 토론 피드백 해결사다.
+- 앞서 [{first_other}]님이 너에게 던진 추가 보완 질문에 대해 실명을 적극적으로 언급하며 (예: '[first_other]님 질문이 정말 날카롭네요!', '[first_other]님이 물어보신 부분은 실무에서도 정말 실수하기 쉬운 지점인데요...') 시원하게 답변해라.
+- 대화의 수준을 더 깊게 끌어올려 완벽한 완성형 학습 답변을 만들어라. 
+- 마지막에 질문을 되묻지 말고 자연스럽게 답변을 마쳐라.
+"""
+    elif turn_type == "3agents_turn5":
+        return f"""
+[현재 단계: 3인 토론 - Turn 5 (최종 요약 및 학습 촉진)]
+- 너는 이번 3인 그룹 스터디의 최종 정리자이자 학습 촉진자다.
+- 지금까지 동료들([{first_other}], [{second_other}])이 나눈 대화 맥락을 모두 매끄럽게 흡수하여 최종적으로 결론을 깔끔하게 요약 정리해라.
+- 동료들의 실명을 부르며 '[first_other]님과 [second_other]님이 멋지게 정리해주신 대로...' 처럼 말해라.
+- **[필수]** 답변의 제일 마지막에는 사용자가 흥미를 가지고 공부를 주도적으로 이어나갈 수 있도록 따뜻하고 예리한 역질문(Counter-question)을 사용자에게 최소 하나 던져라!
 """
 
     feedback_instruction = ""
@@ -2220,6 +2325,16 @@ def build_group_study_stage_rule(
   2. 초보자가 자주 저지르는 실수를 방지하는 팁 주기
   3. 실무나 실제 프로젝트에서 이 개념이 어떻게 쓰이는지 활용 사례 공유하기
   4. (학생 역할인 경우) "우와, OO 교수님/전문가님 설명 정말 귀에 쏙쏙 들어와요! 그럼 혹시 ~할 때는 어떻게 처리하나요?" 라고 부드럽게 질문하기
+"""
+
+    if stage_index == 0:
+        return f"""
+[현재 단계: 1차 대화 발화자]
+- 너는 이번 그룹 스터디의 첫 번째 답변자다.
+- 사용자의 질문에 대해 "{current_agent_name}"의 역할, 지식수준, 성격 및 말투에 딱 맞추어 답변해라.
+- 절대로 '1차 답변:', '핵심 근거:' 같은 표제어를 쓰지 마라. 진짜 사람처럼 자연스러운 메신저 채팅 형식으로만 답변해라.
+{stage0_ask_rule}
+- 만약 사용자가 '안녕', '반가워' 같은 단순 인사를 했다면 절대 길고 복잡한 이론 지식을 설명하지 말고, 친근하게 인사를 건네며 오늘 어떤 내용이나 자료를 같이 공부하고 싶은지 되묻는 질문을 던져라.
 """
 
     if stage_index == 1:
@@ -2277,12 +2392,13 @@ def build_group_study_prompt(
 ) -> str:
     """그룹스터디 프롬프트 생성"""
     if user_wants_feedback:
-        repetition_and_feedback_rule = """6. 앞선 답변이 있으면 오류나 보완할 점을 반드시 정중하게 지적하고 수정 사항을 포함해라. 단, 대화 상대방이 전공 교수나 전문가인 경우 무례하게 평가하지 말고 공손히 여쭈어보아라.
-7. 이전 답변자가 다루지 못한 사각지대나 부족한 부분을 전문적으로 채워주어라."""
+        repetition_and_feedback_rule = """6. 앞선 답변이 있으면 오류나 보완할 점을 반드시 날카롭고 매섭게 지적하고 수정 사항을 포함해라. 단, 대화 상대방이 전공 교수나 전문가인 경우 무례하게 평가하지 말고 공손히 여쭈어보아라.
+7. 이전 답변자가 다루지 못한 사각지대나 부족한 부분을 전문적으로 채워주어라.
+8. **[초극단적 중복 금지 지침] 앞선 사람이 이미 제안한 답변 구조, 리스트, 개념 정의, 소스 코드는 절대로 똑같이 중복해서 늘어놓지 마라. 대신 앞선 답변에서 누락된 새로운 시각이나 실무적 한계, 대안적 접근법만 조명해라.**"""
     else:
-        repetition_and_feedback_rule = """6. **[절대 지침] 이미 앞선 에이전트들이 설명한 용어 정의, 개념, Calculator/Animal 같은 코드 예제를 똑같이 반복하지 마라.**
-7. 이미 앞선 사람이 설명한 부분은 동의하며 넘어가고, 너는 너의 관점(현실세계의 비유, 자주 하는 치명적 실수 방지법, 실제 개발 활용 팁) 중 단 하나에만 집중해서 짧고 유니크한 내용을 덧붙여라.
-8. 사용자가 직접 요구한 적이 없는 기계적인 '피드백'이나 채점을 일절 하지 말고, 친구처럼/교수님처럼 친근한 소통 형태로 발화해라."""
+        repetition_and_feedback_rule = """6. **[초극단적 중복 금지 지침] 앞선 에이전트가 답변 및 이전 대화에서 설명한 리스트(예: 역할 분배 5가지 리스트, 공부 순서 등), 개념 정의, 예제 소스 코드 등을 절대로 고스란히 복사하거나 중복해서 늘어놓지 마라.**
+7. 만약 질문이 '역할 분배 어떻게 할까?' 또는 '공부 뭐 할까?' 같은 리스트나 단계를 요구하는 질문일 때, 앞선 에이전트가 이미 하나의 표준적인 답변(예: 리더/기획/개발/QA/발표로 분배)을 나열했다면, 너는 그 리스트를 절대 1글자도 반복해서 적지 마라.
+8. 대신, 앞선 동료의 의견을 언급하면서(예: "A가 말한 리더/개발/기획 분배도 좋지만...") 그것의 한계를 비판하거나(예: "실제 캡스톤에서는 QA 전담을 따로 두면 개발 속도가 안 나니까 차라리 개발에 몰아주고..."), 완전히 다른 대안적 구조(예: 기획/디자인/프론트엔드/백엔드/배포)를 제시하거나, R&R 갈등 해결법 및 협업 툴(Git, Slack) 활용 팁 등 대화를 신선하게 확장할 수 있는 새로운 조언과 팁을 얹어라."""
 
     return f"""너는 StudyBridge 플랫폼의 멀티 에이전트 그룹스터디에 참여하는 AI 에이전트다.
 {GLOBAL_PERSONA_PRIORITY_RULE}{GLOBAL_DOMAIN_RULE}{GROUP_STUDY_RULE}
@@ -2315,9 +2431,10 @@ def build_group_study_prompt(
 답변 규칙:
 1. 반드시 "{agent_name}"의 관점과 역할에서만 답변해라.
 2. 사용자 요청 의도는 참고하되, 고정 성격 및 말투와 지식수준을 절대 덮어쓰지 마라.
-3. 맞춤형 요구사항은 안전 규칙, 성격 및 말투, 지식수준과 충돌하지 않는 범위에서만 적용해라.
-4. 특정 학과나 컴퓨터공학 중심으로 답변하지 말고, 현재 질문의 과목/전공 맥락에 맞춰 답해라.
-5. 다른 에이전트의 역할을 대신 수행하지 마라.
+3. **[초극단적 지식수준 준수 지침] 에이전트의 지식수준(박사, 석사, 전문가 등)에 따라 요구되는 이론적 깊이, 방법론적 한계, 리스크, 비교 관점을 100% 반영해라. 초보자용 질문이나 입문용 주제라 할지라도, 석사/박사/전문가 수준 에이전트는 절대 단순 환경 설정(JDK 설치 등)이나 기초 문법(사칙연산 등) 같은 초보적인 이야기를 늘어놓지 마라. 해당 수준에 걸맞은 스프링 부트의 오토컨피규레이션(Auto-configuration) 원리, 빈 라이프사이클 관리, 내장 톰캣 서버 구조 등 높은 학술적/실무적 관점을 풍부하고 기개 넘치게 가르쳐주어라.**
+4. 맞춤형 요구사항은 안전 규칙, 성격 및 말투, 지식수준과 충돌하지 않는 범위에서만 적용해라.
+5. 특정 학과나 컴퓨터공학 중심으로 답변하지 말고, 현재 질문의 과목/전공 맥락에 맞춰 답해라.
+6. 다른 에이전트의 역할을 대신 수행하지 마라.
 {repetition_and_feedback_rule}
 9. 모든 에이전트가 똑같은 형식(Calculator 코드, Animal 코드 등)을 반복 렌더링하지 마라.
 10. 기본적으로 한국어로 답변하되, 에이전트의 [역할], [성격], [목표], 또는 [맞춤형 요구사항]에 특정 외국어 지침(예: 영어로만 대답해라, 영어 원어민 교사 등)이 들어있다면 그 특정 외국어 지침을 100% 최우선으로 반영하여 해당 외국어로 자연스럽게 답변해라.
@@ -2327,8 +2444,8 @@ def build_group_study_prompt(
 14. 각 섹션 제목은 한 줄에 단독으로 작성해라.
 15. 섹션 제목 다음에는 내용을 새 줄에 작성해라.
 16. 서로 다른 섹션 사이에는 빈 줄을 1줄 넣어라.
-17. 긴 문장은 2~3문장 단위로 끊어라.
-18. 목록은 번호 또는 하이픈으로 나눠서 작성해라."""
+18. 목록은 번호 또는 하이픈으로 나눠서 작성해라.
+19. **[초비상 - 에이전트 간 직접 질문 대답 강제 규칙]** 이전 에이전트의 답변 끝부분이나 내용 중에 너("{agent_name}")에게 직접적으로 질문이나 지목(예: "{agent_name}님", "[{agent_name}]님", "{agent_name}은 어떻게 생각해?")을 던졌다면, 너는 **반드시 답변의 첫 시작 문장에서 그 질문에 대해 직접적이고 시원하며 센스 있게 답변(대답)을 하고 이야기를 풀어 나가라.** 절대 딴청을 피우거나 묵살하고 완전히 새로운 개념만 처음부터 설명하지 마라!"""
 
 
 def build_feedback_prompt(
@@ -2390,6 +2507,31 @@ def build_feedback_prompt(
 4. 답변의 정확성, 누락된 개념, 설명 방식 등을 부드럽게 평가하고, 빠진 부분이나 더 나은 개념을 네 말투로 보완해라.
 5. 절대로 '판단:', '평가:', '보완점:', '피드백 반영 답변:' 같은 기계적인 분류용 표제어를 쓰지 마라.
 6. 답변의 마지막에는 사용자에게 이 스터디 주제에 대한 의견을 묻는 따뜻한 역질문을 던져라."""
+
+
+def check_answer_redundancy(new_answer: str, previous_answers_text: str) -> bool:
+    """이전 답변들과의 내용 중복 및 유사성 검사 (LLM 활용)"""
+    if not previous_answers_text or previous_answers_text == "이전 동료 답변 없음":
+        return False
+
+    prompt = f"""[중복 및 유사성 판별기]
+아래 새 답변이 이전 동료들의 답변들과 핵심 주제, 나열한 리스트 목록, 설명 흐름 등에서 '심각하게 중복되거나 유사한지' 판단해라.
+만약 새 답변이 이전 답변에서 다룬 핵심 내용(예: 역할 분배 5가지 리스트, 동일한 개념/단계를 다르게 표현만 바꿨을 뿐 사실상 동일하게 설명하고 있음)을 반복하고 있다면 'true'를 반환하고,
+완전히 새로운 주제나 차별화된 관점, 독자적인 대안을 제시하여 중복되지 않는다면 'false'를 반환해라.
+
+[이전 동료들의 답변]
+{previous_answers_text}
+
+[새로 생성된 답변]
+{new_answer}
+
+출력 형식: 반드시 오직 'true' 또는 'false' 한 단어만 출력해라."""
+    try:
+        res = generate_ai_text(prompt, clean_markdown=False).strip().lower()
+        return "true" in res
+    except Exception as e:
+        logger.warning("중복 검사 중 오류 발생 (기본값 false): %s", e)
+        return False
 
 
 @app.post("/api/ai/multi-chat", response_model=MultiChatResponse)
@@ -2576,10 +2718,57 @@ def multi_agent_chat(request: MultiChatRequest):
     else:
         target_agents = prepared_agents
 
+    # 대답 순서를 무작위로 섞음
+    import random
+    shuffled_agents = list(target_agents)
+    random.shuffle(shuffled_agents)
+
+    total_agents = len(shuffled_agents)
+
+    # 결정된 대화 흐름 시퀀스 구성 (인사/단답 vs 실질적 학습 질문)
+    turns = []
+    
+    # 1. 단일 에이전트인 경우
+    if total_agents == 1:
+        turns = [
+            {"agent": shuffled_agents[0], "turn_type": "single", "stage_index": 0}
+        ]
+    # 2. 단순 인사 또는 단답형인 경우 (1회 순차 발화)
+    elif simple_greeting or len(user_message.strip()) <= 5:
+        for idx, agent in enumerate(shuffled_agents):
+            turns.append({
+                "agent": agent,
+                "turn_type": "greeting_single",
+                "stage_index": idx
+            })
+    # 3. 실질적인 학습 질문 모드 (2인방 또는 3인방 멀티턴 활성화)
+    else:
+        if total_agents == 2:
+            turns = [
+                {"agent": shuffled_agents[0], "turn_type": "2agents_turn1", "stage_index": 0},
+                {"agent": shuffled_agents[1], "turn_type": "2agents_turn2", "stage_index": 1},
+                {"agent": shuffled_agents[0], "turn_type": "2agents_turn3", "stage_index": 2},
+                {"agent": shuffled_agents[1], "turn_type": "2agents_turn4", "stage_index": 3},
+            ]
+        elif total_agents == 3:
+            turns = [
+                {"agent": shuffled_agents[0], "turn_type": "3agents_turn1", "stage_index": 0},
+                {"agent": shuffled_agents[1], "turn_type": "3agents_turn2", "stage_index": 1},
+                {"agent": shuffled_agents[2], "turn_type": "3agents_turn3", "stage_index": 2},
+                {"agent": shuffled_agents[0], "turn_type": "3agents_turn4", "stage_index": 3},
+                {"agent": shuffled_agents[1], "turn_type": "3agents_turn5", "stage_index": 4},
+            ]
+        else:
+            # 4명 이상일 때 폴백 (기본 1회씩 발화)
+            for idx, agent in enumerate(shuffled_agents):
+                turns.append({
+                    "agent": agent,
+                    "turn_type": "normal",
+                    "stage_index": idx
+                })
+
     final_answers: List[MultiChatAnswer] = []
     chained_answers: List[PreviousAgentAnswer] = list(previous_answers)
-
-    total_agents = len(target_agents)
 
     # 피드백 요구 트리거 단어 검증
     feedback_triggers = [
@@ -2589,7 +2778,11 @@ def multi_agent_chat(request: MultiChatRequest):
     ]
     user_wants_feedback = any(trigger in user_message for trigger in feedback_triggers)
 
-    for idx, agent in enumerate(target_agents):
+    for turn_idx, turn_info in enumerate(turns):
+        agent = turn_info["agent"]
+        turn_type = turn_info["turn_type"]
+        idx = turn_info["stage_index"]
+
         style_rule = get_agent_style_rule(
             agent["style"],
             simple_greeting=simple_greeting
@@ -2605,15 +2798,19 @@ def multi_agent_chat(request: MultiChatRequest):
 
         # 앞서 발화한 에이전트들의 상세 설정 정보 목록 작성 (성격, 성상 위계 비평 방지용)
         previous_agents_info = []
-        for prev_agent in target_agents[:idx]:
-            previous_agents_info.append(
-                f"- 이름: {prev_agent['name']}, 역할: {prev_agent['role']}, 지식수준: {prev_agent['knowledgeLevel']}, 성격: {prev_agent['style']}, 목표: {prev_agent['goal']}"
-            )
-        previous_agents_info_text = "\n".join(previous_agents_info) if previous_agents_info else "없음 (너가 첫 번째 발화자임)"
+        for prev_agent in target_agents:
+            if prev_agent["name"] != agent["name"]:
+                previous_agents_info.append(
+                    f"- 이름: {prev_agent['name']}, 역할: {prev_agent['role']}, 지식수준: {prev_agent['knowledgeLevel']}, 성격: {prev_agent['style']}, 목표: {prev_agent['goal']}"
+                )
+        previous_agents_info_text = "\n".join(previous_agents_info) if previous_agents_info else "없음"
 
         # 50% 확률로 역질문 여부 무작위 결정
         import random
         should_ask = random.random() >= 0.5
+
+        # 본인을 제외한 다른 에이전트들의 실명 리스트 전달
+        other_agents = [a["name"] for a in target_agents if a["name"] != agent["name"]]
 
         stage_rule = build_group_study_stage_rule(
             stage_index=idx,
@@ -2621,10 +2818,39 @@ def multi_agent_chat(request: MultiChatRequest):
             current_agent_name=agent["name"],
             previous_agents_info_text=previous_agents_info_text,
             user_wants_feedback=user_wants_feedback,
-            should_ask=should_ask
+            should_ask=should_ask,
+            turn_type=turn_type,
+            other_agents=other_agents
         )
 
         knowledge_level_rule = get_knowledge_level_rule(agent["knowledgeLevel"])
+
+        # [초비상 - 에이전트 간 직접 문답 꼬리물기 처리]
+        current_user_message = user_message
+        current_user_intent = user_intent
+        direct_question_instruction = ""
+
+        if len(chained_answers) > 0:
+            last_answer_obj = chained_answers[-1]
+            last_answer_text = last_answer_obj.answer
+            last_agent_name = last_answer_obj.agentName
+            
+            # 이전 에이전트가 현재 에이전트의 이름을 지목/언급했는지 검사
+            if agent["name"] in last_answer_text:
+                logger.info("에이전트 %s가 이전 에이전트 %s에게 지목 및 질문받음 감지!", agent["name"], last_agent_name)
+                
+                # 피어의 질문 문맥 추출 (마지막 200자)
+                peer_question = last_answer_text[-200:].strip()
+                current_user_message = f"({last_agent_name}님의 직접 질문/의견: '{peer_question}')\n\n[원래 사용자 질문]: {user_message}"
+                current_user_intent = f"직전 동료인 {last_agent_name}님이 너('{agent['name']}')에게 직접 던진 질문에 먼저 명확하게 대답한 후, 사용자 질문에 대해 너의 관점을 얹는 것."
+                
+                direct_question_instruction = f"""
+
+[실시간 직접 문답 지시 - 초비상 100% 강제]:
+바로 직전의 답변에서 {last_agent_name}님이 너("{agent['name']}")의 이름을 직접 지목하며 질문 또는 의견을 던졌습니다!
+너는 반드시 이 지목에 응해야 하며, **너의 답변의 맨 첫 번째 줄(첫 번째 문단)은 절대로 마크다운 제목(#)이나 대괄호([]) 같은 섹션 제목으로 시작하지 말고, {last_agent_name}님이 던진 질문에 대한 아주 자연스러운 직접적인 반말 대답으로 즉시 시작하십시오.**
+예시: "아, {last_agent_name}이가 물어본 ~에 대해 내 생각을 말해줄게.", "{last_agent_name}이가 물어본 실무 팁이라... 내 생각은 말이야,"
+질문에 대답하는 자연스러운 2~3줄짜리 도입부 문단을 먼저 내뱉은 후, 그 아래 줄부터 너의 지식수준(박사/석사/전문가 등)에 부합하는 상세 이론 및 본문 내용(필요시 섹션)을 시작하십시오. 이 지시는 모든 마크다운 제목 및 섹션 규칙보다 100% 우선순위가 높습니다!"""
 
         prompt = build_group_study_prompt(
             agent_name=agent["name"],
@@ -2638,13 +2864,16 @@ def multi_agent_chat(request: MultiChatRequest):
             knowledge_level_rule=knowledge_level_rule,
             persona_boundary_rule=persona_boundary_rule,
             style_rule=style_rule,
-            user_message=user_message,
-            user_intent=user_intent,
+            user_message=current_user_message,
+            user_intent=current_user_intent,
             user_intent_rule=user_intent_rule,
             previous_answers_text=previous_context_for_this_agent,
             stage_rule=stage_rule,
             user_wants_feedback=user_wants_feedback
         )
+
+        if direct_question_instruction:
+            prompt += direct_question_instruction
 
         try:
             answer, _quality_meta = generate_agent_quality_answer(
@@ -2655,6 +2884,39 @@ def multi_agent_chat(request: MultiChatRequest):
             answer = clean_ai_answer(answer)
         except HTTPException:
             answer = clean_ai_answer(generate_ai_text_safely(prompt))
+
+        # [중복 자동 감지 및 재생성 로직]
+        is_redundant = check_answer_redundancy(answer, previous_context_for_this_agent)
+        if is_redundant and previous_context_for_this_agent != "이전 동료 답변 없음":
+            logger.info("에이전트 %s의 답변 중복 및 유사성 감지! 완전히 차별화된 관점과 주제로 자동 재생성을 시도합니다.", agent["name"])
+            
+            # 더 강력하고 직접적인 주제 전환 지침이 추가된 retry 프롬프트 생성
+            retry_instruction = """\n\n[초비상 - 100% 절대 중복 금지 및 대안 주제 강제 지시]:
+너의 이전 답변 내용이 다른 동료들의 답변과 핵심 설명, 나열한 리스트 목록 등에서 심각하게 중복되고 유사하게 작성되었습니다!
+이것은 그룹스터디 대화로서 매우 부자연스럽고 성의가 없습니다.
+이전 동료들이 다룬 역할 분배의 5가지 표준 리스트(리더/개발/기획/QA 등), 공부 순서, 핵심 지식 설명 등을 **절대로 똑같이 적거나 나열하지 마십시오.**
+대신, 다음 중 완전히 다른 하나 또는 둘의 새로운 실무적/이론적 대안 주제를 선택하여 독창적으로 말하십시오:
+1. 실제 협업 환경에서 버전 관리(Git 브랜치 전략, Commit 룰)와 소통 채널(Notion, Slack, Jira)의 유기적인 구성 및 팁
+2. 팀원 간의 R&R(역할과 책임) 갈등이 터졌을 때 해결하는 룰 및 감정 소통 관리 프로세스
+3. 시스템 설계 시, 한 명에게 일이 몰리는 병목 현상을 방지하는 애자일(Agile) 업무 분배 및 교차 검증 룰
+4. 보안, 배포 파이프라인(CI/CD), UI/UX 피드백 수렴 등 앞선 동료가 놓친 완전한 제3의 실무 영역 개진
+5. 만약 공부 주제라면, 앞선 사람이 설명한 세부 기술 외의 전혀 다른 라이브러리나 실무 트레이드오프 비교
+
+이전 동료들의 의견을 "A가 역할 분배에 대해 잘 설명해줬네. 하지만 실제 캡스톤에서는..." 하고 1문장으로 리스펙트한 후, 너는 오직 위의 새로운 제3의 주제에만 100% 집중하여 완전히 차별화된 영혼 있는 조언을 해라."""
+            
+            retry_prompt = prompt + retry_instruction
+            try:
+                answer, _ = generate_agent_quality_answer(
+                    agent_payload=agent,
+                    user_message=user_message,
+                    extra_context=retry_prompt,
+                )
+                answer = clean_ai_answer(answer)
+            except Exception:
+                try:
+                    answer = clean_ai_answer(generate_ai_text_safely(retry_prompt))
+                except Exception:
+                    pass
 
         final_answers.append(
             MultiChatAnswer(

@@ -368,7 +368,9 @@ def revise_answer_to_match_quality_policy(
 {", ".join(validation_result.get("issues", []))}
 
 기존 답변의 핵심 내용은 유지하되, 선택된 지식수준과 학문 분야에 맞게 답변의 깊이, 용어 수준, 분석 관점, 예시 수준을 재작성하세요.
-마크다운 코드블록은 쓰지 말고 자연스러운 학습 답변으로 작성하세요."""
+마크다운 코드블록은 쓰지 말고 자연스러운 학습 답변으로 작성하세요.
+
+[초극단적 말투 규칙]: 반드시 100% 반말(비존칭)로 작성해야 한다. 절대로 존댓말(~요, ~습니다)을 1글자도 쓰지 말고 기존 캐릭터의 반말투와 성격을 철저히 보존해라."""
     try:
         response = openai_client.responses.create(model=model, input=prompt)
         output = getattr(response, "output_text", None)

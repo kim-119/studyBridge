@@ -43,7 +43,7 @@ public class ChatService {
 
                 // 에이전트의 이전 대화 기억(Context) 및 상호 피드백을 위해 최근 15개 메시지(사용자 질문 + AI 답변 전체) 가져오기
                 List<ChatMessage> allMessages = chatMessageRepository
-                                .findByAgentChatRoomIdOrderByCreatedAtAsc(roomId);
+                                .findByAgentChatRoomIdOrderByIdAsc(roomId);
                 
                 int totalMsgs = allMessages.size();
                 List<ChatMessage> recentMsgs = totalMsgs > 15
@@ -122,7 +122,7 @@ public class ChatService {
 
         // 채팅방 기록 조회
         public List<ChatDTO.MessageResponse> getRoomChatHistory(Long roomId) {
-                return chatMessageRepository.findByAgentChatRoomIdOrderByCreatedAtAsc(roomId).stream()
+                return chatMessageRepository.findByAgentChatRoomIdOrderByIdAsc(roomId).stream()
                                 .map(msg -> ChatDTO.MessageResponse.builder()
                                                 .id(msg.getId())
                                                 .content(msg.getContent())
