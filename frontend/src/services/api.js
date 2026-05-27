@@ -1,15 +1,100 @@
 import axios from 'axios';
 
-// 현재 브라우저가 접속 중인 호스트 주소(IP 혹은 localhost)를 동적으로 알아냅니다!
 const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
 
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_BACKEND_URL ||
+  `http://${hostname}:8080`;
+
+const FASTAPI_BASE_URL =
+  import.meta.env.VITE_FASTAPI_BASE_URL ||
+  `http://${hostname}:8000`;
+
 const api = axios.create({
-  baseURL: `http://${hostname}:8080`,
+  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
+const fastApi = axios.create({
+  baseURL: FASTAPI_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+const normalizeAgentFromRoom = (room) => {
+  const primaryAgent = Array.isArray(room?.agents) && room.agents.length > 0 ? room.agents[0] : {};
+  return {
+    ...primaryAgent,
+    id: room?.roomId ?? room?.id ?? primaryAgent?.id ?? primaryAgent?.agentId,
+    agentId: primaryAgent?.agentId ?? primaryAgent?.id,
+    roomId: room?.roomId ?? room?.id,
+    roomName: room?.roomName,
+    name: primaryAgent?.name || room?.roomName || 'AI 에이전트',
+    role: primaryAgent?.role || '학습 도우미',
+    persona: primaryAgent?.persona || '',
+    tone: primaryAgent?.tone || '전문적',
+    goal: primaryAgent?.goal || '',
+    agents: room?.agents || [],
+    createdAt: room?.createdAt,
+  };
+};
+
+const normalizeAgentRoomPayload = (agentData) => {
+  if (agentData?.roomName && Array.isArray(agentData?.agents)) {
+    return agentData;
+  }
+
+  const agentName = agentData?.name || 'AI 에이전트';
+  return {
+    roomName: agentData?.roomName || agentName,
+    agents: [
+      {
+        name: agentName,
+        role: agentData?.role || '학습 도우미',
+        persona: agentData?.persona || agentData?.customInstruction || agentData?.goal || '사용자의 학습을 돕는다',
+        tone: agentData?.tone || agentData?.personality || '전문적',
+        goal: agentData?.goal || '사용자의 학습을 돕는다',
+        personality: agentData?.personality,
+        style: agentData?.style || agentData?.personality,
+        knowledgeLevel: agentData?.knowledgeLevel,
+        knowledge_level: agentData?.knowledge_level || agentData?.knowledgeLevel,
+        customInstruction: agentData?.customInstruction,
+        custom_instruction: agentData?.custom_instruction || agentData?.customInstruction,
+      },
+    ],
+  };
+};
+
+const normalizeChatResponse = (data) => {
+  if (data?.answer) {
+    return data;
+  }
+
+  if (Array.isArray(data?.replies)) {
+    const answer = data.replies
+      .map((reply) => {
+        const name = reply.agentName || reply.agent_name || 'AI';
+        const text = reply.answer || '';
+        return data.replies.length > 1 ? `${name}: ${text}` : text;
+      })
+      .filter(Boolean)
+      .join('\n\n');
+
+    return {
+      ...data,
+      answer,
+    };
+  }
+
+  return {
+    ...data,
+    answer: '',
+  };
+};
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
@@ -39,7 +124,7 @@ api.interceptors.response.use(
         const refreshToken = localStorage.getItem('refreshToken');
         if (!refreshToken) throw new Error('No refresh token');
         
-        const res = await axios.post(`http://${hostname}:8080/api/users/refresh?refreshToken=${refreshToken}`);
+        const res = await axios.post(`${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`);
         
         if (res.data && res.data.accessToken) {
           localStorage.setItem('token', res.data.accessToken);
@@ -60,13 +145,6 @@ api.interceptors.response.use(
   }
 );
 
-const fastApi = axios.create({
-  baseURL: `http://${hostname}:8000`,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
-
 fastApi.interceptors.response.use(
   (res) => res,
   (err) => {
@@ -75,6 +153,84 @@ fastApi.interceptors.response.use(
     return Promise.reject(err);
   }
 );
+
+export const agentService = {
+  getAgents: async () => {
+    const res = await api.get('/api/agent-rooms');
+    return (res.data || []).map(normalizeAgentFromRoom);
+  },
+
+  createAgent: async (userId, agentData) => {
+    const payload = normalizeAgentRoomPayload(agentData);
+    const res = await api.post('/api/agent-rooms', payload);
+    return normalizeAgentFromRoom(res.data);
+  },
+
+  deleteAgent: async (userId, agentId) => {
+    const res = await api.delete(`/api/agent-rooms/${agentId}`);
+    return res.data;
+  },
+
+  sendMessage: async (userId, agentId, message) => {
+    const res = await api.post(`/api/chat/rooms/${agentId}`, { message });
+    return normalizeChatResponse(res.data);
+  },
+
+  getChatHistory: async (userId, agentId) => {
+    const res = await api.get(`/api/chat/rooms/${agentId}/history`);
+    return res.data;
+  },
+
+  getRooms: async () => {
+    const res = await api.get('/api/agent-rooms');
+    return res.data;
+  },
+
+  createRoom: async (userId, roomData) => {
+    const res = await api.post('/api/agent-rooms', roomData);
+    return res.data;
+  },
+
+  deleteRoom: async (userId, roomId) => {
+    const res = await api.delete(`/api/agent-rooms/${roomId}`);
+    return res.data;
+  },
+
+  sendAgentMessage: async (payload) => {
+    if (payload?.roomId) {
+      const res = await api.post(`/api/chat/rooms/${payload.roomId}`, { message: payload.message });
+      return normalizeChatResponse(res.data);
+    }
+    // 확인 필요: Spring Boot에 단일 agent chat endpoint가 없으면 FastAPI 직접 호출이 필요함.
+    const res = await fastApi.post('/agents/1/chat', payload);
+    return res.data;
+  },
+
+  sendMultiAgentMessage: async (payload) => {
+    const res = await fastApi.post('/api/ai/multi-chat', payload);
+    return res.data;
+  },
+
+  requestFeedback: async (payload) => {
+    const reviewerAgentId = payload?.reviewer_agent_id || payload?.reviewerAgentId || payload?.agent_id || payload?.agentId;
+    if (reviewerAgentId) {
+      const res = await fastApi.post(`/agents/${reviewerAgentId}/feedback`, payload);
+      return res.data;
+    }
+    // 확인 필요: reviewer agent id가 없는 feedback 요청은 FastAPI의 별도 범용 endpoint가 현재 확인되지 않음.
+    const res = await fastApi.post('/api/ai/multi-chat', payload);
+    return res.data;
+  },
+
+  createStudyRoom: async (payload) => {
+    const res = await api.post('/api/agent-rooms', payload);
+    return res.data;
+  },
+
+  sendFeedbackRequest: async (payload) => {
+    return agentService.requestFeedback(payload);
+  },
+};
 
 export const authService = {
   register: async (userData) => {

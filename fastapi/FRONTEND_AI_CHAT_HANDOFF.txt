@@ -1,0 +1,234 @@
+# 프론트엔드 인수인계서 - PDF 기반 AI 질문 채팅 오류
+
+## 1. 문서 목적
+
+- AI 질문 채팅 화면 문제 분석 기준으로 작성함.
+- 프론트엔드에서 조치해야 할 내용을 정리함.
+- 실제 프론트 코드는 수정하지 않았음.
+- 실제 확인한 파일 기준:
+  - frontend/src/pages/ArchiveDetail.jsx
+  - frontend/src/services/api.js
+  - backend/src/main/java/com/studybridge/api/controller/MaterialController.java
+  - backend/src/main/java/com/studybridge/api/service/AiIntegrationService.java
+  - fastapi/main.py
+
+## 2. 현재 문제 요약
+
+- 사용자가 PDF 상세 화면 AI 질문 입력창에 “이 PDF 요약해줘” 등을 입력했으나 실제 PDF 내용 기반 요약이 나오지 않음.
+- 화면 응답으로 “문서 내용만으로는 명확히 확인하기 어렵습니다.” 계열 답변이 표시됨.
+- 해당 문구는 FastAPI /api/ai/question 프롬프트 fallback 지시와 일치함.c
+- F12 Network/Console에 요청 또는 오류가 보이지 않는다고 보고됨.
+- 프론트 관점에서는 이벤트 핸들러 실행 여부, Spring Boot API 요청 발생 여부, catch에서 오류를 삼키는지 확인 필요.
+
+## 3. 프론트 관련 원인 후보
+
+### 3-1. 전송 버튼 onClick 미연결 가능성
+
+확인 결과:
+- ArchiveDetail.jsx에서 AI 질문 입력 영역은 form onSubmit={handleSendChat} 구조임.
+- 전송 버튼은 type="submit"임.
+- 별도 onClick은 없지만 form submit으로 handleSendChat이 호출되는 구조임.
+
+결론:
+- 현재 코드 기준 버튼 연결 자체는 되어 있음.
+- 그래도 Network에 요청이 없으면 handleSendChat 실행 로그를 추가해 실제 실행 여부 확인 필요.
+
+### 3-2. form onSubmit 또는 Enter 이벤트 문제
+
+확인 결과:
+- handleSendChat(e)에서 e.preventDefault() 호출함.
+- input이 form 내부에 있고 button type="submit"이라 Enter 또는 버튼 클릭 시 submit될 수 있는 구조임.
+
+확인 필요:
+- 브라우저에서 실제 handleSendChat이 실행되는지 console.log 필요.
+- chatInput이 빈 값으로 판단되어 조기 return되는지 확인 필요.
+
+### 3-3. API 호출 함수 누락 가능성
+
+확인 결과:
+- frontend/src/services/api.js에 materialService.askQuestion(materialId, questionRequest) 존재함.
+- 호출 경로는 POST /api/materials/{materialId}/question임.
+- ArchiveDetail.jsx는 materialService.askQuestion(id, { userQuestion: userMsg })를 호출함.
+
+결론:
+- 프론트 코드 기준 API 호출 함수는 존재함.
+
+### 3-4. API baseURL 오류 가능성
+
+확인 결과:
+- api.js는 baseURL을 http://${hostname}:8080 으로 생성함.
+- 즉 프론트는 FastAPI가 아니라 Spring Boot 8080 서버로 요청함.
+
+확인 필요:
+- React 실행 호스트와 Spring Boot 서버 호스트가 같은지 확인 필요.
+- Docker/로컬 환경에서 hostname이 의도한 값인지 확인 필요.
+- Spring Boot가 다른 포트 또는 프록시 뒤에서 동작하면 Network 요청 실패 가능.
+- Network 탭 필터가 Fetch/XHR 또는 Preserve log 설정 때문에 누락되지 않는지 확인 필요.
+
+### 3-5. catch에서 에러를 삼키는 가능성
+
+확인 결과:
+- ArchiveDetail.jsx catch에서 console.error('AI 질문 실패:', e)를 호출함.
+- 이후 사용자에게 일반 실패 문구를 채팅창에 추가함.
+- api.js interceptor도 console.error('API 에러:', err.response || err.message)를 호출함.
+
+확인 필요:
+- 브라우저 콘솔에서 필터가 Error만 표시되거나 로그가 접혀 있는지 확인 필요.
+- 배포 빌드 환경에서 console 출력 정책이 다른지 확인 필요.
+- catch까지 도달하지 않는 경우 handleSendChat 자체가 실행되지 않을 수 있음.
+
+### 3-6. fallback 문구 하드코딩 가능성
+
+확인 결과:
+- 프론트 ArchiveDetail.jsx에서 “문서 내용만으로는 명확히 확인하기 어렵습니다.” 문구는 확인되지 않음.
+- Spring Boot 검색에서도 해당 정확 문구는 확인되지 않음.
+- FastAPI main.py /api/ai/question 프롬프트에 해당 fallback 지시 문구가 존재함.
+
+결론:
+- 현재 문구는 프론트 하드코딩보다는 FastAPI/OpenAI 응답 가능성이 높음.
+
+### 3-7. 응답 필드명 불일치 가능성
+
+확인 결과:
+- Spring Boot QuestionDTO.Response 필드는 aiAnswer임.
+- ArchiveDetail.jsx는 res.aiAnswer를 화면에 표시함.
+- Spring Boot는 FastAPI answer를 aiAnswer로 변환함.
+
+결론:
+- 현재 확인된 질문 응답 필드 매핑은 일치함.
+
+### 3-8. material_id 또는 message 누락 가능성
+
+확인 결과:
+- ArchiveDetail.jsx는 useParams()의 id를 materialService.askQuestion(id, ...)에 사용함.
+- 요청 Body는 { userQuestion: userMsg }임.
+- Spring Boot path variable materialId와 Request userQuestion 구조와 일치함.
+
+확인 필요:
+- id가 실제 materialId인지 확인 필요.
+- location state 또는 route param이 잘못되어 undefined/null로 들어가지 않는지 확인 필요.
+
+## 4. 프론트 조치 사항
+
+- 전송 버튼 클릭 시 handleSendChat 실행 여부 확인.
+- Enter 입력 시 handleSendChat 실행 여부 확인.
+- 요청 직전 console.log 추가 권장:
+  - materialId(id)
+  - userMsg
+  - 호출 API 경로
+- materialService.askQuestion 응답 직후 console.log 추가 권장:
+  - 전체 res
+  - res.aiAnswer
+- catch에서 console.error 유지 및 사용자용 오류 메시지 표시.
+- Network 탭에 POST /api/materials/{materialId}/question 요청이 보이는지 확인.
+- 요청 payload에 userQuestion이 포함되는지 확인.
+- 프론트는 pdf_text를 직접 만들거나 보내지 않음.
+- 프론트는 OPENAI_API_KEY를 절대 직접 다루면 안 됨.
+- 프론트는 material_id 또는 URL path의 materialId와 message/userQuestion만 Spring Boot로 전달하는 구조 유지 권장.
+- AI 질문 요청 중 loading 상태 표시.
+- 실패 상태 표시.
+- 백엔드가 반환한 aiAnswer 필드를 렌더링.
+
+## 5. 권장 요청 흐름
+
+### React → Spring Boot 현재 확인된 구조
+
+POST /api/materials/{materialId}/question
+
+Request:
+
+{
+  "userQuestion": "이 PDF 요약해줘"
+}
+
+프론트가 보내는 값:
+- URL path의 materialId
+- Body의 userQuestion
+
+프론트가 직접 보내지 않는 값:
+- pdf_text
+- extractedText
+- OPENAI_API_KEY
+- FastAPI API Key 또는 OpenAI API Key
+
+### 권장 구조
+
+React는 Spring Boot에 materialId와 사용자 질문만 전달함.
+Spring Boot가 Material을 조회하고 extractedText 또는 Vision extracted_text를 확보함.
+Spring Boot가 FastAPI에 PDF 내용과 질문을 전달함.
+React는 Spring Boot 응답의 aiAnswer 또는 합의된 answer 필드를 화면에 출력함.
+
+## 6. 화면 처리 기준
+
+- 사용자가 질문을 입력하고 전송하면 사용자 메시지를 즉시 채팅창에 추가.
+- API 요청 중 “답변 작성 중” loading 메시지 표시.
+- 성공 시 loading 메시지 제거 후 aiAnswer 출력.
+- 실패 시 loading 메시지 제거 후 명확한 실패 메시지 출력.
+- Network에 요청이 보이지 않으면 handleSendChat 실행 여부부터 확인.
+- Console에 로그가 없으면 form submit, button type, chatInput 상태, 조건문 if (!chatInput.trim()) return 흐름부터 확인.
+- Spring Boot에서 400/500 오류가 내려오면 사용자에게 “PDF 텍스트 추출 상태를 확인해 주세요” 등 원인성 메시지를 보여주는 것이 적합함.
+
+## 7. 프론트 수정 후보 파일
+
+실제 프론트 코드는 수정하지 않았음.
+
+수정 후보:
+- frontend/src/pages/ArchiveDetail.jsx
+  - handleSendChat 시작 지점 로그 추가
+  - materialService.askQuestion 호출 직전 payload 로그 추가
+  - 응답 로그 추가
+  - catch 오류 메시지 개선
+  - materialId(id) undefined 여부 방어
+- frontend/src/services/api.js
+  - materialService.askQuestion 요청/응답 로그 추가
+  - baseURL 환경별 설정 확인
+  - interceptor에서 에러를 숨기지 않는지 확인
+- 프록시/Vite 설정 파일
+  - 현재 직접 axios baseURL이 http://${hostname}:8080이므로 프록시 사용 여부 확인 필요
+
+## 8. 테스트 기준
+
+### 프론트 테스트
+
+1. AI 질문 입력창에 “이 PDF 요약해줘” 입력.
+2. 전송 버튼 클릭.
+3. Console에 handleSendChat 실행 로그가 출력되어야 함.
+4. Console에 materialId와 userQuestion 로그가 출력되어야 함.
+5. Network에 POST http://{hostname}:8080/api/materials/{materialId}/question 요청이 표시되어야 함.
+6. 요청 payload에 userQuestion이 포함되어야 함.
+7. 응답에 aiAnswer가 포함되어야 함.
+8. 화면에 res.aiAnswer가 표시되어야 함.
+
+### Network에 요청이 보이지 않을 때 확인 순서
+
+1. 현재 화면이 ArchiveDetail.jsx의 AI 질문 폼을 렌더링하는지 확인.
+2. button type이 submit인지 확인.
+3. form onSubmit이 handleSendChat인지 확인.
+4. chatInput 값이 실제로 state에 반영되는지 확인.
+5. handleSendChat 첫 줄 console.log가 찍히는지 확인.
+6. materialService.askQuestion 호출 직전 로그가 찍히는지 확인.
+7. 브라우저 Network 필터가 Fetch/XHR인지 확인.
+8. Preserve log 활성화 후 재시도.
+
+## 9. 프론트 체크리스트
+
+- [ ] 전송 버튼 onClick 또는 submit 연결 확인
+- [ ] Enter 전송 연결 확인
+- [ ] API 호출 함수 연결 확인
+- [ ] material_id 또는 route param id 전달 확인
+- [ ] message/userQuestion 전달 확인
+- [ ] Network 요청 발생 확인
+- [ ] Console 로그 출력 확인
+- [ ] catch에서 에러를 숨기지 않는지 확인
+- [ ] 응답 aiAnswer 필드 표시 확인
+- [ ] OPENAI_API_KEY를 프론트에서 사용하지 않는지 확인
+- [ ] loading 상태 표시 확인
+- [ ] 실패 상태 표시 확인
+
+## 10. 결론
+
+현재 프론트 코드에는 form submit과 materialService.askQuestion 호출 구조가 존재함.
+Network에 요청이 보이지 않는다면 handleSendChat 실행 여부와 baseURL/필터 설정부터 확인 필요.
+프론트는 pdf_text를 직접 보내지 않고 materialId와 userQuestion만 Spring Boot로 보내는 구조가 적합함.
+현재 응답 문구는 프론트 하드코딩보다 FastAPI 문서 질문 fallback 응답일 가능성이 높음.
+이번 작업에서 React 코드는 수정하지 않았음.
