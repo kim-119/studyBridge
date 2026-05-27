@@ -313,7 +313,17 @@ public class AiIntegrationService {
                         throw new IllegalArgumentException("텍스트가 아직 추출되지 않아 로드맵을 생성할 수 없습니다.");
                 }
 
-                Map<String, Object> requestBody = Map.of("text", material.getExtractedText());
+                String userGoal = "학습 목표 달성";
+                if (material.getTitle() != null && !material.getTitle().isBlank()) {
+                        userGoal = material.getTitle() + " 학습 및 핵심 목표 달성";
+                }
+
+                Map<String, Object> requestBody = Map.of(
+                        "material_id", material.getMaterialId(),
+                        "pdf_text", material.getExtractedText(),
+                        "user_goal", userGoal
+                );
+
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/roadmap")
@@ -322,16 +332,25 @@ public class AiIntegrationService {
                         throw new RuntimeException("AI 서버에서 로드맵 생성 중 오류가 발생했습니다: " + e.getMessage());
                 }
 
-                // FastAPI 응답 파싱 및 엔티티 생성
+                // roadmap 오브젝트 파싱
+                Map<String, Object> roadmapMap = null;
+                if (response != null && response.containsKey("roadmap")) {
+                        roadmapMap = (Map<String, Object>) response.get("roadmap");
+                }
+
+                String roadmapTitle = "AI 생성 학습 로드맵";
+                if (roadmapMap != null && roadmapMap.containsKey("title")) {
+                        roadmapTitle = roadmapMap.get("title").toString();
+                }
+
+                // 엔티티 생성
                 Roadmap roadmap = Roadmap.builder()
                                 .material(material)
-                                .title(response != null && response.containsKey("title")
-                                                ? response.get("title").toString()
-                                                : "AI 생성 학습 로드맵")
+                                .title(roadmapTitle)
                                 .build();
 
-                if (response != null && response.containsKey("steps")) {
-                        java.util.List<Map<String, Object>> stepMaps = (java.util.List<Map<String, Object>>) response
+                if (roadmapMap != null && roadmapMap.containsKey("steps")) {
+                        java.util.List<Map<String, Object>> stepMaps = (java.util.List<Map<String, Object>>) roadmapMap
                                         .get("steps");
                         for (Map<String, Object> stepMap : stepMaps) {
                                 RoadmapStep step = RoadmapStep.builder()
