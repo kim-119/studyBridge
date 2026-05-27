@@ -2260,19 +2260,49 @@ class QuizResponse(BaseModel):
     quizData: str
 
 
-class RoadmapContractRequest(BaseModel):
-    text: str
+DEFAULT_ROADMAP_GOAL = "제공된 학습자료를 체계적으로 학습하기"
 
 
-class RoadmapTaskContract(BaseModel):
+class RoadmapGenerateRequest(BaseModel):
+    material_id: int
+    pdf_text: str
+    user_goal: str = DEFAULT_ROADMAP_GOAL
+
+
+class RoadmapTaskResponse(BaseModel):
     taskOrder: int
     content: str
 
 
-class RoadmapStepContract(BaseModel):
+class RoadmapStepResponse(BaseModel):
     stepOrder: int
     title: str
     description: str
+    tasks: List[RoadmapTaskResponse]
+
+
+class RoadmapInfoResponse(BaseModel):
+    title: str
+    goal: str
+    summary: str
+    steps: List[RoadmapStepResponse]
+
+
+class RoadmapGenerateResponse(BaseModel):
+    status: str
+    material_id: int
+    roadmap: RoadmapInfoResponse
+
+
+class RoadmapContractRequest(BaseModel):
+    text: str
+
+
+class RoadmapTaskContract(RoadmapTaskResponse):
+    pass
+
+
+class RoadmapStepContract(RoadmapStepResponse):
     tasks: List[RoadmapTaskContract]
 
 
@@ -2510,59 +2540,32 @@ JSON 배열만 반환해라.
     return QuizResponse(quizData=_dump_json_string(normalized))
 
 
-@app.post("/api/ai/roadmap", response_model=RoadmapContractResponse)
-def create_roadmap(request: RoadmapContractRequest):
-    text = _contract_text(request.text)
+@app.post("/api/ai/roadmap", response_model=RoadmapGenerateResponse)
+def create_roadmap(request: RoadmapGenerateRequest):
+    if not request.pdf_text or not request.pdf_text.strip():
+        raise HTTPException(status_code=400, detail="pdf_text is empty")
 
-    # roadmap.py의 기존 생성기가 사용 가능하면 먼저 재사용하고, 계약 응답으로 변환한다.
+    user_goal = (
+        request.user_goal.strip()
+        if request.user_goal and request.user_goal.strip()
+        else DEFAULT_ROADMAP_GOAL
+    )
+
     try:
-        from roadmap import create_default_roadmap_tool
+        from roadmap import generate_roadmap_from_pdf_text
 
-        tool = create_default_roadmap_tool()
-        frontend_response = tool.generate_frontend_response(
-            source_text=text,
-            subject="문서 기반 학습",
-            level="학사 수준",
-            week_count=4,
-            material_id=None,
+        return generate_roadmap_from_pdf_text(
+            material_id=request.material_id,
+            pdf_text=request.pdf_text,
+            user_goal=user_goal,
         )
-        return _normalize_roadmap(_as_dict(frontend_response))
-    except Exception:
-        pass
-
-    prompt = f"""
-너는 StudyBridge의 학습 로드맵 생성 AI다.
-아래 문서를 기반으로 4주 학습 로드맵을 만들고 JSON만 반환해라.
-
-반환 형식:
-{{
-  "title": "문서 주제 기반 4주 완성 로드맵",
-  "steps": [
-    {{
-      "stepOrder": 1,
-      "title": "1주차: 학습 주제",
-      "description": "학습 설명",
-      "tasks": [
-        {{"taskOrder": 1, "content": "학습 과제"}},
-        {{"taskOrder": 2, "content": "학습 과제"}}
-      ]
-    }}
-  ]
-}}
-
-규칙:
-- steps는 반드시 배열이다.
-- stepOrder는 1부터 순서대로 증가한다.
-- 각 step의 tasks는 최소 2개다.
-- taskOrder는 각 step 내부에서 1부터 시작한다.
-
-문서:
-{text}
-"""
-    result = _load_ai_json(_call_openai_contract(prompt, expect_json=True, max_output_tokens=3000))
-    if not isinstance(result, dict):
-        raise HTTPException(status_code=500, detail="AI 로드맵 응답 형식 오류")
-    return _normalize_roadmap(result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"로드맵 생성 중 내부 오류가 발생했습니다: {type(e).__name__}: {str(e)}",
+        )
 
 
 @app.post("/api/ai/feedback", response_model=FeedbackResponse)

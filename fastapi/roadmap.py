@@ -1267,6 +1267,361 @@ def generate_ai_roadmap_contract(source_text: str) -> AiRoadmapResponse:
     return normalize_ai_roadmap(json.loads(content))
 
 
+FORBIDDEN_RESPONSE_FIELDS = {
+    "roadmapId",
+    "stepId",
+    "taskId",
+    "isCompleted",
+    "material",
+    "userId",
+    "createdAt",
+    "updatedAt",
+    "file_path",
+    "pdf_url",
+    "download_url",
+    "html",
+    "markdown",
+}
+
+DEFAULT_USER_GOAL = "제공된 학습자료를 체계적으로 학습하기"
+
+
+def generate_roadmap_from_pdf_text(
+    material_id: int,
+    pdf_text: str,
+    user_goal: str,
+) -> dict:
+    cleaned_text = (pdf_text or "").strip()
+    cleaned_goal = (user_goal or "").strip() or DEFAULT_USER_GOAL
+
+    if not cleaned_text:
+        return _fallback_roadmap(material_id, cleaned_text, cleaned_goal)
+
+    try:
+        ai_payload = _generate_roadmap_with_openai(cleaned_text, cleaned_goal)
+        wrapped_payload = {
+            "status": "success",
+            "material_id": material_id,
+            "roadmap": ai_payload.get("roadmap", ai_payload),
+        }
+        normalized = _normalize_roadmap_payload(wrapped_payload, material_id, cleaned_text, cleaned_goal)
+
+        if _validate_roadmap_payload(normalized):
+            return normalized
+    except Exception:
+        pass
+
+    return _fallback_roadmap(material_id, cleaned_text, cleaned_goal)
+
+
+def _generate_roadmap_with_openai(pdf_text: str, user_goal: str) -> dict:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    client = OpenAI(api_key=api_key)
+    model = os.getenv("ROADMAP_OPENAI_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    prompt = _build_prompt(pdf_text[: int(os.getenv("ROADMAP_MAX_SOURCE_CHARS", "20000"))], user_goal)
+
+    response = client.chat.completions.create(
+        model=model,
+        temperature=0.2,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You generate StudyBridge learning roadmaps. "
+                    "Return valid JSON only. Do not include markdown, explanations, database IDs, "
+                    "relationship objects, completion flags, file URLs, HTML, or markdown fields."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+    )
+
+    content = response.choices[0].message.content
+    if not content:
+        raise ValueError("OpenAI roadmap response is empty")
+
+    return json.loads(_clean_json_text(content))
+
+
+def _build_prompt(pdf_text: str, user_goal: str) -> str:
+    return f"""
+다음 PDF 추출 텍스트를 기반으로 StudyBridge 학습 로드맵 JSON을 생성해라.
+
+사용자 학습 목표:
+{user_goal}
+
+반환 형식은 반드시 아래 JSON 객체 하나만 사용해라.
+{{
+  "title": "PDF 주제와 사용자 목표를 반영한 로드맵 제목",
+  "goal": "{user_goal}",
+  "summary": "PDF 핵심 내용을 2~4문장으로 요약하고 로드맵 구성 방향을 설명",
+  "steps": [
+    {{
+      "stepOrder": 1,
+      "title": "1단계 또는 1주차 학습 제목",
+      "description": "이 단계의 학습 목표와 범위",
+      "tasks": [
+        {{"taskOrder": 1, "content": "수행 가능한 학습 과제"}},
+        {{"taskOrder": 2, "content": "수행 가능한 학습 과제"}}
+      ]
+    }}
+  ]
+}}
+
+규칙:
+- 순수 JSON만 반환한다.
+- 코드블록, 마크다운, 설명문을 포함하지 않는다.
+- title, goal, summary, steps만 최상위 필드로 포함한다.
+- roadmapId, stepId, taskId, isCompleted, userId, material, createdAt, updatedAt를 포함하지 않는다.
+- file_path, pdf_url, download_url, html, markdown을 포함하지 않는다.
+- goal은 사용자 학습 목표 문장을 그대로 반영한다.
+- steps는 최소 3개 이상 생성한다.
+- 각 step에는 stepOrder, title, description, tasks만 포함한다.
+- stepOrder는 1부터 순차 증가하는 정수다.
+- 각 step의 tasks는 최소 2개 이상 생성한다.
+- 각 task에는 taskOrder, content만 포함한다.
+- taskOrder는 각 step 내부에서 1부터 순차 증가하는 정수다.
+- PDF에 없는 내용을 과도하게 지어내지 말고 학습 순서와 과제 중심으로 구성한다.
+
+PDF 추출 텍스트:
+{pdf_text}
+""".strip()
+
+
+def _clean_json_text(text: str) -> str:
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+    if cleaned.startswith("{") and cleaned.endswith("}"):
+        return cleaned
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start >= 0 and end > start:
+        return cleaned[start : end + 1]
+
+    return cleaned
+
+
+def _normalize_roadmap_payload(payload: dict, material_id: int, pdf_text: str, user_goal: str) -> dict:
+    roadmap = payload.get("roadmap") if isinstance(payload.get("roadmap"), dict) else payload
+    roadmap = _remove_forbidden_fields(roadmap if isinstance(roadmap, dict) else {})
+
+    fallback = _fallback_roadmap(material_id, pdf_text, user_goal)
+    fallback_roadmap = fallback["roadmap"]
+
+    title = _clean_text(roadmap.get("title")) or fallback_roadmap["title"]
+    goal = _clean_text(roadmap.get("goal")) or user_goal
+    summary = _clean_text(roadmap.get("summary")) or fallback_roadmap["summary"]
+
+    steps = []
+    raw_steps = roadmap.get("steps") if isinstance(roadmap.get("steps"), list) else []
+    for step_index, raw_step in enumerate(raw_steps, start=1):
+        if not isinstance(raw_step, dict):
+            continue
+
+        clean_step = _remove_forbidden_fields(raw_step)
+        tasks = []
+        raw_tasks = clean_step.get("tasks") if isinstance(clean_step.get("tasks"), list) else []
+
+        for task_index, raw_task in enumerate(raw_tasks, start=1):
+            if not isinstance(raw_task, dict):
+                continue
+
+            clean_task = _remove_forbidden_fields(raw_task)
+            content = _clean_text(clean_task.get("content"))
+            if content:
+                tasks.append({"taskOrder": len(tasks) + 1, "content": content})
+
+        while len(tasks) < 2:
+            tasks.append(
+                {
+                    "taskOrder": len(tasks) + 1,
+                    "content": f"{_clean_text(clean_step.get('title')) or f'{step_index}단계'} 핵심 내용을 정리하기",
+                }
+            )
+
+        steps.append(
+            {
+                "stepOrder": len(steps) + 1,
+                "title": _clean_text(clean_step.get("title")) or f"{step_index}단계: 핵심 학습",
+                "description": _clean_text(clean_step.get("description")) or "자료의 핵심 개념을 학습합니다.",
+                "tasks": tasks,
+            }
+        )
+
+    if len(steps) < 3:
+        steps = fallback_roadmap["steps"]
+
+    return {
+        "status": "success",
+        "material_id": material_id,
+        "roadmap": {
+            "title": title,
+            "goal": goal,
+            "summary": summary,
+            "steps": steps,
+        },
+    }
+
+
+def _validate_roadmap_payload(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+
+    if set(payload.keys()) != {"status", "material_id", "roadmap"}:
+        return False
+
+    roadmap = payload.get("roadmap")
+    if not isinstance(roadmap, dict):
+        return False
+
+    if any(field in payload or field in roadmap for field in FORBIDDEN_RESPONSE_FIELDS):
+        return False
+
+    required_roadmap_fields = {"title", "goal", "summary", "steps"}
+    if not required_roadmap_fields.issubset(roadmap.keys()):
+        return False
+
+    steps = roadmap.get("steps")
+    if not isinstance(steps, list) or len(steps) < 3:
+        return False
+
+    for expected_step_order, step in enumerate(steps, start=1):
+        if not isinstance(step, dict):
+            return False
+        if any(field in step for field in FORBIDDEN_RESPONSE_FIELDS):
+            return False
+        if set(step.keys()) != {"stepOrder", "title", "description", "tasks"}:
+            return False
+        if step.get("stepOrder") != expected_step_order:
+            return False
+        if not step.get("title") or not step.get("description"):
+            return False
+
+        tasks = step.get("tasks")
+        if not isinstance(tasks, list) or len(tasks) < 2:
+            return False
+
+        for expected_task_order, task in enumerate(tasks, start=1):
+            if not isinstance(task, dict):
+                return False
+            if any(field in task for field in FORBIDDEN_RESPONSE_FIELDS):
+                return False
+            if set(task.keys()) != {"taskOrder", "content"}:
+                return False
+            if task.get("taskOrder") != expected_task_order:
+                return False
+            if not task.get("content"):
+                return False
+
+    return True
+
+
+def _fallback_roadmap(material_id: int, pdf_text: str, user_goal: str) -> dict:
+    keywords = _extract_keywords(pdf_text)
+    keyword_text = ", ".join(keywords[:5]) if keywords else "핵심 개념"
+    title_keyword = keywords[0] if keywords else "학습자료"
+
+    return {
+        "status": "success",
+        "material_id": material_id,
+        "roadmap": {
+            "title": f"{title_keyword} 기반 핵심 로드맵",
+            "goal": user_goal,
+            "summary": (
+                f"제공된 학습자료에서 {keyword_text} 등을 중심 주제로 확인했습니다. "
+                "핵심 개념 이해, 구조 적용, 복습 점검 단계로 학습 로드맵을 구성했습니다."
+            ),
+            "steps": [
+                {
+                    "stepOrder": 1,
+                    "title": "1단계: 핵심 개념 파악",
+                    "description": "자료에 등장하는 주요 개념과 용어를 정리합니다.",
+                    "tasks": [
+                        {"taskOrder": 1, "content": "PDF 텍스트에서 핵심 키워드 10개 추출하기"},
+                        {"taskOrder": 2, "content": "각 키워드의 정의와 관계를 정리하기"},
+                    ],
+                },
+                {
+                    "stepOrder": 2,
+                    "title": "2단계: 구조 이해 및 예제 적용",
+                    "description": "핵심 개념이 실제 코드나 문제 상황에서 어떻게 사용되는지 확인합니다.",
+                    "tasks": [
+                        {"taskOrder": 1, "content": "주요 개념별 예제 하나씩 작성하기"},
+                        {"taskOrder": 2, "content": "개념 간 흐름을 다이어그램으로 정리하기"},
+                    ],
+                },
+                {
+                    "stepOrder": 3,
+                    "title": "3단계: 복습 및 실전 점검",
+                    "description": "학습한 내용을 문제 풀이와 요약 정리로 점검합니다.",
+                    "tasks": [
+                        {"taskOrder": 1, "content": "학습 내용을 10문장 이내로 요약하기"},
+                        {"taskOrder": 2, "content": "스스로 설명 가능한지 체크리스트로 점검하기"},
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def _extract_keywords(pdf_text: str) -> list[str]:
+    text = (pdf_text or "")[:3000]
+    tokens = re.findall(r"[가-힣A-Za-z0-9+#.@_-]{2,}", text)
+    stopwords = {
+        "그리고",
+        "하지만",
+        "또한",
+        "대한",
+        "위해",
+        "있는",
+        "한다",
+        "입니다",
+        "the",
+        "and",
+        "for",
+        "with",
+        "this",
+        "that",
+    }
+
+    counts: dict[str, int] = {}
+    for token in tokens:
+        normalized = token.strip()
+        lowered = normalized.lower()
+        if lowered in stopwords or len(normalized) < 2:
+            continue
+        counts[normalized] = counts.get(normalized, 0) + 1
+
+    return [
+        token
+        for token, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:10]
+    ]
+
+
+def _remove_forbidden_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _remove_forbidden_fields(item)
+            for key, item in value.items()
+            if key not in FORBIDDEN_RESPONSE_FIELDS
+        }
+    if isinstance(value, list):
+        return [_remove_forbidden_fields(item) for item in value]
+    return value
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return strip_markdown(str(value)).strip()
+
+
 if APIRouter is not None:
     router = APIRouter(prefix="/api/ai", tags=["ai-roadmap"])
     legacy_router = APIRouter(prefix="/api/roadmap", tags=["roadmap"])
