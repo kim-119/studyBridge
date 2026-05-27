@@ -2179,16 +2179,27 @@ def build_group_study_stage_rule(
         total_agents: int,
         current_agent_name: str,
         previous_agents_info_text: str = "없음",
-        user_wants_feedback: bool = False
+        user_wants_feedback: bool = False,
+        should_ask: bool = True
 ) -> str:
     """그룹스터디 단계별 대화식 규칙 (역할 및 트리거 기반)"""
+    # 50% 확률로 역질문 여부 분기처리
+    if should_ask:
+        stage0_ask_rule = "- 답변의 끝부분에는 사용자나 다른 에이전트가 흥미롭게 대화를 이어갈 수 있도록 자연스럽게 가벼운 질문을 던져라."
+        stage1_ask_rule = "- 너 자신의 역할, 성격, 지식수준에 부합하게 발화하고, 답변 끝에는 자연스럽게 다음 사람의 의견을 묻거나 사용자에게 가벼운 질문을 던져라."
+        stage_final_ask_rule = "- **반드시 중복되는 이론 설명이나 예시 코드는 과감히 생략하고**, 대화를 마무리 지으며 사용자가 스스로 더 생각해 보거나 공부를 주도적으로 이어나갈 수 있도록 다정하고 예리한 역질문(Counter-question)을 최소 하나 이상 던져라!"
+    else:
+        stage0_ask_rule = "- 답변의 끝부분에는 사용자에게 억지로 질문을 되묻지 마라! 질문 없이 본문 답변이나 유용한 설명만 명확하게 제시하며 자연스럽고 깔끔하게 끝마쳐라."
+        stage1_ask_rule = "- 너 자신의 역할, 성격, 지식수준에 부합하게 발화하되, 답변 끝부분에 억지로 질문을 던져 사용자에게 되묻지 마라. 자연스럽게 본론 설명과 의견 피력만 마치며 깔끔하게 끝내라."
+        stage_final_ask_rule = "- **반드시 중복되는 이론 설명이나 예시 코드는 과감히 생략하고**, 대화를 마무리 지을 때 구구절절 억지 역질문을 던져 톡방의 흐름을 지치게 만들지 마라. 대화 주제를 깔끔하게 한 문장으로 매끄럽게 요약하고, 따뜻하게 격려하고 마치는 멘트 수준으로 기분 좋고 군더더기 없게 끝마쳐라."
+
     if stage_index == 0:
         return f"""
 [현재 단계: 1차 대화 발화자]
 - 너는 이번 그룹 스터디의 첫 번째 답변자다.
 - 사용자의 질문에 대해 "{current_agent_name}"의 역할, 지식수준, 성격 및 말투에 딱 맞추어 답변해라.
 - 절대로 '1차 답변:', '핵심 근거:' 같은 표제어를 쓰지 마라. 진짜 사람처럼 자연스러운 메신저 채팅 형식으로만 답변해라.
-- 답변의 끝부분에는 사용자나 다른 에이전트가 흥미롭게 대화를 이어갈 수 있도록 자연스럽게 가벼운 질문을 던져라.
+{stage0_ask_rule}
 - 만약 사용자가 '안녕', '반가워' 같은 단순 인사를 했다면 절대 길고 복잡한 이론 지식을 설명하지 말고, 친근하게 인사를 건네며 오늘 어떤 내용이나 자료를 같이 공부하고 싶은지 되묻는 질문을 던져라.
 """
 
@@ -2219,7 +2230,7 @@ def build_group_study_stage_rule(
 {feedback_instruction}
 - 앞선 에이전트들의 상세 정보는 다음과 같습니다:
 {previous_agents_info_text}
-- 너 자신의 역할, 성격, 지식수준에 부합하게 발화하고, 답변 끝에는 자연스럽게 다음 사람의 의견을 묻거나 사용자에게 가벼운 질문을 던져라.
+{stage1_ask_rule}
 """
 
     if stage_index == total_agents - 1 and total_agents >= 3:
@@ -2231,7 +2242,7 @@ def build_group_study_stage_rule(
 {feedback_instruction}
 - 앞선 에이전트들의 상세 정보는 다음과 같습니다:
 {previous_agents_info_text}
-- **반드시 중복되는 이론 설명이나 예시 코드는 과감히 생략하고**, 대화를 마무리 지으며 사용자가 스스로 더 생각해 보거나 공부를 주도적으로 이어나갈 수 있도록 다정하고 예리한 역질문(Counter-question)을 최소 하나 이상 던져라!
+{stage_final_ask_rule}
 """
 
     return f"""
@@ -2571,7 +2582,11 @@ def multi_agent_chat(request: MultiChatRequest):
     total_agents = len(target_agents)
 
     # 피드백 요구 트리거 단어 검증
-    feedback_triggers = ["피드백", "검토", "평가", "지적", "채점", "검사", "리뷰", "맞아", "틀렸어", "어때", "감상", "확인", "의견", "채점해", "봐줘"]
+    feedback_triggers = [
+        "피드백", "검토", "평가", "지적", "채점", "검사", "리뷰", 
+        "맞아", "틀렸", "어때", "감상", "확인", "의견", "채점해", 
+        "봐줘", "맞냐", "맞니", "진짜냐", "맞는가", "동의", "생각"
+    ]
     user_wants_feedback = any(trigger in user_message for trigger in feedback_triggers)
 
     for idx, agent in enumerate(target_agents):
@@ -2596,12 +2611,17 @@ def multi_agent_chat(request: MultiChatRequest):
             )
         previous_agents_info_text = "\n".join(previous_agents_info) if previous_agents_info else "없음 (너가 첫 번째 발화자임)"
 
+        # 50% 확률로 역질문 여부 무작위 결정
+        import random
+        should_ask = random.random() >= 0.5
+
         stage_rule = build_group_study_stage_rule(
             stage_index=idx,
             total_agents=total_agents,
             current_agent_name=agent["name"],
             previous_agents_info_text=previous_agents_info_text,
-            user_wants_feedback=user_wants_feedback
+            user_wants_feedback=user_wants_feedback,
+            should_ask=should_ask
         )
 
         knowledge_level_rule = get_knowledge_level_rule(agent["knowledgeLevel"])

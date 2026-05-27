@@ -47,6 +47,12 @@ FEEDBACK_ACTION_KEYWORDS = [
     "생각을 말",
     "코멘트",
     "리뷰",
+    "맞냐",
+    "맞아",
+    "맞니",
+    "틀렸",
+    "진짜냐",
+    "맞는가",
 ]
 
 ANSWER_TARGET_KEYWORDS = [
