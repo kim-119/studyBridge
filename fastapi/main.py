@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import logging
 from typing import Any, List, Dict, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -10,6 +11,21 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 import fitz
+from agent_quality_policy import (
+    build_agent_system_prompt,
+    normalize_agent_config,
+    revise_answer_to_match_quality_policy,
+    validate_answer_quality,
+    validate_prompt_contains_agent_constraints,
+)
+from agent_feedback_policy import (
+    build_feedback_system_prompt,
+    build_feedback_user_prompt,
+    detect_feedback_intent,
+    extract_feedback_targets,
+    revise_feedback_output,
+    validate_feedback_output as validate_feedback_policy_output,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
@@ -17,6 +33,7 @@ ENV_PATH = os.path.join(BASE_DIR, ".env")
 load_dotenv(dotenv_path=ENV_PATH)
 
 app = FastAPI(title="StudyBridge FastAPI Server")
+logger = logging.getLogger("studybridge.fastapi")
 
 app.add_middleware(
     CORSMiddleware,
@@ -168,6 +185,178 @@ def generate_ai_text_safely(prompt: str) -> str:
 
 
 # 1단계: 입력 정리 관련 상수
+def generate_agent_quality_answer(agent_payload: dict, user_message: str, extra_context: str = "") -> tuple[str, dict]:
+    """정규화된 에이전트 품질 정책을 적용해 답변을 생성하고 검증한다."""
+    check_openai_client()
+
+    agent_config = normalize_agent_config(agent_payload, user_message=user_message)
+    system_prompt = build_agent_system_prompt(agent_config)
+    prompt_warnings = validate_prompt_contains_agent_constraints(system_prompt, agent_config)
+    logger.info(
+        "agent_quality normalized=%s prompt_warnings=%s",
+        {
+            key: agent_config.get(key)
+            for key in ("name", "role", "canonical_personality", "canonical_tone", "canonical_knowledge_level", "discipline")
+        },
+        prompt_warnings,
+    )
+
+    user_prompt = f"{extra_context.strip()}\n\n[사용자 질문]\n{user_message}".strip()
+
+    try:
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            input=[
+                {"role": "system", "content": trim_prompt(system_prompt)},
+                {"role": "user", "content": trim_prompt(user_prompt)},
+            ],
+            max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
+        )
+        if not response.output_text:
+            raise HTTPException(status_code=500, detail="OpenAI 응답 텍스트가 비어 있습니다.")
+        answer = clean_ai_answer(response.output_text)
+        validation_result = validate_answer_quality(answer, agent_config, user_message)
+        revised = False
+        if not validation_result.get("passed", False):
+            answer = clean_ai_answer(
+                revise_answer_to_match_quality_policy(
+                    answer=answer,
+                    agent_config=agent_config,
+                    validation_result=validation_result,
+                    user_message=user_message,
+                    openai_client=openai_client,
+                    model=OPENAI_MODEL,
+                )
+            )
+            revised = True
+            validation_result = validate_answer_quality(answer, agent_config, user_message)
+        logger.info("agent_quality validation=%s revised=%s", validation_result, revised)
+        return answer, {
+            "agent_config": agent_config,
+            "prompt_warnings": prompt_warnings,
+            "validation": validation_result,
+            "revised": revised,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"OpenAI 에이전트 답변 생성 실패: {type(e).__name__}: {str(e)}",
+        )
+
+
+def generate_agent_feedback_answer(
+        agent_payload: dict,
+        request_payload: dict,
+        user_message: str
+) -> tuple[str, dict]:
+    """피드백/의견 요청을 감지한 경우 대상 답변을 검토하는 답변을 생성한다."""
+    reviewer_config = normalize_agent_config(agent_payload, user_message=user_message)
+    intent = detect_feedback_intent(user_message)
+    targets = extract_feedback_targets(request_payload)
+
+    if not targets.get("has_target"):
+        feedback_type = intent.get("feedback_type", "unknown_feedback")
+        return (
+            "피드백할 이전 답변이나 질문이 전달되지 않았습니다. 피드백 대상 답변 또는 질문을 함께 보내야 합니다.",
+            {
+                "status": "need_target",
+                "feedback_type": feedback_type,
+                "intent": intent,
+                "targets": targets,
+                "validation": None,
+            },
+        )
+
+    check_openai_client()
+
+    requested_mode = request_payload.get("feedback_mode")
+    feedback_type = (
+        requested_mode
+        if requested_mode and requested_mode != "auto"
+        else intent.get("feedback_type") or "answer_review"
+    )
+    system_prompt = build_feedback_system_prompt(
+        feedback_type=feedback_type,
+        reviewer_agent_config=reviewer_config,
+    )
+    user_prompt = build_feedback_user_prompt(
+        message=user_message,
+        feedback_type=feedback_type,
+        targets=targets,
+        reviewer_agent_config=reviewer_config,
+    )
+
+    try:
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            input=[
+                {"role": "system", "content": trim_prompt(system_prompt)},
+                {"role": "user", "content": trim_prompt(user_prompt)},
+            ],
+            max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
+        )
+        if not response.output_text:
+            raise HTTPException(status_code=500, detail="OpenAI 피드백 응답 텍스트가 비어 있습니다.")
+
+        feedback = clean_ai_answer(response.output_text)
+        validation = validate_feedback_policy_output(feedback, feedback_type)
+        revised = False
+
+        if not validation.get("passed", False):
+            feedback = clean_ai_answer(
+                revise_feedback_output(
+                    feedback=feedback,
+                    feedback_type=feedback_type,
+                    validation_result=validation,
+                    message=user_message,
+                    targets=targets,
+                    openai_client=openai_client,
+                    model=OPENAI_MODEL,
+                )
+            )
+            revised = True
+            validation = validate_feedback_policy_output(feedback, feedback_type)
+
+        logger.info(
+            "agent_feedback type=%s validation=%s revised=%s missing=%s",
+            feedback_type,
+            validation,
+            revised,
+            targets.get("missing_fields"),
+        )
+
+        return (
+            feedback,
+            {
+                "status": "success",
+                "feedback_type": feedback_type,
+                "intent": intent,
+                "targets": targets,
+                "validation": validation,
+                "revised": revised,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"OpenAI 에이전트 피드백 생성 실패: {type(e).__name__}: {str(e)}",
+        )
+
+
+def _model_to_plain_dict(value: Any) -> dict:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
 BLOCKED_PERSONALITY_KEYWORDS = [
     "ignore previous",
     "ignore all previous",
@@ -1302,6 +1491,18 @@ class AgentResponse(BaseModel):
 class AgentChatRequest(BaseModel):
     """에이전트 채팅 요청"""
     message: str = Field(..., min_length=1)
+    target_answer: Optional[str] = Field(default=None, max_length=12000)
+    target_question: Optional[str] = Field(default=None, max_length=6000)
+    previous_answers: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    previousAnswers: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    feedback_mode: Optional[str] = Field(default="auto", max_length=50)
+    source_agent_id: Optional[int] = None
+    sourceAgentId: Optional[int] = None
+    knowledgeLevel: Optional[str] = Field(default=None, max_length=30)
+    knowledge_level: Optional[str] = Field(default=None, max_length=30)
+    personality: Optional[str] = Field(default=None, max_length=100)
+    customInstruction: Optional[str] = Field(default=None, max_length=1500)
+    custom_instruction: Optional[str] = Field(default=None, max_length=1500)
 
 
 class AgentChatResponse(BaseModel):
@@ -1310,6 +1511,9 @@ class AgentChatResponse(BaseModel):
     agent_name: str
     role: str
     answer: str
+    status: Optional[str] = "success"
+    feedback_type: Optional[str] = None
+    feedback_validation: Optional[Dict[str, Any]] = None
 
 
 class AgentFeedbackRequest(BaseModel):
@@ -1422,10 +1626,27 @@ def create_agent(request: AgentCreateRequest):
 
     agent_custom_instruction = validate_custom_instruction(raw_custom_instruction)
 
-    # 지식수준 검증
-    agent_knowledge_level = validate_knowledge_level(
-        request.knowledgeLevel if request.knowledgeLevel else request.knowledge_level
+    raw_knowledge_level = request.knowledgeLevel if request.knowledgeLevel else request.knowledge_level
+    agent_knowledge_level = validate_knowledge_level(raw_knowledge_level)
+
+    normalized_agent_config = normalize_agent_config(
+        {
+            "name": agent_name,
+            "role": agent_role,
+            "personality": raw_personality_option,
+            "style": request.style,
+            "tone": agent_tone,
+            "goal": agent_goal,
+            "customInstruction": agent_custom_instruction,
+            "knowledgeLevel": raw_knowledge_level,
+            "knowledge_level": raw_knowledge_level,
+            "persona": request.persona or "",
+        }
     )
+    selected_style = normalized_agent_config["canonical_personality"]
+    agent_knowledge_level = normalized_agent_config["canonical_knowledge_level"]
+    agent_custom_instruction = normalized_agent_config["customInstruction"]
+    agent_tone = normalized_agent_config["canonical_tone"]
 
     agent = {
         "id": agent_id,
@@ -1481,6 +1702,31 @@ def chat_with_agent(agent_id: int, request: AgentChatRequest):
     agent = get_or_create_agent(agent_id)
 
     user_message = validate_user_message(request.message)
+    request_payload = _model_to_plain_dict(request)
+    feedback_intent = detect_feedback_intent(user_message)
+    explicit_feedback_mode = request_payload.get("feedback_mode")
+    if feedback_intent.get("is_feedback_request") or (explicit_feedback_mode and explicit_feedback_mode != "auto"):
+        feedback_agent = {
+            **agent,
+            "personality": request_payload.get("personality") or agent.get("personality"),
+            "knowledgeLevel": request_payload.get("knowledgeLevel") or request_payload.get("knowledge_level") or agent.get("knowledgeLevel"),
+            "customInstruction": request_payload.get("customInstruction") or request_payload.get("custom_instruction") or agent.get("customInstruction"),
+        }
+        feedback, feedback_meta = generate_agent_feedback_answer(
+            agent_payload=feedback_agent,
+            request_payload=request_payload,
+            user_message=user_message,
+        )
+        return AgentChatResponse(
+            agent_id=agent["id"],
+            agent_name=agent["name"],
+            role=agent["role"],
+            answer=feedback,
+            status=feedback_meta.get("status", "success"),
+            feedback_type=feedback_meta.get("feedback_type"),
+            feedback_validation=feedback_meta.get("validation"),
+        )
+
     user_intent = detect_user_intent(user_message)
     user_intent_rule = get_user_intent_rule(user_intent)
 
@@ -1557,7 +1803,11 @@ def chat_with_agent(agent_id: int, request: AgentChatRequest):
 13. 긴 문장은 2~3문장 단위로 끊어라.
 14. 목록은 번호 또는 하이픈으로 나눠서 작성해라."""
 
-    answer = generate_ai_text(prompt)
+    answer, _quality_meta = generate_agent_quality_answer(
+        agent_payload=agent,
+        user_message=user_message,
+        extra_context=prompt,
+    )
 
     return AgentChatResponse(
         agent_id=agent["id"],
@@ -1678,7 +1928,11 @@ def feedback_between_agents(
 수정 답변
 - 학습자에게 더 적절한 답변 예시를 제시한다."""
 
-    feedback = generate_ai_text(prompt)
+    feedback, _quality_meta = generate_agent_quality_answer(
+        agent_payload=reviewer,
+        user_message=checked["original_question"],
+        extra_context=prompt,
+    )
     feedback = validate_feedback_output(feedback)
 
     validation = AgentFeedbackValidation(
@@ -1736,7 +1990,10 @@ class MultiChatAgent(BaseModel):
 
 class PreviousAgentAnswer(BaseModel):
     """이전 에이전트 답변"""
+    agent_id: Optional[int] = None
+    agentId: Optional[int] = None
     agentName: str
+    role: Optional[str] = ""
     answer: str
 
 
@@ -1745,6 +2002,9 @@ class MultiChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
     agents: List[MultiChatAgent]
     previousAnswers: Optional[List[PreviousAgentAnswer]] = Field(default_factory=list)
+    target_answer: Optional[str] = Field(default=None, max_length=12000)
+    target_question: Optional[str] = Field(default=None, max_length=6000)
+    feedback_mode: Optional[str] = Field(default="auto", max_length=50)
 
 
 class MultiChatAnswer(BaseModel):
@@ -2069,9 +2329,28 @@ def multi_agent_chat(request: MultiChatRequest):
 
         agent_custom_instruction = validate_custom_instruction(raw_custom_instruction)
 
-        agent_knowledge_level = validate_knowledge_level(
-            agent.knowledgeLevel if agent.knowledgeLevel else agent.knowledge_level
+        raw_knowledge_level = agent.knowledgeLevel if agent.knowledgeLevel else agent.knowledge_level
+        agent_knowledge_level = validate_knowledge_level(raw_knowledge_level)
+
+        normalized_agent_config = normalize_agent_config(
+            {
+                "name": agent_name,
+                "role": agent_role,
+                "personality": raw_personality_option,
+                "style": agent.style,
+                "tone": agent_tone,
+                "goal": agent_goal,
+                "customInstruction": agent_custom_instruction,
+                "knowledgeLevel": raw_knowledge_level,
+                "knowledge_level": raw_knowledge_level,
+                "persona": raw_custom_instruction or "",
+            },
+            user_message=user_message,
         )
+        selected_style = normalized_agent_config["canonical_personality"]
+        agent_knowledge_level = normalized_agent_config["canonical_knowledge_level"]
+        agent_custom_instruction = normalized_agent_config["customInstruction"]
+        agent_tone = normalized_agent_config["canonical_tone"]
 
         prepared_agents.append({
             "index": index,
@@ -2097,6 +2376,29 @@ def multi_agent_chat(request: MultiChatRequest):
 
     previous_answers = request.previousAnswers or []
     previous_answers_text = format_previous_answers(previous_answers)
+
+    feedback_intent = detect_feedback_intent(user_message)
+    explicit_feedback_mode = request.feedback_mode
+    if feedback_intent.get("is_feedback_request") or (explicit_feedback_mode and explicit_feedback_mode != "auto"):
+        reviewer_agent = prepared_agents[0]
+        request_payload = _model_to_plain_dict(request)
+        request_payload["previous_answers"] = [
+            _model_to_plain_dict(item)
+            for item in previous_answers
+        ]
+        feedback, feedback_meta = generate_agent_feedback_answer(
+            agent_payload=reviewer_agent,
+            request_payload=request_payload,
+            user_message=user_message,
+        )
+        return MultiChatResponse(
+            answers=[
+                MultiChatAnswer(
+                    agentName=reviewer_agent["name"],
+                    answer=feedback,
+                )
+            ]
+        )
 
     if is_feedback_message(user_message, mentioned_names):
         reviewer_name, target_name = choose_feedback_agents(user_message, mentioned_names)
@@ -2144,7 +2446,14 @@ def multi_agent_chat(request: MultiChatRequest):
             previous_answers_text=previous_answers_text
         )
 
-        answer = generate_ai_text_safely(prompt)
+        try:
+            answer, _quality_meta = generate_agent_quality_answer(
+                agent_payload=reviewer_agent,
+                user_message=user_message,
+                extra_context=prompt,
+            )
+        except HTTPException:
+            answer = generate_ai_text_safely(prompt)
 
         return MultiChatResponse(
             answers=[
@@ -2210,7 +2519,15 @@ def multi_agent_chat(request: MultiChatRequest):
             stage_rule=stage_rule
         )
 
-        answer = clean_ai_answer(generate_ai_text_safely(prompt))
+        try:
+            answer, _quality_meta = generate_agent_quality_answer(
+                agent_payload=agent,
+                user_message=user_message,
+                extra_context=prompt,
+            )
+            answer = clean_ai_answer(answer)
+        except HTTPException:
+            answer = clean_ai_answer(generate_ai_text_safely(prompt))
 
         final_answers.append(
             MultiChatAnswer(

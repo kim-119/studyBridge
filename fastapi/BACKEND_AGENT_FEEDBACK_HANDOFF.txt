@@ -1,0 +1,57 @@
+# 백엔드 인수인계서 - AI 에이전트 피드백 기능 연동
+
+## 1. 문서 목적
+FastAPI에 AI 답변 피드백/의견 생성 로직이 추가되었으며, 백엔드가 피드백 대상 데이터를 함께 전달해야 함을 설명한다.
+
+## 2. 백엔드에서 추가로 전달해야 할 값
+- message: 사용자의 현재 요청
+- target_answer: 피드백 대상 AI 답변
+- target_question: 원래 사용자 질문 또는 AI가 생성한 질문
+- previous_answers 또는 previousAnswers: 멀티 에이전트 답변 목록
+- source_agent_id 또는 sourceAgentId: 피드백 대상 답변을 만든 에이전트 ID
+- reviewer_agent_id 또는 agent_id: 피드백을 수행할 에이전트 ID
+- feedback_mode: auto, answer_review, question_review, compare_answers, improve_answer 등
+
+## 3. 권장 FastAPI 요청 구조
+{
+  "user_id": 1,
+  "agent_id": 3,
+  "message": "AI가 답변한 거 피드백해줘",
+  "target_answer": "이전에 AI가 생성한 답변",
+  "target_question": "원래 질문",
+  "previous_answers": [
+    {
+      "agent_id": 1,
+      "agent_name": "영어 선생님",
+      "role": "학습 도우미",
+      "answer": "..."
+    }
+  ],
+  "feedback_mode": "auto"
+}
+
+## 4. 백엔드 조치 사항
+- 채팅 기록에서 직전 AI 답변을 조회해야 함
+- 사용자가 특정 에이전트를 언급하면 해당 agent_id의 답변을 찾아야 함
+- 멀티 에이전트 답변 비교 요청이면 previous_answers 또는 previousAnswers 배열을 구성해야 함
+- target_answer 없이 FastAPI에 피드백 요청을 보내면 need_target 응답이 발생함
+- 피드백 결과도 채팅 기록에 저장할지 결정 필요
+- 기존 AgentChatRequest DTO가 message만 받는 경우 optional 필드 추가 필요
+- FastAPI 응답의 answer 필드는 기존처럼 화면 표시용 본문으로 유지됨
+- status가 need_target이면 프론트에 피드백 대상 선택 안내를 내려줘야 함
+
+## 5. 예외 처리
+- 피드백 대상 답변이 없으면 프론트에 명확한 안내 반환
+- target_answer가 너무 길면 요약 후 전달하거나 FastAPI에서 trim 처리됨
+- previous_answers가 비어 있으면 비교 피드백 불가
+- OpenAI 실패 시 500 응답이 발생할 수 있으므로 백엔드 로그에 FastAPI detail을 남겨야 함
+
+## 6. 체크리스트
+- [ ] 직전 AI 답변 조회 가능 여부
+- [ ] agent_id별 답변 조회 가능 여부
+- [ ] target_answer 전달 여부
+- [ ] target_question 전달 여부
+- [ ] previous_answers 전달 여부
+- [ ] FastAPI need_target 응답 처리 여부
+- [ ] 피드백 결과 저장 여부 결정
+- [ ] AgentChatRequest DTO optional 필드 확장 여부 확인
