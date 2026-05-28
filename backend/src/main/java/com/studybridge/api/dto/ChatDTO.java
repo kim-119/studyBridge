@@ -38,6 +38,8 @@ public class ChatDTO {
         private Boolean showFinalSynthesis;
         private List<RequestAgent> agents;
         private String personality;
+        private String personalityStrength;
+        private String personality_strength;
         private String style;
         private String tone;
         private String knowledgeLevel;
@@ -60,6 +62,8 @@ public class ChatDTO {
         private String name;
         private String role;
         private String personality;
+        private String personalityStrength;
+        private String personality_strength;
         private String style;
         private String tone;
         private String knowledgeLevel;
@@ -78,6 +82,10 @@ public class ChatDTO {
         private List<DiscussionMessage> messages;
         private String finalSynthesis;
         private List<AgentReply> replies;
+        // 에러/타임아웃 시 프론트에 메시지 전달 (500 대신 200+errorMessage 반환)
+        private String errorMessage;
+        private String errorCode;
+        private Boolean success;
     }
 
     @Getter
@@ -91,6 +99,7 @@ public class ChatDTO {
         private String agentName;
         private String role;
         private String personality;
+        private String personalityStrength;
         private String knowledgeLevel;
         private String speechType;
         private String targetAgentId;

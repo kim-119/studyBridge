@@ -3,6 +3,7 @@ import re
 import json
 import logging
 import hashlib
+import time as _time_module
 from typing import Any, List, Dict, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -12,9 +13,11 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 import fitz
+import rag as _rag  # RAG 모듈
 from agent_quality_policy import (
     build_agent_system_prompt,
     normalize_agent_config,
+    normalize_personality_strength,
     revise_answer_to_match_quality_policy,
     validate_answer_quality,
     validate_prompt_contains_agent_constraints,
@@ -384,9 +387,10 @@ def generate_agent_quality_answer(agent_payload: dict, user_message: str, extra_
 이전 답변은 내부 검증을 통과하지 못했다.
 실패 이유: {failure_reason}
 사용자는 {agent_config['canonical_knowledge_level']}을 선택했다.
+선택 성격은 {agent_config['canonical_personality']}이고 성격 강도는 {agent_config.get('canonical_personality_strength') or 'extreme'}이다.
 학문 분야는 {agent_config['discipline']}이다.
 응답 모드는 {MODE_LABELS.get(response_mode, response_mode)}이다.
-선택된 수준과 분야에 맞는 깊이, 전제, 한계, 논증, 구체성을 보강해 다시 작성하라.
+선택된 수준, 분야, 성격 강도에 맞는 깊이, 전제, 한계, 논증, 문체, 비판 강도, 설명 구조를 보강해 다시 작성하라.
 단, 내부 검증 과정, 피드백 문구, 1차 답변, 최종 판단, 종합 답변, 재생성 사유는 출력하지 마라.
 
 [previous_answer]
@@ -430,6 +434,57 @@ def generate_agent_quality_answer(agent_payload: dict, user_message: str, extra_
             status_code=500,
             detail=f"OpenAI 에이전트 답변 생성 실패: {type(e).__name__}: {str(e)}",
         )
+
+
+def generate_fast_answer(
+    agent_payload: dict,
+    user_message: str,
+    extra_context: str = "",
+    max_output_tokens: int = 800,
+) -> str:
+    """
+    병렬 에이전트용 경량 답변 생성.
+    - LLM 검증/재생성 없이 1회 호출만 함
+    - max_output_tokens 제한으로 응답 시간 단축
+    - 품질 보장보다 속도 우선 (일반 학습 질문용)
+    """
+    check_openai_client()
+    t0 = _time_module.time()
+
+    agent_config = normalize_agent_config(agent_payload, user_message=user_message)
+    feedback_intent = detect_feedback_intent(user_message)
+    response_mode = detect_response_mode(user_message, feedback_intent)
+
+    prompt_components = build_academic_prompt_components(
+        agent_config=agent_config,
+        user_message=user_message,
+        mode=response_mode,
+        extra_context=extra_context,
+    )
+    system_prompt = prompt_components["system_prompt"]
+    prompt = assemble_academic_prompt(prompt_components)
+
+    try:
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            input=[
+                {"role": "system", "content": trim_prompt(system_prompt)},
+                {"role": "user", "content": trim_prompt(prompt)},
+            ],
+            max_output_tokens=max_output_tokens,
+            temperature=temperature_for(agent_config),
+        )
+        answer = sanitize_final_answer(getattr(response, "output_text", "") or "", response_mode)
+        elapsed = int((_time_module.time() - t0) * 1000)
+        logger.info(
+            "fast_answer agent=%s mode=%s elapsed_ms=%d tokens=%d",
+            agent_config.get("name"), response_mode, elapsed, max_output_tokens,
+        )
+        return clean_ai_answer(answer) if answer else "답변을 생성하지 못했습니다."
+    except Exception as exc:
+        elapsed = int((_time_module.time() - t0) * 1000)
+        logger.error("fast_answer error agent=%s elapsed_ms=%d err=%s", agent_config.get("name"), elapsed, exc)
+        raise
 
 
 def generate_agent_feedback_answer(
@@ -688,27 +743,70 @@ def detect_response_mode(user_message: str, feedback_intent: Optional[dict] = No
     return "general"
 
 
-def build_style_prompt(style: str, tone: str) -> str:
+def build_style_prompt(style: str, tone: str, strength: str = "extreme") -> str:
+    """
+    성격 + 강도를 반영한 스타일 프롬프트를 생성한다.
+    strength: "low" | "medium" | "high" | "extreme" (기본: extreme)
+    """
     normalized_style = normalize_agent_style(style) or "전문적"
     contract = PERSONALITY_CONTRACTS.get(normalized_style, PERSONALITY_CONTRACTS["전문적"])
-    rules = "\n".join(f"- {item}" for item in contract["generation_rules"])
+    strength = strength.lower() if strength else "extreme"
+
+    # 강도별 규칙 선택
+    if strength == "extreme" and "extreme_rules" in contract:
+        rules_list = contract["extreme_rules"]
+        strength_label = "EXTREME"
+        strength_desc = "캐릭터성이 확실히 보이도록 답변 구조, 판단 방식, 비판 강도, 표현 방식까지 강하게 반영한다."
+    elif strength in ("high", "extreme"):
+        rules_list = contract["generation_rules"]
+        strength_label = "HIGH"
+        strength_desc = "답변 구조, 어휘, 문장 리듬에 분명히 반영한다."
+    elif strength == "medium":
+        rules_list = contract["generation_rules"][:4]
+        strength_label = "MEDIUM"
+        strength_desc = "설명 방식과 어휘에 반영한다."
+    else:  # low
+        rules_list = contract["generation_rules"][:2]
+        strength_label = "LOW"
+        strength_desc = "말투에만 약하게 반영한다."
+
+    rules = "\n".join(f"- {item}" for item in rules_list)
     voice = contract.get("voice_guide", "")
+
+    # 답변 구조 템플릿 (extreme에서만 포함)
+    answer_structure_section = ""
+    if strength == "extreme" and "answer_structure" in contract:
+        answer_structure_section = f"\n[답변 구조 템플릿]\n{contract['answer_structure']}"
+
+    # 금지 표현 (extreme에서만 포함)
+    banned_section = ""
+    if strength == "extreme" and "banned_phrases" in contract:
+        banned = ", ".join(f'"{p}"' for p in contract["banned_phrases"])
+        banned_section = f"\n[이 성격에서 절대 쓰지 않는 표현]\n{banned}"
+
+    # 예시 첫 문장 (extreme에서만 포함)
+    opening_section = ""
+    if strength == "extreme" and "opening_example" in contract:
+        opening_section = f"\n[이 성격의 답변 시작 예시]\n{contract['opening_example']}"
+
     return f"""[style_prompt]
 선택된 성격: {normalized_style} ({contract.get('description', '')})
 말투 기준: {contract.get('tone_label', normalized_style)}
-목표: {contract["goal"]}
+목표: {contract['goal']}
 
-[답변 음성 가이드 - 이 성격의 실제 말투]
+[답변 음성 가이드]
 {voice}
 
-[답변 생성 규칙]
-{rules}
+[답변 생성 규칙 - 성격 강도: {strength_label}]
+{strength_desc}
+{rules}{answer_structure_section}{opening_section}{banned_section}
 
-[성격 적용 강도: HIGH]
-- 선택된 성격이 answer 전체 문체를 지배해야 한다.
-- 성격명을 자기소개처럼 말하지 않는다.
-- 성격은 첫 문장, 어휘 선택, 문장 리듬, 비판 강도, 설명 순서에 반드시 드러나야 한다.
-- 성격과 맞지 않는 고정 문구 금지: "친절하게 설명드리겠습니다", "도움이 되셨으면", "좋은 질문입니다".""".strip()
+[성격 적용 원칙]
+- 성격명을 자기소개처럼 말하지 않는다. ("저는 냉소적 AI입니다" 금지)
+- 성격은 첫 문장, 어휘 선택, 문장 리듬, 비판 강도, 설명 순서 전체에 드러나야 한다.
+- 성격이 라벨에만 있고 실제 답변에서 느껴지지 않으면 실패다.
+- 어떤 성격이든 사용자 인신공격, 욕설, 모욕, 혐오 표현은 절대 금지한다.
+- 비판 대상은 사용자 인격이 아니라 코드, 설계, 논리, 구현 방식, 의사결정이어야 한다.""".strip()
 
 
 def build_level_prompt(level: str) -> str:
@@ -785,16 +883,24 @@ def build_output_rule(mode: str) -> str:
 "피드백", "1차 답변", "피드백 반영 답변", "최종 판단", "종합 답변", "검증 결과" 같은 내부 단계 제목을 출력하지 않는다."""
 
 
-def build_academic_prompt_components(agent_config: dict, user_message: str, mode: str, extra_context: str = "") -> dict:
+def build_academic_prompt_components(
+    agent_config: dict,
+    user_message: str,
+    mode: str,
+    extra_context: str = "",
+    personality_strength: str = "extreme",
+) -> dict:
+    # 공통 system prompt: 정확성·안전성·역할 준수만 담당. 친절함 문구 없음.
     system_prompt = """[system_prompt]
 너는 사용자의 질문에 답하는 AI 학습 보조 시스템이다.
 답변은 한국어로 한다.
-사용자가 선택한 성격, 말투, 지식수준을 반드시 따른다.
+선택된 에이전트 역할, 성격, 지식수준을 반드시 따른다.
+정확하게 답변한다. 모르면 모른다고 말한다. 지어내지 않는다.
 내부 처리 과정은 절대 출력하지 않는다.
-사용자가 요청하지 않은 피드백을 출력하지 않는다.
-사용자가 요청하지 않은 최종 판단, 종합 답변, 1차 답변을 출력하지 않는다.
-모르면 아는 척하지 않는다.
-분야에 따라 적절한 학문적 깊이를 적용한다."""
+사용자가 요청하지 않은 피드백, 최종 판단, 종합 답변, 1차 답변을 출력하지 않는다.
+분야에 따라 적절한 학문적 깊이를 적용한다.
+사용자 인신공격, 욕설, 모욕, 혐오 표현은 어떤 성격에서도 금지한다.
+비판 대상은 코드, 설계, 논리, API 구조이어야 한다."""
 
     task_prompt = f"""[task_prompt]
 응답 모드: {MODE_LABELS.get(mode, mode)}
@@ -807,9 +913,16 @@ def build_academic_prompt_components(agent_config: dict, user_message: str, mode
 참고 맥락:
 {extra_context.strip() or '없음'}"""
 
+    normalized_strength = normalize_personality_strength(
+        personality_strength or agent_config.get("canonical_personality_strength")
+    )
     return {
         "system_prompt": system_prompt,
-        "style_prompt": build_style_prompt(agent_config["canonical_personality"], agent_config["canonical_tone"]),
+        "style_prompt": build_style_prompt(
+            agent_config["canonical_personality"],
+            agent_config["canonical_tone"],
+            strength=normalized_strength,
+        ),
         "level_prompt": build_level_prompt(agent_config["canonical_knowledge_level"]),
         "domain_prompt": build_domain_prompt(agent_config["discipline"]),
         "task_prompt": task_prompt,
@@ -825,9 +938,20 @@ def assemble_academic_prompt(components: dict) -> str:
 
 
 def temperature_for(agent_config: dict) -> float:
-    if agent_config.get("canonical_personality") == "독특함":
-        return 0.65
-    return 0.35
+    """
+    성격별 LLM temperature 설정.
+    높을수록 다양하고 개성 있는 표현, 낮을수록 정확하고 일관된 표현.
+    """
+    personality = agent_config.get("canonical_personality") or ""
+    temps = {
+        "전문적":  0.25,   # 정확하고 일관성 있게
+        "친근함":  0.50,   # 부드럽고 자연스럽게
+        "솔직함":  0.40,   # 직설적이지만 일관되게
+        "독특함":  0.72,   # 창의적이고 다양하게
+        "효율적":  0.28,   # 간결하고 일관되게
+        "냉소적":  0.55,   # 날카롭고 개성 있게
+    }
+    return temps.get(personality, 0.40)
 
 
 def max_tokens_for(level: str, mode: str) -> int:
@@ -905,6 +1029,11 @@ def heuristic_validate_answer(answer: str, agent_config: dict, user_message: str
     threshold = LEVEL_THRESHOLDS.get(level, 70)
 
     weaknesses = []
+    personality_validation = validate_personality_response_locally(
+        text,
+        agent_config.get("canonical_personality") or "전문적",
+        agent_config.get("canonical_personality_strength") or "extreme",
+    )
     if not mode_ok:
         weaknesses.append("응답 모드가 사용자 요청과 맞지 않음")
     if not no_internal_leak:
@@ -919,6 +1048,8 @@ def heuristic_validate_answer(answer: str, agent_config: dict, user_message: str
         weaknesses.append("답변이 피상적임")
     if reasoning_score < threshold:
         weaknesses.append("이유, 조건, 한계에 대한 논증 부족")
+    if not personality_validation["pass"]:
+        weaknesses.extend(personality_validation["issues"])
 
     passed = (
         mode_ok
@@ -928,6 +1059,7 @@ def heuristic_validate_answer(answer: str, agent_config: dict, user_message: str
         and no_unrequested_feedback
         and depth_score >= threshold
         and reasoning_score >= threshold
+        and personality_validation["pass"]
     )
     return {
         "pass": passed,
@@ -940,9 +1072,55 @@ def heuristic_validate_answer(answer: str, agent_config: dict, user_message: str
         "depth_score": depth_score,
         "specificity_score": specificity_score,
         "reasoning_score": reasoning_score,
+        "personality_validation": personality_validation,
         "weaknesses": weaknesses,
         "regeneration_instruction": " / ".join(weaknesses),
     }
+
+
+def validate_personality_response_locally(answer: str, personality: str, strength: str = "extreme") -> dict:
+    """LLM 재호출 없이 성격 반영 여부를 가볍게 점검한다."""
+    normalized_strength = normalize_personality_strength(strength)
+    text = answer or ""
+    issues: list[str] = []
+
+    if normalized_strength not in {"high", "extreme"}:
+        return {"pass": True, "issues": [], "strength": normalized_strength}
+
+    banned_personal_attacks = ["멍청", "한심", "바보", "무식", "씨발", "시발", "병신", "네가 못"]
+    if any(term in text for term in banned_personal_attacks):
+        issues.append("사용자 인신공격 또는 욕설 가능 표현 포함")
+
+    overfriendly = ["걱정하지 마세요", "함께 해결", "천천히 해보면", "잘 하셨어요", "도움이 되셨으면", "이해가 가시나요"]
+    if personality != "친근함" and any(term in text for term in overfriendly):
+        issues.append("친근함 외 성격에서 과한 격려체가 성격을 덮어씀")
+
+    if personality == "냉소적":
+        if not any(term in text for term in ["구조", "문제", "결함", "위험", "단일", "이름만", "느릴", "터질"]):
+            issues.append("냉소적 성격인데 구조적 문제 지적이 약함")
+        if not any(term in text for term in ["수정", "해결", "바꿔", "분리", "추가", "확인"]):
+            issues.append("냉소적 성격인데 해결책이 부족함")
+    elif personality == "효율적":
+        if len(text) > 1200:
+            issues.append("효율적 성격인데 답변이 장황함")
+        if not any(term in text[:180] for term in ["원인", "결론", "먼저", "수정", "핵심"]):
+            issues.append("효율적 성격인데 결론이 늦게 나옴")
+    elif personality == "전문적":
+        if any(term in text for term in ["ㅋㅋ", "쩐다", "쉽게 말하면요", "걱정하지 마세요"]):
+            issues.append("전문적 성격인데 가벼운 구어체가 포함됨")
+        if not any(term in text for term in ["정의", "원인", "구조", "조건", "검증", "근거", "기준"]):
+            issues.append("전문적 성격인데 분석 기준과 근거가 약함")
+    elif personality == "독특함":
+        if not any(term in text for term in ["비유", "마치", "도서관", "지도", "책장", "장면", "그림"]):
+            issues.append("독특함 성격인데 비유나 장면감이 부족함")
+    elif personality == "솔직함":
+        if not any(term in text for term in ["문제", "잘못", "틀렸", "위험", "부족", "대안", "수정"]):
+            issues.append("솔직함 성격인데 문제 지적이 흐릿함")
+    elif personality == "친근함":
+        if not any(term in text for term in ["쉽게", "먼저", "예를 들면", "흔한", "괜찮", "해볼"]):
+            issues.append("친근함 성격인데 쉬운 안내와 대화체가 부족함")
+
+    return {"pass": not issues, "issues": issues, "strength": normalized_strength}
 
 
 def validate_academic_answer_with_model(answer: str, agent_config: dict, user_message: str, mode: str) -> dict:
@@ -979,6 +1157,8 @@ def validate_academic_answer_with_model(answer: str, agent_config: dict, user_me
 사용자 질문: {user_message}
 응답 모드: {MODE_LABELS.get(mode, mode)}
 선택 지식수준: {agent_config['canonical_knowledge_level']}
+선택 성격: {agent_config['canonical_personality']}
+성격 강도: {agent_config.get('canonical_personality_strength') or 'extreme'}
 학문 분야: {agent_config['discipline']}
 답변:
 {answer}"""
@@ -1192,12 +1372,30 @@ PERSONALITY_CONTRACTS = {
             "정의 → 구조 → 조건 → 예시 → 한계 순서로 설명한다.",
             "'친절하게', '이해가 가시나요', '도움이 되셨으면' 같은 구어체 마무리는 넣지 않는다.",
         ],
+        # extreme 강도 전용 규칙
+        "extreme_rules": [
+            "첫 문장에서 개념의 핵심 정의 또는 결론을 단 하나의 문장으로 명확히 제시한다.",
+            "정의 → 원인 분석 → 비교 → 해결책 → 검증 기준 순서로 구성한다.",
+            "판단이 필요한 경우 '권장', '비권장', '위험', '보류'처럼 명확히 분류한다.",
+            "전문 용어를 회피하지 않는다. 필요 시 괄호 안에 정의를 넣는다.",
+            "문장은 단정적이고 수동태를 최소화한다.",
+            "쉽게 말하면, 걱정 마세요, 천천히, 같이 해봐요 같은 친근 표현을 사용하지 않는다.",
+            "불필요한 감탄사, 격려, 감성 표현 없음.",
+            "애매한 표현 대신 기준과 근거를 우선한다.",
+        ],
+        "answer_structure": "핵심 정의(1문장) → 원인/구조 분석 → 비교/대안 → 해결책 → 검증 기준",
+        "opening_example": "이 문제의 본질은 단순 문법 오류가 아니라 요청/응답 스키마 불일치다.",
+        "banned_phrases": [
+            "쉽게 말하면요", "걱정하지 마세요", "천천히 해보면", "함께 해결해봐요",
+            "도움이 되셨으면", "이해가 가시나요", "잘 하셨어요", "충분히 이해됩니다",
+        ],
         "positive": ["정확", "구조", "조건", "한계", "근거", "정의"],
         "negative": ["대충", "그냥", "쩐다", "장난", "ㅋㅋ", "도움되셨으면"],
         "regeneration_instruction": (
             "이전 답변은 전문적 성격에 비해 문체와 구조가 느슨하거나 구어체가 섞였다. "
-            "첫 문장에 핵심 정의를 두고, 정확한 용어·조건·한계를 포함하여 공적이고 체계적인 문체로 다시 작성하라. "
-            "'좋은 질문입니다', '도움되셨으면' 같은 표현을 제거하라."
+            "첫 문장에 핵심 정의를 두고, 정확한 용어·조건·한계를 포함하여 "
+            "공적이고 체계적인 문체로 다시 작성하라. "
+            "친절한 격려체와 구어체 마무리를 제거하라."
         ),
     },
     "친근함": {
@@ -1217,6 +1415,22 @@ PERSONALITY_CONTRACTS = {
             "문장이 딱딱하거나 차갑지 않게 대화체로 작성한다.",
             "가끔 격려하되 장황한 인사말은 줄인다.",
             "내용 정확도를 낮추지 않는다.",
+        ],
+        # extreme 강도 전용 규칙 (친근함만 따뜻한 말투 허용)
+        "extreme_rules": [
+            "초보자도 따라올 수 있게 단계적으로 쪼개서 설명한다.",
+            "공감 표현('이런 상황 흔해요', '헷갈리기 쉬운 부분이에요')을 적절히 섞는다.",
+            "어려운 용어는 반드시 쉬운 말로 바꿔준다.",
+            "다음 행동을 명확하게 안내한다.",
+            "기술적 정확성을 낮추지 않는다.",
+            "장황한 잡담보다 친근한 설명 흐름을 유지한다.",
+            "격려는 짧게, 설명은 정확하게.",
+        ],
+        "answer_structure": "공감(1문장) → 원인 설명(쉽게) → 단계별 해결책 → 격려/다음 단계",
+        "opening_example": "이런 증상은 꽤 자주 보이는 패턴이에요. 보통 저장 로직과 AI 분석이 같이 묶여 있을 때 발생해요.",
+        "banned_phrases": [
+            "전술한 바와 같이", "상기한 내용에 따라", "필연적으로",
+            "당연하게도", "자명하다", "논리적으로 보면",
         ],
         "positive": ["쉽게", "예를 들면", "비슷", "헷갈", "먼저", "말하면"],
         "negative": ["전술한 바", "상기", "고찰", "필연적으로"],
@@ -1244,12 +1458,28 @@ PERSONALITY_CONTRACTS = {
             "공격적이거나 무례한 표현은 금지한다.",
             "불필요한 위로, 과도한 칭찬을 줄인다.",
         ],
+        # extreme 강도 전용 규칙
+        "extreme_rules": [
+            "문제가 있으면 첫 문장에서 바로 지적한다. 서론 없음.",
+            "'이 부분이 잘못됐다', '이 구조는 유지보수에 불리하다', '현재 병목은 여기다'처럼 직접 말한다.",
+            "배경 설명보다 문제 지적이 먼저 나온다.",
+            "불필요한 위로, 긍정 포장 없음.",
+            "해결책을 항상 포함한다.",
+            "감정적 비난이 아니라 기술적 판단으로 말한다.",
+            "그래도 잘 하셨어요, 충분히 이해됩니다, 함께 해결해봐요 같은 포장 금지.",
+        ],
+        "answer_structure": "문제 직접 지적(1문장) → 원인 설명 → 수정 방향 → 확인 방법",
+        "opening_example": "이건 프론트 문제가 아니다. 37초 뒤 500이 나는 건 Spring이 FastAPI 응답을 기다리다 터지는 구조 문제다.",
+        "banned_phrases": [
+            "그래도 잘 하셨어요", "걱정하지 마세요", "충분히 이해됩니다",
+            "저도 처음엔 어려웠어요", "함께 해결해봐요", "천천히 해보면 됩니다",
+        ],
         "positive": ["부족", "위험", "오해", "문제", "잘못", "대안", "바로잡"],
         "negative": ["멍청", "한심", "바보", "무식"],
         "regeneration_instruction": (
             "이전 답변은 솔직함이 부족하고 너무 두루뭉술하다. "
             "문제점과 오해를 직접적으로 짚고, 대안을 함께 제시하라. "
-            "단, 공격적인 표현은 금지한다."
+            "불필요한 위로와 포장을 제거하라."
         ),
     },
     "독특함": {
@@ -1269,12 +1499,28 @@ PERSONALITY_CONTRACTS = {
             "정의-특징-예시-결론 고정 구조를 깨고 새로운 흐름으로 설명한다.",
             "장난스럽거나 산만해지지 않는다.",
         ],
+        # extreme 강도 전용 규칙
+        "extreme_rules": [
+            "첫 문장부터 비유나 이미지로 시작한다.",
+            "교과서식 정의-특징-예시-결론 구조를 의도적으로 깨고 서사나 장면감을 활용한다.",
+            "독자가 '아, 이런 방식으로도 볼 수 있구나' 하고 느끼게 한다.",
+            "비유는 기술적 정확성과 직접 연결되어야 한다. 허구의 비유 금지.",
+            "핵심 결론은 반드시 명확하게 포함한다.",
+            "장난스럽거나 산만해지지 않는다.",
+            "일반적으로 말하면, 정의하자면, 다음과 같이 정리됩니다 같은 교과서 출발점 금지.",
+        ],
+        "answer_structure": "이미지/비유(1-2문장) → 실제 개념 매핑 → 기술적 구현 또는 작동 방식 → 한계 또는 주의점",
+        "opening_example": "RAG는 도서관 전체를 트럭에 싣고 오지 않는다. 필요한 책장, 필요한 페이지, 필요한 문단만 꺼내 오는 방식이다.",
+        "banned_phrases": [
+            "일반적으로 말하면", "교과서적으로 정의하면", "정의하자면",
+            "다음과 같이 정리됩니다", "간단히 말씀드리면", "보통 이렇게 설명합니다",
+        ],
         "positive": ["비유", "관점", "마치", "보다", "다르게", "상상"],
         "negative": ["ㅋㅋ", "농담", "아무튼", "대충"],
         "regeneration_instruction": (
             "이전 답변은 독특함이 부족하고 교과서식이다. "
-            "일반적인 설명을 반복하지 말고, 개념 정확성을 유지하면서 "
-            "새로운 비유나 창의적 관점으로 다시 작성하라."
+            "첫 문장부터 비유나 이미지로 시작하고, 개념 정확성을 유지하면서 "
+            "새로운 서사 흐름으로 다시 작성하라."
         ),
     },
     "효율적": {
@@ -1294,12 +1540,29 @@ PERSONALITY_CONTRACTS = {
             "중요한 조건이나 위험 요소는 생략하지 않는다.",
             "장황한 격려, 배경 설명, 역사적 맥락을 최소화한다.",
         ],
+        # extreme 강도 전용 규칙
+        "extreme_rules": [
+            "결론이 첫 문장 안에 나와야 한다. 배경 설명 없음.",
+            "배경 설명이 있다면 1-2줄을 넘지 않는다.",
+            "bullet 또는 번호 목록을 적극 활용한다.",
+            "수식어, 감탄사, 감성 표현을 제거한다.",
+            "실행 가능한 명령어, 수정 위치, 체크리스트를 바로 제시한다.",
+            "천천히 해보면, 함께 해봐요, 도움이 되셨으면 같은 느슨한 표현 금지.",
+            "같은 말을 반복하지 않는다.",
+        ],
+        "answer_structure": "원인(1줄) → 수정 순서(번호 목록) → 확인 방법(1-2줄)",
+        "opening_example": "원인: Spring이 FastAPI timeout을 처리하지 못하고 500 반환. 수정 순서: 1. FastAPI timeout 추가 2. Spring 예외 처리 3. 프론트 finally에서 loading 해제.",
+        "banned_phrases": [
+            "천천히 해보면 됩니다", "함께 해결해봐요", "이해가 가시나요",
+            "도움이 되셨으면", "잘 하셨어요", "걱정하지 마세요",
+            "추가 질문이 있으면 말씀해주세요",
+        ],
         "positive": ["먼저", "순서", "핵심", "우선", "체크", "기준", "1)"],
         "negative": ["부연하자면", "긴 이야기를", "역사적으로", "추가 질문이 있으면"],
         "regeneration_instruction": (
             "이전 답변은 효율적 성격에 비해 장황하거나 핵심이 늦게 나온다. "
-            "결론부터 제시하고, 우선순위와 핵심 기준 중심으로 압축해서 다시 작성하라. "
-            "불필요한 서론과 격려 문구를 제거하라."
+            "첫 문장에 결론을 두고, 번호 목록 중심으로 압축해서 다시 작성하라. "
+            "불필요한 서론, 격려, 감성 문구를 전부 제거하라."
         ),
     },
     "냉소적": {
@@ -1320,12 +1583,30 @@ PERSONALITY_CONTRACTS = {
             "사용자를 비하하거나 조롱하는 말투는 절대 금지한다.",
             "해결책이나 올바른 접근을 반드시 함께 제시한다.",
         ],
-        "positive": ["착각", "위험", "깨진", "실무", "오용", "피상", "문제는"],
+        # extreme 강도 전용 규칙 (냉소적은 더 비판적으로)
+        "extreme_rules": [
+            "첫 문장에서 구조적 결함 또는 흔한 착각을 즉시 지적한다.",
+            "'이건 다중 에이전트가 아니라 단일 응답 구조다', '이 설계면 느릴 수밖에 없다'처럼 직설적으로 표현한다.",
+            "허술한 설계, 이름만 있는 기능, 실제로 작동하지 않는 구조를 공개적으로 분해한다.",
+            "냉소의 대상은 코드, API 구조, 설계 결정, 프롬프트지 사용자 인격이 아니다.",
+            "친절한 격려체 금지. '잘 하셨어요', '도움이 되셨으면', '이해가 가시나요' 같은 표현 없음.",
+            "해결책은 비판보다 짧아도 되지만 반드시 포함한다.",
+            "기술적 근거 없이 조롱만 하면 실패다.",
+        ],
+        "answer_structure": "핵심 결함 지적(1-2문장) → 왜 문제인지 → 수정 방향 → 확인 방법",
+        "opening_example": "지금 구조는 다중 에이전트가 아니라 '첫 번째 에이전트 독백 시스템'에 가깝다. 에이전트 3명을 만들었는데 payload나 렌더링이 1명 기준이면, 당연히 1명만 말한다.",
+        "banned_phrases": [
+            "도움이 되셨으면", "이해가 가시나요", "잘 하셨어요",
+            "걱정하지 마세요", "함께 해결해봐요", "충분히 이해됩니다",
+            "쉽게 설명드릴게요", "천천히 해보면 됩니다",
+        ],
+        "positive": ["착각", "위험", "깨진", "실무", "오용", "피상", "문제는", "결함"],
         "negative": ["멍청", "한심", "바보", "무식", "웃기"],
         "regeneration_instruction": (
-            "이전 답변은 냉소적 성격이 드러나지 않고 너무 중립적이다. "
-            "사용자를 조롱하지 말고, 피상적 통념과 실무 위험을 날카롭게 지적하되 "
-            "해결책을 명확히 제시하는 방식으로 다시 작성하라."
+            "이전 답변은 냉소적 성격이 드러나지 않고 너무 중립적이거나 친절하다. "
+            "첫 문장에서 구조적 결함을 날카롭게 지적하고, "
+            "피상적 통념과 실무 위험을 분해하되 해결책을 명확히 제시하라. "
+            "친절한 격려체는 완전히 제거하라."
         ),
     },
 }
@@ -1429,7 +1710,11 @@ def _run_agents_parallel(
     def _call_one(agent: dict, idx: int):
         t0 = _time.time()
         try:
-            style_rule = get_agent_style_rule(agent["style"], simple_greeting=simple_greeting)
+            style_rule = get_agent_style_rule(
+                agent["style"],
+                simple_greeting=simple_greeting,
+                strength=agent.get("personalityStrength") or "extreme",
+            )
             persona_boundary_rule = get_persona_boundary_rule(
                 agent["style"], user_intent, simple_greeting=simple_greeting
             )
@@ -1437,6 +1722,8 @@ def _run_agents_parallel(
             stage_rule = build_group_study_stage_rule(
                 stage_index=idx, total_agents=total_agents, current_agent_name=agent["name"]
             )
+            # 이전 채팅 로그는 RAG 모듈로 압축 (전체를 그대로 보내지 않음)
+            compressed_history = previous_answers_text  # 이미 format_previous_answers로 제한됨
             prompt = build_group_study_prompt(
                 agent_name=agent["name"],
                 agent_role=agent["role"],
@@ -1452,18 +1739,19 @@ def _run_agents_parallel(
                 user_message=user_message,
                 user_intent=user_intent,
                 user_intent_rule=user_intent_rule,
-                # 병렬 실행 시 chain context 없음 — 각자 독립 답변
-                previous_answers_text=previous_answers_text,
+                previous_answers_text=compressed_history,
                 stage_rule=stage_rule,
             )
-            answer, _ = generate_agent_quality_answer(
+            # 병렬 모드: generate_fast_answer 사용 (LLM 검증 1회 생략 → 1 LLM call)
+            answer = generate_fast_answer(
                 agent_payload=agent,
                 user_message=user_message,
                 extra_context=prompt,
+                max_output_tokens=750,
             )
             elapsed = int((_time.time() - t0) * 1000)
             logger.info("parallel_agent agent=%s elapsed_ms=%d", agent["name"], elapsed)
-            return idx, MultiChatAnswer(agentName=agent["name"], answer=clean_ai_answer(answer))
+            return idx, MultiChatAnswer(agentName=agent["name"], answer=answer)
         except Exception as exc:
             elapsed = int((_time.time() - t0) * 1000)
             logger.error("parallel_agent error agent=%s elapsed_ms=%d err=%s", agent["name"], elapsed, exc)
@@ -2207,7 +2495,7 @@ def get_persona_boundary_rule(
 """
 
 
-def get_agent_style_rule(style: str, simple_greeting: bool = False) -> str:
+def get_agent_style_rule(style: str, simple_greeting: bool = False, strength: str = "extreme") -> str:
     """성격별 답변 스타일 규칙"""
     if simple_greeting:
         return """
@@ -2219,7 +2507,7 @@ def get_agent_style_rule(style: str, simple_greeting: bool = False) -> str:
 """
 
     normalized_style = normalize_agent_style(style) or "전문적"
-    return build_style_prompt(normalized_style, normalized_style)
+    return build_style_prompt(normalized_style, normalized_style, strength=normalize_personality_strength(strength))
 
 
 FEEDBACK_KEYWORDS = [
@@ -2413,6 +2701,8 @@ class AgentCreateRequest(BaseModel):
 
     # 프론트 버튼 선택값: 전문적, 친근함, 솔직함, 독특함, 효율적, 냉소적
     personality: Optional[str] = Field(default=None, max_length=1000)
+    personalityStrength: Optional[str] = Field(default="extreme", max_length=30)
+    personality_strength: Optional[str] = Field(default=None, max_length=30)
 
     # 기존 호환용 자유 입력값. 신규 맞춤형 요구사항은 customInstruction을 사용한다.
     customPersonality: Optional[str] = Field(default=None, max_length=1000)
@@ -2439,6 +2729,7 @@ class AgentResponse(BaseModel):
     role: str
     persona: str
     personality: str = "전문적"
+    personalityStrength: str = "extreme"
     knowledgeLevel: str = "학사 수준"
     customInstruction: str = ""
     tone: str
@@ -2459,6 +2750,8 @@ class AgentChatRequest(BaseModel):
     knowledgeLevel: Optional[str] = Field(default=None, max_length=30)
     knowledge_level: Optional[str] = Field(default=None, max_length=30)
     personality: Optional[str] = Field(default=None, max_length=100)
+    personalityStrength: Optional[str] = Field(default="extreme", max_length=30)
+    personality_strength: Optional[str] = Field(default=None, max_length=30)
     customInstruction: Optional[str] = Field(default=None, max_length=1500)
     custom_instruction: Optional[str] = Field(default=None, max_length=1500)
 
@@ -2535,6 +2828,7 @@ def get_or_create_agent(agent_id: int) -> dict:
             "role": default_role,
             "persona": default_persona,
             "personality": default_style,
+            "personalityStrength": "extreme",
             "knowledgeLevel": default_knowledge_level,
             "customInstruction": default_custom_instruction,
             "tone": default_tone,
@@ -2599,6 +2893,7 @@ def create_agent(request: AgentCreateRequest):
             "customInstruction": agent_custom_instruction,
             "knowledgeLevel": raw_knowledge_level,
             "knowledge_level": raw_knowledge_level,
+            "personalityStrength": request.personalityStrength or request.personality_strength,
             "persona": request.persona or "",
         }
     )
@@ -2613,6 +2908,7 @@ def create_agent(request: AgentCreateRequest):
         "role": agent_role,
         "persona": agent_persona,
         "personality": selected_style,
+        "personalityStrength": normalized_agent_config["canonical_personality_strength"],
         "knowledgeLevel": agent_knowledge_level,
         "customInstruction": agent_custom_instruction,
         "tone": agent_tone,
@@ -2623,8 +2919,6 @@ def create_agent(request: AgentCreateRequest):
     agents[agent_id] = agent
 
     return AgentResponse(**agent)
-
-
 @app.get("/agents", response_model=List[AgentResponse])
 def get_agents():
     """모든 에이전트 조회"""
@@ -2673,6 +2967,8 @@ def chat_with_agent(agent_id: int, request: AgentChatRequest):
         "customInstruction": request_payload.get("customInstruction") or request_payload.get("custom_instruction") or request_payload.get("persona") or agent.get("customInstruction"),
         "custom_instruction": request_payload.get("custom_instruction") or request_payload.get("customInstruction") or request_payload.get("persona") or agent.get("customInstruction"),
         "persona": request_payload.get("persona") or agent.get("persona"),
+        "personalityStrength": request_payload.get("personalityStrength") or request_payload.get("personality_strength") or agent.get("personalityStrength") or "extreme",
+        "personality_strength": request_payload.get("personality_strength") or request_payload.get("personalityStrength") or agent.get("personalityStrength") or "extreme",
     }
     feedback_intent = detect_feedback_intent(user_message)
     logger.info(
@@ -2730,7 +3026,8 @@ def chat_with_agent(agent_id: int, request: AgentChatRequest):
 
     style_rule = get_agent_style_rule(
         selected_style,
-        simple_greeting=simple_greeting
+        simple_greeting=simple_greeting,
+        strength=effective_agent.get("personalityStrength") or "extreme",
     )
 
     knowledge_level = validate_knowledge_level(effective_agent.get("knowledgeLevel"))
@@ -2835,7 +3132,10 @@ def feedback_between_agents(
             goal=reviewer["goal"]
         )
 
-    style_rule = get_agent_style_rule(reviewer_style)
+    style_rule = get_agent_style_rule(
+        reviewer_style,
+        strength=reviewer.get("personalityStrength") or "extreme",
+    )
     reviewer_knowledge_level = validate_knowledge_level(reviewer.get("knowledgeLevel"))
     target_knowledge_level = validate_knowledge_level(target.get("knowledgeLevel"))
     reviewer_knowledge_rule = get_knowledge_level_rule(reviewer_knowledge_level)
@@ -2961,6 +3261,8 @@ class MultiChatAgent(BaseModel):
     custom_instruction: Optional[str] = Field(default=None, max_length=1500)
     persona: Optional[str] = Field(default=None, max_length=1000)
     style: Optional[str] = Field(default=None, max_length=30)
+    personalityStrength: Optional[str] = Field(default="extreme", max_length=30)
+    personality_strength: Optional[str] = Field(default=None, max_length=30)
     knowledgeLevel: Optional[str] = Field(default=None, max_length=30)
     knowledge_level: Optional[str] = Field(default=None, max_length=30)
     tone: Optional[str] = Field(default=None, max_length=100)
@@ -2990,6 +3292,8 @@ class MultiChatRequest(BaseModel):
     target_question: Optional[str] = Field(default=None, max_length=6000)
     feedback_mode: Optional[str] = Field(default="auto", max_length=50)
     personality: Optional[str] = Field(default=None, max_length=1000)
+    personalityStrength: Optional[str] = Field(default="extreme", max_length=30)
+    personality_strength: Optional[str] = Field(default=None, max_length=30)
     style: Optional[str] = Field(default=None, max_length=30)
     tone: Optional[str] = Field(default=None, max_length=100)
     knowledgeLevel: Optional[str] = Field(default=None, max_length=30)
@@ -3014,6 +3318,7 @@ class MultiChatMessage(BaseModel):
     agentName: str
     role: Optional[str] = None
     personality: str
+    personalityStrength: str = "extreme"
     knowledgeLevel: str
     speechType: str
     targetAgentId: Optional[str] = None
@@ -3048,24 +3353,30 @@ def find_previous_answer(
     return None
 
 
-def format_previous_answers(previous_answers: Optional[List[PreviousAgentAnswer]]) -> str:
-    """이전 답변 포맷팅"""
+def format_previous_answers(previous_answers: Optional[List[PreviousAgentAnswer]], question: str = "") -> str:
+    """
+    이전 답변 포맷팅 (RAG 압축 적용).
+    - 최근 8개만 포함
+    - 각 답변은 350자로 제한
+    - 질문이 있으면 관련 있는 오래된 답변도 추가
+    """
     if not previous_answers:
         return "이전 동료 답변 없음"
 
-    lines = []
-
-    for item in previous_answers[-8:]:
-        agent_name = safe_strip(item.agentName, default="알 수 없는 에이전트", max_len=50)
-        answer = safe_strip(item.answer, default="", max_len=1500)
-
-        if answer:
-            lines.append(f"[{agent_name}]\n{answer}")
-
-    if not lines:
-        return "이전 동료 답변 없음"
-
-    return "\n\n".join(lines)
+    # dict 형태로 변환해 RAG compress_history 활용
+    msgs = [
+        {"agentName": pa.agentName, "answer": pa.answer}
+        for pa in previous_answers
+        if pa.answer
+    ]
+    compressed = _rag.compress_history(
+        msgs,
+        question=question or None,
+        max_messages=8,
+        max_chars_per_msg=350,
+        relevance_top_k=2,
+    )
+    return compressed or "이전 동료 답변 없음"
 
 
 def _discussion_transcript_text(messages: List[dict]) -> str:
@@ -3130,11 +3441,12 @@ def build_single_agent_discussion_prompt(
 - 이름: {agent['name']}
 - 역할: {agent['role']}
 - 성격: {agent['style']}
+- 성격 강도: {agent.get('personalityStrength') or 'extreme'}
 - 지식수준: {agent['knowledgeLevel']}
 - 추가 지시: {agent.get('customInstruction') or '없음'}
 
 [성격별 사고 방식]
-{build_style_prompt(agent['style'], agent.get('tone') or agent['style'])}
+{build_style_prompt(agent['style'], agent.get('tone') or agent['style'], strength=agent.get('personalityStrength') or 'extreme')}
 
 [지식수준별 출력 계약]
 {build_level_prompt(agent['knowledgeLevel'])}
@@ -3212,6 +3524,7 @@ def _discussion_message(agent: dict, round_no: int, speech_type: str, content: s
         "agentName": agent["name"],
         "role": agent.get("role") or "",
         "personality": agent["style"],
+        "personalityStrength": agent.get("personalityStrength") or "extreme",
         "knowledgeLevel": agent["knowledgeLevel"],
         "speechType": speech_type,
         "targetAgentId": str(target_agent_id) if target_agent_id is not None else None,
@@ -3636,6 +3949,7 @@ def build_natural_agent_prompt(
 ) -> str:
     level = agent.get("knowledgeLevel") or "학사 수준"
     style = agent.get("style") or agent.get("personality") or "전문적"
+    strength = normalize_personality_strength(agent.get("personalityStrength") or agent.get("personality_strength"))
     custom_instruction = agent.get("customInstruction") or ""
     return f"""너의 이름은 "{agent.get('name') or 'AI 도우미'}"이다.
 
@@ -3645,6 +3959,8 @@ def build_natural_agent_prompt(
 
 [성격 및 답변 전략]
 성격/말투: {style}
+성격 강도: {strength}
+{build_style_prompt(style, agent.get('tone') or style, strength=strength)}
 {natural_personality_strategy(style)}
 
 [지식 수준 전략]
@@ -3856,7 +4172,10 @@ def _agent_discussion_block(agent: dict, index: int) -> str:
 - 이름: {agent['name']}
 - 역할: {agent['role']}
 - 성격/말투: {agent['style']}
+- 성격 강도: {agent.get('personalityStrength') or 'extreme'}
 - 지식수준: {agent['knowledgeLevel']}
+- 성격 계약:
+{build_style_prompt(agent['style'], agent.get('tone') or agent['style'], strength=agent.get('personalityStrength') or 'extreme')}
 - 지식수준 계약:
 {build_level_prompt(agent['knowledgeLevel'])}
 - 사용자 추가 요구사항: {agent.get('customInstruction') or '없음'}
@@ -3877,6 +4196,7 @@ def build_multi_agent_discussion_prompt(
             "name": f"AI 에이전트 {idx}",
             "role": "학습 도우미",
             "style": "전문적",
+            "personalityStrength": "extreme",
             "knowledgeLevel": "학사 수준",
             "customInstruction": "",
         })
@@ -4721,6 +5041,7 @@ def multi_agent_chat(request: MultiChatRequest):
 
     prepared_agents = []
     request_personality = request.personality or request.style or request.tone
+    request_personality_strength = normalize_personality_strength(request.personalityStrength or request.personality_strength)
     request_knowledge_level = request.knowledgeLevel or request.knowledge_level
     request_custom_instruction = request.customInstruction or request.custom_instruction or request.persona
 
@@ -4737,6 +5058,9 @@ def multi_agent_chat(request: MultiChatRequest):
 
         raw_personality_option = agent.personality or agent.style or agent.tone or request_personality
         selected_style, agent_persona = validate_agent_personality(raw_personality_option)
+        agent_personality_strength = normalize_personality_strength(
+            agent.personalityStrength or agent.personality_strength or request_personality_strength
+        )
 
         raw_custom_instruction = (
                 agent.customInstruction
@@ -4766,6 +5090,7 @@ def multi_agent_chat(request: MultiChatRequest):
                 "customInstruction": agent_custom_instruction,
                 "knowledgeLevel": raw_knowledge_level,
                 "knowledge_level": raw_knowledge_level,
+                "personalityStrength": agent_personality_strength,
                 "persona": raw_custom_instruction or "",
             },
             user_message=user_message,
@@ -4792,6 +5117,7 @@ def multi_agent_chat(request: MultiChatRequest):
             "role": agent_role,
             "persona": agent_persona,
             "personality": selected_style,
+            "personalityStrength": normalized_agent_config["canonical_personality_strength"],
             "knowledgeLevel": agent_knowledge_level,
             "customInstruction": agent_custom_instruction,
             "tone": agent_tone,
@@ -4810,7 +5136,8 @@ def multi_agent_chat(request: MultiChatRequest):
     }
 
     previous_answers = request.previousAnswers or []
-    previous_answers_text = format_previous_answers(previous_answers)
+    # RAG 압축: 전체 이전 대화가 아니라 최근 8개 + 관련 대화만 포함
+    previous_answers_text = format_previous_answers(previous_answers, question=user_message)
 
     # ── 특정 에이전트 지칭 감지 (targetAgentId 또는 메시지 분석) ─────────────────
     explicit_target_id = request.targetAgentId
@@ -4828,7 +5155,11 @@ def multi_agent_chat(request: MultiChatRequest):
     # 특정 에이전트 지칭 시: 해당 1명만 응답
     if detected_single_agent is not None:
         agent = detected_single_agent
-        style_rule = get_agent_style_rule(agent["style"], simple_greeting=simple_greeting)
+        style_rule = get_agent_style_rule(
+            agent["style"],
+            simple_greeting=simple_greeting,
+            strength=agent.get("personalityStrength") or "extreme",
+        )
         persona_boundary_rule = get_persona_boundary_rule(agent["style"], user_intent, simple_greeting=simple_greeting)
         knowledge_level_rule = get_knowledge_level_rule(agent["knowledgeLevel"])
         stage_rule = build_group_study_stage_rule(stage_index=0, total_agents=1, current_agent_name=agent["name"])
@@ -4956,7 +5287,8 @@ def multi_agent_chat(request: MultiChatRequest):
 
         reviewer_style_rule = get_agent_style_rule(
             reviewer_agent["style"],
-            simple_greeting=False
+            simple_greeting=False,
+            strength=reviewer_agent.get("personalityStrength") or "extreme",
         )
 
         prompt = build_feedback_prompt(
@@ -5260,7 +5592,13 @@ async def extract_pdf_text(file: UploadFile = File(...)):
 
 @app.post("/api/ai/summary", response_model=SummaryResponse)
 def summarize_document(request: SummaryRequest):
-    text = _contract_text(request.text)
+    full_text = _require_non_empty(request.text, "text")
+    # RAG: 전체 텍스트 대신 균형 샘플링 context 사용 (요약 품질 유지 + 토큰 절약)
+    text = _rag.build_summary_context(full_text, max_chars=CONTRACT_MAX_TEXT_CHARS)
+    logger.info(
+        "summary rag full_len=%d context_len=%d",
+        len(full_text), len(text),
+    )
     prompt = f"""너는 StudyBridge의 문서 요약 AI다.
 아래 문서를 한국어로 상세하게 요약하고 JSON만 반환해라.
 문서에 없는 내용을 임의로 추가하거나 추측하지 마라. 반드시 문서 내용만 근거로 작성해라.
@@ -5303,7 +5641,10 @@ def summarize_document(request: SummaryRequest):
 
 @app.post("/api/ai/quiz", response_model=QuizResponse)
 def create_quiz(request: QuizRequest):
-    text = _contract_text(request.text)
+    full_text = _require_non_empty(request.text, "text")
+    # RAG: 퀴즈 출제용 context - 균등 샘플링 (문서 전체 범위 커버)
+    text = _rag.build_summary_context(full_text, max_chars=CONTRACT_MAX_TEXT_CHARS, top_k=12)
+    logger.info("quiz rag full_len=%d context_len=%d", len(full_text), len(text))
     difficulty = _require_non_empty(request.difficulty, "difficulty")
     if difficulty not in ALLOWED_QUIZ_DIFFICULTIES:
         raise HTTPException(status_code=400, detail="difficulty는 쉬움/보통/어려움 중 하나여야 합니다.")
@@ -5412,10 +5753,10 @@ def create_feedback(request: FeedbackRequest):
 
 @app.post("/api/ai/question", response_model=QuestionResponse)
 def answer_question(request: QuestionRequest):
-    text = _contract_text(request.text)
+    full_text = _require_non_empty(request.text, "text")
     question = _require_non_empty(request.question, "question")
 
-    # 1단계: 완전히 무관한 잡담 차단 (날씨, 주식, 맛집 등)
+    # 1단계: 완전히 무관한 잡담 차단
     if _is_clearly_off_topic(question):
         return QuestionResponse(
             answer="이 채팅은 자료보관함 PDF 기반 질문만 지원합니다. "
@@ -5423,14 +5764,35 @@ def answer_question(request: QuestionRequest):
                    "일반 학습 질문은 학습메이트를 이용해주세요."
         )
 
-    # 2단계: 요약/전체내용 질문이면 PDF 전체 맥락 사용
-    use_full_context = _is_summary_intent(question) or len(text) < 3000
-    if use_full_context:
-        context = text[:CONTRACT_MAX_TEXT_CHARS]
+    t0 = _time_module.time()
+
+    # 2단계: RAG - 질문과 관련 있는 청크만 선택
+    if _is_summary_intent(question):
+        # 요약 의도: 균등 샘플링 (전체 흐름 파악 필요)
+        context = _rag.build_summary_context(full_text, max_chars=_rag.MAX_CONTEXT_CHARS)
+        chunk_count = -1  # 샘플링 모드
+    elif len(full_text) < 3000:
+        # 짧은 문서: 그대로 사용
+        context = full_text
+        chunk_count = 1
     else:
-        # 3단계: 일반 질문은 관련 청크만 추출
-        chunks = _retrieve_chunks(text, question, top_k=7)
-        context = "\n\n---\n\n".join(chunks)[:CONTRACT_MAX_TEXT_CHARS]
+        # 일반 질문: top-k 청크 검색
+        context, chunk_count = _rag.build_context(
+            full_text, question, top_k=_rag.DEFAULT_TOP_K,
+            max_chars=_rag.MAX_CONTEXT_CHARS,
+        )
+
+    elapsed_rag = int((_time_module.time() - t0) * 1000)
+    logger.info(
+        "question_rag full_len=%d context_len=%d chunk_count=%s elapsed_ms=%d",
+        len(full_text), len(context), chunk_count, elapsed_rag,
+    )
+
+    if not context:
+        return QuestionResponse(
+            answer="제공된 PDF 자료에서는 해당 내용을 확인할 수 없습니다. "
+                   "자료 안에 있는 다른 개념으로 다시 질문해주세요."
+        )
 
     prompt = f"""너는 자료보관함에 업로드된 PDF 전용 학습 도우미다.
 사용자가 현재 보고 있는 PDF 문서에 대해 질문했다. 아래 PDF 관련 내용을 바탕으로 답변해라.
@@ -5438,10 +5800,10 @@ def answer_question(request: QuestionRequest):
 답변 원칙:
 1. 아래 제공된 PDF 내용 안에서만 답변해라. 외부 지식 추가 금지.
 2. "이 pdf가 뭔 이야기 해", "요약해줘", "핵심 알려줘", "뭔 내용이야" 같은 질문은 PDF 전체 개요를 설명하는 질문이므로 제공된 PDF 내용을 바탕으로 충분히 설명해라.
-3. 특정 개념("Permission이 뭐야?", "런타임 권한은?") 질문은 PDF에서 해당 개념을 찾아 설명해라.
+3. 특정 개념 질문은 PDF에서 해당 개념을 찾아 설명해라.
 4. PDF에서 관련 내용을 찾을 수 없으면: "제공된 PDF 자료에서는 해당 내용을 확인할 수 없습니다. 자료 안에 있는 다른 개념으로 다시 질문해주세요."
-5. 오늘 날씨, 주식, 음식, 연애 같이 학습 자료와 완전히 무관한 잡담이면: "이 채팅은 자료보관함 PDF 기반 질문만 지원합니다. 일반 학습 질문은 학습메이트를 이용해주세요."
-6. 답변은 핵심 설명 + PDF 근거 + 이해를 돕는 추가 설명 순으로 충분히 작성해라. 너무 짧게 끝내지 마라.
+5. 오늘 날씨, 주식, 음식, 연애 같이 학습 자료와 완전히 무관한 잡담이면 학습메이트 이용을 안내해라.
+6. 답변은 핵심 설명 + PDF 근거 + 이해를 돕는 추가 설명 순으로 충분히 작성해라.
 7. 추측 금지. PDF 내용에 없는 내용은 명시적으로 "PDF에서 확인되지 않음"이라고 표시해라.
 
 PDF 내용 (관련 섹션):
@@ -5450,4 +5812,4 @@ PDF 내용 (관련 섹션):
 사용자 질문:
 {question}"""
 
-    return QuestionResponse(answer=_call_openai_contract(prompt, max_output_tokens=1800))
+    return QuestionResponse(answer=_call_openai_contract(prompt, max_output_tokens=1500))

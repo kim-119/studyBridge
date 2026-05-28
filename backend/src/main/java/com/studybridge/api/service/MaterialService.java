@@ -6,12 +6,14 @@ import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialType;
 import com.studybridge.api.repository.MaterialRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -108,7 +110,15 @@ public class MaterialService {
 
     public List<MaterialDTO> getUserMaterials(Long userId) {
         return materialRepository.findByUserIdOrderByUploadedAtDesc(userId).stream()
-                .map(this::convertToDTO)
+                .map(material -> {
+                    try {
+                        return convertToDTO(material);
+                    } catch (Exception e) {
+                        // S3 또는 기타 오류가 개별 자료에서 발생해도 목록 전체를 실패시키지 않는다
+                        log.warn("getUserMaterials: convertToDTO failed for materialId={} err={}", material.getMaterialId(), e.getMessage());
+                        return convertToDTOWithoutS3(material);
+                    }
+                })
                 .collect(Collectors.toList());
     }
 
@@ -125,6 +135,15 @@ public class MaterialService {
     }
 
     private MaterialDTO convertToDTO(Material material) {
+        String presignedUrl = null;
+        if (material.getS3FileUrl() != null && !material.getS3FileUrl().isBlank()) {
+            try {
+                presignedUrl = s3Service.getPresignedUrl(material.getS3FileUrl());
+            } catch (Exception e) {
+                // S3 Presigned URL 생성 실패는 해당 자료에만 영향을 줌 (목록 전체 실패 방지)
+                log.warn("S3 presignedUrl 생성 실패 materialId={}: {}", material.getMaterialId(), e.getMessage());
+            }
+        }
         return MaterialDTO.builder()
                 .materialId(material.getMaterialId())
                 .title(material.getTitle())
@@ -136,7 +155,25 @@ public class MaterialService {
                 .originalFileName(material.getOriginalFileName())
                 .fileSize(material.getFileSize())
                 .extractionStatus(material.getExtractionStatus())
-                .s3PresignedUrl(material.getS3FileUrl() != null ? generatePresignedUrl(material.getS3FileUrl()) : null)
+                .s3PresignedUrl(presignedUrl)
+                .uploadedAt(material.getUploadedAt())
+                .build();
+    }
+
+    // S3 없이 기본 정보만 반환 (fallback)
+    private MaterialDTO convertToDTOWithoutS3(Material material) {
+        return MaterialDTO.builder()
+                .materialId(material.getMaterialId())
+                .title(material.getTitle())
+                .materialType(material.getMaterialType())
+                .keywords(material.getKeywords())
+                .studyDate(material.getStudyDate())
+                .learningContent(material.getLearningContent())
+                .nextPlan(material.getNextPlan())
+                .originalFileName(material.getOriginalFileName())
+                .fileSize(material.getFileSize())
+                .extractionStatus(material.getExtractionStatus())
+                .s3PresignedUrl(null)
                 .uploadedAt(material.getUploadedAt())
                 .build();
     }

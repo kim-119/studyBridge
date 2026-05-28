@@ -10,10 +10,12 @@ logger = logging.getLogger("studybridge.agent_quality")
 
 ALLOWED_KNOWLEDGE_LEVELS = ["입문 수준", "학사 수준", "석사 수준", "박사 수준", "전문가 수준"]
 ALLOWED_PERSONALITIES = ["전문적", "친근함", "솔직함", "독특함", "효율적", "냉소적"]
+ALLOWED_PERSONALITY_STRENGTHS = ["low", "medium", "high", "extreme"]
 
 DEFAULT_KNOWLEDGE_LEVEL = "학사 수준"
 DEFAULT_PERSONALITY = "전문적"
 DEFAULT_TONE = "전문적"
+DEFAULT_PERSONALITY_STRENGTH = "extreme"
 
 KNOWLEDGE_ALIASES = {
     "입문 수준": "입문 수준",
@@ -312,6 +314,104 @@ def normalize_personality_tone(agent: dict) -> tuple[str, str, list[str]]:
     return chosen, chosen, warnings
 
 
+def normalize_personality_strength(value: Any) -> str:
+    text = _normalize_space(str(value or "")).lower()
+    aliases = {
+        "낮음": "low",
+        "약함": "low",
+        "low": "low",
+        "보통": "medium",
+        "medium": "medium",
+        "normal": "medium",
+        "강함": "high",
+        "high": "high",
+        "매우 강함": "extreme",
+        "매우강함": "extreme",
+        "극강": "extreme",
+        "extreme": "extreme",
+    }
+    return aliases.get(text, DEFAULT_PERSONALITY_STRENGTH)
+
+
+def build_personality_style_contract(personality: str, strength: str = DEFAULT_PERSONALITY_STRENGTH) -> str:
+    normalized_strength = normalize_personality_strength(strength)
+    contracts = {
+        "전문적": {
+            "tone": "공적이고 단정한 문체. 감탄사, 농담, 과한 친근 표현 제거.",
+            "rhythm": "중간 길이의 정확한 문장. 기준과 근거를 먼저 제시.",
+            "critique": "판단은 권장, 비권장, 위험, 보류처럼 명확히 분류.",
+            "structure": "개념 정의 → 원인 분석 → 비교 → 해결책 → 검증 기준",
+            "allowed": "전문 용어, 조건, 한계, 검증 기준",
+            "banned": "쉽게 말하면요, 걱정하지 마세요, 장황한 위로, 불필요한 감정 표현",
+            "example": "이 문제의 본질은 단순 문법 오류가 아니라 요청 스키마와 응답 스키마의 불일치다.",
+        },
+        "친근함": {
+            "tone": "편안한 대화체. 초보자가 막히는 지점을 먼저 짚고 부드럽게 안내.",
+            "rhythm": "짧고 쉬운 문장과 단계적 설명. 필요한 만큼만 격려.",
+            "critique": "차갑게 단정하지 말고 문제 지점과 다음 행동을 함께 설명.",
+            "structure": "공감 1문장 → 쉬운 원인 설명 → 단계별 해결책 → 다음 행동",
+            "allowed": "이런 상황 흔해요, 먼저, 쉽게 보면, 짧은 격려",
+            "banned": "딱딱한 보고서체, 근거 없는 칭찬 남발, 차가운 비판",
+            "example": "지금 상황은 꽤 흔한 케이스예요. 저장 로직과 AI 분석이 같이 묶이면 버튼이 오래 멈출 수 있어요.",
+        },
+        "솔직함": {
+            "tone": "직설적이고 객관적인 문체. 문제를 돌려 말하지 않음.",
+            "rhythm": "첫 문장에 문제 판단. 이후 원인과 수정 방향을 바로 제시.",
+            "critique": "잘못된 설계, 비효율 코드, 위험한 가정을 명확히 지적하되 사람을 공격하지 않음.",
+            "structure": "문제 직접 지적 → 원인 설명 → 수정 방향 → 확인 방법",
+            "allowed": "이건 틀렸다, 이 구조는 유지보수에 불리하다, 현재 병목은 여기다",
+            "banned": "욕설, 사용자 능력 비하, 근거 없는 단정, 해결책 없는 비판",
+            "example": "이건 프론트 문제가 아니다. Spring이 FastAPI 응답을 기다리다 터지는 구조다.",
+        },
+        "독특함": {
+            "tone": "비유와 장면감이 있는 창의적 문체. 결론은 흐리지 않음.",
+            "rhythm": "이미지/비유로 시작한 뒤 실제 개념과 기술 설명으로 연결.",
+            "critique": "복잡한 개념을 기억에 남는 구조로 바꾸되 실제 코드에 없는 기능을 상상하지 않음.",
+            "structure": "이미지/비유 → 실제 개념 매핑 → 작동 방식 → 한계",
+            "allowed": "마치, 도서관, 지도, 책장, 비유, 관점 전환",
+            "banned": "의미 없는 농담, 과장된 허풍, 본질을 흐리는 비유",
+            "example": "RAG는 도서관 전체를 트럭에 싣지 않는다. 필요한 책장과 문단만 꺼내 온다.",
+        },
+        "효율적": {
+            "tone": "간결하고 꾸밈없는 문체. 결론부터 말함.",
+            "rhythm": "짧은 문장, bullet/번호 목록, 실행 항목 중심.",
+            "critique": "우선순위와 수정 위치를 바로 제시. 배경 설명은 최소화.",
+            "structure": "원인 1줄 → 수정 순서 → 확인 방법",
+            "allowed": "원인:, 수정 순서:, 체크:, 먼저, 우선",
+            "banned": "장황한 설명, 감성 문장, 같은 말 반복, 천천히 해보면 됩니다",
+            "example": "원인: Spring이 FastAPI timeout을 처리하지 못하고 500을 반환함.",
+        },
+        "냉소적": {
+            "tone": "비판적이고 까칠한 문체. 허술한 설계를 숨기지 않음.",
+            "rhythm": "첫 문장에 구조적 결함을 날카롭게 지적하고, 바로 근거와 수정 방향으로 이동.",
+            "critique": "코드, 설계, API 구조, 프롬프트, 로직을 냉소적으로 비판. 사용자 인격 공격 금지.",
+            "structure": "핵심 결함 지적 → 왜 문제인지 → 수정 방향 → 확인 방법",
+            "allowed": "이건 다중 에이전트가 아니라 단일 응답 구조다, 이름만 기능이다, 이 구조면 느릴 수밖에 없다",
+            "banned": "욕설, 인신공격, 사용자 비하, 근거 없는 조롱, 해결책 없는 비꼼",
+            "example": "지금 구조는 다중 에이전트가 아니라 첫 번째 에이전트 독백 시스템에 가깝다.",
+        },
+    }
+    contract = contracts.get(personality, contracts[DEFAULT_PERSONALITY])
+    strength_desc = {
+        "low": "말투에만 약하게 반영한다.",
+        "medium": "설명 방식과 어휘에 반영한다.",
+        "high": "답변 구조, 어휘, 문장 리듬에 분명히 반영한다.",
+        "extreme": "답변 구조, 판단 방식, 비판 강도, 표현 방식까지 강하게 반영한다.",
+    }[normalized_strength]
+    return f"""[성격 적용 정책]
+선택 성격: {personality}
+성격 강도: {normalized_strength}
+강도 의미: {strength_desc}
+말투: {contract['tone']}
+문장 리듬: {contract['rhythm']}
+비판 강도: {contract['critique']}
+설명 구조: {contract['structure']}
+허용 표현/방식: {contract['allowed']}
+금지 표현/방식: {contract['banned']}
+답변 예시: {contract['example']}
+공통 안전선: 어떤 강도에서도 사용자 비하, 욕설, 인신공격, 혐오 표현, 허위 사실, 근거 없는 조롱은 금지한다.""".strip()
+
+
 def normalize_agent_config(agent: dict, user_message: str = "") -> dict:
     warnings: list[str] = []
     persona = str(agent.get("persona") or "")
@@ -321,6 +421,11 @@ def normalize_agent_config(agent: dict, user_message: str = "") -> dict:
     warnings.extend(level_warnings)
     personality, tone, tone_warnings = normalize_personality_tone(agent)
     warnings.extend(tone_warnings)
+    personality_strength = normalize_personality_strength(
+        agent.get("personalityStrength")
+        or agent.get("personality_strength")
+        or _extract_tag_value(persona, "성격강도")
+    )
     custom_instruction = _merge_custom_instruction(agent)
     discipline = infer_discipline(user_message, {**agent, "customInstruction": custom_instruction})
     policy = get_knowledge_depth_policy(knowledge_level, discipline)
@@ -332,6 +437,7 @@ def normalize_agent_config(agent: dict, user_message: str = "") -> dict:
         "persona": persona.strip(),
         "customInstruction": custom_instruction,
         "canonical_personality": personality,
+        "canonical_personality_strength": personality_strength,
         "canonical_tone": tone,
         "canonical_knowledge_level": knowledge_level,
         "discipline": discipline,
@@ -355,8 +461,13 @@ def build_agent_system_prompt(agent_config: dict) -> str:
 [성격]
 {agent_config['canonical_personality']}
 
+[성격 강도]
+{agent_config['canonical_personality_strength']}
+
 [말투]
 {agent_config['canonical_tone']}
+
+{build_personality_style_contract(agent_config['canonical_personality'], agent_config['canonical_personality_strength'])}
 
 [지식수준]
 {agent_config['canonical_knowledge_level']}
@@ -397,6 +508,7 @@ def validate_prompt_contains_agent_constraints(prompt: str, agent_config: dict) 
         ("지식수준", agent_config["canonical_knowledge_level"]),
         ("학문 분야", agent_config["discipline"]),
         ("성격", agent_config["canonical_personality"]),
+        ("성격 강도", agent_config["canonical_personality_strength"]),
         ("말투", agent_config["canonical_tone"]),
         ("depth policy", agent_config["knowledge_depth_policy"]["depth_goal"]),
     ]
@@ -425,7 +537,7 @@ def validate_answer_quality(answer: str, agent_config: dict, user_message: str) 
         score += 0.15
     else:
         issues.append("학문 분야별 보정 관점 부족")
-    if _personality_signal_ok(text, agent_config["canonical_personality"]):
+    if _personality_signal_ok(text, agent_config["canonical_personality"], agent_config.get("canonical_personality_strength", DEFAULT_PERSONALITY_STRENGTH)):
         score += 0.1
     else:
         issues.append("성격/말투 반영 약함")
@@ -561,9 +673,23 @@ def _normalize_space(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
-def _personality_signal_ok(answer: str, personality: str) -> bool:
+def _personality_signal_ok(answer: str, personality: str, strength: str = DEFAULT_PERSONALITY_STRENGTH) -> bool:
+    if normalize_personality_strength(strength) not in {"high", "extreme"}:
+        return True
+    if _contains_any(answer, ["멍청", "한심", "바보", "무식", "씨발", "시발", "병신"]):
+        return False
     if personality == "효율적":
         return len(answer) < 2500
+    if personality == "냉소적":
+        return _contains_any(answer, ["구조", "문제", "결함", "위험", "느릴", "단일", "이름만", "수정", "해결"])
+    if personality == "솔직함":
+        return _contains_any(answer, ["문제", "틀렸", "잘못", "위험", "대안", "수정"])
+    if personality == "전문적":
+        return _contains_any(answer, ["정의", "원인", "구조", "조건", "검증", "근거", "기준"])
+    if personality == "독특함":
+        return _contains_any(answer, ["비유", "마치", "도서관", "지도", "책장", "장면", "그림"])
+    if personality == "친근함":
+        return _contains_any(answer, ["쉽게", "먼저", "예를 들면", "괜찮", "흔한", "해볼"])
     return True
 
 

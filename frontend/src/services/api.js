@@ -59,6 +59,8 @@ const normalizeAgentRoomPayload = (agentData) => {
         tone: agentData?.tone || agentData?.personality || '전문적',
         goal: agentData?.goal || '사용자의 학습을 돕는다',
         personality: agentData?.personality,
+        personalityStrength: agentData?.personalityStrength || agentData?.personality_strength || 'extreme',
+        personality_strength: agentData?.personality_strength || agentData?.personalityStrength || 'extreme',
         style: agentData?.style || agentData?.personality,
         knowledgeLevel: agentData?.knowledgeLevel,
         knowledge_level: agentData?.knowledge_level || agentData?.knowledgeLevel,

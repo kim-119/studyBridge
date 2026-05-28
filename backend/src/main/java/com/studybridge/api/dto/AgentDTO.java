@@ -52,6 +52,8 @@ public class AgentDTO {
         private Long agentId;
         private Long roomId;
         private String personality;
+        private String personalityStrength;
+        private String personality_strength;
         private String style;
         private String tone;
         private String knowledgeLevel;

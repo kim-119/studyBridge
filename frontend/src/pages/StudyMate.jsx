@@ -4,6 +4,17 @@ import { agentService } from '../services/api';
 import { AlertCircle, Bot, Plus, Send, Sparkles, Trash2, X, Info } from 'lucide-react';
 
 const PERSONALITY_OPTIONS = ['전문적', '친근함', '솔직함', '독특함', '효율적', '냉소적'];
+const PERSONALITY_STRENGTH_OPTIONS = [
+  { value: 'medium', label: '보통' },
+  { value: 'high', label: '강함' },
+  { value: 'extreme', label: '매우 강함' },
+];
+const PERSONALITY_STRENGTH_LABELS = {
+  low: '낮음',
+  medium: '보통',
+  high: '강함',
+  extreme: '매우 강함',
+};
 const PERSONALITY_DESCRIPTIONS = {
   '전문적': '정제되어 있고 정확함',
   '친근함': '따뜻하고 수다스러움',
@@ -18,6 +29,7 @@ const DEFAULT_AGENT = {
   name: '',
   role: '',
   personality: '전문적',
+  personalityStrength: 'extreme',
   knowledgeLevel: '학사 수준',
   customInstruction: '',
   goal: '사용자의 학습을 돕는다'
@@ -45,6 +57,18 @@ const getAgentPersonality = (agent) => {
     || '전문적';
 };
 
+const getAgentPersonalityStrength = (agent) => {
+  const raw = agent?.personalityStrength
+    || agent?.personality_strength
+    || parsePersonaTag(agent?.persona, '성격강도')
+    || 'extreme';
+  return ['low', 'medium', 'high', 'extreme'].includes(raw) ? raw : 'extreme';
+};
+
+const getPersonalityStrengthLabel = (strength) => (
+  PERSONALITY_STRENGTH_LABELS[strength] || PERSONALITY_STRENGTH_LABELS.extreme
+);
+
 const sanitizeCustomInstruction = (value) => {
   return String(value || '')
     .replace(/\[[^\]]*지식수준[^\]]*\]/gi, '')
@@ -64,6 +88,7 @@ const buildDiscussionAgentsPayload = (selectedAgent) => {
 
   return sourceAgents.map((agent, index) => {
     const personality = getAgentPersonality(agent);
+    const personalityStrength = getAgentPersonalityStrength(agent);
     const knowledgeLevel = getAgentKnowledgeLevel(agent);
     const customInstruction = sanitizeCustomInstruction(
       agent?.customInstruction || agent?.custom_instruction || agent?.persona || ''
@@ -74,6 +99,8 @@ const buildDiscussionAgentsPayload = (selectedAgent) => {
       name: agent?.name || `AI 도우미 ${index + 1}`,
       role: agent?.role || 'AI 학습 도우미',
       personality,
+      personalityStrength,
+      personality_strength: personalityStrength,
       style: personality,
       tone: personality,
       knowledgeLevel,
@@ -156,6 +183,9 @@ const getAgentStyleTheme = (personality) => {
 
 const buildCanonicalAgentPayload = (agent) => {
   const personality = PERSONALITY_OPTIONS.includes(agent.personality) ? agent.personality : '전문적';
+  const personalityStrength = ['low', 'medium', 'high', 'extreme'].includes(agent.personalityStrength)
+    ? agent.personalityStrength
+    : 'extreme';
   const knowledgeLevel = KNOWLEDGE_LEVEL_OPTIONS.includes(agent.knowledgeLevel) ? agent.knowledgeLevel : '학사 수준';
   const customInstruction = String(agent.customInstruction || '').trim();
   const goal = String(agent.goal || '사용자의 학습을 돕는다').trim();
@@ -165,6 +195,8 @@ const buildCanonicalAgentPayload = (agent) => {
     name: String(agent.name || '').trim(),
     role: String(agent.role || '').trim(),
     personality,
+    personalityStrength,
+    personality_strength: personalityStrength,
     style: personality,
     tone: personality,
     knowledgeLevel,
@@ -172,12 +204,13 @@ const buildCanonicalAgentPayload = (agent) => {
     goal,
     customInstruction,
     custom_instruction: customInstruction,
-    persona: `[지식수준: ${knowledgeLevel}] [성격: ${personality}] ${personaBody}`
+    persona: `[지식수준: ${knowledgeLevel}] [성격: ${personality}] [성격강도: ${personalityStrength}] ${personaBody}`
   };
 };
 
 const buildChatAgentSettingsPayload = (selectedAgent, inputMsg, agentId) => {
   const personality = getAgentPersonality(selectedAgent);
+  const personalityStrength = getAgentPersonalityStrength(selectedAgent);
   const knowledgeLevel = getAgentKnowledgeLevel(selectedAgent);
   const customInstruction = sanitizeCustomInstruction(
     selectedAgent?.customInstruction
@@ -199,6 +232,8 @@ const buildChatAgentSettingsPayload = (selectedAgent, inputMsg, agentId) => {
     showFinalSynthesis: false,
     agents: discussionAgents,
     personality,
+    personalityStrength,
+    personality_strength: personalityStrength,
     style: personality,
     tone: personality,
     knowledgeLevel,
@@ -206,7 +241,7 @@ const buildChatAgentSettingsPayload = (selectedAgent, inputMsg, agentId) => {
     customInstruction,
     custom_instruction: customInstruction,
     persona: selectedAgent?.persona
-      || `[지식수준: ${knowledgeLevel}] [성격: ${personality}] ${customInstruction}`,
+      || `[지식수준: ${knowledgeLevel}] [성격: ${personality}] [성격강도: ${personalityStrength}] ${customInstruction}`,
   };
 };
 
@@ -461,7 +496,20 @@ export default function StudyMate() {
       console.debug('[StudyMate] chat response', res);
 
       if (selectedAgentIdRef.current === agentId) {
-        if (res.messages && Array.isArray(res.messages)) {
+        // 200이지만 errorMessage가 있는 경우 (FastAPI/timeout 오류를 500 대신 200으로 반환)
+        if (res.errorMessage || res.success === false) {
+          setChatHistory((prev) => [
+            ...prev,
+            {
+              id: `error-${Date.now()}`,
+              content: `오류: ${res.errorMessage || 'AI 응답을 받지 못했습니다.'}`,
+              sender: 'AI',
+              senderName: '시스템',
+              isError: true,
+              createdAt: new Date().toISOString(),
+            },
+          ]);
+        } else if (res.messages && Array.isArray(res.messages)) {
           const newMsgs = res.messages.map((m) => ({
             id: `${m.round}-${m.agentId}-${Date.now()}-${Math.random()}`,
             content: m.content,
@@ -472,6 +520,7 @@ export default function StudyMate() {
             agentName: m.agentName,
             role: m.role,
             personality: m.personality,
+            personalityStrength: m.personalityStrength,
             knowledgeLevel: m.knowledgeLevel,
             round: m.round,
             speechType: m.speechType,
@@ -513,10 +562,25 @@ export default function StudyMate() {
       }
     } catch (err) {
       console.error('메시지 전송 실패:', err);
-      alert('메시지 전송에 실패했습니다.');
+      const errMsg = err?.response?.data?.errorMessage
+        || err?.response?.data?.message
+        || err?.message
+        || '메시지 전송에 실패했습니다. 잠시 후 다시 시도해주세요.';
       if (selectedAgentIdRef.current === agentId) {
-        setChatHistory((prev) => prev.filter((m) => m.id !== userMsg.id));
+        // alert() 대신 채팅창 안에 에러 카드 표시
+        setChatHistory((prev) => [
+          ...prev,
+          {
+            id: `error-${Date.now()}`,
+            content: `오류: ${errMsg}`,
+            sender: 'AI',
+            senderName: '시스템',
+            isError: true,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
       }
+      // 실패한 입력은 입력창에 복원
       setMessage(inputMsg);
     } finally {
       setTypingRoomId(null);
@@ -585,6 +649,7 @@ export default function StudyMate() {
                 const avatarColor = getAvatarColor(index);
                 const knowledgeLevel = getAgentKnowledgeLevel(agent);
                 const personality = getAgentPersonality(agent);
+                const personalityStrength = getAgentPersonalityStrength(agent);
 
                 return (
                   <div
@@ -625,13 +690,18 @@ export default function StudyMate() {
                       <div style={{ marginBottom: '6px', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
                         {agent.agents && agent.agents.length > 0 ? (
                           agent.agents.map((ag, idx) => (
-                            <span key={idx} className="tag">#{ag.name}</span>
+                            <React.Fragment key={idx}>
+                              <span className="tag">#{ag.name}</span>
+                              <span className="tag">#{getAgentPersonality(ag)}</span>
+                              <span className="tag">#{getPersonalityStrengthLabel(getAgentPersonalityStrength(ag))}</span>
+                            </React.Fragment>
                           ))
                         ) : (
                           <>
                             <span className="tag">#{agent.role}</span>
                             <span className="tag">#{knowledgeLevel}</span>
                             <span className="tag">#{personality}</span>
+                            <span className="tag">#{getPersonalityStrengthLabel(personalityStrength)}</span>
                           </>
                         )}
                       </div>
@@ -752,6 +822,7 @@ export default function StudyMate() {
                       accent: '#4B5563'
                     };
                     let agentPersonality = '';
+                    let agentPersonalityStrength = '';
                     let agentRole = '';
 
                     if (!isUser && selectedAgent && selectedAgent.agents) {
@@ -760,12 +831,14 @@ export default function StudyMate() {
                       );
                       if (matchedAgent) {
                         agentPersonality = getAgentPersonality(matchedAgent);
+                        agentPersonalityStrength = getAgentPersonalityStrength(matchedAgent);
                         agentTheme = getAgentStyleTheme(agentPersonality);
                         agentRole = matchedAgent.role;
                       }
                     }
                     if (!agentPersonality && msg.personality) {
                       agentPersonality = msg.personality;
+                      agentPersonalityStrength = msg.personalityStrength || agentPersonalityStrength;
                       agentTheme = getAgentStyleTheme(agentPersonality);
                     }
 
@@ -815,6 +888,20 @@ export default function StudyMate() {
                               }}
                             >
                               {agentPersonality}
+                            </span>
+                          )}
+                          {!isUser && agentPersonalityStrength && (
+                            <span
+                              style={{
+                                fontSize: '9px',
+                                padding: '1px 5px',
+                                borderRadius: '4px',
+                                backgroundColor: '#FEF3C7',
+                                color: '#92400E',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              {getPersonalityStrengthLabel(agentPersonalityStrength)}
                             </span>
                           )}
                           {!isUser && msg.knowledgeLevel && (
@@ -956,6 +1043,7 @@ export default function StudyMate() {
                                 name: '김민성',
                                 role: '명문대 교수',
                                 personality: '전문적',
+                                personalityStrength: 'extreme',
                                 knowledgeLevel: '박사 수준'
                               };
                               setCreatedAgents(list);
@@ -982,6 +1070,7 @@ export default function StudyMate() {
                                 name: '둘리',
                                 role: '친한친구',
                                 personality: '친근함',
+                                personalityStrength: 'extreme',
                                 knowledgeLevel: '입문 수준'
                               };
                               setCreatedAgents(list);
@@ -1008,6 +1097,7 @@ export default function StudyMate() {
                                 name: '장동탁',
                                 role: '4차원 강사',
                                 personality: '독특함',
+                                personalityStrength: 'extreme',
                                 knowledgeLevel: '전문가 수준'
                               };
                               setCreatedAgents(list);
@@ -1034,6 +1124,7 @@ export default function StudyMate() {
                                 name: '김영환',
                                 role: '까칠한 스승',
                                 personality: '냉소적',
+                                personalityStrength: 'extreme',
                                 knowledgeLevel: '학사 수준'
                               };
                               setCreatedAgents(list);
@@ -1111,7 +1202,7 @@ export default function StudyMate() {
                       </div>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
                       <div>
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>성격/말투</label>
                         <select
@@ -1127,6 +1218,22 @@ export default function StudyMate() {
                             <option key={option} value={option}>
                               {option} / {PERSONALITY_DESCRIPTIONS[option] || option}
                             </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>성격 강도</label>
+                        <select
+                          className="input-field"
+                          value={agent.personalityStrength || 'extreme'}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].personalityStrength = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                        >
+                          {PERSONALITY_STRENGTH_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
                           ))}
                         </select>
                       </div>
@@ -1254,6 +1361,7 @@ export default function StudyMate() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 {(selectedAgent.agents && selectedAgent.agents.length > 0 ? selectedAgent.agents : [selectedAgent]).map((ag, idx) => {
                   const agPersonality = getAgentPersonality(ag);
+                  const agPersonalityStrength = getAgentPersonalityStrength(ag);
                   const agTheme = getAgentStyleTheme(agPersonality);
                   const agKnowledge = getAgentKnowledgeLevel(ag);
 
@@ -1317,6 +1425,18 @@ export default function StudyMate() {
                             }}
                           >
                             {agPersonality}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              padding: '2px 8px',
+                              borderRadius: '12px',
+                              backgroundColor: '#FEF3C7',
+                              color: '#92400E',
+                              fontWeight: '600'
+                            }}
+                          >
+                            강도: {getPersonalityStrengthLabel(agPersonalityStrength)}
                           </span>
                         </div>
                       </div>

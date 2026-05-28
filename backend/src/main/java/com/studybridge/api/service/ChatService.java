@@ -61,6 +61,10 @@ public class ChatService {
 
                 String requestKnowledgeLevel = firstNonBlank(request.getKnowledgeLevel(), request.getKnowledge_level());
                 String requestPersonality = firstNonBlank(request.getPersonality(), request.getStyle(), request.getTone());
+                String requestPersonalityStrength = firstNonBlank(
+                                request.getPersonalityStrength(),
+                                request.getPersonality_strength(),
+                                "extreme");
                 String requestCustomInstruction = firstNonBlank(
                                 request.getCustomInstruction(),
                                 request.getCustom_instruction(),
@@ -98,6 +102,8 @@ public class ChatService {
                                         agentMap.put("name", agent.getName());
                                         agentMap.put("role", agent.getRole());
                                         agentMap.put("personality", agentPersonality);
+                                        agentMap.put("personalityStrength", requestPersonalityStrength);
+                                        agentMap.put("personality_strength", requestPersonalityStrength);
                                         agentMap.put("style", agentPersonality);
                                         agentMap.put("tone", agentPersonality);
                                         agentMap.put("knowledgeLevel", agentKnowledgeLevel);
@@ -112,7 +118,7 @@ public class ChatService {
 
                 if (request.getAgents() != null && !request.getAgents().isEmpty()) {
                         agentsList = request.getAgents().stream()
-                                        .map(agent -> mapRequestAgent(agent, requestKnowledgeLevel, requestPersonality))
+                                        .map(agent -> mapRequestAgent(agent, requestKnowledgeLevel, requestPersonality, requestPersonalityStrength))
                                         .collect(Collectors.toList());
                 }
 
@@ -139,6 +145,8 @@ public class ChatService {
                 requestBody.put("rounds", request.getRounds() != null ? Math.min(Math.max(request.getRounds(), 1), 3) : 3);
                 requestBody.put("showFinalSynthesis", request.getShowFinalSynthesis() != null ? request.getShowFinalSynthesis() : false);
                 requestBody.put("personality", requestPersonality);
+                requestBody.put("personalityStrength", requestPersonalityStrength);
+                requestBody.put("personality_strength", requestPersonalityStrength);
                 requestBody.put("style", firstNonBlank(request.getStyle(), requestPersonality));
                 requestBody.put("tone", firstNonBlank(request.getTone(), requestPersonality));
                 requestBody.put("knowledgeLevel", requestKnowledgeLevel);
@@ -162,14 +170,30 @@ public class ChatService {
                                         .bodyValue(requestBody)
                                         .retrieve()
                                         .bodyToMono(Map.class)
-                                        .block(Duration.ofSeconds(33)); // WebClientConfig 타임아웃보다 2초 여유
+                                        .block(Duration.ofSeconds(33));
                         log.info("chat fastapi elapsed_ms={} roomId={}", System.currentTimeMillis() - faStart, roomId);
-                } catch (WebClientRequestException timeout) {
-                        log.error("chat fastapi TIMEOUT elapsed_ms={} roomId={}", System.currentTimeMillis() - faStart, roomId);
-                        throw new RuntimeException("AI 서버 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.");
                 } catch (Exception e) {
-                        log.error("chat fastapi ERROR elapsed_ms={} roomId={} err={}", System.currentTimeMillis() - faStart, roomId, e.getMessage());
-                        throw new RuntimeException("AI 서버와 통신 중 오류가 발생했습니다: " + e.getMessage());
+                        long elapsed = System.currentTimeMillis() - faStart;
+                        // 타임아웃 여부 판단 (block(Duration) 타임아웃은 IllegalStateException으로 올 수 있음)
+                        boolean isTimeout = e instanceof WebClientRequestException
+                                        || (e.getCause() != null && e.getCause() instanceof java.util.concurrent.TimeoutException)
+                                        || elapsed >= 30_000;
+                        if (isTimeout) {
+                                log.error("chat fastapi TIMEOUT elapsed_ms={} roomId={}", elapsed, roomId);
+                                return ChatDTO.MultiChatResponse.builder()
+                                                .success(false)
+                                                .errorCode("AI_TIMEOUT")
+                                                .errorMessage("AI 응답 시간이 초과되었습니다. 질문을 더 짧게 하거나 잠시 후 다시 시도해주세요.")
+                                                .replies(java.util.Collections.emptyList())
+                                                .build();
+                        }
+                        log.error("chat fastapi ERROR elapsed_ms={} roomId={} err={} class={}", elapsed, roomId, e.getMessage(), e.getClass().getSimpleName());
+                        return ChatDTO.MultiChatResponse.builder()
+                                        .success(false)
+                                        .errorCode("FASTAPI_ERROR")
+                                        .errorMessage("AI 서버와 통신 중 오류가 발생했습니다. FastAPI 서버 상태를 확인해주세요.")
+                                        .replies(java.util.Collections.emptyList())
+                                        .build();
                 }
 
                 List<ChatDTO.AgentReply> replies = new java.util.ArrayList<>();
@@ -187,10 +211,11 @@ public class ChatService {
                                 String agentName = String.valueOf(messageMap.getOrDefault("agentName", "AI"));
                                 String responseAgentId = String.valueOf(messageMap.getOrDefault("agentId", ""));
 
+                                // IndexOutOfBoundsException 방어: agents가 비어있으면 null 허용
                                 Agent targetAgent = room.getAgents().stream()
                                                 .filter(a -> String.valueOf(a.getId()).equals(responseAgentId) || a.getName().equals(agentName))
                                                 .findFirst()
-                                                .orElse(room.getAgents().get(0));
+                                                .orElse(room.getAgents().isEmpty() ? null : room.getAgents().get(0));
 
                                 saveRoomMessage(room, targetAgent, aiContent, "AI");
 
@@ -201,6 +226,7 @@ public class ChatService {
                                                 .agentName(agentName)
                                                 .role(String.valueOf(messageMap.getOrDefault("role", "")))
                                                 .personality(String.valueOf(messageMap.getOrDefault("personality", "")))
+                                                .personalityStrength(String.valueOf(messageMap.getOrDefault("personalityStrength", "extreme")))
                                                 .knowledgeLevel(String.valueOf(messageMap.getOrDefault("knowledgeLevel", "")))
                                                 .speechType(String.valueOf(messageMap.getOrDefault("speechType", "")))
                                                 .targetAgentId(messageMap.get("targetAgentId") != null
@@ -210,33 +236,53 @@ public class ChatService {
                                                 .build();
                                 discussionMessages.add(discussionMessage);
 
-                                replies.add(ChatDTO.AgentReply.builder()
-                                                .agentId(targetAgent.getId())
-                                                .agentName(targetAgent.getName())
-                                                .answer(aiContent)
-                                                .build());
+                                if (targetAgent != null) {
+                                        replies.add(ChatDTO.AgentReply.builder()
+                                                        .agentId(targetAgent.getId())
+                                                        .agentName(targetAgent.getName())
+                                                        .answer(aiContent)
+                                                        .build());
+                                } else {
+                                        replies.add(ChatDTO.AgentReply.builder()
+                                                        .agentName(agentName)
+                                                        .answer(aiContent)
+                                                        .build());
+                                }
                         }
                 } else if (response != null && response.containsKey("answers")) {
                         List<Map<String, Object>> answers = (List<Map<String, Object>>) response.get("answers");
 
                         for (int i = 0; i < answers.size(); i++) {
                                 Map<String, Object> answerMap = answers.get(i);
-                                String aiAnswer = answerMap.get("answer").toString();
-                                String agentName = answerMap.get("agentName").toString();
+                                // NPE 방어: answerMap 값이 null일 수 있음
+                                Object answerObj = answerMap.get("answer");
+                                Object nameObj = answerMap.get("agentName");
+                                String aiAnswer = answerObj != null ? answerObj.toString() : "";
+                                String agentName = nameObj != null ? nameObj.toString() : "AI";
 
+                                // IndexOutOfBoundsException 방어
+                                final String finalAgentName = agentName;
+                                final int finalIdx = i;
                                 Agent targetAgent = room.getAgents().stream()
-                                                .filter(a -> a.getName().equals(agentName))
+                                                .filter(a -> a.getName().equals(finalAgentName))
                                                 .findFirst()
-                                                .orElse(room.getAgents().get(Math.min(i, room.getAgents().size() - 1)));
+                                                .orElse(room.getAgents().isEmpty() ? null
+                                                                : room.getAgents().get(Math.min(finalIdx, room.getAgents().size() - 1)));
 
-                                // 각 AI의 응답 저장
                                 saveRoomMessage(room, targetAgent, aiAnswer, "AI");
 
-                                replies.add(ChatDTO.AgentReply.builder()
-                                                .agentId(targetAgent.getId())
-                                                .agentName(targetAgent.getName())
-                                                .answer(aiAnswer)
-                                                .build());
+                                if (targetAgent != null) {
+                                        replies.add(ChatDTO.AgentReply.builder()
+                                                        .agentId(targetAgent.getId())
+                                                        .agentName(targetAgent.getName())
+                                                        .answer(aiAnswer)
+                                                        .build());
+                                } else {
+                                        replies.add(ChatDTO.AgentReply.builder()
+                                                        .agentName(agentName)
+                                                        .answer(aiAnswer)
+                                                        .build());
+                                }
                         }
                 }
 
@@ -276,7 +322,8 @@ public class ChatService {
         private Map<String, Object> mapRequestAgent(
                         ChatDTO.RequestAgent agent,
                         String requestKnowledgeLevel,
-                        String requestPersonality) {
+                        String requestPersonality,
+                        String requestPersonalityStrength) {
                 String persona = nullToEmpty(agent.getPersona());
                 String agentId = firstNonBlank(agent.getAgentId(), agent.getId());
                 String agentKnowledgeLevel = firstNonBlank(
@@ -290,6 +337,11 @@ public class ChatService {
                                 agent.getTone(),
                                 requestPersonality,
                                 "전문적");
+                String agentPersonalityStrength = firstNonBlank(
+                                agent.getPersonalityStrength(),
+                                agent.getPersonality_strength(),
+                                requestPersonalityStrength,
+                                "extreme");
                 String agentCustomInstruction = firstNonBlank(
                                 stripPersonaTags(agent.getCustomInstruction()),
                                 stripPersonaTags(agent.getCustom_instruction()),
@@ -302,6 +354,8 @@ public class ChatService {
                 agentMap.put("name", firstNonBlank(agent.getName(), "AI 학습 도우미"));
                 agentMap.put("role", firstNonBlank(agent.getRole(), "AI 학습 도우미"));
                 agentMap.put("personality", agentPersonality);
+                agentMap.put("personalityStrength", agentPersonalityStrength);
+                agentMap.put("personality_strength", agentPersonalityStrength);
                 agentMap.put("style", agentPersonality);
                 agentMap.put("tone", agentPersonality);
                 agentMap.put("knowledgeLevel", agentKnowledgeLevel);
