@@ -70,8 +70,6 @@ const normalizeAgentRoomPayload = (agentData) => {
 };
 
 const normalizeChatResponse = (data) => {
-<<<<<<< HEAD
-=======
   if (Array.isArray(data?.messages)) {
     return {
       ...data,
@@ -81,7 +79,6 @@ const normalizeChatResponse = (data) => {
     };
   }
 
->>>>>>> 45414b3 (update fastapi)
   if (data?.answer) {
     return data;
   }
@@ -183,10 +180,6 @@ export const agentService = {
     return res.data;
   },
 
-<<<<<<< HEAD
-  sendMessage: async (userId, agentId, message) => {
-    const res = await api.post(`/api/chat/rooms/${agentId}`, { message });
-=======
   sendMessage: async (userId, agentId, payloadOrMessage) => {
     const basePayload = typeof payloadOrMessage === 'string'
       ? { message: payloadOrMessage, agentId, roomId: agentId }
@@ -204,7 +197,6 @@ export const agentService = {
     };
     console.debug('[api.agentService.sendMessage] request body', payload);
     const res = await api.post(`/api/chat/rooms/${agentId}`, payload);
->>>>>>> 45414b3 (update fastapi)
     return normalizeChatResponse(res.data);
   },
 
@@ -230,12 +222,8 @@ export const agentService = {
 
   sendAgentMessage: async (payload) => {
     if (payload?.roomId) {
-<<<<<<< HEAD
-      const res = await api.post(`/api/chat/rooms/${payload.roomId}`, { message: payload.message });
-=======
       console.debug('[api.agentService.sendAgentMessage] request body', payload);
       const res = await api.post(`/api/chat/rooms/${payload.roomId}`, payload);
->>>>>>> 45414b3 (update fastapi)
       return normalizeChatResponse(res.data);
     }
     // 확인 필요: Spring Boot에 단일 agent chat endpoint가 없으면 FastAPI 직접 호출이 필요함.

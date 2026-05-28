@@ -45,6 +45,8 @@ public class ChatDTO {
         private String customInstruction;
         private String custom_instruction;
         private String persona;
+        // 특정 에이전트 지칭 (@에이전트이름 또는 N번만 답해줘)
+        private String targetAgentId;
     }
 
     @Getter

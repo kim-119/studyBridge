@@ -1,13 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { agentService } from '../services/api';
-<<<<<<< HEAD
-import { AlertCircle, Bot, Plus, Send, Sparkles, Trash2, X } from 'lucide-react';
-=======
 import { AlertCircle, Bot, Plus, Send, Sparkles, Trash2, X, Info } from 'lucide-react';
->>>>>>> 45414b3 (update fastapi)
 
 const PERSONALITY_OPTIONS = ['전문적', '친근함', '솔직함', '독특함', '효율적', '냉소적'];
+const PERSONALITY_DESCRIPTIONS = {
+  '전문적': '정제되어 있고 정확함',
+  '친근함': '따뜻하고 수다스러움',
+  '솔직함': '직설적이면서도 객관적',
+  '독특함': '유쾌하고 상상력이 풍부함',
+  '효율적': '간결하고 꾸밈없음',
+  '냉소적': '비꼬면서 비판적임',
+};
 const KNOWLEDGE_LEVEL_OPTIONS = ['입문 수준', '학사 수준', '석사 수준', '박사 수준', '전문가 수준'];
 
 const DEFAULT_AGENT = {
@@ -41,8 +45,6 @@ const getAgentPersonality = (agent) => {
     || '전문적';
 };
 
-<<<<<<< HEAD
-=======
 const sanitizeCustomInstruction = (value) => {
   return String(value || '')
     .replace(/\[[^\]]*지식수준[^\]]*\]/gi, '')
@@ -152,7 +154,6 @@ const getAgentStyleTheme = (personality) => {
   }
 };
 
->>>>>>> 45414b3 (update fastapi)
 const buildCanonicalAgentPayload = (agent) => {
   const personality = PERSONALITY_OPTIONS.includes(agent.personality) ? agent.personality : '전문적';
   const knowledgeLevel = KNOWLEDGE_LEVEL_OPTIONS.includes(agent.knowledgeLevel) ? agent.knowledgeLevel : '학사 수준';
@@ -174,8 +175,6 @@ const buildCanonicalAgentPayload = (agent) => {
     persona: `[지식수준: ${knowledgeLevel}] [성격: ${personality}] ${personaBody}`
   };
 };
-<<<<<<< HEAD
-=======
 
 const buildChatAgentSettingsPayload = (selectedAgent, inputMsg, agentId) => {
   const personality = getAgentPersonality(selectedAgent);
@@ -209,7 +208,6 @@ const buildChatAgentSettingsPayload = (selectedAgent, inputMsg, agentId) => {
       || `[지식수준: ${knowledgeLevel}] [성격: ${personality}] ${customInstruction}`,
   };
 };
->>>>>>> 45414b3 (update fastapi)
 
 export default function StudyMate() {
   const { userId } = useAuth();
@@ -218,11 +216,6 @@ export default function StudyMate() {
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
   const [message, setMessage] = useState('');
-<<<<<<< HEAD
-  const [isTyping, setIsTyping] = useState(false);
-  const [showModal, setShowModal] = useState(false);
-  const [newAgent, setNewAgent] = useState(DEFAULT_AGENT);
-=======
   const [typingRoomId, setTypingRoomId] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
@@ -230,23 +223,48 @@ export default function StudyMate() {
   const selectedAgentIdRef = useRef(null);
   useEffect(() => {
     selectedAgentIdRef.current = getAgentId(selectedAgent);
-    if (selectedAgent) {
-      console.debug('[StudyMate] selectedAgent settings changed', {
-        agentId: getAgentId(selectedAgent),
-        personality: getAgentPersonality(selectedAgent),
-        knowledgeLevel: getAgentKnowledgeLevel(selectedAgent),
-        customInstruction: selectedAgent?.customInstruction || selectedAgent?.custom_instruction || '',
-        persona: selectedAgent?.persona || '',
-      });
-    }
   }, [selectedAgent]);
 
   // 멀티 에이전트 동적 추가를 위해 상태를 배열로 정의
   const [createdAgents, setCreatedAgents] = useState([{ ...DEFAULT_AGENT }]);
   const [roomName, setRoomName] = useState('');
->>>>>>> 45414b3 (update fastapi)
 
   const chatEndRef = useRef(null);
+
+  // ── localStorage 헬퍼 ──────────────────────────────────────────────────────
+  const LS_AGENT_KEY = userId ? `sm_agent_${userId}` : null;
+  const lsChatKey = (agentId) => userId ? `sm_chat_${userId}_${agentId}` : null;
+
+  const saveAgentToStorage = (agentId) => {
+    if (LS_AGENT_KEY) localStorage.setItem(LS_AGENT_KEY, String(agentId));
+  };
+
+  const saveChatToStorage = (agentId, history) => {
+    const key = lsChatKey(agentId);
+    if (key && history.length > 0) {
+      try {
+        localStorage.setItem(key, JSON.stringify(history.slice(-60)));
+      } catch (e) { /* storage full 등 무시 */ }
+    }
+  };
+
+  const loadChatFromStorage = (agentId) => {
+    const key = lsChatKey(agentId);
+    if (!key) return null;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (e) { return null; }
+  };
+
+  // 채팅 기록 변경 시 localStorage 자동 저장
+  useEffect(() => {
+    if (selectedAgent && userId && chatHistory.length > 0) {
+      saveChatToStorage(getAgentId(selectedAgent), chatHistory);
+    }
+  }, [chatHistory]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (userId) {
@@ -260,50 +278,43 @@ export default function StudyMate() {
 
   useEffect(() => {
     scrollToBottom();
-<<<<<<< HEAD
-  }, [chatHistory, isTyping]);
-=======
   }, [chatHistory, typingRoomId]);
->>>>>>> 45414b3 (update fastapi)
 
   const loadAgents = async () => {
     try {
       const data = await agentService.getAgents(userId);
-      setAgents(data || []);
+      const agentList = data || [];
+      setAgents(agentList);
+
+      // 이전에 선택했던 에이전트를 localStorage에서 복원
+      if (!selectedAgent && LS_AGENT_KEY && agentList.length > 0) {
+        const savedId = localStorage.getItem(LS_AGENT_KEY);
+        if (savedId) {
+          const restored = agentList.find(a => String(getAgentId(a)) === String(savedId));
+          if (restored) {
+            const agentId = getAgentId(restored);
+            setSelectedAgent(restored);
+            selectedAgentIdRef.current = agentId;
+
+            // localStorage 캐시 즉시 표시
+            const cached = loadChatFromStorage(agentId);
+            if (cached && cached.length > 0) setChatHistory(cached);
+
+            // 서버에서 최신 이력 로드
+            try {
+              const history = await agentService.getChatHistory(userId, agentId);
+              if (history && history.length > 0) {
+                setChatHistory(history);
+              }
+            } catch (e) { /* 캐시 사용 */ }
+          }
+        }
+      }
     } catch (err) {
       console.error('에이전트 목록 조회 실패:', err);
     }
   };
 
-<<<<<<< HEAD
-  const handleCreateAgent = async (e) => {
-    e.preventDefault();
-    if (agents.length >= 3) {
-      alert('AI 에이전트는 최대 3개까지 생성할 수 있습니다.');
-      return;
-    }
-
-    const payload = buildCanonicalAgentPayload(newAgent);
-    if (!payload.name || !payload.role) {
-      alert('이름과 역할을 입력해야 합니다.');
-      return;
-    }
-
-    if (payload.persona.length < 5) {
-      alert('에이전트 설명 또는 추가 요구사항을 최소 5자 이상 입력해야 합니다.');
-      return;
-    }
-
-    try {
-      console.debug('[StudyMate] create agent payload', payload);
-      await agentService.createAgent(userId, payload);
-      setShowModal(false);
-      setNewAgent(DEFAULT_AGENT);
-      await loadAgents();
-    } catch (err) {
-      console.error('에이전트 생성 실패:', err);
-      alert(err.message || '에이전트 생성에 실패했습니다.');
-=======
   const handleOpenModal = () => {
     setCreatedAgents([{ ...DEFAULT_AGENT }]);
     setRoomName('');
@@ -346,21 +357,20 @@ export default function StudyMate() {
     } catch (err) {
       console.error('에이전트 스터디방 생성 실패:', err);
       alert(err.message || '에이전트 스터디방 생성에 실패했습니다.');
->>>>>>> 45414b3 (update fastapi)
     }
   };
 
   const handleDeleteAgent = async (e, agentId) => {
     e.stopPropagation();
-<<<<<<< HEAD
-    if (!window.confirm('정말 이 에이전트를 삭제하시겠습니까? 대화 내용도 함께 삭제될 수 있습니다.')) return;
-=======
     if (!window.confirm('정말 이 에이전트 스터디방을 삭제하시겠습니까? 모든 대화 내용이 완전히 삭제됩니다.')) return;
->>>>>>> 45414b3 (update fastapi)
 
     try {
       await agentService.deleteAgent(userId, agentId);
+      // localStorage 정리
+      const chatKey = lsChatKey(agentId);
+      if (chatKey) localStorage.removeItem(chatKey);
       if (getAgentId(selectedAgent) === agentId) {
+        if (LS_AGENT_KEY) localStorage.removeItem(LS_AGENT_KEY);
         setSelectedAgent(null);
         setChatHistory([]);
       }
@@ -374,27 +384,55 @@ export default function StudyMate() {
   const selectAgent = async (agent) => {
     const agentId = getAgentId(agent);
     setSelectedAgent(agent);
-    console.debug('[StudyMate] selected agent', agent);
+    selectedAgentIdRef.current = agentId;
+    saveAgentToStorage(agentId);
 
+    // localStorage 캐시를 먼저 보여줘서 즉각적인 UI 피드백
+    const cached = loadChatFromStorage(agentId);
+    if (cached && cached.length > 0) setChatHistory(cached);
+    else setChatHistory([]);
+
+    // 서버에서 최신 이력 로드
     try {
       const history = await agentService.getChatHistory(userId, agentId);
-      setChatHistory(history || []);
+      const hist = history || [];
+      setChatHistory(hist);
     } catch (err) {
       console.error('채팅 이력 조회 실패:', err);
-      setChatHistory([]);
+      // 캐시가 있으면 유지, 없으면 빈 배열
+      if (!cached || cached.length === 0) setChatHistory([]);
     }
+  };
+
+  const detectTargetAgentId = (msg, agents) => {
+    if (!msg || !agents || agents.length === 0) return null;
+    const atMatch = msg.match(/@(\S+)/);
+    if (atMatch) {
+      const atName = atMatch[1].replace(/[^\w가-힣]/g, '').toLowerCase();
+      const found = agents.find(a => {
+        const n = (a.name || '').replace(/[^\w가-힣]/g, '').toLowerCase();
+        return n === atName || n.includes(atName);
+      });
+      if (found) return String(found.id || found.agentId);
+    }
+    const singlePatterns = [/(\d)[번]\s*(에이전트)?\s*(만|답해|대답)/];
+    for (const pattern of singlePatterns) {
+      const m = msg.match(pattern);
+      if (m) {
+        const num = parseInt(m[1]) - 1;
+        if (num >= 0 && num < agents.length) return String(agents[num].id || agents[num].agentId);
+      }
+    }
+    return null;
   };
 
   const sendMessage = async (e) => {
     e.preventDefault();
-<<<<<<< HEAD
-    if (!message.trim() || !selectedAgent || isTyping) return;
-=======
     if (!message.trim() || !selectedAgent || typingRoomId) return;
->>>>>>> 45414b3 (update fastapi)
 
     const agentId = getAgentId(selectedAgent);
     const inputMsg = message.trim();
+    const targetAgentId = detectTargetAgentId(inputMsg, selectedAgent?.agents || []);
     const userMsg = {
       id: Date.now(),
       content: inputMsg,
@@ -404,11 +442,7 @@ export default function StudyMate() {
 
     setChatHistory((prev) => [...prev, userMsg]);
     setMessage('');
-<<<<<<< HEAD
-    setIsTyping(true);
-=======
     setTypingRoomId(agentId);
->>>>>>> 45414b3 (update fastapi)
 
     try {
       console.debug('[StudyMate] chat request', {
@@ -417,25 +451,10 @@ export default function StudyMate() {
         message: inputMsg,
         selectedAgent
       });
-<<<<<<< HEAD
-      const res = await agentService.sendMessage(userId, agentId, inputMsg);
-      console.debug('[StudyMate] chat response', res);
-      const aiMsg = {
-        id: Date.now() + 1,
-        content: res.answer,
-        sender: 'AI',
-        createdAt: new Date().toISOString()
+      const chatPayload = {
+        ...buildChatAgentSettingsPayload(selectedAgent, inputMsg, agentId),
+        ...(targetAgentId ? { targetAgentId } : {}),
       };
-      setChatHistory((prev) => [...prev, aiMsg]);
-    } catch (err) {
-      console.error('메시지 전송 실패:', err);
-      alert('메시지 전송에 실패했습니다.');
-      setChatHistory((prev) => prev.filter((m) => m.id !== userMsg.id));
-      setMessage(inputMsg);
-    } finally {
-      setIsTyping(false);
-=======
-      const chatPayload = buildChatAgentSettingsPayload(selectedAgent, inputMsg, agentId);
       console.debug('[StudyMate] chat payload', chatPayload);
       const res = await agentService.sendMessage(userId, agentId, chatPayload);
       console.debug('[StudyMate] chat response', res);
@@ -500,7 +519,6 @@ export default function StudyMate() {
       setMessage(inputMsg);
     } finally {
       setTypingRoomId(null);
->>>>>>> 45414b3 (update fastapi)
     }
   };
 
@@ -546,11 +564,7 @@ export default function StudyMate() {
             <button
               className="btn-outline"
               style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
-<<<<<<< HEAD
-              onClick={() => setShowModal(true)}
-=======
               onClick={handleOpenModal}
->>>>>>> 45414b3 (update fastapi)
               disabled={agents.length >= 3}
             >
               <Plus size={16} /> 생성 ({agents.length}/3)
@@ -577,46 +591,28 @@ export default function StudyMate() {
                     style={{
                       padding: '16px',
                       borderRadius: '12px',
-<<<<<<< HEAD
-                      border: '1px solid var(--color-border)',
-                      backgroundColor: 'var(--color-bg-base)',
-=======
                       borderWidth: '1px',
                       borderStyle: 'solid',
                       borderColor: isActive ? 'var(--color-primary)' : 'var(--color-border)',
                       backgroundColor: isActive ? 'rgba(96, 201, 90, 0.05)' : 'var(--color-bg-base)',
                       boxShadow: isActive ? '0 2px 8px rgba(96, 201, 90, 0.1)' : 'none',
->>>>>>> 45414b3 (update fastapi)
                       cursor: 'pointer',
                       display: 'flex',
                       alignItems: 'flex-start',
                       gap: '12px',
-<<<<<<< HEAD
-                      transition: 'all 0.2s ease',
-                      ...(isActive ? { borderColor: 'var(--color-primary)', backgroundColor: 'rgba(96, 201, 90, 0.05)', boxShadow: '0 2px 8px rgba(96, 201, 90, 0.1)' } : {})
-=======
                       transition: 'all 0.2s ease'
->>>>>>> 45414b3 (update fastapi)
                     }}
                     onClick={() => selectAgent(agent)}
                   >
                     <div className="avatar" style={{ backgroundColor: avatarColor.bg, color: avatarColor.text }}>
-<<<<<<< HEAD
-                      {agent.name?.charAt(0)}
-=======
                       {(agent.roomName || agent.name)?.charAt(0)}
->>>>>>> 45414b3 (update fastapi)
                     </div>
 
                     <div style={{ flex: 1, overflow: 'hidden' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-<<<<<<< HEAD
-                        <div style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)', marginBottom: '4px' }}>{agent.name}</div>
-=======
                         <div style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {agent.roomName || agent.name}
                         </div>
->>>>>>> 45414b3 (update fastapi)
                         <button
                           style={{ background: 'none', border: 'none', color: '#D1D5DB', cursor: 'pointer', padding: '2px' }}
                           onClick={(e) => handleDeleteAgent(e, agentId)}
@@ -626,11 +622,6 @@ export default function StudyMate() {
                         </button>
                       </div>
                       <div style={{ marginBottom: '6px', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-<<<<<<< HEAD
-                        <span className="tag">#{agent.role}</span>
-                        <span className="tag">#{knowledgeLevel}</span>
-                        <span className="tag">#{personality}</span>
-=======
                         {agent.agents && agent.agents.length > 0 ? (
                           agent.agents.map((ag, idx) => (
                             <span key={idx} className="tag">#{ag.name}</span>
@@ -642,7 +633,6 @@ export default function StudyMate() {
                             <span className="tag">#{personality}</span>
                           </>
                         )}
->>>>>>> 45414b3 (update fastapi)
                       </div>
                       <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: '1.4' }}>
                         {String(agent.persona || agent.goal || '').length > 35
@@ -668,18 +658,6 @@ export default function StudyMate() {
             </div>
           ) : (
             <div className="chat-container">
-<<<<<<< HEAD
-              <div className="chat-header">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div className="avatar-sm" style={{ backgroundColor: 'var(--color-primary)', color: 'white' }}>
-                    {selectedAgent.name?.charAt(0)}
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 'bold', fontSize: '15px' }}>{selectedAgent.name}</div>
-                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
-                      {selectedAgent.role} · {getAgentKnowledgeLevel(selectedAgent)} · {getAgentPersonality(selectedAgent)}
-                    </div>
-=======
               <div className="chat-header" style={{ paddingBottom: '16px', borderBottom: '1px solid var(--color-border)' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
@@ -713,7 +691,6 @@ export default function StudyMate() {
                     >
                       <Info size={14} /> 에이전트 상세보기
                     </button>
->>>>>>> 45414b3 (update fastapi)
                   </div>
 
                   {/* 스터디방 에이전트 목록 표시 */}
@@ -763,12 +740,6 @@ export default function StudyMate() {
                 ) : (
                   chatHistory.map((msg, idx) => {
                     const isUser = msg.sender === 'USER';
-<<<<<<< HEAD
-                    return (
-                      <div key={msg.id || idx} style={{ display: 'flex', flexDirection: 'column', maxWidth: '75%', alignSelf: isUser ? 'flex-end' : 'flex-start' }}>
-                        <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`}>{msg.content}</div>
-                        <div style={{ fontSize: '11px', color: '#9CA3AF', marginTop: '4px', textAlign: isUser ? 'right' : 'left' }}>
-=======
                     const senderName = isUser ? '나' : (msg.senderName || msg.sender_name || selectedAgent.name);
 
                     let agentTheme = {
@@ -886,21 +857,15 @@ export default function StudyMate() {
                           {msg.content || msg.text}
                         </div>
                         <div className="chat-bubble-time">
->>>>>>> 45414b3 (update fastapi)
                           {formatTime(msg.createdAt)}
                         </div>
                       </div>
                     );
                   })
                 )}
-<<<<<<< HEAD
-                {isTyping && (
-                  <div style={{ display: 'flex', flexDirection: 'column', maxWidth: '75%', alignSelf: 'flex-start' }}>
-=======
                 {typingRoomId === getAgentId(selectedAgent) && (
                   <div className="chat-bubble-container ai">
                     <div className="chat-bubble-sender">AI 에이전트들이 검토 중...</div>
->>>>>>> 45414b3 (update fastapi)
                     <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', minHeight: '20px' }}>
                       <span className="dot"></span><span className="dot"></span><span className="dot"></span>
                     </div>
@@ -916,17 +881,10 @@ export default function StudyMate() {
                   style={{ flex: 1, borderRadius: '24px', paddingLeft: '20px', backgroundColor: '#F3F4F6', border: 'none' }}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-<<<<<<< HEAD
-                  placeholder={`${selectedAgent.name}에게 메시지 보내기...`}
-                  disabled={isTyping}
-                />
-                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={isTyping || !message.trim()}>
-=======
                   placeholder="메시지를 입력해보세요..."
                   disabled={typingRoomId === getAgentId(selectedAgent)}
                 />
                 <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={typingRoomId === getAgentId(selectedAgent) || !message.trim()}>
->>>>>>> 45414b3 (update fastapi)
                   <Send size={18} />
                 </button>
               </form>
@@ -939,42 +897,6 @@ export default function StudyMate() {
         <div className="modal-overlay">
           <div className="glass-panel modal-content" style={{ width: '95%', maxWidth: '600px', maxHeight: '85vh', overflow: 'hidden' }}>
             <div className="modal-header">
-<<<<<<< HEAD
-              <h3 style={{ margin: 0 }}>새 AI 에이전트 생성</h3>
-              <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)' }} onClick={() => setShowModal(false)} aria-label="닫기"><X size={20} /></button>
-            </div>
-            <form onSubmit={handleCreateAgent} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>이름</label>
-                <input type="text" className="input-field" maxLength="30" required value={newAgent.name} onChange={(e) => setNewAgent({ ...newAgent, name: e.target.value })} placeholder="예: 영어 선생님" />
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>역할</label>
-                <input type="text" className="input-field" maxLength="20" required value={newAgent.role} onChange={(e) => setNewAgent({ ...newAgent, role: e.target.value })} placeholder="예: 학습 도우미" />
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>성격/말투</label>
-                <select className="input-field" value={newAgent.personality} onChange={(e) => setNewAgent({ ...newAgent, personality: e.target.value })}>
-                  {PERSONALITY_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>지식수준</label>
-                <select className="input-field" value={newAgent.knowledgeLevel} onChange={(e) => setNewAgent({ ...newAgent, knowledgeLevel: e.target.value })}>
-                  {KNOWLEDGE_LEVEL_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>목표</label>
-                <input type="text" className="input-field" maxLength="100" value={newAgent.goal} onChange={(e) => setNewAgent({ ...newAgent, goal: e.target.value })} placeholder="예: 사용자가 알기 쉽게 설명하기" />
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>사용자 추가 요구사항</label>
-                <textarea className="input-field" style={{ height: '80px', paddingTop: '10px', resize: 'none' }} maxLength="1000" value={newAgent.customInstruction} onChange={(e) => setNewAgent({ ...newAgent, customInstruction: e.target.value })} placeholder="예: 원어민 선생님처럼 영어로 대답해" />
-              </div>
-              <button type="submit" className="btn-primary" style={{ marginTop: '8px' }}>에이전트 생성하기</button>
-            </form>
-=======
               <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Sparkles size={20} color="var(--color-primary)" /> 새 AI 그룹 스터디 생성
               </h3>
@@ -1200,7 +1122,11 @@ export default function StudyMate() {
                             setCreatedAgents(list);
                           }}
                         >
-                          {PERSONALITY_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                          {PERSONALITY_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option} / {PERSONALITY_DESCRIPTIONS[option] || option}
+                            </option>
+                          ))}
                         </select>
                       </div>
                       <div>
@@ -1428,7 +1354,6 @@ export default function StudyMate() {
                 닫기
               </button>
             </div>
->>>>>>> 45414b3 (update fastapi)
           </div>
         </div>
       )}

@@ -146,6 +146,10 @@ public class ChatService {
                 requestBody.put("persona", request.getPersona());
                 requestBody.put("agents", agentsList);
                 requestBody.put("previousAnswers", previousAnswers);
+                // 특정 에이전트 지칭 전달 (프론트 → Spring → FastAPI)
+                if (request.getTargetAgentId() != null && !request.getTargetAgentId().isBlank()) {
+                        requestBody.put("targetAgentId", request.getTargetAgentId());
+                }
                 log.info("chat fastapi payload roomId={} payload={}", roomId, requestBody);
 
                 Map<String, Object> response;

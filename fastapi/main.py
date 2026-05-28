@@ -54,6 +54,120 @@ if OPENAI_API_KEY:
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
 else:
     openai_client = None
+
+# ── PDF 청크 인메모리 캐시 (text hash → chunks list) ──────────────────────────
+_chunk_cache: Dict[str, List[str]] = {}
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.md5(text[:8000].encode("utf-8", errors="replace")).hexdigest()
+
+
+def _split_chunks(text: str, target_size: int = 450) -> List[str]:
+    """단락 기준 청크 분리. 너무 긴 단락은 추가 분리."""
+    paras = re.split(r'\n{2,}', text.strip())
+    chunks: List[str] = []
+    current = ""
+    for p in paras:
+        p = p.strip()
+        if not p:
+            continue
+        if len(current) + len(p) < target_size:
+            current = (current + "\n\n" + p).strip()
+        else:
+            if current:
+                chunks.append(current)
+            current = p
+    if current:
+        chunks.append(current)
+    # 지나치게 긴 청크는 단어 단위로 추가 분리
+    final: List[str] = []
+    for c in chunks:
+        if len(c) > target_size * 2:
+            words = c.split()
+            sub: List[str] = []
+            for w in words:
+                sub.append(w)
+                if len(" ".join(sub)) >= target_size:
+                    final.append(" ".join(sub))
+                    sub = []
+            if sub:
+                final.append(" ".join(sub))
+        else:
+            final.append(c)
+    return [c for c in final if c.strip()]
+
+
+def _get_cached_chunks(text: str) -> List[str]:
+    key = _text_hash(text)
+    if key not in _chunk_cache:
+        _chunk_cache[key] = _split_chunks(text)
+    return _chunk_cache[key]
+
+
+def _score_chunk(chunk: str, q_tokens: set) -> float:
+    if not q_tokens:
+        return 0.0
+    chunk_norm = re.sub(r'[^\w\s가-힣]', ' ', chunk.lower())
+    chunk_tokens = {t for t in chunk_norm.split() if len(t) >= 2}
+    return len(q_tokens & chunk_tokens) / len(q_tokens)
+
+
+def _retrieve_chunks(text: str, question: str, top_k: int = 6) -> List[str]:
+    """질문과 관련도 높은 청크 top_k개를 원문 순서로 반환."""
+    chunks = _get_cached_chunks(text)
+    if not chunks:
+        return []
+    q_norm = re.sub(r'[^\w\s가-힣]', ' ', question.lower())
+    q_tokens = {t for t in q_norm.split() if len(t) >= 2}
+
+    if not q_tokens:
+        return chunks[:min(top_k, len(chunks))]
+
+    scored = sorted(
+        enumerate(chunks),
+        key=lambda x: _score_chunk(x[1], q_tokens),
+        reverse=True,
+    )
+    top_indices = {i for i, _ in scored[:top_k]}
+    top_indices.add(0)  # 첫 청크는 항상 포함 (문서 개요)
+    return [chunks[i] for i in sorted(top_indices) if i < len(chunks)]
+
+
+# 완전히 PDF와 무관한 잡담 키워드 (PDF 내용 질문이 아닌 게 명백한 경우만)
+_BLOCKED_TOPICS: set = {
+    "날씨", "기온", "비가올까", "우산", "주식", "코인", "비트코인", "투자추천",
+    "맛집", "식당추천", "저녁메뉴", "점심메뉴", "연애", "사귀는법", "데이트",
+    "로또", "복권", "당첨번호", "정치인", "선거예측", "연예인", "드라마추천",
+}
+
+# 요약/전체설명 의도 키워드
+_SUMMARY_INTENT: set = {
+    "요약", "정리", "핵심", "무슨내용", "뭔이야기", "뭔내용", "전체내용",
+    "개요", "설명해줘", "알려줘", "뭐야", "뭐임", "어떤내용", "무슨주제",
+    "요약해", "정리해", "핵심만", "간단히", "학습계획", "로드맵",
+}
+
+
+def _normalize_question(q: str) -> str:
+    return re.sub(r'[\s ]+', '', q.lower())
+
+
+def _is_clearly_off_topic(question: str) -> bool:
+    """PDF/학습과 완전히 무관한 잡담인지 판별."""
+    q_words = set(re.sub(r'[^\w가-힣]', ' ', question.lower()).split())
+    hits = q_words & _BLOCKED_TOPICS
+    if not hits:
+        return False
+    # 학습/자료 관련 단어가 함께 있으면 차단하지 않음
+    study_signals = {"pdf", "자료", "문서", "내용", "이", "주제", "개념", "학습", "공부", "시험"}
+    return not bool(q_words & study_signals)
+
+
+def _is_summary_intent(question: str) -> bool:
+    """전체 요약/개요 질문인지 판별."""
+    q_norm = _normalize_question(question)
+    return any(kw in q_norm for kw in _SUMMARY_INTENT)
 def check_openai_client():
     if openai_client is None:
         raise HTTPException(
@@ -578,17 +692,23 @@ def build_style_prompt(style: str, tone: str) -> str:
     normalized_style = normalize_agent_style(style) or "전문적"
     contract = PERSONALITY_CONTRACTS.get(normalized_style, PERSONALITY_CONTRACTS["전문적"])
     rules = "\n".join(f"- {item}" for item in contract["generation_rules"])
+    voice = contract.get("voice_guide", "")
     return f"""[style_prompt]
-성격/말투: {normalized_style}
+선택된 성격: {normalized_style} ({contract.get('description', '')})
+말투 기준: {contract.get('tone_label', normalized_style)}
 목표: {contract["goal"]}
-답변 방식:
-{rules}
-세부 말투 입력값: {tone or normalized_style}
 
-주의:
+[답변 음성 가이드 - 이 성격의 실제 말투]
+{voice}
+
+[답변 생성 규칙]
+{rules}
+
+[성격 적용 강도: HIGH]
+- 선택된 성격이 answer 전체 문체를 지배해야 한다.
 - 성격명을 자기소개처럼 말하지 않는다.
-- 성격은 첫 문장, 설명 순서, 비판 강도, 예시 선택, 정리 방식에 드러나야 한다.
-- 실제 UI 옵션명은 전문적, 친근함, 솔직함, 독특함, 효율적, 냉소적 중 하나다.""".strip()
+- 성격은 첫 문장, 어휘 선택, 문장 리듬, 비판 강도, 설명 순서에 반드시 드러나야 한다.
+- 성격과 맞지 않는 고정 문구 금지: "친절하게 설명드리겠습니다", "도움이 되셨으면", "좋은 질문입니다".""".strip()
 
 
 def build_level_prompt(level: str) -> str:
@@ -1056,83 +1176,177 @@ PERSONALITY_ALIASES = {
 PERSONALITY_CONTRACTS = {
     "전문적": {
         "goal": "정확하고 공적인 설명을 제공한다.",
+        "description": "정제되어 있고 정확함",
+        "tone_label": "정확하고 체계적인 공적 문체",
+        "voice_guide": (
+            "보고서처럼 구조화된 문장을 쓴다. "
+            "첫 문장에서 핵심 정의나 결론을 제시한다. "
+            "'이 개념은', '핵심은', '정확히 말하면' 같은 공적 출발점을 선호한다. "
+            "감탄사, 과장, 구어체를 제거한다."
+        ),
         "generation_rules": [
-            "용어를 정확히 사용한다.",
-            "개념을 체계적으로 정리한다.",
-            "근거, 조건, 한계를 명확히 말한다.",
-            "감정적 표현과 과장을 줄이고 객관적인 문체를 유지한다.",
-            "필요하면 정의, 구조, 예시, 주의점을 균형 있게 다룬다.",
+            "첫 문장에서 개념의 핵심 정의나 결론을 먼저 제시한다.",
+            "용어를 정확하게 사용하고 필요 시 정의를 제공한다.",
+            "근거, 조건, 한계를 명시한다.",
+            "감정적 표현, 감탄사, 과장을 제거하고 객관적 문체를 유지한다.",
+            "정의 → 구조 → 조건 → 예시 → 한계 순서로 설명한다.",
+            "'친절하게', '이해가 가시나요', '도움이 되셨으면' 같은 구어체 마무리는 넣지 않는다.",
         ],
         "positive": ["정확", "구조", "조건", "한계", "근거", "정의"],
-        "negative": ["대충", "그냥", "쩐다", "장난", "ㅋㅋ"],
-        "regeneration_instruction": "이전 답변은 전문적 성격에 비해 문체와 구조가 느슨하다. 정확한 용어, 조건, 한계를 포함하여 공적이고 체계적인 문체로 다시 작성하라.",
+        "negative": ["대충", "그냥", "쩐다", "장난", "ㅋㅋ", "도움되셨으면"],
+        "regeneration_instruction": (
+            "이전 답변은 전문적 성격에 비해 문체와 구조가 느슨하거나 구어체가 섞였다. "
+            "첫 문장에 핵심 정의를 두고, 정확한 용어·조건·한계를 포함하여 공적이고 체계적인 문체로 다시 작성하라. "
+            "'좋은 질문입니다', '도움되셨으면' 같은 표현을 제거하라."
+        ),
     },
     "친근함": {
-        "goal": "사용자가 부담 없이 이해하도록 부드럽게 설명한다.",
+        "goal": "사용자가 부담 없이 이해하도록 따뜻하게 설명한다.",
+        "description": "따뜻하고 수다스러움",
+        "tone_label": "따뜻하고 자연스러운 대화체",
+        "voice_guide": (
+            "대화하듯 자연스럽게 설명한다. "
+            "'이렇게 생각해봐요', '쉽게 말하면' 같은 안내형 문장을 쓴다. "
+            "초보자도 따라오게 단계적으로 풀어준다. "
+            "격려 표현을 간간이 사용해도 되지만 장황한 잡담은 하지 않는다."
+        ),
         "generation_rules": [
             "어려운 개념을 쉬운 말로 풀어준다.",
-            "사용자가 헷갈릴 만한 지점을 먼저 잡아준다.",
-            "필요한 경우 일상 예시를 사용한다.",
-            "문장이 너무 차갑거나 딱딱하지 않게 한다.",
+            "학습자가 헷갈릴 지점을 예상하고 먼저 설명한다.",
+            "일상 비유나 쉬운 예시를 자연스럽게 사용한다.",
+            "문장이 딱딱하거나 차갑지 않게 대화체로 작성한다.",
+            "가끔 격려하되 장황한 인사말은 줄인다.",
             "내용 정확도를 낮추지 않는다.",
         ],
         "positive": ["쉽게", "예를 들면", "비슷", "헷갈", "먼저", "말하면"],
         "negative": ["전술한 바", "상기", "고찰", "필연적으로"],
-        "regeneration_instruction": "이전 답변은 친근함이 부족하거나 너무 딱딱하다. 개념 정확성은 유지하되, 쉬운 표현과 학습자 친화적 예시를 사용하여 다시 작성하라.",
+        "regeneration_instruction": (
+            "이전 답변은 친근함이 부족하거나 너무 딱딱하다. "
+            "개념 정확성은 유지하되, 쉬운 표현과 학습자 친화적 예시를 사용하고 "
+            "대화체로 자연스럽게 다시 작성하라."
+        ),
     },
     "솔직함": {
         "goal": "좋은 점과 부족한 점을 돌려 말하지 않고 명확히 말한다.",
+        "description": "직설적이면서도 객관적",
+        "tone_label": "직설적이고 명확한 문체",
+        "voice_guide": (
+            "문제점을 돌려 말하지 않고 바로 짚는다. "
+            "'이건 잘못됨', '이 부분이 문제임', '흔한 오해가 있는데' 같은 직접적 표현을 쓴다. "
+            "칭찬보다 개선점에 집중한다. "
+            "단, 사용자를 공격하거나 비하하지 않는다."
+        ),
         "generation_rules": [
-            "애매한 표현을 줄인다.",
-            "문제점이 있으면 바로 짚는다.",
+            "애매한 표현을 줄이고 핵심을 바로 말한다.",
+            "문제점이 있으면 '이 부분이 잘못됨', '이렇게 하면 안 됨'처럼 직접적으로 표현한다.",
             "오해 가능성을 직접 바로잡는다.",
-            "문제점과 대안을 함께 제시한다.",
+            "문제점과 대안을 반드시 함께 제시한다.",
             "공격적이거나 무례한 표현은 금지한다.",
+            "불필요한 위로, 과도한 칭찬을 줄인다.",
         ],
         "positive": ["부족", "위험", "오해", "문제", "잘못", "대안", "바로잡"],
         "negative": ["멍청", "한심", "바보", "무식"],
-        "regeneration_instruction": "이전 답변은 솔직함이 부족하다. 사용자의 오해 가능성이나 개념의 부족한 이해를 명확히 짚고, 대안을 함께 제시하라. 단, 공격적인 표현은 금지한다.",
+        "regeneration_instruction": (
+            "이전 답변은 솔직함이 부족하고 너무 두루뭉술하다. "
+            "문제점과 오해를 직접적으로 짚고, 대안을 함께 제시하라. "
+            "단, 공격적인 표현은 금지한다."
+        ),
     },
     "독특함": {
         "goal": "평범한 교과서식 설명에서 벗어나 새로운 관점이나 비유로 이해를 돕는다.",
+        "description": "유쾌하고 상상력이 풍부함",
+        "tone_label": "창의적이고 유쾌한 문체",
+        "voice_guide": (
+            "비유, 은유, 창의적 표현을 자유롭게 쓴다. "
+            "'마치 X처럼', '다른 각도로 보면' 같은 표현을 즐겨 쓴다. "
+            "설명이 기억에 남게 구성한다. "
+            "정확성을 해치거나 과장하지 않는다."
+        ),
         "generation_rules": [
-            "흔한 설명만 반복하지 않는다.",
-            "개념을 색다른 구조나 비유로 풀 수 있다.",
+            "흔한 설명을 반복하지 말고 색다른 비유나 관점으로 풀어낸다.",
+            "개념을 창의적인 구조나 이미지로 연결한다.",
             "창의적이어도 개념 정확성을 해치지 않는다.",
-            "답변 흐름이 매번 정의-특징-예시-결론으로 고정되지 않게 한다.",
+            "정의-특징-예시-결론 고정 구조를 깨고 새로운 흐름으로 설명한다.",
             "장난스럽거나 산만해지지 않는다.",
         ],
         "positive": ["비유", "관점", "마치", "보다", "다르게", "상상"],
         "negative": ["ㅋㅋ", "농담", "아무튼", "대충"],
-        "regeneration_instruction": "이전 답변은 독특함이 부족하다. 일반적인 설명을 반복하지 말고, 개념 정확성을 유지하면서 새로운 관점이나 비유를 사용해 다시 작성하라.",
+        "regeneration_instruction": (
+            "이전 답변은 독특함이 부족하고 교과서식이다. "
+            "일반적인 설명을 반복하지 말고, 개념 정확성을 유지하면서 "
+            "새로운 비유나 창의적 관점으로 다시 작성하라."
+        ),
     },
     "효율적": {
         "goal": "핵심을 빠르게 잡고 사용자가 바로 공부하거나 실행할 수 있게 한다.",
+        "description": "간결하고 꾸밈없음",
+        "tone_label": "간결하고 핵심 중심 문체",
+        "voice_guide": (
+            "결론부터 말한다. "
+            "불필요한 서론, 역사 배경, 감탄사를 제거한다. "
+            "체크리스트, 번호 목록, 핵심 명령어를 선호한다. "
+            "'1. 핵심은', '먼저', '요점만 말하면' 같은 출발점을 쓴다."
+        ),
         "generation_rules": [
-            "불필요한 서론을 줄인다.",
-            "우선순위, 체크리스트, 핵심 기준을 잘 사용한다.",
-            "개념 설명도 무엇을 먼저 알아야 하는가 중심으로 정리한다.",
+            "불필요한 서론과 감사 인사를 제거하고 결론부터 말한다.",
+            "우선순위, 체크리스트, 핵심 기준 중심으로 정리한다.",
             "짧고 밀도 있는 문장을 선호한다.",
             "중요한 조건이나 위험 요소는 생략하지 않는다.",
+            "장황한 격려, 배경 설명, 역사적 맥락을 최소화한다.",
         ],
         "positive": ["먼저", "순서", "핵심", "우선", "체크", "기준", "1)"],
-        "negative": ["부연하자면", "긴 이야기를", "역사적으로"],
-        "regeneration_instruction": "이전 답변은 효율적 성격에 비해 장황하거나 핵심이 늦게 나온다. 우선순위, 핵심 기준, 실행 가능한 형태를 중심으로 압축해서 다시 작성하라.",
+        "negative": ["부연하자면", "긴 이야기를", "역사적으로", "추가 질문이 있으면"],
+        "regeneration_instruction": (
+            "이전 답변은 효율적 성격에 비해 장황하거나 핵심이 늦게 나온다. "
+            "결론부터 제시하고, 우선순위와 핵심 기준 중심으로 압축해서 다시 작성하라. "
+            "불필요한 서론과 격려 문구를 제거하라."
+        ),
     },
     "냉소적": {
         "goal": "피상적인 설명, 잘못된 통념, 실무에서 깨지는 낙관을 날카롭게 지적한다.",
+        "description": "비꼬면서 비판적임",
+        "tone_label": "냉소적이고 비판적인 문체",
+        "voice_guide": (
+            "허술한 설명이나 위험한 설계를 날카롭게 지적한다. "
+            "'이 구조면 느릴 수밖에 없다', '이건 설계가 꼬인 상태다'처럼 직설적으로 표현한다. "
+            "사용자가 아닌 허술한 개념/설계에 냉소를 향한다. "
+            "기술적 정확성과 해결책 제시는 반드시 유지한다."
+        ),
         "generation_rules": [
-            "사용자를 비꼬지 않는다.",
-            "냉소는 사용자에게 향하지 않고 허술한 설명이나 위험한 설계에 향한다.",
-            "흔한 오해나 위험한 단순화를 찌른다.",
-            "실무 리스크, 오용 가능성, 착각하기 쉬운 부분을 분명히 말한다.",
-            "무례하거나 조롱하는 말투는 금지한다.",
+            "첫 문장에서 흔한 착각이나 피상적 통념을 날카롭게 지적한다.",
+            "냉소는 사용자가 아닌 허술한 설명·위험한 설계에 향한다.",
+            "'이렇게 하면 문제가 생긴다', '이 통념은 실무에서 깨진다'처럼 직접적으로 표현한다.",
+            "실무 리스크와 오용 가능성을 분명히 말한다.",
+            "사용자를 비하하거나 조롱하는 말투는 절대 금지한다.",
+            "해결책이나 올바른 접근을 반드시 함께 제시한다.",
         ],
         "positive": ["착각", "위험", "깨진", "실무", "오용", "피상", "문제는"],
         "negative": ["멍청", "한심", "바보", "무식", "웃기"],
-        "regeneration_instruction": "이전 답변은 냉소적 성격이 제대로 반영되지 않았다. 사용자를 조롱하지 말고, 피상적인 설명과 위험한 통념, 실무에서 깨지는 부분을 날카롭게 지적하는 방식으로 다시 작성하라.",
+        "regeneration_instruction": (
+            "이전 답변은 냉소적 성격이 드러나지 않고 너무 중립적이다. "
+            "사용자를 조롱하지 말고, 피상적 통념과 실무 위험을 날카롭게 지적하되 "
+            "해결책을 명확히 제시하는 방식으로 다시 작성하라."
+        ),
     },
 }
+
+# 성격별 기본 말투 (hardcoded "친절하고 전문적인 말투" 대체)
+PERSONALITY_TONES: Dict[str, str] = {
+    "전문적": "정확하고 체계적인 공적 문체",
+    "친근함": "따뜻하고 자연스러운 대화체",
+    "솔직함": "직설적이고 명확한 문체",
+    "독특함": "창의적이고 유쾌한 문체",
+    "효율적": "간결하고 핵심 중심 문체",
+    "냉소적": "냉소적이고 비판적인 문체",
+}
+
+
+def get_default_tone(style: Optional[str]) -> str:
+    """성격 기반 기본 말투 반환 (하드코딩된 '친절하고' 제거)"""
+    normalized = normalize_agent_style(style) if style else None
+    if normalized and normalized in PERSONALITY_TONES:
+        return PERSONALITY_TONES[normalized]
+    return PERSONALITY_TONES["전문적"]
 
 KNOWLEDGE_LEVEL_ALIASES = {
     "입문": "입문 수준",
@@ -1164,6 +1378,95 @@ KNOWLEDGE_LEVEL_ALIASES = {
 }
 
 ALLOWED_STYLES = PERSONALITY_OPTIONS
+
+# ── 응답 시간 제한 설정 ────────────────────────────────────────────────────────
+AGENT_SINGLE_TIMEOUT = int(os.getenv("AGENT_SINGLE_TIMEOUT_SECONDS", "20"))
+AGENT_MULTI_TIMEOUT = int(os.getenv("AGENT_MULTI_TIMEOUT_SECONDS", "35"))
+
+TIMEOUT_FALLBACK_ANSWER = (
+    "응답 생성 시간이 초과되었습니다. "
+    "질문을 조금 더 좁히거나 구체적으로 바꿔서 다시 요청해주세요."
+)
+
+
+def _call_with_timeout(fn, timeout_seconds: int, fallback: str = TIMEOUT_FALLBACK_ANSWER):
+    """동기 함수를 threading.Timer 기반 timeout으로 감싼다."""
+    import concurrent.futures
+    import time
+    start = time.time()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        try:
+            result = future.result(timeout=timeout_seconds)
+            elapsed = int((time.time() - start) * 1000)
+            logger.info("agent_call elapsed_ms=%d", elapsed)
+            return result, elapsed, False
+        except concurrent.futures.TimeoutError:
+            elapsed = timeout_seconds * 1000
+            logger.warning("agent_call TIMEOUT timeout_seconds=%d", timeout_seconds)
+            return fallback, elapsed, True
+        except Exception as e:
+            elapsed = int((time.time() - start) * 1000)
+            logger.error("agent_call error=%s elapsed_ms=%d", e, elapsed)
+            raise
+
+
+# ── 특정 에이전트 지칭 감지 ───────────────────────────────────────────────────
+def _detect_target_agent(message: str, prepared_agents: List[dict]) -> Optional[dict]:
+    """사용자가 특정 에이전트를 지칭하는지 감지하고 해당 agent dict를 반환한다."""
+    if not message or not prepared_agents:
+        return None
+
+    norm_msg = normalize_text_for_match(message)
+
+    # 패턴 1: @에이전트이름
+    at_match = re.search(r'@(\S+)', message)
+    if at_match:
+        at_name = normalize_text_for_match(at_match.group(1))
+        for agent in prepared_agents:
+            if normalize_text_for_match(agent["name"]) == at_name:
+                return agent
+
+    # 패턴 2: 에이전트 이름 직접 지칭 + 단독 지칭 시그널
+    single_keywords = ["만답해", "만대답해", "에게물어볼게", "너가설명해", "너만답해", "한명만"]
+    has_single_signal = any(kw in norm_msg for kw in single_keywords)
+
+    if has_single_signal:
+        mentioned = [
+            agent for agent in prepared_agents
+            if normalize_text_for_match(agent["name"]) in norm_msg
+        ]
+        if len(mentioned) == 1:
+            return mentioned[0]
+
+    # 패턴 3: N번 에이전트만 / N번만 답해
+    num_match = re.search(r'(\d)[번]?\s*(에이전트|번|만)\s*(답|대답|설명)', norm_msg)
+    if num_match:
+        num = int(num_match.group(1))
+        if 1 <= num <= len(prepared_agents):
+            return prepared_agents[num - 1]
+
+    # 패턴 4: 지식수준 지칭 ("박사수준 에이전트만")
+    level_keywords = {
+        "입문": "입문 수준",
+        "학사": "학사 수준",
+        "석사": "석사 수준",
+        "박사": "박사 수준",
+        "전문가": "전문가 수준",
+    }
+    for kw, level in level_keywords.items():
+        if kw in norm_msg and "에이전트" in norm_msg:
+            level_agents = [a for a in prepared_agents if a.get("knowledgeLevel") == level]
+            if len(level_agents) == 1:
+                return level_agents[0]
+
+    # 패턴 5: "간단히", "빠르게", "한명만" → 에이전트 1명만 (첫 번째)
+    fast_keywords = ["간단히", "빠르게", "짧게", "한명만", "혼자서"]
+    if any(kw in norm_msg for kw in fast_keywords):
+        return prepared_agents[0]
+
+    return None
+
 
 GLOBAL_PERSONA_PRIORITY_RULE = """
 [최상위 페르소나 우선 규칙]
@@ -2129,7 +2432,7 @@ def get_or_create_agent(agent_id: int) -> dict:
         default_persona = build_persona_text(default_style)
         default_knowledge_level = "학사 수준"
         default_custom_instruction = ""
-        default_tone = "친절하고 전문적인 말투"
+        default_tone = get_default_tone(default_style)
         default_goal = "사용자의 학습 이해를 돕는다"
 
         agents[agent_id] = {
@@ -2170,7 +2473,8 @@ def create_agent(request: AgentCreateRequest):
 
     agent_name = safe_strip(request.name, default=f"AI 에이전트 {agent_id}", max_len=30)
     agent_role = safe_strip(request.role, default="학습 도우미", max_len=50)
-    agent_tone = safe_strip(request.tone, default="친절하고 전문적인 말투", max_len=100)
+    raw_personality_for_tone = request.personality or request.style
+    agent_tone = safe_strip(request.tone, default=get_default_tone(raw_personality_for_tone), max_len=100)
     agent_goal = safe_strip(request.goal, default="사용자의 학습을 돕는다", max_len=200)
 
     raw_personality_option = request.personality if request.personality else request.style
@@ -2599,6 +2903,8 @@ class MultiChatRequest(BaseModel):
     customInstruction: Optional[str] = Field(default=None, max_length=1500)
     custom_instruction: Optional[str] = Field(default=None, max_length=1500)
     persona: Optional[str] = Field(default=None, max_length=1000)
+    # 특정 에이전트 지칭: "@이름", "N번만 답해줘" 처리 결과
+    targetAgentId: Optional[str] = Field(default=None, max_length=100)
 
 
 class MultiChatAnswer(BaseModel):
@@ -4327,7 +4633,12 @@ def multi_agent_chat(request: MultiChatRequest):
     for index, agent in enumerate(request.agents, start=1):
         agent_name = safe_strip(agent.name, default=f"AI 에이전트 {index}", max_len=30)
         agent_role = safe_strip(agent.role, default="학습 도우미", max_len=50)
-        agent_tone = safe_strip(agent.tone or agent.style or agent.personality or request_personality, default="친절하고 전문적인 말투", max_len=100)
+        _raw_style_for_tone = agent.personality or agent.style or agent.tone or request_personality
+        agent_tone = safe_strip(
+            agent.tone or agent.style or agent.personality or request_personality,
+            default=get_default_tone(_raw_style_for_tone),
+            max_len=100,
+        )
         agent_goal = safe_strip(agent.goal, default="사용자의 학습을 돕는다", max_len=200)
 
         raw_personality_option = agent.personality or agent.style or agent.tone or request_personality
@@ -4406,6 +4717,61 @@ def multi_agent_chat(request: MultiChatRequest):
 
     previous_answers = request.previousAnswers or []
     previous_answers_text = format_previous_answers(previous_answers)
+
+    # ── 특정 에이전트 지칭 감지 (targetAgentId 또는 메시지 분석) ─────────────────
+    explicit_target_id = request.targetAgentId
+    detected_single_agent: Optional[dict] = None
+
+    if explicit_target_id:
+        for a in prepared_agents:
+            if str(_discussion_agent_identity(a)) == str(explicit_target_id):
+                detected_single_agent = a
+                break
+
+    if detected_single_agent is None:
+        detected_single_agent = _detect_target_agent(user_message, prepared_agents)
+
+    # 특정 에이전트 지칭 시: 해당 1명만 응답
+    if detected_single_agent is not None:
+        agent = detected_single_agent
+        style_rule = get_agent_style_rule(agent["style"], simple_greeting=simple_greeting)
+        persona_boundary_rule = get_persona_boundary_rule(agent["style"], user_intent, simple_greeting=simple_greeting)
+        knowledge_level_rule = get_knowledge_level_rule(agent["knowledgeLevel"])
+        stage_rule = build_group_study_stage_rule(stage_index=0, total_agents=1, current_agent_name=agent["name"])
+        prompt = build_group_study_prompt(
+            agent_name=agent["name"],
+            agent_role=agent["role"],
+            agent_persona=agent["persona"],
+            agent_tone=agent["tone"],
+            agent_goal=agent["goal"],
+            selected_style=agent["style"],
+            agent_knowledge_level=agent["knowledgeLevel"],
+            agent_custom_instruction=agent["customInstruction"],
+            knowledge_level_rule=knowledge_level_rule,
+            persona_boundary_rule=persona_boundary_rule,
+            style_rule=style_rule,
+            user_message=user_message,
+            user_intent=user_intent,
+            user_intent_rule=user_intent_rule,
+            previous_answers_text=previous_answers_text,
+            stage_rule=stage_rule,
+        )
+
+        def _single_call():
+            ans, _ = generate_agent_quality_answer(
+                agent_payload=agent,
+                user_message=user_message,
+                extra_context=prompt,
+            )
+            return clean_ai_answer(ans)
+
+        answer_or_fallback, _elapsed, timed_out = _call_with_timeout(_single_call, AGENT_SINGLE_TIMEOUT)
+        if timed_out:
+            logger.warning("single_agent_target timeout agent=%s", agent["name"])
+        return MultiChatResponse(
+            mode="single_agent",
+            answers=[MultiChatAnswer(agentName=agent["name"], answer=answer_or_fallback)],
+        )
 
     explicit_feedback_mode = request.feedback_mode
     if feedback_intent.get("is_feedback_request") or (explicit_feedback_mode and explicit_feedback_mode not in {"auto", "general", "none", "off"}):
@@ -4858,20 +5224,36 @@ async def extract_pdf_text(file: UploadFile = File(...)):
 @app.post("/api/ai/summary", response_model=SummaryResponse)
 def summarize_document(request: SummaryRequest):
     text = _contract_text(request.text)
-    prompt = f"""
-너는 StudyBridge의 문서 요약 AI다.
-아래 문서를 한국어로 요약하고 JSON만 반환해라.
+    prompt = f"""너는 StudyBridge의 문서 요약 AI다.
+아래 문서를 한국어로 상세하게 요약하고 JSON만 반환해라.
+문서에 없는 내용을 임의로 추가하거나 추측하지 마라. 반드시 문서 내용만 근거로 작성해라.
 
 반환 형식:
 {{
-  "overview": "문서 전체 개요를 2~4문장으로 작성",
-  "coreContents": ["핵심 내용1", "핵심 내용2", "핵심 내용3"]
+  "overview": "문서 전체의 핵심 주제, 주요 개념, 학습 목적을 6~10문장으로 상세하게 작성. 단순 나열이 아니라 문서 내용 흐름을 반영해라. 최소 300자 이상.",
+  "coreContents": [
+    "핵심 주제: 이 문서의 핵심 주제와 학습 목적을 2~3문장으로 설명",
+    "주요 개념 정리: 문서에서 반드시 알아야 할 핵심 개념 및 용어를 2~4개 설명. 각 개념의 정의와 역할 포함",
+    "세부 내용 1: 문서 첫 번째 주요 섹션의 핵심 내용을 2~3문장으로 설명",
+    "세부 내용 2: 문서 두 번째 주요 섹션의 핵심 내용을 2~3문장으로 설명",
+    "세부 내용 3: 문서 세 번째 주요 섹션의 핵심 내용을 2~3문장으로 설명 (내용이 있는 경우)",
+    "세부 내용 4: 문서 네 번째 주요 섹션의 핵심 내용을 2~3문장으로 설명 (내용이 있는 경우)",
+    "학습자 핵심 포인트: 이 자료에서 반드시 이해해야 할 포인트를 2~3문장으로 설명",
+    "헷갈리기 쉬운 부분: 초학자가 혼동하기 쉬운 개념이나 주의사항을 2문장으로 설명",
+    "시험 및 복습 핵심: 시험이나 복습 시 반드시 확인해야 할 내용을 2~3문장으로 정리"
+  ]
 }}
 
+규칙:
+- coreContents 각 항목은 레이블을 포함하고 2문장 이상 충분히 작성해라.
+- overview는 최소 300자 이상 작성해라.
+- 문서에 없는 내용은 절대 추가하지 마라.
+- 문서가 짧으면 coreContents 항목 수를 줄여도 되지만 각 항목은 충분히 작성해라.
+- 전체 요약 분량이 700자 이상이 되도록 작성해라.
+
 문서:
-{text}
-"""
-    result = _load_ai_json(_call_openai_contract(prompt, expect_json=True, max_output_tokens=1500))
+{text}"""
+    result = _load_ai_json(_call_openai_contract(prompt, expect_json=True, max_output_tokens=3500))
     core_contents = result.get("coreContents")
     if not isinstance(core_contents, list):
         raise HTTPException(status_code=500, detail="AI 요약 응답 형식 오류: coreContents")
@@ -4968,32 +5350,67 @@ def create_roadmap(request: RoadmapGenerateRequest):
 @app.post("/api/ai/feedback", response_model=FeedbackResponse)
 def create_feedback(request: FeedbackRequest):
     content = _require_non_empty(request.content, "content")[:CONTRACT_MAX_TEXT_CHARS]
-    prompt = f"""
-너는 StudyBridge의 학습 피드백 AI다.
-아래 학습일지를 읽고 한국어로 피드백을 작성해라.
-반드시 칭찬, 보완점, 다음 학습 방향을 포함해라.
-마크다운 제목이나 코드블록은 사용하지 마라.
+    prompt = f"""너는 StudyBridge의 학습 피드백 AI다.
+아래 학습일지를 꼼꼼히 읽고 구조화된 상세 피드백을 작성해라.
+
+피드백 형식 (각 항목을 번호와 제목으로 구분해서 작성해라):
+1. 잘한 점: 학습일지에서 잘 기록된 부분, 구체적인 개념 정리나 실습 연결이 있으면 인용하며 칭찬해라. 최소 2문장.
+2. 부족한 점: 개념 이해 깊이, 실습 연결, 기록 방식 중 아쉬운 점을 구체적으로 지적해라. 최소 2문장.
+3. 개념 보완: 이 학습 내용에서 더 깊이 알아야 할 개념이나 헷갈리기 쉬운 부분을 짚어줘라. 최소 2문장.
+4. 실습 제안: 이 내용을 실제로 적용하거나 연습할 수 있는 구체적인 실습 방법을 2~3가지 제안해라.
+5. 다음 학습 방향: 이 내용을 바탕으로 다음에 학습하면 좋은 주제나 개념을 구체적으로 제시해라. 최소 2문장.
+6. 한 줄 총평: 이 학습일지의 핵심 강점과 개선점을 한 문장으로 요약.
+
+주의사항:
+- "좋은 학습일지입니다"처럼 일반적인 칭찬만 반복하지 마라.
+- 학습일지에 실제로 작성된 내용을 인용하거나 참조해서 피드백해라.
+- 내용이 짧거나 부실하면 구체적으로 어떤 내용을 추가해야 하는지 알려줘라.
+- 최소 600자 이상으로 충분히 작성해라.
+- 마크다운 제목(##), 코드블록(```)은 사용하지 마라.
 
 학습일지:
-{content}
-"""
-    return FeedbackResponse(feedbackData=_call_openai_contract(prompt, max_output_tokens=1200))
+{content}"""
+    return FeedbackResponse(feedbackData=_call_openai_contract(prompt, max_output_tokens=1800))
 
 
 @app.post("/api/ai/question", response_model=QuestionResponse)
 def answer_question(request: QuestionRequest):
     text = _contract_text(request.text)
     question = _require_non_empty(request.question, "question")
-    prompt = f"""
-너는 StudyBridge의 문서 기반 질의응답 AI다.
-아래 문서 내용만 근거로 질문에 답해라.
-문서 내용만으로 답을 명확히 확인할 수 없으면 정확히 다음 문장으로 답해라:
-문서 내용만으로는 명확히 확인하기 어렵습니다
 
-문서:
-{text}
+    # 1단계: 완전히 무관한 잡담 차단 (날씨, 주식, 맛집 등)
+    if _is_clearly_off_topic(question):
+        return QuestionResponse(
+            answer="이 채팅은 자료보관함 PDF 기반 질문만 지원합니다. "
+                   "날씨, 주식, 음식, 연애 등 생활 잡담은 이 채팅에서 답변하기 어렵습니다. "
+                   "일반 학습 질문은 학습메이트를 이용해주세요."
+        )
 
-질문:
-{question}
-"""
-    return QuestionResponse(answer=_call_openai_contract(prompt, max_output_tokens=1200))
+    # 2단계: 요약/전체내용 질문이면 PDF 전체 맥락 사용
+    use_full_context = _is_summary_intent(question) or len(text) < 3000
+    if use_full_context:
+        context = text[:CONTRACT_MAX_TEXT_CHARS]
+    else:
+        # 3단계: 일반 질문은 관련 청크만 추출
+        chunks = _retrieve_chunks(text, question, top_k=7)
+        context = "\n\n---\n\n".join(chunks)[:CONTRACT_MAX_TEXT_CHARS]
+
+    prompt = f"""너는 자료보관함에 업로드된 PDF 전용 학습 도우미다.
+사용자가 현재 보고 있는 PDF 문서에 대해 질문했다. 아래 PDF 관련 내용을 바탕으로 답변해라.
+
+답변 원칙:
+1. 아래 제공된 PDF 내용 안에서만 답변해라. 외부 지식 추가 금지.
+2. "이 pdf가 뭔 이야기 해", "요약해줘", "핵심 알려줘", "뭔 내용이야" 같은 질문은 PDF 전체 개요를 설명하는 질문이므로 제공된 PDF 내용을 바탕으로 충분히 설명해라.
+3. 특정 개념("Permission이 뭐야?", "런타임 권한은?") 질문은 PDF에서 해당 개념을 찾아 설명해라.
+4. PDF에서 관련 내용을 찾을 수 없으면: "제공된 PDF 자료에서는 해당 내용을 확인할 수 없습니다. 자료 안에 있는 다른 개념으로 다시 질문해주세요."
+5. 오늘 날씨, 주식, 음식, 연애 같이 학습 자료와 완전히 무관한 잡담이면: "이 채팅은 자료보관함 PDF 기반 질문만 지원합니다. 일반 학습 질문은 학습메이트를 이용해주세요."
+6. 답변은 핵심 설명 + PDF 근거 + 이해를 돕는 추가 설명 순으로 충분히 작성해라. 너무 짧게 끝내지 마라.
+7. 추측 금지. PDF 내용에 없는 내용은 명시적으로 "PDF에서 확인되지 않음"이라고 표시해라.
+
+PDF 내용 (관련 섹션):
+{context}
+
+사용자 질문:
+{question}"""
+
+    return QuestionResponse(answer=_call_openai_contract(prompt, max_output_tokens=1800))

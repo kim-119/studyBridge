@@ -49,8 +49,6 @@ FEEDBACK_ACTION_KEYWORDS = [
     "리뷰",
 ]
 
-<<<<<<< HEAD
-=======
 FEEDBACK_NEGATION_PATTERNS = [
     "피드백 기능이 왜",
     "피드백이 왜",
@@ -87,7 +85,7 @@ EXPLICIT_IMPROVE_PATTERNS = [
     "최종 답안으로 정리해줘",
 ]
 
->>>>>>> 45414b3 (update fastapi)
+
 ANSWER_TARGET_KEYWORDS = [
     "답변",
     "대답",
@@ -160,8 +158,6 @@ def detect_feedback_intent(message: str) -> dict:
             "matched_keywords": [],
         }
 
-<<<<<<< HEAD
-=======
     if any(pattern in text for pattern in FEEDBACK_NEGATION_PATTERNS):
         return {
             "is_feedback_request": False,
@@ -188,7 +184,7 @@ def detect_feedback_intent(message: str) -> dict:
             "matched_keywords": explicit_matches,
         }
 
->>>>>>> 45414b3 (update fastapi)
+
     for pattern in GENERAL_QUESTION_PATTERNS:
         if re.search(pattern, text):
             return {
