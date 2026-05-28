@@ -1380,8 +1380,9 @@ KNOWLEDGE_LEVEL_ALIASES = {
 ALLOWED_STYLES = PERSONALITY_OPTIONS
 
 # ── 응답 시간 제한 설정 ────────────────────────────────────────────────────────
-AGENT_SINGLE_TIMEOUT = int(os.getenv("AGENT_SINGLE_TIMEOUT_SECONDS", "20"))
-AGENT_MULTI_TIMEOUT = int(os.getenv("AGENT_MULTI_TIMEOUT_SECONDS", "35"))
+AGENT_SINGLE_TIMEOUT = int(os.getenv("AGENT_SINGLE_TIMEOUT_SECONDS", "18"))
+AGENT_MULTI_TIMEOUT = int(os.getenv("AGENT_MULTI_TIMEOUT_SECONDS", "22"))
+AGENT_INDIVIDUAL_TIMEOUT = int(os.getenv("AGENT_INDIVIDUAL_TIMEOUT_SECONDS", "16"))
 
 TIMEOUT_FALLBACK_ANSWER = (
     "응답 생성 시간이 초과되었습니다. "
@@ -1409,6 +1410,98 @@ def _call_with_timeout(fn, timeout_seconds: int, fallback: str = TIMEOUT_FALLBAC
             elapsed = int((time.time() - start) * 1000)
             logger.error("agent_call error=%s elapsed_ms=%d", e, elapsed)
             raise
+
+
+# ── 다중 에이전트 병렬 실행 ──────────────────────────────────────────────────
+def _run_agents_parallel(
+    agents_list: List[dict],
+    user_message: str,
+    user_intent: str,
+    user_intent_rule: str,
+    previous_answers_text: str,
+    simple_greeting: bool,
+    total_agents: int,
+) -> List["MultiChatAnswer"]:
+    """에이전트 N명을 ThreadPoolExecutor로 병렬 호출하고 answers 배열을 반환한다."""
+    import concurrent.futures
+    import time as _time
+
+    def _call_one(agent: dict, idx: int):
+        t0 = _time.time()
+        try:
+            style_rule = get_agent_style_rule(agent["style"], simple_greeting=simple_greeting)
+            persona_boundary_rule = get_persona_boundary_rule(
+                agent["style"], user_intent, simple_greeting=simple_greeting
+            )
+            knowledge_level_rule = get_knowledge_level_rule(agent["knowledgeLevel"])
+            stage_rule = build_group_study_stage_rule(
+                stage_index=idx, total_agents=total_agents, current_agent_name=agent["name"]
+            )
+            prompt = build_group_study_prompt(
+                agent_name=agent["name"],
+                agent_role=agent["role"],
+                agent_persona=agent["persona"],
+                agent_tone=agent["tone"],
+                agent_goal=agent["goal"],
+                selected_style=agent["style"],
+                agent_knowledge_level=agent["knowledgeLevel"],
+                agent_custom_instruction=agent["customInstruction"],
+                knowledge_level_rule=knowledge_level_rule,
+                persona_boundary_rule=persona_boundary_rule,
+                style_rule=style_rule,
+                user_message=user_message,
+                user_intent=user_intent,
+                user_intent_rule=user_intent_rule,
+                # 병렬 실행 시 chain context 없음 — 각자 독립 답변
+                previous_answers_text=previous_answers_text,
+                stage_rule=stage_rule,
+            )
+            answer, _ = generate_agent_quality_answer(
+                agent_payload=agent,
+                user_message=user_message,
+                extra_context=prompt,
+            )
+            elapsed = int((_time.time() - t0) * 1000)
+            logger.info("parallel_agent agent=%s elapsed_ms=%d", agent["name"], elapsed)
+            return idx, MultiChatAnswer(agentName=agent["name"], answer=clean_ai_answer(answer))
+        except Exception as exc:
+            elapsed = int((_time.time() - t0) * 1000)
+            logger.error("parallel_agent error agent=%s elapsed_ms=%d err=%s", agent["name"], elapsed, exc)
+            return idx, MultiChatAnswer(
+                agentName=agent["name"],
+                answer="이 에이전트의 응답 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+            )
+
+    results: Dict[int, "MultiChatAnswer"] = {}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(agents_list), 5)) as executor:
+        future_map = {
+            executor.submit(_call_one, agent, idx): idx
+            for idx, agent in enumerate(agents_list)
+        }
+        try:
+            for future in concurrent.futures.as_completed(future_map, timeout=AGENT_MULTI_TIMEOUT):
+                idx_done = future_map[future]
+                try:
+                    _, answer_obj = future.result()
+                    results[idx_done] = answer_obj
+                except Exception as exc2:
+                    agent = agents_list[idx_done]
+                    logger.error("parallel_future error agent=%s err=%s", agent["name"], exc2)
+                    results[idx_done] = MultiChatAnswer(
+                        agentName=agent["name"],
+                        answer="응답 생성 중 오류가 발생했습니다.",
+                    )
+        except concurrent.futures.TimeoutError:
+            logger.warning("parallel_agents overall timeout elapsed_ms=%d", AGENT_MULTI_TIMEOUT * 1000)
+            for idx, agent in enumerate(agents_list):
+                if idx not in results:
+                    results[idx] = MultiChatAnswer(
+                        agentName=agent["name"],
+                        answer="응답 시간이 초과되었습니다. 질문을 더 간결하게 바꿔서 다시 시도해주세요.",
+                    )
+
+    return [results[i] for i in sorted(results)]
 
 
 # ── 특정 에이전트 지칭 감지 ───────────────────────────────────────────────────
@@ -1460,9 +1553,10 @@ def _detect_target_agent(message: str, prepared_agents: List[dict]) -> Optional[
             if len(level_agents) == 1:
                 return level_agents[0]
 
-    # 패턴 5: "간단히", "빠르게", "한명만" → 에이전트 1명만 (첫 번째)
-    fast_keywords = ["간단히", "빠르게", "짧게", "한명만", "혼자서"]
-    if any(kw in norm_msg for kw in fast_keywords):
+    # 패턴 5: 명확한 단독 지칭 표현만 ("한명만", "혼자만" 등 명시적 표현에 한정)
+    # "간단히", "빠르게", "짧게" 같은 일반 어휘는 제거 — 일반 질문과 구분 불가
+    explicit_single_keywords = ["한명만", "혼자만", "혼자서만", "단독으로"]
+    if any(kw in norm_msg for kw in explicit_single_keywords):
         return prepared_agents[0]
 
     return None
@@ -4892,6 +4986,7 @@ def multi_agent_chat(request: MultiChatRequest):
             ]
         )
 
+    # 언급된 에이전트 이름이 있으면 해당 에이전트만, 없으면 전체 실행
     if mentioned_names:
         target_agents = [
             agent_by_name[normalize_text_for_match(name)]
@@ -4901,95 +4996,37 @@ def multi_agent_chat(request: MultiChatRequest):
     else:
         target_agents = prepared_agents
 
-    final_answers: List[MultiChatAnswer] = []
-    chained_answers: List[PreviousAgentAnswer] = list(previous_answers)
-    final_prompt_hashes: Dict[str, str] = {}
+    if not target_agents:
+        return MultiChatResponse(
+            answers=[MultiChatAnswer(agentName="시스템", answer="실행할 에이전트를 찾을 수 없습니다.")]
+        )
 
     total_agents = len(target_agents)
+    mode_label = "single_agent" if total_agents == 1 else "multi_agent"
 
-    for idx, agent in enumerate(target_agents):
-        style_rule = get_agent_style_rule(
-            agent["style"],
-            simple_greeting=simple_greeting
-        )
+    logger.info(
+        "multi_chat parallel_start agents=%s mode=%s",
+        [a["name"] for a in target_agents],
+        mode_label,
+    )
 
-        persona_boundary_rule = get_persona_boundary_rule(
-            agent["style"],
-            user_intent,
-            simple_greeting=simple_greeting
-        )
+    # ── 병렬 실행: 에이전트 N명을 동시에 호출 ───────────────────────────────────
+    final_answers = _run_agents_parallel(
+        agents_list=target_agents,
+        user_message=user_message,
+        user_intent=user_intent,
+        user_intent_rule=user_intent_rule,
+        previous_answers_text=previous_answers_text,
+        simple_greeting=simple_greeting,
+        total_agents=total_agents,
+    )
 
-        previous_context_for_this_agent = format_previous_answers(chained_answers)
+    logger.info(
+        "multi_chat parallel_done mode=%s answered=%d/%d",
+        mode_label, len(final_answers), total_agents,
+    )
 
-        stage_rule = build_group_study_stage_rule(
-            stage_index=idx,
-            total_agents=total_agents,
-            current_agent_name=agent["name"]
-        )
-
-        knowledge_level_rule = get_knowledge_level_rule(agent["knowledgeLevel"])
-
-        prompt = build_group_study_prompt(
-            agent_name=agent["name"],
-            agent_role=agent["role"],
-            agent_persona=agent["persona"],
-            agent_tone=agent["tone"],
-            agent_goal=agent["goal"],
-            selected_style=agent["style"],
-            agent_knowledge_level=agent["knowledgeLevel"],
-            agent_custom_instruction=agent["customInstruction"],
-            knowledge_level_rule=knowledge_level_rule,
-            persona_boundary_rule=persona_boundary_rule,
-            style_rule=style_rule,
-            user_message=user_message,
-            user_intent=user_intent,
-            user_intent_rule=user_intent_rule,
-            previous_answers_text=previous_context_for_this_agent,
-            stage_rule=stage_rule
-        )
-
-        try:
-            answer, _quality_meta = generate_agent_quality_answer(
-                agent_payload=agent,
-                user_message=user_message,
-                extra_context=prompt,
-            )
-            final_prompt_hash = _quality_meta.get("final_prompt_hash")
-            if final_prompt_hash:
-                final_prompt_hashes[agent["name"]] = final_prompt_hash
-            answer = clean_ai_answer(answer)
-        except HTTPException:
-            answer = clean_ai_answer(generate_ai_text_safely(prompt))
-
-        final_answers.append(
-            MultiChatAnswer(
-                agentName=agent["name"],
-                answer=answer
-            )
-        )
-
-        chained_answers.append(
-            PreviousAgentAnswer(
-                agentName=agent["name"],
-                answer=answer
-            )
-        )
-
-    duplicate_hashes = {
-        prompt_hash
-        for prompt_hash in final_prompt_hashes.values()
-        if list(final_prompt_hashes.values()).count(prompt_hash) > 1
-    }
-    if duplicate_hashes:
-        logger.error(
-            "multi_chat final_prompt_hash duplicate failure hashes=%s agent_hashes=%s",
-            list(duplicate_hashes),
-            final_prompt_hashes,
-        )
-    else:
-        logger.info("multi_chat final_prompt_hash unique agent_hashes=%s", final_prompt_hashes)
-
-    return MultiChatResponse(answers=final_answers)
+    return MultiChatResponse(mode=mode_label, answers=final_answers)
 
 
 # =========================================================

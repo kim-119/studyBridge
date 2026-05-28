@@ -191,10 +191,11 @@ const buildChatAgentSettingsPayload = (selectedAgent, inputMsg, agentId) => {
     message: inputMsg,
     agentId,
     roomId: agentId,
-    mode: discussionAgents.length > 1
-      ? 'multi_agent_discussion'
-      : 'single_answer',
-    rounds: 3,
+    // 항상 single_answer 모드로 전송:
+    //   - multi_agent_discussion 모드는 FastAPI에서 3라운드×3명=9회 LLM 순차 호출 → 매우 느림
+    //   - single_answer → FastAPI 기본 경로(병렬 for-loop) 실행 → 에이전트 N명 병렬 처리
+    mode: 'single_answer',
+    rounds: 1,
     showFinalSynthesis: false,
     agents: discussionAgents,
     personality,

@@ -12,7 +12,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -153,14 +155,20 @@ public class ChatService {
                 log.info("chat fastapi payload roomId={} payload={}", roomId, requestBody);
 
                 Map<String, Object> response;
+                long faStart = System.currentTimeMillis();
                 try {
                         response = fastApiWebClient.post()
                                         .uri("/api/ai/multi-chat")
                                         .bodyValue(requestBody)
                                         .retrieve()
                                         .bodyToMono(Map.class)
-                                        .block();
+                                        .block(Duration.ofSeconds(33)); // WebClientConfig 타임아웃보다 2초 여유
+                        log.info("chat fastapi elapsed_ms={} roomId={}", System.currentTimeMillis() - faStart, roomId);
+                } catch (WebClientRequestException timeout) {
+                        log.error("chat fastapi TIMEOUT elapsed_ms={} roomId={}", System.currentTimeMillis() - faStart, roomId);
+                        throw new RuntimeException("AI 서버 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.");
                 } catch (Exception e) {
+                        log.error("chat fastapi ERROR elapsed_ms={} roomId={} err={}", System.currentTimeMillis() - faStart, roomId, e.getMessage());
                         throw new RuntimeException("AI 서버와 통신 중 오류가 발생했습니다: " + e.getMessage());
                 }
 
