@@ -1656,6 +1656,25 @@ class AgentFeedbackResponse(BaseModel):
     validation: AgentFeedbackValidation
 
 
+def infer_agent_goal(personality: str, original_goal: str) -> str:
+    """성격에 맞춰 목표(Goal)를 자동 할당"""
+    if not original_goal or "사용자의 학습" in original_goal:
+        p = (personality or "").strip()
+        if p == "냉소적":
+            return "매서운 팩트 폭력과 비판으로 사용자가 스스로 문제점을 깨닫고 정신 차리게 만든다"
+        elif p == "독특함":
+            return "예측 불허의 기발하고 창의적인 관점을 던져 사용자의 사고력을 극한으로 자극한다"
+        elif p == "친근함":
+            return "동네 친구처럼 다정하고 따뜻하게 사용자를 멘토링하며 포기하지 않게 응원한다"
+        elif p == "솔직함":
+            return "눈치 보지 않고 가감 없는 투명한 피드백으로 사용자가 현실을 직시하도록 돕는다"
+        elif p == "효율적":
+            return "군더더기 설명 없이 최단 시간에 핵심만 빠르게 주입하여 학습 효율을 극대화한다"
+        else:
+            return "사용자의 학습 이해를 돕는다"
+    return original_goal
+
+
 def get_or_create_agent(agent_id: int) -> dict:
     """에이전트 조회 또는 자동 생성"""
     global agent_id_sequence
@@ -1674,7 +1693,7 @@ def get_or_create_agent(agent_id: int) -> dict:
         default_knowledge_level = "학사 수준"
         default_custom_instruction = ""
         default_tone = "친절하고 전문적인 말투"
-        default_goal = "사용자의 학습 이해를 돕는다"
+        default_goal = infer_agent_goal(default_style, "사용자의 학습 이해를 돕는다")
 
         agents[agent_id] = {
             "id": agent_id,
@@ -1715,7 +1734,11 @@ def create_agent(request: AgentCreateRequest):
     agent_name = safe_strip(request.name, default=f"AI 에이전트 {agent_id}", max_len=30)
     agent_role = safe_strip(request.role, default="학습 도우미", max_len=50)
     agent_tone = safe_strip(request.tone, default="친절하고 전문적인 말투", max_len=100)
+    
+    raw_personality_option = request.personality if request.personality else request.style
+    
     agent_goal = safe_strip(request.goal, default="사용자의 학습을 돕는다", max_len=200)
+    agent_goal = infer_agent_goal(raw_personality_option, agent_goal)
 
     raw_personality_option = request.personality if request.personality else request.style
 
@@ -2651,63 +2674,40 @@ def multi_agent_chat(request: MultiChatRequest):
         reviewer_agent = agent_by_name.get(normalize_text_for_match(reviewer_name or ""))
         target_agent = agent_by_name.get(normalize_text_for_match(target_name or ""))
 
-        if reviewer_agent is None or target_agent is None:
-            return MultiChatResponse(
-                answers=[
-                    MultiChatAnswer(
-                        agentName=reviewer_name or "에이전트",
-                        answer="피드백 대상 에이전트를 정확히 찾지 못했습니다. 에이전트 이름을 다시 확인해 주세요."
-                    )
-                ]
-            )
-
-        target_answer = find_previous_answer(target_agent["name"], previous_answers)
-
-        if not target_answer:
-            return MultiChatResponse(
-                answers=[
-                    MultiChatAnswer(
-                        agentName=reviewer_agent["name"],
-                        answer=(
-                            f"{reviewer_agent['name']}입니다. "
-                            f"{target_agent['name']}의 이전 답변 내용이 전달되지 않아 정확한 피드백을 할 수 없습니다. "
-                            f"Spring에서 FastAPI로 previousAnswers에 {target_agent['name']}의 최근 답변을 함께 보내야 합니다."
-                        )
-                    )
-                ]
-            )
-
-        reviewer_style_rule = get_agent_style_rule(
-            reviewer_agent["style"],
-            simple_greeting=False
-        )
-
-        prompt = build_feedback_prompt(
-            reviewer_agent=reviewer_agent,
-            target_agent=target_agent,
-            target_answer=target_answer,
-            user_message=user_message,
-            reviewer_style_rule=reviewer_style_rule,
-            previous_answers_text=previous_answers_text
-        )
-
-        try:
-            answer, _quality_meta = generate_agent_quality_answer(
-                agent_payload=reviewer_agent,
-                user_message=user_message,
-                extra_context=prompt,
-            )
-        except HTTPException:
-            answer = generate_ai_text_safely(prompt)
-
-        return MultiChatResponse(
-            answers=[
-                MultiChatAnswer(
-                    agentName=reviewer_agent["name"],
-                    answer=clean_ai_answer(answer)
+        if reviewer_agent and target_agent:
+            target_answer = find_previous_answer(target_agent["name"], previous_answers)
+            
+            # 이전 답변이 존재할 때만 에이전트 간 피드백 로직 수행
+            # 이전 답변이 없다면(아직 발화 안함) 단순 의견 묻기이므로 일반 채팅 로직으로 Fallthrough
+            if target_answer:
+                reviewer_style_rule = get_agent_style_rule(
+                    reviewer_agent["style"],
+                    simple_greeting=False
                 )
-            ]
-        )
+        
+                prompt = build_feedback_prompt(
+                    reviewer_agent=reviewer_agent,
+                    target_agent=target_agent,
+                    target_answer=target_answer,
+                    user_message=user_message,
+                    reviewer_style_rule=reviewer_style_rule,
+                    previous_answers_text=previous_answers_text
+                )
+        
+                try:
+                    # 속도 향상을 위해 무거운 품질 검증 생략
+                    answer = clean_ai_answer(generate_ai_text_safely(prompt))
+                except Exception:
+                    answer = "피드백 생성 중 오류가 발생했습니다."
+        
+                return MultiChatResponse(
+                    answers=[
+                        MultiChatAnswer(
+                            agentName=reviewer_agent["name"],
+                            answer=answer
+                        )
+                    ]
+                )
 
     if mentioned_names:
         target_agents = [
@@ -3180,19 +3180,25 @@ async def extract_pdf_text(file: UploadFile = File(...)):
 def summarize_document(request: SummaryRequest):
     text = _contract_text(request.text)
     prompt = f"""
-너는 StudyBridge의 문서 요약 AI다.
-아래 문서를 한국어로 요약하고 JSON만 반환해라.
+너는 StudyBridge의 전문적인 문서 요약 및 학습 자료 생성 AI다.
+단순히 두루뭉실하게 요약하지 말고, 아래 문서를 바탕으로 **최대한 상세하고 깊이 있게** 한국어로 요약해라.
+특히 중요한 키워드나 핵심 개념을 요약할 때는 **반드시 명확한 개념 설명과 구체적인 예제(또는 실생활 비유)를 함께 들어서** 학습자가 직관적으로 완벽히 이해할 수 있도록 작성해라.
+결과는 반드시 JSON 형식으로만 반환해라.
 
 반환 형식:
 {{
-  "overview": "문서 전체 개요를 2~4문장으로 작성",
-  "coreContents": ["핵심 내용1", "핵심 내용2", "핵심 내용3"]
+  "overview": "문서 전체의 핵심 흐름과 목적을 4~6문장으로 매우 상세하고 구조적으로 작성",
+  "coreContents": [
+    "핵심 키워드 1: [상세한 개념 설명] (예제/예시: ~)",
+    "핵심 내용 2: [상세 설명] (예제/비유: ~)",
+    "핵심 개념 3: [상세 설명] (구체적 사례: ~)"
+  ]
 }}
 
 문서:
 {text}
 """
-    result = _load_ai_json(_call_openai_contract(prompt, expect_json=True, max_output_tokens=1500))
+    result = _load_ai_json(_call_openai_contract(prompt, expect_json=True, max_output_tokens=3000))
     core_contents = result.get("coreContents")
     if not isinstance(core_contents, list):
         raise HTTPException(status_code=500, detail="AI 요약 응답 형식 오류: coreContents")
@@ -3303,18 +3309,63 @@ def create_feedback(request: FeedbackRequest):
 
 @app.post("/api/ai/question", response_model=QuestionResponse)
 def answer_question(request: QuestionRequest):
-    text = _contract_text(request.text)
     question = _require_non_empty(request.question, "question")
-    prompt = f"""
-너는 StudyBridge의 문서 기반 질의응답 AI다.
-아래 문서 내용만 근거로 질문에 답해라.
-문서 내용만으로 답을 명확히 확인할 수 없으면 정확히 다음 문장으로 답해라:
-문서 내용만으로는 명확히 확인하기 어렵습니다
+    text = request.text.strip() if request.text else ""
+    
+    if not text:
+        return QuestionResponse(answer="문서 내용이 비어 있습니다.")
 
-문서:
-{text}
+    try:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        from langchain_openai import OpenAIEmbeddings
+        from langchain_community.vectorstores import FAISS
+
+        # 1. 텍스트 분할 (Chunking)
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=600,
+            chunk_overlap=100,
+            separators=["\n\n", "\n", ".", " ", ""]
+        )
+        chunks = text_splitter.split_text(text)
+        
+        # 2. 임베딩 및 벡터 DB(FAISS) 구축
+        embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
+        vectorstore = FAISS.from_texts(texts=chunks, embedding=embeddings)
+        
+        # 3. 질문과 유사한 문서 청크 검색 (Top 3)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+        docs = retriever.invoke(question)
+        context = "\n\n---\n\n".join([doc.page_content for doc in docs])
+        
+        # 4. 프롬프트 생성
+        prompt = f"""
+너는 StudyBridge의 친절하고 똑똑한 학습 보조 AI 튜터다.
+사용자가 제공한 문서 내용(Context)을 바탕으로 질문에 답해라.
+문서에 있는 문제의 정답을 묻거나 개념에 대해 질문하면, 문서 내용을 참고하여 너의 지식을 활용해 올바른 정답과 상세한 설명을 제공해라.
+답변을 작성할 때 반드시 마크다운 형식(###, **, ``` 등 특수기호)을 일절 사용하지 말고, 읽기 쉬운 순수 텍스트(Plain Text)로만 자연스럽게 답변해라.
+
+발췌된 문서 내용(Context):
+{context}
 
 질문:
 {question}
 """
-    return QuestionResponse(answer=_call_openai_contract(prompt, max_output_tokens=1200))
+        return QuestionResponse(answer=_call_openai_contract(prompt, max_output_tokens=1200))
+        
+    except Exception as e:
+        logger.error(f"Vector DB 처리 중 오류 발생: {e}")
+        # 오류 발생 시 기존 방식으로 폴백(Fallback)
+        text_fallback = _contract_text(text)
+        prompt = f"""
+너는 StudyBridge의 친절하고 똑똑한 학습 보조 AI 튜터다.
+사용자가 제공한 문서 내용을 바탕으로 질문에 답해라.
+문서에 있는 문제의 정답을 묻거나 개념에 대해 질문하면, 문서 내용을 참고하여 너의 지식을 활용해 올바른 정답과 상세한 설명을 제공해라.
+답변을 작성할 때 반드시 마크다운 형식(###, **, ``` 등 특수기호)을 일절 사용하지 말고, 읽기 쉬운 순수 텍스트(Plain Text)로만 자연스럽게 답변해라.
+
+문서:
+{text_fallback}
+
+질문:
+{question}
+"""
+        return QuestionResponse(answer=_call_openai_contract(prompt, max_output_tokens=1200))

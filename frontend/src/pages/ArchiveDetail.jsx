@@ -686,9 +686,9 @@ export default function ArchiveDetail() {
       }
       case 'chat':
         return (
-            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '450px' }}>
+            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
               <h3 style={{ margin: '0 0 16px', fontSize: '20px' }}>AI 질문</h3>
-              <div style={{ flex: 1, backgroundColor: '#F9FAFB', borderRadius: '12px', padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid var(--color-border)', maxHeight: '350px' }}>
+              <div style={{ flex: 1, backgroundColor: '#F9FAFB', borderRadius: '12px', padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid var(--color-border)' }}>
                 {chatMessages.map((msg, idx) => (
                     <div
                         key={idx}

@@ -182,6 +182,7 @@ export default function StudyMate() {
   };
 
   const handleOpenModal = () => {
+    if (!userId) return;
     setCreatedAgents([{ ...DEFAULT_AGENT }]);
     setRoomName('');
     setShowModal(true);
@@ -391,17 +392,7 @@ export default function StudyMate() {
     return colors[index % colors.length];
   };
 
-  if (!userId) {
-    return (
-      <div className="container-main">
-        <div className="glass-panel empty-state" style={{ padding: '40px' }}>
-          <AlertCircle size={48} color="var(--color-text-muted)" style={{ margin: '0 auto 16px' }} />
-          <h3>로그인이 필요합니다</h3>
-          <p style={{ color: 'var(--color-text-muted)' }}>AI 학습메이트 기능은 로그인 후 사용할 수 있습니다.</p>
-        </div>
-      </div>
-    );
-  }
+  // 로그아웃 상태일 때도 UI는 렌더링되도록 함
 
   return (
     <div className="container-main">

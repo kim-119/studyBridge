@@ -221,6 +221,22 @@ export default function Archive() {
     }
   };
 
+  // 학습일지 삭제
+  const handleDeleteJournal = async () => {
+    if (!checkAuth()) return;
+    if (window.confirm('정말로 이 학습일지를 삭제하시겠습니까? 삭제 후 복구할 수 없습니다.')) {
+      try {
+        await materialService.deleteMaterial(selectedJournal.id);
+        alert('학습일지가 삭제되었습니다.');
+        setSelectedJournal(null);
+        fetchMaterials();
+      } catch (error) {
+        console.error('학습일지 삭제 실패:', error);
+        alert('삭제 도중 오류가 발생했습니다.');
+      }
+    }
+  };
+
   // 학습일지 수정
   const handleUpdateJournal = async () => {
     if (!checkAuth()) return;
@@ -232,15 +248,24 @@ export default function Archive() {
       await materialService.updateMaterial(selectedJournal.id, {
         title: editTitle,
         keywords: editKeywords,
+        learningContent: editContent,
+        nextPlan: editNextPlan,
       });
       alert('학습일지가 수정되었습니다.');
       setIsJournalEditMode(false);
       fetchMaterials();
+      
+      // Update local state and trigger AI data fetch to reload feedback/summary if content changed
       setSelectedJournal((prev) => ({
         ...prev,
         title: editTitle,
         keywords: editKeywords.split(',').map((k) => k.trim()),
+        content: editContent,
+        nextPlan: editNextPlan,
       }));
+      
+      // Re-fetch the AI data (feedback, summary) because they might have been regenerated
+      fetchJournalAiData(selectedJournal.id);
     } catch (error) {
       console.error('학습일지 수정 실패:', error);
       alert('수정 도중 오류가 발생했습니다.');
@@ -508,11 +533,11 @@ export default function Archive() {
                           </div>
                           <div>
                             <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>학습 내용</label>
-                            <textarea className="input-field" value={editContent} disabled style={{ width: '100%', minHeight: '120px', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', resize: 'vertical', backgroundColor: '#F3F4F6', color: '#9CA3AF', fontFamily: 'inherit', lineHeight: '1.5' }} />
+                            <textarea className="input-field" value={editContent} onChange={(e) => setEditContent(e.target.value)} style={{ width: '100%', minHeight: '120px', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', resize: 'vertical', backgroundColor: '#F9FAFB', color: 'var(--color-text-main)', fontFamily: 'inherit', lineHeight: '1.5' }} />
                           </div>
                           <div>
                             <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>다음 학습 계획</label>
-                            <textarea className="input-field" value={editNextPlan} disabled style={{ width: '100%', minHeight: '80px', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', resize: 'vertical', backgroundColor: '#F3F4F6', color: '#9CA3AF', fontFamily: 'inherit', lineHeight: '1.5' }} />
+                            <textarea className="input-field" value={editNextPlan} onChange={(e) => setEditNextPlan(e.target.value)} style={{ width: '100%', minHeight: '80px', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', resize: 'vertical', backgroundColor: '#F9FAFB', color: 'var(--color-text-main)', fontFamily: 'inherit', lineHeight: '1.5' }} />
                           </div>
                           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: 'auto', paddingTop: '12px' }}>
                             <button className="btn-outline" style={{ padding: '10px 24px', width: 'auto' }} onClick={() => setIsJournalEditMode(false)}>취소</button>
@@ -538,8 +563,9 @@ export default function Archive() {
                             <h4 style={{ margin: '0 0 8px', fontSize: '15px', color: 'var(--color-text-muted)' }}>다음 학습 계획</h4>
                             <p style={{ margin: 0, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: 'var(--color-text-main)' }}>{selectedJournal.nextPlan}</p>
                           </div>
-                          <div style={{ marginTop: 'auto', paddingTop: '16px' }}>
-                            <button className="btn-outline" style={{ width: '100%', padding: '12px', fontWeight: 'bold' }} onClick={() => setIsJournalEditMode(true)}>수정하기</button>
+                          <div style={{ marginTop: 'auto', paddingTop: '16px', display: 'flex', gap: '12px' }}>
+                            <button className="btn-outline" style={{ flex: 1, padding: '12px', fontWeight: 'bold', color: '#EF4444', borderColor: '#FCA5A5' }} onClick={handleDeleteJournal}>삭제하기</button>
+                            <button className="btn-outline" style={{ flex: 1, padding: '12px', fontWeight: 'bold' }} onClick={() => setIsJournalEditMode(true)}>수정하기</button>
                           </div>
                         </div>
                     )}
