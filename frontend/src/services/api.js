@@ -392,10 +392,11 @@ export const materialService = {
     }
     formData.append('file', file);
     
-    const res = await api.post('/api/materials/upload', formData, {
+    const token = localStorage.getItem('token');
+    const res = await axios.post(`${API_BASE_URL}/api/materials/upload`, formData, {
       headers: {
-        'Content-Type': 'multipart/form-data',
-      },
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      }
     });
     return res.data;
   },

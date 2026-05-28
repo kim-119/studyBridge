@@ -2733,38 +2733,50 @@ def multi_agent_chat(request: MultiChatRequest):
         turns = [
             {"agent": shuffled_agents[0], "turn_type": "single", "stage_index": 0}
         ]
-    # 2. 단순 인사 또는 단답형인 경우 (1회 순차 발화)
+    # 2. 단순 인사 또는 단답형인 경우 (무작위로 1명 또는 전원 대답)
     elif simple_greeting or len(user_message.strip()) <= 5:
-        for idx, agent in enumerate(shuffled_agents):
+        num_participants = 1 if random.random() < 0.6 else total_agents
+        for idx in range(num_participants):
             turns.append({
-                "agent": agent,
+                "agent": shuffled_agents[idx],
                 "turn_type": "greeting_single",
                 "stage_index": idx
             })
-    # 3. 실질적인 학습 질문 모드 (2인방 또는 3인방 멀티턴 활성화)
+    # 3. 실질적인 학습 질문 모드 (확률적으로 발화자 수와 티키타카 결정)
     else:
-        if total_agents == 2:
+        rand_val = random.random()
+        if rand_val < 0.3:
+            # 30% 확률: 1명만 대표로 깔끔하게 대답
+            turns.append({
+                "agent": shuffled_agents[0],
+                "turn_type": "single_representative",
+                "stage_index": 0
+            })
+        elif rand_val < 0.7 and total_agents >= 2:
+            # 40% 확률: 2명 집중 티키타카
             turns = [
                 {"agent": shuffled_agents[0], "turn_type": "2agents_turn1", "stage_index": 0},
-                {"agent": shuffled_agents[1], "turn_type": "2agents_turn2", "stage_index": 1},
-                {"agent": shuffled_agents[0], "turn_type": "2agents_turn3", "stage_index": 2},
-                {"agent": shuffled_agents[1], "turn_type": "2agents_turn4", "stage_index": 3},
+                {"agent": shuffled_agents[1], "turn_type": "2agents_turn2", "stage_index": 1}
             ]
-        elif total_agents == 3:
-            turns = [
-                {"agent": shuffled_agents[0], "turn_type": "3agents_turn1", "stage_index": 0},
-                {"agent": shuffled_agents[1], "turn_type": "3agents_turn2", "stage_index": 1},
-                {"agent": shuffled_agents[2], "turn_type": "3agents_turn3", "stage_index": 2},
-                {"agent": shuffled_agents[0], "turn_type": "3agents_turn4", "stage_index": 3},
-                {"agent": shuffled_agents[1], "turn_type": "3agents_turn5", "stage_index": 4},
-            ]
+            # 50% 확률로 서로 한 번 더 질문/답변 이어가기
+            if random.random() < 0.5:
+                turns.append({"agent": shuffled_agents[0], "turn_type": "2agents_turn3", "stage_index": 2})
+                if random.random() < 0.5:
+                    turns.append({"agent": shuffled_agents[1], "turn_type": "2agents_turn4", "stage_index": 3})
         else:
-            # 4명 이상일 때 폴백 (기본 1회씩 발화)
-            for idx, agent in enumerate(shuffled_agents):
+            # 30% 확률: 전원 참여
+            for idx in range(total_agents):
                 turns.append({
-                    "agent": agent,
-                    "turn_type": "normal",
+                    "agent": shuffled_agents[idx],
+                    "turn_type": f"multi_turn{idx+1}",
                     "stage_index": idx
+                })
+            # 40% 확률로 꼬리물기 보완 발화 추가
+            if random.random() < 0.4 and total_agents > 1:
+                 turns.append({
+                    "agent": shuffled_agents[0],
+                    "turn_type": "multi_turn_extra",
+                    "stage_index": total_agents
                 })
 
     final_answers: List[MultiChatAnswer] = []
