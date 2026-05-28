@@ -38,11 +38,18 @@ public class AiIntegrationService {
         }
 
         private String getTextToAnalyze(Material material) {
-                if (material.getMaterialType() == MaterialType.STUDY_LOG) {
-                        return material.getLearningContent();
-                } else {
-                        return material.getExtractedText();
+                if (material == null) {
+                        throw new IllegalArgumentException("자료 정보가 없습니다.");
                 }
+                String extractedText = material.getExtractedText();
+                if (extractedText != null && !extractedText.isBlank()) {
+                        return extractedText;
+                }
+                String learningContent = material.getLearningContent();
+                if (learningContent != null && !learningContent.isBlank()) {
+                        return learningContent;
+                }
+                return null;
         }
 
         // 메모 가져오기
@@ -246,7 +253,13 @@ public class AiIntegrationService {
 
                 String textToAnalyze = getTextToAnalyze(material);
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
-                        throw new IllegalArgumentException("자료의 텍스트가 비어 있어 질문할 수 없습니다.");
+                        QuestionDTO.Response noTextResponse = QuestionDTO.Response.builder()
+                                        .questionId(null)
+                                        .materialId(materialId)
+                                        .userQuestion(request.getUserQuestion())
+                                        .aiAnswer("자료에서 추출된 텍스트가 없습니다. PDF 텍스트 추출 후 다시 시도해주세요.")
+                                        .build();
+                        return noTextResponse;
                 }
 
                 Map<String, Object> requestBody = Map.of(
