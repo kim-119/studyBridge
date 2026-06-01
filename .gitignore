@@ -23,16 +23,3 @@ __pycache__/
 *.pyc
 
 *.egg-info/
-__pycache__/
-.env
-<<<<<<< HEAD
-
-*.egg-info/
-__pycache__/
-.env
-
-*.egg-info/
-__pycache__/
-.env
-=======
->>>>>>> origin/develop

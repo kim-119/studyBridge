@@ -4,12 +4,32 @@ import { agentService } from '../services/api';
 import { AlertCircle, Bot, Plus, Send, Sparkles, Trash2, X, Info } from 'lucide-react';
 
 const PERSONALITY_OPTIONS = ['전문적', '친근함', '솔직함', '독특함', '효율적', '냉소적'];
+const PERSONALITY_STRENGTH_OPTIONS = [
+  { value: 'medium', label: '보통' },
+  { value: 'high', label: '강함' },
+  { value: 'extreme', label: '매우 강함' },
+];
+const PERSONALITY_STRENGTH_LABELS = {
+  low: '낮음',
+  medium: '보통',
+  high: '강함',
+  extreme: '매우 강함',
+};
+const PERSONALITY_DESCRIPTIONS = {
+  '전문적': '정제되어 있고 정확함',
+  '친근함': '따뜻하고 수다스러움',
+  '솔직함': '직설적이면서도 객관적',
+  '독특함': '유쾌하고 상상력이 풍부함',
+  '효율적': '간결하고 꾸밈없음',
+  '냉소적': '비꼬면서 비판적임',
+};
 const KNOWLEDGE_LEVEL_OPTIONS = ['입문 수준', '학사 수준', '석사 수준', '박사 수준', '전문가 수준'];
 
 const DEFAULT_AGENT = {
   name: '',
   role: '',
   personality: '전문적',
+  personalityStrength: 'extreme',
   knowledgeLevel: '학사 수준',
   customInstruction: '',
   goal: '사용자의 학습을 돕는다'
@@ -35,6 +55,61 @@ const getAgentPersonality = (agent) => {
     || agent?.tone
     || parsePersonaTag(agent?.persona, '성격')
     || '전문적';
+};
+
+const getAgentPersonalityStrength = (agent) => {
+  const raw = agent?.personalityStrength
+    || agent?.personality_strength
+    || parsePersonaTag(agent?.persona, '성격강도')
+    || 'extreme';
+  return ['low', 'medium', 'high', 'extreme'].includes(raw) ? raw : 'extreme';
+};
+
+const getPersonalityStrengthLabel = (strength) => (
+  PERSONALITY_STRENGTH_LABELS[strength] || PERSONALITY_STRENGTH_LABELS.extreme
+);
+
+const sanitizeCustomInstruction = (value) => {
+  return String(value || '')
+    .replace(/\[[^\]]*지식수준[^\]]*\]/gi, '')
+    .replace(/\[[^\]]*knowledge\s*level[^\]]*\]/gi, '')
+    .replace(/\[[^\]]*성격[^\]]*\]/gi, '')
+    .replace(/\[[^\]]*personality[^\]]*\]/gi, '')
+    .replace(/\[[^\]]*tone[^\]]*\]/gi, '')
+    .trim();
+};
+
+const buildDiscussionAgentsPayload = (selectedAgent) => {
+  const sourceAgents = Array.isArray(selectedAgent?.agents) && selectedAgent.agents.length > 0
+    ? selectedAgent.agents
+    : selectedAgent
+      ? [selectedAgent]
+      : [];
+
+  return sourceAgents.map((agent, index) => {
+    const personality = getAgentPersonality(agent);
+    const personalityStrength = getAgentPersonalityStrength(agent);
+    const knowledgeLevel = getAgentKnowledgeLevel(agent);
+    const customInstruction = sanitizeCustomInstruction(
+      agent?.customInstruction || agent?.custom_instruction || agent?.persona || ''
+    );
+
+    return {
+      agentId: String(agent?.id || agent?.agentId || index + 1),
+      name: agent?.name || `AI 도우미 ${index + 1}`,
+      role: agent?.role || 'AI 학습 도우미',
+      personality,
+      personalityStrength,
+      personality_strength: personalityStrength,
+      style: personality,
+      tone: personality,
+      knowledgeLevel,
+      knowledge_level: knowledgeLevel,
+      customInstruction,
+      custom_instruction: customInstruction,
+      persona: agent?.persona || ''
+    };
+  });
 };
 
 const getAgentStyleTheme = (personality) => {
@@ -108,6 +183,9 @@ const getAgentStyleTheme = (personality) => {
 
 const buildCanonicalAgentPayload = (agent) => {
   const personality = PERSONALITY_OPTIONS.includes(agent.personality) ? agent.personality : '전문적';
+  const personalityStrength = ['low', 'medium', 'high', 'extreme'].includes(agent.personalityStrength)
+    ? agent.personalityStrength
+    : 'extreme';
   const knowledgeLevel = KNOWLEDGE_LEVEL_OPTIONS.includes(agent.knowledgeLevel) ? agent.knowledgeLevel : '학사 수준';
   const customInstruction = String(agent.customInstruction || '').trim();
   const goal = String(agent.goal || '사용자의 학습을 돕는다').trim();
@@ -117,6 +195,8 @@ const buildCanonicalAgentPayload = (agent) => {
     name: String(agent.name || '').trim(),
     role: String(agent.role || '').trim(),
     personality,
+    personalityStrength,
+    personality_strength: personalityStrength,
     style: personality,
     tone: personality,
     knowledgeLevel,
@@ -124,7 +204,44 @@ const buildCanonicalAgentPayload = (agent) => {
     goal,
     customInstruction,
     custom_instruction: customInstruction,
-    persona: `[지식수준: ${knowledgeLevel}] [성격: ${personality}] ${personaBody}`
+    persona: `[지식수준: ${knowledgeLevel}] [성격: ${personality}] [성격강도: ${personalityStrength}] ${personaBody}`
+  };
+};
+
+const buildChatAgentSettingsPayload = (selectedAgent, inputMsg, agentId) => {
+  const personality = getAgentPersonality(selectedAgent);
+  const personalityStrength = getAgentPersonalityStrength(selectedAgent);
+  const knowledgeLevel = getAgentKnowledgeLevel(selectedAgent);
+  const customInstruction = sanitizeCustomInstruction(
+    selectedAgent?.customInstruction
+      || selectedAgent?.custom_instruction
+      || selectedAgent?.persona
+      || ''
+  );
+  const discussionAgents = buildDiscussionAgentsPayload(selectedAgent);
+
+  return {
+    message: inputMsg,
+    agentId,
+    roomId: agentId,
+    // 항상 single_answer 모드로 전송:
+    //   - multi_agent_discussion 모드는 FastAPI에서 3라운드×3명=9회 LLM 순차 호출 → 매우 느림
+    //   - single_answer → FastAPI 기본 경로(병렬 for-loop) 실행 → 에이전트 N명 병렬 처리
+    mode: 'single_answer',
+    rounds: 1,
+    showFinalSynthesis: false,
+    agents: discussionAgents,
+    personality,
+    personalityStrength,
+    personality_strength: personalityStrength,
+    style: personality,
+    tone: personality,
+    knowledgeLevel,
+    knowledge_level: knowledgeLevel,
+    customInstruction,
+    custom_instruction: customInstruction,
+    persona: selectedAgent?.persona
+      || `[지식수준: ${knowledgeLevel}] [성격: ${personality}] [성격강도: ${personalityStrength}] ${customInstruction}`,
   };
 };
 
@@ -135,12 +252,7 @@ export default function StudyMate() {
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
   const [message, setMessage] = useState('');
-  
-  // 개별 채팅방별 캐시 및 상태 관리
-  const [roomHistories, setRoomHistories] = useState({}); // { [roomId]: messages[] }
-  const [typingRooms, setTypingRooms] = useState({});     // { [roomId]: boolean }
-  const [roomDrafts, setRoomDrafts] = useState({});       // { [roomId]: string }
-
+  const [typingRoomId, setTypingRoomId] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
 
@@ -155,6 +267,41 @@ export default function StudyMate() {
 
   const chatEndRef = useRef(null);
 
+  // ── localStorage 헬퍼 ──────────────────────────────────────────────────────
+  const LS_AGENT_KEY = userId ? `sm_agent_${userId}` : null;
+  const lsChatKey = (agentId) => userId ? `sm_chat_${userId}_${agentId}` : null;
+
+  const saveAgentToStorage = (agentId) => {
+    if (LS_AGENT_KEY) localStorage.setItem(LS_AGENT_KEY, String(agentId));
+  };
+
+  const saveChatToStorage = (agentId, history) => {
+    const key = lsChatKey(agentId);
+    if (key && history.length > 0) {
+      try {
+        localStorage.setItem(key, JSON.stringify(history.slice(-60)));
+      } catch (e) { /* storage full 등 무시 */ }
+    }
+  };
+
+  const loadChatFromStorage = (agentId) => {
+    const key = lsChatKey(agentId);
+    if (!key) return null;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (e) { return null; }
+  };
+
+  // 채팅 기록 변경 시 localStorage 자동 저장
+  useEffect(() => {
+    if (selectedAgent && userId && chatHistory.length > 0) {
+      saveChatToStorage(getAgentId(selectedAgent), chatHistory);
+    }
+  }, [chatHistory]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (userId) {
       loadAgents();
@@ -162,27 +309,49 @@ export default function StudyMate() {
       setAgents([]);
       setSelectedAgent(null);
       setChatHistory([]);
-      setRoomHistories({});
-      setTypingRooms({});
-      setRoomDrafts({});
     }
   }, [userId]);
 
   useEffect(() => {
     scrollToBottom();
-  }, [chatHistory, typingRooms]);
+  }, [chatHistory, typingRoomId]);
 
   const loadAgents = async () => {
     try {
       const data = await agentService.getAgents(userId);
-      setAgents(data || []);
+      const agentList = data || [];
+      setAgents(agentList);
+
+      // 이전에 선택했던 에이전트를 localStorage에서 복원
+      if (!selectedAgent && LS_AGENT_KEY && agentList.length > 0) {
+        const savedId = localStorage.getItem(LS_AGENT_KEY);
+        if (savedId) {
+          const restored = agentList.find(a => String(getAgentId(a)) === String(savedId));
+          if (restored) {
+            const agentId = getAgentId(restored);
+            setSelectedAgent(restored);
+            selectedAgentIdRef.current = agentId;
+
+            // localStorage 캐시 즉시 표시
+            const cached = loadChatFromStorage(agentId);
+            if (cached && cached.length > 0) setChatHistory(cached);
+
+            // 서버에서 최신 이력 로드
+            try {
+              const history = await agentService.getChatHistory(userId, agentId);
+              if (history && history.length > 0) {
+                setChatHistory(history);
+              }
+            } catch (e) { /* 캐시 사용 */ }
+          }
+        }
+      }
     } catch (err) {
       console.error('에이전트 목록 조회 실패:', err);
     }
   };
 
   const handleOpenModal = () => {
-    if (!userId) return;
     setCreatedAgents([{ ...DEFAULT_AGENT }]);
     setRoomName('');
     setShowModal(true);
@@ -233,7 +402,11 @@ export default function StudyMate() {
 
     try {
       await agentService.deleteAgent(userId, agentId);
+      // localStorage 정리
+      const chatKey = lsChatKey(agentId);
+      if (chatKey) localStorage.removeItem(chatKey);
       if (getAgentId(selectedAgent) === agentId) {
+        if (LS_AGENT_KEY) localStorage.removeItem(LS_AGENT_KEY);
         setSelectedAgent(null);
         setChatHistory([]);
       }
@@ -247,39 +420,55 @@ export default function StudyMate() {
   const selectAgent = async (agent) => {
     const agentId = getAgentId(agent);
     setSelectedAgent(agent);
-    console.debug('[StudyMate] selected agent', agent);
+    selectedAgentIdRef.current = agentId;
+    saveAgentToStorage(agentId);
 
-    // 1. 이전 방의 질문이 보이지 않도록 즉각적으로 해당 방의 캐시된 기록을 UI에 노출 (없으면 빈 리스트)
-    const cachedHistory = roomHistories[agentId] || [];
-    setChatHistory(cachedHistory);
+    // localStorage 캐시를 먼저 보여줘서 즉각적인 UI 피드백
+    const cached = loadChatFromStorage(agentId);
+    if (cached && cached.length > 0) setChatHistory(cached);
+    else setChatHistory([]);
 
-    // 2. 해당 방의 드래프트가 존재하면 입력 폼에 로드
-    setMessage(roomDrafts[agentId] || '');
-
-    // 3. 최신 채팅 이력을 비동기 조회하여 동기화
+    // 서버에서 최신 이력 로드
     try {
       const history = await agentService.getChatHistory(userId, agentId);
-      // 캐시 갱신
-      setRoomHistories(prev => ({ ...prev, [agentId]: history || [] }));
-      
-      // 비동기 복귀 시점에도 여전히 이 방이 활성화되어 있을 때만 UI에 반영하여 다른 방 간섭 방지
-      if (selectedAgentIdRef.current === agentId) {
-        setChatHistory(history || []);
-      }
+      const hist = history || [];
+      setChatHistory(hist);
     } catch (err) {
       console.error('채팅 이력 조회 실패:', err);
-      if (selectedAgentIdRef.current === agentId) {
-        // 에러가 발생해도 이전 캐시를 그대로 보여줍니다.
+      // 캐시가 있으면 유지, 없으면 빈 배열
+      if (!cached || cached.length === 0) setChatHistory([]);
+    }
+  };
+
+  const detectTargetAgentId = (msg, agents) => {
+    if (!msg || !agents || agents.length === 0) return null;
+    const atMatch = msg.match(/@(\S+)/);
+    if (atMatch) {
+      const atName = atMatch[1].replace(/[^\w가-힣]/g, '').toLowerCase();
+      const found = agents.find(a => {
+        const n = (a.name || '').replace(/[^\w가-힣]/g, '').toLowerCase();
+        return n === atName || n.includes(atName);
+      });
+      if (found) return String(found.id || found.agentId);
+    }
+    const singlePatterns = [/(\d)[번]\s*(에이전트)?\s*(만|답해|대답)/];
+    for (const pattern of singlePatterns) {
+      const m = msg.match(pattern);
+      if (m) {
+        const num = parseInt(m[1]) - 1;
+        if (num >= 0 && num < agents.length) return String(agents[num].id || agents[num].agentId);
       }
     }
+    return null;
   };
 
   const sendMessage = async (e) => {
     e.preventDefault();
-    const agentId = getAgentId(selectedAgent);
-    if (!message.trim() || !selectedAgent || typingRooms[agentId]) return;
+    if (!message.trim() || !selectedAgent || typingRoomId) return;
 
+    const agentId = getAgentId(selectedAgent);
     const inputMsg = message.trim();
+    const targetAgentId = detectTargetAgentId(inputMsg, selectedAgent?.agents || []);
     const userMsg = {
       id: Date.now(),
       content: inputMsg,
@@ -287,18 +476,9 @@ export default function StudyMate() {
       createdAt: new Date().toISOString()
     };
 
-    // 1. 현재 화면에 즉시 사용자 메시지 추가
     setChatHistory((prev) => [...prev, userMsg]);
-    // 2. 해당 방의 캐시된 히스토리에도 사용자 메시지 추가
-    setRoomHistories((prev) => ({
-      ...prev,
-      [agentId]: [...(prev[agentId] || []), userMsg]
-    }));
-    // 3. 입력 폼 비우기 및 드래프트 캐시 비우기
     setMessage('');
-    setRoomDrafts((prev) => ({ ...prev, [agentId]: '' }));
-    // 4. 해당 방의 타이핑/로딩 상태 활성화 (전체 방 블로킹 X)
-    setTypingRooms((prev) => ({ ...prev, [agentId]: true }));
+    setTypingRoomId(agentId);
 
     try {
       console.debug('[StudyMate] chat request', {
@@ -307,69 +487,103 @@ export default function StudyMate() {
         message: inputMsg,
         selectedAgent
       });
-      const res = await agentService.sendMessage(userId, agentId, inputMsg);
+      const chatPayload = {
+        ...buildChatAgentSettingsPayload(selectedAgent, inputMsg, agentId),
+        ...(targetAgentId ? { targetAgentId } : {}),
+      };
+      console.debug('[StudyMate] chat payload', chatPayload);
+      const res = await agentService.sendMessage(userId, agentId, chatPayload);
       console.debug('[StudyMate] chat response', res);
 
-      let newMsgs = [];
-      if (res.replies && res.replies.length > 0) {
-        newMsgs = res.replies.map((reply, index) => ({
-          id: Date.now() + 1 + index,
-          content: reply.answer || reply.content,
-          sender: 'AI',
-          senderName: reply.agentName || reply.agent_name,
-          agentId: reply.agentId,
-          createdAt: new Date().toISOString()
-        }));
-      } else {
-        newMsgs = [{
-          id: Date.now() + 1,
-          content: res.answer,
-          sender: 'AI',
-          senderName: selectedAgent.name,
-          createdAt: new Date().toISOString()
-        }];
-      }
-
-      // 5. 해당 방의 캐시 갱신 (사용자가 다른 방에 있더라도 백그라운드 캐시에 완벽히 반영)
-      setRoomHistories((prev) => {
-        const currentList = prev[agentId] || [];
-        const hasUserMsg = currentList.some(m => m.id === userMsg.id);
-        const baseList = hasUserMsg ? currentList : [...currentList, userMsg];
-        return {
-          ...prev,
-          [agentId]: [...baseList, ...newMsgs]
-        };
-      });
-
-      // 6. 현재 여전히 이 방을 보고 있는 경우에만 실시간 UI 업데이트 실행
       if (selectedAgentIdRef.current === agentId) {
-        setChatHistory((prev) => {
-          const hasUserMsg = prev.some(m => m.id === userMsg.id);
-          const baseList = hasUserMsg ? prev : [...prev, userMsg];
-          return [...baseList, ...newMsgs];
-        });
+        // 200이지만 errorMessage가 있는 경우 (FastAPI/timeout 오류를 500 대신 200으로 반환)
+        if (res.errorMessage || res.success === false) {
+          setChatHistory((prev) => [
+            ...prev,
+            {
+              id: `error-${Date.now()}`,
+              content: `오류: ${res.errorMessage || 'AI 응답을 받지 못했습니다.'}`,
+              sender: 'AI',
+              senderName: '시스템',
+              isError: true,
+              createdAt: new Date().toISOString(),
+            },
+          ]);
+        } else if (res.messages && Array.isArray(res.messages)) {
+          const newMsgs = res.messages.map((m) => ({
+            id: `${m.round}-${m.agentId}-${Date.now()}-${Math.random()}`,
+            content: m.content,
+            text: m.content,
+            sender: 'AI',
+            agentId: m.agentId,
+            senderName: m.agentName,
+            agentName: m.agentName,
+            role: m.role,
+            personality: m.personality,
+            personalityStrength: m.personalityStrength,
+            knowledgeLevel: m.knowledgeLevel,
+            round: m.round,
+            speechType: m.speechType,
+            targetAgentId: m.targetAgentId,
+            createdAt: new Date().toISOString()
+          }));
+          if (res.finalSynthesis) {
+            newMsgs.push({
+              id: `synthesis-${Date.now()}`,
+              content: res.finalSynthesis,
+              text: res.finalSynthesis,
+              sender: 'AI',
+              senderName: '핵심 정리',
+              speechType: 'final_synthesis',
+              createdAt: new Date().toISOString()
+            });
+          }
+          setChatHistory((prev) => [...prev, ...newMsgs]);
+        } else if (res.replies && res.replies.length > 0) {
+          const newMsgs = res.replies.map((reply, index) => ({
+            id: Date.now() + 1 + index,
+            content: reply.answer || reply.content,
+            sender: 'AI',
+            senderName: reply.agentName || reply.agent_name,
+            agentId: reply.agentId,
+            createdAt: new Date().toISOString()
+          }));
+          setChatHistory((prev) => [...prev, ...newMsgs]);
+        } else {
+          const aiMsg = {
+            id: Date.now() + 1,
+            content: res.answer,
+            sender: 'AI',
+            senderName: selectedAgent.name,
+            createdAt: new Date().toISOString()
+          };
+          setChatHistory((prev) => [...prev, aiMsg]);
+        }
       }
     } catch (err) {
       console.error('메시지 전송 실패:', err);
-      alert('메시지 전송에 실패했습니다.');
-
-      // 7. 실패 시, 해당 방의 캐시 및 UI에서 에러 메시지만 복구
-      setRoomHistories((prev) => ({
-        ...prev,
-        [agentId]: (prev[agentId] || []).filter((m) => m.id !== userMsg.id)
-      }));
-
+      const errMsg = err?.response?.data?.errorMessage
+        || err?.response?.data?.message
+        || err?.message
+        || '메시지 전송에 실패했습니다. 잠시 후 다시 시도해주세요.';
       if (selectedAgentIdRef.current === agentId) {
-        setChatHistory((prev) => prev.filter((m) => m.id !== userMsg.id));
-        setMessage(inputMsg);
-        setRoomDrafts((prev) => ({ ...prev, [agentId]: inputMsg }));
-      } else {
-        // 다른 방에 있는 경우, 그 방의 드래프트로 실패한 메시지를 복구해줌
-        setRoomDrafts((prev) => ({ ...prev, [agentId]: inputMsg }));
+        // alert() 대신 채팅창 안에 에러 카드 표시
+        setChatHistory((prev) => [
+          ...prev,
+          {
+            id: `error-${Date.now()}`,
+            content: `오류: ${errMsg}`,
+            sender: 'AI',
+            senderName: '시스템',
+            isError: true,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
       }
+      // 실패한 입력은 입력창에 복원
+      setMessage(inputMsg);
     } finally {
-      // 8. 해당 방의 타이핑/로딩 상태만 해제
-      setTypingRooms((prev) => ({ ...prev, [agentId]: false }));
+      setTypingRoomId(null);
     }
   };
 
@@ -392,7 +606,17 @@ export default function StudyMate() {
     return colors[index % colors.length];
   };
 
-  // 로그아웃 상태일 때도 UI는 렌더링되도록 함
+  if (!userId) {
+    return (
+      <div className="container-main">
+        <div className="glass-panel empty-state" style={{ padding: '40px' }}>
+          <AlertCircle size={48} color="var(--color-text-muted)" style={{ margin: '0 auto 16px' }} />
+          <h3>로그인이 필요합니다</h3>
+          <p style={{ color: 'var(--color-text-muted)' }}>AI 학습메이트 기능은 로그인 후 사용할 수 있습니다.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="container-main">
@@ -425,6 +649,7 @@ export default function StudyMate() {
                 const avatarColor = getAvatarColor(index);
                 const knowledgeLevel = getAgentKnowledgeLevel(agent);
                 const personality = getAgentPersonality(agent);
+                const personalityStrength = getAgentPersonalityStrength(agent);
 
                 return (
                   <div
@@ -465,13 +690,18 @@ export default function StudyMate() {
                       <div style={{ marginBottom: '6px', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
                         {agent.agents && agent.agents.length > 0 ? (
                           agent.agents.map((ag, idx) => (
-                            <span key={idx} className="tag">#{ag.name}</span>
+                            <React.Fragment key={idx}>
+                              <span className="tag">#{ag.name}</span>
+                              <span className="tag">#{getAgentPersonality(ag)}</span>
+                              <span className="tag">#{getPersonalityStrengthLabel(getAgentPersonalityStrength(ag))}</span>
+                            </React.Fragment>
                           ))
                         ) : (
                           <>
                             <span className="tag">#{agent.role}</span>
                             <span className="tag">#{knowledgeLevel}</span>
                             <span className="tag">#{personality}</span>
+                            <span className="tag">#{getPersonalityStrengthLabel(personalityStrength)}</span>
                           </>
                         )}
                       </div>
@@ -530,7 +760,7 @@ export default function StudyMate() {
                         cursor: 'pointer'
                       }}
                     >
-                      에이전트 상세보기
+                      <Info size={14} /> 에이전트 상세보기
                     </button>
                   </div>
 
@@ -592,17 +822,24 @@ export default function StudyMate() {
                       accent: '#4B5563'
                     };
                     let agentPersonality = '';
+                    let agentPersonalityStrength = '';
                     let agentRole = '';
 
                     if (!isUser && selectedAgent && selectedAgent.agents) {
                       const matchedAgent = selectedAgent.agents.find(
-                        (ag) => ag.name === senderName || ag.name === msg.senderName || ag.name === msg.sender_name
+                        (ag) => String(ag.id || ag.agentId) === String(msg.agentId) || ag.name === senderName || ag.name === msg.senderName || ag.name === msg.sender_name
                       );
                       if (matchedAgent) {
                         agentPersonality = getAgentPersonality(matchedAgent);
+                        agentPersonalityStrength = getAgentPersonalityStrength(matchedAgent);
                         agentTheme = getAgentStyleTheme(agentPersonality);
                         agentRole = matchedAgent.role;
                       }
+                    }
+                    if (!agentPersonality && msg.personality) {
+                      agentPersonality = msg.personality;
+                      agentPersonalityStrength = msg.personalityStrength || agentPersonalityStrength;
+                      agentTheme = getAgentStyleTheme(agentPersonality);
                     }
 
                     return (
@@ -653,6 +890,48 @@ export default function StudyMate() {
                               {agentPersonality}
                             </span>
                           )}
+                          {!isUser && agentPersonalityStrength && (
+                            <span
+                              style={{
+                                fontSize: '9px',
+                                padding: '1px 5px',
+                                borderRadius: '4px',
+                                backgroundColor: '#FEF3C7',
+                                color: '#92400E',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              {getPersonalityStrengthLabel(agentPersonalityStrength)}
+                            </span>
+                          )}
+                          {!isUser && msg.knowledgeLevel && (
+                            <span
+                              style={{
+                                fontSize: '9px',
+                                padding: '1px 5px',
+                                borderRadius: '4px',
+                                backgroundColor: '#EEF2FF',
+                                color: '#4F46E5',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              {msg.knowledgeLevel}
+                            </span>
+                          )}
+                          {!isUser && msg.round && (
+                            <span
+                              style={{
+                                fontSize: '9px',
+                                padding: '1px 5px',
+                                borderRadius: '999px',
+                                backgroundColor: '#F3F4F6',
+                                color: 'var(--color-text-muted)',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              R{msg.round}{msg.speechType ? ` · ${msg.speechType}` : ''}
+                            </span>
+                          )}
                         </div>
                         <div
                           className={`chat-bubble ${isUser ? 'user' : 'ai'}`}
@@ -663,7 +942,7 @@ export default function StudyMate() {
                             border: 'none'
                           }}
                         >
-                          {msg.content}
+                          {msg.content || msg.text}
                         </div>
                         <div className="chat-bubble-time">
                           {formatTime(msg.createdAt)}
@@ -672,7 +951,7 @@ export default function StudyMate() {
                     );
                   })
                 )}
-                {typingRooms[getAgentId(selectedAgent)] && (
+                {typingRoomId === getAgentId(selectedAgent) && (
                   <div className="chat-bubble-container ai">
                     <div className="chat-bubble-sender">AI 에이전트들이 검토 중...</div>
                     <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', minHeight: '20px' }}>
@@ -689,18 +968,11 @@ export default function StudyMate() {
                   className="input-field"
                   style={{ flex: 1, borderRadius: '24px', paddingLeft: '20px', backgroundColor: '#F3F4F6', border: 'none' }}
                   value={message}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setMessage(val);
-                    const activeId = getAgentId(selectedAgent);
-                    if (activeId) {
-                      setRoomDrafts((prev) => ({ ...prev, [activeId]: val }));
-                    }
-                  }}
+                  onChange={(e) => setMessage(e.target.value)}
                   placeholder="메시지를 입력해보세요..."
-                  disabled={typingRooms[getAgentId(selectedAgent)]}
+                  disabled={typingRoomId === getAgentId(selectedAgent)}
                 />
-                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={typingRooms[getAgentId(selectedAgent)] || !message.trim()}>
+                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={typingRoomId === getAgentId(selectedAgent) || !message.trim()}>
                   <Send size={18} />
                 </button>
               </form>
@@ -771,6 +1043,7 @@ export default function StudyMate() {
                                 name: '김민성',
                                 role: '명문대 교수',
                                 personality: '전문적',
+                                personalityStrength: 'extreme',
                                 knowledgeLevel: '박사 수준'
                               };
                               setCreatedAgents(list);
@@ -797,6 +1070,7 @@ export default function StudyMate() {
                                 name: '둘리',
                                 role: '친한친구',
                                 personality: '친근함',
+                                personalityStrength: 'extreme',
                                 knowledgeLevel: '입문 수준'
                               };
                               setCreatedAgents(list);
@@ -823,6 +1097,7 @@ export default function StudyMate() {
                                 name: '장동탁',
                                 role: '4차원 강사',
                                 personality: '독특함',
+                                personalityStrength: 'extreme',
                                 knowledgeLevel: '전문가 수준'
                               };
                               setCreatedAgents(list);
@@ -849,6 +1124,7 @@ export default function StudyMate() {
                                 name: '김영환',
                                 role: '까칠한 스승',
                                 personality: '냉소적',
+                                personalityStrength: 'extreme',
                                 knowledgeLevel: '학사 수준'
                               };
                               setCreatedAgents(list);
@@ -926,7 +1202,7 @@ export default function StudyMate() {
                       </div>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
                       <div>
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>성격/말투</label>
                         <select
@@ -938,7 +1214,27 @@ export default function StudyMate() {
                             setCreatedAgents(list);
                           }}
                         >
-                          {PERSONALITY_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                          {PERSONALITY_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option} / {PERSONALITY_DESCRIPTIONS[option] || option}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>성격 강도</label>
+                        <select
+                          className="input-field"
+                          value={agent.personalityStrength || 'extreme'}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].personalityStrength = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                        >
+                          {PERSONALITY_STRENGTH_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
                         </select>
                       </div>
                       <div>
@@ -1065,6 +1361,7 @@ export default function StudyMate() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 {(selectedAgent.agents && selectedAgent.agents.length > 0 ? selectedAgent.agents : [selectedAgent]).map((ag, idx) => {
                   const agPersonality = getAgentPersonality(ag);
+                  const agPersonalityStrength = getAgentPersonalityStrength(ag);
                   const agTheme = getAgentStyleTheme(agPersonality);
                   const agKnowledge = getAgentKnowledgeLevel(ag);
 
@@ -1129,35 +1426,39 @@ export default function StudyMate() {
                           >
                             {agPersonality}
                           </span>
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              padding: '2px 8px',
+                              borderRadius: '12px',
+                              backgroundColor: '#FEF3C7',
+                              color: '#92400E',
+                              fontWeight: '600'
+                            }}
+                          >
+                            강도: {getPersonalityStrengthLabel(agPersonalityStrength)}
+                          </span>
                         </div>
                       </div>
 
-                      {(() => {
-                        const basePersona = ag.customInstruction || ag.custom_instruction || ag.persona || '';
-                        const cleanedPersona = basePersona.replace('사용자의 학습을 돕는다', '').trim();
-                        // 대괄호 태그들만 남고 알맹이가 없는 경우 노출하지 않음
-                        const hasRealContent = ag.customInstruction || ag.custom_instruction || (cleanedPersona.replace(/\[지식수준:[^\]]+\]/, '').replace(/\[성격:[^\]]+\]/, '').trim().length > 0);
-                        if (!hasRealContent) return null;
-
-                        return (
-                          <div style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--color-text-main)' }}>
-                            <div style={{ fontWeight: '600', marginBottom: '4px', color: 'var(--color-text-muted)' }}>사용자 지침 / 페르소나 설정</div>
-                            <div
-                              style={{
-                                padding: '10px 12px',
-                                backgroundColor: '#F9FAFB',
-                                borderRadius: '8px',
-                                border: '1px solid var(--color-border)',
-                                fontStyle: 'normal',
-                                whiteSpace: 'pre-wrap',
-                                color: 'var(--color-text-main)'
-                              }}
-                            >
-                              {ag.customInstruction || ag.custom_instruction || cleanedPersona}
-                            </div>
+                      {(ag.customInstruction || ag.custom_instruction || ag.persona) && (
+                        <div style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--color-text-main)' }}>
+                          <div style={{ fontWeight: '600', marginBottom: '4px', color: 'var(--color-text-muted)' }}>사용자 지침 / 페르소나 설정</div>
+                          <div
+                            style={{
+                              padding: '10px 12px',
+                              backgroundColor: '#F9FAFB',
+                              borderRadius: '8px',
+                              border: '1px solid var(--color-border)',
+                              fontStyle: 'normal',
+                              whiteSpace: 'pre-wrap',
+                              color: 'var(--color-text-main)'
+                            }}
+                          >
+                            {ag.customInstruction || ag.custom_instruction || ag.persona}
                           </div>
-                        );
-                      })()}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

@@ -215,14 +215,13 @@ public class AiIntegrationService {
                                         .bodyValue(requestBody)
                                         .retrieve()
                                         .bodyToMono(Map.class)
-                                        .block(); // 동기식 대기
+                                        .block();
                 } catch (Exception e) {
                         throw new RuntimeException("AI 서버에서 퀴즈 생성 중 오류가 발생했습니다: " + e.getMessage());
                 }
 
                 String generatedQuizJson = "[]";
                 if (response != null && response.containsKey("quizData")) {
-                        // ObjectMapper 등을 통해 문자열로 저장하거나, FastAPI가 String 형태로 줬다고 가정
                         generatedQuizJson = response.get("quizData").toString();
                 }
 
@@ -246,7 +245,7 @@ public class AiIntegrationService {
                                 .build();
         }
 
-        // AI에게 질문하기
+        // AI에게 질문하기 (자료보관함 PDF 기반)
         @Transactional
         public QuestionDTO.Response askQuestion(Long userId, Long materialId, QuestionDTO.Request request) {
                 Material material = getMaterialSafely(userId, materialId);
@@ -273,7 +272,7 @@ public class AiIntegrationService {
                                         .bodyValue(requestBody)
                                         .retrieve()
                                         .bodyToMono(Map.class)
-                                        .block(); // 동기식 대기
+                                        .block();
                 } catch (Exception e) {
                         throw new RuntimeException("AI 서버와 통신 중 오류가 발생했습니다: " + e.getMessage());
                 }
@@ -358,7 +357,6 @@ public class AiIntegrationService {
                         throw new RuntimeException("AI 서버에서 로드맵 생성 중 오류가 발생했습니다: " + e.getMessage());
                 }
 
-                // roadmap 오브젝트 파싱
                 Map<String, Object> roadmapMap = null;
                 if (response != null && response.containsKey("roadmap")) {
                         roadmapMap = (Map<String, Object>) response.get("roadmap");
@@ -369,7 +367,6 @@ public class AiIntegrationService {
                         roadmapTitle = roadmapMap.get("title").toString();
                 }
 
-                // 엔티티 생성
                 Roadmap roadmap = Roadmap.builder()
                                 .material(material)
                                 .userId(material.getUserId())
@@ -414,7 +411,6 @@ public class AiIntegrationService {
 
                 roadmap = roadmapRepository.save(roadmap);
 
-                // 저장된 엔티티를 DTO로 변환하여 반환
                 return RoadmapDTO.builder()
                                 .roadmapId(roadmap.getRoadmapId())
                                 .materialId(material.getMaterialId())
@@ -443,18 +439,15 @@ public class AiIntegrationService {
         // 로드맵 태스크 완료 상태 토글
         @Transactional
         public RoadmapDTO.RoadmapTaskDTO toggleRoadmapTask(Long userId, Long materialId, Long taskId) {
-                // 권한 체크
                 getMaterialSafely(userId, materialId);
-                
+
                 RoadmapTask task = roadmapTaskRepository.findById(taskId)
                                 .orElseThrow(() -> new IllegalArgumentException("해당 할 일을 찾을 수 없습니다."));
 
-                // 해당 Task가 요청된 Material의 Roadmap에 속하는지 검증
                 if (!task.getStep().getRoadmap().getMaterial().getMaterialId().equals(materialId)) {
                         throw new SecurityException("잘못된 접근입니다.");
                 }
 
-                // 토글 수행
                 task.setIsCompleted(!task.getIsCompleted());
                 roadmapTaskRepository.save(task);
 

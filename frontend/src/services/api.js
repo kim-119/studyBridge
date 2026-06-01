@@ -59,6 +59,8 @@ const normalizeAgentRoomPayload = (agentData) => {
         tone: agentData?.tone || agentData?.personality || '전문적',
         goal: agentData?.goal || '사용자의 학습을 돕는다',
         personality: agentData?.personality,
+        personalityStrength: agentData?.personalityStrength || agentData?.personality_strength || 'extreme',
+        personality_strength: agentData?.personality_strength || agentData?.personalityStrength || 'extreme',
         style: agentData?.style || agentData?.personality,
         knowledgeLevel: agentData?.knowledgeLevel,
         knowledge_level: agentData?.knowledge_level || agentData?.knowledgeLevel,
@@ -70,6 +72,15 @@ const normalizeAgentRoomPayload = (agentData) => {
 };
 
 const normalizeChatResponse = (data) => {
+  if (Array.isArray(data?.messages)) {
+    return {
+      ...data,
+      mode: data.mode || 'multi_agent_discussion',
+      messages: data.messages,
+      answer: '',
+    };
+  }
+
   if (data?.answer) {
     return data;
   }
@@ -171,8 +182,23 @@ export const agentService = {
     return res.data;
   },
 
-  sendMessage: async (userId, agentId, message) => {
-    const res = await api.post(`/api/chat/rooms/${agentId}`, { message });
+  sendMessage: async (userId, agentId, payloadOrMessage) => {
+    const basePayload = typeof payloadOrMessage === 'string'
+      ? { message: payloadOrMessage, agentId, roomId: agentId }
+      : { agentId, roomId: agentId, ...payloadOrMessage };
+    const payload = {
+      personality: '',
+      style: '',
+      tone: '',
+      knowledgeLevel: '',
+      knowledge_level: '',
+      customInstruction: '',
+      custom_instruction: '',
+      persona: '',
+      ...basePayload,
+    };
+    console.debug('[api.agentService.sendMessage] request body', payload);
+    const res = await api.post(`/api/chat/rooms/${agentId}`, payload);
     return normalizeChatResponse(res.data);
   },
 
@@ -198,7 +224,8 @@ export const agentService = {
 
   sendAgentMessage: async (payload) => {
     if (payload?.roomId) {
-      const res = await api.post(`/api/chat/rooms/${payload.roomId}`, { message: payload.message });
+      console.debug('[api.agentService.sendAgentMessage] request body', payload);
+      const res = await api.post(`/api/chat/rooms/${payload.roomId}`, payload);
       return normalizeChatResponse(res.data);
     }
     // 확인 필요: Spring Boot에 단일 agent chat endpoint가 없으면 FastAPI 직접 호출이 필요함.
@@ -319,8 +346,23 @@ export const roomService = {
     const res = await api.post('/api/agent-rooms', roomData);
     return res.data;
   },
-  sendMessage: async (userId, roomId, message) => {
-    const res = await api.post(`/api/chat/rooms/${roomId}`, { message });
+  sendMessage: async (userId, roomId, payloadOrMessage) => {
+    const basePayload = typeof payloadOrMessage === 'string'
+      ? { message: payloadOrMessage, agentId: roomId, roomId }
+      : { agentId: roomId, roomId, ...payloadOrMessage };
+    const payload = {
+      personality: '',
+      style: '',
+      tone: '',
+      knowledgeLevel: '',
+      knowledge_level: '',
+      customInstruction: '',
+      custom_instruction: '',
+      persona: '',
+      ...basePayload,
+    };
+    console.debug('[api.roomService.sendMessage] request body', payload);
+    const res = await api.post(`/api/chat/rooms/${roomId}`, payload);
     return res.data;
   },
   getChatHistory: async (userId, roomId) => {

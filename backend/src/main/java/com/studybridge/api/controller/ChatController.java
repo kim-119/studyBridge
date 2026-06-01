@@ -5,6 +5,7 @@ import com.studybridge.api.service.ChatService;
 import com.studybridge.api.security.domain.CustomUserDetails;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -13,6 +14,7 @@ import java.util.List;
 
 @RestController
 @RequiredArgsConstructor
+@Slf4j
 @RequestMapping("/api/chat")
 public class ChatController {
 
@@ -25,6 +27,7 @@ public class ChatController {
             @PathVariable Long roomId,
             @Valid @RequestBody ChatDTO.MultiChatRequest request) {
 
+        log.info("chat controller received roomId={} request={}", roomId, request);
         return ResponseEntity.ok(chatService.chatWithRoom(userDetails.getId(), roomId, request));
     }
 
