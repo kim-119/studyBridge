@@ -1,119 +1,605 @@
-/* 
-  studymate-premium.css 
-  StudyBridge Signature Light Theme (White & Green) 
+/*
+  studymate-premium.css
+  StudyBridge — Digital Twin × Mind Map Theme
+  v2 — Command Center Layout
 */
 
-.studymate-premium-container {
-  min-height: calc(100vh - 64px);
-  background-color: var(--color-bg-base); /* #F4F6F4 */
-  color: var(--color-text-main);
-  padding: 24px;
+/* =========================================
+   전체 레이아웃 오버라이드
+========================================= */
+
+/* 좌측 패널 — 트윈 컨트롤 패널 */
+/* 백그라운드 애니메이션 정의 */
+@keyframes aiAura {
+  0% { background-position: 0% 0%; }
+  50% { background-position: 100% 100%; }
+  100% { background-position: 0% 0%; }
+}
+
+@keyframes pulseDot {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.6); opacity: 0.4; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.container-workspace {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
   box-sizing: border-box;
-  font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
-}
-
-/* Orchestration Layout */
-.orchestration-layout {
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 24px;
-}
-
-/* Agent Nodes (Light) */
-.agent-node-light {
-  background: #FFFFFF;
-  border-radius: 12px;
-  padding: 16px;
-  margin-bottom: 12px;
-  border: 1px solid var(--color-border);
   display: flex;
-  align-items: center;
-  gap: 16px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+  flex-direction: column;
+  height: calc(100vh - 80px);
+  /* 임팩트 있는 AI 아우라 백그라운드 */
+  background: radial-gradient(circle at 15% 50%, rgba(96, 201, 90, 0.08), transparent 25%),
+              radial-gradient(circle at 85% 30%, rgba(59, 130, 246, 0.08), transparent 25%),
+              linear-gradient(135deg, #f8fafc 0%, #f0fdf4 100%);
+  background-size: 200% 200%;
+  animation: aiAura 15s ease-in-out infinite alternate;
+  position: relative;
+}
+.container-workspace::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjQiIGZpbGw9IiNmZmYiIGZpbGwtb3BhY2l0eT0iMC4wMSIvPjxwYXRoIGQ9Ik0wIDBMMCA0TDEgNEwxIDBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9IjAuMDIiLz48cGF0aCBkPSJNMCAwTDQgMEw0IDFMMCAxWiIgZmlsbD0iIzAwMCIgZmlsbC1vcGFjaXR5PSIwLjAyIi8+PC9zdmc+') repeat;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.layout-3-panel {
+  display: flex;
+  gap: 0;
+  height: 100%;
+  width: 100%;
+  position: relative;
+  z-index: 1;
+}
+
+.pane-left {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(24px);
+  border-right: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: 2px 0 12px rgba(0,0,0,0.02);
+  overflow: hidden;
   transition: all 0.3s ease;
 }
 
-.agent-node-light.active {
-  border-color: var(--color-primary);
-  box-shadow: 0 4px 16px rgba(96, 201, 90, 0.15);
-}
-
-.avatar-light {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: #F3F4F6;
+.pane-center {
+  flex: 1;
   display: flex;
-  justify-content: center;
-  align-items: center;
-  font-size: 20px;
+  flex-direction: column;
+  background: #ffffff;
+  overflow: hidden;
   position: relative;
-  z-index: 2;
+  z-index: 10;
+  transition: all 0.3s ease;
 }
 
-.avatar-light.active {
-  background: rgba(96, 201, 90, 0.1);
+.pane-right {
+  flex: 0 0 320px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(24px);
+  border-left: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: -2px 0 12px rgba(0,0,0,0.02);
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+.dt-left-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  height: 100%;
 }
 
-.pulse-ring-light {
+.dt-left-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid rgba(96,201,90,0.12);
+  flex-shrink: 0;
+}
+
+.dt-left-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 900;
+  font-size: 16px;
+  /* 텍스트 그라디언트 효과 */
+  background: linear-gradient(135deg, #111827 0%, #374151 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: -0.3px;
+}
+
+.dt-left-title-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #60C95A, #3b82f6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(96,201,90,0.4);
+  position: relative;
+}
+
+.dt-left-title-icon::after {
+  content: '';
   position: absolute;
-  top: -4px; left: -4px; right: -4px; bottom: -4px;
-  border-radius: 50%;
-  border: 2px solid transparent;
+  top: 0; left: 0; right: 0; bottom: 0;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.2);
 }
 
-.agent-node-light.analyzing .pulse-ring-light,
-.agent-node-light.reviewing .pulse-ring-light {
-  border-color: var(--color-primary);
-  animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+/* 트윈 동기화 상태 배너 */
+.dt-sync-banner {
+  margin: 12px 14px 0;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, rgba(96,201,90,0.06), rgba(59,130,246,0.06));
+  border: 1px solid rgba(96,201,90,0.15);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+
+.dt-sync-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+  animation: sync-pulse 2s infinite;
+}
+
+@keyframes sync-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0.4); }
+  50%       { box-shadow: 0 0 0 4px rgba(34,197,94,0); }
+}
+
+.dt-sync-text { font-weight: 600; color: #374151; }
+
+/* 에이전트 리스트 스크롤 영역 */
+.dt-agent-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 새 방 생성 버튼 (하단 고정) */
+.dt-create-btn-wrap {
+  padding: 12px 14px 14px;
+  flex-shrink: 0;
+  border-top: 1px solid rgba(0,0,0,0.05);
+}
+
+.dt-create-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 0;
+  border-radius: 10px;
+  border: 1.5px dashed rgba(96,201,90,0.4);
+  background: rgba(96,201,90,0.03);
+  font-size: 13px;
+  font-weight: 700;
+  color: #16a34a;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.dt-create-btn:hover:not(:disabled) {
+  background: rgba(96,201,90,0.08);
+  border-color: rgba(96,201,90,0.7);
+}
+
+.dt-create-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* =========================================
-   Mind Map / Tree Discussion Flow
+   Digital Twin Agent Card (Left Panel)
+========================================= */
+
+/* 에이전트 목록 컨테이너 */
+.dt-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* 에이전트 카드 (홀로그래픽) */
+.dt-agent-card {
+  position: relative;
+  background: linear-gradient(135deg, rgba(255,255,255,0.97) 0%, rgba(240,253,244,0.97) 100%);
+  border: 1.5px solid rgba(96, 201, 90, 0.2);
+  border-radius: 16px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.dt-agent-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  background: linear-gradient(135deg, transparent 0%, rgba(96, 201, 90, 0.04) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.dt-agent-card:hover {
+  border-color: rgba(96, 201, 90, 0.5);
+  box-shadow: 0 4px 20px rgba(96, 201, 90, 0.15), 0 0 0 1px rgba(96, 201, 90, 0.1);
+  transform: translateY(-1px);
+}
+
+.dt-agent-card:hover::before {
+  opacity: 1;
+}
+
+.dt-agent-card.active {
+  border-color: #60C95A;
+  background: linear-gradient(135deg, rgba(240,253,244,0.98) 0%, rgba(220,252,231,0.98) 100%);
+  box-shadow: 0 4px 24px rgba(96, 201, 90, 0.2), inset 0 1px 0 rgba(255,255,255,0.8);
+}
+
+/* 에이전트 카드 상단 행 */
+.dt-agent-card-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+/* 홀로그래픽 아바타 */
+.dt-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.dt-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 17px;
+  position: relative;
+  z-index: 1;
+}
+
+/* 상태 인디케이터 */
+.dt-status-dot {
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid white;
+  z-index: 2;
+}
+.dt-status-dot.online  { background: #22c55e; }
+.dt-status-dot.idle    { background: #94a3b8; }
+.dt-status-dot.busy    { background: #f59e0b; animation: dot-pulse 1.2s infinite; }
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* 에이전트 정보 */
+.dt-agent-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dt-agent-name {
+  font-weight: 700;
+  font-size: 14px;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.dt-agent-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+
+.dt-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-weight: 600;
+  background: rgba(96, 201, 90, 0.12);
+  color: #16a34a;
+  border: 1px solid rgba(96, 201, 90, 0.2);
+}
+
+.dt-agent-desc {
+  font-size: 11px;
+  color: #6b7280;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 삭제 버튼 */
+.dt-delete-btn {
+  background: none;
+  border: none;
+  color: #d1d5db;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  transition: color 0.2s;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+.dt-delete-btn:hover { color: #ef4444; }
+
+/* 뉴럴 라인 장식 (active 카드 하단) */
+.dt-neural-bar {
+  height: 2px;
+  margin-top: 10px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, #60C95A, #3b82f6, transparent);
+  background-size: 200% 100%;
+  animation: neural-flow 2s linear infinite;
+}
+
+@keyframes neural-flow {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* =========================================
+   빈 에이전트 상태 (Empty State)
+========================================= */
+.dt-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.dt-empty-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(96,201,90,0.1), rgba(59,130,246,0.1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  position: relative;
+}
+
+.dt-empty-icon::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px dashed rgba(96,201,90,0.3);
+  animation: spin 8s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* =========================================
+   디지털 트윈 세션 헤더 (우측 패널 상단)
+========================================= */
+.dt-session-header {
+  padding: 16px 20px 12px;
+  background: #fff;
+  border-bottom: 1px solid #f3f4f6;
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  flex-shrink: 0;
+}
+
+.dt-session-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.dt-session-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dt-session-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 16px;
+  color: white;
+  background: linear-gradient(135deg, #60C95A, #4ade80);
+  box-shadow: 0 2px 8px rgba(96,201,90,0.3);
+}
+
+.dt-session-title {
+  font-weight: 800;
+  font-size: 15px;
+  color: #111827;
+  line-height: 1.2;
+}
+
+.dt-session-sub {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 2px;
+  font-weight: 500;
+}
+
+/* 에이전트 칩 목록 */
+.dt-agent-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.dt-agent-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  background: rgba(96,201,90,0.06);
+  border: 1px solid rgba(96,201,90,0.18);
+  border-radius: 20px;
+  font-size: 11px;
+  color: #374151;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.dt-agent-chip:hover {
+  background: rgba(96,201,90,0.12);
+}
+
+.dt-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* 탭 전환 바 — 개선 */
+.view-tab-bar {
+  display: flex;
+  gap: 3px;
+  background: #f3f4f6;
+  padding: 3px;
+  border-radius: 10px;
+}
+
+.view-tab-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 700;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 0.2px;
+}
+
+.view-tab-btn.active {
+  background: #ffffff;
+  color: #111827;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+}
+
+.view-tab-btn.active.mindmap {
+  color: #16a34a;
+}
+
+/* =========================================
+   마인드맵 트리 (Mind Map Discussion)
 ========================================= */
 .discussion-container-light {
   display: flex;
   flex-direction: column;
-  gap: 40px;
-  padding-bottom: 24px;
-  align-items: center; /* Center the tree */
+  gap: 36px;
+  padding: 20px 10px 32px;
+  align-items: center;
+  overflow-y: auto;
 }
 
-/* Session Tree Container */
+/* 세션 트리 전체 (가로 트리 형태로 변경) */
 .session-tree {
-  width: 100%;
-  max-width: 800px;
+  width: auto;
+  max-width: none;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   position: relative;
+  gap: 40px;
 }
 
-/* Vertical Center Line for the Tree */
+/* 중앙 연결선 (더 이상 사용 안함 혹은 수평선으로 대체, 일단 숨김) */
 .tree-trunk {
-  position: absolute;
-  top: 40px;
-  bottom: 40px;
-  left: 50%;
-  width: 3px;
-  background: #E5E7EB; /* Light gray line */
-  transform: translateX(-50%);
-  z-index: 0;
-  border-radius: 2px;
+  display: none;
 }
 
-/* 1. Root Node (User Query) */
+/* 루트 노드 (내 질문 — 디지털 트윈) */
 .tree-root-node {
-  background: #FFFFFF;
+  background: linear-gradient(135deg, #ffffff 0%, #f4fbf4 100%);
+  border: 1px solid rgba(96,201,90,0.3);
   border-radius: 16px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
-  border: 2px solid var(--color-primary);
-  padding: 20px;
-  width: 80%;
+  padding: 20px 24px;
+  width: 380px;
+  flex-shrink: 0;
   z-index: 1;
   position: relative;
-  text-align: center;
-  margin-bottom: 30px;
+  text-align: left;
+  box-shadow: 0 8px 30px rgba(96,201,90,0.12), 0 2px 5px rgba(96,201,90,0.05);
+}
+
+.tree-root-node::after {
+  content: '';
+  position: absolute;
+  right: -40px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 3px;
+  background: #60C95A;
+  border-radius: 2px;
 }
 
 .tree-root-header {
@@ -121,188 +607,540 @@
   justify-content: center;
   align-items: center;
   gap: 8px;
-  color: var(--color-primary);
+  color: #16a34a;
   font-weight: 800;
-  margin-bottom: 12px;
-  font-size: 15px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .tree-root-content {
   font-size: 16px;
-  font-weight: 600;
-  color: var(--color-text-main);
-  line-height: 1.5;
+  font-weight: 700;
+  color: #111827;
+  line-height: 1.6;
+  letter-spacing: -0.2px;
 }
 
-/* 2. Branch Nodes (AI Brainstorming) */
+/* 브랜치 컨테이너 (가로로 컬럼 나열) */
 .tree-branches-container {
-  width: 100%;
   display: flex;
-  flex-direction: column;
-  gap: 20px;
+  flex-direction: row;
+  align-items: center;
+  gap: 60px;
   z-index: 1;
   position: relative;
-  margin-bottom: 30px;
 }
 
-.tree-branch-node {
-  width: 45%;
-  background: #FFFFFF;
-  border: 1px solid var(--color-border);
-  border-radius: 16px;
-  padding: 16px;
-  box-shadow: 0 4px 15px rgba(0,0,0,0.04);
+/* 턴 컬럼의 연결선/연결점 등 (기존 컬럼 기반 로직 삭제) */
+.connection-line-left {
+  position: absolute;
+  left: -30px;
+  top: 50%;
+  width: 30px;
+  height: 3px;
+  background: linear-gradient(90deg, #9ca3af, #60C95A);
+  border-radius: 2px;
+  transform: translateY(-50%);
+  z-index: -1;
+  opacity: 0.7;
+}
+
+.connection-line-right {
+  position: absolute;
+  right: -30px;
+  top: 50%;
+  width: 30px;
+  height: 3px;
+  background: linear-gradient(90deg, #60C95A, #9ca3af);
+  border-radius: 2px;
+  transform: translateY(-50%);
+  z-index: -1;
+  opacity: 0.7;
+}
+
+.connection-line-right::after {
+  content: '';
+  position: absolute;
+  right: -5px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  background: #60C95A;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  box-shadow: 0 0 12px #60C95A, 0 0 24px rgba(96,201,90,0.6); /* 강력한 네온 글로우 */
+}
+
+/* =========================================
+   디지털 트윈 지식 그래프 진행 바
+========================================= */
+.dt-knowledge-bar {
+  width: 90%;
+  max-width: 820px;
+  background: #fff;
+  border: 1px solid rgba(96,201,90,0.18);
+  border-radius: 12px;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   position: relative;
-  transition: transform 0.2s ease;
+  overflow: hidden;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
+
+.dk-stat {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+.dk-stat strong { font-weight: 700; color: #374151; }
+
+.dk-divider {
+  width: 1px;
+  height: 16px;
+  background: #e5e7eb;
+}
+
+.dk-progress-wrap {
+  flex: 1;
+  height: 4px;
+  background: #f3f4f6;
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 60px;
+}
+
+.dk-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #60C95A, #4ade80);
+  border-radius: 4px;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 15px rgba(96,201,90,0.8); /* 진행률 네온 글로우 */
+}
+
+
+
+/* 브랜치 노드 */
+.tree-branch-node {
+  width: 320px; /* 기존 380px에서 축소하여 한눈에 더 많이 보이게 함 */
+  flex-shrink: 0;
+  background: #ffffff;
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 16px;
+  padding: 16px 20px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.04), 0 2px 8px rgba(0,0,0,0.02);
+  position: relative;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+/* 핵심 질문(Root) 노드 강한 대비 디자인 - 오렌지(Amber) 포인트 적용 */
+.tree-root-node {
+  background: #ffffff;
+  color: #111827;
+  border: 2px solid #f97316; /* 오렌지 포인트 */
+  box-shadow: 0 12px 30px rgba(249,115,22,0.15), 0 4px 12px rgba(249,115,22,0.08);
+  width: 300px; /* 기존 340px에서 축소 */
+}
+
+.tree-root-node .branch-header {
+  color: #ea580c !important; /* 강렬한 오렌지 텍스트 */
+  border-bottom-color: rgba(249,115,22,0.2) !important;
+}
+
+.tree-root-node .branch-content {
+  color: #1f2937 !important;
+}
+
+/* 루트 노드에서 뻗어나가는 연결선은 오렌지 -> 그린 그라데이션 */
+.tree-root-node > .connection-line-right {
+  background: linear-gradient(90deg, #f97316, #60C95A);
+  opacity: 0.9;
+}
+
+/* 노드 내 스크롤바 미려하게 */
+.tree-branch-node::-webkit-scrollbar {
+  width: 6px;
+}
+.tree-branch-node::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 3px;
+}
+.tree-branch-node::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .tree-branch-node:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+  transform: translateY(-8px) scale(1.02); /* 확실하게 붕 뜨는 반응형 UI */
+  box-shadow: 0 24px 40px rgba(0,0,0,0.1), 0 8px 16px rgba(96,201,90,0.15); /* 넓게 퍼지는 그림자 */
+  border-color: rgba(96,201,90,0.6);
 }
 
-/* Alternating Layout */
-.tree-branch-node.left {
-  align-self: flex-start;
-  margin-left: 2%;
+.tree-root-node:hover {
+  transform: translateY(-8px) scale(1.02);
+  box-shadow: 0 24px 40px rgba(249,115,22,0.2), 0 8px 16px rgba(249,115,22,0.15); /* 오렌지 글로우 그림자 */
 }
 
-.tree-branch-node.right {
-  align-self: flex-end;
-  margin-right: 2%;
+/* 학습 완료 상태 - 발광 애니메이션 */
+@keyframes neonGlow {
+  0% { box-shadow: 0 0 10px rgba(96,201,90,0.2); }
+  50% { box-shadow: 0 0 20px rgba(96,201,90,0.5); }
+  100% { box-shadow: 0 0 10px rgba(96,201,90,0.2); }
 }
 
-/* Connecting lines from branch to trunk */
+.tree-branch-node.learned {
+  border-color: #60C95A;
+  background: linear-gradient(135deg, #ffffff 0%, #f0fdf4 100%);
+  animation: neonGlow 3s infinite;
+}
+
+/* 학습 완료 뱃지 */
+.learned-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #16a34a;
+  background: rgba(96,201,90,0.1);
+  border: 1px solid rgba(96,201,90,0.25);
+  padding: 2px 8px;
+  border-radius: 20px;
+  margin-bottom: 8px;
+}
+
+
+
+/* 좌우 교대 클래스 삭제 (더 이상 사용 안함) */
+
+/* 연결선 (노드별 수평선) - 필요 시 추가 가능하지만 지금은 Column에서 처리 */
 .tree-branch-node::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  width: calc(10% + 2px); /* Connects card to trunk */
-  height: 2px;
-  background: #E5E7EB;
-  z-index: -1;
-}
-
-.tree-branch-node.left::before {
-  right: calc(-11%);
-}
-
-.tree-branch-node.right::before {
-  left: calc(-11%);
+  display: none;
 }
 
 .branch-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
+  gap: 8px;
+  margin-bottom: 10px;
   font-weight: 700;
   font-size: 14px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid rgba(0,0,0,0.04);
+  padding-bottom: 8px;
 }
 
 .branch-badge {
-  font-size: 11px;
-  background: rgba(96, 201, 90, 0.1);
-  color: var(--color-primary);
+  font-size: 10px;
   padding: 2px 8px;
-  border-radius: 12px;
-  font-weight: 600;
+  border-radius: 10px;
+  font-weight: 700;
 }
 
 .branch-content {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--color-text-muted);
+  font-size: 14px;
+  line-height: 1.7;
+  color: #1f2937;
+  white-space: pre-wrap;
+  margin-bottom: 12px;
+  letter-spacing: -0.1px;
 }
 
-/* 3. Convergence Node (Final Answer) */
+/* 피드백 버튼 */
+.branch-feedback-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  border-top: 1px solid #f3f4f6;
+  padding-top: 8px;
+}
+
+.feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 20px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  color: #6b7280;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.18s ease;
+}
+
+.feedback-btn:hover {
+  border-color: #60C95A;
+  background: rgba(96,201,90,0.08);
+  color: #16a34a;
+}
+
+.feedback-btn.active {
+  border-color: #60C95A;
+  background: rgba(96,201,90,0.12);
+  color: #16a34a;
+}
+
+.feedback-btn.detail:hover {
+  border-color: #3b82f6;
+  background: rgba(59,130,246,0.08);
+  color: #2563eb;
+}
+
+/* 컨버전스 노드 (최종 답변) */
 .tree-convergence-node {
-  background: rgba(96, 201, 90, 0.05);
-  border: 2px solid var(--color-primary);
+  background: linear-gradient(135deg, rgba(240,253,244,0.95) 0%, rgba(220,252,231,0.95) 100%);
+  border: 2px solid #60C95A;
   border-radius: 16px;
-  padding: 24px;
-  width: 90%;
+  padding: 20px 24px;
+  width: 88%;
   z-index: 1;
   position: relative;
-  box-shadow: 0 8px 25px rgba(96, 201, 90, 0.15);
+  box-shadow: 0 6px 24px rgba(96,201,90,0.18);
+  margin-top: 8px;
+}
+
+.tree-convergence-node::before {
+  content: '';
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 14px;
+  background: #60C95A;
 }
 
 .convergence-header {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  color: var(--color-primary);
+  gap: 8px;
+  color: #16a34a;
   font-weight: 800;
-  font-size: 16px;
-  margin-bottom: 16px;
+  font-size: 14px;
+  margin-bottom: 14px;
 }
 
 .convergence-content {
-  font-size: 15px;
-  line-height: 1.7;
-  color: var(--color-text-main);
+  font-size: 14px;
+  line-height: 1.75;
+  color: #111827;
   white-space: pre-wrap;
 }
 
-/* Skeleton Light */
-.skeleton-light {
-  height: 12px;
-  background: #E5E7EB;
-  border-radius: 4px;
-  margin-bottom: 8px;
-  animation: pulse-bg-light 1.5s infinite;
-}
-
-/* Input Area */
+/* ── 프리미엄 입력창 ── */
 .chat-input-premium {
   display: flex;
-  gap: 12px;
-  background: #FFFFFF;
-  border: 1px solid var(--color-border);
-  padding: 16px;
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 20px;
+  padding: 4px 6px 4px 16px;
+  transition: all 0.2s ease;
+}
+
+.chat-input-premium:focus-within {
+  background: #ffffff;
+  border-color: rgba(96,201,90,0.4);
+  box-shadow: 0 4px 12px rgba(96,201,90,0.1);
+}
+
+.chat-input-premium input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  color: #111827;
+  outline: none;
+  padding: 8px 0;
+}
+
+.chat-input-premium input::placeholder {
+  color: #9ca3af;
+}
+
+.chat-input-premium button {
+  width: 36px;
+  height: 36px;
+  border-radius: 14px;
+  border: none;
+  background: linear-gradient(135deg, #60C95A, #4ade80);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(96,201,90,0.3);
+}
+
+.chat-input-premium button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(96,201,90,0.4);
+}
+
+.chat-input-premium button:disabled {
+  background: #e5e7eb;
+  color: #9ca3af;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* 마인드맵 탭 전환 */
+.mindmap-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  color: #9ca3af;
+}
+
+.mindmap-empty-icon {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(96,201,90,0.08), rgba(59,130,246,0.08));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  border: 1.5px dashed rgba(96,201,90,0.3);
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-6px); }
+}
+
+/* =========================================
+   스켈레톤 & 로딩
+========================================= */
+.skeleton-light {
+  height: 11px;
+  background: linear-gradient(90deg, #f3f4f6 25%, #e9eaec 50%, #f3f4f6 75%);
+  background-size: 200% 100%;
+  border-radius: 6px;
+  margin-bottom: 7px;
+  animation: shimmer 1.4s infinite;
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+/* 타이핑 도트 */
+.dt-typing-dots span {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  background: #60C95A;
+  border-radius: 50%;
+  margin: 0 2px;
+  animation: typing-bounce 1.2s infinite;
+}
+.dt-typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.dt-typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typing-bounce {
+  0%, 100% { transform: translateY(0); opacity: 0.5; }
+  50%       { transform: translateY(-4px); opacity: 1; }
+}
+
+/* =========================================
+   채팅 인풋 (Premium)
+========================================= */
+.chat-input-premium {
+  display: flex;
+  gap: 10px;
+  background: #ffffff;
+  border: 1.5px solid #e5e7eb;
+  padding: 10px 14px;
   border-radius: 16px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.04);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+  transition: border-color 0.2s;
+}
+
+.chat-input-premium:focus-within {
+  border-color: rgba(96,201,90,0.6);
+  box-shadow: 0 2px 16px rgba(96,201,90,0.12);
 }
 
 .chat-input-premium input {
   flex: 1;
   background: transparent;
   border: none;
-  font-size: 15px;
+  font-size: 14px;
   outline: none;
-  color: var(--color-text-main);
+  color: #111827;
+}
+
+.chat-input-premium input::placeholder {
+  color: #9ca3af;
 }
 
 .chat-input-premium button {
-  background: var(--color-primary);
-  color: #FFFFFF;
+  background: linear-gradient(135deg, #60C95A, #4ade80);
+  color: #fff;
   border: none;
-  border-radius: 12px;
-  width: 48px;
-  height: 48px;
+  border-radius: 10px;
+  width: 40px;
+  height: 40px;
   display: flex;
   justify-content: center;
   align-items: center;
   cursor: pointer;
   transition: all 0.2s;
-  box-shadow: 0 4px 10px rgba(96, 201, 90, 0.2);
+  box-shadow: 0 2px 8px rgba(96,201,90,0.3);
+  flex-shrink: 0;
+}
+
+.chat-input-premium button:hover:not(:disabled) {
+  transform: scale(1.05);
+  box-shadow: 0 4px 14px rgba(96,201,90,0.4);
 }
 
 .chat-input-premium button:disabled {
-  background: #E5E7EB;
-  color: #9CA3AF;
+  background: #e5e7eb;
+  color: #9ca3af;
   box-shadow: none;
   cursor: not-allowed;
 }
 
-@keyframes pulse-bg-light {
-  0% { background-color: #F3F4F6; }
-  50% { background-color: #E5E7EB; }
-  100% { background-color: #F3F4F6; }
+/* =========================================
+   채팅 헤더 에이전트 칩
+========================================= */
+.agent-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(96,201,90,0.06);
+  border: 1px solid rgba(96,201,90,0.18);
+  border-radius: 20px;
+  font-size: 11px;
+  color: #111827;
 }
 
-@keyframes pulse-ring {
-  0% { transform: scale(1); opacity: 0.8; }
-  100% { transform: scale(1.4); opacity: 0; }
+.agent-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }

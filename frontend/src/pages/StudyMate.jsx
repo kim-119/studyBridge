@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { agentService } from '../services/api';
-import { AlertCircle, Bot, Plus, Send, Sparkles, Trash2, X, Info } from 'lucide-react';
+import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLeft, ChevronRight, CheckCircle2 } from 'lucide-react';
+import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
+import '../components/studymate/studymate-premium.css';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const PERSONALITY_OPTIONS = ['전문적', '친근함', '솔직함', '독특함', '효율적', '냉소적'];
 const KNOWLEDGE_LEVEL_OPTIONS = ['입문 수준', '학사 수준', '석사 수준', '박사 수준', '전문가 수준'];
@@ -134,7 +137,21 @@ export default function StudyMate() {
   const [agents, setAgents] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
+  const [viewTab, setViewTab] = useState('chat'); // 'chat' | 'mindmap'
   const [message, setMessage] = useState('');
+  
+  // 멘션(@) 관련 상태
+  const [showMentionPopup, setShowMentionPopup] = useState(false);
+  const [mentionFilter, setMentionFilter] = useState('');
+  const [learnedIds, setLearnedIds] = useState(new Set());
+  const [toastMsg, setToastMsg] = useState('');
+  
+  // 패널 토글 상태
+  const [isLeftOpen, setIsLeftOpen] = useState(true);
+  const [isRightOpen, setIsRightOpen] = useState(true);
+
+  // 더 자세히 요청 시, 다음 AI 응답을 어떤 노드의 자식로 연결할지 추적
+  const pendingDetailParentId = React.useRef(null);
   
   // 개별 채팅방별 캐시 및 상태 관리
   const [roomHistories, setRoomHistories] = useState({}); // { [roomId]: messages[] }
@@ -274,17 +291,17 @@ export default function StudyMate() {
     }
   };
 
-  const sendMessage = async (e) => {
-    e.preventDefault();
+  const sendMessage = async (e, directMessage = null) => {
+    if (e) e.preventDefault();
     const agentId = getAgentId(selectedAgent);
-    if (!message.trim() || !selectedAgent || typingRooms[agentId]) return;
-
-    const inputMsg = message.trim();
+    const inputMsg = directMessage || message.trim();
+    if (!inputMsg || !selectedAgent || typingRooms[agentId]) return;
     const userMsg = {
       id: Date.now(),
       content: inputMsg,
       sender: 'USER',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      parentId: pendingDetailParentId.current || undefined
     };
 
     // 1. 현재 화면에 즉시 사용자 메시지 추가
@@ -318,7 +335,8 @@ export default function StudyMate() {
           sender: 'AI',
           senderName: reply.agentName || reply.agent_name,
           agentId: reply.agentId,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          parentId: userMsg.id, // AI 응답은 방금 작성한 유저 질문의 자식이 됨
         }));
       } else {
         newMsgs = [{
@@ -326,9 +344,12 @@ export default function StudyMate() {
           content: res.answer,
           sender: 'AI',
           senderName: selectedAgent.name,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          parentId: userMsg.id,
         }];
       }
+      // 태깅 초기화
+      pendingDetailParentId.current = null;
 
       // 5. 해당 방의 캐시 갱신 (사용자가 다른 방에 있더라도 백그라운드 캐시에 완벽히 반영)
       setRoomHistories((prev) => {
@@ -394,319 +415,575 @@ export default function StudyMate() {
 
   // 로그아웃 상태일 때도 UI는 렌더링되도록 함
 
+  // ─── 트윈 지식 키워드 및 로그 추출 ───
+  const getLearnedKeywords = () => {
+    const keywords = new Set();
+    const logs = [];
+    Array.from(learnedIds).forEach(id => {
+      const msg = chatHistory.find(m => m.id === id);
+      if (msg && msg.content) {
+        // 특수문자 제거 후 2글자 이상 핵심 단어 추출
+        const words = msg.content.split(/\s+/)
+          .map(w => w.replace(/[^가-힣a-zA-Z0-9]/g, ''))
+          .filter(w => w.length >= 2 && w.length <= 8)
+          .filter(w => !['그래서', '하지만', '그리고', '이런', '저런', '있는', '대한', '어떤', '입니다', '합니다', '것이', '가장', '대해', '위해'].includes(w));
+        
+        const extracted = Array.from(new Set(words)).slice(0, 2);
+        extracted.forEach(kw => keywords.add(kw));
+        
+        logs.push({
+          id,
+          keywords: extracted,
+          preview: msg.content.slice(0, 25) + '...'
+        });
+      }
+    });
+    return { twinKeywords: Array.from(keywords).slice(-12), twinLogs: logs.reverse().slice(0, 3) };
+  };
+
+  const { twinKeywords, twinLogs } = getLearnedKeywords();
+
   return (
-    <div className="container-main">
-      <div className="layout-split">
-        <div className="glass-panel layout-pane-left animate-fade-in">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-            <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', fontSize: '18px' }}>
-              <Sparkles size={20} color="var(--color-primary)" /> AI 학습메이트
-            </h2>
-            <button
-              className="btn-outline"
-              style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
-              onClick={handleOpenModal}
-              disabled={agents.length >= 3}
-            >
-              <Plus size={16} /> 생성 ({agents.length}/3)
-            </button>
-          </div>
+    <div className="container-workspace">
+      {/* ── 토스트 알림 ── */}
+      {toastMsg && (
+        <div style={{
+          position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)',
+          background: '#111827', color: '#fff', padding: '10px 20px', borderRadius: 12,
+          fontSize: 13, fontWeight: 600, zIndex: 9999, whiteSpace: 'nowrap',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.2)', animation: 'fadeInUp 0.25s ease',
+        }}>
+          {toastMsg}
+        </div>
+      )}
+      <div className="layout-3-panel">
+        {/* ════ 1. 좌측: 트윈 컨트롤 패널 ════ */}
+        {isLeftOpen && (
+          <div className="pane-left animate-fade-in">
+            <div className="dt-left-panel">
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', paddingRight: '4px' }}>
-            {agents.length === 0 ? (
-              <div className="empty-state" style={{ padding: '40px 0' }}>
-                <p>생성된 에이전트가 없습니다.</p>
-                <p style={{ fontSize: '12px' }}>학습 목적에 맞는 AI 에이전트를 만들어보세요.</p>
+            {/* 헤더 */}
+            <div className="dt-left-header">
+              <div className="dt-left-title">
+                <div className="dt-left-title-icon">
+                  <Sparkles size={14} color="white" />
+                </div>
+                AI 학습메이트
               </div>
-            ) : (
-              agents.map((agent, index) => {
-                const agentId = getAgentId(agent);
-                const isActive = getAgentId(selectedAgent) === agentId;
-                const avatarColor = getAvatarColor(index);
-                const knowledgeLevel = getAgentKnowledgeLevel(agent);
-                const personality = getAgentPersonality(agent);
+            </div>
 
-                return (
-                  <div
-                    key={agentId}
-                    style={{
-                      padding: '16px',
-                      borderRadius: '12px',
-                      borderWidth: '1px',
-                      borderStyle: 'solid',
-                      borderColor: isActive ? 'var(--color-primary)' : 'var(--color-border)',
-                      backgroundColor: isActive ? 'rgba(96, 201, 90, 0.05)' : 'var(--color-bg-base)',
-                      boxShadow: isActive ? '0 2px 8px rgba(96, 201, 90, 0.1)' : 'none',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '12px',
-                      transition: 'all 0.2s ease'
-                    }}
-                    onClick={() => selectAgent(agent)}
-                  >
-                    <div className="avatar" style={{ backgroundColor: avatarColor.bg, color: avatarColor.text }}>
-                      {(agent.roomName || agent.name)?.charAt(0)}
-                    </div>
+            {/* 트윈 동기화 상태 배너 */}
+            <div className="dt-sync-banner">
+              <div className="dt-sync-dot" />
+              <div>
+                <span className="dt-sync-text">트윈 세션 활성화</span>
+                <span style={{ marginLeft: 4 }}>·</span>
+                <span style={{ marginLeft: 4 }}>{agents.length}개 그룹</span>
+              </div>
+            </div>
 
-                    <div style={{ flex: 1, overflow: 'hidden' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <div style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {agent.roomName || agent.name}
+            {/* 에이전트 카드 스크롤 영역 */}
+            <div className="dt-agent-scroll">
+              {agents.length === 0 ? (
+                <div className="dt-empty-state">
+                  <div className="dt-empty-icon">
+                    <Bot size={28} color="#60C95A" />
+                  </div>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: '#374151', marginBottom: 6 }}>에이전트가 없습니다</div>
+                  <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.5 }}>학습 목적에 맞는<br/>
+                    AI 에이전트를 만들어보세요.
+                  </div>
+                </div>
+              ) : (
+                agents.map((agent, index) => {
+                  const agentId = getAgentId(agent);
+                  const isActive = getAgentId(selectedAgent) === agentId;
+                  const avatarColor = getAvatarColor(index);
+                  const knowledgeLevel = getAgentKnowledgeLevel(agent);
+                  const personality = getAgentPersonality(agent);
+                  const isTyping = typingRooms[agentId];
+
+                  return (
+                    <div
+                      key={agentId}
+                      className={`dt-agent-card ${isActive ? 'active' : ''}`}
+                      onClick={() => selectAgent(agent)}
+                    >
+                      <div className="dt-agent-card-row">
+                        <div className="dt-avatar-wrap">
+                          <div className="dt-avatar" style={{ backgroundColor: avatarColor.bg, color: avatarColor.text }}>
+                            {(agent.roomName || agent.name)?.charAt(0)}
+                          </div>
+                          <div className={`dt-status-dot ${isTyping ? 'busy' : isActive ? 'online' : 'idle'}`} />
+                        </div>
+                        <div className="dt-agent-info">
+                          <div className="dt-agent-name">{agent.roomName || agent.name}</div>
+                          <div className="dt-agent-tags">
+                            {agent.agents && agent.agents.length > 0 ? (
+                              agent.agents.map((ag, idx) => (
+                                <span key={idx} className="dt-tag">#{ag.name}</span>
+                              ))
+                            ) : (
+                              <>
+                                <span className="dt-tag">#{personality}</span>
+                                <span className="dt-tag">#{knowledgeLevel}</span>
+                              </>
+                            )}
+                          </div>
+                          <div className="dt-agent-desc">
+                            {String(agent.persona || agent.goal || '').substring(0, 38) || '학습 메이트'}
+                          </div>
                         </div>
                         <button
-                          style={{ background: 'none', border: 'none', color: '#D1D5DB', cursor: 'pointer', padding: '2px' }}
+                          className="dt-delete-btn"
                           onClick={(e) => handleDeleteAgent(e, agentId)}
                           aria-label="에이전트 삭제"
                         >
-                          <Trash2 size={14} />
+                          <Trash2 size={13} />
                         </button>
                       </div>
-                      <div style={{ marginBottom: '6px', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                        {agent.agents && agent.agents.length > 0 ? (
-                          agent.agents.map((ag, idx) => (
-                            <span key={idx} className="tag">#{ag.name}</span>
-                          ))
-                        ) : (
-                          <>
-                            <span className="tag">#{agent.role}</span>
-                            <span className="tag">#{knowledgeLevel}</span>
-                            <span className="tag">#{personality}</span>
-                          </>
-                        )}
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: '1.4' }}>
-                        {String(agent.persona || agent.goal || '').length > 35
-                          ? `${String(agent.persona || agent.goal || '').substring(0, 35)}...`
-                          : String(agent.persona || agent.goal || '')}
-                      </div>
+                      {isActive && <div className="dt-neural-bar" />}
                     </div>
-                  </div>
-                );
-              })
-            )}
+                  );
+                })
+              )}
+            </div>
+
+            {/* 하단 고정 생성 버튼 */}
+            <div className="dt-create-btn-wrap">
+              <button
+                className="dt-create-btn"
+                onClick={handleOpenModal}
+                disabled={agents.length >= 3}
+              >
+                <Plus size={15} /> 새 AI 그룹 생성 ({agents.length}/3)
+              </button>
+            </div>
+
           </div>
         </div>
+        )}
 
-        <div className="glass-panel layout-pane-right animate-fade-in">
+        {/* 좌측 패널 토글 버튼 */}
+        <button 
+          onClick={() => setIsLeftOpen(!isLeftOpen)}
+          style={{
+            position: 'absolute', left: isLeftOpen ? '300px' : '0', top: '50%', transform: 'translateY(-50%)', zIndex: 50,
+            background: 'white', border: '1px solid #e5e7eb', borderLeft: 'none', borderRadius: '0 12px 12px 0', padding: '10px 4px', cursor: 'pointer',
+            boxShadow: '4px 0 12px rgba(0,0,0,0.05)', transition: 'left 0.3s ease', display: 'flex', alignItems: 'center', justifyContent: 'center'
+          }}
+        >
+          {isLeftOpen ? <ChevronLeft size={16} color="#9ca3af" /> : <ChevronRight size={16} color="#9ca3af" />}
+        </button>
+
+        {/* ════ 2. 중앙: 메인 학습 캔버스 ════ */}
+        <div className="pane-center animate-fade-in">
           {!selectedAgent ? (
-            <div className="empty-state">
-              <Bot size={50} color="#E5E7EB" style={{ marginBottom: '16px' }} />
-              <h3 style={{ margin: '0 0 8px 0', color: 'var(--color-text-main)' }}>AI 학습메이트</h3>
-              <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px' }}>
-                왼쪽에서 대화할 에이전트를 선택하거나 새로 생성하세요.
+            <div className="empty-state" style={{ 
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', 
+              height: '100%', background: 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)', position: 'relative' 
+            }}>
+              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '300px', height: '300px', background: 'radial-gradient(circle, rgba(96,201,90,0.05) 0%, transparent 70%)', borderRadius: '50%', animation: 'pulseDot 4s infinite alternate' }}></div>
+              <div style={{ background: 'white', padding: '24px', borderRadius: '24px', boxShadow: '0 8px 30px rgba(0,0,0,0.04)', marginBottom: '24px', position: 'relative', zIndex: 1 }}>
+                <Sparkles size={48} color="#60C95A" />
+              </div>
+              <h2 style={{ 
+                margin: '0 0 12px 0', fontSize: '28px', fontWeight: '900', letterSpacing: '-0.5px',
+                background: 'linear-gradient(135deg, #111827 0%, #374151 100%)',
+                WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', position: 'relative', zIndex: 1 
+              }}>디지털 트윈 학습 세션</h2>
+              <p style={{ margin: 0, color: '#6b7280', fontSize: '15px', fontWeight: '500', textAlign: 'center', lineHeight: '1.6', position: 'relative', zIndex: 1 }}>
+                왼쪽 패널에서 에이전트를 선택하여 지식 동기화를 시작하거나<br/>
+                새로운 AI 학습메이트를 생성하세요.
               </p>
             </div>
           ) : (
             <div className="chat-container">
-              <div className="chat-header" style={{ paddingBottom: '16px', borderBottom: '1px solid var(--color-border)' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <div className="avatar-sm" style={{ backgroundColor: 'var(--color-primary)', color: 'white', fontWeight: 'bold' }}>
-                        {(selectedAgent.roomName || selectedAgent.name)?.charAt(0)}
+              {/* ── 디지털 트윈 세션 헤더 ── */}
+              <div className="dt-session-header">
+                {/* 상단: 아이덴티티 + 상세보기 */}
+                <div className="dt-session-top">
+                  <div className="dt-session-identity">
+                    <div className="dt-session-avatar">
+                      {(selectedAgent.roomName || selectedAgent.name)?.charAt(0)}
+                    </div>
+                    <div>
+                      <div className="dt-session-title">
+                        {selectedAgent.roomName || `${selectedAgent.name}의 그룹 스터디`}
                       </div>
-                      <div>
-                        <div style={{ fontWeight: 'bold', fontSize: '16px', color: 'var(--color-text-main)' }}>
-                          {selectedAgent.roomName || `${selectedAgent.name}의 그룹 스터디`}
-                        </div>
+                      <div className="dt-session-sub">
+                        Digital Twin Learning Session
                       </div>
                     </div>
+                  </div>
+                  <button
+                    onClick={() => setShowDetailsModal(true)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '5px',
+                      fontSize: '11px', padding: '5px 10px', borderRadius: '8px',
+                      background: 'rgba(96,201,90,0.08)', border: '1px solid rgba(96,201,90,0.2)',
+                      color: '#16a34a', fontWeight: '700', cursor: 'pointer'
+                    }}
+                  >
+                    에이전트 상세
+                  </button>
+                </div>
 
-                    <button
-                      onClick={() => setShowDetailsModal(true)}
-                      className="btn-secondary"
+                {/* 에이전트 칩 */}
+                {selectedAgent.agents && selectedAgent.agents.length > 0 && (
+                  <div className="dt-agent-chips">
+                    {selectedAgent.agents.map((ag, idx) => {
+                      const c = getAvatarColor(idx);
+                      return (
+                        <div key={ag.id || idx} className="dt-agent-chip">
+                          <div className="dt-chip-dot" style={{ backgroundColor: c.text }} />
+                          <span>{ag.name}</span>
+                          <span style={{ color: '#9ca3af', fontSize: 10 }}>({ag.role})</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* 탭 전환 바 */}
+                <div className="view-tab-bar">
+                  <button
+                    id="tab-chat"
+                    className={`view-tab-btn ${viewTab === 'chat' ? 'active' : ''}`}
+                    onClick={() => {
+                      setViewTab('chat');
+                      setIsLeftOpen(true);
+                      setIsRightOpen(true);
+                    }}
+                  >
+                    <MessageSquare size={13} /> 채팅
+                  </button>
+                  <button
+                    id="tab-mindmap"
+                    className={`view-tab-btn ${viewTab === 'mindmap' ? 'active mindmap' : ''}`}
+                    onClick={() => {
+                      setViewTab('mindmap');
+                      setIsLeftOpen(false); // 마인드맵 진입 시 좌측 패널 자동 숨김
+                      setIsRightOpen(false); // 마인드맵 진입 시 우측 패널 자동 숨김
+                    }}
+                  >
+                    <Network size={13} /> 마인드맵 (크게 보기)
+                  </button>
+                </div>
+              </div>
+
+              {/* ── 채팅 뷰 ── */}
+              {viewTab === 'chat' && (
+                <div className="chat-history">
+                  {chatHistory.length === 0 ? (
+                    <div className="empty-state" style={{ marginTop: '40px' }}>
+                      <MessageSquare size={36} color="#E5E7EB" style={{ marginBottom: 12 }} />
+                      <p style={{ margin: 0, color: '#9ca3af', fontSize: 14 }}>질문을 입력해보세요.</p>
+                    </div>
+                  ) : (
+                    chatHistory.map((msg, idx) => {
+                      const isUser = msg.sender === 'USER';
+                      const senderName = isUser ? '나' : (msg.senderName || msg.sender_name || selectedAgent.name);
+
+                      let agentTheme = { bg: '#F3F4F6', icon: '🤖', tagBg: '#E5E7EB', accent: '#4B5563' };
+                      let agentPersonality = '';
+                      let agentRole = '';
+
+                      if (!isUser && selectedAgent && selectedAgent.agents) {
+                        const matchedAgent = selectedAgent.agents.find(
+                          (ag) => ag.name === senderName || ag.name === msg.senderName || ag.name === msg.sender_name
+                        );
+                        if (matchedAgent) {
+                          agentPersonality = getAgentPersonality(matchedAgent);
+                          agentTheme = getAgentStyleTheme(agentPersonality);
+                          agentRole = matchedAgent.role;
+                        }
+                      }
+
+                      return (
+                        <div key={msg.id || idx} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
+                          <div className="chat-bubble-sender" style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isUser ? undefined : agentTheme.accent }}>
+                            {!isUser && (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', backgroundColor: agentTheme.tagBg, fontSize: '11px' }}>
+                                {agentTheme.icon}
+                              </span>
+                            )}
+                            <span style={{ fontWeight: '700' }}>{senderName}</span>
+                            {!isUser && agentRole && <span style={{ fontSize: '10px', color: '#9ca3af' }}>({agentRole})</span>}
+                            {!isUser && agentPersonality && (
+                              <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '4px', backgroundColor: agentTheme.tagBg, color: agentTheme.accent, fontWeight: 'bold' }}>
+                                {agentPersonality}
+                              </span>
+                            )}
+                          </div>
+                          <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none' }}>
+                            {msg.content}
+                          </div>
+                          <div className="chat-bubble-time">{formatTime(msg.createdAt)}</div>
+                        </div>
+                      );
+                    })
+                  )}
+                  {typingRooms[getAgentId(selectedAgent)] && (
+                    <div className="chat-bubble-container ai">
+                      <div className="chat-bubble-sender">AI 에이전트 검토 중...</div>
+                      <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span className="dot" /><span className="dot" /><span className="dot" />
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+              )}
+
+              {/* ── 마인드맵 뷰 ── */}
+              {viewTab === 'mindmap' && (
+                <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                  <AgentDiscussionThread
+                    messages={chatHistory}
+                    typingAgents={
+                      typingRooms[getAgentId(selectedAgent)]
+                        ? (selectedAgent.agents || [{ id: 'ai', name: selectedAgent.name || 'AI' }]).map((ag, i) => ({
+                            id: ag.id || i,
+                            name: ag.name,
+                            color: ['#2563eb','#EA580C','#7C3AED'][i % 3],
+                          }))
+                        : []
+                    }
+                    agents={selectedAgent.agents || []}
+                    learnedIds={learnedIds}
+                    onHelpful={(disc) => {
+                      // 학습 완료 등록
+                      if (!disc.id) return;
+                      setLearnedIds((prev) => new Set([...prev, disc.id]));
+                      setToastMsg('✅ 학습 완료! 디지털 트윈에 저장되었습니다.');
+                      setTimeout(() => setToastMsg(''), 2800);
+                    }}
+                    onRequestDetail={(disc) => {
+                      pendingDetailParentId.current = disc.id;
+                      
+                      // 사용자의 질문 노드에서 파생될 경우와 AI 노드에서 파생될 경우 문구 분리
+                      const isUserNode = disc.sender === 'USER';
+                      const promptText = isUserNode 
+                        ? `@모두 여기에 덧붙여서 질문이 하나 더 있는데, `
+                        : `@모두 이 부분에 대해 각자의 관점에서 더 자세히 설명해 줄래?`;
+                        
+                      setMessage(promptText);
+                      setShowMentionPopup(true);
+                      setMentionFilter(''); // 전체 목록 보여주기
+                      
+                      const activeId = getAgentId(selectedAgent);
+                      if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+
+                      const inputEl = document.querySelector('.chat-input-premium input');
+                      if (inputEl) inputEl.focus();
+
+                      setToastMsg('💡 하단 입력창에 이어서 질문을 작성해주세요.');
+                      setTimeout(() => setToastMsg(''), 2500);
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* ── 공통 입력창 ── */}
+              <div style={{ position: 'relative', padding: '12px 20px 16px', backgroundColor: 'white', borderTop: '1px solid #f3f4f6', borderBottomLeftRadius: 16, borderBottomRightRadius: 16 }}>
+                
+                {/* 멘션 팝업 */}
+                <AnimatePresence>
+                  {showMentionPopup && selectedAgent && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      transition={{ duration: 0.15 }}
                       style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        fontSize: '12px',
-                        padding: '6px 12px',
-                        borderRadius: '20px',
-                        backgroundColor: 'rgba(96, 201, 90, 0.1)',
-                        border: '1px solid rgba(96, 201, 90, 0.2)',
-                        color: 'var(--color-primary)',
-                        fontWeight: '600',
-                        cursor: 'pointer'
+                        position: 'absolute', bottom: '100%', left: '20px', marginBottom: '8px',
+                        background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '12px',
+                        boxShadow: '0 10px 25px rgba(0,0,0,0.1)', minWidth: '200px', overflow: 'hidden', zIndex: 100
                       }}
                     >
-                      에이전트 상세보기
-                    </button>
-                  </div>
-
-                  {/* 스터디방 에이전트 목록 표시 */}
-                  {selectedAgent.agents && selectedAgent.agents.length > 0 && (
-                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
-                      {selectedAgent.agents.map((ag, idx) => {
-                        const avatarColor = getAvatarColor(idx);
-                        return (
-                          <div
-                            key={ag.id || idx}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '6px',
-                              padding: '4px 10px',
-                              backgroundColor: 'rgba(96, 201, 90, 0.04)',
-                              border: '1px solid rgba(96, 201, 90, 0.15)',
-                              borderRadius: '16px',
-                              fontSize: '11px',
-                              color: 'var(--color-text-main)'
-                            }}
-                          >
-                            <span
-                              style={{
-                                display: 'inline-block',
-                                width: '6px',
-                                height: '6px',
-                                borderRadius: '50%',
-                                backgroundColor: avatarColor.text
+                      <ul style={{ listStyle: 'none', margin: 0, padding: '4px' }}>
+                        {[{ name: '모두', color: '#60C95A' }, ...(selectedAgent.agents || [])]
+                          .filter(ag => !mentionFilter || ag.name.toLowerCase().includes(mentionFilter.toLowerCase()))
+                          .map((ag, idx) => (
+                            <li 
+                              key={idx}
+                              style={{ 
+                                padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', 
+                                fontSize: '13px', fontWeight: '600', color: '#374151', borderRadius: '8px', transition: 'background 0.2s'
                               }}
-                            />
-                            <span style={{ fontWeight: '600' }}>{ag.name}</span>
-                            <span style={{ color: 'var(--color-text-muted)', fontSize: '10px' }}>({ag.role})</span>
-                          </div>
-                        );
-                      })}
-                    </div>
+                              onMouseEnter={(e) => e.currentTarget.style.background = '#f3f4f6'}
+                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                              onClick={() => {
+                                const val = message;
+                                const lastAtPos = val.lastIndexOf('@');
+                                if (lastAtPos !== -1) {
+                                  const beforeAt = val.slice(0, lastAtPos);
+                                  const afterAtText = val.slice(lastAtPos);
+                                  const spaceIndex = afterAtText.indexOf(' ');
+                                  
+                                  const afterMention = spaceIndex !== -1 ? afterAtText.slice(spaceIndex) : ' ';
+                                  const newMsg = beforeAt + '@' + ag.name + afterMention;
+                                  
+                                  setMessage(newMsg);
+                                  const activeId = getAgentId(selectedAgent);
+                                  if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: newMsg }));
+                                }
+                                setShowMentionPopup(false);
+                                const inputEl = document.querySelector('.chat-input-premium input');
+                                if (inputEl) inputEl.focus();
+                              }}
+                            >
+                              <div style={{ width: 24, height: 24, borderRadius: '50%', background: ag.color || '#e5e7eb', color: ag.color ? '#fff' : '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
+                                {ag.name === '모두' ? 'M' : ag.name.charAt(0)}
+                              </div>
+                              {ag.name}
+                            </li>
+                          ))
+                        }
+                      </ul>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <form onSubmit={sendMessage} className="chat-input-premium">
+                  <input
+                    type="text"
+                    value={message}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setMessage(val);
+                      
+                      // 멘션 팝업 파싱 로직
+                      const lastAtPos = val.lastIndexOf('@');
+                      if (lastAtPos !== -1) {
+                        const afterAt = val.slice(lastAtPos + 1);
+                        if (!afterAt.includes(' ')) {
+                          setShowMentionPopup(true);
+                          setMentionFilter(afterAt);
+                        } else {
+                          setShowMentionPopup(false);
+                        }
+                      } else {
+                        setShowMentionPopup(false);
+                      }
+
+                      const activeId = getAgentId(selectedAgent);
+                      if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: val }));
+                    }}
+                    placeholder={viewTab === 'mindmap' ? '마인드맵으로 탐색할 질문을 입력하세요... (@를 입력해 에이전트 호출)' : '메시지를 입력해보세요... (@호출)'}
+                    disabled={typingRooms[getAgentId(selectedAgent)]}
+                  />
+                  <button type="submit" disabled={typingRooms[getAgentId(selectedAgent)] || !message.trim()}>
+                    <Send size={17} />
+                  </button>
+                </form>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 우측 패널 토글 버튼 */}
+        <button 
+          onClick={() => setIsRightOpen(!isRightOpen)}
+          style={{
+            position: 'absolute', right: isRightOpen ? '320px' : '0', top: '50%', transform: 'translateY(-50%)', zIndex: 50,
+            background: 'white', border: '1px solid #e5e7eb', borderRight: 'none', borderRadius: '12px 0 0 12px', padding: '10px 4px', cursor: 'pointer',
+            boxShadow: '-4px 0 12px rgba(0,0,0,0.05)', transition: 'right 0.3s ease', display: 'flex', alignItems: 'center', justifyContent: 'center'
+          }}
+        >
+          {isRightOpen ? <ChevronRight size={16} color="#9ca3af" /> : <ChevronLeft size={16} color="#9ca3af" />}
+        </button>
+
+        {/* ════ 3. 우측: 디지털 트윈 애널리틱스 & 인사이트 ════ */}
+        {isRightOpen && (
+          <div className="pane-right animate-fade-in">
+            {!selectedAgent ? (
+              <div className="dt-right-empty" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#9ca3af', textAlign: 'center', padding: '20px' }}>
+                <Network size={36} color="#e5e7eb" style={{ marginBottom: '12px' }} />
+                <div style={{ fontSize: '14px', fontWeight: '600', color: '#6b7280' }}>세션을 선택하면<br/>트윈 상태가 표시됩니다</div>
+              </div>
+            ) : (
+              <div className="dt-insight-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '20px' }}>
+              
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '24px', paddingBottom: '16px', borderBottom: '1px solid rgba(0,0,0,0.05)' }}>
+                <div style={{ position: 'relative', width: '10px', height: '10px' }}>
+                  <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: '50%', backgroundColor: '#60C95A', animation: 'pulseDot 2s infinite' }}></div>
+                  <div style={{ position: 'absolute', top: '2px', left: '2px', width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#fff' }}></div>
+                </div>
+                <h3 style={{ 
+                  margin: 0, fontSize: '15px', fontWeight: '900', letterSpacing: '-0.3px',
+                  background: 'linear-gradient(135deg, #111827 0%, #374151 100%)',
+                  WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent'
+                }}>실시간 트윈 동기화</h3>
+              </div>
+
+              <div className="insight-card" style={{ background: '#fff', borderRadius: '12px', padding: '16px', marginBottom: '16px', border: '1px solid rgba(0,0,0,0.05)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+                <div style={{ fontSize: '12px', color: '#6b7280', fontWeight: '600', marginBottom: '12px' }}>학습 노드 진행률</div>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', marginBottom: '12px' }}>
+                  <div style={{ fontSize: '28px', fontWeight: '900', color: '#60C95A', lineHeight: '1' }}>
+                    {chatHistory.filter(m => m.sender === 'AI').length > 0 
+                      ? Math.round((learnedIds.size / chatHistory.filter(m => m.sender === 'AI').length) * 100) 
+                      : 0}%
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#9ca3af', paddingBottom: '4px' }}>지식 복제 완료</div>
+                </div>
+                <div style={{ width: '100%', height: '6px', background: '#f3f4f6', borderRadius: '4px', overflow: 'hidden' }}>
+                  <div style={{ 
+                    width: `${chatHistory.filter(m => m.sender === 'AI').length > 0 ? (learnedIds.size / chatHistory.filter(m => m.sender === 'AI').length) * 100 : 0}%`, 
+                    height: '100%', 
+                    background: 'linear-gradient(90deg, #60C95A, #4ade80)',
+                    transition: 'width 0.5s ease'
+                  }}></div>
+                </div>
+              </div>
+
+              <div className="insight-card" style={{ background: '#fff', borderRadius: '12px', padding: '16px', marginBottom: '16px', border: '1px solid rgba(0,0,0,0.05)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
+                <div style={{ fontSize: '12px', color: '#6b7280', fontWeight: '600', marginBottom: '12px' }}>핵심 키워드 네트워크</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {twinKeywords.length === 0 ? (
+                     <div style={{ fontSize: '12px', color: '#9ca3af', width: '100%', textAlign: 'center', padding: '10px 0' }}>학습된 키워드가 없습니다</div>
+                  ) : (
+                    twinKeywords.map((kw, idx) => (
+                      <span key={idx} style={{ padding: '5px 10px', background: 'rgba(96,201,90,0.08)', color: '#16a34a', borderRadius: '8px', fontSize: '12px', fontWeight: '600', border: '1px solid rgba(96,201,90,0.15)' }}>
+                        # {kw}
+                      </span>
+                    ))
                   )}
                 </div>
               </div>
 
-              <div className="chat-history">
-                {chatHistory.length === 0 ? (
-                  <div className="empty-state" style={{ marginTop: '40px' }}>
-                    <p>대화 이력이 없습니다. 질문을 입력해보세요.</p>
-                  </div>
-                ) : (
-                  chatHistory.map((msg, idx) => {
-                    const isUser = msg.sender === 'USER';
-                    const senderName = isUser ? '나' : (msg.senderName || msg.sender_name || selectedAgent.name);
-
-                    let agentTheme = {
-                      bg: '#F3F4F6',
-                      border: '#D1D5DB',
-                      text: '#374151',
-                      icon: '🤖',
-                      tagBg: '#E5E7EB',
-                      accent: '#4B5563'
-                    };
-                    let agentPersonality = '';
-                    let agentRole = '';
-
-                    if (!isUser && selectedAgent && selectedAgent.agents) {
-                      const matchedAgent = selectedAgent.agents.find(
-                        (ag) => ag.name === senderName || ag.name === msg.senderName || ag.name === msg.sender_name
-                      );
-                      if (matchedAgent) {
-                        agentPersonality = getAgentPersonality(matchedAgent);
-                        agentTheme = getAgentStyleTheme(agentPersonality);
-                        agentRole = matchedAgent.role;
-                      }
-                    }
-
-                    return (
-                      <div key={msg.id || idx} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
-                        <div
-                          className="chat-bubble-sender"
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            color: isUser ? undefined : agentTheme.accent
-                          }}
-                        >
-                          {!isUser && (
-                            <span
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                width: '20px',
-                                height: '20px',
-                                borderRadius: '50%',
-                                backgroundColor: agentTheme.tagBg,
-                                fontSize: '11px',
-                                boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
-                              }}
-                            >
-                              {agentTheme.icon}
-                            </span>
-                          )}
-                          <span style={{ fontWeight: '700' }}>{senderName}</span>
-                          {!isUser && agentRole && (
-                            <span style={{ fontSize: '10px', color: 'var(--color-text-muted)', opacity: 0.8 }}>
-                              ({agentRole})
-                            </span>
-                          )}
-                          {!isUser && agentPersonality && (
-                            <span
-                              style={{
-                                fontSize: '9px',
-                                padding: '1px 5px',
-                                borderRadius: '4px',
-                                backgroundColor: agentTheme.tagBg,
-                                color: agentTheme.accent,
-                                fontWeight: 'bold'
-                              }}
-                            >
-                              {agentPersonality}
-                            </span>
-                          )}
-                        </div>
-                        <div
-                          className={`chat-bubble ${isUser ? 'user' : 'ai'}`}
-                          style={{
-                            whiteSpace: 'pre-wrap',
-                            backgroundColor: isUser ? undefined : agentTheme.bg,
-                            color: isUser ? '#FFFFFF' : 'var(--color-text-main)',
-                            border: 'none'
-                          }}
-                        >
-                          {msg.content}
-                        </div>
-                        <div className="chat-bubble-time">
-                          {formatTime(msg.createdAt)}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-                {typingRooms[getAgentId(selectedAgent)] && (
-                  <div className="chat-bubble-container ai">
-                    <div className="chat-bubble-sender">AI 에이전트들이 검토 중...</div>
-                    <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', minHeight: '20px' }}>
-                      <span className="dot"></span><span className="dot"></span><span className="dot"></span>
+              <div className="insight-card" style={{ background: '#fff', borderRadius: '12px', padding: '16px', border: '1px solid rgba(0,0,0,0.05)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)', flex: 1, display: 'flex', flexDirection: 'column' }}>
+                <div style={{ fontSize: '12px', color: '#6b7280', fontWeight: '600', marginBottom: '12px' }}>최근 지식 동기화 로그</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', paddingRight: '4px' }}>
+                  {twinLogs.length === 0 ? (
+                    <div style={{ fontSize: '12px', color: '#9ca3af', width: '100%', textAlign: 'center', padding: '30px 0' }}>
+                      <Network size={24} color="#e5e7eb" style={{ margin: '0 auto 8px' }} />
+                      도움이 된 답변에 <br/><strong style={{color: '#6b7280'}}>👍 도움됨</strong>을 눌러보세요
                     </div>
-                  </div>
-                )}
-                <div ref={chatEndRef} />
+                  ) : (
+                    twinLogs.map((log, idx) => (
+                      <div key={idx} style={{ padding: '12px', background: '#f8fafc', borderRadius: '10px', borderLeft: '3px solid #60C95A' }}>
+                        <div style={{ fontSize: '11px', color: '#16a34a', fontWeight: '700', marginBottom: '4px', display: 'flex', gap: '4px' }}>
+                          <CheckCircle2 size={12} /> 트윈 동기화 완료
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#374151', lineHeight: '1.5' }}>
+                          "{log.preview}"
+                        </div>
+                        {log.keywords.length > 0 && (
+                          <div style={{ marginTop: '8px', fontSize: '11px', color: '#6b7280', fontWeight: '500' }}>
+                            추출: {log.keywords.join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
-
-              <form onSubmit={sendMessage} className="chat-input-wrapper">
-                <input
-                  type="text"
-                  className="input-field"
-                  style={{ flex: 1, borderRadius: '24px', paddingLeft: '20px', backgroundColor: '#F3F4F6', border: 'none' }}
-                  value={message}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setMessage(val);
-                    const activeId = getAgentId(selectedAgent);
-                    if (activeId) {
-                      setRoomDrafts((prev) => ({ ...prev, [activeId]: val }));
-                    }
-                  }}
-                  placeholder="메시지를 입력해보세요..."
-                  disabled={typingRooms[getAgentId(selectedAgent)]}
-                />
-                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={typingRooms[getAgentId(selectedAgent)] || !message.trim()}>
-                  <Send size={18} />
-                </button>
-              </form>
             </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
       {showModal && (
