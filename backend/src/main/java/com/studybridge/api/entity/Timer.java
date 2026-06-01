@@ -22,9 +22,9 @@ public class Timer {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @ManyToOne(fetch = FetchType.LAZY) // User 엔티티와의 다대일 관계 설정
-    @JoinColumn(name = "user_id", nullable = false) // 외래 키 컬럼 지정
-    private User user; // User 엔티티 참조
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
 
     @Column(nullable = false)
     private LocalDateTime startTime;

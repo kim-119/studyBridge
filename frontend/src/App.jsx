@@ -80,8 +80,8 @@ function App() {
 
           <Route path="/studymate" element={<StudyMate />} />
           <Route path="/groupstudy" element={<GroupStudy />} />
-          <Route path="/archive" element={<PrivateRoute><Archive /></PrivateRoute>} />
-          <Route path="/archive/:type/:id" element={<PrivateRoute><ArchiveDetail /></PrivateRoute>} />
+          <Route path="/archive" element={<Archive />} />
+          <Route path="/archive/:type/:id" element={<ArchiveDetail />} />
           {/* 잘못된 주소는 메인으로 이동 */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
