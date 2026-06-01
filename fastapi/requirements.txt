@@ -11,4 +11,9 @@ python-multipart
 matplotlib
 boto3
 reportlab
+faiss-cpu
+langchain
+langchain-openai
+langchain-community
+tiktoken
 -e .

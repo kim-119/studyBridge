@@ -47,6 +47,12 @@ FEEDBACK_ACTION_KEYWORDS = [
     "생각을 말",
     "코멘트",
     "리뷰",
+    "맞냐",
+    "맞아",
+    "맞니",
+    "틀렸",
+    "진짜냐",
+    "맞는가",
 ]
 
 FEEDBACK_NEGATION_PATTERNS = [
@@ -212,7 +218,7 @@ def detect_feedback_intent(message: str) -> dict:
         + matched_support
     )
 
-    if not matched_actions and not matched_compare:
+    if not matched_compare and not (matched_actions and (matched_answers or matched_questions)):
         return {
             "is_feedback_request": False,
             "feedback_type": "general",
