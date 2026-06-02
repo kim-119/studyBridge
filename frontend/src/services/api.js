@@ -129,18 +129,18 @@ api.interceptors.response.use(
       if (originalRequest.url.includes('/api/users/refresh')) {
         return Promise.reject(err);
       }
-      
+
       originalRequest._retry = true;
       try {
         const refreshToken = localStorage.getItem('refreshToken');
         if (!refreshToken) throw new Error('No refresh token');
-        
+
         const res = await axios.post(`${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`);
-        
+
         if (res.data && res.data.accessToken) {
           localStorage.setItem('token', res.data.accessToken);
           localStorage.setItem('refreshToken', res.data.refreshToken);
-          
+
           originalRequest.headers['Authorization'] = `Bearer ${res.data.accessToken}`;
           return api(originalRequest);
         }
@@ -433,7 +433,7 @@ export const materialService = {
       formData.append('keywords', keywords);
     }
     formData.append('file', file);
-    
+
     const token = localStorage.getItem('token');
     const res = await axios.post(`${API_BASE_URL}/api/materials/upload`, formData, {
       headers: {

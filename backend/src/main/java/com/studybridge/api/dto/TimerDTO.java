@@ -17,6 +17,7 @@ public class TimerDTO {
     @Builder
     public static class StartRequest {
         private LocalDateTime startTime;
+        private Long groupStudyId; // 선택 연동할 그룹스터디 ID
     }
 
     @Data
@@ -35,6 +36,7 @@ public class TimerDTO {
     public static class Response {
         private Long id;
         private Long userId;
+        private Long groupStudyId; // 연동된 그룹스터디 ID
         private LocalDateTime startTime;
         private LocalDateTime endTime;
         private Long durationSeconds;
