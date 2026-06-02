@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { agentService } from '../services/api';
-import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLeft, ChevronRight, CheckCircle2 } from 'lucide-react';
+import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark } from 'lucide-react';
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
 import '../components/studymate/studymate-premium.css';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -143,7 +143,7 @@ export default function StudyMate() {
   // 멘션(@) 관련 상태
   const [showMentionPopup, setShowMentionPopup] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
-  const [learnedIds, setLearnedIds] = useState(new Set());
+  const [bookmarkedIds, setBookmarkedIds] = useState(new Set());
   const [toastMsg, setToastMsg] = useState('');
   
   // 패널 토글 상태
@@ -415,33 +415,33 @@ export default function StudyMate() {
 
   // 로그아웃 상태일 때도 UI는 렌더링되도록 함
 
-  // ─── 트윈 지식 키워드 및 로그 추출 ───
-  const getLearnedKeywords = () => {
-    const keywords = new Set();
-    const logs = [];
-    Array.from(learnedIds).forEach(id => {
-      const msg = chatHistory.find(m => m.id === id);
-      if (msg && msg.content) {
-        // 특수문자 제거 후 2글자 이상 핵심 단어 추출
-        const words = msg.content.split(/\s+/)
-          .map(w => w.replace(/[^가-힣a-zA-Z0-9]/g, ''))
-          .filter(w => w.length >= 2 && w.length <= 8)
-          .filter(w => !['그래서', '하지만', '그리고', '이런', '저런', '있는', '대한', '어떤', '입니다', '합니다', '것이', '가장', '대해', '위해'].includes(w));
-        
-        const extracted = Array.from(new Set(words)).slice(0, 2);
-        extracted.forEach(kw => keywords.add(kw));
-        
-        logs.push({
-          id,
-          keywords: extracted,
-          preview: msg.content.slice(0, 25) + '...'
-        });
+  const handleBookmark = (node) => {
+    setBookmarkedIds((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(node.id)) {
+        newSet.delete(node.id);
+        setToastMsg('❌ 메모가 취소되었습니다.');
+      } else {
+        newSet.add(node.id);
+        setToastMsg('📌 메모에 저장되었습니다.');
       }
+      setTimeout(() => setToastMsg(''), 2500);
+      return newSet;
     });
-    return { twinKeywords: Array.from(keywords).slice(-12), twinLogs: logs.reverse().slice(0, 3) };
   };
 
-  const { twinKeywords, twinLogs } = getLearnedKeywords();
+  const handleScrollToNode = (id) => {
+    const element = document.getElementById(`node-${id}`);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // 반짝이는 효과 주기
+      element.style.transition = 'box-shadow 0.3s ease-in-out';
+      element.style.boxShadow = '0 0 0 4px rgba(16, 185, 129, 0.4)';
+      setTimeout(() => {
+        element.style.boxShadow = '';
+      }, 1500);
+    }
+  };
 
   return (
     <div className="container-workspace">
@@ -601,48 +601,52 @@ export default function StudyMate() {
             <div className="chat-container">
               {/* ── 디지털 트윈 세션 헤더 ── */}
               <div className="dt-session-header">
-                {/* 상단: 아이덴티티 + 상세보기 */}
-                <div className="dt-session-top">
-                  <div className="dt-session-identity">
-                    <div className="dt-session-avatar">
-                      {(selectedAgent.roomName || selectedAgent.name)?.charAt(0)}
-                    </div>
-                    <div>
-                      <div className="dt-session-title">
-                        {selectedAgent.roomName || `${selectedAgent.name}의 그룹 스터디`}
-                      </div>
-                      <div className="dt-session-sub">
-                        Digital Twin Learning Session
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setShowDetailsModal(true)}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: '5px',
-                      fontSize: '11px', padding: '5px 10px', borderRadius: '8px',
-                      background: 'rgba(96,201,90,0.08)', border: '1px solid rgba(96,201,90,0.2)',
-                      color: '#16a34a', fontWeight: '700', cursor: 'pointer'
-                    }}
-                  >
-                    에이전트 상세
-                  </button>
-                </div>
-
-                {/* 에이전트 칩 */}
-                {selectedAgent.agents && selectedAgent.agents.length > 0 && (
-                  <div className="dt-agent-chips">
-                    {selectedAgent.agents.map((ag, idx) => {
-                      const c = getAvatarColor(idx);
-                      return (
-                        <div key={ag.id || idx} className="dt-agent-chip">
-                          <div className="dt-chip-dot" style={{ backgroundColor: c.text }} />
-                          <span>{ag.name}</span>
-                          <span style={{ color: '#9ca3af', fontSize: 10 }}>({ag.role})</span>
+                {/* 상단: 아이덴티티 + 상세보기 (전체화면 시 숨김) */}
+                { (isLeftOpen || isRightOpen) && (
+                  <>
+                    <div className="dt-session-top">
+                      <div className="dt-session-identity">
+                        <div className="dt-session-avatar">
+                          {(selectedAgent.roomName || selectedAgent.name)?.charAt(0)}
                         </div>
-                      );
-                    })}
-                  </div>
+                        <div>
+                          <div className="dt-session-title">
+                            {selectedAgent.roomName || `${selectedAgent.name}의 그룹 스터디`}
+                          </div>
+                          <div className="dt-session-sub">
+                            Digital Twin Learning Session
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setShowDetailsModal(true)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: '5px',
+                          fontSize: '11px', padding: '5px 10px', borderRadius: '8px',
+                          background: 'rgba(96,201,90,0.08)', border: '1px solid rgba(96,201,90,0.2)',
+                          color: '#16a34a', fontWeight: '700', cursor: 'pointer'
+                        }}
+                      >
+                        에이전트 상세
+                      </button>
+                    </div>
+
+                    {/* 에이전트 칩 */}
+                    {selectedAgent.agents && selectedAgent.agents.length > 0 && (
+                      <div className="dt-agent-chips">
+                        {selectedAgent.agents.map((ag, idx) => {
+                          const c = getAvatarColor(idx);
+                          return (
+                            <div key={ag.id || idx} className="dt-agent-chip">
+                              <div className="dt-chip-dot" style={{ backgroundColor: c.text }} />
+                              <span>{ag.name}</span>
+                              <span style={{ color: '#9ca3af', fontSize: 10 }}>({ag.role})</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {/* 탭 전환 바 */}
@@ -751,22 +755,23 @@ export default function StudyMate() {
                         : []
                     }
                     agents={selectedAgent.agents || []}
-                    learnedIds={learnedIds}
-                    onHelpful={(disc) => {
-                      // 학습 완료 등록
-                      if (!disc.id) return;
-                      setLearnedIds((prev) => new Set([...prev, disc.id]));
-                      setToastMsg('✅ 학습 완료! 디지털 트윈에 저장되었습니다.');
-                      setTimeout(() => setToastMsg(''), 2800);
-                    }}
+                    bookmarkedIds={bookmarkedIds}
+                    onBookmark={handleBookmark}
                     onRequestDetail={(disc) => {
                       pendingDetailParentId.current = disc.id;
                       
                       // 사용자의 질문 노드에서 파생될 경우와 AI 노드에서 파생될 경우 문구 분리
                       const isUserNode = disc.sender === 'USER';
+                      const senderName = disc.senderName || disc.sender_name || 'AI';
+                      
+                      // 내용을 25자 정도로 요약해서 프롬프트에 직접 포함하여 문맥 상실 방지
+                      const contentExcerpt = disc.content 
+                          ? (disc.content.length > 25 ? disc.content.substring(0, 25).replace(/\n/g, ' ') + '...' : disc.content.replace(/\n/g, ' '))
+                          : '';
+
                       const promptText = isUserNode 
-                        ? `@모두 여기에 덧붙여서 질문이 하나 더 있는데, `
-                        : `@모두 이 부분에 대해 각자의 관점에서 더 자세히 설명해 줄래?`;
+                        ? `@모두 여기에 덧붙여서 하나 더 궁금한 게 있는데, `
+                        : `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 대해 각자의 특기나 관점에서 좀 더 자세히 설명해 줄래?`;
                         
                       setMessage(promptText);
                       setShowMentionPopup(true);
@@ -895,90 +900,69 @@ export default function StudyMate() {
           {isRightOpen ? <ChevronRight size={16} color="#9ca3af" /> : <ChevronLeft size={16} color="#9ca3af" />}
         </button>
 
-        {/* ════ 3. 우측: 디지털 트윈 애널리틱스 & 인사이트 ════ */}
+        {/* ════ 3. 우측: 저장된 메모 (북마크) 패널 ════ */}
         {isRightOpen && (
-          <div className="pane-right animate-fade-in">
+          <div className="pane-right animate-fade-in" style={{ width: '320px', flexShrink: 0 }}>
             {!selectedAgent ? (
               <div className="dt-right-empty" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#9ca3af', textAlign: 'center', padding: '20px' }}>
-                <Network size={36} color="#e5e7eb" style={{ marginBottom: '12px' }} />
-                <div style={{ fontSize: '14px', fontWeight: '600', color: '#6b7280' }}>세션을 선택하면<br/>트윈 상태가 표시됩니다</div>
+                <Bookmark size={36} color="#e5e7eb" style={{ marginBottom: '12px' }} />
+                <div style={{ fontSize: '14px', fontWeight: '600', color: '#6b7280' }}>세션을 선택하면<br/>저장된 메모가 표시됩니다</div>
               </div>
             ) : (
               <div className="dt-insight-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '20px' }}>
               
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '24px', paddingBottom: '16px', borderBottom: '1px solid rgba(0,0,0,0.05)' }}>
-                <div style={{ position: 'relative', width: '10px', height: '10px' }}>
-                  <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: '50%', backgroundColor: '#60C95A', animation: 'pulseDot 2s infinite' }}></div>
-                  <div style={{ position: 'absolute', top: '2px', left: '2px', width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#fff' }}></div>
-                </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', paddingBottom: '16px', borderBottom: '1px solid rgba(0,0,0,0.05)' }}>
+                <Bookmark size={20} color="#10b981" />
                 <h3 style={{ 
-                  margin: 0, fontSize: '15px', fontWeight: '900', letterSpacing: '-0.3px',
-                  background: 'linear-gradient(135deg, #111827 0%, #374151 100%)',
-                  WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent'
-                }}>실시간 트윈 동기화</h3>
+                  margin: 0, fontSize: '15px', fontWeight: '800', color: '#334155'
+                }}>저장된 메모 목록</h3>
+                <span style={{ marginLeft: 'auto', background: '#ecfdf5', color: '#10b981', padding: '2px 8px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}>
+                  {bookmarkedIds.size}개
+                </span>
               </div>
 
-              <div className="insight-card" style={{ background: '#fff', borderRadius: '12px', padding: '16px', marginBottom: '16px', border: '1px solid rgba(0,0,0,0.05)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
-                <div style={{ fontSize: '12px', color: '#6b7280', fontWeight: '600', marginBottom: '12px' }}>학습 노드 진행률</div>
-                <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', marginBottom: '12px' }}>
-                  <div style={{ fontSize: '28px', fontWeight: '900', color: '#60C95A', lineHeight: '1' }}>
-                    {chatHistory.filter(m => m.sender === 'AI').length > 0 
-                      ? Math.round((learnedIds.size / chatHistory.filter(m => m.sender === 'AI').length) * 100) 
-                      : 0}%
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', paddingRight: '4px', flex: 1 }}>
+                {bookmarkedIds.size === 0 ? (
+                  <div style={{ fontSize: '13px', color: '#9ca3af', width: '100%', textAlign: 'center', padding: '40px 0', lineHeight: '1.6' }}>
+                    <Bookmark size={24} color="#f1f5f9" style={{ margin: '0 auto 12px' }} fill="#e2e8f0" />
+                    유용한 답변에 <br/><strong style={{color: '#64748b'}}>📌 메모하기</strong>를 누르면<br/>이곳에 저장됩니다.
                   </div>
-                  <div style={{ fontSize: '12px', color: '#9ca3af', paddingBottom: '4px' }}>지식 복제 완료</div>
-                </div>
-                <div style={{ width: '100%', height: '6px', background: '#f3f4f6', borderRadius: '4px', overflow: 'hidden' }}>
-                  <div style={{ 
-                    width: `${chatHistory.filter(m => m.sender === 'AI').length > 0 ? (learnedIds.size / chatHistory.filter(m => m.sender === 'AI').length) * 100 : 0}%`, 
-                    height: '100%', 
-                    background: 'linear-gradient(90deg, #60C95A, #4ade80)',
-                    transition: 'width 0.5s ease'
-                  }}></div>
-                </div>
-              </div>
-
-              <div className="insight-card" style={{ background: '#fff', borderRadius: '12px', padding: '16px', marginBottom: '16px', border: '1px solid rgba(0,0,0,0.05)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
-                <div style={{ fontSize: '12px', color: '#6b7280', fontWeight: '600', marginBottom: '12px' }}>핵심 키워드 네트워크</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {twinKeywords.length === 0 ? (
-                     <div style={{ fontSize: '12px', color: '#9ca3af', width: '100%', textAlign: 'center', padding: '10px 0' }}>학습된 키워드가 없습니다</div>
-                  ) : (
-                    twinKeywords.map((kw, idx) => (
-                      <span key={idx} style={{ padding: '5px 10px', background: 'rgba(96,201,90,0.08)', color: '#16a34a', borderRadius: '8px', fontSize: '12px', fontWeight: '600', border: '1px solid rgba(96,201,90,0.15)' }}>
-                        # {kw}
-                      </span>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="insight-card" style={{ background: '#fff', borderRadius: '12px', padding: '16px', border: '1px solid rgba(0,0,0,0.05)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)', flex: 1, display: 'flex', flexDirection: 'column' }}>
-                <div style={{ fontSize: '12px', color: '#6b7280', fontWeight: '600', marginBottom: '12px' }}>최근 지식 동기화 로그</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', paddingRight: '4px' }}>
-                  {twinLogs.length === 0 ? (
-                    <div style={{ fontSize: '12px', color: '#9ca3af', width: '100%', textAlign: 'center', padding: '30px 0' }}>
-                      <Network size={24} color="#e5e7eb" style={{ margin: '0 auto 8px' }} />
-                      도움이 된 답변에 <br/><strong style={{color: '#6b7280'}}>👍 도움됨</strong>을 눌러보세요
-                    </div>
-                  ) : (
-                    twinLogs.map((log, idx) => (
-                      <div key={idx} style={{ padding: '12px', background: '#f8fafc', borderRadius: '10px', borderLeft: '3px solid #60C95A' }}>
-                        <div style={{ fontSize: '11px', color: '#16a34a', fontWeight: '700', marginBottom: '4px', display: 'flex', gap: '4px' }}>
-                          <CheckCircle2 size={12} /> 트윈 동기화 완료
+                ) : (
+                  Array.from(bookmarkedIds).map((id) => {
+                    const msg = chatHistory.find(m => m.id === id);
+                    if (!msg) return null;
+                    return (
+                      <div 
+                        key={id} 
+                        onClick={() => handleScrollToNode(id)}
+                        style={{ 
+                          padding: '16px', 
+                          background: '#ffffff', 
+                          borderRadius: '12px', 
+                          border: '1px solid #e2e8f0', 
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease',
+                          boxShadow: '0 2px 4px rgba(0,0,0,0.02)'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = '#34d399';
+                          e.currentTarget.style.boxShadow = '0 4px 12px rgba(16,185,129,0.1)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = '#e2e8f0';
+                          e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.02)';
+                        }}
+                      >
+                        <div style={{ fontSize: '12px', color: '#10b981', fontWeight: '700', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                           <Bot size={14} /> {msg.senderName || msg.sender_name || 'AI'}
                         </div>
-                        <div style={{ fontSize: '12px', color: '#374151', lineHeight: '1.5' }}>
-                          "{log.preview}"
+                        <div style={{ fontSize: '13px', color: '#334155', lineHeight: '1.5', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                          "{msg.content}"
                         </div>
-                        {log.keywords.length > 0 && (
-                          <div style={{ marginTop: '8px', fontSize: '11px', color: '#6b7280', fontWeight: '500' }}>
-                            추출: {log.keywords.join(', ')}
-                          </div>
-                        )}
                       </div>
-                    ))
-                  )}
-                </div>
+                    );
+                  })
+                )}
               </div>
             </div>
             )}
