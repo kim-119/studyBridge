@@ -37,6 +37,18 @@ export default function Register() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!emailRegex.test(formData.email)) {
+      setError('올바른 이메일 형식을 입력해주세요.');
+      return;
+    }
+
+    const passwordRegex = /^(?=.*[a-zA-Z])(?=.*\d)(?=.*[^a-zA-Z0-9]).{8,}$/;
+    if (!passwordRegex.test(formData.password)) {
+      setError('비밀번호는 영문, 숫자, 특수문자를 모두 포함해야 합니다.');
+      return;
+    }
+
     if (formData.password !== formData.passwordConfirm) {
       setError('비밀번호가 일치하지 않습니다.');
       return;
@@ -96,7 +108,7 @@ export default function Register() {
                 <label style={styles.label}>비밀번호</label>
                 <div style={styles.inputIconWrap}>
                   <Lock size={18} style={styles.inputIcon} />
-                  <input type="password" name="password" className="input-field" style={{ paddingLeft: '40px' }} placeholder="8자 이상" value={formData.password} onChange={handleChange} required minLength="8" />
+                  <input type="password" name="password" className="input-field" style={{ paddingLeft: '40px' }} placeholder="영문, 숫자, 특수문자 포함 8자 이상" value={formData.password} onChange={handleChange} required minLength="8" />
                 </div>
               </div>
               <div style={styles.inputGroup}>
