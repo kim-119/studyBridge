@@ -8,22 +8,19 @@ export default function Archive() {
   const { userId } = useAuth();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('journal');
-  const [openedModalType, setOpenedModalType] = useState(null); // 'addMaterial'
+  const [openedModalType, setOpenedModalType] = useState(null);
   const [addMaterialType, setAddMaterialType] = useState('journal');
   const [visibleCount, setVisibleCount] = useState(6);
   const [selectedJournal, setSelectedJournal] = useState(null);
   const [isJournalEditMode, setIsJournalEditMode] = useState(false);
 
-  // 실시간 백엔드 데이터 상태
   const [journals, setJournals] = useState([]);
   const [pdfs, setPdfs] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  // AI 분석 실시간 상태
   const [journalSummary, setJournalSummary] = useState('');
   const [journalFeedback, setJournalFeedback] = useState([]);
 
-  // "자료 추가" 폼 상태
   const [formTitle, setFormTitle] = useState('');
   const [formDate, setFormDate] = useState(new Date().toISOString().split('T')[0]);
   const [formKeywords, setFormKeywords] = useState('');
@@ -33,14 +30,12 @@ export default function Archive() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const addFileInputRef = useRef(null);
 
-  // "학습일지 수정" 폼 상태
   const [editTitle, setEditTitle] = useState('');
   const [editDate, setEditDate] = useState('');
   const [editKeywords, setEditKeywords] = useState('');
   const [editContent, setEditContent] = useState('');
   const [editNextPlan, setEditNextPlan] = useState('');
 
-  // ---------------- 인증 체크 핸들러 ----------------
   const checkAuth = () => {
     if (!userId) {
       alert('로그인이 필요한 기능입니다. 로그인 페이지로 이동합니다.');
@@ -50,7 +45,6 @@ export default function Archive() {
     return true;
   };
 
-  // ---------------- 데이터 페칭 ----------------
   const fetchMaterials = async () => {
     if (!userId) return;
     try {
@@ -58,7 +52,6 @@ export default function Archive() {
       const data = await materialService.getMaterials();
       const list = Array.isArray(data) ? data : [];
 
-      // 1. 학습일지 필터링 및 매핑
       const fetchedJournals = list
         .filter((item) => item.materialType === 'STUDY_LOG')
         .map((item) => ({
@@ -77,7 +70,6 @@ export default function Archive() {
           nextPlan: item.nextPlan || '',
         }));
 
-      // 2. PDF / Syllabus 필터링 및 매핑
       const fetchedPdfs = list
         .filter((item) => item.materialType === 'SYLLABUS' || item.materialType === 'PDF')
         .map((item) => ({
@@ -97,7 +89,6 @@ export default function Archive() {
     }
   };
 
-  // AI 요약 & 피드백 조회
   const fetchJournalAiData = async (materialId) => {
     try {
       setJournalSummary('AI가 학습일지를 분석 중입니다...');
@@ -137,7 +128,6 @@ export default function Archive() {
     }
   }, [userId]);
 
-  // ---------------- 핸들러 ----------------
   const handleTabChange = (tab) => {
     setActiveTab(tab);
     setVisibleCount(6);
@@ -182,7 +172,6 @@ export default function Archive() {
     resetFormState();
   };
 
-  // 자료 추가 제출
   const handleSubmitMaterial = async () => {
     if (!checkAuth()) return;
     if (!formTitle.trim()) {
@@ -221,7 +210,6 @@ export default function Archive() {
     }
   };
 
-  // 학습일지 수정
   const handleUpdateJournal = async () => {
     if (!checkAuth()) return;
     if (!editTitle.trim()) {
@@ -380,7 +368,7 @@ export default function Archive() {
             style={{ width: 'max-content', flex: 'none', padding: '12px 32px', borderRadius: '30px', fontWeight: '600', backgroundColor: 'white', border: '1px solid var(--color-border)', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}
             onClick={() => setVisibleCount(prev => prev + 6)}
           >
-            + 더보기 ({(activeTab === 'journal' ? visibleCount : visibleCount)}/{(activeTab === 'journal' ? journals.length : activeTab === 'syllabus' ? pdfs.filter(p => p.tag === '강의계획서').length : pdfs.filter(p => p.tag === '학습PDF').length)})
+            더보기 ({visibleCount}/{activeTab === 'journal' ? journals.length : activeTab === 'syllabus' ? pdfs.filter(p => p.tag === '강의계획서').length : pdfs.filter(p => p.tag === '학습PDF').length})
           </button>
         </div>
       )}

@@ -26,6 +26,8 @@ public class MaterialDTO {
     public static class UpdateRequest {
         private String title;
         private String keywords;
+        private String learningContent;
+        private String nextPlan;
     }
 
     private Long materialId;

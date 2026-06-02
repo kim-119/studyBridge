@@ -1378,13 +1378,15 @@ def _build_prompt(pdf_text: str, user_goal: str) -> str:
 - roadmapId, stepId, taskId, isCompleted, userId, material, createdAt, updatedAt를 포함하지 않는다.
 - file_path, pdf_url, download_url, html, markdown을 포함하지 않는다.
 - goal은 사용자 학습 목표 문장을 그대로 반영한다.
-- steps는 최소 3개 이상 생성한다.
+- steps는 반드시 12개 이상 생성한다. 1주차부터 12주차까지 주차별로 구성해라.
+- PDF 내용이 적어도 12주차 구조는 반드시 생성한다. 부족한 주차는 복습/실습/응용/점검 중심으로 채워라.
 - 각 step에는 stepOrder, title, description, tasks만 포함한다.
 - stepOrder는 1부터 순차 증가하는 정수다.
 - 각 step의 tasks는 최소 2개 이상 생성한다.
 - 각 task에는 taskOrder, content만 포함한다.
 - taskOrder는 각 step 내부에서 1부터 순차 증가하는 정수다.
 - PDF에 없는 내용을 과도하게 지어내지 말고 학습 순서와 과제 중심으로 구성한다.
+- 12주차 구성 권장 흐름: 1~2주차(개념 파악), 3~5주차(핵심 내용 학습), 6~8주차(심화 및 예제), 9~10주차(실습 및 응용), 11주차(종합 복습), 12주차(최종 점검 및 정리).
 
 PDF 추출 텍스트:
 {pdf_text}

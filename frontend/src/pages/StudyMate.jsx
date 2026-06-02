@@ -1,252 +1,589 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { roomService } from '../services/api';
-import { Bot, Plus, Trash2, Send, AlertCircle, X, Sparkles, Users, ChevronRight, Check } from 'lucide-react';
+import { agentService } from '../services/api';
+import { AlertCircle, Bot, Plus, Send, Sparkles, Trash2, X, Info } from 'lucide-react';
 
-const AI_PERSONAS = [
-  {
-    id: 'bomi',
-    name: '봄이',
-    role: '열정 응원단장',
-    description: '"넌 할 수 있어! 오늘도 최고야!" 항상 포근하게 응원해주는 관심집중 꽃같은 아이',
-    color: '#EC4899', // Pink
-    bgLight: '#FDF2F8'
-  },
-  {
-    id: 'byeol',
-    name: '별이',
-    role: '공감 요정',
-    description: '"힘들었지? 괜찮아, 내가 있잖아" 공감과 위로로 마음을 치유해주는 아이',
-    color: '#8B5CF6', // Purple
-    bgLight: '#F5F3FF'
-  },
-  {
-    id: 'energizer',
-    name: '에너자이저',
-    role: '자극 응원단',
-    description: '"파이팅! 파이팅! 우리 같이하면 무한 긍정 에너지로 이끌어주는 친구"',
-    color: '#F97316', // Orange
-    bgLight: '#FFF7ED'
-  },
-  {
-    id: 'fighter',
-    name: '열정 파이터',
-    role: '동기부여 친구',
-    description: '"포기는 없어! 끝까지 해보자" 불타는 열정으로 함께 달려가는 친구',
-    color: '#EF4444', // Red
-    bgLight: '#FEF2F2'
-  },
-  {
-    id: 'brain',
-    name: '두뇌풀가동',
-    role: '논리형 분석가',
-    description: '"이 문제의 핵심은 단계별로 보면..." 논리적으로 도와주는 나야나 친구',
-    color: '#3B82F6', // Blue
-    bgLight: '#EFF6FF'
-  }
+const PERSONALITY_OPTIONS = ['전문적', '친근함', '솔직함', '독특함', '효율적', '냉소적'];
+const PERSONALITY_STRENGTH_OPTIONS = [
+  { value: 'medium', label: '보통' },
+  { value: 'high', label: '강함' },
+  { value: 'extreme', label: '매우 강함' },
 ];
+const PERSONALITY_STRENGTH_LABELS = {
+  low: '낮음',
+  medium: '보통',
+  high: '강함',
+  extreme: '매우 강함',
+};
+const PERSONALITY_DESCRIPTIONS = {
+  '전문적': '정제되어 있고 정확함',
+  '친근함': '따뜻하고 수다스러움',
+  '솔직함': '직설적이면서도 객관적',
+  '독특함': '유쾌하고 상상력이 풍부함',
+  '효율적': '간결하고 꾸밈없음',
+  '냉소적': '비꼬면서 비판적임',
+};
+const KNOWLEDGE_LEVEL_OPTIONS = ['입문 수준', '학사 수준', '석사 수준', '박사 수준', '전문가 수준'];
+
+const DEFAULT_AGENT = {
+  name: '',
+  role: '',
+  personality: '전문적',
+  personalityStrength: 'extreme',
+  knowledgeLevel: '학사 수준',
+  customInstruction: '',
+  goal: '사용자의 학습을 돕는다'
+};
+
+const parsePersonaTag = (persona, tagName) => {
+  const match = String(persona || '').match(new RegExp(`\\[${tagName}:\\s*([^\\]]+)\\]`));
+  return match ? match[1].trim() : '';
+};
+
+const getAgentId = (agent) => agent?.id ?? agent?.agentId;
+
+const getAgentKnowledgeLevel = (agent) => {
+  return agent?.knowledgeLevel
+    || agent?.knowledge_level
+    || parsePersonaTag(agent?.persona, '지식수준')
+    || '학사 수준';
+};
+
+const getAgentPersonality = (agent) => {
+  return agent?.personality
+    || agent?.style
+    || agent?.tone
+    || parsePersonaTag(agent?.persona, '성격')
+    || '전문적';
+};
+
+const getAgentPersonalityStrength = (agent) => {
+  const raw = agent?.personalityStrength
+    || agent?.personality_strength
+    || parsePersonaTag(agent?.persona, '성격강도')
+    || 'extreme';
+  return ['low', 'medium', 'high', 'extreme'].includes(raw) ? raw : 'extreme';
+};
+
+const getPersonalityStrengthLabel = (strength) => (
+  PERSONALITY_STRENGTH_LABELS[strength] || PERSONALITY_STRENGTH_LABELS.extreme
+);
+
+const sanitizeCustomInstruction = (value) => {
+  return String(value || '')
+    .replace(/\[[^\]]*지식수준[^\]]*\]/gi, '')
+    .replace(/\[[^\]]*knowledge\s*level[^\]]*\]/gi, '')
+    .replace(/\[[^\]]*성격[^\]]*\]/gi, '')
+    .replace(/\[[^\]]*personality[^\]]*\]/gi, '')
+    .replace(/\[[^\]]*tone[^\]]*\]/gi, '')
+    .trim();
+};
+
+const buildDiscussionAgentsPayload = (selectedAgent) => {
+  const sourceAgents = Array.isArray(selectedAgent?.agents) && selectedAgent.agents.length > 0
+    ? selectedAgent.agents
+    : selectedAgent
+      ? [selectedAgent]
+      : [];
+
+  return sourceAgents.map((agent, index) => {
+    const personality = getAgentPersonality(agent);
+    const personalityStrength = getAgentPersonalityStrength(agent);
+    const knowledgeLevel = getAgentKnowledgeLevel(agent);
+    const customInstruction = sanitizeCustomInstruction(
+      agent?.customInstruction || agent?.custom_instruction || agent?.persona || ''
+    );
+
+    return {
+      agentId: String(agent?.id || agent?.agentId || index + 1),
+      name: agent?.name || `AI 도우미 ${index + 1}`,
+      role: agent?.role || 'AI 학습 도우미',
+      personality,
+      personalityStrength,
+      personality_strength: personalityStrength,
+      style: personality,
+      tone: personality,
+      knowledgeLevel,
+      knowledge_level: knowledgeLevel,
+      customInstruction,
+      custom_instruction: customInstruction,
+      persona: agent?.persona || ''
+    };
+  });
+};
+
+const getAgentStyleTheme = (personality) => {
+  const normalized = String(personality || '').trim();
+  switch (normalized) {
+    case '전문적':
+      return {
+        bg: 'rgba(219, 234, 254, 0.35)',
+        border: 'none',
+        text: 'var(--color-text-main)',
+        icon: '🎓',
+        tagBg: '#DBEAFE',
+        accent: '#2563EB'
+      };
+    case '친근함':
+      return {
+        bg: 'rgba(254, 215, 170, 0.35)',
+        border: 'none',
+        text: 'var(--color-text-main)',
+        icon: '✨',
+        tagBg: '#FFEDD5',
+        accent: '#EA580C'
+      };
+    case '솔직함':
+      return {
+        bg: 'rgba(209, 250, 229, 0.35)',
+        border: 'none',
+        text: 'var(--color-text-main)',
+        icon: '🎤',
+        tagBg: '#D1FAE5',
+        accent: '#059669'
+      };
+    case '독특함':
+      return {
+        bg: 'rgba(237, 233, 254, 0.35)',
+        border: 'none',
+        text: 'var(--color-text-main)',
+        icon: '👽',
+        tagBg: '#EDE9FE',
+        accent: '#7C3AED'
+      };
+    case '효율적':
+      return {
+        bg: 'rgba(243, 244, 246, 0.65)',
+        border: 'none',
+        text: 'var(--color-text-main)',
+        icon: '⏱️',
+        tagBg: '#F3F4F6',
+        accent: '#374151'
+      };
+    case '냉소적':
+      return {
+        bg: 'rgba(254, 228, 230, 0.35)',
+        border: 'none',
+        text: 'var(--color-text-main)',
+        icon: '😈',
+        tagBg: '#FFE4E6',
+        accent: '#E11D48'
+      };
+    default:
+      return {
+        bg: 'rgba(243, 244, 246, 0.5)',
+        border: 'none',
+        text: 'var(--color-text-main)',
+        icon: '🤖',
+        tagBg: '#E5E7EB',
+        accent: '#4B5563'
+      };
+  }
+};
+
+const buildCanonicalAgentPayload = (agent) => {
+  const personality = PERSONALITY_OPTIONS.includes(agent.personality) ? agent.personality : '전문적';
+  const personalityStrength = ['low', 'medium', 'high', 'extreme'].includes(agent.personalityStrength)
+    ? agent.personalityStrength
+    : 'extreme';
+  const knowledgeLevel = KNOWLEDGE_LEVEL_OPTIONS.includes(agent.knowledgeLevel) ? agent.knowledgeLevel : '학사 수준';
+  const customInstruction = String(agent.customInstruction || '').trim();
+  const goal = String(agent.goal || '사용자의 학습을 돕는다').trim();
+  const personaBody = customInstruction || goal;
+
+  return {
+    name: String(agent.name || '').trim(),
+    role: String(agent.role || '').trim(),
+    personality,
+    personalityStrength,
+    personality_strength: personalityStrength,
+    style: personality,
+    tone: personality,
+    knowledgeLevel,
+    knowledge_level: knowledgeLevel,
+    goal,
+    customInstruction,
+    custom_instruction: customInstruction,
+    persona: `[지식수준: ${knowledgeLevel}] [성격: ${personality}] [성격강도: ${personalityStrength}] ${personaBody}`
+  };
+};
+
+const buildChatAgentSettingsPayload = (selectedAgent, inputMsg, agentId) => {
+  const personality = getAgentPersonality(selectedAgent);
+  const personalityStrength = getAgentPersonalityStrength(selectedAgent);
+  const knowledgeLevel = getAgentKnowledgeLevel(selectedAgent);
+  const customInstruction = sanitizeCustomInstruction(
+    selectedAgent?.customInstruction
+      || selectedAgent?.custom_instruction
+      || selectedAgent?.persona
+      || ''
+  );
+  const discussionAgents = buildDiscussionAgentsPayload(selectedAgent);
+
+  return {
+    message: inputMsg,
+    agentId,
+    roomId: agentId,
+    // 항상 single_answer 모드로 전송:
+    //   - multi_agent_discussion 모드는 FastAPI에서 3라운드×3명=9회 LLM 순차 호출 → 매우 느림
+    //   - single_answer → FastAPI 기본 경로(병렬 for-loop) 실행 → 에이전트 N명 병렬 처리
+    mode: 'single_answer',
+    rounds: 1,
+    showFinalSynthesis: false,
+    agents: discussionAgents,
+    personality,
+    personalityStrength,
+    personality_strength: personalityStrength,
+    style: personality,
+    tone: personality,
+    knowledgeLevel,
+    knowledge_level: knowledgeLevel,
+    customInstruction,
+    custom_instruction: customInstruction,
+    persona: selectedAgent?.persona
+      || `[지식수준: ${knowledgeLevel}] [성격: ${personality}] [성격강도: ${personalityStrength}] ${customInstruction}`,
+  };
+};
 
 export default function StudyMate() {
   const { userId } = useAuth();
-  const navigate = useNavigate();
-  const MAX_ROOMS = 3;
 
-  const [rooms, setRooms] = useState([]);
-  const [selectedRoom, setSelectedRoom] = useState(null);
+  const [agents, setAgents] = useState([]);
+  const [selectedAgent, setSelectedAgent] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
   const [message, setMessage] = useState('');
-  const [typingStatus, setTypingStatus] = useState({}); // { [roomId]: boolean }
+  const [typingRoomId, setTypingRoomId] = useState(null);
   const [showModal, setShowModal] = useState(false);
-  const [currentAgentIndex, setCurrentAgentIndex] = useState(0);
-  const [deleteModal, setDeleteModal] = useState({ show: false, roomId: null });
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
 
-  const isLimitReached = rooms.length >= MAX_ROOMS;
+  const selectedAgentIdRef = useRef(null);
+  useEffect(() => {
+    selectedAgentIdRef.current = getAgentId(selectedAgent);
+  }, [selectedAgent]);
 
-  const [newRoom, setNewRoom] = useState({
-    roomName: '',
-    agents: []
-  });
+  // 멀티 에이전트 동적 추가를 위해 상태를 배열로 정의
+  const [createdAgents, setCreatedAgents] = useState([{ ...DEFAULT_AGENT }]);
+  const [roomName, setRoomName] = useState('');
 
   const chatEndRef = useRef(null);
-  const selectedRoomRef = useRef(null);
 
-  // 현재 선택된 방을 ref에 동기화 (비동기 콜백에서 최신값 참조용)
+  // ── localStorage 헬퍼 ──────────────────────────────────────────────────────
+  const LS_AGENT_KEY = userId ? `sm_agent_${userId}` : null;
+  const lsChatKey = (agentId) => userId ? `sm_chat_${userId}_${agentId}` : null;
+
+  const saveAgentToStorage = (agentId) => {
+    if (LS_AGENT_KEY) localStorage.setItem(LS_AGENT_KEY, String(agentId));
+  };
+
+  const saveChatToStorage = (agentId, history) => {
+    const key = lsChatKey(agentId);
+    if (key && history.length > 0) {
+      try {
+        localStorage.setItem(key, JSON.stringify(history.slice(-60)));
+      } catch (e) { /* storage full 등 무시 */ }
+    }
+  };
+
+  const loadChatFromStorage = (agentId) => {
+    const key = lsChatKey(agentId);
+    if (!key) return null;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (e) { return null; }
+  };
+
+  // 채팅 기록 변경 시 localStorage 자동 저장
   useEffect(() => {
-    selectedRoomRef.current = selectedRoom;
-  }, [selectedRoom]);
+    if (selectedAgent && userId && chatHistory.length > 0) {
+      saveChatToStorage(getAgentId(selectedAgent), chatHistory);
+    }
+  }, [chatHistory]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (userId) {
-      loadRooms();
+      loadAgents();
     } else {
-      setRooms([]);
-      setSelectedRoom(null);
+      setAgents([]);
+      setSelectedAgent(null);
       setChatHistory([]);
     }
   }, [userId]);
 
-  const checkAuth = (e) => {
-    if (!userId) {
-      if (e) e.preventDefault();
-      alert('로그인이 필요한 기능입니다. 로그인 페이지로 이동합니다.');
-      navigate('/login');
-      return false;
-    }
-    return true;
-  };
-
-  const getRoomId = (room) => room?.agentRoomId ?? room?.roomId ?? room?.id;
-
   useEffect(() => {
     scrollToBottom();
-  }, [chatHistory, typingStatus, selectedRoom]);
+  }, [chatHistory, typingRoomId]);
 
-  const loadRooms = async () => {
+  const loadAgents = async () => {
     try {
-      const data = await roomService.getRooms(userId);
-      setRooms(data || []);
-    } catch (err) {
-      console.error('채팅방 목록 조회 실패:', err);
-    }
-  };
+      const data = await agentService.getAgents(userId);
+      const agentList = data || [];
+      setAgents(agentList);
 
-  const handleDeleteRoom = async () => {
-    if (!deleteModal.roomId) return;
-    try {
-      await roomService.deleteRoom(userId, deleteModal.roomId);
-      setDeleteModal({ show: false, roomId: null });
-      if (getRoomId(selectedRoom) === deleteModal.roomId) {
-        setSelectedRoom(null);
-        setChatHistory([]);
-      }
-      loadRooms();
-    } catch (err) {
-      alert('채팅방 삭제에 실패했습니다.');
-    }
-  };
+      // 이전에 선택했던 에이전트를 localStorage에서 복원
+      if (!selectedAgent && LS_AGENT_KEY && agentList.length > 0) {
+        const savedId = localStorage.getItem(LS_AGENT_KEY);
+        if (savedId) {
+          const restored = agentList.find(a => String(getAgentId(a)) === String(savedId));
+          if (restored) {
+            const agentId = getAgentId(restored);
+            setSelectedAgent(restored);
+            selectedAgentIdRef.current = agentId;
 
-  const toggleAgentSelection = (persona) => {
-    setNewRoom(prev => {
-      const isSelected = prev.agents.some(a => a.id === persona.id);
-      if (isSelected) {
-        return { ...prev, agents: prev.agents.filter(a => a.id !== persona.id) };
-      } else {
-        if (prev.agents.length >= 3) {
-          alert('최대 3명까지만 선택할 수 있습니다.');
-          return prev;
+            // localStorage 캐시 즉시 표시
+            const cached = loadChatFromStorage(agentId);
+            if (cached && cached.length > 0) setChatHistory(cached);
+
+            // 서버에서 최신 이력 로드
+            try {
+              const history = await agentService.getChatHistory(userId, agentId);
+              if (history && history.length > 0) {
+                setChatHistory(history);
+              }
+            } catch (e) { /* 캐시 사용 */ }
+          }
         }
-        return { ...prev, agents: [...prev.agents, persona] };
       }
-    });
-  };
-
-  const handleCreateRoom = async (e) => {
-    if (e) e.preventDefault();
-
-    if (!newRoom.roomName.trim()) return alert('채팅방 이름을 입력해주세요.');
-    if (newRoom.agents.length === 0) return alert('최소 1명 이상의 AI 페르소나를 선택해주세요.');
-
-    try {
-      const payload = {
-        roomName: newRoom.roomName,
-        agents: newRoom.agents.map(p => ({
-          name: p.name,
-          role: p.role,
-          persona: p.description,
-          tone: '친절한',
-          goal: ''
-        }))
-      };
-      console.log('채팅방 생성 요청 페이로드:', JSON.stringify(payload, null, 2));
-      await roomService.createRoom(userId, payload);
-      setShowModal(false);
-      setNewRoom({
-        roomName: '',
-        agents: []
-      });
-      loadRooms();
     } catch (err) {
-      alert(err.message || '채팅방 생성에 실패했습니다.');
+      console.error('에이전트 목록 조회 실패:', err);
     }
   };
 
-  const selectRoom = async (room) => {
-    const roomId = getRoomId(room);
-    if (!roomId) {
-      console.error("roomId 없음:", room);
+  const handleOpenModal = () => {
+    setCreatedAgents([{ ...DEFAULT_AGENT }]);
+    setRoomName('');
+    setShowModal(true);
+  };
+
+  const handleCreateAgent = async (e) => {
+    e.preventDefault();
+    if (agents.length >= 3) {
+      alert('생성된 학습방은 최대 3개까지 가질 수 있습니다.');
       return;
     }
 
-    setSelectedRoom({ ...room, roomId });
-    try {
-      const history = await roomService.getChatHistory(userId, roomId);
-      setChatHistory(history || []);
-    } catch (err) {
-      console.error('채팅 내역 조회 실패:', err);
-      setChatHistory([]);
+    for (const agent of createdAgents) {
+      if (!agent.name.trim() || !agent.role.trim()) {
+        alert('모든 에이전트의 이름과 역할을 입력해야 합니다.');
+        return;
+      }
+      if (agent.customInstruction && agent.customInstruction.trim().length < 5 && agent.customInstruction.trim().length > 0) {
+        alert('에이전트 설명 또는 추가 요구사항은 공백이거나 최소 5자 이상이어야 합니다.');
+        return;
+      }
     }
+
+    const payloadAgents = createdAgents.map(agent => buildCanonicalAgentPayload(agent));
+    const finalRoomName = roomName.trim() || createdAgents.map(a => a.name.trim()).join(' & ') + '의 그룹 스터디';
+
+    const payload = {
+      roomName: finalRoomName,
+      agents: payloadAgents
+    };
+
+    try {
+      console.debug('[StudyMate] create agent room payload', payload);
+      await agentService.createAgent(userId, payload);
+      setShowModal(false);
+      setCreatedAgents([{ ...DEFAULT_AGENT }]);
+      setRoomName('');
+      await loadAgents();
+    } catch (err) {
+      console.error('에이전트 스터디방 생성 실패:', err);
+      alert(err.message || '에이전트 스터디방 생성에 실패했습니다.');
+    }
+  };
+
+  const handleDeleteAgent = async (e, agentId) => {
+    e.stopPropagation();
+    if (!window.confirm('정말 이 에이전트 스터디방을 삭제하시겠습니까? 모든 대화 내용이 완전히 삭제됩니다.')) return;
+
+    try {
+      await agentService.deleteAgent(userId, agentId);
+      // localStorage 정리
+      const chatKey = lsChatKey(agentId);
+      if (chatKey) localStorage.removeItem(chatKey);
+      if (getAgentId(selectedAgent) === agentId) {
+        if (LS_AGENT_KEY) localStorage.removeItem(LS_AGENT_KEY);
+        setSelectedAgent(null);
+        setChatHistory([]);
+      }
+      await loadAgents();
+    } catch (err) {
+      console.error('에이전트 삭제 실패:', err);
+      alert('삭제에 실패했습니다.');
+    }
+  };
+
+  const selectAgent = async (agent) => {
+    const agentId = getAgentId(agent);
+    setSelectedAgent(agent);
+    selectedAgentIdRef.current = agentId;
+    saveAgentToStorage(agentId);
+
+    // localStorage 캐시를 먼저 보여줘서 즉각적인 UI 피드백
+    const cached = loadChatFromStorage(agentId);
+    if (cached && cached.length > 0) setChatHistory(cached);
+    else setChatHistory([]);
+
+    // 서버에서 최신 이력 로드
+    try {
+      const history = await agentService.getChatHistory(userId, agentId);
+      const hist = history || [];
+      setChatHistory(hist);
+    } catch (err) {
+      console.error('채팅 이력 조회 실패:', err);
+      // 캐시가 있으면 유지, 없으면 빈 배열
+      if (!cached || cached.length === 0) setChatHistory([]);
+    }
+  };
+
+  const detectTargetAgentId = (msg, agents) => {
+    if (!msg || !agents || agents.length === 0) return null;
+    const atMatch = msg.match(/@(\S+)/);
+    if (atMatch) {
+      const atName = atMatch[1].replace(/[^\w가-힣]/g, '').toLowerCase();
+      const found = agents.find(a => {
+        const n = (a.name || '').replace(/[^\w가-힣]/g, '').toLowerCase();
+        return n === atName || n.includes(atName);
+      });
+      if (found) return String(found.id || found.agentId);
+    }
+    const singlePatterns = [/(\d)[번]\s*(에이전트)?\s*(만|답해|대답)/];
+    for (const pattern of singlePatterns) {
+      const m = msg.match(pattern);
+      if (m) {
+        const num = parseInt(m[1]) - 1;
+        if (num >= 0 && num < agents.length) return String(agents[num].id || agents[num].agentId);
+      }
+    }
+    return null;
   };
 
   const sendMessage = async (e) => {
     e.preventDefault();
-    if (!checkAuth()) return;
-    
-    const roomId = getRoomId(selectedRoom);
-    if (!message.trim() || !roomId || typingStatus[roomId]) return;
+    if (!message.trim() || !selectedAgent || typingRoomId) return;
 
+    const agentId = getAgentId(selectedAgent);
+    const inputMsg = message.trim();
+    const targetAgentId = detectTargetAgentId(inputMsg, selectedAgent?.agents || []);
     const userMsg = {
       id: Date.now(),
-      messageId: Date.now(),
-      content: message,
+      content: inputMsg,
       sender: 'USER',
       createdAt: new Date().toISOString()
     };
 
-    setChatHistory(prev => [...prev, userMsg]);
-    const inputMsg = message;
+    setChatHistory((prev) => [...prev, userMsg]);
     setMessage('');
-    
-    // 해당 방의 타이핑 상태 활성화
-    setTypingStatus(prev => ({ ...prev, [roomId]: true }));
+    setTypingRoomId(agentId);
 
     try {
-      const res = await roomService.sendMessage(userId, roomId, inputMsg);
-      
-      // [정합성 검사] 응답이 왔을 때 사용자가 여전히 같은 방에 있는지 확인
-      if (getRoomId(selectedRoomRef.current) !== roomId) {
-        console.log(`방 이동 감지: ${roomId} 응답을 무시합니다.`);
-        return;
-      }
+      console.debug('[StudyMate] chat request', {
+        userId,
+        agentId,
+        message: inputMsg,
+        selectedAgent
+      });
+      const chatPayload = {
+        ...buildChatAgentSettingsPayload(selectedAgent, inputMsg, agentId),
+        ...(targetAgentId ? { targetAgentId } : {}),
+      };
+      console.debug('[StudyMate] chat payload', chatPayload);
+      const res = await agentService.sendMessage(userId, agentId, chatPayload);
+      console.debug('[StudyMate] chat response', res);
 
-      if (res && res.replies) {
-        const newMessages = res.replies.map((reply, idx) => ({
-          id: Date.now() + idx + 1,
-          content: reply.answer,
-          sender: 'AI',
-          senderName: selectedRoom.agents?.find(a => a.id === reply.agentId)?.name || '에이전트',
-          createdAt: new Date().toISOString()
-        }));
-        setChatHistory(prev => [...prev, ...newMessages]);
-      } else {
-        const aiMsg = {
-          id: Date.now() + 1,
-          content: res.answer || '응답이 없습니다.',
-          sender: 'AI',
-          createdAt: new Date().toISOString()
-        };
-        setChatHistory(prev => [...prev, aiMsg]);
+      if (selectedAgentIdRef.current === agentId) {
+        // 200이지만 errorMessage가 있는 경우 (FastAPI/timeout 오류를 500 대신 200으로 반환)
+        if (res.errorMessage || res.success === false) {
+          setChatHistory((prev) => [
+            ...prev,
+            {
+              id: `error-${Date.now()}`,
+              content: `오류: ${res.errorMessage || 'AI 응답을 받지 못했습니다.'}`,
+              sender: 'AI',
+              senderName: '시스템',
+              isError: true,
+              createdAt: new Date().toISOString(),
+            },
+          ]);
+        } else if (res.messages && Array.isArray(res.messages)) {
+          const newMsgs = res.messages.map((m) => ({
+            id: `${m.round}-${m.agentId}-${Date.now()}-${Math.random()}`,
+            content: m.content,
+            text: m.content,
+            sender: 'AI',
+            agentId: m.agentId,
+            senderName: m.agentName,
+            agentName: m.agentName,
+            role: m.role,
+            personality: m.personality,
+            personalityStrength: m.personalityStrength,
+            knowledgeLevel: m.knowledgeLevel,
+            round: m.round,
+            speechType: m.speechType,
+            targetAgentId: m.targetAgentId,
+            createdAt: new Date().toISOString()
+          }));
+          if (res.finalSynthesis) {
+            newMsgs.push({
+              id: `synthesis-${Date.now()}`,
+              content: res.finalSynthesis,
+              text: res.finalSynthesis,
+              sender: 'AI',
+              senderName: '핵심 정리',
+              speechType: 'final_synthesis',
+              createdAt: new Date().toISOString()
+            });
+          }
+          setChatHistory((prev) => [...prev, ...newMsgs]);
+        } else if (res.replies && res.replies.length > 0) {
+          const newMsgs = res.replies.map((reply, index) => ({
+            id: Date.now() + 1 + index,
+            content: reply.answer || reply.content,
+            sender: 'AI',
+            senderName: reply.agentName || reply.agent_name,
+            agentId: reply.agentId,
+            createdAt: new Date().toISOString()
+          }));
+          setChatHistory((prev) => [...prev, ...newMsgs]);
+        } else {
+          const aiMsg = {
+            id: Date.now() + 1,
+            content: res.answer,
+            sender: 'AI',
+            senderName: selectedAgent.name,
+            createdAt: new Date().toISOString()
+          };
+          setChatHistory((prev) => [...prev, aiMsg]);
+        }
       }
     } catch (err) {
-      // 에러 시에도 현재 방이면 복구 로직 실행
-      if (getRoomId(selectedRoomRef.current) === roomId) {
-        alert('메시지 전송에 실패했습니다.');
-        setChatHistory(prev => prev.filter(m => m.id !== userMsg.id));
-        setMessage(inputMsg);
+      console.error('메시지 전송 실패:', err);
+      const errMsg = err?.response?.data?.errorMessage
+        || err?.response?.data?.message
+        || err?.message
+        || '메시지 전송에 실패했습니다. 잠시 후 다시 시도해주세요.';
+      if (selectedAgentIdRef.current === agentId) {
+        // alert() 대신 채팅창 안에 에러 카드 표시
+        setChatHistory((prev) => [
+          ...prev,
+          {
+            id: `error-${Date.now()}`,
+            content: `오류: ${errMsg}`,
+            sender: 'AI',
+            senderName: '시스템',
+            isError: true,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
       }
+      // 실패한 입력은 입력창에 복원
+      setMessage(inputMsg);
     } finally {
-      // 해당 방의 타이핑 상태 해제
-      setTypingStatus(prev => ({ ...prev, [roomId]: false }));
+      setTypingRoomId(null);
     }
   };
 
@@ -264,125 +601,348 @@ export default function StudyMate() {
     const colors = [
       { bg: '#E8F5E9', text: '#2E7D32' },
       { bg: '#E3F2FD', text: '#1565C0' },
-      { bg: '#FFF3E0', text: '#E65100' },
+      { bg: '#FFF3E0', text: '#E65100' }
     ];
     return colors[index % colors.length];
   };
 
-  const isCurrentRoomTyping = typingStatus[getRoomId(selectedRoom)];
+  if (!userId) {
+    return (
+      <div className="container-main">
+        <div className="glass-panel empty-state" style={{ padding: '40px' }}>
+          <AlertCircle size={48} color="var(--color-text-muted)" style={{ margin: '0 auto 16px' }} />
+          <h3>로그인이 필요합니다</h3>
+          <p style={{ color: 'var(--color-text-muted)' }}>AI 학습메이트 기능은 로그인 후 사용할 수 있습니다.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="container-main studymate-page">
+    <div className="container-main">
       <div className="layout-split">
-        {/* 좌측: 채팅방 리스트 패널 */}
         <div className="glass-panel layout-pane-left animate-fade-in">
-          <div className="room-list-header">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', fontSize: '18px' }}>
-              <Users size={20} color="var(--color-primary)" /> 내 채팅방
-              <span className={`limit-badge ${isLimitReached ? 'reached' : ''}`}>
-                {rooms.length} / {MAX_ROOMS}
-              </span>
+              <Sparkles size={20} color="var(--color-primary)" /> AI 학습메이트
             </h2>
             <button
-              className={`btn-outline btn-create-room ${isLimitReached ? 'disabled' : ''}`}
-              style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', transition: 'all 0.2s ease' }}
-              onClick={() => checkAuth() && setShowModal(true)}
-              disabled={isLimitReached}
-              title={isLimitReached ? "채팅방은 최대 3개까지 생성 가능합니다." : ""}
+              className="btn-outline"
+              style={{ width: 'auto', height: '28px', padding: '0 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
+              onClick={handleOpenModal}
+              disabled={agents.length >= 3}
             >
-              <Plus size={16} /> 방 만들기
+              <Plus size={16} /> 생성 ({agents.length}/3)
             </button>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', paddingRight: '4px' }}>
-            {rooms.length === 0 ? (
+            {agents.length === 0 ? (
               <div className="empty-state" style={{ padding: '40px 0' }}>
-                <p>생성된 채팅방이 없습니다.</p>
-                <p style={{ fontSize: '12px' }}>나만의 스터디 그룹을 만들어보세요!</p>
+                <p>생성된 에이전트가 없습니다.</p>
+                <p style={{ fontSize: '12px' }}>학습 목적에 맞는 AI 에이전트를 만들어보세요.</p>
               </div>
             ) : (
-              rooms.map((room, index) => {
-                const rId = getRoomId(room);
-                const isActive = getRoomId(selectedRoom) === rId;
+              agents.map((agent, index) => {
+                const agentId = getAgentId(agent);
+                const isActive = getAgentId(selectedAgent) === agentId;
                 const avatarColor = getAvatarColor(index);
+                const knowledgeLevel = getAgentKnowledgeLevel(agent);
+                const personality = getAgentPersonality(agent);
+                const personalityStrength = getAgentPersonalityStrength(agent);
 
                 return (
                   <div
-                    key={rId || index}
-                    className={`room-card ${isActive ? 'active' : ''}`}
-                    onClick={() => selectRoom(room)}
+                    key={agentId}
+                    style={{
+                      padding: '16px',
+                      borderRadius: '12px',
+                      borderWidth: '1px',
+                      borderStyle: 'solid',
+                      borderColor: isActive ? 'var(--color-primary)' : 'var(--color-border)',
+                      backgroundColor: isActive ? 'rgba(96, 201, 90, 0.05)' : 'var(--color-bg-base)',
+                      boxShadow: isActive ? '0 2px 8px rgba(96, 201, 90, 0.1)' : 'none',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '12px',
+                      transition: 'all 0.2s ease'
+                    }}
+                    onClick={() => selectAgent(agent)}
                   >
                     <div className="avatar" style={{ backgroundColor: avatarColor.bg, color: avatarColor.text }}>
-                      <Users size={20} />
+                      {(agent.roomName || agent.name)?.charAt(0)}
                     </div>
 
                     <div style={{ flex: 1, overflow: 'hidden' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <div style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)', marginBottom: '4px' }}>{room.roomName || `채팅방 ${index + 1}`}</div>
+                        <div style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {agent.roomName || agent.name}
+                        </div>
+                        <button
+                          style={{ background: 'none', border: 'none', color: '#D1D5DB', cursor: 'pointer', padding: '2px' }}
+                          onClick={(e) => handleDeleteAgent(e, agentId)}
+                          aria-label="에이전트 삭제"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                      <div style={{ marginBottom: '6px', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                        {agent.agents && agent.agents.length > 0 ? (
+                          agent.agents.map((ag, idx) => (
+                            <React.Fragment key={idx}>
+                              <span className="tag">#{ag.name}</span>
+                              <span className="tag">#{getAgentPersonality(ag)}</span>
+                              <span className="tag">#{getPersonalityStrengthLabel(getAgentPersonalityStrength(ag))}</span>
+                            </React.Fragment>
+                          ))
+                        ) : (
+                          <>
+                            <span className="tag">#{agent.role}</span>
+                            <span className="tag">#{knowledgeLevel}</span>
+                            <span className="tag">#{personality}</span>
+                            <span className="tag">#{getPersonalityStrengthLabel(personalityStrength)}</span>
+                          </>
+                        )}
                       </div>
                       <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: '1.4' }}>
-                        {room.agents?.map(a => a.name).join(', ')} ({room.agents?.length || 0}명)
+                        {String(agent.persona || agent.goal || '').length > 35
+                          ? `${String(agent.persona || agent.goal || '').substring(0, 35)}...`
+                          : String(agent.persona || agent.goal || '')}
                       </div>
                     </div>
-
-                    <div className="room-actions">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteModal({ show: true, roomId: rId });
-                        }}
-                        style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
                   </div>
-                )
+                );
               })
             )}
           </div>
         </div>
 
-        {/* 우측: 채팅 영역 */}
         <div className="glass-panel layout-pane-right animate-fade-in">
-          {!selectedRoom ? (
+          {!selectedAgent ? (
             <div className="empty-state">
               <Bot size={50} color="#E5E7EB" style={{ marginBottom: '16px' }} />
               <h3 style={{ margin: '0 0 8px 0', color: 'var(--color-text-main)' }}>AI 학습메이트</h3>
               <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px' }}>
-                좌측에서 대화할 채팅방을 선택하거나 새로 생성해주세요.
+                왼쪽에서 대화할 에이전트를 선택하거나 새로 생성하세요.
               </p>
             </div>
           ) : (
             <div className="chat-container">
-              <div className="chat-header">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div className="avatar-sm" style={{ backgroundColor: 'var(--color-primary)', color: 'white' }}>
-                    <Users size={16} />
+              <div className="chat-header" style={{ paddingBottom: '16px', borderBottom: '1px solid var(--color-border)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div className="avatar-sm" style={{ backgroundColor: 'var(--color-primary)', color: 'white', fontWeight: 'bold' }}>
+                        {(selectedAgent.roomName || selectedAgent.name)?.charAt(0)}
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '16px', color: 'var(--color-text-main)' }}>
+                          {selectedAgent.roomName || `${selectedAgent.name}의 그룹 스터디`}
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => setShowDetailsModal(true)}
+                      className="btn-secondary"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        fontSize: '12px',
+                        padding: '6px 12px',
+                        borderRadius: '20px',
+                        backgroundColor: 'rgba(96, 201, 90, 0.1)',
+                        border: '1px solid rgba(96, 201, 90, 0.2)',
+                        color: 'var(--color-primary)',
+                        fontWeight: '600',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <Info size={14} /> 에이전트 상세보기
+                    </button>
                   </div>
-                  <div>
-                    <div style={{ fontWeight: 'bold', fontSize: '15px' }}>{selectedRoom.roomName || '채팅방'}</div>
-                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>에이전트: {selectedRoom.agents?.map(a => a.name).join(', ')}</div>
-                  </div>
+
+                  {/* 스터디방 에이전트 목록 표시 */}
+                  {selectedAgent.agents && selectedAgent.agents.length > 0 && (
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
+                      {selectedAgent.agents.map((ag, idx) => {
+                        const avatarColor = getAvatarColor(idx);
+                        return (
+                          <div
+                            key={ag.id || idx}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '4px 10px',
+                              backgroundColor: 'rgba(96, 201, 90, 0.04)',
+                              border: '1px solid rgba(96, 201, 90, 0.15)',
+                              borderRadius: '16px',
+                              fontSize: '11px',
+                              color: 'var(--color-text-main)'
+                            }}
+                          >
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                width: '6px',
+                                height: '6px',
+                                borderRadius: '50%',
+                                backgroundColor: avatarColor.text
+                              }}
+                            />
+                            <span style={{ fontWeight: '600' }}>{ag.name}</span>
+                            <span style={{ color: 'var(--color-text-muted)', fontSize: '10px' }}>({ag.role})</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 
               <div className="chat-history">
                 {chatHistory.length === 0 ? (
                   <div className="empty-state" style={{ marginTop: '40px' }}>
-                    <p>대화 내역이 없습니다. 인사를 건네보세요!</p>
+                    <p>대화 이력이 없습니다. 질문을 입력해보세요.</p>
                   </div>
                 ) : (
                   chatHistory.map((msg, idx) => {
                     const isUser = msg.sender === 'USER';
-                    const msgKey = msg.messageId ?? msg.id ?? idx;
+                    const senderName = isUser ? '나' : (msg.senderName || msg.sender_name || selectedAgent.name);
+
+                    let agentTheme = {
+                      bg: '#F3F4F6',
+                      border: '#D1D5DB',
+                      text: '#374151',
+                      icon: '🤖',
+                      tagBg: '#E5E7EB',
+                      accent: '#4B5563'
+                    };
+                    let agentPersonality = '';
+                    let agentPersonalityStrength = '';
+                    let agentRole = '';
+
+                    if (!isUser && selectedAgent && selectedAgent.agents) {
+                      const matchedAgent = selectedAgent.agents.find(
+                        (ag) => String(ag.id || ag.agentId) === String(msg.agentId) || ag.name === senderName || ag.name === msg.senderName || ag.name === msg.sender_name
+                      );
+                      if (matchedAgent) {
+                        agentPersonality = getAgentPersonality(matchedAgent);
+                        agentPersonalityStrength = getAgentPersonalityStrength(matchedAgent);
+                        agentTheme = getAgentStyleTheme(agentPersonality);
+                        agentRole = matchedAgent.role;
+                      }
+                    }
+                    if (!agentPersonality && msg.personality) {
+                      agentPersonality = msg.personality;
+                      agentPersonalityStrength = msg.personalityStrength || agentPersonalityStrength;
+                      agentTheme = getAgentStyleTheme(agentPersonality);
+                    }
+
                     return (
-                      <div key={msgKey} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
-                        <div className="chat-bubble-sender">
-                          {!isUser && (msg.senderName || msg.sender)}
+                      <div key={msg.id || idx} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
+                        <div
+                          className="chat-bubble-sender"
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            color: isUser ? undefined : agentTheme.accent
+                          }}
+                        >
+                          {!isUser && (
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                width: '20px',
+                                height: '20px',
+                                borderRadius: '50%',
+                                backgroundColor: agentTheme.tagBg,
+                                fontSize: '11px',
+                                boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                              }}
+                            >
+                              {agentTheme.icon}
+                            </span>
+                          )}
+                          <span style={{ fontWeight: '700' }}>{senderName}</span>
+                          {!isUser && agentRole && (
+                            <span style={{ fontSize: '10px', color: 'var(--color-text-muted)', opacity: 0.8 }}>
+                              ({agentRole})
+                            </span>
+                          )}
+                          {!isUser && agentPersonality && (
+                            <span
+                              style={{
+                                fontSize: '9px',
+                                padding: '1px 5px',
+                                borderRadius: '4px',
+                                backgroundColor: agentTheme.tagBg,
+                                color: agentTheme.accent,
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              {agentPersonality}
+                            </span>
+                          )}
+                          {!isUser && agentPersonalityStrength && (
+                            <span
+                              style={{
+                                fontSize: '9px',
+                                padding: '1px 5px',
+                                borderRadius: '4px',
+                                backgroundColor: '#FEF3C7',
+                                color: '#92400E',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              {getPersonalityStrengthLabel(agentPersonalityStrength)}
+                            </span>
+                          )}
+                          {!isUser && msg.knowledgeLevel && (
+                            <span
+                              style={{
+                                fontSize: '9px',
+                                padding: '1px 5px',
+                                borderRadius: '4px',
+                                backgroundColor: '#EEF2FF',
+                                color: '#4F46E5',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              {msg.knowledgeLevel}
+                            </span>
+                          )}
+                          {!isUser && msg.round && (
+                            <span
+                              style={{
+                                fontSize: '9px',
+                                padding: '1px 5px',
+                                borderRadius: '999px',
+                                backgroundColor: '#F3F4F6',
+                                color: 'var(--color-text-muted)',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              R{msg.round}{msg.speechType ? ` · ${msg.speechType}` : ''}
+                            </span>
+                          )}
                         </div>
-                        <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`}>
-                          {msg.content}
+                        <div
+                          className={`chat-bubble ${isUser ? 'user' : 'ai'}`}
+                          style={{
+                            whiteSpace: 'pre-wrap',
+                            backgroundColor: isUser ? undefined : agentTheme.bg,
+                            color: isUser ? '#FFFFFF' : 'var(--color-text-main)',
+                            border: 'none'
+                          }}
+                        >
+                          {msg.content || msg.text}
                         </div>
                         <div className="chat-bubble-time">
                           {formatTime(msg.createdAt)}
@@ -391,8 +951,9 @@ export default function StudyMate() {
                     );
                   })
                 )}
-                {isCurrentRoomTyping && (
+                {typingRoomId === getAgentId(selectedAgent) && (
                   <div className="chat-bubble-container ai">
+                    <div className="chat-bubble-sender">AI 에이전트들이 검토 중...</div>
                     <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', minHeight: '20px' }}>
                       <span className="dot"></span><span className="dot"></span><span className="dot"></span>
                     </div>
@@ -408,11 +969,10 @@ export default function StudyMate() {
                   style={{ flex: 1, borderRadius: '24px', paddingLeft: '20px', backgroundColor: '#F3F4F6', border: 'none' }}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  onFocus={checkAuth}
-                  placeholder="메시지 보내기..."
-                  disabled={isCurrentRoomTyping}
+                  placeholder="메시지를 입력해보세요..."
+                  disabled={typingRoomId === getAgentId(selectedAgent)}
                 />
-                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={isCurrentRoomTyping || !message.trim()}>
+                <button type="submit" className="btn-primary" style={{ width: '42px', height: '42px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }} disabled={typingRoomId === getAgentId(selectedAgent) || !message.trim()}>
                   <Send size={18} />
                 </button>
               </form>
@@ -421,152 +981,522 @@ export default function StudyMate() {
         </div>
       </div>
 
-      {/* 채팅방 생성 모달 */}
       {showModal && (
         <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ maxWidth: '800px', width: '100%' }}>
-            <div className="modal-header" style={{ marginBottom: '16px' }}>
-              <h3 style={{ margin: 0, fontSize: '20px' }}>새로운 학습메이트 방 만들기</h3>
-              <button className="btn-close" onClick={() => setShowModal(false)}><X size={20} /></button>
+          <div className="glass-panel modal-content" style={{ width: '95%', maxWidth: '600px', maxHeight: '85vh', overflow: 'hidden' }}>
+            <div className="modal-header">
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Sparkles size={20} color="var(--color-primary)" /> 새 AI 그룹 스터디 생성
+              </h3>
+              <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)' }} onClick={() => setShowModal(false)} aria-label="닫기"><X size={20} /></button>
             </div>
 
-            <p style={{ color: 'var(--color-text-muted)', fontSize: '14px', marginBottom: '24px' }}>
-              AI 메이트를 최대 3명 선택하고 나만의 스터디 방을 만들어보세요
-            </p>
+            <form onSubmit={handleCreateAgent} style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+              <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px', display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '16px' }}>
 
-            <div className="modal-body" style={{ padding: '0 4px' }}>
-              <div style={{ marginBottom: '24px' }}>
-                <label style={{ display: 'block', fontSize: '14px', fontWeight: '700', color: 'var(--color-text-main)', marginBottom: '8px' }}>채팅방 이름</label>
-                <input 
-                  type="text" 
-                  className="input-field" 
-                  value={newRoom.roomName} 
-                  onChange={e => setNewRoom({ ...newRoom, roomName: e.target.value })} 
-                  placeholder="예: 토익 스피킹 연습방, 자료구조 벼락치기" 
-                  style={{ width: '100%', padding: '12px 16px', borderRadius: '12px' }}
-                />
-              </div>
-
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                  <label style={{ fontSize: '14px', fontWeight: '700', color: 'var(--color-text-main)' }}>AI 페르소나 선택 <span style={{ color: 'var(--color-text-muted)', fontWeight: 'normal', fontSize: '13px' }}>(최대 3명)</span></label>
-                  <div style={{ fontSize: '13px', fontWeight: '700', color: 'var(--color-primary)' }}>
-                    {newRoom.agents.length}명 선택됨
-                  </div>
+                {/* 스터디방 이름 설정 */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)', marginBottom: '6px' }}>
+                    그룹 스터디방 이름
+                  </label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    maxLength="50"
+                    value={roomName}
+                    onChange={(e) => setRoomName(e.target.value)}
+                    placeholder={roomName ? "" : createdAgents.map(a => a.name.trim() || '새 에이전트').join(' & ') + '의 그룹 스터디'}
+                  />
                 </div>
 
-                {/* 페르소나 카드 리스트 (가로 스크롤) */}
-                <div style={{ 
-                  display: 'flex', 
-                  gap: '16px', 
-                  overflowX: 'auto', 
-                  padding: '4px 4px 16px 4px',
-                  // 스크롤바 숨기기
-                  msOverflowStyle: 'none',
-                  scrollbarWidth: 'none',
-                }}>
-                  {AI_PERSONAS.map(persona => {
-                    const isSelected = newRoom.agents.some(a => a.id === persona.id);
-                    return (
-                      <div 
-                        key={persona.id}
-                        onClick={() => toggleAgentSelection(persona)}
-                        style={{
-                          flex: '0 0 200px',
-                          height: '280px',
-                          borderRadius: '16px',
-                          padding: '24px 16px',
-                          cursor: 'pointer',
-                          border: `2px solid ${isSelected ? persona.color : '#E5E7EB'}`,
-                          backgroundColor: isSelected ? persona.bgLight : '#FFFFFF',
-                          boxShadow: isSelected ? `0 4px 12px ${persona.color}20` : '0 2px 8px rgba(0,0,0,0.05)',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          textAlign: 'center',
-                          transition: 'all 0.2s ease-in-out',
-                          position: 'relative'
-                        }}
-                      >
-                        {isSelected && (
-                          <div style={{
-                            position: 'absolute',
-                            top: '12px',
-                            right: '12px',
-                            backgroundColor: persona.color,
-                            color: 'white',
-                            borderRadius: '50%',
-                            width: '24px',
-                            height: '24px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center'
-                          }}>
-                            <Check size={14} strokeWidth={3} />
-                          </div>
-                        )}
+                <div className="divider" style={{ margin: '8px 0' }} />
 
-                        <div style={{
-                          width: '70px',
-                          height: '70px',
-                          borderRadius: '50%',
-                          backgroundColor: persona.bgLight,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          marginBottom: '16px',
-                          border: `2px solid ${persona.color}40`,
-                          color: persona.color
-                        }}>
-                          <Bot size={32} />
-                        </div>
-                        
-                        <div style={{ color: persona.color, fontSize: '16px', fontWeight: '800', marginBottom: '4px' }}>{persona.name}</div>
-                        <div style={{ color: 'var(--color-text-muted)', fontSize: '12px', marginBottom: '16px' }}>{persona.role}</div>
-                        
-                        <div style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--color-text-main)', wordBreak: 'keep-all' }}>
-                          {persona.description}
+                {/* 에이전트 동적 폼 리스트 */}
+                {createdAgents.map((agent, index) => (
+                  <div
+                    key={index}
+                    style={{
+                      border: '1px solid var(--color-border)',
+                      borderRadius: '12px',
+                      padding: '16px',
+                      backgroundColor: 'rgba(249, 250, 251, 0.7)',
+                      position: 'relative',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '12px'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <h4 style={{ margin: 0, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: '700' }}>
+                          <Bot size={16} /> AI 학습메이트 #{index + 1}
+                        </h4>
+
+                        {/* 추천 에이전트 생성 버튼 모음 */}
+                        <div style={{ display: 'flex', gap: '4px', marginLeft: '4px', flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const list = [...createdAgents];
+                              list[index] = {
+                                ...list[index],
+                                name: '김민성',
+                                role: '명문대 교수',
+                                personality: '전문적',
+                                personalityStrength: 'extreme',
+                                knowledgeLevel: '박사 수준'
+                              };
+                              setCreatedAgents(list);
+                            }}
+                            style={{
+                              padding: '2px 8px',
+                              borderRadius: '12px',
+                              border: '1px solid rgba(59, 130, 246, 0.2)',
+                              backgroundColor: 'rgba(59, 130, 246, 0.05)',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              color: '#2563EB',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            🎓 전문교수
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const list = [...createdAgents];
+                              list[index] = {
+                                ...list[index],
+                                name: '둘리',
+                                role: '친한친구',
+                                personality: '친근함',
+                                personalityStrength: 'extreme',
+                                knowledgeLevel: '입문 수준'
+                              };
+                              setCreatedAgents(list);
+                            }}
+                            style={{
+                              padding: '2px 8px',
+                              borderRadius: '12px',
+                              border: '1px solid rgba(249, 115, 22, 0.2)',
+                              backgroundColor: 'rgba(249, 115, 22, 0.05)',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              color: '#EA580C',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            ✨ 친근한친구
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const list = [...createdAgents];
+                              list[index] = {
+                                ...list[index],
+                                name: '장동탁',
+                                role: '4차원 강사',
+                                personality: '독특함',
+                                personalityStrength: 'extreme',
+                                knowledgeLevel: '전문가 수준'
+                              };
+                              setCreatedAgents(list);
+                            }}
+                            style={{
+                              padding: '2px 8px',
+                              borderRadius: '12px',
+                              border: '1px solid rgba(139, 92, 246, 0.2)',
+                              backgroundColor: 'rgba(139, 92, 246, 0.05)',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              color: '#7C3AED',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            👽 독창적강사
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const list = [...createdAgents];
+                              list[index] = {
+                                ...list[index],
+                                name: '김영환',
+                                role: '까칠한 스승',
+                                personality: '냉소적',
+                                personalityStrength: 'extreme',
+                                knowledgeLevel: '학사 수준'
+                              };
+                              setCreatedAgents(list);
+                            }}
+                            style={{
+                              padding: '2px 8px',
+                              borderRadius: '12px',
+                              border: '1px solid rgba(244, 63, 94, 0.2)',
+                              backgroundColor: 'rgba(244, 63, 94, 0.05)',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              color: '#E11D48',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            😈 냉철한멘토
+                          </button>
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
+                      {createdAgents.length > 1 && (
+                        <button
+                          type="button"
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: '#EF4444',
+                            cursor: 'pointer',
+                            fontSize: '12px',
+                            fontWeight: '600',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
+                          onClick={() => {
+                            setCreatedAgents(createdAgents.filter((_, i) => i !== index));
+                          }}
+                        >
+                          <X size={14} /> 제거
+                        </button>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>이름</label>
+                        <input
+                          type="text"
+                          className="input-field"
+                          maxLength="30"
+                          required
+                          value={agent.name}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].name = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                          placeholder="예: 김영한"
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>역할</label>
+                        <input
+                          type="text"
+                          className="input-field"
+                          maxLength="20"
+                          required
+                          value={agent.role}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].role = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                          placeholder="예: 자바 전공교수"
+                        />
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>성격/말투</label>
+                        <select
+                          className="input-field"
+                          value={agent.personality}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].personality = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                        >
+                          {PERSONALITY_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option} / {PERSONALITY_DESCRIPTIONS[option] || option}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>성격 강도</label>
+                        <select
+                          className="input-field"
+                          value={agent.personalityStrength || 'extreme'}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].personalityStrength = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                        >
+                          {PERSONALITY_STRENGTH_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>지식수준</label>
+                        <select
+                          className="input-field"
+                          value={agent.knowledgeLevel}
+                          onChange={(e) => {
+                            const list = [...createdAgents];
+                            list[index].knowledgeLevel = e.target.value;
+                            setCreatedAgents(list);
+                          }}
+                        >
+                          {KNOWLEDGE_LEVEL_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>사용자 추가 요구사항</label>
+                      <textarea
+                        className="input-field"
+                        style={{ height: '50px', paddingTop: '6px', resize: 'none' }}
+                        maxLength="1000"
+                        value={agent.customInstruction}
+                        onChange={(e) => {
+                          const list = [...createdAgents];
+                          list[index].customInstruction = e.target.value;
+                          setCreatedAgents(list);
+                        }}
+                        placeholder="예: 원어민처럼 영어로만 답변해줘"
+                      />
+                    </div>
+                  </div>
+                ))}
+
+                {/* 에이전트 동적 추가 버튼 */}
+                {createdAgents.length < 3 && (
+                  <button
+                    type="button"
+                    className="btn-outline"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      width: '100%',
+                      padding: '10px',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      borderStyle: 'dashed'
+                    }}
+                    onClick={() => setCreatedAgents([...createdAgents, { ...DEFAULT_AGENT }])}
+                  >
+                    <Plus size={16} /> AI 학습메이트 추가 ({createdAgents.length}/3)
+                  </button>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid var(--color-border)' }}>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  style={{ flex: 1 }}
+                  onClick={() => setShowModal(false)}
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ flex: 2 }}
+                >
+                  스터디방 생성하기
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showDetailsModal && selectedAgent && (
+        <div className="modal-overlay" onClick={() => setShowDetailsModal(false)}>
+          <div
+            className="glass-panel modal-content"
+            style={{
+              width: '95%',
+              maxWidth: '650px',
+              maxHeight: '85vh',
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column',
+              backgroundColor: 'rgba(255, 255, 255, 0.98)',
+              backdropFilter: 'blur(16px)',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+              border: '1px solid rgba(255, 255, 255, 0.5)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header" style={{ paddingBottom: '16px', borderBottom: '1px solid var(--color-border)' }}>
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>
+                <Bot size={20} color="var(--color-primary)" /> 스터디방 에이전트 상세 정보
+              </h3>
+              <button
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)' }}
+                onClick={() => setShowDetailsModal(false)}
+                aria-label="닫기"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 0', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div style={{ padding: '0 4px' }}>
+                <h4 style={{ margin: '0 0 4px 0', fontSize: '15px', fontWeight: '700', color: 'var(--color-text-main)' }}>
+                  스터디 그룹
+                </h4>
+                <p style={{ margin: 0, fontSize: '13px', color: 'var(--color-text-muted)' }}>
+                  {selectedAgent.roomName || `${selectedAgent.name}의 그룹 스터디`}
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {(selectedAgent.agents && selectedAgent.agents.length > 0 ? selectedAgent.agents : [selectedAgent]).map((ag, idx) => {
+                  const agPersonality = getAgentPersonality(ag);
+                  const agPersonalityStrength = getAgentPersonalityStrength(ag);
+                  const agTheme = getAgentStyleTheme(agPersonality);
+                  const agKnowledge = getAgentKnowledgeLevel(ag);
+
+                  return (
+                    <div
+                      key={ag.id || idx}
+                      style={{
+                        border: '1px solid var(--color-border)',
+                        borderRadius: '12px',
+                        padding: '16px',
+                        backgroundColor: '#FFFFFF',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '12px',
+                        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.02)'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: '28px',
+                              height: '28px',
+                              borderRadius: '50%',
+                              backgroundColor: agTheme.tagBg,
+                              fontSize: '16px'
+                            }}
+                          >
+                            {agTheme.icon}
+                          </span>
+                          <div>
+                            <span style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)' }}>{ag.name}</span>
+                            <span style={{ color: 'var(--color-text-muted)', fontSize: '11px', marginLeft: '6px' }}>({ag.role || '학습 메이트'})</span>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              padding: '2px 8px',
+                              borderRadius: '12px',
+                              backgroundColor: 'rgba(96, 201, 90, 0.08)',
+                              color: 'var(--color-primary)',
+                              fontWeight: '600'
+                            }}
+                          >
+                            {agKnowledge}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              padding: '2px 8px',
+                              borderRadius: '12px',
+                              backgroundColor: agTheme.tagBg,
+                              color: agTheme.accent,
+                              fontWeight: '600'
+                            }}
+                          >
+                            {agPersonality}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              padding: '2px 8px',
+                              borderRadius: '12px',
+                              backgroundColor: '#FEF3C7',
+                              color: '#92400E',
+                              fontWeight: '600'
+                            }}
+                          >
+                            강도: {getPersonalityStrengthLabel(agPersonalityStrength)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {(ag.customInstruction || ag.custom_instruction || ag.persona) && (
+                        <div style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--color-text-main)' }}>
+                          <div style={{ fontWeight: '600', marginBottom: '4px', color: 'var(--color-text-muted)' }}>사용자 지침 / 페르소나 설정</div>
+                          <div
+                            style={{
+                              padding: '10px 12px',
+                              backgroundColor: '#F9FAFB',
+                              borderRadius: '8px',
+                              border: '1px solid var(--color-border)',
+                              fontStyle: 'normal',
+                              whiteSpace: 'pre-wrap',
+                              color: 'var(--color-text-main)'
+                            }}
+                          >
+                            {ag.customInstruction || ag.custom_instruction || ag.persona}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
-            <div className="modal-footer" style={{ marginTop: '24px', borderTop: 'none', paddingTop: 0 }}>
-              <button 
-                className="btn-primary" 
-                style={{ width: '100%', height: '52px', fontSize: '16px', fontWeight: '700', borderRadius: '12px' }} 
-                onClick={handleCreateRoom}
+            <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid var(--color-border)' }}>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ width: '100%', borderRadius: '8px' }}
+                onClick={() => setShowDetailsModal(false)}
               >
-                채팅방 생성하기
+                닫기
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 삭제 확인 모달 */}
-      {deleteModal.show && (
-        <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ maxWidth: '400px' }}>
-            <div style={{ textAlign: 'center', padding: '20px 0' }}>
-              <Trash2 size={48} color="#EF4444" style={{ marginBottom: '16px' }} />
-              <h3 style={{ marginBottom: '12px' }}>정말 삭제하시겠습니까?</h3>
-              <p style={{ color: 'var(--color-text-muted)', fontSize: '14px', lineHeight: '1.5' }}>
-                채팅방을 삭제하면 해당 채팅방의<br />
-                <strong>에이전트 설정 및 모든 대화 내역</strong>이<br />
-                함께 삭제되며 복구할 수 없습니다.
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
-              <button className="btn-outline" onClick={() => setDeleteModal({ show: false, roomId: null })} style={{ flex: 1 }}>취소</button>
-              <button className="btn-primary" onClick={handleDeleteRoom} style={{ flex: 1, backgroundColor: '#EF4444' }}>삭제하기</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <style>
+        {`
+          @keyframes typing {
+            0%, 100% { transform: translateY(0); opacity: 0.5; }
+            50% { transform: translateY(-3px); opacity: 1; }
+          }
+          .dot {
+            display: inline-block;
+            width: 4px; height: 4px;
+            background-color: #6B7280;
+            border-radius: 50%;
+            margin: 0 2px;
+            animation: typing 1s infinite;
+          }
+          .dot:nth-child(2) { animation-delay: 0.2s; }
+          .dot:nth-child(3) { animation-delay: 0.4s; }
+        `}
+      </style>
     </div>
   );
 }
