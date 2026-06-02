@@ -38,22 +38,46 @@ public class GroupStudy {
     private LocalDate endDate;
 
     @Column(nullable = false)
-    private Integer capacity; // 최대 정원 (최대 10명 제한)
+    private Integer capacity;
 
     @Builder.Default
     @Column(nullable = false)
-    private Integer currentCount = 0; // 현재 인원
+    private Integer currentCount = 0;
 
     @Column(nullable = false)
-    private Boolean isPublic; // 공개 여부 (false 면 승인제 비공개방)
+    private Boolean isPublic;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "leader_id", nullable = false)
-    private User leader; // 방장 (그룹 생성 유저)
+    private User leader;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
-    private GroupStudyStatus status; // 상태 (RECRUITING, ACTIVE, COMPLETED)
+    private GroupStudyStatus status;
+
+    @Builder.Default
+    @OneToMany(mappedBy = "groupStudy", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<GroupStudyMember> members = new java.util.ArrayList<>();
+
+    @Builder.Default
+    @OneToMany(mappedBy = "groupStudy", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<GroupStudyJoinApplication> applications = new java.util.ArrayList<>();
+
+    @Builder.Default
+    @OneToMany(mappedBy = "groupStudy", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<GroupStudyMaterial> materials = new java.util.ArrayList<>();
+
+    @Builder.Default
+    @OneToMany(mappedBy = "groupStudy", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<GroupStudyAttendance> attendances = new java.util.ArrayList<>();
+
+    @Builder.Default
+    @OneToMany(mappedBy = "groupStudy", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<GroupStudyReport> reports = new java.util.ArrayList<>();
+
+    @Builder.Default
+    @OneToMany(mappedBy = "groupStudy", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<GroupStudyQuiz> quizzes = new java.util.ArrayList<>();
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)

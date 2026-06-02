@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "group_study_attendances", uniqueConstraints = {
-        @UniqueConstraint(columnNames = {"group_study_id", "user_id", "attendance_date"})
+        @UniqueConstraint(columnNames = { "group_study_id", "user_id", "attendance_date" })
 })
 @Getter
 @Setter
@@ -44,5 +44,5 @@ public class GroupStudyAttendance {
     private Long studyDurationSeconds = 0L;
 
     @Column(nullable = false, length = 20)
-    private String status; // PRESENT, ABSENT
+    private String status;
 }

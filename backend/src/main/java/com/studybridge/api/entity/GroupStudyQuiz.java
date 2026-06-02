@@ -35,6 +35,10 @@ public class GroupStudyQuiz {
     @Column(nullable = false)
     private Integer rewardPoints = 10; // 정답 시 제공할 스터디 포인트
 
+    @Builder.Default
+    @OneToMany(mappedBy = "quiz", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<GroupStudyQuizQuestion> questions = new java.util.ArrayList<>();
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

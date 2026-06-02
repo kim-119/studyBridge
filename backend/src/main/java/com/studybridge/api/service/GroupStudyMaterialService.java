@@ -37,12 +37,11 @@ public class GroupStudyMaterialService {
     private final WebClient fastApiWebClient;
     private final ObjectMapper objectMapper;
 
-    /**
-     * 그룹원 전용 PDF 학습 자료를 업로드하고, S3 업로드 성공 시 FastAPI AI 엔진을 호출하여 퀴즈를 자동으로 생성합니다.
-     */
     @Transactional
-    public GroupStudyMaterialDTO uploadMaterialAndGenerateQuiz(Long userId, Long groupId, String title, MultipartFile file) throws IOException {
-        log.info("Group study material upload and quiz generation start. userId={}, groupId={}, title={}", userId, groupId, title);
+    public GroupStudyMaterialDTO uploadMaterialAndGenerateQuiz(Long userId, Long groupId, String title,
+            MultipartFile file) throws IOException {
+        log.info("Group study material upload and quiz generation start. userId={}, groupId={}, title={}", userId,
+                groupId, title);
 
         User uploader = userRepository.findById(userId)
                 .orElseThrow(() -> new NoSuchElementException("User not found with ID: " + userId));
@@ -51,7 +50,8 @@ public class GroupStudyMaterialService {
                 .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
 
         // 1. 그룹 멤버 권한 체크
-        if (!groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId, GroupStudyMemberStatus.JOINED)) {
+        if (!groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId,
+                GroupStudyMemberStatus.JOINED)) {
             throw new SecurityException("해당 그룹스터디방의 정식 멤버만 자료를 업로드할 수 있습니다.");
         }
 
@@ -77,11 +77,11 @@ public class GroupStudyMaterialService {
         return toDTO(savedMaterial);
     }
 
-    /**
-     * 특정 스터디 룸 내부의 모든 공유 자료 목록을 조회합니다. (정식 회원만 조회 가능, 1회용 Presigned Url 포함)
-     */
+    // 특정 스터디 룸 내부의 모든 공유 자료 목록을 조회합니다.
+
     public List<GroupStudyMaterialDTO> getMaterials(Long userId, Long groupId) {
-        if (!groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId, GroupStudyMemberStatus.JOINED)) {
+        if (!groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId,
+                GroupStudyMemberStatus.JOINED)) {
             throw new SecurityException("그룹 멤버만 자료 목록을 조회할 수 있습니다.");
         }
 
@@ -90,25 +90,24 @@ public class GroupStudyMaterialService {
                 .collect(Collectors.toList());
     }
 
-    /**
-     * 자료 다운로드를 위해 안전한 1회용 Presigned URL을 발급받습니다. (정식 회원만 가능)
-     */
+    // 자료 다운로드를 위해 안전한 1회용 Presigned URL을 발급받습니다.
+
     public String downloadMaterialUrl(Long userId, Long materialId) {
         GroupStudyMaterial material = groupStudyMaterialRepository.findById(materialId)
                 .orElseThrow(() -> new NoSuchElementException("Material not found with ID: " + materialId));
 
         Long groupId = material.getGroupStudy().getId();
-        if (!groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId, GroupStudyMemberStatus.JOINED)) {
+        if (!groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId,
+                GroupStudyMemberStatus.JOINED)) {
             throw new SecurityException("그룹 멤버만 자료 다운로드 URL을 발급받을 수 있습니다.");
         }
 
         return s3Service.getPresignedUrl(material.getS3Key());
     }
 
-    /**
-     * FastAPI AI 연동을 이용해 비동기로 퀴즈 세트를 생성하는 메서드 (실패 시 Fallback 제공)
-     */
-    private void generateAIQuiz(GroupStudy groupStudy, User creator, GroupStudyMaterial material, String s3Key, String fileName) {
+    // FastAPI AI 연동을 이용해 비동기로 퀴즈 세트를 생성하는 메서드 (실패 시 Fallback 제공)
+    private void generateAIQuiz(GroupStudy groupStudy, User creator, GroupStudyMaterial material, String s3Key,
+            String fileName) {
         log.info("Requesting AI quiz generation from FastAPI. materialId={}", material.getId());
 
         GroupStudyQuizDTO.AIQuizRequest requestPayload = GroupStudyQuizDTO.AIQuizRequest.builder()
@@ -127,21 +126,22 @@ public class GroupStudyMaterialService {
                     .bodyToMono(GroupStudyQuizDTO.AIQuizResponse.class)
                     .block(); // 동기식 대기
         } catch (Exception e) {
-            log.error("FastAPI AI quiz generation communication failed. Initiating standard welcome quiz fallback. Error: ", e);
+            log.error(
+                    "FastAPI AI quiz generation communication failed. Initiating standard welcome quiz fallback. Error: ",
+                    e);
         }
 
-        // AI 서버 응답이 없거나 예외 발생 시, 학습용 룰 기반 기본 퀴즈 3문제를 생성해 주는 Fallback 메커니즘
         if (aiResponse == null || aiResponse.getQuestions() == null || aiResponse.getQuestions().isEmpty()) {
             aiResponse = createFallbackQuiz(material.getTitle());
         }
 
-        // 퀴즈 영속화 저장
+        // 퀴즈 저장
         try {
             GroupStudyQuiz quiz = GroupStudyQuiz.builder()
                     .groupStudy(groupStudy)
                     .creator(creator)
                     .title(aiResponse.getQuizTitle())
-                    .rewardPoints(10) // 맞출 때 마다 10점 지급 기본설정
+                    .rewardPoints(10) // 맞출 때 마다 10점 지급
                     .build();
 
             GroupStudyQuiz savedQuiz = groupStudyQuizRepository.save(quiz);
@@ -160,7 +160,7 @@ public class GroupStudyMaterialService {
                 groupStudyQuizQuestionRepository.save(question);
             }
 
-            log.info("Successfully persisted AI/Fallback Quiz. quizId={}, questionsCount={}", 
+            log.info("Successfully persisted AI/Fallback Quiz. quizId={}, questionsCount={}",
                     savedQuiz.getId(), aiResponse.getQuestions().size());
 
         } catch (Exception e) {
@@ -175,7 +175,8 @@ public class GroupStudyMaterialService {
 
         questions.add(GroupStudyQuizDTO.AIQuestion.builder()
                 .question("학습 계획을 수립할 때 가장 효과적인 목표 설정 기법은 무엇일까요?")
-                .options(Arrays.asList("SMART 기법 (구체적, 측정가능, 달성가능, 현실적, 시간제한)", "무조건 많이 공부하기", "남의 계획 그대로 따라하기", "계획 세우지 않기"))
+                .options(Arrays.asList("SMART 기법 (구체적, 측정가능, 달성가능, 현실적, 시간제한)", "무조건 많이 공부하기", "남의 계획 그대로 따라하기",
+                        "계획 세우지 않기"))
                 .correctAnswer(0)
                 .timeLimitSeconds(20)
                 .build());
@@ -205,7 +206,8 @@ public class GroupStudyMaterialService {
         try {
             presignedUrl = s3Service.getPresignedUrl(material.getS3Key());
         } catch (Exception e) {
-            log.warn("Failed to generate presignedUrl for group study material ID={}: {}", material.getId(), e.getMessage());
+            log.warn("Failed to generate presignedUrl for group study material ID={}: {}", material.getId(),
+                    e.getMessage());
         }
 
         return GroupStudyMaterialDTO.builder()

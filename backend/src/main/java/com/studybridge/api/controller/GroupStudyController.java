@@ -90,4 +90,22 @@ public class GroupStudyController {
                 applicationId);
         return ResponseEntity.ok(response);
     }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteGroup(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id) {
+        log.info("Request delete group study. leaderId={}, groupId={}", userDetails.getId(), id);
+        groupStudyService.deleteGroupStudy(userDetails.getId(), id);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{id}/complete")
+    public ResponseEntity<GroupStudyDTO.Response> completeRecruitment(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id) {
+        log.info("Request to complete recruitment and start study. leaderId={}, groupId={}", userDetails.getId(), id);
+        GroupStudyDTO.Response response = groupStudyService.startGroupStudy(userDetails.getId(), id);
+        return ResponseEntity.ok(response);
+    }
 }

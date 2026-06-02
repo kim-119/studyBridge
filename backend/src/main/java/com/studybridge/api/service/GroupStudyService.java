@@ -26,9 +26,7 @@ public class GroupStudyService {
     private final GroupStudyJoinApplicationRepository groupStudyJoinApplicationRepository;
     private final UserRepository userRepository;
 
-    /**
-     * 그룹스터디를 생성합니다. (방장이 자동 가입 처리됩니다.)
-     */
+    // 그룹스터디 생성. 방장이 자동 가입 처리됨
     @Transactional
     public GroupStudyDTO.Response createGroupStudy(Long leaderId, GroupStudyDTO.CreateRequest request) {
         log.info("Creating group study. leaderId={}, title={}", leaderId, request.getTitle());
@@ -69,30 +67,27 @@ public class GroupStudyService {
         return toResponseDTO(savedGroupStudy);
     }
 
-    /**
-     * 특정 그룹스터디의 상세 정보를 조회합니다.
-     */
+    // 특정 그룹스터디의 상세 정보를 조회합니다.
+
     public GroupStudyDTO.Response getGroupStudy(Long groupId) {
         GroupStudy groupStudy = groupStudyRepository.findById(groupId)
                 .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
         return toResponseDTO(groupStudy);
     }
 
-    /**
-     * 모든 모집 중인 혹은 활성화된 그룹스터디 목록을 조회합니다.
-     */
+    // 모든 모집 중인 혹은 활성화된 그룹스터디 목록을 조회합니다.
+
     public List<GroupStudyDTO.Response> getAllGroupStudies() {
         return groupStudyRepository.findAll().stream()
                 .map(this::toResponseDTO)
                 .collect(Collectors.toList());
     }
 
-    /**
-     * 그룹스터디 가입을 신청합니다.
-     * 공개방인 경우 즉시 가입 처리되며, 비공개방인 경우 신청서가 생성되어 PENDING 대기합니다.
-     */
+    // 그룹스터디 가입을 신청합니다.
+
     @Transactional
-    public GroupStudyDTO.ApplicationResponse applyToGroupStudy(Long userId, Long groupId, GroupStudyDTO.JoinApplyRequest request) {
+    public GroupStudyDTO.ApplicationResponse applyToGroupStudy(Long userId, Long groupId,
+            GroupStudyDTO.JoinApplyRequest request) {
         log.info("User applied to group study. userId={}, groupId={}", userId, groupId);
 
         User user = userRepository.findById(userId)
@@ -102,12 +97,14 @@ public class GroupStudyService {
                 .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
 
         // 1. 이미 소속된 멤버인지 체크
-        if (groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId, GroupStudyMemberStatus.JOINED)) {
+        if (groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId,
+                GroupStudyMemberStatus.JOINED)) {
             throw new IllegalStateException("이미 가입된 그룹 스터디입니다.");
         }
 
         // 2. 이미 대기 중인 신청서가 있는지 체크
-        if (groupStudyJoinApplicationRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId, GroupStudyJoinStatus.PENDING)) {
+        if (groupStudyJoinApplicationRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId,
+                GroupStudyJoinStatus.PENDING)) {
             throw new IllegalStateException("이미 승인 대기 중인 신청이 존재합니다.");
         }
 
@@ -155,9 +152,8 @@ public class GroupStudyService {
         return toApplicationResponseDTO(savedApplication);
     }
 
-    /**
-     * 그룹장 전용: 대기 중인 모든 지원서 목록을 조회합니다.
-     */
+    // 그룹장 전용: 대기 중인 모든 지원서 목록을 조회합니다.
+
     public List<GroupStudyDTO.ApplicationResponse> getApplications(Long leaderId, Long groupId) {
         GroupStudy groupStudy = groupStudyRepository.findById(groupId)
                 .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
@@ -172,9 +168,8 @@ public class GroupStudyService {
                 .collect(Collectors.toList());
     }
 
-    /**
-     * 그룹장 전용: 가입 지원서를 승인하여 정식 멤버로 가입시킵니다.
-     */
+    // 그룹장 전용: 가입 지원서를 승인하여 정식 멤버로 가입시킵니다.
+
     @Transactional
     public GroupStudyDTO.ApplicationResponse approveApplication(Long leaderId, Long applicationId) {
         log.info("Approving application. leaderId={}, applicationId={}", leaderId, applicationId);
@@ -196,7 +191,7 @@ public class GroupStudyService {
             throw new IllegalStateException("정원이 가득 찬 그룹스터디입니다. 더 이상 승인할 수 없습니다.");
         }
 
-        // 지원서 상태 APPROVED 변경
+        // 지원서 상태 변경
         application.setStatus(GroupStudyJoinStatus.APPROVED);
         groupStudyJoinApplicationRepository.save(application);
 
@@ -218,9 +213,7 @@ public class GroupStudyService {
         return toApplicationResponseDTO(application);
     }
 
-    /**
-     * 그룹장 전용: 가입 지원서를 거절합니다.
-     */
+    // 그룹장 전용: 가입 지원서를 거절합니다.
     @Transactional
     public GroupStudyDTO.ApplicationResponse rejectApplication(Long leaderId, Long applicationId) {
         log.info("Rejecting application. leaderId={}, applicationId={}", leaderId, applicationId);
@@ -245,9 +238,6 @@ public class GroupStudyService {
         return toApplicationResponseDTO(application);
     }
 
-    /**
-     * 특정 그룹스터디에 소속된 멤버 리스트를 조회합니다.
-     */
     public List<GroupStudyDTO.MemberResponse> getGroupMembers(Long groupId) {
         return groupStudyMemberRepository.findByGroupStudyIdAndStatus(groupId, GroupStudyMemberStatus.JOINED)
                 .stream()
@@ -261,6 +251,43 @@ public class GroupStudyService {
                         .joinedAt(member.getJoinedAt())
                         .build())
                 .collect(Collectors.toList());
+    }
+
+    // 그룹스터디 삭제
+
+    @Transactional
+    public void deleteGroupStudy(Long userId, Long groupId) {
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId)
+                .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
+
+        if (!groupStudy.getLeader().getId().equals(userId)) {
+            throw new SecurityException("그룹스터디 삭제 권한이 없습니다. (방장만 삭제 가능)");
+        }
+
+        groupStudyRepository.delete(groupStudy);
+        log.info("Group study deleted successfully. groupId={}, deletedBy={}", groupId, userId);
+    }
+
+    @Transactional
+    public GroupStudyDTO.Response startGroupStudy(Long leaderId, Long groupId) {
+        log.info("Starting group study (activating). leaderId={}, groupId={}", leaderId, groupId);
+
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId)
+                .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
+
+        if (!groupStudy.getLeader().getId().equals(leaderId)) {
+            throw new SecurityException("스터디를 시작할 권한이 없습니다. (방장만 가능)");
+        }
+
+        if (groupStudy.getStatus() != GroupStudyStatus.RECRUITING) {
+            throw new IllegalStateException("모집 중인 스터디그룹만 시작할 수 있습니다.");
+        }
+
+        groupStudy.setStatus(GroupStudyStatus.ACTIVE);
+        GroupStudy saved = groupStudyRepository.save(groupStudy);
+
+        log.info("Group study activated. groupId={}", groupId);
+        return toResponseDTO(saved);
     }
 
     private GroupStudyDTO.Response toResponseDTO(GroupStudy groupStudy) {
