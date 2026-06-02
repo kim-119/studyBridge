@@ -1,0 +1,28 @@
+# StudyBridge FastAPI AI 서버 의존성
+
+# --- 웹 프레임워크 ---
+fastapi
+uvicorn[standard]
+
+# --- 환경변수 ---
+python-dotenv
+
+# --- 데이터 검증 ---
+pydantic
+
+# --- HTTP 클라이언트 ---
+requests
+
+# --- LLM 클라이언트 (Qwen vLLM OpenAI-compatible server 호출용) ---
+openai
+
+# --- 검색 API ---
+tavily-python
+
+# --- PostgreSQL + pgvector ---
+psycopg[binary]
+pgvector
+
+# --- 임베딩 / RAG ---
+sentence-transformers
+numpy
