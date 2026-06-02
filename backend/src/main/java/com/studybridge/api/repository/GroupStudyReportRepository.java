@@ -9,4 +9,5 @@ import java.util.List;
 @Repository
 public interface GroupStudyReportRepository extends JpaRepository<GroupStudyReport, Long> {
     List<GroupStudyReport> findByGroupStudyId(Long groupStudyId);
+    List<GroupStudyReport> findAllByOrderByCreatedAtDesc();
 }

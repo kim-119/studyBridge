@@ -1,6 +1,7 @@
 package com.studybridge.api.controller;
 
 import com.studybridge.api.dto.AdminDTO;
+import com.studybridge.api.dto.GroupStudyReportDTO;
 import com.studybridge.api.security.domain.CustomUserDetails;
 import com.studybridge.api.service.AdminService;
 import lombok.RequiredArgsConstructor;
@@ -8,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import java.util.List;
 
 @Slf4j
 @RestController
@@ -66,6 +68,25 @@ public class AdminController {
             @PathVariable Long commentId) {
         verifyAdminRole(userDetails);
         AdminDTO.ModerationResponse response = adminService.crushComment(commentId);
+        return ResponseEntity.ok(response);
+    }
+
+    // 그룹스터디 신고 전체 내역 조회
+    @GetMapping("/reports/groups")
+    public ResponseEntity<List<GroupStudyReportDTO.Response>> listGroupStudyReports(
+            @AuthenticationPrincipal CustomUserDetails userDetails) {
+        verifyAdminRole(userDetails);
+        List<GroupStudyReportDTO.Response> responses = adminService.listAllGroupStudyReports();
+        return ResponseEntity.ok(responses);
+    }
+
+    // 그룹스터디 강제 삭제
+    @DeleteMapping("/groups/{groupId}")
+    public ResponseEntity<AdminDTO.ModerationResponse> crushGroupStudy(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long groupId) {
+        verifyAdminRole(userDetails);
+        AdminDTO.ModerationResponse response = adminService.crushGroupStudy(groupId);
         return ResponseEntity.ok(response);
     }
 }

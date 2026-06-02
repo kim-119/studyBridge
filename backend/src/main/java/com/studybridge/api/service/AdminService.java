@@ -1,6 +1,7 @@
 package com.studybridge.api.service;
 
 import com.studybridge.api.dto.AdminDTO;
+import com.studybridge.api.dto.GroupStudyReportDTO;
 import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +19,8 @@ public class AdminService {
 
     private final UserRepository userRepository;
     private final BlogService blogService;
+    private final GroupStudyReportService groupStudyReportService;
+    private final GroupStudyService groupStudyService;
 
     // 유저 일시 정지 (SUSPEND)
     @Transactional
@@ -102,6 +105,25 @@ public class AdminService {
                  .targetType("COMMENT")
                  .action("DELETE")
                  .message("댓글 강제 삭제 성공")
+                 .executionTime(LocalDateTime.now())
+                 .build();
+     }
+
+     // 모든 그룹스터디 신고 내역 조회 (어드민 전용)
+     public java.util.List<GroupStudyReportDTO.Response> listAllGroupStudyReports() {
+         return groupStudyReportService.listAllGroupStudyReports();
+     }
+
+     // 그룹스터디 강제 삭제 (DELETE)
+     @Transactional
+     public AdminDTO.ModerationResponse crushGroupStudy(Long groupId) {
+         groupStudyService.deleteGroupStudyForce(groupId);
+         log.info("[관리자 제재] 그룹스터디 강제 삭제 완료. 그룹 ID: {}", groupId);
+         return AdminDTO.ModerationResponse.builder()
+                 .targetId(groupId)
+                 .targetType("GROUP_STUDY")
+                 .action("DELETE")
+                 .message("그룹스터디 강제 삭제 성공")
                  .executionTime(LocalDateTime.now())
                  .build();
      }

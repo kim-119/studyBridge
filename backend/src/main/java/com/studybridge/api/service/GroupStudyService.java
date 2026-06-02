@@ -268,6 +268,15 @@ public class GroupStudyService {
         log.info("Group study deleted successfully. groupId={}, deletedBy={}", groupId, userId);
     }
 
+    // 그룹스터디 관리자 강제 삭제 (소유권 검증 없음)
+    @Transactional
+    public void deleteGroupStudyForce(Long groupId) {
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId)
+                .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
+        groupStudyRepository.delete(groupStudy);
+        log.info("Group study force-deleted successfully by admin. groupId={}", groupId);
+    }
+
     @Transactional
     public GroupStudyDTO.Response startGroupStudy(Long leaderId, Long groupId) {
         log.info("Starting group study (activating). leaderId={}, groupId={}", leaderId, groupId);
