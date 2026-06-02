@@ -15,6 +15,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.NoSuchElementException;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -66,5 +68,21 @@ public class GroupStudyReportService {
                 .reason(savedReport.getReason())
                 .createdAt(savedReport.getCreatedAt())
                 .build();
+    }
+
+    // 모든 그룹스터디 신고 내역 조회 (어드민 전용)
+    public List<GroupStudyReportDTO.Response> listAllGroupStudyReports() {
+        return groupStudyReportRepository.findAllByOrderByCreatedAtDesc().stream()
+                .map(report -> GroupStudyReportDTO.Response.builder()
+                        .id(report.getId())
+                        .groupStudyId(report.getGroupStudy().getId())
+                        .reporterId(report.getReporter().getId())
+                        .reporterName(report.getReporter().getDisplayName())
+                        .reportedUserId(report.getReportedUser() != null ? report.getReportedUser().getId() : null)
+                        .reportedUserName(report.getReportedUser() != null ? report.getReportedUser().getDisplayName() : null)
+                        .reason(report.getReason())
+                        .createdAt(report.getCreatedAt())
+                        .build())
+                .collect(Collectors.toList());
     }
 }

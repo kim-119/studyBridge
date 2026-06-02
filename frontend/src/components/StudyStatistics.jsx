@@ -172,6 +172,7 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
     });
 
     setGraphData(updatedData);
+    setIsEmpty(!updatedData.some(item => item.seconds > 0));
   }, [baseRawData, weeklySecondsMap, todayStudySeconds]);
 
   return (
