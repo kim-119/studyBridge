@@ -1,0 +1,272 @@
+import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Search, Plus, Heart, MessageSquare, Image as ImageIcon, FileText, X } from 'lucide-react';
+import { useAuth } from '../hooks/useAuth';
+
+export default function Knowledge() {
+  const { user } = useAuth();
+  
+  const [posts, setPosts] = useState([
+    {
+      id: 1,
+      title: '비전공자를 위한 백엔드 개발자 로드맵 (PDF 첨부)',
+      summary: '제가 1년 동안 공부했던 내용과 단계별로 추천하는 강의, 책, 프로젝트 주제들을 정리했습니다. 방향을 못 잡고 계신 분들께 도움이 되길 바랍니다.',
+      author: '잠재용',
+      date: '2023-11-01',
+      likes: 124,
+      comments: 32,
+      hashtags: ['#백엔드', '#로드맵', '#비전공자'],
+      thumbnail: 'https://images.unsplash.com/photo-1517694712202-14dd9538aa97?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80',
+    },
+    {
+      id: 2,
+      title: 'Python 알고리즘 코딩테스트 핵심 문법 족보',
+      summary: '코테 준비하면서 가장 많이 쓰이는 파이썬 내장함수와 라이브러리를 단권화했습니다. 이 PDF 하나면 기본 문법은 끝납니다.',
+      author: 'PythonMaster',
+      date: '2023-10-28',
+      likes: 89,
+      comments: 15,
+      hashtags: ['#알고리즘', '#코딩테스트', '#Python', '#자료'],
+      thumbnail: 'https://images.unsplash.com/photo-1526379095098-d400fd0bfce8?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80',
+    },
+    {
+      id: 3,
+      title: '성공적인 토익 900달성을 위한 오답노트 작성법',
+      summary: '문제를 많이 푸는 것보다 오답노트를 어떻게 쓰느냐가 중요합니다. 제가 실제로 썼던 오답노트 양식과 예시 사진을 공유합니다.',
+      author: '토익부스터',
+      date: '2023-10-25',
+      likes: 56,
+      comments: 8,
+      hashtags: ['#토익', '#오답노트', '#영어'],
+      thumbnail: 'https://images.unsplash.com/photo-1434030216411-0b793f4b4173?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80',
+    },
+    {
+      id: 4,
+      title: 'UI/UX 디자이너 취업 포트폴리오 가이드',
+      summary: '서류 합격률을 높이는 포트폴리오 템플릿과 구성 방법을 담았습니다. 피그마 원본 파일도 함께 제공합니다.',
+      author: '디자인마스터',
+      date: '2023-10-20',
+      likes: 210,
+      comments: 45,
+      hashtags: ['#디자인', '#포트폴리오', '#취업'],
+      thumbnail: 'https://images.unsplash.com/photo-1561070791-2526d30994b5?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80',
+    }
+  ]);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeFilter, setActiveFilter] = useState('전체');
+  const [showWriteModal, setShowWriteModal] = useState(false);
+  const [newPost, setNewPost] = useState({ title: '', summary: '', tags: '' });
+
+  const filters = ['전체', '#로드맵', '#코딩테스트', '#토익', '#자료', '#취업', '#디자인'];
+
+  const handleWriteSubmit = () => {
+    if (!newPost.title.trim() || !newPost.summary.trim()) return;
+    
+    const tagsArray = newPost.tags.split(',').map(tag => tag.trim().startsWith('#') ? tag.trim() : `#${tag.trim()}`).filter(t => t !== '#');
+    
+    const newEntry = {
+      id: Date.now(),
+      title: newPost.title,
+      summary: newPost.summary,
+      author: user?.displayName || user?.name || '새사용자',
+      date: new Date().toISOString().split('T')[0],
+      likes: 0,
+      comments: 0,
+      hashtags: tagsArray,
+      thumbnail: 'https://images.unsplash.com/photo-1456324504439-367cee3b3c32?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80',
+    };
+
+    setPosts([newEntry, ...posts]);
+    setShowWriteModal(false);
+    setNewPost({ title: '', summary: '', tags: '' });
+  };
+
+  return (
+    <div style={{ width: '100%', boxSizing: 'border-box', padding: '40px', fontFamily: '"Malgun Gothic", "맑은 고딕", sans-serif', backgroundColor: '#F9FAFB', minHeight: 'calc(100vh - 80px)' }}>
+      
+      {/* 중앙 집중형 검색 및 생성 헤더 */}
+      <div style={{ maxWidth: '800px', margin: '0 auto 48px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        
+        <div style={{ width: '100%', position: 'relative', display: 'flex', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: '24px', boxShadow: '0 8px 30px rgba(0,0,0,0.06)', padding: '8px 8px 8px 24px', border: '1px solid #E5E7EB', transition: 'all 0.3s' }}
+             onFocus={(e) => { e.currentTarget.style.boxShadow = '0 12px 40px rgba(96, 201, 90, 0.15)'; e.currentTarget.style.borderColor = '#60C95A' }}
+             onBlur={(e) => { e.currentTarget.style.boxShadow = '0 8px 30px rgba(0,0,0,0.06)'; e.currentTarget.style.borderColor = '#E5E7EB' }}
+        >
+          <Search size={24} color="#9CA3AF" />
+          <input 
+            type="text" 
+            placeholder="궁금한 로드맵이나 자료를 RAG AI로 검색해보세요" 
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{ flex: 1, height: '48px', border: 'none', backgroundColor: 'transparent', fontSize: '16px', color: '#111827', outline: 'none', marginLeft: '12px' }}
+          />
+          <button 
+            onClick={() => setShowWriteModal(true)}
+            style={{ height: '48px', padding: '0 24px', backgroundColor: '#60C95A', color: 'white', borderRadius: '16px', border: 'none', fontWeight: 'bold', fontSize: '15px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', transition: 'background-color 0.2s', boxShadow: '0 4px 12px rgba(96, 201, 90, 0.3)', whiteSpace: 'nowrap' }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#387235'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#60C95A'}
+          >
+            <Plus size={20} />
+            새 지식 작성
+          </button>
+        </div>
+
+        {/* Filter Tags */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginTop: '24px' }}>
+          {filters.map(filter => (
+            <button
+              key={filter}
+              onClick={() => setActiveFilter(filter)}
+              style={{ padding: '8px 16px', borderRadius: '20px', border: activeFilter === filter ? '1px solid #60C95A' : '1px solid #E5E7EB', backgroundColor: activeFilter === filter ? '#60C95A' : '#FFFFFF', color: activeFilter === filter ? 'white' : '#6B7280', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s', boxShadow: activeFilter === filter ? '0 4px 12px rgba(96, 201, 90, 0.2)' : 'none' }}
+              onMouseEnter={(e) => { if(activeFilter !== filter) e.currentTarget.style.borderColor = '#60C95A' }}
+              onMouseLeave={(e) => { if(activeFilter !== filter) e.currentTarget.style.borderColor = '#E5E7EB' }}
+            >
+              {filter}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Main Content: Post Grid (Full Width) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
+        {/* Featured Post (First post) spanning full width */}
+        {posts.length > 0 && (
+          <div style={{ gridColumn: '1 / -1', marginBottom: '16px' }}>
+             <Link to={`/knowledge/${posts[0].id}`} style={{ textDecoration: 'none', display: 'block' }}>
+              <div style={{ position: 'relative', width: '100%', height: '400px', borderRadius: '24px', overflow: 'hidden', boxShadow: '0 12px 32px rgba(0,0,0,0.1)', cursor: 'pointer' }}>
+                <img src={posts[0].thumbnail} alt={posts[0].title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '60px 40px 40px', background: 'linear-gradient(to top, rgba(0,0,0,0.9), transparent)', color: 'white' }}>
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                    {posts[0].hashtags.map(tag => <span key={tag} style={{ backgroundColor: '#60C95A', padding: '6px 12px', borderRadius: '8px', fontSize: '13px', fontWeight: 'bold' }}>{tag}</span>)}
+                  </div>
+                  <h2 style={{ fontSize: '32px', fontWeight: 'bold', margin: '0 0 16px' }}>{posts[0].title}</h2>
+                  <p style={{ fontSize: '16px', color: 'rgba(255,255,255,0.8)', margin: '0 0 20px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', maxWidth: '800px' }}>{posts[0].summary}</p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '15px' }}>
+                    <span style={{ fontWeight: 'bold' }}>{posts[0].author}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Heart size={16} /> {posts[0].likes}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><MessageSquare size={16} /> {posts[0].comments}</div>
+                  </div>
+                </div>
+              </div>
+            </Link>
+          </div>
+        )}
+
+        {/* Rest of the posts Grid */}
+        {posts.slice(1).map(post => (
+          <Link to={`/knowledge/${post.id}`} key={post.id} style={{ textDecoration: 'none', color: 'inherit' }}>
+            <div style={{ backgroundColor: 'white', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.04)', transition: 'transform 0.2s, boxShadow 0.2s', display: 'flex', flexDirection: 'column', height: '100%', border: '1px solid #E5E7EB' }} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-6px)'; e.currentTarget.style.boxShadow = '0 12px 24px rgba(0,0,0,0.08)' }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.04)' }}>
+              <div style={{ width: '100%', height: '200px', backgroundColor: '#F3F4F6' }}>
+                <img src={post.thumbnail} alt={post.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              </div>
+              <div style={{ padding: '24px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                  {post.hashtags.map(tag => <span key={tag} style={{ color: '#60C95A', fontSize: '13px', fontWeight: 'bold', backgroundColor: 'rgba(96, 201, 90, 0.1)', padding: '4px 8px', borderRadius: '6px' }}>{tag}</span>)}
+                </div>
+                <h3 style={{ fontSize: '18px', fontWeight: 'bold', color: '#111827', margin: '0 0 12px', lineHeight: '1.4', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{post.title}</h3>
+                <p style={{ fontSize: '15px', color: '#6B7280', margin: '0 0 20px', lineHeight: '1.5', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden', flex: 1 }}>{post.summary}</p>
+                
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '16px', borderTop: '1px solid #E5E7EB' }}>
+                  <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#111827' }}>{post.author}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#6B7280', fontSize: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><Heart size={16} /> {post.likes}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><MessageSquare size={16} /> {post.comments}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+
+      {/* 글 작성 모달 (디자인 정책 적용) */}
+      {showWriteModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000, padding: '20px' }} onClick={() => setShowWriteModal(false)}>
+          <div style={{ backgroundColor: '#FFFFFF', borderRadius: '12px', width: '100%', maxWidth: '800px', maxHeight: '90vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', animation: 'slideUp 0.3s ease-out' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #E5E7EB', paddingBottom: '16px' }}>
+                <h2 style={{ fontSize: '20px', fontWeight: 'bold', color: '#111827', margin: 0 }}>지식 공유하기</h2>
+                <button onClick={() => setShowWriteModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6B7280' }}><X size={24} /></button>
+              </div>
+
+              {/* 입력 폼 */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#111827', marginBottom: '8px' }}>제목</label>
+                  <input 
+                    type="text" 
+                    placeholder="글 제목을 입력하세요." 
+                    value={newPost.title}
+                    onChange={(e) => setNewPost({...newPost, title: e.target.value})}
+                    style={{ width: '100%', height: '40px', boxSizing: 'border-box', padding: '0 16px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', outline: 'none' }}
+                    onFocus={(e) => e.target.style.border = '1px solid #60C95A'}
+                    onBlur={(e) => e.target.style.border = '1px solid #D1D5DB'}
+                  />
+                </div>
+                
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#111827', marginBottom: '8px' }}>해시태그</label>
+                  <input 
+                    type="text" 
+                    placeholder="쉼표(,)로 구분하여 해시태그를 입력하세요. 예: 로드맵, 코딩테스트" 
+                    value={newPost.tags}
+                    onChange={(e) => setNewPost({...newPost, tags: e.target.value})}
+                    style={{ width: '100%', height: '40px', boxSizing: 'border-box', padding: '0 16px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', outline: 'none' }}
+                    onFocus={(e) => e.target.style.border = '1px solid #60C95A'}
+                    onBlur={(e) => e.target.style.border = '1px solid #D1D5DB'}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#111827', marginBottom: '8px' }}>내용</label>
+                  <textarea 
+                    placeholder="나만의 로드맵, 노하우, 공부 자료를 상세히 공유해주세요. 다른 사람들에게 큰 도움이 됩니다!" 
+                    value={newPost.summary}
+                    onChange={(e) => setNewPost({...newPost, summary: e.target.value})}
+                    style={{ width: '100%', boxSizing: 'border-box', padding: '16px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', outline: 'none', minHeight: '200px', resize: 'vertical', lineHeight: '1.6' }}
+                    onFocus={(e) => e.target.style.border = '1px solid #60C95A'}
+                    onBlur={(e) => e.target.style.border = '1px solid #D1D5DB'}
+                  />
+                </div>
+
+                {/* 첨부 파일 섹션 */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#111827', marginBottom: '8px' }}>자료 첨부 (PDF, 이미지)</label>
+                  <div style={{ display: 'flex', gap: '16px' }}>
+                    <button style={{ flex: 1, padding: '24px', backgroundColor: '#F3F4F6', border: '1px dashed #D1D5DB', borderRadius: '8px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', color: '#6B7280', transition: '0.2s' }} onMouseEnter={(e) => e.currentTarget.style.borderColor = '#60C95A'} onMouseLeave={(e) => e.currentTarget.style.borderColor = '#D1D5DB'}>
+                      <FileText size={28} color="#6B7280" />
+                      <span style={{ fontSize: '12px', fontWeight: 'bold' }}>PDF 업로드</span>
+                    </button>
+                    <button style={{ flex: 1, padding: '24px', backgroundColor: '#F3F4F6', border: '1px dashed #D1D5DB', borderRadius: '8px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', color: '#6B7280', transition: '0.2s' }} onMouseEnter={(e) => e.currentTarget.style.borderColor = '#60C95A'} onMouseLeave={(e) => e.currentTarget.style.borderColor = '#D1D5DB'}>
+                      <ImageIcon size={28} color="#6B7280" />
+                      <span style={{ fontSize: '12px', fontWeight: 'bold' }}>사진 업로드</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 하단 버튼 */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #E5E7EB' }}>
+                <button 
+                  onClick={() => setShowWriteModal(false)}
+                  style={{ width: '80px', height: '40px', backgroundColor: '#FFFFFF', color: '#111827', border: '1px solid #E5E7EB', borderRadius: '8px', fontSize: '14px', cursor: 'pointer' }}
+                >
+                  취소
+                </button>
+                <button 
+                  onClick={handleWriteSubmit}
+                  style={{ width: '80px', height: '40px', backgroundColor: '#60C95A', color: 'white', border: 'none', borderRadius: '8px', fontSize: '14px', cursor: 'pointer' }}
+                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#387235'}
+                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#60C95A'}
+                >
+                  등록
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}

@@ -12,6 +12,8 @@ import StudyMate from './pages/StudyMate';
 import GroupStudy from './pages/GroupStudy';
 import Archive from './pages/Archive';
 import ArchiveDetail from './pages/ArchiveDetail';
+import Knowledge from './pages/Knowledge';
+import KnowledgeDetail from './pages/KnowledgeDetail';
 function PrivateRoute({ children }) {
   const { isLoggedIn } = useAuth();
   return isLoggedIn ? children : <Navigate to="/login" replace />;
@@ -82,6 +84,8 @@ function App() {
           <Route path="/groupstudy" element={<GroupStudy />} />
           <Route path="/archive" element={<Archive />} />
           <Route path="/archive/:type/:id" element={<ArchiveDetail />} />
+          <Route path="/knowledge" element={<Knowledge />} />
+          <Route path="/knowledge/:id" element={<KnowledgeDetail />} />
           {/* 잘못된 주소는 메인으로 이동 */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

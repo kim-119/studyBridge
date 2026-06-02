@@ -34,6 +34,9 @@ export default function Navbar() {
             <Link to="/archive" className="nav-link">
               자료보관함
             </Link>
+            <Link to="/knowledge" className="nav-link">
+              지식공유
+            </Link>
           </div>
         </div>
 

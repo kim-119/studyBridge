@@ -324,8 +324,15 @@ export default function StudyMate() {
         message: inputMsg,
         selectedAgent
       });
-      const res = await agentService.sendMessage(userId, agentId, inputMsg);
+      const res = await agentService.sendMessage(userId, agentId, {
+        message: inputMsg,
+        rounds: 1, // 프론트단에서 타임아웃 방지를 위해 강제로 1라운드(병렬 단답)만 요청
+      });
       console.debug('[StudyMate] chat response', res);
+
+      if (res.success === false || res.errorMessage) {
+        throw new Error(res.errorMessage || 'AI 응답 실패');
+      }
 
       let newMsgs = [];
       if (res.replies && res.replies.length > 0) {
@@ -372,7 +379,7 @@ export default function StudyMate() {
       }
     } catch (err) {
       console.error('메시지 전송 실패:', err);
-      alert('메시지 전송에 실패했습니다.');
+      alert(err.message || '메시지 전송에 실패했습니다.');
 
       // 7. 실패 시, 해당 방의 캐시 및 UI에서 에러 메시지만 복구
       setRoomHistories((prev) => ({
@@ -757,7 +764,7 @@ export default function StudyMate() {
                     agents={selectedAgent.agents || []}
                     bookmarkedIds={bookmarkedIds}
                     onBookmark={handleBookmark}
-                    onRequestDetail={(disc) => {
+                    onRequestDetail={(disc, actionType = 'detail') => {
                       pendingDetailParentId.current = disc.id;
                       
                       // 사용자의 질문 노드에서 파생될 경우와 AI 노드에서 파생될 경우 문구 분리
@@ -769,9 +776,20 @@ export default function StudyMate() {
                           ? (disc.content.length > 25 ? disc.content.substring(0, 25).replace(/\n/g, ' ') + '...' : disc.content.replace(/\n/g, ' '))
                           : '';
 
-                      const promptText = isUserNode 
-                        ? `@모두 여기에 덧붙여서 하나 더 궁금한 게 있는데, `
-                        : `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 대해 각자의 특기나 관점에서 좀 더 자세히 설명해 줄래?`;
+                      let promptText = '';
+                      if (isUserNode) {
+                        promptText = `@모두 여기에 덧붙여서 하나 더 궁금한 게 있는데, `;
+                      } else {
+                        if (actionType === 'criticize') {
+                          promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 대해 각자의 관점에서 단점이나 문제점을 비판하고 반박해 줄래?`;
+                        } else if (actionType === 'compare') {
+                          promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용과 다른 개념을 대조하거나 각자의 의견과 어떻게 다른지 비교 분석해 줄래?`;
+                        } else if (actionType === 'support') {
+                          promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 전적으로 동의하며, 실무적인 추가 예시를 들어 보충 설명해 줄래?`;
+                        } else {
+                          promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 대해 각자의 특기나 관점에서 좀 더 자세히 설명해 줄래?`;
+                        }
+                      }
                         
                       setMessage(promptText);
                       setShowMentionPopup(true);
