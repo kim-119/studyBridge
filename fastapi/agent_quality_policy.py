@@ -10,38 +10,112 @@ logger = logging.getLogger("studybridge.agent_quality")
 
 ALLOWED_KNOWLEDGE_LEVELS = ["입문 수준", "학사 수준", "석사 수준", "박사 수준", "전문가 수준"]
 ALLOWED_PERSONALITIES = ["전문적", "친근함", "솔직함", "독특함", "효율적", "냉소적"]
+ALLOWED_PERSONALITY_STRENGTHS = ["low", "medium", "high", "extreme"]
 
 DEFAULT_KNOWLEDGE_LEVEL = "학사 수준"
 DEFAULT_PERSONALITY = "전문적"
 DEFAULT_TONE = "전문적"
+DEFAULT_PERSONALITY_STRENGTH = "extreme"
+
+KNOWLEDGE_ALIASES = {
+    "입문 수준": "입문 수준",
+    "입문": "입문 수준",
+    "초보": "입문 수준",
+    "초급": "입문 수준",
+    "기초": "입문 수준",
+    "beginner": "입문 수준",
+    "basic": "입문 수준",
+    "학사 수준": "학사 수준",
+    "학사": "학사 수준",
+    "대학생": "학사 수준",
+    "전공기초": "학사 수준",
+    "전공 기본": "학사 수준",
+    "bachelor": "학사 수준",
+    "undergraduate": "학사 수준",
+    "석사 수준": "석사 수준",
+    "석사": "석사 수준",
+    "대학원": "석사 수준",
+    "연구 기초": "석사 수준",
+    "고급 이론": "석사 수준",
+    "master": "석사 수준",
+    "graduate": "석사 수준",
+    "박사 수준": "박사 수준",
+    "박사": "박사 수준",
+    "연구자": "박사 수준",
+    "이론 연구": "박사 수준",
+    "학술 연구": "박사 수준",
+    "phd": "박사 수준",
+    "doctoral": "박사 수준",
+    "전문가 수준": "전문가 수준",
+    "전문가": "전문가 수준",
+    "실무자": "전문가 수준",
+    "시니어": "전문가 수준",
+    "아키텍트": "전문가 수준",
+    "현업 전문가": "전문가 수준",
+    "expert": "전문가 수준",
+    "senior": "전문가 수준",
+    "architect": "전문가 수준",
+}
+
+PERSONALITY_ALIASES = {
+    "전문적": "전문적",
+    "전문": "전문적",
+    "professional": "전문적",
+    "formal": "전문적",
+    "친근함": "친근함",
+    "친근": "친근함",
+    "friendly": "친근함",
+    "솔직함": "솔직함",
+    "솔직": "솔직함",
+    "honest": "솔직함",
+    "critical": "솔직함",
+    "독특함": "독특함",
+    "독특": "독특함",
+    "creative": "독특함",
+    "효율적": "효율적",
+    "효율": "효율적",
+    "efficient": "효율적",
+    "concise": "효율적",
+    "냉소적": "냉소적",
+    "냉소": "냉소적",
+    "cynical": "냉소적",
+}
 
 DISCIPLINE_KEYWORDS = {
     "computer_science": [
         "java", "python", "알고리즘", "oop", "객체지향", "네트워크", "데이터베이스", "컴퓨터공학",
         "프로그래밍", "운영체제", "컴파일러", "api", "spring", "react", "fastapi", "분산", "자료구조",
+        "msa", "마이크로서비스", "마이크로 서비스", "devops", "배포", "모니터링",
+        "자바", "상속", "다형성", "캡슐화", "클래스", "인터페이스",
     ],
     "linguistics": ["음운론", "통사론", "의미론", "형태소", "언어학", "화용론", "음성학", "담화", "구문"],
-    "mathematics": ["미분", "적분", "대수", "확률", "통계", "기하", "미분방정식", "정리", "행렬", "위상"],
-    "psychology": ["인지", "행동주의", "프로이트", "심리", "상담", "기억", "학습이론", "동기", "지능", "정신분석"],
-    "philosophy": ["칸트", "존재론", "윤리학", "인식론", "형이상학", "공리주의", "철학", "헤겔", "데카르트"],
-    "biology": ["세포", "유전자", "단백질", "생명과학", "세포호흡", "효소", "dna", "rna", "대사"],
+    "mathematics": ["미분", "적분", "대수", "확률", "통계", "기하", "미분방정식", "정리", "행렬", "위상", "고유값", "선형대수", "증명", "수렴"],
+    "natural_science": ["물리", "화학", "양자", "역학", "열역학", "분자", "원자", "반응", "실험", "관찰"],
+    "psychology": ["인지", "행동주의", "프로이트", "심리", "상담", "기억", "학습이론", "성격", "동기", "인지부조화", "정서"],
+    "philosophy": ["칸트", "존재론", "윤리학", "인식론", "형이상학", "공리주의", "철학", "헤겔", "데카르트", "실존주의", "사르트르", "하이데거", "키르케고르"],
+    "biology_medicine": ["세포", "유전자", "단백질", "생명과학", "세포호흡", "효소", "dna", "rna", "대사", "의학", "진단", "질환", "임상", "치료", "병리", "약물", "환자", "수술", "보건"],
     "medicine": ["의학", "진단", "질환", "임상", "치료", "병리", "약물", "환자", "수술"],
     "law": ["헌법", "민법", "판례", "계약", "형법", "소송", "법률", "행정법", "상법"],
-    "business": ["마케팅", "회계", "전략", "조직", "stp", "재무", "브랜드", "시장", "kpi", "경영"],
+    "business": ["마케팅", "회계", "전략", "조직", "stp", "재무", "브랜드", "시장", "kpi", "경영", "경제", "비용", "인센티브", "스타트업"],
     "education": ["교육학", "교수법", "학습자", "평가", "교육과정", "수업", "교수설계"],
-    "engineering": ["회로", "제어", "역학", "열역학", "재료", "공정", "전기", "기계", "토목", "화학공학"],
-    "social_science": ["사회학", "정치", "경제", "문화", "정책", "제도", "불평등", "국제관계"],
+    "engineering": ["회로", "제어", "역학", "재료", "공정", "전기", "기계", "토목", "화학공학", "시스템", "표준", "신뢰성"],
+    "arts_design": ["예술", "디자인", "미학", "색채", "조형", "ux", "ui", "시각", "브랜딩"],
+    "humanities": ["역사", "문학", "텍스트", "사료", "서사", "시대", "언어학", "담론"],
+    "social_science": ["사회학", "정치", "문화", "정책", "제도", "불평등", "국제관계", "민주주의", "권력", "규범"],
 }
+
 
 def normalize_knowledge_level(value: str | None, fallback_text: str = "") -> tuple[str, list[str]]:
     warnings: list[str] = []
-    val = str(value or "").strip()
-    if val in ALLOWED_KNOWLEDGE_LEVELS:
-        return val, warnings
-    # UI에서 전달받은 값 중 정규화 대상 매칭
-    for canonical in ALLOWED_KNOWLEDGE_LEVELS:
-        if canonical in val or canonical.replace(" ", "") in val.replace(" ", ""):
-            return canonical, warnings
+    candidates = [value or "", fallback_text or ""]
+    for candidate in candidates:
+        normalized = _normalize_space(candidate).lower()
+        if not normalized:
+            continue
+        for alias, canonical in KNOWLEDGE_ALIASES.items():
+            if alias.lower().replace(" ", "") in normalized.replace(" ", ""):
+                return canonical, warnings
+    warnings.append(f"지식수준을 정규화할 수 없어 기본값 '{DEFAULT_KNOWLEDGE_LEVEL}'을 사용함")
     return DEFAULT_KNOWLEDGE_LEVEL, warnings
 
 
@@ -146,6 +220,18 @@ def get_discipline_depth_adjustment(discipline: str, level: str) -> dict:
             "박사 수준": ["분자 수준 메커니즘", "연구 가설", "최신 논쟁"],
             "전문가 수준": ["실험 설계", "임상/산업 적용", "데이터 해석", "리스크"],
         },
+        "biology_medicine": {
+            "학사 수준": ["세포/조직/기관 수준", "기본 생리 과정", "핵심 경로", "대표 예시"],
+            "석사 수준": ["조절 메커니즘", "병태생리 또는 실험 방법", "근거 수준", "개인차와 한계"],
+            "박사 수준": ["분자/세포 수준 메커니즘", "모델 가정", "실험적 검증", "연구 논쟁과 한계"],
+            "전문가 수준": ["근거 수준", "임상/보건 적용", "위험요인", "윤리와 안전", "의사결정 기준"],
+        },
+        "natural_science": {
+            "학사 수준": ["핵심 법칙", "변수 관계", "대표 현상", "기본 실험"],
+            "석사 수준": ["모델 가정", "메커니즘", "측정 가능성", "오차와 불확실성"],
+            "박사 수준": ["이론-관찰 관계", "반증 가능성", "스케일", "실험 설계와 한계"],
+            "전문가 수준": ["검증 전략", "운영 조건", "안전성", "비용과 리스크"],
+        },
         "philosophy": {
             "학사 수준": ["주요 개념", "사상가", "기본 논증"],
             "석사 수준": ["논증 구조", "전제", "반론", "학파 비교"],
@@ -164,6 +250,36 @@ def get_discipline_depth_adjustment(discipline: str, level: str) -> dict:
             "박사 수준": ["이론 모델", "실증 연구", "방법론", "논쟁"],
             "전문가 수준": ["의사결정", "KPI", "실행 전략", "리스크", "운영 적용"],
         },
+        "social_science": {
+            "학사 수준": ["제도", "행위자", "규범", "대표 이론"],
+            "석사 수준": ["권력관계", "사회구조", "인과 추론", "질적/양적 방법론"],
+            "박사 수준": ["정당성", "대표성", "담론", "방법론 논쟁", "역사적 맥락"],
+            "전문가 수준": ["정책 설계", "제도 운영", "집행 리스크", "평가 지표"],
+        },
+        "education": {
+            "학사 수준": ["학습자 특성", "교수 원리", "평가", "수업 예시"],
+            "석사 수준": ["교육과정 설계", "측정 도구", "학습 이론", "효과 검증"],
+            "박사 수준": ["방법론", "타당도", "교육철학", "정책 맥락", "연구 쟁점"],
+            "전문가 수준": ["현장 적용", "운영 제약", "평가 지표", "개선 전략"],
+        },
+        "arts_design": {
+            "학사 수준": ["조형 원리", "구성", "색채", "대표 사례"],
+            "석사 수준": ["매체 특성", "사용자 경험", "비평 기준", "맥락 분석"],
+            "박사 수준": ["미학 이론", "해석틀", "담론", "수용사", "비판적 관점"],
+            "전문가 수준": ["제작 기준", "품질 평가", "개선 방향", "사용성 리스크"],
+        },
+        "humanities": {
+            "학사 수준": ["시대적 맥락", "주요 개념", "텍스트/사료 근거", "대표 해석"],
+            "석사 수준": ["해석틀", "담론", "문체/서사 구조", "관점의 한계"],
+            "박사 수준": ["사료 비판", "수용사", "방법론", "해석 논쟁", "메타비평"],
+            "전문가 수준": ["분석 기준", "출판/교육/전시 적용", "윤리와 맥락 리스크"],
+        },
+        "engineering": {
+            "학사 수준": ["원리", "요구사항", "기본 설계", "테스트"],
+            "석사 수준": ["설계 제약", "효율", "신뢰성", "표준과 검증"],
+            "박사 수준": ["모델 가정", "최적화", "불확실성", "실험/시뮬레이션 한계"],
+            "전문가 수준": ["운영 조건", "안전성", "비용", "유지보수", "장애 대응"],
+        },
     }
     focus = adjustments.get(discipline, {}).get(canonical)
     if not focus:
@@ -173,21 +289,127 @@ def get_discipline_depth_adjustment(discipline: str, level: str) -> dict:
 
 def normalize_personality_tone(agent: dict) -> tuple[str, str, list[str]]:
     warnings: list[str] = []
-    raw_val = (
-        agent.get("personality")
-        or agent.get("style")
-        or agent.get("tone")
-        or str(agent.get("persona") or "")
-    )
-    val = str(raw_val or "").strip()
-    if val in ALLOWED_PERSONALITIES:
-        return val, val, warnings
-        
-    for canonical in ALLOWED_PERSONALITIES:
-        if canonical in val or canonical.replace(" ", "") in val.replace(" ", ""):
-            return canonical, canonical, warnings
-            
-    return DEFAULT_PERSONALITY, DEFAULT_TONE, warnings
+    values = [
+        ("personality", agent.get("personality")),
+        ("style", agent.get("style")),
+        ("tone", agent.get("tone")),
+        ("persona", _extract_tag_value(str(agent.get("persona") or ""), "성격")),
+    ]
+    chosen = None
+    chosen_source = ""
+    normalized_values = []
+    for source, value in values:
+        normalized = _normalize_personality(value)
+        if normalized:
+            normalized_values.append((source, normalized))
+            if chosen is None:
+                chosen = normalized
+                chosen_source = source
+    if chosen is None:
+        chosen = DEFAULT_PERSONALITY
+        chosen_source = "default"
+    for source, normalized in normalized_values[1:]:
+        if normalized != chosen:
+            warnings.append(f"성격/말투 충돌: {chosen_source}={chosen} 우선, {source}={normalized} 보정")
+    return chosen, chosen, warnings
+
+
+def normalize_personality_strength(value: Any) -> str:
+    text = _normalize_space(str(value or "")).lower()
+    aliases = {
+        "낮음": "low",
+        "약함": "low",
+        "low": "low",
+        "보통": "medium",
+        "medium": "medium",
+        "normal": "medium",
+        "강함": "high",
+        "high": "high",
+        "매우 강함": "extreme",
+        "매우강함": "extreme",
+        "극강": "extreme",
+        "extreme": "extreme",
+    }
+    return aliases.get(text, DEFAULT_PERSONALITY_STRENGTH)
+
+
+def build_personality_style_contract(personality: str, strength: str = DEFAULT_PERSONALITY_STRENGTH) -> str:
+    normalized_strength = normalize_personality_strength(strength)
+    contracts = {
+        "전문적": {
+            "tone": "공적이고 단정한 문체. 감탄사, 농담, 과한 친근 표현 제거.",
+            "rhythm": "중간 길이의 정확한 문장. 기준과 근거를 먼저 제시.",
+            "critique": "판단은 권장, 비권장, 위험, 보류처럼 명확히 분류.",
+            "structure": "개념 정의 → 원인 분석 → 비교 → 해결책 → 검증 기준",
+            "allowed": "전문 용어, 조건, 한계, 검증 기준",
+            "banned": "쉽게 말하면요, 걱정하지 마세요, 장황한 위로, 불필요한 감정 표현",
+            "example": "이 문제의 본질은 단순 문법 오류가 아니라 요청 스키마와 응답 스키마의 불일치다.",
+        },
+        "친근함": {
+            "tone": "편안한 대화체. 초보자가 막히는 지점을 먼저 짚고 부드럽게 안내.",
+            "rhythm": "짧고 쉬운 문장과 단계적 설명. 필요한 만큼만 격려.",
+            "critique": "차갑게 단정하지 말고 문제 지점과 다음 행동을 함께 설명.",
+            "structure": "공감 1문장 → 쉬운 원인 설명 → 단계별 해결책 → 다음 행동",
+            "allowed": "이런 상황 흔해요, 먼저, 쉽게 보면, 짧은 격려",
+            "banned": "딱딱한 보고서체, 근거 없는 칭찬 남발, 차가운 비판",
+            "example": "지금 상황은 꽤 흔한 케이스예요. 저장 로직과 AI 분석이 같이 묶이면 버튼이 오래 멈출 수 있어요.",
+        },
+        "솔직함": {
+            "tone": "직설적이고 객관적인 문체. 문제를 돌려 말하지 않음.",
+            "rhythm": "첫 문장에 문제 판단. 이후 원인과 수정 방향을 바로 제시.",
+            "critique": "잘못된 설계, 비효율 코드, 위험한 가정을 명확히 지적하되 사람을 공격하지 않음.",
+            "structure": "문제 직접 지적 → 원인 설명 → 수정 방향 → 확인 방법",
+            "allowed": "이건 틀렸다, 이 구조는 유지보수에 불리하다, 현재 병목은 여기다",
+            "banned": "욕설, 사용자 능력 비하, 근거 없는 단정, 해결책 없는 비판",
+            "example": "이건 프론트 문제가 아니다. Spring이 FastAPI 응답을 기다리다 터지는 구조다.",
+        },
+        "독특함": {
+            "tone": "비유와 장면감이 있는 창의적 문체. 결론은 흐리지 않음.",
+            "rhythm": "이미지/비유로 시작한 뒤 실제 개념과 기술 설명으로 연결.",
+            "critique": "복잡한 개념을 기억에 남는 구조로 바꾸되 실제 코드에 없는 기능을 상상하지 않음.",
+            "structure": "이미지/비유 → 실제 개념 매핑 → 작동 방식 → 한계",
+            "allowed": "마치, 도서관, 지도, 책장, 비유, 관점 전환",
+            "banned": "의미 없는 농담, 과장된 허풍, 본질을 흐리는 비유",
+            "example": "RAG는 도서관 전체를 트럭에 싣지 않는다. 필요한 책장과 문단만 꺼내 온다.",
+        },
+        "효율적": {
+            "tone": "간결하고 꾸밈없는 문체. 결론부터 말함.",
+            "rhythm": "짧은 문장, bullet/번호 목록, 실행 항목 중심.",
+            "critique": "우선순위와 수정 위치를 바로 제시. 배경 설명은 최소화.",
+            "structure": "원인 1줄 → 수정 순서 → 확인 방법",
+            "allowed": "원인:, 수정 순서:, 체크:, 먼저, 우선",
+            "banned": "장황한 설명, 감성 문장, 같은 말 반복, 천천히 해보면 됩니다",
+            "example": "원인: Spring이 FastAPI timeout을 처리하지 못하고 500을 반환함.",
+        },
+        "냉소적": {
+            "tone": "비판적이고 까칠한 문체. 허술한 설계를 숨기지 않음.",
+            "rhythm": "첫 문장에 구조적 결함을 날카롭게 지적하고, 바로 근거와 수정 방향으로 이동.",
+            "critique": "코드, 설계, API 구조, 프롬프트, 로직을 냉소적으로 비판. 사용자 인격 공격 금지.",
+            "structure": "핵심 결함 지적 → 왜 문제인지 → 수정 방향 → 확인 방법",
+            "allowed": "이건 다중 에이전트가 아니라 단일 응답 구조다, 이름만 기능이다, 이 구조면 느릴 수밖에 없다",
+            "banned": "욕설, 인신공격, 사용자 비하, 근거 없는 조롱, 해결책 없는 비꼼",
+            "example": "지금 구조는 다중 에이전트가 아니라 첫 번째 에이전트 독백 시스템에 가깝다.",
+        },
+    }
+    contract = contracts.get(personality, contracts[DEFAULT_PERSONALITY])
+    strength_desc = {
+        "low": "말투에만 약하게 반영한다.",
+        "medium": "설명 방식과 어휘에 반영한다.",
+        "high": "답변 구조, 어휘, 문장 리듬에 분명히 반영한다.",
+        "extreme": "답변 구조, 판단 방식, 비판 강도, 표현 방식까지 강하게 반영한다.",
+    }[normalized_strength]
+    return f"""[성격 적용 정책]
+선택 성격: {personality}
+성격 강도: {normalized_strength}
+강도 의미: {strength_desc}
+말투: {contract['tone']}
+문장 리듬: {contract['rhythm']}
+비판 강도: {contract['critique']}
+설명 구조: {contract['structure']}
+허용 표현/방식: {contract['allowed']}
+금지 표현/방식: {contract['banned']}
+답변 예시: {contract['example']}
+공통 안전선: 어떤 강도에서도 사용자 비하, 욕설, 인신공격, 혐오 표현, 허위 사실, 근거 없는 조롱은 금지한다.""".strip()
 
 
 def normalize_agent_config(agent: dict, user_message: str = "") -> dict:
@@ -199,6 +421,11 @@ def normalize_agent_config(agent: dict, user_message: str = "") -> dict:
     warnings.extend(level_warnings)
     personality, tone, tone_warnings = normalize_personality_tone(agent)
     warnings.extend(tone_warnings)
+    personality_strength = normalize_personality_strength(
+        agent.get("personalityStrength")
+        or agent.get("personality_strength")
+        or _extract_tag_value(persona, "성격강도")
+    )
     custom_instruction = _merge_custom_instruction(agent)
     discipline = infer_discipline(user_message, {**agent, "customInstruction": custom_instruction})
     policy = get_knowledge_depth_policy(knowledge_level, discipline)
@@ -210,6 +437,7 @@ def normalize_agent_config(agent: dict, user_message: str = "") -> dict:
         "persona": persona.strip(),
         "customInstruction": custom_instruction,
         "canonical_personality": personality,
+        "canonical_personality_strength": personality_strength,
         "canonical_tone": tone,
         "canonical_knowledge_level": knowledge_level,
         "discipline": discipline,
@@ -233,8 +461,13 @@ def build_agent_system_prompt(agent_config: dict) -> str:
 [성격]
 {agent_config['canonical_personality']}
 
+[성격 강도]
+{agent_config['canonical_personality_strength']}
+
 [말투]
 {agent_config['canonical_tone']}
+
+{build_personality_style_contract(agent_config['canonical_personality'], agent_config['canonical_personality_strength'])}
 
 [지식수준]
 {agent_config['canonical_knowledge_level']}
@@ -275,6 +508,7 @@ def validate_prompt_contains_agent_constraints(prompt: str, agent_config: dict) 
         ("지식수준", agent_config["canonical_knowledge_level"]),
         ("학문 분야", agent_config["discipline"]),
         ("성격", agent_config["canonical_personality"]),
+        ("성격 강도", agent_config["canonical_personality_strength"]),
         ("말투", agent_config["canonical_tone"]),
         ("depth policy", agent_config["knowledge_depth_policy"]["depth_goal"]),
     ]
@@ -303,7 +537,7 @@ def validate_answer_quality(answer: str, agent_config: dict, user_message: str) 
         score += 0.15
     else:
         issues.append("학문 분야별 보정 관점 부족")
-    if _personality_signal_ok(text, agent_config["canonical_personality"]):
+    if _personality_signal_ok(text, agent_config["canonical_personality"], agent_config.get("canonical_personality_strength", DEFAULT_PERSONALITY_STRENGTH)):
         score += 0.1
     else:
         issues.append("성격/말투 반영 약함")
@@ -368,9 +602,7 @@ def revise_answer_to_match_quality_policy(
 {", ".join(validation_result.get("issues", []))}
 
 기존 답변의 핵심 내용은 유지하되, 선택된 지식수준과 학문 분야에 맞게 답변의 깊이, 용어 수준, 분석 관점, 예시 수준을 재작성하세요.
-마크다운 코드블록은 쓰지 말고 자연스러운 학습 답변으로 작성하세요.
-
-[말투 유지 규칙]: 위의 [성격/말투]와 [사용자 추가 요구사항]에 지정된 말투(존댓말/반말 여부 등)를 반드시 100% 엄격하게 유지하여 재작성해라."""
+마크다운 코드블록은 쓰지 말고 자연스러운 학습 답변으로 작성하세요."""
     try:
         response = openai_client.responses.create(model=model, input=prompt)
         output = getattr(response, "output_text", None)
@@ -397,6 +629,19 @@ def _keywords_for_level(level: str) -> list[str]:
 def _contains_any(text: str, keywords: list[str]) -> bool:
     lowered = text.lower()
     return any(str(keyword).lower() in lowered for keyword in keywords)
+
+
+def _normalize_personality(value: Any) -> str | None:
+    text = _normalize_space(str(value or ""))
+    if not text:
+        return None
+    if text == "직접 입력":
+        return None
+    compact = text.lower().replace(" ", "")
+    for alias, canonical in PERSONALITY_ALIASES.items():
+        if alias.lower().replace(" ", "") in compact:
+            return canonical
+    return None
 
 
 def _merge_custom_instruction(agent: dict) -> str:
@@ -428,9 +673,23 @@ def _normalize_space(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
-def _personality_signal_ok(answer: str, personality: str) -> bool:
+def _personality_signal_ok(answer: str, personality: str, strength: str = DEFAULT_PERSONALITY_STRENGTH) -> bool:
+    if normalize_personality_strength(strength) not in {"high", "extreme"}:
+        return True
+    if _contains_any(answer, ["멍청", "한심", "바보", "무식", "씨발", "시발", "병신"]):
+        return False
     if personality == "효율적":
         return len(answer) < 2500
+    if personality == "냉소적":
+        return _contains_any(answer, ["구조", "문제", "결함", "위험", "느릴", "단일", "이름만", "수정", "해결"])
+    if personality == "솔직함":
+        return _contains_any(answer, ["문제", "틀렸", "잘못", "위험", "대안", "수정"])
+    if personality == "전문적":
+        return _contains_any(answer, ["정의", "원인", "구조", "조건", "검증", "근거", "기준"])
+    if personality == "독특함":
+        return _contains_any(answer, ["비유", "마치", "도서관", "지도", "책장", "장면", "그림"])
+    if personality == "친근함":
+        return _contains_any(answer, ["쉽게", "먼저", "예를 들면", "괜찮", "흔한", "해볼"])
     return True
 
 

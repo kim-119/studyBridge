@@ -22,7 +22,7 @@ export default function ArchiveDetail() {
   const [roadmapSteps, setRoadmapSteps] = useState([]);
   const [memoText, setMemoText] = useState('');
   const [chatMessages, setChatMessages] = useState([
-    { sender: 'ai', text: '안녕하세요! 업로드한 자료에 대해 궁금한 점을 질문해주세요.' }
+    { sender: 'ai', text: '이 AI는 자료보관함에 업로드된 PDF 기반 채팅만 가능합니다.\n현재 선택한 자료의 내용 안에서만 질문에 답변합니다.\n자료에 없는 내용은 임의로 생성하지 않습니다.\n일반적인 학습 질문이나 자료와 무관한 질문은 학습메이트 기능을 이용해주세요.' }
   ]);
   const [chatInput, setChatInput] = useState('');
 
@@ -670,8 +670,8 @@ export default function ArchiveDetail() {
                                           <Circle size={18} color="var(--color-text-muted)" />
                                       )}
                                       <span style={{ fontSize: '13.5px', textDecoration: task.isCompleted ? 'line-through' : 'none', color: task.isCompleted ? 'var(--color-text-muted)' : 'var(--color-text-main)' }}>
-                                {task.content}
-                              </span>
+                                        {task.content}
+                                      </span>
                                     </div>
                                 ))}
                               </div>
@@ -686,9 +686,9 @@ export default function ArchiveDetail() {
       }
       case 'chat':
         return (
-            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '450px' }}>
               <h3 style={{ margin: '0 0 16px', fontSize: '20px' }}>AI 질문</h3>
-              <div style={{ flex: 1, backgroundColor: '#F9FAFB', borderRadius: '12px', padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid var(--color-border)' }}>
+              <div style={{ flex: 1, backgroundColor: '#F9FAFB', borderRadius: '12px', padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid var(--color-border)', maxHeight: '350px' }}>
                 {chatMessages.map((msg, idx) => (
                     <div
                         key={idx}
@@ -823,8 +823,8 @@ export default function ArchiveDetail() {
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 <h2 style={{ margin: 0, fontSize: '18px' }}>{material.title}</h2>
                 <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
-              {material.studyDate || (material.uploadedAt ? material.uploadedAt.split('T')[0] : '')} • 학습일지
-            </span>
+                  {material.studyDate || (material.uploadedAt ? material.uploadedAt.split('T')[0] : '')} • 학습일지
+                </span>
               </div>
             </div>
         )}
@@ -836,9 +836,9 @@ export default function ArchiveDetail() {
                   {material.s3PresignedUrl ? (
                       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
                         <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F9FAFB' }}>
-                    <span style={{ fontWeight: '600', fontSize: '14px', color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }} title={material.title || material.originalFileName}>
-                      {material.title || material.originalFileName}
-                    </span>
+                          <span style={{ fontWeight: '600', fontSize: '14px', color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }} title={material.title || material.originalFileName}>
+                            {material.title || material.originalFileName}
+                          </span>
                           <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
                             <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginRight: '4px' }}>뷰어 너비:</span>
                             {[30, 50, 70].map(pct => (
