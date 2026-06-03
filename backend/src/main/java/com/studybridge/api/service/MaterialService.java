@@ -171,7 +171,7 @@ public class MaterialService {
         String presignedUrl = null;
         if (material.getS3FileUrl() != null && !material.getS3FileUrl().isBlank()) {
             try {
-                presignedUrl = s3Service.getPresignedUrl(material.getS3FileUrl());
+                presignedUrl = s3Service.getPresignedUrl(material.getS3FileUrl(), material.getOriginalFileName());
             } catch (Exception e) {
                 // S3 Presigned URL 생성 실패는 해당 자료에만 영향을 줌 (목록 전체 실패 방지)
                 log.warn("S3 presignedUrl 생성 실패 materialId={}: {}", material.getMaterialId(), e.getMessage());

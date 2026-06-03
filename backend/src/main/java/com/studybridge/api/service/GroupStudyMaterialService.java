@@ -102,7 +102,7 @@ public class GroupStudyMaterialService {
             throw new SecurityException("그룹 멤버만 자료 다운로드 URL을 발급받을 수 있습니다.");
         }
 
-        return s3Service.getPresignedUrl(material.getS3Key());
+        return s3Service.getPresignedUrl(material.getS3Key(), material.getOriginalFileName());
     }
 
     // FastAPI AI 연동을 이용해 비동기로 퀴즈 세트를 생성하는 메서드 (실패 시 Fallback 제공)
@@ -204,7 +204,7 @@ public class GroupStudyMaterialService {
     private GroupStudyMaterialDTO toDTO(GroupStudyMaterial material) {
         String presignedUrl = null;
         try {
-            presignedUrl = s3Service.getPresignedUrl(material.getS3Key());
+            presignedUrl = s3Service.getPresignedUrl(material.getS3Key(), material.getOriginalFileName());
         } catch (Exception e) {
             log.warn("Failed to generate presignedUrl for group study material ID={}: {}", material.getId(),
                     e.getMessage());
