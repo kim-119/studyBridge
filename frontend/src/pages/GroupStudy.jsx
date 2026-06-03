@@ -156,14 +156,9 @@ export default function GroupStudy() {
     return true;
   };
 
-  const [studies] = useState([]);
-
   const handleApply = (study, e) => {
     e.stopPropagation(); // 카드 클릭 이벤트 방지
     if (!checkAuth()) return;
-
-    if (appliedStudies.includes(studyId)) {
-      alert('이미 신청한 스터디입니다.');
 
     if (appliedStudies.includes(study.id)) {
       showAlert('알림', '이미 신청한 스터디입니다.');
@@ -372,37 +367,8 @@ export default function GroupStudy() {
         </div>
       ) : (
         <>
-          {/* 상단 컨트롤 영역 (검색 & 필터) */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '32px' }}>
-
-      {/* 검색 바 (UI 개선) */}
-      <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 20px', marginBottom: '32px', borderRadius: '12px' }}>
-        <Search size={20} color="#9CA3AF" />
-        <input
-          type="text"
-          placeholder="관심있는 스터디나 기술 스택을 검색해보세요"
-          style={{ flex: 1, border: 'none', outline: 'none', backgroundColor: 'transparent', fontSize: '15px', color: 'var(--color-text-main)' }}
-        />
-        <button className="btn-outline" style={{ width: 'auto', height: '36px', padding: '0 20px', fontSize: '13px' }}>
-          검색
-        </button>
-        <div style={{ width: '1px', height: '24px', backgroundColor: 'var(--color-border)', margin: '0 4px' }} />
-        <button className="btn-primary" style={{ width: 'auto', height: '36px', padding: '0 16px', fontSize: '13px' }} onClick={() => checkAuth() && alert('스터디 생성 기능은 준비 중입니다.')}>
-          <Plus size={16} /> 스터디 만들기
-        </button>
-      </div>
-
-      {/* 스터디 목록 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: '24px' }}>
-        {studies.map(study => (
-          <div key={study.id} className="glass-panel animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', cursor: 'pointer' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              {getStatusBadge(study.status)}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px', color: 'var(--color-text-muted)', fontWeight: '600' }}>
-                <User size={14} /> {study.currentMembers} / {study.maxMembers}
-              </div>
-            {/* 필터 탭 */}
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          {/* 필터 탭 */}
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
               <button
                 onClick={() => setFilter('PUBLIC')}
                 style={{
@@ -464,7 +430,6 @@ export default function GroupStudy() {
                 <Plus size={16} /> {filter === 'RECRUIT' ? '모집글 쓰기' : '스터디 만들기'}
               </button>
             </div>
-          </div>
 
           {filter === 'RECRUIT' ? (
             // 모집게시판 UI (게시글 목록 형태)
@@ -516,46 +481,6 @@ export default function GroupStudy() {
                 </tbody>
               </table>
             </div>
-
-            <h3 style={{ margin: '0 0 12px 0', fontSize: '18px', fontWeight: '700', color: 'var(--color-text-main)', lineHeight: '1.4' }}>
-              {study.title}
-            </h3>
-
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '16px' }}>
-              {study.tags.map((tag, idx) => (
-                <span key={idx} className="tag">#{tag}</span>
-              ))}
-            </div>
-
-            <p style={{ margin: '0 0 24px 0', fontSize: '14px', color: 'var(--color-text-muted)', lineHeight: '1.5', flex: 1 }}>
-              {study.description}
-            </p>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '16px', borderTop: '1px solid var(--color-border)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--color-text-main)', fontWeight: '500' }}>
-                <div className="avatar-sm" style={{ backgroundColor: 'rgba(96, 201, 90, 0.15)', color: 'var(--color-primary)' }}>
-                  {study.leader.charAt(0)}
-                </div>
-                <span>{study.leader}</span>
-              </div>
-
-              <button
-                className={study.status === 'CLOSED' ? 'btn-outline' : 'btn-primary'}
-                style={{
-                  width: 'auto',
-                  height: '32px',
-                  padding: '0 16px',
-                  fontSize: '13px',
-                  borderRadius: '6px',
-                  opacity: study.status === 'CLOSED' ? 0.6 : 1,
-                  backgroundColor: appliedStudies.includes(study.id) ? '#E5E7EB' : undefined,
-                  color: appliedStudies.includes(study.id) ? '#6B7280' : undefined,
-                  borderColor: appliedStudies.includes(study.id) ? '#D1D5DB' : undefined,
-                }}
-                disabled={study.status === 'CLOSED' || appliedStudies.includes(study.id)}
-                onClick={() => handleApply(study.id)}
-              >
-                {appliedStudies.includes(study.id) ? '신청완료' : (study.status === 'CLOSED' ? '마감됨' : '참가 신청')}
           ) : (
             /* 스터디 목록 그리드 */
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
