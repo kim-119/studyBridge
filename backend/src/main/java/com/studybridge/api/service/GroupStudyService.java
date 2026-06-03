@@ -2,6 +2,7 @@ package com.studybridge.api.service;
 
 import com.studybridge.api.dto.GroupStudyDTO;
 import com.studybridge.api.entity.*;
+import com.studybridge.api.repository.GroupStudyAttendanceRepository;
 import com.studybridge.api.repository.GroupStudyJoinApplicationRepository;
 import com.studybridge.api.repository.GroupStudyMemberRepository;
 import com.studybridge.api.repository.GroupStudyRepository;
@@ -10,7 +11,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
@@ -25,11 +29,13 @@ public class GroupStudyService {
     private final GroupStudyRepository groupStudyRepository;
     private final GroupStudyMemberRepository groupStudyMemberRepository;
     private final GroupStudyJoinApplicationRepository groupStudyJoinApplicationRepository;
+    private final GroupStudyAttendanceRepository groupStudyAttendanceRepository;
     private final UserRepository userRepository;
+    private final S3Service s3Service;
 
     // 그룹스터디 생성. 방장이 자동 가입 처리됨
     @Transactional
-    public GroupStudyDTO.Response createGroupStudy(Long leaderId, GroupStudyDTO.CreateRequest request) {
+    public GroupStudyDTO.Response createGroupStudy(Long leaderId, GroupStudyDTO.CreateRequest request, MultipartFile image) {
         log.info("Creating group study. leaderId={}, title={}", leaderId, request.getTitle());
 
         User leader = userRepository.findById(leaderId)
@@ -39,9 +45,18 @@ public class GroupStudyService {
             throw new IllegalArgumentException("그룹 정원은 최대 10명까지만 가능합니다. (WebRTC SFU 서비스 성능 보장)");
         }
 
+        String coverImageKey = null;
+        if (image != null && !image.isEmpty()) {
+            try {
+                coverImageKey = s3Service.uploadFile(image, leaderId);
+            } catch (IOException e) {
+                log.error("Failed to upload cover image to S3", e);
+                throw new RuntimeException("스터디 대표 이미지 업로드에 실패했습니다.", e);
+            }
+        }
+
         GroupStudy groupStudy = GroupStudy.builder()
                 .title(request.getTitle())
-                .goal(request.getGoal())
                 .description(request.getDescription())
                 .startDate(request.getStartDate())
                 .endDate(request.getEndDate())
@@ -50,6 +65,8 @@ public class GroupStudyService {
                 .isPublic(request.getIsPublic())
                 .leader(leader)
                 .status(GroupStudyStatus.RECRUITING)
+                .hashtags(request.getHashtags())
+                .coverImageKey(coverImageKey)
                 .build();
 
         GroupStudy savedGroupStudy = groupStudyRepository.save(groupStudy);
@@ -242,15 +259,43 @@ public class GroupStudyService {
     public List<GroupStudyDTO.MemberResponse> getGroupMembers(Long groupId) {
         return groupStudyMemberRepository.findByGroupStudyIdAndStatus(groupId, GroupStudyMemberStatus.JOINED)
                 .stream()
-                .map(member -> GroupStudyDTO.MemberResponse.builder()
-                        .userId(member.getUser().getId())
-                        .displayName(member.getUser().getDisplayName())
-                        .photoUrl(member.getUser().getPhotoUrl())
-                        .major(member.getUser().getMajor())
-                        .role(member.getRole())
-                        .points(member.getPoints())
-                        .joinedAt(member.getJoinedAt())
-                        .build())
+                .map(member -> {
+                    List<GroupStudyAttendance> attendances = groupStudyAttendanceRepository
+                            .findByGroupStudyIdAndUserId(groupId, member.getUser().getId());
+
+                    LocalDateTime recentAttendanceTime = null;
+                    Long recentStudyTimeSeconds = 0L;
+                    Long cumulativeStudyTimeSeconds = 0L;
+
+                    if (attendances != null && !attendances.isEmpty()) {
+                        GroupStudyAttendance mostRecent = attendances.stream()
+                                .filter(a -> a.getCheckInTime() != null)
+                                .max(java.util.Comparator.comparing(GroupStudyAttendance::getCheckInTime))
+                                .orElse(null);
+
+                        if (mostRecent != null) {
+                            recentAttendanceTime = mostRecent.getCheckInTime();
+                            recentStudyTimeSeconds = mostRecent.getStudyDurationSeconds() != null ? mostRecent.getStudyDurationSeconds() : 0L;
+                        }
+
+                        cumulativeStudyTimeSeconds = attendances.stream()
+                                .mapToLong(a -> a.getStudyDurationSeconds() != null ? a.getStudyDurationSeconds() : 0L)
+                                .sum();
+                    }
+
+                    return GroupStudyDTO.MemberResponse.builder()
+                            .userId(member.getUser().getId())
+                            .displayName(member.getUser().getDisplayName())
+                            .photoUrl(member.getUser().getPhotoUrl())
+                            .major(member.getUser().getMajor())
+                            .role(member.getRole())
+                            .points(member.getPoints())
+                            .joinedAt(member.getJoinedAt())
+                            .recentAttendanceTime(recentAttendanceTime)
+                            .recentStudyTimeSeconds(recentStudyTimeSeconds)
+                            .cumulativeStudyTimeSeconds(cumulativeStudyTimeSeconds)
+                            .build();
+                })
                 .collect(Collectors.toList());
     }
 
@@ -309,7 +354,7 @@ public class GroupStudyService {
 
     // 그룹스터디 정보 수정
     @Transactional
-    public GroupStudyDTO.Response updateGroupStudy(Long leaderId, Long groupId, GroupStudyDTO.UpdateRequest request) {
+    public GroupStudyDTO.Response updateGroupStudy(Long leaderId, Long groupId, GroupStudyDTO.UpdateRequest request, MultipartFile image, boolean clearImage) {
         log.info("Updating group study. leaderId={}, groupId={}", leaderId, groupId);
         GroupStudy groupStudy = groupStudyRepository.findById(groupId)
                 .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
@@ -320,9 +365,6 @@ public class GroupStudyService {
 
         if (request.getTitle() != null && !request.getTitle().isBlank()) {
             groupStudy.setTitle(request.getTitle());
-        }
-        if (request.getGoal() != null && !request.getGoal().isBlank()) {
-            groupStudy.setGoal(request.getGoal());
         }
         if (request.getDescription() != null && !request.getDescription().isBlank()) {
             groupStudy.setDescription(request.getDescription());
@@ -344,6 +386,38 @@ public class GroupStudyService {
         }
         if (request.getIsPublic() != null) {
             groupStudy.setIsPublic(request.getIsPublic());
+        }
+        if (request.getHashtags() != null) {
+            groupStudy.setHashtags(request.getHashtags());
+        }
+
+        // 이미지 수정/삭제 처리
+        if (clearImage) {
+            if (groupStudy.getCoverImageKey() != null) {
+                try {
+                    s3Service.deleteFile(groupStudy.getCoverImageKey());
+                } catch (Exception e) {
+                    log.error("Failed to delete old cover image from S3: {}", groupStudy.getCoverImageKey(), e);
+                }
+                groupStudy.setCoverImageKey(null);
+            }
+        } else if (image != null && !image.isEmpty()) {
+            // 기존 이미지 삭제
+            if (groupStudy.getCoverImageKey() != null) {
+                try {
+                    s3Service.deleteFile(groupStudy.getCoverImageKey());
+                } catch (Exception e) {
+                    log.error("Failed to delete old cover image from S3: {}", groupStudy.getCoverImageKey(), e);
+                }
+            }
+            // 새 이미지 업로드
+            try {
+                String newKey = s3Service.uploadFile(image, leaderId);
+                groupStudy.setCoverImageKey(newKey);
+            } catch (IOException e) {
+                log.error("Failed to upload new cover image to S3", e);
+                throw new RuntimeException("새 대표 이미지 업로드에 실패했습니다.", e);
+            }
         }
 
         GroupStudy updated = groupStudyRepository.save(groupStudy);
@@ -388,10 +462,18 @@ public class GroupStudyService {
     }
 
     private GroupStudyDTO.Response toResponseDTO(GroupStudy groupStudy) {
+        String coverImageUrl = null;
+        if (groupStudy.getCoverImageKey() != null && !groupStudy.getCoverImageKey().isBlank()) {
+            try {
+                coverImageUrl = s3Service.getPresignedUrl(groupStudy.getCoverImageKey());
+            } catch (Exception e) {
+                log.error("Failed to generate presigned URL for cover image: {}", groupStudy.getCoverImageKey(), e);
+            }
+        }
+
         return GroupStudyDTO.Response.builder()
                 .id(groupStudy.getId())
                 .title(groupStudy.getTitle())
-                .goal(groupStudy.getGoal())
                 .description(groupStudy.getDescription())
                 .startDate(groupStudy.getStartDate())
                 .endDate(groupStudy.getEndDate())
@@ -402,7 +484,39 @@ public class GroupStudyService {
                 .leaderName(groupStudy.getLeader().getDisplayName())
                 .status(groupStudy.getStatus())
                 .createdAt(groupStudy.getCreatedAt())
+                .hashtags(groupStudy.getHashtags())
+                .coverImageUrl(coverImageUrl)
                 .build();
+    }
+
+    @Transactional
+    public void kickMember(Long leaderId, Long groupId, Long memberUserId) {
+        log.info("Leader kicking member. leaderId={}, groupId={}, memberUserId={}", leaderId, groupId, memberUserId);
+
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId)
+                .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
+
+        // 1. 방장인지 확인
+        if (!groupStudy.getLeader().getId().equals(leaderId)) {
+            throw new SecurityException("멤버 강제 퇴장 권한이 없습니다. (방장만 가능)");
+        }
+
+        // 2. 본인을 퇴장시키려는지 확인
+        if (leaderId.equals(memberUserId)) {
+            throw new IllegalArgumentException("방장 본인은 강제 퇴장할 수 없습니다.");
+        }
+
+        // 3. 대상 멤버 조회
+        GroupStudyMember member = groupStudyMemberRepository
+                .findByGroupStudyIdAndUserIdAndStatus(groupId, memberUserId, GroupStudyMemberStatus.JOINED)
+                .orElseThrow(() -> new NoSuchElementException("해당 스터디그룹에 가입된 멤버를 찾을 수 없습니다."));
+
+        // 4. 퇴장 처리 (삭제 및 인원수 감소)
+        groupStudyMemberRepository.delete(member);
+        groupStudy.setCurrentCount(groupStudy.getCurrentCount() - 1);
+        groupStudyRepository.save(groupStudy);
+
+        log.info("Member kicked successfully. groupId={}, kickedMemberUserId={}", groupId, memberUserId);
     }
 
     private GroupStudyDTO.ApplicationResponse toApplicationResponseDTO(GroupStudyJoinApplication app) {
