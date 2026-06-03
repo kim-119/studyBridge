@@ -108,4 +108,32 @@ public class GroupStudyController {
         GroupStudyDTO.Response response = groupStudyService.startGroupStudy(userDetails.getId(), id);
         return ResponseEntity.ok(response);
     }
+
+    @GetMapping("/search")
+    public ResponseEntity<List<GroupStudyDTO.Response>> searchGroups(
+            @RequestParam(value = "keyword", required = false) String keyword) {
+        log.info("Request to search group studies by keyword: {}", keyword);
+        List<GroupStudyDTO.Response> response = groupStudyService.searchGroupStudies(keyword);
+        return ResponseEntity.ok(response);
+    }
+
+    @PutMapping("/{id}")
+    public ResponseEntity<GroupStudyDTO.Response> updateGroup(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id,
+            @Valid @RequestBody GroupStudyDTO.UpdateRequest request) {
+        log.info("Request to update group study. leaderId={}, groupId={}", userDetails.getId(), id);
+        GroupStudyDTO.Response response = groupStudyService.updateGroupStudy(userDetails.getId(), id, request);
+        return ResponseEntity.ok(response);
+    }
+
+    @DeleteMapping("/{id}/leave")
+    public ResponseEntity<Void> leaveGroup(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id) {
+        log.info("Request to leave group study. userId={}, groupId={}", userDetails.getId(), id);
+        groupStudyService.leaveGroupStudy(userDetails.getId(), id);
+        return ResponseEntity.noContent().build();
+    }
 }
+

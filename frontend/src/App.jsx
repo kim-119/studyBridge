@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { authService } from './services/api';
 
@@ -12,6 +12,7 @@ import StudyMate from './pages/StudyMate';
 import GroupStudy from './pages/GroupStudy';
 import Archive from './pages/Archive';
 import ArchiveDetail from './pages/ArchiveDetail';
+
 function PrivateRoute({ children }) {
   const { isLoggedIn } = useAuth();
   return isLoggedIn ? children : <Navigate to="/login" replace />;
@@ -20,6 +21,7 @@ function PrivateRoute({ children }) {
 function App() {
   const { logout, updateUser } = useAuth();
   const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const location = useLocation();
 
   useEffect(() => {
     const initAuth = async () => {
@@ -55,11 +57,14 @@ function App() {
     return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: 'var(--color-primary)', fontWeight: 'bold' }}>Loading...</div>;
   }
 
+  // Hide Navbar and top padding for Archive Detail pages to make it full screen
+  const hideNavbar = location.pathname.includes('/archive/pdf/') || location.pathname.includes('/archive/journal/');
+
   return (
     <div className="app-container">
-      <Navbar />
+      {!hideNavbar && <Navbar />}
 
-      <main style={{ paddingTop: '80px' }}>
+      <main style={{ paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
         <Routes>
           {/* 메인페이지: 누구나 접근 가능 */}
           <Route path="/" element={<Dashboard />} />
