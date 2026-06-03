@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Service
@@ -297,6 +298,93 @@ public class GroupStudyService {
 
         log.info("Group study activated. groupId={}", groupId);
         return toResponseDTO(saved);
+    }
+
+    // 키워드로 그룹스터디 검색
+    public List<GroupStudyDTO.Response> searchGroupStudies(String keyword) {
+        return groupStudyRepository.searchByKeyword(keyword).stream()
+                .map(this::toResponseDTO)
+                .collect(Collectors.toList());
+    }
+
+    // 그룹스터디 정보 수정
+    @Transactional
+    public GroupStudyDTO.Response updateGroupStudy(Long leaderId, Long groupId, GroupStudyDTO.UpdateRequest request) {
+        log.info("Updating group study. leaderId={}, groupId={}", leaderId, groupId);
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId)
+                .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
+
+        if (!groupStudy.getLeader().getId().equals(leaderId)) {
+            throw new SecurityException("그룹스터디 수정 권한이 없습니다. (방장만 수정 가능)");
+        }
+
+        if (request.getTitle() != null && !request.getTitle().isBlank()) {
+            groupStudy.setTitle(request.getTitle());
+        }
+        if (request.getGoal() != null && !request.getGoal().isBlank()) {
+            groupStudy.setGoal(request.getGoal());
+        }
+        if (request.getDescription() != null && !request.getDescription().isBlank()) {
+            groupStudy.setDescription(request.getDescription());
+        }
+        if (request.getStartDate() != null) {
+            groupStudy.setStartDate(request.getStartDate());
+        }
+        if (request.getEndDate() != null) {
+            groupStudy.setEndDate(request.getEndDate());
+        }
+        if (request.getCapacity() != null) {
+            if (request.getCapacity() < groupStudy.getCurrentCount()) {
+                throw new IllegalArgumentException("현재 참여 멤버 수보다 적은 정원으로 변경할 수 없습니다.");
+            }
+            if (request.getCapacity() > 10) {
+                throw new IllegalArgumentException("그룹 정원은 최대 10명까지만 가능합니다.");
+            }
+            groupStudy.setCapacity(request.getCapacity());
+        }
+        if (request.getIsPublic() != null) {
+            groupStudy.setIsPublic(request.getIsPublic());
+        }
+
+        GroupStudy updated = groupStudyRepository.save(groupStudy);
+        return toResponseDTO(updated);
+    }
+
+    // 그룹스터디 탈퇴 또는 가입 신청 취소
+    @Transactional
+    public void leaveGroupStudy(Long userId, Long groupId) {
+        log.info("User leaving group study or cancelling application. userId={}, groupId={}", userId, groupId);
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId)
+                .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
+
+        if (groupStudy.getLeader().getId().equals(userId)) {
+            throw new IllegalStateException("그룹장은 탈퇴할 수 없습니다. 그룹을 삭제하거나 소유권을 이전해야 합니다.");
+        }
+
+        // 1. 가입되어 활동 중인 멤버인 경우
+        Optional<GroupStudyMember> memberOpt = groupStudyMemberRepository
+                .findByGroupStudyIdAndUserIdAndStatus(groupId, userId, GroupStudyMemberStatus.JOINED);
+
+        if (memberOpt.isPresent()) {
+            GroupStudyMember member = memberOpt.get();
+            groupStudyMemberRepository.delete(member);
+            groupStudy.setCurrentCount(groupStudy.getCurrentCount() - 1);
+            groupStudyRepository.save(groupStudy);
+            log.info("Voluntarily left group study. userId={}, groupId={}", userId, groupId);
+            return;
+        }
+
+        // 2. 가입 대기 중인 신청서가 있는 경우 (신청 취소)
+        Optional<GroupStudyJoinApplication> appOpt = groupStudyJoinApplicationRepository
+                .findByGroupStudyIdAndUserIdAndStatus(groupId, userId, GroupStudyJoinStatus.PENDING);
+
+        if (appOpt.isPresent()) {
+            groupStudyJoinApplicationRepository.delete(appOpt.get());
+            log.info("Cancelled pending application. userId={}, groupId={}", userId, groupId);
+            return;
+        }
+
+        throw new IllegalArgumentException("해당 스터디그룹에 가입되어 있거나 대기 중인 신청서가 존재하지 않습니다.");
     }
 
     private GroupStudyDTO.Response toResponseDTO(GroupStudy groupStudy) {
