@@ -103,4 +103,21 @@ public class GroupStudyDTO {
         private GroupStudyJoinStatus status;
         private LocalDateTime createdAt;
     }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class UpdateRequest {
+        private String title;
+        private String goal;
+        private String description;
+        private LocalDate startDate;
+        private LocalDate endDate;
+        @Min(value = 2, message = "최소 인원은 2명입니다.")
+        @Max(value = 10, message = "최대 정원은 10명입니다. (화상통화 안정 성능 보장)")
+        private Integer capacity;
+        private Boolean isPublic;
+    }
 }
+
