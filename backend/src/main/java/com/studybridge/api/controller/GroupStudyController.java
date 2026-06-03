@@ -21,12 +21,13 @@ public class GroupStudyController {
 
     private final GroupStudyService groupStudyService;
 
-    @PostMapping
+    @PostMapping(consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<GroupStudyDTO.Response> createGroup(
             @AuthenticationPrincipal CustomUserDetails userDetails,
-            @Valid @RequestBody GroupStudyDTO.CreateRequest request) {
+            @Valid @ModelAttribute GroupStudyDTO.CreateRequest request,
+            @RequestParam(value = "image", required = false) org.springframework.web.multipart.MultipartFile image) {
         log.info("Create group request received from userId={}, title={}", userDetails.getId(), request.getTitle());
-        GroupStudyDTO.Response response = groupStudyService.createGroupStudy(userDetails.getId(), request);
+        GroupStudyDTO.Response response = groupStudyService.createGroupStudy(userDetails.getId(), request, image);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
@@ -117,14 +118,26 @@ public class GroupStudyController {
         return ResponseEntity.ok(response);
     }
 
-    @PutMapping("/{id}")
+    @PutMapping(value = "/{id}", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<GroupStudyDTO.Response> updateGroup(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long id,
-            @Valid @RequestBody GroupStudyDTO.UpdateRequest request) {
+            @Valid @ModelAttribute GroupStudyDTO.UpdateRequest request,
+            @RequestParam(value = "image", required = false) org.springframework.web.multipart.MultipartFile image,
+            @RequestParam(value = "clearImage", required = false, defaultValue = "false") boolean clearImage) {
         log.info("Request to update group study. leaderId={}, groupId={}", userDetails.getId(), id);
-        GroupStudyDTO.Response response = groupStudyService.updateGroupStudy(userDetails.getId(), id, request);
+        GroupStudyDTO.Response response = groupStudyService.updateGroupStudy(userDetails.getId(), id, request, image, clearImage);
         return ResponseEntity.ok(response);
+    }
+
+    @DeleteMapping("/{id}/members/{memberUserId}")
+    public ResponseEntity<Void> kickMember(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id,
+            @PathVariable Long memberUserId) {
+        log.info("Request to kick member from group study. leaderId={}, groupId={}, memberUserId={}", userDetails.getId(), id, memberUserId);
+        groupStudyService.kickMember(userDetails.getId(), id, memberUserId);
+        return ResponseEntity.noContent().build();
     }
 
     @DeleteMapping("/{id}/leave")

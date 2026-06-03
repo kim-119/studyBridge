@@ -25,9 +25,6 @@ public class GroupStudy {
     @Column(nullable = false, length = 100)
     private String title;
 
-    @Column(nullable = false, length = 200)
-    private String goal;
-
     @Column(nullable = false, columnDefinition = "TEXT")
     private String description;
 
@@ -54,6 +51,12 @@ public class GroupStudy {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private GroupStudyStatus status;
+
+    @Column(name = "hashtags", length = 200)
+    private String hashtags;
+
+    @Column(name = "cover_image_key", length = 300)
+    private String coverImageKey;
 
     @Builder.Default
     @OneToMany(mappedBy = "groupStudy", cascade = CascadeType.ALL, orphanRemoval = true)
