@@ -15,7 +15,7 @@ public interface GroupStudyRepository extends JpaRepository<GroupStudy, Long> {
 
     @Query("SELECT g FROM GroupStudy g WHERE " +
            "LOWER(g.title) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
-           "LOWER(g.goal) LIKE LOWER(CONCAT('%', :keyword, '%'))")
+           "(g.hashtags IS NOT NULL AND LOWER(g.hashtags) LIKE LOWER(CONCAT('%', :keyword, '%')))")
     List<GroupStudy> searchByKeyword(@Param("keyword") String keyword);
 }
 
