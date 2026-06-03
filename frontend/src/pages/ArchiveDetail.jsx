@@ -35,43 +35,8 @@ export default function ArchiveDetail() {
 
   const chatEndRef = useRef(null);
 
-  // ✅ 패널 너비 조절 및 리사이즈 관련 상태 & Ref
+  // ✅ 패널 너비 조절 관련 상태
   const [leftWidth, setLeftWidth] = useState(50); // 기본값 50%
-  const isResizing = useRef(false);
-
-  const startResizing = (e) => {
-    isResizing.current = true;
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', stopResizing);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  };
-
-  const handleMouseMove = (e) => {
-    if (!isResizing.current) return;
-    const container = document.querySelector('.archive-split-view');
-    if (!container) return;
-    const containerRect = container.getBoundingClientRect();
-    const newLeftWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
-    if (newLeftWidth >= 20 && newLeftWidth <= 80) {
-      setLeftWidth(newLeftWidth);
-    }
-  };
-
-  const stopResizing = () => {
-    isResizing.current = false;
-    document.removeEventListener('mousemove', handleMouseMove);
-    document.removeEventListener('mouseup', stopResizing);
-    document.body.style.cursor = 'default';
-    document.body.style.userSelect = 'auto';
-  };
-
-  useEffect(() => {
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', stopResizing);
-    };
-  }, []);
 
   // ---------------- 인증 체크 ----------------
   useEffect(() => {
@@ -847,28 +812,12 @@ export default function ArchiveDetail() {
           </div>
           {type === 'pdf' && (
               <div
-                  onMouseDown={startResizing}
-                  className="panel-resizer-bar"
                   style={{
-                    width: '10px',
-                    cursor: 'col-resize',
-                    backgroundColor: '#F3F4F6',
-                    borderLeft: '1px solid var(--color-border)',
-                    borderRight: '1px solid var(--color-border)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
+                    width: '1px',
+                    backgroundColor: 'var(--color-border)',
                     zIndex: 10,
-                    userSelect: 'none',
-                    transition: 'background-color 0.2s',
                   }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <div style={{ width: '4px', height: '4px', borderRadius: '50%', backgroundColor: '#9CA3AF' }}></div>
-                  <div style={{ width: '4px', height: '4px', borderRadius: '50%', backgroundColor: '#9CA3AF' }}></div>
-                  <div style={{ width: '4px', height: '4px', borderRadius: '50%', backgroundColor: '#9CA3AF' }}></div>
-                </div>
-              </div>
+              />
           )}
           <div className="archive-right-panel" style={{ width: type === 'pdf' ? `${100 - leftWidth}%` : '50%', flex: 'none', overflowY: 'auto', overflowX: 'hidden', boxSizing: 'border-box', backgroundColor: type === 'journal' ? 'var(--color-bg-base)' : 'white', borderLeft: type === 'pdf' ? 'none' : '1px solid var(--color-border)' }}>
             {type === 'pdf' ? (

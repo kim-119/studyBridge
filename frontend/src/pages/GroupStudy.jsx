@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Users, Plus, Search, User, Lock, Globe, Filter, ClipboardList, X, AlertTriangle, CheckCircle2, Video, VideoOff, Mic, MicOff, Settings, Volume2, Camera, Check, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
+import { groupService } from '../services/api';
 import StudyRoom from '../components/StudyRoom';
 
 const DUMMY_STUDIES = [
@@ -97,8 +98,9 @@ export default function GroupStudy() {
   const { userId } = useAuth();
   const navigate = useNavigate();
 
-  const [studies] = useState(DUMMY_STUDIES);
-  const [recruitments, setRecruitments] = useState(DUMMY_RECRUITMENTS);
+  const [studies, setStudies] = useState([]);
+  const [recruitments, setRecruitments] = useState([]);
+  const [myStudies, setMyStudies] = useState([]);
   const [appliedStudies, setAppliedStudies] = useState([]);
   const [filter, setFilter] = useState('PUBLIC'); // 'PUBLIC', 'PRIVATE', 'RECRUIT'
   const [searchQuery, setSearchQuery] = useState('');
@@ -129,6 +131,8 @@ export default function GroupStudy() {
   const [isMicOn, setIsMicOn] = useState(true);
   const [showPreJoinInfo, setShowPreJoinInfo] = useState(false);
   const [showPreJoinSettings, setShowPreJoinSettings] = useState(false);
+  const [preJoinMembers, setPreJoinMembers] = useState([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
 
   // 커스텀 알림/컨펌 모달 상태
   const [customAlert, setCustomAlert] = useState({
@@ -156,17 +160,99 @@ export default function GroupStudy() {
     return true;
   };
 
-  const handleApply = (study, e) => {
-    e.stopPropagation(); // 카드 클릭 이벤트 방지
+  const loadGroups = async () => {
+    try {
+      const data = await groupService.getGroups();
+      
+      const normalized = data.map(group => ({
+        id: group.id,
+        title: group.title,
+        description: group.description || group.goal || '스터디 설명이 없습니다.',
+        content: group.description || group.goal || '스터디 설명이 없습니다.',
+        goal: group.goal || group.title,
+        tags: group.goal ? group.goal.split(',').map(s => s.trim()) : ['자율', '캠스터디'],
+        currentMembers: group.currentCount || 1,
+        maxMembers: group.capacity || 10,
+        current: group.currentCount || 1,
+        max: group.capacity || 10,
+        leader: group.leaderName || '방장',
+        author: group.leaderName || '방장',
+        leaderId: group.leaderId,
+        status: group.status, // 'RECRUITING', 'ACTIVE', 'COMPLETED'
+        isPrivate: !group.isPublic,
+        thumbnailUrl: 'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
+        startDate: group.startDate,
+        endDate: group.endDate,
+        createdAt: group.createdAt,
+        date: group.createdAt ? group.createdAt.split('T')[0] : (group.startDate || new Date().toISOString().split('T')[0])
+      }));
+
+      // Sort by id desc
+      normalized.sort((a, b) => b.id - a.id);
+
+      // ACTIVE or RECRUITING ones go to studies
+      setStudies(normalized.filter(g => g.status === 'ACTIVE' || g.status === 'RECRUITING'));
+      // RECRUITING ones go to recruitments (모집게시판)
+      setRecruitments(normalized.filter(g => g.status === 'RECRUITING'));
+      
+      // myStudies: groups where I am the leader
+      if (userId) {
+        setMyStudies(normalized.filter(g => Number(g.leaderId) === Number(userId)));
+      }
+    } catch (err) {
+      console.error('Failed to load group studies', err);
+    }
+  };
+
+  useEffect(() => {
+    loadGroups();
+  }, [userId]);
+
+  useEffect(() => {
+    if (preJoinStudy && userId) {
+      setLoadingMembers(true);
+      groupService.getMembers(preJoinStudy.id)
+        .then(members => {
+          setPreJoinMembers(members);
+        })
+        .catch(err => {
+          console.error('Failed to load group members', err);
+        })
+        .finally(() => {
+          setLoadingMembers(false);
+        });
+    } else {
+      setPreJoinMembers([]);
+    }
+  }, [preJoinStudy, userId]);
+
+  const handleApply = async (study, e) => {
+    if (e) e.stopPropagation(); // 카드 클릭 이벤트 방지
     if (!checkAuth()) return;
 
-    if (appliedStudies.includes(study.id)) {
-      showAlert('알림', '이미 신청한 스터디입니다.');
+    if (Number(study.leaderId) === Number(userId)) {
+      setPreJoinStudy(study);
       return;
     }
 
-    if (study.leader === 'mindcontrol') {
+    // 이미 가입된 멤버인지 체크 추가
+    let isAlreadyJoined = false;
+    try {
+      const members = await groupService.getMembers(study.id);
+      if (members.some(m => Number(m.userId) === Number(userId))) {
+        isAlreadyJoined = true;
+      }
+    } catch (err) {
+      console.warn("Failed to check group membership in handleApply", err);
+    }
+
+    if (isAlreadyJoined) {
       setPreJoinStudy(study);
+      return;
+    }
+
+    if (appliedStudies.includes(study.id)) {
+      showAlert('알림', '이미 신청한 스터디입니다.');
       return;
     }
 
@@ -175,9 +261,15 @@ export default function GroupStudy() {
       return;
     }
 
-    showConfirm('참가 신청', `'${study.title}' 스터디에 참가 신청하시겠습니까?\n(리더의 승인 후 참여가 확정됩니다.)`, () => {
-      setAppliedStudies(prev => [...prev, study.id]);
-      showAlert('알림', '참가 신청이 완료되었습니다.');
+    showConfirm('참가 신청', `'${study.title}' 스터디에 바로 참여하시겠습니까?`, async () => {
+      try {
+        await groupService.applyGroup(study.id, { introduction: '공개 스터디 바로 참가' });
+        setAppliedStudies(prev => [...prev, study.id]);
+        showAlert('알림', '참여가 완료되었습니다. 카드 또는 입장 버튼을 눌러 스터디에 들어가실 수 있습니다.');
+        loadGroups();
+      } catch (err) {
+        showAlert('오류', err.response?.data?.message || '참가 신청에 실패했습니다.');
+      }
     });
   };
 
@@ -357,8 +449,39 @@ export default function GroupStudy() {
             <button
               className="btn-primary"
               style={{ padding: '14px 48px', fontSize: '16px', fontWeight: '700', backgroundColor: '#22C55E' }}
-              onClick={() => {
-                showAlert('성공', '스터디가 성공적으로 개설되었습니다!', () => setIsCreateStudyMode(false));
+              onClick={async () => {
+                if (!createForm.title || !createForm.description) {
+                  showAlert('알림', '스터디 이름과 공지사항은 필수 항목입니다.');
+                  return;
+                }
+                try {
+                  const payload = {
+                    title: createForm.title,
+                    goal: createForm.tags || createForm.title,
+                    description: createForm.description,
+                    startDate: createForm.startDate,
+                    endDate: createForm.endDate,
+                    capacity: 10,
+                    isPublic: createForm.isPublic
+                  };
+                  await groupService.createGroup(payload);
+                  showAlert('성공', '스터디가 성공적으로 개설되었습니다!', () => {
+                    setIsCreateStudyMode(false);
+                    setCreateForm({
+                      title: '',
+                      tags: '',
+                      thumbnail: 'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
+                      startDate: '2026-06-02',
+                      endDate: '2026-09-02',
+                      isPublic: true,
+                      cameraOn: true,
+                      description: ''
+                    });
+                    loadGroups();
+                  });
+                } catch (err) {
+                  showAlert('오류', err.response?.data?.message || '스터디 개설에 실패했습니다.');
+                }
               }}
             >
               + 스터디 만들기
@@ -560,15 +683,15 @@ export default function GroupStudy() {
                           style={{
                             width: 'auto', flexShrink: 0,
                             height: '32px', padding: '0 16px', fontSize: '13px', fontWeight: '600', borderRadius: '8px', border: 'none',
-                            backgroundColor: appliedStudies.includes(study.id) ? '#E5E7EB' : (study.leader === 'mindcontrol' ? '#DCFCE7' : (study.isPrivate ? 'rgba(139, 92, 246, 0.1)' : '#EFF6FF')),
-                            color: appliedStudies.includes(study.id) ? '#6B7280' : (study.leader === 'mindcontrol' ? '#16A34A' : (study.isPrivate ? '#8B5CF6' : '#3B82F6')),
-                            cursor: (study.status === 'CLOSED' && study.leader !== 'mindcontrol' && !study.isPrivate || appliedStudies.includes(study.id)) ? 'not-allowed' : 'pointer',
-                            opacity: (study.status === 'CLOSED' && study.leader !== 'mindcontrol' && !study.isPrivate) ? 0.5 : 1
+                            backgroundColor: appliedStudies.includes(study.id) ? '#E5E7EB' : (Number(study.leaderId) === Number(userId) ? '#DCFCE7' : (study.isPrivate ? 'rgba(139, 92, 246, 0.1)' : '#EFF6FF')),
+                            color: appliedStudies.includes(study.id) ? '#6B7280' : (Number(study.leaderId) === Number(userId) ? '#16A34A' : (study.isPrivate ? '#8B5CF6' : '#3B82F6')),
+                            cursor: (study.status === 'CLOSED' && Number(study.leaderId) !== Number(userId) && !study.isPrivate || appliedStudies.includes(study.id)) ? 'not-allowed' : 'pointer',
+                            opacity: (study.status === 'CLOSED' && Number(study.leaderId) !== Number(userId) && !study.isPrivate) ? 0.5 : 1
                           }}
-                          disabled={study.status === 'CLOSED' && study.leader !== 'mindcontrol' && !study.isPrivate || appliedStudies.includes(study.id)}
+                          disabled={study.status === 'CLOSED' && Number(study.leaderId) !== Number(userId) && !study.isPrivate || appliedStudies.includes(study.id)}
                           onClick={(e) => handleApply(study, e)}
                         >
-                          {appliedStudies.includes(study.id) ? '신청완료' : (study.leader === 'mindcontrol' ? '내 스터디 입장' : (study.isPrivate ? '스터디 입장' : (study.status === 'CLOSED' ? '모집마감' : '참여하기')))}
+                          {appliedStudies.includes(study.id) ? '신청완료' : (Number(study.leaderId) === Number(userId) ? '내 스터디 입장' : (study.isPrivate ? '스터디 입장' : (study.status === 'CLOSED' ? '모집마감' : '참여하기')))}
                         </button>
                       </div>
                     </div>
@@ -668,24 +791,52 @@ export default function GroupStudy() {
                     style={{ width: '100%', padding: '16px', fontSize: '15px', fontWeight: '600', color: 'white', backgroundColor: 'transparent', border: 'none', cursor: 'pointer', transition: 'background-color 0.2s' }}
                     onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2563EB'}
                     onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                    onClick={() => {
+                    onClick={async () => {
                       if (!checkAuth()) return;
-                      if (appliedStudies.includes(`recruit_${selectedPost.id}`)) {
+
+                      // 1. 이미 리더이거나 가입 완료된 회원인지 체크
+                      const isMeLeader = Number(selectedPost.leaderId) === Number(userId);
+                      let isAlreadyJoined = isMeLeader;
+
+                      try {
+                        const members = await groupService.getMembers(selectedPost.id);
+                        if (members.some(m => Number(m.userId) === Number(userId))) {
+                          isAlreadyJoined = true;
+                        }
+                      } catch (e) {
+                        console.warn("Failed to check group membership", e);
+                      }
+
+                      if (isAlreadyJoined) {
+                        showAlert('알림', '이미 가입되어 있는 스터디입니다. 스터디룸 입장 페이지로 이동합니다.', () => {
+                          setSelectedPost(null);
+                          setPreJoinStudy(selectedPost);
+                        });
+                        return;
+                      }
+
+                      if (appliedStudies.includes(selectedPost.id)) {
                         showAlert('알림', '이미 신청한 스터디입니다.');
                         return;
                       }
-                      if (selectedPost.status === 'CLOSED') {
-                        showAlert('알림', '마감된 스터디입니다.');
+                      if (selectedPost.status === 'CLOSED' || selectedPost.currentMembers >= selectedPost.maxMembers) {
+                        showAlert('알림', '마감되었거나 정원이 가득 찬 스터디입니다.');
                         return;
                       }
                       if (selectedPost.isPrivate) {
-                        const processApplication = () => {
-                          showConfirm('참가 신청', `'${selectedPost.title}' 방장에게 참가 신청서를 전송하시겠습니까?`, () => {
-                            setAppliedStudies(prev => [...prev, `recruit_${selectedPost.id}`]);
-                            showAlert('신청 완료', `신청 완료!\n\n[방장에게 전송된 메시지]\n${applyMessage || '(메시지 없음)'}\n\n방장의 승인을 기다려주세요.`, () => {
-                              setSelectedPost(null);
-                              setApplyMessage('');
-                            });
+                        const processApplication = async () => {
+                          showConfirm('참가 신청', `'${selectedPost.title}' 방장에게 참가 신청서를 전송하시겠습니까?`, async () => {
+                            try {
+                              await groupService.applyGroup(selectedPost.id, { introduction: applyMessage || '안녕하세요! 가입 신청합니다.' });
+                              setAppliedStudies(prev => [...prev, selectedPost.id]);
+                              showAlert('신청 완료', `신청 완료!\n\n[방장에게 전송된 메시지]\n${applyMessage || '안녕하세요! 가입 신청합니다.'}\n\n방장의 승인을 기다려주세요.`, () => {
+                                setSelectedPost(null);
+                                setApplyMessage('');
+                                loadGroups();
+                              });
+                            } catch (err) {
+                              showAlert('오류', err.response?.data?.message || '참가 신청에 실패했습니다.');
+                            }
                           });
                         };
 
@@ -695,10 +846,16 @@ export default function GroupStudy() {
                           processApplication();
                         }
                       } else {
-                        showConfirm('바로 참여', `'${selectedPost.title}' 스터디에 바로 참여하시겠습니까?`, () => {
-                          setAppliedStudies(prev => [...prev, `recruit_${selectedPost.id}`]);
-                          setSelectedPost(null);
-                          setPreJoinStudy(selectedPost);
+                        showConfirm('바로 참여', `'${selectedPost.title}' 스터디에 바로 참여하시겠습니까?`, async () => {
+                          try {
+                            await groupService.applyGroup(selectedPost.id, { introduction: '공개 스터디 바로 참가' });
+                            setAppliedStudies(prev => [...prev, selectedPost.id]);
+                            setSelectedPost(null);
+                            setPreJoinStudy(selectedPost);
+                            loadGroups();
+                          } catch (err) {
+                            showAlert('오류', err.response?.data?.message || '가입에 실패했습니다.');
+                          }
                         });
                       }
                     }}
@@ -731,7 +888,7 @@ export default function GroupStudy() {
                       style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', outline: 'none', backgroundColor: '#fff', cursor: 'pointer' }}
                     >
                       <option value="">스터디를 선택해주세요</option>
-                      {DUMMY_MY_STUDIES.map(study => (
+                      {myStudies.map(study => (
                         <option key={study.id} value={study.id}>{study.title}</option>
                       ))}
                     </select>
@@ -768,29 +925,31 @@ export default function GroupStudy() {
                     취소
                   </button>
                   <button
-                    onClick={() => {
-                      if (!writeForm.studyId || !writeForm.title || !writeForm.content) {
-                        showAlert('알림', '모든 필수 항목을 입력해주세요.');
+                    onClick={async () => {
+                      if (!writeForm.title || !writeForm.content) {
+                        showAlert('알림', '모집글 제목과 상세 내용을 입력해주세요.');
                         return;
                       }
-                      const selectedStudy = DUMMY_MY_STUDIES.find(s => s.id === parseInt(writeForm.studyId));
-                      const newPost = {
-                        id: Date.now(),
-                        isPrivate: selectedStudy.title.includes('빡공') || selectedStudy.title.includes('토플') ? true : false, // 임의 지정
-                        title: writeForm.title,
-                        author: '나(방장)',
-                        date: new Date().toISOString().split('T')[0],
-                        status: 'RECRUITING',
-                        current: 1,
-                        max: 4,
-                        views: 0,
-                        content: writeForm.content
-                      };
-                      setRecruitments(prev => [newPost, ...prev]);
-                      showAlert('성공', `'${selectedStudy.title}' 스터디의 모집글이 등록되었습니다!`, () => {
-                        setIsWriteModalOpen(false);
-                        setWriteForm({ studyId: '', title: '', content: '' });
-                      });
+                      const selectedStudy = myStudies.find(s => s.id === parseInt(writeForm.studyId));
+                      try {
+                        const payload = {
+                          title: writeForm.title,
+                          goal: selectedStudy ? selectedStudy.goal : writeForm.title,
+                          description: writeForm.content,
+                          startDate: selectedStudy ? selectedStudy.startDate : new Date().toISOString().split('T')[0],
+                          endDate: selectedStudy ? selectedStudy.endDate : new Date(Date.now() + 90*24*60*60*1000).toISOString().split('T')[0],
+                          capacity: selectedStudy ? selectedStudy.maxMembers : 10,
+                          isPublic: selectedStudy ? !selectedStudy.isPrivate : true
+                        };
+                        await groupService.createGroup(payload);
+                        showAlert('성공', '스터디 모집글이 성공적으로 등록되었습니다!', () => {
+                          setIsWriteModalOpen(false);
+                          setWriteForm({ studyId: '', title: '', content: '' });
+                          loadGroups();
+                        });
+                      } catch (err) {
+                        showAlert('오류', err.response?.data?.message || '모집글 등록에 실패했습니다.');
+                      }
                     }}
                     style={{ padding: '10px 24px', borderRadius: '8px', border: 'none', backgroundColor: '#10B981', color: '#fff', fontSize: '14px', fontWeight: '600', cursor: 'pointer' }}
                   >
@@ -910,10 +1069,32 @@ export default function GroupStudy() {
                   onMouseEnter={(e) => e.currentTarget.style.backgroundColor = preJoinStudy.isPrivate ? '#7C3AED' : '#2563EB'}
                   onMouseLeave={(e) => e.currentTarget.style.backgroundColor = preJoinStudy.isPrivate ? '#8B5CF6' : '#3B82F6'}
                   onClick={() => {
-                    showAlert('입장', `[${preJoinStudy.title}] 스터디룸으로 입장합니다!`, () => {
-                      setActiveStudyRoom(preJoinStudy);
-                      setPreJoinStudy(null);
-                    });
+                    const isMember = preJoinMembers.some(m => Number(m.userId) === Number(userId)) || Number(preJoinStudy.leaderId) === Number(userId);
+                    
+                    if (isMember) {
+                      showAlert('입장', `[${preJoinStudy.title}] 스터디룸으로 입장합니다!`, () => {
+                        setActiveStudyRoom(preJoinStudy);
+                        setPreJoinStudy(null);
+                      });
+                    } else {
+                      if (!preJoinStudy.isPrivate) {
+                        showConfirm('참가 신청', `'${preJoinStudy.title}' 스터디에 바로 참여하시겠습니까?`, async () => {
+                          try {
+                            await groupService.applyGroup(preJoinStudy.id, { introduction: '공개 스터디 바로 참가' });
+                            setAppliedStudies(prev => [...prev, preJoinStudy.id]);
+                            showAlert('가입 완료', '스터디에 정상적으로 가입되었습니다. 다시 입장 버튼을 눌러 스터디룸으로 들어가실 수 있습니다.', () => {
+                              loadGroups();
+                              // Refresh members
+                              groupService.getMembers(preJoinStudy.id).then(setPreJoinMembers);
+                            });
+                          } catch (err) {
+                            showAlert('오류', err.response?.data?.message || '가입에 실패했습니다.');
+                          }
+                        });
+                      } else {
+                        showAlert('권한 없음', '이 비공개 스터디의 멤버가 아닙니다. 모집게시판을 통해 가입 신청을 해주세요.');
+                      }
+                    }
                   }}
                 >
                   <div style={{ width: '16px', height: '20px', border: '2px solid white', borderRight: 'none', borderTopLeftRadius: '4px', borderBottomLeftRadius: '4px', position: 'relative' }}>

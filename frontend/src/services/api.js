@@ -488,4 +488,112 @@ export const materialService = {
   }
 };
 
+export const groupService = {
+  getGroups: async () => {
+    const res = await api.get('/api/groups');
+    return res.data;
+  },
+  getGroupDetail: async (id) => {
+    const res = await api.get(`/api/groups/${id}`);
+    return res.data;
+  },
+  createGroup: async (groupData) => {
+    const res = await api.post('/api/groups', groupData);
+    return res.data;
+  },
+  applyGroup: async (id, applyData) => {
+    const res = await api.post(`/api/groups/${id}/apply`, applyData);
+    return res.data;
+  },
+  getMembers: async (id) => {
+    const res = await api.get(`/api/groups/${id}/members`);
+    return res.data;
+  },
+  getApplications: async (id) => {
+    const res = await api.get(`/api/groups/${id}/applications`);
+    return res.data;
+  },
+  approveApplication: async (applicationId) => {
+    const res = await api.post(`/api/groups/applications/${applicationId}/approve`);
+    return res.data;
+  },
+  rejectApplication: async (applicationId) => {
+    const res = await api.post(`/api/groups/applications/${applicationId}/reject`);
+    return res.data;
+  },
+  deleteGroup: async (id) => {
+    const res = await api.delete(`/api/groups/${id}`);
+    return res.data;
+  },
+  completeRecruitment: async (id) => {
+    const res = await api.post(`/api/groups/${id}/complete`);
+    return res.data;
+  }
+};
+
+export const knowledgeService = {
+  getPosts: async () => {
+    const res = await api.get('/api/blogs');
+    return res.data;
+  },
+  getPostDetail: async (blogId) => {
+    const res = await api.get(`/api/blogs/${blogId}`);
+    return res.data;
+  },
+  createPost: async (title, content, imageFile, pdfFile) => {
+    const formData = new FormData();
+    formData.append('title', title);
+    formData.append('content', content);
+    if (imageFile) formData.append('image', imageFile);
+    if (pdfFile) formData.append('pdf', pdfFile);
+
+    const token = localStorage.getItem('token');
+    const res = await axios.post(`${API_BASE_URL}/api/blogs`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      }
+    });
+    return res.data;
+  },
+  updatePost: async (blogId, title, content, imageFile, pdfFile, clearImage = false, clearPdf = false) => {
+    const formData = new FormData();
+    if (title) formData.append('title', title);
+    if (content) formData.append('content', content);
+    if (imageFile) formData.append('image', imageFile);
+    if (pdfFile) formData.append('pdf', pdfFile);
+    formData.append('clearImage', clearImage);
+    formData.append('clearPdf', clearPdf);
+
+    const token = localStorage.getItem('token');
+    const res = await axios.put(`${API_BASE_URL}/api/blogs/${blogId}`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      }
+    });
+    return res.data;
+  },
+  deletePost: async (blogId) => {
+    const res = await api.delete(`/api/blogs/${blogId}`);
+    return res.data;
+  },
+  searchPosts: async (keyword) => {
+    const res = await api.get(`/api/blogs/search`, { params: { keyword } });
+    return res.data;
+  },
+  toggleLike: async (blogId) => {
+    const res = await api.post(`/api/blogs/${blogId}/like`);
+    return res.data;
+  },
+  addComment: async (blogId, content) => {
+    const res = await api.post(`/api/blogs/${blogId}/comments`, { content });
+    return res.data;
+  },
+  deleteComment: async (blogId, commentId) => {
+    const res = await api.delete(`/api/blogs/${blogId}/comments/${commentId}`);
+    return res.data;
+  }
+};
+
 export default api;
