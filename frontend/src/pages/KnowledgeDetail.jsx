@@ -132,6 +132,22 @@ export default function KnowledgeDetail() {
             {cleanContent}
           </div>
 
+          {/* Attached S3 Image Rendering */}
+          {post.imagePresignedUrl && (
+            <div style={{ marginTop: '32px', textAlign: 'center' }}>
+              <img 
+                src={post.imagePresignedUrl} 
+                alt="Attached Resource" 
+                style={{ 
+                  maxWidth: '100%', 
+                  maxHeight: '500px', 
+                  borderRadius: '12px', 
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.08)' 
+                }} 
+              />
+            </div>
+          )}
+
           {/* 첨부파일 영역 */}
           {post.pdfPresignedUrl && (
             <div style={{ marginTop: '40px', paddingTop: '32px', borderTop: '1px solid #E5E7EB' }}>

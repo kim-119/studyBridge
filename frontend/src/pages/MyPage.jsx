@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { authService } from '../services/api';
+import { authService, adminService } from '../services/api';
 import { ShieldAlert, MessageCircle, X, CheckCircle, AlertTriangle, Ban } from 'lucide-react';
 
 export default function MyPage() {
   const { userId, userEmail, user, updateUser } = useAuth();
+  const isAdmin = user?.role === 'ADMIN' || userEmail === 'admin@studybridge.com';
   
   const [name, setName] = useState('');
   const [major, setMajor] = useState('');
@@ -30,17 +31,59 @@ export default function MyPage() {
   }, [userId, userEmail]);
 
   // 관리자 메뉴 (문의/신고) 더미 데이터 및 상태
-  const [inquiries, setInquiries] = useState([
-    { id: 1, author: '김철수', title: '강의계획서 업로드 오류', content: 'PDF 파일을 올리는데 계속 실패합니다. 확인 부탁드려요.', date: '2026-05-20', status: '대기중', reply: '' },
-    { id: 2, author: '이영희', title: '비밀번호 초기화 메일 안옴', content: '비밀번호 재설정 메일이 오지 않습니다.', date: '2026-05-21', status: '답변완료', reply: '스팸 메일함을 확인해주세요. 그래도 없으면 고객센터로 전화주세요.' },
-  ]);
+  const [inquiries, setInquiries] = useState([]);
 
-  const [reports, setReports] = useState([
-    { id: 1, reporter: '홍길동', reportedUser: '악플러123', reason: '욕설/비방', content: '게시판에서 계속 욕설을 합니다.', date: '2026-05-21', status: '대기중', adminNote: '' },
-    { id: 2, reporter: '김철수', reportedUser: '광고봇99', reason: '스팸/도배', content: '불법 광고 링크를 계속 올립니다.', date: '2026-05-22', status: '대기중', adminNote: '' },
-  ]);
+  const [reports, setReports] = useState([]);
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [suspensionDetails, setSuspensionDetails] = useState(null);
+
+  const fetchReports = async () => {
+    if (!isAdmin) return;
+    const stored = localStorage.getItem('reports');
+    if (stored) {
+      setReports(JSON.parse(stored));
+      return;
+    }
+    setLoadingReports(true);
+    try {
+      const data = await adminService.getGroupReports();
+      const fetched = (data || []).map(r => ({
+        id: r.id,
+        groupStudyId: r.groupStudyId,
+        reporter: r.reporterName || '익명',
+        reportedUser: r.reportedUserName || '알 수 없음',
+        reportedUserId: r.reportedUserId,
+        reason: r.reason || '신고',
+        content: `스터디그룹 ID: ${r.groupStudyId}에 대한 회원 신고가 접수되었습니다.`,
+        date: r.createdAt ? r.createdAt.split('T')[0] : new Date().toISOString().split('T')[0],
+        status: '대기중',
+        adminNote: ''
+      }));
+      setReports(fetched);
+      localStorage.setItem('reports', JSON.stringify(fetched));
+    } catch (err) {
+      console.error('신고 내역 로드 실패:', err);
+    } finally {
+      setLoadingReports(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isAdmin) {
+      fetchReports();
+    }
+  }, [userEmail, user]);
 
   const [activeAdminTab, setActiveAdminTab] = useState('inquiries');
+
+  // 문의 목록 실시간 로드 (관리자 전용)
+  useEffect(() => {
+    if (isAdmin) {
+      adminService.getInquiries()
+        .then(setInquiries)
+        .catch(err => console.error('문의 조회 실패', err));
+    }
+  }, [isAdmin]);
 
   // 모달 상태
   const [selectedInquiry, setSelectedInquiry] = useState(null);
@@ -51,7 +94,6 @@ export default function MyPage() {
   const [suspendReasonOther, setSuspendReasonOther] = useState('');
   const [suspendDuration, setSuspendDuration] = useState('7일');
   const [adminNote, setAdminNote] = useState('');
-  const [showSuspensionMockup, setShowSuspensionMockup] = useState(false);
 
   const handleReplyInquiry = () => {
     if (!replyContent.trim()) {
@@ -66,17 +108,66 @@ export default function MyPage() {
     alert('답변이 등록되었습니다.');
   };
 
-  const handleSuspendUser = () => {
+  const handleSuspendUser = async () => {
     const finalReason = suspendReason === '기타' ? (suspendReasonOther || '기타') : suspendReason;
-    setReports(reports.map(rep => 
-      rep.id === selectedReport.id ? { ...rep, status: '처리완료', adminNote: `[${suspendDuration} 정지] ${finalReason}` } : rep
-    ));
-    setSelectedReport(null);
-    setSuspendDuration('7일');
-    setSuspendReason('바람직하지 않은 활동 (광고, 도배, 욕설, 비방 등)');
-    setSuspendReasonOther('');
-    setAdminNote('');
-    alert(`해당 멤버를 활동 정지했습니다.`);
+    
+    try {
+      if (selectedReport && selectedReport.reportedUserId) {
+        if (suspendDuration === '영구 정지') {
+          await adminService.banUser(selectedReport.reportedUserId, {
+            reason: finalReason,
+            memo: adminNote || '영구 정지 조치'
+          });
+          alert(`${selectedReport.reportedUser} 회원이 영구 정지되었습니다.`);
+        } else {
+          let days = 7;
+          if (suspendDuration === '1일') days = 1;
+          if (suspendDuration === '30일') days = 30;
+
+          await adminService.suspendUser(selectedReport.reportedUserId, {
+            days: days,
+            reason: finalReason,
+            memo: adminNote || `${days}일 활동 정지 조치`
+          });
+          alert(`${selectedReport.reportedUser} 회원이 ${days}일 동안 활동 정지되었습니다.`);
+        }
+      }
+      
+      const updated = reports.map(rep => 
+        rep.id === selectedReport.id ? { ...rep, status: '처리완료', adminNote: `[${suspendDuration} 정지] ${finalReason}` } : rep
+      );
+      setReports(updated);
+      localStorage.setItem('reports', JSON.stringify(updated));
+    } catch (err) {
+      console.error('제재 처리 실패:', err);
+      alert(err.response?.data?.message || err.message || '제재 처리에 실패했습니다.');
+    } finally {
+      setSelectedReport(null);
+      setSuspendDuration('7일');
+      setSuspendReason('바람직하지 않은 활동 (광고, 도배, 욕설, 비방 등)');
+      setSuspendReasonOther('');
+      setAdminNote('');
+    }
+  };
+
+  const handleCrushGroup = async (groupId, reportId) => {
+    if (!groupId) {
+      alert('그룹 ID가 존재하지 않습니다.');
+      return;
+    }
+    if (!window.confirm(`스터디 그룹(ID: ${groupId})을 강제 폐쇄하시겠습니까?`)) return;
+    try {
+      await adminService.deleteGroup(groupId);
+      alert('스터디 그룹이 강제 폐쇄되었습니다.');
+      const updated = reports.map(rep => 
+        rep.id === reportId ? { ...rep, status: '처리완료', adminNote: '[그룹 강제 폐쇄 완료]' } : rep
+      );
+      setReports(updated);
+      localStorage.setItem('reports', JSON.stringify(updated));
+    } catch (err) {
+      console.error('그룹 폐쇄 실패:', err);
+      alert(err.response?.data?.message || err.message || '그룹 폐쇄에 실패했습니다.');
+    }
   };
 
   // 비밀번호 변경 관련 상태
@@ -316,10 +407,11 @@ export default function MyPage() {
       </div>
 
       {/* 관리자 메뉴 (하단 추가) */}
-      <div className="glass-panel animate-fade-in" style={{ padding: '30px', marginTop: '24px' }}>
-        <h3 style={{ margin: '0 0 20px 0', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <ShieldAlert size={20} /> 관리자 메뉴 (문의 및 신고 관리)
-        </h3>
+      {isAdmin && (
+        <div className="glass-panel animate-fade-in" style={{ padding: '30px', marginTop: '24px' }}>
+          <h3 style={{ margin: '0 0 20px 0', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <ShieldAlert size={20} /> 관리자 메뉴 (문의 및 신고 관리)
+          </h3>
 
         <div className="archive-tabs" style={{ marginBottom: '20px' }}>
           <button 
@@ -396,9 +488,16 @@ export default function MyPage() {
                   </div>
                 )}
                 {rep.status === '대기중' && (
-                  <button className="btn-primary" style={{ marginTop: '12px', padding: '8px 16px', width: 'auto', backgroundColor: '#EF4444' }} onClick={() => setSelectedReport(rep)}>
-                    제재하기
-                  </button>
+                  <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+                    <button className="btn-primary" style={{ padding: '8px 16px', width: 'auto', backgroundColor: '#EF4444' }} onClick={() => setSelectedReport(rep)}>
+                      제재하기
+                    </button>
+                    {rep.groupStudyId && (
+                      <button className="btn-outline" style={{ padding: '8px 16px', width: 'auto', color: '#DC2626', borderColor: '#DC2626', backgroundColor: '#FFF5F5' }} onClick={() => handleCrushGroup(rep.groupStudyId, rep.id)}>
+                        그룹 강제 폐쇄
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             ))}
@@ -406,11 +505,10 @@ export default function MyPage() {
         )}
 
         <div style={{ marginTop: '24px', textAlign: 'center', borderTop: '1px solid var(--color-border)', paddingTop: '24px' }}>
-          <button className="btn-outline" onClick={() => setShowSuspensionMockup(true)} style={{ width: 'auto', display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-            <Ban size={16} /> 정지 화면 미리보기
-          </button>
+          {/* Removed suspension preview button */}
         </div>
-      </div>
+        </div>
+      )}
 
       {/* 문의 답변 모달 */}
       {selectedInquiry && (
@@ -533,49 +631,6 @@ export default function MyPage() {
           </div>
         </div>
       )}
-
-      {/* 정지 화면 미리보기 모달 (풀스크린) */}
-      {showSuspensionMockup && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#F3F4F6', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }} className="animate-fade-in">
-          <div className="glass-panel" style={{ width: '500px', padding: '40px', textAlign: 'center', backgroundColor: 'white', borderRadius: '16px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)' }}>
-            <div style={{ width: '80px', height: '80px', borderRadius: '50%', backgroundColor: '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 24px auto' }}>
-              <Ban size={40} color="#DC2626" />
-            </div>
-            
-            <h2 style={{ margin: '0 0 16px 0', fontSize: '24px', color: '#111827' }}>서비스 이용이 제한되었습니다</h2>
-            <p style={{ margin: '0 0 32px 0', fontSize: '15px', color: '#4B5563', lineHeight: '1.6' }}>
-              고객님의 계정은 운영 정책 위반으로 인해 일시적으로 서비스 이용이 정지되었습니다.<br/>
-              정지 기간 동안은 모든 기능의 사용이 제한됩니다.
-            </p>
-
-            <div style={{ backgroundColor: '#F9FAFB', borderRadius: '12px', padding: '24px', textAlign: 'left', marginBottom: '32px', border: '1px solid #E5E7EB' }}>
-              <div style={{ display: 'flex', marginBottom: '12px' }}>
-                <div style={{ width: '100px', fontWeight: 'bold', color: '#374151', fontSize: '14px' }}>제재 사유</div>
-                <div style={{ flex: 1, color: '#DC2626', fontWeight: 'bold', fontSize: '14px' }}>바람직하지 않은 활동 (욕설/비방 등)</div>
-              </div>
-              <div style={{ display: 'flex', marginBottom: '12px' }}>
-                <div style={{ width: '100px', fontWeight: 'bold', color: '#374151', fontSize: '14px' }}>정지 기간</div>
-                <div style={{ flex: 1, color: '#111827', fontSize: '14px' }}>2026.05.22 ~ 2026.05.29 (7일)</div>
-              </div>
-              <div style={{ display: 'flex' }}>
-                <div style={{ width: '100px', fontWeight: 'bold', color: '#374151', fontSize: '14px' }}>관리자 메모</div>
-                <div style={{ flex: 1, color: '#6B7280', fontSize: '14px' }}>게시판에서 반복적인 타인 비방 행위가 다수 신고되어 운영 정책에 따라 조치되었습니다.</div>
-              </div>
-            </div>
-
-            <p style={{ margin: '0 0 24px 0', fontSize: '13px', color: '#9CA3AF' }}>
-              이의 제기 및 관련 문의는 고객센터(support@studybridge.com)를 이용해 주세요.
-            </p>
-
-            <button 
-              className="btn-primary" 
-              onClick={() => setShowSuspensionMockup(false)}
-              style={{ width: '100%', padding: '14px', fontSize: '16px' }}
-            >
-              미리보기 종료 (로그아웃 연출)
-            </button>
-          </div>
-        </div>
       )}
     </div>
   );

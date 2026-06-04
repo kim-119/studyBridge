@@ -7,7 +7,7 @@ import {
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { useAuth } from '../hooks/useAuth';
-import { groupService } from '../services/api';
+import { groupService, timerService } from '../services/api';
 
 function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = true }) {
   const videoRef = React.useRef(null);
@@ -116,6 +116,27 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
 
 export default function StudyRoom({ study, onClose }) {
   const { userId } = useAuth();
+  
+  const formatSecondsToStudyTime = (secs) => {
+    if (!secs && secs !== 0) return '-';
+    const hrs = Math.floor(secs / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    return `${hrs}시간 ${mins}분`;
+  };
+
+  const formatAttendanceTime = (isoString) => {
+    if (!isoString) return '-';
+    try {
+      const date = new Date(isoString);
+      const today = new Date();
+      const isToday = date.toDateString() === today.toDateString();
+      const formatted = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return isToday ? `오늘 ${formatted}` : `${date.getMonth() + 1}월 ${date.getDate()}일 ${formatted}`;
+    } catch {
+      return isoString;
+    }
+  };
+
   const [members, setMembers] = useState([]);
   const [applications, setApplications] = useState([]);
   const [activeTab, setActiveTab] = useState('chat');
@@ -127,11 +148,20 @@ export default function StudyRoom({ study, onClose }) {
   const [roomManageTab, setRoomManageTab] = useState('settings'); // 'settings' | 'members'
   const [showAdminReportModal, setShowAdminReportModal] = useState(false);
   const [adminReportTab, setAdminReportTab] = useState('inquiry'); // 'inquiry' | 'report'
+  const [reportUserId, setReportUserId] = useState('');
+  const [reportReasonType, setReportReasonType] = useState('욕설 / 비방 / 혐오 발언');
+  const [reportDetail, setReportDetail] = useState('');
   const [isCamFullScreen, setIsCamFullScreen] = useState(false);
 
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [stompClient, setStompClient] = useState(null);
+  
+  // AI Multi-Agent SSE Streaming Chat states
+  const [chatTab, setChatTab] = useState('normal'); // 'normal' | 'ai'
+  const [aiMessages, setAiMessages] = useState([]);
+  const [aiInput, setAiInput] = useState('');
+  const [isAiStreaming, setIsAiStreaming] = useState(false);
   
   const [activeQuiz, setActiveQuiz] = useState(null);
   const [quizTimer, setQuizTimer] = useState(0);
@@ -317,11 +347,16 @@ export default function StudyRoom({ study, onClose }) {
 
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
     const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const defaultBrokerURL = `${protocol}://${hostname}:8080/ws-group/websocket`;
+    const defaultBrokerURL = `${protocol}://${hostname}:9090/ws-group/websocket`;
     const brokerURL = import.meta.env.VITE_WS_URL || defaultBrokerURL;
+
+    const token = localStorage.getItem('token');
 
     const client = new Client({
       brokerURL,
+      connectHeaders: {
+        Authorization: token ? `Bearer ${token}` : ''
+      },
       reconnectDelay: 5000,
       heartbeatIncoming: 4000,
       heartbeatOutgoing: 4000,
@@ -509,10 +544,127 @@ export default function StudyRoom({ study, onClose }) {
     setChatInput('');
   };
 
+  const handleSendAiMessage = async () => {
+    if (!aiInput.trim() || isAiStreaming) return;
+    
+    const userMsg = aiInput.trim();
+    setAiInput('');
+    setIsAiStreaming(true);
+    
+    // Add user message to state
+    const userMsgObj = {
+      id: Date.now(),
+      senderName: myDisplayName,
+      content: userMsg,
+      isUser: true
+    };
+    setAiMessages(prev => [...prev, userMsgObj]);
+    
+    const token = localStorage.getItem('token');
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `http://${hostname}:9090`;
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/groups/${study.id}/chats/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': token ? `Bearer ${token}` : ''
+        },
+        body: JSON.stringify({
+          message: userMsg,
+          mode: 'multi_agent_discussion',
+          rounds: 3,
+          showFinalSynthesis: true,
+          agents: [] // empty array defaults to Summary, Quiz, and Search agent
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`스트리밍 오류 (HTTP ${response.status})`);
+      }
+      
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep the last partial line in the buffer
+        
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          if (trimmed.startsWith('data:')) {
+            const dataStr = trimmed.slice(5).trim();
+            if (!dataStr) continue;
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (parsed.done) {
+                console.log("AI Stream done");
+                continue;
+              }
+              
+              if (parsed.agentName && parsed.content) {
+                setAiMessages(prev => {
+                  if (prev.length === 0) return prev;
+                  const lastMsg = prev[prev.length - 1];
+                  // If the last message is from the same agent, append text
+                  if (!lastMsg.isUser && lastMsg.senderName === parsed.agentName) {
+                    const updated = [...prev];
+                    updated[updated.length - 1] = {
+                      ...lastMsg,
+                      content: lastMsg.content + parsed.content
+                    };
+                    return updated;
+                  } else {
+                    // Create a new message from this agent
+                    return [
+                      ...prev,
+                      {
+                        id: Date.now() + Math.random(),
+                        senderName: parsed.agentName,
+                        content: parsed.content,
+                        isUser: false
+                      }
+                    ];
+                  }
+                });
+              }
+            } catch (jsonErr) {
+              console.warn("JSON parsing chunk error:", jsonErr, "dataStr:", dataStr);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("AI Stream connection error:", err);
+      setAiMessages(prev => [
+        ...prev,
+        {
+          id: Date.now() + 1,
+          senderName: 'System',
+          content: `오류가 발생했습니다: ${err.message || err}`,
+          isUser: false,
+          isError: true
+        }
+      ]);
+    } finally {
+      setIsAiStreaming(false);
+    }
+  };
+
   useEffect(() => {
     if (study?.id) {
       loadMembers();
       loadApplications();
+      timerService.syncTimer(study.id)
+        .then(() => console.log('Timer synced with group study room'))
+        .catch(err => console.error('Failed to sync timer:', err));
     }
   }, [study?.id, userId]);
 
@@ -765,66 +917,185 @@ export default function StudyRoom({ study, onClose }) {
 
             {/* Chat Area */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#111827' }}>
-              <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '14px', fontWeight: '700', color: '#F3F4F6' }}>채팅</span>
+              
+              {/* Chat Tabs */}
+              <div style={{ padding: '0 20px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', gap: '16px', backgroundColor: '#0F172A' }}>
+                <button
+                  onClick={() => setChatTab('normal')}
+                  style={{
+                    padding: '14px 0',
+                    border: 'none',
+                    background: 'none',
+                    color: chatTab === 'normal' ? '#3B82F6' : '#9CA3AF',
+                    borderBottom: chatTab === 'normal' ? '2px solid #3B82F6' : '2px solid transparent',
+                    fontSize: '14px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    outline: 'none'
+                  }}
+                >
+                  일반 채팅
+                </button>
+                <button
+                  onClick={() => setChatTab('ai')}
+                  style={{
+                    padding: '14px 0',
+                    border: 'none',
+                    background: 'none',
+                    color: chatTab === 'ai' ? '#3B82F6' : '#9CA3AF',
+                    borderBottom: chatTab === 'ai' ? '2px solid #3B82F6' : '2px solid transparent',
+                    fontSize: '14px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    outline: 'none'
+                  }}
+                >
+                  AI 토론 (SSE)
+                </button>
               </div>
 
-              <div className="custom-scrollbar" style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {/* Notice Box */}
-                <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F87171', fontSize: '13px', fontWeight: '700', marginBottom: '8px' }}>
-                    <AlertTriangle size={16} /> 서비스 이용 안내
-                  </div>
-                  <div style={{ color: '#FCA5A5', fontSize: '12px', lineHeight: '1.6', wordBreak: 'keep-all' }}>
-                    불건전한 행동이나 욕설 발견 시 즉각 강제 퇴장 및 계정 정지 조치가 이루어질 수 있습니다. 모두가 집중할 수 있는 분위기를 만들어주세요.
-                  </div>
-                </div>
+              {chatTab === 'normal' ? (
+                <>
+                  <div className="custom-scrollbar" style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {/* Notice Box */}
+                    <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F87171', fontSize: '13px', fontWeight: '700', marginBottom: '8px' }}>
+                        <AlertTriangle size={16} /> 서비스 이용 안내
+                      </div>
+                      <div style={{ color: '#FCA5A5', fontSize: '12px', lineHeight: '1.6', wordBreak: 'keep-all' }}>
+                        불건전한 행동이나 욕설 발견 시 즉각 강제 퇴장 및 계정 정지 조치가 이루어질 수 있습니다. 모두가 집중할 수 있는 분위기를 만들어주세요.
+                      </div>
+                    </div>
 
-                {/* Chat Messages */}
-                {chatMessages.map((msg, idx) => (
-                  <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignSelf: Number(msg.senderId) === Number(userId) ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
-                    <span style={{ fontSize: '11px', color: '#9CA3AF', alignSelf: Number(msg.senderId) === Number(userId) ? 'flex-end' : 'flex-start' }}>
-                      {msg.senderName}
-                    </span>
-                    <div style={{
-                      backgroundColor: Number(msg.senderId) === Number(userId) ? '#22C55E' : '#1E293B',
-                      color: 'white',
-                      padding: '8px 12px',
-                      borderRadius: Number(msg.senderId) === Number(userId) ? '12px 12px 0 12px' : '12px 12px 12px 0',
-                      fontSize: '13px',
-                      lineHeight: '1.4',
-                      wordBreak: 'break-all'
-                    }}>
-                      {msg.content}
+                    {/* Chat Messages */}
+                    {chatMessages.map((msg, idx) => (
+                      <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignSelf: Number(msg.senderId) === Number(userId) ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
+                        <span style={{ fontSize: '11px', color: '#9CA3AF', alignSelf: Number(msg.senderId) === Number(userId) ? 'flex-end' : 'flex-start' }}>
+                          {msg.senderName}
+                        </span>
+                        <div style={{
+                          backgroundColor: Number(msg.senderId) === Number(userId) ? '#22C55E' : '#1E293B',
+                          color: 'white',
+                          padding: '8px 12px',
+                          borderRadius: Number(msg.senderId) === Number(userId) ? '12px 12px 0 12px' : '12px 12px 12px 0',
+                          fontSize: '13px',
+                          lineHeight: '1.4',
+                          wordBreak: 'break-all'
+                        }}>
+                          {msg.content}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Chat Input */}
+                  <div style={{ padding: '20px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: '24px', padding: '8px 16px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                      <div style={{ fontSize: '13px', color: '#9CA3AF', paddingRight: '12px', borderRight: '1px solid rgba(255,255,255,0.1)', marginRight: '12px', display: 'flex', alignItems: 'center', gap: '6px', height: '20px', whiteSpace: 'nowrap' }}>
+                        전체 <span style={{ fontSize: '8px', opacity: 0.8 }}>▼</span>
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="메시지 입력..."
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSendChat();
+                        }}
+                        style={{ flex: 1, border: 'none', outline: 'none', fontSize: '13px', color: '#F3F4F6', backgroundColor: 'transparent', height: '20px', lineHeight: '20px', padding: 0, margin: 0 }}
+                      />
+                      <button
+                        onClick={handleSendChat}
+                        style={{ background: 'linear-gradient(135deg, #22C55E, #16A34A)', border: 'none', width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginLeft: '8px', boxShadow: '0 2px 8px rgba(34, 197, 94, 0.3)' }}
+                      >
+                        <Send size={14} color="white" style={{ marginLeft: '-2px', marginTop: '2px' }} />
+                      </button>
                     </div>
                   </div>
-                ))}
-              </div>
+                </>
+              ) : (
+                <>
+                  <div className="custom-scrollbar" style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    {/* Notice Box */}
+                    <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#60A5FA', fontSize: '13px', fontWeight: '700', marginBottom: '8px' }}>
+                        <AlertTriangle size={16} /> AI 토론 안내
+                      </div>
+                      <div style={{ color: '#93C5FD', fontSize: '12px', lineHeight: '1.6', wordBreak: 'keep-all' }}>
+                        에이전트들에게 질문하면 요약봇, 퀴즈봇, 검색봇 등 다중 에이전트들이 실시간으로 토론하며 솔루션을 탐색합니다.
+                      </div>
+                    </div>
 
-              {/* Chat Input */}
-              <div style={{ padding: '20px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: '24px', padding: '8px 16px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                  <div style={{ fontSize: '13px', color: '#9CA3AF', paddingRight: '12px', borderRight: '1px solid rgba(255,255,255,0.1)', marginRight: '12px', display: 'flex', alignItems: 'center', gap: '6px', height: '20px', whiteSpace: 'nowrap' }}>
-                    전체 <span style={{ fontSize: '8px', opacity: 0.8 }}>▼</span>
+                    {/* AI Chat Messages */}
+                    {aiMessages.map((msg) => {
+                      const isMe = msg.isUser;
+                      let colors = { bg: '#1E293B', border: 'rgba(255,255,255,0.08)', text: '#E5E7EB' };
+                      if (msg.senderName === 'SummaryAgent') {
+                        colors = { bg: '#1E3A8A', border: '#3B82F6', text: '#93C5FD' };
+                      } else if (msg.senderName === 'QuizAgent') {
+                        colors = { bg: '#064E3B', border: '#10B981', text: '#A7F3D0' };
+                      } else if (msg.senderName === 'SearchAgent') {
+                        colors = { bg: '#581C87', border: '#8B5CF6', text: '#DDD6FE' };
+                      } else if (msg.isUser) {
+                        colors = { bg: '#16A34A', border: '#22C55E', text: '#FFFFFF' };
+                      }
+                      
+                      return (
+                        <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignSelf: isMe ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
+                          <span style={{ fontSize: '11px', color: '#9CA3AF', alignSelf: isMe ? 'flex-end' : 'flex-start', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            {!isMe && <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: colors.border }} />}
+                            {msg.senderName}
+                          </span>
+                          <div style={{
+                            backgroundColor: colors.bg,
+                            color: colors.text,
+                            border: `1px solid ${colors.border}`,
+                            padding: '10px 14px',
+                            borderRadius: isMe ? '16px 16px 0 16px' : '16px 16px 16px 0',
+                            fontSize: '13px',
+                            lineHeight: '1.5',
+                            wordBreak: 'break-all',
+                            boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                          }}>
+                            {msg.content}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    
+                    {isAiStreaming && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#9CA3AF', fontSize: '12px', paddingLeft: '8px' }}>
+                        <RefreshCw size={14} className="animate-spin" style={{ animation: 'spin 1.5s linear infinite' }} />
+                        <span>AI 에이전트들이 답변을 스트리밍하고 있습니다...</span>
+                      </div>
+                    )}
                   </div>
-                  <input
-                    type="text"
-                    placeholder="메시지 입력..."
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleSendChat();
-                    }}
-                    style={{ flex: 1, border: 'none', outline: 'none', fontSize: '13px', color: '#F3F4F6', backgroundColor: 'transparent', height: '20px', lineHeight: '20px', padding: 0, margin: 0 }}
-                  />
-                  <button
-                    onClick={handleSendChat}
-                    style={{ background: 'linear-gradient(135deg, #22C55E, #16A34A)', border: 'none', width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginLeft: '8px', boxShadow: '0 2px 8px rgba(34, 197, 94, 0.3)' }}
-                  >
-                    <Send size={14} color="white" style={{ marginLeft: '-2px', marginTop: '2px' }} />
-                  </button>
-                </div>
-              </div>
+
+                  {/* AI Input */}
+                  <div style={{ padding: '20px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: '24px', padding: '8px 16px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                      <input
+                        type="text"
+                        placeholder="AI에게 질문해보세요..."
+                        value={aiInput}
+                        onChange={(e) => setAiInput(e.target.value)}
+                        disabled={isAiStreaming}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSendAiMessage();
+                        }}
+                        style={{ flex: 1, border: 'none', outline: 'none', fontSize: '13px', color: '#F3F4F6', backgroundColor: 'transparent', height: '20px', lineHeight: '20px', padding: 0, margin: 0, opacity: isAiStreaming ? 0.6 : 1 }}
+                      />
+                      <button
+                        onClick={handleSendAiMessage}
+                        disabled={isAiStreaming || !aiInput.trim()}
+                        style={{ background: isAiStreaming ? '#4B5563' : 'linear-gradient(135deg, #3B82F6, #2563EB)', border: 'none', width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: isAiStreaming ? 'not-allowed' : 'pointer', marginLeft: '8px', boxShadow: isAiStreaming ? 'none' : '0 2px 8px rgba(59, 130, 246, 0.3)' }}
+                      >
+                        <Send size={14} color="white" style={{ marginLeft: '-2px', marginTop: '2px' }} />
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -1061,60 +1332,70 @@ export default function StudyRoom({ study, onClose }) {
                     <thead>
                       <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: '#9CA3AF', fontSize: '13px', fontWeight: '500' }}>
                         <th style={{ padding: '12px 16px', fontWeight: '500' }}>이름</th>
-                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>최근 출석시간</th>
-                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>최근 공부시간</th>
-                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>누적 공부시간</th>
-                        <th style={{ padding: '12px 16px', fontWeight: '500' }}></th>
+                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>최근 출석 시간</th>
+                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>최근 공부 시간</th>
+                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>누적 공부 시간</th>
+                        <th style={{ padding: '12px 16px', fontWeight: '500', textAlign: 'right' }}>관리</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {/* 방장 */}
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                        <td style={{ padding: '16px' }}>
-                          <div style={{ color: '#3B82F6', fontWeight: '600', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#3B82F6', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>M</div>
-                            mindcontrol (나)
-                          </div>
-                        </td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>오늘 09:30</td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>1시간 20분</td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>32시간 15분</td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '13px', fontWeight: '500', textAlign: 'right' }}>방장</td>
-                      </tr>
-                      {/* 일반 멤버 */}
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                        <td style={{ padding: '16px' }}>
-                          <div style={{ color: '#F3F4F6', fontWeight: '500', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#6366F1', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>잠</div>
-                            잠재용
-                          </div>
-                        </td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>어제 22:10</td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>0시간</td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>14시간 50분</td>
-                        <td style={{ padding: '16px', textAlign: 'right' }}>
-                          <button style={{ padding: '6px 12px', backgroundColor: 'rgba(239,68,68,0.1)', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.2)', fontSize: '12px', fontWeight: '600', cursor: 'pointer', transition: '0.2s' }} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.2)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.1)'; }}>
-                            강제 퇴장
-                          </button>
-                        </td>
-                      </tr>
-                      {/* AI 에이전트 */}
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                        <td style={{ padding: '16px' }}>
-                          <div style={{ color: '#F3F4F6', fontWeight: '500', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#10B981', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>S</div>
-                            StudyMate
-                          </div>
-                        </td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '14px' }}>-</td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '14px' }}>-</td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '14px' }}>-</td>
-                        <td style={{ padding: '16px', textAlign: 'right' }}>
-                          <button style={{ padding: '6px 12px', backgroundColor: 'rgba(239,68,68,0.1)', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.2)', fontSize: '12px', fontWeight: '600', cursor: 'pointer', transition: '0.2s' }} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.2)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.1)'; }}>
-                            강제 퇴장
-                          </button>
-                        </td>
-                      </tr>
+                      {members.map(member => {
+                        const isLeader = member.role === 'LEADER';
+                        const isMe = Number(member.userId) === Number(userId);
+                        return (
+                          <tr key={member.userId} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                            <td style={{ padding: '16px' }}>
+                              <div style={{ color: isLeader ? '#3B82F6' : '#F3F4F6', fontWeight: isLeader ? '600' : '500', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: isLeader ? '#3B82F6' : '#6366F1', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
+                                  {member.displayName ? member.displayName.charAt(0) : 'U'}
+                                </div>
+                                {member.displayName} {isMe ? '(나)' : ''}
+                              </div>
+                            </td>
+                            <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>
+                              {formatAttendanceTime(member.recentAttendanceTime)}
+                            </td>
+                            <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>
+                              {formatSecondsToStudyTime(member.recentStudyTimeSeconds)}
+                            </td>
+                            <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>
+                              {formatSecondsToStudyTime(member.cumulativeStudyTimeSeconds)}
+                            </td>
+                            <td style={{ padding: '16px', textAlign: 'right' }}>
+                              {isLeader ? (
+                                <span style={{ color: '#9CA3AF', fontSize: '13px', fontWeight: '500' }}>방장</span>
+                              ) : (
+                                Number(study.leaderId) === Number(userId) && (
+                                  <button
+                                    onClick={async () => {
+                                      if (window.confirm(`${member.displayName} 멤버를 정말로 강제 퇴장시키겠습니까?`)) {
+                                        try {
+                                          await groupService.kickMember(study.id, member.userId);
+                                          showAlert('알림', '멤버가 강제 퇴장 처리되었습니다.', () => {
+                                            loadMembers();
+                                          });
+                                        } catch (err) {
+                                          showAlert('오류', err.response?.data?.message || '강제 퇴장에 실패했습니다.');
+                                        }
+                                      }
+                                    }}
+                                    style={{ padding: '6px 12px', backgroundColor: 'rgba(239,68,68,0.1)', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.2)', fontSize: '12px', fontWeight: '600', cursor: 'pointer', transition: '0.2s' }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.2)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.1)'; }}
+                                  >
+                                    강제 퇴장
+                                  </button>
+                                )
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {members.length === 0 && (
+                        <tr>
+                          <td colSpan="5" style={{ padding: '32px', textAlign: 'center', color: '#9CA3AF' }}>참여 멤버가 없습니다.</td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -1342,28 +1623,42 @@ export default function StudyRoom({ study, onClose }) {
                   {/* 신고 대상 */}
                   <div>
                     <div style={{ color: '#EF4444', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>신고할 유저</div>
-                    <select style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}>
+                    <select
+                      value={reportUserId}
+                      onChange={(e) => setReportUserId(e.target.value)}
+                      style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}
+                    >
                       <option value="">신고할 멤버를 선택하세요</option>
-                      <option value="user1">잠재용</option>
-                      <option value="user2">StudyMate (AI 에이전트)</option>
+                      {members.filter(m => Number(m.userId) !== Number(userId)).map(m => (
+                        <option key={m.userId} value={m.userId}>{m.displayName}</option>
+                      ))}
                     </select>
                   </div>
 
                   {/* 신고 사유 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>신고 사유</div>
-                    <select style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}>
-                      <option>욕설 / 비방 / 혐오 발언</option>
-                      <option>도배 및 스팸</option>
-                      <option>부적절한 프로필 또는 닉네임</option>
-                      <option>기타 (직접 작성)</option>
+                    <select
+                      value={reportReasonType}
+                      onChange={(e) => setReportReasonType(e.target.value)}
+                      style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}
+                    >
+                      <option value="욕설 / 비방 / 혐오 발언">욕설 / 비방 / 혐오 발언</option>
+                      <option value="도배 및 스팸">도배 및 스팸</option>
+                      <option value="부적절한 프로필 또는 닉네임">부적절한 프로필 또는 닉네임</option>
+                      <option value="기타 (직접 작성)">기타 (직접 작성)</option>
                     </select>
                   </div>
 
                   {/* 내용 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>상세 사유</div>
-                    <textarea placeholder="신고 사유를 상세히 적어주세요.&#13;&#10;허위 신고 시 서비스 이용에 불이익을 받을 수 있습니다." style={{ width: '100%', boxSizing: 'border-box', height: '160px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }} />
+                    <textarea
+                      placeholder="신고 사유를 상세히 적어주세요.&#13;&#10;허위 신고 시 서비스 이용에 불이익을 받을 수 있습니다."
+                      value={reportDetail}
+                      onChange={(e) => setReportDetail(e.target.value)}
+                      style={{ width: '100%', boxSizing: 'border-box', height: '160px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }}
+                    />
                   </div>
                 </>
               )}
@@ -1383,7 +1678,29 @@ export default function StudyRoom({ study, onClose }) {
                 style={{ padding: '10px 24px', backgroundColor: adminReportTab === 'inquiry' ? '#22C55E' : '#EF4444', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '600', cursor: 'pointer', boxShadow: adminReportTab === 'inquiry' ? '0 4px 12px rgba(34,197,94,0.3)' : '0 4px 12px rgba(239,68,68,0.3)', transition: '0.2s' }}
                 onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = adminReportTab === 'inquiry' ? '#16A34A' : '#DC2626'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = adminReportTab === 'inquiry' ? '#22C55E' : '#EF4444'; }}
-                onClick={() => setShowAdminReportModal(false)}
+                onClick={async () => {
+                  if (adminReportTab === 'inquiry') {
+                    showAlert('성공', '1:1 문의가 성공적으로 접수되었습니다.');
+                    setShowAdminReportModal(false);
+                  } else {
+                    if (!reportUserId) {
+                      showAlert('알림', '신고할 멤버를 선택해주세요.');
+                      return;
+                    }
+                    try {
+                      await groupService.reportUser(study.id, {
+                        reportedUserId: Number(reportUserId),
+                        reason: `${reportReasonType} - ${reportDetail}`
+                      });
+                      showAlert('성공', '신고가 정상 접수되었습니다.');
+                      setShowAdminReportModal(false);
+                      setReportUserId('');
+                      setReportDetail('');
+                    } catch (err) {
+                      showAlert('오류', err.response?.data?.message || '신고 접수에 실패했습니다.');
+                    }
+                  }
+                }}
               >
                 {adminReportTab === 'inquiry' ? '문의 접수하기' : '신고 접수하기'}
               </button>

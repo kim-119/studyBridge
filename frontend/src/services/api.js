@@ -5,7 +5,7 @@ const hostname = typeof window !== 'undefined' ? window.location.hostname : 'loc
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   import.meta.env.VITE_BACKEND_URL ||
-  `http://${hostname}:8080`;
+  `http://${hostname}:9090`;
 
 const FASTAPI_BASE_URL =
   import.meta.env.VITE_FASTAPI_BASE_URL ||
@@ -375,6 +375,7 @@ export const roomService = {
   }
 };
 
+
 export const timerService = {
   startTimer: async (userId, startTime) => {
     const res = await api.post('/api/timers/start', { startTime });
@@ -390,6 +391,10 @@ export const timerService = {
   },
   getTimerHistory: async (userId) => {
     const res = await api.get('/api/timers');
+    return res.data;
+  },
+  syncTimer: async (groupId) => {
+    const res = await api.post(`/api/timers/sync/${groupId}`);
     return res.data;
   }
 };
@@ -498,7 +503,31 @@ export const groupService = {
     return res.data;
   },
   createGroup: async (groupData) => {
-    const res = await api.post('/api/groups', groupData);
+    const formData = new FormData();
+    Object.keys(groupData).forEach(key => {
+      if (groupData[key] !== undefined && groupData[key] !== null) {
+        formData.append(key, groupData[key]);
+      }
+    });
+    const res = await api.post('/api/groups', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    return res.data;
+  },
+  updateGroup: async (id, groupData) => {
+    const formData = new FormData();
+    Object.keys(groupData).forEach(key => {
+      if (groupData[key] !== undefined && groupData[key] !== null) {
+        formData.append(key, groupData[key]);
+      }
+    });
+    const res = await api.put(`/api/groups/${id}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    return res.data;
+  },
+  reportUser: async (groupId, reportData) => {
+    const res = await api.post(`/api/groups/${groupId}/reports`, reportData);
     return res.data;
   },
   applyGroup: async (id, applyData) => {
@@ -523,6 +552,10 @@ export const groupService = {
   },
   deleteGroup: async (id) => {
     const res = await api.delete(`/api/groups/${id}`);
+    return res.data;
+  },
+  kickMember: async (groupId, memberUserId) => {
+    const res = await api.delete(`/api/groups/${groupId}/members/${memberUserId}`);
     return res.data;
   },
   completeRecruitment: async (id) => {
@@ -592,6 +625,38 @@ export const knowledgeService = {
   },
   deleteComment: async (blogId, commentId) => {
     const res = await api.delete(`/api/blogs/${blogId}/comments/${commentId}`);
+    return res.data;
+  }
+};
+
+export const adminService = {
+  getGroupReports: async () => {
+    const res = await api.get('/api/admin/reports/groups');
+    return res.data;
+  },
+  deleteGroup: async (groupId) => {
+    const res = await api.delete(`/api/admin/groups/${groupId}`);
+    return res.data;
+  },
+  deletePost: async (blogId) => {
+    const res = await api.delete(`/api/admin/blogs/${blogId}`);
+    return res.data;
+  },
+  deleteComment: async (commentId) => {
+    const res = await api.delete(`/api/admin/comments/${commentId}`);
+    return res.data;
+  },
+  // 문의 목록 조회 (관리자 전용)
+  getInquiries: async () => {
+    const res = await api.get('/api/admin/inquiries');
+    return res.data;
+  },
+  suspendUser: async (userId, suspendData) => {
+    const res = await api.post(`/api/admin/users/${userId}/suspend`, suspendData);
+    return res.data;
+  },
+  banUser: async (userId, banData) => {
+    const res = await api.post(`/api/admin/users/${userId}/ban`, banData);
     return res.data;
   }
 };

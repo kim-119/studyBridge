@@ -164,28 +164,34 @@ export default function GroupStudy() {
     try {
       const data = await groupService.getGroups();
       
-      const normalized = data.map(group => ({
-        id: group.id,
-        title: group.title,
-        description: group.description || group.goal || '스터디 설명이 없습니다.',
-        content: group.description || group.goal || '스터디 설명이 없습니다.',
-        goal: group.goal || group.title,
-        tags: group.goal ? group.goal.split(',').map(s => s.trim()) : ['자율', '캠스터디'],
-        currentMembers: group.currentCount || 1,
-        maxMembers: group.capacity || 10,
-        current: group.currentCount || 1,
-        max: group.capacity || 10,
-        leader: group.leaderName || '방장',
-        author: group.leaderName || '방장',
-        leaderId: group.leaderId,
-        status: group.status, // 'RECRUITING', 'ACTIVE', 'COMPLETED'
-        isPrivate: !group.isPublic,
-        thumbnailUrl: 'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
-        startDate: group.startDate,
-        endDate: group.endDate,
-        createdAt: group.createdAt,
-        date: group.createdAt ? group.createdAt.split('T')[0] : (group.startDate || new Date().toISOString().split('T')[0])
-      }));
+      const normalized = data.map(group => {
+        let tags = ['자율', '캠스터디'];
+        if (group.hashtags) {
+          tags = group.hashtags.split(/[\s,#]+/).map(s => s.trim()).filter(Boolean);
+        }
+        return {
+          id: group.id,
+          title: group.title,
+          description: group.description || '스터디 설명이 없습니다.',
+          content: group.description || '스터디 설명이 없습니다.',
+          hashtags: group.hashtags || '',
+          tags: tags,
+          currentMembers: group.currentCount || 1,
+          maxMembers: group.capacity || 10,
+          current: group.currentCount || 1,
+          max: group.capacity || 10,
+          leader: group.leaderName || '방장',
+          author: group.leaderName || '방장',
+          leaderId: group.leaderId,
+          status: group.status, // 'RECRUITING', 'ACTIVE', 'COMPLETED'
+          isPrivate: !group.isPublic,
+          thumbnailUrl: group.coverImageUrl || 'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
+          startDate: group.startDate,
+          endDate: group.endDate,
+          createdAt: group.createdAt,
+          date: group.createdAt ? group.createdAt.split('T')[0] : (group.startDate || new Date().toISOString().split('T')[0])
+        };
+      });
 
       // Sort by id desc
       normalized.sort((a, b) => b.id - a.id);
@@ -225,6 +231,81 @@ export default function GroupStudy() {
       setPreJoinMembers([]);
     }
   }, [preJoinStudy, userId]);
+
+  const [applications, setApplications] = useState([]);
+  const [loadingApps, setLoadingApps] = useState(false);
+
+  const loadApplications = async (groupId) => {
+    setLoadingApps(true);
+    try {
+      const data = await groupService.getApplications(groupId);
+      setApplications((data || []).filter(app => app.status === 'WAITING'));
+    } catch (err) {
+      console.error('Failed to load applications', err);
+    } finally {
+      setLoadingApps(false);
+    }
+  };
+
+  useEffect(() => {
+    if (preJoinStudy && Number(preJoinStudy.leaderId) === Number(userId)) {
+      loadApplications(preJoinStudy.id);
+    }
+  }, [preJoinStudy, userId]);
+
+  const handleApproveApp = async (appId) => {
+    try {
+      await groupService.approveApplication(appId);
+      showAlert('성공', '가입 신청을 승인했습니다.');
+      if (preJoinStudy) {
+        loadApplications(preJoinStudy.id);
+        loadGroups();
+      }
+    } catch (err) {
+      showAlert('오류', err.response?.data?.message || '승인 처리에 실패했습니다.');
+    }
+  };
+
+  const handleRejectApp = async (appId) => {
+    try {
+      await groupService.rejectApplication(appId);
+      showAlert('성공', '가입 신청을 거절했습니다.');
+      if (preJoinStudy) {
+        loadApplications(preJoinStudy.id);
+        loadGroups();
+      }
+    } catch (err) {
+      showAlert('오류', err.response?.data?.message || '거절 처리에 실패했습니다.');
+    }
+  };
+
+  const handleCompleteRecruitment = async () => {
+    if (!preJoinStudy) return;
+    showConfirm('모집 종료', '스터디원 모집을 완료하고 스터디를 시작하시겠습니까?', async () => {
+      try {
+        await groupService.completeRecruitment(preJoinStudy.id);
+        showAlert('성공', '스터디 모집이 종료되었습니다. 정식 스터디가 시작됩니다.');
+        setPreJoinStudy(null);
+        loadGroups();
+      } catch (err) {
+        showAlert('오류', err.response?.data?.message || '모집 종료 처리에 실패했습니다.');
+      }
+    });
+  };
+
+  const handleDeleteStudy = async () => {
+    if (!preJoinStudy) return;
+    showConfirm('스터디 해체', '정말로 이 스터디 그룹을 해체하시겠습니까? 해체 시 다시 복구할 수 없습니다.', async () => {
+      try {
+        await groupService.deleteGroup(preJoinStudy.id);
+        showAlert('성공', '스터디 그룹이 해체(삭제)되었습니다.');
+        setPreJoinStudy(null);
+        loadGroups();
+      } catch (err) {
+        showAlert('오류', err.response?.data?.message || '스터디 해체에 실패했습니다.');
+      }
+    });
+  };
 
   const handleApply = async (study, e) => {
     if (e) e.stopPropagation(); // 카드 클릭 이벤트 방지
@@ -457,12 +538,13 @@ export default function GroupStudy() {
                 try {
                   const payload = {
                     title: createForm.title,
-                    goal: createForm.tags || createForm.title,
+                    hashtags: createForm.tags || '',
                     description: createForm.description,
                     startDate: createForm.startDate,
                     endDate: createForm.endDate,
                     capacity: 10,
-                    isPublic: createForm.isPublic
+                    isPublic: createForm.isPublic,
+                    image: createForm.imageFile || null
                   };
                   await groupService.createGroup(payload);
                   showAlert('성공', '스터디가 성공적으로 개설되었습니다!', () => {
@@ -471,6 +553,7 @@ export default function GroupStudy() {
                       title: '',
                       tags: '',
                       thumbnail: 'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
+                      imageFile: null,
                       startDate: '2026-06-02',
                       endDate: '2026-09-02',
                       isPublic: true,
@@ -934,7 +1017,7 @@ export default function GroupStudy() {
                       try {
                         const payload = {
                           title: writeForm.title,
-                          goal: selectedStudy ? selectedStudy.goal : writeForm.title,
+                          hashtags: selectedStudy ? selectedStudy.hashtags : '',
                           description: writeForm.content,
                           startDate: selectedStudy ? selectedStudy.startDate : new Date().toISOString().split('T')[0],
                           endDate: selectedStudy ? selectedStudy.endDate : new Date(Date.now() + 90*24*60*60*1000).toISOString().split('T')[0],
@@ -976,15 +1059,38 @@ export default function GroupStudy() {
               </div>
 
               {/* Body */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px', gap: '32px', overflowY: 'auto' }}>
+              <div style={{ 
+                flex: 1, 
+                display: 'flex', 
+                flexDirection: Number(preJoinStudy.leaderId) === Number(userId) ? 'row' : 'column', 
+                alignItems: Number(preJoinStudy.leaderId) === Number(userId) ? 'stretch' : 'center', 
+                justifyContent: 'center', 
+                padding: '40px 20px', 
+                gap: '40px', 
+                overflowY: 'auto',
+                maxWidth: '1200px',
+                width: '100%',
+                margin: '0 auto',
+                boxSizing: 'border-box'
+              }}>
 
-                <div style={{ textAlign: 'center' }}>
-                  <h1 style={{ margin: '0 0 12px', fontSize: '24px', fontWeight: '700', color: '#111827' }}>스터디룸에 입장하기 전에 내 화면을 마음대로 꾸며보세요.</h1>
-                  <p style={{ margin: 0, fontSize: '15px', color: '#6B7280' }}>지금 보이는 영상은 다른 사람이 볼 수 없습니다.</p>
-                </div>
+                <div style={{ 
+                  flex: 1, 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  alignItems: 'center', 
+                  justifyContent: 'center', 
+                  gap: '24px', 
+                  maxWidth: Number(preJoinStudy.leaderId) === Number(userId) ? '640px' : '800px',
+                  width: '100%'
+                }}>
+                  <div style={{ textAlign: 'center' }}>
+                    <h1 style={{ margin: '0 0 12px', fontSize: '22px', fontWeight: '700', color: '#111827' }}>스터디룸에 입장하기 전에 내 화면을 마음대로 꾸며보세요.</h1>
+                    <p style={{ margin: 0, fontSize: '14px', color: '#6B7280' }}>지금 보이는 영상은 다른 사람이 볼 수 없습니다.</p>
+                  </div>
 
-                {/* Video Box */}
-                <div style={{ width: '100%', maxWidth: '800px', backgroundColor: 'black', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column' }}>
+                  {/* Video Box */}
+                  <div style={{ width: '100%', backgroundColor: 'black', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column' }}>
                   <div style={{ position: 'relative', width: '100%', paddingTop: '56.25%', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: isVideoOn ? '#1F2937' : 'black' }}>
                     {!isVideoOn ? (
                       <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', color: '#4B5563' }}>
@@ -1103,8 +1209,114 @@ export default function GroupStudy() {
                   입장
                 </button>
               </div>
+
+              {/* Leader Console Panel */}
+              {Number(preJoinStudy.leaderId) === Number(userId) && (
+                <div className="glass-panel animate-fade-in" style={{ 
+                  width: '420px', 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  gap: '24px', 
+                  padding: '24px', 
+                  boxSizing: 'border-box',
+                  backgroundColor: '#ffffff',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '16px',
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)',
+                  height: 'fit-content',
+                  maxHeight: '100%',
+                  overflowY: 'auto'
+                }}>
+                  <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#111827', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Settings size={20} color="#10B981" /> 방장 관리 콘솔
+                  </h3>
+                  
+                  {/* 스터디 상태 표시 */}
+                  <div style={{ backgroundColor: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '12px 16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
+                      <span style={{ color: '#6B7280' }}>스터디 상태</span>
+                      <span style={{ 
+                        fontWeight: '700', 
+                        color: preJoinStudy.status === 'RECRUITING' ? '#10B981' : '#3B82F6'
+                      }}>
+                        {preJoinStudy.status === 'RECRUITING' ? '모집중' : '진행중 (모집종료)'}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                      <span style={{ color: '#6B7280' }}>가입 인원</span>
+                      <span style={{ fontWeight: '700', color: '#111827' }}>
+                        {preJoinStudy.currentMembers} / {preJoinStudy.maxMembers}명
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 가입 신청자 대기 명단 */}
+                  <div style={{ display: 'flex', flexDirection: 'column', minHeight: '240px' }}>
+                    <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: '700', color: '#374151' }}>
+                      가입 신청 대기자 명단 ({applications.length})
+                    </h4>
+                    
+                    <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '10px', backgroundColor: '#F9FAFB', display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '300px' }}>
+                      {loadingApps ? (
+                        <div style={{ padding: '20px 0', textAlign: 'center', fontSize: '13px', color: '#9CA3AF' }}>불러오는 중...</div>
+                      ) : applications.length === 0 ? (
+                        <div style={{ padding: '40px 0', textAlign: 'center', fontSize: '13px', color: '#9CA3AF' }}>대기 중인 신청자가 없습니다.</div>
+                      ) : (
+                        applications.map(app => (
+                          <div key={app.applicationId} style={{ backgroundColor: '#ffffff', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ fontWeight: '700', fontSize: '14px', color: '#111827' }}>{app.applicantName}</span>
+                              <span style={{ fontSize: '11px', color: '#9CA3AF' }}>
+                                {app.createdAt ? app.createdAt.split('T')[0] : ''}
+                              </span>
+                            </div>
+                            <p style={{ margin: 0, fontSize: '13px', color: '#4B5563', backgroundColor: '#F3F4F6', padding: '8px 10px', borderRadius: '6px', wordBreak: 'break-all', lineHeight: '1.4' }}>
+                              {app.introduction}
+                            </p>
+                            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                              <button 
+                                onClick={() => handleApproveApp(app.applicationId)}
+                                style={{ flex: 1, height: '32px', backgroundColor: '#10B981', color: 'white', border: 'none', borderRadius: '6px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
+                              >
+                                승인
+                              </button>
+                              <button 
+                                onClick={() => handleRejectApp(app.applicationId)}
+                                style={{ flex: 1, height: '32px', backgroundColor: '#EF4444', color: 'white', border: 'none', borderRadius: '6px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
+                              >
+                                거절
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 관리 액션 */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderTop: '1px solid #E5E7EB', paddingTop: '16px', marginTop: 'auto' }}>
+                    {preJoinStudy.status === 'RECRUITING' && (
+                      <button 
+                        onClick={handleCompleteRecruitment}
+                        style={{ width: '100%', height: '40px', backgroundColor: '#3B82F6', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '700', fontSize: '14px', cursor: 'pointer' }}
+                      >
+                        모집 종료 및 스터디 시작
+                      </button>
+                    )}
+                    <button 
+                      onClick={handleDeleteStudy}
+                      style={{ width: '100%', height: '40px', backgroundColor: 'transparent', color: '#EF4444', border: '1px solid #EF4444', borderRadius: '8px', fontWeight: '700', fontSize: '14px', cursor: 'pointer', boxSizing: 'border-box' }}
+                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#FEE2E2'}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                    >
+                      스터디 강제 해체
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-          )}
+          </div>
+        )}
 
           {/* 프리조인 "정보" 모달 */}
           {showPreJoinInfo && preJoinStudy && (
@@ -1205,9 +1417,28 @@ export default function GroupStudy() {
             </div>
 
             <div style={{ display: 'flex', height: '56px' }}>
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F3F4F6', color: '#6B7280', fontWeight: '600', cursor: 'pointer' }}>
+              <label
+                htmlFor="create-study-image"
+                style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F3F4F6', color: '#6B7280', fontWeight: '600', cursor: 'pointer', margin: 0 }}
+              >
                 이미지 불러오기
-              </div>
+                <input
+                  type="file"
+                  id="create-study-image"
+                  accept="image/*"
+                  onChange={(e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                      setCreateForm(prev => ({
+                        ...prev,
+                        imageFile: file,
+                        thumbnail: URL.createObjectURL(file)
+                      }));
+                    }
+                  }}
+                  style={{ display: 'none' }}
+                />
+              </label>
               <div
                 style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#3B82F6', color: 'white', fontWeight: '600', cursor: 'pointer' }}
                 onClick={() => setShowImageSelectModal(false)}
