@@ -44,7 +44,7 @@ public class User {
     private Boolean isSubscribed = false; // 구독 여부
 
     @Builder.Default
-    @Column(name = "role", nullable = false, length = 20)
+    @Column(name = "role", length = 20)
     private String role = "USER"; // USER, ADMIN
 
     @Column(name = "suspension_end_date")
