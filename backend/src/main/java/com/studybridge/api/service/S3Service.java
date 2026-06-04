@@ -37,7 +37,16 @@ public class S3Service {
             throw new IllegalArgumentException("PDF 파일만 업로드 가능합니다.");
         }
 
-        String fileName = "materials/user_" + userId + "/" + UUID.randomUUID() + ".pdf";
+        String originalName = file.getOriginalFilename();
+        if (originalName != null) {
+            originalName = new java.io.File(originalName).getName();
+        }
+        if (originalName == null || originalName.isBlank()) {
+            originalName = "document.pdf";
+        }
+        originalName = originalName.replaceAll("[^a-zA-Z0-9.\\-_\\s가-힣ㄱ-ㅎㅏ-ㅣ]", "_");
+
+        String fileName = "materials/user_" + userId + "/" + UUID.randomUUID() + "/" + originalName;
 
         try {
             PutObjectRequest putObjectRequest = PutObjectRequest.builder()

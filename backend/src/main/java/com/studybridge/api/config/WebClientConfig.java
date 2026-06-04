@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
 @Configuration
 public class WebClientConfig {
 
-    @Value("${fastapi.base-url:http://localhost:8000}")
+    @Value("${ai.server.fastapi.base-url:http://localhost:8000}")
     private String fastApiBaseUrl;
 
     // 멀티 에이전트 병렬 처리: 최대 30초 허용 (FastAPI 내부 타임아웃 22초 + 여유 8초)
