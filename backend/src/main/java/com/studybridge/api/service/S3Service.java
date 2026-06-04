@@ -37,7 +37,16 @@ public class S3Service {
             throw new IllegalArgumentException("PDF 파일만 업로드 가능합니다.");
         }
 
-        String fileName = "materials/user_" + userId + "/" + UUID.randomUUID() + ".pdf";
+        String originalName = file.getOriginalFilename();
+        if (originalName != null) {
+            originalName = new java.io.File(originalName).getName();
+        }
+        if (originalName == null || originalName.isBlank()) {
+            originalName = "document.pdf";
+        }
+        originalName = originalName.replaceAll("[^a-zA-Z0-9.\\-_\\s가-힣ㄱ-ㅎㅏ-ㅣ]", "_");
+
+        String fileName = "materials/user_" + userId + "/" + UUID.randomUUID() + "/" + originalName;
 
         try {
             PutObjectRequest putObjectRequest = PutObjectRequest.builder()
@@ -95,6 +104,10 @@ public class S3Service {
     }
 
     public String getPresignedUrl(String s3Key) {
+        return getPresignedUrl(s3Key, null);
+    }
+
+    public String getPresignedUrl(String s3Key, String originalFileName) {
         if (s3Key == null || s3Key.isEmpty()) {
             return null;
         }
@@ -102,7 +115,14 @@ public class S3Service {
         try {
             GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
                     .signatureDuration(Duration.ofHours(1))
-                    .getObjectRequest(builder -> builder.bucket(bucket).key(s3Key))
+                    .getObjectRequest(builder -> {
+                        builder.bucket(bucket).key(s3Key);
+                        if (originalFileName != null && !originalFileName.isEmpty()) {
+                            String encoded = java.net.URLEncoder.encode(originalFileName, java.nio.charset.StandardCharsets.UTF_8)
+                                    .replaceAll("\\+", "%20");
+                            builder.responseContentDisposition("inline; filename=\"" + encoded + "\"; filename*=UTF-8''" + encoded);
+                        }
+                    })
                     .build();
 
             PresignedGetObjectRequest presignedRequest = s3Presigner.presignGetObject(presignRequest);

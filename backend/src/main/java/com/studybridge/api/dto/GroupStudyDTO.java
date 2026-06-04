@@ -25,16 +25,15 @@ public class GroupStudyDTO {
         @NotBlank(message = "그룹 제목은 필수입니다.")
         private String title;
 
-        @NotBlank(message = "목표는 필수입니다.")
-        private String goal;
-
         @NotBlank(message = "세부 사항은 필수입니다.")
         private String description;
 
         @NotNull(message = "시작 기간은 필수입니다.")
+        @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE)
         private LocalDate startDate;
 
         @NotNull(message = "종료 기간은 필수입니다.")
+        @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE)
         private LocalDate endDate;
 
         @NotNull(message = "정원은 필수입니다.")
@@ -44,6 +43,8 @@ public class GroupStudyDTO {
 
         @NotNull(message = "공개 방 여부는 필수입니다.")
         private Boolean isPublic;
+
+        private String hashtags;
     }
 
     @Data
@@ -62,7 +63,6 @@ public class GroupStudyDTO {
     public static class Response {
         private Long id;
         private String title;
-        private String goal;
         private String description;
         private LocalDate startDate;
         private LocalDate endDate;
@@ -73,6 +73,8 @@ public class GroupStudyDTO {
         private String leaderName;
         private GroupStudyStatus status;
         private LocalDateTime createdAt;
+        private String hashtags;
+        private String coverImageUrl;
     }
 
     @Data
@@ -87,6 +89,9 @@ public class GroupStudyDTO {
         private GroupStudyRole role;
         private Integer points;
         private LocalDateTime joinedAt;
+        private LocalDateTime recentAttendanceTime;
+        private Long recentStudyTimeSeconds;
+        private Long cumulativeStudyTimeSeconds;
     }
 
     @Data
@@ -103,4 +108,23 @@ public class GroupStudyDTO {
         private GroupStudyJoinStatus status;
         private LocalDateTime createdAt;
     }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class UpdateRequest {
+        private String title;
+        private String description;
+        @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE)
+        private LocalDate startDate;
+        @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE)
+        private LocalDate endDate;
+        @Min(value = 2, message = "최소 인원은 2명입니다.")
+        @Max(value = 10, message = "최대 정원은 10명입니다. (화상통화 안정 성능 보장)")
+        private Integer capacity;
+        private Boolean isPublic;
+        private String hashtags;
+    }
 }
+
