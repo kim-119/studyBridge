@@ -12,3 +12,8 @@ env/
 .vscode/
 
 *.log
+
+# secrets
+*.pem
+.env*
+!.env.example
