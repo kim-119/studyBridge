@@ -34,4 +34,25 @@ public class AgentRoomDTO {
         private List<AgentDTO.Response> agents;
         private String createdAt;
     }
+
+    @Getter
+    @Setter
+    public static class ChatRequest {
+        @NotBlank(message = "질문 내용은 필수입니다.")
+        private String question;
+        private String knowledgeLevel;
+        private String personality;
+    }
+
+    @Getter
+    @Setter
+    @Builder
+    public static class ChatResponse {
+        private String answer;
+        private String status;
+        private String knowledgeLevel;
+        private String personality;
+        private List<String> processLogs;
+        private String validationJobId;
+    }
 }

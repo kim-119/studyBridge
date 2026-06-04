@@ -21,6 +21,9 @@ public class WebClientConfig {
     @Value("${ai.server.fastapi.base-url:http://localhost:8000}")
     private String fastApiBaseUrl;
 
+    @Value("${ai.server.fastapi.api-key:}")
+    private String fastApiKey;
+
     // 멀티 에이전트 병렬 처리: 최대 30초 허용 (FastAPI 내부 타임아웃 22초 + 여유 8초)
     private static final int CONNECT_TIMEOUT_MS = 5000;
     private static final int READ_TIMEOUT_SECONDS = 35;
@@ -38,6 +41,7 @@ public class WebClientConfig {
         return builder
                 .baseUrl(fastApiBaseUrl)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + fastApiKey)
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .build();
     }

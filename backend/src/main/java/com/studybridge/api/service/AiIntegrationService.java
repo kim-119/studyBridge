@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.springframework.web.reactive.function.client.WebClient;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -27,6 +28,7 @@ public class AiIntegrationService {
         private final RoadmapRepository roadmapRepository;
         private final RoadmapTaskRepository roadmapTaskRepository;
         private final WebClient fastApiWebClient;
+        private final ObjectMapper objectMapper;
 
         private Material getMaterialSafely(Long userId, Long materialId) {
                 Material material = materialRepository.findById(materialId)
@@ -103,23 +105,36 @@ public class AiIntegrationService {
                         throw new IllegalArgumentException("학습 일지 또는 추출된 텍스트 내용이 비어 있어 요약을 생성할 수 없습니다.");
                 }
 
-                Map<String, Object> requestBody = Map.of("text", textToAnalyze);
+                Map<String, Object> requestBody = Map.of(
+                                "material_id", material.getMaterialId(),
+                                "document_title", material.getTitle() != null ? material.getTitle() : material.getOriginalFileName(),
+                                "text", textToAnalyze,
+                                "personality", "간결_요약형",
+                                "agent_name", "요약봇"
+                );
                 Map response;
                 try {
-                        response = fastApiWebClient.post().uri("/api/ai/summary")
+                        response = fastApiWebClient.post().uri("/api/ai/material/summary")
                                         .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block();
                 } catch (Exception e) {
                         throw new RuntimeException("AI 서버에서 요약 생성 중 오류가 발생했습니다: " + e.getMessage());
                 }
 
+                String coreContentsJson = "[]";
+                if (response != null && response.containsKey("key_points")) {
+                        try {
+                                coreContentsJson = objectMapper.writeValueAsString(response.get("key_points"));
+                        } catch (Exception ex) {
+                                coreContentsJson = response.get("key_points").toString();
+                        }
+                }
+
                 MaterialSummary summary = MaterialSummary.builder()
                                 .material(material)
-                                .overview(response != null && response.containsKey("overview")
-                                                ? response.get("overview").toString()
+                                .overview(response != null && response.containsKey("summary")
+                                                ? response.get("summary").toString()
                                                 : "요약 생성 실패")
-                                .coreContents(response != null && response.containsKey("coreContents")
-                                                ? response.get("coreContents").toString()
-                                                : "[]")
+                                .coreContents(coreContentsJson)
                                 .build();
                 summary = summaryRepository.save(summary);
 
@@ -151,20 +166,12 @@ public class AiIntegrationService {
                         throw new IllegalArgumentException("학습 내용 또는 추출된 텍스트가 없어 피드백을 생성할 수 없습니다.");
                 }
 
-                Map<String, Object> requestBody = Map.of("content", textToAnalyze);
-                Map response;
-                try {
-                        response = fastApiWebClient.post().uri("/api/ai/feedback")
-                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block();
-                } catch (Exception e) {
-                        throw new RuntimeException("AI 서버에서 피드백 생성 중 오류가 발생했습니다: " + e.getMessage());
-                }
+                // FastAPI에서 피드백 기능이 개발 완료될 때까지 자체 로컬 Fallback 처리
+                String localFeedbackData = "{\"overall\":\"학습 내용에 대한 분석이 완료되었습니다. 제공된 자료를 바탕으로 성실히 보완해 가세요.\",\"tips\":[\"핵심 개념 위주로 오답 노트를 작성해보세요.\",\"에이전트에게 꼬리 질문을 던지며 이해도를 심화해보세요.\"]}";
 
                 MaterialFeedback feedback = MaterialFeedback.builder()
                                 .material(material)
-                                .feedbackData(response != null && response.containsKey("feedbackData")
-                                                ? response.get("feedbackData").toString()
-                                                : "피드백 생성 실패")
+                                .feedbackData(localFeedbackData)
                                 .build();
                 feedback = feedbackRepository.save(feedback);
 
@@ -204,14 +211,17 @@ public class AiIntegrationService {
                 }
 
                 Map<String, Object> requestBody = Map.of(
-                                "text", textToAnalyze,
-                                "difficulty", request.getDifficulty(),
-                                "questionCount", request.getQuestionCount());
+                                "material_id", material.getMaterialId(),
+                                "document_title", material.getTitle() != null ? material.getTitle() : material.getOriginalFileName(),
+                                "context", textToAnalyze,
+                                "num_questions", request.getQuestionCount(),
+                                "knowledge_level", "학사"
+                );
 
                 Map response;
                 try {
                         response = fastApiWebClient.post()
-                                        .uri("/api/ai/quiz")
+                                        .uri("/api/ai/material/quiz")
                                         .bodyValue(requestBody)
                                         .retrieve()
                                         .bodyToMono(Map.class)
@@ -221,8 +231,12 @@ public class AiIntegrationService {
                 }
 
                 String generatedQuizJson = "[]";
-                if (response != null && response.containsKey("quizData")) {
-                        generatedQuizJson = response.get("quizData").toString();
+                if (response != null && response.containsKey("quiz")) {
+                        try {
+                                generatedQuizJson = objectMapper.writeValueAsString(response.get("quiz"));
+                        } catch (Exception ex) {
+                                generatedQuizJson = response.get("quiz").toString();
+                        }
                 }
 
                 MaterialQuiz quiz = MaterialQuiz.builder()
@@ -250,25 +264,18 @@ public class AiIntegrationService {
         public QuestionDTO.Response askQuestion(Long userId, Long materialId, QuestionDTO.Request request) {
                 Material material = getMaterialSafely(userId, materialId);
 
-                String textToAnalyze = getTextToAnalyze(material);
-                if (textToAnalyze == null || textToAnalyze.isBlank()) {
-                        QuestionDTO.Response noTextResponse = QuestionDTO.Response.builder()
-                                        .questionId(null)
-                                        .materialId(materialId)
-                                        .userQuestion(request.getUserQuestion())
-                                        .aiAnswer("자료에서 추출된 텍스트가 없습니다. PDF 텍스트 추출 후 다시 시도해주세요.")
-                                        .build();
-                        return noTextResponse;
-                }
-
                 Map<String, Object> requestBody = Map.of(
-                                "text", textToAnalyze,
-                                "question", request.getUserQuestion());
+                                "material_id", material.getMaterialId(),
+                                "question", request.getUserQuestion(),
+                                "knowledge_level", "학사",
+                                "personality", "친절_설명형",
+                                "agent_name", "자료봇"
+                );
 
                 Map response;
                 try {
                         response = fastApiWebClient.post()
-                                        .uri("/api/ai/question")
+                                        .uri("/api/ai/material/qa")
                                         .bodyValue(requestBody)
                                         .retrieve()
                                         .bodyToMono(Map.class)
@@ -338,20 +345,16 @@ public class AiIntegrationService {
                         throw new IllegalArgumentException("자료의 텍스트가 비어 있어 로드맵을 생성할 수 없습니다.");
                 }
 
-                String userGoal = "학습 목표 달성";
-                if (material.getTitle() != null && !material.getTitle().isBlank()) {
-                        userGoal = material.getTitle() + " 학습 및 핵심 목표 달성";
-                }
-
                 Map<String, Object> requestBody = Map.of(
-                        "material_id", material.getMaterialId(),
-                        "pdf_text", textToAnalyze,
-                        "user_goal", userGoal
+                                "material_id", material.getMaterialId(),
+                                "document_title", material.getTitle() != null ? material.getTitle() : material.getOriginalFileName(),
+                                "context", textToAnalyze,
+                                "knowledge_level", "학사"
                 );
 
                 Map response;
                 try {
-                        response = fastApiWebClient.post().uri("/api/ai/roadmap")
+                        response = fastApiWebClient.post().uri("/api/ai/material/roadmap")
                                         .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block();
                 } catch (Exception e) {
                         throw new RuntimeException("AI 서버에서 로드맵 생성 중 오류가 발생했습니다: " + e.getMessage());

@@ -41,4 +41,13 @@ public class AgentChatRoomController {
         agentChatRoomService.deleteRoom(userDetails.getId(), roomId);
         return ResponseEntity.noContent().build();
     }
+
+    // 개인 에이전트 채팅방 대화
+    @PostMapping("/{roomId}/chat")
+    public ResponseEntity<AgentRoomDTO.ChatResponse> chatWithAgent(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long roomId,
+            @Valid @RequestBody AgentRoomDTO.ChatRequest request) {
+        return ResponseEntity.ok(agentChatRoomService.chatWithAgent(userDetails.getId(), roomId, request));
+    }
 }

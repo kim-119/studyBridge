@@ -4,15 +4,19 @@ import com.studybridge.api.dto.AgentDTO;
 import com.studybridge.api.dto.AgentRoomDTO;
 import com.studybridge.api.entity.Agent;
 import com.studybridge.api.entity.AgentChatRoom;
+import com.studybridge.api.entity.ChatMessage;
 import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.AgentChatRoomRepository;
 import com.studybridge.api.repository.AgentRepository;
+import com.studybridge.api.repository.ChatMessageRepository;
 import com.studybridge.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -23,6 +27,8 @@ public class AgentChatRoomService {
         private final AgentChatRoomRepository agentChatRoomRepository;
         private final AgentRepository agentRepository;
         private final UserRepository userRepository;
+        private final ChatMessageRepository chatMessageRepository;
+        private final WebClient fastApiWebClient;
 
         // 멀티 에이전트 채팅방 생성
         @Transactional
@@ -74,6 +80,85 @@ public class AgentChatRoomService {
                 }
 
                 agentChatRoomRepository.delete(room);
+        }
+
+        // 개인 에이전트 채팅방 대화 및 DB 저장
+        @Transactional
+        public AgentRoomDTO.ChatResponse chatWithAgent(Long userId, Long roomId, AgentRoomDTO.ChatRequest request) {
+                AgentChatRoom room = agentChatRoomRepository.findById(roomId)
+                                .orElseThrow(() -> new RuntimeException("채팅방을 찾을 수 없습니다."));
+
+                if (!room.getUser().getId().equals(userId)) {
+                        throw new SecurityException("해당 채팅방에 접근할 권한이 없습니다.");
+                }
+
+                // 에이전트 조회 (기본적으로 채팅방의 첫 번째 에이전트와 대화)
+                Agent agent = room.getAgents().stream()
+                                .findFirst()
+                                .orElseThrow(() -> new RuntimeException("채팅방에 생성된 에이전트가 존재하지 않습니다."));
+
+                // 1. 유저 질문 저장
+                ChatMessage userMessage = ChatMessage.builder()
+                                .agentChatRoom(room)
+                                .content(request.getQuestion())
+                                .sender("USER")
+                                .build();
+                chatMessageRepository.save(userMessage);
+
+                // 2. FastAPI 호출 준비
+                String knowledgeLevel = (request.getKnowledgeLevel() != null && !request.getKnowledgeLevel().isBlank())
+                                ? request.getKnowledgeLevel()
+                                : "학사";
+                String personality = (request.getPersonality() != null && !request.getPersonality().isBlank())
+                                ? request.getPersonality()
+                                : (agent.getTone() != null ? agent.getTone() : "전문적");
+
+                Map<String, Object> apiRequest = Map.of(
+                                "question", request.getQuestion(),
+                                "agent_name", agent.getName(),
+                                "knowledge_level", knowledgeLevel,
+                                "personality", personality,
+                                "enable_tiki_taka", false,
+                                "use_gpt_validation", false
+                );
+
+                Map response;
+                try {
+                        response = fastApiWebClient.post()
+                                        .uri("/api/ai/chat")
+                                        .bodyValue(apiRequest)
+                                        .retrieve()
+                                        .bodyToMono(Map.class)
+                                        .block();
+                } catch (Exception e) {
+                        throw new RuntimeException("AI 서버와 통신 중 오류가 발생했습니다: " + e.getMessage());
+                }
+
+                String answer = (response != null && response.get("answer") != null)
+                                ? response.get("answer").toString()
+                                : "답변을 가져오지 못했습니다.";
+
+                // 3. AI 답변 저장
+                ChatMessage aiMessage = ChatMessage.builder()
+                                .agentChatRoom(room)
+                                .agent(agent)
+                                .content(answer)
+                                .sender("AI")
+                                .build();
+                chatMessageRepository.save(aiMessage);
+
+                List<String> processLogs = (response != null && response.get("process_logs") instanceof List)
+                                ? (List<String>) response.get("process_logs")
+                                : List.of();
+
+                return AgentRoomDTO.ChatResponse.builder()
+                                .answer(answer)
+                                .status((response != null && response.get("status") != null) ? response.get("status").toString() : "complete")
+                                .knowledgeLevel(knowledgeLevel)
+                                .personality(personality)
+                                .processLogs(processLogs)
+                                .validationJobId((response != null && response.get("validation_job_id") != null) ? response.get("validation_job_id").toString() : null)
+                                .build();
         }
 
         private AgentRoomDTO.Response convertToRoomResponse(AgentChatRoom room, List<Agent> agents) {

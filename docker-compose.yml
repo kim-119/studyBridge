@@ -31,6 +31,8 @@ services:
       AWS_S3_BUCKET: ${AWS_S3_BUCKET}
       FASTAPI_BASE_URL: http://fastapi:8000
       FASTAPI_EXTRACTION_URL: http://fastapi:8000/api/extract
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
 
     depends_on:
       - db
@@ -50,6 +52,17 @@ services:
     environment:
       PYTHONUNBUFFERED: 1
       TZ: Asia/Seoul
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-capstone}
+      DB_USER: ${DB_USER:-capstone}
+      DB_PASSWORD: ${DB_PASSWORD:-1234}
+      AI_DATABASE_URL: postgresql://${DB_USER:-capstone}:${DB_PASSWORD:-1234}@${DB_HOST:-db}:${DB_PORT:-5432}/${DB_NAME:-capstone}
+      VECTOR_DATABASE_URL: postgresql://${DB_USER:-capstone}:${DB_PASSWORD:-1234}@${DB_HOST:-db}:${DB_PORT:-5432}/${DB_NAME:-capstone}
+      DATABASE_URL: postgresql://${DB_USER:-capstone}:${DB_PASSWORD:-1234}@${DB_HOST:-db}:${DB_PORT:-5432}/${DB_NAME:-capstone}
+      AI_DB_SCHEMA: ${AI_DB_SCHEMA:-ai}
+      RAG_DB_SCHEMA: ${RAG_DB_SCHEMA:-rag}
+      REDIS_URL: redis://redis:6379/0
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   db:
