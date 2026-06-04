@@ -542,6 +542,77 @@ export default function ArchiveDetail() {
             </div>
         );
       }
+      case 'roadmap': {
+        const allTasks = roadmapSteps.flatMap(s => s.tasks || []);
+        const doneCount = allTasks.filter(t => t.isCompleted).length;
+        const totalCount = allTasks.length;
+        const progressPercent = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+
+        return (
+            <div className="animate-fade-in" style={{ paddingBottom: '32px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <h2 style={{ margin: 0, color: 'var(--color-text-main)' }}>주차별 학습 로드맵</h2>
+              </div>
+              <p style={{ color: 'var(--color-text-muted)', marginBottom: '24px' }}>
+                업로드한 강의계획서를 기반으로 AI가 설계한 주차별 학습계획 로드맵입니다.
+              </p>
+
+              <div className="glass-panel" style={{ padding: '20px', marginBottom: '32px', borderLeft: '4px solid var(--color-primary)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <span style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)' }}>전체 학습 진행률</span>
+                  <span style={{ fontWeight: 'bold', fontSize: '18px', color: 'var(--color-primary)' }}>{progressPercent}% <span style={{ fontSize: '13px', color: 'var(--color-text-muted)', fontWeight: 'normal' }}>({doneCount}/{totalCount})</span></span>
+                </div>
+                <div style={{ width: '100%', height: '10px', backgroundColor: '#E5E7EB', borderRadius: '5px', overflow: 'hidden' }}>
+                  <div style={{ width: `${progressPercent}%`, height: '100%', backgroundColor: 'var(--color-primary)', transition: 'width 0.6s cubic-bezier(0.4, 0, 0.2, 1)' }}></div>
+                </div>
+              </div>
+
+              {roadmapSteps.length === 0 ? (
+                  <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>로드맵 정보가 없습니다. 문서가 분석 중이거나 지원되지 않는 형식입니다.</p>
+              ) : (
+                  <div className="roadmap-timeline">
+                    {roadmapSteps.map((step, idx) => {
+                      const isStepDone = step.tasks && step.tasks.length > 0 && step.tasks.every(t => t.isCompleted);
+                      return (
+                          <div key={step.stepId} className="timeline-item" style={{ opacity: isStepDone ? 0.6 : 1, transition: 'opacity 0.3s' }}>
+                            <div className="timeline-left">
+                              <div className="timeline-circle" style={{ backgroundColor: isStepDone ? '#9CA3AF' : getNodeColor(step.stepOrder) }}>{step.stepOrder}</div>
+                              {idx < roadmapSteps.length - 1 && <div className="timeline-line"></div>}
+                            </div>
+                            <div className="timeline-card glass-panel" style={{ borderLeftColor: isStepDone ? '#9CA3AF' : getNodeColor(step.stepOrder), padding: '24px', backgroundColor: isStepDone ? '#F3F4F6' : 'white', transition: 'all 0.3s' }}>
+                              <h4 style={{ margin: '0 0 12px', fontSize: '16px', textDecoration: isStepDone ? 'line-through' : 'none', color: isStepDone ? 'var(--color-text-muted)' : 'var(--color-text-main)', fontWeight: 'bold' }}>{step.title}</h4>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '14px', marginBottom: '16px' }}>
+                                <div><span style={{ fontWeight: 'bold', color: 'var(--color-text-muted)', marginRight: '8px' }}>주제 개요:</span> <span style={{ textDecoration: isStepDone ? 'line-through' : 'none' }}>{step.description}</span></div>
+                              </div>
+
+                              {/* 하위 과제 체크리스트 */}
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderTop: '1px solid var(--color-border)', paddingTop: '12px' }}>
+                                {step.tasks && step.tasks.map((task) => (
+                                    <div
+                                        key={task.taskId}
+                                        onClick={() => handleToggleTask(task.taskId)}
+                                        style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '4px 0' }}
+                                    >
+                                      {task.isCompleted ? (
+                                          <CheckCircle2 size={18} color="var(--color-primary)" />
+                                      ) : (
+                                          <Circle size={18} color="var(--color-text-muted)" />
+                                      )}
+                                      <span style={{ fontSize: '13.5px', textDecoration: task.isCompleted ? 'line-through' : 'none', color: task.isCompleted ? 'var(--color-text-muted)' : 'var(--color-text-main)' }}>
+                                        {task.content}
+                                      </span>
+                                    </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                      );
+                    })}
+                  </div>
+              )}
+            </div>
+        );
+      }
       case 'memo':
         return (
             <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', paddingBottom: '24px' }}>
@@ -715,6 +786,7 @@ export default function ArchiveDetail() {
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button className={`archive-action-btn ${activePdfTool === 'summary' ? 'active' : ''}`} onClick={() => setActivePdfTool('summary')}><AlignLeft size={16} /> 요약</button>
                   <button className={`archive-action-btn ${activePdfTool === 'quiz' ? 'active' : ''}`} onClick={() => setActivePdfTool('quiz')}><HelpCircle size={16} /> 퀴즈/문제 생성</button>
+                  <button className={`archive-action-btn ${activePdfTool === 'roadmap' ? 'active' : ''}`} onClick={() => setActivePdfTool('roadmap')}><Map size={16} /> 주차별 로드맵</button>
                   <button className={`archive-action-btn ${activePdfTool === 'memo' ? 'active' : ''}`} onClick={() => setActivePdfTool('memo')}><Edit3 size={16} /> 메모</button>
                   <button className={`archive-action-btn ${activePdfTool === 'chat' ? 'active' : ''}`} onClick={() => setActivePdfTool('chat')}><MessageSquare size={16} /> AI 질문</button>
                 </div>
