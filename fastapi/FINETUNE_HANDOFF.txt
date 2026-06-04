@@ -1,0 +1,160 @@
+StudyBridge FastAPI AI 서버 — Qwen2.5 14B + Ollama 엔진 인수인계
+작성 대상: AI 학습/추론 담당자
+작성일: 2026-06
+──────────────────────────────────────────────────────────────────────────────
+
+0. 핵심 전략 요약
+─────────────────
+- 주력 모델: Qwen2.5 14B 양자화 모델
+- 주력 엔진: Ollama (vLLM 사용 안 함)
+- 파인튜닝: optional 향미제 수준 (adapter 실험). 주력이 아님.
+- 실제 시연 품질: 14B Ollama 추론 + prompt/controller + RAG/Tavily/Wikipedia/GPT 조합
+- Spring Boot → FastAPI → Ollama 호출 구조. React는 Spring만 호출.
+- Spring Boot, React 수정 없음. FastAPI 계약 API 필드명 그대로 유지.
+
+
+1. 서버컴 환경
+──────────────
+GPU:   NVIDIA GeForce RTX 5070 Ti
+VRAM:  약 16GB
+엔진:  Ollama
+모델:  Qwen2.5 14B 양자화 (q4_K_M 권장)
+
+실행 확인 순서:
+  nvidia-smi
+  ollama --version
+  ollama list | grep qwen
+  ollama run qwen2.5:14b "테스트입니다."
+
+
+2. 14B 양자화 현실
+──────────────────
+14B full precision (BF16/FP16):
+  메모리: 약 28~30GB → 16GB VRAM에서 OOM 또는 매우 느림
+  대책: 반드시 양자화 모델 사용
+
+권장 양자화 순서:
+  1. q4_K_M  (약 8~9GB 모델, VRAM 10~11GB) → 가장 빠름, 시연 환경 우선
+  2. q5_K_M  (약 10~11GB 모델)             → 균형형, VRAM 여유 있으면
+  3. q6_K    (약 12~13GB 모델)             → 고품질, 테스트 필요
+
+양자화 가이드: fastapi/training/ollama/quantize_qwen25_14b_guide.txt
+Ollama 명령어: fastapi/training/ollama/ollama_run_commands.txt
+
+
+3. 모델 설정 파일 위치
+───────────────────────
+.env 주요 변수:
+  OLLAMA_BASE_URL=http://localhost:11434
+  OLLAMA_MODEL=qwen2.5:14b          # ollama list로 실제 모델명 확인 후 변경
+  OLLAMA_TIMEOUT_SECONDS=45
+  OLLAMA_NUM_PREDICT=512
+  OLLAMA_CONTEXT_LENGTH=4096
+  FINETUNED_MODEL_ENABLED=false      # adapter 실험 완료 후에만 true
+
+Ollama Modelfile 예시: fastapi/training/ollama/Modelfile.qwen25_14b_studybridge.example
+  커스텀 모델 생성: ollama create studybridge-qwen25-14b -f Modelfile...
+
+
+4. LLM 호출 구조
+────────────────
+호출 계층:
+  FastAPI 라우터
+    → llm_engine_router.call_primary_llm()   [주력 진입점]
+      → ollama_client.ask_ollama()           [Ollama qwen2.5:14b 호출]
+      → openai_client.chat_sync()            [fallback/검증용 GPT]
+
+코드 위치:
+  fastapi/app/services/llm_engine_router.py  (메인 엔진 라우터)
+  fastapi/app/services/ollama_client.py      (Ollama 호출)
+  fastapi/app/services/openai_client.py      (GPT fallback)
+
+vLLM: 사용 안 함. 코드에 포함하지 않았음.
+
+
+5. 응답 속도 조정
+─────────────────
+느릴 때 조정 순서:
+  1. OLLAMA_NUM_PREDICT=256 (응답 더 짧게)
+  2. OLLAMA_CONTEXT_LENGTH=2048 (context 줄이기)
+  3. MAX_ROUNDS=1 (라운드 1 고정)
+  4. DEFAULT_MAX_AGENTS=2 (에이전트 2명 제한)
+  5. q4_K_M 양자화 모델 사용 (가장 중요)
+
+3명 에이전트 × 2라운드 + showFinalSynthesis = Ollama 7회 호출 → 느림
+기본 설정: 3명 × 1라운드 (config.py DEFAULT_ROUNDS=1, MAX_ROUNDS=2)
+
+
+6. QLoRA optional 실험
+───────────────────────
+역할: 향미제 수준 보조 실험. 주력 아님.
+목적: StudyBridge 성격/지식수준/티키타카 응답 패턴을 adapter에 입히는 실험.
+하지 않는 것: PDF 전공지식 암기, 최신정보 암기, 개인정보 학습.
+
+실행 순서:
+  1. 서버컴 CUDA/bitsandbytes 호환 확인
+  2. pip install -r requirements-finetune.txt
+  3. python training/scripts/prepare_sft_dataset.py --smoke
+  4. python training/scripts/validate_sft_dataset.py --input data/sft_train.jsonl
+  5. python training/scripts/train_lora_adapter.py --config ... --smoke-test
+  6. (실제 학습) python training/scripts/train_lora_adapter.py --config ...
+  7. python training/scripts/compare_base_vs_finetuned.py --base qwen2.5:14b --finetuned ...
+  8. base가 낫거나 차이 없으면 adapter 사용 안 함
+
+config: fastapi/training/configs/qwen25_14b_qlora_optional.yaml
+주의: 학습 완료 ≠ 품질 개선 보장. 반드시 비교 후 판단.
+
+
+7. 알려진 위험 및 대응
+───────────────────────
+위험 1: 14B full precision OOM
+  대응: q4_K_M 양자화 모델 사용. OLLAMA_CONTEXT_LENGTH=2048.
+
+위험 2: Ollama 모델명이 환경마다 다름
+  대응: 서버컴에서 `ollama list`로 실제 모델명 확인 후 .env 수정.
+
+위험 3: num_ctx 크게 잡으면 메모리 증가
+  대응: 기본 4096. 느리면 2048로.
+
+위험 4: 3명 × 2라운드 응답 느림
+  대응: MAX_ROUNDS=1, DEFAULT_MAX_AGENTS=2 또는 3.
+
+위험 5: GPT/Tavily/Wikipedia 매번 다 호출하면 느림
+  대응: query_classifier 라우팅 확인. 필요한 경우만 호출.
+
+위험 6: QLoRA bitsandbytes/CUDA 호환 문제
+  대응: smoke-test 먼저 실행. 실패해도 Ollama 기본 추론으로 간다.
+
+위험 7: adapter 효과 과장
+  대응: compare_base_vs_finetuned.py 비교 결과로만 판단. 추측 금지.
+
+
+8. Spring 계약 API (절대 깨지면 안 됨)
+────────────────────────────────────
+POST /api/ai/predict/study-time
+  request:  { userId, weeklyStudySeconds }
+  response: { predictedStudySeconds }
+
+POST /api/ai/quiz/generate
+  request:  { materialId, s3Key, fileName }
+  response: { quizTitle, questions[{question, options, correctAnswer, timeLimitSeconds}] }
+
+POST /api/ai/multi-chat
+  request:  { message, mode, rounds, showFinalSynthesis, targetAgentId, previousAnswers, agents }
+  response: { mode, answers[{agentName, answer}] }
+  주의: FastAPI는 동기 JSON만 반환. SSE는 Spring Boot가 처리.
+
+GET /api/health
+  response: { status, service, openaiConfigured, ollamaConfigured, tavilyConfigured, awsConfigured }
+
+
+9. 실제 실행 상태 (이 문서 작성 시점)
+───────────────────────────────────────
+- 양자화 실행: 서버컴에서 실행 필요 (이 문서에서는 실행하지 않음)
+- Ollama 실연결 테스트: 서버컴에서 실행 필요
+- QLoRA 학습: 서버컴에서 CUDA 확인 후 실행 (선택 사항)
+- Spring 실연동: 서버컴 FastAPI 기동 후 Spring 팀과 함께 확인
+- 코드 수정 사항: ollama_client.py, llm_engine_router.py, finetune_config.py 신규/수정
+
+──────────────────────────────────────────────────────────────────────────────
+이 파일은 .md가 아닌 .txt로 작성됨. 인수인계용.

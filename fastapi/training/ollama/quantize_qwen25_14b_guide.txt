@@ -1,0 +1,122 @@
+Qwen2.5 14B 양자화 가이드 — 서버컴 전용
+주의: 이 파일의 명령어는 실제 서버컴에서만 실행한다.
+──────────────────────────────────────────────────────────────────────────────
+
+0. 배경
+───────
+- Qwen2.5 14B 원본 (BF16/FP16) 모델은 약 28~30GB 메모리 필요
+- 16GB VRAM 서버컴에서 full precision 추론은 OOM 또는 매우 느림
+- 해결책: 양자화 (GGUF + q4_K_M 또는 q5_K_M)
+- 양자화는 추론 속도/메모리를 줄이는 전략이지, 학습(LoRA)이 아님
+
+양자화 모델 크기 참고 (14B 기준, 실제 크기는 모델마다 다름):
+  q4_K_M  ≈ 8~9GB   VRAM 사용: 약 10~11GB  → 16GB에서 권장
+  q5_K_M  ≈ 10~11GB VRAM 사용: 약 12~13GB  → 여유 있으면 선택
+  q6_K    ≈ 12~13GB VRAM 사용: 약 14~15GB  → 간당간당, 테스트 필요
+  q8_0    ≈ 15~16GB VRAM 사용: 약 16GB+    → OOM 가능, 비권장
+
+──────────────────────────────────────────────────────────────────────────────
+1단계: 현재 모델 형식 확인
+──────────────────────────────────────────────────────────────────────────────
+
+A. Ollama에 이미 있는 경우 (가장 쉬운 경우)
+  ollama list
+  # qwen2.5:14b 계열 모델이 보이면 바로 사용 가능
+
+B. Hugging Face safetensors 형식인 경우 (변환 필요)
+  ls /경로/Qwen2.5-14B-Instruct/
+  # config.json, model.safetensors.index.json 등이 있으면 HF 형식
+
+C. GGUF 파일이 있는 경우 (Ollama에 직접 로드 가능)
+  ls /경로/ | grep .gguf
+  # *.gguf 파일이 있으면 아래 2C 단계로
+
+──────────────────────────────────────────────────────────────────────────────
+2단계: 모델 형식별 처리
+──────────────────────────────────────────────────────────────────────────────
+
+2A. Ollama에 이미 있으면 → 바로 사용
+  ollama run qwen2.5:14b "테스트"
+  # 동작하면 .env에 OLLAMA_MODEL=qwen2.5:14b 설정 후 FastAPI 실행
+
+2B. Hugging Face safetensors → GGUF 변환 (llama.cpp 필요)
+  # llama.cpp 설치 (서버컴에서 한 번만)
+  git clone https://github.com/ggerganov/llama.cpp
+  cd llama.cpp
+  pip install -r requirements.txt
+  cmake -B build -DGGML_CUDA=ON   # GPU 지원 빌드
+  cmake --build build --config Release -j
+
+  # HF 모델을 GGUF FP16으로 변환
+  python convert_hf_to_gguf.py /경로/Qwen2.5-14B-Instruct \
+    --outfile /경로/qwen2.5-14b-instruct-f16.gguf \
+    --outtype f16
+
+  # q4_K_M 양자화 (권장)
+  ./build/bin/llama-quantize \
+    /경로/qwen2.5-14b-instruct-f16.gguf \
+    /경로/qwen2.5-14b-instruct-q4_K_M.gguf \
+    Q4_K_M
+
+  # q5_K_M (선택, 여유 있으면)
+  ./build/bin/llama-quantize \
+    /경로/qwen2.5-14b-instruct-f16.gguf \
+    /경로/qwen2.5-14b-instruct-q5_K_M.gguf \
+    Q5_K_M
+
+2C. GGUF 파일이 있으면 → Ollama Modelfile로 로드
+  # Modelfile 작성 (FROM에 절대 경로 기입)
+  echo 'FROM /경로/qwen2.5-14b-instruct-q4_K_M.gguf' > /tmp/Modelfile_14b
+  echo 'PARAMETER temperature 0.4' >> /tmp/Modelfile_14b
+  echo 'PARAMETER num_predict 512' >> /tmp/Modelfile_14b
+  echo 'PARAMETER num_ctx 4096' >> /tmp/Modelfile_14b
+
+  # Ollama에 등록
+  ollama create qwen2.5-14b-q4 -f /tmp/Modelfile_14b
+
+  # 확인
+  ollama list
+  ollama run qwen2.5-14b-q4 "테스트"
+
+──────────────────────────────────────────────────────────────────────────────
+3단계: 양자화 선택 기준
+──────────────────────────────────────────────────────────────────────────────
+
+1. 속도 우선 시연 환경     → q4_K_M 선택
+2. 품질/속도 균형         → q5_K_M 선택
+3. 최대 품질 테스트        → q6_K 시도 (OOM 확인 필수)
+4. OOM 발생 시            → q4_K_M으로 내려가거나 num_ctx 줄이기
+
+──────────────────────────────────────────────────────────────────────────────
+4단계: OOM 대응 체크리스트
+──────────────────────────────────────────────────────────────────────────────
+
+OOM 또는 응답 느릴 때:
+  □ OLLAMA_NUM_PREDICT=256 (더 짧은 응답)
+  □ OLLAMA_CONTEXT_LENGTH=2048 (context 줄이기)
+  □ MAX_ROUNDS=1 (라운드 1로 제한)
+  □ DEFAULT_MAX_AGENTS=2 (에이전트 2명 제한)
+  □ q4_K_M 양자화 모델 사용
+
+──────────────────────────────────────────────────────────────────────────────
+5단계: 양자화 완료 후 확인
+──────────────────────────────────────────────────────────────────────────────
+
+  # 1. 모델 목록 확인
+  ollama list
+
+  # 2. 간단 테스트
+  ollama run qwen2.5-14b-q4 "Python 리스트와 튜플의 차이를 한 문장으로 설명해줘."
+
+  # 3. FastAPI .env 업데이트
+  OLLAMA_MODEL=qwen2.5-14b-q4  # 실제 등록한 모델명으로
+
+  # 4. FastAPI health 확인
+  curl http://localhost:8000/api/health
+
+──────────────────────────────────────────────────────────────────────────────
+주의:
+- 이 파일의 명령어는 실제로 실행하지 않았다. 서버컴에서만 실행할 것.
+- 양자화 품질 저하가 "전혀 없다"고 과장하지 말 것.
+- q4_K_M은 약간의 품질 저하가 있으나 시연 환경에서 허용 가능한 수준.
+- 실제 품질 평가는 base vs quantized 비교 후 판단할 것.

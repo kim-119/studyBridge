@@ -87,6 +87,15 @@ from app.api.rag_routes import router as rag_api_router
 from app.api.validation_routes import router as validation_router
 from app.api.training_candidate_routes import router as training_router
 
+# Spring Boot 계약 API 라우터 (v0.5)
+from app.api.prediction_routes import router as prediction_router
+from app.api.quiz_routes import router as quiz_router
+from app.api.multi_chat_routes import router as multi_chat_router
+
+# v0.6 추가 라우터
+from app.api.rag_routes import spring_rag_router
+from app.api.deep_search_routes import router as deep_search_api_router
+
 app.include_router(health_router)
 app.include_router(ai_chat_router)
 app.include_router(tikitaka_router)
@@ -95,19 +104,27 @@ app.include_router(rag_api_router)
 app.include_router(validation_router)
 app.include_router(training_router)
 
-# ── 기존 routers/ 라우터 (하위 호환) ────────────────────────────────────────
+# Spring Boot 계약 API (v0.5)
+app.include_router(prediction_router)     # POST /api/ai/predict/study-time
+app.include_router(quiz_router)           # POST /api/ai/quiz/generate
+app.include_router(multi_chat_router)     # POST /api/ai/multi-chat
+
+# RAG / Deep Search Spring 계약 (v0.6)
+app.include_router(spring_rag_router)     # POST /api/rag/ingest, /api/rag/query
+app.include_router(deep_search_api_router)  # POST /api/agent/deep-search
+
+# ── 기존 routers/ 라우터 (하위 호환, agent_chat만 로드) ─────────────────────
+# deep_search_router → /api/agent/deep-search (deep_search_api_router와 중복, 스킵)
+# rag_legacy_router  → /api/rag/ingest, /api/rag/materials/{id} (spring_rag_router와 중복, 스킵)
 try:
-    from app.routers.deep_search_router import router as deep_search_router
-    from app.routers.rag_router import router as rag_legacy_router
     from app.routers.agent_chat_router import router as agent_chat_legacy_router
-    app.include_router(deep_search_router)
-    app.include_router(rag_legacy_router)
     app.include_router(agent_chat_legacy_router)
-    logger.info("기존 routers/ 라우터 로드 완료 (하위 호환)")
+    logger.info("agent_chat_router 로드 완료 (하위 호환)")
 except Exception as e:
-    logger.warning("기존 routers/ 로드 실패 (계속 기동): %s", e)
+    logger.warning("agent_chat_router 로드 실패 (계속 기동): %s", e)
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    from app.core.config import FASTAPI_PORT
+    uvicorn.run("app.main:app", host="0.0.0.0", port=FASTAPI_PORT, reload=True)

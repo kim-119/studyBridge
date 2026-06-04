@@ -1,64 +1,967 @@
 """
-StudyBridge AI 서버 진입점.
-FastAPI 앱을 생성하고 라우터를 등록한다.
+StudyBridge FastAPI AI 서버 — Spring Boot 계약 API + 확장 API
+uvicorn main:app --host 0.0.0.0 --port 8000 으로 실행한다.
+
+Spring Boot 계약 (v0.5):
+  GET  /api/health
+  POST /api/ai/predict/study-time
+  POST /api/ai/quiz/generate
+  POST /api/ai/multi-chat
+
+확장 라우터 (v0.6, 선택적 로드):
+  /api/rag/*, /api/agent/deep-search,
+  /api/training-candidates/*, /api/ai/chat, /api/ai/material/*
 """
-from contextlib import asynccontextmanager
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. imports
+# ─────────────────────────────────────────────────────────────────────────────
+import asyncio
+import hashlib
+import json
 import logging
+import os
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI
+import requests
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from openai import OpenAI
+from pydantic import BaseModel, Field
 
-from app.routers.deep_search_router import router as deep_search_router
-from app.routers.rag_router import router as rag_router
-from app.routers.agent_chat_router import router as agent_chat_router
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. 환경변수 & 로거
+# ─────────────────────────────────────────────────────────────────────────────
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+logger = logging.getLogger("studybridge.fastapi")
 
-logger = logging.getLogger(__name__)
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. policy 모듈 (agent_quality_policy.py / agent_feedback_policy.py)
+#    같은 디렉터리에 있으면 import; 없으면 fallback 동작
+# ─────────────────────────────────────────────────────────────────────────────
+_POLICY_AVAILABLE = False
+try:
+    from agent_quality_policy import (         # noqa: F401
+        normalize_agent_config,
+        build_agent_system_prompt,
+        validate_prompt_contains_agent_constraints,
+        validate_answer_quality,
+        revise_answer_to_match_quality_policy,
+    )
+    from agent_feedback_policy import (        # noqa: F401
+        detect_feedback_intent,
+        build_feedback_system_prompt,
+        build_feedback_user_prompt,
+        revise_feedback_output,
+        validate_feedback_output as validate_feedback_policy_output,
+    )
+    _POLICY_AVAILABLE = True
+    logger.info("agent_quality_policy / agent_feedback_policy 로드 완료")
+except ImportError as _policy_err:
+    logger.warning("policy 모듈 로드 실패 (fallback 동작): %s", _policy_err)
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    서버 시작 시 임베딩 모델을 미리 로드한다.
-    첫 요청 지연(cold start) 방지 목적.
-    """
-    try:
-        from app.services.embedding_service import _get_model
-        _get_model()
-        logger.info("임베딩 모델 로드 완료")
-    except Exception as e:
-        # 모델 로드 실패해도 서버 기동은 허용 (임베딩 호출 시 재시도)
-        logger.warning(f"임베딩 모델 워밍업 실패 (서버는 계속 기동): {e}")
-
-    yield  # 서버 실행 중
-
-    logger.info("StudyBridge AI 서버 종료")
-
-
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. FastAPI 앱 + CORS
+# ─────────────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="StudyBridge AI Server",
-    description=(
-        "StudyBridge 캡스톤 프로젝트 AI Orchestrator. "
-        "자료보관함(GPT 70%+Qwen 30%) + 에이전트 채팅(Qwen+Tavily+Wikipedia+GPT 검증) "
-        "+ pgvector RAG + 티키타카 + 지식수준별/성격별 답변 차등화"
-    ),
-    version="0.4.0",
-    lifespan=lifespan,
+    description="RAG + Deep Search + 지식수준별 답변 차등화 AI Orchestrator",
+    version="0.6.0",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. 설정 상수 (환경변수 우선, 기본값 후순위)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# OpenAI
+OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MAX_OUTPUT_TOKENS: int = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "2000"))
+OPENAI_MAX_INPUT_CHARS: int = int(os.getenv("OPENAI_MAX_INPUT_CHARS", "12000"))
+
+# Ollama — 주력 엔진 (Qwen2.5 14B 양자화 권장, vLLM 사용 안 함)
+# 서버컴에서 `ollama list`로 실제 모델명 확인 후 .env 수정
+OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "45"))
+
+# 외부 서비스
+TAVILY_API_KEY: Optional[str] = os.getenv("TAVILY_API_KEY")
+AWS_ACCESS_KEY_ID: Optional[str] = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY: Optional[str] = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION: str = os.getenv("AWS_REGION", "ap-northeast-2")
+AWS_S3_BUCKET: Optional[str] = os.getenv("AWS_S3_BUCKET")
+
+# 학습 시간 예측
+STUDY_TIME_MODEL_PATH: str = os.getenv("STUDY_TIME_MODEL_PATH", "./models/study_time_model")
+
+# 타임아웃
+AI_RESPONSE_TIMEOUT_SECONDS: int = int(os.getenv("AI_RESPONSE_TIMEOUT_SECONDS", "30"))
+QUIZ_GENERATION_TIMEOUT_SECONDS: int = int(os.getenv("QUIZ_GENERATION_TIMEOUT_SECONDS", "15"))
+MULTI_CHAT_TIMEOUT_SECONDS: int = int(os.getenv("MULTI_CHAT_TIMEOUT_SECONDS", "30"))
+
+# 퀴즈 생성
+DEFAULT_QUIZ_COUNT: int = int(os.getenv("DEFAULT_QUIZ_COUNT", "3"))
+DEFAULT_QUIZ_TIME_LIMIT_SECONDS: int = int(os.getenv("DEFAULT_QUIZ_TIME_LIMIT_SECONDS", "30"))
+QUIZ_OPTIONS_COUNT: int = 4  # 4지선다 고정
+
+# multi-chat
+MULTI_CHAT_MAX_ROUNDS: int = int(os.getenv("MULTI_CHAT_MAX_ROUNDS", "3"))
+PREVIOUS_ANSWERS_LIMIT: int = int(os.getenv("PREVIOUS_ANSWERS_LIMIT", "20"))
+AGENT_ANSWER_MAX_CHARS: int = int(os.getenv("AGENT_ANSWER_MAX_CHARS", "1200"))
+SYNTHESIS_AGENT_NAME: str = "종합정리봇"
+DEFAULT_AGENT_NAME: str = os.getenv("DEFAULT_AGENT_NAME", "스터디봇")
+
+# 가중 평균 예측 가중치 (최근 7일, 최근일수록 높음)
+_PREDICT_WEIGHTS: List[float] = [0.08, 0.10, 0.12, 0.14, 0.16, 0.18, 0.22]
+
+# fallback 문구 상수 (각 endpoint에 복붙하지 않음)
+_FALLBACK_LLM_UNAVAILABLE = (
+    "현재 AI 서비스에 일시적으로 접근할 수 없습니다. 잠시 후 다시 시도해 주세요."
+)
+_FALLBACK_TIMEOUT = (
+    "AI 응답 시간이 초과되었습니다. 에이전트 수를 줄이거나 잠시 후 다시 시도해 주세요."
+)
+_FALLBACK_QUIZ_TITLE = "자료 기반 학습 퀴즈 (기본 안내형)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. LLM 클라이언트 초기화
+# ─────────────────────────────────────────────────────────────────────────────
+openai_client: Optional[OpenAI] = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. 공통 유틸 함수
+# ─────────────────────────────────────────────────────────────────────────────
+
+def trim_prompt(text: str, max_chars: int = OPENAI_MAX_INPUT_CHARS) -> str:
+    if len(text) > max_chars:
+        return text[:max_chars] + "\n\n[안내] 입력이 너무 길어 일부 내용이 잘렸습니다."
+    return text
+
+
+def safe_strip(value: Any, default: str = "", max_len: int = 2000) -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return (text[:max_len] if len(text) > max_len else text) or default
+
+
+def clean_ai_answer(text: str) -> str:
+    """마크다운 제거, 과도한 개행 정리."""
+    if not text:
+        return ""
+    text = re.sub(r"\*\*|__", "", text)
+    text = re.sub(r"(?m)^\s*#{2,6}\s*", "", text)
+    text = re.sub(r"(?m)^\s*```[a-zA-Z0-9_-]*\s*$", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def sanitize_answer_for_spring(answer: str) -> str:
+    """Spring DTO 반환 전 길이 제한 및 정리."""
+    text = clean_ai_answer(answer)
+    return text[:AGENT_ANSWER_MAX_CHARS] if len(text) > AGENT_ANSWER_MAX_CHARS else text
+
+
+def _to_agent_dict(agent: Any) -> Dict[str, Any]:
+    """AgentProfile Pydantic 모델 또는 dict를 plain dict로 변환."""
+    if hasattr(agent, "model_dump"):
+        return agent.model_dump()
+    if hasattr(agent, "dict"):
+        return agent.dict()
+    return agent if isinstance(agent, dict) else {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. LLM 호출 함수 (Ollama 우선 → OpenAI fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _call_ollama(
+    system: str, user: str, max_tokens: int = 600, temperature: float = 0.5
+) -> Optional[str]:
+    """Ollama /api/chat 호출. 서버 불응 시 None 반환."""
+    try:
+        probe = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=3)
+        if probe.status_code != 200:
+            return None
+    except Exception:
+        return None
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "options": {"temperature": temperature, "num_predict": max_tokens},
+    }
+    try:
+        resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
+        resp.raise_for_status()
+        return resp.json().get("message", {}).get("content", "")
+    except Exception as e:
+        logger.warning("Ollama 호출 실패: %s", e)
+        return None
+
+
+def _call_openai(
+    system: str, user: str, max_tokens: int = 800, temperature: float = 0.5
+) -> Optional[str]:
+    """OpenAI Chat Completions API 호출. 실패 시 None 반환."""
+    if not openai_client:
+        return None
+    try:
+        resp = openai_client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": trim_prompt(system)},
+                {"role": "user", "content": trim_prompt(user)},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return resp.choices[0].message.content or ""
+    except Exception as e:
+        logger.warning("OpenAI 호출 실패: %s", e)
+        return None
+
+
+def _call_llm(
+    system: str, user: str, max_tokens: int = 600, temperature: float = 0.5
+) -> str:
+    """Ollama 우선, 실패 시 OpenAI, 둘 다 실패 시 fallback 문구."""
+    result = _call_ollama(system, user, max_tokens, temperature)
+    if result and result.strip():
+        return result.strip()
+    result = _call_openai(system, user, max_tokens, temperature)
+    if result and result.strip():
+        return result.strip()
+    return _FALLBACK_LLM_UNAVAILABLE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. 학습 시간 예측 헬퍼
+# ─────────────────────────────────────────────────────────────────────────────
+_tf_model = None
+_tf_available: bool = False
+_tf_load_attempted: bool = False
+
+
+def _weighted_average_predict(weekly_seconds: List[float]) -> float:
+    """7일 가중 평균 예측 (TF 모델 없을 때 fallback)."""
+    return round(sum(w * v for w, v in zip(_PREDICT_WEIGHTS, weekly_seconds)), 1)
+
+
+def _get_or_load_tf_model() -> bool:
+    """TensorFlow 모델 로드 시도. 이미 시도했으면 캐시된 결과 반환."""
+    global _tf_model, _tf_available, _tf_load_attempted
+    if _tf_load_attempted:
+        return _tf_available
+    _tf_load_attempted = True
+    try:
+        import tensorflow as tf  # noqa: F401
+        if os.path.exists(STUDY_TIME_MODEL_PATH):
+            _tf_model = tf.saved_model.load(STUDY_TIME_MODEL_PATH)
+            _tf_available = True
+            logger.info("TF 모델 로드 완료: %s", STUDY_TIME_MODEL_PATH)
+        else:
+            logger.warning("TF 모델 파일 없음: %s. 가중 평균 fallback 사용.", STUDY_TIME_MODEL_PATH)
+    except ImportError:
+        logger.info("TensorFlow 없음. 가중 평균 fallback 사용.")
+    except Exception as e:
+        logger.warning("TF 모델 로드 실패: %s. 가중 평균 fallback 사용.", e)
+    return _tf_available
+
+
+def predict_study_time(weekly_seconds: List[float]) -> float:
+    """TF 모델 예측 → 실패 시 가중 평균 fallback."""
+    if _get_or_load_tf_model() and _tf_model is not None:
+        try:
+            import numpy as np
+            arr = np.array([weekly_seconds], dtype=np.float32)
+            return float(_tf_model(arr).numpy()[0][0])
+        except Exception as e:
+            logger.error("TF 예측 실패, fallback 사용: %s", e)
+    return _weighted_average_predict(weekly_seconds)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. 퀴즈 생성 헬퍼
+# ─────────────────────────────────────────────────────────────────────────────
+_QUIZ_SYSTEM_PROMPT_TMPL = (
+    "너는 대학교 강의 자료 기반 객관식 퀴즈 출제 전문가다.\n"
+    "반드시 4지선다 객관식 문제 {count}개를 만든다.\n"
+    "정답은 0-indexed(0~3)로 반환한다.\n"
+    "반드시 아래 JSON 배열 형식으로만 응답한다. 다른 텍스트 없이 JSON만 출력한다:\n"
+    '[{{"question":"...", "options":["...","...","...","..."], '
+    '"correctAnswer":0, "timeLimitSeconds":30}}]'
+)
+
+_FALLBACK_QUESTIONS_DATA: List[Dict[str, Any]] = [
+    {
+        "question": "다음 중 효과적인 학습 방법으로 알려진 것은?",
+        "options": [
+            "한 번에 몰아서 공부하기",
+            "분산 학습(Spaced Repetition) 활용하기",
+            "밑줄만 긋고 다시 보지 않기",
+            "소리만 듣고 노트 필기 안 하기",
+        ],
+        "correctAnswer": 1,
+        "timeLimitSeconds": 30,
+    },
+    {
+        "question": "학습 내용을 장기 기억으로 전환하는 데 가장 효과적인 방법은?",
+        "options": [
+            "한 번 읽고 넘어가기",
+            "형광펜으로 중요 부분만 표시하기",
+            "자신이 배운 내용을 직접 설명해보기 (인출 연습)",
+            "공부 후 바로 자기",
+        ],
+        "correctAnswer": 2,
+        "timeLimitSeconds": 30,
+    },
+    {
+        "question": "집중력을 높이기 위한 포모도로 기법에서 기본 집중 시간은?",
+        "options": ["10분", "25분", "45분", "60분"],
+        "correctAnswer": 1,
+        "timeLimitSeconds": 30,
+    },
+]
+
+
+def build_fallback_quiz(file_name: str = "", reason: str = "") -> Dict[str, Any]:
+    """S3/LLM/PDF 실패 시 기본 안내형 퀴즈 반환."""
+    if reason:
+        logger.warning("퀴즈 fallback: file=%s reason=%s", file_name, reason)
+    return {"quizTitle": _FALLBACK_QUIZ_TITLE, "questions": _FALLBACK_QUESTIONS_DATA}
+
+
+def _load_pdf_from_s3(s3_key: str) -> bytes:
+    import boto3  # 선택적 의존성 — 설치 없으면 ImportError
+    s3 = boto3.client(
+        "s3",
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        region_name=AWS_REGION,
+    )
+    obj = s3.get_object(Bucket=AWS_S3_BUCKET, Key=s3_key)
+    return obj["Body"].read()
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    import fitz  # PyMuPDF
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        return "\n".join(page.get_text() for page in doc)
+
+
+def _parse_quiz_json(llm_output: str) -> List[Dict[str, Any]]:
+    """LLM 출력에서 JSON 배열을 파싱하고 유효한 문항만 반환."""
+    match = re.search(r"\[.*?\]", llm_output.strip(), re.DOTALL)
+    if not match:
+        return []
+    try:
+        items = json.loads(match.group())
+    except json.JSONDecodeError:
+        return []
+
+    validated: List[Dict[str, Any]] = []
+    for item in items[:5]:
+        options = item.get("options", [])
+        correct = int(item.get("correctAnswer", 0))
+        if len(options) != QUIZ_OPTIONS_COUNT or not (0 <= correct <= 3):
+            continue
+        validated.append({
+            "question": safe_strip(item.get("question"), "문제를 불러올 수 없습니다."),
+            "options": [safe_strip(o) for o in options],
+            "correctAnswer": correct,
+            "timeLimitSeconds": int(item.get("timeLimitSeconds", DEFAULT_QUIZ_TIME_LIMIT_SECONDS)),
+        })
+    return validated
+
+
+def generate_quiz_from_pdf(material_id: int, s3_key: str, file_name: str) -> Dict[str, Any]:
+    """S3 → PDF 추출 → LLM 퀴즈 생성. 각 단계 실패 시 fallback 반환."""
+    try:
+        pdf_bytes = _load_pdf_from_s3(s3_key)
+    except Exception as e:
+        return build_fallback_quiz(file_name, f"S3 로드 실패: {e}")
+
+    try:
+        pdf_text = _extract_pdf_text(pdf_bytes)
+        if len(pdf_text.strip()) < 100:
+            return build_fallback_quiz(file_name, "PDF 텍스트 부족")
+    except Exception as e:
+        return build_fallback_quiz(file_name, f"PDF 추출 실패: {e}")
+
+    system = _QUIZ_SYSTEM_PROMPT_TMPL.format(count=DEFAULT_QUIZ_COUNT)
+    user = (
+        f"## 자료명\n{file_name}\n\n"
+        f"## 자료 내용\n{pdf_text[:2500]}\n\n"
+        f"위 자료를 기반으로 객관식 퀴즈 {DEFAULT_QUIZ_COUNT}개를 JSON 배열 형식으로 출제하라."
+    )
+    # OpenAI 우선, Ollama fallback
+    llm_output = _call_openai(system, user, max_tokens=1200, temperature=0.3)
+    if not llm_output:
+        llm_output = _call_ollama(system, user, max_tokens=1200, temperature=0.3)
+    if not llm_output:
+        return build_fallback_quiz(file_name, "LLM 응답 없음")
+
+    questions = _parse_quiz_json(llm_output)
+    if not questions:
+        return build_fallback_quiz(file_name, "JSON 파싱 실패")
+
+    return {
+        "quizTitle": f"[{file_name}] 자료 기반 학습 퀴즈",
+        "questions": questions,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. multi-chat 프롬프트 빌더
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 로컬 personality → agent_quality_policy 호환 매핑
+_PERSONALITY_COMPAT: Dict[str, str] = {
+    "친절_설명형": "친근함",
+    "비판적_분析형": "솔직함",
+    "논리적_탐구형": "전문적",
+    "창의적_확장형": "독특함",
+    "간결_요약형": "효율적",
+    "冷소적": "냉소적",
+}
+
+
+def _normalize_agent_for_policy(agent_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """로컬 personality 값을 agent_quality_policy 호환 값으로 매핑."""
+    d = dict(agent_dict)
+    personality = d.get("personality") or ""
+    d["personality"] = _PERSONALITY_COMPAT.get(personality, personality)
+    d.setdefault("tone", d["personality"])
+    return d
+
+
+def build_multi_agent_system_prompt(agent: Any, context: str = "") -> str:
+    """
+    agent_quality_policy.build_agent_system_prompt 우선 사용.
+    실패 시 직접 빌드한다.
+    """
+    agent_dict = _normalize_agent_for_policy(_to_agent_dict(agent))
+
+    if _POLICY_AVAILABLE:
+        try:
+            normalized = normalize_agent_config(agent_dict, user_message="")
+            base_prompt = build_agent_system_prompt(normalized)
+            return f"{base_prompt}\n\n{context}" if context else base_prompt
+        except Exception as e:
+            logger.debug("policy prompt 빌드 실패, fallback 사용: %s", e)
+
+    # fallback 직접 빌드
+    name = agent_dict.get("name", DEFAULT_AGENT_NAME)
+    level = agent_dict.get("knowledgeLevel") or "학사"
+    personality = agent_dict.get("personality") or "친근함"
+    parts = [
+        f"너는 StudyBridge AI 에이전트 '{name}'이다.",
+        f"지식 수준: {level} / 성격: {personality}",
+        "반드시 한국어로 답변한다.",
+        "학습에 도움이 되는 실질적인 내용을 제공한다.",
+        "다른 에이전트와 같은 표현을 반복하지 않는다.",
+    ]
+    if context:
+        parts.append(f"\n{context}")
+    return "\n".join(parts)
+
+
+def build_context_from_previous_answers(
+    previous_answers: List[Any], max_items: int = PREVIOUS_ANSWERS_LIMIT
+) -> str:
+    """이전 답변 최근 N개를 컨텍스트 문자열로 변환."""
+    if not previous_answers:
+        return ""
+    recent = previous_answers[-max_items:]
+    lines = ["[이전 대화 맥락]"]
+    for item in recent:
+        name = getattr(item, "agentName", None) or (item.get("agentName", "") if isinstance(item, dict) else "")
+        ans = getattr(item, "answer", None) or (item.get("answer", "") if isinstance(item, dict) else "")
+        role = getattr(item, "role", None) or "ASSISTANT"
+        if ans.strip():
+            lines.append(f"[{role}] {name}: {ans.strip()[:300]}")
+    return "\n".join(lines)
+
+
+def build_agent_turn_instruction(agent_index: int, total_agents: int) -> str:
+    """티키타카 스타일 에이전트 역할 부여."""
+    if total_agents <= 1:
+        return ""
+    _INSTRUCTIONS = {
+        0: "이 질문의 핵심 개념과 원리를 명확하게 설명하라.",
+        1: "앞서 설명된 내용을 보완하거나, 놓친 부분이나 주의할 점을 지적하라.",
+        2: "앞의 설명을 쉽게 요약하여 초보자도 이해할 수 있게 정리하라.",
+    }
+    return _INSTRUCTIONS.get(agent_index, "추가적인 관점이나 실용적인 응용 사례를 제시하라.")
+
+
+def select_agents_for_response(
+    agents: List[Any], target_id: Optional[int]
+) -> List[Any]:
+    """targetAgentId 필터링. 매칭 없으면 전체 반환."""
+    if target_id is None:
+        return agents
+    filtered = [
+        a for a in agents
+        if getattr(a, "agentId", None) == target_id or getattr(a, "id", None) == target_id
+    ]
+    if not filtered:
+        logger.warning("targetAgentId=%s 매칭 없음. 전체 에이전트 사용.", target_id)
+        return agents
+    return filtered
+
+
+def generate_single_agent_response(
+    agent: Any,
+    message: str,
+    context: str,
+    agent_index: int,
+    total_agents: int,
+) -> str:
+    """단일 에이전트 답변 생성 (Ollama 우선 → OpenAI fallback)."""
+    system_prompt = build_multi_agent_system_prompt(agent, context)
+    turn_instr = build_agent_turn_instruction(agent_index, total_agents)
+
+    user_parts: List[str] = []
+    if turn_instr:
+        user_parts.append(f"[이번 역할] {turn_instr}")
+    user_parts.append(f"[사용자 메시지] {message}")
+    user_prompt = "\n".join(user_parts)
+
+    raw = _call_llm(system_prompt, user_prompt, max_tokens=AGENT_ANSWER_MAX_CHARS)
+    return clean_ai_answer(raw)
+
+
+def build_final_synthesis_answer(
+    answers: List[Dict[str, str]], message: str
+) -> str:
+    """showFinalSynthesis=True일 때 종합 답변 생성."""
+    existing = "\n".join(
+        f"[{a['agentName']}] {a['answer'][:200]}" for a in answers
+    )
+    system = (
+        "너는 여러 에이전트의 답변을 종합하는 정리 전문가다. "
+        "각 에이전트의 핵심 포인트를 통합하여 최종 결론을 한국어로 명확하게 제시하라. "
+        "중복 내용은 제거하고 핵심만 압축하라."
+    )
+    user = (
+        f"[사용자 질문] {message}\n\n"
+        f"[에이전트 답변들]\n{existing}\n\n"
+        "위 내용을 종합하여 최종 정리를 제공하라."
+    )
+    return clean_ai_answer(_call_llm(system, user, max_tokens=600))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. 검증 래퍼 (agent_quality_policy 재사용)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def validate_and_revise_agent_answer(
+    answer: str,
+    agent_payload: Dict[str, Any],
+    user_message: str,
+    response_mode: str = "general",
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    1. normalize_agent_config
+    2. validate_prompt_contains_agent_constraints (로그만)
+    3. validate_answer_quality
+    4. 실패 시 revise_answer_to_match_quality_policy
+    5. 재생성 실패 시 원문 반환
+
+    반환: (최종 답변, 검증 메타데이터)
+    메타데이터는 로그용 — Spring 응답에 노출하지 않는다.
+    """
+    if not _POLICY_AVAILABLE:
+        return answer, {"skipped": True}
+
+    try:
+        agent_config = normalize_agent_config(
+            _normalize_agent_for_policy(agent_payload), user_message=user_message
+        )
+    except Exception as e:
+        logger.warning("normalize_agent_config 실패: %s", e)
+        return answer, {"error": str(e)}
+
+    # prompt 제약 경고 (로그만)
+    try:
+        prompt_text = build_agent_system_prompt(agent_config)
+        warnings = validate_prompt_contains_agent_constraints(prompt_text, agent_config)
+        if warnings:
+            logger.debug("prompt 제약 경고: %s", warnings)
+    except Exception:
+        warnings = []
+
+    # 품질 검증
+    try:
+        validation = validate_answer_quality(answer, agent_config, user_message)
+    except Exception as e:
+        logger.warning("validate_answer_quality 실패: %s", e)
+        return answer, {"error": str(e)}
+
+    meta: Dict[str, Any] = {
+        "passed": validation.get("passed", True),
+        "score": validation.get("score", 0.0),
+        "prompt_warnings": warnings,
+    }
+
+    if validation.get("passed", True):
+        return answer, meta
+
+    # 품질 미달 → revise 시도
+    logger.info(
+        "답변 품질 미달 → revise 시도 score=%.2f issues=%s",
+        validation.get("score", 0), validation.get("issues", []),
+    )
+    try:
+        revised = revise_answer_to_match_quality_policy(
+            answer=answer,
+            agent_config=agent_config,
+            validation_result=validation,
+            user_message=user_message,
+            openai_client=openai_client,
+            model=OPENAI_MODEL,
+        )
+        meta["revised"] = True
+        return clean_ai_answer(revised), meta
+    except Exception as e:
+        logger.warning("revise_answer 실패: %s", e)
+        meta["revised"] = False
+        return answer, meta
+
+
+def build_fallback_agent_answer(agent_name: str, reason: str = "") -> str:
+    if reason:
+        logger.warning("에이전트 fallback: agent=%s reason=%s", agent_name, reason)
+    return _FALLBACK_LLM_UNAVAILABLE
+
+
+def build_fallback_multi_chat_response(mode: str, agent_name: str, reason: str = "") -> Dict[str, Any]:
+    if reason:
+        logger.warning("multi-chat fallback: reason=%s", reason)
+    return {
+        "mode": mode,
+        "answers": [{"agentName": agent_name, "answer": _FALLBACK_LLM_UNAVAILABLE}],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. Pydantic 스키마 (Spring 계약 필드명 camelCase 유지)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class StudyTimePredictRequest(BaseModel):
+    userId: int = Field(..., description="사용자 ID")
+    weeklyStudySeconds: List[float] = Field(..., description="최근 7일 학습 시간 (초 단위)")
+
+
+class StudyTimePredictResponse(BaseModel):
+    predictedStudySeconds: float
+
+
+class QuizGenerateRequest(BaseModel):
+    materialId: int = Field(..., description="자료 ID")
+    s3Key: str = Field(..., description="S3 오브젝트 키")
+    fileName: str = Field(..., description="원본 파일명")
+
+
+class QuizQuestion(BaseModel):
+    question: str
+    options: List[str] = Field(..., min_length=4, max_length=4)
+    correctAnswer: int = Field(..., ge=0, le=3)
+    timeLimitSeconds: int = Field(DEFAULT_QUIZ_TIME_LIMIT_SECONDS)
+
+
+class QuizGenerateResponse(BaseModel):
+    quizTitle: str
+    questions: List[QuizQuestion]
+
+
+class PreviousAnswer(BaseModel):
+    agentName: str
+    answer: str
+    role: str = "ASSISTANT"
+    agentId: Optional[int] = None
+
+
+class AgentProfile(BaseModel):
+    id: Optional[int] = None
+    agentId: Optional[int] = None
+    name: str
+    role: Optional[str] = None
+    personality: Optional[str] = None
+    personalityStrength: Optional[str] = None
+    style: Optional[str] = None
+    tone: Optional[str] = None
+    knowledgeLevel: Optional[str] = None
+    customInstruction: Optional[str] = None
+
+
+class MultiChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, description="사용자 메시지")
+    mode: str = Field("multi_agent_discussion")
+    rounds: int = Field(3, ge=1, le=5)
+    showFinalSynthesis: bool = Field(True)
+    targetAgentId: Optional[int] = None
+    previousAnswers: List[PreviousAnswer] = Field(default_factory=list)
+    agents: List[AgentProfile] = Field(default_factory=list)
+
+
+class AgentAnswer(BaseModel):
+    agentName: str
+    answer: str
+
+
+class MultiChatResponse(BaseModel):
+    mode: str
+    answers: List[AgentAnswer]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 14. 동기 실행 함수 (asyncio.to_thread에서 호출)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DEFAULT_AGENT_PROFILE = AgentProfile(
+    id=0, agentId=0, name=DEFAULT_AGENT_NAME, role="학습 도우미",
+    personality="친절_설명형", personalityStrength="moderate", knowledgeLevel="학사",
 )
 
 
-# ── 헬스 체크 ────────────────────────────────────────────────────────
+def _run_multi_chat_sync(
+    active_agents: List[AgentProfile],
+    message: str,
+    context: str,
+    rounds: int,
+    show_synthesis: bool,
+) -> List[AgentAnswer]:
+    """동기 multi-chat 실행 — asyncio.to_thread 전용."""
+    answers: List[AgentAnswer] = []
+    total = len(active_agents)
+
+    for round_idx in range(rounds):
+        if round_idx > 0 and total <= 1:
+            break
+        for agent_idx, agent in enumerate(active_agents):
+            try:
+                raw = generate_single_agent_response(
+                    agent=agent,
+                    message=message,
+                    context=context,
+                    agent_index=agent_idx,
+                    total_agents=total,
+                )
+                # agent_quality_policy 검증 & 보정
+                final_text, meta = validate_and_revise_agent_answer(
+                    answer=raw,
+                    agent_payload=_to_agent_dict(agent),
+                    user_message=message,
+                    response_mode="general",
+                )
+                logger.debug("agent=%s passed=%s score=%s", agent.name, meta.get("passed"), meta.get("score"))
+                answers.append(AgentAnswer(
+                    agentName=agent.name,
+                    answer=sanitize_answer_for_spring(final_text),
+                ))
+            except Exception as e:
+                logger.error("에이전트 '%s' 답변 실패: %s", agent.name, e)
+                answers.append(AgentAnswer(
+                    agentName=agent.name,
+                    answer="일시적인 오류로 답변을 생성할 수 없습니다.",
+                ))
+        if round_idx == 0 and total <= 1:
+            break
+
+    if not answers:
+        answers.append(AgentAnswer(agentName="시스템", answer=_FALLBACK_LLM_UNAVAILABLE))
+
+    if show_synthesis and len(answers) > 1:
+        try:
+            synth = build_final_synthesis_answer(
+                answers=[{"agentName": a.agentName, "answer": a.answer} for a in answers],
+                message=message,
+            )
+            answers.append(AgentAnswer(
+                agentName=SYNTHESIS_AGENT_NAME,
+                answer=sanitize_answer_for_spring(synth),
+            ))
+        except Exception as e:
+            logger.warning("종합 답변 생성 실패 (건너뜀): %s", e)
+
+    return answers
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 15. Spring 계약 API endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
 @app.get("/health", tags=["Health"])
+async def health_root():
+    """루트 헬스 체크 (uvicorn 직접 실행 확인용)."""
+    return {"status": "ok", "service": "StudyBridge AI Server", "version": "0.6.0"}
+
+
+@app.get("/api/health", tags=["Health"])
 async def health_check():
-    """서버 정상 동작 여부를 확인한다. 인증 불필요."""
-    return {"status": "ok", "service": "StudyBridge AI Server", "version": "0.4.0"}
+    """
+    Spring Boot 계약 헬스 체크.
+    key 값 노출 없이 설정 여부만 boolean으로 반환한다.
+    """
+    return {
+        "status": "ok",
+        "service": "studybridge-fastapi",
+        "openaiConfigured": bool(OPENAI_API_KEY),
+        "ollamaConfigured": bool(OLLAMA_BASE_URL),
+        "tavilyConfigured": bool(TAVILY_API_KEY),
+        "awsConfigured": bool(AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_S3_BUCKET),
+    }
 
 
-# ── 라우터 등록 ──────────────────────────────────────────────────────
-app.include_router(deep_search_router)
-app.include_router(rag_router)
-app.include_router(agent_chat_router)   # v0.4: 에이전트 채팅 + 자료보관함 AI
+@app.post(
+    "/api/ai/predict/study-time",
+    response_model=StudyTimePredictResponse,
+    tags=["Study Time Prediction"],
+)
+async def predict_study_time_endpoint(request: StudyTimePredictRequest):
+    """
+    최근 7일 학습 시간 기반 예측.
+    TF 모델 없으면 가중 평균 fallback.
+    weeklyStudySeconds 길이 != 7 또는 음수 → 400.
+    """
+    if len(request.weeklyStudySeconds) != 7:
+        raise HTTPException(status_code=400, detail="weeklyStudySeconds는 정확히 7개여야 합니다.")
+    if any(v < 0 for v in request.weeklyStudySeconds):
+        raise HTTPException(status_code=400, detail="weeklyStudySeconds 값은 음수일 수 없습니다.")
+    try:
+        predicted = await asyncio.wait_for(
+            asyncio.to_thread(predict_study_time, list(request.weeklyStudySeconds)),
+            timeout=AI_RESPONSE_TIMEOUT_SECONDS,
+        )
+        return StudyTimePredictResponse(predictedStudySeconds=predicted)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="학습 시간 예측 요청이 시간 초과되었습니다.")
+    except Exception as e:
+        logger.error("학습 시간 예측 오류: %s", e)
+        raise HTTPException(status_code=500, detail="학습 시간 예측 중 서버 오류가 발생했습니다.")
 
 
-# ── 직접 실행 시 (개발용) ─────────────────────────────────────────────
+@app.post(
+    "/api/ai/quiz/generate",
+    response_model=QuizGenerateResponse,
+    tags=["Quiz Generation"],
+)
+async def generate_quiz_endpoint(request: QuizGenerateRequest):
+    """
+    S3 PDF 기반 4지선다 퀴즈 생성.
+    S3/PDF/LLM 실패 시 fallback quiz 반환 (구조 유지).
+    """
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                generate_quiz_from_pdf,
+                material_id=request.materialId,
+                s3_key=request.s3Key,
+                file_name=request.fileName,
+            ),
+            timeout=QUIZ_GENERATION_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        result = build_fallback_quiz(request.fileName, "timeout")
+    except Exception as e:
+        logger.error("퀴즈 생성 오류: %s", e)
+        result = build_fallback_quiz(request.fileName, str(e))
+
+    return QuizGenerateResponse(
+        quizTitle=result["quizTitle"],
+        questions=[QuizQuestion(**q) for q in result["questions"]],
+    )
+
+
+@app.post(
+    "/api/ai/multi-chat",
+    response_model=MultiChatResponse,
+    tags=["Multi Agent Chat"],
+)
+async def multi_chat_endpoint(request: MultiChatRequest):
+    """
+    멀티 에이전트 토론 — 동기 JSON 반환 (SSE는 Spring Boot 담당).
+    - agents 빈 배열 → 기본 에이전트 사용
+    - targetAgentId 있으면 해당 에이전트만 답변
+    - previousAnswers 최근 PREVIOUS_ANSWERS_LIMIT개만 프롬프트에 사용
+    - rounds 최대 MULTI_CHAT_MAX_ROUNDS로 제한
+    - agent_quality_policy로 답변 품질 검증 및 보정
+    """
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="message는 비워둘 수 없습니다.")
+
+    agents = request.agents if request.agents else [_DEFAULT_AGENT_PROFILE]
+    active_agents = select_agents_for_response(agents, request.targetAgentId)
+    context = build_context_from_previous_answers(request.previousAnswers)
+    rounds = min(request.rounds, MULTI_CHAT_MAX_ROUNDS)
+    fallback_name = active_agents[0].name if active_agents else DEFAULT_AGENT_NAME
+
+    try:
+        raw_answers = await asyncio.wait_for(
+            asyncio.to_thread(
+                _run_multi_chat_sync,
+                active_agents, request.message, context, rounds, request.showFinalSynthesis,
+            ),
+            timeout=MULTI_CHAT_TIMEOUT_SECONDS,
+        )
+        return MultiChatResponse(mode=request.mode, answers=raw_answers)
+    except asyncio.TimeoutError:
+        logger.warning("multi-chat 타임아웃 (%ss)", MULTI_CHAT_TIMEOUT_SECONDS)
+        return MultiChatResponse(
+            mode=request.mode,
+            answers=[AgentAnswer(agentName="시스템", answer=_FALLBACK_TIMEOUT)],
+        )
+    except Exception as e:
+        logger.error("multi-chat 오류: %s", e)
+        return MultiChatResponse(
+            mode=request.mode,
+            answers=[AgentAnswer(agentName="시스템", answer=_FALLBACK_LLM_UNAVAILABLE)],
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 16. v0.6 확장 라우터 (app/ 구조 선택적 로드)
+#     deep_search, rag, training, agent_chat 고유 엔드포인트 유지
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    from app.api.rag_routes import router as _rag_legacy_router, spring_rag_router as _spring_rag_router
+    from app.api.deep_search_routes import router as _deep_search_router
+    from app.api.training_candidate_routes import router as _training_router
+    from app.routers.agent_chat_router import router as _agent_chat_router
+    from app.api.roadmap_routes import router as _roadmap_router
+
+    app.include_router(_spring_rag_router)      # /api/rag/ingest, /api/rag/query, DELETE /api/rag/materials/{id}
+    app.include_router(_rag_legacy_router)      # /api/materials/{id}/rag/* (하위 호환)
+    app.include_router(_deep_search_router)     # /api/agent/deep-search
+    app.include_router(_training_router)        # /api/training-candidates/stats, /export-jsonl
+    app.include_router(_agent_chat_router)      # /api/ai/chat, /api/ai/material/*
+    app.include_router(_roadmap_router)         # POST /api/materials/{id}/ai/roadmap
+
+    logger.info("v0.6 확장 라우터 로드 완료 (로드맵 포함)")
+except Exception as _ext_err:
+    logger.warning("v0.6 확장 라우터 로드 실패 (Spring 계약 API는 정상 동작): %s", _ext_err)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 직접 실행 (개발용)
+# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

@@ -90,3 +90,34 @@ async def health_check() -> dict:
         return {"status": "ok", "detail": "connected"}
     except Exception as e:
         return {"status": "unavailable", "detail": str(e)}
+
+
+# alias — caller에서 check_ai_db_health()로 호출 가능
+check_ai_db_health = health_check
+
+
+# ── MAIN_DATABASE_URL (기존 팀플 DB) — 사용 주의 ────────────────────────────
+# FastAPI는 기본적으로 MAIN_DATABASE_URL을 사용하지 않는다.
+# Spring Boot가 데이터 주인이다.
+# 아래 함수는 read-only 보조 조회가 필요한 경우에만 사용한다.
+# production에서는 MAIN_DATABASE_READONLY=true 강제 권장.
+async def get_main_db_conn_readonly():
+    """
+    기존 팀플 DB에 read-only 연결을 반환한다.
+    MAIN_DATABASE_URL이 미설정이면 RuntimeError.
+    FastAPI가 기존 capstone-db를 직접 조회해야 하는 예외적인 경우에만 사용한다.
+    """
+    import os
+    main_url = os.getenv("MAIN_DATABASE_URL")
+    if not main_url:
+        raise RuntimeError(
+            "MAIN_DATABASE_URL이 설정되지 않았습니다. "
+            "기본적으로 Spring Boot를 통해 데이터를 받는 구조를 우선합니다."
+        )
+    try:
+        import asyncpg
+        conn = await asyncpg.connect(dsn=main_url)
+        return conn
+    except Exception as e:
+        logger.error("MAIN DB read-only 연결 실패: %s", type(e).__name__)
+        raise RuntimeError(f"기존 DB 연결 실패: {type(e).__name__}") from e

@@ -72,10 +72,19 @@ AI_DATABASE_URL: str | None = os.getenv(
 # ----- Redis -----
 REDIS_URL: str | None = os.getenv("REDIS_URL")
 
-# ----- Ollama (로컬 LLM 서버) -----
-OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL: str    = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
-OLLAMA_TIMEOUT: int  = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "30"))
+# ----- Ollama (주력 LLM 엔진 — Qwen2.5 14B 양자화) -----
+# 주력: Qwen2.5 14B 양자화 모델 (q4_K_M 또는 q5_K_M)
+# 서버컴에서 `ollama list` 실행 후 실제 모델명을 OLLAMA_MODEL에 기입할 것
+# 16GB VRAM 환경: 14B full precision은 OOM 가능 → 반드시 양자화 모델 사용
+OLLAMA_BASE_URL: str      = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL: str         = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+OLLAMA_TIMEOUT: int       = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "45"))
+OLLAMA_NUM_PREDICT: int   = int(os.getenv("OLLAMA_NUM_PREDICT", "512"))
+OLLAMA_TEMPERATURE: float = float(os.getenv("OLLAMA_TEMPERATURE", "0.4"))
+OLLAMA_TOP_P: float       = float(os.getenv("OLLAMA_TOP_P", "0.9"))
+OLLAMA_CONTEXT_LENGTH: int = int(os.getenv("OLLAMA_CONTEXT_LENGTH", "4096"))
+# 지식수준 전문가/박사는 더 긴 응답 허용
+OLLAMA_NUM_PREDICT_ADVANCED: int = int(os.getenv("OLLAMA_NUM_PREDICT_ADVANCED", "768"))
 
 # ----- OpenAI 임베딩 -----
 OPENAI_MODEL: str           = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -90,3 +99,36 @@ TRAINING_HOLDOUT_SCORE: int      = int(os.getenv("TRAINING_HOLDOUT_SCORE", "70")
 APP_ENV: str  = os.getenv("APP_ENV", "local")
 APP_NAME: str = os.getenv("APP_NAME", "StudyBridge AI Server")
 API_PREFIX: str = os.getenv("API_PREFIX", "/api")
+
+# ----- AWS / S3 (PDF 업로드) -----
+AWS_ACCESS_KEY_ID: str | None     = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY: str | None = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION: str                   = os.getenv("AWS_REGION", "ap-northeast-2")
+AWS_S3_BUCKET: str | None         = os.getenv("AWS_S3_BUCKET")
+
+# ----- 학습 시간 예측 모델 -----
+STUDY_TIME_MODEL_PATH: str = os.getenv("STUDY_TIME_MODEL_PATH", "./models/study_time_model")
+
+# ----- AI 응답 타임아웃 -----
+AI_RESPONSE_TIMEOUT_SECONDS: int      = int(os.getenv("AI_RESPONSE_TIMEOUT_SECONDS", "30"))
+QUIZ_GENERATION_TIMEOUT_SECONDS: int  = int(os.getenv("QUIZ_GENERATION_TIMEOUT_SECONDS", "15"))
+MULTI_CHAT_TIMEOUT_SECONDS: int       = int(os.getenv("MULTI_CHAT_TIMEOUT_SECONDS", "30"))
+
+# ----- Tavily 검색 깊이 -----
+TAVILY_SEARCH_DEPTH: str = os.getenv("TAVILY_SEARCH_DEPTH", "basic")
+
+# ----- 멀티 에이전트 상수 -----
+DEFAULT_MAX_AGENTS: int          = int(os.getenv("DEFAULT_MAX_AGENTS", "3"))
+DEFAULT_ROUNDS: int              = int(os.getenv("DEFAULT_ROUNDS", "1"))
+MAX_ROUNDS: int                  = int(os.getenv("MAX_ROUNDS", "2"))
+AGENT_ANSWER_MAX_CHARS: int      = int(os.getenv("AGENT_ANSWER_MAX_CHARS", "450"))
+ADVANCED_AGENT_ANSWER_MAX_CHARS: int = int(os.getenv("ADVANCED_AGENT_ANSWER_MAX_CHARS", "600"))
+
+# ----- previousAnswers 컨텍스트 제한 -----
+PREVIOUS_ANSWERS_LIMIT: int      = int(os.getenv("PREVIOUS_ANSWERS_LIMIT", "20"))
+PREVIOUS_ANSWERS_HARD_LIMIT: int = int(os.getenv("PREVIOUS_ANSWERS_HARD_LIMIT", "100"))
+PREVIOUS_ANSWER_MAX_CHARS: int   = int(os.getenv("PREVIOUS_ANSWER_MAX_CHARS", "300"))
+
+# ----- FastAPI 서버 포트 (vLLM 8000 포트 충돌 방지) -----
+# vLLM이 8000을 점유하면 FASTAPI_PORT=8001 로 변경한다.
+FASTAPI_PORT: int = int(os.getenv("FASTAPI_PORT", "8000"))

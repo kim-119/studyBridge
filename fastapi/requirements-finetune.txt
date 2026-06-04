@@ -1,0 +1,36 @@
+# StudyBridge QLoRA Optional 학습 전용 패키지
+# 메인 requirements.txt와 분리 (서버 실행에는 불필요)
+# 설치: pip install -r requirements-finetune.txt
+#
+# 주의:
+# - bitsandbytes는 Linux + CUDA 환경에서만 정상 동작
+# - Windows에서 bitsandbytes 설치 시 별도 빌드 필요
+# - 학습은 서버컴에서만 실행할 것 (16GB VRAM 필요)
+# - 이 패키지를 메인 서버 환경에 설치할 필요 없음
+
+# PyTorch (CUDA 버전은 서버컴 CUDA에 맞게 설치할 것)
+# pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch>=2.1.0
+
+# Hugging Face 생태계
+transformers>=4.40.0
+datasets>=2.18.0
+accelerate>=0.28.0
+tokenizers>=0.19.0
+
+# PEFT (LoRA / QLoRA)
+peft>=0.10.0
+
+# TRL (SFT Trainer)
+trl>=0.8.0
+
+# 양자화 (Linux + CUDA 필수)
+bitsandbytes>=0.43.0
+
+# 기타
+sentencepiece>=0.2.0
+protobuf>=3.20.0
+safetensors>=0.4.0
+scipy>=1.12.0
+numpy>=1.26.0
+pyyaml>=6.0
