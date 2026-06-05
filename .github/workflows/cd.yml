@@ -68,8 +68,10 @@ jobs:
           script: |
             cd ~/studyBridge
             
-            # 최신 docker-compose.yml 반영
-            git pull origin develop
+            # 강제 리셋 후 최신 코드로 반영
+            sudo git fetch origin develop
+            sudo git reset --hard origin/develop
+            sudo git clean -fd
             
             # Docker Hub 로그인 및 최신 이미지 Pull
             echo ${{ secrets.DOCKERHUB_TOKEN }} | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
