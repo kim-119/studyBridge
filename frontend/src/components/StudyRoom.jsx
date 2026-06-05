@@ -297,7 +297,7 @@ export default function StudyRoom({ study, onClose }) {
 
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
     const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
-    const serverURL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `${protocol}://${hostname}:9090`;
+    const serverURL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `${protocol}://${hostname}:8080`;
 
     const token = localStorage.getItem('token');
 
@@ -437,7 +437,7 @@ export default function StudyRoom({ study, onClose }) {
     
     const token = localStorage.getItem('token');
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `http://${hostname}:9090`;
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `http://${hostname}:8080`;
     
     try {
       const response = await fetch(`${API_BASE_URL}/api/groups/${study.id}/chats/stream`, {

@@ -5,7 +5,7 @@ const hostname = typeof window !== 'undefined' ? window.location.hostname : 'loc
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   import.meta.env.VITE_BACKEND_URL ||
-  `http://${hostname}:9090`;
+  `http://${hostname}:8080`;
 
 const FASTAPI_BASE_URL =
   import.meta.env.VITE_FASTAPI_BASE_URL ||
