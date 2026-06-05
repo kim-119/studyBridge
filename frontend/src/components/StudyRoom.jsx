@@ -1,11 +1,145 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Users, User, X, MicOff, Video, VideoOff, Maximize, Minimize, Gift, UserPlus,
   Settings, MessageSquare, Calendar, ClipboardList, Mic,
   Search, AlertTriangle, Play, RefreshCw, VolumeX, Volume2, Monitor, Edit2, Send, Check
 } from 'lucide-react';
+import { Client } from '@stomp/stompjs';
+import SockJS from 'sockjs-client';
+import { OpenVidu } from 'openvidu-browser';
+import { useAuth } from '../hooks/useAuth';
+import { groupService, timerService, inquiryService } from '../services/api';
+
+function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = true }) {
+  const videoRef = React.useRef(null);
+  const [isSpeaking, setIsSpeaking] = React.useState(false);
+
+  useEffect(() => {
+    if (videoRef.current && stream && isCamOn) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream, isCamOn]);
+
+  useEffect(() => {
+    if (!stream || !isMicOn) {
+      setIsSpeaking(false);
+      return;
+    }
+
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      setIsSpeaking(false);
+      return;
+    }
+
+    let audioContext;
+    let source;
+    let analyser;
+    let intervalId;
+
+    try {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      source = audioContext.createMediaStreamSource(stream);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      intervalId = setInterval(() => {
+        if (audioTracks[0] && !audioTracks[0].enabled) {
+          setIsSpeaking(false);
+          return;
+        }
+
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / bufferLength;
+        // Average frequency volume threshold: 10
+        setIsSpeaking(average > 10);
+      }, 150);
+    } catch (e) {
+      console.warn("Failed to initialize audio speaking detector", e);
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+      if (source) source.disconnect();
+      if (analyser) analyser.disconnect();
+      if (audioContext && audioContext.state !== 'closed') {
+        audioContext.close();
+      }
+    };
+  }, [stream, isMicOn]);
+
+  const speakBorderColor = isSpeaking ? '#22C55E' : 'rgba(255,255,255,0.05)';
+  const speakBoxShadow = isSpeaking 
+    ? '0 0 20px rgba(34, 197, 94, 0.6), inset 0 0 15px rgba(34, 197, 94, 0.2)' 
+    : (isLocal ? '0 4px 15px rgba(0,0,0,0.2)' : '0 10px 30px rgba(0,0,0,0.3)');
+  const speakBorderWidth = isSpeaking ? '3px' : '1px';
+
+  if (!isCamOn || !stream) {
+    return (
+      <div style={{ position: 'relative', backgroundColor: '#1E293B', borderRadius: '16px', overflow: 'hidden', aspectRatio: '16/9', border: `${speakBorderWidth} solid ${speakBorderColor}`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: speakBoxShadow, transition: 'all 0.2s ease' }}>
+        <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+          <User size={32} color="#9CA3AF" />
+        </div>
+        <div style={{ position: 'absolute', bottom: '12px', left: '12px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)' }}>
+          <span style={{ color: 'white', fontSize: '13px', fontWeight: '600' }}>
+            {displayName} {isLocal ? '(나)' : ''}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#1E293B', borderRadius: '16px', overflow: 'hidden', aspectRatio: '16/9', border: `${speakBorderWidth} solid ${speakBorderColor}`, boxShadow: speakBoxShadow, transition: 'all 0.2s ease' }}>
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={isMuted}
+        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+      />
+      <div style={{ position: 'absolute', bottom: '12px', left: '12px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)' }}>
+        <span style={{ color: 'white', fontSize: '13px', fontWeight: '600' }}>
+          {displayName} {isLocal ? '(나)' : ''}
+        </span>
+      </div>
+    </div>
+  );
+}
 
 export default function StudyRoom({ study, onClose }) {
+  const { userId, user } = useAuth();
+  
+  const formatSecondsToStudyTime = (secs) => {
+    if (!secs && secs !== 0) return '-';
+    const hrs = Math.floor(secs / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    return `${hrs}시간 ${mins}분`;
+  };
+
+  const formatAttendanceTime = (isoString) => {
+    if (!isoString) return '-';
+    try {
+      const date = new Date(isoString);
+      const today = new Date();
+      const isToday = date.toDateString() === today.toDateString();
+      const formatted = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return isToday ? `오늘 ${formatted}` : `${date.getMonth() + 1}월 ${date.getDate()}일 ${formatted}`;
+    } catch {
+      return isoString;
+    }
+  };
+
+  const [members, setMembers] = useState([]);
+  const [applications, setApplications] = useState([]);
   const [activeTab, setActiveTab] = useState('chat');
   const [isMicOn, setIsMicOn] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(true);
@@ -15,7 +149,399 @@ export default function StudyRoom({ study, onClose }) {
   const [roomManageTab, setRoomManageTab] = useState('settings'); // 'settings' | 'members'
   const [showAdminReportModal, setShowAdminReportModal] = useState(false);
   const [adminReportTab, setAdminReportTab] = useState('inquiry'); // 'inquiry' | 'report'
+  const [reportUserId, setReportUserId] = useState('');
+  const [reportReasonType, setReportReasonType] = useState('욕설 / 비방 / 혐오 발언');
+  const [reportDetail, setReportDetail] = useState('');
+  const [inquiryType, setInquiryType] = useState('이용 문의');
+  const [inquiryTitle, setInquiryTitle] = useState('');
+  const [inquiryContent, setInquiryContent] = useState('');
   const [isCamFullScreen, setIsCamFullScreen] = useState(false);
+
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [stompClient, setStompClient] = useState(null);
+  
+  // AI Multi-Agent SSE Streaming Chat states
+  const [chatTab, setChatTab] = useState('normal'); // 'normal' | 'ai'
+  const [aiMessages, setAiMessages] = useState([]);
+  const [aiInput, setAiInput] = useState('');
+  const [isAiStreaming, setIsAiStreaming] = useState(false);
+  
+  const [activeQuiz, setActiveQuiz] = useState(null);
+  const [quizTimer, setQuizTimer] = useState(0);
+  const [quizScoreboard, setQuizScoreboard] = useState(null);
+  const [quizSelectedAnswer, setQuizSelectedAnswer] = useState(null);
+  const [quizHasSubmitted, setQuizHasSubmitted] = useState(false);
+  const [quizStartTime, setQuizStartTime] = useState(null);
+  const [quizIdInput, setQuizIdInput] = useState('1');
+  
+  const [session, setSession] = useState(null);
+  const [publisher, setPublisher] = useState(null);
+  const [subscribers, setSubscribers] = useState([]);
+
+  const myMember = members.find(m => Number(m.userId) === Number(userId));
+  const myDisplayName = user?.displayName || user?.nickname || `User_${userId}`;
+
+  const loadMembers = async () => {
+    try {
+      const data = await groupService.getMembers(study.id);
+      setMembers(data);
+    } catch (err) {
+      console.error('Failed to load members', err);
+    }
+  };
+
+  const loadApplications = async () => {
+    try {
+      if (Number(study.leaderId) === Number(userId)) {
+        const data = await groupService.getApplications(study.id);
+        setApplications(data);
+      }
+    } catch (err) {
+      console.error('Failed to load applications', err);
+    }
+  };
+
+  // 1. OpenVidu Video Call Lifecycle
+  useEffect(() => {
+    if (!study?.id || !userId) return;
+
+    let OVInstance = null;
+    let sessionInstance = null;
+    let isMounted = true;
+
+    async function joinSession() {
+      try {
+        const { token } = await groupService.getVideoToken(study.id);
+        if (!isMounted) return;
+
+        OVInstance = new OpenVidu();
+        sessionInstance = OVInstance.initSession();
+
+        sessionInstance.on('streamCreated', (event) => {
+          const subscriber = sessionInstance.subscribe(event.stream, undefined);
+          if (isMounted) {
+            setSubscribers(prev => [...prev, subscriber]);
+          }
+        });
+
+        sessionInstance.on('streamDestroyed', (event) => {
+          if (isMounted) {
+            setSubscribers(prev => prev.filter(sub => sub !== event.stream.streamManager));
+          }
+        });
+
+        sessionInstance.on('exception', (exception) => {
+          console.warn('OpenVidu Exception:', exception);
+        });
+
+        const connectionData = JSON.stringify({ userId: userId, clientData: myDisplayName });
+        await sessionInstance.connect(token, connectionData);
+        if (!isMounted) return;
+
+        setSession(sessionInstance);
+
+        const publisherInstance = await OVInstance.initPublisherAsync(undefined, {
+          audioSource: undefined,
+          videoSource: undefined,
+          publishAudio: isMicOn,
+          publishVideo: isVideoOn,
+          resolution: '640x480',
+          frameRate: 30,
+          insertMode: 'APPEND',
+          mirror: true
+        });
+
+        if (!isMounted) {
+          publisherInstance.dispose();
+          return;
+        }
+
+        await sessionInstance.publish(publisherInstance);
+        setPublisher(publisherInstance);
+
+      } catch (err) {
+        console.error('Failed to join OpenVidu video session:', err);
+      }
+    }
+
+    joinSession();
+
+    return () => {
+      isMounted = false;
+      if (sessionInstance) {
+        sessionInstance.disconnect();
+      }
+      setSession(null);
+      setPublisher(null);
+      setSubscribers([]);
+    };
+  }, [study?.id, userId, myDisplayName]);
+
+  // 2. Local Stream Track Publish Control Effects
+  useEffect(() => {
+    if (publisher) {
+      publisher.publishAudio(isMicOn);
+    }
+  }, [isMicOn, publisher]);
+
+  useEffect(() => {
+    if (publisher) {
+      publisher.publishVideo(isVideoOn);
+    }
+  }, [isVideoOn, publisher]);
+
+  // 3. STOMP & WebRTC Lifecycle
+  useEffect(() => {
+    if (!study?.id || !userId) return;
+
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
+    const serverURL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `${protocol}://${hostname}:9090`;
+
+    const token = localStorage.getItem('token');
+
+    const client = new Client({
+      webSocketFactory: () => new SockJS(`${serverURL}/ws-group`, null, { credentials: false }),
+      connectHeaders: {
+        Authorization: token ? `Bearer ${token}` : ''
+      },
+      reconnectDelay: 5000,
+      heartbeatIncoming: 4000,
+      heartbeatOutgoing: 4000,
+    });
+
+    client.onConnect = (frame) => {
+      console.log('Connected to group study socket: ' + frame);
+      
+      client.subscribe(`/topic/group/${study.id}/chat`, (message) => {
+        const payload = JSON.parse(message.body);
+        setChatMessages(prev => [...prev, payload]);
+      });
+
+      client.subscribe(`/topic/group/${study.id}/quiz/question`, (message) => {
+        const payload = JSON.parse(message.body);
+        console.log('Received quiz question:', payload);
+        setActiveQuiz(payload);
+        setQuizTimer(payload.timeLimitSeconds);
+        setQuizSelectedAnswer(null);
+        setQuizHasSubmitted(false);
+        setQuizStartTime(Date.now());
+        setQuizScoreboard(null);
+      });
+
+      client.subscribe(`/topic/group/${study.id}/quiz/scoreboard`, (message) => {
+        const payload = JSON.parse(message.body);
+        console.log('Received quiz scoreboard:', payload);
+        setQuizScoreboard(payload);
+      });
+
+    };
+
+    client.onStompError = (frame) => {
+      console.error('STOMP error', frame);
+    };
+
+    client.activate();
+    setStompClient(client);
+
+    return () => {
+      if (client) {
+        client.deactivate();
+      }
+    };
+  }, [study?.id, userId, myDisplayName]);
+
+  // 퀴즈 타이머 이펙트
+  useEffect(() => {
+    if (activeQuiz && quizTimer > 0 && !quizHasSubmitted) {
+      const interval = setInterval(() => {
+        setQuizTimer(prev => {
+          if (prev <= 1) {
+            handleQuizSubmit(-1);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [activeQuiz, quizTimer, quizHasSubmitted]);
+
+  const handleQuizSubmit = (answerIndex) => {
+    if (quizHasSubmitted || !activeQuiz || !stompClient || !stompClient.connected) return;
+
+    setQuizSelectedAnswer(answerIndex);
+    setQuizHasSubmitted(true);
+
+    const timeTaken = quizStartTime ? Math.round((Date.now() - quizStartTime) / 1000) : 5;
+
+    stompClient.publish({
+      destination: `/pub/group/${study.id}/quiz/submit`,
+      body: JSON.stringify({
+        userId: userId,
+        questionId: activeQuiz.questionId,
+        submittedAnswer: String(answerIndex),
+        timeTakenSeconds: timeTaken
+      })
+    });
+  };
+
+  const handleQuizStart = (quizId) => {
+    if (!stompClient || !stompClient.connected) {
+      showAlert('오류', '웹소켓 서버가 연결되어 있지 않습니다. 잠시 후 다시 시도해주세요.');
+      return;
+    }
+    if (!quizId) {
+      showAlert('오류', '퀴즈 ID를 입력해주세요.');
+      return;
+    }
+
+    stompClient.publish({
+      destination: `/pub/group/${study.id}/quiz/start`,
+      body: JSON.stringify({
+        quizId: Number(quizId)
+      })
+    });
+  };
+
+  const handleSendChat = () => {
+    if (!chatInput.trim() || !stompClient || !stompClient.connected) return;
+    
+    stompClient.publish({
+      destination: `/pub/group/${study.id}/chat`,
+      body: JSON.stringify({
+        senderId: userId,
+        senderName: myDisplayName,
+        content: chatInput
+      })
+    });
+    setChatInput('');
+  };
+
+  const handleSendAiMessage = async () => {
+    if (!aiInput.trim() || isAiStreaming) return;
+    
+    const userMsg = aiInput.trim();
+    setAiInput('');
+    setIsAiStreaming(true);
+    
+    // Add user message to state
+    const userMsgObj = {
+      id: Date.now(),
+      senderName: myDisplayName,
+      content: userMsg,
+      isUser: true
+    };
+    setAiMessages(prev => [...prev, userMsgObj]);
+    
+    const token = localStorage.getItem('token');
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `http://${hostname}:9090`;
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/groups/${study.id}/chats/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': token ? `Bearer ${token}` : ''
+        },
+        body: JSON.stringify({
+          message: userMsg,
+          mode: 'multi_agent_discussion',
+          rounds: 3,
+          showFinalSynthesis: true,
+          agents: [] // empty array defaults to Summary, Quiz, and Search agent
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`스트리밍 오류 (HTTP ${response.status})`);
+      }
+      
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep the last partial line in the buffer
+        
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          if (trimmed.startsWith('data:')) {
+            const dataStr = trimmed.slice(5).trim();
+            if (!dataStr) continue;
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (parsed.done) {
+                console.log("AI Stream done");
+                continue;
+              }
+              
+              if (parsed.agentName && parsed.content) {
+                setAiMessages(prev => {
+                  if (prev.length === 0) return prev;
+                  const lastMsg = prev[prev.length - 1];
+                  // If the last message is from the same agent, append text
+                  if (!lastMsg.isUser && lastMsg.senderName === parsed.agentName) {
+                    const updated = [...prev];
+                    updated[updated.length - 1] = {
+                      ...lastMsg,
+                      content: lastMsg.content + parsed.content
+                    };
+                    return updated;
+                  } else {
+                    // Create a new message from this agent
+                    return [
+                      ...prev,
+                      {
+                        id: Date.now() + Math.random(),
+                        senderName: parsed.agentName,
+                        content: parsed.content,
+                        isUser: false
+                      }
+                    ];
+                  }
+                });
+              }
+            } catch (jsonErr) {
+              console.warn("JSON parsing chunk error:", jsonErr, "dataStr:", dataStr);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("AI Stream connection error:", err);
+      setAiMessages(prev => [
+        ...prev,
+        {
+          id: Date.now() + 1,
+          senderName: 'System',
+          content: `오류가 발생했습니다: ${err.message || err}`,
+          isUser: false,
+          isError: true
+        }
+      ]);
+    } finally {
+      setIsAiStreaming(false);
+    }
+  };
+
+  useEffect(() => {
+    if (study?.id) {
+      loadMembers();
+      loadApplications();
+      timerService.syncTimer(study.id)
+        .then(() => console.log('Timer synced with group study room'))
+        .catch(err => console.error('Failed to sync timer:', err));
+    }
+  }, [study?.id, userId]);
 
   // 커스텀 모달 상태
   const [customAlert, setCustomAlert] = useState({
@@ -126,8 +652,11 @@ export default function StudyRoom({ study, onClose }) {
               <div onClick={() => setShowStatsModal(true)} style={{ padding: '10px', borderRadius: '12px', color: '#9CA3AF', cursor: 'pointer', transition: '0.2s', ':hover': { color: 'white', backgroundColor: 'rgba(255,255,255,0.1)' } }}>
                 <Calendar size={22} />
               </div>
-              <div onClick={() => setShowRoomManageModal(true)} style={{ padding: '10px', borderRadius: '12px', color: '#9CA3AF', cursor: 'pointer', transition: '0.2s', ':hover': { color: 'white', backgroundColor: 'rgba(255,255,255,0.1)' } }}>
+              <div onClick={() => { setRoomManageTab('settings'); setShowRoomManageModal(true); }} style={{ padding: '10px', borderRadius: '12px', color: '#9CA3AF', cursor: 'pointer', transition: '0.2s', ':hover': { color: 'white', backgroundColor: 'rgba(255,255,255,0.1)' } }}>
                 <ClipboardList size={22} />
+              </div>
+              <div onClick={() => { setRoomManageTab('quiz'); setShowRoomManageModal(true); }} style={{ padding: '10px', borderRadius: '12px', color: '#9CA3AF', cursor: 'pointer', transition: '0.2s', ':hover': { color: 'white', backgroundColor: 'rgba(255,255,255,0.1)' } }} title="실시간 퀴즈">
+                <Edit2 size={22} />
               </div>
             </div>
 
@@ -159,45 +688,39 @@ export default function StudyRoom({ study, onClose }) {
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', height: '100%', alignContent: 'start' }}>
 
-            {/* Slot 1: Active user */}
-            <div style={{ position: 'relative', backgroundColor: '#1E293B', borderRadius: '16px', overflow: 'hidden', aspectRatio: '16/9', border: '1px solid rgba(255,255,255,0.05)', boxShadow: '0 10px 30px rgba(0,0,0,0.3)' }}>
-              <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundImage: 'url(https://images.unsplash.com/photo-1516321318423-f06f85e504b3?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80)', backgroundSize: 'cover', backgroundPosition: 'center' }} />
+            {/* Local Video Feed */}
+            <VideoFeed
+              stream={publisher ? publisher.stream.mediaStream : null}
+              isLocal={true}
+              displayName={myDisplayName}
+              isMuted={true}
+              isCamOn={isVideoOn}
+              isMicOn={isMicOn}
+            />
 
-              <div style={{ position: 'absolute', top: '12px', left: '12px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', padding: '4px 10px', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '6px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#F87171', boxShadow: '0 0 8px #F87171' }} />
-                <span style={{ color: 'white', fontSize: '11px', fontWeight: '600' }}>00:10:35</span>
-              </div>
-
-              <div style={{ position: 'absolute', top: '12px', right: '12px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', padding: '4px 10px', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '6px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                <Play size={10} color="#60A5FA" />
-                <span style={{ color: 'white', fontSize: '11px', fontWeight: '600' }}>00:00:00</span>
-              </div>
-
-              <div style={{ position: 'absolute', bottom: '0', left: '0', right: '0', padding: '24px 12px 12px', background: 'linear-gradient(to top, rgba(0,0,0,0.8), transparent)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-                <span style={{ color: 'white', fontSize: '14px', fontWeight: '600', textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>mindcontrol</span>
-                <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.2)', padding: '6px', borderRadius: '50%', backdropFilter: 'blur(4px)' }}>
-                  <MicOff size={14} color="#F87171" />
-                </div>
-              </div>
-            </div>
-
-            {/* Slot 2: Camera Off */}
-            <div style={{ position: 'relative', backgroundColor: '#1E293B', borderRadius: '16px', overflow: 'hidden', aspectRatio: '16/9', border: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 15px rgba(0,0,0,0.2)' }}>
-              <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
-                <User size={32} color="#9CA3AF" />
-              </div>
-              <div style={{ position: 'absolute', bottom: '0', left: '0', right: '0', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: 'rgba(15, 23, 42, 0.6)', padding: '4px 12px', borderRadius: '20px' }}>
-                  <span style={{ color: '#FCD34D', fontSize: '13px', fontWeight: '600' }}>잠재용</span>
-                </div>
-                <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.2)', padding: '6px', borderRadius: '50%' }}>
-                  <MicOff size={14} color="#F87171" />
-                </div>
-              </div>
-            </div>
+            {/* Remote Peer Video Feeds */}
+            {subscribers.map(sub => {
+              let displayName = '알 수 없음';
+              try {
+                const connectionData = JSON.parse(sub.stream.connection.data);
+                displayName = connectionData.clientData || '알 수 없음';
+              } catch (e) {
+                // fallback
+              }
+              return (
+                <VideoFeed
+                  key={sub.stream.streamId}
+                  stream={sub.stream.mediaStream}
+                  isLocal={false}
+                  displayName={displayName}
+                  isMuted={false}
+                  isCamOn={sub.stream.videoActive}
+                />
+              );
+            })}
 
             {/* Empty Slots */}
-            {Array.from({ length: 14 }).map((_, i) => (
+            {Array.from({ length: Math.max(0, (study.maxMembers || 16) - 1 - subscribers.length) }).map((_, i) => (
               <div key={i} style={{ backgroundColor: 'rgba(30, 41, 59, 0.3)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '16/9', border: '1px dashed rgba(255,255,255,0.1)' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', opacity: 0.3 }}>
                   <Monitor size={36} color="#9CA3AF" />
@@ -226,66 +749,241 @@ export default function StudyRoom({ study, onClose }) {
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px', borderRadius: '12px', backgroundColor: 'rgba(255,255,255,0.02)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundImage: 'url(https://images.unsplash.com/photo-1534528741775-53994a69daeb?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80)', backgroundSize: 'cover', border: '2px solid #3B82F6' }} />
-                    <span style={{ fontSize: '13px', color: '#E5E7EB', fontWeight: '500' }}>mindcontrol</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <Video size={14} color="#9CA3AF" />
-                    <MicOff size={14} color="#F87171" />
-                  </div>
-                </div>
+                {members.map(member => {
+                  const isMe = Number(member.userId) === Number(userId);
+                  let isUserMicOn = false;
+                  let isUserVideoOn = false;
 
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px', borderRadius: '12px', backgroundColor: 'rgba(255,255,255,0.02)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <User size={16} color="#9CA3AF" />
+                  if (isMe) {
+                    isUserMicOn = isMicOn;
+                    isUserVideoOn = isVideoOn;
+                  } else {
+                    const sub = subscribers.find(s => {
+                      try {
+                        const connData = JSON.parse(s.stream.connection.data);
+                        return Number(connData.userId) === Number(member.userId);
+                      } catch (e) {
+                        return false;
+                      }
+                    });
+                    if (sub) {
+                      isUserMicOn = sub.stream.audioActive;
+                      isUserVideoOn = sub.stream.videoActive;
+                    }
+                  }
+
+                  return (
+                    <div key={member.userId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px', borderRadius: '12px', backgroundColor: 'rgba(255,255,255,0.02)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: member.role === 'LEADER' ? '#3B82F6' : '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: '700', color: 'white' }}>
+                          {member.displayName ? member.displayName.charAt(0) : 'U'}
+                        </div>
+                        <span style={{ fontSize: '13px', color: '#E5E7EB', fontWeight: '500' }}>
+                          {member.displayName} {isMe ? '(나)' : ''}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        {isUserVideoOn ? (
+                          <Video size={14} color="#10B981" />
+                        ) : (
+                          <VideoOff size={14} color="#EF4444" />
+                        )}
+                        {isUserMicOn ? (
+                          <Mic size={14} color="#10B981" />
+                        ) : (
+                          <MicOff size={14} color="#EF4444" />
+                        )}
+                      </div>
                     </div>
-                    <span style={{ fontSize: '13px', color: '#E5E7EB', fontWeight: '500' }}>잠재용</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <Video size={14} color="#9CA3AF" />
-                    <MicOff size={14} color="#F87171" />
-                  </div>
-                </div>
+                  );
+                })}
+                {members.length === 0 && (
+                  <div style={{ color: '#9CA3AF', fontSize: '12px', textAlign: 'center', padding: '20px 0' }}>참여자가 없습니다.</div>
+                )}
               </div>
             </div>
 
             {/* Chat Area */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#111827' }}>
-              <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '14px', fontWeight: '700', color: '#F3F4F6' }}>채팅</span>
+              
+              {/* Chat Tabs */}
+              <div style={{ padding: '0 20px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', gap: '16px', backgroundColor: '#0F172A' }}>
+                <button
+                  onClick={() => setChatTab('normal')}
+                  style={{
+                    padding: '14px 0',
+                    border: 'none',
+                    background: 'none',
+                    color: chatTab === 'normal' ? '#3B82F6' : '#9CA3AF',
+                    borderBottom: chatTab === 'normal' ? '2px solid #3B82F6' : '2px solid transparent',
+                    fontSize: '14px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    outline: 'none'
+                  }}
+                >
+                  일반 채팅
+                </button>
+                <button
+                  onClick={() => setChatTab('ai')}
+                  style={{
+                    padding: '14px 0',
+                    border: 'none',
+                    background: 'none',
+                    color: chatTab === 'ai' ? '#3B82F6' : '#9CA3AF',
+                    borderBottom: chatTab === 'ai' ? '2px solid #3B82F6' : '2px solid transparent',
+                    fontSize: '14px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    outline: 'none'
+                  }}
+                >
+                  AI 토론 (SSE)
+                </button>
               </div>
 
-              <div className="custom-scrollbar" style={{ flex: 1, padding: '20px', overflowY: 'auto' }}>
-                {/* Notice Box */}
-                <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F87171', fontSize: '13px', fontWeight: '700', marginBottom: '8px' }}>
-                    <AlertTriangle size={16} /> 서비스 이용 안내
-                  </div>
-                  <div style={{ color: '#FCA5A5', fontSize: '12px', lineHeight: '1.6', wordBreak: 'keep-all' }}>
-                    불건전한 행동이나 욕설 발견 시 즉각 강제 퇴장 및 계정 정지 조치가 이루어질 수 있습니다. 모두가 집중할 수 있는 분위기를 만들어주세요.
-                  </div>
-                </div>
-              </div>
+              {chatTab === 'normal' ? (
+                <>
+                  <div className="custom-scrollbar" style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {/* Notice Box */}
+                    <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F87171', fontSize: '13px', fontWeight: '700', marginBottom: '8px' }}>
+                        <AlertTriangle size={16} /> 서비스 이용 안내
+                      </div>
+                      <div style={{ color: '#FCA5A5', fontSize: '12px', lineHeight: '1.6', wordBreak: 'keep-all' }}>
+                        불건전한 행동이나 욕설 발견 시 즉각 강제 퇴장 및 계정 정지 조치가 이루어질 수 있습니다. 모두가 집중할 수 있는 분위기를 만들어주세요.
+                      </div>
+                    </div>
 
-              {/* Chat Input */}
-              <div style={{ padding: '20px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: '24px', padding: '8px 16px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                  <div style={{ fontSize: '13px', color: '#9CA3AF', paddingRight: '12px', borderRight: '1px solid rgba(255,255,255,0.1)', marginRight: '12px', display: 'flex', alignItems: 'center', gap: '6px', height: '20px', whiteSpace: 'nowrap' }}>
-                    전체 <span style={{ fontSize: '8px', opacity: 0.8 }}>▼</span>
+                    {/* Chat Messages */}
+                    {chatMessages.map((msg, idx) => (
+                      <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignSelf: Number(msg.senderId) === Number(userId) ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
+                        <span style={{ fontSize: '11px', color: '#9CA3AF', alignSelf: Number(msg.senderId) === Number(userId) ? 'flex-end' : 'flex-start' }}>
+                          {msg.senderName}
+                        </span>
+                        <div style={{
+                          backgroundColor: Number(msg.senderId) === Number(userId) ? '#22C55E' : '#1E293B',
+                          color: 'white',
+                          padding: '8px 12px',
+                          borderRadius: Number(msg.senderId) === Number(userId) ? '12px 12px 0 12px' : '12px 12px 12px 0',
+                          fontSize: '13px',
+                          lineHeight: '1.4',
+                          wordBreak: 'break-all'
+                        }}>
+                          {msg.content}
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                  <input
-                    type="text"
-                    placeholder="메시지 입력..."
-                    style={{ flex: 1, border: 'none', outline: 'none', fontSize: '13px', color: '#F3F4F6', backgroundColor: 'transparent', height: '20px', lineHeight: '20px', padding: 0, margin: 0 }}
-                  />
-                  <button style={{ background: 'linear-gradient(135deg, #22C55E, #16A34A)', border: 'none', width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginLeft: '8px', boxShadow: '0 2px 8px rgba(34, 197, 94, 0.3)' }}>
-                    <Send size={14} color="white" style={{ marginLeft: '-2px', marginTop: '2px' }} />
-                  </button>
-                </div>
-              </div>
+
+                  {/* Chat Input */}
+                  <div style={{ padding: '20px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: '24px', padding: '8px 16px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                      <div style={{ fontSize: '13px', color: '#9CA3AF', paddingRight: '12px', borderRight: '1px solid rgba(255,255,255,0.1)', marginRight: '12px', display: 'flex', alignItems: 'center', gap: '6px', height: '20px', whiteSpace: 'nowrap' }}>
+                        전체 <span style={{ fontSize: '8px', opacity: 0.8 }}>▼</span>
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="메시지 입력..."
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSendChat();
+                        }}
+                        style={{ flex: 1, border: 'none', outline: 'none', fontSize: '13px', color: '#F3F4F6', backgroundColor: 'transparent', height: '20px', lineHeight: '20px', padding: 0, margin: 0 }}
+                      />
+                      <button
+                        onClick={handleSendChat}
+                        style={{ background: 'linear-gradient(135deg, #22C55E, #16A34A)', border: 'none', width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginLeft: '8px', boxShadow: '0 2px 8px rgba(34, 197, 94, 0.3)' }}
+                      >
+                        <Send size={14} color="white" style={{ marginLeft: '-2px', marginTop: '2px' }} />
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="custom-scrollbar" style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    {/* Notice Box */}
+                    <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#60A5FA', fontSize: '13px', fontWeight: '700', marginBottom: '8px' }}>
+                        <AlertTriangle size={16} /> AI 토론 안내
+                      </div>
+                      <div style={{ color: '#93C5FD', fontSize: '12px', lineHeight: '1.6', wordBreak: 'keep-all' }}>
+                        에이전트들에게 질문하면 요약봇, 퀴즈봇, 검색봇 등 다중 에이전트들이 실시간으로 토론하며 솔루션을 탐색합니다.
+                      </div>
+                    </div>
+
+                    {/* AI Chat Messages */}
+                    {aiMessages.map((msg) => {
+                      const isMe = msg.isUser;
+                      let colors = { bg: '#1E293B', border: 'rgba(255,255,255,0.08)', text: '#E5E7EB' };
+                      if (msg.senderName === 'SummaryAgent') {
+                        colors = { bg: '#1E3A8A', border: '#3B82F6', text: '#93C5FD' };
+                      } else if (msg.senderName === 'QuizAgent') {
+                        colors = { bg: '#064E3B', border: '#10B981', text: '#A7F3D0' };
+                      } else if (msg.senderName === 'SearchAgent') {
+                        colors = { bg: '#581C87', border: '#8B5CF6', text: '#DDD6FE' };
+                      } else if (msg.isUser) {
+                        colors = { bg: '#16A34A', border: '#22C55E', text: '#FFFFFF' };
+                      }
+                      
+                      return (
+                        <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignSelf: isMe ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
+                          <span style={{ fontSize: '11px', color: '#9CA3AF', alignSelf: isMe ? 'flex-end' : 'flex-start', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            {!isMe && <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: colors.border }} />}
+                            {msg.senderName}
+                          </span>
+                          <div style={{
+                            backgroundColor: colors.bg,
+                            color: colors.text,
+                            border: `1px solid ${colors.border}`,
+                            padding: '10px 14px',
+                            borderRadius: isMe ? '16px 16px 0 16px' : '16px 16px 16px 0',
+                            fontSize: '13px',
+                            lineHeight: '1.5',
+                            wordBreak: 'break-all',
+                            boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                          }}>
+                            {msg.content}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    
+                    {isAiStreaming && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#9CA3AF', fontSize: '12px', paddingLeft: '8px' }}>
+                        <RefreshCw size={14} className="animate-spin" style={{ animation: 'spin 1.5s linear infinite' }} />
+                        <span>AI 에이전트들이 답변을 스트리밍하고 있습니다...</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* AI Input */}
+                  <div style={{ padding: '20px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: '24px', padding: '8px 16px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                      <input
+                        type="text"
+                        placeholder="AI에게 질문해보세요..."
+                        value={aiInput}
+                        onChange={(e) => setAiInput(e.target.value)}
+                        disabled={isAiStreaming}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSendAiMessage();
+                        }}
+                        style={{ flex: 1, border: 'none', outline: 'none', fontSize: '13px', color: '#F3F4F6', backgroundColor: 'transparent', height: '20px', lineHeight: '20px', padding: 0, margin: 0, opacity: isAiStreaming ? 0.6 : 1 }}
+                      />
+                      <button
+                        onClick={handleSendAiMessage}
+                        disabled={isAiStreaming || !aiInput.trim()}
+                        style={{ background: isAiStreaming ? '#4B5563' : 'linear-gradient(135deg, #3B82F6, #2563EB)', border: 'none', width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: isAiStreaming ? 'not-allowed' : 'pointer', marginLeft: '8px', boxShadow: isAiStreaming ? 'none' : '0 2px 8px rgba(59, 130, 246, 0.3)' }}
+                      >
+                        <Send size={14} color="white" style={{ marginLeft: '-2px', marginTop: '2px' }} />
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -377,24 +1075,33 @@ export default function StudyRoom({ study, onClose }) {
                 <thead>
                   <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: '#9CA3AF', fontSize: '13px' }}>
                     <th style={{ padding: '16px 32px', fontWeight: '500' }}>이름</th>
-                    <th style={{ padding: '16px 16px', fontWeight: '500' }}>최근 출석시간</th>
-                    <th style={{ padding: '16px 16px', fontWeight: '500' }}>일주일 출석시간</th>
-                    <th style={{ padding: '16px 32px', fontWeight: '500' }}>평균 출석시간</th>
+                    <th style={{ padding: '16px 16px', fontWeight: '500' }}>역할</th>
+                    <th style={{ padding: '16px 16px', fontWeight: '500' }}>획득 포인트</th>
+                    <th style={{ padding: '16px 32px', fontWeight: '500' }}>가입일</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.02)', backgroundColor: 'rgba(255,255,255,0.02)' }}>
-                    <td style={{ padding: '16px 32px', color: '#60A5FA', fontWeight: '600', fontSize: '14px' }}>mindcontrol (나)</td>
-                    <td style={{ padding: '16px 16px', color: '#E5E7EB', fontSize: '14px' }}>오늘 09:30</td>
-                    <td style={{ padding: '16px 16px', color: '#E5E7EB', fontSize: '14px' }}>32시간 15분</td>
-                    <td style={{ padding: '16px 32px', color: '#E5E7EB', fontSize: '14px' }}>4시간 30분</td>
-                  </tr>
-                  <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                    <td style={{ padding: '16px 32px', color: '#3B82F6', fontWeight: '600', fontSize: '14px' }}>잠재용</td>
-                    <td style={{ padding: '16px 16px', color: '#9CA3AF', fontSize: '14px' }}>어제 22:10</td>
-                    <td style={{ padding: '16px 16px', color: '#E5E7EB', fontSize: '14px' }}>14시간 50분</td>
-                    <td style={{ padding: '16px 32px', color: '#E5E7EB', fontSize: '14px' }}>2시간 10분</td>
-                  </tr>
+                  {members.map(member => (
+                    <tr key={member.userId} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)', backgroundColor: Number(member.userId) === Number(userId) ? 'rgba(255, 255, 255, 0.02)' : 'transparent' }}>
+                      <td style={{ padding: '16px 32px', color: Number(member.userId) === Number(userId) ? '#60A5FA' : '#E5E7EB', fontWeight: '600', fontSize: '14px' }}>
+                        {member.displayName} {Number(member.userId) === Number(userId) ? '(나)' : ''}
+                      </td>
+                      <td style={{ padding: '16px 16px', color: '#9CA3AF', fontSize: '14px' }}>
+                        {member.role === 'LEADER' ? '방장' : '그룹원'}
+                      </td>
+                      <td style={{ padding: '16px 16px', color: '#E5E7EB', fontSize: '14px' }}>
+                        {member.points || 0} 점
+                      </td>
+                      <td style={{ padding: '16px 32px', color: '#E5E7EB', fontSize: '14px' }}>
+                        {member.joinedAt ? new Date(member.joinedAt).toLocaleDateString() : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                  {members.length === 0 && (
+                    <tr>
+                      <td colSpan="4" style={{ padding: '32px', textStyle: 'center', color: '#9CA3AF' }}>가입된 멤버가 없습니다.</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -426,9 +1133,15 @@ export default function StudyRoom({ study, onClose }) {
                   style={{ padding: '16px 24px', borderBottom: roomManageTab === 'applications' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'applications' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s', display: 'flex', alignItems: 'center', gap: '6px' }}
                   onClick={() => setRoomManageTab('applications')}
                 >
-                  가입 신청 관리 <span style={{ backgroundColor: '#EF4444', color: 'white', fontSize: '11px', padding: '2px 6px', borderRadius: '10px' }}>2</span>
+                  가입 신청 관리 <span style={{ backgroundColor: '#EF4444', color: 'white', fontSize: '11px', padding: '2px 6px', borderRadius: '10px' }}>{applications.length}</span>
                 </div>
               )}
+              <div
+                style={{ padding: '16px 24px', borderBottom: roomManageTab === 'quiz' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'quiz' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
+                onClick={() => setRoomManageTab('quiz')}
+              >
+                실시간 퀴즈
+              </div>
               <div style={{ flex: 1 }} />
               <div style={{ padding: '0 20px', cursor: 'pointer' }} onClick={() => setShowRoomManageModal(false)}>
                 <X size={20} color="#9CA3AF" />
@@ -507,62 +1220,118 @@ export default function StudyRoom({ study, onClose }) {
                     <thead>
                       <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: '#9CA3AF', fontSize: '13px', fontWeight: '500' }}>
                         <th style={{ padding: '12px 16px', fontWeight: '500' }}>이름</th>
-                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>최근 출석시간</th>
-                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>최근 공부시간</th>
-                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>누적 공부시간</th>
-                        <th style={{ padding: '12px 16px', fontWeight: '500' }}></th>
+                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>최근 출석 시간</th>
+                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>최근 공부 시간</th>
+                        <th style={{ padding: '12px 16px', fontWeight: '500' }}>누적 공부 시간</th>
+                        <th style={{ padding: '12px 16px', fontWeight: '500', textAlign: 'right' }}>관리</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {/* 방장 */}
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                        <td style={{ padding: '16px' }}>
-                          <div style={{ color: '#3B82F6', fontWeight: '600', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#3B82F6', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>M</div>
-                            mindcontrol (나)
-                          </div>
-                        </td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>오늘 09:30</td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>1시간 20분</td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>32시간 15분</td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '13px', fontWeight: '500', textAlign: 'right' }}>방장</td>
-                      </tr>
-                      {/* 일반 멤버 */}
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                        <td style={{ padding: '16px' }}>
-                          <div style={{ color: '#F3F4F6', fontWeight: '500', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#6366F1', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>잠</div>
-                            잠재용
-                          </div>
-                        </td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>어제 22:10</td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>0시간</td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>14시간 50분</td>
-                        <td style={{ padding: '16px', textAlign: 'right' }}>
-                          <button style={{ padding: '6px 12px', backgroundColor: 'rgba(239,68,68,0.1)', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.2)', fontSize: '12px', fontWeight: '600', cursor: 'pointer', transition: '0.2s' }} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.2)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.1)'; }}>
-                            강제 퇴장
-                          </button>
-                        </td>
-                      </tr>
-                      {/* AI 에이전트 */}
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                        <td style={{ padding: '16px' }}>
-                          <div style={{ color: '#F3F4F6', fontWeight: '500', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#10B981', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>S</div>
-                            StudyMate
-                          </div>
-                        </td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '14px' }}>-</td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '14px' }}>-</td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '14px' }}>-</td>
-                        <td style={{ padding: '16px', textAlign: 'right' }}>
-                          <button style={{ padding: '6px 12px', backgroundColor: 'rgba(239,68,68,0.1)', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.2)', fontSize: '12px', fontWeight: '600', cursor: 'pointer', transition: '0.2s' }} onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.2)'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.1)'; }}>
-                            강제 퇴장
-                          </button>
-                        </td>
-                      </tr>
+                      {members.map(member => {
+                        const isLeader = member.role === 'LEADER';
+                        const isMe = Number(member.userId) === Number(userId);
+                        return (
+                          <tr key={member.userId} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                            <td style={{ padding: '16px' }}>
+                              <div style={{ color: isLeader ? '#3B82F6' : '#F3F4F6', fontWeight: isLeader ? '600' : '500', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: isLeader ? '#3B82F6' : '#6366F1', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
+                                  {member.displayName ? member.displayName.charAt(0) : 'U'}
+                                </div>
+                                {member.displayName} {isMe ? '(나)' : ''}
+                              </div>
+                            </td>
+                            <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>
+                              {formatAttendanceTime(member.recentAttendanceTime)}
+                            </td>
+                            <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>
+                              {formatSecondsToStudyTime(member.recentStudyTimeSeconds)}
+                            </td>
+                            <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '14px' }}>
+                              {formatSecondsToStudyTime(member.cumulativeStudyTimeSeconds)}
+                            </td>
+                            <td style={{ padding: '16px', textAlign: 'right' }}>
+                              {isLeader ? (
+                                <span style={{ color: '#9CA3AF', fontSize: '13px', fontWeight: '500' }}>방장</span>
+                              ) : (
+                                Number(study.leaderId) === Number(userId) && (
+                                  <button
+                                    onClick={async () => {
+                                      if (window.confirm(`${member.displayName} 멤버를 정말로 강제 퇴장시키겠습니까?`)) {
+                                        try {
+                                          await groupService.kickMember(study.id, member.userId);
+                                          showAlert('알림', '멤버가 강제 퇴장 처리되었습니다.', () => {
+                                            loadMembers();
+                                          });
+                                        } catch (err) {
+                                          showAlert('오류', err.response?.data?.message || '강제 퇴장에 실패했습니다.');
+                                        }
+                                      }
+                                    }}
+                                    style={{ padding: '6px 12px', backgroundColor: 'rgba(239,68,68,0.1)', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.2)', fontSize: '12px', fontWeight: '600', cursor: 'pointer', transition: '0.2s' }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.2)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.1)'; }}
+                                  >
+                                    강제 퇴장
+                                  </button>
+                                )
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {members.length === 0 && (
+                        <tr>
+                          <td colSpan="5" style={{ padding: '32px', textAlign: 'center', color: '#9CA3AF' }}>참여 멤버가 없습니다.</td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
+                </div>
+              ) : roomManageTab === 'quiz' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '8px 0' }}>
+                  <div style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '20px' }}>
+                    <h3 style={{ margin: '0 0 8px 0', fontSize: '16px', color: '#F3F4F6', fontWeight: '700' }}>실시간 웹소켓 퀴즈 출제</h3>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#9CA3AF', lineHeight: '1.5' }}>
+                      스터디에 등록된 PDF 학습자료를 바탕으로 AI가 생성한 퀴즈를 출제할 수 있습니다.<br />
+                      퀴즈를 시작하면 그룹 방에 접속한 모든 멤버의 화면에 실시간으로 퀴즈 팝업이 노출되며,<br />
+                      문제를 풀 때 남은 시간에 비례하여 스터디 포인트가 자동 가산됩니다.
+                    </p>
+                  </div>
+
+                  {Number(study.leaderId) === Number(userId) ? (
+                    <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.05)', border: '1px solid rgba(59, 130, 246, 0.1)', borderRadius: '12px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                        <div style={{ width: '120px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px' }}>퀴즈 번호 (ID)</div>
+                        <input
+                          type="number"
+                          min="1"
+                          value={quizIdInput}
+                          onChange={(e) => setQuizIdInput(e.target.value)}
+                          placeholder="퀴즈 ID (예: 1)"
+                          style={{ width: '120px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '10px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }}
+                        />
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+                        <button
+                          onClick={() => {
+                            handleQuizStart(quizIdInput);
+                            setShowRoomManageModal(false);
+                          }}
+                          style={{ padding: '12px 24px', backgroundColor: '#3B82F6', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '700', cursor: 'pointer', transition: '0.2s', boxShadow: '0 4px 12px rgba(59,130,246,0.3)', display: 'flex', alignItems: 'center', gap: '8px' }}
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2563EB'}
+                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#3B82F6'}
+                        >
+                          <Play size={16} fill="white" /> 실시간 퀴즈 시작 (방 전체 공유)
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', padding: '40px 0', opacity: 0.8 }}>
+                      <AlertTriangle size={36} color="#F59E0B" />
+                      <div style={{ color: '#E5E7EB', fontSize: '14px', fontWeight: '600' }}>퀴즈 시작 권한이 없습니다.</div>
+                      <div style={{ color: '#9CA3AF', fontSize: '12px' }}>실시간 퀴즈는 스터디 방장(Leader)만 출제할 수 있습니다.</div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div style={{ width: '100%', overflowX: 'auto', padding: '8px 0' }}>
@@ -596,50 +1365,70 @@ export default function StudyRoom({ study, onClose }) {
                       </tr>
                     </thead>
                     <tbody>
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                        <td style={{ padding: '16px' }}>
-                          <div style={{ color: '#F3F4F6', fontWeight: '500', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <div style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: '#8B5CF6', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px' }}>합</div>
-                            합격기원1일차
-                          </div>
-                        </td>
-                        <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '13px', lineHeight: '1.5' }}>
-                          안녕하세요! 매일 아침 9시부터 밤 11시까지 풀타임으로 공부할 예정입니다. 절대 지각 결석 안 합니다! 꼭 받아주세요.
-                        </td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '13px' }}>오늘 14:30</td>
-                        <td style={{ padding: '16px', textAlign: 'center' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                            <button onClick={() => showAlert('알림', '승인되었습니다.')} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(34,197,94,0.1)', color: '#22C55E', borderRadius: '6px', border: '1px solid rgba(34,197,94,0.2)', cursor: 'pointer', transition: '0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(34,197,94,0.2)'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(34,197,94,0.1)'} title="승인">
-                              <Check size={16} />
-                            </button>
-                            <button onClick={() => showAlert('알림', '거절되었습니다.')} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(239,68,68,0.1)', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer', transition: '0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.2)'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.1)'} title="거절">
-                              <X size={16} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                        <td style={{ padding: '16px' }}>
-                          <div style={{ color: '#F3F4F6', fontWeight: '500', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <div style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: '#F59E0B', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px' }}>P</div>
-                            PythonMaster
-                          </div>
-                        </td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '13px', fontStyle: 'italic' }}>
-                          (메시지 없음)
-                        </td>
-                        <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '13px' }}>어제 22:15</td>
-                        <td style={{ padding: '16px', textAlign: 'center' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                            <button onClick={() => showAlert('알림', '승인되었습니다.')} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(34,197,94,0.1)', color: '#22C55E', borderRadius: '6px', border: '1px solid rgba(34,197,94,0.2)', cursor: 'pointer', transition: '0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(34,197,94,0.2)'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(34,197,94,0.1)'} title="승인">
-                              <Check size={16} />
-                            </button>
-                            <button onClick={() => showAlert('알림', '거절되었습니다.')} style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(239,68,68,0.1)', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer', transition: '0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.2)'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.1)'} title="거절">
-                              <X size={16} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
+                      {applications.map(app => (
+                        <tr key={app.applicationId} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                          <td style={{ padding: '16px' }}>
+                            <div style={{ color: '#F3F4F6', fontWeight: '500', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <div style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: '#8B5CF6', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px' }}>
+                                {app.applicantName ? app.applicantName.charAt(0) : 'U'}
+                              </div>
+                              {app.applicantName}
+                            </div>
+                          </td>
+                          <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '13px', lineHeight: '1.5' }}>
+                            {app.introduction || <span style={{ fontStyle: 'italic', color: '#9CA3AF' }}>(메시지 없음)</span>}
+                          </td>
+                          <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '13px' }}>
+                            {app.createdAt ? new Date(app.createdAt).toLocaleDateString() : '-'}
+                          </td>
+                          <td style={{ padding: '16px', textAlign: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    await groupService.approveApplication(app.applicationId);
+                                    showAlert('알림', '가입이 승인되었습니다.', () => {
+                                      loadApplications();
+                                      loadMembers();
+                                    });
+                                  } catch (err) {
+                                    showAlert('오류', err.response?.data?.message || '승인에 실패했습니다.');
+                                  }
+                                }}
+                                style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(34,197,94,0.1)', color: '#22C55E', borderRadius: '6px', border: '1px solid rgba(34,197,94,0.2)', cursor: 'pointer', transition: '0.2s' }}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(34,197,94,0.2)'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(34,197,94,0.1)'}
+                                title="승인"
+                              >
+                                <Check size={16} />
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    await groupService.rejectApplication(app.applicationId);
+                                    showAlert('알림', '가입이 거절되었습니다.', () => {
+                                      loadApplications();
+                                    });
+                                  } catch (err) {
+                                    showAlert('오류', err.response?.data?.message || '거절에 실패했습니다.');
+                                  }
+                                }}
+                                style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(239,68,68,0.1)', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer', transition: '0.2s' }}
+                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.2)'}
+                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.1)'}
+                                title="거절"
+                              >
+                                <X size={16} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {applications.length === 0 && (
+                        <tr>
+                          <td colSpan="4" style={{ padding: '32px', textAlign: 'center', color: '#9CA3AF' }}>대기 중인 가입 신청이 없습니다.</td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -698,7 +1487,11 @@ export default function StudyRoom({ study, onClose }) {
                   {/* 문의 카테고리 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>문의 유형</div>
-                    <select style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}>
+                    <select 
+                      value={inquiryType}
+                      onChange={(e) => setInquiryType(e.target.value)}
+                      style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}
+                    >
                       <option>이용 문의</option>
                       <option>버그 및 오류 신고</option>
                       <option>기타</option>
@@ -708,13 +1501,24 @@ export default function StudyRoom({ study, onClose }) {
                   {/* 제목 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>제목</div>
-                    <input type="text" placeholder="문의 제목을 입력하세요." style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }} />
+                    <input 
+                      type="text" 
+                      placeholder="문의 제목을 입력하세요." 
+                      value={inquiryTitle}
+                      onChange={(e) => setInquiryTitle(e.target.value)}
+                      style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }} 
+                    />
                   </div>
 
                   {/* 내용 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>문의 내용</div>
-                    <textarea placeholder="문의하실 내용을 상세히 적어주세요.&#13;&#10;최대한 빠르고 정확하게 답변해 드리겠습니다." style={{ width: '100%', boxSizing: 'border-box', height: '160px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }} />
+                    <textarea 
+                      placeholder="문의하실 내용을 상세히 적어주세요.&#13;&#10;최대한 빠르고 정확하게 답변해 드리겠습니다." 
+                      value={inquiryContent}
+                      onChange={(e) => setInquiryContent(e.target.value)}
+                      style={{ width: '100%', boxSizing: 'border-box', height: '160px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }} 
+                    />
                   </div>
                 </>
               ) : (
@@ -722,28 +1526,42 @@ export default function StudyRoom({ study, onClose }) {
                   {/* 신고 대상 */}
                   <div>
                     <div style={{ color: '#EF4444', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>신고할 유저</div>
-                    <select style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}>
+                    <select
+                      value={reportUserId}
+                      onChange={(e) => setReportUserId(e.target.value)}
+                      style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}
+                    >
                       <option value="">신고할 멤버를 선택하세요</option>
-                      <option value="user1">잠재용</option>
-                      <option value="user2">StudyMate (AI 에이전트)</option>
+                      {members.filter(m => Number(m.userId) !== Number(userId)).map(m => (
+                        <option key={m.userId} value={m.userId}>{m.displayName}</option>
+                      ))}
                     </select>
                   </div>
 
                   {/* 신고 사유 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>신고 사유</div>
-                    <select style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}>
-                      <option>욕설 / 비방 / 혐오 발언</option>
-                      <option>도배 및 스팸</option>
-                      <option>부적절한 프로필 또는 닉네임</option>
-                      <option>기타 (직접 작성)</option>
+                    <select
+                      value={reportReasonType}
+                      onChange={(e) => setReportReasonType(e.target.value)}
+                      style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}
+                    >
+                      <option value="욕설 / 비방 / 혐오 발언">욕설 / 비방 / 혐오 발언</option>
+                      <option value="도배 및 스팸">도배 및 스팸</option>
+                      <option value="부적절한 프로필 또는 닉네임">부적절한 프로필 또는 닉네임</option>
+                      <option value="기타 (직접 작성)">기타 (직접 작성)</option>
                     </select>
                   </div>
 
                   {/* 내용 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>상세 사유</div>
-                    <textarea placeholder="신고 사유를 상세히 적어주세요.&#13;&#10;허위 신고 시 서비스 이용에 불이익을 받을 수 있습니다." style={{ width: '100%', boxSizing: 'border-box', height: '160px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }} />
+                    <textarea
+                      placeholder="신고 사유를 상세히 적어주세요.&#13;&#10;허위 신고 시 서비스 이용에 불이익을 받을 수 있습니다."
+                      value={reportDetail}
+                      onChange={(e) => setReportDetail(e.target.value)}
+                      style={{ width: '100%', boxSizing: 'border-box', height: '160px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }}
+                    />
                   </div>
                 </>
               )}
@@ -763,7 +1581,44 @@ export default function StudyRoom({ study, onClose }) {
                 style={{ padding: '10px 24px', backgroundColor: adminReportTab === 'inquiry' ? '#22C55E' : '#EF4444', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '600', cursor: 'pointer', boxShadow: adminReportTab === 'inquiry' ? '0 4px 12px rgba(34,197,94,0.3)' : '0 4px 12px rgba(239,68,68,0.3)', transition: '0.2s' }}
                 onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = adminReportTab === 'inquiry' ? '#16A34A' : '#DC2626'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = adminReportTab === 'inquiry' ? '#22C55E' : '#EF4444'; }}
-                onClick={() => setShowAdminReportModal(false)}
+                onClick={async () => {
+                  if (adminReportTab === 'inquiry') {
+                    if (!inquiryTitle.trim() || !inquiryContent.trim()) {
+                      showAlert('알림', '문의 제목과 내용을 입력해주세요.');
+                      return;
+                    }
+                    try {
+                      await inquiryService.submitInquiry({
+                        type: inquiryType,
+                        title: inquiryTitle,
+                        content: inquiryContent
+                      });
+                      showAlert('성공', '1:1 문의가 성공적으로 접수되었습니다.');
+                      setShowAdminReportModal(false);
+                      setInquiryTitle('');
+                      setInquiryContent('');
+                    } catch (err) {
+                      showAlert('오류', err.response?.data?.message || '문의 접수에 실패했습니다.');
+                    }
+                  } else {
+                    if (!reportUserId) {
+                      showAlert('알림', '신고할 멤버를 선택해주세요.');
+                      return;
+                    }
+                    try {
+                      await groupService.reportUser(study.id, {
+                        reportedUserId: Number(reportUserId),
+                        reason: `${reportReasonType} - ${reportDetail}`
+                      });
+                      showAlert('성공', '신고가 정상 접수되었습니다.');
+                      setShowAdminReportModal(false);
+                      setReportUserId('');
+                      setReportDetail('');
+                    } catch (err) {
+                      showAlert('오류', err.response?.data?.message || '신고 접수에 실패했습니다.');
+                    }
+                  }
+                }}
               >
                 {adminReportTab === 'inquiry' ? '문의 접수하기' : '신고 접수하기'}
               </button>
@@ -771,6 +1626,141 @@ export default function StudyRoom({ study, onClose }) {
           </div>
         </div>
       )}
+      {/* 실시간 퀴즈 진행 모달 */}
+      {activeQuiz && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.8)', backdropFilter: 'blur(8px)' }}>
+          <div style={{ backgroundColor: '#1E293B', borderRadius: '20px', padding: '32px', width: '500px', maxWidth: '90vw', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', gap: '24px', animation: 'slideUp 0.3s ease-out' }}>
+            
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{ color: '#3B82F6', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '1px' }}>AI Live Quiz</span>
+                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#F3F4F6' }}>{activeQuiz.quizTitle}</h2>
+              </div>
+              {quizScoreboard && (
+                <div
+                  onClick={() => {
+                    setActiveQuiz(null);
+                    setQuizScoreboard(null);
+                  }}
+                  style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                >
+                  <X size={16} color="#9CA3AF" />
+                </div>
+              )}
+            </div>
+
+            {/* Progress & Timer */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#9CA3AF', fontWeight: '600' }}>
+                <span>문제 {activeQuiz.currentIndex + 1} / {activeQuiz.totalQuestions}</span>
+                <span style={{ color: quizTimer <= 5 ? '#EF4444' : '#10B981' }}>남은 시간: {quizTimer}초</span>
+              </div>
+              <div style={{ height: '6px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '3px', overflow: 'hidden' }}>
+                <div style={{ width: `${(quizTimer / (activeQuiz.timeLimitSeconds || 30)) * 100}%`, height: '100%', backgroundColor: quizTimer <= 5 ? '#EF4444' : '#10B981', borderRadius: '3px', transition: 'width 1s linear' }} />
+              </div>
+            </div>
+
+            {/* Question Text */}
+            <div style={{ backgroundColor: '#0F172A', borderRadius: '12px', padding: '20px', border: '1px solid rgba(255,255,255,0.03)' }}>
+              <p style={{ margin: 0, fontSize: '15px', color: '#E5E7EB', fontWeight: '600', lineHeight: '1.6', wordBreak: 'keep-all' }}>
+                {activeQuiz.questionText}
+              </p>
+            </div>
+
+            {/* Options */}
+            {!quizScoreboard && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {activeQuiz.options.map((option, idx) => {
+                  const isSelected = quizSelectedAnswer === idx;
+                  return (
+                    <button
+                      key={idx}
+                      disabled={quizHasSubmitted}
+                      onClick={() => handleQuizSubmit(idx)}
+                      style={{
+                        width: '100%',
+                        textAlign: 'left',
+                        padding: '14px 20px',
+                        borderRadius: '12px',
+                        border: isSelected ? '2px solid #3B82F6' : '1px solid rgba(255,255,255,0.08)',
+                        backgroundColor: isSelected ? 'rgba(59, 130, 246, 0.15)' : 'rgba(255,255,255,0.02)',
+                        color: isSelected ? '#60A5FA' : '#D1D5DB',
+                        fontSize: '14px',
+                        fontWeight: isSelected ? '700' : '500',
+                        cursor: quizHasSubmitted ? 'not-allowed' : 'pointer',
+                        transition: 'all 0.2s',
+                        outline: 'none'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: isSelected ? '#3B82F6' : 'rgba(255,255,255,0.1)', color: isSelected ? 'white' : '#9CA3AF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '700' }}>
+                          {idx + 1}
+                        </div>
+                        <span style={{ flex: 1 }}>{option}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Submitting Message */}
+            {quizHasSubmitted && !quizScoreboard && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', color: '#9CA3AF', fontSize: '13px', padding: '10px 0' }}>
+                <RefreshCw size={16} className="animate-spin" />
+                <span>다른 멤버들이 제출할 때까지 대기 중...</span>
+              </div>
+            )}
+
+            {/* Live Scoreboard */}
+            {quizScoreboard && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '8px' }}>
+                  <h3 style={{ margin: 0, fontSize: '14px', color: '#F3F4F6', fontWeight: '700' }}>실시간 랭킹 (누적 포인트)</h3>
+                </div>
+                <div className="custom-scrollbar" style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+                  {quizScoreboard.map((entry, idx) => {
+                    const isMe = Number(entry.userId) === Number(userId);
+                    return (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderRadius: '8px', backgroundColor: isMe ? 'rgba(59,130,246,0.1)' : 'rgba(255,255,255,0.02)', border: isMe ? '1px solid rgba(59,130,246,0.2)' : '1px solid transparent' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <span style={{ fontSize: '13px', fontWeight: '800', color: idx === 0 ? '#F59E0B' : idx === 1 ? '#9CA3AF' : idx === 2 ? '#B45309' : '#4B5563' }}>
+                            {idx + 1}위
+                          </span>
+                          <span style={{ fontSize: '13px', fontWeight: isMe ? '700' : '500', color: isMe ? '#60A5FA' : '#E5E7EB' }}>
+                            {entry.displayName} {isMe ? '(나)' : ''}
+                          </span>
+                        </div>
+                        <span style={{ fontSize: '13px', fontWeight: '700', color: '#10B981' }}>{entry.points} P</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Next Button or Final Close */}
+                {activeQuiz.currentIndex + 1 === activeQuiz.totalQuestions ? (
+                  <button
+                    onClick={() => {
+                      setActiveQuiz(null);
+                      setQuizScoreboard(null);
+                    }}
+                    style={{ padding: '12px', backgroundColor: '#EF4444', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '700', cursor: 'pointer', transition: '0.2s', width: '100%' }}
+                  >
+                    퀴즈 종료
+                  </button>
+                ) : (
+                  <div style={{ textAlign: 'center', color: '#9CA3AF', fontSize: '12px' }}>
+                    방장이 다음 문제를 전송할 때까지 대기하고 있습니다...
+                  </div>
+                )}
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
+
       {/* 커스텀 모달 UI */}
       {customAlert.isOpen && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100000, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(2px)' }}>

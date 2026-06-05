@@ -37,6 +37,9 @@ public class Timer {
     @Column(nullable = false)
     private TimerStatus status;
 
+    @Column(name = "group_study_id")
+    private Long groupStudyId; // 연동된 그룹스터디 ID
+
     @CreationTimestamp
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;

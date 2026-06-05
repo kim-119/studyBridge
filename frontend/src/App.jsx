@@ -60,11 +60,14 @@ function App() {
     return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: 'var(--color-primary)', fontWeight: 'bold' }}>Loading...</div>;
   }
 
+  // Hide Navbar and top padding for Archive Detail pages to make it full screen
+  const hideNavbar = location.pathname.includes('/archive/pdf/') || location.pathname.includes('/archive/journal/');
+
   return (
     <div className={isAdminRoute ? "" : "app-container"} style={isAdminRoute ? { width: '100%', height: '100vh', overflow: 'hidden' } : {}}>
-      {!isAdminRoute && <Navbar />}
+      {(!isAdminRoute && !hideNavbar) && <Navbar />}
 
-      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: '80px' }}>
+      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
         <Routes>
           {/* 메인페이지: 누구나 접근 가능 */}
           <Route path="/" element={<Dashboard />} />

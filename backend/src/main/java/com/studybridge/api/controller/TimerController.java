@@ -80,4 +80,17 @@ public class TimerController {
         TimerDTO.WeeklyStudyTimeResponse response = timerService.getWeeklyStudyTime(userDetails.getId());
         return ResponseEntity.ok(response);
     }
+
+    // 그룹스터디 입장 시 대시보드 타이머 동기화 및 출석 연동
+    @PostMapping("/timers/sync/{groupStudyId}")
+    public ResponseEntity<TimerDTO.Response> syncTimer(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long groupStudyId) {
+        TimerDTO.Response response = timerService.syncGroupStudyTimer(userDetails.getId(), groupStudyId);
+        if (response != null) {
+            return ResponseEntity.ok(response);
+        } else {
+            return ResponseEntity.noContent().build();
+        }
+    }
 }

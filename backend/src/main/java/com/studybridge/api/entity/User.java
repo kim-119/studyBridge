@@ -43,6 +43,19 @@ public class User {
     @Column(name = "is_subscribed", nullable = false, columnDefinition = "boolean default false")
     private Boolean isSubscribed = false; // 구독 여부
 
+    @Builder.Default
+    @Column(name = "role", length = 20)
+    private String role = "USER"; // USER, ADMIN
+
+    @Column(name = "suspension_end_date")
+    private LocalDateTime suspensionEndDate; // 일시정지 만료일
+
+    @Column(name = "suspension_reason")
+    private String suspensionReason; // 정지/제재 사유
+
+    @Column(name = "suspension_memo")
+    private String suspensionMemo; // 관리자 메모
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt; // 계정 생성 일시

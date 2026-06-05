@@ -22,7 +22,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 1. Backend (Spring Boot) 이미지 빌드 및 푸시
+      # Backend (Spring Boot) 이미지 빌드 및 푸시
       - name: Backend 빌드 및 푸시
         uses: docker/build-push-action@v5
         with:
@@ -34,7 +34,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 2. Frontend (React) 이미지 빌드 및 푸시
+      # Frontend (React) 이미지 빌드 및 푸시
       - name: Frontend 빌드 및 푸시
         uses: docker/build-push-action@v5
         with:
@@ -46,7 +46,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 3. AI (FastAPI) 이미지 빌드 및 푸시
+      # AI (FastAPI) 이미지 빌드 및 푸시
       - name: FastAPI 빌드 및 푸시
         uses: docker/build-push-action@v5
         with:
@@ -58,7 +58,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 4. AWS EC2 배포
+      # AWS EC2 배포
       - name: AWS EC2 서버 배포
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -73,10 +73,10 @@ jobs:
             
             # Docker Hub 로그인 및 최신 이미지 Pull
             echo ${{ secrets.DOCKERHUB_TOKEN }} | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
-            docker-compose pull
+            docker compose pull
             
             # 서비스 무중단 재시작
-            docker-compose up -d --remove-orphans
+            docker compose up -d --remove-orphans
             
             # 사용하지 않는 이미지 정리
             docker image prune -f

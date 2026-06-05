@@ -71,14 +71,22 @@ export default function Archive() {
         }));
 
       const fetchedPdfs = list
-        .filter((item) => item.materialType === 'SYLLABUS' || item.materialType === 'PDF')
-        .map((item) => ({
-          id: item.materialId,
-          title: item.title || item.originalFileName || '이름 없음',
-          date: item.uploadedAt ? item.uploadedAt.split('T')[0] : '',
-          tag: item.materialType === 'SYLLABUS' ? '강의계획서' : '학습PDF',
-          extractionStatus: item.extractionStatus || 'SUCCESS',
-        }));
+        .filter((item) => item.materialType === 'PDF')
+        .map((item) => {
+          let displayTitle = item.title || item.originalFileName || '이름 없음';
+          // UUID(36자) + '_' 형태가 앞에 붙어있으면 제거
+          const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}_/;
+          if (uuidRegex.test(displayTitle)) {
+            displayTitle = displayTitle.replace(uuidRegex, '');
+          }
+          return {
+            id: item.materialId,
+            title: displayTitle,
+            date: item.uploadedAt ? item.uploadedAt.split('T')[0] : '',
+            tag: '학습PDF',
+            extractionStatus: item.extractionStatus || 'SUCCESS',
+          };
+        });
 
       setJournals(fetchedJournals);
       setPdfs(fetchedPdfs);
@@ -158,6 +166,20 @@ export default function Archive() {
     setFormFile(null);
   };
 
+  const handleDeleteMaterial = async (e, id) => {
+    e.stopPropagation();
+    if (window.confirm('정말로 이 자료를 삭제하시겠습니까? 삭제 후에는 복구할 수 없습니다.')) {
+      try {
+        await materialService.deleteMaterial(id);
+        alert('자료가 삭제되었습니다.');
+        fetchMaterials();
+      } catch (error) {
+        console.error('자료 삭제 실패:', error);
+        alert('자료 삭제 중 오류가 발생했습니다.');
+      }
+    }
+  };
+
   const openModal = (type) => {
     if (!checkAuth()) return;
     setOpenedModalType(type);
@@ -196,8 +218,7 @@ export default function Archive() {
           alert('업로드할 파일을 선택해주세요.');
           return;
         }
-        const materialType = addMaterialType === 'syllabus' ? 'SYLLABUS' : 'PDF';
-        await materialService.uploadMaterial(formTitle, materialType, formKeywords, formFile);
+        await materialService.uploadMaterial(formTitle, 'PDF', formKeywords, formFile);
         alert('자료 업로드가 시작되었습니다. AI가 문서를 분석하는 데 수 분이 걸릴 수 있습니다.');
       }
       closeModal();
@@ -247,12 +268,6 @@ export default function Archive() {
             학습일지
           </button>
           <button
-            className={`archive-tab ${activeTab === 'syllabus' ? 'active' : ''}`}
-            onClick={() => handleTabChange('syllabus')}
-          >
-            강의계획서
-          </button>
-          <button
             className={`archive-tab ${activeTab === 'pdf' ? 'active' : ''}`}
             onClick={() => handleTabChange('pdf')}
           >
@@ -287,11 +302,19 @@ export default function Archive() {
             style={{ cursor: 'pointer' }}
             onClick={() => handleOpenDetail('journal', journal)}
           >
-            <div className="card-header">
-              <div className="icon-wrapper journal-icon">
-                <FileText size={22} color="rgba(255,255,255,0.8)" />
+            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div className="icon-wrapper journal-icon">
+                  <FileText size={22} color="rgba(255,255,255,0.8)" />
+                </div>
+                <span className="card-date">{journal.date}</span>
               </div>
-              <span className="card-date">{journal.date}</span>
+              <button 
+                onClick={(e) => handleDeleteMaterial(e, journal.id)} 
+                style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}
+              >
+                삭제
+              </button>
             </div>
             <h3 className="card-title">{journal.title}</h3>
             <div className="card-tags">
@@ -301,33 +324,7 @@ export default function Archive() {
           </div>
         ))}
 
-        {!isLoading && activeTab === 'syllabus' && pdfs.filter(p => p.tag === '강의계획서').length === 0 && (
-          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
-            <FileIcon size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
-            <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>등록된 강의계획서가 없습니다</h3>
-            <p style={{ margin: 0 }}>강의계획서를 업로드하여 AI 기반의 주차별 자동 학습 로드맵을 설계해보세요.</p>
-          </div>
-        )}
 
-        {!isLoading && activeTab === 'syllabus' && pdfs.filter(p => p.tag === '강의계획서').slice(0, visibleCount).map((pdf) => (
-          <div
-            key={pdf.id}
-            className="glass-panel archive-card animate-fade-in"
-            style={{ cursor: 'pointer' }}
-            onClick={() => handleOpenDetail('syllabus', pdf)}
-          >
-            <div className="card-header">
-              <div className="icon-wrapper pdf-icon">
-                <FileIcon size={22} color="rgba(255,255,255,0.8)" />
-              </div>
-              <span className="card-date">{pdf.date}</span>
-            </div>
-            <h3 className="card-title">{pdf.title}</h3>
-            <div className="card-tags" style={{ marginBottom: 'auto' }}>
-              <span className="card-tag">#{pdf.tag}</span>
-            </div>
-          </div>
-        ))}
 
         {!isLoading && activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').length === 0 && (
           <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
@@ -344,11 +341,19 @@ export default function Archive() {
             style={{ cursor: 'pointer' }}
             onClick={() => handleOpenDetail('pdf', pdf)}
           >
-            <div className="card-header">
-              <div className="icon-wrapper pdf-icon">
-                <FileIcon size={22} color="rgba(255,255,255,0.8)" />
+            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div className="icon-wrapper pdf-icon">
+                  <FileIcon size={22} color="rgba(255,255,255,0.8)" />
+                </div>
+                <span className="card-date">{pdf.date}</span>
               </div>
-              <span className="card-date">{pdf.date}</span>
+              <button 
+                onClick={(e) => handleDeleteMaterial(e, pdf.id)} 
+                style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}
+              >
+                삭제
+              </button>
             </div>
             <h3 className="card-title">{pdf.title}</h3>
             <div className="card-tags" style={{ marginBottom: 'auto' }}>
@@ -360,7 +365,6 @@ export default function Archive() {
 
       {/* 3. 더보기(Load More) 버튼 */}
       {((activeTab === 'journal' && visibleCount < journals.length) ||
-        (activeTab === 'syllabus' && visibleCount < pdfs.filter(p => p.tag === '강의계획서').length) ||
         (activeTab === 'pdf' && visibleCount < pdfs.filter(p => p.tag === '학습PDF').length)) && (
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: '40px' }}>
           <button
@@ -368,7 +372,7 @@ export default function Archive() {
             style={{ width: 'max-content', flex: 'none', padding: '12px 32px', borderRadius: '30px', fontWeight: '600', backgroundColor: 'white', border: '1px solid var(--color-border)', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}
             onClick={() => setVisibleCount(prev => prev + 6)}
           >
-            더보기 ({visibleCount}/{activeTab === 'journal' ? journals.length : activeTab === 'syllabus' ? pdfs.filter(p => p.tag === '강의계획서').length : pdfs.filter(p => p.tag === '학습PDF').length})
+            더보기 ({visibleCount}/{activeTab === 'journal' ? journals.length : pdfs.filter(p => p.tag === '학습PDF').length})
           </button>
         </div>
       )}
@@ -387,9 +391,6 @@ export default function Archive() {
                 <div style={{ display: 'flex', gap: '20px' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px', cursor: 'pointer' }}>
                     <input type="radio" name="materialType" checked={addMaterialType === 'journal'} onChange={() => setAddMaterialType('journal')} style={{ transform: 'scale(1.2)' }} /> 학습일지
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px', cursor: 'pointer' }}>
-                    <input type="radio" name="materialType" checked={addMaterialType === 'syllabus'} onChange={() => setAddMaterialType('syllabus')} style={{ transform: 'scale(1.2)' }} /> 강의계획서
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px', cursor: 'pointer' }}>
                     <input type="radio" name="materialType" checked={addMaterialType === 'pdf'} onChange={() => setAddMaterialType('pdf')} style={{ transform: 'scale(1.2)' }} /> 학습PDF
@@ -441,7 +442,7 @@ export default function Archive() {
 
                   <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
                     <label style={{ display: 'block', fontSize: '16px', fontWeight: 'bold', marginBottom: '12px' }}>파일 업로드</label>
-                    <input type="file" accept="application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" ref={addFileInputRef} onChange={(e) => setFormFile(e.target.files[0])} style={{ display: 'none' }} />
+                    <input type="file" accept="application/pdf" ref={addFileInputRef} onChange={(e) => setFormFile(e.target.files[0])} style={{ display: 'none' }} />
                     <div
                       onClick={() => addFileInputRef.current?.click()}
                       style={{ flex: 1, border: '2px dashed var(--color-border)', borderRadius: '12px', padding: '40px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', color: 'var(--color-text-muted)', backgroundColor: '#F9FAFB', cursor: 'pointer', transition: 'all 0.2s', minHeight: '200px' }}
@@ -450,7 +451,7 @@ export default function Archive() {
                       <p style={{ margin: '0 0 12px', fontSize: '16px', fontWeight: 'bold' }}>
                         {formFile ? `선택된 파일: ${formFile.name}` : '클릭하거나 파일을 드래그하여 업로드하세요'}
                       </p>
-                      <p style={{ margin: 0, fontSize: '14px' }}>지원 형식: PDF, DOCX, TXT</p>
+                      <p style={{ margin: 0, fontSize: '14px' }}>지원 형식: PDF</p>
                     </div>
                   </div>
                 </div>

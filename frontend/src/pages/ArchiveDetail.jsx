@@ -35,43 +35,8 @@ export default function ArchiveDetail() {
 
   const chatEndRef = useRef(null);
 
-  // ✅ 패널 너비 조절 및 리사이즈 관련 상태 & Ref
+  // ✅ 패널 너비 조절 관련 상태
   const [leftWidth, setLeftWidth] = useState(50); // 기본값 50%
-  const isResizing = useRef(false);
-
-  const startResizing = (e) => {
-    isResizing.current = true;
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', stopResizing);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  };
-
-  const handleMouseMove = (e) => {
-    if (!isResizing.current) return;
-    const container = document.querySelector('.archive-split-view');
-    if (!container) return;
-    const containerRect = container.getBoundingClientRect();
-    const newLeftWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
-    if (newLeftWidth >= 20 && newLeftWidth <= 80) {
-      setLeftWidth(newLeftWidth);
-    }
-  };
-
-  const stopResizing = () => {
-    isResizing.current = false;
-    document.removeEventListener('mousemove', handleMouseMove);
-    document.removeEventListener('mouseup', stopResizing);
-    document.body.style.cursor = 'default';
-    document.body.style.userSelect = 'auto';
-  };
-
-  useEffect(() => {
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', stopResizing);
-    };
-  }, []);
 
   // ---------------- 인증 체크 ----------------
   useEffect(() => {
@@ -577,42 +542,6 @@ export default function ArchiveDetail() {
             </div>
         );
       }
-      case 'memo':
-        return (
-            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', paddingBottom: '24px' }}>
-              <h3 style={{ margin: '0 0 16px', fontSize: '20px' }}>나의 학습 메모</h3>
-              <p style={{ color: 'var(--color-text-muted)', fontSize: '14px', marginBottom: '16px' }}>문서와 관련된 아이디어나 핵심 정리 사항을 메모로 기록해보세요.</p>
-              <textarea
-                  style={{
-                    flex: 1,
-                    padding: '24px',
-                    borderRadius: '16px',
-                    border: '1px solid var(--color-border)',
-                    backgroundColor: '#FFFDF5',
-                    color: 'var(--color-text-main)',
-                    fontSize: '16px',
-                    lineHeight: '1.7',
-                    fontFamily: 'inherit',
-                    resize: 'none',
-                    boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.03)',
-                    minHeight: '300px'
-                  }}
-                  placeholder="이 자료를 보며 중요하게 기억할 부분을 자유롭게 입력하세요."
-                  value={memoText}
-                  onChange={(e) => setMemoText(e.target.value)}
-              />
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '20px' }}>
-                <button
-                    className="btn-primary"
-                    style={{ width: 'auto', padding: '12px 32px', borderRadius: '30px', fontWeight: 'bold' }}
-                    onClick={handleSaveMemo}
-                    disabled={isSavingMemo}
-                >
-                  {isSavingMemo ? '저장 중...' : '메모 저장'}
-                </button>
-              </div>
-            </div>
-        );
       case 'roadmap': {
         const allTasks = roadmapSteps.flatMap(s => s.tasks || []);
         const doneCount = allTasks.filter(t => t.isCompleted).length;
@@ -639,7 +568,7 @@ export default function ArchiveDetail() {
               </div>
 
               {roadmapSteps.length === 0 ? (
-                  <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>로드맵 정보가 없습니다. 문서를 분석 중이거나 지원되지 않는 양식입니다.</p>
+                  <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>로드맵 정보가 없습니다. 문서가 분석 중이거나 지원되지 않는 형식입니다.</p>
               ) : (
                   <div className="roadmap-timeline">
                     {roadmapSteps.map((step, idx) => {
@@ -684,6 +613,43 @@ export default function ArchiveDetail() {
             </div>
         );
       }
+      case 'memo':
+        return (
+            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', paddingBottom: '24px' }}>
+              <h3 style={{ margin: '0 0 16px', fontSize: '20px' }}>나의 학습 메모</h3>
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '14px', marginBottom: '16px' }}>문서와 관련된 아이디어나 핵심 정리 사항을 메모로 기록해보세요.</p>
+              <textarea
+                  style={{
+                    flex: 1,
+                    padding: '24px',
+                    borderRadius: '16px',
+                    border: '1px solid var(--color-border)',
+                    backgroundColor: '#FFFDF5',
+                    color: 'var(--color-text-main)',
+                    fontSize: '16px',
+                    lineHeight: '1.7',
+                    fontFamily: 'inherit',
+                    resize: 'none',
+                    boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.03)',
+                    minHeight: '300px'
+                  }}
+                  placeholder="이 자료를 보며 중요하게 기억할 부분을 자유롭게 입력하세요."
+                  value={memoText}
+                  onChange={(e) => setMemoText(e.target.value)}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '20px' }}>
+                <button
+                    className="btn-primary"
+                    style={{ width: 'auto', padding: '12px 32px', borderRadius: '30px', fontWeight: 'bold' }}
+                    onClick={handleSaveMemo}
+                    disabled={isSavingMemo}
+                >
+                  {isSavingMemo ? '저장 중...' : '메모 저장'}
+                </button>
+              </div>
+            </div>
+        );
+
       case 'chat':
         return (
             <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '450px' }}>
@@ -782,31 +748,51 @@ export default function ArchiveDetail() {
           box-sizing: border-box;
         }
       `}} />
-        {(type === 'pdf' || type === 'syllabus') && (
-            <div className="archive-action-bar" style={{ padding: '16px 0', borderBottom: '1px solid var(--color-border)', backgroundColor: 'white' }}>
-              <div style={{ flex: 1, padding: '0 24px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none' }} onClick={() => navigate('/archive')}>
+        {type === 'pdf' && (
+            <div className="archive-action-bar" style={{ padding: '16px 24px', borderBottom: '1px solid var(--color-border)', backgroundColor: 'white', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1, minWidth: 0 }}>
+                <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none', flexShrink: 0 }} onClick={() => navigate('/archive')}>
                   <ArrowLeft size={18} /> 목록
                 </button>
+                <span style={{ fontWeight: '600', fontSize: '18px', color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={material.title || material.originalFileName}>
+                  {material.title || material.originalFileName}
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexShrink: 0 }}>
+                {/* 뷰어 너비 */}
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginRight: '4px' }}>뷰어 너비:</span>
+                  {[30, 50, 70].map(pct => (
+                      <button
+                          key={pct}
+                          onClick={() => setLeftWidth(pct)}
+                          style={{
+                            padding: '4px 8px',
+                            fontSize: '11px',
+                            borderRadius: '4px',
+                            border: '1px solid var(--color-border)',
+                            backgroundColor: leftWidth === pct ? 'var(--color-primary)' : 'white',
+                            color: leftWidth === pct ? 'white' : 'var(--color-text-main)',
+                            cursor: 'pointer',
+                            fontWeight: leftWidth === pct ? 'bold' : 'normal',
+                            transition: 'all 0.15s'
+                          }}
+                      >
+                        {pct}%
+                      </button>
+                  ))}
+                </div>
+                {/* 기존 AI 버튼들 */}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className={`archive-action-btn ${activePdfTool === 'summary' ? 'active' : ''}`} onClick={() => setActivePdfTool('summary')}><AlignLeft size={16} /> 요약</button>
+                  <button className={`archive-action-btn ${activePdfTool === 'quiz' ? 'active' : ''}`} onClick={() => setActivePdfTool('quiz')}><HelpCircle size={16} /> 퀴즈/문제 생성</button>
+                  <button className={`archive-action-btn ${activePdfTool === 'roadmap' ? 'active' : ''}`} onClick={() => setActivePdfTool('roadmap')}><Map size={16} /> 주차별 로드맵</button>
+                  <button className={`archive-action-btn ${activePdfTool === 'memo' ? 'active' : ''}`} onClick={() => setActivePdfTool('memo')}><Edit3 size={16} /> 메모</button>
+                  <button className={`archive-action-btn ${activePdfTool === 'chat' ? 'active' : ''}`} onClick={() => setActivePdfTool('chat')}><MessageSquare size={16} /> AI 질문</button>
+                </div>
+                {/* 삭제 버튼 */}
                 <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none', color: '#EF4444' }} onClick={handleDeleteMaterial}>
                   <Trash2 size={18} /> 삭제
-                </button>
-              </div>
-              <div style={{ flex: 1, padding: '0 24px', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
-                <button className={`archive-action-btn ${activePdfTool === 'summary' ? 'active' : ''}`} onClick={() => setActivePdfTool('summary')}>
-                  <AlignLeft size={16} /> 요약
-                </button>
-                <button className={`archive-action-btn ${activePdfTool === 'quiz' ? 'active' : ''}`} onClick={() => setActivePdfTool('quiz')}>
-                  <HelpCircle size={16} /> 퀴즈/문제 생성
-                </button>
-                <button className={`archive-action-btn ${activePdfTool === 'roadmap' ? 'active' : ''}`} onClick={() => setActivePdfTool('roadmap')}>
-                  <Map size={16} /> 주차별 로드맵
-                </button>
-                <button className={`archive-action-btn ${activePdfTool === 'memo' ? 'active' : ''}`} onClick={() => setActivePdfTool('memo')}>
-                  <Edit3 size={16} /> 메모
-                </button>
-                <button className={`archive-action-btn ${activePdfTool === 'chat' ? 'active' : ''}`} onClick={() => setActivePdfTool('chat')}>
-                  <MessageSquare size={16} /> AI 질문
                 </button>
               </div>
             </div>
@@ -830,38 +816,12 @@ export default function ArchiveDetail() {
         )}
 
         <div className="archive-split-view">
-          <div className="archive-left-panel" style={{ width: (type === 'pdf' || type === 'syllabus') ? `${leftWidth}%` : '50%', flex: 'none', overflowY: 'auto' }}>
-            {(type === 'pdf' || type === 'syllabus') ? (
-                <div style={{ width: '100%', height: '100%', backgroundColor: 'white', borderRadius: '12px', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div className="archive-left-panel" style={{ width: type === 'pdf' ? `${leftWidth}%` : '50%', flex: 'none', overflowY: 'auto' }}>
+            {type === 'pdf' ? (
+                <div style={{ width: '100%', height: '100%', backgroundColor: 'white', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                   {material.s3PresignedUrl ? (
                       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
-                        <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F9FAFB' }}>
-                          <span style={{ fontWeight: '600', fontSize: '14px', color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }} title={material.title || material.originalFileName}>
-                            {material.title || material.originalFileName}
-                          </span>
-                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
-                            <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginRight: '4px' }}>뷰어 너비:</span>
-                            {[30, 50, 70].map(pct => (
-                                <button
-                                    key={pct}
-                                    onClick={() => setLeftWidth(pct)}
-                                    style={{
-                                      padding: '4px 8px',
-                                      fontSize: '11px',
-                                      borderRadius: '4px',
-                                      border: '1px solid var(--color-border)',
-                                      backgroundColor: leftWidth === pct ? 'var(--color-primary)' : 'white',
-                                      color: leftWidth === pct ? 'white' : 'var(--color-text-main)',
-                                      cursor: 'pointer',
-                                      fontWeight: leftWidth === pct ? 'bold' : 'normal',
-                                      transition: 'all 0.15s'
-                                    }}
-                                >
-                                  {pct}%
-                                </button>
-                            ))}
-                          </div>
-                        </div>
+
                         <div style={{ flex: 1, position: 'relative' }}>
                           <iframe src={material.s3PresignedUrl} style={{ width: '100%', height: '100%', border: 'none' }} title="Document Viewer" />
                         </div>
@@ -922,33 +882,17 @@ export default function ArchiveDetail() {
                 </div>
             )}
           </div>
-          {(type === 'pdf' || type === 'syllabus') && (
+          {type === 'pdf' && (
               <div
-                  onMouseDown={startResizing}
-                  className="panel-resizer-bar"
                   style={{
-                    width: '10px',
-                    cursor: 'col-resize',
-                    backgroundColor: '#F3F4F6',
-                    borderLeft: '1px solid var(--color-border)',
-                    borderRight: '1px solid var(--color-border)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
+                    width: '1px',
+                    backgroundColor: 'var(--color-border)',
                     zIndex: 10,
-                    userSelect: 'none',
-                    transition: 'background-color 0.2s',
                   }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  <div style={{ width: '4px', height: '4px', borderRadius: '50%', backgroundColor: '#9CA3AF' }}></div>
-                  <div style={{ width: '4px', height: '4px', borderRadius: '50%', backgroundColor: '#9CA3AF' }}></div>
-                  <div style={{ width: '4px', height: '4px', borderRadius: '50%', backgroundColor: '#9CA3AF' }}></div>
-                </div>
-              </div>
+              />
           )}
-          <div className="archive-right-panel" style={{ width: (type === 'pdf' || type === 'syllabus') ? `${100 - leftWidth}%` : '50%', flex: 'none', overflowY: 'auto', overflowX: 'hidden', boxSizing: 'border-box', backgroundColor: type === 'journal' ? 'var(--color-bg-base)' : 'white', borderLeft: (type === 'pdf' || type === 'syllabus') ? 'none' : '1px solid var(--color-border)' }}>
-            {(type === 'pdf' || type === 'syllabus') ? (
+          <div className="archive-right-panel" style={{ width: type === 'pdf' ? `${100 - leftWidth}%` : '50%', flex: 'none', overflowY: 'auto', overflowX: 'hidden', boxSizing: 'border-box', backgroundColor: type === 'journal' ? 'var(--color-bg-base)' : 'white', borderLeft: type === 'pdf' ? 'none' : '1px solid var(--color-border)' }}>
+            {type === 'pdf' ? (
                 renderPdfRightPanel()
             ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>

@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build"
+  },
   "dependencies": {
     "chart.js": "^4.5.1",
     "react-chartjs-2": "^5.3.1"

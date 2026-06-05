@@ -32,6 +32,7 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
   const [graphData, setGraphData] = useState([]);
   const [baseRawData, setBaseRawData] = useState([]);
   const [weeklySecondsMap, setWeeklySecondsMap] = useState({});
+  const [predictionData, setPredictionData] = useState(null);
 
   // ✅ 2. 유저 ID 계산 로직
   const effectiveUserId = useMemo(() => {
@@ -49,6 +50,13 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
 
       // Spring Boot 데이터 호출
       const weeklyResult = await studyTimeService.getWeekly(effectiveUserId);
+      
+      try {
+        const predResult = await studyTimeService.getPrediction(effectiveUserId);
+        setPredictionData(predResult);
+      } catch (predErr) {
+        console.warn("Prediction loading failed (using fallback/ignored):", predErr.message);
+      }
 
       // ✨ 프론트엔드 정밀 교정 2탄: 과거 요일의 '초' 데이터도 정확하게 반영하기 위해 모든 타이머 히스토리를 불러와서 주간 초를 직접 계산합니다.
       const timerHistory = await timerService.getTimerHistory(effectiveUserId);
@@ -172,6 +180,7 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
     });
 
     setGraphData(updatedData);
+    setIsEmpty(!updatedData.some(item => item.seconds > 0));
   }, [baseRawData, weeklySecondsMap, todayStudySeconds]);
 
   return (
@@ -268,6 +277,26 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
                       </div>
                     </div>
                   </div>
+
+                  {predictionData && (
+                    <>
+                      <div style={{ width: '1px', height: '30px', backgroundColor: '#E5E7EB', flexShrink: 0 }}></div>
+                      <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }} title={predictionData.message}>
+                        <div style={{ padding: '8px', backgroundColor: '#F3E8FF', borderRadius: '8px', color: '#9333EA', flexShrink: 0 }}>
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+                            <circle cx="12" cy="12" r="4" />
+                          </svg>
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '2px', whiteSpace: 'nowrap' }}>내일 예측</div>
+                          <div style={{ fontSize: '15px', fontWeight: 'bold', color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {formatDuration(predictionData.predictedSeconds)}
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               );
             })()}

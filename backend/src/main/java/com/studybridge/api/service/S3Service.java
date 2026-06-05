@@ -37,7 +37,16 @@ public class S3Service {
             throw new IllegalArgumentException("PDF 파일만 업로드 가능합니다.");
         }
 
-        String fileName = "materials/user_" + userId + "/" + UUID.randomUUID() + ".pdf";
+        String originalName = file.getOriginalFilename();
+        if (originalName != null) {
+            originalName = new java.io.File(originalName).getName();
+        }
+        if (originalName == null || originalName.isBlank()) {
+            originalName = "document.pdf";
+        }
+        originalName = originalName.replaceAll("[^a-zA-Z0-9.\\-_\\s가-힣ㄱ-ㅎㅏ-ㅣ]", "_");
+
+        String fileName = "materials/user_" + userId + "/" + UUID.randomUUID() + "/" + originalName;
 
         try {
             PutObjectRequest putObjectRequest = PutObjectRequest.builder()
@@ -55,7 +64,50 @@ public class S3Service {
         }
     }
 
+    public String uploadBlogFile(MultipartFile file, Long userId) throws IOException {
+        String contentType = file.getContentType();
+        if (contentType == null) {
+            throw new IllegalArgumentException("파일 타입을 확인할 수 없습니다.");
+        }
+
+        String extension = "";
+        if (contentType.equals("application/pdf")) {
+            extension = ".pdf";
+        } else if (contentType.equals("image/jpeg") || contentType.equals("image/jpg")) {
+            extension = ".jpg";
+        } else if (contentType.equals("image/png")) {
+            extension = ".png";
+        } else if (contentType.equals("image/gif")) {
+            extension = ".gif";
+        } else if (contentType.equals("image/webp")) {
+            extension = ".webp";
+        } else {
+            throw new IllegalArgumentException("지원하지 않는 파일 형식입니다. (PDF 및 이미지 파일만 가능)");
+        }
+
+        String fileName = "blogs/user_" + userId + "/" + UUID.randomUUID() + extension;
+
+        try {
+            PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(fileName)
+                    .contentType(contentType)
+                    .build();
+
+            s3Client.putObject(putObjectRequest, RequestBody.fromBytes(file.getBytes()));
+            log.info("[S3 블로그 파일 업로드 완료] 파일이 S3 버킷에 정상 업로드되었습니다: {}", fileName);
+            return fileName;
+        } catch (Exception e) {
+            log.error("[S3 블로그 파일 업로드 에러] S3 업로드 중 예외가 발생했습니다: ", e);
+            throw new RuntimeException("AWS S3 파일 업로드에 실패했습니다.", e);
+        }
+    }
+
     public String getPresignedUrl(String s3Key) {
+        return getPresignedUrl(s3Key, null);
+    }
+
+    public String getPresignedUrl(String s3Key, String originalFileName) {
         if (s3Key == null || s3Key.isEmpty()) {
             return null;
         }
@@ -63,7 +115,14 @@ public class S3Service {
         try {
             GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
                     .signatureDuration(Duration.ofHours(1))
-                    .getObjectRequest(builder -> builder.bucket(bucket).key(s3Key))
+                    .getObjectRequest(builder -> {
+                        builder.bucket(bucket).key(s3Key);
+                        if (originalFileName != null && !originalFileName.isEmpty()) {
+                            String encoded = java.net.URLEncoder.encode(originalFileName, java.nio.charset.StandardCharsets.UTF_8)
+                                    .replaceAll("\\+", "%20");
+                            builder.responseContentDisposition("inline; filename=\"" + encoded + "\"; filename*=UTF-8''" + encoded);
+                        }
+                    })
                     .build();
 
             PresignedGetObjectRequest presignedRequest = s3Presigner.presignGetObject(presignRequest);
