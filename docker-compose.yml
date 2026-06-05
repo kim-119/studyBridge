@@ -29,28 +29,27 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: ${AWS_REGION}
       AWS_S3_BUCKET: ${AWS_S3_BUCKET}
-      FASTAPI_BASE_URL: http://fastapi:8000
-      FASTAPI_EXTRACTION_URL: http://fastapi:8000/api/extract
+      AI_SERVER_BASE_URL: ${AI_SERVER_BASE_URL:-http://127.0.0.1:18000}
+      AI_SERVER_API_KEY: ${AI_SERVER_API_KEY:-studybridge_ai_secret}
 
     depends_on:
       - db
-      - fastapi
 
-  fastapi:
-    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-fastapi:latest
-    build:
-      context: ./fastapi
-    container_name: capstone-fastapi
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./fastapi:/app
-    env_file:
-      - ./fastapi/.env
-    environment:
-      PYTHONUNBUFFERED: 1
-      TZ: Asia/Seoul
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+  # fastapi:
+  #   image: ${DOCKER_IMAGE_PREFIX:-studybridge}-fastapi:latest
+  #   build:
+  #     context: ./fastapi
+  #   container_name: capstone-fastapi
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - ./fastapi:/app
+  #   env_file:
+  #     - ./fastapi/.env
+  #   environment:
+  #     PYTHONUNBUFFERED: 1
+  #     TZ: Asia/Seoul
+  #   command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   db:
     image: postgres:16

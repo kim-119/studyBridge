@@ -18,8 +18,11 @@ import java.util.concurrent.TimeUnit;
 @Configuration
 public class WebClientConfig {
 
-    @Value("${ai.server.fastapi.base-url:http://localhost:8000}")
+    @Value("${ai.server.fastapi.base-url:http://127.0.0.1:18000}")
     private String fastApiBaseUrl;
+
+    @Value("${ai.server.fastapi.api-key:}")
+    private String fastApiApiKey;
 
     // 멀티 에이전트 병렬 처리: 최대 30초 허용 (FastAPI 내부 타임아웃 22초 + 여유 8초)
     private static final int CONNECT_TIMEOUT_MS = 5000;
@@ -35,10 +38,15 @@ public class WebClientConfig {
                         .addHandlerLast(new ReadTimeoutHandler(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
                         .addHandlerLast(new WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)));
 
-        return builder
+        WebClient.Builder webClientBuilder = builder
                 .baseUrl(fastApiBaseUrl)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                .clientConnector(new ReactorClientHttpConnector(httpClient))
-                .build();
+                .clientConnector(new ReactorClientHttpConnector(httpClient));
+
+        if (fastApiApiKey != null && !fastApiApiKey.isEmpty()) {
+            webClientBuilder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + fastApiApiKey);
+        }
+
+        return webClientBuilder.build();
     }
 }

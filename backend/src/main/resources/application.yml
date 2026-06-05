@@ -24,7 +24,8 @@ spring:
 ai:
   server:
     fastapi:
-      base-url: ${FASTAPI_BASE_URL:http://localhost:8000}
+      base-url: ${AI_SERVER_BASE_URL:http://127.0.0.1:18000}
+      api-key: ${AI_SERVER_API_KEY:studybridge_ai_secret}
 
 cloud:
   aws:
@@ -38,7 +39,7 @@ cloud:
 
 external-api:
   fastapi:
-    url: ${FASTAPI_EXTRACTION_URL:http://localhost:8000/api/extract}
+    url: ${AI_SERVER_BASE_URL:http://127.0.0.1:18000}/api/extract
     timeout: ${FASTAPI_TIMEOUT:30000}
 
 jwt:
