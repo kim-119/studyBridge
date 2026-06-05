@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { authService } from './services/api';
 
@@ -8,6 +8,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import MyPage from './pages/MyPage';
+import AdminPage from './pages/AdminPage';
 import StudyMate from './pages/StudyMate';
 import GroupStudy from './pages/GroupStudy';
 import Archive from './pages/Archive';
@@ -22,6 +23,8 @@ function PrivateRoute({ children }) {
 function App() {
   const { logout, updateUser } = useAuth();
   const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const location = useLocation();
+  const isAdminRoute = location.pathname.startsWith('/admin');
 
   useEffect(() => {
     const initAuth = async () => {
@@ -58,10 +61,10 @@ function App() {
   }
 
   return (
-    <div className="app-container">
-      <Navbar />
+    <div className={isAdminRoute ? "" : "app-container"} style={isAdminRoute ? { width: '100%', height: '100vh', overflow: 'hidden' } : {}}>
+      {!isAdminRoute && <Navbar />}
 
-      <main style={{ paddingTop: '80px' }}>
+      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: '80px' }}>
         <Routes>
           {/* 메인페이지: 누구나 접근 가능 */}
           <Route path="/" element={<Dashboard />} />
@@ -80,6 +83,7 @@ function App() {
             }
           />
 
+          <Route path="/admin" element={<AdminPage />} />
           <Route path="/studymate" element={<StudyMate />} />
           <Route path="/groupstudy" element={<GroupStudy />} />
           <Route path="/archive" element={<Archive />} />
