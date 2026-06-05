@@ -16,3 +16,13 @@ class StudyTimePredictRequest(BaseModel):
 
 class StudyTimePredictResponse(BaseModel):
     predictedStudySeconds: float = Field(..., description="예측된 학습 시간 (초 단위)")
+    method: str = Field(
+        "weighted_average_fallback",
+        description="예측 방식: 'transformer' 또는 'weighted_average_fallback'",
+    )
+    confidence: float = Field(
+        0.5,
+        ge=0.0,
+        le=1.0,
+        description="예측 신뢰도 (0~1). 가중평균 fallback은 최대 0.75 제한.",
+    )

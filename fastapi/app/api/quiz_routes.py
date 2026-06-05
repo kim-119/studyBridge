@@ -1,6 +1,7 @@
 """
 POST /api/ai/quiz/generate — PDF 기반 객관식 퀴즈 생성.
 Spring Boot 계약 endpoint. camelCase 필드명 유지.
+difficulty / knowledgeLevel / numQuestions 를 서비스에 전달한다.
 S3/LLM 실패 시에도 fallback quiz로 명세 구조를 유지한다.
 """
 import asyncio
@@ -21,6 +22,8 @@ router = APIRouter(prefix="/api/ai", tags=["Quiz Generation"])
     summary="PDF 기반 퀴즈 생성",
     description=(
         "S3에서 PDF를 로드하여 텍스트를 추출하고, LLM으로 4지선다 퀴즈를 생성한다. "
+        "difficulty (쉬움/보통/어려움), knowledgeLevel (입문~전문가), "
+        "numQuestions (기본 3)를 지원한다. "
         "S3/LLM 실패 시 기본 안내형 퀴즈를 반환한다."
     ),
 )
@@ -34,6 +37,9 @@ async def generate_quiz(request: QuizGenerateRequest) -> QuizGenerateResponse:
                 material_id=request.materialId,
                 s3_key=request.s3Key,
                 file_name=request.fileName,
+                difficulty=request.difficulty,
+                knowledge_level=request.knowledgeLevel or "학사",
+                num_questions=request.numQuestions,
             ),
             timeout=QUIZ_GENERATION_TIMEOUT_SECONDS,
         )

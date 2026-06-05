@@ -1,6 +1,6 @@
 """
 AI 에이전트 채팅 오케스트레이터.
-성격/지식수준 프롬프트 빌드 → RAG 검색 → Qwen 1차 답변 → 티키타카(선택)
+성격/지식수준 프롬프트 빌드 → 의도 분류 → RAG 검색 → Qwen 1차 답변 → 티키타카(선택)
 까지의 흐름을 조율한다.
 
 검증(GPT verify)은 이 모듈에서 실행하지 않는다.
@@ -11,12 +11,13 @@ from typing import Optional
 
 from app.services.knowledge_level_controller import get_level_instruction
 from app.services.personality_prompt_builder import build_personality_prompt
-from app.services.qwen_service import ask_qwen
+from app.services.message_intent_classifier import classify_message_intent
+from app.services.llm_engine_router import call_primary_llm
 from app.services.tiki_taka_manager import run_tiki_taka, TikiTakaTurn
 
 logger = logging.getLogger(__name__)
 
-# 에이전트 채팅 시스템 프롬프트 뼈대
+# 학습 질문용 시스템 프롬프트 뼈대
 _BASE_SYSTEM = """\
 너는 StudyBridge의 AI 학습 에이전트 '{agent_name}'이다.
 
@@ -31,14 +32,25 @@ _BASE_SYSTEM = """\
 - 답변 마지막에 '참고 자료 출처'를 간단히 포함한다.
 """
 
+# 일상 대화용 시스템 프롬프트 뼈대 (짧고 자연스럽게)
+_CASUAL_SYSTEM = """\
+너는 StudyBridge의 AI 학습 에이전트 '{agent_name}'이다.
+지금은 가벼운 대화 상황이다. 짧고 자연스럽게 응답하라.
+전공 지식 설명, 이론, 전문 용어를 불필요하게 붙이지 않는다.
+반드시 한국어로 답변한다.
+"""
+
 
 def _build_system_prompt(
     agent_name: str,
-    knowledge_level: str,
+    effective_knowledge_level: str,
     personality: str,
     custom_instruction: Optional[str] = None,
+    is_casual: bool = False,
 ) -> str:
-    level_instr = get_level_instruction(knowledge_level)
+    if is_casual:
+        return _CASUAL_SYSTEM.format(agent_name=agent_name)
+    level_instr = get_level_instruction(effective_knowledge_level)
     personality_instr = build_personality_prompt(personality, custom_instruction)
     return _BASE_SYSTEM.format(
         agent_name=agent_name,
@@ -71,18 +83,30 @@ def run_agent_chat(
 
     Returns:
         {
-          "answer": str,                 # Qwen 1차 답변
-          "tiki_taka_dialogue": list,    # TikiTakaTurn 직렬화 목록 (비활성 시 [])
+          "answer": str,
+          "tiki_taka_dialogue": list,
           "process_logs": list[str],
-          "knowledge_level": str,
+          "knowledge_level": str,          # 사용자가 선택한 원본 지식수준
           "personality": str,
+          "requested_knowledge_level": str,
+          "effective_knowledge_level": str, # 실제 적용된 지식수준
+          "intent": str,
         }
     """
     logs: list[str] = []
 
-    # ── RAG 컨텍스트 수집 (optional) ─────────────────────────────────
+    # ── 메시지 의도 분류 ──────────────────────────────────────────────
+    intent_result = classify_message_intent(question, knowledge_level)
+    effective_level = intent_result.effective_knowledge_level
+    is_casual = intent_result.is_casual_message
+    logs.append(
+        f"의도 분류: {intent_result.intent} | "
+        f"effective_level={effective_level} | {intent_result.reason}"
+    )
+
+    # ── RAG 컨텍스트 수집 (학습 질문이고 material_id 있을 때만) ──────
     rag_context = ""
-    if material_id is not None:
+    if not is_casual and material_id is not None:
         try:
             from app.services.pdf_rag_service import search_pdf_context
             pdf_chunks = search_pdf_context(question, material_id)
@@ -95,26 +119,33 @@ def run_agent_chat(
                     )
                 rag_context = "\n".join(parts)
                 logs.append(f"PDF 자료에서 {len(pdf_chunks)}개 청크를 검색했습니다.")
+            else:
+                logs.append("RAG 검색 결과 없음 — 일반 지식 기반으로 답변합니다.")
         except Exception as e:
             logs.append(f"RAG 검색 실패 (계속 진행): {e}")
 
     # ── 시스템/사용자 프롬프트 조립 ──────────────────────────────────
     system_prompt = _build_system_prompt(
         agent_name=agent_name,
-        knowledge_level=knowledge_level,
+        effective_knowledge_level=effective_level,
         personality=personality,
         custom_instruction=custom_instruction,
+        is_casual=is_casual,
     )
     user_prompt = _build_user_prompt(question, rag_context)
     logs.append("프롬프트를 조립했습니다.")
 
-    # ── Qwen 1차 답변 생성 ────────────────────────────────────────────
-    answer = ask_qwen(system_prompt=system_prompt, user_prompt=user_prompt)
-    logs.append("Qwen 1차 답변을 생성했습니다.")
+    # ── LLM 1차 답변 생성 (Ollama → OpenAI fallback) ────────────────
+    answer = call_primary_llm(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        knowledge_level=effective_level if not is_casual else None,
+    )
+    logs.append("LLM 1차 답변을 생성했습니다.")
 
-    # ── 티키타카 (선택) ───────────────────────────────────────────────
+    # ── 티키타카 (선택, 일상대화이면 skip) ───────────────────────────
     tiki_taka_serialized: list[dict] = []
-    if enable_tiki_taka:
+    if enable_tiki_taka and not is_casual:
         try:
             turns: list[TikiTakaTurn] = run_tiki_taka(
                 question=question,
@@ -138,9 +169,12 @@ def run_agent_chat(
             logs.append(f"티키타카 생성 실패 (계속 진행): {e}")
 
     return {
-        "answer":             answer,
-        "tiki_taka_dialogue": tiki_taka_serialized,
-        "process_logs":       logs,
-        "knowledge_level":    knowledge_level,
-        "personality":        personality,
+        "answer":                     answer,
+        "tiki_taka_dialogue":         tiki_taka_serialized,
+        "process_logs":               logs,
+        "knowledge_level":            knowledge_level,   # 원본 선택값
+        "personality":                personality,
+        "requested_knowledge_level":  knowledge_level,
+        "effective_knowledge_level":  effective_level,
+        "intent":                     intent_result.intent,
     }

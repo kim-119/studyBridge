@@ -91,6 +91,14 @@ from app.api.training_candidate_routes import router as training_router
 from app.api.prediction_routes import router as prediction_router
 from app.api.quiz_routes import router as quiz_router
 from app.api.multi_chat_routes import router as multi_chat_router
+from app.api.training_status_routes import router as training_status_router
+
+# 비동기 멀티에이전트 (v0.6)
+from app.api.multi_agent_async_routes import router as multi_agent_async_router
+
+# 학습 파이프라인 확장 (v0.6 — [8-2] / [8-3])
+from app.api.auto_retrain_routes import router as auto_retrain_router
+from app.api.dataset_routes import router as dataset_router
 
 # v0.6 추가 라우터
 from app.api.rag_routes import spring_rag_router
@@ -105,9 +113,15 @@ app.include_router(validation_router)
 app.include_router(training_router)
 
 # Spring Boot 계약 API (v0.5)
-app.include_router(prediction_router)     # POST /api/ai/predict/study-time
-app.include_router(quiz_router)           # POST /api/ai/quiz/generate
-app.include_router(multi_chat_router)     # POST /api/ai/multi-chat
+app.include_router(prediction_router)       # POST /api/ai/predict/study-time
+app.include_router(quiz_router)             # POST /api/ai/quiz/generate
+app.include_router(multi_chat_router)       # POST /api/ai/multi-chat
+app.include_router(training_status_router)  # GET/POST /api/ai/training/status|readiness-check|...
+app.include_router(multi_agent_async_router)  # POST /api/ai/multi-chat/async
+
+# 자동 재학습 + dataset 관리 (v0.6)
+app.include_router(auto_retrain_router)     # GET/POST /api/ai/training/auto-retrain/*
+app.include_router(dataset_router)          # GET/POST /api/ai/training/datasets/*
 
 # RAG / Deep Search Spring 계약 (v0.6)
 app.include_router(spring_rag_router)     # POST /api/rag/ingest, /api/rag/query

@@ -4,8 +4,12 @@
 TensorFlow 모델이 있으면 모델 기반 예측, 없으면 7일 가중 평균 기반 예측.
 [FastAPI 내부 안전장치] Spring Boot에도 별도 fallback이 있음.
 TensorFlow import 실패 시 서버 전체가 죽지 않도록 graceful degradation.
+
+응답에 method와 confidence를 포함하여 예측 방식을 명확히 구분한다.
+실제 학습된 Transformer 모델이 없으면 "transformer" method를 반환하지 않는다.
 """
 import logging
+import math
 import os
 from typing import List
 
@@ -26,11 +30,13 @@ def _try_load_tf_model(model_path: str) -> bool:
         import tensorflow as tf  # noqa: F401
         _tf_available = True
     except ImportError:
-        logger.warning("TensorFlow를 import할 수 없습니다. 평균 기반 예측으로 fallback합니다.")
+        logger.warning("TensorFlow를 import할 수 없습니다. 가중평균 기반 예측으로 fallback합니다.")
         return False
 
     if not os.path.exists(model_path):
-        logger.warning("TF 모델 파일을 찾을 수 없습니다: %s. 평균 기반 예측으로 fallback합니다.", model_path)
+        logger.warning(
+            "TF 모델 파일을 찾을 수 없습니다: %s. 가중평균 기반 예측으로 fallback합니다.", model_path
+        )
         return False
 
     try:
@@ -39,15 +45,33 @@ def _try_load_tf_model(model_path: str) -> bool:
         logger.info("TensorFlow 학습 시간 예측 모델 로드 완료: %s", model_path)
         return True
     except Exception as e:
-        logger.error("TF 모델 로드 실패: %s. 평균 기반 예측으로 fallback합니다.", e)
+        logger.error("TF 모델 로드 실패: %s. 가중평균 기반 예측으로 fallback합니다.", e)
         return False
 
 
-def _average_fallback(weekly_seconds: List[float]) -> float:
+def _compute_weighted_avg(weekly_seconds: List[float]) -> float:
     """7일 데이터의 가중 평균 (최근 3일 가중치 증가) 기반 예측."""
     weights = [0.08, 0.10, 0.12, 0.14, 0.16, 0.18, 0.22]
     total = sum(w * v for w, v in zip(weights, weekly_seconds))
     return round(total, 1)
+
+
+def _compute_fallback_confidence(weekly_seconds: List[float]) -> float:
+    """
+    가중평균 fallback의 신뢰도를 데이터 분산 기반으로 추정한다.
+    분산이 낮을수록(패턴이 일정할수록) 신뢰도가 높다.
+    최대 0.75 (실제 모델이 아니므로 상한 제한).
+    """
+    if not weekly_seconds:
+        return 0.3
+    mean = sum(weekly_seconds) / len(weekly_seconds)
+    if mean == 0:
+        return 0.3
+    variance = sum((v - mean) ** 2 for v in weekly_seconds) / len(weekly_seconds)
+    cv = math.sqrt(variance) / (mean + 1e-9)  # 변동계수 (0에 가까울수록 안정)
+    # cv 0 → confidence 0.75, cv 1+ → confidence 0.35
+    confidence = max(0.35, min(0.75, 0.75 - cv * 0.4))
+    return round(confidence, 2)
 
 
 def _model_predict(weekly_seconds: List[float]) -> float:
@@ -60,7 +84,7 @@ def _model_predict(weekly_seconds: List[float]) -> float:
     return float(result.numpy()[0][0])
 
 
-def predict_study_time(weekly_seconds: List[float]) -> float:
+def predict_study_time(weekly_seconds: List[float]) -> dict:
     """
     학습 시간 예측 진입점.
 
@@ -68,7 +92,11 @@ def predict_study_time(weekly_seconds: List[float]) -> float:
         weekly_seconds: 최근 7일 학습 시간 (초 단위). 길이 검증은 호출 전에 완료.
 
     Returns:
-        예측된 학습 시간 (초 단위, float)
+        {
+            "predicted_seconds": float,
+            "method": "transformer" | "weighted_average_fallback",
+            "confidence": float,  # 0~1
+        }
     """
     from app.core.config import STUDY_TIME_MODEL_PATH
 
@@ -78,10 +106,19 @@ def predict_study_time(weekly_seconds: List[float]) -> float:
         try:
             result = _model_predict(weekly_seconds)
             logger.info("TF 모델 예측 완료: %.1f초", result)
-            return result
+            return {
+                "predicted_seconds": result,
+                "method": "transformer",
+                "confidence": 0.82,
+            }
         except Exception as e:
-            logger.error("TF 모델 예측 중 오류, 평균 기반으로 fallback: %s", e)
+            logger.error("TF 모델 예측 중 오류, 가중평균 fallback: %s", e)
 
-    result = _average_fallback(weekly_seconds)
-    logger.info("평균 기반 예측 (fallback) 완료: %.1f초", result)
-    return result
+    result = _compute_weighted_avg(weekly_seconds)
+    confidence = _compute_fallback_confidence(weekly_seconds)
+    logger.info("가중평균 예측 (fallback) 완료: %.1f초, confidence=%.2f", result, confidence)
+    return {
+        "predicted_seconds": result,
+        "method": "weighted_average_fallback",
+        "confidence": confidence,
+    }
