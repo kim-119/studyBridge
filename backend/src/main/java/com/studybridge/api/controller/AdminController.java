@@ -2,6 +2,9 @@ package com.studybridge.api.controller;
 
 import com.studybridge.api.dto.AdminDTO;
 import com.studybridge.api.dto.GroupStudyReportDTO;
+import com.studybridge.api.dto.InquiryDTO;
+import com.studybridge.api.entity.Inquiry;
+import com.studybridge.api.repository.InquiryRepository;
 import com.studybridge.api.security.domain.CustomUserDetails;
 import com.studybridge.api.service.AdminService;
 import lombok.RequiredArgsConstructor;
@@ -10,6 +13,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.time.format.DateTimeFormatter;
 
 @Slf4j
 @RestController
@@ -18,6 +23,7 @@ import java.util.List;
 public class AdminController {
 
     private final AdminService adminService;
+    private final InquiryRepository inquiryRepository;
 
     // 관리자 권한 확인 헬퍼
     private void verifyAdminRole(CustomUserDetails userDetails) {
@@ -88,5 +94,44 @@ public class AdminController {
         verifyAdminRole(userDetails);
         AdminDTO.ModerationResponse response = adminService.crushGroupStudy(groupId);
         return ResponseEntity.ok(response);
+    }
+
+    // 문의 목록 전체 조회 (관리자 전용)
+    @GetMapping("/inquiries")
+    public ResponseEntity<List<InquiryDTO.Response>> listInquiries(
+            @AuthenticationPrincipal CustomUserDetails userDetails) {
+        verifyAdminRole(userDetails);
+        List<Inquiry> inquiries = inquiryRepository.findAllByOrderByCreatedAtDesc();
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+        List<InquiryDTO.Response> responses = inquiries.stream()
+                .map(inquiry -> new InquiryDTO.Response(
+                        inquiry.getId(),
+                        inquiry.getType(),
+                        inquiry.getTitle(),
+                        inquiry.getContent(),
+                        inquiry.getReply(),
+                        inquiry.getStatus(),
+                        inquiry.getAuthor().getDisplayName(),
+                        inquiry.getCreatedAt() != null ? inquiry.getCreatedAt().format(formatter) : java.time.LocalDate.now().format(formatter)
+                ))
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(responses);
+    }
+
+    // 문의 답변 등록 (관리자 전용)
+    @PostMapping("/inquiries/{inquiryId}/reply")
+    public ResponseEntity<Void> replyInquiry(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long inquiryId,
+            @RequestBody InquiryDTO.ReplyRequest request) {
+        verifyAdminRole(userDetails);
+        Inquiry inquiry = inquiryRepository.findById(inquiryId)
+                .orElseThrow(() -> new IllegalArgumentException("문의 건이 존재하지 않습니다."));
+        
+        inquiry.setReply(request.getReply());
+        inquiry.setStatus("답변완료");
+        inquiryRepository.save(inquiry);
+        
+        return ResponseEntity.ok().build();
     }
 }
