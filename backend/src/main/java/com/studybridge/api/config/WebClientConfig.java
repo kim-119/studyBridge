@@ -18,13 +18,13 @@ import java.util.concurrent.TimeUnit;
 @Configuration
 public class WebClientConfig {
 
-    @Value("${fastapi.base-url:http://localhost:8000}")
+    @Value("${ai.server.fastapi.base-url:http://localhost:8000}")
     private String fastApiBaseUrl;
 
     // 멀티 에이전트 병렬 처리: 최대 30초 허용 (FastAPI 내부 타임아웃 22초 + 여유 8초)
     private static final int CONNECT_TIMEOUT_MS = 5000;
-    private static final int READ_TIMEOUT_SECONDS = 35;
-    private static final int WRITE_TIMEOUT_SECONDS = 10;
+    private static final int READ_TIMEOUT_SECONDS = 120;
+    private static final int WRITE_TIMEOUT_SECONDS = 30;
 
     @Bean
     public WebClient fastApiWebClient(WebClient.Builder builder) {

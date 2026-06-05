@@ -55,6 +55,22 @@ public class UserService {
             throw new IllegalArgumentException("가입되지 않은 이메일이거나 비밀번호가 틀렸습니다.");
         }
 
+        // 계정 정지 여부 검증
+        if ("BANNED".equals(user.getStatus())) {
+            throw new IllegalArgumentException("영구 정지된 계정입니다. 사유: " + user.getSuspensionReason() + " (메모: " + user.getSuspensionMemo() + ")");
+        } else if ("SUSPENDED".equals(user.getStatus())) {
+            if (user.getSuspensionEndDate() != null && user.getSuspensionEndDate().isAfter(LocalDateTime.now())) {
+                throw new IllegalArgumentException("일시 정지된 계정입니다. 정지 만료일: " + user.getSuspensionEndDate() + ", 사유: " + user.getSuspensionReason() + " (메모: " + user.getSuspensionMemo() + ")");
+            } else {
+                // 정지 기한이 만료된 경우 정상으로 복구
+                user.setStatus("ACTIVE");
+                user.setSuspensionEndDate(null);
+                user.setSuspensionReason(null);
+                user.setSuspensionMemo(null);
+                userRepository.save(user);
+            }
+        }
+
         // Access Token & Refresh Token 생성
         String accessToken = jwtTokenProvider.createToken(user.getId(), user.getEmail());
         String refreshToken = jwtTokenProvider.createRefreshToken(user.getId(), user.getEmail());
@@ -157,6 +173,9 @@ public class UserService {
                 .photoUrl(user.getPhotoUrl())
                 .status(user.getStatus())
                 .isSubscribed(user.getIsSubscribed())
+                .suspensionEndDate(user.getSuspensionEndDate())
+                .suspensionReason(user.getSuspensionReason())
+                .suspensionMemo(user.getSuspensionMemo())
                 .build();
         return response;
     }

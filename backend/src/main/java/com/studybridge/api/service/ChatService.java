@@ -170,14 +170,14 @@ public class ChatService {
                                         .bodyValue(requestBody)
                                         .retrieve()
                                         .bodyToMono(Map.class)
-                                        .block(Duration.ofSeconds(33));
+                                        .block(Duration.ofSeconds(120));
                         log.info("chat fastapi elapsed_ms={} roomId={}", System.currentTimeMillis() - faStart, roomId);
                 } catch (Exception e) {
                         long elapsed = System.currentTimeMillis() - faStart;
                         // 타임아웃 여부 판단 (block(Duration) 타임아웃은 IllegalStateException으로 올 수 있음)
                         boolean isTimeout = e instanceof WebClientRequestException
                                         || (e.getCause() != null && e.getCause() instanceof java.util.concurrent.TimeoutException)
-                                        || elapsed >= 30_000;
+                                        || elapsed >= 110_000;
                         if (isTimeout) {
                                 log.error("chat fastapi TIMEOUT elapsed_ms={} roomId={}", elapsed, roomId);
                                 return ChatDTO.MultiChatResponse.builder()
