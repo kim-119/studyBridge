@@ -15,6 +15,7 @@ export default function Login() {
 
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [suspensionDetails, setSuspensionDetails] = useState(null);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -85,7 +86,34 @@ export default function Login() {
       navigate('/dashboard');
     } catch (err) {
       console.error('로그인 실패:', err);
-      setError(err.message || '로그인에 실패했습니다.');
+      const errMsg = err.message || (typeof err === 'string' ? err : '');
+      const errStatus = err.status || 401;
+
+      if (errStatus === 403 || errMsg.includes('정지된 계정') || errMsg.includes('제재') || errMsg.includes('일시정지') || errMsg.includes('영구정지')) {
+        let isPermanent = errMsg.includes('영구정지') || errMsg.includes('영구 정지');
+        let reason = '운영 정책 위반';
+        let endDate = '';
+
+        // Parse reason and date
+        const reasonMatch = errMsg.match(/사유:\s*([^,\)\(]+)/) || errMsg.match(/사유:\s*([^\s]+)/);
+        if (reasonMatch) {
+          reason = reasonMatch[1].trim();
+        }
+        const dateMatch = errMsg.match(/정지 만료일:\s*([^,\)\(]+)/) || errMsg.match(/만료일:\s*([^,\)\(]+)/);
+        if (dateMatch) {
+          endDate = dateMatch[1].trim();
+        }
+
+        setSuspensionDetails({
+          isSuspended: true,
+          type: isPermanent ? '영구정지' : '일시정지',
+          reason,
+          endDate: isPermanent ? '영구 정지' : endDate,
+          originalMessage: errMsg
+        });
+      } else {
+        setError(errMsg || '로그인에 실패했습니다.');
+      }
     } finally {
       setLoading(false);
     }
@@ -287,6 +315,98 @@ export default function Login() {
           </Link>
         </p>
       </div>
+      {/* 제재 안내 모달 */}
+      {suspensionDetails && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 100000,
+          fontFamily: '"Malgun Gothic", sans-serif'
+        }}>
+          <div className="glass-panel animate-fade-in" style={{
+            width: '100%',
+            maxWidth: '480px',
+            padding: '36px',
+            backgroundColor: '#ffffff',
+            borderRadius: '16px',
+            boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)',
+            textAlign: 'center'
+          }}>
+            <div style={{
+              width: '72px',
+              height: '72px',
+              borderRadius: '50%',
+              backgroundColor: '#fee2e2',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 20px',
+              color: '#ef4444'
+            }}>
+              <AlertCircle size={36} />
+            </div>
+
+            <h2 style={{ fontSize: '22px', fontWeight: '700', color: '#111827', margin: '0 0 12px 0' }}>
+              서비스 이용이 제한된 계정입니다
+            </h2>
+            
+            <p style={{ fontSize: '14px', color: '#4b5563', lineHeight: '1.6', margin: '0 0 24px 0' }}>
+              고객님의 계정은 운영정책 위반으로 인해 서비스 이용이 정지되었습니다. 정지 기간 동안은 로그인을 포함한 모든 기능 사용이 제한됩니다.
+            </p>
+
+            <div style={{
+              backgroundColor: '#f9fafb',
+              borderRadius: '12px',
+              padding: '20px',
+              textAlign: 'left',
+              border: '1px solid #e5e7eb',
+              marginBottom: '24px'
+            }}>
+              <div style={{ display: 'flex', marginBottom: '10px' }}>
+                <div style={{ width: '90px', fontWeight: '700', color: '#374151', fontSize: '13px' }}>제재 구분</div>
+                <div style={{ flex: 1, color: '#ef4444', fontWeight: '700', fontSize: '13px' }}>
+                  {suspensionDetails.type === '영구정지' ? '영구 활동 정지' : '일시 활동 정지'}
+                </div>
+              </div>
+              <div style={{ display: 'flex', marginBottom: '10px' }}>
+                <div style={{ width: '90px', fontWeight: '700', color: '#374151', fontSize: '13px' }}>제재 사유</div>
+                <div style={{ flex: 1, color: '#1f2937', fontSize: '13px' }}>{suspensionDetails.reason}</div>
+              </div>
+              <div style={{ display: 'flex' }}>
+                <div style={{ width: '90px', fontWeight: '700', color: '#374151', fontSize: '13px' }}>정지 만료일</div>
+                <div style={{ flex: 1, color: '#1f2937', fontSize: '13px' }}>
+                  {suspensionDetails.endDate === '영구 정지' ? '영구 정지 (해제 불가)' : suspensionDetails.endDate}
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setSuspensionDetails(null)}
+              style={{
+                width: '100%',
+                padding: '12px',
+                borderRadius: '8px',
+                border: 'none',
+                backgroundColor: 'var(--color-primary)',
+                color: '#fff',
+                fontWeight: '700',
+                cursor: 'pointer',
+                fontSize: '15px'
+              }}
+            >
+              확인
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
