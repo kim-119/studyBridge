@@ -8,6 +8,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
+import reactor.netty.http.client.HttpClient;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -19,10 +24,22 @@ public class OpenViduService {
     private final WebClient webClient;
 
     public OpenViduService(
-            @Value("${openvidu.url:http://localhost:4443}") String openviduUrl,
+            @Value("${openvidu.url:https://localhost:4443}") String openviduUrl,
             @Value("${openvidu.secret:MY_SECRET}") String openviduSecret) {
 
+        SslContext sslContext;
+        try {
+            sslContext = SslContextBuilder.forClient()
+                    .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                    .build();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create SSL context for OpenVidu", e);
+        }
+
+        HttpClient httpClient = HttpClient.create().secure(t -> t.sslContext(sslContext));
+
         this.webClient = WebClient.builder()
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .baseUrl(openviduUrl)
                 .defaultHeaders(headers -> {
                     headers.setContentType(MediaType.APPLICATION_JSON);

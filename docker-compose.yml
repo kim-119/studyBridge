@@ -31,10 +31,13 @@ services:
       AWS_S3_BUCKET: ${AWS_S3_BUCKET}
       FASTAPI_BASE_URL: http://fastapi:8000
       FASTAPI_EXTRACTION_URL: http://fastapi:8000/api/extract
+      OPENVIDU_URL: http://openvidu:4443
+      OPENVIDU_SECRET: MY_SECRET
 
     depends_on:
       - db
       - fastapi
+      - openvidu
 
   fastapi:
     image: ${DOCKER_IMAGE_PREFIX:-studybridge}-fastapi:latest
@@ -51,6 +54,18 @@ services:
       PYTHONUNBUFFERED: 1
       TZ: Asia/Seoul
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  openvidu:
+    image: openvidu/openvidu-dev:2.30.0
+    container_name: capstone-openvidu
+    ports:
+      - "4443:4443"
+    environment:
+      - OPENVIDU_SECRET=MY_SECRET
+      - DOMAIN_OR_PUBLIC_IP=localhost
+      - CERTIFICATE_TYPE=selfsigned
+      - OPENVIDU_WEBHOOK=false
+    restart: on-failure
 
   db:
     image: postgres:16

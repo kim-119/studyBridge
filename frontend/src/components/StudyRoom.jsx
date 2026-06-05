@@ -115,7 +115,7 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
   );
 }
 
-export default function StudyRoom({ study, onClose }) {
+export default function StudyRoom({ study, onClose, selectedCamera }) {
   const { userId, user } = useAuth();
   
   const formatSecondsToStudyTime = (secs) => {
@@ -178,6 +178,7 @@ export default function StudyRoom({ study, onClose }) {
   const [session, setSession] = useState(null);
   const [publisher, setPublisher] = useState(null);
   const [subscribers, setSubscribers] = useState([]);
+  const [ovError, setOvError] = useState('');
 
   const myMember = members.find(m => Number(m.userId) === Number(userId));
   const myDisplayName = user?.displayName || user?.nickname || `User_${userId}`;
@@ -241,27 +242,52 @@ export default function StudyRoom({ study, onClose }) {
 
         setSession(sessionInstance);
 
-        const publisherInstance = await OVInstance.initPublisherAsync(undefined, {
-          audioSource: undefined,
-          videoSource: undefined,
-          publishAudio: isMicOn,
-          publishVideo: isVideoOn,
-          resolution: '640x480',
-          frameRate: 30,
-          insertMode: 'APPEND',
-          mirror: true
-        });
+        // 이전 프리뷰 화면에서 사용하던 카메라 하드웨어가 완전히 릴리즈될 시간을 확보 (500ms)
+        await new Promise(resolve => setTimeout(resolve, 500));
+        if (!isMounted) return;
+
+        let publisherInstance;
+        try {
+          publisherInstance = await OVInstance.initPublisherAsync(undefined, {
+            audioSource: undefined,
+            videoSource: selectedCamera ? selectedCamera : undefined,
+            publishAudio: isMicOn,
+            publishVideo: isVideoOn,
+            resolution: '640x480',
+            frameRate: 30,
+            insertMode: 'APPEND',
+            mirror: true
+          });
+        } catch (pubErr) {
+          console.warn("첫 번째 Publisher 초기화 실패, 마이크 없이 재시도합니다.", pubErr);
+          // 마이크 문제일 수 있으므로 audioSource를 false로 설정하여 재시도
+          publisherInstance = await OVInstance.initPublisherAsync(undefined, {
+            audioSource: false,
+            videoSource: selectedCamera ? selectedCamera : undefined,
+            publishAudio: false,
+            publishVideo: isVideoOn,
+            resolution: '640x480',
+            frameRate: 30,
+            insertMode: 'APPEND',
+            mirror: true
+          });
+          setIsMicOn(false); // 마이크 강제 종료
+        }
 
         if (!isMounted) {
-          publisherInstance.dispose();
+          if (publisherInstance) publisherInstance.dispose();
           return;
         }
 
         await sessionInstance.publish(publisherInstance);
         setPublisher(publisherInstance);
+        setOvError('');
 
       } catch (err) {
         console.error('Failed to join OpenVidu video session:', err);
+        if (isMounted) {
+          setOvError(err.message || '카메라/마이크를 초기화할 수 없습니다. 장치를 확인해주세요.');
+        }
       }
     }
 
@@ -277,6 +303,15 @@ export default function StudyRoom({ study, onClose }) {
       setSubscribers([]);
     };
   }, [study?.id, userId, myDisplayName]);
+
+  const updateStudyStatus = async (status) => {
+    try {
+      await groupService.updateStudyStatus(study.id, status);
+      showAlert('성공', `스터디 상태가 '${status}'(으)로 변경되었습니다.`);
+    } catch (error) {
+      showAlert('오류', error.response?.data?.message || '스터디 상태 변경에 실패했습니다.');
+    }
+  };
 
   // 2. Local Stream Track Publish Control Effects
   useEffect(() => {
@@ -689,14 +724,23 @@ export default function StudyRoom({ study, onClose }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', height: '100%', alignContent: 'start' }}>
 
             {/* Local Video Feed */}
-            <VideoFeed
-              stream={publisher ? publisher.stream.mediaStream : null}
-              isLocal={true}
-              displayName={myDisplayName}
-              isMuted={true}
-              isCamOn={isVideoOn}
-              isMicOn={isMicOn}
-            />
+            <div style={{ position: 'relative' }}>
+              <VideoFeed
+                stream={publisher ? publisher.stream.mediaStream : null}
+                isLocal={true}
+                displayName={myDisplayName}
+                isMuted={true}
+                isCamOn={isVideoOn}
+                isMicOn={isMicOn}
+              />
+              {ovError && (
+                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', color: '#FCA5A5', padding: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', zIndex: 10, borderRadius: '16px' }}>
+                  <AlertTriangle size={32} color="#EF4444" style={{ marginBottom: '8px' }} />
+                  <div style={{ fontSize: '14px', fontWeight: 'bold' }}>장치 연결 실패</div>
+                  <div style={{ fontSize: '12px', marginTop: '4px', wordBreak: 'break-all' }}>{ovError}</div>
+                </div>
+              )}
+            </div>
 
             {/* Remote Peer Video Feeds */}
             {subscribers.map(sub => {
@@ -802,6 +846,55 @@ export default function StudyRoom({ study, onClose }) {
                 )}
               </div>
             </div>
+
+            {/* 방장 관리 콘솔 */}
+            {myMember?.role === 'LEADER' && (
+              <div style={{ padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: 'rgba(15, 23, 42, 0.5)' }}>
+                <div style={{ fontSize: '14px', fontWeight: '700', color: '#34D399', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                  <Settings size={16} /> 방장 관리 콘솔
+                </div>
+                
+                {/* 스터디 상태 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '12px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '8px', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                    <span style={{ color: '#9CA3AF' }}>스터디 상태</span>
+                    <span style={{ color: study.status === '모집중' ? '#34D399' : '#9CA3AF', fontWeight: '600' }}>{study.status}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                    <span style={{ color: '#9CA3AF' }}>가입 인원</span>
+                    <span style={{ color: '#E5E7EB', fontWeight: '600' }}>{study.currentMembers} / {study.maxMembers}명</span>
+                  </div>
+                </div>
+
+                {/* 가입 신청 대기자 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: '600', color: '#E5E7EB', display: 'flex', justifyContent: 'space-between' }}>
+                    가입 신청 대기자 명단 ({applications.length})
+                    <span onClick={() => { setRoomManageTab('members'); setShowRoomManageModal(true); }} style={{ color: '#60A5FA', cursor: 'pointer', fontSize: '11px' }}>자세히 보기 &gt;</span>
+                  </div>
+                  <div className="custom-scrollbar" style={{ height: '80px', overflowY: 'auto', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '8px', backgroundColor: 'rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {applications.length > 0 ? (
+                      applications.map(app => (
+                        <div key={app.applicationId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', padding: '6px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>
+                          <span style={{ color: '#D1D5DB' }}>{app.applicantName}</span>
+                          <span style={{ color: '#60A5FA', cursor: 'pointer' }} onClick={() => { setRoomManageTab('members'); setShowRoomManageModal(true); }}>심사하기</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div style={{ color: '#6B7280', fontSize: '11px', textAlign: 'center', marginTop: '24px' }}>대기 중인 신청자가 없습니다.</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 관리 버튼 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+
+                  <button onClick={() => updateStudyStatus('해체됨')} style={{ width: '100%', padding: '10px', backgroundColor: 'transparent', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.5)', fontSize: '12px', fontWeight: '600', cursor: 'pointer', transition: '0.2s', ':hover': { backgroundColor: 'rgba(239,68,68,0.1)' } }}>
+                    스터디 강제 해체
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Chat Area */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#111827' }}>
@@ -1006,12 +1099,10 @@ export default function StudyRoom({ study, onClose }) {
                   <Video size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>카메라</span>
                 </div>
                 <div style={{ backgroundColor: '#0F172A', borderRadius: '12px', padding: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <select style={{ width: '100%', backgroundColor: 'transparent', border: 'none', outline: 'none', color: '#F3F4F6', fontSize: '14px', cursor: 'pointer' }}>
-                    <option value="cam1" style={{ backgroundColor: '#1E293B' }}>기본 카메라 (FaceTime HD Camera)</option>
-                    <option value="cam2" style={{ backgroundColor: '#1E293B' }}>OBS Virtual Camera</option>
+                  <select disabled style={{ width: '100%', backgroundColor: 'transparent', border: 'none', outline: 'none', color: '#9CA3AF', fontSize: '14px', cursor: 'not-allowed' }}>
+                    <option value="cam1" style={{ backgroundColor: '#1E293B' }}>카메라 변경은 입장 전 미리보기에서 가능합니다.</option>
                   </select>
                 </div>
-                <div style={{ fontSize: '12px', color: '#34D399', marginTop: '6px', marginLeft: '4px' }}>정상적으로 작동중입니다</div>
               </div>
 
               {/* 마이크 설정 */}
@@ -1020,11 +1111,10 @@ export default function StudyRoom({ study, onClose }) {
                   <Mic size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>마이크</span>
                 </div>
                 <div style={{ backgroundColor: '#0F172A', borderRadius: '12px', padding: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <select style={{ width: '100%', backgroundColor: 'transparent', border: 'none', outline: 'none', color: '#F3F4F6', fontSize: '14px', cursor: 'pointer' }}>
-                    <option value="mic1" style={{ backgroundColor: '#1E293B' }}>기본 마이크 (Built-in Microphone)</option>
+                  <select disabled style={{ width: '100%', backgroundColor: 'transparent', border: 'none', outline: 'none', color: '#9CA3AF', fontSize: '14px', cursor: 'not-allowed' }}>
+                    <option value="mic1" style={{ backgroundColor: '#1E293B' }}>마이크 변경은 입장 전 미리보기에서 가능합니다.</option>
                   </select>
                 </div>
-                <div style={{ fontSize: '12px', color: '#34D399', marginTop: '6px', marginLeft: '4px' }}>정상적으로 작동중입니다</div>
               </div>
 
               {/* 스피커 설정 */}
@@ -1033,11 +1123,10 @@ export default function StudyRoom({ study, onClose }) {
                   <Volume2 size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>스피커</span>
                 </div>
                 <div style={{ backgroundColor: '#0F172A', borderRadius: '12px', padding: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <select style={{ width: '100%', backgroundColor: 'transparent', border: 'none', outline: 'none', color: '#F3F4F6', fontSize: '14px', cursor: 'pointer' }}>
-                    <option value="spk1" style={{ backgroundColor: '#1E293B' }}>시스템 기본값 (Built-in Output)</option>
+                  <select disabled style={{ width: '100%', backgroundColor: 'transparent', border: 'none', outline: 'none', color: '#9CA3AF', fontSize: '14px', cursor: 'not-allowed' }}>
+                    <option value="spk1" style={{ backgroundColor: '#1E293B' }}>기본 스피커</option>
                   </select>
                 </div>
-                <div style={{ fontSize: '12px', color: '#34D399', marginTop: '6px', marginLeft: '4px' }}>정상적으로 작동중입니다</div>
               </div>
             </div>
 

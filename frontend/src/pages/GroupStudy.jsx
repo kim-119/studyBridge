@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, Plus, Search, User, Lock, Globe, Filter, ClipboardList, X, AlertTriangle, CheckCircle2, Video, VideoOff, Mic, MicOff, Settings, Volume2, Camera, Check, ArrowLeft } from 'lucide-react';
+import { Users, Plus, Search, User, Lock, Globe, Filter, ClipboardList, X, AlertTriangle, CheckCircle2, Video, VideoOff, Mic, MicOff, Settings, Volume2, Camera, Check, ArrowLeft, Shield } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { groupService } from '../services/api';
 import StudyRoom from '../components/StudyRoom';
@@ -102,7 +102,7 @@ export default function GroupStudy() {
   const [recruitments, setRecruitments] = useState([]);
   const [myStudies, setMyStudies] = useState([]);
   const [appliedStudies, setAppliedStudies] = useState([]);
-  const [filter, setFilter] = useState('PUBLIC'); // 'PUBLIC', 'PRIVATE', 'RECRUIT'
+  const [filter, setFilter] = useState('PUBLIC'); // 'PUBLIC', 'PRIVATE'
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPost, setSelectedPost] = useState(null);
   const [applyMessage, setApplyMessage] = useState('');
@@ -131,6 +131,7 @@ export default function GroupStudy() {
   const [isMicOn, setIsMicOn] = useState(true);
   const [showPreJoinInfo, setShowPreJoinInfo] = useState(false);
   const [showPreJoinSettings, setShowPreJoinSettings] = useState(false);
+  const [showLeaderConsole, setShowLeaderConsole] = useState(false);
   const [preJoinMembers, setPreJoinMembers] = useState([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
 
@@ -139,10 +140,76 @@ export default function GroupStudy() {
     isOpen: false,
     title: '',
     message: '',
-    type: 'alert', // 'alert' | 'confirm'
+    type: 'alert',
     onConfirm: null,
     onCancel: null,
   });
+
+  const videoRef = React.useRef(null);
+  const [camError, setCamError] = useState('');
+  
+  const [cameras, setCameras] = useState([]);
+  const [selectedCamera, setSelectedCamera] = useState('');
+
+  // 권한을 얻은 후 장치 목록을 가져오는 함수
+  const fetchDevices = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter(device => device.kind === 'videoinput');
+      setCameras(videoInputs);
+      // 만약 선택된 카메라가 없고, 사용 가능한 카메라가 있다면 첫 번째 카메라를 기본값으로 설정
+      if (!selectedCamera && videoInputs.length > 0) {
+        setSelectedCamera(videoInputs[0].deviceId);
+      }
+    } catch (err) {
+      console.error("장치 목록을 가져오는데 실패했습니다.", err);
+    }
+  };
+
+  useEffect(() => {
+    let stream = null;
+    let isMounted = true;
+
+    if (preJoinStudy && isVideoOn) {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setCamError('브라우저가 카메라 API를 지원하지 않습니다 (HTTPS 또는 localhost 필요).');
+        return;
+      }
+
+      const constraints = {
+        video: selectedCamera ? { deviceId: { exact: selectedCamera } } : true,
+        audio: false
+      };
+
+      navigator.mediaDevices.getUserMedia(constraints)
+        .then(s => {
+          if (!isMounted) {
+            s.getTracks().forEach(t => t.stop());
+            return;
+          }
+          stream = s;
+          if (videoRef.current) {
+            videoRef.current.srcObject = s;
+          }
+          setCamError('');
+          // 스트림 획득(권한 허용) 성공 후 장치 목록 갱신 (label을 읽어오기 위함)
+          fetchDevices();
+        })
+        .catch(err => {
+          if (isMounted) {
+            console.error("카메라 에러:", err);
+            setCamError(`${err.name}: ${err.message}`);
+          }
+        });
+    }
+    return () => {
+      isMounted = false;
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [preJoinStudy, isVideoOn, selectedCamera]);
 
   const showAlert = (title, message, onConfirm = null) => {
     setCustomAlert({ isOpen: true, title, message, type: 'alert', onConfirm: () => { setCustomAlert(prev => ({ ...prev, isOpen: false })); if (onConfirm) onConfirm(); } });
@@ -196,10 +263,7 @@ export default function GroupStudy() {
       // Sort by id desc
       normalized.sort((a, b) => b.id - a.id);
 
-      // ACTIVE or RECRUITING ones go to studies
       setStudies(normalized.filter(g => g.status === 'ACTIVE' || g.status === 'RECRUITING'));
-      // RECRUITING ones go to recruitments (모집게시판)
-      setRecruitments(normalized.filter(g => g.status === 'RECRUITING'));
       
       // myStudies: groups where I am the leader
       if (userId) {
@@ -279,19 +343,7 @@ export default function GroupStudy() {
     }
   };
 
-  const handleCompleteRecruitment = async () => {
-    if (!preJoinStudy) return;
-    showConfirm('모집 종료', '스터디원 모집을 완료하고 스터디를 시작하시겠습니까?', async () => {
-      try {
-        await groupService.completeRecruitment(preJoinStudy.id);
-        showAlert('성공', '스터디 모집이 종료되었습니다. 정식 스터디가 시작됩니다.');
-        setPreJoinStudy(null);
-        loadGroups();
-      } catch (err) {
-        showAlert('오류', err.response?.data?.message || '모집 종료 처리에 실패했습니다.');
-      }
-    });
-  };
+
 
   const handleDeleteStudy = async () => {
     if (!preJoinStudy) return;
@@ -307,51 +359,24 @@ export default function GroupStudy() {
     });
   };
 
-  const handleApply = async (study, e) => {
-    if (e) e.stopPropagation(); // 카드 클릭 이벤트 방지
+  const handleCardClick = async (study) => {
     if (!checkAuth()) return;
-
-    if (Number(study.leaderId) === Number(userId)) {
-      setPreJoinStudy(study);
-      return;
-    }
-
-    // 이미 가입된 멤버인지 체크 추가
+    
     let isAlreadyJoined = false;
-    try {
-      const members = await groupService.getMembers(study.id);
-      if (members.some(m => Number(m.userId) === Number(userId))) {
-        isAlreadyJoined = true;
-      }
-    } catch (err) {
-      console.warn("Failed to check group membership in handleApply", err);
-    }
-
-    if (isAlreadyJoined) {
-      setPreJoinStudy(study);
-      return;
-    }
-
-    if (appliedStudies.includes(study.id)) {
-      showAlert('알림', '이미 신청한 스터디입니다.');
-      return;
-    }
-
-    if (study.isPrivate) {
-      setPreJoinStudy(study);
-      return;
-    }
-
-    showConfirm('참가 신청', `'${study.title}' 스터디에 바로 참여하시겠습니까?`, async () => {
+    if (Number(study.leaderId) === Number(userId)) {
+      isAlreadyJoined = true;
+    } else {
       try {
-        await groupService.applyGroup(study.id, { introduction: '공개 스터디 바로 참가' });
-        setAppliedStudies(prev => [...prev, study.id]);
-        showAlert('알림', '참여가 완료되었습니다. 카드 또는 입장 버튼을 눌러 스터디에 들어가실 수 있습니다.');
-        loadGroups();
+        const members = await groupService.getMembers(study.id);
+        if (members.some(m => Number(m.userId) === Number(userId))) {
+          isAlreadyJoined = true;
+        }
       } catch (err) {
-        showAlert('오류', err.response?.data?.message || '참가 신청에 실패했습니다.');
+        console.warn("Failed to check group membership in handleCardClick", err);
       }
-    });
+    }
+    
+    setSelectedPost({ ...study, isAlreadyJoined });
   };
 
   // 필터링 적용
@@ -597,17 +622,6 @@ export default function GroupStudy() {
               >
                 <Lock size={16} /> 비공개방
               </button>
-              <button
-                onClick={() => setFilter('RECRUIT')}
-                style={{
-                  padding: '8px 20px', borderRadius: '30px', fontSize: '14px', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s', border: 'none',
-                  backgroundColor: filter === 'RECRUIT' ? '#10B981' : '#f3f4f6',
-                  color: filter === 'RECRUIT' ? '#fff' : 'var(--color-text-muted)',
-                  display: 'flex', alignItems: 'center', gap: '6px'
-                }}
-              >
-                <ClipboardList size={16} /> 모집게시판
-              </button>
             </div>
 
             {/* 검색 바 */}
@@ -626,70 +640,14 @@ export default function GroupStudy() {
                 style={{ width: 'auto', height: '36px', padding: '0 16px', fontSize: '14px' }}
                 onClick={() => {
                   if (!checkAuth()) return;
-                  if (filter === 'RECRUIT') {
-                    setIsWriteModalOpen(true);
-                  } else {
-                    setIsCreateStudyMode(true);
-                  }
+                  setIsCreateStudyMode(true);
                 }}
               >
-                <Plus size={16} /> {filter === 'RECRUIT' ? '모집글 쓰기' : '스터디 만들기'}
+                <Plus size={16} /> 스터디 만들기
               </button>
             </div>
-
-          {filter === 'RECRUIT' ? (
-            // 모집게시판 UI (게시글 목록 형태)
-            <div className="glass-panel" style={{ padding: '0', overflow: 'hidden', borderRadius: '12px', border: '1px solid #e5e7eb' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-                <thead style={{ backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-                  <tr>
-                    <th style={{ padding: '16px 20px', color: '#6B7280', fontWeight: '600', fontSize: '13px', width: '10%' }}>상태</th>
-                    <th style={{ padding: '16px 20px', color: '#6B7280', fontWeight: '600', fontSize: '13px', width: '60%' }}>제목</th>
-                    <th style={{ padding: '16px 20px', color: '#6B7280', fontWeight: '600', fontSize: '13px', width: '15%' }}>작성자</th>
-                    <th style={{ padding: '16px 20px', color: '#6B7280', fontWeight: '600', fontSize: '13px', width: '15%' }}>작성일</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recruitments.filter(post => !searchQuery || post.title.includes(searchQuery)).map((post, idx) => (
-                    <tr
-                      key={post.id}
-                      style={{ borderBottom: idx === recruitments.length - 1 ? 'none' : '1px solid #e5e7eb', transition: 'background-color 0.2s', cursor: 'pointer' }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f9fafb'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                      onClick={() => setSelectedPost(post)}
-                    >
-                      <td style={{ padding: '16px 20px' }}>
-                        {post.status === 'RECRUITING' ?
-                          <span style={{ backgroundColor: '#DEF7EC', color: '#03543F', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '700' }}>모집중</span> :
-                          <span style={{ backgroundColor: '#F3F4F6', color: '#6B7280', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '700' }}>마감</span>
-                        }
-                      </td>
-                      <td style={{ padding: '16px 20px', fontWeight: '600', color: '#111827', fontSize: '15px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          {post.isPrivate ? (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', backgroundColor: '#F3F4F6', color: '#4B5563', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: '700' }}><Lock size={12} /> 비공개</span>
-                          ) : (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', backgroundColor: '#EFF6FF', color: '#3B82F6', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: '700' }}><Globe size={12} /> 공개</span>
-                          )}
-                          <span>{post.title}</span>
-                          <span style={{ fontSize: '12px', color: '#6B7280', fontWeight: '500' }}>[{post.current}/{post.max}]</span>
-                        </div>
-                      </td>
-                      <td style={{ padding: '16px 20px', color: '#4B5563', fontSize: '14px' }}>{post.author}</td>
-                      <td style={{ padding: '16px 20px', color: '#9CA3AF', fontSize: '13px' }}>{post.date}</td>
-                    </tr>
-                  ))}
-                  {recruitments.filter(post => !searchQuery || post.title.includes(searchQuery)).length === 0 && (
-                    <tr>
-                      <td colSpan="5" style={{ padding: '60px 0', textAlign: 'center', color: '#9CA3AF' }}>검색 결과가 없습니다.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            /* 스터디 목록 그리드 */
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
+            {/* 스터디 목록 그리드 */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px', marginTop: '24px' }}>
               {filteredStudies.length === 0 ? (
                 <div style={{ gridColumn: '1 / -1', padding: '60px 0', textAlign: 'center', color: 'var(--color-text-muted)', backgroundColor: '#f9fafb', borderRadius: '16px' }}>
                   <Filter size={40} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
@@ -703,10 +661,7 @@ export default function GroupStudy() {
                     style={{ display: 'flex', flexDirection: 'column', height: '100%', cursor: 'pointer', overflow: 'hidden', padding: 0, border: '1px solid #e5e7eb', transition: 'transform 0.2s, box-shadow 0.2s' }}
                     onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = '0 10px 25px rgba(0,0,0,0.08)'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 6px rgba(0,0,0,0.02)'; }}
-                    onClick={() => {
-                      if (!checkAuth()) return;
-                      setPreJoinStudy(study);
-                    }}
+                    onClick={() => handleCardClick(study)}
                   >
                     {/* 썸네일 영역 */}
                     <div style={{ position: 'relative', width: '100%', paddingTop: '56.25%', backgroundColor: '#f3f4f6', overflow: 'hidden' }}>
@@ -772,9 +727,12 @@ export default function GroupStudy() {
                             opacity: (study.status === 'CLOSED' && Number(study.leaderId) !== Number(userId) && !study.isPrivate) ? 0.5 : 1
                           }}
                           disabled={study.status === 'CLOSED' && Number(study.leaderId) !== Number(userId) && !study.isPrivate || appliedStudies.includes(study.id)}
-                          onClick={(e) => handleApply(study, e)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCardClick(study);
+                          }}
                         >
-                          {appliedStudies.includes(study.id) ? '신청완료' : (Number(study.leaderId) === Number(userId) ? '내 스터디 입장' : (study.isPrivate ? '스터디 입장' : (study.status === 'CLOSED' ? '모집마감' : '참여하기')))}
+                          {appliedStudies.includes(study.id) ? '신청완료' : (Number(study.leaderId) === Number(userId) ? '내 스터디' : (study.isPrivate ? '참여신청' : (study.status === 'CLOSED' ? '모집마감' : '참여하기')))}
                         </button>
                       </div>
                     </div>
@@ -782,7 +740,6 @@ export default function GroupStudy() {
                 ))
               )}
             </div>
-          )}
 
           {/* 모집글 상세 모달 */}
           {selectedPost && (
@@ -834,7 +791,7 @@ export default function GroupStudy() {
                     </div>
                   </div>
 
-                  {selectedPost.isPrivate && (
+                  {selectedPost.isPrivate && !selectedPost.isAlreadyJoined && !appliedStudies.includes(selectedPost.id) && (
                     <div style={{ marginBottom: '24px' }}>
                       <div style={{ fontSize: '13px', color: '#6B7280', marginBottom: '8px', display: 'flex', justifyContent: 'space-between' }}>
                         <span>방장에게 보낼 참가 신청 메시지</span>
@@ -891,10 +848,8 @@ export default function GroupStudy() {
                       }
 
                       if (isAlreadyJoined) {
-                        showAlert('알림', '이미 가입되어 있는 스터디입니다. 스터디룸 입장 페이지로 이동합니다.', () => {
-                          setSelectedPost(null);
-                          setPreJoinStudy(selectedPost);
-                        });
+                        setSelectedPost(null);
+                        setPreJoinStudy(selectedPost);
                         return;
                       }
 
@@ -943,7 +898,7 @@ export default function GroupStudy() {
                       }
                     }}
                   >
-                    {selectedPost.isPrivate ? '신청하기' : '바로 참여하기'}
+                    {selectedPost.isAlreadyJoined ? '스터디 입장' : (selectedPost.isPrivate ? '참가신청' : '바로 참여하기')}
                   </button>
                 </div>
 
@@ -1099,9 +1054,27 @@ export default function GroupStudy() {
                         </div>
                       </div>
                     ) : (
-                      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundImage: 'url(https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80)', backgroundSize: 'cover', backgroundPosition: 'center', opacity: 0.8 }}>
-                        {/* 가상 카메라 화면 예시 */}
-                      </div>
+                      <>
+                        <video
+                          ref={videoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+                        />
+                        {camError && (
+                          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', backgroundColor: 'rgba(0,0,0,0.7)', color: '#FCA5A5', padding: '16px', borderRadius: '8px', textAlign: 'center', maxWidth: '80%', zIndex: 10 }}>
+                            <AlertTriangle size={32} color="#EF4444" style={{ marginBottom: '8px' }} />
+                            <div style={{ fontSize: '14px', fontWeight: 'bold' }}>카메라를 불러오지 못했습니다.</div>
+                            <div style={{ fontSize: '12px', marginTop: '4px', wordBreak: 'break-all' }}>{camError}</div>
+                            <button 
+                              onClick={() => { setCamError(''); setIsVideoOn(false); setTimeout(() => setIsVideoOn(true), 100); }} 
+                              style={{ marginTop: '12px', padding: '6px 12px', borderRadius: '4px', border: '1px solid #FCA5A5', background: 'transparent', color: '#FCA5A5', cursor: 'pointer', fontSize: '12px' }}>
+                              다시 시도
+                            </button>
+                          </div>
+                        )}
+                      </>
                     )}
 
 
@@ -1114,12 +1087,24 @@ export default function GroupStudy() {
                             <Video size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>카메라</span>
                           </div>
                           <div style={{ position: 'relative', marginBottom: '8px' }}>
-                            <select style={{ width: '100%', appearance: 'none', border: 'none', backgroundColor: 'transparent', fontSize: '15px', color: '#111827', cursor: 'pointer', outline: 'none' }}>
-                              <option>camera1</option>
+                            <select 
+                              value={selectedCamera}
+                              onChange={(e) => setSelectedCamera(e.target.value)}
+                              style={{ width: '100%', appearance: 'none', border: 'none', backgroundColor: 'transparent', fontSize: '15px', color: '#111827', cursor: 'pointer', outline: 'none' }}
+                            >
+                              {cameras.length === 0 ? (
+                                <option value="">카메라 찾는 중...</option>
+                              ) : (
+                                cameras.map((cam, idx) => (
+                                  <option key={cam.deviceId} value={cam.deviceId}>
+                                    {cam.label || `카메라 ${idx + 1}`}
+                                  </option>
+                                ))
+                              )}
                             </select>
                             <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>▼</div>
                           </div>
-                          <div style={{ fontSize: '12px', color: '#9CA3AF' }}>정상적으로 작동중입니다</div>
+                          <div style={{ fontSize: '12px', color: '#9CA3AF' }}>목록에서 다른 카메라를 선택해보세요</div>
                         </div>
                         {/* Mic */}
                         <div style={{ flex: 1, padding: '0 16px', borderRight: '1px solid #E5E7EB' }}>
@@ -1160,6 +1145,17 @@ export default function GroupStudy() {
                       <AlertTriangle size={24} />
                       <span style={{ fontSize: '12px', fontWeight: '500' }}>정보</span>
                     </button>
+                    
+                    {Number(preJoinStudy.leaderId) === Number(userId) && (
+                      <button
+                        style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', background: 'none', border: 'none', cursor: 'pointer', color: showLeaderConsole ? '#10B981' : '#6B7280', flex: 1 }}
+                        onClick={() => setShowLeaderConsole(true)}
+                      >
+                        <Shield size={24} />
+                        <span style={{ fontSize: '12px', fontWeight: '500' }}>방장 관리</span>
+                      </button>
+                    )}
+
                     <button
                       style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', background: 'none', border: 'none', cursor: 'pointer', color: showPreJoinSettings ? '#3B82F6' : '#6B7280', flex: 1 }}
                       onClick={() => setShowPreJoinSettings(!showPreJoinSettings)}
@@ -1210,107 +1206,108 @@ export default function GroupStudy() {
                 </button>
               </div>
 
-              {/* Leader Console Panel */}
-              {Number(preJoinStudy.leaderId) === Number(userId) && (
-                <div className="glass-panel animate-fade-in" style={{ 
-                  width: '420px', 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  gap: '24px', 
-                  padding: '24px', 
-                  boxSizing: 'border-box',
-                  backgroundColor: '#ffffff',
-                  border: '1px solid #e5e7eb',
-                  borderRadius: '16px',
-                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)',
-                  height: 'fit-content',
-                  maxHeight: '100%',
-                  overflowY: 'auto'
-                }}>
-                  <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#111827', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Settings size={20} color="#10B981" /> 방장 관리 콘솔
-                  </h3>
-                  
-                  {/* 스터디 상태 표시 */}
-                  <div style={{ backgroundColor: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '12px 16px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
-                      <span style={{ color: '#6B7280' }}>스터디 상태</span>
-                      <span style={{ 
-                        fontWeight: '700', 
-                        color: preJoinStudy.status === 'RECRUITING' ? '#10B981' : '#3B82F6'
-                      }}>
-                        {preJoinStudy.status === 'RECRUITING' ? '모집중' : '진행중 (모집종료)'}
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                      <span style={{ color: '#6B7280' }}>가입 인원</span>
-                      <span style={{ fontWeight: '700', color: '#111827' }}>
-                        {preJoinStudy.currentMembers} / {preJoinStudy.maxMembers}명
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* 가입 신청자 대기 명단 */}
-                  <div style={{ display: 'flex', flexDirection: 'column', minHeight: '240px' }}>
-                    <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: '700', color: '#374151' }}>
-                      가입 신청 대기자 명단 ({applications.length})
-                    </h4>
-                    
-                    <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '10px', backgroundColor: '#F9FAFB', display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '300px' }}>
-                      {loadingApps ? (
-                        <div style={{ padding: '20px 0', textAlign: 'center', fontSize: '13px', color: '#9CA3AF' }}>불러오는 중...</div>
-                      ) : applications.length === 0 ? (
-                        <div style={{ padding: '40px 0', textAlign: 'center', fontSize: '13px', color: '#9CA3AF' }}>대기 중인 신청자가 없습니다.</div>
-                      ) : (
-                        applications.map(app => (
-                          <div key={app.applicationId} style={{ backgroundColor: '#ffffff', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ fontWeight: '700', fontSize: '14px', color: '#111827' }}>{app.applicantName}</span>
-                              <span style={{ fontSize: '11px', color: '#9CA3AF' }}>
-                                {app.createdAt ? app.createdAt.split('T')[0] : ''}
-                              </span>
-                            </div>
-                            <p style={{ margin: 0, fontSize: '13px', color: '#4B5563', backgroundColor: '#F3F4F6', padding: '8px 10px', borderRadius: '6px', wordBreak: 'break-all', lineHeight: '1.4' }}>
-                              {app.introduction}
-                            </p>
-                            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                              <button 
-                                onClick={() => handleApproveApp(app.applicationId)}
-                                style={{ flex: 1, height: '32px', backgroundColor: '#10B981', color: 'white', border: 'none', borderRadius: '6px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
-                              >
-                                승인
-                              </button>
-                              <button 
-                                onClick={() => handleRejectApp(app.applicationId)}
-                                style={{ flex: 1, height: '32px', backgroundColor: '#EF4444', color: 'white', border: 'none', borderRadius: '6px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
-                              >
-                                거절
-                              </button>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-
-                  {/* 관리 액션 */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderTop: '1px solid #E5E7EB', paddingTop: '16px', marginTop: 'auto' }}>
-                    {preJoinStudy.status === 'RECRUITING' && (
-                      <button 
-                        onClick={handleCompleteRecruitment}
-                        style={{ width: '100%', height: '40px', backgroundColor: '#3B82F6', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '700', fontSize: '14px', cursor: 'pointer' }}
-                      >
-                        모집 종료 및 스터디 시작
+              {/* Leader Console Panel - Changed to Modal */}
+              {showLeaderConsole && Number(preJoinStudy.leaderId) === Number(userId) && (
+                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000, padding: '20px' }} onClick={() => setShowLeaderConsole(false)}>
+                  <div className="glass-panel animate-fade-in" style={{ 
+                    width: '100%',
+                    maxWidth: '420px', 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: '24px', 
+                    padding: '24px', 
+                    boxSizing: 'border-box',
+                    backgroundColor: '#ffffff',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '16px',
+                    boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)',
+                    height: 'fit-content',
+                    maxHeight: '90vh',
+                    overflowY: 'auto'
+                  }} onClick={(e) => e.stopPropagation()}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#111827', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Settings size={20} color="#10B981" /> 방장 관리 콘솔
+                      </h3>
+                      <button onClick={() => setShowLeaderConsole(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                        <X size={24} color="#9CA3AF" />
                       </button>
-                    )}
-                    <button 
-                      onClick={handleDeleteStudy}
-                      style={{ width: '100%', height: '40px', backgroundColor: 'transparent', color: '#EF4444', border: '1px solid #EF4444', borderRadius: '8px', fontWeight: '700', fontSize: '14px', cursor: 'pointer', boxSizing: 'border-box' }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#FEE2E2'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                    >
-                      스터디 강제 해체
-                    </button>
+                    </div>
+                    
+                    {/* 스터디 상태 표시 */}
+                    <div style={{ backgroundColor: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '12px 16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
+                        <span style={{ color: '#6B7280' }}>스터디 상태</span>
+                        <span style={{ 
+                          fontWeight: '700', 
+                          color: preJoinStudy.status === 'RECRUITING' ? '#10B981' : '#3B82F6'
+                        }}>
+                          {preJoinStudy.status === 'RECRUITING' ? '모집중' : '진행중 (모집종료)'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                        <span style={{ color: '#6B7280' }}>가입 인원</span>
+                        <span style={{ fontWeight: '700', color: '#111827' }}>
+                          {preJoinStudy.currentMembers} / {preJoinStudy.maxMembers}명
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* 가입 신청자 대기 명단 */}
+                    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '240px' }}>
+                      <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: '700', color: '#374151' }}>
+                        가입 신청 대기자 명단 ({applications.length})
+                      </h4>
+                      
+                      <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '10px', backgroundColor: '#F9FAFB', display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '300px' }}>
+                        {loadingApps ? (
+                          <div style={{ padding: '20px 0', textAlign: 'center', fontSize: '13px', color: '#9CA3AF' }}>불러오는 중...</div>
+                        ) : applications.length === 0 ? (
+                          <div style={{ padding: '40px 0', textAlign: 'center', fontSize: '13px', color: '#9CA3AF' }}>대기 중인 신청자가 없습니다.</div>
+                        ) : (
+                          applications.map(app => (
+                            <div key={app.applicationId} style={{ backgroundColor: '#ffffff', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ fontWeight: '700', fontSize: '14px', color: '#111827' }}>{app.applicantName}</span>
+                                <span style={{ fontSize: '11px', color: '#9CA3AF' }}>
+                                  {app.createdAt ? app.createdAt.split('T')[0] : ''}
+                                </span>
+                              </div>
+                              <p style={{ margin: 0, fontSize: '13px', color: '#4B5563', backgroundColor: '#F3F4F6', padding: '8px 10px', borderRadius: '6px', wordBreak: 'break-all', lineHeight: '1.4' }}>
+                                {app.introduction}
+                              </p>
+                              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                                <button 
+                                  onClick={() => handleApproveApp(app.applicationId)}
+                                  style={{ flex: 1, height: '32px', backgroundColor: '#10B981', color: 'white', border: 'none', borderRadius: '6px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
+                                >
+                                  승인
+                                </button>
+                                <button 
+                                  onClick={() => handleRejectApp(app.applicationId)}
+                                  style={{ flex: 1, height: '32px', backgroundColor: '#EF4444', color: 'white', border: 'none', borderRadius: '6px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
+                                >
+                                  거절
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 관리 액션 */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderTop: '1px solid #E5E7EB', paddingTop: '16px', marginTop: 'auto' }}>
+
+                      <button 
+                        onClick={handleDeleteStudy}
+                        style={{ width: '100%', height: '40px', backgroundColor: 'transparent', color: '#EF4444', border: '1px solid #EF4444', borderRadius: '8px', fontWeight: '700', fontSize: '14px', cursor: 'pointer', boxSizing: 'border-box' }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#FEE2E2'}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                      >
+                        스터디 강제 해체
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1374,6 +1371,7 @@ export default function GroupStudy() {
             <StudyRoom
               study={activeStudyRoom}
               onClose={() => setActiveStudyRoom(null)}
+              selectedCamera={selectedCamera}
             />
           )}
         </>

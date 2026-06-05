@@ -23,10 +23,8 @@ export default function Navbar() {
             StudyBridge
           </Link>
           <div className="nav-links">
-            <Link to="/studymate" className="nav-link nav-link-core">
-              <Sparkles size={14} className="core-icon" />
+            <Link to="/studymate" className="nav-link">
               학습메이트
-              <span className="core-badge">CORE</span>
             </Link>
             <Link to="/groupstudy" className="nav-link">
               그룹스터디
