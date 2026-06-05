@@ -7,5 +7,9 @@ export default defineConfig({
   server: {
     port: 3000,
     host: '0.0.0.0', // Docker 환경에서 필수
+    allowedHosts: ['studybridge.kro.kr'],
+  },
+  define: {
+    global: 'window',
   }
 })

@@ -73,6 +73,10 @@ public class AgentChatRoomService {
                         throw new RuntimeException("삭제 권한이 없습니다.");
                 }
 
+                // ChatMessage가 Agent를 참조하므로, 메시지를 먼저 지워야 외래 키 제약 조건 위배 방지 가능
+                room.getChatMessages().clear();
+                agentChatRoomRepository.flush();
+
                 agentChatRoomRepository.delete(room);
         }
 

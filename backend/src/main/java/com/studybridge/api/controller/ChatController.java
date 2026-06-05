@@ -15,13 +15,13 @@ import java.util.List;
 @RestController
 @RequiredArgsConstructor
 @Slf4j
-@RequestMapping("/api/chat")
+@RequestMapping("/api/agent-rooms")
 public class ChatController {
 
     private final ChatService chatService;
 
     // 멀티 에이전트 채팅방에서 채팅하기
-    @PostMapping("/rooms/{roomId}")
+    @PostMapping("/{roomId}/chat")
     public ResponseEntity<ChatDTO.MultiChatResponse> chatWithRoom(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long roomId,
@@ -32,7 +32,7 @@ public class ChatController {
     }
 
     // 채팅방 내역 조회
-    @GetMapping("/rooms/{roomId}/history")
+    @GetMapping("/{roomId}/history")
     public ResponseEntity<List<ChatDTO.MessageResponse>> getRoomChatHistory(
             @PathVariable Long roomId) {
 
