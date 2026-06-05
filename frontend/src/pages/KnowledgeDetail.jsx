@@ -7,7 +7,7 @@ import { knowledgeService } from '../services/api';
 export default function KnowledgeDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, userId } = useAuth();
   
   const [post, setPost] = useState(null);
   const [newComment, setNewComment] = useState('');
@@ -50,6 +50,32 @@ export default function KnowledgeDetail() {
     }
   };
 
+  const handleDeleteComment = async (commentId) => {
+    if (window.confirm("정말로 이 댓글을 삭제하시겠습니까?")) {
+      try {
+        await knowledgeService.deleteComment(id, commentId);
+        fetchPostDetail();
+      } catch (error) {
+        console.error("Failed to delete comment:", error);
+        alert("댓글 삭제에 실패했습니다.");
+      }
+    }
+  };
+
+  const handleDeletePost = async () => {
+    if (window.confirm("정말로 이 게시글을 삭제하시겠습니까?")) {
+      try {
+        await knowledgeService.deletePost(id);
+        alert("게시글이 삭제되었습니다.");
+        navigate('/knowledge');
+      } catch (error) {
+        console.error("Failed to delete post:", error);
+        alert("게시글 삭제에 실패했습니다.");
+      }
+    }
+  };
+
+
   if (!post) {
     return <div style={{ padding: '40px', textAlign: 'center', fontFamily: '"Malgun Gothic", sans-serif' }}>로딩 중...</div>;
   }
@@ -89,6 +115,7 @@ export default function KnowledgeDetail() {
   };
 
   const isLiked = post.likedByCurrentUser;
+  const isMyPost = post && userId && (String(post.authorId) === String(userId));
 
   return (
     <div style={{ backgroundColor: '#F9FAFB', minHeight: '100vh', paddingBottom: '80px', fontFamily: '"Malgun Gothic", "맑은 고딕", sans-serif' }}>
@@ -96,7 +123,7 @@ export default function KnowledgeDetail() {
       {/* 썸네일 헤더 영역 */}
       <div style={{ width: '100%', height: '400px', position: 'relative', overflow: 'hidden' }}>
         <img src={getThumbnail()} alt={post.title} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: 'brightness(0.6)' }} />
-        <div style={{ position: 'absolute', top: '40px', left: '0', right: '0', maxWidth: '800px', margin: '0 auto', padding: '0 20px', zIndex: 10 }}>
+        <div style={{ position: 'absolute', top: '40px', left: '0', right: '0', maxWidth: '800px', margin: '0 auto', padding: '0 20px', zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <button 
             onClick={() => navigate('/knowledge')}
             style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.2)', backdropFilter: 'blur(4px)', color: 'white', border: '1px solid rgba(255,255,255,0.3)', padding: '10px 16px', borderRadius: '12px', cursor: 'pointer', fontWeight: '600', transition: '0.2s' }}
@@ -106,6 +133,17 @@ export default function KnowledgeDetail() {
             <ArrowLeft size={18} />
             목록으로
           </button>
+          
+          {isMyPost && (
+            <button 
+              onClick={handleDeletePost}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(239,68,68,0.2)', backdropFilter: 'blur(4px)', color: '#F87171', border: '1px solid rgba(239,68,68,0.3)', padding: '10px 16px', borderRadius: '12px', cursor: 'pointer', fontWeight: '600', transition: '0.2s' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.4)'; e.currentTarget.style.color = 'white'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)'; e.currentTarget.style.color = '#F87171'; }}
+            >
+              삭제하기
+            </button>
+          )}
         </div>
         <div style={{ position: 'absolute', bottom: '40px', left: '0', right: '0', maxWidth: '800px', margin: '0 auto', padding: '0 20px', color: 'white', zIndex: 10 }}>
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
@@ -222,12 +260,14 @@ export default function KnowledgeDetail() {
 
           {/* 댓글 리스트 */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            {post.comments?.map(comment => (
+            {post.comments?.map(comment => {
+              const isMyComment = user && (comment.authorNickname === user.displayName || comment.authorNickname === user.nickname);
+              return (
               <div key={comment.commentId} style={{ display: 'flex', gap: '16px' }}>
                 <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#111827', color: 'white', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700', fontSize: '14px' }}>
                   {comment.authorNickname ? comment.authorNickname.charAt(0) : 'U'}
                 </div>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, position: 'relative' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
                     <span style={{ fontWeight: '700', color: '#111827', fontSize: '15px' }}>{comment.authorNickname}</span>
                     <span style={{ fontSize: '13px', color: '#9CA3AF' }}>{formatCommentDate(comment.createdAt)}</span>
@@ -235,9 +275,17 @@ export default function KnowledgeDetail() {
                   <div style={{ color: '#4B5563', fontSize: '15px', lineHeight: '1.6' }}>
                     {comment.content}
                   </div>
+                  {isMyComment && (
+                    <button
+                      onClick={() => handleDeleteComment(comment.commentId)}
+                      style={{ position: 'absolute', right: '0', top: '0', background: 'none', border: 'none', color: '#EF4444', fontSize: '13px', cursor: 'pointer', padding: '4px', fontWeight: 'bold' }}
+                    >
+                      삭제
+                    </button>
+                  )}
                 </div>
               </div>
-            ))}
+            )})}
           </div>
 
         </div>

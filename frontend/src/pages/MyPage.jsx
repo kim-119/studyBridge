@@ -39,30 +39,49 @@ export default function MyPage() {
 
   const fetchReports = async () => {
     if (!isAdmin) return;
-    const stored = localStorage.getItem('reports');
-    if (stored) {
-      setReports(JSON.parse(stored));
-      return;
-    }
+    
     setLoadingReports(true);
     try {
       const data = await adminService.getGroupReports();
-      const fetched = (data || []).map(r => ({
-        id: r.id,
-        groupStudyId: r.groupStudyId,
-        reporter: r.reporterName || '익명',
-        reportedUser: r.reportedUserName || '알 수 없음',
-        reportedUserId: r.reportedUserId,
-        reason: r.reason || '신고',
-        content: `스터디그룹 ID: ${r.groupStudyId}에 대한 회원 신고가 접수되었습니다.`,
-        date: r.createdAt ? r.createdAt.split('T')[0] : new Date().toISOString().split('T')[0],
-        status: '대기중',
-        adminNote: ''
-      }));
+      const stored = localStorage.getItem('reports');
+      let storedMap = {};
+      
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(r => {
+              storedMap[r.id] = r;
+            });
+          }
+        } catch (e) {
+          console.error('Failed to parse stored reports', e);
+        }
+      }
+
+      const fetched = (data || []).map(r => {
+        const existing = storedMap[r.id];
+        return {
+          id: r.id,
+          groupStudyId: r.groupStudyId,
+          reporter: r.reporterName || '익명',
+          reportedUser: r.reportedUserName || '알 수 없음',
+          reportedUserId: r.reportedUserId,
+          reason: r.reason || '신고',
+          content: `스터디그룹 ID: ${r.groupStudyId}에 대한 회원 신고가 접수되었습니다.`,
+          date: r.createdAt ? r.createdAt.split('T')[0] : new Date().toISOString().split('T')[0],
+          status: existing ? existing.status : '대기중',
+          adminNote: existing ? existing.adminNote : ''
+        };
+      });
       setReports(fetched);
       localStorage.setItem('reports', JSON.stringify(fetched));
     } catch (err) {
       console.error('신고 내역 로드 실패:', err);
+      const stored = localStorage.getItem('reports');
+      if (stored) {
+        setReports(JSON.parse(stored));
+      }
     } finally {
       setLoadingReports(false);
     }
@@ -95,17 +114,24 @@ export default function MyPage() {
   const [suspendDuration, setSuspendDuration] = useState('7일');
   const [adminNote, setAdminNote] = useState('');
 
-  const handleReplyInquiry = () => {
+  const handleReplyInquiry = async () => {
     if (!replyContent.trim()) {
       alert('답변 내용을 입력해주세요.');
       return;
     }
-    setInquiries(inquiries.map(inq => 
-      inq.id === selectedInquiry.id ? { ...inq, status: '답변완료', reply: replyContent } : inq
-    ));
-    setSelectedInquiry(null);
-    setReplyContent('');
-    alert('답변이 등록되었습니다.');
+    try {
+      await adminService.replyInquiry(selectedInquiry.id, { reply: replyContent });
+      alert('답변이 등록되었습니다.');
+      // Refresh inquiries
+      const data = await adminService.getInquiries();
+      setInquiries(data);
+    } catch (err) {
+      console.error('답변 등록 실패:', err);
+      alert(err.response?.data?.message || err.message || '답변 등록에 실패했습니다.');
+    } finally {
+      setSelectedInquiry(null);
+      setReplyContent('');
+    }
   };
 
   const handleSuspendUser = async () => {
@@ -630,7 +656,6 @@ export default function MyPage() {
             </div>
           </div>
         </div>
-      )}
       )}
     </div>
   );

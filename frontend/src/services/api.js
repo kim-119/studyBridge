@@ -125,8 +125,8 @@ api.interceptors.response.use(
 
     if (err.response && (err.response.status === 401 || err.response.status === 403) && !originalRequest._retry) {
       // 무한 루프 방지용 플래그
-      // Refresh token 요청일 경우 제외
-      if (originalRequest.url.includes('/api/users/refresh')) {
+      // Refresh token 요청이나 로그인 요청일 경우 제외
+      if (originalRequest.url.includes('/api/users/refresh') || originalRequest.url.includes('/api/users/login')) {
         return Promise.reject(err);
       }
 
@@ -187,23 +187,24 @@ export const agentService = {
       ? { message: payloadOrMessage, agentId, roomId: agentId }
       : { agentId, roomId: agentId, ...payloadOrMessage };
     const payload = {
-      personality: '',
-      style: '',
-      tone: '',
-      knowledgeLevel: '',
-      knowledge_level: '',
-      customInstruction: '',
-      custom_instruction: '',
-      persona: '',
+      personality: basePayload.personality || '',
+      style: basePayload.style || '',
+      tone: basePayload.tone || '',
+      knowledgeLevel: basePayload.knowledgeLevel || '',
+      knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
+      customInstruction: basePayload.customInstruction || '',
+      custom_instruction: basePayload.custom_instruction || basePayload.customInstruction || '',
+      persona: basePayload.persona || '',
+      agent_name: basePayload.agent_name || basePayload.agentName || '',
       ...basePayload,
     };
     console.debug('[api.agentService.sendMessage] request body', payload);
-    const res = await api.post(`/api/chat/rooms/${agentId}`, payload);
+    const res = await api.post(`/api/agent-rooms/${agentId}/chat`, payload);
     return normalizeChatResponse(res.data);
   },
 
   getChatHistory: async (userId, agentId) => {
-    const res = await api.get(`/api/chat/rooms/${agentId}/history`);
+    const res = await api.get(`/api/agent-rooms/${agentId}/history`);
     return res.data;
   },
 
@@ -225,7 +226,13 @@ export const agentService = {
   sendAgentMessage: async (payload) => {
     if (payload?.roomId) {
       console.debug('[api.agentService.sendAgentMessage] request body', payload);
-      const res = await api.post(`/api/chat/rooms/${payload.roomId}`, payload);
+      const unifiedPayload = {
+        ...payload,
+        agent_name: payload.agent_name || payload.agentName,
+        knowledge_level: payload.knowledge_level || payload.knowledgeLevel,
+        personality: payload.personality,
+      };
+      const res = await api.post(`/api/agent-rooms/${payload.roomId}/chat`, unifiedPayload);
       return normalizeChatResponse(res.data);
     }
     // 확인 필요: Spring Boot에 단일 agent chat endpoint가 없으면 FastAPI 직접 호출이 필요함.
@@ -234,7 +241,13 @@ export const agentService = {
   },
 
   sendMultiAgentMessage: async (payload) => {
-    const res = await fastApi.post('/api/ai/multi-chat', payload);
+    const unifiedPayload = {
+      ...payload,
+      agent_name: payload.agent_name || payload.agentName,
+      knowledge_level: payload.knowledge_level || payload.knowledgeLevel,
+      personality: payload.personality,
+    };
+    const res = await fastApi.post('/api/ai/chat', unifiedPayload);
     return res.data;
   },
 
@@ -245,7 +258,13 @@ export const agentService = {
       return res.data;
     }
     // 확인 필요: reviewer agent id가 없는 feedback 요청은 FastAPI의 별도 범용 endpoint가 현재 확인되지 않음.
-    const res = await fastApi.post('/api/ai/multi-chat', payload);
+    const unifiedPayload = {
+      ...payload,
+      agent_name: payload.agent_name || payload.agentName,
+      knowledge_level: payload.knowledge_level || payload.knowledgeLevel,
+      personality: payload.personality,
+    };
+    const res = await fastApi.post('/api/ai/chat', unifiedPayload);
     return res.data;
   },
 
@@ -351,22 +370,23 @@ export const roomService = {
       ? { message: payloadOrMessage, agentId: roomId, roomId }
       : { agentId: roomId, roomId, ...payloadOrMessage };
     const payload = {
-      personality: '',
-      style: '',
-      tone: '',
-      knowledgeLevel: '',
-      knowledge_level: '',
-      customInstruction: '',
-      custom_instruction: '',
-      persona: '',
+      personality: basePayload.personality || '',
+      style: basePayload.style || '',
+      tone: basePayload.tone || '',
+      knowledgeLevel: basePayload.knowledgeLevel || '',
+      knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
+      customInstruction: basePayload.customInstruction || '',
+      custom_instruction: basePayload.custom_instruction || basePayload.customInstruction || '',
+      persona: basePayload.persona || '',
+      agent_name: basePayload.agent_name || basePayload.agentName || '',
       ...basePayload,
     };
     console.debug('[api.roomService.sendMessage] request body', payload);
-    const res = await api.post(`/api/chat/rooms/${roomId}`, payload);
+    const res = await api.post(`/api/agent-rooms/${roomId}/chat`, payload);
     return res.data;
   },
   getChatHistory: async (userId, roomId) => {
-    const res = await api.get(`/api/chat/rooms/${roomId}/history`);
+    const res = await api.get(`/api/agent-rooms/${roomId}/history`);
     return res.data;
   },
   deleteRoom: async (userId, roomId) => {
@@ -406,6 +426,10 @@ export const studyTimeService = {
   },
   getWeekly: async (userId) => {
     const res = await api.get('/api/study-time/weekly');
+    return res.data;
+  },
+  getPrediction: async (userId) => {
+    const res = await api.get('/api/study-time/predict');
     return res.data;
   }
 };
@@ -561,6 +585,10 @@ export const groupService = {
   completeRecruitment: async (id) => {
     const res = await api.post(`/api/groups/${id}/complete`);
     return res.data;
+  },
+  getVideoToken: async (id) => {
+    const res = await api.post(`/api/groups/${id}/video/token`);
+    return res.data;
   }
 };
 
@@ -651,12 +679,28 @@ export const adminService = {
     const res = await api.get('/api/admin/inquiries');
     return res.data;
   },
+  // 문의 답변 등록 (관리자 전용)
+  replyInquiry: async (inquiryId, replyData) => {
+    const res = await api.post(`/api/admin/inquiries/${inquiryId}/reply`, replyData);
+    return res.data;
+  },
   suspendUser: async (userId, suspendData) => {
     const res = await api.post(`/api/admin/users/${userId}/suspend`, suspendData);
     return res.data;
   },
   banUser: async (userId, banData) => {
     const res = await api.post(`/api/admin/users/${userId}/ban`, banData);
+    return res.data;
+  }
+};
+
+export const inquiryService = {
+  submitInquiry: async (inquiryData) => {
+    const res = await api.post('/api/inquiries', inquiryData);
+    return res.data;
+  },
+  getInquiries: async () => {
+    const res = await api.get('/api/inquiries');
     return res.data;
   }
 };

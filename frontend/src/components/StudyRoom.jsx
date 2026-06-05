@@ -6,8 +6,9 @@ import {
 } from 'lucide-react';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
+import { OpenVidu } from 'openvidu-browser';
 import { useAuth } from '../hooks/useAuth';
-import { groupService, timerService } from '../services/api';
+import { groupService, timerService, inquiryService } from '../services/api';
 
 function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = true }) {
   const videoRef = React.useRef(null);
@@ -115,7 +116,7 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
 }
 
 export default function StudyRoom({ study, onClose }) {
-  const { userId } = useAuth();
+  const { userId, user } = useAuth();
   
   const formatSecondsToStudyTime = (secs) => {
     if (!secs && secs !== 0) return '-';
@@ -151,6 +152,9 @@ export default function StudyRoom({ study, onClose }) {
   const [reportUserId, setReportUserId] = useState('');
   const [reportReasonType, setReportReasonType] = useState('욕설 / 비방 / 혐오 발언');
   const [reportDetail, setReportDetail] = useState('');
+  const [inquiryType, setInquiryType] = useState('이용 문의');
+  const [inquiryTitle, setInquiryTitle] = useState('');
+  const [inquiryContent, setInquiryContent] = useState('');
   const [isCamFullScreen, setIsCamFullScreen] = useState(false);
 
   const [chatMessages, setChatMessages] = useState([]);
@@ -171,17 +175,12 @@ export default function StudyRoom({ study, onClose }) {
   const [quizStartTime, setQuizStartTime] = useState(null);
   const [quizIdInput, setQuizIdInput] = useState('1');
   
-  const [localStream, setLocalStream] = useState(null);
-  const localStreamRef = React.useRef(null);
-  useEffect(() => {
-    localStreamRef.current = localStream;
-  }, [localStream]);
-
-  const peerConnections = React.useRef({});
-  const [peerStreams, setPeerStreams] = useState({});
+  const [session, setSession] = useState(null);
+  const [publisher, setPublisher] = useState(null);
+  const [subscribers, setSubscribers] = useState([]);
 
   const myMember = members.find(m => Number(m.userId) === Number(userId));
-  const myDisplayName = myMember ? myMember.displayName : `User_${userId}`;
+  const myDisplayName = user?.displayName || user?.nickname || `User_${userId}`;
 
   const loadMembers = async () => {
     try {
@@ -203,157 +202,107 @@ export default function StudyRoom({ study, onClose }) {
     }
   };
 
-  // 1. Local Media Stream 획득
+  // 1. OpenVidu Video Call Lifecycle
   useEffect(() => {
-    let stream = null;
-    async function getMedia() {
+    if (!study?.id || !userId) return;
+
+    let OVInstance = null;
+    let sessionInstance = null;
+    let isMounted = true;
+
+    async function joinSession() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: isVideoOn,
-          audio: isMicOn
+        const { token } = await groupService.getVideoToken(study.id);
+        if (!isMounted) return;
+
+        OVInstance = new OpenVidu();
+        sessionInstance = OVInstance.initSession();
+
+        sessionInstance.on('streamCreated', (event) => {
+          const subscriber = sessionInstance.subscribe(event.stream, undefined);
+          if (isMounted) {
+            setSubscribers(prev => [...prev, subscriber]);
+          }
         });
-        setLocalStream(stream);
-      } catch (e) {
-        console.warn("Failed to get media devices, playing dummy visual.", e);
+
+        sessionInstance.on('streamDestroyed', (event) => {
+          if (isMounted) {
+            setSubscribers(prev => prev.filter(sub => sub !== event.stream.streamManager));
+          }
+        });
+
+        sessionInstance.on('exception', (exception) => {
+          console.warn('OpenVidu Exception:', exception);
+        });
+
+        const connectionData = JSON.stringify({ userId: userId, clientData: myDisplayName });
+        await sessionInstance.connect(token, connectionData);
+        if (!isMounted) return;
+
+        setSession(sessionInstance);
+
+        const publisherInstance = await OVInstance.initPublisherAsync(undefined, {
+          audioSource: undefined,
+          videoSource: undefined,
+          publishAudio: isMicOn,
+          publishVideo: isVideoOn,
+          resolution: '640x480',
+          frameRate: 30,
+          insertMode: 'APPEND',
+          mirror: true
+        });
+
+        if (!isMounted) {
+          publisherInstance.dispose();
+          return;
+        }
+
+        await sessionInstance.publish(publisherInstance);
+        setPublisher(publisherInstance);
+
+      } catch (err) {
+        console.error('Failed to join OpenVidu video session:', err);
       }
     }
-    getMedia();
+
+    joinSession();
 
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
+      isMounted = false;
+      if (sessionInstance) {
+        sessionInstance.disconnect();
       }
+      setSession(null);
+      setPublisher(null);
+      setSubscribers([]);
     };
-  }, [isVideoOn, isMicOn]);
+  }, [study?.id, userId, myDisplayName]);
 
-  // 2. WebRTC Peer Connection Helpers
-  const rtcConfig = {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ]
-  };
-
-  const createPeerConnection = async (peerId, peerName, isOffer, client) => {
-    if (peerConnections.current[peerId]) {
-      peerConnections.current[peerId].pc.close();
+  // 2. Local Stream Track Publish Control Effects
+  useEffect(() => {
+    if (publisher) {
+      publisher.publishAudio(isMicOn);
     }
+  }, [isMicOn, publisher]);
 
-    const pc = new RTCPeerConnection(rtcConfig);
-    peerConnections.current[peerId] = { pc, displayName: peerName };
-
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => {
-        pc.addTrack(track, localStreamRef.current);
-      });
+  useEffect(() => {
+    if (publisher) {
+      publisher.publishVideo(isVideoOn);
     }
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate && client && client.connected) {
-        client.publish({
-          destination: `/topic/group/${study.id}/webrtc`,
-          body: JSON.stringify({
-            senderId: userId,
-            senderName: myDisplayName,
-            targetId: peerId,
-            type: 'CANDIDATE',
-            candidate: event.candidate
-          })
-        });
-      }
-    };
-
-    pc.ontrack = (event) => {
-      console.log(`ontrack event from peerId=${peerId}`);
-      const remoteStream = event.streams[0];
-      setPeerStreams(prev => ({
-        ...prev,
-        [peerId]: { stream: remoteStream, displayName: peerName }
-      }));
-    };
-
-    if (isOffer) {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      
-      if (client && client.connected) {
-        client.publish({
-          destination: `/topic/group/${study.id}/webrtc`,
-          body: JSON.stringify({
-            senderId: userId,
-            senderName: myDisplayName,
-            targetId: peerId,
-            type: 'OFFER',
-            sdp: offer
-          })
-        });
-      }
-    }
-
-    return pc;
-  };
-
-  const handleOffer = async (peerId, peerName, sdp, client) => {
-    const pc = await createPeerConnection(peerId, peerName, false, client);
-    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-    
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-
-    if (client && client.connected) {
-      client.publish({
-        destination: `/topic/group/${study.id}/webrtc`,
-        body: JSON.stringify({
-          senderId: userId,
-          senderName: myDisplayName,
-          targetId: peerId,
-          type: 'ANSWER',
-          sdp: answer
-        })
-      });
-    }
-  };
-
-  const handleAnswer = async (peerId, sdp) => {
-    const connection = peerConnections.current[peerId];
-    if (connection) {
-      await connection.pc.setRemoteDescription(new RTCSessionDescription(sdp));
-    }
-  };
-
-  const handleCandidate = async (peerId, candidate) => {
-    const connection = peerConnections.current[peerId];
-    if (connection) {
-      await connection.pc.addIceCandidate(new RTCIceCandidate(candidate));
-    }
-  };
-
-  const closePeerConnection = (peerId) => {
-    const connection = peerConnections.current[peerId];
-    if (connection) {
-      connection.pc.close();
-      delete peerConnections.current[peerId];
-    }
-    setPeerStreams(prev => {
-      const copy = { ...prev };
-      delete copy[peerId];
-      return copy;
-    });
-  };
+  }, [isVideoOn, publisher]);
 
   // 3. STOMP & WebRTC Lifecycle
   useEffect(() => {
     if (!study?.id || !userId) return;
 
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const defaultBrokerURL = `${protocol}://${hostname}:9090/ws-group/websocket`;
-    const brokerURL = import.meta.env.VITE_WS_URL || defaultBrokerURL;
+    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
+    const serverURL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `${protocol}://${hostname}:9090`;
 
     const token = localStorage.getItem('token');
 
     const client = new Client({
-      brokerURL,
+      webSocketFactory: () => new SockJS(`${serverURL}/ws-group`, null, { credentials: false }),
       connectHeaders: {
         Authorization: token ? `Bearer ${token}` : ''
       },
@@ -387,40 +336,6 @@ export default function StudyRoom({ study, onClose }) {
         setQuizScoreboard(payload);
       });
 
-      client.subscribe(`/topic/group/${study.id}/webrtc`, async (message) => {
-        const payload = JSON.parse(message.body);
-        
-        if (Number(payload.senderId) === Number(userId)) return;
-
-        console.log(`WebRTC signal: ${payload.type} from=${payload.senderId}`);
-
-        if (payload.type === 'JOIN') {
-          await createPeerConnection(payload.senderId, payload.senderName, true, client);
-        } else if (payload.type === 'OFFER') {
-          if (Number(payload.targetId) === Number(userId)) {
-            await handleOffer(payload.senderId, payload.senderName, payload.sdp, client);
-          }
-        } else if (payload.type === 'ANSWER') {
-          if (Number(payload.targetId) === Number(userId)) {
-            await handleAnswer(payload.senderId, payload.sdp);
-          }
-        } else if (payload.type === 'CANDIDATE') {
-          if (Number(payload.targetId) === Number(userId)) {
-            await handleCandidate(payload.senderId, payload.candidate);
-          }
-        } else if (payload.type === 'LEAVE') {
-          closePeerConnection(payload.senderId);
-        }
-      });
-
-      client.publish({
-        destination: `/topic/group/${study.id}/webrtc`,
-        body: JSON.stringify({
-          senderId: userId,
-          senderName: myDisplayName,
-          type: 'JOIN'
-        })
-      });
     };
 
     client.onStompError = (frame) => {
@@ -432,50 +347,10 @@ export default function StudyRoom({ study, onClose }) {
 
     return () => {
       if (client) {
-        if (client.connected) {
-          client.publish({
-            destination: `/topic/group/${study.id}/webrtc`,
-            body: JSON.stringify({
-              senderId: userId,
-              senderName: myDisplayName,
-              type: 'LEAVE'
-            })
-          });
-        }
         client.deactivate();
       }
     };
   }, [study?.id, userId, myDisplayName]);
-
-  // 4. Local Stream 변경 시 Peer Connection의 오디오/비디오 트랙 동적 대체
-  useEffect(() => {
-    if (!localStream) return;
-    Object.keys(peerConnections.current).forEach(peerId => {
-      const conn = peerConnections.current[peerId];
-      if (conn && conn.pc) {
-        const senders = conn.pc.getSenders();
-        localStream.getTracks().forEach(track => {
-          const sender = senders.find(s => s.track && s.track.kind === track.kind);
-          if (sender) {
-            sender.replaceTrack(track).catch(err => {
-              console.warn("Failed to replace track for peer", peerId, err);
-            });
-          } else {
-            conn.pc.addTrack(track, localStream);
-          }
-        });
-      }
-    });
-  }, [localStream]);
-
-  useEffect(() => {
-    return () => {
-      Object.keys(peerConnections.current).forEach(peerId => {
-        peerConnections.current[peerId].pc.close();
-      });
-      peerConnections.current = {};
-    };
-  }, []);
 
   // 퀴즈 타이머 이펙트
   useEffect(() => {
@@ -815,7 +690,7 @@ export default function StudyRoom({ study, onClose }) {
 
             {/* Local Video Feed */}
             <VideoFeed
-              stream={localStream}
+              stream={publisher ? publisher.stream.mediaStream : null}
               isLocal={true}
               displayName={myDisplayName}
               isMuted={true}
@@ -824,22 +699,28 @@ export default function StudyRoom({ study, onClose }) {
             />
 
             {/* Remote Peer Video Feeds */}
-            {Object.keys(peerStreams).map(peerId => {
-              const peer = peerStreams[peerId];
+            {subscribers.map(sub => {
+              let displayName = '알 수 없음';
+              try {
+                const connectionData = JSON.parse(sub.stream.connection.data);
+                displayName = connectionData.clientData || '알 수 없음';
+              } catch (e) {
+                // fallback
+              }
               return (
                 <VideoFeed
-                  key={peerId}
-                  stream={peer.stream}
+                  key={sub.stream.streamId}
+                  stream={sub.stream.mediaStream}
                   isLocal={false}
-                  displayName={peer.displayName}
+                  displayName={displayName}
                   isMuted={false}
-                  isCamOn={true}
+                  isCamOn={sub.stream.videoActive}
                 />
               );
             })}
 
             {/* Empty Slots */}
-            {Array.from({ length: Math.max(0, (study.maxMembers || 16) - 1 - Object.keys(peerStreams).length) }).map((_, i) => (
+            {Array.from({ length: Math.max(0, (study.maxMembers || 16) - 1 - subscribers.length) }).map((_, i) => (
               <div key={i} style={{ backgroundColor: 'rgba(30, 41, 59, 0.3)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '16/9', border: '1px dashed rgba(255,255,255,0.1)' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', opacity: 0.3 }}>
                   <Monitor size={36} color="#9CA3AF" />
@@ -877,10 +758,17 @@ export default function StudyRoom({ study, onClose }) {
                     isUserMicOn = isMicOn;
                     isUserVideoOn = isVideoOn;
                   } else {
-                    const peerFeed = peerStreams[member.userId];
-                    if (peerFeed && peerFeed.stream) {
-                      isUserMicOn = peerFeed.stream.getAudioTracks().some(t => t.enabled && t.readyState === 'live');
-                      isUserVideoOn = peerFeed.stream.getVideoTracks().some(t => t.enabled && t.readyState === 'live');
+                    const sub = subscribers.find(s => {
+                      try {
+                        const connData = JSON.parse(s.stream.connection.data);
+                        return Number(connData.userId) === Number(member.userId);
+                      } catch (e) {
+                        return false;
+                      }
+                    });
+                    if (sub) {
+                      isUserMicOn = sub.stream.audioActive;
+                      isUserVideoOn = sub.stream.videoActive;
                     }
                   }
 
@@ -1599,7 +1487,11 @@ export default function StudyRoom({ study, onClose }) {
                   {/* 문의 카테고리 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>문의 유형</div>
-                    <select style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}>
+                    <select 
+                      value={inquiryType}
+                      onChange={(e) => setInquiryType(e.target.value)}
+                      style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}
+                    >
                       <option>이용 문의</option>
                       <option>버그 및 오류 신고</option>
                       <option>기타</option>
@@ -1609,13 +1501,24 @@ export default function StudyRoom({ study, onClose }) {
                   {/* 제목 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>제목</div>
-                    <input type="text" placeholder="문의 제목을 입력하세요." style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }} />
+                    <input 
+                      type="text" 
+                      placeholder="문의 제목을 입력하세요." 
+                      value={inquiryTitle}
+                      onChange={(e) => setInquiryTitle(e.target.value)}
+                      style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }} 
+                    />
                   </div>
 
                   {/* 내용 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>문의 내용</div>
-                    <textarea placeholder="문의하실 내용을 상세히 적어주세요.&#13;&#10;최대한 빠르고 정확하게 답변해 드리겠습니다." style={{ width: '100%', boxSizing: 'border-box', height: '160px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }} />
+                    <textarea 
+                      placeholder="문의하실 내용을 상세히 적어주세요.&#13;&#10;최대한 빠르고 정확하게 답변해 드리겠습니다." 
+                      value={inquiryContent}
+                      onChange={(e) => setInquiryContent(e.target.value)}
+                      style={{ width: '100%', boxSizing: 'border-box', height: '160px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }} 
+                    />
                   </div>
                 </>
               ) : (
@@ -1680,8 +1583,23 @@ export default function StudyRoom({ study, onClose }) {
                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = adminReportTab === 'inquiry' ? '#22C55E' : '#EF4444'; }}
                 onClick={async () => {
                   if (adminReportTab === 'inquiry') {
-                    showAlert('성공', '1:1 문의가 성공적으로 접수되었습니다.');
-                    setShowAdminReportModal(false);
+                    if (!inquiryTitle.trim() || !inquiryContent.trim()) {
+                      showAlert('알림', '문의 제목과 내용을 입력해주세요.');
+                      return;
+                    }
+                    try {
+                      await inquiryService.submitInquiry({
+                        type: inquiryType,
+                        title: inquiryTitle,
+                        content: inquiryContent
+                      });
+                      showAlert('성공', '1:1 문의가 성공적으로 접수되었습니다.');
+                      setShowAdminReportModal(false);
+                      setInquiryTitle('');
+                      setInquiryContent('');
+                    } catch (err) {
+                      showAlert('오류', err.response?.data?.message || '문의 접수에 실패했습니다.');
+                    }
                   } else {
                     if (!reportUserId) {
                       showAlert('알림', '신고할 멤버를 선택해주세요.');
