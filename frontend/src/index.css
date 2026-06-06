@@ -194,9 +194,7 @@ a {
   font-size: 20px; 
   font-weight: 900; 
   text-decoration: none;
-  background: linear-gradient(135deg, var(--color-primary) 0%, #f97316 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--color-text-main);
   letter-spacing: -0.5px;
 }
 .nav-link {
@@ -208,53 +206,7 @@ a {
   position: relative;
 }
 .nav-link:hover {
-  color: #ea580c; /* 오렌지색 호버 강조 */
-}
-.nav-link:hover::after {
-  content: '';
-  position: absolute;
-  bottom: -4px;
-  left: 0;
-  width: 100%;
-  height: 2px;
-  background-color: #ea580c;
-  border-radius: 2px;
-}
-/* 핵심 콘텐츠(학습메이트) 강제 시선집중 디자인 */
-.nav-link-core {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: linear-gradient(90deg, rgba(96,201,90,0.1), rgba(249,115,22,0.1));
-  padding: 6px 12px;
-  border-radius: 20px;
-  border: 1px solid rgba(249,115,22,0.2);
-  color: #ea580c !important;
-}
-.nav-link-core:hover {
-  background: linear-gradient(90deg, rgba(96,201,90,0.15), rgba(249,115,22,0.15));
-  box-shadow: 0 0 12px rgba(249,115,22,0.3);
-}
-.nav-link-core:hover::after {
-  display: none; /* 커스텀 호버라 밑줄 제외 */
-}
-.core-icon {
-  color: #ea580c;
-  animation: sparkle 2s infinite;
-}
-@keyframes sparkle {
-  0% { transform: scale(1); opacity: 0.8; }
-  50% { transform: scale(1.2); opacity: 1; filter: drop-shadow(0 0 4px #ea580c); }
-  100% { transform: scale(1); opacity: 0.8; }
-}
-.core-badge {
-  font-size: 9px;
-  font-weight: 800;
-  background: linear-gradient(135deg, #f97316, #ea580c);
-  color: #fff;
-  padding: 2px 6px;
-  border-radius: 10px;
-  box-shadow: 0 2px 4px rgba(234,88,12,0.4);
+  color: var(--color-primary);
 }
 .nav-user {
   font-size: 14px; color: var(--color-text-muted); text-decoration: none; cursor: pointer;

@@ -89,7 +89,7 @@ export default function Login() {
       const errMsg = err.message || (typeof err === 'string' ? err : '');
       const errStatus = err.status || 401;
 
-      if (errStatus === 403 || errMsg.includes('정지된 계정') || errMsg.includes('제재') || errMsg.includes('일시정지') || errMsg.includes('영구정지')) {
+      if (errStatus === 403 || errMsg.includes('정지된 계정') || errMsg.includes('제재') || errMsg.includes('일시정지') || errMsg.includes('일시 정지') || errMsg.includes('영구정지') || errMsg.includes('영구 정지')) {
         let isPermanent = errMsg.includes('영구정지') || errMsg.includes('영구 정지');
         let reason = '운영 정책 위반';
         let endDate = '';

@@ -8,13 +8,13 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import MyPage from './pages/MyPage';
+import AdminPage from './pages/AdminPage';
 import StudyMate from './pages/StudyMate';
 import GroupStudy from './pages/GroupStudy';
 import Archive from './pages/Archive';
 import ArchiveDetail from './pages/ArchiveDetail';
 import Knowledge from './pages/Knowledge';
 import KnowledgeDetail from './pages/KnowledgeDetail';
-
 function PrivateRoute({ children }) {
   const { isLoggedIn } = useAuth();
   return isLoggedIn ? children : <Navigate to="/login" replace />;
@@ -24,6 +24,7 @@ function App() {
   const { logout, updateUser } = useAuth();
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const location = useLocation();
+  const isAdminRoute = location.pathname.startsWith('/admin');
 
   useEffect(() => {
     const initAuth = async () => {
@@ -63,10 +64,10 @@ function App() {
   const hideNavbar = location.pathname.includes('/archive/pdf/') || location.pathname.includes('/archive/journal/');
 
   return (
-    <div className="app-container">
-      {!hideNavbar && <Navbar />}
+    <div className={isAdminRoute ? "" : "app-container"} style={isAdminRoute ? { width: '100%', height: '100vh', overflow: 'hidden' } : {}}>
+      {(!isAdminRoute && !hideNavbar) && <Navbar />}
 
-      <main style={{ paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
+      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
         <Routes>
           {/* 메인페이지: 누구나 접근 가능 */}
           <Route path="/" element={<Dashboard />} />
@@ -85,6 +86,7 @@ function App() {
             }
           />
 
+          <Route path="/admin" element={<AdminPage />} />
           <Route path="/studymate" element={<StudyMate />} />
           <Route path="/groupstudy" element={<GroupStudy />} />
           <Route path="/archive" element={<Archive />} />
