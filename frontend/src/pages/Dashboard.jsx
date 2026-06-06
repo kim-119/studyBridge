@@ -71,6 +71,16 @@ export default function Dashboard() {
     setSelectedEndDate(arg.dateStr);
     setSelectedDate(arg.dateStr);
     setTodoText('');
+
+    // 즉각적인 셀 하이라이팅 (미세한 틈 없이 td 자체를 칠함)
+    document.querySelectorAll('.fc-daygrid-day').forEach(el => {
+      el.style.backgroundColor = '';
+      el.style.boxShadow = '';
+    });
+    if (arg.dayEl) {
+      arg.dayEl.style.backgroundColor = 'rgba(0, 0, 0, 0.02)';
+      arg.dayEl.style.boxShadow = 'inset 0 0 12px rgba(0, 0, 0, 0.06)';
+    }
   };
 
   const handleAddTodo = async () => {
@@ -255,10 +265,20 @@ export default function Dashboard() {
               center: 'title',
               right: 'dayGridMonth,dayGridWeek',
             }}
-            contentHeight="auto"
+            height="650px"
             views={{
               dayGridMonth: { dayMaxEvents: 3 },
               dayGridWeek: { dayMaxEvents: false }
+            }}
+            dayCellDidMount={(info) => {
+              // 달력이 새로 그려질 때 (달 변경 등) 선택된 날짜 유지
+              if (info.dateStr === selectedDate) {
+                info.el.style.backgroundColor = 'rgba(0, 0, 0, 0.02)';
+                info.el.style.boxShadow = 'inset 0 0 12px rgba(0, 0, 0, 0.06)';
+              } else {
+                info.el.style.backgroundColor = '';
+                info.el.style.boxShadow = '';
+              }
             }}
           />
         </div>

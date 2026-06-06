@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
 export default function Navbar() {
@@ -23,10 +23,8 @@ export default function Navbar() {
             StudyBridge
           </Link>
           <div className="nav-links">
-            <Link to="/studymate" className="nav-link nav-link-core">
-              <Sparkles size={14} className="core-icon" />
+            <Link to="/studymate" className="nav-link">
               학습메이트
-              <span className="core-badge">CORE</span>
             </Link>
             <Link to="/groupstudy" className="nav-link">
               그룹스터디
@@ -44,6 +42,10 @@ export default function Navbar() {
         <div className="nav-right">
           {userEmail ? (
             <>
+              <Link to="/admin" className="nav-link" style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#10B981', fontWeight: 'bold' }}>
+                <ShieldAlert size={16} />
+                관리자
+              </Link>
               <Link to="/mypage" className="nav-user">
                 {displayText}
               </Link>
