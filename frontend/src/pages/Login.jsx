@@ -81,6 +81,25 @@ export default function Login() {
         major: profile.major || result.major || ''
       };
 
+      if (normalizedUser.status === 'BANNED' || normalizedUser.status === 'SUSPENDED' || (normalizedUser.suspensionEndDate && new Date(normalizedUser.suspensionEndDate) > new Date())) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+        
+        let isPermanent = normalizedUser.status === 'BANNED';
+        let reason = normalizedUser.suspensionReason || '운영 정책 위반';
+        let endDate = normalizedUser.suspensionEndDate ? normalizedUser.suspensionEndDate.split('T')[0] : '영구 정지';
+        
+        setSuspensionDetails({
+          isSuspended: true,
+          type: isPermanent ? '영구정지' : '일시정지',
+          reason,
+          endDate: isPermanent ? '영구 정지' : endDate,
+          originalMessage: '정지된 계정입니다.'
+        });
+        setLoading(false);
+        return;
+      }
+
       login(normalizedUser);
 
       navigate('/dashboard');
@@ -355,7 +374,7 @@ export default function Login() {
             </div>
 
             <h2 style={{ fontSize: '22px', fontWeight: '700', color: '#111827', margin: '0 0 12px 0' }}>
-              서비스 이용이 제한된 계정입니다
+              서비스 이용이 제한되었습니다
             </h2>
             
             <p style={{ fontSize: '14px', color: '#4b5563', lineHeight: '1.6', margin: '0 0 24px 0' }}>
