@@ -93,16 +93,22 @@ export default function AdminPage() {
         await adminService.banUser(userId, { reason: finalReason });
         alert('해당 멤버를 영구 정지했습니다.');
       } else {
-        await adminService.suspendUser(userId, { reason: finalReason, durationDays: suspendDuration === '경고' ? 0 : parseInt(suspendDuration) });
+        await adminService.suspendUser(userId, { reason: finalReason, days: suspendDuration === '경고' ? 0 : parseInt(suspendDuration) });
         const actionText = suspendDuration === '경고' ? '경고 처리' : '활동 정지';
         alert(`해당 멤버를 ${actionText}했습니다.`);
       }
+
+      setReports(prevReports => prevReports.map(report => 
+        report.id === expandedReportId ? { ...report, status: '처리 완료' } : report
+      ));
+
       setExpandedReportId(null);
       setSuspendDuration('7일');
       setSuspendReason('바람직하지 않은 활동 (광고, 도배, 욕설, 비방 등)');
       setSuspendReasonOther('');
       setAdminNote('');
-      fetchReports();
+      // 백엔드에서 신고 상태 업데이트 API가 없으므로 프론트엔드에서 상태만 변경 (fetchReports() 주석 처리)
+      // fetchReports();
     } catch (err) {
       console.error('제재 처리 실패', err);
       alert('제재 처리에 실패했습니다.');
@@ -291,9 +297,6 @@ export default function AdminPage() {
             ) : (
               <>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
-                  <button className="btn-outline" onClick={() => setShowSuspensionMockup(true)} style={{ width: 'auto', display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '8px 16px', borderRadius: '8px', fontWeight: 'bold', fontSize: '14px' }}>
-                    <Ban size={16} /> 제재(정지) 화면 클라이언트 미리보기
-                  </button>
                 </div>
                 <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                   <thead>
@@ -330,10 +333,10 @@ export default function AdminPage() {
                           <td style={{ padding: '16px 8px', textAlign: 'center' }}>
                             <span style={{ 
                               padding: '6px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold',
-                              backgroundColor: rep.status === '대기중' ? '#FEF08A' : '#BBF7D0',
-                              color: rep.status === '대기중' ? '#854D0E' : '#166534'
+                              backgroundColor: (rep.reportedUserStatus === 'SUSPENDED' || rep.reportedUserStatus === 'BANNED' || rep.status === '처리 완료') ? '#BBF7D0' : '#FEF08A',
+                              color: (rep.reportedUserStatus === 'SUSPENDED' || rep.reportedUserStatus === 'BANNED' || rep.status === '처리 완료') ? '#166534' : '#854D0E'
                             }}>
-                              {rep.status || '대기중'}
+                              {(rep.reportedUserStatus === 'SUSPENDED' || rep.reportedUserStatus === 'BANNED' || rep.status === '처리 완료') ? '처리 완료' : '대기중'}
                             </span>
                           </td>
                         </tr>
@@ -488,49 +491,6 @@ export default function AdminPage() {
       </div>
     </div>
 
-      {/* 정지 화면 미리보기 모달 */}
-      {showSuspensionMockup && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(17, 24, 39, 0.7)', backdropFilter: 'blur(8px)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }} className="animate-fade-in">
-          <div className="glass-panel" style={{ width: '550px', padding: '50px', textAlign: 'center', backgroundColor: 'white', borderRadius: '24px', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)' }}>
-            <div style={{ width: '90px', height: '90px', borderRadius: '50%', backgroundColor: '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 30px auto' }}>
-              <Ban size={48} color="#DC2626" />
-            </div>
-            
-            <h2 style={{ margin: '0 0 20px 0', fontSize: '28px', color: '#111827', fontWeight: 'bold' }}>서비스 이용이 제한되었습니다</h2>
-            <p style={{ margin: '0 0 40px 0', fontSize: '16px', color: '#4B5563', lineHeight: '1.6' }}>
-              고객님의 계정은 운영 정책 위반으로 인해 일시적으로 서비스 이용이 정지되었습니다.<br/>
-              정지 기간 동안은 모든 기능의 사용이 제한됩니다.
-            </p>
-
-            <div style={{ backgroundColor: '#F9FAFB', borderRadius: '16px', padding: '24px', textAlign: 'left', marginBottom: '40px', border: '1px solid #E5E7EB' }}>
-              <div style={{ display: 'flex', marginBottom: '16px' }}>
-                <div style={{ width: '120px', fontWeight: 'bold', color: '#374151', fontSize: '15px' }}>제재 사유</div>
-                <div style={{ flex: 1, color: '#DC2626', fontWeight: 'bold', fontSize: '15px' }}>바람직하지 않은 활동 (욕설/비방 등)</div>
-              </div>
-              <div style={{ display: 'flex', marginBottom: '16px' }}>
-                <div style={{ width: '120px', fontWeight: 'bold', color: '#374151', fontSize: '15px' }}>정지 기간</div>
-                <div style={{ flex: 1, color: '#111827', fontSize: '15px', fontWeight: 'bold' }}>2026.05.22 ~ 2026.05.29 (7일)</div>
-              </div>
-              <div style={{ display: 'flex' }}>
-                <div style={{ width: '120px', fontWeight: 'bold', color: '#374151', fontSize: '15px' }}>관리자 메모</div>
-                <div style={{ flex: 1, color: '#6B7280', fontSize: '15px', lineHeight: '1.5' }}>게시판에서 반복적인 타인 비방 행위가 다수 신고되어 운영 정책에 따라 조치되었습니다.</div>
-              </div>
-            </div>
-
-            <p style={{ margin: '0 0 30px 0', fontSize: '14px', color: '#9CA3AF' }}>
-              이의 제기 및 관련 문의는 고객센터(kimdo0910@gmail.com)를 이용해 주세요.
-            </p>
-
-            <button 
-              className="btn-primary" 
-              onClick={() => setShowSuspensionMockup(false)}
-              style={{ width: '100%', padding: '16px', fontSize: '18px', borderRadius: '12px', fontWeight: 'bold' }}
-            >
-              미리보기 종료 (로그아웃 연출)
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

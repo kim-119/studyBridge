@@ -41,6 +41,12 @@ function App() {
       try {
         if (userId) {
           const profile = await authService.getProfile(userId);
+          if (profile.status === 'BANNED' || profile.status === 'SUSPENDED' || (profile.suspensionEndDate && new Date(profile.suspensionEndDate) > new Date())) {
+            console.warn('제재된 계정입니다. 자동 로그아웃됩니다.');
+            logout();
+            setIsAuthChecking(false);
+            return;
+          }
           updateUser(profile);
         } else {
           throw new Error('유효한 사용자 ID가 없습니다.');
