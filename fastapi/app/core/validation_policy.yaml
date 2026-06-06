@@ -1,0 +1,91 @@
+multi_agent:
+  min_score: 85
+  max_similarity: 0.88
+
+debate:
+  require_support_argument: true
+  require_counter_argument: true
+  require_moderator_question: true
+  support_keywords:
+    - "장점"
+    - "긍정"
+    - "유익"
+    - "효과"
+    - "도움"
+    - "가치"
+    - "이점"
+    - "근거"
+    - "옹호"
+    - "지지"
+  counter_keywords:
+    - "부족"
+    - "누락"
+    - "한계"
+    - "위험"
+    - "반례"
+    - "맹점"
+    - "문제"
+    - "단점"
+    - "오해"
+    - "반론"
+  moderator_question_markers:
+    - "?"
+    - "어떻게 생각"
+    - "어느 관점"
+    - "당신은"
+    - "여러분은"
+    - "어떻습니까"
+
+socratic:
+  max_questions: 1
+  block_direct_answer: true
+  max_answer_length_chars: 450
+  direct_answer_markers:
+    - "정답은"
+    - "결론은"
+    - "즉, 답은"
+    - "완성 답안은"
+    - "정확한 답은"
+
+tikitaka:
+  critique_keywords:
+    - "부족"
+    - "누락"
+    - "빠뜨"
+    - "한계"
+    - "오해"
+    - "위험"
+    - "반례"
+    - "근거가 약"
+    - "설명이 불충분"
+    - "보완 필요"
+    - "관점이 좁"
+    - "전제가 불명확"
+    - "놓쳤"
+    - "불명확"
+  rebuttal_keywords:
+    - "맞습니다"
+    - "수정"
+    - "보완"
+    - "실제로"
+    - "정확히"
+    - "덧붙이"
+    - "다시 말"
+    - "재고"
+    - "추가로"
+    - "보충"
+  blend_markers:
+    - "첫째"
+    - "둘째"
+    - "셋째"
+    - "각각"
+    - "모두"
+    - "세 답변"
+    - "세 가지"
+
+timeouts:
+  per_agent_seconds: 45
+  total_seconds: 90
+
+display:
+  default_delay_ms: 700

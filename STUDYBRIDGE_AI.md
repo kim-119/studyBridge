@@ -1,7 +1,9 @@
 # StudyBridge AI 서버 — 통합 문서
 
-> 브랜치: `LLM` | 최종 업데이트: 2026-06-05 (v0.6)  
+> 브랜치: `LLM` | 최종 업데이트: 2026-06-07 (v0.8)  
 > FastAPI AI 서버 + Spring Boot 연동 + 캡스톤 시연 가이드
+>
+> **v0.8 추가**: generation config 고도화 · 전 학문 domain classifier · OpenAlex 박사 전용 · Depth Verifier/Rewriter · Distillation/Offline Cache 구조
 
 ---
 
@@ -56,7 +58,16 @@ OpenAI GPT-4o-mini           (ai.training_candidate)
 - 프론트 SSE는 필수 아님. `AiChatSseController.java`는 optional/legacy
 - 멀티에이전트는 jobId 기반 REST 조회 우선
 
-### 멀티에이전트 비동기 흐름
+### mode 기반 멀티에이전트 흐름 (v0.7)
+
+| mode | 흐름 | 실행 방식 |
+|------|------|---------|
+| `default` | 기존 병렬 multi-agent 답변 | asyncio (병렬) |
+| `tikitaka` | initial→critique→rebuttal 3라운드 | 라운드 단위 순차 |
+| `debate` | supporter→critic→moderator 순차 체인 | 순차 (이전 답변이 입력) |
+| `socratic` | 소크라테스 꼬리질문 단일 응답 | 단일 에이전트 |
+
+### 멀티에이전트 비동기 흐름 (jobId 방식)
 
 ```
 React
@@ -295,7 +306,90 @@ GET /api/ai/chat/stream?question=...&knowledgeLevel=학사&personality=친절_�
 
 ---
 
-### 4-5. 멀티에이전트 비동기 답변 [권장]
+### 4-5. 멀티에이전트 모드 기반 답변 (v0.7)
+
+**지원 mode:** `default` | `tikitaka` | `debate` | `socratic`
+
+**Request 공통 필드:**
+```json
+{
+  "message": "스프링에서 IoC가 뭐야?",
+  "mode": "debate",
+  "agents": [
+    {"agentId": 1, "name": "찬성봇", "role": "supporter", "knowledgeLevel": "학사"},
+    {"agentId": 2, "name": "반대봇", "role": "critic",    "knowledgeLevel": "학사"},
+    {"agentId": 3, "name": "사회자봇","role": "moderator", "knowledgeLevel": "학사"}
+  ],
+  "materialId": 10,
+  "userAttempt": "사용자 시도 답변 (socratic 모드에서 오개념 분석에 사용)",
+  "knowledgeLevel": "학사",
+  "enableFeedback": false,
+  "enableFeedbackValidation": true
+}
+```
+
+**Response 공통 구조:**
+```json
+{
+  "mode": "debate",
+  "status": "COMPLETED",
+  "question": "스프링에서 IoC가 뭐야?",
+  "answers": [
+    {
+      "agentName": "찬성봇",
+      "answer": "...",
+      "agentId": 1,
+      "role": "supporter",
+      "speechType": "support_argument",
+      "displayOrder": 1,
+      "displayDelayMs": 0,
+      "status": "SUCCESS",
+      "metadata": {"knowledgeLevel": "학사", "usedRag": true}
+    },
+    {
+      "agentName": "반대봇",
+      "answer": "...",
+      "role": "critic",
+      "speechType": "counter_argument",
+      "displayOrder": 2,
+      "displayDelayMs": 700
+    },
+    {
+      "agentName": "사회자봇",
+      "answer": "...당신은 어떻게 생각하나요?",
+      "role": "moderator",
+      "speechType": "moderation_summary",
+      "displayOrder": 3,
+      "displayDelayMs": 1400
+    }
+  ],
+  "validation": {"passed": true, "issues": []}
+}
+```
+
+**socratic 모드 출력 예시:**
+```json
+{
+  "mode": "socratic",
+  "answers": [
+    {
+      "agentName": "소크라테스 튜터",
+      "role": "socratic_tutor",
+      "speechType": "follow_up_question",
+      "answer": "좋아요. 다만 '멈춘다'는 결과만 말하면 핵심 조건이 빠질 수 있어요. 자원을 놓지 않은 채 서로 기다리는 상황과 단순 정지는 어떻게 다를까요?",
+      "metadata": {"usedRag": true, "detectedMisconception": true, "directAnswerSuppressed": true}
+    }
+  ],
+  "validation": {"passed": true, "directAnswerBlocked": true}
+}
+```
+
+**status enum:** `COMPLETED` | `PARTIAL_SUCCESS` | `FAILED`
+**answer status:** `SUCCESS` | `FAILED` | `TIMEOUT` | `BLOCKED` | `REWRITTEN` | `SKIPPED`
+
+---
+
+### 4-6. 멀티에이전트 비동기 답변 [jobId 방식, Spring @Async]
 
 **Step 1 — job 생성 (즉시 반환)**
 ```
@@ -830,6 +924,26 @@ curl http://{EC2_PUBLIC_IP}:8000/api/health
 
 ## 9. 완료 현황
 
+### v0.7 신규 (2026-06-07)
+
+- [x] **하드코딩 최소화** — `agent_modes.yaml`, `feedback_policy.yaml`, `validation_policy.yaml`, `prompt_templates/*.md` 분리
+- [x] **`policy_loader.py`** — YAML 로더, 파일 없으면 기본값 자동 사용, 서버 죽지 않음
+- [x] **tikitaka 검증 버그 수정**
+  - `all()` over empty iterator → `bool(items) and all(...)` 패턴
+  - `content_has_all_agents` 오탐 → blend_markers + 3명 이름 동시 등장으로 좁힘
+  - 연산자 우선순위 괄호 명시
+  - critique 키워드에서 "하지만"/"반면" 단독 통과 제거
+- [x] **mode 분기** — `default | tikitaka | debate | socratic` 완전 분기
+- [x] **debate 모드** — supporter→critic→moderator 순차 체인, 비방 자동 검증+재작성
+- [x] **socratic 모드** — 정답 직접 제공 차단, 꼬리질문 1개, 최대 1회 재작성
+- [x] **`mode_validator.py`** — `validate_tikitaka_messages`, `validate_debate_answers`, `validate_socratic_answer`
+- [x] **`AgentAnswer` 확장** — `role`, `speechType`, `displayOrder`, `displayDelayMs`, `status`, `metadata` 추가 (하위 호환)
+- [x] **`MultiChatRequest` 확장** — `mode`, `materialId`, `userAttempt`, `knowledgeLevel`, `enableFeedback` 추가
+- [x] **`MultiChatResponse` 확장** — `status`, `question`, `validation`, `feedbacks` 추가
+- [x] **inter_agent_feedback_validator** — YAML 정책 참조 (키워드·임계값 코드에서 제거)
+- [x] **constructive_feedback_rewriter** — YAML fallback 문구 참조
+- [x] **policy_loader 워밍업** — `app/main.py` lifespan에서 시작 시 로드
+
 ### v0.6 신규 (2026-06-05)
 
 - [x] `POST /api/ai/multi-chat/async` — 비동기 3명 병렬 답변 (asyncio.gather)
@@ -920,3 +1034,12 @@ A: "Ollama로 로컬 실행하여 API 비용 없이 빠른 1차 응답 생성이
 
 **Q: 3명 에이전트가 동시에 답한다는 게 어떻게?**  
 A: "FastAPI 내부에서 asyncio.gather()로 3명을 병렬 실행합니다. 한 명이 실패해도 나머지 답변은 정상 반환됩니다."
+
+**Q: 토론 모드와 소크라테스 모드는 어떻게 다른가요?**  
+A: "토론 모드는 찬성봇→반대봇→사회자봇 순서로 학습 주제를 여러 관점에서 논의합니다. 소크라테스 모드는 AI가 정답을 주지 않고, 학생이 스스로 생각할 수 있도록 꼬리질문으로 유도합니다."
+
+**Q: 에이전트 간 비방은 어떻게 방지하나요?**  
+A: "모든 에이전트 간 피드백은 독성/인신공격/조롱 점수를 계산하여 기준 초과 시 Qwen으로 건설적 표현으로 재작성하고, 재작성 후에도 기준을 못 넘으면 safe fallback 문구로 대체됩니다."
+
+**Q: 프롬프트를 바꾸려면 코드를 수정해야 하나요?**  
+A: "아닙니다. `fastapi/app/core/prompt_templates/*.md` 파일만 수정하면 됩니다. 검증 키워드나 임계값도 `validation_policy.yaml`, `feedback_policy.yaml`만 수정하면 코드 변경 없이 반영됩니다."

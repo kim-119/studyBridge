@@ -47,6 +47,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("임베딩 모델 워밍업 실패: %s", e)
 
+    # 정책 파일 로드 (실패해도 서버 기동 허용 — 기본값 사용)
+    try:
+        from app.core.policy_loader import reload_all
+        reload_all()
+        logger.info("정책 설정(agent_modes/feedback_policy/validation_policy) 로드 완료")
+    except Exception as e:
+        logger.warning("정책 파일 로드 실패 (기본값 사용): %s", e)
+
     logger.info("%s 기동 완료", APP_NAME)
     yield
 

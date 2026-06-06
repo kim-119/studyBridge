@@ -1,6 +1,7 @@
 """
 에이전트 간 피드백을 건설적 표현으로 재작성하는 서비스.
 Qwen을 사용해 독성 피드백을 논리 비판 + 개선 제안 형식으로 변환한다.
+fallback 문구와 재작성 정책은 feedback_policy.yaml에서 읽는다.
 """
 import logging
 
@@ -9,9 +10,14 @@ from app.services.inter_agent_feedback_validator import validate_inter_agent_fee
 
 logger = logging.getLogger(__name__)
 
-_SAFE_FALLBACK = (
-    "해당 피드백은 표현이 부적절하여 건설적인 개선 의견으로 대체되었습니다."
-)
+
+def _get_safe_fallback() -> str:
+    try:
+        from app.core.policy_loader import get_safe_fallback
+        return get_safe_fallback()
+    except Exception:
+        return "해당 피드백은 표현이 부적절하여 건설적인 개선 의견으로 대체되었습니다."
+
 
 _REWRITE_SYSTEM = """\
 너는 학습 피드백 품질 관리 에이전트다.
@@ -34,6 +40,7 @@ def rewrite_feedback_to_constructive(feedback: str) -> str:
     Qwen으로 피드백을 건설적 표현으로 재작성한다.
     Qwen 실패 시 safe fallback 문구를 반환한다.
     """
+    safe_fallback = _get_safe_fallback()
     try:
         from app.services.qwen_service import ask_qwen
         rewritten = ask_qwen(
@@ -44,28 +51,29 @@ def rewrite_feedback_to_constructive(feedback: str) -> str:
         )
         if rewritten and len(rewritten.strip()) > 10:
             return rewritten.strip()
-        return _SAFE_FALLBACK
+        return safe_fallback
     except Exception as e:
         logger.warning("피드백 재작성 실패: %s", e)
-        return _SAFE_FALLBACK
+        return safe_fallback
 
 
 def process_feedback(feedback: str) -> FeedbackValidationResult:
     """
     피드백 검증 → 필요 시 재작성 → FeedbackValidationResult 반환.
-    재작성 후에도 독성이면 safe fallback으로 대체한다.
+    재작성 후에도 독성이면 safe fallback으로 대체한다. 최대 1회 재작성.
     """
+    safe_fallback = _get_safe_fallback()
     result = validate_inter_agent_feedback(feedback)
 
     if result.allowed:
         result.finalFeedback = feedback
         return result
 
-    # 1차 재작성
+    # 1차 재작성 (최대 1회 — validation_policy.yaml max_rewrite_attempts)
     rewritten = rewrite_feedback_to_constructive(feedback)
 
-    if rewritten == _SAFE_FALLBACK:
-        result.finalFeedback = _SAFE_FALLBACK
+    if rewritten == safe_fallback:
+        result.finalFeedback = safe_fallback
         result.wasRewritten = True
         result.wasBlocked = True
         return result
@@ -77,7 +85,7 @@ def process_feedback(feedback: str) -> FeedbackValidationResult:
         result.wasRewritten = True
         result.wasBlocked = False
     else:
-        result.finalFeedback = _SAFE_FALLBACK
+        result.finalFeedback = safe_fallback
         result.wasRewritten = True
         result.wasBlocked = True
 
