@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { authService } from '../services/api';
+import { authService, inquiryService } from '../services/api';
 import { ShieldAlert, MessageCircle, X, CheckCircle, AlertTriangle, Ban, User, Lock, Mail, BookOpen, Key, Camera } from 'lucide-react';
 
 export default function MyPage() {
@@ -41,35 +41,48 @@ export default function MyPage() {
   }, [userId, userEmail]);
 
   // 나의 1:1 문의 상태
-  const [myInquiries, setMyInquiries] = useState([
-    { id: 1, type: '버그 및 오류신고', title: '강의계획서 업로드 오류', content: 'PDF 파일을 올리는데 계속 실패합니다. 확인 부탁드려요.', date: '2026-05-20', status: '대기중', reply: '' },
-    { id: 2, type: '이용문의', title: '비밀번호 초기화 메일 안옴', content: '비밀번호 재설정 메일이 오지 않습니다.', date: '2026-05-21', status: '답변완료', reply: '스팸 메일함을 확인해주세요. 그래도 없으면 고객센터로 전화주세요.' },
-  ]);
+  const [myInquiries, setMyInquiries] = useState([]);
+
+  useEffect(() => {
+    if (!userId) return;
+    fetchInquiries();
+  }, [userId]);
+
+  const fetchInquiries = async () => {
+    try {
+      const res = await inquiryService.getInquiries();
+      setMyInquiries(res || []);
+    } catch (err) {
+      console.error('문의 내역을 불러오는데 실패했습니다.', err);
+    }
+  };
   const [showInquiryModal, setShowInquiryModal] = useState(false);
   const [newInquiryType, setNewInquiryType] = useState('이용문의');
   const [newInquiryTitle, setNewInquiryTitle] = useState('');
   const [newInquiryContent, setNewInquiryContent] = useState('');
 
-  const handleSubmitInquiry = () => {
+  const handleSubmitInquiry = async () => {
     if (!newInquiryTitle.trim() || !newInquiryContent.trim()) {
       alert('제목과 내용을 모두 입력해주세요.');
       return;
     }
-    const newInq = {
-      id: Date.now(),
-      type: newInquiryType,
-      title: newInquiryTitle,
-      content: newInquiryContent,
-      date: new Date().toISOString().split('T')[0],
-      status: '대기중',
-      reply: ''
-    };
-    setMyInquiries([newInq, ...myInquiries]);
-    setShowInquiryModal(false);
-    setNewInquiryTitle('');
-    setNewInquiryContent('');
-    setNewInquiryType('이용문의');
-    alert('문의가 성공적으로 접수되었습니다.');
+    
+    try {
+      await inquiryService.submitInquiry({
+        type: newInquiryType,
+        title: newInquiryTitle,
+        content: newInquiryContent
+      });
+      setShowInquiryModal(false);
+      setNewInquiryTitle('');
+      setNewInquiryContent('');
+      setNewInquiryType('이용문의');
+      alert('문의가 성공적으로 접수되었습니다.');
+      fetchInquiries();
+    } catch (err) {
+      console.error('문의 접수에 실패했습니다.', err);
+      alert('문의 접수에 실패했습니다.');
+    }
   };
 
   // 비밀번호 변경 관련 상태

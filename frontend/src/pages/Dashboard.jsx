@@ -1,22 +1,31 @@
 import React, { useEffect, useState } from 'react';
+import { Navigate } from 'react-router-dom';
+import { useAuth } from '../hooks/useAuth';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
+import { AlertTriangle, X } from 'lucide-react';
 
 import StudyTimer from '../components/StudyTimer';
 import StudyStatistics from '../components/StudyStatistics';
 import { todoService } from '../services/api';
 
 export default function Dashboard() {
+  const { user } = useAuth();
   const userEmail = localStorage.getItem('userEmail') || 'guest';
   const userId = localStorage.getItem('userId');
   const userName = userEmail.includes('@') ? userEmail.split('@')[0] : userEmail;
+
+  if (user?.role === 'ADMIN' || user?.displayName === '시스템 관리자' || userName === 'admin') {
+    return <Navigate to="/admin" replace />;
+  }
 
   const [todayStudySeconds, setTodayStudySeconds] = useState(0);
   const [selectedDate, setSelectedDate] = useState('');
   const [todoText, setTodoText] = useState('');
   const [todos, setTodos] = useState([]);
   const [selectedEndDate, setSelectedEndDate] = useState('');
+  const [showWarning, setShowWarning] = useState(false);
 
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
@@ -39,6 +48,13 @@ export default function Dashboard() {
       setTodos([]);
     }
   };
+
+  useEffect(() => {
+    if (user?.status === 'WARNING' && !sessionStorage.getItem('warningShown')) {
+      setShowWarning(true);
+      sessionStorage.setItem('warningShown', 'true');
+    }
+  }, [user]);
 
   useEffect(() => {
     const savedUserId = localStorage.getItem('userId');
@@ -402,6 +418,28 @@ export default function Dashboard() {
       )}
 
       <StudyStatistics todayStudySeconds={todayStudySeconds} />
+      {showWarning && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="animate-fade-in" style={{ backgroundColor: 'white', borderRadius: '16px', width: '90%', maxWidth: '400px', overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)' }}>
+            <div style={{ padding: '24px', textAlign: 'center' }}>
+              <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#FEF3C7', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: '#D97706' }}>
+                <AlertTriangle size={32} />
+              </div>
+              <h3 style={{ margin: '0 0 12px 0', fontSize: '20px', fontWeight: 'bold', color: '#111827' }}>경고 안내</h3>
+              <p style={{ margin: '0 0 16px 0', fontSize: '14px', color: '#4B5563', lineHeight: '1.5' }}>
+                운영 정책 위반으로 인해 경고 조치되었습니다.<br/>
+                사유: <strong>{user?.suspensionReason || '운영 정책 위반'}</strong>
+              </p>
+              <button 
+                onClick={() => setShowWarning(false)}
+                style={{ width: '100%', padding: '12px', backgroundColor: '#F59E0B', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '15px' }}
+              >
+                확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

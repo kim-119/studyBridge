@@ -42,10 +42,7 @@ export default function Navbar() {
         <div className="nav-right">
           {userEmail ? (
             <>
-              <Link to="/admin" className="nav-link" style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#10B981', fontWeight: 'bold' }}>
-                <ShieldAlert size={16} />
-                관리자
-              </Link>
+
               <Link to="/mypage" className="nav-user">
                 {displayText}
               </Link>

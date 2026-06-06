@@ -1,21 +1,60 @@
 import React, { useState } from 'react';
-import { ShieldAlert, MessageCircle, X, CheckCircle, AlertTriangle, Ban, LogOut } from 'lucide-react';
+import { ShieldAlert, MessageCircle, X, CheckCircle, AlertTriangle, Ban, LogOut, Users, FileText, Trash2 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
+import { adminService, groupService, knowledgeService } from '../services/api';
 
 export default function AdminPage() {
   const { logout } = useAuth();
   const navigate = useNavigate();
-  const [inquiries, setInquiries] = useState([
-    { id: 1, author: '김철수', type: '버그 및 오류신고', title: '강의계획서 업로드 오류', content: 'PDF 파일을 올리는데 계속 실패합니다. 확인 부탁드려요.', date: '2026-05-20', status: '대기중', reply: '' },
-    { id: 2, author: '이영희', type: '이용문의', title: '비밀번호 초기화 메일 안옴', content: '비밀번호 재설정 메일이 오지 않습니다.', date: '2026-05-21', status: '답변완료', reply: '스팸 메일함을 확인해주세요. 그래도 없으면 고객센터로 전화주세요.' },
-  ]);
+  const [inquiries, setInquiries] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [posts, setPosts] = useState([]);
 
-  const [reports, setReports] = useState([
-    { id: 1, reporter: '홍길동', reportedUser: '악플러123', reason: '욕설/비방', content: '게시판에서 계속 욕설을 합니다.', date: '2026-05-21', status: '대기중', adminNote: '', pastReports: [{ date: '2026-04-10', reason: '도배', result: '경고 조치' }, { date: '2026-05-01', reason: '욕설/비방', result: '3일 정지' }] },
-    { id: 2, reporter: '김철수', reportedUser: '광고봇99', reason: '스팸/도배', content: '불법 광고 링크를 계속 올립니다.', date: '2026-05-22', status: '대기중', adminNote: '', pastReports: [] },
-    { id: 3, reporter: '이영희', reportedUser: '어그로꾼', reason: '욕설/비방', content: '채팅방 분위기를 계속 흐립니다.', date: '2026-05-23', status: '대기중', adminNote: '', pastReports: [{ date: '2025-12-01', reason: '운영원칙 위배', result: '30일 정지' }, { date: '2026-02-15', reason: '광고', result: '7일 정지' }] },
-  ]);
+  const [reports, setReports] = useState([]);
+
+  React.useEffect(() => {
+    fetchInquiries();
+    fetchGroups();
+    fetchPosts();
+    fetchReports();
+  }, []);
+
+  const fetchReports = async () => {
+    try {
+      const res = await adminService.getGroupReports();
+      setReports(res || []);
+    } catch (err) {
+      console.error('신고 목록을 불러오는데 실패했습니다.', err);
+    }
+  };
+
+  const fetchGroups = async () => {
+    try {
+      const res = await groupService.getGroups();
+      setGroups(res || []);
+    } catch (err) {
+      console.error('그룹 목록을 불러오는데 실패했습니다.', err);
+    }
+  };
+
+  const fetchPosts = async () => {
+    try {
+      const res = await knowledgeService.getPosts();
+      setPosts(res || []);
+    } catch (err) {
+      console.error('게시글 목록을 불러오는데 실패했습니다.', err);
+    }
+  };
+
+  const fetchInquiries = async () => {
+    try {
+      const res = await adminService.getInquiries();
+      setInquiries(res || []);
+    } catch (err) {
+      console.error('문의 목록을 불러오는데 실패했습니다.', err);
+    }
+  };
 
   const [activeAdminTab, setActiveAdminTab] = useState('inquiries');
 
@@ -30,32 +69,68 @@ export default function AdminPage() {
   const [adminNote, setAdminNote] = useState('');
   const [showSuspensionMockup, setShowSuspensionMockup] = useState(false);
 
-  const handleReplyInquiry = (id) => {
+  const handleReplyInquiry = async (id) => {
     if (!replyContent.trim()) {
       alert('답변 내용을 입력해주세요.');
       return;
     }
-    setInquiries(inquiries.map(inq => 
-      inq.id === id ? { ...inq, status: '답변완료', reply: replyContent } : inq
-    ));
-    setExpandedInquiryId(null);
-    setReplyContent('');
-    alert('답변이 등록되었습니다.');
+    try {
+      await adminService.replyInquiry(id, { reply: replyContent });
+      alert('답변이 등록되었습니다.');
+      setExpandedInquiryId(null);
+      setReplyContent('');
+      fetchInquiries();
+    } catch (err) {
+      console.error('답변 등록에 실패했습니다.', err);
+      alert('답변 등록에 실패했습니다.');
+    }
   };
 
-  const handleSuspendUser = (id) => {
+  const handleSuspendUser = async (userId) => {
     const finalReason = suspendReason === '기타' ? (suspendReasonOther || '기타') : suspendReason;
-    const notePrefix = suspendDuration === '경고' ? '[경고 조치]' : `[${suspendDuration} 정지]`;
-    setReports(reports.map(rep => 
-      rep.id === id ? { ...rep, status: '처리완료', adminNote: `${notePrefix} ${finalReason}` } : rep
-    ));
-    setExpandedReportId(null);
-    setSuspendDuration('7일');
-    setSuspendReason('바람직하지 않은 활동 (광고, 도배, 욕설, 비방 등)');
-    setSuspendReasonOther('');
-    setAdminNote('');
-    const actionText = suspendDuration === '경고' ? '경고 처리' : '활동 정지';
-    alert(`해당 멤버를 ${actionText}했습니다.`);
+    try {
+      if (suspendDuration === '영구 정지') {
+        await adminService.banUser(userId, { reason: finalReason });
+        alert('해당 멤버를 영구 정지했습니다.');
+      } else {
+        await adminService.suspendUser(userId, { reason: finalReason, durationDays: suspendDuration === '경고' ? 0 : parseInt(suspendDuration) });
+        const actionText = suspendDuration === '경고' ? '경고 처리' : '활동 정지';
+        alert(`해당 멤버를 ${actionText}했습니다.`);
+      }
+      setExpandedReportId(null);
+      setSuspendDuration('7일');
+      setSuspendReason('바람직하지 않은 활동 (광고, 도배, 욕설, 비방 등)');
+      setSuspendReasonOther('');
+      setAdminNote('');
+      fetchReports();
+    } catch (err) {
+      console.error('제재 처리 실패', err);
+      alert('제재 처리에 실패했습니다.');
+    }
+  };
+
+  const handleDeleteGroup = async (id) => {
+    if (!window.confirm('정말 이 그룹 스터디를 삭제하시겠습니까?')) return;
+    try {
+      await adminService.deleteGroup(id);
+      alert('그룹 스터디가 삭제되었습니다.');
+      fetchGroups();
+    } catch (err) {
+      console.error('그룹 스터디 삭제 실패:', err);
+      alert('삭제에 실패했습니다.');
+    }
+  };
+
+  const handleDeletePost = async (id) => {
+    if (!window.confirm('정말 이 지식공유 게시글을 삭제하시겠습니까?')) return;
+    try {
+      await adminService.deletePost(id);
+      alert('게시글이 삭제되었습니다.');
+      fetchPosts();
+    } catch (err) {
+      console.error('게시글 삭제 실패:', err);
+      alert('삭제에 실패했습니다.');
+    }
   };
 
   return (
@@ -82,6 +157,18 @@ export default function AdminPage() {
             onClick={() => setActiveAdminTab('reports')}
           >
             <AlertTriangle size={18} /> 신고 내역 관리
+          </button>
+          <button 
+            style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', border: 'none', backgroundColor: activeAdminTab === 'groups' ? '#1F2937' : 'transparent', color: activeAdminTab === 'groups' ? '#3B82F6' : '#9CA3AF', fontWeight: activeAdminTab === 'groups' ? 'bold' : 'normal', transition: 'all 0.2s', fontSize: '15px' }}
+            onClick={() => setActiveAdminTab('groups')}
+          >
+            <Users size={18} /> 그룹스터디 관리
+          </button>
+          <button 
+            style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', border: 'none', backgroundColor: activeAdminTab === 'posts' ? '#1F2937' : 'transparent', color: activeAdminTab === 'posts' ? '#8B5CF6' : '#9CA3AF', fontWeight: activeAdminTab === 'posts' ? 'bold' : 'normal', transition: 'all 0.2s', fontSize: '15px' }}
+            onClick={() => setActiveAdminTab('posts')}
+          >
+            <FileText size={18} /> 지식공유 관리
           </button>
         </nav>
 
@@ -214,7 +301,6 @@ export default function AdminPage() {
                       <th style={{ padding: '16px 8px', width: '60px', textAlign: 'center' }}>No.</th>
                       <th style={{ padding: '16px 8px', width: '150px' }}>신고 사유</th>
                       <th style={{ padding: '16px 8px', width: '150px' }}>대상자</th>
-                      <th style={{ padding: '16px 8px' }}>내용 요약</th>
                       <th style={{ padding: '16px 8px', width: '100px' }}>신고자</th>
                       <th style={{ padding: '16px 8px', width: '120px' }}>신고일</th>
                       <th style={{ padding: '16px 8px', width: '100px', textAlign: 'center' }}>상태</th>
@@ -237,31 +323,30 @@ export default function AdminPage() {
                           }}
                         >
                           <td style={{ padding: '16px 8px', textAlign: 'center', color: '#6B7280' }}>{rep.id}</td>
-                          <td style={{ padding: '16px 8px', fontWeight: 'bold', color: '#991B1B' }}>[{rep.reason}]</td>
-                          <td style={{ padding: '16px 8px', fontWeight: 'bold', color: '#111827' }}>{rep.reportedUser}</td>
-                          <td style={{ padding: '16px 8px', color: '#4B5563', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{rep.content}</td>
-                          <td style={{ padding: '16px 8px', color: '#4B5563' }}>{rep.reporter}</td>
-                          <td style={{ padding: '16px 8px', color: '#4B5563' }}>{rep.date}</td>
+                          <td style={{ padding: '16px 8px', fontWeight: 'bold', color: '#991B1B' }}>[{rep.reason || '기타'}]</td>
+                          <td style={{ padding: '16px 8px', fontWeight: 'bold', color: '#111827' }}>{rep.reportedUserName || '알 수 없음'}</td>
+                          <td style={{ padding: '16px 8px', color: '#4B5563' }}>{rep.reporterName || '알 수 없음'}</td>
+                          <td style={{ padding: '16px 8px', color: '#4B5563' }}>{(rep.createdAt || '').split('T')[0]}</td>
                           <td style={{ padding: '16px 8px', textAlign: 'center' }}>
                             <span style={{ 
                               padding: '6px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold',
-                              backgroundColor: rep.status === '대기중' ? '#FCA5A5' : '#E5E7EB',
-                              color: rep.status === '대기중' ? '#7F1D1D' : '#4B5563'
+                              backgroundColor: rep.status === '대기중' ? '#FEF08A' : '#BBF7D0',
+                              color: rep.status === '대기중' ? '#854D0E' : '#166534'
                             }}>
-                              {rep.status}
+                              {rep.status || '대기중'}
                             </span>
                           </td>
                         </tr>
                         {expandedReportId === rep.id && (
                           <tr style={{ borderBottom: '1px solid #E5E7EB', backgroundColor: '#FEF2F2' }}>
-                            <td colSpan={7} style={{ padding: '0 24px 24px 24px' }}>
+                            <td colSpan={6} style={{ padding: '0 24px 24px 24px' }}>
                               <div style={{ padding: '20px', backgroundColor: 'white', borderRadius: '12px', border: '1px solid #FCA5A5', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                                   <div style={{ flex: 1, padding: '16px', backgroundColor: '#F9FAFB', borderRadius: '8px', border: '1px solid #E5E7EB' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                                       <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#6B7280' }}>신고 내용 요약</div>
                                     </div>
-                                    <p style={{ margin: 0, fontSize: '14px', color: '#4B5563', lineHeight: '1.6' }}><strong>[{rep.reason}]</strong> {rep.content}</p>
+                                    <p style={{ margin: 0, fontSize: '14px', color: '#4B5563', lineHeight: '1.6' }}><strong>[{rep.reason || '기타'}]</strong> 신고가 접수되었습니다.</p>
                                   </div>
                                   
                                   <div style={{ flex: 1, padding: '16px', backgroundColor: '#FEF2F2', borderRadius: '8px', border: '1px solid #FCA5A5' }}>
@@ -282,44 +367,35 @@ export default function AdminPage() {
                                   </div>
                                 </div>
                                 
-                                {rep.status === '대기중' ? (
-                                  <div style={{ display: 'flex', gap: '20px' }}>
-                                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                      <label style={{ fontWeight: 'bold', fontSize: '14px', color: '#991B1B' }}>활동 정지 사유 선택</label>
-                                      <select className="input-field" value={suspendReason} onChange={(e) => setSuspendReason(e.target.value)} style={{ padding: '10px', borderRadius: '8px', fontSize: '14px', border: '1px solid #FCA5A5' }}>
-                                        <option value="성인/도박 등 불법광고 및 스팸 활동">성인/도박 등 불법광고 및 스팸 활동</option>
-                                        <option value="바람직하지 않은 활동 (광고, 도배, 욕설, 비방 등)">바람직하지 않은 활동 (광고, 도배, 욕설, 비방 등)</option>
-                                        <option value="플랫폼 내 자체 운영 원칙에 위배되는 활동">플랫폼 내 자체 운영 원칙에 위배되는 활동</option>
-                                        <option value="기타">기타 (직접 입력)</option>
-                                      </select>
-                                      {suspendReason === '기타' && (
-                                        <input type="text" className="input-field" placeholder="상세 사유 입력" value={suspendReasonOther} onChange={(e) => setSuspendReasonOther(e.target.value)} style={{ padding: '10px', borderRadius: '8px', fontSize: '14px', border: '1px solid #FCA5A5' }} />
-                                      )}
-                                    </div>
-                                    <div style={{ width: '200px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                      <label style={{ fontWeight: 'bold', fontSize: '14px', color: '#374151' }}>제재 수위</label>
-                                      <select className="input-field" value={suspendDuration} onChange={(e) => setSuspendDuration(e.target.value)} style={{ padding: '10px', borderRadius: '8px', fontSize: '14px' }}>
-                                        <option value="경고">경고</option>
-                                        <option value="1일">1일 정지</option>
-                                        <option value="7일">7일 정지</option>
-                                        <option value="30일">30일 정지</option>
-                                        <option value="영구 정지">영구 계정 정지</option>
-                                      </select>
-                                    </div>
-                                    <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-                                      <button className="btn-primary" style={{ padding: '10px 20px', backgroundColor: '#DC2626', borderRadius: '8px', fontWeight: 'bold', fontSize: '14px' }} onClick={() => handleSuspendUser(rep.id)}>
-                                        제재 처분 확정
-                                      </button>
-                                    </div>
+                                <div style={{ display: 'flex', gap: '20px' }}>
+                                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                    <label style={{ fontWeight: 'bold', fontSize: '14px', color: '#991B1B' }}>활동 정지 사유 선택</label>
+                                    <select className="input-field" value={suspendReason} onChange={(e) => setSuspendReason(e.target.value)} style={{ padding: '10px', borderRadius: '8px', fontSize: '14px', border: '1px solid #FCA5A5' }}>
+                                      <option value="성인/도박 등 불법광고 및 스팸 활동">성인/도박 등 불법광고 및 스팸 활동</option>
+                                      <option value="바람직하지 않은 활동 (광고, 도배, 욕설, 비방 등)">바람직하지 않은 활동 (광고, 도배, 욕설, 비방 등)</option>
+                                      <option value="플랫폼 내 자체 운영 원칙에 위배되는 활동">플랫폼 내 자체 운영 원칙에 위배되는 활동</option>
+                                      <option value="기타">기타 (직접 입력)</option>
+                                    </select>
+                                    {suspendReason === '기타' && (
+                                      <input type="text" className="input-field" placeholder="상세 사유 입력" value={suspendReasonOther} onChange={(e) => setSuspendReasonOther(e.target.value)} style={{ padding: '10px', borderRadius: '8px', fontSize: '14px', border: '1px solid #FCA5A5' }} />
+                                    )}
                                   </div>
-                                ) : (
-                                  <div style={{ padding: '16px', backgroundColor: '#F9FAFB', borderRadius: '8px', border: '1px solid #E5E7EB', color: '#374151' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', fontWeight: 'bold', fontSize: '14px' }}>
-                                      <CheckCircle size={16} color="#10B981" /> 처리 내역
-                                    </div>
-                                    <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5' }}>{rep.adminNote}</p>
+                                  <div style={{ width: '200px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                    <label style={{ fontWeight: 'bold', fontSize: '14px', color: '#374151' }}>제재 수위</label>
+                                    <select className="input-field" value={suspendDuration} onChange={(e) => setSuspendDuration(e.target.value)} style={{ padding: '10px', borderRadius: '8px', fontSize: '14px' }}>
+                                      <option value="경고">경고</option>
+                                      <option value="1일">1일 정지</option>
+                                      <option value="7일">7일 정지</option>
+                                      <option value="30일">30일 정지</option>
+                                      <option value="영구 정지">영구 정지</option>
+                                    </select>
                                   </div>
-                                )}
+                                  <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                                    <button className="btn-primary" style={{ padding: '10px 20px', backgroundColor: '#DC2626', borderRadius: '8px', fontWeight: 'bold', fontSize: '14px' }} onClick={() => handleSuspendUser(rep.reportedUserId)}>
+                                      제재 처분 확정
+                                    </button>
+                                  </div>
+                                </div>
                               </div>
                             </td>
                           </tr>
@@ -332,11 +408,85 @@ export default function AdminPage() {
             )}
           </div>
         )}
+
+        {activeAdminTab === 'groups' && (
+          <div>
+            {groups.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>등록된 그룹 스터디가 없습니다.</div>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                <thead>
+                  <tr style={{ borderBottom: '2px solid #E5E7EB', color: '#6B7280', fontSize: '14px' }}>
+                    <th style={{ padding: '16px 8px', width: '60px', textAlign: 'center' }}>ID</th>
+                    <th style={{ padding: '16px 8px' }}>그룹명</th>
+                    <th style={{ padding: '16px 8px', width: '120px' }}>작성자</th>
+                    <th style={{ padding: '16px 8px', width: '80px', textAlign: 'center' }}>관리</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groups.map(group => (
+                    <tr key={group.id} style={{ borderBottom: '1px solid #E5E7EB' }}>
+                      <td style={{ padding: '16px 8px', textAlign: 'center', color: '#6B7280' }}>{group.id}</td>
+                      <td style={{ padding: '16px 8px', fontWeight: 'bold', color: '#111827' }}>
+                        <a href={`/groupstudy?openModal=${group.id}`} style={{ textDecoration: 'none', color: '#111827', textDecorationLine: 'underline' }} target="_blank" rel="noopener noreferrer">
+                          {group.name || group.title}
+                        </a>
+                      </td>
+                      <td style={{ padding: '16px 8px', color: '#4B5563' }}>{group.leaderName || group.owner?.displayName || '알 수 없음'}</td>
+                      <td style={{ padding: '16px 8px', textAlign: 'center' }}>
+                        <button onClick={() => handleDeleteGroup(group.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444', padding: '4px' }} title="삭제">
+                          <Trash2 size={18} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {activeAdminTab === 'posts' && (
+          <div>
+            {posts.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>등록된 지식공유 게시글이 없습니다.</div>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                <thead>
+                  <tr style={{ borderBottom: '2px solid #E5E7EB', color: '#6B7280', fontSize: '14px' }}>
+                    <th style={{ padding: '16px 8px', width: '60px', textAlign: 'center' }}>ID</th>
+                    <th style={{ padding: '16px 8px' }}>제목</th>
+                    <th style={{ padding: '16px 8px', width: '120px' }}>작성자</th>
+                    <th style={{ padding: '16px 8px', width: '120px' }}>작성일</th>
+                    <th style={{ padding: '16px 8px', width: '80px', textAlign: 'center' }}>관리</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {posts.map(post => (
+                    <tr key={post.id || post.blogId} style={{ borderBottom: '1px solid #E5E7EB' }}>
+                      <td style={{ padding: '16px 8px', textAlign: 'center', color: '#6B7280' }}>{post.id || post.blogId}</td>
+                      <td style={{ padding: '16px 8px', fontWeight: 'bold', color: '#111827' }}>
+                        <a href={`/knowledge/${post.id || post.blogId}`} style={{ textDecoration: 'none', color: '#111827' }} target="_blank" rel="noopener noreferrer">
+                          {post.title}
+                        </a>
+                      </td>
+                      <td style={{ padding: '16px 8px', color: '#4B5563' }}>{post.authorNickname || post.authorName || post.user?.displayName || '알 수 없음'}</td>
+                      <td style={{ padding: '16px 8px', color: '#4B5563' }}>{(post.createdAt || post.date || '').split('T')[0]}</td>
+                      <td style={{ padding: '16px 8px', textAlign: 'center' }}>
+                        <button onClick={() => handleDeletePost(post.id || post.blogId)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444', padding: '4px' }} title="삭제">
+                          <Trash2 size={18} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
         </div>
       </div>
     </div>
-
-
 
       {/* 정지 화면 미리보기 모달 */}
       {showSuspensionMockup && (

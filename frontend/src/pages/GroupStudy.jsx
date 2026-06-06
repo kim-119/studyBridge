@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Users, Plus, Search, User, Lock, Globe, Filter, ClipboardList, X, AlertTriangle, CheckCircle2, Video, VideoOff, Mic, MicOff, Settings, Volume2, Camera, Check, ArrowLeft, Shield } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { groupService } from '../services/api';
@@ -97,6 +97,7 @@ const DUMMY_MY_STUDIES = [
 export default function GroupStudy() {
   const { userId } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [studies, setStudies] = useState([]);
   const [recruitments, setRecruitments] = useState([]);
@@ -378,6 +379,20 @@ export default function GroupStudy() {
     
     setSelectedPost({ ...study, isAlreadyJoined });
   };
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    const openModalId = searchParams.get('openModal');
+    
+    if (openModalId && studies.length > 0) {
+      const study = studies.find(s => String(s.id) === String(openModalId));
+      if (study && (!selectedPost || String(selectedPost.id) !== String(openModalId))) {
+        handleCardClick(study);
+        // Prevent re-triggering by removing the query param
+        navigate(location.pathname, { replace: true });
+      }
+    }
+  }, [location.search, studies, navigate, selectedPost]);
 
   // 필터링 적용
   const filteredStudies = studies.filter(study => {

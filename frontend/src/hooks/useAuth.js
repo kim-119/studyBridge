@@ -6,7 +6,8 @@ export const normalizeUser = (raw) => ({
   userId: raw.userId || raw.id,
   displayName: raw.displayName || raw.display_name || raw.name || raw.nickname || '',
   email: raw.email || '',
-  major: raw.major || ''
+  major: raw.major || '',
+  role: raw.role || 'USER'
 });
 
 export function useAuth() {
