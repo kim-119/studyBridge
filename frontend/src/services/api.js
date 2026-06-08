@@ -1,0 +1,710 @@
+import axios from 'axios';
+
+const hostname = typeof window !== 'undefined' 
+  ? (window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname) 
+  : '127.0.0.1';
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_BACKEND_URL ||
+  `http://${hostname}:8080`;
+
+const FASTAPI_BASE_URL =
+  import.meta.env.VITE_FASTAPI_BASE_URL ||
+  `http://${hostname}:8000`;
+
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+const fastApi = axios.create({
+  baseURL: FASTAPI_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+const normalizeAgentFromRoom = (room) => {
+  const primaryAgent = Array.isArray(room?.agents) && room.agents.length > 0 ? room.agents[0] : {};
+  return {
+    ...primaryAgent,
+    id: room?.roomId ?? room?.id ?? primaryAgent?.id ?? primaryAgent?.agentId,
+    agentId: primaryAgent?.agentId ?? primaryAgent?.id,
+    roomId: room?.roomId ?? room?.id,
+    roomName: room?.roomName,
+    name: primaryAgent?.name || room?.roomName || 'AI 에이전트',
+    role: primaryAgent?.role || '학습 도우미',
+    persona: primaryAgent?.persona || '',
+    tone: primaryAgent?.tone || '전문적',
+    goal: primaryAgent?.goal || '',
+    agents: room?.agents || [],
+    createdAt: room?.createdAt,
+  };
+};
+
+const normalizeAgentRoomPayload = (agentData) => {
+  if (agentData?.roomName && Array.isArray(agentData?.agents)) {
+    return agentData;
+  }
+
+  const agentName = agentData?.name || 'AI 에이전트';
+  return {
+    roomName: agentData?.roomName || agentName,
+    agents: [
+      {
+        name: agentName,
+        role: agentData?.role || '학습 도우미',
+        persona: agentData?.persona || agentData?.customInstruction || agentData?.goal || '사용자의 학습을 돕는다',
+        tone: agentData?.tone || agentData?.personality || '전문적',
+        goal: agentData?.goal || '사용자의 학습을 돕는다',
+        personality: agentData?.personality,
+        personalityStrength: agentData?.personalityStrength || agentData?.personality_strength || 'extreme',
+        personality_strength: agentData?.personality_strength || agentData?.personalityStrength || 'extreme',
+        style: agentData?.style || agentData?.personality,
+        knowledgeLevel: agentData?.knowledgeLevel,
+        knowledge_level: agentData?.knowledge_level || agentData?.knowledgeLevel,
+        customInstruction: agentData?.customInstruction,
+        custom_instruction: agentData?.custom_instruction || agentData?.customInstruction,
+      },
+    ],
+  };
+};
+
+const normalizeChatResponse = (data) => {
+  if (Array.isArray(data?.messages)) {
+    return {
+      ...data,
+      mode: data.mode || 'multi_agent_discussion',
+      messages: data.messages,
+      answer: '',
+    };
+  }
+
+  if (data?.answer) {
+    return data;
+  }
+
+  if (Array.isArray(data?.replies)) {
+    const answer = data.replies
+      .map((reply) => {
+        const name = reply.agentName || reply.agent_name || 'AI';
+        const text = reply.answer || '';
+        return data.replies.length > 1 ? `${name}: ${text}` : text;
+      })
+      .filter(Boolean)
+      .join('\n\n');
+
+    return {
+      ...data,
+      answer,
+    };
+  }
+
+  return {
+    ...data,
+    answer: '',
+  };
+};
+api.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+api.interceptors.response.use(
+  (res) => res,
+  async (err) => {
+    console.error('API 에러:', err.response || err.message);
+    const originalRequest = err.config;
+
+    if (err.response && (err.response.status === 401 || err.response.status === 403) && !originalRequest._retry) {
+      // 무한 루프 방지용 플래그
+      // Refresh token 요청이나 로그인 요청일 경우 제외
+      if (originalRequest.url.includes('/api/users/refresh') || originalRequest.url.includes('/api/users/login')) {
+        return Promise.reject(err);
+      }
+
+      originalRequest._retry = true;
+      try {
+        const refreshToken = localStorage.getItem('refreshToken');
+        if (!refreshToken) throw new Error('No refresh token');
+
+        const res = await axios.post(`${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`);
+
+        if (res.data && res.data.accessToken) {
+          localStorage.setItem('token', res.data.accessToken);
+          localStorage.setItem('refreshToken', res.data.refreshToken);
+
+          originalRequest.headers['Authorization'] = `Bearer ${res.data.accessToken}`;
+          return api(originalRequest);
+        }
+      } catch (refreshErr) {
+        console.warn('토큰 갱신 실패. 로그아웃 처리됩니다.');
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+        window.dispatchEvent(new Event('auth-change'));
+        return Promise.reject(refreshErr);
+      }
+    }
+    return Promise.reject(err);
+  }
+);
+
+fastApi.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    // 404 Not Found 에러 등 불필요한 로그 출력 방지
+    // console.error('FastAPI 에러:', err.response || err.message);
+    return Promise.reject(err);
+  }
+);
+
+export const agentService = {
+  getAgents: async () => {
+    const res = await api.get('/api/agent-rooms');
+    return (res.data || []).map(normalizeAgentFromRoom);
+  },
+
+  createAgent: async (userId, agentData) => {
+    const payload = normalizeAgentRoomPayload(agentData);
+    const res = await api.post('/api/agent-rooms', payload);
+    return normalizeAgentFromRoom(res.data);
+  },
+
+  deleteAgent: async (userId, agentId) => {
+    const res = await api.delete(`/api/agent-rooms/${agentId}`);
+    return res.data;
+  },
+
+  sendMessage: async (userId, agentId, payloadOrMessage) => {
+    const basePayload = typeof payloadOrMessage === 'string'
+      ? { message: payloadOrMessage, agentId, roomId: agentId }
+      : { agentId, roomId: agentId, ...payloadOrMessage };
+    const payload = {
+      personality: basePayload.personality || '',
+      style: basePayload.style || '',
+      tone: basePayload.tone || '',
+      knowledgeLevel: basePayload.knowledgeLevel || '',
+      knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
+      customInstruction: basePayload.customInstruction || '',
+      custom_instruction: basePayload.custom_instruction || basePayload.customInstruction || '',
+      persona: basePayload.persona || '',
+      agent_name: basePayload.agent_name || basePayload.agentName || '',
+      ...basePayload,
+    };
+    console.debug('[api.agentService.sendMessage] request body', payload);
+    const res = await api.post(`/api/agent-rooms/${agentId}/chat`, payload);
+    return normalizeChatResponse(res.data);
+  },
+
+  getChatHistory: async (userId, agentId) => {
+    const res = await api.get(`/api/agent-rooms/${agentId}/history`);
+    return res.data;
+  },
+
+  getRooms: async () => {
+    const res = await api.get('/api/agent-rooms');
+    return res.data;
+  },
+
+  createRoom: async (userId, roomData) => {
+    const res = await api.post('/api/agent-rooms', roomData);
+    return res.data;
+  },
+
+  deleteRoom: async (userId, roomId) => {
+    const res = await api.delete(`/api/agent-rooms/${roomId}`);
+    return res.data;
+  },
+
+  sendAgentMessage: async (payload) => {
+    if (payload?.roomId) {
+      console.debug('[api.agentService.sendAgentMessage] request body', payload);
+      const unifiedPayload = {
+        ...payload,
+        agent_name: payload.agent_name || payload.agentName,
+        knowledge_level: payload.knowledge_level || payload.knowledgeLevel,
+        personality: payload.personality,
+      };
+      const res = await api.post(`/api/agent-rooms/${payload.roomId}/chat`, unifiedPayload);
+      return normalizeChatResponse(res.data);
+    }
+    // 확인 필요: Spring Boot에 단일 agent chat endpoint가 없으면 FastAPI 직접 호출이 필요함.
+    const res = await fastApi.post('/agents/1/chat', payload);
+    return res.data;
+  },
+
+  sendMultiAgentMessage: async (payload) => {
+    const unifiedPayload = {
+      ...payload,
+      agent_name: payload.agent_name || payload.agentName,
+      knowledge_level: payload.knowledge_level || payload.knowledgeLevel,
+      personality: payload.personality,
+    };
+    const res = await fastApi.post('/api/ai/chat', unifiedPayload);
+    return res.data;
+  },
+
+  requestFeedback: async (payload) => {
+    const reviewerAgentId = payload?.reviewer_agent_id || payload?.reviewerAgentId || payload?.agent_id || payload?.agentId;
+    if (reviewerAgentId) {
+      const res = await fastApi.post(`/agents/${reviewerAgentId}/feedback`, payload);
+      return res.data;
+    }
+    // 확인 필요: reviewer agent id가 없는 feedback 요청은 FastAPI의 별도 범용 endpoint가 현재 확인되지 않음.
+    const unifiedPayload = {
+      ...payload,
+      agent_name: payload.agent_name || payload.agentName,
+      knowledge_level: payload.knowledge_level || payload.knowledgeLevel,
+      personality: payload.personality,
+    };
+    const res = await fastApi.post('/api/ai/chat', unifiedPayload);
+    return res.data;
+  },
+
+  createStudyRoom: async (payload) => {
+    const res = await api.post('/api/agent-rooms', payload);
+    return res.data;
+  },
+
+  sendFeedbackRequest: async (payload) => {
+    return agentService.requestFeedback(payload);
+  },
+};
+
+export const authService = {
+  register: async (userData) => {
+    try {
+      const res = await api.post('/api/users/register', userData);
+      return res.data;
+    } catch (err) {
+      throw err.response?.data || { message: '회원가입 실패' };
+    }
+  },
+
+  login: async (credentials) => {
+    try {
+      const res = await api.post('/api/users/login', credentials);
+      return res.data;
+    } catch (err) {
+      throw err.response?.data || { message: '로그인 실패' };
+    }
+  },
+
+  getProfile: async (userId) => {
+    try {
+      const res = await api.get('/api/users/profile');
+      return res.data;
+    } catch (err) {
+      throw err.response?.data || { message: '프로필 조회 실패' };
+    }
+  },
+
+  updateProfile: async (userId, profileData) => {
+    try {
+      const res = await api.put('/api/users/profile', profileData);
+      return res.data;
+    } catch (err) {
+      throw err.response?.data || { message: '프로필 업데이트 실패' };
+    }
+  },
+
+  updatePassword: async (passwordData) => {
+    try {
+      const res = await api.put('/api/users/password', passwordData);
+      return res.data;
+    } catch (err) {
+      throw err.response?.data || { message: '비밀번호 변경 실패' };
+    }
+  },
+
+  verifyPassword: async (credentials) => {
+    try {
+      const res = await api.post('/api/users/login', credentials);
+      return { verified: true, data: res.data };
+    } catch (err) {
+      throw err.response?.data || { message: '본인 확인 실패' };
+    }
+  },
+};
+
+export const todoService = {
+  getTodos: async (userId) => {
+    const res = await api.get('/api/todos');
+    return res.data;
+  },
+
+  createTodo: async (userId, todoData) => {
+    const res = await api.post('/api/todos', todoData);
+    return res.data;
+  },
+
+  toggleTodo: async (todoId) => {
+    const res = await api.patch(`/api/todos/${todoId}/toggle`);
+    return res.data;
+  },
+
+  deleteTodo: async (todoId) => {
+    const res = await api.delete(`/api/todos/${todoId}`);
+    return res.data;
+  },
+};
+
+export const roomService = {
+  getRooms: async (userId) => {
+    const res = await api.get('/api/agent-rooms');
+    return res.data;
+  },
+  createRoom: async (userId, roomData) => {
+    const res = await api.post('/api/agent-rooms', roomData);
+    return res.data;
+  },
+  sendMessage: async (userId, roomId, payloadOrMessage) => {
+    const basePayload = typeof payloadOrMessage === 'string'
+      ? { message: payloadOrMessage, agentId: roomId, roomId }
+      : { agentId: roomId, roomId, ...payloadOrMessage };
+    const payload = {
+      personality: basePayload.personality || '',
+      style: basePayload.style || '',
+      tone: basePayload.tone || '',
+      knowledgeLevel: basePayload.knowledgeLevel || '',
+      knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
+      customInstruction: basePayload.customInstruction || '',
+      custom_instruction: basePayload.custom_instruction || basePayload.customInstruction || '',
+      persona: basePayload.persona || '',
+      agent_name: basePayload.agent_name || basePayload.agentName || '',
+      ...basePayload,
+    };
+    console.debug('[api.roomService.sendMessage] request body', payload);
+    const res = await api.post(`/api/agent-rooms/${roomId}/chat`, payload);
+    return res.data;
+  },
+  getChatHistory: async (userId, roomId) => {
+    const res = await api.get(`/api/agent-rooms/${roomId}/history`);
+    return res.data;
+  },
+  deleteRoom: async (userId, roomId) => {
+    const res = await api.delete(`/api/agent-rooms/${roomId}`);
+    return res.data;
+  }
+};
+
+
+export const timerService = {
+  startTimer: async (userId, startTime) => {
+    const res = await api.post('/api/timers/start', { startTime });
+    return res.data;
+  },
+  endTimer: async (userId, endTime, durationSeconds) => {
+    const res = await api.post('/api/timers/end', { endTime, durationSeconds });
+    return res.data;
+  },
+  getCurrentSession: async (userId) => {
+    const res = await api.get('/api/timers/current');
+    return res.data;
+  },
+  getTimerHistory: async (userId) => {
+    const res = await api.get('/api/timers');
+    return res.data;
+  },
+  syncTimer: async (groupId) => {
+    const res = await api.post(`/api/timers/sync/${groupId}`);
+    return res.data;
+  }
+};
+
+export const studyTimeService = {
+  getToday: async (userId) => {
+    const res = await api.get('/api/study-time/today');
+    return res.data;
+  },
+  getWeekly: async (userId) => {
+    const res = await api.get('/api/study-time/weekly');
+    return res.data;
+  },
+  getPrediction: async (userId) => {
+    const res = await api.get('/api/study-time/predict');
+    return res.data;
+  }
+};
+
+export const activityService = {
+  getWeeklyGraph: async (payload) => {
+    const res = await fastApi.post('/activity/weekly', payload);
+    return res.data;
+  }
+};
+
+export const materialService = {
+  getMaterials: async () => {
+    const res = await api.get('/api/materials');
+    return res.data;
+  },
+  getMaterialDetail: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}`);
+    return res.data;
+  },
+  createStudyLog: async (studyLogData) => {
+    const res = await api.post('/api/materials/log', studyLogData);
+    return res.data;
+  },
+  uploadMaterial: async (title, materialType, keywords, file) => {
+    const formData = new FormData();
+    formData.append('title', title);
+    formData.append('materialType', materialType);
+    if (keywords) {
+      formData.append('keywords', keywords);
+    }
+    formData.append('file', file);
+
+    const token = localStorage.getItem('token');
+    const res = await axios.post(`${API_BASE_URL}/api/materials/upload`, formData, {
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      }
+    });
+    return res.data;
+  },
+  updateMaterial: async (materialId, updateData) => {
+    const res = await api.put(`/api/materials/${materialId}`, updateData);
+    return res.data;
+  },
+  deleteMaterial: async (materialId) => {
+    const res = await api.delete(`/api/materials/${materialId}`);
+    return res.data;
+  },
+  getSummary: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/summary`);
+    return res.data;
+  },
+  getFeedback: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/feedback`);
+    return res.data;
+  },
+  getMemo: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/memo`);
+    return res.data;
+  },
+  saveMemo: async (materialId, content) => {
+    const res = await api.put(`/api/materials/${materialId}/memo`, { content });
+    return res.data;
+  },
+  getQuizzes: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/quiz`);
+    return res.data;
+  },
+  generateQuiz: async (materialId, quizRequest) => {
+    const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest);
+    return res.data;
+  },
+  askQuestion: async (materialId, questionRequest) => {
+    const res = await api.post(`/api/materials/${materialId}/question`, questionRequest);
+    return res.data;
+  },
+  getRoadmap: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/roadmap`);
+    return res.data;
+  },
+  toggleRoadmapTask: async (materialId, taskId) => {
+    const res = await api.put(`/api/materials/${materialId}/roadmap/tasks/${taskId}/toggle`);
+    return res.data;
+  }
+};
+
+export const groupService = {
+  getGroups: async () => {
+    const res = await api.get('/api/groups');
+    return res.data;
+  },
+  getGroupDetail: async (id) => {
+    const res = await api.get(`/api/groups/${id}`);
+    return res.data;
+  },
+  createGroup: async (groupData) => {
+    const formData = new FormData();
+    Object.keys(groupData).forEach(key => {
+      if (groupData[key] !== undefined && groupData[key] !== null) {
+        formData.append(key, groupData[key]);
+      }
+    });
+    const res = await api.post('/api/groups', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    return res.data;
+  },
+  updateGroup: async (id, groupData) => {
+    const formData = new FormData();
+    Object.keys(groupData).forEach(key => {
+      if (groupData[key] !== undefined && groupData[key] !== null) {
+        formData.append(key, groupData[key]);
+      }
+    });
+    const res = await api.put(`/api/groups/${id}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    return res.data;
+  },
+  reportUser: async (groupId, reportData) => {
+    const res = await api.post(`/api/groups/${groupId}/reports`, reportData);
+    return res.data;
+  },
+  applyGroup: async (id, applyData) => {
+    const res = await api.post(`/api/groups/${id}/apply`, applyData);
+    return res.data;
+  },
+  getMembers: async (id) => {
+    const res = await api.get(`/api/groups/${id}/members`);
+    return res.data;
+  },
+  getApplications: async (id) => {
+    const res = await api.get(`/api/groups/${id}/applications`);
+    return res.data;
+  },
+  approveApplication: async (applicationId) => {
+    const res = await api.post(`/api/groups/applications/${applicationId}/approve`);
+    return res.data;
+  },
+  rejectApplication: async (applicationId) => {
+    const res = await api.post(`/api/groups/applications/${applicationId}/reject`);
+    return res.data;
+  },
+  deleteGroup: async (id) => {
+    const res = await api.delete(`/api/groups/${id}`);
+    return res.data;
+  },
+  kickMember: async (groupId, memberUserId) => {
+    const res = await api.delete(`/api/groups/${groupId}/members/${memberUserId}`);
+    return res.data;
+  },
+  completeRecruitment: async (id) => {
+    const res = await api.post(`/api/groups/${id}/complete`);
+    return res.data;
+  },
+  getVideoToken: async (id) => {
+    const res = await api.post(`/api/groups/${id}/video/token`);
+    return res.data;
+  }
+};
+
+export const knowledgeService = {
+  getPosts: async () => {
+    const res = await api.get('/api/blogs');
+    return res.data;
+  },
+  getPostDetail: async (blogId) => {
+    const res = await api.get(`/api/blogs/${blogId}`);
+    return res.data;
+  },
+  createPost: async (title, content, imageFile, pdfFile) => {
+    const formData = new FormData();
+    formData.append('title', title);
+    formData.append('content', content);
+    if (imageFile) formData.append('image', imageFile);
+    if (pdfFile) formData.append('pdf', pdfFile);
+
+    const token = localStorage.getItem('token');
+    const res = await axios.post(`${API_BASE_URL}/api/blogs`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      }
+    });
+    return res.data;
+  },
+  updatePost: async (blogId, title, content, imageFile, pdfFile, clearImage = false, clearPdf = false) => {
+    const formData = new FormData();
+    if (title) formData.append('title', title);
+    if (content) formData.append('content', content);
+    if (imageFile) formData.append('image', imageFile);
+    if (pdfFile) formData.append('pdf', pdfFile);
+    formData.append('clearImage', clearImage);
+    formData.append('clearPdf', clearPdf);
+
+    const token = localStorage.getItem('token');
+    const res = await axios.put(`${API_BASE_URL}/api/blogs/${blogId}`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      }
+    });
+    return res.data;
+  },
+  deletePost: async (blogId) => {
+    const res = await api.delete(`/api/blogs/${blogId}`);
+    return res.data;
+  },
+  searchPosts: async (keyword) => {
+    const res = await api.get(`/api/blogs/search`, { params: { keyword } });
+    return res.data;
+  },
+  toggleLike: async (blogId) => {
+    const res = await api.post(`/api/blogs/${blogId}/like`);
+    return res.data;
+  },
+  addComment: async (blogId, content) => {
+    const res = await api.post(`/api/blogs/${blogId}/comments`, { content });
+    return res.data;
+  },
+  deleteComment: async (blogId, commentId) => {
+    const res = await api.delete(`/api/blogs/${blogId}/comments/${commentId}`);
+    return res.data;
+  }
+};
+
+export const adminService = {
+  getGroupReports: async () => {
+    const res = await api.get('/api/admin/reports/groups');
+    return res.data;
+  },
+  deleteGroup: async (groupId) => {
+    const res = await api.delete(`/api/admin/groups/${groupId}`);
+    return res.data;
+  },
+  deletePost: async (blogId) => {
+    const res = await api.delete(`/api/admin/blogs/${blogId}`);
+    return res.data;
+  },
+  deleteComment: async (commentId) => {
+    const res = await api.delete(`/api/admin/comments/${commentId}`);
+    return res.data;
+  },
+  // 문의 목록 조회 (관리자 전용)
+  getInquiries: async () => {
+    const res = await api.get('/api/admin/inquiries');
+    return res.data;
+  },
+  // 문의 답변 등록 (관리자 전용)
+  replyInquiry: async (inquiryId, replyData) => {
+    const res = await api.post(`/api/admin/inquiries/${inquiryId}/reply`, replyData);
+    return res.data;
+  },
+  suspendUser: async (userId, suspendData) => {
+    const res = await api.post(`/api/admin/users/${userId}/suspend`, suspendData);
+    return res.data;
+  },
+  banUser: async (userId, banData) => {
+    const res = await api.post(`/api/admin/users/${userId}/ban`, banData);
+    return res.data;
+  }
+};
+
+export const inquiryService = {
+  submitInquiry: async (inquiryData) => {
+    const res = await api.post('/api/inquiries', inquiryData);
+    return res.data;
+  },
+  getInquiries: async () => {
+    const res = await api.get('/api/inquiries');
+    return res.data;
+  }
+};
+
+export default api;

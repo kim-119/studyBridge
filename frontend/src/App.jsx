@@ -1,0 +1,110 @@
+import React, { useEffect, useState } from 'react';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useAuth } from './hooks/useAuth';
+import { authService } from './services/api';
+
+import Navbar from './components/Navbar';
+import Login from './pages/Login';
+import Register from './pages/Register';
+import Dashboard from './pages/Dashboard';
+import MyPage from './pages/MyPage';
+import AdminPage from './pages/AdminPage';
+import StudyMate from './pages/StudyMate';
+import GroupStudy from './pages/GroupStudy';
+import Archive from './pages/Archive';
+import ArchiveDetail from './pages/ArchiveDetail';
+import Knowledge from './pages/Knowledge';
+import KnowledgeDetail from './pages/KnowledgeDetail';
+function PrivateRoute({ children }) {
+  const { isLoggedIn } = useAuth();
+  return isLoggedIn ? children : <Navigate to="/login" replace />;
+}
+
+function App() {
+  const { logout, updateUser } = useAuth();
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const location = useLocation();
+  const isAdminRoute = location.pathname.startsWith('/admin');
+
+  useEffect(() => {
+    const initAuth = async () => {
+      const storedUser = localStorage.getItem("user");
+      const userId = localStorage.getItem("userId");
+      const token = localStorage.getItem("token");
+
+      if (!userId && !token) {
+        logout();
+        setIsAuthChecking(false);
+        return;
+      }
+
+      try {
+        if (userId) {
+          const profile = await authService.getProfile(userId);
+          if (profile.status === 'BANNED' || profile.status === 'SUSPENDED' || (profile.suspensionEndDate && new Date(profile.suspensionEndDate) > new Date())) {
+            console.warn('제재된 계정입니다. 자동 로그아웃됩니다.');
+            logout();
+            setIsAuthChecking(false);
+            return;
+          }
+          updateUser(profile);
+        } else {
+          throw new Error('유효한 사용자 ID가 없습니다.');
+        }
+      } catch (e) {
+        console.warn('기존 로그인 세션이 유효하지 않습니다. 자동 로그아웃됩니다.');
+        logout();
+      } finally {
+        setIsAuthChecking(false);
+      }
+    };
+
+    initAuth();
+  }, []);
+
+  if (isAuthChecking) {
+    return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: 'var(--color-primary)', fontWeight: 'bold' }}>Loading...</div>;
+  }
+
+  // Hide Navbar and top padding for Archive Detail pages to make it full screen
+  const hideNavbar = location.pathname.includes('/archive/pdf/') || location.pathname.includes('/archive/journal/');
+
+  return (
+    <div className={isAdminRoute ? "" : "app-container"} style={isAdminRoute ? { width: '100%', height: '100vh', overflow: 'hidden' } : {}}>
+      {(!isAdminRoute && !hideNavbar) && <Navbar />}
+
+      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
+        <Routes>
+          {/* 메인페이지: 누구나 접근 가능 */}
+          <Route path="/" element={<Dashboard />} />
+
+          {/* 인증 페이지 */}
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+
+          {/* 로그인 필요 페이지 */}
+          <Route
+            path="/mypage"
+            element={
+              <PrivateRoute>
+                <MyPage />
+              </PrivateRoute>
+            }
+          />
+
+          <Route path="/admin" element={<AdminPage />} />
+          <Route path="/studymate" element={<StudyMate />} />
+          <Route path="/groupstudy" element={<GroupStudy />} />
+          <Route path="/archive" element={<Archive />} />
+          <Route path="/archive/:type/:id" element={<ArchiveDetail />} />
+          <Route path="/knowledge" element={<Knowledge />} />
+          <Route path="/knowledge/:id" element={<KnowledgeDetail />} />
+          {/* 잘못된 주소는 메인으로 이동 */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </main>
+    </div>
+  );
+}
+
+export default App;
