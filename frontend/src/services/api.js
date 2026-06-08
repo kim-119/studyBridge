@@ -1,8 +1,15 @@
 import axios from 'axios';
 
-const hostname = typeof window !== 'undefined' 
-  ? (window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname) 
-  : '127.0.0.1';
+export const AI_TIMEOUT_MS = Number(
+  import.meta.env.VITE_AI_TIMEOUT_MS || 180000
+);
+
+const hostname =
+  typeof window !== 'undefined'
+    ? window.location.hostname === 'localhost'
+      ? '127.0.0.1'
+      : window.location.hostname
+    : '127.0.0.1';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -15,6 +22,7 @@ const FASTAPI_BASE_URL =
 
 const api = axios.create({
   baseURL: API_BASE_URL,
+  timeout: AI_TIMEOUT_MS,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -22,6 +30,7 @@ const api = axios.create({
 
 const fastApi = axios.create({
   baseURL: FASTAPI_BASE_URL,
+  timeout: AI_TIMEOUT_MS,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -31,14 +40,15 @@ const fastApi = axios.create({
 export const AI_TIMEOUT_MS = Number(import.meta.env.VITE_FRONTEND_AI_TIMEOUT_MS || import.meta.env.FRONTEND_AI_TIMEOUT_MS) || 130000;
 
 const normalizeAgentFromRoom = (room) => {
-  const primaryAgent = Array.isArray(room?.agents) && room.agents.length > 0 ? room.agents[0] : {};
+  const primaryAgent =
+    Array.isArray(room?.agents) && room.agents.length > 0 ? room.agents[0] : {};
+
   return {
     ...primaryAgent,
     id: room?.roomId ?? room?.id ?? primaryAgent?.id ?? primaryAgent?.agentId,
     agentId: primaryAgent?.agentId ?? primaryAgent?.id,
     roomId: room?.roomId ?? room?.id,
     roomName: room?.roomName,
-    // 기존 방(learningMode 미저장)은 기본 채팅 모드로 취급
     learningMode: room?.learningMode || 'basic',
     name: primaryAgent?.name || room?.roomName || 'AI 에이전트',
     role: primaryAgent?.role || '학습 도우미',
@@ -56,23 +66,35 @@ const normalizeAgentRoomPayload = (agentData) => {
   }
 
   const agentName = agentData?.name || 'AI 에이전트';
+
   return {
     roomName: agentData?.roomName || agentName,
     agents: [
       {
         name: agentName,
         role: agentData?.role || '학습 도우미',
-        persona: agentData?.persona || agentData?.customInstruction || agentData?.goal || '사용자의 학습을 돕는다',
+        persona:
+          agentData?.persona ||
+          agentData?.customInstruction ||
+          agentData?.goal ||
+          '사용자의 학습을 돕는다',
         tone: agentData?.tone || agentData?.personality || '전문적',
         goal: agentData?.goal || '사용자의 학습을 돕는다',
         personality: agentData?.personality,
-        personalityStrength: agentData?.personalityStrength || agentData?.personality_strength || 'extreme',
-        personality_strength: agentData?.personality_strength || agentData?.personalityStrength || 'extreme',
+        personalityStrength:
+          agentData?.personalityStrength ||
+          agentData?.personality_strength ||
+          'extreme',
+        personality_strength:
+          agentData?.personality_strength ||
+          agentData?.personalityStrength ||
+          'extreme',
         style: agentData?.style || agentData?.personality,
         knowledgeLevel: agentData?.knowledgeLevel,
         knowledge_level: agentData?.knowledge_level || agentData?.knowledgeLevel,
         customInstruction: agentData?.customInstruction,
-        custom_instruction: agentData?.custom_instruction || agentData?.customInstruction,
+        custom_instruction:
+          agentData?.custom_instruction || agentData?.customInstruction,
       },
     ],
   };
@@ -113,12 +135,15 @@ const normalizeChatResponse = (data) => {
     answer: '',
   };
 };
+
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
+
     if (token) {
-      config.headers['Authorization'] = `Bearer ${token}`;
+      config.headers.Authorization = `Bearer ${token}`;
     }
+
     return config;
   },
   (error) => Promise.reject(error)
@@ -128,27 +153,43 @@ api.interceptors.response.use(
   (res) => res,
   async (err) => {
     console.error('API 에러:', err.response || err.message);
+
     const originalRequest = err.config;
 
-    if (err.response && (err.response.status === 401 || err.response.status === 403) && !originalRequest._retry) {
-      // 무한 루프 방지용 플래그
-      // Refresh token 요청이나 로그인 요청일 경우 제외
-      if (originalRequest.url.includes('/api/users/refresh') || originalRequest.url.includes('/api/users/login')) {
+    if (
+      err.response &&
+      (err.response.status === 401 || err.response.status === 403) &&
+      !originalRequest._retry
+    ) {
+      if (
+        originalRequest.url.includes('/api/users/refresh') ||
+        originalRequest.url.includes('/api/users/login')
+      ) {
         return Promise.reject(err);
       }
 
       originalRequest._retry = true;
+
       try {
         const refreshToken = localStorage.getItem('refreshToken');
-        if (!refreshToken) throw new Error('No refresh token');
 
-        const res = await axios.post(`${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`);
+        if (!refreshToken) {
+          throw new Error('No refresh token');
+        }
+
+        const res = await axios.post(
+          `${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`,
+          null,
+          {
+            timeout: AI_TIMEOUT_MS,
+          }
+        );
 
         if (res.data && res.data.accessToken) {
           localStorage.setItem('token', res.data.accessToken);
           localStorage.setItem('refreshToken', res.data.refreshToken);
 
-          originalRequest.headers['Authorization'] = `Bearer ${res.data.accessToken}`;
+          originalRequest.headers.Authorization = `Bearer ${res.data.accessToken}`;
           return api(originalRequest);
         }
       } catch (refreshErr) {
@@ -159,17 +200,14 @@ api.interceptors.response.use(
         return Promise.reject(refreshErr);
       }
     }
+
     return Promise.reject(err);
   }
 );
 
 fastApi.interceptors.response.use(
   (res) => res,
-  (err) => {
-    // 404 Not Found 에러 등 불필요한 로그 출력 방지
-    // console.error('FastAPI 에러:', err.response || err.message);
-    return Promise.reject(err);
-  }
+  (err) => Promise.reject(err)
 );
 
 export const agentService = {
@@ -190,9 +228,11 @@ export const agentService = {
   },
 
   sendMessage: async (userId, agentId, payloadOrMessage) => {
-    const basePayload = typeof payloadOrMessage === 'string'
-      ? { message: payloadOrMessage, agentId, roomId: agentId }
-      : { agentId, roomId: agentId, ...payloadOrMessage };
+    const basePayload =
+      typeof payloadOrMessage === 'string'
+        ? { message: payloadOrMessage, agentId, roomId: agentId }
+        : { agentId, roomId: agentId, ...payloadOrMessage };
+
     const payload = {
       personality: basePayload.personality || '',
       style: basePayload.style || '',
@@ -200,12 +240,15 @@ export const agentService = {
       knowledgeLevel: basePayload.knowledgeLevel || '',
       knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
       customInstruction: basePayload.customInstruction || '',
-      custom_instruction: basePayload.custom_instruction || basePayload.customInstruction || '',
+      custom_instruction:
+        basePayload.custom_instruction || basePayload.customInstruction || '',
       persona: basePayload.persona || '',
       agent_name: basePayload.agent_name || basePayload.agentName || '',
       ...basePayload,
     };
+
     console.debug('[api.agentService.sendMessage] request body', payload);
+
     const res = await api.post(`/api/agent-rooms/${agentId}/chat`, payload);
     return normalizeChatResponse(res.data);
   },
@@ -283,16 +326,22 @@ export const agentService = {
   sendAgentMessage: async (payload) => {
     if (payload?.roomId) {
       console.debug('[api.agentService.sendAgentMessage] request body', payload);
+
       const unifiedPayload = {
         ...payload,
         agent_name: payload.agent_name || payload.agentName,
         knowledge_level: payload.knowledge_level || payload.knowledgeLevel,
         personality: payload.personality,
       };
-      const res = await api.post(`/api/agent-rooms/${payload.roomId}/chat`, unifiedPayload);
+
+      const res = await api.post(
+        `/api/agent-rooms/${payload.roomId}/chat`,
+        unifiedPayload
+      );
+
       return normalizeChatResponse(res.data);
     }
-    // 확인 필요: Spring Boot에 단일 agent chat endpoint가 없으면 FastAPI 직접 호출이 필요함.
+
     const res = await fastApi.post('/agents/1/chat', payload);
     return res.data;
   },
@@ -304,23 +353,30 @@ export const agentService = {
       knowledge_level: payload.knowledge_level || payload.knowledgeLevel,
       personality: payload.personality,
     };
+
     const res = await fastApi.post('/api/ai/chat', unifiedPayload);
     return res.data;
   },
 
   requestFeedback: async (payload) => {
-    const reviewerAgentId = payload?.reviewer_agent_id || payload?.reviewerAgentId || payload?.agent_id || payload?.agentId;
+    const reviewerAgentId =
+      payload?.reviewer_agent_id ||
+      payload?.reviewerAgentId ||
+      payload?.agent_id ||
+      payload?.agentId;
+
     if (reviewerAgentId) {
       const res = await fastApi.post(`/agents/${reviewerAgentId}/feedback`, payload);
       return res.data;
     }
-    // 확인 필요: reviewer agent id가 없는 feedback 요청은 FastAPI의 별도 범용 endpoint가 현재 확인되지 않음.
+
     const unifiedPayload = {
       ...payload,
       agent_name: payload.agent_name || payload.agentName,
       knowledge_level: payload.knowledge_level || payload.knowledgeLevel,
       personality: payload.personality,
     };
+
     const res = await fastApi.post('/api/ai/chat', unifiedPayload);
     return res.data;
   },
@@ -376,13 +432,17 @@ export const authService = {
     try {
       const formData = new FormData();
       formData.append('file', file);
+
       const token = localStorage.getItem('token');
+
       const res = await axios.post(`${API_BASE_URL}/api/users/profile/image`, formData, {
+        timeout: AI_TIMEOUT_MS,
         headers: {
           'Content-Type': 'multipart/form-data',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        }
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
+
       return res.data;
     } catch (err) {
       throw err.response?.data || { message: '프로필 이미지 업로드 실패' };
@@ -435,14 +495,18 @@ export const roomService = {
     const res = await api.get('/api/agent-rooms');
     return res.data;
   },
+
   createRoom: async (userId, roomData) => {
     const res = await api.post('/api/agent-rooms', roomData);
     return res.data;
   },
+
   sendMessage: async (userId, roomId, payloadOrMessage) => {
-    const basePayload = typeof payloadOrMessage === 'string'
-      ? { message: payloadOrMessage, agentId: roomId, roomId }
-      : { agentId: roomId, roomId, ...payloadOrMessage };
+    const basePayload =
+      typeof payloadOrMessage === 'string'
+        ? { message: payloadOrMessage, agentId: roomId, roomId }
+        : { agentId: roomId, roomId, ...payloadOrMessage };
+
     const payload = {
       personality: basePayload.personality || '',
       style: basePayload.style || '',
@@ -450,47 +514,55 @@ export const roomService = {
       knowledgeLevel: basePayload.knowledgeLevel || '',
       knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
       customInstruction: basePayload.customInstruction || '',
-      custom_instruction: basePayload.custom_instruction || basePayload.customInstruction || '',
+      custom_instruction:
+        basePayload.custom_instruction || basePayload.customInstruction || '',
       persona: basePayload.persona || '',
       agent_name: basePayload.agent_name || basePayload.agentName || '',
       ...basePayload,
     };
+
     console.debug('[api.roomService.sendMessage] request body', payload);
+
     const res = await api.post(`/api/agent-rooms/${roomId}/chat`, payload);
     return res.data;
   },
+
   getChatHistory: async (userId, roomId) => {
     const res = await api.get(`/api/agent-rooms/${roomId}/history`);
     return res.data;
   },
+
   deleteRoom: async (userId, roomId) => {
     const res = await api.delete(`/api/agent-rooms/${roomId}`);
     return res.data;
-  }
+  },
 };
-
 
 export const timerService = {
   startTimer: async (userId, startTime) => {
     const res = await api.post('/api/timers/start', { startTime });
     return res.data;
   },
+
   endTimer: async (userId, endTime, durationSeconds) => {
     const res = await api.post('/api/timers/end', { endTime, durationSeconds });
     return res.data;
   },
+
   getCurrentSession: async (userId) => {
     const res = await api.get('/api/timers/current');
     return res.data;
   },
+
   getTimerHistory: async (userId) => {
     const res = await api.get('/api/timers');
     return res.data;
   },
+
   syncTimer: async (groupId) => {
     const res = await api.post(`/api/timers/sync/${groupId}`);
     return res.data;
-  }
+  },
 };
 
 export const studyTimeService = {
@@ -498,21 +570,23 @@ export const studyTimeService = {
     const res = await api.get('/api/study-time/today');
     return res.data;
   },
+
   getWeekly: async (userId) => {
     const res = await api.get('/api/study-time/weekly');
     return res.data;
   },
+
   getPrediction: async (userId) => {
     const res = await api.get('/api/study-time/predict');
     return res.data;
-  }
+  },
 };
 
 export const activityService = {
   getWeeklyGraph: async (payload) => {
     const res = await fastApi.post('/activity/weekly', payload);
     return res.data;
-  }
+  },
 };
 
 export const materialService = {
@@ -520,75 +594,96 @@ export const materialService = {
     const res = await api.get('/api/materials');
     return res.data;
   },
+
   getMaterialDetail: async (materialId) => {
     const res = await api.get(`/api/materials/${materialId}`);
     return res.data;
   },
+
   createStudyLog: async (studyLogData) => {
     const res = await api.post('/api/materials/log', studyLogData);
     return res.data;
   },
+
   uploadMaterial: async (title, materialType, keywords, file) => {
     const formData = new FormData();
     formData.append('title', title);
     formData.append('materialType', materialType);
+
     if (keywords) {
       formData.append('keywords', keywords);
     }
+
     formData.append('file', file);
 
     const token = localStorage.getItem('token');
+
     const res = await axios.post(`${API_BASE_URL}/api/materials/upload`, formData, {
+      timeout: AI_TIMEOUT_MS,
       headers: {
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-      }
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
     });
+
     return res.data;
   },
+
   updateMaterial: async (materialId, updateData) => {
     const res = await api.put(`/api/materials/${materialId}`, updateData);
     return res.data;
   },
+
   deleteMaterial: async (materialId) => {
     const res = await api.delete(`/api/materials/${materialId}`);
     return res.data;
   },
+
   getSummary: async (materialId) => {
     const res = await api.get(`/api/materials/${materialId}/summary`, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
+
   getFeedback: async (materialId) => {
     const res = await api.get(`/api/materials/${materialId}/feedback`);
     return res.data;
   },
+
   getMemo: async (materialId) => {
     const res = await api.get(`/api/materials/${materialId}/memo`);
     return res.data;
   },
+
   saveMemo: async (materialId, content) => {
     const res = await api.put(`/api/materials/${materialId}/memo`, { content });
     return res.data;
   },
+
   getQuizzes: async (materialId) => {
     const res = await api.get(`/api/materials/${materialId}/quiz`);
     return res.data;
   },
+
   generateQuiz: async (materialId, quizRequest) => {
     const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
+
   askQuestion: async (materialId, questionRequest) => {
     const res = await api.post(`/api/materials/${materialId}/question`, questionRequest, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
+
   getRoadmap: async (materialId) => {
     const res = await api.get(`/api/materials/${materialId}/roadmap`, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
+
   toggleRoadmapTask: async (materialId, taskId) => {
-    const res = await api.put(`/api/materials/${materialId}/roadmap/tasks/${taskId}/toggle`);
+    const res = await api.put(
+      `/api/materials/${materialId}/roadmap/tasks/${taskId}/toggle`
+    );
     return res.data;
-  }
+  },
 };
 
 export const groupService = {
@@ -596,74 +691,97 @@ export const groupService = {
     const res = await api.get('/api/groups');
     return res.data;
   },
+
   getGroupDetail: async (id) => {
     const res = await api.get(`/api/groups/${id}`);
     return res.data;
   },
+
   createGroup: async (groupData) => {
     const formData = new FormData();
-    Object.keys(groupData).forEach(key => {
+
+    Object.keys(groupData).forEach((key) => {
       if (groupData[key] !== undefined && groupData[key] !== null) {
         formData.append(key, groupData[key]);
       }
     });
+
     const res = await api.post('/api/groups', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
     });
+
     return res.data;
   },
+
   updateGroup: async (id, groupData) => {
     const formData = new FormData();
-    Object.keys(groupData).forEach(key => {
+
+    Object.keys(groupData).forEach((key) => {
       if (groupData[key] !== undefined && groupData[key] !== null) {
         formData.append(key, groupData[key]);
       }
     });
+
     const res = await api.put(`/api/groups/${id}`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
     });
+
     return res.data;
   },
+
   reportUser: async (groupId, reportData) => {
     const res = await api.post(`/api/groups/${groupId}/reports`, reportData);
     return res.data;
   },
+
   applyGroup: async (id, applyData) => {
     const res = await api.post(`/api/groups/${id}/apply`, applyData);
     return res.data;
   },
+
   getMembers: async (id) => {
     const res = await api.get(`/api/groups/${id}/members`);
     return res.data;
   },
+
   getApplications: async (id) => {
     const res = await api.get(`/api/groups/${id}/applications`);
     return res.data;
   },
+
   approveApplication: async (applicationId) => {
     const res = await api.post(`/api/groups/applications/${applicationId}/approve`);
     return res.data;
   },
+
   rejectApplication: async (applicationId) => {
     const res = await api.post(`/api/groups/applications/${applicationId}/reject`);
     return res.data;
   },
+
   deleteGroup: async (id) => {
     const res = await api.delete(`/api/groups/${id}`);
     return res.data;
   },
+
   kickMember: async (groupId, memberUserId) => {
     const res = await api.delete(`/api/groups/${groupId}/members/${memberUserId}`);
     return res.data;
   },
+
   completeRecruitment: async (id) => {
     const res = await api.post(`/api/groups/${id}/complete`);
     return res.data;
   },
+
   getVideoToken: async (id) => {
     const res = await api.post(`/api/groups/${id}/video/token`);
     return res.data;
-  }
+  },
 };
 
 export const knowledgeService = {
@@ -671,64 +789,110 @@ export const knowledgeService = {
     const res = await api.get('/api/blogs');
     return res.data;
   },
+
   getPostDetail: async (blogId) => {
     const res = await api.get(`/api/blogs/${blogId}`);
     return res.data;
   },
+
   createPost: async (title, content, imageFile, pdfFile) => {
     const formData = new FormData();
     formData.append('title', title);
     formData.append('content', content);
-    if (imageFile) formData.append('image', imageFile);
-    if (pdfFile) formData.append('pdf', pdfFile);
+
+    if (imageFile) {
+      formData.append('image', imageFile);
+    }
+
+    if (pdfFile) {
+      formData.append('pdf', pdfFile);
+    }
 
     const token = localStorage.getItem('token');
+
     const res = await axios.post(`${API_BASE_URL}/api/blogs`, formData, {
+      timeout: AI_TIMEOUT_MS,
       headers: {
         'Content-Type': 'multipart/form-data',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-      }
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
     });
+
     return res.data;
   },
-  updatePost: async (blogId, title, content, imageFile, pdfFile, clearImage = false, clearPdf = false) => {
+
+  updatePost: async (
+    blogId,
+    title,
+    content,
+    imageFile,
+    pdfFile,
+    clearImage = false,
+    clearPdf = false
+  ) => {
     const formData = new FormData();
-    if (title) formData.append('title', title);
-    if (content) formData.append('content', content);
-    if (imageFile) formData.append('image', imageFile);
-    if (pdfFile) formData.append('pdf', pdfFile);
+
+    if (title) {
+      formData.append('title', title);
+    }
+
+    if (content) {
+      formData.append('content', content);
+    }
+
+    if (imageFile) {
+      formData.append('image', imageFile);
+    }
+
+    if (pdfFile) {
+      formData.append('pdf', pdfFile);
+    }
+
     formData.append('clearImage', clearImage);
     formData.append('clearPdf', clearPdf);
 
     const token = localStorage.getItem('token');
+
     const res = await axios.put(`${API_BASE_URL}/api/blogs/${blogId}`, formData, {
+      timeout: AI_TIMEOUT_MS,
       headers: {
         'Content-Type': 'multipart/form-data',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-      }
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
     });
+
     return res.data;
   },
+
   deletePost: async (blogId) => {
     const res = await api.delete(`/api/blogs/${blogId}`);
     return res.data;
   },
+
   searchPosts: async (keyword) => {
-    const res = await api.get(`/api/blogs/search`, { params: { keyword } });
+    const res = await api.get('/api/blogs/search', {
+      params: {
+        keyword,
+      },
+    });
+
     return res.data;
   },
+
   toggleLike: async (blogId) => {
     const res = await api.post(`/api/blogs/${blogId}/like`);
     return res.data;
   },
+
   addComment: async (blogId, content) => {
     const res = await api.post(`/api/blogs/${blogId}/comments`, { content });
     return res.data;
   },
+
   deleteComment: async (blogId, commentId) => {
     const res = await api.delete(`/api/blogs/${blogId}/comments/${commentId}`);
     return res.data;
-  }
+  },
 };
 
 export const adminService = {
@@ -736,36 +900,41 @@ export const adminService = {
     const res = await api.get('/api/admin/reports/groups');
     return res.data;
   },
+
   deleteGroup: async (groupId) => {
     const res = await api.delete(`/api/admin/groups/${groupId}`);
     return res.data;
   },
+
   deletePost: async (blogId) => {
     const res = await api.delete(`/api/admin/blogs/${blogId}`);
     return res.data;
   },
+
   deleteComment: async (commentId) => {
     const res = await api.delete(`/api/admin/comments/${commentId}`);
     return res.data;
   },
-  // 문의 목록 조회 (관리자 전용)
+
   getInquiries: async () => {
     const res = await api.get('/api/admin/inquiries');
     return res.data;
   },
-  // 문의 답변 등록 (관리자 전용)
+
   replyInquiry: async (inquiryId, replyData) => {
     const res = await api.post(`/api/admin/inquiries/${inquiryId}/reply`, replyData);
     return res.data;
   },
+
   suspendUser: async (userId, suspendData) => {
     const res = await api.post(`/api/admin/users/${userId}/suspend`, suspendData);
     return res.data;
   },
+
   banUser: async (userId, banData) => {
     const res = await api.post(`/api/admin/users/${userId}/ban`, banData);
     return res.data;
-  }
+  },
 };
 
 export const inquiryService = {
@@ -773,10 +942,11 @@ export const inquiryService = {
     const res = await api.post('/api/inquiries', inquiryData);
     return res.data;
   },
+
   getInquiries: async () => {
     const res = await api.get('/api/inquiries');
     return res.data;
-  }
+  },
 };
 
 export default api;
