@@ -143,6 +143,8 @@ public class ChatService {
                                 request.getMode(),
                                 agentsList.size() > 1 ? "multi_agent_discussion" : "single_answer"));
                 requestBody.put("rounds", request.getRounds() != null ? Math.min(Math.max(request.getRounds(), 1), 3) : 3);
+                // 학습 진행 모드 (basic/socratic/debate) — 미지정 시 FastAPI에서 basic으로 정규화됨
+                requestBody.put("learningMode", request.getLearningMode());
                 requestBody.put("showFinalSynthesis", request.getShowFinalSynthesis() != null ? request.getShowFinalSynthesis() : false);
                 requestBody.put("personality", requestPersonality);
                 requestBody.put("personalityStrength", requestPersonalityStrength);
@@ -201,6 +203,10 @@ public class ChatService {
                 String responseMode = response != null && response.get("mode") != null ? response.get("mode").toString() : null;
                 String finalSynthesis = response != null && response.get("finalSynthesis") != null
                                 ? response.get("finalSynthesis").toString()
+                                : null;
+                // 1차/2차/3차 생성 과정 — FastAPI 응답을 그대로 패스스루 (없으면 null)
+                Map<String, Object> processSteps = response != null && response.get("processSteps") instanceof Map
+                                ? (Map<String, Object>) response.get("processSteps")
                                 : null;
 
                 if (response != null && response.containsKey("messages") && response.get("messages") instanceof List) {
@@ -291,6 +297,7 @@ public class ChatService {
                                 .messages(discussionMessages.isEmpty() ? null : discussionMessages)
                                 .finalSynthesis(finalSynthesis)
                                 .replies(replies)
+                                .processSteps(processSteps)
                                 .build();
         }
 

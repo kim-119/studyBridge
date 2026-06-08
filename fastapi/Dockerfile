@@ -11,9 +11,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-COPY pyproject.toml .
-COPY roadmap.py .
 COPY main.py .
+COPY agent_quality_policy.py .
+COPY agent_feedback_policy.py .
+COPY rag.py .
 
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt

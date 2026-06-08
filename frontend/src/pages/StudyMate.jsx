@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { agentService } from '../services/api';
-import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark } from 'lucide-react';
+import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLeft, ChevronRight, ChevronDown, CheckCircle2, Bookmark } from 'lucide-react';
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
 import '../components/studymate/studymate-premium.css';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -18,9 +18,102 @@ const DEFAULT_AGENT = {
   goal: '사용자의 학습을 돕는다'
 };
 
+// 멀티 에이전트 응답의 1차/2차/3차 생성 과정을 펼쳐볼 수 있는 아코디언
+const ProcessStepsAccordion = ({ processSteps }) => {
+  const [open, setOpen] = useState(false);
+  if (!processSteps) return null;
+
+  const { initialAnswer, validatedAnswer, peerFeedback = [] } = processSteps;
+  const hasAny = initialAnswer || validatedAnswer || (peerFeedback && peerFeedback.length > 0);
+  if (!hasAny) return null;
+
+  const stepCardStyle = { padding: '10px 12px', borderRadius: '10px', backgroundColor: 'rgba(0,0,0,0.03)', fontSize: '12px' };
+  const bodyTextStyle = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', color: 'var(--color-text-muted)' };
+
+  return (
+    <div style={{ marginTop: '8px' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: '4px',
+          background: 'none', border: 'none', cursor: 'pointer',
+          fontSize: '12px', fontWeight: '600', color: 'var(--color-text-muted)', padding: '2px 0',
+        }}
+      >
+        <ChevronDown size={14} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+        {open ? '생성과정 접기' : '생성과정 보기'}
+      </button>
+
+      {open && (
+        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {initialAnswer && (
+            <div style={stepCardStyle}>
+              <div style={{ fontWeight: '700', marginBottom: '4px' }}>1차 답변 생성</div>
+              <div style={bodyTextStyle}>{initialAnswer.answer}</div>
+            </div>
+          )}
+
+          {validatedAnswer && (
+            <div style={stepCardStyle}>
+              <div style={{ fontWeight: '700', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                2차 검증 답안
+                {typeof validatedAnswer.score === 'number' && (
+                  <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.06)' }}>
+                    score {validatedAnswer.score.toFixed(2)}
+                  </span>
+                )}
+                {validatedAnswer.revised && (
+                  <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.06)' }}>
+                    수정됨
+                  </span>
+                )}
+              </div>
+              <div style={bodyTextStyle}>{validatedAnswer.answer}</div>
+              {validatedAnswer.issues && validatedAnswer.issues.length > 0 && (
+                <ul style={{ margin: '6px 0 0', paddingLeft: '16px', color: 'var(--color-text-muted)' }}>
+                  {validatedAnswer.issues.map((issue, i) => <li key={i}>{issue}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <div style={stepCardStyle}>
+            <div style={{ fontWeight: '700', marginBottom: '4px' }}>3차 상호 피드백</div>
+            {peerFeedback && peerFeedback.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {peerFeedback.map((fb, i) => (
+                  <div key={i} style={{ color: 'var(--color-text-muted)' }}>
+                    <span style={{ fontWeight: '600' }}>{fb.fromAgent} → {fb.toAgent}</span>
+                    <div style={bodyTextStyle}>{fb.feedback}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ color: 'var(--color-text-muted)' }}>이 모드에서는 상호 피드백이 생성되지 않았습니다.</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const parsePersonaTag = (persona, tagName) => {
   const match = String(persona || '').match(new RegExp(`\\[${tagName}:\\s*([^\\]]+)\\]`));
   return match ? match[1].trim() : '';
+};
+
+// 멀티 에이전트 응답의 processSteps에서 특정 에이전트와 관련된 항목만 추려낸다
+const extractAgentProcessSteps = (processSteps, agentName) => {
+  if (!processSteps || !agentName) return null;
+  const initialAnswer = (processSteps.initialAnswers || []).find((s) => s.agentName === agentName) || null;
+  const validatedAnswer = (processSteps.validatedAnswers || []).find((s) => s.agentName === agentName) || null;
+  const peerFeedback = (processSteps.peerFeedback || []).filter(
+    (fb) => fb.fromAgent === agentName || fb.toAgent === agentName
+  );
+  if (!initialAnswer && !validatedAnswer && peerFeedback.length === 0) return null;
+  return { initialAnswer, validatedAnswer, peerFeedback };
 };
 
 const getAgentId = (agent) => agent?.id ?? agent?.agentId;
@@ -169,6 +262,8 @@ export default function StudyMate() {
   // 멀티 에이전트 동적 추가를 위해 상태를 배열로 정의
   const [createdAgents, setCreatedAgents] = useState([{ ...DEFAULT_AGENT }]);
   const [roomName, setRoomName] = useState('');
+  // 학습 진행 모드: basic(기본 채팅) / socratic(소크라테스) / debate(토론)
+  const [learningMode, setLearningMode] = useState('basic');
 
   const chatEndRef = useRef(null);
 
@@ -202,6 +297,7 @@ export default function StudyMate() {
     if (!userId) return;
     setCreatedAgents([{ ...DEFAULT_AGENT }]);
     setRoomName('');
+    setLearningMode('basic');
     setShowModal(true);
   };
 
@@ -228,7 +324,8 @@ export default function StudyMate() {
 
     const payload = {
       roomName: finalRoomName,
-      agents: payloadAgents
+      agents: payloadAgents,
+      learningMode
     };
 
     try {
@@ -237,6 +334,7 @@ export default function StudyMate() {
       setShowModal(false);
       setCreatedAgents([{ ...DEFAULT_AGENT }]);
       setRoomName('');
+      setLearningMode('basic');
       await loadAgents();
     } catch (err) {
       console.error('에이전트 스터디방 생성 실패:', err);
@@ -326,6 +424,8 @@ export default function StudyMate() {
       });
       const res = await agentService.sendMessage(userId, agentId, {
         message: inputMsg,
+        // 방에 저장된 학습 진행 모드를 그대로 전달 (없으면 기본 채팅 모드로 처리)
+        learningMode: selectedAgent?.learningMode || 'basic',
         rounds: 1, // 프론트단에서 타임아웃 방지를 위해 강제로 1라운드(병렬 단답)만 요청
       });
       console.debug('[StudyMate] chat response', res);
@@ -336,15 +436,19 @@ export default function StudyMate() {
 
       let newMsgs = [];
       if (res.replies && res.replies.length > 0) {
-        newMsgs = res.replies.map((reply, index) => ({
-          id: Date.now() + 1 + index,
-          content: reply.answer || reply.content,
-          sender: 'AI',
-          senderName: reply.agentName || reply.agent_name,
-          agentId: reply.agentId,
-          createdAt: new Date().toISOString(),
-          parentId: userMsg.id, // AI 응답은 방금 작성한 유저 질문의 자식이 됨
-        }));
+        newMsgs = res.replies.map((reply, index) => {
+          const senderName = reply.agentName || reply.agent_name;
+          return {
+            id: Date.now() + 1 + index,
+            content: reply.answer || reply.content,
+            sender: 'AI',
+            senderName,
+            agentId: reply.agentId,
+            createdAt: new Date().toISOString(),
+            parentId: userMsg.id, // AI 응답은 방금 작성한 유저 질문의 자식이 됨
+            processSteps: extractAgentProcessSteps(res.processSteps, senderName),
+          };
+        });
       } else {
         newMsgs = [{
           id: Date.now() + 1,
@@ -353,6 +457,7 @@ export default function StudyMate() {
           senderName: selectedAgent.name,
           createdAt: new Date().toISOString(),
           parentId: userMsg.id,
+          processSteps: extractAgentProcessSteps(res.processSteps, selectedAgent.name),
         }];
       }
       // 태깅 초기화
@@ -730,6 +835,7 @@ export default function StudyMate() {
                           <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none' }}>
                             {msg.content}
                           </div>
+                          {!isUser && <ProcessStepsAccordion processSteps={msg.processSteps} />}
                           <div className="chat-bubble-time">{formatTime(msg.createdAt)}</div>
                         </div>
                       );
@@ -1014,6 +1120,47 @@ export default function StudyMate() {
                     onChange={(e) => setRoomName(e.target.value)}
                     placeholder={roomName ? "" : createdAgents.map(a => a.name.trim() || '새 에이전트').join(' & ') + '의 그룹 스터디'}
                   />
+                </div>
+
+                {/* 학습 진행 모드 선택 */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)', marginBottom: '6px' }}>
+                    학습 진행 모드
+                  </label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {[
+                      { value: 'basic', title: '기본 채팅 모드', desc: '각 AI가 바로 답변합니다.' },
+                      { value: 'socratic', title: '소크라테스 모드', desc: '정답을 바로 주기보다 질문으로 사고를 유도합니다.' },
+                      { value: 'debate', title: '토론 모드', desc: 'AI들이 서로 다른 관점으로 답하고 피드백합니다.' },
+                    ].map((opt) => (
+                      <label
+                        key={opt.value}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '10px',
+                          padding: '10px 12px',
+                          borderRadius: '10px',
+                          border: `1px solid ${learningMode === opt.value ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                          backgroundColor: learningMode === opt.value ? 'var(--color-primary-soft, rgba(99,102,241,0.08))' : 'transparent',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="learningMode"
+                          value={opt.value}
+                          checked={learningMode === opt.value}
+                          onChange={() => setLearningMode(opt.value)}
+                          style={{ marginTop: '3px' }}
+                        />
+                        <div>
+                          <div style={{ fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)' }}>{opt.title}</div>
+                          <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '2px' }}>{opt.desc}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="divider" style={{ margin: '8px 0' }} />

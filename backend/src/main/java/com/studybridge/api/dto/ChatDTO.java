@@ -8,6 +8,7 @@ import lombok.ToString;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 public class ChatDTO {
 
@@ -37,6 +38,8 @@ public class ChatDTO {
         private Integer rounds;
         private Boolean showFinalSynthesis;
         private List<RequestAgent> agents;
+        // 학습 진행 모드: basic / socratic / debate (미지정 시 FastAPI에서 basic으로 처리)
+        private String learningMode;
         private String personality;
         private String personalityStrength;
         private String personality_strength;
@@ -82,6 +85,8 @@ public class ChatDTO {
         private List<DiscussionMessage> messages;
         private String finalSynthesis;
         private List<AgentReply> replies;
+        // 1차/2차/3차 생성 과정 (FastAPI processSteps를 그대로 패스스루, 없으면 null)
+        private Map<String, Object> processSteps;
         // 에러/타임아웃 시 프론트에 메시지 전달 (500 대신 200+errorMessage 반환)
         private String errorMessage;
         private String errorCode;

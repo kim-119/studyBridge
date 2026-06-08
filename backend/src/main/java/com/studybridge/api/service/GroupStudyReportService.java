@@ -67,7 +67,6 @@ public class GroupStudyReportService {
                 .reportedUserName(reportedUser != null ? reportedUser.getDisplayName() : null)
                 .reason(savedReport.getReason())
                 .createdAt(savedReport.getCreatedAt())
-                .reportedUserStatus(reportedUser != null ? ("WARNING".equals(reportedUser.getStatus()) ? "SUSPENDED" : reportedUser.getStatus()) : "ACTIVE")
                 .build();
     }
 
@@ -83,7 +82,6 @@ public class GroupStudyReportService {
                         .reportedUserName(report.getReportedUser() != null ? report.getReportedUser().getDisplayName() : null)
                         .reason(report.getReason())
                         .createdAt(report.getCreatedAt())
-                        .reportedUserStatus(report.getReportedUser() != null ? ("WARNING".equals(report.getReportedUser().getStatus()) ? "SUSPENDED" : report.getReportedUser().getStatus()) : "ACTIVE")
                         .build())
                 .collect(Collectors.toList());
     }

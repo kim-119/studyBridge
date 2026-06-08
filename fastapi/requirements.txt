@@ -1,19 +1,58 @@
+# StudyBridge FastAPI AI 서버 의존성
+# Spring Boot 계약 API (v0.5) + 확장 API (v0.6)
+
+# ── 웹 프레임워크 ─────────────────────────────────────────────────
 fastapi
 uvicorn[standard]
+
+# ── 환경변수 / 설정 ───────────────────────────────────────────────
 python-dotenv
-openai
 pydantic
-pypdf
-PyMuPDF
-pytesseract
-Pillow
-python-multipart
-matplotlib
+pydantic-settings
+
+# ── HTTP 클라이언트 ───────────────────────────────────────────────
+requests
+httpx
+
+# ── LLM 클라이언트 ────────────────────────────────────────────────
+openai
+
+# ── 검색 API ──────────────────────────────────────────────────────
+tavily-python
+
+# ── AWS S3 ────────────────────────────────────────────────────────
 boto3
-reportlab
-faiss-cpu
-langchain
-langchain-openai
-langchain-community
-tiktoken
--e .
+
+# ── PDF 텍스트 추출 ───────────────────────────────────────────────
+PyMuPDF
+pypdf
+
+# ── Wikipedia ─────────────────────────────────────────────────────
+wikipedia-api
+
+# ── PostgreSQL + pgvector (AI RAG 전용 DB) ────────────────────────
+psycopg[binary]
+pgvector
+
+# ── 임베딩 / RAG (sentence-transformers는 무겁지만 pgvector RAG에 필요) ──
+sentence-transformers
+numpy
+
+# ── JSON / 유틸 ───────────────────────────────────────────────────
+orjson
+python-multipart
+
+# ── HTTP 재시도 ───────────────────────────────────────────────────
+tenacity
+
+# ════════════════════════════════════════════════════════════════════
+# 선택적 패키지 (Optional) — 필요 시 주석 해제
+# ════════════════════════════════════════════════════════════════════
+
+# TensorFlow 학습 시간 예측 모델 (실제 모델 파일이 있을 때만 설치)
+# tensorflow-cpu
+# TF 없으면 가중 평균 예측(fallback)으로 자동 동작함
+
+# OCR 기반 이미지 PDF (이미지 PDF 처리 시 필요)
+# pytesseract
+# Pillow

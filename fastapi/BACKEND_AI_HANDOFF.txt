@@ -1,0 +1,376 @@
+================================================================
+StudyBridge FastAPI AI 서버 백엔드 인수인계서
+작성일: 2026-06-03
+대상: Spring Boot 백엔드 담당자
+================================================================
+
+1. FastAPI AI 서버 역할
+----------------------------------------------------------------
+- Spring Boot가 AI 기능이 필요할 때 호출하는 AI Orchestrator
+- React(프론트엔드)는 FastAPI를 직접 호출하지 않음
+- 인증/권한 확인은 Spring Boot에서 처리 후 FastAPI 호출
+- FastAPI는 동기 JSON 응답만 반환 (SSE 스트리밍은 Spring Boot 담당)
+
+서버 포트:
+  FastAPI: 8000 (또는 8001, vLLM 8000 사용 시 충돌 주의 → 아래 6항 참조)
+  Ollama:  11434
+  vLLM:    8001 (FastAPI와 포트 분리 권장)
+  AI DB (pgvector): 5433 (호스트 포트), 컨테이너 내부 5432
+  Redis:   6380 (호스트 포트), 컨테이너 내부 6379
+
+내부 인증:
+  Spring Boot → FastAPI 호출 시 헤더 필수:
+    Authorization: Bearer {AI_SERVER_API_KEY}
+  AI_SERVER_API_KEY 미설정 시 개발 모드 (인증 스킵)
+
+
+2. 현재 구현된 계약 API (Spring Boot가 호출해야 할 필수 API)
+----------------------------------------------------------------
+
+[필수 계약 API 4개]
+
+  (a) POST /api/ai/predict/study-time
+  (b) POST /api/ai/quiz/generate
+  (c) POST /api/ai/multi-chat
+  (d) GET  /api/health
+
+[확장 API 6개]
+
+  (e) POST   /api/rag/ingest
+  (f) POST   /api/rag/query
+  (g) DELETE /api/rag/materials/{material_id}
+  (h) POST   /api/agent/deep-search
+  (i) GET    /api/training-candidates/stats
+  (j) POST   /api/training-candidates/export-jsonl
+
+확장 API (e~j)는 Authorization 헤더 필수.
+필수 API (a~d)는 현재 인증 없음 (개발 단계).
+
+
+3. 각 API Request / Response 요약
+----------------------------------------------------------------
+
+(a) POST /api/ai/predict/study-time
+
+  Request (JSON):
+    {
+      "userId": 123,
+      "weeklyStudySeconds": [3600, 7200, 1800, 5400, 0, 4500, 3000]
+    }
+    - weeklyStudySeconds: 반드시 7개 값, 음수 불가
+    - 길이 != 7 또는 음수 → 400 Bad Request
+
+  Response (JSON):
+    {
+      "predictedStudySeconds": 3420.0
+    }
+
+  Spring DTO 주의:
+    - 필드명 camelCase 그대로 유지 (예: predictedStudySeconds)
+    - TensorFlow 모델 없으면 가중 평균 기반 fallback 자동 동작
+    - 타임아웃: AI_RESPONSE_TIMEOUT_SECONDS (기본 30초) → 504 반환
+
+
+(b) POST /api/ai/quiz/generate
+
+  Request (JSON):
+    {
+      "materialId": 42,
+      "s3Key": "uploads/user123/lecture01.pdf",
+      "fileName": "lecture01.pdf"
+    }
+
+  Response (JSON):
+    {
+      "quizTitle": "[lecture01.pdf] 자료 기반 학습 퀴즈",
+      "questions": [
+        {
+          "question": "문제 내용",
+          "options": ["보기1", "보기2", "보기3", "보기4"],
+          "correctAnswer": 1,
+          "timeLimitSeconds": 30
+        }
+      ]
+    }
+
+  Spring DTO 주의:
+    - options는 항상 4개
+    - correctAnswer는 0~3 (0-indexed)
+    - S3 실패, PDF 추출 실패, LLM 실패 모두 fallback quiz 반환 (구조 유지)
+    - 타임아웃: QUIZ_GENERATION_TIMEOUT_SECONDS (기본 15초) → 504 반환
+
+
+(c) POST /api/ai/multi-chat
+
+  Request (JSON):
+    {
+      "message": "자바 OOP에서 다형성이란?",
+      "mode": "multi_agent_discussion",
+      "rounds": 1,
+      "showFinalSynthesis": true,
+      "targetAgentId": null,
+      "previousAnswers": [
+        {
+          "agentName": "자바도우미",
+          "answer": "이전 답변 내용",
+          "role": "ASSISTANT",
+          "agentId": 1
+        }
+      ],
+      "agents": [
+        {
+          "agentId": 1,
+          "name": "자바도우미",
+          "personality": "친절_설명형",
+          "knowledgeLevel": "학사"
+        }
+      ]
+    }
+
+  Response (JSON):
+    {
+      "mode": "multi_agent_discussion",
+      "answers": [
+        {
+          "agentName": "자바도우미",
+          "answer": "에이전트 답변 내용"
+        },
+        {
+          "agentName": "종합정리봇",
+          "answer": "showFinalSynthesis=true일 때 추가됨"
+        }
+      ]
+    }
+
+  Spring DTO 주의:
+    - FastAPI는 SSE 없음. 동기 JSON만 반환
+    - Spring에서 SSE로 분리 전송 필요 시 answers 배열을 순서대로 emit
+    - targetAgentId 있으면 해당 에이전트만 답변
+    - targetAgentId null이면 agents 전체 답변
+    - agents 비어있으면 기본 에이전트(스터디봇) 사용
+    - previousAnswers 최대 100개 수신 → FastAPI 내부에서 최근 20개만 사용
+    - rounds 최대 5 수신 → FastAPI 내부에서 최대 3으로 제한
+    - 타임아웃: MULTI_CHAT_TIMEOUT_SECONDS (기본 30초) → fallback 응답 반환
+
+
+(d) GET /api/health
+
+  Response (JSON):
+    {
+      "status": "ok",
+      "service": "studybridge-fastapi",
+      "openaiConfigured": true,
+      "ollamaConfigured": true,
+      "tavilyConfigured": false,
+      "awsConfigured": true
+    }
+
+  주의:
+    - 외부 서버 실제 연결 시도 없음 (환경변수 존재 여부만 확인)
+    - 실제 key 값 응답에 포함되지 않음
+
+
+4. Spring에서 호출할 때 주의사항
+----------------------------------------------------------------
+
+(1) 타임아웃 설정
+  - predict: 30초 (AI_RESPONSE_TIMEOUT_SECONDS)
+  - quiz: 15초 (QUIZ_GENERATION_TIMEOUT_SECONDS, LLM 호출 포함)
+  - multi-chat: 30초 (MULTI_CHAT_TIMEOUT_SECONDS, 에이전트 수×라운드만큼 LLM 호출)
+  - FastAPI 504 → Spring에서 기존 fallback으로 대체 권장
+
+(2) SSE 처리
+  - FastAPI는 동기 JSON만 반환
+  - Spring이 answers 배열을 받아 SSE로 순차 emit 처리 담당
+
+(3) FastAPI 실패 시
+  - HTTP 5xx → Spring 자체 fallback 응답 반환
+  - 연결 불가 → Spring 자체 fallback 응답 반환
+  - Spring이 FastAPI를 호출하지 못해도 기본 서비스는 유지되어야 함
+
+(4) 내부 인증 헤더
+  - 확장 API (RAG, Deep Search, Training) 호출 시 필수:
+    Authorization: Bearer {AI_SERVER_API_KEY}
+  - Spring application.yml 또는 환경변수에 AI_SERVER_API_KEY 저장
+
+
+5. 환경변수 정리
+----------------------------------------------------------------
+
+Spring Boot에서 설정할 환경변수:
+  FASTAPI_BASE_URL=http://localhost:8000   (또는 컨테이너명 기반 URL)
+  AI_SERVER_API_KEY=...                    (내부 인증 공유 키)
+
+FastAPI에서만 관리하는 환경변수 (Spring은 직접 사용 안 함):
+  OPENAI_API_KEY        (GPT 퀴즈 생성, 에이전트 fallback)
+  OLLAMA_BASE_URL       (로컬 LLM 서버 URL)
+  OLLAMA_MODEL          (기본 qwen2.5:7b)
+  TAVILY_API_KEY        (Deep Search 웹 검색)
+  AWS_ACCESS_KEY_ID     (S3 PDF 로드)
+  AWS_SECRET_ACCESS_KEY
+  AWS_S3_BUCKET
+  AI_DATABASE_URL       (pgvector AI 전용 DB, capstone-db와 분리)
+  REDIS_URL             (AI 서버 전용)
+  QWEN_BASE_URL         (vLLM 서버, 기본 http://localhost:8001/v1)
+
+
+6. DB 분리 확인
+----------------------------------------------------------------
+
+기존 capstone-db:
+  호스트 포트: 5432
+  Spring Boot 전용 (FastAPI가 접근하지 않음)
+
+AI 전용 DB (pgvector):
+  컨테이너 이름: studybridge-pgvector (또는 capstone-ai-db)
+  호스트 포트: 5433
+  컨테이너 내부 포트: 5432
+  FastAPI 접속: AI_DATABASE_URL 환경변수 사용
+
+Redis:
+  컨테이너 이름: capstone-redis (또는 별도 AI Redis)
+  호스트 포트: 6380
+  컨테이너 내부 포트: 6379
+  REDIS_URL 환경변수 사용
+
+주의: docker-compose.ai.yml에 Redis 서비스가 없음.
+      Redis가 필요하면 별도 compose에 추가하거나 기존 Spring compose에서 공유해야 함.
+
+
+7. 멀티 에이전트 연결 주의사항
+----------------------------------------------------------------
+
+- Spring은 /api/ai/multi-chat에 agents 배열을 완전하게 전달할 것
+- agentId와 id 중 하나만 있어도 targetAgentId 필터 동작
+- previousAnswers는 최대 100개 전송 가능 → 내부에서 최근 20개만 사용
+- showFinalSynthesis=true이면 종합정리봇 답변이 answers 마지막에 추가됨
+- SSE emit 시 종합정리봇은 마지막에 emit하면 자연스러움
+
+에이전트 personality 종류:
+  친절_설명형, 비판적_분析형, 논리적_탐구형, 창의적_확장형, 간결_요약형, 전문적
+
+에이전트 knowledgeLevel 종류:
+  입문, 학사, 석사, 박사, 전문가
+
+비판적_분析형은 공격적 욕설 없음. 츤데레 코치형으로 처리됨.
+
+
+8. 자료보관함/퀴즈 연결 주의사항
+----------------------------------------------------------------
+
+흐름:
+  1. React에서 PDF 업로드 → Spring Boot가 S3에 저장
+  2. Spring Boot가 FastAPI /api/ai/quiz/generate 호출
+     (materialId, s3Key, fileName 전달)
+  3. FastAPI가 S3에서 PDF 로드 → GPT/Ollama로 퀴즈 생성
+  4. Spring Boot가 quizTitle, questions 응답 수신
+  5. 실패 시 Spring fallback (기본 퀴즈 또는 에러 처리)
+
+RAG ingest 흐름 (PDF 청킹 저장):
+  Spring Boot → POST /api/rag/ingest
+  body: { "material_id": 42, "document_title": "제목", "text": "추출된 텍스트" }
+  Spring이 PDF 텍스트를 추출해서 전달하거나, FastAPI에 S3 키를 주고 FastAPI가 추출
+
+RAG query 흐름 (PDF 근거 검색):
+  Spring Boot → POST /api/rag/query
+  body: { "material_id": 42, "question": "질문", "top_k": 5 }
+  응답: { "material_id": 42, "question": "...", "chunks": [...] }
+
+
+9. 향후 연결 예정 API
+----------------------------------------------------------------
+
+  POST   /api/rag/ingest                        PDF 텍스트 RAG 저장
+  POST   /api/rag/query                         pgvector 유사 청크 검색
+  DELETE /api/rag/materials/{material_id}       자료 삭제 시 청크 제거
+  POST   /api/agent/deep-search                 RAG+웹검색+LLM 통합 검색
+  GET    /api/training-candidates/stats         학습 후보 상태별 통계
+  POST   /api/training-candidates/export-jsonl  JSONL 파일 내보내기
+
+위 API는 모두 Authorization: Bearer {AI_SERVER_API_KEY} 헤더 필수.
+
+
+10. 현재 검증 상태
+----------------------------------------------------------------
+
+[정적 검증 - 완료]
+  - 전체 Python 파일 AST 구문 검사: 오류 없음
+  - pytest --collect-only: 22개 테스트 수집 확인
+
+[실제 실행 검증 - 보류]
+  서버컴에서 아래 명령으로 확인 필요:
+
+  # FastAPI 서버 기동
+  cd fastapi
+  uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # 또는 app.main 사용 시
+  uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # 상태 확인
+  curl http://localhost:8000/api/health
+
+  # predict 테스트
+  curl -X POST http://localhost:8000/api/ai/predict/study-time \
+    -H "Content-Type: application/json" \
+    -d '{"userId":1,"weeklyStudySeconds":[3600,7200,1800,5400,0,4500,3000]}'
+
+  # quiz 테스트 (S3 연결 필요)
+  curl -X POST http://localhost:8000/api/ai/quiz/generate \
+    -H "Content-Type: application/json" \
+    -d '{"materialId":1,"s3Key":"uploads/test.pdf","fileName":"test.pdf"}'
+
+  # multi-chat 테스트 (Ollama 또는 OpenAI 필요)
+  curl -X POST http://localhost:8000/api/ai/multi-chat \
+    -H "Content-Type: application/json" \
+    -d '{"message":"자바란?","mode":"multi_agent_discussion","rounds":1}'
+
+  # pytest 실행 (서버 기동 없이 단위 테스트)
+  pytest tests/ -v
+
+[Docker 기동 - 보류]
+  docker compose -f docker-compose.ai.yml up -d
+  (Redis는 별도 추가 필요)
+
+
+11. 서버컴 실행 시 주의사항 (VRAM 및 포트)
+----------------------------------------------------------------
+
+VRAM: RTX 5070 Ti / 약 16GB
+
+모델 선택 권장:
+  - Qwen2.5-14B-Instruct-AWQ (양자화): 16GB에서 가능하나 멀티 에이전트 시 느릴 수 있음
+  - Qwen2.5-7B (권장): 더 빠르고 안정적. 에이전트 3명 동시 호출 감당 가능
+  - Ollama 사용 시: ollama run qwen2.5:7b
+
+포트 충돌 주의:
+  - vLLM은 기본 8000 포트 사용 → FastAPI와 충돌
+  - FastAPI를 8001로 돌리거나 vLLM을 8001로 돌릴 것
+  - 현재 config 기본값: QWEN_BASE_URL=http://localhost:8001/v1
+
+multi-chat 서버컴 주의:
+  - 에이전트 3명 × 3라운드 = 최대 9번 LLM 호출
+  - 7B 기준 1회 약 3~10초 → 전체 30~90초 가능
+  - 타임아웃 기본 30초는 서버컴에서 부족할 수 있음
+  - MULTI_CHAT_TIMEOUT_SECONDS=60~120으로 늘리거나 에이전트 1명 테스트부터 시작
+
+서버컴 먼저 확인할 명령어:
+  nvidia-smi
+  docker ps
+  docker images
+  curl http://localhost:11434/api/tags       # Ollama 모델 목록
+  curl http://localhost:8000/api/health      # FastAPI 상태 (포트 확인 후)
+
+
+12. 주의사항 요약
+----------------------------------------------------------------
+
+  - FastAPI는 기존 capstone-db에 접근하지 않음 (AI_DATABASE_URL만 사용)
+  - .env 파일은 Git에 커밋하지 말 것 (.env.example만 커밋)
+  - AI_SERVER_API_KEY는 Spring application.yml과 FastAPI .env에서 동일한 값 사용
+  - quiz generate는 S3 연결 필요 → S3 key 없으면 fallback quiz 반환
+  - Swagger UI: http://localhost:8000/docs
+
+================================================================
+END OF HANDOFF
+================================================================
