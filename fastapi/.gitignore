@@ -1,64 +1,19 @@
-# 환경변수 (절대 커밋 금지)
-.env
-.env.local
-.env.production
-
-# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.so
-*.egg
-*.egg-info/
-dist/
-build/
-.Python
-venv/
+*$py.class
+
+.env
 .venv/
+venv/
 env/
 
-# QLoRA / LoRA adapter 파일 (용량 크고 민감)
-adapters/
-checkpoints/
-*.adapter/
-*.safetensors
-*.bin
-*.pt
-*.ckpt
-*.pth
-
-# GGUF 양자화 모델 파일
-*.gguf
-*.ggml
-
-# 학습 데이터 (raw/개인정보 포함 가능)
-data/raw/
-data/sft_train.jsonl
-data/sft_eval.jsonl
-data/*.jsonl
-
-# 학습 결과
-eval/
-runs/
-wandb/
-mlruns/
-logs/
-
-# 모델 파일
-models/
-
-# IDE
+.DS_Store
 .idea/
 .vscode/
-*.swp
-*.swo
 
-# OS
-.DS_Store
-Thumbs.db
+*.log
 
-# 테스트 캐시
-.pytest_cache/
-.coverage
-htmlcov/
+# secrets
+*.pem
+.env*
+!.env.example
