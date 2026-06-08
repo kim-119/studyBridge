@@ -283,10 +283,19 @@ public class GroupStudyService {
                                 .sum();
                     }
 
+                    String photoUrl = member.getUser().getPhotoUrl();
+                    if (photoUrl != null && !photoUrl.isBlank() && !photoUrl.startsWith("http")) {
+                        try {
+                            photoUrl = s3Service.getPresignedUrl(photoUrl);
+                        } catch (Exception e) {
+                            log.warn("Failed to generate presigned URL for group study member photo: {}", e.getMessage());
+                        }
+                    }
+
                     return GroupStudyDTO.MemberResponse.builder()
                             .userId(member.getUser().getId())
                             .displayName(member.getUser().getDisplayName())
-                            .photoUrl(member.getUser().getPhotoUrl())
+                            .photoUrl(photoUrl)
                             .major(member.getUser().getMajor())
                             .role(member.getRole())
                             .points(member.getPoints())
@@ -471,6 +480,15 @@ public class GroupStudyService {
             }
         }
 
+        String leaderPhotoUrl = groupStudy.getLeader().getPhotoUrl();
+        if (leaderPhotoUrl != null && !leaderPhotoUrl.isBlank() && !leaderPhotoUrl.startsWith("http")) {
+            try {
+                leaderPhotoUrl = s3Service.getPresignedUrl(leaderPhotoUrl);
+            } catch (Exception e) {
+                log.error("Failed to generate presigned URL for leader photo: {}", leaderPhotoUrl, e);
+            }
+        }
+
         return GroupStudyDTO.Response.builder()
                 .id(groupStudy.getId())
                 .title(groupStudy.getTitle())
@@ -486,6 +504,7 @@ public class GroupStudyService {
                 .createdAt(groupStudy.getCreatedAt())
                 .hashtags(groupStudy.getHashtags())
                 .coverImageUrl(coverImageUrl)
+                .leaderPhotoUrl(leaderPhotoUrl)
                 .build();
     }
 
@@ -520,12 +539,21 @@ public class GroupStudyService {
     }
 
     private GroupStudyDTO.ApplicationResponse toApplicationResponseDTO(GroupStudyJoinApplication app) {
+        String applicantPhotoUrl = app.getUser().getPhotoUrl();
+        if (applicantPhotoUrl != null && !applicantPhotoUrl.isBlank() && !applicantPhotoUrl.startsWith("http")) {
+            try {
+                applicantPhotoUrl = s3Service.getPresignedUrl(applicantPhotoUrl);
+            } catch (Exception e) {
+                log.warn("Failed to generate presigned URL for group study applicant photo: {}", e.getMessage());
+            }
+        }
+
         return GroupStudyDTO.ApplicationResponse.builder()
                 .applicationId(app.getId())
                 .groupStudyId(app.getGroupStudy().getId())
                 .applicantId(app.getUser().getId())
                 .applicantName(app.getUser().getDisplayName())
-                .applicantPhotoUrl(app.getUser().getPhotoUrl())
+                .applicantPhotoUrl(applicantPhotoUrl)
                 .introduction(app.getIntroduction())
                 .status(app.getStatus())
                 .createdAt(app.getCreatedAt())

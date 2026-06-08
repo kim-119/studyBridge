@@ -319,6 +319,23 @@ export const authService = {
     }
   },
 
+  uploadProfileImage: async (file) => {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const token = localStorage.getItem('token');
+      const res = await axios.post(`${API_BASE_URL}/api/users/profile/image`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      return res.data;
+    } catch (err) {
+      throw err.response?.data || { message: '프로필 이미지 업로드 실패' };
+    }
+  },
+
   updatePassword: async (passwordData) => {
     try {
       const res = await api.put('/api/users/password', passwordData);
