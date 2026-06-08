@@ -27,9 +27,6 @@ const fastApi = axios.create({
   },
 });
 
-// AI 자료보관함 요청 timeout (기본 130초). 무한 로딩 방지.
-export const AI_TIMEOUT_MS = Number(import.meta.env.VITE_FRONTEND_AI_TIMEOUT_MS || import.meta.env.FRONTEND_AI_TIMEOUT_MS) || 130000;
-
 const normalizeAgentFromRoom = (room) => {
   const primaryAgent = Array.isArray(room?.agents) && room.agents.length > 0 ? room.agents[0] : {};
   return {
@@ -322,6 +319,23 @@ export const authService = {
     }
   },
 
+  uploadProfileImage: async (file) => {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const token = localStorage.getItem('token');
+      const res = await axios.post(`${API_BASE_URL}/api/users/profile/image`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      return res.data;
+    } catch (err) {
+      throw err.response?.data || { message: '프로필 이미지 업로드 실패' };
+    }
+  },
+
   updatePassword: async (passwordData) => {
     try {
       const res = await api.put('/api/users/password', passwordData);
@@ -487,7 +501,7 @@ export const materialService = {
     return res.data;
   },
   getSummary: async (materialId) => {
-    const res = await api.get(`/api/materials/${materialId}/summary`, { timeout: AI_TIMEOUT_MS });
+    const res = await api.get(`/api/materials/${materialId}/summary`);
     return res.data;
   },
   getFeedback: async (materialId) => {
@@ -507,15 +521,15 @@ export const materialService = {
     return res.data;
   },
   generateQuiz: async (materialId, quizRequest) => {
-    const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest, { timeout: AI_TIMEOUT_MS });
+    const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest);
     return res.data;
   },
   askQuestion: async (materialId, questionRequest) => {
-    const res = await api.post(`/api/materials/${materialId}/question`, questionRequest, { timeout: AI_TIMEOUT_MS });
+    const res = await api.post(`/api/materials/${materialId}/question`, questionRequest);
     return res.data;
   },
   getRoadmap: async (materialId) => {
-    const res = await api.get(`/api/materials/${materialId}/roadmap`, { timeout: AI_TIMEOUT_MS });
+    const res = await api.get(`/api/materials/${materialId}/roadmap`);
     return res.data;
   },
   toggleRoadmapTask: async (materialId, taskId) => {

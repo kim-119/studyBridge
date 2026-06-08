@@ -12,14 +12,148 @@ export default function MyPage() {
   const [isEditing, setIsEditing] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState('profile');
   const [profileImage, setProfileImage] = useState(null);
+  const [selectedFile, setSelectedFile] = useState(null);
   const fileInputRef = useRef(null);
+
+  // 프로필 크기 및 위치 조정(Crop)용 상태 변수들
+  const [showCropModal, setShowCropModal] = useState(false);
+  const [imageToCrop, setImageToCrop] = useState('');
+  const [cropScale, setCropScale] = useState(1.0);
+  const [cropMinScale, setCropMinScale] = useState(0.5); // 이미지 비율별 최소 스케일 동적 결정용
+  const [cropPosition, setCropPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
       const imageUrl = URL.createObjectURL(file);
-      setProfileImage(imageUrl);
+      
+      const img = new Image();
+      img.src = imageUrl;
+      img.onload = () => {
+        const imgWidth = img.naturalWidth;
+        const imgHeight = img.naturalHeight;
+        
+        let baseWidth = 300;
+        let baseHeight = 300;
+        const aspect = imgWidth / imgHeight;
+        if (aspect > 1) {
+          baseHeight = 300 / aspect;
+        } else {
+          baseWidth = 300 * aspect;
+        }
+        
+        // 이미지의 더 짧은 쪽이 160px 원형 마스크를 완전히 꽉 채우도록 하는 배율 (Cover 배율)
+        const minDim = Math.min(baseWidth, baseHeight);
+        const coverScale = 160 / minDim;
+        
+        // 너무 작아지지 않도록 최소 0.2로 하한선 보장, 소수점 둘째자리 반올림
+        const minVal = Math.max(0.2, Math.round(coverScale * 100) / 100);
+        
+        setImageToCrop(imageUrl);
+        setCropMinScale(minVal);
+        setCropScale(minVal); // 기본 시작 크기를 원에 여백 없이 꽉 채우는 크기(Cover)로 맞춤
+        setCropPosition({ x: 0, y: 0 });
+        setShowCropModal(true);
+      };
+      
+      e.target.value = ''; // 동일 이미지 파일 재선택 시 이벤트 작동 보장
     }
+  };
+
+  const handleMouseDown = (e) => {
+    setIsDragging(true);
+    setDragStart({ x: e.clientX - cropPosition.x, y: e.clientY - cropPosition.y });
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging) return;
+    setCropPosition({
+      x: e.clientX - dragStart.x,
+      y: e.clientY - dragStart.y
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  const handleTouchStart = (e) => {
+    if (e.touches.length === 1) {
+      setIsDragging(true);
+      const touch = e.touches[0];
+      setDragStart({ x: touch.clientX - cropPosition.x, y: touch.clientY - cropPosition.y });
+    }
+  };
+
+  const handleTouchMove = (e) => {
+    if (!isDragging || e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    setCropPosition({
+      x: touch.clientX - dragStart.x,
+      y: touch.clientY - dragStart.y
+    });
+  };
+
+  const handleCropApply = () => {
+    const img = new Image();
+    img.src = imageToCrop;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      canvas.width = 200;
+      canvas.height = 200;
+      
+      const imgWidth = img.naturalWidth;
+      const imgHeight = img.naturalHeight;
+      
+      let baseWidth = 300;
+      let baseHeight = 300;
+      const aspect = imgWidth / imgHeight;
+      if (aspect > 1) {
+        baseHeight = 300 / aspect;
+      } else {
+        baseWidth = 300 * aspect;
+      }
+      
+      const scaledWidth = baseWidth * cropScale;
+      const scaledHeight = baseHeight * cropScale;
+      
+      const scaleX = imgWidth / scaledWidth;
+      const scaleY = imgHeight / scaledHeight;
+      
+      const MASK_SIZE = 160; // 모달 내 원형 마스크의 실제 화면 상 가로세로 크기
+      const cropWidth = MASK_SIZE * scaleX;
+      const cropHeight = MASK_SIZE * scaleY;
+      
+      const originX = (imgWidth / 2) - (cropPosition.x * scaleX);
+      const originY = (imgHeight / 2) - (cropPosition.y * scaleY);
+      
+      const sx = originX - (cropWidth / 2);
+      const sy = originY - (cropHeight / 2);
+      
+      // canvas 그리기 전 초기화 및 클리어
+      ctx.clearRect(0, 0, 200, 200);
+      
+      try {
+        ctx.drawImage(img, sx, sy, cropWidth, cropHeight, 0, 0, 200, 200);
+      } catch (err) {
+        console.error("Canvas drawImage failed, fallback to drawing whole image:", err);
+        ctx.drawImage(img, 0, 0, imgWidth, imgHeight, 0, 0, 200, 200);
+      }
+      
+      canvas.toBlob((blob) => {
+        if (blob) {
+          const croppedFile = new File([blob], 'profile_cropped.png', { type: 'image/png' });
+          setSelectedFile(croppedFile);
+          const croppedUrl = URL.createObjectURL(blob);
+          setProfileImage(croppedUrl);
+          setShowCropModal(false);
+        }
+      }, 'image/png');
+    };
   };
 
   useEffect(() => {
@@ -30,15 +164,17 @@ export default function MyPage() {
         setName(res.displayName || res.display_name || res.name || '');
         setMajor(res.major || '');
         setEmail(res.email || userEmail || '');
+        setProfileImage(res.photoUrl || res.photo_url || null);
       } catch (err) {
         console.warn('서버에서 프로필을 불러오지 못했습니다. 로컬 데이터를 사용합니다.');
         setName(user?.displayName || '');
         setMajor(user?.major || '');
         setEmail(user?.email || userEmail || '');
+        setProfileImage(user?.photoUrl || user?.photo_url || null);
       }
     };
     fetchProfile();
-  }, [userId, userEmail]);
+  }, [userId, userEmail, user]);
 
   // 나의 1:1 문의 상태
   const [myInquiries, setMyInquiries] = useState([]);
@@ -100,9 +236,26 @@ export default function MyPage() {
 
     try {
       if (userId) {
-        await authService.updateProfile(userId, { displayName: finalName, major: finalMajor });
+        let currentPhotoUrl = user?.photoUrl || user?.photo_url || '';
+
+        if (selectedFile) {
+          try {
+            const uploadRes = await authService.uploadProfileImage(selectedFile);
+            currentPhotoUrl = uploadRes.s3Key;
+          } catch (uploadErr) {
+            console.error('이미지 업로드 실패:', uploadErr);
+            alert('프로필 이미지 업로드에 실패했습니다.');
+            return;
+          }
+        }
+
+        await authService.updateProfile(userId, { 
+          displayName: finalName, 
+          major: finalMajor,
+          photoUrl: currentPhotoUrl
+        });
         
-        let refreshed = { displayName: finalName, major: finalMajor, email: email };
+        let refreshed = { displayName: finalName, major: finalMajor, email: email, photoUrl: currentPhotoUrl };
         try {
           refreshed = await authService.getProfile(userId);
         } catch (e) {
@@ -114,6 +267,8 @@ export default function MyPage() {
         setName(refreshed.displayName || refreshed.display_name || refreshed.name || finalName);
         setMajor(refreshed.major || finalMajor);
         setEmail(refreshed.email || email);
+        setProfileImage(refreshed.photoUrl || refreshed.photo_url || null);
+        setSelectedFile(null);
       }
       
       setIsEditing(false);
@@ -126,6 +281,8 @@ export default function MyPage() {
   const handleCancel = () => {
     setName(user?.displayName || '');
     setMajor(user?.major || '');
+    setProfileImage(user?.photoUrl || user?.photo_url || null);
+    setSelectedFile(null);
     setIsEditing(false);
   };
 
@@ -469,6 +626,144 @@ export default function MyPage() {
             <div style={{ display: 'flex', gap: '12px' }}>
               <button className="btn-outline" style={{ flex: 1, padding: '12px', borderRadius: '8px', fontWeight: 'bold' }} onClick={() => setShowInquiryModal(false)}>취소</button>
               <button className="btn-primary" style={{ flex: 2, padding: '12px', borderRadius: '8px', fontWeight: 'bold' }} onClick={handleSubmitInquiry}>문의 접수</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 프로필 이미지 크기 및 위치 조정 모달 */}
+      {showCropModal && (
+        <div 
+          className="modal-overlay" 
+          style={{ 
+            zIndex: 1100, 
+            backdropFilter: 'blur(8px)', 
+            backgroundColor: 'rgba(15, 23, 42, 0.6)' 
+          }}
+        >
+          <div 
+            className="glass-panel modal-content animate-fade-in" 
+            style={{ 
+              width: '380px', 
+              padding: '30px', 
+              borderRadius: '24px', 
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', 
+              backgroundColor: '#FFFFFF',
+              border: '1px solid #E5E7EB',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', marginBottom: '20px' }}>
+              <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold', color: '#111827' }}>프로필 크기 및 위치 설정</h3>
+              <button 
+                onClick={() => setShowCropModal(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', padding: 0 }}
+              >
+                <X size={20} color="#6B7280" />
+              </button>
+            </div>
+
+            {/* 이미지 크롭 컨테이너 */}
+            <div 
+              style={{ 
+                position: 'relative', 
+                width: '300px', 
+                height: '300px', 
+                backgroundColor: '#F3F4F6', 
+                borderRadius: '16px', 
+                overflow: 'hidden', 
+                cursor: isDragging ? 'grabbing' : 'grab',
+                border: '1px solid #E5E7EB',
+                userSelect: 'none',
+                touchAction: 'none'
+              }}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleMouseUp}
+            >
+              {/* 원본 이미지 */}
+              <img
+                src={imageToCrop}
+                alt="Original"
+                style={{
+                  position: 'absolute',
+                  top: '50%',
+                  left: '50%',
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  objectFit: 'contain',
+                  transform: `translate(calc(-50% + ${cropPosition.x}px), calc(-50% + ${cropPosition.y}px)) scale(${cropScale})`,
+                  pointerEvents: 'none',
+                  transition: isDragging ? 'none' : 'transform 0.1s ease-out'
+                }}
+              />
+
+              {/* 원형 마스크 오버레이 */}
+              <div 
+                style={{ 
+                  position: 'absolute', 
+                  top: '70px', 
+                  left: '70px', 
+                  width: '160px', 
+                  height: '160px', 
+                  borderRadius: '50%', 
+                  boxShadow: '0 0 0 9999px rgba(15, 23, 42, 0.6)', 
+                  border: '2px solid #10B981', 
+                  pointerEvents: 'none',
+                  boxSizing: 'border-box'
+                }} 
+              />
+            </div>
+
+            {/* 줌 슬라이더 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%', maxWidth: '300px', margin: '20px auto 0' }}>
+              <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#6B7280' }}>작게</span>
+              <input 
+                type="range" 
+                min={cropMinScale} 
+                max="3.0" 
+                step="0.01" 
+                value={cropScale} 
+                onChange={(e) => setCropScale(parseFloat(e.target.value))}
+                style={{ 
+                  flex: 1, 
+                  accentColor: '#10B981', 
+                  height: '6px', 
+                  borderRadius: '3px', 
+                  cursor: 'pointer',
+                  backgroundColor: '#E5E7EB',
+                  outline: 'none'
+                }}
+              />
+              <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#6B7280' }}>크게</span>
+            </div>
+
+            <p style={{ fontSize: '12px', color: '#9CA3AF', margin: '12px 0 24px', textAlign: 'center', wordBreak: 'keep-all' }}>
+              이미지를 드래그하여 중심을 맞추고, 슬라이더로 크기를 조절해 보세요.
+            </p>
+
+            {/* 버튼 그룹 */}
+            <div style={{ display: 'flex', gap: '12px', width: '100%' }}>
+              <button 
+                className="btn-outline" 
+                style={{ flex: 1, padding: '12px', borderRadius: '12px', fontWeight: 'bold', fontSize: '14px' }} 
+                onClick={() => setShowCropModal(false)}
+              >
+                취소
+              </button>
+              <button 
+                className="btn-primary" 
+                style={{ flex: 2, padding: '12px', borderRadius: '12px', fontWeight: 'bold', fontSize: '14px', backgroundColor: '#10B981', color: 'white', border: 'none', cursor: 'pointer' }} 
+                onClick={handleCropApply}
+              >
+                적용하기
+              </button>
             </div>
           </div>
         </div>

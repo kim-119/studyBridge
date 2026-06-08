@@ -153,7 +153,16 @@ export default function KnowledgeDetail() {
           </div>
           <h1 style={{ fontSize: '36px', fontWeight: 'bold', margin: '0 0 16px', lineHeight: '1.3' }}>{post.title}</h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '15px', color: 'rgba(255,255,255,0.9)' }}>
-            <span style={{ fontWeight: '700' }}>{post.authorNickname}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {post.authorPhotoUrl ? (
+                <img src={post.authorPhotoUrl} alt="author" style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover' }} />
+              ) : (
+                <div style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: '#60C95A', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 'bold' }}>
+                  {post.authorNickname ? post.authorNickname.charAt(0) : 'U'}
+                </div>
+              )}
+              <span style={{ fontWeight: '700' }}>{post.authorNickname}</span>
+            </div>
             <span>•</span>
             <span>{formatDate(post.createdAt)}</span>
             <span>•</span>
@@ -235,8 +244,12 @@ export default function KnowledgeDetail() {
           {/* 댓글 입력 폼 */}
           <form onSubmit={handleAddComment} style={{ marginBottom: '40px' }}>
             <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
-              <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#E5E7EB', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <User size={20} color="#9CA3AF" />
+              <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#E5E7EB', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                {user?.photoUrl ? (
+                  <img src={user.photoUrl} alt="my avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <User size={20} color="#9CA3AF" />
+                )}
               </div>
               <div style={{ flex: 1, position: 'relative' }}>
                 <textarea 
@@ -264,9 +277,13 @@ export default function KnowledgeDetail() {
               const isMyComment = user && (comment.authorNickname === user.displayName || comment.authorNickname === user.nickname);
               return (
               <div key={comment.commentId} style={{ display: 'flex', gap: '16px' }}>
-                <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#111827', color: 'white', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700', fontSize: '14px' }}>
-                  {comment.authorNickname ? comment.authorNickname.charAt(0) : 'U'}
-                </div>
+                {comment.authorPhotoUrl ? (
+                  <img src={comment.authorPhotoUrl} alt="author" style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                ) : (
+                  <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#111827', color: 'white', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700', fontSize: '14px' }}>
+                    {comment.authorNickname ? comment.authorNickname.charAt(0) : 'U'}
+                  </div>
+                )}
                 <div style={{ flex: 1, position: 'relative' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
                     <span style={{ fontWeight: '700', color: '#111827', fontSize: '15px' }}>{comment.authorNickname}</span>
