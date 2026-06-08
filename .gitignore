@@ -1,0 +1,25 @@
+.env
+.env.*
+!.env.example
+pycache/
+*.pyc
+.idea/
+venv/
+.venv/
+frontend/node_modules/
+node_modules/
+
+fastapi/.env
+
+backend/build/
+*.class
+backend/.gradle/
+backend/bin/
+.gradle/
+bin/
+
+# Python cache
+__pycache__/
+*.pyc
+
+*.egg-info/

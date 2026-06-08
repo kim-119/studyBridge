@@ -1,0 +1,95 @@
+services:
+  react:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-frontend:latest
+    build:
+      context: ./frontend
+    container_name: capstone-react
+    ports:
+      - "80:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - spring
+
+  spring:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-backend:latest
+    container_name: capstone-spring
+    build:
+      context: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-capstone}
+      DB_USER: ${DB_USER:-capstone}
+      DB_PASSWORD: ${DB_PASSWORD:-1234}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+      FASTAPI_BASE_URL: http://fastapi:8000
+      FASTAPI_EXTRACTION_URL: http://fastapi:8000/api/extract
+      OPENVIDU_URL: http://openvidu:4443
+      OPENVIDU_SECRET: MY_SECRET
+
+    depends_on:
+      - db
+      - fastapi
+      - openvidu
+
+  fastapi:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-fastapi:latest
+    build:
+      context: ./fastapi
+    container_name: capstone-fastapi
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./fastapi:/app
+    env_file:
+      - ./fastapi/.env
+    environment:
+      PYTHONUNBUFFERED: 1
+      TZ: Asia/Seoul
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  openvidu:
+    image: openvidu/openvidu-dev:2.30.0
+    container_name: capstone-openvidu
+    ports:
+      - "4443:4443"
+    environment:
+      - OPENVIDU_SECRET=MY_SECRET
+      - DOMAIN_OR_PUBLIC_IP=localhost
+      - CERTIFICATE_TYPE=selfsigned
+      - OPENVIDU_WEBHOOK=false
+    restart: on-failure
+
+  db:
+    image: postgres:16
+    container_name: capstone-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: capstone
+      POSTGRES_USER: capstone
+      POSTGRES_PASSWORD: 1234
+      TZ: Asia/Seoul
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: capstone-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    environment:
+      - TZ=Asia/Seoul
+
+volumes:
+  postgres_data:
+  redis_data:

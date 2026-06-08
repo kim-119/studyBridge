@@ -171,42 +171,10 @@ def clean_ai_answer(text: str) -> str:
     return text.strip()
 
 
-def safe_trim_answer(text: str, max_chars: int) -> str:
-    """
-    긴 답변을 문장 끝/줄바꿈/공백 경계에서 안전하게 자른다.
-    answer[:max_chars] 같은 단순 절단은 문장 중간에서 잘려 broken answer를 만들 수 있으므로 사용하지 않는다.
-    """
-    if not text or len(text) <= max_chars:
-        return text
-
-    truncated = text[:max_chars]
-    min_cut = int(max_chars * 0.5)
-
-    # 1. 한국어/영어 문장 종결 지점 (마침표/물음표/느낌표 + 공백 또는 끝)
-    sentence_end = -1
-    for match in re.finditer(r"[.!?][\"')\]]?(?=\s|$)", truncated):
-        if match.end() >= min_cut:
-            sentence_end = match.end()
-    if sentence_end > 0:
-        return truncated[:sentence_end].rstrip()
-
-    # 2. 줄바꿈 경계
-    newline_cut = truncated.rfind("\n")
-    if newline_cut >= min_cut:
-        return truncated[:newline_cut].rstrip()
-
-    # 3. 공백 경계 (단어 중간 절단 방지)
-    space_cut = truncated.rfind(" ")
-    if space_cut >= min_cut:
-        return truncated[:space_cut].rstrip()
-
-    return truncated.rstrip()
-
-
 def sanitize_answer_for_spring(answer: str) -> str:
-    """Spring DTO 반환 전 길이 제한 및 정리. 단순 절단 대신 safe_trim_answer로 자른다."""
+    """Spring DTO 반환 전 길이 제한 및 정리."""
     text = clean_ai_answer(answer)
-    return safe_trim_answer(text, AGENT_ANSWER_MAX_CHARS)
+    return text[:AGENT_ANSWER_MAX_CHARS] if len(text) > AGENT_ANSWER_MAX_CHARS else text
 
 
 def _to_agent_dict(agent: Any) -> Dict[str, Any]:
@@ -487,59 +455,18 @@ def _normalize_agent_for_policy(agent_dict: Dict[str, Any]) -> Dict[str, Any]:
     return d
 
 
-_LEARNING_MODES = ("basic", "socratic", "debate")
-
-
-def normalize_learning_mode(value: Optional[str]) -> str:
-    """프론트에서 전달한 learningMode를 basic/socratic/debate로 정규화한다."""
-    v = str(value or "basic").strip().lower()
-    return v if v in _LEARNING_MODES else "basic"
-
-
-def build_learning_mode_instruction(learning_mode: str, knowledge_level: str) -> str:
-    """학습 진행 모드(소크라테스/토론)에 따른 추가 답변 지침을 생성한다."""
-    if learning_mode == "socratic":
-        return (
-            "[학습 진행 방식: 소크라테스 모드]\n"
-            "정답을 곧바로 길게 설명하지 말고 다음 순서를 따라 답하라.\n"
-            "1) 사용자가 현재 어디까지 이해하고 있는지 짧게 확인한다.\n"
-            "2) 사용자의 사고를 유도하는 핵심 질문을 1~2개 제시한다.\n"
-            "3) 막히지 않도록 가벼운 힌트를 함께 제공한다.\n"
-            "4) 사용자가 답하면 다음 단계로 자연스럽게 이어가겠다는 태도로 마무리한다.\n"
-            f"질문과 힌트의 난이도는 학습자의 지식수준('{knowledge_level}')에 맞춘다 — "
-            "입문 수준이면 쉬운 질문 위주로, 학사 수준이면 개념 간 관계를 묻는 질문 위주로, "
-            "박사/전문가 수준이면 원리·한계·반례를 묻는 질문 위주로 구성한다. "
-            "사용자를 몰아붙이지 말고 학습자 수준에 맞춰 친절하게 유도한다."
-        )
-    if learning_mode == "debate":
-        return (
-            "[학습 진행 방식: 토론 모드]\n"
-            "다른 에이전트들과 같은 결론을 그대로 반복하지 말고, 너만의 관점과 근거를 제시하라. "
-            "단정적으로 결론짓기보다 '~라고 볼 수 있다', '다른 관점에서는' 같은 표현으로 "
-            "다른 시각이 있을 수 있음을 인정하는 태도로 답하라."
-        )
-    return ""
-
-
-def build_multi_agent_system_prompt(agent: Any, context: str = "", learning_mode: str = "basic") -> str:
+def build_multi_agent_system_prompt(agent: Any, context: str = "") -> str:
     """
     agent_quality_policy.build_agent_system_prompt 우선 사용.
-    실패 시 직접 빌드한다. learning_mode에 따라 소크라테스/토론 지침을 덧붙인다.
+    실패 시 직접 빌드한다.
     """
     agent_dict = _normalize_agent_for_policy(_to_agent_dict(agent))
-    knowledge_level = agent_dict.get("knowledgeLevel") or "학사 수준"
-    mode_instruction = build_learning_mode_instruction(learning_mode, knowledge_level)
 
     if _POLICY_AVAILABLE:
         try:
             normalized = normalize_agent_config(agent_dict, user_message="")
             base_prompt = build_agent_system_prompt(normalized)
-            parts = [base_prompt]
-            if mode_instruction:
-                parts.append(mode_instruction)
-            if context:
-                parts.append(context)
-            return "\n\n".join(parts)
+            return f"{base_prompt}\n\n{context}" if context else base_prompt
         except Exception as e:
             logger.debug("policy prompt 빌드 실패, fallback 사용: %s", e)
 
@@ -554,8 +481,6 @@ def build_multi_agent_system_prompt(agent: Any, context: str = "", learning_mode
         "학습에 도움이 되는 실질적인 내용을 제공한다.",
         "다른 에이전트와 같은 표현을 반복하지 않는다.",
     ]
-    if mode_instruction:
-        parts.append(f"\n{mode_instruction}")
     if context:
         parts.append(f"\n{context}")
     return "\n".join(parts)
@@ -612,10 +537,9 @@ def generate_single_agent_response(
     context: str,
     agent_index: int,
     total_agents: int,
-    learning_mode: str = "basic",
 ) -> str:
     """단일 에이전트 답변 생성 (Ollama 우선 → OpenAI fallback)."""
-    system_prompt = build_multi_agent_system_prompt(agent, context, learning_mode)
+    system_prompt = build_multi_agent_system_prompt(agent, context)
     turn_instr = build_agent_turn_instruction(agent_index, total_agents)
 
     user_parts: List[str] = []
@@ -724,7 +648,6 @@ def validate_and_revise_agent_answer(
     meta: Dict[str, Any] = {
         "passed": validation.get("passed", True),
         "score": validation.get("score", 0.0),
-        "issues": validation.get("issues", []),
         "prompt_warnings": warnings,
     }
 
@@ -828,8 +751,6 @@ class AgentProfile(BaseModel):
 class MultiChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="사용자 메시지")
     mode: str = Field("multi_agent_discussion")
-    # 학습 진행 방식: basic(기본 채팅) / socratic(소크라테스) / debate(토론). mode와 별개 필드.
-    learningMode: Optional[str] = Field("basic")
     rounds: int = Field(3, ge=1, le=5)
     showFinalSynthesis: bool = Field(True)
     targetAgentId: Optional[int] = None
@@ -842,40 +763,9 @@ class AgentAnswer(BaseModel):
     answer: str
 
 
-class InitialAnswerStep(BaseModel):
-    """1차: 에이전트가 독립적으로 생성한 최초 답변 (safe trim 적용 후 안정된 텍스트)."""
-    agentName: str
-    answer: str
-
-
-class ValidatedAnswerStep(BaseModel):
-    """2차: 품질 검증/revise 결과. 검증 비활성화 시 원본 답변 + 안내 issue를 담는다."""
-    agentName: str
-    answer: str
-    score: Optional[float] = None
-    issues: List[str] = Field(default_factory=list)
-    revised: bool = False
-
-
-class PeerFeedbackStep(BaseModel):
-    """3차: 에이전트 간 상호 피드백 (토론 모드 등에서만 생성)."""
-    fromAgent: str
-    toAgent: str
-    feedback: str
-
-
-class ProcessSteps(BaseModel):
-    """1차/2차/3차 생성 과정 — 선택 필드. 없으면 프론트는 '과정 데이터 없음'으로 처리한다."""
-    initialAnswers: List[InitialAnswerStep] = Field(default_factory=list)
-    validatedAnswers: List[ValidatedAnswerStep] = Field(default_factory=list)
-    peerFeedback: List[PeerFeedbackStep] = Field(default_factory=list)
-
-
 class MultiChatResponse(BaseModel):
     mode: str
     answers: List[AgentAnswer]
-    # 선택 필드 — 1차/2차/3차 생성 과정. 기존 answers 계약은 그대로 유지한다.
-    processSteps: Optional[ProcessSteps] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -919,70 +809,14 @@ def _make_agent_error_answer(agent_name: str) -> AgentAnswer:
     )
 
 
-def _build_validated_step(agent_name: str, final_answer: str, meta: Dict[str, Any]) -> ValidatedAnswerStep:
-    """validate_and_revise_agent_answer의 메타데이터를 2차 검증 표시용 데이터로 변환한다."""
-    if meta.get("skipped"):
-        if meta.get("reason") == "validation_disabled":
-            issue = "현재 시연 안정성을 위해 품질 검증은 비활성화되어 원본 답변을 유지했습니다."
-        else:
-            issue = "검증 모듈을 사용할 수 없어 원본 답변을 유지했습니다."
-        return ValidatedAnswerStep(agentName=agent_name, answer=final_answer, score=None, issues=[issue], revised=False)
-
-    if meta.get("error"):
-        return ValidatedAnswerStep(
-            agentName=agent_name, answer=final_answer, score=None,
-            issues=["검증 중 오류가 발생하여 원본 답변을 유지했습니다."], revised=False,
-        )
-
-    score = meta.get("score")
-    issues = [str(i) for i in (meta.get("issues") or [])][:5]
-    return ValidatedAnswerStep(
-        agentName=agent_name,
-        answer=final_answer,
-        score=float(score) if isinstance(score, (int, float)) else None,
-        issues=issues,
-        revised=bool(meta.get("revised", False)),
-    )
-
-
-def _make_agent_run_timeout_result(agent_name: str) -> Dict[str, Any]:
-    answer = _make_agent_timeout_answer(agent_name)
-    return {
-        "agentName": agent_name,
-        "initialAnswer": answer.answer,
-        "finalAnswer": answer,
-        "validatedStep": ValidatedAnswerStep(
-            agentName=agent_name, answer=answer.answer, score=None,
-            issues=["응답 생성이 지연되어 검증을 진행하지 못했습니다."], revised=False,
-        ),
-    }
-
-
-def _make_agent_run_error_result(agent_name: str) -> Dict[str, Any]:
-    answer = _make_agent_error_answer(agent_name)
-    return {
-        "agentName": agent_name,
-        "initialAnswer": answer.answer,
-        "finalAnswer": answer,
-        "validatedStep": ValidatedAnswerStep(
-            agentName=agent_name, answer=answer.answer, score=None,
-            issues=["답변 생성 중 오류가 발생하여 검증을 진행하지 못했습니다."], revised=False,
-        ),
-    }
-
-
 def _run_single_agent_sync(
     agent: AgentProfile,
     message: str,
     context: str,
     agent_index: int,
     total_agents: int,
-    learning_mode: str = "basic",
-) -> Dict[str, Any]:
-    """
-    ThreadPoolExecutor에서 호출되는 단일 에이전트 동기 실행.
-    1차(원본)/2차(검증) 데이터를 함께 수집해 반환한다 (processSteps 구성용).
-    """
+) -> AgentAnswer:
+    """ThreadPoolExecutor에서 호출되는 단일 에이전트 동기 실행."""
     agent_name = _get_agent_name(agent)
     try:
         raw = generate_single_agent_response(
@@ -991,10 +825,7 @@ def _run_single_agent_sync(
             context=context,
             agent_index=agent_index,
             total_agents=total_agents,
-            learning_mode=learning_mode,
         )
-        initial_answer = sanitize_answer_for_spring(raw)
-
         # validate_and_revise_agent_answer 내부에서 AI_VALIDATION_ENABLED 체크
         final_text, meta = validate_and_revise_agent_answer(
             answer=raw,
@@ -1006,66 +837,13 @@ def _run_single_agent_sync(
             "single_agent done agent=%s passed=%s score=%s validation_enabled=%s",
             agent_name, meta.get("passed"), meta.get("score"), AI_VALIDATION_ENABLED,
         )
-        final_answer_text = sanitize_answer_for_spring(final_text)
-        return {
-            "agentName": agent_name,
-            "initialAnswer": initial_answer,
-            "finalAnswer": AgentAnswer(agentName=agent_name, answer=final_answer_text),
-            "validatedStep": _build_validated_step(agent_name, final_answer_text, meta),
-        }
+        return AgentAnswer(
+            agentName=agent_name,
+            answer=sanitize_answer_for_spring(final_text),
+        )
     except Exception as e:
         logger.error("에이전트 '%s' 답변 실패: %s", agent_name, e)
-        return _make_agent_run_error_result(agent_name)
-
-
-def generate_peer_feedback_for_debate(
-    agents: List[AgentProfile],
-    final_answers: List[AgentAnswer],
-    message: str,
-) -> List[PeerFeedbackStep]:
-    """
-    토론 모드 3차: 에이전트들이 순환 구조(0→1, 1→2, ... n-1→0)로 서로의 답변에
-    짧은 보완/비판 피드백을 제시한다. 내부 프롬프트 전문은 노출하지 않는다.
-    """
-    total = len(agents)
-    if total < 2:
-        return []
-
-    answer_by_name = {a.agentName: a.answer for a in final_answers}
-    feedback_steps: List[PeerFeedbackStep] = []
-
-    for i in range(total):
-        from_name = _get_agent_name(agents[i])
-        to_name = _get_agent_name(agents[(i + 1) % total])
-        to_answer_excerpt = answer_by_name.get(to_name, "")[:250]
-
-        system = (
-            f"너는 StudyBridge AI 에이전트 '{from_name}'이다. "
-            f"같은 질문에 대한 동료 에이전트 '{to_name}'의 답변을 검토하고, "
-            "짧게 보완하거나 비판할 점, 혹은 동의하는 부분을 한국어 3~4문장으로 제시하라. "
-            "인신공격이나 무관한 화제는 피하고, 학습에 도움이 되는 건설적인 피드백만 작성하라."
-        )
-        user = (
-            f"[원래 질문] {message}\n\n"
-            f"[{to_name}의 답변]\n{to_answer_excerpt}\n\n"
-            "위 답변에 대한 너의 피드백을 작성하라."
-        )
-        try:
-            raw_feedback = clean_ai_answer(_call_llm(system, user, max_tokens=320))
-        except Exception as e:
-            logger.warning("peer feedback 생성 실패 from=%s to=%s: %s", from_name, to_name, e)
-            raw_feedback = ""
-
-        if not raw_feedback.strip():
-            raw_feedback = f"{to_name}의 답변에 대한 추가 의견을 정리하지 못했습니다."
-
-        feedback_steps.append(PeerFeedbackStep(
-            fromAgent=from_name,
-            toAgent=to_name,
-            feedback=safe_trim_answer(raw_feedback, 400),
-        ))
-
-    return feedback_steps
+        return _make_agent_error_answer(agent_name)
 
 
 def _run_agents_parallel(
@@ -1073,18 +851,16 @@ def _run_agents_parallel(
     message: str,
     context: str,
     timeout_seconds: int,
-    learning_mode: str = "basic",
-) -> Tuple[List[AgentAnswer], ProcessSteps]:
+) -> List[AgentAnswer]:
     """
     병렬 에이전트 실행.
     - 항상 len(agents) 개수만큼 answers 반환
     - timeout된 에이전트만 개별 fallback (agentName 유지)
     - 성공한 에이전트 답변은 절대 버리지 않음
-    - 1차(initialAnswers)/2차(validatedAnswers)/3차(peerFeedback) 데이터를 함께 수집한다
     """
     start_time = time.monotonic()
     total = len(agents)
-    results_by_name: Dict[str, Dict[str, Any]] = {}
+    results_by_name: Dict[str, AgentAnswer] = {}
     max_workers = min(total, 5)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1096,7 +872,6 @@ def _run_agents_parallel(
                 context,
                 idx,
                 total,
-                learning_mode,
             ): agent
             for idx, agent in enumerate(agents)
         }
@@ -1106,13 +881,13 @@ def _run_agents_parallel(
                 agent = future_to_agent[future]
                 agent_name = _get_agent_name(agent)
                 try:
-                    result = future.result(timeout=5)
-                    results_by_name[agent_name] = result
+                    answer = future.result(timeout=5)
+                    results_by_name[agent_name] = answer
                 except Exception:
                     logger.exception(
                         "parallel agent answer exception agent=%s", agent_name
                     )
-                    results_by_name[agent_name] = _make_agent_run_error_result(agent_name)
+                    results_by_name[agent_name] = _make_agent_error_answer(agent_name)
 
         except FuturesTimeoutError:
             elapsed = time.monotonic() - start_time
@@ -1136,32 +911,18 @@ def _run_agents_parallel(
                 future.cancel()
                 results_by_name.setdefault(
                     agent_name,
-                    _make_agent_run_timeout_result(agent_name),
+                    _make_agent_timeout_answer(agent_name),
                 )
 
     # 요청 agents 순서대로 재정렬 (항상 len(agents) 반환 보장)
-    ordered_results: List[Dict[str, Any]] = []
     final_answers: List[AgentAnswer] = []
     for agent in agents:
         agent_name = _get_agent_name(agent)
-        result = results_by_name.get(agent_name) or _make_agent_run_timeout_result(agent_name)
-        ordered_results.append(result)
-        final_answers.append(result["finalAnswer"])
+        final_answers.append(
+            results_by_name.get(agent_name, _make_agent_timeout_answer(agent_name))
+        )
 
-    process_steps = ProcessSteps(
-        initialAnswers=[
-            InitialAnswerStep(agentName=r["agentName"], answer=r["initialAnswer"])
-            for r in ordered_results
-        ],
-        validatedAnswers=[r["validatedStep"] for r in ordered_results],
-        peerFeedback=(
-            generate_peer_feedback_for_debate(agents, final_answers, message)
-            if learning_mode == "debate"
-            else []
-        ),
-    )
-
-    return final_answers, process_steps
+    return final_answers
 
 
 def _run_multi_chat_sync(
@@ -1170,7 +931,6 @@ def _run_multi_chat_sync(
     context: str,
     rounds: int,
     show_synthesis: bool,
-    learning_mode: str = "basic",
 ) -> List[AgentAnswer]:
     """동기 multi-chat 실행 — asyncio.to_thread 전용."""
     answers: List[AgentAnswer] = []
@@ -1187,7 +947,6 @@ def _run_multi_chat_sync(
                     context=context,
                     agent_index=agent_idx,
                     total_agents=total,
-                    learning_mode=learning_mode,
                 )
                 # agent_quality_policy 검증 & 보정
                 final_text, meta = validate_and_revise_agent_answer(
@@ -1338,7 +1097,6 @@ async def multi_chat_endpoint(request: MultiChatRequest):
     active_agents = select_agents_for_response(agents, request.targetAgentId)
     context = build_context_from_previous_answers(request.previousAnswers)
     rounds = min(request.rounds, MULTI_CHAT_MAX_ROUNDS)
-    learning_mode = normalize_learning_mode(request.learningMode)
 
     if should_use_internal_collaboration(request.mode):
         # 협업 모드: 순차 실행 (기존 로직 유지)
@@ -1346,7 +1104,7 @@ async def multi_chat_endpoint(request: MultiChatRequest):
             raw_answers = await asyncio.wait_for(
                 asyncio.to_thread(
                     _run_multi_chat_sync,
-                    active_agents, request.message, context, rounds, request.showFinalSynthesis, learning_mode,
+                    active_agents, request.message, context, rounds, request.showFinalSynthesis,
                 ),
                 timeout=MULTI_CHAT_TIMEOUT_SECONDS,
             )
@@ -1379,20 +1137,19 @@ async def multi_chat_endpoint(request: MultiChatRequest):
         # _run_agents_parallel이 내부에서 per-agent fallback을 보장하므로
         # 외부 asyncio.wait_for로 전체를 "시스템 1개"로 축소하지 않는다.
         try:
-            raw_answers, process_steps = await asyncio.to_thread(
+            raw_answers = await asyncio.to_thread(
                 _run_agents_parallel,
                 active_agents,
                 request.message,
                 context,
                 MULTI_CHAT_TIMEOUT_SECONDS,
-                learning_mode,
             )
             logger.info(
-                "parallel multi-chat 완료 mode=%s learningMode=%s requested_agent_count=%d "
+                "parallel multi-chat 완료 mode=%s requested_agent_count=%d "
                 "returned_count=%d validation_enabled=%s",
-                request.mode, learning_mode, len(active_agents), len(raw_answers), AI_VALIDATION_ENABLED,
+                request.mode, len(active_agents), len(raw_answers), AI_VALIDATION_ENABLED,
             )
-            return MultiChatResponse(mode=request.mode, answers=raw_answers, processSteps=process_steps)
+            return MultiChatResponse(mode=request.mode, answers=raw_answers)
         except Exception as e:
             logger.error(
                 "parallel multi-chat 예외 mode=%s requested_agent_count=%d "
