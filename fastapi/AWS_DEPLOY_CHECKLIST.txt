@@ -1,0 +1,111 @@
+StudyBridge FastAPI AI 서버 — AWS 배포 체크리스트
+주의: 이 목록의 항목은 실제 AWS 환경에서 직접 확인해야 한다.
+──────────────────────────────────────────────────────────────────────────────
+
+[1단계] 환경변수 준비
+──────────────────────
+□ .env 파일을 이미지에 포함하지 않는다 (.gitignore, .dockerignore 확인)
+□ 환경변수 주입 방법 선택:
+    - EC2: /etc/environment 또는 systemd unit 파일
+    - Docker Compose: docker-compose.prod.yml의 environment 섹션 (값은 호스트 env 참조)
+    - ECS: Task Definition environment / AWS Parameter Store / Secrets Manager
+    - GitHub Actions: Secrets → EC2 SSH로 주입
+□ 필수 환경변수 목록:
+    OPENAI_API_KEY
+    OLLAMA_BASE_URL          (같은 서버: localhost:11434 / 별도 서버: IP:11434)
+    OLLAMA_MODEL             (ollama list 확인 후)
+    TAVILY_API_KEY
+    AWS_S3_BUCKET
+    AI_DATABASE_URL          (RDS endpoint)
+    REDIS_URL                (ElastiCache 또는 Redis 서버)
+    AI_SERVER_API_KEY        (Spring ↔ FastAPI 인증)
+    FASTAPI_PORT             (기본 8000)
+□ AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY 는 IAM Role 환경에서는 불필요
+
+[2단계] S3 권한
+───────────────
+□ EC2/ECS에 IAM Role 부여 (S3 read 권한)
+    - Action: s3:GetObject
+    - Resource: arn:aws:s3:::버킷명/*
+□ IAM Role 환경에서 .env에 AWS_ACCESS_KEY_ID/SECRET 설정 불필요
+□ 로컬 개발: .env에 설정 (절대 Git 커밋 금지)
+
+[3단계] RDS 연결
+──────────────────
+□ AI 전용 RDS 인스턴스 (capstone DB와 분리)
+    - DB 이름: studybridge_ai
+    - 포트: 5432 (또는 5433)
+□ AI_DATABASE_URL=postgresql://USER:PW@RDS_ENDPOINT:5432/studybridge_ai
+□ RDS 보안그룹: FastAPI 서버의 IP/보안그룹에서만 5432 허용
+□ migration은 수동 실행 (python scripts/run_migrations.py --apply)
+□ capstone-db에 migration 적용 금지
+
+[4단계] Ollama 위치 결정
+─────────────────────────
+□ 옵션 A: FastAPI와 같은 EC2 인스턴스
+    → OLLAMA_BASE_URL=http://localhost:11434
+    → GPU 지원 인스턴스 (p3, g4, g5 등) 필요
+□ 옵션 B: 별도 서버컴 (GPU 서버)
+    → OLLAMA_BASE_URL=http://서버컴내부IP:11434
+    → 보안그룹에서 서버컴 ↔ EC2 내부망 11434 허용
+    → 외부 인터넷에 11434 포트 공개 금지
+□ ollama list로 실제 모델명 확인 후 OLLAMA_MODEL 설정
+
+[5단계] 포트 및 보안그룹
+──────────────────────────
+□ FastAPI: EC2 보안그룹에서 Spring Boot 서버 IP에서만 8000 허용
+□ Spring Boot: 외부(로드밸런서/ALB)에서 8080/443 허용
+□ Ollama: 11434는 내부망에서만 허용 (외부 공개 금지)
+□ Redis: 6379는 내부망에서만 허용
+□ RDS: 5432는 내부망에서만 허용
+
+[6단계] Docker 실행
+──────────────────
+□ Dockerfile 확인 (uvicorn main:app or app.main:app 중 하나 통일)
+□ .dockerignore에 .env, adapters/, data/, models/ 포함
+□ 빌드:
+    docker build -t studybridge-fastapi:latest .
+□ 실행 (환경변수는 외부에서 주입):
+    docker run -d \
+      -p 8000:8000 \
+      -e OPENAI_API_KEY=$OPENAI_API_KEY \
+      -e OLLAMA_BASE_URL=$OLLAMA_BASE_URL \
+      -e OLLAMA_MODEL=$OLLAMA_MODEL \
+      -e AI_DATABASE_URL=$AI_DATABASE_URL \
+      -e REDIS_URL=$REDIS_URL \
+      -e AWS_S3_BUCKET=$AWS_S3_BUCKET \
+      -e AI_SERVER_API_KEY=$AI_SERVER_API_KEY \
+      --name studybridge-fastapi \
+      studybridge-fastapi:latest
+
+[7단계] 배포 후 확인
+──────────────────────
+□ curl http://EC2_IP:8000/api/health
+    → {"status":"ok","ollamaConfigured":true,...}
+□ curl -X POST http://EC2_IP:8000/api/ai/predict/study-time ...
+    → {"predictedStudySeconds":...}
+□ Spring Boot에서 FastAPI 호출 테스트
+□ quiz fallback 확인 (S3 연결 전)
+□ multi-chat 1명 에이전트 응답시간 확인
+□ roadmap fallback 확인
+
+[8단계] 응답속도 튜닝
+──────────────────────
+□ 14B 양자화 모델 사용 확인 (ollama list)
+□ OLLAMA_NUM_PREDICT=384 이하 설정
+□ MAX_ROUNDS=1, DEFAULT_MAX_AGENTS=3
+□ MULTI_CHAT_TIMEOUT_SECONDS=60 이상
+
+[9단계] 모니터링
+──────────────────
+□ docker logs -f studybridge-fastapi
+□ /api/health 주기적 확인
+□ Ollama 메모리 사용량 확인 (nvidia-smi)
+
+──────────────────────────────────────────────────────────────────────────────
+주의:
+- .env를 이미지에 포함하거나 Git에 커밋하지 않는다
+- RDS 비밀번호를 코드에 직접 쓰지 않는다
+- production RDS에 migration 자동 실행하지 않는다
+- capstone-db (Spring Boot용)에 AI migration 적용하지 않는다
+- Ollama 11434 포트를 외부 인터넷에 공개하지 않는다

@@ -35,6 +35,8 @@ const normalizeAgentFromRoom = (room) => {
     agentId: primaryAgent?.agentId ?? primaryAgent?.id,
     roomId: room?.roomId ?? room?.id,
     roomName: room?.roomName,
+    // 기존 방(learningMode 미저장)은 기본 채팅 모드로 취급
+    learningMode: room?.learningMode || 'basic',
     name: primaryAgent?.name || room?.roomName || 'AI 에이전트',
     role: primaryAgent?.role || '학습 도우미',
     persona: primaryAgent?.persona || '',

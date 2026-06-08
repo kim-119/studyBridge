@@ -1,0 +1,42 @@
+# StudyBridge Qwen2.5 14B Ollama Modelfile 예시
+# 사용법:
+#   ollama create studybridge-qwen25-14b -f Modelfile.qwen25_14b_studybridge.example
+#
+# 주의:
+# - FROM 줄의 모델명은 서버컴에서 `ollama list` 실행 후 실제 모델명으로 교체할 것
+# - qwen2.5:14b가 없으면 qwen2.5:14b-instruct-q4_K_M 등 실제 이름 확인 필요
+# - 이 파일은 예시이므로 실제 서버컴에서 모델명을 확인하고 수정해야 한다
+# - 실제 adapter(QLoRA)를 학습했다면 FROM에 adapter 경로를 사용한다
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# 16GB VRAM 권장 양자화 옵션:
+#   q4_K_M — 가장 가볍고 빠름. 품질 약간 저하. 시연 환경 우선 권장.
+#   q5_K_M — 균형형. VRAM 여유 있으면 선택.
+#   q6_K   — 고품질. 16GB에서 간당간당할 수 있음. 테스트 필요.
+#   q8_0   — 거의 full precision. 16GB VRAM에서 OOM 가능. 비권장.
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM qwen2.5:14b
+
+# 추론 파라미터
+# num_ctx: context 길이. 크게 잡으면 메모리 증가. 기본 4096 권장.
+# num_predict: 최대 출력 토큰. 멀티 에이전트는 512 이하 권장 (응답속도 관리).
+# temperature: 0.4는 창의성과 일관성의 균형점.
+# top_p: 0.9. 다양성 유지.
+PARAMETER num_ctx 4096
+PARAMETER num_predict 512
+PARAMETER temperature 0.4
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.1
+
+# StudyBridge 에이전트 기본 시스템 프롬프트
+# FastAPI에서 각 에이전트 호출 시 system_prompt를 동적으로 주입하므로
+# 여기 SYSTEM은 최소한의 기본값만 설정한다.
+SYSTEM """
+너는 StudyBridge의 학습 지원 에이전트다.
+사용자의 에이전트 설정(성격, 역할, 지식수준, 사용자 추가 요구사항)을 최우선으로 반영한다.
+답변은 너무 길지 않게 하되, 질문 의도에 직접 답한다.
+성격은 자연스럽게 드러내고, 지식수준에 따라 답변 깊이를 다르게 조절한다.
+GPT처럼 무색무취하게 답하지 않는다.
+반드시 한국어로 답변한다.
+"""
