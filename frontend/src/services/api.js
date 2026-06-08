@@ -8,7 +8,6 @@ export const AI_TIMEOUT_MS = Number(
   180000
 );
 
-
 const hostname =
   typeof window !== 'undefined'
     ? window.location.hostname === 'localhost'
@@ -41,7 +40,88 @@ const fastApi = axios.create({
   },
 });
 
-// AI 자료보관함 요청 timeout (기본 130초). 무한 로딩 방지.
+const normalizeAgentFromRoom = (room) => {
+  const primaryAgent = Array.isArray(room?.agents) && room.agents.length > 0 ? room.agents[0] : {};
+
+  return {
+    ...primaryAgent,
+    id: room?.roomId ?? room?.id ?? primaryAgent?.id ?? primaryAgent?.agentId,
+    agentId: primaryAgent?.agentId ?? primaryAgent?.id,
+    roomId: room?.roomId ?? room?.id,
+    roomName: room?.roomName,
+    learningMode: room?.learningMode || 'basic',
+    name: primaryAgent?.name || room?.roomName || 'AI 에이전트',
+    role: primaryAgent?.role || '학습 도우미',
+    persona: primaryAgent?.persona || '',
+    tone: primaryAgent?.tone || '전문적',
+    goal: primaryAgent?.goal || '',
+    agents: room?.agents || [],
+    createdAt: room?.createdAt,
+  };
+};
+
+const normalizeAgentRoomPayload = (agentData) => {
+  if (agentData?.roomName && Array.isArray(agentData?.agents)) {
+    return agentData;
+  }
+
+  const agentName = agentData?.name || 'AI 에이전트';
+
+  return {
+    roomName: agentData?.roomName || agentName,
+    agents: [
+      {
+        name: agentName,
+        role: agentData?.role || '학습 도우미',
+        persona:
+          agentData?.persona ||
+          agentData?.customInstruction ||
+          agentData?.goal ||
+          '사용자의 학습을 돕는다',
+        tone: agentData?.tone || agentData?.personality || '전문적',
+        goal: agentData?.goal || '사용자의 학습을 돕는다',
+        personality: agentData?.personality,
+        personalityStrength:
+          agentData?.personalityStrength ||
+          agentData?.personality_strength ||
+          'extreme',
+        personality_strength:
+          agentData?.personality_strength ||
+          agentData?.personalityStrength ||
+          'extreme',
+        style: agentData?.style || agentData?.personality,
+        knowledgeLevel: agentData?.knowledgeLevel,
+        knowledge_level: agentData?.knowledge_level || agentData?.knowledgeLevel,
+        customInstruction: agentData?.customInstruction,
+        custom_instruction: agentData?.custom_instruction || agentData?.customInstruction,
+      },
+    ],
+  };
+};
+
+const normalizeChatResponse = (data) => {
+  if (Array.isArray(data?.messages)) {
+    return {
+      ...data,
+      mode: data.mode || 'multi_agent_discussion',
+      messages: data.messages,
+      answer: '',
+    };
+  }
+
+  if (data?.answer) {
+    return data;
+  }
+
+  if (Array.isArray(data?.replies)) {
+    const answer = data.replies
+      .map((reply) => {
+        const name = reply.agentName || reply.agent_name || 'AI';
+        const text = reply.answer || '';
+        return data.replies.length > 1 ? `${name}: ${text}` : text;
+      })
+      .filter(Boolean)
+      .join('\n\n');
 
     return {
       ...data,
@@ -56,77 +136,77 @@ const fastApi = axios.create({
 };
 
 api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('token');
+    (config) => {
+      const token = localStorage.getItem('token');
 
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
 
-    return config;
-  },
-  (error) => Promise.reject(error)
+      return config;
+    },
+    (error) => Promise.reject(error)
 );
 
 api.interceptors.response.use(
-  (res) => res,
-  async (err) => {
-    console.error('API 에러:', err.response || err.message);
+    (res) => res,
+    async (err) => {
+      console.error('API 에러:', err.response || err.message);
 
-    const originalRequest = err.config;
+      const originalRequest = err.config;
 
-    if (
-      err.response &&
-      (err.response.status === 401 || err.response.status === 403) &&
-      !originalRequest._retry
-    ) {
       if (
-        originalRequest.url.includes('/api/users/refresh') ||
-        originalRequest.url.includes('/api/users/login')
+          err.response &&
+          (err.response.status === 401 || err.response.status === 403) &&
+          !originalRequest._retry
       ) {
-        return Promise.reject(err);
-      }
-
-      originalRequest._retry = true;
-
-      try {
-        const refreshToken = localStorage.getItem('refreshToken');
-
-        if (!refreshToken) {
-          throw new Error('No refresh token');
+        if (
+            originalRequest.url.includes('/api/users/refresh') ||
+            originalRequest.url.includes('/api/users/login')
+        ) {
+          return Promise.reject(err);
         }
 
-        const res = await axios.post(
-          `${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`,
-          null,
-          {
-            timeout: AI_TIMEOUT_MS,
+        originalRequest._retry = true;
+
+        try {
+          const refreshToken = localStorage.getItem('refreshToken');
+
+          if (!refreshToken) {
+            throw new Error('No refresh token');
           }
-        );
 
-        if (res.data && res.data.accessToken) {
-          localStorage.setItem('token', res.data.accessToken);
-          localStorage.setItem('refreshToken', res.data.refreshToken);
+          const res = await axios.post(
+              `${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`,
+              null,
+              {
+                timeout: AI_TIMEOUT_MS,
+              }
+          );
 
-          originalRequest.headers.Authorization = `Bearer ${res.data.accessToken}`;
-          return api(originalRequest);
+          if (res.data && res.data.accessToken) {
+            localStorage.setItem('token', res.data.accessToken);
+            localStorage.setItem('refreshToken', res.data.refreshToken);
+
+            originalRequest.headers.Authorization = `Bearer ${res.data.accessToken}`;
+            return api(originalRequest);
+          }
+        } catch (refreshErr) {
+          console.warn('토큰 갱신 실패. 로그아웃 처리됩니다.');
+          localStorage.removeItem('token');
+          localStorage.removeItem('refreshToken');
+          window.dispatchEvent(new Event('auth-change'));
+          return Promise.reject(refreshErr);
         }
-      } catch (refreshErr) {
-        console.warn('토큰 갱신 실패. 로그아웃 처리됩니다.');
-        localStorage.removeItem('token');
-        localStorage.removeItem('refreshToken');
-        window.dispatchEvent(new Event('auth-change'));
-        return Promise.reject(refreshErr);
       }
-    }
 
-    return Promise.reject(err);
-  }
+      return Promise.reject(err);
+    }
 );
 
 fastApi.interceptors.response.use(
-  (res) => res,
-  (err) => Promise.reject(err)
+    (res) => res,
+    (err) => Promise.reject(err)
 );
 
 export const agentService = {
@@ -148,9 +228,9 @@ export const agentService = {
 
   sendMessage: async (userId, agentId, payloadOrMessage) => {
     const basePayload =
-      typeof payloadOrMessage === 'string'
-        ? { message: payloadOrMessage, agentId, roomId: agentId }
-        : { agentId, roomId: agentId, ...payloadOrMessage };
+        typeof payloadOrMessage === 'string'
+            ? { message: payloadOrMessage, agentId, roomId: agentId }
+            : { agentId, roomId: agentId, ...payloadOrMessage };
 
     const payload = {
       personality: basePayload.personality || '',
@@ -160,7 +240,7 @@ export const agentService = {
       knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
       customInstruction: basePayload.customInstruction || '',
       custom_instruction:
-        basePayload.custom_instruction || basePayload.customInstruction || '',
+          basePayload.custom_instruction || basePayload.customInstruction || '',
       persona: basePayload.persona || '',
       agent_name: basePayload.agent_name || basePayload.agentName || '',
       ...basePayload,
@@ -176,8 +256,8 @@ export const agentService = {
   // 실패 시 throw → 호출부에서 blocking sendMessage로 폴백한다.
   streamMessage: async (userId, agentId, payloadOrMessage, handlers = {}) => {
     const basePayload = typeof payloadOrMessage === 'string'
-      ? { message: payloadOrMessage, agentId, roomId: agentId }
-      : { agentId, roomId: agentId, ...payloadOrMessage };
+        ? { message: payloadOrMessage, agentId, roomId: agentId }
+        : { agentId, roomId: agentId, ...payloadOrMessage };
     const token = localStorage.getItem('token');
     const resp = await fetch(`${API_BASE_URL}/api/agent-rooms/${agentId}/chat/stream`, {
       method: 'POST',
@@ -254,8 +334,8 @@ export const agentService = {
       };
 
       const res = await api.post(
-        `/api/agent-rooms/${payload.roomId}/chat`,
-        unifiedPayload
+          `/api/agent-rooms/${payload.roomId}/chat`,
+          unifiedPayload
       );
 
       return normalizeChatResponse(res.data);
@@ -279,10 +359,10 @@ export const agentService = {
 
   requestFeedback: async (payload) => {
     const reviewerAgentId =
-      payload?.reviewer_agent_id ||
-      payload?.reviewerAgentId ||
-      payload?.agent_id ||
-      payload?.agentId;
+        payload?.reviewer_agent_id ||
+        payload?.reviewerAgentId ||
+        payload?.agent_id ||
+        payload?.agentId;
 
     if (reviewerAgentId) {
       const res = await fastApi.post(`/agents/${reviewerAgentId}/feedback`, payload);
@@ -422,9 +502,9 @@ export const roomService = {
 
   sendMessage: async (userId, roomId, payloadOrMessage) => {
     const basePayload =
-      typeof payloadOrMessage === 'string'
-        ? { message: payloadOrMessage, agentId: roomId, roomId }
-        : { agentId: roomId, roomId, ...payloadOrMessage };
+        typeof payloadOrMessage === 'string'
+            ? { message: payloadOrMessage, agentId: roomId, roomId }
+            : { agentId: roomId, roomId, ...payloadOrMessage };
 
     const payload = {
       personality: basePayload.personality || '',
@@ -434,7 +514,7 @@ export const roomService = {
       knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
       customInstruction: basePayload.customInstruction || '',
       custom_instruction:
-        basePayload.custom_instruction || basePayload.customInstruction || '',
+          basePayload.custom_instruction || basePayload.customInstruction || '',
       persona: basePayload.persona || '',
       agent_name: basePayload.agent_name || basePayload.agentName || '',
       ...basePayload,
@@ -599,7 +679,7 @@ export const materialService = {
 
   toggleRoadmapTask: async (materialId, taskId) => {
     const res = await api.put(
-      `/api/materials/${materialId}/roadmap/tasks/${taskId}/toggle`
+        `/api/materials/${materialId}/roadmap/tasks/${taskId}/toggle`
     );
     return res.data;
   },
@@ -741,13 +821,13 @@ export const knowledgeService = {
   },
 
   updatePost: async (
-    blogId,
-    title,
-    content,
-    imageFile,
-    pdfFile,
-    clearImage = false,
-    clearPdf = false
+      blogId,
+      title,
+      content,
+      imageFile,
+      pdfFile,
+      clearImage = false,
+      clearPdf = false
   ) => {
     const formData = new FormData();
 
