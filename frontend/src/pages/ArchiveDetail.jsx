@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, Circle, Settings, ChevronRight, X, Trash2 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
-import { materialService } from '../services/api';
+import { AI_TIMEOUT_MS, materialService } from '../services/api';
 
 export default function ArchiveDetail() {
   const { type, id } = useParams();
@@ -26,6 +26,11 @@ export default function ArchiveDetail() {
   ]);
   const [chatInput, setChatInput] = useState('');
 
+  const [roadmapData, setRoadmapData] = useState(null);
+  const [quizError, setQuizError] = useState(null);
+  const [isAskingQuestion, setIsAskingQuestion] = useState(false);
+
+
   // UI 상호작용 상태
   const [isQuizSettingsOpen, setIsQuizSettingsOpen] = useState(false);
   const [quizSettings, setQuizSettings] = useState({ difficulty: '보통', count: 5, range: '전체' });
@@ -37,6 +42,99 @@ export default function ArchiveDetail() {
 
   // ✅ 패널 너비 조절 관련 상태
   const [leftWidth, setLeftWidth] = useState(50); // 기본값 50%
+
+
+  const AI_ERROR_MESSAGES = {
+    PDF_TEXT_EMPTY: 'PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.',
+    PDF_TEXT_TOO_SHORT: '문서 텍스트가 너무 짧아 요약 품질이 낮을 수 있습니다.',
+    PDF_EXTRACTION_FAILED: 'PDF 텍스트 추출에 실패했습니다.',
+    PDF_OCR_REQUIRED: '이미지 기반 PDF라 텍스트 추출이 필요합니다. OCR 설정을 켠 뒤 다시 시도해주세요.',
+    AI_TIMEOUT: 'AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.',
+    OLLAMA_UNAVAILABLE: '로컬 AI 모델 연결에 실패했습니다.',
+    OPENAI_UNAVAILABLE: 'GPT 모델 연결에 실패했습니다.',
+    AI_RESPONSE_PARSE_FAILED: 'AI 응답 형식 처리에 실패했습니다. 다시 생성해주세요.',
+    QUIZ_VALIDATE_FAILED: '퀴즈 형식 검증에 실패했습니다. 다시 생성해주세요.',
+    ROADMAP_VALIDATE_FAILED: '로드맵 형식 검증에 실패했습니다. 다시 생성해주세요.',
+    SUMMARY_VALIDATE_FAILED: '요약 형식 검증에 실패했습니다. 다시 생성해주세요.',
+    QA_VALIDATE_FAILED: '답변 검증에 실패했습니다. 다시 질문해주세요.',
+    UNKNOWN_ERROR: 'AI 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+  };
+
+  const normalizeAiResponse = (response) => {
+    if (!response) return { success: null };
+    if (response.success === false) {
+      return {
+        ...response,
+        success: false,
+        errorCode: response.errorCode || 'UNKNOWN_ERROR',
+        message: getAiErrorMessage(response.errorCode, response.textStatus, response.message),
+        retryable: response.retryable !== false,
+      };
+    }
+    return { ...response, success: response.success !== false };
+  };
+
+  const normalizeAiException = (error) => {
+    const isTimeout = error?.code === 'ECONNABORTED' || /timeout|timed out/i.test(error?.message || '');
+    const data = error?.response?.data || {};
+    const errorCode = isTimeout ? 'AI_TIMEOUT' : (data.errorCode || 'UNKNOWN_ERROR');
+    return normalizeAiResponse({
+      success: false,
+      errorCode,
+      message: data.message,
+      retryable: true,
+      textStatus: data.textStatus,
+      metadata: { timeoutMs: AI_TIMEOUT_MS },
+    });
+  };
+
+  const getAiErrorMessage = (errorCode, textStatus, fallback) => {
+    if (fallback) return fallback;
+    if (errorCode && AI_ERROR_MESSAGES[errorCode]) return AI_ERROR_MESSAGES[errorCode];
+    if (textStatus?.hasText === false) return AI_ERROR_MESSAGES.PDF_TEXT_EMPTY;
+    if (textStatus?.status === 'TOO_SHORT') return AI_ERROR_MESSAGES.PDF_TEXT_TOO_SHORT;
+    return AI_ERROR_MESSAGES.UNKNOWN_ERROR;
+  };
+
+  const isRetryableAiError = (response) => normalizeAiResponse(response).retryable === true;
+
+  const getTextStatusMessage = (textStatus) => {
+    if (!textStatus) return null;
+    if (textStatus.hasText === false || textStatus.status === 'EMPTY') return AI_ERROR_MESSAGES.PDF_TEXT_EMPTY;
+    if (textStatus.status === 'TOO_SHORT') return AI_ERROR_MESSAGES.PDF_TEXT_TOO_SHORT;
+    return null;
+  };
+
+  const removeDummyKeywords = (keywords) => {
+    const list = Array.isArray(keywords) ? keywords : String(keywords || '').split(',');
+    const junk = new Set(['ㅇㅇ', '#ㅇㅇ', 'ㅎㅎ', 'ㅋㅋ', 'test', 'keyword', 'keywords', '테스트', 'null', 'undefined']);
+    const seen = new Set();
+    return list
+      .map((kw) => String(kw || '').trim().replace(/^#+/, '').trim())
+      .filter((kw) => kw.length > 1 && !junk.has(kw.toLowerCase()) && /[가-힣A-Za-z0-9]/.test(kw))
+      .filter((kw) => {
+        const key = kw.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  };
+
+  const renderAiStatus = (response, onRetry) => {
+    const normalized = normalizeAiResponse(response);
+    if (normalized.success !== false) return null;
+    return (
+      <div className="glass-panel" style={{ padding: '16px', borderLeft: '4px solid #EF4444', backgroundColor: '#FEF2F2', color: '#991B1B', marginBottom: '16px' }}>
+        <div style={{ fontWeight: 700, marginBottom: '6px' }}>{normalized.message}</div>
+        {normalized.errorCode && <div style={{ fontSize: '12px', color: '#B45309' }}>오류 코드: {normalized.errorCode}</div>}
+        {isRetryableAiError(normalized) && onRetry && (
+          <button className="btn-outline" style={{ width: 'auto', marginTop: '12px', padding: '8px 16px', borderRadius: '20px' }} onClick={onRetry}>
+            다시 생성
+          </button>
+        )}
+      </div>
+    );
+  };
 
   // ---------------- 인증 체크 ----------------
   useEffect(() => {
@@ -82,6 +180,7 @@ export default function ArchiveDetail() {
     // 3. 로드맵 정보 로드
     try {
       const roadmap = await materialService.getRoadmap(materialId);
+      setRoadmapData(roadmap);
       setRoadmapSteps(roadmap?.steps || []);
     } catch (e) {
       console.warn('AI 로드맵 정보 로드 실패:', e);
@@ -148,14 +247,18 @@ export default function ArchiveDetail() {
         pageRange: quizSettings.range
       };
       const newQuiz = await materialService.generateQuiz(id, req);
+      if (newQuiz?.success === false) {
+        setQuizError(newQuiz);
+        return;
+      }
+      setQuizError(null);
       setQuizzes(prev => [newQuiz, ...prev]);
       setSelectedQuizId(newQuiz.quizId);
       setUserAnswers({});
       setIsQuizSettingsOpen(false);
-      alert('새로운 AI 맞춤형 퀴즈가 출제되었습니다!');
     } catch (e) {
       console.error('퀴즈 생성 실패:', e);
-      alert('퀴즈 생성에 실패했습니다. AI 분석 완료 여부를 확인해보세요.');
+      setQuizError(normalizeAiException(e));
     } finally {
       setIsGeneratingQuiz(false);
     }
@@ -234,18 +337,23 @@ export default function ArchiveDetail() {
     setChatMessages(prev => [...prev, { sender: 'user', text: userMsg }]);
 
     try {
-      setChatMessages(prev => [...prev, { sender: 'ai', text: 'AI 분석기가 답변을 작성하는 중입니다...', isThinking: true }]);
+      setIsAskingQuestion(true);
+      setChatMessages(prev => [...prev, { sender: 'ai', text: '질문 답변을 생성하는 중입니다...', isThinking: true }]);
       const res = await materialService.askQuestion(id, { userQuestion: userMsg });
+      const normalized = normalizeAiResponse(res);
       setChatMessages(prev => {
         const filtered = prev.filter(m => !m.isThinking);
-        return [...filtered, { sender: 'ai', text: res.aiAnswer }];
+        return [...filtered, { sender: 'ai', text: normalized.success === false ? normalized.message : (res.aiAnswer || '문서 기준으로는 확인되지 않습니다.'), response: normalized }];
       });
     } catch (e) {
       console.error('AI 질문 실패:', e);
+      const normalized = normalizeAiException(e);
       setChatMessages(prev => {
         const filtered = prev.filter(m => !m.isThinking);
-        return [...filtered, { sender: 'ai', text: '죄송합니다. 답변을 받아오지 못했습니다. 잠시 후 다시 시도해 주세요.' }];
+        return [...filtered, { sender: 'ai', text: normalized.message, response: normalized }];
       });
+    } finally {
+      setIsAskingQuestion(false);
     }
   };
 
@@ -259,11 +367,13 @@ export default function ArchiveDetail() {
   // ---------------- 퀴즈 파서 ----------------
   const parseQuizQuestions = (rawQuizData) => {
     try {
-      const parsed = JSON.parse(rawQuizData);
+      const parsedRaw = JSON.parse(rawQuizData);
+      const parsed = Array.isArray(parsedRaw) ? parsedRaw : (parsedRaw.questions || parsedRaw.quizzes || []);
       return parsed.map((item, idx) => ({
         q: item.question || item.q || `Q${idx + 1}. 문제`,
         options: item.options || item.choices || item.answers || [],
-        answer: typeof item.answer === 'number' ? item.answer : 0
+        answer: typeof item.answerIndex === 'number' ? item.answerIndex : (typeof item.answer === 'number' ? item.answer : 0),
+        explanation: item.explanation || ''
       }));
     } catch (e) {
       console.error("Quiz JSON 파싱 실패:", e);
@@ -276,6 +386,9 @@ export default function ArchiveDetail() {
     switch (activePdfTool) {
       case 'summary': {
         const parsedCoreContents = [];
+        const summaryStatus = normalizeAiResponse(summaryData);
+        const summaryTextStatusMessage = getTextStatusMessage(summaryData?.textStatus);
+        const cleanKeywords = removeDummyKeywords(summaryData?.keywords?.length ? summaryData.keywords : material?.keywords);
         if (summaryData?.coreContents) {
           try {
             const parsed = JSON.parse(summaryData.coreContents);
@@ -300,23 +413,30 @@ export default function ArchiveDetail() {
                 문서 전체 맥락을 분석하여 도출된 종합 핵심 요약입니다.
               </p>
 
+              {renderAiStatus(summaryStatus, () => loadTabData(material.materialId))}
+              {summaryTextStatusMessage && summaryStatus.success !== false && (
+                <div className="glass-panel" style={{ padding: '14px 16px', borderLeft: '4px solid #F59E0B', backgroundColor: '#FFFBEB', color: '#92400E', marginBottom: '16px' }}>
+                  {summaryTextStatusMessage}
+                </div>
+              )}
+
               <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                 <div className="glass-panel" style={{ padding: '20px', borderLeft: '4px solid var(--color-primary)' }}>
                   <h4 style={{ margin: '0 0 12px', fontSize: '16px', color: 'var(--color-text-main)' }}>📌 문서 개요</h4>
                   <p style={{ margin: 0, fontSize: '15px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>
-                    {summaryData?.overview || '요약 개요 정보를 불러오는 중이거나 작성된 요약이 없습니다.'}
+                    {summaryStatus.success === false ? '요약 내용이 아직 생성되지 않았습니다.' : (summaryData?.overview || (summaryData ? '요약 내용이 아직 생성되지 않았습니다.' : '문서 내용을 분석하고 있습니다.'))}
                   </p>
                 </div>
 
                 <div>
                   <h4 style={{ margin: '0 0 12px', fontSize: '16px', color: 'var(--color-text-main)' }}>🔑 핵심 키워드</h4>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                    {material?.keywords ? (
-                        material.keywords.split(',').map((kw) => (
-                            <span key={kw} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)' }}>#{kw.trim()}</span>
+                    {cleanKeywords.length > 0 ? (
+                        cleanKeywords.map((kw) => (
+                            <span key={kw} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)' }}>#{kw}</span>
                         ))
                     ) : (
-                        <span style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>등록된 키워드가 없습니다.</span>
+                        <span style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>핵심 키워드가 아직 생성되지 않았습니다.</span>
                     )}
                   </div>
                 </div>
@@ -332,7 +452,7 @@ export default function ArchiveDetail() {
                             </div>
                         ))
                     ) : (
-                        <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>세부 요약 내용이 존재하지 않습니다.</p>
+                        <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{summaryStatus.success === false ? '요약 내용이 아직 생성되지 않았습니다.' : '세부 요약 내용이 존재하지 않습니다.'}</p>
                     )}
                   </div>
                 </div>
@@ -342,6 +462,7 @@ export default function ArchiveDetail() {
       }
       case 'quiz': {
         const activeQuiz = quizzes.find(q => q.quizId === selectedQuizId);
+        const activeQuizStatus = normalizeAiResponse(activeQuiz);
         const parsedQuestions = activeQuiz ? parseQuizQuestions(activeQuiz.quizData) : [];
 
         return (
@@ -371,6 +492,8 @@ export default function ArchiveDetail() {
                   </button>
                 </div>
               </div>
+
+              {renderAiStatus(quizError, handleGenerateQuiz)}
 
               {/* 퀴즈 내용 영역 */}
               {selectedQuizId === null ? (
@@ -416,8 +539,9 @@ export default function ArchiveDetail() {
                       </button>
                       <h4 style={{ margin: 0, fontSize: '18px', color: 'var(--color-text-main)' }}>퀴즈 풀이</h4>
                     </div>
+                    {renderAiStatus(activeQuizStatus, handleGenerateQuiz)}
                     {parsedQuestions.length === 0 ? (
-                        <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>파싱된 질문이 없습니다.</p>
+                        <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{activeQuizStatus.success === false ? getAiErrorMessage(activeQuizStatus.errorCode, activeQuizStatus.textStatus, activeQuizStatus.message) : '퀴즈 형식 검증에 실패했습니다. 다시 생성해주세요.'}</p>
                     ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
                           {parsedQuestions.map((q, idx) => (
@@ -469,6 +593,9 @@ export default function ArchiveDetail() {
                                     );
                                   })}
                                 </div>
+                                {q.explanation && userAnswers[idx] !== undefined && (
+                                  <p style={{ margin: '14px 0 0', fontSize: '13px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>해설: {q.explanation}</p>
+                                )}
                               </div>
                           ))}
                         </div>
@@ -543,7 +670,17 @@ export default function ArchiveDetail() {
         );
       }
       case 'roadmap': {
-        const allTasks = roadmapSteps.flatMap(s => s.tasks || []);
+        const roadmapStatus = normalizeAiResponse(roadmapData);
+        const displayRoadmapSteps = roadmapSteps.length > 0
+          ? Array.from({ length: 12 }, (_, idx) => roadmapSteps.find(step => Number(step.stepOrder) === idx + 1) || {
+              stepId: `placeholder-${idx + 1}`,
+              stepOrder: idx + 1,
+              title: `${idx + 1}주차`,
+              description: '로드맵 미생성',
+              tasks: []
+            })
+          : [];
+        const allTasks = displayRoadmapSteps.flatMap(s => s.tasks || []);
         const doneCount = allTasks.filter(t => t.isCompleted).length;
         const totalCount = allTasks.length;
         const progressPercent = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
@@ -557,6 +694,8 @@ export default function ArchiveDetail() {
                 업로드한 강의계획서를 기반으로 AI가 설계한 주차별 학습계획 로드맵입니다.
               </p>
 
+              {renderAiStatus(roadmapStatus, () => loadTabData(material.materialId))}
+
               <div className="glass-panel" style={{ padding: '20px', marginBottom: '32px', borderLeft: '4px solid var(--color-primary)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                   <span style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)' }}>전체 학습 진행률</span>
@@ -567,17 +706,17 @@ export default function ArchiveDetail() {
                 </div>
               </div>
 
-              {roadmapSteps.length === 0 ? (
-                  <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>로드맵 정보가 없습니다. 문서가 분석 중이거나 지원되지 않는 형식입니다.</p>
+              {displayRoadmapSteps.length === 0 ? (
+                  <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{roadmapStatus.success === false ? getAiErrorMessage(roadmapStatus.errorCode, roadmapStatus.textStatus, roadmapStatus.message) : '로드맵 미생성'}</p>
               ) : (
                   <div className="roadmap-timeline">
-                    {roadmapSteps.map((step, idx) => {
+                    {displayRoadmapSteps.map((step, idx) => {
                       const isStepDone = step.tasks && step.tasks.length > 0 && step.tasks.every(t => t.isCompleted);
                       return (
                           <div key={step.stepId} className="timeline-item" style={{ opacity: isStepDone ? 0.6 : 1, transition: 'opacity 0.3s' }}>
                             <div className="timeline-left">
                               <div className="timeline-circle" style={{ backgroundColor: isStepDone ? '#9CA3AF' : getNodeColor(step.stepOrder) }}>{step.stepOrder}</div>
-                              {idx < roadmapSteps.length - 1 && <div className="timeline-line"></div>}
+                              {idx < displayRoadmapSteps.length - 1 && <div className="timeline-line"></div>}
                             </div>
                             <div className="timeline-card glass-panel" style={{ borderLeftColor: isStepDone ? '#9CA3AF' : getNodeColor(step.stepOrder), padding: '24px', backgroundColor: isStepDone ? '#F3F4F6' : 'white', transition: 'all 0.3s' }}>
                               <h4 style={{ margin: '0 0 12px', fontSize: '16px', textDecoration: isStepDone ? 'line-through' : 'none', color: isStepDone ? 'var(--color-text-muted)' : 'var(--color-text-main)', fontWeight: 'bold' }}>{step.title}</h4>
@@ -590,8 +729,8 @@ export default function ArchiveDetail() {
                                 {step.tasks && step.tasks.map((task) => (
                                     <div
                                         key={task.taskId}
-                                        onClick={() => handleToggleTask(task.taskId)}
-                                        style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '4px 0' }}
+                                        onClick={() => task.taskId && handleToggleTask(task.taskId)}
+                                        style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: task.taskId ? 'pointer' : 'default', padding: '4px 0' }}
                                     >
                                       {task.isCompleted ? (
                                           <CheckCircle2 size={18} color="var(--color-primary)" />
@@ -650,10 +789,18 @@ export default function ArchiveDetail() {
             </div>
         );
 
-      case 'chat':
+      case 'chat': {
+        const currentTextStatus = summaryData?.textStatus || roadmapData?.textStatus || quizzes.find(q => q?.textStatus)?.textStatus;
+        const textBlocked = currentTextStatus?.hasText === false || currentTextStatus?.status === 'EMPTY';
+        const textStatusMessage = getTextStatusMessage(currentTextStatus);
         return (
             <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '450px' }}>
               <h3 style={{ margin: '0 0 16px', fontSize: '20px' }}>AI 질문</h3>
+              {textStatusMessage && (
+                <div className="glass-panel" style={{ padding: '14px 16px', borderLeft: '4px solid #F59E0B', backgroundColor: '#FFFBEB', color: '#92400E', marginBottom: '12px' }}>
+                  {textStatusMessage}
+                </div>
+              )}
               <div style={{ flex: 1, backgroundColor: '#F9FAFB', borderRadius: '12px', padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid var(--color-border)', maxHeight: '350px' }}>
                 {chatMessages.map((msg, idx) => (
                     <div
@@ -670,7 +817,10 @@ export default function ArchiveDetail() {
                           boxShadow: '0 1px 4px rgba(0,0,0,0.05)',
                           fontSize: '15px',
                           lineHeight: '1.6',
-                          whiteSpace: 'pre-wrap'
+                          whiteSpace: 'pre-wrap',
+                          overflowWrap: 'anywhere',
+                          maxHeight: msg.sender === 'ai' ? '220px' : 'none',
+                          overflowY: msg.sender === 'ai' ? 'auto' : 'visible'
                         }}
                     >
                       {msg.text}
@@ -684,17 +834,19 @@ export default function ArchiveDetail() {
                       type="text"
                       className="input-field"
                       style={{ flex: 1, minWidth: 0, margin: 0, borderRadius: '30px', backgroundColor: '#F3F4F6', border: 'none', padding: '16px 24px', fontSize: '15px', height: '50px' }}
-                      placeholder="자료 내용에 대해 궁금한 점을 입력하세요."
+                      placeholder={textBlocked ? '문서 텍스트 추출 후 질문할 수 있습니다.' : '자료 내용에 대해 궁금한 점을 입력하세요.'}
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
+                      disabled={textBlocked || isAskingQuestion}
                   />
-                  <button type="submit" className="btn-primary" style={{ width: '50px', height: '50px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                  <button type="submit" disabled={textBlocked || isAskingQuestion || !chatInput.trim()} className="btn-primary" style={{ width: '50px', height: '50px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center', opacity: (textBlocked || isAskingQuestion || !chatInput.trim()) ? 0.55 : 1 }}>
                     <Send size={20} />
                   </button>
                 </form>
               </div>
             </div>
         );
+      }
       default:
         return null;
     }

@@ -120,6 +120,10 @@ app.include_router(rag_api_router)
 app.include_router(validation_router)
 app.include_router(training_router)
 
+# 자료보관함 라이브 AI (Spring AiIntegrationService 계약): /api/ai/summary|quiz|question|roadmap|feedback
+from app.api.material_legacy_routes import router as material_legacy_router
+app.include_router(material_legacy_router)
+
 # Spring Boot 계약 API (v0.5)
 app.include_router(prediction_router)       # POST /api/ai/predict/study-time
 app.include_router(quiz_router)             # POST /api/ai/quiz/generate

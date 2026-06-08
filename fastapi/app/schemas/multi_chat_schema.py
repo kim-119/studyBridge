@@ -36,13 +36,27 @@ class AgentProfile(BaseModel):
     tone: Optional[str] = Field(None, description="어조")
     knowledgeLevel: Optional[str] = Field(None, description="지식 수준 (입문/학사/석사/박사/전문가)")
     customInstruction: Optional[str] = Field(None, description="직접 입력 지시사항")
+    # group_study_ai 모드용 봇 식별 필드 (선택)
+    botType: Optional[str] = Field(
+        None,
+        description="그룹스터디 AI 봇 타입: summary_bot | quiz_bot | search_bot",
+    )
+    displayName: Optional[str] = Field(None, description="봇 표시 이름 (요약봇/퀴즈봇/검색봇)")
+    modelProvider: Optional[str] = Field(
+        None,
+        description="모델 제공자: qwen_ollama | openai_gpt | openai_gpt_tavily",
+    )
 
 
 class MultiChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="사용자 메시지")
     mode: str = Field(
         "default",
-        description="응답 모드: default | tikitaka | debate | socratic",
+        description="응답 모드: default | tikitaka | debate | socratic | group_study_ai",
+    )
+    runMode: Optional[str] = Field(
+        None,
+        description="group_study_ai 실행 모드: single | all_bots",
     )
     rounds: int = Field(3, ge=1, le=5, description="토론 라운드 수 (tikitaka 모드)")
     showFinalSynthesis: bool = Field(True, description="최종 종합 의견 포함 여부 (default/tikitaka)")

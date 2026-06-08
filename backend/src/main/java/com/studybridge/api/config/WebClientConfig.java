@@ -21,18 +21,22 @@ public class WebClientConfig {
     @Value("${ai.server.fastapi.base-url:http://localhost:8000}")
     private String fastApiBaseUrl;
 
-    // 멀티 에이전트 병렬 처리: 최대 30초 허용 (FastAPI 내부 타임아웃 22초 + 여유 8초)
+    // 하드 상한(connector 레벨). 소크라테스/토론 모드는 오래 걸리므로 충분히 크게 둔다.
+    // 실제 요청별 제한은 ChatService의 block(Duration) / per-request responseTimeout로 모드별 제어한다.
     private static final int CONNECT_TIMEOUT_MS = 5000;
-    private static final int READ_TIMEOUT_SECONDS = 120;
+
+    @Value("${ai.server.fastapi.read-timeout-seconds:360}")
+    private int readTimeoutSeconds;
+
     private static final int WRITE_TIMEOUT_SECONDS = 30;
 
     @Bean
     public WebClient fastApiWebClient(WebClient.Builder builder) {
         HttpClient httpClient = HttpClient.create()
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, CONNECT_TIMEOUT_MS)
-                .responseTimeout(Duration.ofSeconds(READ_TIMEOUT_SECONDS))
+                .responseTimeout(Duration.ofSeconds(readTimeoutSeconds))
                 .doOnConnected(conn -> conn
-                        .addHandlerLast(new ReadTimeoutHandler(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                        .addHandlerLast(new ReadTimeoutHandler(readTimeoutSeconds, TimeUnit.SECONDS))
                         .addHandlerLast(new WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)));
 
         return builder

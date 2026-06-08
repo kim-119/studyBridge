@@ -111,6 +111,11 @@ STUDY_TIME_MODEL_PATH: str = os.getenv("STUDY_TIME_MODEL_PATH", "./models/study_
 AI_RESPONSE_TIMEOUT_SECONDS: int = int(os.getenv("AI_RESPONSE_TIMEOUT_SECONDS", "120"))
 QUIZ_GENERATION_TIMEOUT_SECONDS: int = int(os.getenv("QUIZ_GENERATION_TIMEOUT_SECONDS", "15"))
 MULTI_CHAT_TIMEOUT_SECONDS: int = int(os.getenv("MULTI_CHAT_TIMEOUT_SECONDS", "180"))
+# 모드별 총 타임아웃 (소크라테스/토론은 단계적 처리로 오래 걸리므로 길게).
+AI_DEFAULT_TIMEOUT_SECONDS: int = int(os.getenv("AI_DEFAULT_TIMEOUT_SECONDS", "90"))
+AI_SOCRATIC_TIMEOUT_SECONDS: int = int(os.getenv("AI_SOCRATIC_TIMEOUT_SECONDS", "240"))
+AI_DEBATE_TIMEOUT_SECONDS: int = int(os.getenv("AI_DEBATE_TIMEOUT_SECONDS", "300"))
+AI_MULTI_AGENT_TIMEOUT_SECONDS: int = int(os.getenv("AI_MULTI_AGENT_TIMEOUT_SECONDS", "300"))
 AI_VALIDATION_ENABLED: bool = os.getenv("AI_VALIDATION_ENABLED", "false").lower() in ("true", "1", "yes")
 AI_VALIDATION_TIMEOUT_SECONDS: int = int(os.getenv("AI_VALIDATION_TIMEOUT_SECONDS", "30"))
 
@@ -123,6 +128,13 @@ QUIZ_OPTIONS_COUNT: int = 4  # 4지선다 고정
 MULTI_CHAT_MAX_ROUNDS: int = int(os.getenv("MULTI_CHAT_MAX_ROUNDS", "3"))
 PREVIOUS_ANSWERS_LIMIT: int = int(os.getenv("PREVIOUS_ANSWERS_LIMIT", "20"))
 AGENT_ANSWER_MAX_CHARS: int = int(os.getenv("AGENT_ANSWER_MAX_CHARS", "1200"))
+# 사용자에게 보이는 실제 답변 길이 제한(문자). 0이면 절단 비활성화(기본).
+# 속도/비용 제어는 문자 절단이 아니라 max_tokens/timeout으로 한다.
+AI_MAX_RESPONSE_CHARS: int = int(os.getenv("AI_MAX_RESPONSE_CHARS", "0"))
+# LLM 생성 토큰 상한 (답변 잘림 방지를 위해 충분히 크게).
+AI_ANSWER_MAX_TOKENS: int = int(os.getenv("AI_ANSWER_MAX_TOKENS", "2048"))
+# 로그에만 적용되는 미리보기 길이 (실제 응답에는 영향 없음).
+AI_LOG_PREVIEW_CHARS: int = int(os.getenv("AI_LOG_PREVIEW_CHARS", "300"))
 SYNTHESIS_AGENT_NAME: str = "종합정리봇"
 DEFAULT_AGENT_NAME: str = os.getenv("DEFAULT_AGENT_NAME", "스터디봇")
 
@@ -160,23 +172,64 @@ def safe_strip(value: Any, default: str = "", max_len: int = 2000) -> str:
     return (text[:max_len] if len(text) > max_len else text) or default
 
 
+# 에이전트가 천편일률적으로 시작하는 상투적 도입부 (성격이 죽는 GPT 문체)
+_FORBIDDEN_OPENINGS = (
+    "안녕하세요", "좋은 질문입니다", "좋은 질문이에요", "궁금하신가요",
+    "다음과 같이 설명할 수 있습니다", "핵심 개념은 다음과 같습니다",
+    "이 과정은 매우 중요합니다", "요약하자면",
+)
+_TRAILING_FILLER = (
+    "더 궁금한 점이 있으면 질문해주세요", "더 궁금한 점이 있으면 언제든 질문해주세요",
+    "도움이 되었길 바랍니다",
+)
+
+
+def strip_generic_phrases(text: str) -> str:
+    """상투적 도입부/맺음말을 제거해 성격이 드러나는 답변을 보존한다 (내용은 자르지 않음)."""
+    if not text:
+        return text
+    stripped = text.lstrip()
+    # 첫 문장이 금지 도입부로 시작하면 그 문장만 제거
+    for opener in _FORBIDDEN_OPENINGS:
+        if stripped.startswith(opener):
+            # 첫 문장 끝(마침표/줄바꿈)까지 제거
+            m = re.search(r"[.!?\n]", stripped)
+            stripped = stripped[m.end():].lstrip() if m else ""
+            break
+    # 상투적 맺음말 제거
+    for tail in _TRAILING_FILLER:
+        idx = stripped.rfind(tail)
+        if idx != -1 and idx >= len(stripped) - len(tail) - 3:
+            stripped = stripped[:idx].rstrip()
+    return stripped or text  # 전부 비면 원문 유지(빈 답변 방지)
+
+
 def clean_ai_answer(text: str) -> str:
-    """마크다운 제거, 과도한 개행 정리."""
+    """마크다운 제거, 과도한 개행 정리, 상투적 도입부 제거."""
     if not text:
         return ""
     text = re.sub(r"\*\*|__", "", text)
     text = re.sub(r"(?m)^\s*#{2,6}\s*", "", text)
     text = re.sub(r"(?m)^\s*```[a-zA-Z0-9_-]*\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = strip_generic_phrases(text)
     return text.strip()
+
+
+def preview_text(text: str, limit: int = AI_LOG_PREVIEW_CHARS) -> str:
+    """로그 출력 전용 미리보기. 실제 API 응답에는 절대 사용하지 않는다."""
+    if not text:
+        return ""
+    return text[:limit] + ("..." if len(text) > limit else "")
 
 
 def safe_trim_answer(text: str, max_chars: int) -> str:
     """
     긴 답변을 문장 끝/줄바꿈/공백 경계에서 안전하게 자른다.
     answer[:max_chars] 같은 단순 절단은 문장 중간에서 잘려 broken answer를 만들 수 있으므로 사용하지 않는다.
+    max_chars<=0이면 절단을 비활성화하고 원문 전체를 반환한다(사용자 답변 보존).
     """
-    if not text or len(text) <= max_chars:
+    if not text or max_chars <= 0 or len(text) <= max_chars:
         return text
 
     truncated = text[:max_chars]
@@ -204,9 +257,12 @@ def safe_trim_answer(text: str, max_chars: int) -> str:
 
 
 def sanitize_answer_for_spring(answer: str) -> str:
-    """Spring DTO 반환 전 길이 제한 및 정리. 단순 절단 대신 safe_trim_answer로 자른다."""
+    """
+    Spring DTO 반환 전 정리. 사용자에게 보이는 답변은 임의 절단하지 않는다.
+    AI_MAX_RESPONSE_CHARS>0으로 명시 설정한 경우에만 safe_trim_answer로 안전 절단한다.
+    """
     text = clean_ai_answer(answer)
-    return safe_trim_answer(text, AGENT_ANSWER_MAX_CHARS)
+    return safe_trim_answer(text, AI_MAX_RESPONSE_CHARS)
 
 
 def _to_agent_dict(agent: Any) -> Dict[str, Any]:
@@ -496,6 +552,22 @@ def normalize_learning_mode(value: Optional[str]) -> str:
     return v if v in _LEARNING_MODES else "basic"
 
 
+def resolve_multi_chat_timeout(mode: Optional[str], learning_mode: str) -> int:
+    """
+    mode/learning_mode 기준으로 multi-chat 총 타임아웃(초)을 결정한다.
+    소크라테스/토론/멀티에이전트는 단계적 검토로 오래 걸리므로 길게 허용한다.
+    Spring 측 대기시간보다 약간 짧거나 같게 두어 FastAPI가 우아한 fallback을 반환할 수 있게 한다.
+    """
+    m = str(mode or "").strip().lower()
+    if learning_mode == "socratic" or "socratic" in m:
+        return AI_SOCRATIC_TIMEOUT_SECONDS
+    if learning_mode == "debate" or "debate" in m:
+        return AI_DEBATE_TIMEOUT_SECONDS
+    if "multi_agent" in m or "multi-agent" in m:
+        return AI_MULTI_AGENT_TIMEOUT_SECONDS
+    return max(AI_DEFAULT_TIMEOUT_SECONDS, MULTI_CHAT_TIMEOUT_SECONDS)
+
+
 def build_learning_mode_instruction(learning_mode: str, knowledge_level: str) -> str:
     """학습 진행 모드(소크라테스/토론)에 따른 추가 답변 지침을 생성한다."""
     if learning_mode == "socratic":
@@ -521,6 +593,67 @@ def build_learning_mode_instruction(learning_mode: str, knowledge_level: str) ->
     return ""
 
 
+# 성격(personality) → PersonaDNA: voice / signature_move / forbidden 을 한 블록으로 강제.
+# 라벨이 아니라 '사고방식'으로 작동하도록 system prompt에 직접 주입한다.
+_PERSONA_DNA: Dict[str, str] = {
+    "친근함": (
+        "[PersonaDNA: 친근한 설명형]\n"
+        "- voice: 따뜻하지만 가볍지 않게. 상대를 어린아이 취급하지 않는다.\n"
+        "- signature_move: 생활 속 비유 1개 + '한마디로 말하면' 식 짧은 정리.\n"
+        "- forbidden: 과장된 상담사 말투, 모든 내용을 번호 목록으로만 나열."
+    ),
+    "솔직함": (
+        "[PersonaDNA: 비판적 분석형 — 츤데레 코치]\n"
+        "- voice: 살짝 까칠하지만 도와주려는 태도. 두루뭉술함을 싫어한다.\n"
+        "- signature_move: 흔한 오개념 1개를 반드시 교정 + 마지막에 짧은 코칭 한 줄.\n"
+        "- forbidden: 인신공격, 과도한 비난, 친절형처럼 둥글둥글한 말투."
+    ),
+    "전문적": (
+        "[PersonaDNA: 논리적 분석형]\n"
+        "- voice: 차분하고 명확. 잡담 없이 구조부터 잡고 용어를 정확히 쓴다.\n"
+        "- signature_move: '조건 → 과정 → 결과' 구조 + 마지막에 핵심 변수/주의점.\n"
+        "- forbidden: 감성적 문장 남발, 비유 중심 설명, 장황한 서론."
+    ),
+    "독특함": (
+        "[PersonaDNA: 창의적 비유형]\n"
+        "- voice: 시각적이고 기억에 남는 문장. 개념을 하나의 장면처럼 보여준다.\n"
+        "- signature_move: 강한 은유 1개로 시작 → 개념 매핑 → 기억용 한 줄.\n"
+        "- forbidden: 비유만 있고 정확한 설명이 없는 답변, 시처럼 과한 꾸밈, 교과서 목차식."
+    ),
+    "효율적": (
+        "[PersonaDNA: 간결 핵심형]\n"
+        "- voice: 짧고 단단하게. 불필요한 말은 버리고 핵심만 찍는다.\n"
+        "- signature_move: 결론부터 → 이유 3개 이하 → 예시 1개 → 암기 포인트.\n"
+        "- forbidden: 긴 서론, 과한 비유, 5개 이상 목록 남발."
+    ),
+    "냉소적": (
+        "[PersonaDNA: 냉소적 현실형]\n"
+        "- voice: 건조하고 현실적. 환상을 걷어내고 실제로 중요한 것만 말한다.\n"
+        "- signature_move: 흔한 착각을 짚고, 실제로 쓰이는 부분만 콕 집는다.\n"
+        "- forbidden: 응원성 멘트, 인신공격, 핵심 없는 비꼬기."
+    ),
+}
+
+_UNIVERSAL_STYLE_RULES = (
+    "[공통 답변 규칙]\n"
+    "- 첫 문장부터 너의 성격이 드러나야 한다. 상투적 인사말로 시작하지 마라.\n"
+    "- 모든 답변을 '핵심 개념 / 원리 / 단계' 구조로 쓰지 마라.\n"
+    "- 답변 안에 기억 장치 최소 1개(비유, 반례, 짧은 공식, 한 줄 문장, 실생활 장면, 비교 구조)를 넣어라.\n"
+    "- 비유는 개념의 보조 도구일 뿐 개념 자체를 대체하면 안 되고, 사실을 꾸며내지 마라.\n"
+    "- 금지 표현: '안녕하세요', '좋은 질문입니다', '궁금하신가요', '다음과 같이 설명할 수 있습니다', "
+    "'핵심 개념은 다음과 같습니다', '요약하자면', '더 궁금한 점이 있으면 질문해주세요'."
+)
+
+
+def build_persona_dna_block(agent_dict: Dict[str, Any]) -> str:
+    """성격 라벨을 PersonaDNA(사고방식)로 변환한 system prompt 블록."""
+    personality = _PERSONALITY_COMPAT.get(
+        agent_dict.get("personality") or "", agent_dict.get("personality") or ""
+    )
+    dna = _PERSONA_DNA.get(personality, "")
+    return "\n\n".join(p for p in (dna, _UNIVERSAL_STYLE_RULES) if p)
+
+
 def build_multi_agent_system_prompt(agent: Any, context: str = "", learning_mode: str = "basic") -> str:
     """
     agent_quality_policy.build_agent_system_prompt 우선 사용.
@@ -529,17 +662,18 @@ def build_multi_agent_system_prompt(agent: Any, context: str = "", learning_mode
     agent_dict = _normalize_agent_for_policy(_to_agent_dict(agent))
     knowledge_level = agent_dict.get("knowledgeLevel") or "학사 수준"
     mode_instruction = build_learning_mode_instruction(learning_mode, knowledge_level)
+    persona_dna = build_persona_dna_block(agent_dict)
 
     if _POLICY_AVAILABLE:
         try:
             normalized = normalize_agent_config(agent_dict, user_message="")
             base_prompt = build_agent_system_prompt(normalized)
-            parts = [base_prompt]
+            parts = [base_prompt, persona_dna]
             if mode_instruction:
                 parts.append(mode_instruction)
             if context:
                 parts.append(context)
-            return "\n\n".join(parts)
+            return "\n\n".join(p for p in parts if p)
         except Exception as e:
             logger.debug("policy prompt 빌드 실패, fallback 사용: %s", e)
 
@@ -552,13 +686,13 @@ def build_multi_agent_system_prompt(agent: Any, context: str = "", learning_mode
         f"지식 수준: {level} / 성격: {personality}",
         "반드시 한국어로 답변한다.",
         "학습에 도움이 되는 실질적인 내용을 제공한다.",
-        "다른 에이전트와 같은 표현을 반복하지 않는다.",
+        persona_dna,
     ]
     if mode_instruction:
         parts.append(f"\n{mode_instruction}")
     if context:
         parts.append(f"\n{context}")
-    return "\n".join(parts)
+    return "\n".join(p for p in parts if p)
 
 
 def build_context_from_previous_answers(
@@ -578,16 +712,33 @@ def build_context_from_previous_answers(
     return "\n".join(lines)
 
 
+# 에이전트별로 서로 다른 '설명 렌즈'를 강제해 천편일률적 교과서 구조를 깬다.
+_STYLE_SEEDS = (
+    "생활 속 장면과 비유로 직관부터 잡아라.",
+    "흔히 빠지는 오개념을 먼저 잡아내고 교정하라.",
+    "조건 → 과정 → 결과의 인과 구조로 분석하라.",
+    "강한 은유 이미지로 시작해 실제 개념과 연결하라.",
+    "결론부터 말하고 핵심 이유만 압축하라.",
+    "변수·조건·한계와 실제 적용 관점까지 짚어라.",
+    "반례와 예외 상황을 중심으로 설명하라.",
+    "시험/실전에서 바로 쓰는 포인트 중심으로 정리하라.",
+)
+
+
 def build_agent_turn_instruction(agent_index: int, total_agents: int) -> str:
-    """티키타카 스타일 에이전트 역할 부여."""
+    """
+    에이전트마다 서로 다른 설명 렌즈(style seed)를 배정한다.
+    모든 에이전트가 '핵심 개념/원리/요약'을 반복하던 구조를 제거하고,
+    각자 다른 관점으로 같은 지식을 설명하도록 유도한다.
+    """
     if total_agents <= 1:
         return ""
-    _INSTRUCTIONS = {
-        0: "이 질문의 핵심 개념과 원리를 명확하게 설명하라.",
-        1: "앞서 설명된 내용을 보완하거나, 놓친 부분이나 주의할 점을 지적하라.",
-        2: "앞의 설명을 쉽게 요약하여 초보자도 이해할 수 있게 정리하라.",
-    }
-    return _INSTRUCTIONS.get(agent_index, "추가적인 관점이나 실용적인 응용 사례를 제시하라.")
+    seed = _STYLE_SEEDS[agent_index % len(_STYLE_SEEDS)]
+    return (
+        f"[너만의 설명 렌즈] {seed}\n"
+        "다른 에이전트와 같은 첫 문장, 같은 목차 구조, 같은 비유를 절대 반복하지 마라. "
+        "이미 나온 설명을 복사하거나 재배열하지 말고, 너의 성격에 맞는 다른 관점으로 설명하라."
+    )
 
 
 def select_agents_for_response(
@@ -624,7 +775,7 @@ def generate_single_agent_response(
     user_parts.append(f"[사용자 메시지] {message}")
     user_prompt = "\n".join(user_parts)
 
-    raw = _call_llm(system_prompt, user_prompt, max_tokens=AGENT_ANSWER_MAX_CHARS)
+    raw = _call_llm(system_prompt, user_prompt, max_tokens=AI_ANSWER_MAX_TOKENS)
     return clean_ai_answer(raw)
 
 
@@ -645,7 +796,7 @@ def build_final_synthesis_answer(
         f"[에이전트 답변들]\n{existing}\n\n"
         "위 내용을 종합하여 최종 정리를 제공하라."
     )
-    return clean_ai_answer(_call_llm(system, user, max_tokens=600))
+    return clean_ai_answer(_call_llm(system, user, max_tokens=AI_ANSWER_MAX_TOKENS))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1051,7 +1202,7 @@ def generate_peer_feedback_for_debate(
             "위 답변에 대한 너의 피드백을 작성하라."
         )
         try:
-            raw_feedback = clean_ai_answer(_call_llm(system, user, max_tokens=320))
+            raw_feedback = clean_ai_answer(_call_llm(system, user, max_tokens=800))
         except Exception as e:
             logger.warning("peer feedback 생성 실패 from=%s to=%s: %s", from_name, to_name, e)
             raw_feedback = ""
@@ -1062,7 +1213,7 @@ def generate_peer_feedback_for_debate(
         feedback_steps.append(PeerFeedbackStep(
             fromAgent=from_name,
             toAgent=to_name,
-            feedback=safe_trim_answer(raw_feedback, 400),
+            feedback=safe_trim_answer(raw_feedback, AI_MAX_RESPONSE_CHARS),
         ))
 
     return feedback_steps
@@ -1339,6 +1490,7 @@ async def multi_chat_endpoint(request: MultiChatRequest):
     context = build_context_from_previous_answers(request.previousAnswers)
     rounds = min(request.rounds, MULTI_CHAT_MAX_ROUNDS)
     learning_mode = normalize_learning_mode(request.learningMode)
+    effective_timeout = resolve_multi_chat_timeout(request.mode, learning_mode)
 
     if should_use_internal_collaboration(request.mode):
         # 협업 모드: 순차 실행 (기존 로직 유지)
@@ -1348,7 +1500,7 @@ async def multi_chat_endpoint(request: MultiChatRequest):
                     _run_multi_chat_sync,
                     active_agents, request.message, context, rounds, request.showFinalSynthesis, learning_mode,
                 ),
-                timeout=MULTI_CHAT_TIMEOUT_SECONDS,
+                timeout=effective_timeout,
             )
             return MultiChatResponse(mode=request.mode, answers=raw_answers)
         except asyncio.TimeoutError:
@@ -1356,7 +1508,7 @@ async def multi_chat_endpoint(request: MultiChatRequest):
                 "multi-chat 협업 타임아웃 mode=%s requested_agent_count=%d "
                 "elapsed_seconds=%d validation_enabled=%s",
                 request.mode, len(active_agents),
-                MULTI_CHAT_TIMEOUT_SECONDS, AI_VALIDATION_ENABLED,
+                effective_timeout, AI_VALIDATION_ENABLED,
             )
             return MultiChatResponse(
                 mode=request.mode,
@@ -1384,7 +1536,7 @@ async def multi_chat_endpoint(request: MultiChatRequest):
                 active_agents,
                 request.message,
                 context,
-                MULTI_CHAT_TIMEOUT_SECONDS,
+                effective_timeout,
                 learning_mode,
             )
             logger.info(
@@ -1416,6 +1568,7 @@ try:
     from app.api.training_candidate_routes import router as _training_router
     from app.routers.agent_chat_router import router as _agent_chat_router
     from app.api.roadmap_routes import router as _roadmap_router
+    from app.api.material_legacy_routes import router as _material_legacy_router
 
     app.include_router(_spring_rag_router)      # /api/rag/ingest, /api/rag/query, DELETE /api/rag/materials/{id}
     app.include_router(_rag_legacy_router)      # /api/materials/{id}/rag/* (하위 호환)
@@ -1423,8 +1576,9 @@ try:
     app.include_router(_training_router)        # /api/training-candidates/stats, /export-jsonl
     app.include_router(_agent_chat_router)      # /api/ai/chat, /api/ai/material/*
     app.include_router(_roadmap_router)         # POST /api/materials/{id}/ai/roadmap
+    app.include_router(_material_legacy_router) # POST /api/ai/summary|quiz|question|roadmap|feedback (자료보관함 라이브)
 
-    logger.info("v0.6 확장 라우터 로드 완료 (로드맵 포함)")
+    logger.info("v0.6 확장 라우터 로드 완료 (로드맵 + 자료보관함 라이브 포함)")
 except Exception as _ext_err:
     logger.warning("v0.6 확장 라우터 로드 실패 (Spring 계약 API는 정상 동작): %s", _ext_err)
 

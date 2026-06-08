@@ -2,13 +2,110 @@ import React, { useState, useEffect } from 'react';
 import {
   Users, User, X, MicOff, Video, VideoOff, Maximize, Minimize, Gift, UserPlus,
   Settings, MessageSquare, Calendar, ClipboardList, Mic,
-  Search, AlertTriangle, Play, RefreshCw, VolumeX, Volume2, Monitor, Edit2, Send, Check
+  Search, AlertTriangle, Play, RefreshCw, VolumeX, Volume2, Monitor, Edit2, Send, Check, Sparkles
 } from 'lucide-react';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { OpenVidu } from 'openvidu-browser';
 import { useAuth } from '../hooks/useAuth';
 import { groupService, timerService, inquiryService } from '../services/api';
+
+// ── 그룹스터디 AI 봇 정의 (요약/퀴즈/검색 3종) ────────────────────────────────
+// 일정봇은 절대 추가하지 않는다.
+const GROUP_STUDY_AI_BOTS = [
+  {
+    emoji: '📝',
+    slashCommand: '/요약봇',
+    botType: 'summary_bot',
+    agentName: 'SummaryAgent',
+    displayName: '요약봇',
+    modelProvider: 'qwen_ollama',
+    modelLabel: 'Qwen/Ollama',
+    role: 'summary',
+    description: '스터디 내용과 학습 자료를 핵심 개념, 키워드, 시험 포인트 중심으로 정리합니다.',
+    placeholder: '요약할 스터디 내용이나 학습 주제를 입력하세요...'
+  },
+  {
+    emoji: '🧩',
+    slashCommand: '/퀴즈봇',
+    botType: 'quiz_bot',
+    agentName: 'QuizAgent',
+    displayName: '퀴즈봇',
+    modelProvider: 'openai_gpt',
+    modelLabel: 'GPT/OpenAI',
+    role: 'quiz',
+    description: '학습 내용을 바탕으로 퀴즈를 만들고 정답과 해설까지 제공합니다.',
+    placeholder: '퀴즈로 만들 학습 내용을 입력하세요...'
+  },
+  {
+    emoji: '🔎',
+    slashCommand: '/검색봇',
+    botType: 'search_bot',
+    agentName: 'TavilyAgent',
+    displayName: '검색봇',
+    modelProvider: 'openai_gpt_tavily',
+    modelLabel: 'GPT/OpenAI + Tavily',
+    role: 'search',
+    description: '웹 검색과 출처 기반 분석으로 최신 학습 정보를 보강합니다.',
+    placeholder: '검색할 학습 주제나 최신 정보를 입력하세요...'
+  }
+];
+
+// agentName → 테마 키 (TavilyAgent/SearchAgent 모두 검색봇 스타일)
+const AGENT_THEME_MAP = {
+  SummaryAgent: 'summary',
+  QuizAgent: 'quiz',
+  TavilyAgent: 'search',
+  SearchAgent: 'search'
+};
+
+// 봇 메시지 말풍선 테마 (다크 UI 기반)
+const BOT_THEME = {
+  summary: { accent: '#3B82F6', bg: '#15233E', text: '#BFDBFE', emoji: '📝', displayName: '요약봇' },
+  quiz:    { accent: '#60C95A', bg: '#13251A', text: '#BBF7D0', emoji: '🧩', displayName: '퀴즈봇' },
+  search:  { accent: '#8B5CF6', bg: '#201A38', text: '#DDD6FE', emoji: '🔎', displayName: '검색봇' }
+};
+
+const BOT_BY_TYPE = GROUP_STUDY_AI_BOTS.reduce((acc, b) => { acc[b.botType] = b; return acc; }, {});
+
+// 슬래시 명령어 → botType
+const SLASH_COMMAND_MAP = {
+  '/요약봇': { botType: 'summary_bot', agentName: 'SummaryAgent' },
+  '/퀴즈봇': { botType: 'quiz_bot', agentName: 'QuizAgent' },
+  '/검색봇': { botType: 'search_bot', agentName: 'TavilyAgent' }
+};
+
+// 메시지에서 슬래시 봇 명령어를 1차 파싱한다.
+function parseAiBotCommand(rawMessage) {
+  const trimmed = (rawMessage || '').trim();
+
+  if (!trimmed.startsWith('/')) {
+    return { hasCommand: false, unsupported: false, message: trimmed };
+  }
+
+  const matchedCommand = Object.keys(SLASH_COMMAND_MAP).find((cmd) => trimmed.startsWith(cmd));
+  if (!matchedCommand) {
+    // /일정봇 등 지원하지 않는 명령어
+    return { hasCommand: false, unsupported: true, message: trimmed };
+  }
+
+  return {
+    hasCommand: true,
+    unsupported: false,
+    command: matchedCommand,
+    botType: SLASH_COMMAND_MAP[matchedCommand].botType,
+    agentName: SLASH_COMMAND_MAP[matchedCommand].agentName,
+    runMode: 'single',
+    message: trimmed.replace(matchedCommand, '').trim()
+  };
+}
+
+// agentName / botType 으로 봇 테마를 해석한다.
+function resolveBotTheme(agentName, botType) {
+  let roleKey = botType ? (BOT_BY_TYPE[botType]?.role) : null;
+  if (!roleKey && agentName) roleKey = AGENT_THEME_MAP[agentName];
+  return BOT_THEME[roleKey] || null;
+}
 
 function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = true }) {
   const videoRef = React.useRef(null);
@@ -141,8 +238,42 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const [members, setMembers] = useState([]);
   const [applications, setApplications] = useState([]);
   const [activeTab, setActiveTab] = useState('chat');
-  const [isMicOn, setIsMicOn] = useState(false);
-  const [isVideoOn, setIsVideoOn] = useState(true);
+
+  // 초기 장치 설정(입장 시 카메라/마이크 기본값) — 방별 localStorage에 보관
+  const deviceKey = `sb_device_pref_${study?.id ?? 'default'}`;
+  const readDevicePref = () => {
+    try {
+      const raw = localStorage.getItem(deviceKey);
+      if (raw) {
+        const p = JSON.parse(raw);
+        return { camera: !!p.camera, mic: !!p.mic };
+      }
+    } catch (e) { /* ignore */ }
+    return { camera: true, mic: false }; // 기존 기본값 유지(카메라 ON, 마이크 OFF)
+  };
+  const persistDevicePref = (camera, mic) => {
+    try { localStorage.setItem(deviceKey, JSON.stringify({ camera, mic })); } catch (e) { /* ignore */ }
+  };
+
+  const [initialCameraEnabled, setInitialCameraEnabled] = useState(() => readDevicePref().camera);
+  const [initialMicEnabled, setInitialMicEnabled] = useState(() => readDevicePref().mic);
+  // 실제 입장 상태는 초기 장치 설정값으로 시작한다.
+  const [isMicOn, setIsMicOn] = useState(() => readDevicePref().mic);
+  const [isVideoOn, setIsVideoOn] = useState(() => readDevicePref().camera);
+
+  // 초기 장치 설정 토글 → 저장값 + 현재 세션 상태를 함께 갱신
+  const handleToggleInitialCamera = () => {
+    const next = !initialCameraEnabled;
+    setInitialCameraEnabled(next);
+    setIsVideoOn(next);
+    persistDevicePref(next, initialMicEnabled);
+  };
+  const handleToggleInitialMic = () => {
+    const next = !initialMicEnabled;
+    setInitialMicEnabled(next);
+    setIsMicOn(next);
+    persistDevicePref(initialCameraEnabled, next);
+  };
   const [showSettings, setShowSettings] = useState(false);
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [showRoomManageModal, setShowRoomManageModal] = useState(false);
@@ -166,6 +297,10 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const [aiMessages, setAiMessages] = useState([]);
   const [aiInput, setAiInput] = useState('');
   const [isAiStreaming, setIsAiStreaming] = useState(false);
+  // 그룹스터디 AI 봇 선택 / 실행 모드
+  const [selectedBotType, setSelectedBotType] = useState('summary_bot'); // summary_bot | quiz_bot | search_bot
+  const [aiRunMode, setAiRunMode] = useState('single');                  // single | all_bots
+  const [aiInputFocused, setAiInputFocused] = useState(false);
   
   const [activeQuiz, setActiveQuiz] = useState(null);
   const [quizTimer, setQuizTimer] = useState(0);
@@ -454,26 +589,103 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
     setChatInput('');
   };
 
+  // AI 토론 탭 안내(시스템) 메시지 추가
+  const pushAiSystemMessage = (content) => {
+    setAiMessages(prev => [
+      ...prev,
+      { id: Date.now() + Math.random(), senderName: 'System', content, isUser: false, isSystem: true }
+    ]);
+  };
+
   const handleSendAiMessage = async () => {
     if (!aiInput.trim() || isAiStreaming) return;
-    
-    const userMsg = aiInput.trim();
+
+    const rawMessage = aiInput.trim();
+
+    // 1) 슬래시 명령어 1차 파싱
+    const parsed = parseAiBotCommand(rawMessage);
+
+    if (parsed.unsupported) {
+      pushAiSystemMessage('지원하지 않는 AI 봇입니다. 사용 가능 명령어: /요약봇, /퀴즈봇, /검색봇');
+      return;
+    }
+
+    // 2) 실행할 봇/모드 결정
+    let effectiveBotType = selectedBotType;
+    let effectiveAgentName = BOT_BY_TYPE[selectedBotType]?.agentName;
+    let effectiveRunMode = aiRunMode;
+    let effectiveMessage = rawMessage;
+
+    if (parsed.hasCommand) {
+      effectiveBotType = parsed.botType;
+      effectiveAgentName = parsed.agentName;
+      effectiveRunMode = 'single';
+      effectiveMessage = parsed.message;
+      // 선택 봇도 명령어에 맞춰 동기화
+      setSelectedBotType(parsed.botType);
+      setAiRunMode('single');
+
+      if (!effectiveMessage) {
+        const guideByBot = {
+          summary_bot: '요약할 내용을 입력해주세요.',
+          quiz_bot: '퀴즈로 만들 내용을 입력해주세요.',
+          search_bot: '검색할 주제를 입력해주세요.'
+        };
+        pushAiSystemMessage(guideByBot[parsed.botType] || '질문 내용을 입력해주세요.');
+        return;
+      }
+    }
+
     setAiInput('');
     setIsAiStreaming(true);
-    
-    // Add user message to state
+
+    // Add user message to state (슬래시 명령어 제거된 내용 표시)
     const userMsgObj = {
       id: Date.now(),
       senderName: myDisplayName,
-      content: userMsg,
+      content: effectiveMessage,
       isUser: true
     };
     setAiMessages(prev => [...prev, userMsgObj]);
-    
+
+    // 3) 요청 body 구성
+    let requestBody;
+    if (effectiveRunMode === 'all_bots') {
+      // 검색봇 → 요약봇 → 퀴즈봇 순서
+      const orderedTypes = ['search_bot', 'summary_bot', 'quiz_bot'];
+      requestBody = {
+        studyRoomId: study.id,
+        roomTitle: study.title || study.name || '',
+        message: effectiveMessage,
+        rawMessage,
+        runMode: 'all_bots',
+        mode: 'group_study_ai',
+        agents: orderedTypes.map(t => ({
+          botType: t,
+          agentName: BOT_BY_TYPE[t].agentName,
+          displayName: BOT_BY_TYPE[t].displayName,
+          modelProvider: BOT_BY_TYPE[t].modelProvider
+        })),
+        stream: true
+      };
+    } else {
+      requestBody = {
+        studyRoomId: study.id,
+        roomTitle: study.title || study.name || '',
+        message: effectiveMessage,
+        rawMessage,
+        botType: effectiveBotType,
+        agentName: effectiveAgentName,
+        runMode: 'single',
+        mode: 'group_study_ai',
+        stream: true
+      };
+    }
+
     const token = localStorage.getItem('token');
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
     const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `http://${hostname}:8080`;
-    
+
     try {
       const response = await fetch(`${API_BASE_URL}/api/groups/${study.id}/chats/stream`, {
         method: 'POST',
@@ -481,13 +693,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
           'Content-Type': 'application/json',
           'Authorization': token ? `Bearer ${token}` : ''
         },
-        body: JSON.stringify({
-          message: userMsg,
-          mode: 'multi_agent_discussion',
-          rounds: 3,
-          showFinalSynthesis: true,
-          agents: [] // empty array defaults to Summary, Quiz, and Search agent
-        })
+        body: JSON.stringify(requestBody)
       });
       
       if (!response.ok) {
@@ -518,7 +724,13 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                 console.log("AI Stream done");
                 continue;
               }
-              
+
+              // error 이벤트 페이로드 (agentName 없이 message/errorMessage만 옴)
+              if (!parsed.agentName && (parsed.errorMessage || parsed.message)) {
+                pushAiSystemMessage(parsed.errorMessage || parsed.message);
+                continue;
+              }
+
               if (parsed.agentName && parsed.content) {
                 setAiMessages(prev => {
                   if (prev.length === 0) return prev;
@@ -538,6 +750,9 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                       {
                         id: Date.now() + Math.random(),
                         senderName: parsed.agentName,
+                        botType: parsed.botType || null,
+                        displayName: parsed.displayName || null,
+                        emoji: parsed.emoji || null,
                         content: parsed.content,
                         isUser: false
                       }
@@ -632,7 +847,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
             {/* Text Logo Area */}
             <div style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '6px' }}>
-              <span style={{ fontSize: '20px', fontWeight: '900', letterSpacing: '-0.5px', background: 'linear-gradient(90deg, #84cc16, #eab308, #f97316)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+              <span style={{ fontSize: '20px', fontWeight: '900', letterSpacing: '-0.5px', background: 'linear-gradient(90deg, #60C95A, #22c55e, #16a34a)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
                 StudyBridge
               </span>
             </div>
@@ -651,11 +866,11 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
           {/* Right Controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', backgroundColor: 'rgba(255,255,255,0.05)', padding: '6px 12px', borderRadius: '20px' }}>
-              <div onClick={() => setIsMicOn(!isMicOn)} style={{ display: 'flex', alignItems: 'center' }}>
-                {isMicOn ? <Mic size={18} color="#D1D5DB" cursor="pointer" /> : <MicOff size={18} color="#F87171" cursor="pointer" />}
+              <div onClick={() => setIsMicOn(!isMicOn)} style={{ display: 'flex', alignItems: 'center' }} title={isMicOn ? '마이크 ON' : '마이크 OFF'}>
+                {isMicOn ? <Mic size={18} color="#10B981" cursor="pointer" /> : <MicOff size={18} color="#EF4444" cursor="pointer" />}
               </div>
-              <div onClick={() => setIsVideoOn(!isVideoOn)} style={{ display: 'flex', alignItems: 'center' }}>
-                {isVideoOn ? <Video size={18} color="#D1D5DB" cursor="pointer" /> : <VideoOff size={18} color="#F87171" cursor="pointer" />}
+              <div onClick={() => setIsVideoOn(!isVideoOn)} style={{ display: 'flex', alignItems: 'center' }} title={isVideoOn ? '카메라 ON' : '카메라 OFF'}>
+                {isVideoOn ? <Video size={18} color="#10B981" cursor="pointer" /> : <VideoOff size={18} color="#EF4444" cursor="pointer" />}
               </div>
               <Settings size={18} color="#D1D5DB" cursor="pointer" onClick={() => setShowSettings(true)} />
             </div>
@@ -907,8 +1122,8 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                     padding: '14px 0',
                     border: 'none',
                     background: 'none',
-                    color: chatTab === 'normal' ? '#3B82F6' : '#9CA3AF',
-                    borderBottom: chatTab === 'normal' ? '2px solid #3B82F6' : '2px solid transparent',
+                    color: chatTab === 'normal' ? '#60C95A' : '#9CA3AF',
+                    borderBottom: chatTab === 'normal' ? '2px solid #60C95A' : '2px solid transparent',
                     fontSize: '14px',
                     fontWeight: '700',
                     cursor: 'pointer',
@@ -923,8 +1138,8 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                     padding: '14px 0',
                     border: 'none',
                     background: 'none',
-                    color: chatTab === 'ai' ? '#3B82F6' : '#9CA3AF',
-                    borderBottom: chatTab === 'ai' ? '2px solid #3B82F6' : '2px solid transparent',
+                    color: chatTab === 'ai' ? '#60C95A' : '#9CA3AF',
+                    borderBottom: chatTab === 'ai' ? '2px solid #60C95A' : '2px solid transparent',
                     fontSize: '14px',
                     fontWeight: '700',
                     cursor: 'pointer',
@@ -998,34 +1213,113 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                 <>
                   <div className="custom-scrollbar" style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                     {/* Notice Box */}
-                    <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#60A5FA', fontSize: '13px', fontWeight: '700', marginBottom: '8px' }}>
-                        <AlertTriangle size={16} /> AI 토론 안내
+                    <div style={{ backgroundColor: 'rgba(96, 201, 90, 0.12)', border: '1px solid rgba(96, 201, 90, 0.28)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#60C95A', fontSize: '13px', fontWeight: '700', marginBottom: '8px' }}>
+                        <Sparkles size={16} /> AI 스터디 봇
                       </div>
-                      <div style={{ color: '#93C5FD', fontSize: '12px', lineHeight: '1.6', wordBreak: 'keep-all' }}>
-                        에이전트들에게 질문하면 요약봇, 퀴즈봇, 검색봇 등 다중 에이전트들이 실시간으로 토론하며 솔루션을 탐색합니다.
+                      <div style={{ color: '#CFEFCB', fontSize: '12px', lineHeight: '1.6', wordBreak: 'keep-all' }}>
+                        요약봇 📝, 퀴즈봇 🧩, 검색봇 🔎이 스터디 질문을 함께 분석하고 실시간으로 답변을 구성합니다.
+                      </div>
+                    </div>
+
+                    {/* 봇 선택 영역 */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <div style={{ fontSize: '12px', fontWeight: '700', color: '#F8FAFC' }}>사용할 AI 봇 선택</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {GROUP_STUDY_AI_BOTS.map((bot) => {
+                          const isSelected = aiRunMode === 'single' && selectedBotType === bot.botType;
+                          return (
+                            <button
+                              key={bot.botType}
+                              onClick={() => { setSelectedBotType(bot.botType); setAiRunMode('single'); }}
+                              style={{
+                                textAlign: 'left',
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: '10px',
+                                padding: '12px 14px',
+                                borderRadius: '12px',
+                                cursor: 'pointer',
+                                backgroundColor: isSelected ? 'rgba(96, 201, 90, 0.12)' : '#172033',
+                                border: `1px solid ${isSelected ? '#60C95A' : '#24324A'}`,
+                                outline: 'none',
+                                transition: 'all 0.15s ease'
+                              }}
+                            >
+                              <span style={{ fontSize: '20px', lineHeight: '1.2' }}>{bot.emoji}</span>
+                              <span style={{ display: 'flex', flexDirection: 'column', gap: '3px', flex: 1 }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <span style={{ fontSize: '13px', fontWeight: '700', color: isSelected ? '#60C95A' : '#F8FAFC' }}>{bot.displayName}</span>
+                                  <span style={{ fontSize: '10px', color: '#94A3B8', backgroundColor: '#0F172A', border: '1px solid #24324A', borderRadius: '6px', padding: '1px 6px' }}>{bot.modelLabel}</span>
+                                </span>
+                                <span style={{ fontSize: '11px', color: '#94A3B8', lineHeight: '1.5', wordBreak: 'keep-all' }}>{bot.description}</span>
+                              </span>
+                              {isSelected && <Check size={16} color="#60C95A" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* 실행 모드 */}
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '2px' }}>
+                        <button
+                          onClick={() => setAiRunMode('single')}
+                          style={{
+                            flex: 1, padding: '8px 0', borderRadius: '8px', fontSize: '11px', fontWeight: '700', cursor: 'pointer', outline: 'none',
+                            backgroundColor: aiRunMode === 'single' ? 'rgba(96, 201, 90, 0.12)' : '#172033',
+                            border: `1px solid ${aiRunMode === 'single' ? '#60C95A' : '#24324A'}`,
+                            color: aiRunMode === 'single' ? '#60C95A' : '#94A3B8'
+                          }}
+                        >
+                          선택 봇만 실행
+                        </button>
+                        <button
+                          onClick={() => setAiRunMode('all_bots')}
+                          style={{
+                            flex: 1, padding: '8px 0', borderRadius: '8px', fontSize: '11px', fontWeight: '700', cursor: 'pointer', outline: 'none',
+                            backgroundColor: aiRunMode === 'all_bots' ? 'rgba(96, 201, 90, 0.12)' : '#172033',
+                            border: `1px solid ${aiRunMode === 'all_bots' ? '#60C95A' : '#24324A'}`,
+                            color: aiRunMode === 'all_bots' ? '#60C95A' : '#94A3B8'
+                          }}
+                        >
+                          3개 봇 전체 토론
+                        </button>
+                      </div>
+                      {aiRunMode === 'all_bots' && (
+                        <div style={{ fontSize: '11px', color: '#94A3B8', lineHeight: '1.5', wordBreak: 'keep-all' }}>
+                          검색봇이 자료를 찾고, 요약봇이 핵심을 정리한 뒤, 퀴즈봇이 확인 문제를 생성합니다.
+                        </div>
+                      )}
+                      <div style={{ fontSize: '11px', color: '#64748B', lineHeight: '1.5', wordBreak: 'keep-all' }}>
+                        <span style={{ color: '#60C95A', fontWeight: '700' }}>/요약봇</span>, <span style={{ color: '#60C95A', fontWeight: '700' }}>/퀴즈봇</span>, <span style={{ color: '#60C95A', fontWeight: '700' }}>/검색봇</span>으로 원하는 AI 봇을 바로 호출할 수 있습니다.
                       </div>
                     </div>
 
                     {/* AI Chat Messages */}
                     {aiMessages.map((msg) => {
                       const isMe = msg.isUser;
-                      let colors = { bg: '#1E293B', border: 'rgba(255,255,255,0.08)', text: '#E5E7EB' };
-                      if (msg.senderName === 'SummaryAgent') {
-                        colors = { bg: '#1E3A8A', border: '#3B82F6', text: '#93C5FD' };
-                      } else if (msg.senderName === 'QuizAgent') {
-                        colors = { bg: '#064E3B', border: '#10B981', text: '#A7F3D0' };
-                      } else if (msg.senderName === 'SearchAgent') {
-                        colors = { bg: '#581C87', border: '#8B5CF6', text: '#DDD6FE' };
-                      } else if (msg.isUser) {
+                      const theme = (!isMe && !msg.isSystem) ? resolveBotTheme(msg.senderName, msg.botType) : null;
+                      let colors;
+                      if (isMe) {
                         colors = { bg: '#16A34A', border: '#22C55E', text: '#FFFFFF' };
+                      } else if (msg.isSystem) {
+                        colors = { bg: '#172033', border: '#24324A', text: '#94A3B8' };
+                      } else if (theme) {
+                        colors = { bg: theme.bg, border: theme.accent, text: theme.text };
+                      } else {
+                        colors = { bg: '#172033', border: 'rgba(255,255,255,0.08)', text: '#E5E7EB' };
                       }
-                      
+                      const label = isMe
+                        ? msg.senderName
+                        : (msg.isSystem ? '안내' : (msg.displayName || theme?.displayName || msg.senderName));
+                      const labelEmoji = (!isMe && !msg.isSystem) ? (msg.emoji || theme?.emoji || '') : '';
+
                       return (
                         <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignSelf: isMe ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
                           <span style={{ fontSize: '11px', color: '#9CA3AF', alignSelf: isMe ? 'flex-end' : 'flex-start', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            {!isMe && <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: colors.border }} />}
-                            {msg.senderName}
+                            {!isMe && !msg.isSystem && <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: colors.border }} />}
+                            {labelEmoji && <span>{labelEmoji}</span>}
+                            {label}
                           </span>
                           <div style={{
                             backgroundColor: colors.bg,
@@ -1036,6 +1330,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                             fontSize: '13px',
                             lineHeight: '1.5',
                             wordBreak: 'break-all',
+                            whiteSpace: 'pre-wrap',
                             boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
                           }}>
                             {msg.content}
@@ -1054,13 +1349,19 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
 
                   {/* AI Input */}
                   <div style={{ padding: '20px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: '24px', padding: '8px 16px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: '24px', padding: '8px 16px', border: `1px solid ${aiInputFocused ? '#60C95A' : 'rgba(255,255,255,0.1)'}`, transition: 'border-color 0.15s ease' }}
+                    >
                       <input
                         type="text"
-                        placeholder="AI에게 질문해보세요..."
+                        placeholder={aiRunMode === 'all_bots'
+                          ? '3개 봇 전체 토론할 학습 주제를 입력하세요...'
+                          : (BOT_BY_TYPE[selectedBotType]?.placeholder || 'AI에게 질문해보세요...')}
                         value={aiInput}
                         onChange={(e) => setAiInput(e.target.value)}
                         disabled={isAiStreaming}
+                        onFocus={() => setAiInputFocused(true)}
+                        onBlur={() => setAiInputFocused(false)}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') handleSendAiMessage();
                         }}
@@ -1069,7 +1370,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                       <button
                         onClick={handleSendAiMessage}
                         disabled={isAiStreaming || !aiInput.trim()}
-                        style={{ background: isAiStreaming ? '#4B5563' : 'linear-gradient(135deg, #3B82F6, #2563EB)', border: 'none', width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: isAiStreaming ? 'not-allowed' : 'pointer', marginLeft: '8px', boxShadow: isAiStreaming ? 'none' : '0 2px 8px rgba(59, 130, 246, 0.3)' }}
+                        style={{ background: isAiStreaming ? '#4B5563' : 'linear-gradient(135deg, #60C95A, #4FB848)', border: 'none', width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: isAiStreaming ? 'not-allowed' : 'pointer', marginLeft: '8px', boxShadow: isAiStreaming ? 'none' : '0 2px 8px rgba(96, 201, 90, 0.3)' }}
                       >
                         <Send size={14} color="white" style={{ marginLeft: '-2px', marginTop: '2px' }} />
                       </button>
@@ -1280,11 +1581,17 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '4px' }}>초기 장치 설정</div>
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F3F4F6', fontSize: '14px' }}>
-                          카메라 <div style={{ width: '36px', height: '20px', backgroundColor: '#22C55E', borderRadius: '10px', position: 'relative' }}><div style={{ width: '16px', height: '16px', backgroundColor: 'white', borderRadius: '50%', position: 'absolute', right: '2px', top: '2px' }} /></div>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F3F4F6', fontSize: '14px', cursor: 'pointer' }} onClick={handleToggleInitialCamera}>
+                          카메라
+                          <div style={{ width: '36px', height: '20px', backgroundColor: initialCameraEnabled ? '#22C55E' : '#4B5563', borderRadius: '10px', position: 'relative', transition: 'background-color 0.15s ease' }}>
+                            <div style={{ width: '16px', height: '16px', backgroundColor: 'white', borderRadius: '50%', position: 'absolute', top: '2px', left: initialCameraEnabled ? '18px' : '2px', transition: 'left 0.15s ease' }} />
+                          </div>
                         </label>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F3F4F6', fontSize: '14px' }}>
-                          마이크 <div style={{ width: '36px', height: '20px', backgroundColor: '#4B5563', borderRadius: '10px', position: 'relative' }}><div style={{ width: '16px', height: '16px', backgroundColor: 'white', borderRadius: '50%', position: 'absolute', left: '2px', top: '2px' }} /></div>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F3F4F6', fontSize: '14px', cursor: 'pointer' }} onClick={handleToggleInitialMic}>
+                          마이크
+                          <div style={{ width: '36px', height: '20px', backgroundColor: initialMicEnabled ? '#22C55E' : '#4B5563', borderRadius: '10px', position: 'relative', transition: 'background-color 0.15s ease' }}>
+                            <div style={{ width: '16px', height: '16px', backgroundColor: 'white', borderRadius: '50%', position: 'absolute', top: '2px', left: initialMicEnabled ? '18px' : '2px', transition: 'left 0.15s ease' }} />
+                          </div>
                         </label>
                       </div>
                       <div style={{ fontSize: '12px', color: '#9CA3AF' }}>* 입장하는 인원들의 초기장치를 제어합니다.</div>

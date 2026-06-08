@@ -52,6 +52,14 @@ public class ChatDTO {
         private String persona;
         // 특정 에이전트 지칭 (@에이전트이름 또는 N번만 답해줘)
         private String targetAgentId;
+        // 그룹스터디 AI 봇(요약/퀴즈/검색) 필드
+        private String rawMessage;      // 슬래시 명령어 포함 원본 메시지 (서버 2차 파싱용)
+        private String botType;         // summary_bot | quiz_bot | search_bot
+        private String agentName;       // SummaryAgent | QuizAgent | TavilyAgent
+        private String runMode;         // single | all_bots
+        private Long studyRoomId;
+        private String roomTitle;
+        private Boolean stream;
     }
 
     @Getter
@@ -74,6 +82,10 @@ public class ChatDTO {
         private String customInstruction;
         private String custom_instruction;
         private String persona;
+        // 그룹스터디 AI 봇 식별 필드
+        private String botType;
+        private String displayName;
+        private String modelProvider;
     }
 
     @Getter
