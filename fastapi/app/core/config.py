@@ -112,7 +112,8 @@ STUDY_TIME_MODEL_PATH: str = os.getenv("STUDY_TIME_MODEL_PATH", "./models/study_
 # ----- AI 응답 타임아웃 -----
 AI_RESPONSE_TIMEOUT_SECONDS: int      = int(os.getenv("AI_RESPONSE_TIMEOUT_SECONDS", "30"))
 QUIZ_GENERATION_TIMEOUT_SECONDS: int  = int(os.getenv("QUIZ_GENERATION_TIMEOUT_SECONDS", "15"))
-MULTI_CHAT_TIMEOUT_SECONDS: int       = int(os.getenv("MULTI_CHAT_TIMEOUT_SECONDS", "30"))
+# 1차/2차/3차 파이프라인(각 단계 병렬)을 수용하기 위해 상향. Spring multi_agent 타임아웃(300s) 이내.
+MULTI_CHAT_TIMEOUT_SECONDS: int       = int(os.getenv("MULTI_CHAT_TIMEOUT_SECONDS", "150"))
 
 # ----- Tavily 검색 깊이 -----
 TAVILY_SEARCH_DEPTH: str = os.getenv("TAVILY_SEARCH_DEPTH", "basic")

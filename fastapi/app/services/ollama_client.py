@@ -41,6 +41,9 @@ def ask_ollama(
     max_tokens: Optional[int] = None,
     knowledge_level: Optional[str] = None,
     top_p: Optional[float] = None,
+    top_k: Optional[int] = None,
+    repeat_penalty: Optional[float] = None,
+    timeout: Optional[int] = None,
 ) -> str:
     """
     Ollama /api/chat 엔드포인트를 호출한다.
@@ -69,6 +72,20 @@ def ask_ollama(
     else:
         _num_predict = OLLAMA_NUM_PREDICT
 
+    _timeout = timeout if timeout is not None else OLLAMA_TIMEOUT
+
+    options = {
+        "temperature":  _temperature,
+        "top_p":        _top_p,
+        "num_predict":  _num_predict,
+        "num_ctx":      OLLAMA_CONTEXT_LENGTH,
+    }
+    # 선택적 샘플링 파라미터: 전달된 경우에만 추가 (미전달 시 Ollama 기본값 사용)
+    if top_k is not None:
+        options["top_k"] = top_k
+    if repeat_penalty is not None:
+        options["repeat_penalty"] = repeat_penalty
+
     url = f"{OLLAMA_BASE_URL}/api/chat"
     payload = {
         "model": _model,
@@ -77,16 +94,11 @@ def ask_ollama(
             {"role": "user",   "content": user_prompt},
         ],
         "stream": False,
-        "options": {
-            "temperature":  _temperature,
-            "top_p":        _top_p,
-            "num_predict":  _num_predict,
-            "num_ctx":      OLLAMA_CONTEXT_LENGTH,
-        },
+        "options": options,
     }
 
     try:
-        resp = requests.post(url, json=payload, timeout=OLLAMA_TIMEOUT)
+        resp = requests.post(url, json=payload, timeout=_timeout)
         resp.raise_for_status()
         data = resp.json()
         content = data.get("message", {}).get("content", "")
@@ -98,8 +110,8 @@ def ask_ollama(
         logger.warning("Ollama 서버 연결 실패. URL=%s", OLLAMA_BASE_URL)
         return _connection_fallback(_model)
     except requests.Timeout:
-        logger.warning("Ollama 요청 타임아웃 (%ss). model=%s", OLLAMA_TIMEOUT, _model)
-        return _timeout_fallback(OLLAMA_TIMEOUT)
+        logger.warning("Ollama 요청 타임아웃 (%ss). model=%s", _timeout, _model)
+        return _timeout_fallback(_timeout)
     except Exception as e:
         logger.error("Ollama 호출 중 예외: %s", e)
         return _error_fallback(_model, e)

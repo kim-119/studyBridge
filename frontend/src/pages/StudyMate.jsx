@@ -23,8 +23,8 @@ const ProcessStepsAccordion = ({ processSteps }) => {
   const [open, setOpen] = useState(false);
   if (!processSteps) return null;
 
-  const { initialAnswer, validatedAnswer, peerFeedback = [] } = processSteps;
-  const hasAny = initialAnswer || validatedAnswer || (peerFeedback && peerFeedback.length > 0);
+  const { initialAnswer, validatedAnswer, peerFeedback = [], personalityValidation = null } = processSteps;
+  const hasAny = initialAnswer || validatedAnswer || (peerFeedback && peerFeedback.length > 0) || personalityValidation;
   if (!hasAny) return null;
 
   const stepCardStyle = { padding: '10px 12px', borderRadius: '10px', backgroundColor: 'rgba(0,0,0,0.03)', fontSize: '12px' };
@@ -79,7 +79,23 @@ const ProcessStepsAccordion = ({ processSteps }) => {
           )}
 
           <div style={stepCardStyle}>
-            <div style={{ fontWeight: '700', marginBottom: '4px' }}>3차 상호 피드백</div>
+            <div style={{ fontWeight: '700', marginBottom: '4px' }}>3차 상호 피드백 및 성격 검증</div>
+            {personalityValidation && (
+              <div style={{ marginBottom: '6px', fontSize: '11px', color: 'var(--color-text-muted)' }}>
+                성격 검증: <strong>{personalityValidation.personalityType}</strong>
+                {typeof personalityValidation.score === 'number' && (
+                  <span style={{ marginLeft: 6, padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.06)' }}>
+                    score {personalityValidation.score.toFixed(2)}
+                  </span>
+                )}
+                <span style={{ marginLeft: 6, color: personalityValidation.passed ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+                  {personalityValidation.passed ? '통과' : '보완 필요'}
+                </span>
+                {personalityValidation.note && (
+                  <div style={{ marginTop: 2 }}>{personalityValidation.note}</div>
+                )}
+              </div>
+            )}
             {peerFeedback && peerFeedback.length > 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 {peerFeedback.map((fb, i) => (
@@ -99,6 +115,25 @@ const ProcessStepsAccordion = ({ processSteps }) => {
   );
 };
 
+// 응답 생성 중 진행 단계를 경과 시간 기준으로 안내한다.
+// (백엔드는 1차→2차→3차를 한 번의 호출에서 순차 수행하므로 경과 시간으로 단계명을 추정해 표시한다.)
+const TYPING_STAGES = [
+  { after: 0, label: '1차 빠른 답변 생성 중...' },
+  { after: 12, label: '2차 검증 답안 작성 중...' },
+  { after: 26, label: '3차 에이전트 피드백 정리 중...' },
+];
+
+const StagedTypingLabel = () => {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const startedAt = Date.now();
+    const timer = setInterval(() => setElapsed((Date.now() - startedAt) / 1000), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const current = [...TYPING_STAGES].reverse().find((s) => elapsed >= s.after) || TYPING_STAGES[0];
+  return <>{current.label}</>;
+};
+
 const parsePersonaTag = (persona, tagName) => {
   const match = String(persona || '').match(new RegExp(`\\[${tagName}:\\s*([^\\]]+)\\]`));
   return match ? match[1].trim() : '';
@@ -112,11 +147,32 @@ const extractAgentProcessSteps = (processSteps, agentName) => {
   const peerFeedback = (processSteps.peerFeedback || []).filter(
     (fb) => fb.fromAgent === agentName || fb.toAgent === agentName
   );
-  if (!initialAnswer && !validatedAnswer && peerFeedback.length === 0) return null;
-  return { initialAnswer, validatedAnswer, peerFeedback };
+  const personalityValidation = (processSteps.personalityValidationSummary || []).find(
+    (s) => s.agentName === agentName
+  ) || null;
+  if (!initialAnswer && !validatedAnswer && peerFeedback.length === 0 && !personalityValidation) return null;
+  return { initialAnswer, validatedAnswer, peerFeedback, personalityValidation };
+};
+
+// DB에서 불러온 기록의 processSteps(전체 map)를 라이브 메시지와 동일한 에이전트별 슬라이스로 변환한다.
+// (라이브 메시지는 이미 슬라이스 형태이므로 initialAnswers 키 유무로 미슬라이스 여부를 판별 — 이중 슬라이스 방지)
+const hydrateHistoryProcessSteps = (history) => {
+  if (!Array.isArray(history)) return history;
+  return history.map((msg) => {
+    if (msg && msg.sender === 'AI' && msg.processSteps && msg.processSteps.initialAnswers !== undefined) {
+      const senderName = msg.senderName || msg.sender_name;
+      return { ...msg, processSteps: extractAgentProcessSteps(msg.processSteps, senderName) };
+    }
+    return msg;
+  });
 };
 
 const getAgentId = (agent) => agent?.id ?? agent?.agentId;
+
+// 화면에 표시되는 채팅방/그룹 제목은 항상 '스터디 브릿지'로 고정한다.
+// 내부 roomId, agentId, DB id 및 저장된 roomName 값은 절대 변경하지 않고 표시명만 고정한다.
+const STUDYBRIDGE_ROOM_TITLE = '스터디 브릿지';
+const getDisplayRoomTitle = () => STUDYBRIDGE_ROOM_TITLE;
 
 const getAgentKnowledgeLevel = (agent) => {
   return agent?.knowledgeLevel
@@ -320,7 +376,8 @@ export default function StudyMate() {
     }
 
     const payloadAgents = createdAgents.map(agent => buildCanonicalAgentPayload(agent));
-    const finalRoomName = roomName.trim() || createdAgents.map(a => a.name.trim()).join(' & ') + '의 그룹 스터디';
+    // 표시명은 항상 '스터디 브릿지'로 고정되므로, 저장되는 기본 roomName도 동일하게 맞춘다.
+    const finalRoomName = roomName.trim() || STUDYBRIDGE_ROOM_TITLE;
 
     const payload = {
       roomName: finalRoomName,
@@ -373,10 +430,12 @@ export default function StudyMate() {
 
     // 3. 최신 채팅 이력을 비동기 조회하여 동기화
     try {
-      const history = await agentService.getChatHistory(userId, agentId);
+      const rawHistory = await agentService.getChatHistory(userId, agentId);
+      // DB에 저장된 processSteps(전체 map)를 에이전트별 슬라이스로 변환해 아코디언을 복원
+      const history = hydrateHistoryProcessSteps(rawHistory);
       // 캐시 갱신
       setRoomHistories(prev => ({ ...prev, [agentId]: history || [] }));
-      
+
       // 비동기 복귀 시점에도 여전히 이 방이 활성화되어 있을 때만 UI에 반영하여 다른 방 간섭 방지
       if (selectedAgentIdRef.current === agentId) {
         setChatHistory(history || []);
@@ -415,7 +474,83 @@ export default function StudyMate() {
     // 4. 해당 방의 타이핑/로딩 상태 활성화 (전체 방 블로킹 X)
     setTypingRooms((prev) => ({ ...prev, [agentId]: true }));
 
+    // 이번 턴의 AI 메시지를 통째로 교체(누적 갱신)한다. 단계 도착마다 호출된다.
+    const setTurnAiMessages = (aiMsgs) => {
+      const merge = (list) => {
+        const kept = (list || []).filter((m) => !(m.sender === 'AI' && m.parentId === userMsg.id));
+        return [...kept, ...aiMsgs];
+      };
+      setRoomHistories((prev) => ({ ...prev, [agentId]: merge(prev[agentId]) }));
+      if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => merge(prev));
+    };
+
+    // 누적 processSteps(전체 map)로부터 에이전트별 AI 버블을 만든다 (라이브와 동일한 슬라이서 재사용).
+    const buildStreamAiMsgs = (ps) => {
+      const source = (ps.validatedAnswers && ps.validatedAnswers.length) ? ps.validatedAnswers : (ps.initialAnswers || []);
+      return source.map((row, i) => {
+        const name = row.agentName;
+        const va = (ps.validatedAnswers || []).find((a) => a.agentName === name);
+        const ia = (ps.initialAnswers || []).find((a) => a.agentName === name);
+        const content = (va && va.answer) || (ia && ia.answer) || '';
+        return {
+          id: `${userMsg.id}::${name}::${i}`,
+          content,
+          sender: 'AI',
+          senderName: name,
+          createdAt: new Date().toISOString(),
+          parentId: userMsg.id,
+          processSteps: extractAgentProcessSteps(ps, name),
+        };
+      });
+    };
+
     try {
+      // ── P2: 단계별 SSE 선출력 우선 시도 (실패 시 블로킹 폴백) ──
+      const STREAMING_ENABLED = (import.meta.env.VITE_STUDYMATE_SSE ?? 'true') !== 'false';
+      if (STREAMING_ENABLED) {
+        const fullPS = { initialAnswers: [], validatedAnswers: [], peerFeedback: [], personalityValidationSummary: [] };
+        let streamRendered = false;
+        let streamCompleted = false;
+        try {
+          await agentService.streamMessage(userId, agentId, {
+            message: inputMsg,
+            learningMode: selectedAgent?.learningMode || 'basic',
+            rounds: 1,
+          }, {
+            onStageComplete: (d) => {
+              if (!d) return;
+              if (d.stage === 1) fullPS.initialAnswers = d.answers || [];
+              else if (d.stage === 2) fullPS.validatedAnswers = d.answers || [];
+              else if (d.stage === 3) {
+                fullPS.peerFeedback = d.feedbacks || [];
+                fullPS.personalityValidationSummary = d.personalityValidationSummary || [];
+              }
+              streamRendered = true;
+              setTurnAiMessages(buildStreamAiMsgs(fullPS));
+            },
+            onAllComplete: (d) => {
+              streamCompleted = true;
+              const ps = (d && d.processSteps) || fullPS;
+              setTurnAiMessages(buildStreamAiMsgs(ps));
+            },
+            onError: () => { throw new Error('stream error event'); },
+          });
+          if (!streamCompleted && !streamRendered) {
+            throw new Error('empty stream');
+          }
+          pendingDetailParentId.current = null;
+          return; // 성공 — 바깥 finally에서 typing 해제
+        } catch (streamErr) {
+          console.warn('[StudyMate] SSE 스트리밍 실패', streamErr);
+          if (streamRendered) {
+            // 일부 단계가 이미 렌더됨 → 블로킹 재실행 시 중복되므로 폴백하지 않는다.
+            pendingDetailParentId.current = null;
+            return;
+          }
+          // 아무것도 못 받음 → 아래 블로킹 로직으로 폴백
+        }
+      }
+
       console.debug('[StudyMate] chat request', {
         userId,
         agentId,
@@ -668,7 +803,7 @@ export default function StudyMate() {
                           <div className={`dt-status-dot ${isTyping ? 'busy' : isActive ? 'online' : 'idle'}`} />
                         </div>
                         <div className="dt-agent-info">
-                          <div className="dt-agent-name">{agent.roomName || agent.name}</div>
+                          <div className="dt-agent-name">{getDisplayRoomTitle(agent)}</div>
                           <div className="dt-agent-tags">
                             {agent.agents && agent.agents.length > 0 ? (
                               agent.agents.map((ag, idx) => (
@@ -742,7 +877,7 @@ export default function StudyMate() {
                 margin: '0 0 12px 0', fontSize: '28px', fontWeight: '900', letterSpacing: '-0.5px',
                 background: 'linear-gradient(135deg, #111827 0%, #374151 100%)',
                 WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', position: 'relative', zIndex: 1 
-              }}>디지털 트윈 학습 세션</h2>
+              }}>스터디 브릿지</h2>
               <p style={{ margin: 0, color: '#6b7280', fontSize: '15px', fontWeight: '500', textAlign: 'center', lineHeight: '1.6', position: 'relative', zIndex: 1 }}>
                 왼쪽 패널에서 에이전트를 선택하여 지식 동기화를 시작하거나<br/>
                 새로운 AI 학습메이트를 생성하세요.
@@ -750,7 +885,7 @@ export default function StudyMate() {
             </div>
           ) : (
             <div className="chat-container">
-              {/* ── 디지털 트윈 세션 헤더 ── */}
+              {/* ── 스터디 브릿지 세션 헤더 ── */}
               <div className="dt-session-header">
                 {/* 상단: 아이덴티티 + 상세보기 (전체화면 시 숨김) */}
                 { (isLeftOpen || isRightOpen) && (
@@ -762,10 +897,7 @@ export default function StudyMate() {
                         </div>
                         <div>
                           <div className="dt-session-title">
-                            {selectedAgent.roomName || `${selectedAgent.name}의 그룹 스터디`}
-                          </div>
-                          <div className="dt-session-sub">
-                            Digital Twin Learning Session
+                            {getDisplayRoomTitle(selectedAgent)}
                           </div>
                         </div>
                       </div>
@@ -882,7 +1014,7 @@ export default function StudyMate() {
                   )}
                   {typingRooms[getAgentId(selectedAgent)] && (
                     <div className="chat-bubble-container ai">
-                      <div className="chat-bubble-sender">AI 에이전트 검토 중...</div>
+                      <div className="chat-bubble-sender"><StagedTypingLabel /></div>
                       <div className="chat-bubble ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 4 }}>
                         <span className="dot" /><span className="dot" /><span className="dot" />
                       </div>
@@ -1523,7 +1655,7 @@ export default function StudyMate() {
                   스터디 그룹
                 </h4>
                 <p style={{ margin: 0, fontSize: '13px', color: 'var(--color-text-muted)' }}>
-                  {selectedAgent.roomName || `${selectedAgent.name}의 그룹 스터디`}
+                  {getDisplayRoomTitle(selectedAgent)}
                 </p>
               </div>
 

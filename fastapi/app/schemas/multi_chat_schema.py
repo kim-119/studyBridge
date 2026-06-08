@@ -163,6 +163,61 @@ class ValidationSummary(BaseModel):
     rewrittenFeedbackCount: int = 0
 
 
+# ── 1차/2차/3차 생성 과정 (processSteps) ──────────────────────────────────────
+# 프론트엔드(StudyMate.jsx extractAgentProcessSteps / ProcessStepsAccordion)와 필드명을
+# 정확히 일치시킨다: initialAnswers[].{agentName,answer}, validatedAnswers[].{agentName,answer,score,issues,revised},
+# peerFeedback[].{fromAgent,toAgent,feedback}.
+
+class InitialAnswerStep(BaseModel):
+    agentName: str
+    answer: str
+    agentId: Optional[int] = None
+
+
+class ValidatedAnswerStep(BaseModel):
+    agentName: str
+    answer: str
+    agentId: Optional[int] = None
+    score: Optional[float] = None
+    issues: List[str] = Field(default_factory=list)
+    revised: bool = False
+
+
+class PeerFeedbackStep(BaseModel):
+    fromAgent: str
+    toAgent: str
+    feedback: str
+    personalityValidation: Optional[Dict[str, Any]] = None
+
+
+class PersonalityValidationItem(BaseModel):
+    agentName: Optional[str] = None
+    personalityType: Optional[str] = None
+    score: Optional[float] = None
+    passed: Optional[bool] = None
+    issues: List[str] = Field(default_factory=list)
+    note: Optional[str] = None
+
+
+class ProcessSteps(BaseModel):
+    initialAnswers: List[InitialAnswerStep] = Field(default_factory=list)
+    validatedAnswers: List[ValidatedAnswerStep] = Field(default_factory=list)
+    peerFeedback: List[PeerFeedbackStep] = Field(default_factory=list)
+    personalityValidationSummary: List[PersonalityValidationItem] = Field(default_factory=list)
+
+
+class StageInfo(BaseModel):
+    """프론트가 stages 우선 렌더링할 수 있는 단계별 구조."""
+    stage: int
+    title: str
+    provider: Optional[str] = None
+    status: str = "completed"
+    elapsedMs: Optional[int] = None
+    answers: List[Dict[str, Any]] = Field(default_factory=list)
+    feedbacks: List[Dict[str, Any]] = Field(default_factory=list)
+    personalityValidationSummary: List[PersonalityValidationItem] = Field(default_factory=list)
+
+
 class MultiChatResponse(BaseModel):
     mode: str = Field(..., description="응답 모드")
     answers: List[AgentAnswer] = Field(..., description="에이전트 답변 목록")
@@ -171,5 +226,9 @@ class MultiChatResponse(BaseModel):
     question: Optional[str] = Field(None, description="원본 질문")
     validation: Optional[ValidationSummary] = Field(None, description="검증 결과")
     feedbacks: List[Dict[str, Any]] = Field(default_factory=list, description="에이전트 간 피드백")
+    # 1차/2차/3차 생성 과정 (default 모드에서 생성, Spring이 그대로 패스스루)
+    processSteps: Optional[ProcessSteps] = Field(None, description="1차 초안/2차 검증/3차 상호 피드백")
+    # 단계별 구조 (provider/elapsedMs 포함, 프론트 stages 우선 렌더링용)
+    stages: Optional[List[StageInfo]] = Field(None, description="stage1/2/3 구조 (provider, elapsedMs)")
     # v0.8 debug metadata (debugMetadata=true 요청 시에만 반환)
     debugMetadata: Optional[DebugMetadata] = Field(None, description="debug metadata (관리자용)")

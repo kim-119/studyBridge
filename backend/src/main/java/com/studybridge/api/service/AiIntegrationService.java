@@ -1,5 +1,7 @@
 package com.studybridge.api.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.*;
 import com.studybridge.api.entity.*;
 import com.studybridge.api.repository.*;
@@ -21,6 +23,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class AiIntegrationService {
+
+        private static final ObjectMapper AI_OBJECT_MAPPER = new ObjectMapper();
 
         private final MaterialRepository materialRepository;
         private final MaterialSummaryRepository summaryRepository;
@@ -92,14 +96,7 @@ public class AiIntegrationService {
         public SummaryDTO getSummary(Long userId, Long materialId) {
                 Material material = getMaterialSafely(userId, materialId);
                 return summaryRepository.findByMaterial_MaterialId(materialId)
-                                .map(summary -> SummaryDTO.builder()
-                                                .summaryId(summary.getSummaryId())
-                                                .materialId(materialId)
-                                                .overview(summary.getOverview())
-                                                .coreContents(summary.getCoreContents())
-                                                .success(true)
-                                                .textStatus(textStatusFor(material, getTextToAnalyze(material)))
-                                                .build())
+                                .map(summary -> isSummaryUsable(summary) ? summaryDtoFromEntity(material, summary) : generateSummary(material))
                                 .orElseGet(() -> generateSummary(material));
         }
 
@@ -148,6 +145,184 @@ public class AiIntegrationService {
                         return response.get(key).toString();
                 }
                 return null;
+        }
+
+
+        @SuppressWarnings("unchecked")
+        private List<Map<String, Object>> aiMapList(Map response, String key) {
+                if (response != null && response.get(key) instanceof List) {
+                        List<Map<String, Object>> out = new java.util.ArrayList<>();
+                        for (Object item : (List<Object>) response.get(key)) {
+                                if (item instanceof Map) out.add((Map<String, Object>) item);
+                        }
+                        return out;
+                }
+                return null;
+        }
+
+        private List<String> aiStringList(Map response, String key) {
+                if (response != null && response.get(key) instanceof List) {
+                        List<String> out = new java.util.ArrayList<>();
+                        for (Object item : (List<?>) response.get(key)) {
+                                if (item != null && !item.toString().isBlank()) out.add(item.toString());
+                        }
+                        return out;
+                }
+                return null;
+        }
+
+        private String toJson(Object value, String fallback) {
+                if (value == null) return fallback;
+                if (value instanceof String) return (String) value;
+                try { return AI_OBJECT_MAPPER.writeValueAsString(value); } catch (Exception e) { return fallback; }
+        }
+
+        private Map<String, Object> parseJsonObject(String raw) {
+                if (raw == null || raw.isBlank()) return java.util.Collections.emptyMap();
+                try { return AI_OBJECT_MAPPER.readValue(raw, new TypeReference<Map<String, Object>>() {}); }
+                catch (Exception ignored) { return java.util.Collections.emptyMap(); }
+        }
+
+        private List<Map<String, Object>> parseJsonList(String raw) {
+                if (raw == null || raw.isBlank()) return java.util.Collections.emptyList();
+                try { return AI_OBJECT_MAPPER.readValue(raw, new TypeReference<List<Map<String, Object>>>() {}); }
+                catch (Exception ignored) { return java.util.Collections.emptyList(); }
+        }
+
+        @SuppressWarnings("unchecked")
+        private SummaryDTO summaryDtoFromEntity(Material material, MaterialSummary summary) {
+                Map<String, Object> envelope = parseJsonObject(summary.getCoreContents());
+                List<Map<String, Object>> sections = new java.util.ArrayList<>();
+                if (envelope.get("sections") instanceof List) {
+                        for (Object item : (List<Object>) envelope.get("sections")) {
+                                if (item instanceof Map) sections.add((Map<String, Object>) item);
+                        }
+                } else {
+                        sections.addAll(parseJsonList(summary.getCoreContents()));
+                }
+                List<String> keywords = new java.util.ArrayList<>();
+                Object kwRaw = envelope.get("keywords") != null ? envelope.get("keywords") : envelope.get("key_points");
+                if (kwRaw instanceof List) {
+                        for (Object kw : (List<Object>) kwRaw) if (kw != null && !kw.toString().isBlank()) keywords.add(kw.toString());
+                }
+                String summaryText = envelope.get("summary") != null ? envelope.get("summary").toString() : summary.getOverview();
+                String gptRaw = envelope.get("gpt_raw") != null ? envelope.get("gpt_raw").toString() : null;
+                return SummaryDTO.builder()
+                                .summaryId(summary.getSummaryId())
+                                .materialId(material.getMaterialId())
+                                .overview(summary.getOverview())
+                                .coreContents(summary.getCoreContents())
+                                .summary(summaryText)
+                                .key_points(keywords)
+                                .gpt_raw(gptRaw)
+                                .keywords(keywords)
+                                .sections(sections)
+                                .success(true)
+                                .textStatus(textStatusFor(material, getTextToAnalyze(material)))
+                                .build();
+        }
+
+        @SuppressWarnings("unchecked")
+        private boolean isSummaryUsable(MaterialSummary summary) {
+                if (summary == null) return false;
+                if (summary.getOverview() != null && !summary.getOverview().isBlank() && !"요약 생성 실패".equals(summary.getOverview())) return true;
+                String core = summary.getCoreContents();
+                if (core == null || core.isBlank()) return false;
+                String trimmed = core.trim();
+                if ("[]".equals(trimmed) || "{}".equals(trimmed)) return false;
+                Map<String, Object> envelope = parseJsonObject(core);
+                Object sections = envelope.get("sections");
+                if (sections instanceof List) return !((List<Object>) sections).isEmpty();
+                return !parseJsonList(core).isEmpty();
+        }
+
+        private String buildSummaryCoreContents(Map response) {
+                Map<String, Object> envelope = new LinkedHashMap<>();
+                Object sections = response != null ? response.get("sections") : null;
+                if (sections == null && response != null) sections = response.get("coreContents");
+                envelope.put("sections", sections != null ? sections : java.util.Collections.emptyList());
+                envelope.put("keywords", aiStringList(response, "keywords") != null ? aiStringList(response, "keywords") : aiStringList(response, "key_points"));
+                envelope.put("key_points", aiStringList(response, "key_points") != null ? aiStringList(response, "key_points") : aiStringList(response, "keywords"));
+                envelope.put("summary", aiStr(response, "summary"));
+                envelope.put("gpt_raw", aiStr(response, "gpt_raw"));
+                return toJson(envelope, "[]");
+        }
+
+
+        private List<Map<String, Object>> parseQuizData(String quizData) {
+                if (quizData == null || quizData.isBlank()) return java.util.Collections.emptyList();
+                List<Map<String, Object>> direct = parseJsonList(quizData);
+                if (!direct.isEmpty()) return direct;
+                Map<String, Object> obj = parseJsonObject(quizData);
+                Object quizzes = obj.get("quizzes") != null ? obj.get("quizzes") : obj.get("questions");
+                if (quizzes instanceof List) {
+                        List<Map<String, Object>> out = new java.util.ArrayList<>();
+                        for (Object item : (List<?>) quizzes) if (item instanceof Map) out.add((Map<String, Object>) item);
+                        return out;
+                }
+                return java.util.Collections.emptyList();
+        }
+
+        private Map<String, Object> roadmapDataFromSteps(String title, List<RoadmapDTO.RoadmapStepDTO> steps) {
+                Map<String, Object> data = new LinkedHashMap<>();
+                List<Map<String, Object>> weeks = new java.util.ArrayList<>();
+                for (RoadmapDTO.RoadmapStepDTO step : steps) {
+                        Map<String, Object> week = new LinkedHashMap<>();
+                        week.put("weekNumber", step.getStepOrder());
+                        week.put("stepOrder", step.getStepOrder());
+                        week.put("title", step.getTitle());
+                        week.put("goal", step.getDescription());
+                        week.put("description", step.getDescription());
+                        List<Map<String, Object>> tasks = new java.util.ArrayList<>();
+                        if (step.getTasks() != null) {
+                                for (RoadmapDTO.RoadmapTaskDTO task : step.getTasks()) {
+                                        Map<String, Object> taskMap = new LinkedHashMap<>();
+                                        taskMap.put("taskId", task.getTaskId());
+                                        taskMap.put("taskOrder", task.getTaskOrder());
+                                        taskMap.put("content", task.getContent());
+                                        taskMap.put("isCompleted", task.getIsCompleted());
+                                        tasks.add(taskMap);
+                                }
+                        }
+                        week.put("tasks", tasks);
+                        week.put("estimatedHours", 3);
+                        weeks.add(week);
+                }
+                data.put("title", title);
+                data.put("totalWeeks", 12);
+                data.put("weeks", weeks);
+                data.put("steps", weeks);
+                return data;
+        }
+
+
+        private RoadmapDTO roadmapDtoFromEntity(Material material, Roadmap roadmap) {
+                List<RoadmapDTO.RoadmapStepDTO> steps = roadmap.getSteps().stream()
+                                .map(step -> RoadmapDTO.RoadmapStepDTO.builder()
+                                                .stepId(step.getStepId())
+                                                .stepOrder(step.getStepOrder())
+                                                .title(step.getTitle())
+                                                .description(step.getDescription())
+                                                .tasks(step.getTasks().stream()
+                                                                .map(task -> RoadmapDTO.RoadmapTaskDTO.builder()
+                                                                                .taskId(task.getTaskId())
+                                                                                .taskOrder(task.getTaskOrder())
+                                                                                .content(task.getContent())
+                                                                                .isCompleted(task.getIsCompleted())
+                                                                                .build())
+                                                                .collect(Collectors.toList()))
+                                                .build())
+                                .collect(Collectors.toList());
+                return RoadmapDTO.builder()
+                                .roadmapId(roadmap.getRoadmapId())
+                                .materialId(material.getMaterialId())
+                                .title(roadmap.getTitle())
+                                .steps(steps)
+                                .roadmapData(roadmapDataFromSteps(roadmap.getTitle(), steps))
+                                .totalWeeks(12)
+                                .success(true)
+                                .textStatus(textStatusFor(material, getTextToAnalyze(material)))
+                                .build();
         }
 
         private Long aiMetaLong(Map response, String key) {
@@ -242,6 +417,7 @@ public class AiIntegrationService {
                                 .questionCount(request != null ? request.getQuestionCount() : null)
                                 .pageRange(request != null ? request.getPageRange() : null)
                                 .quizData("[]")
+                                .quizzes(java.util.Collections.emptyList())
                                 .success(false)
                                 .errorCode(errorCode)
                                 .message(userMessageFor(errorCode, message))
@@ -284,6 +460,8 @@ public class AiIntegrationService {
                                 .materialId(material.getMaterialId())
                                 .title("로드맵 미생성")
                                 .steps(java.util.Collections.emptyList())
+                                .roadmapData(java.util.Collections.emptyMap())
+                                .totalWeeks(12)
                                 .success(false)
                                 .errorCode(errorCode)
                                 .message(userMessageFor(errorCode, message))
@@ -321,15 +499,14 @@ public class AiIntegrationService {
                         return summaryFailure(material, aiStr(response, "errorCode"), aiStr(response, "message"), aiBool(response, "retryable", true), response);
                 }
 
-                MaterialSummary summary = MaterialSummary.builder()
-                                .material(material)
-                                .overview(response != null && response.containsKey("overview")
-                                                ? response.get("overview").toString()
-                                                : "요약 생성 실패")
-                                .coreContents(response != null && response.containsKey("coreContents")
-                                                ? response.get("coreContents").toString()
-                                                : "[]")
-                                .build();
+                String overview = response != null && response.get("overview") != null && !response.get("overview").toString().isBlank()
+                                ? response.get("overview").toString()
+                                : (aiStr(response, "summary") != null ? aiStr(response, "summary") : "");
+                String coreContents = buildSummaryCoreContents(response);
+                MaterialSummary summary = summaryRepository.findByMaterial_MaterialId(material.getMaterialId())
+                                .orElseGet(() -> MaterialSummary.builder().material(material).build());
+                summary.setOverview(overview);
+                summary.setCoreContents(coreContents);
                 summary = summaryRepository.save(summary);
 
                 return SummaryDTO.builder()
@@ -337,6 +514,11 @@ public class AiIntegrationService {
                                 .materialId(material.getMaterialId())
                                 .overview(summary.getOverview())
                                 .coreContents(summary.getCoreContents())
+                                .summary(aiStr(response, "summary") != null ? aiStr(response, "summary") : overview)
+                                .key_points(aiStringList(response, "key_points"))
+                                .gpt_raw(aiStr(response, "gpt_raw"))
+                                .keywords(aiStringList(response, "keywords") != null ? aiStringList(response, "keywords") : aiStringList(response, "key_points"))
+                                .sections(aiMapList(response, "sections"))
                                 .success(aiBool(response, "success", true))
                                 .errorCode(aiStr(response, "errorCode"))
                                 .message(aiStr(response, "message"))
@@ -399,7 +581,7 @@ public class AiIntegrationService {
 
         // 퀴즈 목록 조회
         public List<QuizDTO.Response> getQuizzes(Long userId, Long materialId) {
-                getMaterialSafely(userId, materialId);
+                Material material = getMaterialSafely(userId, materialId);
                 return quizRepository.findByMaterial_MaterialIdOrderByCreatedAtDesc(materialId)
                                 .stream()
                                 .map(quiz -> QuizDTO.Response.builder()
@@ -409,7 +591,10 @@ public class AiIntegrationService {
                                                 .questionCount(quiz.getQuestionCount())
                                                 .pageRange(quiz.getPageRange())
                                                 .quizData(quiz.getQuizData())
+                                                .quizzes(parseQuizData(quiz.getQuizData()))
                                                 .createdAt(quiz.getCreatedAt())
+                                                .success(true)
+                                                .textStatus(textStatusFor(material, getTextToAnalyze(material)))
                                                 .build())
                                 .collect(Collectors.toList());
         }
@@ -467,6 +652,7 @@ public class AiIntegrationService {
                                 .questionCount(quiz.getQuestionCount())
                                 .pageRange(quiz.getPageRange())
                                 .quizData(quiz.getQuizData())
+                                .quizzes(parseQuizData(quiz.getQuizData()))
                                 .createdAt(quiz.getCreatedAt())
                                 .success(aiBool(response, "success", true))
                                 .errorCode(aiStr(response, "errorCode"))
@@ -553,32 +739,7 @@ public class AiIntegrationService {
                 Material material = getMaterialSafely(userId, materialId);
 
                 return roadmapRepository.findByMaterial_MaterialId(materialId)
-                                .map(roadmap -> RoadmapDTO.builder()
-                                                .roadmapId(roadmap.getRoadmapId())
-                                                .materialId(materialId)
-                                                .title(roadmap.getTitle())
-                                                .steps(roadmap.getSteps().stream()
-                                                                .map(step -> RoadmapDTO.RoadmapStepDTO.builder()
-                                                                                .stepId(step.getStepId())
-                                                                                .stepOrder(step.getStepOrder())
-                                                                                .title(step.getTitle())
-                                                                                .description(step.getDescription())
-                                                                                .tasks(step.getTasks().stream()
-                                                                                                .map(task -> RoadmapDTO.RoadmapTaskDTO
-                                                                                                                .builder()
-                                                                                                                .taskId(task.getTaskId())
-                                                                                                                .taskOrder(task.getTaskOrder())
-                                                                                                                .content(task.getContent())
-                                                                                                                .isCompleted(task
-                                                                                                                                .getIsCompleted())
-                                                                                                                .build())
-                                                                                                .collect(Collectors
-                                                                                                                .toList()))
-                                                                                .build())
-                                                                .collect(Collectors.toList()))
-                                                .success(true)
-                                                .textStatus(textStatusFor(material, getTextToAnalyze(material)))
-                                                .build())
+                                .map(roadmap -> roadmapDtoFromEntity(material, roadmap))
                                 .orElseGet(() -> generateRoadmap(material));
         }
 
@@ -666,6 +827,8 @@ public class AiIntegrationService {
                                 .roadmapId(roadmap.getRoadmapId())
                                 .materialId(material.getMaterialId())
                                 .title(roadmap.getTitle())
+                                .roadmapData(roadmapMap)
+                                .totalWeeks(12)
                                 .steps(roadmap.getSteps().stream()
                                                 .map(step -> RoadmapDTO.RoadmapStepDTO.builder()
                                                                 .stepId(step.getStepId())

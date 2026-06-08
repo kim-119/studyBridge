@@ -27,6 +27,9 @@ const fastApi = axios.create({
   },
 });
 
+// AI 자료보관함 요청 timeout (기본 130초). 무한 로딩 방지.
+export const AI_TIMEOUT_MS = Number(import.meta.env.VITE_FRONTEND_AI_TIMEOUT_MS || import.meta.env.FRONTEND_AI_TIMEOUT_MS) || 130000;
+
 const normalizeAgentFromRoom = (room) => {
   const primaryAgent = Array.isArray(room?.agents) && room.agents.length > 0 ? room.agents[0] : {};
   return {
@@ -205,6 +208,56 @@ export const agentService = {
     console.debug('[api.agentService.sendMessage] request body', payload);
     const res = await api.post(`/api/agent-rooms/${agentId}/chat`, payload);
     return normalizeChatResponse(res.data);
+  },
+
+  // 1차/2차/3차 단계별 SSE 스트리밍. handlers: { onStageStart, onStageComplete, onAllComplete, onError }
+  // 실패 시 throw → 호출부에서 blocking sendMessage로 폴백한다.
+  streamMessage: async (userId, agentId, payloadOrMessage, handlers = {}) => {
+    const basePayload = typeof payloadOrMessage === 'string'
+      ? { message: payloadOrMessage, agentId, roomId: agentId }
+      : { agentId, roomId: agentId, ...payloadOrMessage };
+    const token = localStorage.getItem('token');
+    const resp = await fetch(`${API_BASE_URL}/api/agent-rooms/${agentId}/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(basePayload),
+    });
+    if (!resp.ok || !resp.body) {
+      throw new Error(`stream http ${resp.status}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const dispatch = (frame) => {
+      let event = 'message';
+      const dataLines = [];
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+      }
+      if (dataLines.length === 0) return;
+      let data = null;
+      try { data = JSON.parse(dataLines.join('\n')); } catch { data = null; }
+      if (event === 'stage_start') handlers.onStageStart && handlers.onStageStart(data);
+      else if (event === 'stage_complete') handlers.onStageComplete && handlers.onStageComplete(data);
+      else if (event === 'all_complete') handlers.onAllComplete && handlers.onAllComplete(data);
+      else if (event === 'error') handlers.onError && handlers.onError(data);
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (frame.trim()) dispatch(frame);
+      }
+    }
   },
 
   getChatHistory: async (userId, agentId) => {
@@ -501,7 +554,7 @@ export const materialService = {
     return res.data;
   },
   getSummary: async (materialId) => {
-    const res = await api.get(`/api/materials/${materialId}/summary`);
+    const res = await api.get(`/api/materials/${materialId}/summary`, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
   getFeedback: async (materialId) => {
@@ -521,15 +574,15 @@ export const materialService = {
     return res.data;
   },
   generateQuiz: async (materialId, quizRequest) => {
-    const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest);
+    const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
   askQuestion: async (materialId, questionRequest) => {
-    const res = await api.post(`/api/materials/${materialId}/question`, questionRequest);
+    const res = await api.post(`/api/materials/${materialId}/question`, questionRequest, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
   getRoadmap: async (materialId) => {
-    const res = await api.get(`/api/materials/${materialId}/roadmap`);
+    const res = await api.get(`/api/materials/${materialId}/roadmap`, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
   toggleRoadmapTask: async (materialId, taskId) => {

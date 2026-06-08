@@ -1,18 +1,24 @@
 """
 에이전트 성격/말투 프롬프트 빌더.
-6가지 성격 유형을 시스템 프롬프트 지시사항으로 변환한다.
+성격 유형을 시스템 프롬프트 지시사항으로 변환한다.
+
+성격 정의의 단일 출처(SSOT)는 policies/agent_personality_profiles.yaml 이다.
+아래 _PERSONALITY_PROMPTS는 YAML 부재/로드 실패 시에만 쓰는 fallback이다(중복 정의 아님).
 """
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 
 class PersonalityType(str, Enum):
-    FRIENDLY  = "친절_설명형"
-    CRITICAL  = "비판적_분석형"
-    LOGICAL   = "논리적_탐구형"
-    CREATIVE  = "창의적_확장형"
-    CONCISE   = "간결_요약형"
-    CUSTOM    = "직접_입력"
+    FRIENDLY     = "친절_설명형"
+    CRITICAL     = "비판적_분석형"
+    LOGICAL      = "논리적_탐구형"
+    CREATIVE     = "창의적_확장형"
+    CONCISE      = "간결_요약형"
+    PROFESSIONAL = "전문적"
+    SARDONIC     = "냉소적"
+    CUSTOM       = "직접_입력"
 
 
 _PERSONALITY_PROMPTS: dict[PersonalityType, str] = {
@@ -55,15 +61,150 @@ _PERSONALITY_PROMPTS: dict[PersonalityType, str] = {
 - 한 포인트는 한 줄 이내.
 - 답변 마지막에 반드시 한 줄 결론을 넣는다.
 - 길면 틀린 것이다. 짧고 명확하게.""",
+
+    PersonalityType.PROFESSIONAL: """\
+말투와 성격: 전문적/학술형
+- 정확한 전문 용어와 명확한 정의로 설명한다. 용어를 처음 쓸 때는 짧게 풀이한다.
+- 개념 → 근거 → 적용/한계 순서로 밀도 있게 전개한다.
+- "일반적으로", "아마도" 같은 모호한 표현 대신 구체적 기준과 조건을 제시한다.
+- 감탄사나 과장 없이 신뢰감 있는 어조를 유지한다.
+- GPT처럼 평범하고 두루뭉술한 답변은 금지. 전문가다운 정확성과 밀도가 있어야 한다.""",
+
+    PersonalityType.SARDONIC: """\
+말투와 성격: 냉소적 리뷰어형
+- 냉정하고 직설적으로 핵심을 찌르되, 비아냥이 아니라 정확한 지적이어야 한다.
+- "이거 자주 틀리는 부분인데", "대충 외우면 시험에서 그대로 깨진다" 같은 시니컬하지만 현실적인 표현을 쓴다.
+- 틀린 부분은 봐주지 않고 정확히 교정한 뒤, 올바른 기준을 못 박는다.
+- 인신공격·욕설·과한 조롱은 금지. 냉소는 오직 개념을 또렷하게 만들기 위한 도구다.
+- GPT처럼 친절하기만 한 무난한 답변은 금지. 차갑지만 쓸모 있는 개성이 있어야 한다.""",
 }
 
-_VALIDATION_CRITERIA: dict[str, str] = {
-    "친절_설명형":  "따뜻하고 친근한가? 예시·비유가 있는가? 위압적이지 않은가?",
-    "비판적_분석형": "문제점 지적 후 개선 방향을 제시하는가? 무례하지 않은가? 개성이 있는가?",
-    "논리적_탐구형": "원인→구조→결과 순서인가? 논리 접속사가 적절한가? 근거가 명확한가?",
-    "창의적_확장형": "새로운 비유·연결이 있는가? 확장적 사고가 포함되었는가? 독창성이 있는가?",
-    "간결_요약형":  "불필요한 장문이 없는가? 목록 형식인가? 한 줄 결론이 있는가?",
+_VALIDATION_CRITERIA: dict[PersonalityType, str] = {
+    PersonalityType.FRIENDLY:     "따뜻하고 친근한가? 예시·비유가 있는가? 위압적이지 않은가?",
+    PersonalityType.CRITICAL:     "문제점 지적 후 개선 방향을 제시하는가? 무례하지 않은가? 개성이 있는가?",
+    PersonalityType.LOGICAL:      "원인→구조→결과 순서인가? 논리 접속사가 적절한가? 근거가 명확한가?",
+    PersonalityType.CREATIVE:     "새로운 비유·연결이 있는가? 확장적 사고가 포함되었는가? 독창성이 있는가?",
+    PersonalityType.CONCISE:      "불필요한 장문이 없는가? 목록 형식인가? 한 줄 결론이 있는가?",
+    PersonalityType.PROFESSIONAL: "정확한 용어와 근거가 있는가? 모호한 표현 없이 밀도 있는가?",
+    PersonalityType.SARDONIC:     "틀린 부분을 정확히 교정했는가? 냉소가 조롱이 아닌 지적에 그치는가?",
 }
+
+# 프론트엔드 표시 라벨 / 요구사항 라벨 / 레거시 라벨을 정규 PersonalityType으로 매핑한다.
+# (프론트는 '전문적/친근함/솔직함/독특함/효율적/냉소적'를 보내지만 프롬프트 키는 달랐다 → 성격이 죽던 원인)
+_ALIAS: dict[str, PersonalityType] = {
+    "전문적": PersonalityType.PROFESSIONAL, "전문": PersonalityType.PROFESSIONAL, "학술": PersonalityType.PROFESSIONAL,
+    "친근함": PersonalityType.FRIENDLY, "친절형": PersonalityType.FRIENDLY, "친절": PersonalityType.FRIENDLY,
+    "솔직함": PersonalityType.CRITICAL, "비판적 분석형": PersonalityType.CRITICAL, "비판형": PersonalityType.CRITICAL, "비판적": PersonalityType.CRITICAL,
+    "논리형": PersonalityType.LOGICAL, "논리적": PersonalityType.LOGICAL, "논리": PersonalityType.LOGICAL,
+    "독특함": PersonalityType.CREATIVE, "창의형": PersonalityType.CREATIVE, "창의적": PersonalityType.CREATIVE, "창의": PersonalityType.CREATIVE,
+    "효율적": PersonalityType.CONCISE, "간결형": PersonalityType.CONCISE, "간결": PersonalityType.CONCISE,
+    "냉소적": PersonalityType.SARDONIC, "냉정": PersonalityType.SARDONIC,
+    "직접입력형": PersonalityType.CUSTOM, "직접입력": PersonalityType.CUSTOM,
+}
+
+# 성격별 LLM 샘플링 파라미터 (call_primary_llm은 temperature/max_tokens만 지원 → temperature 위주로 차등).
+_GEN_PARAMS: dict[PersonalityType, dict] = {
+    PersonalityType.FRIENDLY:     {"temperature": 0.6},
+    PersonalityType.CRITICAL:     {"temperature": 0.45},
+    PersonalityType.LOGICAL:      {"temperature": 0.35},
+    PersonalityType.CREATIVE:     {"temperature": 0.85},
+    PersonalityType.CONCISE:      {"temperature": 0.35},
+    PersonalityType.PROFESSIONAL: {"temperature": 0.4},
+    PersonalityType.SARDONIC:     {"temperature": 0.5},
+    PersonalityType.CUSTOM:       {"temperature": 0.6},
+}
+
+
+# PersonalityType → YAML/env 정규 영문 키
+_PROFILE_KEY: dict[PersonalityType, str] = {
+    PersonalityType.FRIENDLY: "friendly",
+    PersonalityType.CRITICAL: "critical",
+    PersonalityType.LOGICAL: "logical",
+    PersonalityType.CREATIVE: "creative",
+    PersonalityType.CONCISE: "concise",
+    PersonalityType.PROFESSIONAL: "professional",
+    PersonalityType.SARDONIC: "sardonic",
+    PersonalityType.CUSTOM: "custom",
+}
+
+_PROFILES_PATH = Path(__file__).resolve().parent.parent / "policies" / "agent_personality_profiles.yaml"
+_profiles_cache: Optional[dict] = None
+
+
+def _load_profiles() -> dict:
+    """YAML 성격 프로필을 1회 로드/캐싱. 실패해도 서버를 죽이지 않는다."""
+    global _profiles_cache
+    if _profiles_cache is not None:
+        return _profiles_cache
+    data: dict = {}
+    try:
+        import yaml  # pyyaml
+        if _PROFILES_PATH.exists():
+            with open(_PROFILES_PATH, encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+    except Exception:
+        data = {}
+    _profiles_cache = data
+    return data
+
+
+def to_profile_key(personality: Optional[str]) -> str:
+    """성격 라벨을 정규 영문 키로 변환한다(friendly/critical/...)."""
+    return _PROFILE_KEY.get(normalize_personality(personality), "friendly")
+
+
+def get_profile(personality: Optional[str]) -> dict:
+    """성격 YAML 프로필(dict)을 반환한다. 없으면 빈 dict."""
+    return _load_profiles().get(to_profile_key(personality), {})
+
+
+def normalize_personality(raw: Optional[str]) -> PersonalityType:
+    """프론트/요구사항/레거시 라벨을 정규 PersonalityType으로 변환한다. 미상은 FRIENDLY."""
+    if not raw:
+        return PersonalityType.FRIENDLY
+    s = str(raw).strip()
+    try:
+        return PersonalityType(s)  # 정규 enum 값과 정확히 일치
+    except ValueError:
+        pass
+    if s in _ALIAS:
+        return _ALIAS[s]
+    for key, val in _ALIAS.items():  # 부분 매칭 (예: '비판적 분석형(직설)')
+        if key in s or s in key:
+            return val
+    return PersonalityType.FRIENDLY
+
+
+def get_generation_params(personality: Optional[str]) -> dict:
+    """성격별 생성 파라미터(temperature 등)를 반환한다."""
+    return dict(_GEN_PARAMS.get(normalize_personality(personality), {"temperature": 0.5}))
+
+
+def _compose_prompt_from_profile(profile: dict) -> str:
+    """YAML 프로필(dict)을 시스템 프롬프트 블록으로 조립한다."""
+    lines = []
+    name = profile.get("displayName", "")
+    tone = profile.get("toneProfile", "")
+    lines.append(f"말투와 성격: {name} — {tone}".strip(" —"))
+    if profile.get("reasoningStyle"):
+        lines.append(f"설명 방식: {profile['reasoningStyle']}")
+    if profile.get("feedbackStyle"):
+        lines.append(f"피드백 방식: {profile['feedbackStyle']}")
+    shape = profile.get("answerShape") or []
+    if shape:
+        lines.append("답변 구성(권장 순서): " + " → ".join(str(s) for s in shape))
+    must = profile.get("mustUse") or []
+    if must:
+        lines.append("이런 표현/뉘앙스를 자연스럽게 살려라: " + ", ".join(f'"{m}"' for m in must))
+    forbidden = profile.get("forbidden") or []
+    if forbidden:
+        lines.append("금지: " + ", ".join(str(f) for f in forbidden))
+    if profile.get("sampleTone"):
+        lines.append(f"예시 톤: {profile['sampleTone']}")
+    lines.append("GPT처럼 무색무취한 답변은 금지. 위 성격이 실제 문장 톤에 분명히 드러나야 한다.")
+    return "\n".join(lines)
 
 
 def build_personality_prompt(
@@ -73,21 +214,22 @@ def build_personality_prompt(
     """
     성격 타입 문자열을 시스템 프롬프트에 삽입할 지시사항으로 반환한다.
     custom_instruction이 있으면 최우선으로 사용한다.
+    우선순위: custom_instruction > YAML 프로필 > 내장 fallback(_PERSONALITY_PROMPTS).
     """
     if custom_instruction and custom_instruction.strip():
         return f"말투와 성격 (사용자 지정):\n{custom_instruction.strip()}"
 
-    try:
-        p_type = PersonalityType(personality)
-    except ValueError:
-        p_type = PersonalityType.FRIENDLY
+    p_type = normalize_personality(personality)
+    profile = _load_profiles().get(_PROFILE_KEY.get(p_type, "friendly"), {})
+    if profile:
+        return _compose_prompt_from_profile(profile)
     return _PERSONALITY_PROMPTS.get(p_type, _PERSONALITY_PROMPTS[PersonalityType.FRIENDLY])
 
 
 def get_validation_criteria(personality: str) -> str:
     """GPT 검증 시 사용할 성격별 체크 항목을 반환한다."""
     return _VALIDATION_CRITERIA.get(
-        personality, "성격에 맞게 답변했는가? GPT처럼 평범하지 않은가?"
+        normalize_personality(personality), "성격에 맞게 답변했는가? GPT처럼 평범하지 않은가?"
     )
 
 

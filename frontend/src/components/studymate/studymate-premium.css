@@ -471,13 +471,6 @@
   line-height: 1.2;
 }
 
-.dt-session-sub {
-  font-size: 11px;
-  color: #9ca3af;
-  margin-top: 2px;
-  font-weight: 500;
-}
-
 /* 에이전트 칩 목록 */
 .dt-agent-chips {
   display: flex;

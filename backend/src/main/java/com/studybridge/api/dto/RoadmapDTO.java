@@ -18,6 +18,8 @@ public class RoadmapDTO {
     private String title;
 
     private List<RoadmapStepDTO> steps;
+    private Object roadmapData;
+    private Integer totalWeeks;
 
     // AI 상태 전파 필드 (nullable, 하위호환 additive)
     private Boolean success;

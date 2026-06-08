@@ -17,6 +17,11 @@ public class SummaryDTO {
     private Long materialId;
     private String overview;
     private String coreContents; // JSON
+    private String summary;
+    private List<String> key_points;
+    private String gpt_raw;
+    private List<String> keywords;
+    private List<Map<String, Object>> sections;
     // AI 상태 전파 필드 (nullable, 하위호환 additive)
     private Boolean success;
     private String errorCode;

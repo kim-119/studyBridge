@@ -126,10 +126,15 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
                      text_status=_text_status(ts, len(chunks)))
 
     sections = r.get("sections") or []
-    core_contents = json.dumps(
-        [{"title": s.get("title", ""), "description": s.get("content", "")} for s in sections],
-        ensure_ascii=False,
-    )
+    core_items = [
+        {
+            "title": s.get("title", ""),
+            "content": s.get("content", s.get("description", "")),
+            "description": s.get("description", s.get("content", "")),
+        }
+        for s in sections
+    ]
+    core_contents = json.dumps(core_items, ensure_ascii=False)
     elapsed = int((time.time() - started) * 1000)
     logger.info("summary done provider=%s elapsedMs=%s textLen=%s chunks=%s",
                 r.get("provider"), elapsed, ts["textLength"], len(chunks))
@@ -143,7 +148,7 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
         "coreContents": core_contents,
         # 확장
         "keywords": r.get("keywords", []),
-        "sections": sections,
+        "sections": core_items,
         "warnings": r.get("warnings", []),
         "textStatus": _text_status(ts, len(chunks)),
         "metadata": {

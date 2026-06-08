@@ -13,14 +13,21 @@ v0.8 추가:
   - 기존 RAG / 임베딩 / pgvector / Ollama / OpenAI fallback 보존.
 """
 import logging
-from typing import Any, Dict, List, Optional
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.schemas.multi_chat_schema import (
     AgentAnswer, AgentProfile, MultiChatRequest, MultiChatResponse,
     ValidationSummary, PreviousAnswer, DebugMetadata,
     GenerationConfigMetadata, RetrievalMetadata, DepthValidationMetadata, PromptingMetadata,
+    ProcessSteps, InitialAnswerStep, ValidatedAnswerStep, PeerFeedbackStep,
+    PersonalityValidationItem, StageInfo,
 )
 from app.services.prompt_builder import build_agent_system_prompt, build_tikitaka_role_prompt
+from app.services.personality_prompt_builder import to_profile_key
+from app.services.personality_validator import validate_personality_alignment, repair_personality_if_needed
+from app.core import agent_settings as A
 from app.utils.text_utils import build_context_from_previous_answers, safe_str
 from app.core.config import MAX_ROUNDS, ADVANCED_AGENT_ANSWER_MAX_CHARS
 
@@ -36,6 +43,8 @@ _MAX_ROUNDS = MAX_ROUNDS
 # (ADVANCED_AGENT_ANSWER_MAX_CHARS는 '문자 수' 개념이라 토큰 상한으로 쓰면 답변이 잘린다.)
 import os as _os
 _MAX_TOKENS_PER_ANSWER = int(_os.getenv("AI_ANSWER_MAX_TOKENS", "2048"))
+# 단계별 token/timeout/provider 및 성격별 파라미터는 모두 app/core/agent_settings.py(env)에서 읽는다.
+# (서비스 코드에 magic value를 박지 않는다.)
 
 
 def _get_agents(request: MultiChatRequest) -> List[AgentProfile]:
@@ -178,74 +187,379 @@ def _generate_synthesis(agents: List[AgentProfile], answers: List[AgentAnswer], 
     )
 
 
-def _run_default_mode(
-    request: MultiChatRequest,
-    active_agents: List[AgentProfile],
-    context: str,
-    rag_context: str,
-) -> MultiChatResponse:
-    """기존 다중 라운드 병렬 답변 모드."""
-    if rag_context:
-        context = f"{context}\n\n[RAG 자료]\n{rag_context}" if context else rag_context
+_LLM_FALLBACK_MARKERS = ("현재 Ollama", "AI 응답이", "Ollama 응답", "[GPT", "현재 AI 서비스", "일시적인 오류")
 
-    rounds = min(request.rounds, _MAX_ROUNDS)
-    answers: List[AgentAnswer] = []
-    delay_ms = _get_display_delay_ms()
 
-    for round_idx in range(rounds):
-        if round_idx > 0 and len(active_agents) <= 1:
-            break
-        for agent_idx, agent in enumerate(active_agents):
-            order = round_idx * len(active_agents) + agent_idx + 1
+def _is_llm_fallback(text: str) -> bool:
+    t = (text or "").strip()
+    return (not t) or any(t.startswith(m) or m in t[:40] for m in _LLM_FALLBACK_MARKERS)
+
+
+def _call_llm_with_params(
+    provider: str, system: str, user: str,
+    params: Dict[str, Any], knowledge_level: Optional[str] = None,
+) -> Tuple[str, str]:
+    """
+    provider별로 지원하는 파라미터만 전달해 LLM을 호출한다.
+    반환: (텍스트, 실제_사용_provider). openai 미설정이면 ollama로 폴백한다.
+    """
+    prov = (provider or "ollama").strip().lower()
+    if prov == "openai":
+        from app.services.openai_client import chat_sync, is_enabled
+        if is_enabled():
+            text = chat_sync(
+                system=system, user=user,
+                temperature=params.get("temperature", 0.4),
+                max_tokens=params.get("max_tokens", 1200),
+                top_p=params.get("top_p"),
+                presence_penalty=params.get("presence_penalty"),
+                frequency_penalty=params.get("frequency_penalty"),
+                timeout=params.get("timeout_seconds"),
+            )  # OpenAI는 top_k/repeat_penalty 미지원 → 전달하지 않음
+            return text, "openai"
+        logger.info("provider=openai 비활성 → ollama 폴백")
+        prov = "ollama"
+    # ollama
+    from app.services.ollama_client import ask_ollama
+    text = ask_ollama(
+        system, user,
+        temperature=params.get("temperature"),
+        max_tokens=params.get("max_tokens"),
+        knowledge_level=knowledge_level,
+        top_p=params.get("top_p"),
+        top_k=params.get("top_k"),
+        repeat_penalty=params.get("repeat_penalty"),
+        timeout=params.get("timeout_seconds"),
+    )
+    return text, "ollama"
+
+
+def _stage1_initial(agent: AgentProfile, message: str, context: str) -> str:
+    """1차 빠른 초안 — 반드시 Ollama (provider는 agent_settings에서 stage=1로 강제)."""
+    system = build_agent_system_prompt(agent, context)
+    user = (
+        f"[사용자 질문] {message}\n\n"
+        "[이번 단계: 1차 빠른 초안]\n"
+        "핵심 정의 → 대표 예시 → 한 줄 결론 순서로 빠르게 답하라. "
+        "완벽하게 길게 쓰려 하지 말고, 질문에 바로 도움이 되는 핵심만 담아라."
+    )
+    params = A.resolve_agent_generation_params(to_profile_key(agent.personality or agent.tone or agent.style), 1)
+    text, _ = _call_llm_with_params("ollama", system, user, params, knowledge_level=agent.knowledgeLevel)
+    return text
+
+
+def _stage2_validate(agent: AgentProfile, message: str, own_initial: str, others_text: str) -> str:
+    """2차 검증/정제 답안 — provider는 agent_settings stage=2."""
+    system = build_agent_system_prompt(agent)
+    user_parts = [
+        f"[사용자 질문] {message}",
+        f"[너의 1차 초안]\n{own_initial}",
+    ]
+    if others_text:
+        user_parts.append(f"[다른 에이전트의 1차 초안]\n{others_text}")
+    user_parts.append(
+        "[이번 단계: 2차 검증 답안]\n"
+        "1차 초안의 오류·누락·개념 혼동을 점검하고 바로잡아, 더 정확하고 정제된 답을 작성하라. "
+        "특히 SQL/프로그래밍/수학/과학 개념은 정확성을 최우선으로 한다. "
+        "예: DML(SELECT/INSERT/UPDATE/DELETE)과 DDL(CREATE/ALTER/DROP)을 섞지 마라. "
+        "1차 초안을 그대로 반복하지 말고 보완하라."
+    )
+    params = A.resolve_agent_generation_params(to_profile_key(agent.personality or agent.tone or agent.style), 2)
+    return _call_llm_with_params(params["provider"], system, "\n\n".join(user_parts),
+                                 params, knowledge_level=agent.knowledgeLevel)
+
+
+def _stage3_feedback(from_agent: AgentProfile, target_agent: AgentProfile,
+                     target_answer: str, message: str) -> str:
+    """3차 상호 피드백 (from → target) — provider는 agent_settings stage=3."""
+    system = build_agent_system_prompt(from_agent)
+    user = (
+        f"[사용자 질문] {message}\n\n"
+        f"[{target_agent.name}의 답변]\n{target_answer}\n\n"
+        "[이번 단계: 3차 상호 피드백]\n"
+        f"위 {target_agent.name}의 답변을 너의 성격과 관점에서 평가하라. "
+        "좋은 점 / 부족한 점 / 개선 방향을 구체적으로 짚어라. "
+        "단순 칭찬은 금지하고, 실제로 도움이 되는 피드백을 2~4문장으로 작성하라."
+    )
+    params = A.resolve_agent_generation_params(to_profile_key(from_agent.personality or from_agent.tone or from_agent.style), 3)
+    return _call_llm_with_params(params["provider"], system, user, params, knowledge_level=from_agent.knowledgeLevel)
+
+
+def _run_pool(fn, items, parallel):
+    """단계 내 병렬 실행 헬퍼 (parallel=False면 순차)."""
+    if parallel and len(items) > 1:
+        with ThreadPoolExecutor(max_workers=len(items)) as ex:
+            return list(ex.map(fn, items))
+    return [fn(i) for i in items]
+
+
+# ── 단계별 compute 헬퍼 (블로킹/스트리밍 공용) ───────────────────────────────────
+
+def _compute_stage1(request: MultiChatRequest, agents: List[AgentProfile], context: str):
+    """1차 빠른 초안 (Ollama 전용, 병렬). 반환: (steps, initial_map, provider, elapsedMs, status)."""
+    provider = A.resolve_provider_for_stage(1)
+    t1 = time.time()
+
+    def _run1(a: AgentProfile):
+        try:
+            return a, _stage1_initial(a, request.message, context)
+        except Exception as e:
+            logger.error("stage1 에이전트 '%s' 실패: %s", a.name, e)
+            return a, A.stage1_timeout_fallback_text()
+
+    results = _run_pool(_run1, agents, A.enable_parallel_stage1())
+    elapsed = int((time.time() - t1) * 1000)
+    status = "completed"
+    initial_map: Dict[str, str] = {}
+    steps: List[InitialAnswerStep] = []
+    for a, text in results:
+        if _is_llm_fallback(text):
+            status = "timeout_fallback"
+            if not (text or "").strip():
+                text = A.stage1_timeout_fallback_text()
+        initial_map[a.name] = text
+        steps.append(InitialAnswerStep(agentName=a.name, answer=text, agentId=a.agentId))
+    logger.info("[StudyMate] stage=1 provider=%s elapsedMs=%d status=%s agents=%d",
+                provider, elapsed, status, len(agents))
+    return steps, initial_map, provider, elapsed, status
+
+
+def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initial_map: Dict[str, str]):
+    """2차 검증/정제 (병렬, best-effort). 반환: (steps, validated_map, provider, elapsedMs)."""
+    provider = A.resolve_provider_for_stage(2)
+    t2 = time.time()
+
+    def _run2(a: AgentProfile):
+        own = initial_map.get(a.name, "")
+        others = "\n\n".join(
+            f"[{b.name}]\n{initial_map.get(b.name, '')[:300]}" for b in agents if b.name != a.name
+        )
+        try:
+            text, prov = _stage2_validate(a, request.message, own, others)
+            return a, text, prov
+        except Exception as e:
+            logger.warning("stage2 에이전트 '%s' 실패 (1차로 대체): %s", a.name, e)
+            return a, own, "ollama"
+
+    try:
+        results = _run_pool(_run2, agents, A.enable_parallel_stage2())
+    except Exception as e:
+        logger.warning("stage2 전체 실패 (1차로 대체): %s", e)
+        results = [(a, initial_map.get(a.name, ""), "ollama") for a in agents]
+    elapsed = int((time.time() - t2) * 1000)
+
+    validated_map: Dict[str, str] = {}
+    steps: List[ValidatedAnswerStep] = []
+    provs: set = set()
+    for a, text, prov in results:
+        provs.add(prov)
+        final_text = text or initial_map.get(a.name, "")
+        if _is_llm_fallback(text):
+            final_text = initial_map.get(a.name, "") or final_text
+        validated_map[a.name] = final_text
+        revised = final_text.strip() != initial_map.get(a.name, "").strip()
+        steps.append(ValidatedAnswerStep(
+            agentName=a.name, answer=final_text, agentId=a.agentId, revised=revised,
+        ))
+    actual = ",".join(sorted(provs)) if provs else provider
+    logger.info("[StudyMate] stage=2 provider=%s elapsedMs=%d status=completed", actual, elapsed)
+    return steps, validated_map, actual, elapsed
+
+
+def _compute_validation(agents: List[AgentProfile], validated_map: Dict[str, str]):
+    """성격 검증 (2차 답안 기준). 반환: (validation_map, pv_summary)."""
+    validation_map: Dict[str, Dict[str, Any]] = {}
+    summary: List[PersonalityValidationItem] = []
+    if A.enable_personality_validation():
+        for a in agents:
+            peers = [validated_map.get(b.name, "") for b in agents if b.name != a.name]
             try:
-                answer = _generate_agent_answer(
-                    agent=agent,
-                    message=request.message,
-                    context=context,
-                    agent_index=agent_idx,
-                    total_agents=len(active_agents),
-                    display_order=order,
-                    display_delay_ms=(order - 1) * delay_ms,
-                )
-                answers.append(answer)
+                v = validate_personality_alignment(validated_map.get(a.name, ""), a, 2, peer_answers=peers)
             except Exception as e:
-                logger.error("에이전트 '%s' 답변 생성 실패: %s", agent.name, e)
-                answers.append(AgentAnswer(
-                    agentName=agent.name,
-                    answer="일시적인 오류로 답변을 생성할 수 없습니다.",
-                    displayOrder=order,
-                    displayDelayMs=(order - 1) * delay_ms,
-                    status="FAILED",
-                ))
-        if round_idx == 0 and len(active_agents) <= 1:
-            break
+                logger.warning("성격 검증 실패 '%s': %s", a.name, e)
+                continue
+            validation_map[a.name] = v
+            summary.append(PersonalityValidationItem(
+                agentName=a.name, personalityType=v.get("personalityType"),
+                score=v.get("score"), passed=v.get("passed"),
+                issues=v.get("issues", []), note=v.get("note"),
+            ))
+    return validation_map, summary
 
+
+def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
+                    validated_map: Dict[str, str], validation_map: Dict[str, Dict[str, Any]]):
+    """3차 상호 피드백 (병렬, 2명 이상). 반환: (peer_steps, provider, elapsedMs)."""
+    provider = A.resolve_provider_for_stage(3)
+    peer_steps: List[PeerFeedbackStep] = []
+    elapsed = 0
+    provs: set = set()
+    n = len(agents)
+    if n >= 2:
+        t3 = time.time()
+        pairs = [(agents[i], agents[(i + 1) % n]) for i in range(n)]
+
+        def _run3(pair):
+            frm, tgt = pair
+            try:
+                fb, prov = _stage3_feedback(frm, tgt, validated_map.get(tgt.name, ""), request.message)
+                tv = validation_map.get(tgt.name)
+                pv = ({"passed": tv.get("passed"), "score": tv.get("score")} if tv else None)
+                return PeerFeedbackStep(fromAgent=frm.name, toAgent=tgt.name, feedback=fb, personalityValidation=pv), prov
+            except Exception as e:
+                logger.warning("stage3 %s→%s 실패: %s", frm.name, tgt.name, e)
+                return None, None
+
+        for step, prov in _run_pool(_run3, pairs, True):
+            if step is not None:
+                peer_steps.append(step)
+                if prov:
+                    provs.add(prov)
+        elapsed = int((time.time() - t3) * 1000)
+        if provs:
+            provider = ",".join(sorted(provs))
+        logger.info("[StudyMate] stage=3 provider=%s elapsedMs=%d status=completed feedbacks=%d",
+                    provider, elapsed, len(peer_steps))
+    return peer_steps, provider, elapsed
+
+
+def _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
+                       s1, s2, s3):
+    """3개 StageInfo를 만든다. s1/s2/s3 = (provider, elapsedMs, status) 튜플."""
+    return [
+        StageInfo(stage=1, title="1차 답변 - 빠른 초안", provider=s1[0], status=s1[2],
+                  elapsedMs=s1[1], answers=[s.model_dump() for s in initial_steps]),
+        StageInfo(stage=2, title="2차 답변 - 검증 답안", provider=s2[0], status=s2[2],
+                  elapsedMs=s2[1], answers=[s.model_dump() for s in validated_steps]),
+        StageInfo(stage=3, title="3차 답변 - 에이전트 피드백 및 성격 검증", provider=s3[0], status=s3[2],
+                  elapsedMs=s3[1], feedbacks=[s.model_dump() for s in peer_steps],
+                  personalityValidationSummary=pv_summary),
+    ]
+
+
+def _build_default_response(request, agents, initial_map, validated_map,
+                            initial_steps, validated_steps, peer_steps, pv_summary, stages):
+    delay_ms = _get_display_delay_ms()
+    answers: List[AgentAnswer] = []
+    for idx, a in enumerate(agents):
+        answers.append(AgentAnswer(
+            agentName=a.name,
+            answer=validated_map.get(a.name) or initial_map.get(a.name, ""),
+            agentId=a.agentId,
+            role=a.role or "default",
+            displayOrder=idx + 1,
+            displayDelayMs=idx * delay_ms,
+            status="SUCCESS",
+        ))
     if not answers:
         answers.append(AgentAnswer(
             agentName="시스템",
             answer="현재 AI 서비스에 일시적으로 접근할 수 없습니다. 잠시 후 다시 시도해 주세요.",
             displayOrder=1, displayDelayMs=0, status="FAILED",
         ))
-
-    answers = _deduplicate_agent_answers(answers)
-
-    if request.showFinalSynthesis and len(answers) > 1:
-        try:
-            synthesis = _generate_synthesis(active_agents, answers, request.message)
-            answers.append(synthesis)
-        except Exception as e:
-            logger.warning("종합 의견 생성 실패 (건너뜀): %s", e)
-
-    status = "COMPLETED"
-    if any(a.status == "FAILED" for a in answers):
-        status = "PARTIAL_SUCCESS" if any(a.status == "SUCCESS" for a in answers) else "FAILED"
-
+    process_steps = ProcessSteps(
+        initialAnswers=initial_steps,
+        validatedAnswers=validated_steps,
+        peerFeedback=peer_steps,
+        personalityValidationSummary=pv_summary,
+    )
     return MultiChatResponse(
         mode=request.mode,
         answers=answers,
-        status=status,
+        status="COMPLETED",
         question=request.message,
+        processSteps=process_steps,
+        stages=stages,
     )
+
+
+def _prep_default_context(context: str, rag_context: str) -> str:
+    if rag_context:
+        return f"{context}\n\n[RAG 자료]\n{rag_context}" if context else rag_context
+    return context
+
+
+def _run_default_mode(
+    request: MultiChatRequest,
+    active_agents: List[AgentProfile],
+    context: str,
+    rag_context: str,
+) -> MultiChatResponse:
+    """
+    1차/2차/3차 실데이터 파이프라인 (블로킹, 모든 지식수준 공통).
+    스트리밍(run_default_mode_stream)과 동일한 compute 헬퍼를 공유한다.
+    """
+    context = _prep_default_context(context, rag_context)
+    agents = active_agents or [_DEFAULT_AGENT]
+
+    initial_steps, initial_map, p1, e1, st1 = _compute_stage1(request, agents, context)
+    validated_steps, validated_map, p2, e2 = _compute_stage2(request, agents, initial_map)
+    validation_map, pv_summary = _compute_validation(agents, validated_map)
+    peer_steps, p3, e3 = _compute_stage3(request, agents, validated_map, validation_map)
+
+    stages = _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
+                                (p1, e1, st1), (p2, e2, "completed"), (p3, e3, "completed"))
+    return _build_default_response(request, agents, initial_map, validated_map,
+                                   initial_steps, validated_steps, peer_steps, pv_summary, stages)
+
+
+def run_default_mode_stream(
+    request: MultiChatRequest,
+    active_agents: List[AgentProfile],
+    context: str,
+    rag_context: str,
+):
+    """
+    제너레이터: 각 단계 완료 시 {"event","data"} dict를 yield (sync generator).
+    SSE 라우트가 stage_start/stage_complete/all_complete 이벤트로 변환한다.
+    """
+    context = _prep_default_context(context, rag_context)
+    agents = active_agents or [_DEFAULT_AGENT]
+
+    # 1차
+    yield {"event": "stage_start", "data": {"stage": 1, "title": "1차 답변 - 빠른 초안", "status": "running"}}
+    initial_steps, initial_map, p1, e1, st1 = _compute_stage1(request, agents, context)
+    stage1 = _build_stage_infos(initial_steps, [], [], [], (p1, e1, st1), (None, 0, "running"), (None, 0, "running"))[0]
+    yield {"event": "stage_complete", "data": stage1.model_dump()}
+
+    # 2차 (검증 포함)
+    yield {"event": "stage_start", "data": {"stage": 2, "title": "2차 답변 - 검증 답안", "status": "running"}}
+    validated_steps, validated_map, p2, e2 = _compute_stage2(request, agents, initial_map)
+    validation_map, pv_summary = _compute_validation(agents, validated_map)
+    stage2 = _build_stage_infos([], validated_steps, [], pv_summary, (None, 0, "completed"), (p2, e2, "completed"), (None, 0, "running"))[1]
+    yield {"event": "stage_complete", "data": stage2.model_dump()}
+
+    # 3차
+    yield {"event": "stage_start", "data": {"stage": 3, "title": "3차 답변 - 에이전트 피드백 및 성격 검증", "status": "running"}}
+    peer_steps, p3, e3 = _compute_stage3(request, agents, validated_map, validation_map)
+    stage3 = _build_stage_infos([], [], peer_steps, pv_summary, (None, 0, "completed"), (None, 0, "completed"), (p3, e3, "completed"))[2]
+    yield {"event": "stage_complete", "data": stage3.model_dump()}
+
+    # 최종 (저장/하위호환 전체 응답)
+    stages = [stage1, stage2, stage3]
+    final = _build_default_response(request, agents, initial_map, validated_map,
+                                    initial_steps, validated_steps, peer_steps, pv_summary, stages)
+    yield {"event": "all_complete", "data": final.model_dump()}
+
+
+def build_stream_generator(request: MultiChatRequest):
+    """
+    SSE용 이벤트 제너레이터를 만든다.
+    default 계열 모드만 단계별 스트리밍하고, 그 외 모드는 블로킹 실행 후 all_complete 1회만 emit한다.
+    """
+    agents = _get_agents(request)
+    active_agents = _filter_agents(agents, request.targetAgentId)
+    context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
+    rag_context = _get_rag_context(request.message, request.materialId)
+
+    raw_mode = (request.mode or "default").lower()
+    if raw_mode in ("tikitaka", "debate", "socratic", "group_study_ai"):
+        def _single():
+            result = run_multi_chat(request)
+            yield {"event": "all_complete", "data": result.model_dump()}
+        return _single()
+
+    return run_default_mode_stream(request, active_agents, context, rag_context)
 
 
 def _run_tikitaka_mode(
@@ -928,13 +1242,7 @@ def run_multi_chat(request: MultiChatRequest) -> MultiChatResponse:
     if mode == "tikitaka":
         return _run_tikitaka_mode(request, active_agents, context, rag_context)
 
-    # default: 박사/전문가 수준이면 멀티패스 파이프라인 우선 시도
-    if knowledge_level in ("박사", "전문가"):
-        try:
-            result = _run_multi_pass_pipeline(request, active_agents, knowledge_level, mode)
-            if result is not None:
-                return result
-        except Exception as e:
-            logger.warning("멀티패스 파이프라인 실패 (기존 방식으로 fallback): %s", e)
-
+    # default: 모든 지식수준(입문~전문가)을 동일한 1/2/3차 staged 파이프라인으로 처리한다.
+    # (이전엔 박사/전문가가 _run_multi_pass_pipeline로 분기되어 stages/processSteps가 생성되지 않았음.
+    #  OpenAlex/depth 보강은 staged 모드에서 현재 미적용 — 후속 통합 과제.)
     return _run_default_mode(request, active_agents, context, rag_context)
