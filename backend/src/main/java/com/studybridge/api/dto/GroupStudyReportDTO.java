@@ -31,5 +31,6 @@ public class GroupStudyReportDTO {
         private String reportedUserName;
         private String reason;
         private LocalDateTime createdAt;
+        private String reportedUserStatus;
     }
 }

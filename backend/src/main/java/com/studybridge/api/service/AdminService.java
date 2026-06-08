@@ -32,20 +32,28 @@ public class AdminService {
             throw new IllegalArgumentException("관리자 계정은 제재할 수 없습니다.");
         }
 
-        user.setStatus("SUSPENDED");
-        user.setSuspensionEndDate(LocalDateTime.now().plusDays(request.getDays()));
+        // request.getDays()가 0일 경우 '경고(WARNING)' 상태로 처리
+        if (request.getDays() == 0) {
+            user.setStatus("WARNING");
+            user.setSuspensionEndDate(null);
+        } else {
+            user.setStatus("SUSPENDED");
+            user.setSuspensionEndDate(LocalDateTime.now().plusDays(request.getDays()));
+        }
         user.setSuspensionReason(request.getReason());
         user.setSuspensionMemo(request.getMemo());
         userRepository.save(user);
 
-        log.info("[관리자 제재] 유저 일시정지 완료. 대상: {}, 기간: {}일, 정지만료: {}, 사유: {}", 
-                user.getDisplayName(), request.getDays(), user.getSuspensionEndDate(), request.getReason());
+        log.info("[관리자 제재] 유저 제재 완료. 대상: {}, 상태: {}, 기간: {}일, 정지만료: {}, 사유: {}", 
+                user.getDisplayName(), user.getStatus(), request.getDays(), user.getSuspensionEndDate(), request.getReason());
+
+        String message = request.getDays() == 0 ? "유저 경고 성공" : "유저 일시 정지 성공 (기간: " + request.getDays() + "일)";
 
         return AdminDTO.ModerationResponse.builder()
                 .targetId(userId)
                 .targetType("USER")
-                .action("SUSPEND")
-                .message("유저 일시 정지 성공 (기간: " + request.getDays() + "일)")
+                .action(request.getDays() == 0 ? "WARNING" : "SUSPEND")
+                .message(message)
                 .executionTime(LocalDateTime.now())
                 .build();
     }
