@@ -277,13 +277,22 @@ public class BlogService {
                 .map(this::convertCommentToDTO)
                 .collect(Collectors.toList());
 
+        String authorPhotoUrl = blog.getAuthor().getPhotoUrl();
+        if (authorPhotoUrl != null && !authorPhotoUrl.isBlank() && !authorPhotoUrl.startsWith("http")) {
+            try {
+                authorPhotoUrl = s3Service.getPresignedUrl(authorPhotoUrl);
+            } catch (Exception e) {
+                log.warn("Failed to generate presigned URL for blog author photo: {}", e.getMessage());
+            }
+        }
+
         return BlogDTO.Response.builder()
                 .blogId(blog.getBlogId())
                 .title(blog.getTitle())
                 .content(blog.getContent())
                 .authorId(blog.getAuthor().getId())
                 .authorNickname(blog.getAuthor().getDisplayName())
-                .authorPhotoUrl(blog.getAuthor().getPhotoUrl())
+                .authorPhotoUrl(authorPhotoUrl)
                 .imageS3Key(blog.getImageS3Key())
                 .pdfS3Key(blog.getPdfS3Key())
                 .imagePresignedUrl(imagePresignedUrl)
@@ -297,12 +306,21 @@ public class BlogService {
     }
 
     private BlogCommentDTO.Response convertCommentToDTO(BlogComment comment) {
+        String authorPhotoUrl = comment.getAuthor().getPhotoUrl();
+        if (authorPhotoUrl != null && !authorPhotoUrl.isBlank() && !authorPhotoUrl.startsWith("http")) {
+            try {
+                authorPhotoUrl = s3Service.getPresignedUrl(authorPhotoUrl);
+            } catch (Exception e) {
+                log.warn("Failed to generate presigned URL for comment author photo: {}", e.getMessage());
+            }
+        }
+
         return BlogCommentDTO.Response.builder()
                 .commentId(comment.getCommentId())
                 .blogId(comment.getBlog().getBlogId())
                 .authorId(comment.getAuthor().getId())
                 .authorNickname(comment.getAuthor().getDisplayName())
-                .authorPhotoUrl(comment.getAuthor().getPhotoUrl())
+                .authorPhotoUrl(authorPhotoUrl)
                 .content(comment.getContent())
                 .createdAt(comment.getCreatedAt())
                 .updatedAt(comment.getUpdatedAt())

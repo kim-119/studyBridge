@@ -7,6 +7,8 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import com.studybridge.api.service.S3Service;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -15,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
 public class UserController {
 
     private final UserService userService;
+    private final S3Service s3Service;
 
     // 회원가입
     @PostMapping("/register")
@@ -100,6 +103,26 @@ public class UserController {
             UserDTO.Response response = userService.updateProfile(userDetails.getId(), request);
             return ResponseEntity.ok(response);
         } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    // 사용자 프로필 이미지 업로드
+    @PostMapping(value = "/profile/image", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> uploadProfileImage(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestParam("file") MultipartFile file) {
+        if (userDetails == null) {
+            return ResponseEntity.status(401).body("로그인이 필요한 서비스입니다.");
+        }
+        try {
+            String s3Key = s3Service.uploadBlogFile(file, userDetails.getId());
+            String presignedUrl = s3Service.getPresignedUrl(s3Key);
+            java.util.Map<String, String> response = new java.util.HashMap<>();
+            response.put("s3Key", s3Key);
+            response.put("photoUrl", presignedUrl);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
