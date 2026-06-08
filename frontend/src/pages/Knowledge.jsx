@@ -159,7 +159,16 @@ export default function Knowledge() {
                   <h2 style={{ fontSize: '32px', fontWeight: 'bold', margin: '0 0 16px' }}>{filteredPosts[0].title}</h2>
                   <p style={{ fontSize: '16px', color: 'rgba(255,255,255,0.8)', margin: '0 0 20px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', maxWidth: '800px' }}>{stripTags(filteredPosts[0].content)}</p>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '15px' }}>
-                    <span style={{ fontWeight: 'bold' }}>{filteredPosts[0].authorNickname}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {filteredPosts[0].authorPhotoUrl ? (
+                        <img src={filteredPosts[0].authorPhotoUrl} alt="author" style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover' }} />
+                      ) : (
+                        <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#60C95A', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 'bold' }}>
+                          {filteredPosts[0].authorNickname ? filteredPosts[0].authorNickname.charAt(0) : 'U'}
+                        </div>
+                      )}
+                      <span style={{ fontWeight: 'bold' }}>{filteredPosts[0].authorNickname}</span>
+                    </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Heart size={16} /> {filteredPosts[0].likeCount}</div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><MessageSquare size={16} /> {filteredPosts[0].comments?.length || 0}</div>
                   </div>
@@ -184,7 +193,16 @@ export default function Knowledge() {
                 <p style={{ fontSize: '15px', color: '#6B7280', margin: '0 0 20px', lineHeight: '1.5', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden', flex: 1 }}>{stripTags(post.content)}</p>
                 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '16px', borderTop: '1px solid #E5E7EB' }}>
-                  <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#111827' }}>{post.authorNickname}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {post.authorPhotoUrl ? (
+                      <img src={post.authorPhotoUrl} alt="author" style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover' }} />
+                    ) : (
+                      <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#60C95A', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 'bold' }}>
+                        {post.authorNickname ? post.authorNickname.charAt(0) : 'U'}
+                      </div>
+                    )}
+                    <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#111827' }}>{post.authorNickname}</span>
+                  </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#6B7280', fontSize: '14px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><Heart size={16} /> {post.likeCount}</div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><MessageSquare size={16} /> {post.comments?.length || 0}</div>

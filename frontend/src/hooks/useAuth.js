@@ -7,6 +7,7 @@ export const normalizeUser = (raw) => ({
   displayName: raw.displayName || raw.display_name || raw.name || raw.nickname || '',
   email: raw.email || '',
   major: raw.major || '',
+  photoUrl: raw.photoUrl || raw.photo_url || '',
   role: raw.role || 'USER'
 });
 

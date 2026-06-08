@@ -71,6 +71,8 @@ public class UserDTO {
         private String displayName;
 
         private String major;
+
+        private String photoUrl;
     }
 
     // 클라이언트에게 사용자 정보를 반환할 때 사용하는 DTO

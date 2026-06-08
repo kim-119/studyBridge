@@ -431,7 +431,35 @@ export default function StudyMate() {
       console.debug('[StudyMate] chat response', res);
 
       if (res.success === false || res.errorMessage) {
-        throw new Error(res.errorMessage || 'AI 응답 실패');
+        // timeout 등 서버측 실패: alert로 흐름을 막지 않고 UI 내부 메시지로 부드럽게 안내한다.
+        const isSoftTimeout = res.errorCode === 'AI_TIMEOUT';
+        const noticeText = isSoftTimeout
+          ? 'AI 답변 생성이 예상보다 오래 걸리고 있습니다. 소크라테스/토론 모드는 더 깊은 검토가 필요해 시간이 더 걸릴 수 있어요. 잠시 후 다시 시도하면 보통 정상 생성됩니다.'
+          : (res.errorMessage || 'AI 응답 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+        const noticeMsg = {
+          id: Date.now() + 1,
+          content: noticeText,
+          sender: 'AI',
+          senderName: selectedAgent?.name || 'StudyMate',
+          isError: true,
+          createdAt: new Date().toISOString(),
+          parentId: userMsg.id,
+        };
+        setRoomHistories((prev) => {
+          const currentList = prev[agentId] || [];
+          const hasUserMsg = currentList.some((m) => m.id === userMsg.id);
+          const baseList = hasUserMsg ? currentList : [...currentList, userMsg];
+          return { ...prev, [agentId]: [...baseList, noticeMsg] };
+        });
+        if (selectedAgentIdRef.current === agentId) {
+          setChatHistory((prev) => {
+            const hasUserMsg = prev.some((m) => m.id === userMsg.id);
+            const baseList = hasUserMsg ? prev : [...prev, userMsg];
+            return [...baseList, noticeMsg];
+          });
+        }
+        pendingDetailParentId.current = null;
+        return; // alert 없이 종료 (finally에서 typing 상태 해제)
       }
 
       let newMsgs = [];
@@ -484,21 +512,32 @@ export default function StudyMate() {
       }
     } catch (err) {
       console.error('메시지 전송 실패:', err);
-      alert(err.message || '메시지 전송에 실패했습니다.');
-
-      // 7. 실패 시, 해당 방의 캐시 및 UI에서 에러 메시지만 복구
-      setRoomHistories((prev) => ({
-        ...prev,
-        [agentId]: (prev[agentId] || []).filter((m) => m.id !== userMsg.id)
-      }));
-
+      // alert로 흐름을 막지 않고, 네트워크/서버 오류를 채팅 내부 메시지로 표시한다.
+      const isNetwork = err?.code === 'ERR_NETWORK' || /Network|timeout|aborted/i.test(err?.message || '');
+      const noticeText = isNetwork
+        ? '서버 연결이 불안정합니다. 잠시 후 다시 시도해주세요.'
+        : (err.message || 'AI 응답 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      const noticeMsg = {
+        id: Date.now() + 1,
+        content: noticeText,
+        sender: 'AI',
+        senderName: selectedAgent?.name || 'StudyMate',
+        isError: true,
+        createdAt: new Date().toISOString(),
+        parentId: userMsg.id,
+      };
+      setRoomHistories((prev) => {
+        const currentList = prev[agentId] || [];
+        const hasUserMsg = currentList.some((m) => m.id === userMsg.id);
+        const baseList = hasUserMsg ? currentList : [...currentList, userMsg];
+        return { ...prev, [agentId]: [...baseList, noticeMsg] };
+      });
       if (selectedAgentIdRef.current === agentId) {
-        setChatHistory((prev) => prev.filter((m) => m.id !== userMsg.id));
-        setMessage(inputMsg);
-        setRoomDrafts((prev) => ({ ...prev, [agentId]: inputMsg }));
-      } else {
-        // 다른 방에 있는 경우, 그 방의 드래프트로 실패한 메시지를 복구해줌
-        setRoomDrafts((prev) => ({ ...prev, [agentId]: inputMsg }));
+        setChatHistory((prev) => {
+          const hasUserMsg = prev.some((m) => m.id === userMsg.id);
+          const baseList = hasUserMsg ? prev : [...prev, userMsg];
+          return [...baseList, noticeMsg];
+        });
       }
     } finally {
       // 8. 해당 방의 타이핑/로딩 상태만 해제
@@ -623,8 +662,8 @@ export default function StudyMate() {
                     >
                       <div className="dt-agent-card-row">
                         <div className="dt-avatar-wrap">
-                          <div className="dt-avatar" style={{ backgroundColor: avatarColor.bg, color: avatarColor.text }}>
-                            {(agent.roomName || agent.name)?.charAt(0)}
+                          <div className="dt-avatar" style={{ backgroundColor: avatarColor.bg, color: avatarColor.text }} title="StudyBridge AI">
+                            <Bot size={18} />
                           </div>
                           <div className={`dt-status-dot ${isTyping ? 'busy' : isActive ? 'online' : 'idle'}`} />
                         </div>
@@ -718,8 +757,8 @@ export default function StudyMate() {
                   <>
                     <div className="dt-session-top">
                       <div className="dt-session-identity">
-                        <div className="dt-session-avatar">
-                          {(selectedAgent.roomName || selectedAgent.name)?.charAt(0)}
+                        <div className="dt-session-avatar" title="StudyBridge AI">
+                          <Bot size={18} />
                         </div>
                         <div>
                           <div className="dt-session-title">
@@ -964,7 +1003,7 @@ export default function StudyMate() {
                               }}
                             >
                               <div style={{ width: 24, height: 24, borderRadius: '50%', background: ag.color || '#e5e7eb', color: ag.color ? '#fff' : '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
-                                {ag.name === '모두' ? 'M' : ag.name.charAt(0)}
+                                {ag.name === '모두' ? 'M' : <Bot size={13} />}
                               </div>
                               {ag.name}
                             </li>

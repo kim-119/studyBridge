@@ -95,7 +95,7 @@ const DUMMY_MY_STUDIES = [
 ];
 
 export default function GroupStudy() {
-  const { userId } = useAuth();
+  const { userId, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -251,6 +251,7 @@ export default function GroupStudy() {
           leader: group.leaderName || '방장',
           author: group.leaderName || '방장',
           leaderId: group.leaderId,
+          leaderPhotoUrl: group.leaderPhotoUrl,
           status: group.status, // 'RECRUITING', 'ACTIVE', 'COMPLETED'
           isPrivate: !group.isPublic,
           thumbnailUrl: group.coverImageUrl || 'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
@@ -725,9 +726,17 @@ export default function GroupStudy() {
 
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '16px', borderTop: '1px solid #E5E7EB', gap: '12px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#374151', fontWeight: '600', minWidth: 0 }}>
-                          <div style={{ minWidth: '24px', width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
-                            {study.leader.charAt(0)}
-                          </div>
+                          {study.leaderPhotoUrl ? (
+                            <img
+                              src={study.leaderPhotoUrl}
+                              alt={study.leader}
+                              style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover' }}
+                            />
+                          ) : (
+                            <div style={{ minWidth: '24px', width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
+                              {study.leader.charAt(0)}
+                            </div>
+                          )}
                           <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{study.leader}</span>
                         </div>
 
@@ -778,9 +787,17 @@ export default function GroupStudy() {
                     </div>
                     <h2 style={{ margin: '0 0 12px 0', fontSize: '20px', fontWeight: '700', color: '#fff', textShadow: '0 2px 4px rgba(0,0,0,0.5)', wordBreak: 'keep-all', lineHeight: '1.3' }}>{selectedPost.title}</h2>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '700', boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }}>
-                        {selectedPost.author.charAt(0)}
-                      </div>
+                      {selectedPost.leaderPhotoUrl ? (
+                        <img
+                          src={selectedPost.leaderPhotoUrl}
+                          alt={selectedPost.author}
+                          style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover', boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }}
+                        />
+                      ) : (
+                        <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '700', boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }}>
+                          {selectedPost.author.charAt(0)}
+                        </div>
+                      )}
                       <span style={{ fontSize: '14px', fontWeight: '500', textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>{selectedPost.author}</span>
                     </div>
                   </div>
@@ -1064,9 +1081,13 @@ export default function GroupStudy() {
                   <div style={{ position: 'relative', width: '100%', paddingTop: '56.25%', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: isVideoOn ? '#1F2937' : 'black' }}>
                     {!isVideoOn ? (
                       <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', color: '#4B5563' }}>
-                        <div style={{ width: '80px', height: '80px', borderRadius: '50%', backgroundColor: '#374151', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                          <User size={40} color="#9CA3AF" />
-                        </div>
+                        {user?.photoUrl ? (
+                          <img src={user.photoUrl} alt="avatar" style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }} />
+                        ) : (
+                          <div style={{ width: '80px', height: '80px', borderRadius: '50%', backgroundColor: '#374151', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+                            <User size={40} color="#9CA3AF" />
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <>
@@ -1283,7 +1304,20 @@ export default function GroupStudy() {
                           applications.map(app => (
                             <div key={app.applicationId} style={{ backgroundColor: '#ffffff', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontWeight: '700', fontSize: '14px', color: '#111827' }}>{app.applicantName}</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  {app.applicantPhotoUrl ? (
+                                    <img
+                                      src={app.applicantPhotoUrl}
+                                      alt={app.applicantName}
+                                      style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover' }}
+                                    />
+                                  ) : (
+                                    <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 'bold' }}>
+                                      {app.applicantName ? app.applicantName.charAt(0) : '?'}
+                                    </div>
+                                  )}
+                                  <span style={{ fontWeight: '700', fontSize: '14px', color: '#111827' }}>{app.applicantName}</span>
+                                </div>
                                 <span style={{ fontSize: '11px', color: '#9CA3AF' }}>
                                   {app.createdAt ? app.createdAt.split('T')[0] : ''}
                                 </span>

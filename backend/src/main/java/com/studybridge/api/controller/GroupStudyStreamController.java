@@ -71,42 +71,74 @@ public class GroupStudyStreamController {
                 })
                 .toList();
 
-        // 4. FastAPI 요청 페이로드 구성
-        Map<String, Object> fastApiPayload = new LinkedHashMap<>();
-        fastApiPayload.put("message", request.getMessage());
-        fastApiPayload.put("mode", request.getMode() != null ? request.getMode() : "multi_agent_discussion");
-        fastApiPayload.put("rounds", request.getRounds() != null ? request.getRounds() : 3);
-        fastApiPayload.put("showFinalSynthesis", request.getShowFinalSynthesis() != null ? request.getShowFinalSynthesis() : true);
-        fastApiPayload.put("previousAnswers", previousAnswers);
-        fastApiPayload.put("targetAgentId", request.getTargetAgentId());
+        // 4. 그룹스터디 AI 봇 정리 — 슬래시 명령어 2차 파싱 + 일정봇 방어 + runMode별 agents 구성
+        String message = request.getMessage() != null ? request.getMessage().trim() : "";
+        String rawMessage = request.getRawMessage() != null ? request.getRawMessage().trim() : message;
+        String botType = request.getBotType();
+        String runMode = request.getRunMode();
 
-        // 에이전트 목록이 없으면 디폴트 3개 에이전트 구성
+        // 4-1. 서버측 2차 슬래시 파싱 (rawMessage 우선)
+        SlashResult slash = parseSlashCommand(rawMessage);
+        if (slash.unsupported) {
+            return Flux.just(errorEvent(
+                    "지원하지 않는 AI 봇입니다. 사용 가능 명령어: /요약봇, /퀴즈봇, /검색봇"));
+        }
+        if (slash.matched) {
+            botType = slash.botType;
+            runMode = "single";
+            message = slash.message;
+        }
+
+        // 4-2. 일정봇 계열 방어 (schedule_bot/calendar_bot/todo_bot, ScheduleAgent 등)
+        if (isForbiddenBot(botType, request.getAgentName())) {
+            return Flux.just(errorEvent(
+                    "지원하지 않는 AI 봇입니다. 사용 가능: /요약봇, /퀴즈봇, /검색봇"));
+        }
+        if (request.getAgents() != null) {
+            for (ChatDTO.RequestAgent a : request.getAgents()) {
+                if (isForbiddenBot(a.getBotType(), a.getName())) {
+                    return Flux.just(errorEvent("지원하지 않는 AI 봇입니다."));
+                }
+            }
+        }
+
+        // 4-3. message가 비어있으면 안내
+        if (message.isEmpty()) {
+            return Flux.just(errorEvent(emptyMessageGuide(botType)));
+        }
+
+        // 4-4. agents 구성
         List<Map<String, Object>> agentsList;
-        if (request.getAgents() != null && !request.getAgents().isEmpty()) {
-            agentsList = request.getAgents().stream()
-                    .map(a -> {
-                        Map<String, Object> map = new LinkedHashMap<>();
-                        map.put("id", a.getId());
-                        map.put("agentId", a.getAgentId());
-                        map.put("name", a.getName());
-                        map.put("role", a.getRole());
-                        map.put("personality", a.getPersonality());
-                        map.put("personalityStrength", a.getPersonalityStrength() != null ? a.getPersonalityStrength() : "extreme");
-                        map.put("style", a.getStyle());
-                        map.put("tone", a.getTone());
-                        map.put("knowledgeLevel", a.getKnowledgeLevel() != null ? a.getKnowledgeLevel() : "학사 수준");
-                        map.put("customInstruction", a.getCustomInstruction());
-                        map.put("persona", a.getPersona());
-                        return map;
-                    })
-                    .toList();
-        } else {
+        if ("all_bots".equalsIgnoreCase(runMode)) {
+            // 전체 토론: 검색봇 → 요약봇 → 퀴즈봇 순서
             agentsList = List.of(
-                    createAgentMap(1L, "SummaryAgent", "요약봇", "학습 내용을 요약하고 정리해 줍니다."),
-                    createAgentMap(2L, "QuizAgent", "퀴즈봇", "학습 내용을 검토할 퀴즈를 출제합니다."),
-                    createAgentMap(3L, "TavilyAgent", "검색봇", "추가적인 유용한 외부 정보와 문헌을 찾아 줍니다.")
+                    botAgentMap("search_bot"),
+                    botAgentMap("summary_bot"),
+                    botAgentMap("quiz_bot")
+            );
+        } else if (botType != null && BOT_REGISTRY.containsKey(botType)) {
+            // single: 선택한 봇 1개
+            agentsList = List.of(botAgentMap(botType));
+        } else {
+            // 정보 부족 시 안전 기본값: 3봇 전체 토론
+            agentsList = List.of(
+                    botAgentMap("search_bot"),
+                    botAgentMap("summary_bot"),
+                    botAgentMap("quiz_bot")
             );
         }
+
+        final String effectiveMessage = message;
+
+        // 4-5. FastAPI 요청 페이로드 구성 (group_study_ai 모드)
+        Map<String, Object> fastApiPayload = new LinkedHashMap<>();
+        fastApiPayload.put("message", effectiveMessage);
+        fastApiPayload.put("mode", "group_study_ai");
+        fastApiPayload.put("runMode", "all_bots".equalsIgnoreCase(runMode) ? "all_bots" : "single");
+        fastApiPayload.put("rounds", request.getRounds() != null ? request.getRounds() : 1);
+        fastApiPayload.put("showFinalSynthesis", false);
+        fastApiPayload.put("previousAnswers", previousAnswers);
+        fastApiPayload.put("targetAgentId", request.getTargetAgentId());
         fastApiPayload.put("agents", agentsList);
 
         // 스트림 누적 상태 저장 객체
@@ -136,6 +168,9 @@ public class GroupStudyStreamController {
                                     try {
                                         Map<String, Object> chunkObj = new LinkedHashMap<>();
                                         chunkObj.put("agentName", agentName);
+                                        chunkObj.put("botType", botTypeForAgent(agentName));
+                                        chunkObj.put("displayName", displayNameForAgent(agentName));
+                                        chunkObj.put("emoji", emojiForAgent(agentName));
                                         chunkObj.put("content", sub);
                                         chunkObj.put("done", false);
                                         chunks.add(objectMapper.writeValueAsString(chunkObj));
@@ -162,10 +197,10 @@ public class GroupStudyStreamController {
                 .doOnComplete(() -> {
                     log.info("SSE Stream completed for groupId={}. Persisting discussion to Redis.", groupId);
 
-                    // 1. 유저 질문 저장
+                    // 1. 유저 질문 저장 (슬래시 명령어 제거된 메시지)
                     redisChatService.saveMessage(groupId, RedisChatMessage.builder()
                             .agentName(displayName)
-                            .answer(request.getMessage())
+                            .answer(effectiveMessage)
                             .role("USER")
                             .build());
 
@@ -202,12 +237,83 @@ public class GroupStudyStreamController {
                 ));
     }
 
-    private Map<String, Object> createAgentMap(Long id, String name, String role, String goal) {
+    // ── 그룹스터디 AI 봇 레지스트리 (요약/퀴즈/검색 3종) ──────────────────────────
+    //  일정봇(schedule_bot/calendar_bot/todo_bot)은 절대 등록하지 않는다.
+
+    private record BotDef(Long id, String botType, String agentName, String displayName,
+                          String emoji, String modelProvider, String goal) {}
+
+    private static final Map<String, BotDef> BOT_REGISTRY = Map.of(
+            "summary_bot", new BotDef(1L, "summary_bot", "SummaryAgent", "요약봇", "📝",
+                    "qwen_ollama", "스터디 내용과 학습 자료를 핵심 개념, 키워드, 시험 포인트 중심으로 정리합니다."),
+            "quiz_bot", new BotDef(2L, "quiz_bot", "QuizAgent", "퀴즈봇", "🧩",
+                    "openai_gpt", "학습 내용을 바탕으로 퀴즈를 만들고 정답과 해설까지 제공합니다."),
+            "search_bot", new BotDef(3L, "search_bot", "TavilyAgent", "검색봇", "🔎",
+                    "openai_gpt_tavily", "웹 검색과 출처 기반 분석으로 최신 학습 정보를 보강합니다.")
+    );
+
+    // 슬래시 명령어 → botType
+    private static final Map<String, String> SLASH_TO_BOT = Map.of(
+            "/요약봇", "summary_bot",
+            "/퀴즈봇", "quiz_bot",
+            "/검색봇", "search_bot"
+    );
+
+    // 절대 허용하지 않는 봇
+    private static final Set<String> FORBIDDEN_BOT_TYPES = Set.of("schedule_bot", "calendar_bot", "todo_bot");
+    private static final Set<String> FORBIDDEN_AGENT_NAMES = Set.of("ScheduleAgent", "CalendarAgent", "TodoAgent");
+
+    private static final class SlashResult {
+        boolean matched;
+        boolean unsupported;
+        String botType;
+        String message;
+    }
+
+    /** rawMessage의 슬래시 명령어를 2차 파싱한다. */
+    private SlashResult parseSlashCommand(String rawMessage) {
+        SlashResult r = new SlashResult();
+        r.message = rawMessage != null ? rawMessage.trim() : "";
+        if (r.message.isEmpty() || !r.message.startsWith("/")) {
+            return r; // 명령어 없음
+        }
+        for (Map.Entry<String, String> e : SLASH_TO_BOT.entrySet()) {
+            if (r.message.startsWith(e.getKey())) {
+                r.matched = true;
+                r.botType = e.getValue();
+                r.message = r.message.substring(e.getKey().length()).trim();
+                return r;
+            }
+        }
+        // 지원하지 않는 슬래시 명령어 (/일정봇 등)
+        r.unsupported = true;
+        return r;
+    }
+
+    private boolean isForbiddenBot(String botType, String agentName) {
+        if (botType != null && FORBIDDEN_BOT_TYPES.contains(botType.trim())) return true;
+        return agentName != null && FORBIDDEN_AGENT_NAMES.contains(agentName.trim());
+    }
+
+    private String emptyMessageGuide(String botType) {
+        if ("quiz_bot".equals(botType)) return "퀴즈로 만들 내용을 입력해주세요.";
+        if ("search_bot".equals(botType)) return "검색할 주제를 입력해주세요.";
+        if ("summary_bot".equals(botType)) return "요약할 내용을 입력해주세요.";
+        return "질문 내용을 입력해주세요.";
+    }
+
+    /** botType → FastAPI agent payload */
+    private Map<String, Object> botAgentMap(String botType) {
+        BotDef def = BOT_REGISTRY.get(botType);
+        if (def == null) def = BOT_REGISTRY.get("summary_bot");
         Map<String, Object> map = new LinkedHashMap<>();
-        map.put("id", id);
-        map.put("agentId", id);
-        map.put("name", name);
-        map.put("role", role);
+        map.put("id", def.id());
+        map.put("agentId", def.id());
+        map.put("name", def.agentName());
+        map.put("botType", def.botType());
+        map.put("displayName", def.displayName());
+        map.put("modelProvider", def.modelProvider());
+        map.put("role", def.displayName());
         map.put("personality", "전문적");
         map.put("personalityStrength", "extreme");
         map.put("style", "전문적");
@@ -215,7 +321,50 @@ public class GroupStudyStreamController {
         map.put("knowledgeLevel", "학사 수준");
         map.put("customInstruction", "");
         map.put("persona", "");
-        map.put("goal", goal);
+        map.put("goal", def.goal());
         return map;
+    }
+
+    // agentName(TavilyAgent/SearchAgent 모두 검색봇) → BotDef
+    private BotDef botDefForAgent(String agentName) {
+        if (agentName == null) return null;
+        String n = agentName.trim();
+        if ("SearchAgent".equals(n)) n = "TavilyAgent";
+        for (BotDef def : BOT_REGISTRY.values()) {
+            if (def.agentName().equals(n)) return def;
+        }
+        return null;
+    }
+
+    private String botTypeForAgent(String agentName) {
+        BotDef def = botDefForAgent(agentName);
+        return def != null ? def.botType() : null;
+    }
+
+    private String displayNameForAgent(String agentName) {
+        BotDef def = botDefForAgent(agentName);
+        return def != null ? def.displayName() : agentName;
+    }
+
+    private String emojiForAgent(String agentName) {
+        BotDef def = botDefForAgent(agentName);
+        return def != null ? def.emoji() : "";
+    }
+
+    /** error 이벤트 SSE 생성 */
+    private ServerSentEvent<String> errorEvent(String message) {
+        String json;
+        try {
+            Map<String, Object> obj = new LinkedHashMap<>();
+            obj.put("message", message);
+            obj.put("errorMessage", message);
+            json = objectMapper.writeValueAsString(obj);
+        } catch (Exception e) {
+            json = "{\"message\":\"응답 생성 중 오류가 발생했습니다.\"}";
+        }
+        return ServerSentEvent.<String>builder()
+                .event("error")
+                .data(json)
+                .build();
     }
 }

@@ -9,9 +9,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.stream.Collectors;
+
+// 자료보관함 AI 호출 hard timeout (무한 대기 방지). 전체 2분 예산 내(120~125초).
 
 @Service
 @RequiredArgsConstructor
@@ -93,23 +97,228 @@ public class AiIntegrationService {
                                                 .materialId(materialId)
                                                 .overview(summary.getOverview())
                                                 .coreContents(summary.getCoreContents())
+                                                .success(true)
+                                                .textStatus(textStatusFor(material, getTextToAnalyze(material)))
                                                 .build())
                                 .orElseGet(() -> generateSummary(material));
+        }
+
+        /** FastAPI 호출 예외를 사용자 친화 메시지로 변환한다 (timeout 구분). */
+        private RuntimeException aiError(String feature, Exception e) {
+                String msg = e.getMessage() == null ? "" : e.getMessage();
+                boolean timeout = e instanceof IllegalStateException
+                                || msg.toLowerCase().contains("timeout")
+                                || (e.getCause() instanceof java.util.concurrent.TimeoutException);
+                if (timeout) {
+                        return new RuntimeException("AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.");
+                }
+                return new RuntimeException(feature + " 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+        }
+
+        // FastAPI 응답 Map에서 AI 상태 필드를 안전하게 추출 (없으면 null/기본값)
+        @SuppressWarnings("unchecked")
+        private Map<String, Object> aiMap(Map response, String key) {
+                if (response != null && response.get(key) instanceof Map) {
+                        return (Map<String, Object>) response.get(key);
+                }
+                return null;
+        }
+
+        @SuppressWarnings("unchecked")
+        private List<String> aiWarnings(Map response) {
+                if (response != null && response.get("warnings") instanceof List) {
+                        List<String> out = new java.util.ArrayList<>();
+                        for (Object o : (List<Object>) response.get("warnings")) {
+                                if (o != null) out.add(o.toString());
+                        }
+                        return out;
+                }
+                return null;
+        }
+
+        private Boolean aiBool(Map response, String key, Boolean dflt) {
+                if (response != null && response.get(key) instanceof Boolean) {
+                        return (Boolean) response.get(key);
+                }
+                return dflt;
+        }
+
+        private String aiStr(Map response, String key) {
+                if (response != null && response.get(key) != null) {
+                        return response.get(key).toString();
+                }
+                return null;
+        }
+
+        private Long aiMetaLong(Map response, String key) {
+                Map<String, Object> metadata = aiMap(response, "metadata");
+                if (metadata == null || metadata.get(key) == null) return null;
+                Object v = metadata.get(key);
+                if (v instanceof Number) return ((Number) v).longValue();
+                try { return Long.parseLong(v.toString()); } catch (Exception ignored) { return null; }
+        }
+
+        private String aiMetaStr(Map response, String key) {
+                Map<String, Object> metadata = aiMap(response, "metadata");
+                if (metadata == null || metadata.get(key) == null) return null;
+                return metadata.get(key).toString();
+        }
+
+        private Boolean aiMetaBool(Map response, String key) {
+                Map<String, Object> metadata = aiMap(response, "metadata");
+                if (metadata == null || metadata.get(key) == null) return null;
+                Object v = metadata.get(key);
+                if (v instanceof Boolean) return (Boolean) v;
+                return Boolean.parseBoolean(v.toString());
+        }
+
+        private boolean isAiFailure(Map response) {
+                return response != null && Boolean.FALSE.equals(response.get("success"));
+        }
+
+        private boolean isTimeout(Exception e) {
+                String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+                return e instanceof IllegalStateException
+                                || msg.contains("timeout")
+                                || msg.contains("timed out")
+                                || (e.getCause() instanceof java.util.concurrent.TimeoutException);
+        }
+
+        private Map<String, Object> textStatusFor(Material material, String textToAnalyze) {
+                Map<String, Object> status = new LinkedHashMap<>();
+                int length = textToAnalyze == null ? 0 : textToAnalyze.length();
+                status.put("hasText", length > 0);
+                status.put("textLength", length);
+                status.put("chunkCount", 0);
+                status.put("status", length > 0 ? (length < 300 ? "TOO_SHORT" : "READY") : "EMPTY");
+                status.put("materialId", material != null ? material.getMaterialId() : null);
+                return status;
+        }
+
+        private Integer aiInt(Object value, int dflt) {
+                if (value instanceof Number) return ((Number) value).intValue();
+                if (value != null) {
+                        try { return Integer.parseInt(value.toString()); } catch (Exception ignored) { }
+                }
+                return dflt;
+        }
+
+        private String userMessageFor(String errorCode, String fallback) {
+                if ("PDF_OCR_REQUIRED".equals(errorCode)) return "이미지 기반 PDF라 텍스트 추출이 필요합니다. OCR 설정을 켠 뒤 다시 시도해주세요.";
+                if ("PDF_TEXT_EMPTY".equals(errorCode)) return "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.";
+                if ("AI_TIMEOUT".equals(errorCode)) return "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.";
+                if ("OLLAMA_UNAVAILABLE".equals(errorCode)) return "로컬 AI 모델 연결에 실패했습니다.";
+                if ("OPENAI_UNAVAILABLE".equals(errorCode)) return "GPT 모델 연결에 실패했습니다.";
+                if (fallback != null && !fallback.isBlank()) return fallback;
+                return "AI 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.";
+        }
+
+        private SummaryDTO summaryFailure(Material material, String errorCode, String message, Boolean retryable, Map response) {
+                String text = getTextToAnalyze(material);
+                return SummaryDTO.builder()
+                                .materialId(material.getMaterialId())
+                                .overview("")
+                                .coreContents("[]")
+                                .success(false)
+                                .errorCode(errorCode)
+                                .message(userMessageFor(errorCode, message))
+                                .retryable(retryable != null ? retryable : true)
+                                .textStatus(aiMap(response, "textStatus") != null ? aiMap(response, "textStatus") : textStatusFor(material, text))
+                                .warnings(aiWarnings(response))
+                                .metadata(aiMap(response, "metadata"))
+                                .provider(aiMetaStr(response, "provider"))
+                                .model(aiMetaStr(response, "model"))
+                                .elapsedMs(aiMetaLong(response, "elapsedMs"))
+                                .usedFallback(aiMetaBool(response, "usedFallback"))
+                                .cacheHit(aiMetaBool(response, "cacheHit"))
+                                .build();
+        }
+
+        private QuizDTO.Response quizFailure(Material material, QuizDTO.Request request, String errorCode, String message, Boolean retryable, Map response) {
+                String text = getTextToAnalyze(material);
+                return QuizDTO.Response.builder()
+                                .materialId(material.getMaterialId())
+                                .difficulty(request != null ? request.getDifficulty() : null)
+                                .questionCount(request != null ? request.getQuestionCount() : null)
+                                .pageRange(request != null ? request.getPageRange() : null)
+                                .quizData("[]")
+                                .success(false)
+                                .errorCode(errorCode)
+                                .message(userMessageFor(errorCode, message))
+                                .retryable(retryable != null ? retryable : true)
+                                .textStatus(aiMap(response, "textStatus") != null ? aiMap(response, "textStatus") : textStatusFor(material, text))
+                                .warnings(aiWarnings(response))
+                                .metadata(aiMap(response, "metadata"))
+                                .provider(aiMetaStr(response, "provider"))
+                                .model(aiMetaStr(response, "model"))
+                                .elapsedMs(aiMetaLong(response, "elapsedMs"))
+                                .usedFallback(aiMetaBool(response, "usedFallback"))
+                                .cacheHit(aiMetaBool(response, "cacheHit"))
+                                .build();
+        }
+
+        private QuestionDTO.Response questionFailure(Material material, String userQuestion, String errorCode, String message, Boolean retryable, Map response) {
+                String text = getTextToAnalyze(material);
+                return QuestionDTO.Response.builder()
+                                .materialId(material.getMaterialId())
+                                .userQuestion(userQuestion)
+                                .aiAnswer(userMessageFor(errorCode, message))
+                                .success(false)
+                                .errorCode(errorCode)
+                                .message(userMessageFor(errorCode, message))
+                                .retryable(retryable != null ? retryable : true)
+                                .textStatus(aiMap(response, "textStatus") != null ? aiMap(response, "textStatus") : textStatusFor(material, text))
+                                .warnings(aiWarnings(response))
+                                .metadata(aiMap(response, "metadata"))
+                                .provider(aiMetaStr(response, "provider"))
+                                .model(aiMetaStr(response, "model"))
+                                .elapsedMs(aiMetaLong(response, "elapsedMs"))
+                                .usedFallback(aiMetaBool(response, "usedFallback"))
+                                .cacheHit(aiMetaBool(response, "cacheHit"))
+                                .build();
+        }
+
+        private RoadmapDTO roadmapFailure(Material material, String errorCode, String message, Boolean retryable, Map response) {
+                String text = getTextToAnalyze(material);
+                return RoadmapDTO.builder()
+                                .materialId(material.getMaterialId())
+                                .title("로드맵 미생성")
+                                .steps(java.util.Collections.emptyList())
+                                .success(false)
+                                .errorCode(errorCode)
+                                .message(userMessageFor(errorCode, message))
+                                .retryable(retryable != null ? retryable : true)
+                                .textStatus(aiMap(response, "textStatus") != null ? aiMap(response, "textStatus") : textStatusFor(material, text))
+                                .warnings(aiWarnings(response))
+                                .metadata(aiMap(response, "metadata"))
+                                .provider(aiMetaStr(response, "provider"))
+                                .model(aiMetaStr(response, "model"))
+                                .elapsedMs(aiMetaLong(response, "elapsedMs"))
+                                .usedFallback(aiMetaBool(response, "usedFallback"))
+                                .cacheHit(aiMetaBool(response, "cacheHit"))
+                                .build();
         }
 
         private SummaryDTO generateSummary(Material material) {
                 String textToAnalyze = getTextToAnalyze(material);
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
-                        throw new IllegalArgumentException("학습 일지 또는 추출된 텍스트 내용이 비어 있어 요약을 생성할 수 없습니다.");
+                        return summaryFailure(material, "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
                 }
 
-                Map<String, Object> requestBody = Map.of("text", textToAnalyze);
+                Map<String, Object> requestBody = Map.of(
+                                "material_id", material.getMaterialId(),
+                                "document_title", material.getTitle(),
+                                "text", textToAnalyze);
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/summary")
-                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block();
+                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block(Duration.ofSeconds(125));
                 } catch (Exception e) {
-                        throw new RuntimeException("AI 서버에서 요약 생성 중 오류가 발생했습니다: " + e.getMessage());
+                        return summaryFailure(material, isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
+                }
+
+                if (isAiFailure(response)) {
+                        return summaryFailure(material, aiStr(response, "errorCode"), aiStr(response, "message"), aiBool(response, "retryable", true), response);
                 }
 
                 MaterialSummary summary = MaterialSummary.builder()
@@ -128,6 +337,18 @@ public class AiIntegrationService {
                                 .materialId(material.getMaterialId())
                                 .overview(summary.getOverview())
                                 .coreContents(summary.getCoreContents())
+                                .success(aiBool(response, "success", true))
+                                .errorCode(aiStr(response, "errorCode"))
+                                .message(aiStr(response, "message"))
+                                .retryable(aiBool(response, "retryable", null))
+                                .textStatus(aiMap(response, "textStatus"))
+                                .warnings(aiWarnings(response))
+                                .metadata(aiMap(response, "metadata"))
+                                .provider(aiMetaStr(response, "provider"))
+                                .model(aiMetaStr(response, "model"))
+                                .elapsedMs(aiMetaLong(response, "elapsedMs"))
+                                .usedFallback(aiMetaBool(response, "usedFallback"))
+                                .cacheHit(aiMetaBool(response, "cacheHit"))
                                 .build();
         }
 
@@ -155,9 +376,9 @@ public class AiIntegrationService {
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/feedback")
-                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block();
+                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block(Duration.ofSeconds(125));
                 } catch (Exception e) {
-                        throw new RuntimeException("AI 서버에서 피드백 생성 중 오류가 발생했습니다: " + e.getMessage());
+                        throw aiError("피드백", e);
                 }
 
                 MaterialFeedback feedback = MaterialFeedback.builder()
@@ -200,10 +421,11 @@ public class AiIntegrationService {
 
                 String textToAnalyze = getTextToAnalyze(material);
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
-                        throw new IllegalArgumentException("자료의 텍스트가 비어 있어 퀴즈를 생성할 수 없습니다.");
+                        return quizFailure(material, request, "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
                 }
 
                 Map<String, Object> requestBody = Map.of(
+                                "material_id", material.getMaterialId(),
                                 "text", textToAnalyze,
                                 "difficulty", request.getDifficulty(),
                                 "questionCount", request.getQuestionCount());
@@ -215,9 +437,13 @@ public class AiIntegrationService {
                                         .bodyValue(requestBody)
                                         .retrieve()
                                         .bodyToMono(Map.class)
-                                        .block();
+                                        .block(Duration.ofSeconds(125));
                 } catch (Exception e) {
-                        throw new RuntimeException("AI 서버에서 퀴즈 생성 중 오류가 발생했습니다: " + e.getMessage());
+                        return quizFailure(material, request, isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
+                }
+
+                if (isAiFailure(response)) {
+                        return quizFailure(material, request, aiStr(response, "errorCode"), aiStr(response, "message"), aiBool(response, "retryable", true), response);
                 }
 
                 String generatedQuizJson = "[]";
@@ -242,6 +468,18 @@ public class AiIntegrationService {
                                 .pageRange(quiz.getPageRange())
                                 .quizData(quiz.getQuizData())
                                 .createdAt(quiz.getCreatedAt())
+                                .success(aiBool(response, "success", true))
+                                .errorCode(aiStr(response, "errorCode"))
+                                .message(aiStr(response, "message"))
+                                .retryable(aiBool(response, "retryable", null))
+                                .textStatus(aiMap(response, "textStatus"))
+                                .warnings(aiWarnings(response))
+                                .metadata(aiMap(response, "metadata"))
+                                .provider(aiMetaStr(response, "provider"))
+                                .model(aiMetaStr(response, "model"))
+                                .elapsedMs(aiMetaLong(response, "elapsedMs"))
+                                .usedFallback(aiMetaBool(response, "usedFallback"))
+                                .cacheHit(aiMetaBool(response, "cacheHit"))
                                 .build();
         }
 
@@ -252,16 +490,11 @@ public class AiIntegrationService {
 
                 String textToAnalyze = getTextToAnalyze(material);
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
-                        QuestionDTO.Response noTextResponse = QuestionDTO.Response.builder()
-                                        .questionId(null)
-                                        .materialId(materialId)
-                                        .userQuestion(request.getUserQuestion())
-                                        .aiAnswer("자료에서 추출된 텍스트가 없습니다. PDF 텍스트 추출 후 다시 시도해주세요.")
-                                        .build();
-                        return noTextResponse;
+                        return questionFailure(material, request.getUserQuestion(), "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
                 }
 
                 Map<String, Object> requestBody = Map.of(
+                                "material_id", material.getMaterialId(),
                                 "text", textToAnalyze,
                                 "question", request.getUserQuestion());
 
@@ -272,9 +505,13 @@ public class AiIntegrationService {
                                         .bodyValue(requestBody)
                                         .retrieve()
                                         .bodyToMono(Map.class)
-                                        .block();
+                                        .block(Duration.ofSeconds(125));
                 } catch (Exception e) {
-                        throw new RuntimeException("AI 서버와 통신 중 오류가 발생했습니다: " + e.getMessage());
+                        return questionFailure(material, request.getUserQuestion(), isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
+                }
+
+                if (isAiFailure(response)) {
+                        return questionFailure(material, request.getUserQuestion(), aiStr(response, "errorCode"), aiStr(response, "message"), aiBool(response, "retryable", true), response);
                 }
 
                 String aiAnswer = "답변을 가져오지 못했습니다.";
@@ -295,6 +532,18 @@ public class AiIntegrationService {
                                 .userQuestion(question.getUserQuestion())
                                 .aiAnswer(question.getAiAnswer())
                                 .createdAt(question.getCreatedAt())
+                                .success(aiBool(response, "success", true))
+                                .errorCode(aiStr(response, "errorCode"))
+                                .message(aiStr(response, "message"))
+                                .retryable(aiBool(response, "retryable", null))
+                                .textStatus(aiMap(response, "textStatus"))
+                                .warnings(aiWarnings(response))
+                                .metadata(aiMap(response, "metadata"))
+                                .provider(aiMetaStr(response, "provider"))
+                                .model(aiMetaStr(response, "model"))
+                                .elapsedMs(aiMetaLong(response, "elapsedMs"))
+                                .usedFallback(aiMetaBool(response, "usedFallback"))
+                                .cacheHit(aiMetaBool(response, "cacheHit"))
                                 .build();
         }
 
@@ -327,6 +576,8 @@ public class AiIntegrationService {
                                                                                                                 .toList()))
                                                                                 .build())
                                                                 .collect(Collectors.toList()))
+                                                .success(true)
+                                                .textStatus(textStatusFor(material, getTextToAnalyze(material)))
                                                 .build())
                                 .orElseGet(() -> generateRoadmap(material));
         }
@@ -335,7 +586,7 @@ public class AiIntegrationService {
         private RoadmapDTO generateRoadmap(Material material) {
                 String textToAnalyze = getTextToAnalyze(material);
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
-                        throw new IllegalArgumentException("자료의 텍스트가 비어 있어 로드맵을 생성할 수 없습니다.");
+                        return roadmapFailure(material, "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
                 }
 
                 String userGoal = "학습 목표 달성";
@@ -352,9 +603,13 @@ public class AiIntegrationService {
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/roadmap")
-                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block();
+                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block(Duration.ofSeconds(125));
                 } catch (Exception e) {
-                        throw new RuntimeException("AI 서버에서 로드맵 생성 중 오류가 발생했습니다: " + e.getMessage());
+                        return roadmapFailure(material, isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
+                }
+
+                if (isAiFailure(response)) {
+                        return roadmapFailure(material, aiStr(response, "errorCode"), aiStr(response, "message"), aiBool(response, "retryable", true), response);
                 }
 
                 Map<String, Object> roadmapMap = null;
@@ -379,9 +634,7 @@ public class AiIntegrationService {
                         for (Map<String, Object> stepMap : stepMaps) {
                                 RoadmapStep step = RoadmapStep.builder()
                                                 .roadmap(roadmap)
-                                                .stepOrder(stepMap.containsKey("stepOrder")
-                                                                ? (Integer) stepMap.get("stepOrder")
-                                                                : 1)
+                                                .stepOrder(aiInt(stepMap.get("stepOrder"), 1))
                                                 .title(stepMap.containsKey("title") ? stepMap.get("title").toString()
                                                                 : "주차 제목 없음")
                                                 .description(stepMap.containsKey("description")
@@ -395,9 +648,7 @@ public class AiIntegrationService {
                                         for (Map<String, Object> taskMap : taskMaps) {
                                                 RoadmapTask task = RoadmapTask.builder()
                                                                 .step(step)
-                                                                .taskOrder(taskMap.containsKey("taskOrder")
-                                                                                ? (Integer) taskMap.get("taskOrder")
-                                                                                : 1)
+                                                                .taskOrder(aiInt(taskMap.get("taskOrder"), 1))
                                                                 .content(taskMap.containsKey("content")
                                                                                 ? taskMap.get("content").toString()
                                                                                 : "할 일 내용 없음")
@@ -433,6 +684,18 @@ public class AiIntegrationService {
                                                                                 .collect(Collectors.toList()))
                                                                 .build())
                                                 .collect(Collectors.toList()))
+                                .success(aiBool(response, "success", true))
+                                .errorCode(aiStr(response, "errorCode"))
+                                .message(aiStr(response, "message"))
+                                .retryable(aiBool(response, "retryable", null))
+                                .textStatus(aiMap(response, "textStatus"))
+                                .warnings(aiWarnings(response))
+                                .metadata(aiMap(response, "metadata"))
+                                .provider(aiMetaStr(response, "provider"))
+                                .model(aiMetaStr(response, "model"))
+                                .elapsedMs(aiMetaLong(response, "elapsedMs"))
+                                .usedFallback(aiMetaBool(response, "usedFallback"))
+                                .cacheHit(aiMetaBool(response, "cacheHit"))
                                 .build();
         }
 

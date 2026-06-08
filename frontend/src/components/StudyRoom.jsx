@@ -10,7 +10,7 @@ import { OpenVidu } from 'openvidu-browser';
 import { useAuth } from '../hooks/useAuth';
 import { groupService, timerService, inquiryService } from '../services/api';
 
-function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = true }) {
+function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = true, photoUrl }) {
   const videoRef = React.useRef(null);
   const [isSpeaking, setIsSpeaking] = React.useState(false);
 
@@ -85,9 +85,17 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
   if (!isCamOn || !stream) {
     return (
       <div style={{ position: 'relative', backgroundColor: '#1E293B', borderRadius: '16px', overflow: 'hidden', aspectRatio: '16/9', border: `${speakBorderWidth} solid ${speakBorderColor}`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: speakBoxShadow, transition: 'all 0.2s ease' }}>
-        <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
-          <User size={32} color="#9CA3AF" />
-        </div>
+        {photoUrl ? (
+          <img
+            src={photoUrl}
+            alt={displayName}
+            style={{ width: '64px', height: '64px', borderRadius: '50%', objectFit: 'cover', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}
+          />
+        ) : (
+          <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+            <User size={32} color="#9CA3AF" />
+          </div>
+        )}
         <div style={{ position: 'absolute', bottom: '12px', left: '12px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)' }}>
           <span style={{ color: 'white', fontSize: '13px', fontWeight: '600' }}>
             {displayName} {isLocal ? '(나)' : ''}
@@ -732,6 +740,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                 isMuted={true}
                 isCamOn={isVideoOn}
                 isMicOn={isMicOn}
+                photoUrl={user?.photoUrl || user?.photo_url || null}
               />
               {ovError && (
                 <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', color: '#FCA5A5', padding: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', zIndex: 10, borderRadius: '16px' }}>
@@ -745,12 +754,16 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
             {/* Remote Peer Video Feeds */}
             {subscribers.map(sub => {
               let displayName = '알 수 없음';
+              let subUserId = null;
               try {
                 const connectionData = JSON.parse(sub.stream.connection.data);
                 displayName = connectionData.clientData || '알 수 없음';
+                subUserId = connectionData.userId;
               } catch (e) {
                 // fallback
               }
+              const memberObj = members.find(m => Number(m.userId) === Number(subUserId));
+              const subPhotoUrl = memberObj?.photoUrl || null;
               return (
                 <VideoFeed
                   key={sub.stream.streamId}
@@ -759,6 +772,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                   displayName={displayName}
                   isMuted={false}
                   isCamOn={sub.stream.videoActive}
+                  photoUrl={subPhotoUrl}
                 />
               );
             })}
@@ -819,9 +833,17 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                   return (
                     <div key={member.userId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px', borderRadius: '12px', backgroundColor: 'rgba(255,255,255,0.02)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: member.role === 'LEADER' ? '#3B82F6' : '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: '700', color: 'white' }}>
-                          {member.displayName ? member.displayName.charAt(0) : 'U'}
-                        </div>
+                        {member.photoUrl ? (
+                          <img
+                            src={member.photoUrl}
+                            alt={member.displayName}
+                            style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover' }}
+                          />
+                        ) : (
+                          <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: member.role === 'LEADER' ? '#3B82F6' : '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: '700', color: 'white' }}>
+                            {member.displayName ? member.displayName.charAt(0) : 'U'}
+                          </div>
+                        )}
                         <span style={{ fontSize: '13px', color: '#E5E7EB', fontWeight: '500' }}>
                           {member.displayName} {isMe ? '(나)' : ''}
                         </span>

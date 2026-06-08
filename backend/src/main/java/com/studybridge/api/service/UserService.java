@@ -7,12 +7,14 @@ import com.studybridge.api.security.jwt.JwtTokenProvider;
 import com.studybridge.api.entity.RefreshToken;
 import com.studybridge.api.repository.RefreshTokenRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
 import java.time.LocalDateTime;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -22,6 +24,7 @@ public class UserService {
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final S3Service s3Service;
 
     // 회원 가입
     @Transactional
@@ -152,6 +155,7 @@ public class UserService {
 
         user.setDisplayName(request.getDisplayName());
         user.setMajor(request.getMajor());
+        user.setPhotoUrl(request.getPhotoUrl());
 
         return convertToResponse(user);
     }
@@ -165,12 +169,20 @@ public class UserService {
     }
 
     private UserDTO.Response convertToResponse(User user) {
+        String presignedPhotoUrl = user.getPhotoUrl();
+        if (presignedPhotoUrl != null && !presignedPhotoUrl.isBlank() && !presignedPhotoUrl.startsWith("http")) {
+            try {
+                presignedPhotoUrl = s3Service.getPresignedUrl(presignedPhotoUrl);
+            } catch (Exception e) {
+                log.warn("Failed to generate presigned URL for user profile photo user_id={}: {}", user.getId(), e.getMessage());
+            }
+        }
         UserDTO.Response response = UserDTO.Response.builder()
                 .id(user.getId())
                 .email(user.getEmail())
                 .displayName(user.getDisplayName())
                 .major(user.getMajor())
-                .photoUrl(user.getPhotoUrl())
+                .photoUrl(presignedPhotoUrl)
                 .status(user.getStatus())
                 .isSubscribed(user.getIsSubscribed())
                 .suspensionEndDate(user.getSuspensionEndDate())

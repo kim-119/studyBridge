@@ -164,6 +164,10 @@ public class ChatService {
                 }
                 log.info("chat fastapi payload roomId={} payload={}", roomId, requestBody);
 
+                // 모드별 타임아웃: 소크라테스/토론/멀티에이전트는 단계적 검토로 오래 걸리므로 길게 허용한다.
+                long aiTimeoutSeconds = resolveAiTimeoutSeconds(request.getLearningMode(), request.getMode());
+                long aiTimeoutMillis = aiTimeoutSeconds * 1000L;
+
                 Map<String, Object> response;
                 long faStart = System.currentTimeMillis();
                 try {
@@ -172,20 +176,21 @@ public class ChatService {
                                         .bodyValue(requestBody)
                                         .retrieve()
                                         .bodyToMono(Map.class)
-                                        .block(Duration.ofSeconds(120));
-                        log.info("chat fastapi elapsed_ms={} roomId={}", System.currentTimeMillis() - faStart, roomId);
+                                        .block(Duration.ofSeconds(aiTimeoutSeconds));
+                        log.info("chat fastapi elapsed_ms={} roomId={} timeout_s={}",
+                                        System.currentTimeMillis() - faStart, roomId, aiTimeoutSeconds);
                 } catch (Exception e) {
                         long elapsed = System.currentTimeMillis() - faStart;
                         // 타임아웃 여부 판단 (block(Duration) 타임아웃은 IllegalStateException으로 올 수 있음)
                         boolean isTimeout = e instanceof WebClientRequestException
                                         || (e.getCause() != null && e.getCause() instanceof java.util.concurrent.TimeoutException)
-                                        || elapsed >= 110_000;
+                                        || elapsed >= (aiTimeoutMillis - 10_000);
                         if (isTimeout) {
-                                log.error("chat fastapi TIMEOUT elapsed_ms={} roomId={}", elapsed, roomId);
+                                log.error("chat fastapi TIMEOUT elapsed_ms={} roomId={} timeout_s={}", elapsed, roomId, aiTimeoutSeconds);
                                 return ChatDTO.MultiChatResponse.builder()
                                                 .success(false)
                                                 .errorCode("AI_TIMEOUT")
-                                                .errorMessage("AI 응답 시간이 초과되었습니다. 질문을 더 짧게 하거나 잠시 후 다시 시도해주세요.")
+                                                .errorMessage("AI 답변 생성이 예상보다 오래 걸리고 있습니다. 잠시 후 다시 시도해주세요.")
                                                 .replies(java.util.Collections.emptyList())
                                                 .build();
                         }
@@ -371,6 +376,38 @@ public class ChatService {
                 agentMap.put("custom_instruction", agentCustomInstruction);
                 agentMap.put("persona", persona);
                 return agentMap;
+        }
+
+        /**
+         * 모드별 FastAPI 응답 대기 시간(초)을 결정한다.
+         * 소크라테스/토론/멀티에이전트는 단계적 검토·상호 피드백으로 오래 걸리므로 길게 허용한다.
+         * 값은 환경변수로 조정 가능하며, 미설정 시 안전 기본값을 쓴다.
+         */
+        private long resolveAiTimeoutSeconds(String learningMode, String mode) {
+                String lm = learningMode == null ? "" : learningMode.trim().toLowerCase();
+                String md = mode == null ? "" : mode.trim().toLowerCase();
+                if (lm.equals("socratic") || md.contains("socratic")) {
+                        return envSeconds("AI_SOCRATIC_TIMEOUT_SECONDS", 240);
+                }
+                if (lm.equals("debate") || md.contains("debate") || md.contains("multi_agent")) {
+                        return envSeconds("AI_DEBATE_TIMEOUT_SECONDS", 300);
+                }
+                return envSeconds("AI_DEFAULT_TIMEOUT_SECONDS", 90);
+        }
+
+        private long envSeconds(String key, long defaultValue) {
+                try {
+                        String v = System.getenv(key);
+                        if (v != null && !v.isBlank()) {
+                                long parsed = Long.parseLong(v.trim());
+                                if (parsed > 0) {
+                                        return parsed;
+                                }
+                        }
+                } catch (NumberFormatException ignored) {
+                        // 잘못된 값이면 기본값 사용
+                }
+                return defaultValue;
         }
 
         private String firstNonBlank(String... values) {

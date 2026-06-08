@@ -75,6 +75,7 @@ public class GroupStudyDTO {
         private LocalDateTime createdAt;
         private String hashtags;
         private String coverImageUrl;
+        private String leaderPhotoUrl;
     }
 
     @Data
