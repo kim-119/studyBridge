@@ -1,8 +1,13 @@
 import axios from 'axios';
 
+// AI 요청 timeout. GitHub Actions merge 기준 중복 export 방지.
 export const AI_TIMEOUT_MS = Number(
-  import.meta.env.VITE_AI_TIMEOUT_MS || 180000
+  import.meta.env.VITE_AI_TIMEOUT_MS ||
+  import.meta.env.VITE_FRONTEND_AI_TIMEOUT_MS ||
+  import.meta.env.FRONTEND_AI_TIMEOUT_MS ||
+  180000
 );
+
 
 const hostname =
   typeof window !== 'undefined'
@@ -37,92 +42,6 @@ const fastApi = axios.create({
 });
 
 // AI 자료보관함 요청 timeout (기본 130초). 무한 로딩 방지.
-export const AI_TIMEOUT_MS = Number(import.meta.env.VITE_FRONTEND_AI_TIMEOUT_MS || import.meta.env.FRONTEND_AI_TIMEOUT_MS) || 130000;
-
-const normalizeAgentFromRoom = (room) => {
-  const primaryAgent =
-    Array.isArray(room?.agents) && room.agents.length > 0 ? room.agents[0] : {};
-
-  return {
-    ...primaryAgent,
-    id: room?.roomId ?? room?.id ?? primaryAgent?.id ?? primaryAgent?.agentId,
-    agentId: primaryAgent?.agentId ?? primaryAgent?.id,
-    roomId: room?.roomId ?? room?.id,
-    roomName: room?.roomName,
-    learningMode: room?.learningMode || 'basic',
-    name: primaryAgent?.name || room?.roomName || 'AI 에이전트',
-    role: primaryAgent?.role || '학습 도우미',
-    persona: primaryAgent?.persona || '',
-    tone: primaryAgent?.tone || '전문적',
-    goal: primaryAgent?.goal || '',
-    agents: room?.agents || [],
-    createdAt: room?.createdAt,
-  };
-};
-
-const normalizeAgentRoomPayload = (agentData) => {
-  if (agentData?.roomName && Array.isArray(agentData?.agents)) {
-    return agentData;
-  }
-
-  const agentName = agentData?.name || 'AI 에이전트';
-
-  return {
-    roomName: agentData?.roomName || agentName,
-    agents: [
-      {
-        name: agentName,
-        role: agentData?.role || '학습 도우미',
-        persona:
-          agentData?.persona ||
-          agentData?.customInstruction ||
-          agentData?.goal ||
-          '사용자의 학습을 돕는다',
-        tone: agentData?.tone || agentData?.personality || '전문적',
-        goal: agentData?.goal || '사용자의 학습을 돕는다',
-        personality: agentData?.personality,
-        personalityStrength:
-          agentData?.personalityStrength ||
-          agentData?.personality_strength ||
-          'extreme',
-        personality_strength:
-          agentData?.personality_strength ||
-          agentData?.personalityStrength ||
-          'extreme',
-        style: agentData?.style || agentData?.personality,
-        knowledgeLevel: agentData?.knowledgeLevel,
-        knowledge_level: agentData?.knowledge_level || agentData?.knowledgeLevel,
-        customInstruction: agentData?.customInstruction,
-        custom_instruction:
-          agentData?.custom_instruction || agentData?.customInstruction,
-      },
-    ],
-  };
-};
-
-const normalizeChatResponse = (data) => {
-  if (Array.isArray(data?.messages)) {
-    return {
-      ...data,
-      mode: data.mode || 'multi_agent_discussion',
-      messages: data.messages,
-      answer: '',
-    };
-  }
-
-  if (data?.answer) {
-    return data;
-  }
-
-  if (Array.isArray(data?.replies)) {
-    const answer = data.replies
-      .map((reply) => {
-        const name = reply.agentName || reply.agent_name || 'AI';
-        const text = reply.answer || '';
-        return data.replies.length > 1 ? `${name}: ${text}` : text;
-      })
-      .filter(Boolean)
-      .join('\n\n');
 
     return {
       ...data,
