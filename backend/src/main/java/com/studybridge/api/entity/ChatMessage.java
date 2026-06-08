@@ -34,6 +34,11 @@ public class ChatMessage {
     @Column(nullable = false)
     private String sender;
 
+    // 1차/2차/3차 생성 과정(processSteps) JSON 영속화. AI 메시지에만 채워지고 그 외는 null.
+    // 새로고침 후에도 '생성과정 보기' 아코디언을 복원하기 위함. (잘림 방지를 위해 TEXT)
+    @Column(name = "process_steps_json", columnDefinition = "TEXT")
+    private String processStepsJson;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

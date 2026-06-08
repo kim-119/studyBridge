@@ -23,6 +23,8 @@ public class ChatDTO {
         private String senderName;
         private Long agentId;
         private LocalDateTime createdAt;
+        // 영속화된 1차/2차/3차 생성 과정 (AI 메시지에만 존재, 없으면 null)
+        private Map<String, Object> processSteps;
     }
 
     @Getter
@@ -99,6 +101,10 @@ public class ChatDTO {
         private List<AgentReply> replies;
         // 1차/2차/3차 생성 과정 (FastAPI processSteps를 그대로 패스스루, 없으면 null)
         private Map<String, Object> processSteps;
+        // 단계별 구조 (provider/elapsedMs 포함) — FastAPI stages 패스스루, 없으면 null
+        private List<Object> stages;
+        // 성격 검증 요약 — FastAPI personalityValidationSummary 패스스루, 없으면 null
+        private List<Object> personalityValidationSummary;
         // 에러/타임아웃 시 프론트에 메시지 전달 (500 대신 200+errorMessage 반환)
         private String errorMessage;
         private String errorCode;

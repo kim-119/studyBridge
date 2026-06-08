@@ -1,0 +1,186 @@
+"""
+StudyMate 에이전트 파이프라인 중앙 설정 (env 단일 관리).
+
+원칙:
+- stage별 provider / timeout / max_tokens, 성격별 생성 파라미터를 서비스 코드에 직접 박지 않는다.
+- 모든 운영 값은 여기서 env로 읽고, 없으면 최소 fallback 기본값만 사용한다.
+- 긴 성격 프롬프트/말투/금지표현/샘플톤은 여기 두지 않고 YAML(personality_prompt_builder)에서 관리한다.
+- 채팅방 표시명만 프론트에서 하드코딩을 허용하며, 그 외 운영값은 모두 이 모듈을 거친다.
+"""
+import os
+from typing import Any, Dict, Optional
+
+# ── env 파서 ──────────────────────────────────────────────────────────────────
+
+def _f(key: str, default: float) -> float:
+    try:
+        v = os.getenv(key)
+        return float(v) if v not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _i(key: str, default: int) -> int:
+    try:
+        v = os.getenv(key)
+        return int(v) if v not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _s(key: str, default: str) -> str:
+    v = os.getenv(key)
+    return v if v not in (None, "") else default
+
+
+def _b(key: str, default: bool) -> bool:
+    v = os.getenv(key)
+    if v in (None, ""):
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+# ── stage별 provider / token / timeout ────────────────────────────────────────
+
+def resolve_provider_for_stage(stage: int) -> str:
+    """1차=Ollama 강제(기본), 2·3차는 env로 교체 가능."""
+    if stage == 1:
+        # 1차는 반드시 Ollama. env가 비정상이어도 ollama로 강제한다.
+        provider = _s("AGENT_FIRST_PASS_PROVIDER", "ollama").strip().lower()
+        return provider if provider == "ollama" else "ollama"
+    if stage == 2:
+        return _s("AGENT_SECOND_PASS_PROVIDER", "openai").strip().lower()
+    return _s("AGENT_THIRD_PASS_PROVIDER", "openai").strip().lower()
+
+
+def resolve_stage_max_tokens(stage: int) -> int:
+    if stage == 1:
+        # stage1은 Ollama num_predict 우선, 없으면 AGENT_STAGE1_MAX_TOKENS
+        return _i("OLLAMA_STAGE1_NUM_PREDICT", _i("AGENT_STAGE1_MAX_TOKENS", 700))
+    if stage == 2:
+        return _i("AGENT_STAGE2_MAX_TOKENS", 1200)
+    return _i("AGENT_STAGE3_MAX_TOKENS", 900)
+
+
+def resolve_timeout_for_stage(stage: int) -> int:
+    if stage == 1:
+        return _i("OLLAMA_STAGE1_TIMEOUT_SECONDS", _i("AGENT_STAGE1_TIMEOUT_SECONDS", 30))
+    if stage == 2:
+        return _i("AGENT_STAGE2_TIMEOUT_SECONDS", 90)
+    return _i("AGENT_STAGE3_TIMEOUT_SECONDS", 90)
+
+
+def total_timeout_seconds() -> int:
+    return _i("AGENT_TOTAL_TIMEOUT_SECONDS", 180)
+
+
+# ── 파이프라인 토글 ───────────────────────────────────────────────────────────
+
+def enable_parallel_stage1() -> bool:
+    return _b("AGENT_ENABLE_PARALLEL_STAGE1", True)
+
+
+def enable_parallel_stage2() -> bool:
+    return _b("AGENT_ENABLE_PARALLEL_STAGE2", True)
+
+
+def enable_cache() -> bool:
+    return _b("AGENT_ENABLE_CACHE", True)
+
+
+def cache_ttl_seconds() -> int:
+    return _i("AGENT_CACHE_TTL_SECONDS", 600)
+
+
+def enable_personality_validation() -> bool:
+    return _b("AGENT_ENABLE_PERSONALITY_VALIDATION", True)
+
+
+def personality_validation_min_score() -> float:
+    return _f("AGENT_PERSONALITY_VALIDATION_MIN_SCORE", 0.72)
+
+
+def personality_validation_max_retry() -> int:
+    return _i("AGENT_PERSONALITY_VALIDATION_MAX_RETRY", 1)
+
+
+def enable_persona_contrast_check() -> bool:
+    return _b("AGENT_ENABLE_PERSONA_CONTRAST_CHECK", True)
+
+
+# ── 성격별 생성 파라미터 ──────────────────────────────────────────────────────
+# env 키 접두사는 정규 영문 키(friendly/critical/...) 기준. 미지정 성격은 DEFAULT로 fallback.
+
+_DEFAULTS: Dict[str, float] = {
+    "temperature": 0.55, "top_p": 0.9, "top_k": 40, "repeat_penalty": 1.08,
+    "presence_penalty": 0.0, "frequency_penalty": 0.0,
+    "strictness": 0.5, "creativity": 0.5, "verbosity": 0.6, "empathy": 0.5,
+    "directness": 0.5, "example_density": 0.5, "metaphor_density": 0.4,
+    "critique_density": 0.5, "structure_rigidity": 0.5, "humor_level": 0.3,
+    "conclusion_strength": 0.6,
+}
+
+_NUMERIC_FIELDS = list(_DEFAULTS.keys())
+
+
+def _default_params() -> Dict[str, float]:
+    return {
+        "temperature":       _f("AGENT_DEFAULT_TEMPERATURE", _DEFAULTS["temperature"]),
+        "top_p":             _f("AGENT_DEFAULT_TOP_P", _DEFAULTS["top_p"]),
+        "top_k":             _i("AGENT_DEFAULT_TOP_K", int(_DEFAULTS["top_k"])),
+        "repeat_penalty":    _f("AGENT_DEFAULT_REPEAT_PENALTY", _DEFAULTS["repeat_penalty"]),
+        "presence_penalty":  _f("AGENT_DEFAULT_PRESENCE_PENALTY", _DEFAULTS["presence_penalty"]),
+        "frequency_penalty": _f("AGENT_DEFAULT_FREQUENCY_PENALTY", _DEFAULTS["frequency_penalty"]),
+        "strictness":        _DEFAULTS["strictness"], "creativity": _DEFAULTS["creativity"],
+        "verbosity":         _DEFAULTS["verbosity"], "empathy": _DEFAULTS["empathy"],
+        "directness":        _DEFAULTS["directness"], "example_density": _DEFAULTS["example_density"],
+        "metaphor_density":  _DEFAULTS["metaphor_density"], "critique_density": _DEFAULTS["critique_density"],
+        "structure_rigidity": _DEFAULTS["structure_rigidity"], "humor_level": _DEFAULTS["humor_level"],
+        "conclusion_strength": _DEFAULTS["conclusion_strength"],
+    }
+
+
+def get_personality_params(canonical_key: str) -> Dict[str, float]:
+    """
+    성격별 운영 파라미터를 env에서 읽는다. 키 없으면 DEFAULT 사용.
+    canonical_key: friendly | critical | logical | creative | concise | professional | sardonic | custom
+    """
+    base = _default_params()
+    prefix = f"AGENT_{(canonical_key or 'custom').upper()}_"
+    out = dict(base)
+    for field in _NUMERIC_FIELDS:
+        env_key = prefix + field.upper()
+        if field == "top_k":
+            out[field] = _i(env_key, int(base[field]))
+        else:
+            out[field] = _f(env_key, base[field])
+    return out
+
+
+def resolve_agent_generation_params(canonical_key: str, stage: int) -> Dict[str, Any]:
+    """
+    성격 + stage를 합쳐 LLM 호출 파라미터를 반환한다.
+    반환: provider/temperature/top_p/top_k/repeat_penalty/presence_penalty/frequency_penalty/max_tokens/timeout_seconds
+    (provider별 미지원 파라미터는 호출 단계에서 무시된다.)
+    """
+    p = get_personality_params(canonical_key)
+    provider = resolve_provider_for_stage(stage)
+    return {
+        "provider":          provider,
+        "temperature":       p["temperature"],
+        "top_p":             p["top_p"],
+        "top_k":             int(p["top_k"]),
+        "repeat_penalty":    p["repeat_penalty"],
+        "presence_penalty":  p["presence_penalty"],
+        "frequency_penalty": p["frequency_penalty"],
+        "max_tokens":        resolve_stage_max_tokens(stage),
+        "timeout_seconds":   resolve_timeout_for_stage(stage),
+    }
+
+
+def stage1_timeout_fallback_text() -> str:
+    return _s(
+        "AGENT_STAGE1_TIMEOUT_FALLBACK",
+        "1차 빠른 답변 생성이 제한 시간 안에 완료되지 않았습니다. "
+        "2차 검증 단계에서 보완 답변을 이어서 제공합니다.",
+    )

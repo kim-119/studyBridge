@@ -31,6 +31,7 @@ public class QuizDTO {
         private Integer questionCount;
         private String pageRange;
         private String quizData; // JSON 형식의 퀴즈 데이터
+        private List<Map<String, Object>> quizzes;
         private LocalDateTime createdAt;
         // AI 상태 전파 필드 (nullable, 하위호환 additive)
         private Boolean success;

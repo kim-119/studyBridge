@@ -1,7 +1,11 @@
 import axios from 'axios';
 
+// AI 요청 timeout. GitHub Actions merge 기준 중복 export 방지.
 export const AI_TIMEOUT_MS = Number(
-  import.meta.env.VITE_AI_TIMEOUT_MS || 180000
+  import.meta.env.VITE_AI_TIMEOUT_MS ||
+  import.meta.env.VITE_FRONTEND_AI_TIMEOUT_MS ||
+  import.meta.env.FRONTEND_AI_TIMEOUT_MS ||
+  180000
 );
 
 const hostname =
@@ -37,8 +41,7 @@ const fastApi = axios.create({
 });
 
 const normalizeAgentFromRoom = (room) => {
-  const primaryAgent =
-    Array.isArray(room?.agents) && room.agents.length > 0 ? room.agents[0] : {};
+  const primaryAgent = Array.isArray(room?.agents) && room.agents.length > 0 ? room.agents[0] : {};
 
   return {
     ...primaryAgent,
@@ -90,8 +93,7 @@ const normalizeAgentRoomPayload = (agentData) => {
         knowledgeLevel: agentData?.knowledgeLevel,
         knowledge_level: agentData?.knowledge_level || agentData?.knowledgeLevel,
         customInstruction: agentData?.customInstruction,
-        custom_instruction:
-          agentData?.custom_instruction || agentData?.customInstruction,
+        custom_instruction: agentData?.custom_instruction || agentData?.customInstruction,
       },
     ],
   };
@@ -134,77 +136,77 @@ const normalizeChatResponse = (data) => {
 };
 
 api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('token');
+    (config) => {
+      const token = localStorage.getItem('token');
 
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
 
-    return config;
-  },
-  (error) => Promise.reject(error)
+      return config;
+    },
+    (error) => Promise.reject(error)
 );
 
 api.interceptors.response.use(
-  (res) => res,
-  async (err) => {
-    console.error('API 에러:', err.response || err.message);
+    (res) => res,
+    async (err) => {
+      console.error('API 에러:', err.response || err.message);
 
-    const originalRequest = err.config;
+      const originalRequest = err.config;
 
-    if (
-      err.response &&
-      (err.response.status === 401 || err.response.status === 403) &&
-      !originalRequest._retry
-    ) {
       if (
-        originalRequest.url.includes('/api/users/refresh') ||
-        originalRequest.url.includes('/api/users/login')
+          err.response &&
+          (err.response.status === 401 || err.response.status === 403) &&
+          !originalRequest._retry
       ) {
-        return Promise.reject(err);
-      }
-
-      originalRequest._retry = true;
-
-      try {
-        const refreshToken = localStorage.getItem('refreshToken');
-
-        if (!refreshToken) {
-          throw new Error('No refresh token');
+        if (
+            originalRequest.url.includes('/api/users/refresh') ||
+            originalRequest.url.includes('/api/users/login')
+        ) {
+          return Promise.reject(err);
         }
 
-        const res = await axios.post(
-          `${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`,
-          null,
-          {
-            timeout: AI_TIMEOUT_MS,
+        originalRequest._retry = true;
+
+        try {
+          const refreshToken = localStorage.getItem('refreshToken');
+
+          if (!refreshToken) {
+            throw new Error('No refresh token');
           }
-        );
 
-        if (res.data && res.data.accessToken) {
-          localStorage.setItem('token', res.data.accessToken);
-          localStorage.setItem('refreshToken', res.data.refreshToken);
+          const res = await axios.post(
+              `${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`,
+              null,
+              {
+                timeout: AI_TIMEOUT_MS,
+              }
+          );
 
-          originalRequest.headers.Authorization = `Bearer ${res.data.accessToken}`;
-          return api(originalRequest);
+          if (res.data && res.data.accessToken) {
+            localStorage.setItem('token', res.data.accessToken);
+            localStorage.setItem('refreshToken', res.data.refreshToken);
+
+            originalRequest.headers.Authorization = `Bearer ${res.data.accessToken}`;
+            return api(originalRequest);
+          }
+        } catch (refreshErr) {
+          console.warn('토큰 갱신 실패. 로그아웃 처리됩니다.');
+          localStorage.removeItem('token');
+          localStorage.removeItem('refreshToken');
+          window.dispatchEvent(new Event('auth-change'));
+          return Promise.reject(refreshErr);
         }
-      } catch (refreshErr) {
-        console.warn('토큰 갱신 실패. 로그아웃 처리됩니다.');
-        localStorage.removeItem('token');
-        localStorage.removeItem('refreshToken');
-        window.dispatchEvent(new Event('auth-change'));
-        return Promise.reject(refreshErr);
       }
-    }
 
-    return Promise.reject(err);
-  }
+      return Promise.reject(err);
+    }
 );
 
 fastApi.interceptors.response.use(
-  (res) => res,
-  (err) => Promise.reject(err)
+    (res) => res,
+    (err) => Promise.reject(err)
 );
 
 export const agentService = {
@@ -226,9 +228,9 @@ export const agentService = {
 
   sendMessage: async (userId, agentId, payloadOrMessage) => {
     const basePayload =
-      typeof payloadOrMessage === 'string'
-        ? { message: payloadOrMessage, agentId, roomId: agentId }
-        : { agentId, roomId: agentId, ...payloadOrMessage };
+        typeof payloadOrMessage === 'string'
+            ? { message: payloadOrMessage, agentId, roomId: agentId }
+            : { agentId, roomId: agentId, ...payloadOrMessage };
 
     const payload = {
       personality: basePayload.personality || '',
@@ -238,7 +240,7 @@ export const agentService = {
       knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
       customInstruction: basePayload.customInstruction || '',
       custom_instruction:
-        basePayload.custom_instruction || basePayload.customInstruction || '',
+          basePayload.custom_instruction || basePayload.customInstruction || '',
       persona: basePayload.persona || '',
       agent_name: basePayload.agent_name || basePayload.agentName || '',
       ...basePayload,
@@ -248,6 +250,56 @@ export const agentService = {
 
     const res = await api.post(`/api/agent-rooms/${agentId}/chat`, payload);
     return normalizeChatResponse(res.data);
+  },
+
+  // 1차/2차/3차 단계별 SSE 스트리밍. handlers: { onStageStart, onStageComplete, onAllComplete, onError }
+  // 실패 시 throw → 호출부에서 blocking sendMessage로 폴백한다.
+  streamMessage: async (userId, agentId, payloadOrMessage, handlers = {}) => {
+    const basePayload = typeof payloadOrMessage === 'string'
+        ? { message: payloadOrMessage, agentId, roomId: agentId }
+        : { agentId, roomId: agentId, ...payloadOrMessage };
+    const token = localStorage.getItem('token');
+    const resp = await fetch(`${API_BASE_URL}/api/agent-rooms/${agentId}/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(basePayload),
+    });
+    if (!resp.ok || !resp.body) {
+      throw new Error(`stream http ${resp.status}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const dispatch = (frame) => {
+      let event = 'message';
+      const dataLines = [];
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+      }
+      if (dataLines.length === 0) return;
+      let data = null;
+      try { data = JSON.parse(dataLines.join('\n')); } catch { data = null; }
+      if (event === 'stage_start') handlers.onStageStart && handlers.onStageStart(data);
+      else if (event === 'stage_complete') handlers.onStageComplete && handlers.onStageComplete(data);
+      else if (event === 'all_complete') handlers.onAllComplete && handlers.onAllComplete(data);
+      else if (event === 'error') handlers.onError && handlers.onError(data);
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (frame.trim()) dispatch(frame);
+      }
+    }
   },
 
   getChatHistory: async (userId, agentId) => {
@@ -282,8 +334,8 @@ export const agentService = {
       };
 
       const res = await api.post(
-        `/api/agent-rooms/${payload.roomId}/chat`,
-        unifiedPayload
+          `/api/agent-rooms/${payload.roomId}/chat`,
+          unifiedPayload
       );
 
       return normalizeChatResponse(res.data);
@@ -307,10 +359,10 @@ export const agentService = {
 
   requestFeedback: async (payload) => {
     const reviewerAgentId =
-      payload?.reviewer_agent_id ||
-      payload?.reviewerAgentId ||
-      payload?.agent_id ||
-      payload?.agentId;
+        payload?.reviewer_agent_id ||
+        payload?.reviewerAgentId ||
+        payload?.agent_id ||
+        payload?.agentId;
 
     if (reviewerAgentId) {
       const res = await fastApi.post(`/agents/${reviewerAgentId}/feedback`, payload);
@@ -450,9 +502,9 @@ export const roomService = {
 
   sendMessage: async (userId, roomId, payloadOrMessage) => {
     const basePayload =
-      typeof payloadOrMessage === 'string'
-        ? { message: payloadOrMessage, agentId: roomId, roomId }
-        : { agentId: roomId, roomId, ...payloadOrMessage };
+        typeof payloadOrMessage === 'string'
+            ? { message: payloadOrMessage, agentId: roomId, roomId }
+            : { agentId: roomId, roomId, ...payloadOrMessage };
 
     const payload = {
       personality: basePayload.personality || '',
@@ -462,7 +514,7 @@ export const roomService = {
       knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
       customInstruction: basePayload.customInstruction || '',
       custom_instruction:
-        basePayload.custom_instruction || basePayload.customInstruction || '',
+          basePayload.custom_instruction || basePayload.customInstruction || '',
       persona: basePayload.persona || '',
       agent_name: basePayload.agent_name || basePayload.agentName || '',
       ...basePayload,
@@ -586,7 +638,7 @@ export const materialService = {
   },
 
   getSummary: async (materialId) => {
-    const res = await api.get(`/api/materials/${materialId}/summary`);
+    const res = await api.get(`/api/materials/${materialId}/summary`, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
 
@@ -611,23 +663,23 @@ export const materialService = {
   },
 
   generateQuiz: async (materialId, quizRequest) => {
-    const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest);
+    const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
 
   askQuestion: async (materialId, questionRequest) => {
-    const res = await api.post(`/api/materials/${materialId}/question`, questionRequest);
+    const res = await api.post(`/api/materials/${materialId}/question`, questionRequest, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
 
   getRoadmap: async (materialId) => {
-    const res = await api.get(`/api/materials/${materialId}/roadmap`);
+    const res = await api.get(`/api/materials/${materialId}/roadmap`, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
 
   toggleRoadmapTask: async (materialId, taskId) => {
     const res = await api.put(
-      `/api/materials/${materialId}/roadmap/tasks/${taskId}/toggle`
+        `/api/materials/${materialId}/roadmap/tasks/${taskId}/toggle`
     );
     return res.data;
   },
@@ -769,13 +821,13 @@ export const knowledgeService = {
   },
 
   updatePost: async (
-    blogId,
-    title,
-    content,
-    imageFile,
-    pdfFile,
-    clearImage = false,
-    clearPdf = false
+      blogId,
+      title,
+      content,
+      imageFile,
+      pdfFile,
+      clearImage = false,
+      clearPdf = false
   ) => {
     const formData = new FormData();
 

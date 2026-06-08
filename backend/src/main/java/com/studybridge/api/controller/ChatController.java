@@ -6,9 +6,11 @@ import com.studybridge.api.security.domain.CustomUserDetails;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
@@ -29,6 +31,17 @@ public class ChatController {
 
         log.info("chat controller received roomId={} request={}", roomId, request);
         return ResponseEntity.ok(chatService.chatWithRoom(userDetails.getId(), roomId, request));
+    }
+
+    // 멀티 에이전트 채팅 — 1차/2차/3차 단계별 SSE 스트리밍 (선출력)
+    @PostMapping(value = "/{roomId}/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatStream(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long roomId,
+            @Valid @RequestBody ChatDTO.MultiChatRequest request) {
+
+        log.info("chat stream controller received roomId={}", roomId);
+        return chatService.chatStream(userDetails.getId(), roomId, request);
     }
 
     // 채팅방 내역 조회

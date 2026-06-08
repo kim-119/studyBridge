@@ -45,12 +45,26 @@ def chat_sync(
     model: Optional[str] = None,
     temperature: float = 0.2,
     max_tokens: int = 1200,
+    top_p: Optional[float] = None,
+    presence_penalty: Optional[float] = None,
+    frequency_penalty: Optional[float] = None,
+    timeout: Optional[float] = None,
 ) -> str:
     """GPT 동기 호출. API Key 미설정 시 안내 문자열 반환."""
     if not is_enabled():
         return "[GPT 비활성화] OPENAI_API_KEY를 설정하면 GPT 기능이 활성화됩니다."
     try:
         client = get_sync_client()
+        # 선택적 파라미터는 전달된 경우에만 추가 (OpenAI는 top_k 미지원이라 받지 않는다)
+        extra = {}
+        if top_p is not None:
+            extra["top_p"] = top_p
+        if presence_penalty is not None:
+            extra["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            extra["frequency_penalty"] = frequency_penalty
+        if timeout is not None:
+            extra["timeout"] = timeout
         resp = client.chat.completions.create(
             model=model or OPENAI_MODEL,
             messages=[
@@ -59,6 +73,7 @@ def chat_sync(
             ],
             temperature=temperature,
             max_tokens=max_tokens,
+            **extra,
         )
         return resp.choices[0].message.content or ""
     except Exception as e:

@@ -1,5 +1,7 @@
 package com.studybridge.api.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.ChatDTO;
 import com.studybridge.api.entity.Agent;
 import com.studybridge.api.entity.ChatMessage;
@@ -8,11 +10,15 @@ import com.studybridge.api.repository.AgentChatRoomRepository;
 import com.studybridge.api.repository.ChatMessageRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.Disposable;
 
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -32,22 +38,10 @@ public class ChatService {
         private final ChatMessageRepository chatMessageRepository;
         private final WebClient fastApiWebClient;
         private final TransactionTemplate transactionTemplate;
+        private final ObjectMapper objectMapper;
 
-        @Transactional
-        public ChatDTO.MultiChatResponse chatWithRoom(Long userId, Long roomId, ChatDTO.MultiChatRequest request) {
-                AgentChatRoom room = agentChatRoomRepository.findById(roomId)
-                                .orElseThrow(() -> new RuntimeException("해당 채팅방을 찾을 수 없습니다."));
-
-                if (!room.getUser().getId().equals(userId)) {
-                        throw new RuntimeException("해당 채팅방에 접근할 권한이 없습니다.");
-                }
-
-                // 사용자의 메시지 저장
-                transactionTemplate.execute(status -> {
-                        saveRoomMessage(room, null, request.getMessage(), "USER");
-                        return null;
-                });
-
+        // FastAPI(/api/ai/multi-chat[/stream]) 요청 바디 구성 — 블로킹/스트리밍 공용.
+        private Map<String, Object> buildFastApiRequestBody(AgentChatRoom room, Long roomId, ChatDTO.MultiChatRequest request) {
                 // 에이전트 간 상호 피드백을 위해 최근 10개의 AI 답변 가져오기
                 List<ChatMessage> lastAiMessages = chatMessageRepository
                                 .findTop10ByAgentChatRoomIdAndSenderOrderByCreatedAtDesc(roomId, "AI");
@@ -162,6 +156,25 @@ public class ChatService {
                 if (request.getTargetAgentId() != null && !request.getTargetAgentId().isBlank()) {
                         requestBody.put("targetAgentId", request.getTargetAgentId());
                 }
+                return requestBody;
+        }
+
+        @Transactional
+        public ChatDTO.MultiChatResponse chatWithRoom(Long userId, Long roomId, ChatDTO.MultiChatRequest request) {
+                AgentChatRoom room = agentChatRoomRepository.findById(roomId)
+                                .orElseThrow(() -> new RuntimeException("해당 채팅방을 찾을 수 없습니다."));
+
+                if (!room.getUser().getId().equals(userId)) {
+                        throw new RuntimeException("해당 채팅방에 접근할 권한이 없습니다.");
+                }
+
+                // 사용자의 메시지 저장
+                transactionTemplate.execute(status -> {
+                        saveRoomMessage(room, null, request.getMessage(), "USER");
+                        return null;
+                });
+
+                Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request);
                 log.info("chat fastapi payload roomId={} payload={}", roomId, requestBody);
 
                 // 모드별 타임아웃: 소크라테스/토론/멀티에이전트는 단계적 검토로 오래 걸리므로 길게 허용한다.
@@ -213,6 +226,23 @@ public class ChatService {
                 Map<String, Object> processSteps = response != null && response.get("processSteps") instanceof Map
                                 ? (Map<String, Object>) response.get("processSteps")
                                 : null;
+                // 단계별 구조(stages) / 성격 검증 요약 — 유실 없이 패스스루 (없으면 null)
+                List<Object> stages = response != null && response.get("stages") instanceof List
+                                ? (List<Object>) response.get("stages")
+                                : null;
+                List<Object> personalityValidationSummary = response != null
+                                && response.get("personalityValidationSummary") instanceof List
+                                ? (List<Object>) response.get("personalityValidationSummary")
+                                : null;
+                // processSteps를 JSON 문자열로 직렬화해 AI 메시지와 함께 영속화한다 (새로고침 후 복원용).
+                String processStepsJson = null;
+                if (processSteps != null) {
+                        try {
+                                processStepsJson = objectMapper.writeValueAsString(processSteps);
+                        } catch (Exception e) {
+                                log.warn("processSteps 직렬화 실패 (저장 생략): {}", e.getMessage());
+                        }
+                }
 
                 if (response != null && response.containsKey("messages") && response.get("messages") instanceof List) {
                         List<Map<String, Object>> messages = (List<Map<String, Object>>) response.get("messages");
@@ -228,7 +258,7 @@ public class ChatService {
                                                 .findFirst()
                                                 .orElse(room.getAgents().isEmpty() ? null : room.getAgents().get(0));
 
-                                saveRoomMessage(room, targetAgent, aiContent, "AI");
+                                saveRoomMessage(room, targetAgent, aiContent, "AI", processStepsJson);
 
                                 ChatDTO.DiscussionMessage discussionMessage = ChatDTO.DiscussionMessage.builder()
                                                 .id(String.valueOf(messageMap.getOrDefault("id", "")))
@@ -280,7 +310,7 @@ public class ChatService {
                                                 .orElse(room.getAgents().isEmpty() ? null
                                                                 : room.getAgents().get(Math.min(finalIdx, room.getAgents().size() - 1)));
 
-                                saveRoomMessage(room, targetAgent, aiAnswer, "AI");
+                                saveRoomMessage(room, targetAgent, aiAnswer, "AI", processStepsJson);
 
                                 if (targetAgent != null) {
                                         replies.add(ChatDTO.AgentReply.builder()
@@ -303,7 +333,106 @@ public class ChatService {
                                 .finalSynthesis(finalSynthesis)
                                 .replies(replies)
                                 .processSteps(processSteps)
+                                .stages(stages)
+                                .personalityValidationSummary(personalityValidationSummary)
                                 .build();
+        }
+
+        // 멀티 에이전트 채팅 — 1차/2차/3차 단계별 SSE 스트리밍.
+        // FastAPI /api/ai/multi-chat/stream 의 SSE를 그대로 브라우저로 중계하고,
+        // all_complete 시점에 AI 답변 + processSteps를 영속화한다. (블로킹 경로와 동일 저장 로직)
+        @Transactional
+        public SseEmitter chatStream(Long userId, Long roomId, ChatDTO.MultiChatRequest request) {
+                AgentChatRoom room = agentChatRoomRepository.findById(roomId)
+                                .orElseThrow(() -> new RuntimeException("해당 채팅방을 찾을 수 없습니다."));
+                if (!room.getUser().getId().equals(userId)) {
+                        throw new RuntimeException("해당 채팅방에 접근할 권한이 없습니다.");
+                }
+
+                // 사용자 메시지 저장
+                transactionTemplate.execute(status -> {
+                        saveRoomMessage(room, null, request.getMessage(), "USER");
+                        return null;
+                });
+
+                // FastAPI 요청 바디 (블로킹과 동일 로직 재사용; room.getAgents() lazy 접근은 현재 트랜잭션 내)
+                Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request);
+
+                SseEmitter emitter = new SseEmitter(envSeconds("STUDYMATE_SSE_TIMEOUT_SECONDS", 300) * 1000L);
+
+                Disposable subscription = fastApiWebClient.post()
+                                .uri("/api/ai/multi-chat/stream")
+                                .bodyValue(requestBody)
+                                .retrieve()
+                                .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() {})
+                                .subscribe(
+                                                ev -> {
+                                                        try {
+                                                                String event = ev.event() != null ? ev.event() : "message";
+                                                                String data = ev.data();
+                                                                emitter.send(SseEmitter.event().name(event)
+                                                                                .data(data != null ? data : "{}"));
+                                                                if ("all_complete".equals(event) && data != null) {
+                                                                        // 비동기 스레드에서 별도 트랜잭션으로 영속화 (room 재조회로 lazy 회피)
+                                                                        persistStreamedAnswers(roomId, data);
+                                                                }
+                                                        } catch (Exception e) {
+                                                                log.warn("SSE 이벤트 전송 실패: {}", e.getMessage());
+                                                        }
+                                                },
+                                                err -> {
+                                                        log.error("FastAPI 스트리밍 오류 roomId={} err={}", roomId, err.getMessage());
+                                                        try {
+                                                                emitter.send(SseEmitter.event().name("error")
+                                                                                .data("{\"message\":\"AI 스트리밍 중 오류가 발생했습니다.\"}"));
+                                                        } catch (Exception ignored) {
+                                                        }
+                                                        emitter.completeWithError(err);
+                                                },
+                                                emitter::complete);
+
+                emitter.onCompletion(subscription::dispose);
+                emitter.onTimeout(() -> {
+                        subscription.dispose();
+                        emitter.complete();
+                });
+                return emitter;
+        }
+
+        // 스트리밍 all_complete 결과(JSON)를 파싱해 AI 메시지 + processStepsJson을 영속화한다.
+        private void persistStreamedAnswers(Long roomId, String allCompleteJson) {
+                try {
+                        Map<String, Object> resp = objectMapper.readValue(
+                                        allCompleteJson, new TypeReference<Map<String, Object>>() {});
+                        Object psObj = resp.get("processSteps");
+                        String processStepsJson = psObj != null ? objectMapper.writeValueAsString(psObj) : null;
+                        Object ansObj = resp.get("answers");
+                        if (!(ansObj instanceof List)) {
+                                return;
+                        }
+                        @SuppressWarnings("unchecked")
+                        List<Map<String, Object>> answers = (List<Map<String, Object>>) ansObj;
+
+                        transactionTemplate.execute(status -> {
+                                AgentChatRoom room = agentChatRoomRepository.findById(roomId).orElse(null);
+                                if (room == null) {
+                                        return null;
+                                }
+                                for (Map<String, Object> a : answers) {
+                                        String agentName = String.valueOf(a.getOrDefault("agentName", "AI"));
+                                        Object answerObj = a.get("answer");
+                                        String content = answerObj != null ? answerObj.toString() : "";
+                                        Agent targetAgent = room.getAgents().stream()
+                                                        .filter(ag -> ag.getName().equals(agentName))
+                                                        .findFirst()
+                                                        .orElse(room.getAgents().isEmpty() ? null : room.getAgents().get(0));
+                                        saveRoomMessage(room, targetAgent, content, "AI", processStepsJson);
+                                }
+                                return null;
+                        });
+                } catch (Exception e) {
+                        log.warn("스트리밍 결과 영속화 실패 roomId={}: {}", roomId, e.getMessage());
+                }
         }
 
         // 채팅방 기록 조회
@@ -316,17 +445,37 @@ public class ChatService {
                                                 .senderName(msg.getAgent() != null ? msg.getAgent().getName() : null)
                                                 .agentId(msg.getAgent() != null ? msg.getAgent().getId() : null)
                                                 .createdAt(msg.getCreatedAt())
+                                                .processSteps(parseProcessSteps(msg.getProcessStepsJson()))
                                                 .build())
                                 .collect(Collectors.toList());
         }
 
-        // 채팅 기록 저장
+        // 영속화된 processSteps JSON을 Map으로 역직렬화한다. 실패/없음이면 null.
+        private Map<String, Object> parseProcessSteps(String json) {
+                if (json == null || json.isBlank()) {
+                        return null;
+                }
+                try {
+                        return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+                } catch (Exception e) {
+                        log.warn("processSteps 역직렬화 실패 (생략): {}", e.getMessage());
+                        return null;
+                }
+        }
+
+        // 채팅 기록 저장 (processSteps 없는 경우)
         private void saveRoomMessage(AgentChatRoom room, Agent agent, String content, String sender) {
+                saveRoomMessage(room, agent, content, sender, null);
+        }
+
+        // 채팅 기록 저장 (AI 메시지는 processStepsJson 함께 영속화)
+        private void saveRoomMessage(AgentChatRoom room, Agent agent, String content, String sender, String processStepsJson) {
                 ChatMessage message = ChatMessage.builder()
                                 .agentChatRoom(room)
                                 .agent(agent)
                                 .content(content)
                                 .sender(sender)
+                                .processStepsJson(processStepsJson)
                                 .build();
                 chatMessageRepository.save(message);
         }

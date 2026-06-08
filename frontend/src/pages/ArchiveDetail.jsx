@@ -120,6 +120,83 @@ export default function ArchiveDetail() {
       });
   };
 
+
+  const parseMaybeJson = (value, fallback = null) => {
+    if (value == null) return fallback;
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    if (!trimmed) return fallback;
+    try {
+      return JSON.parse(trimmed);
+    } catch (_) {
+      return fallback;
+    }
+  };
+
+  const getSummaryOverview = (data) => {
+    if (!data) return '';
+    return data.overview || data.summary || data.gpt_raw || '';
+  };
+
+  const getSummaryEnvelope = (data) => {
+    const parsedCore = parseMaybeJson(data?.coreContents, null);
+    if (parsedCore && !Array.isArray(parsedCore) && typeof parsedCore === 'object') return parsedCore;
+    return { sections: Array.isArray(parsedCore) ? parsedCore : null };
+  };
+
+  const getSummaryKeywords = (data) => {
+    if (!data) return [];
+    const envelope = getSummaryEnvelope(data);
+    return removeDummyKeywords(data.keywords?.length ? data.keywords : (data.key_points?.length ? data.key_points : (envelope.keywords || envelope.key_points || [])));
+  };
+
+  const getSummarySections = (data) => {
+    if (!data) return [];
+    const envelope = getSummaryEnvelope(data);
+    const candidates = data.sections || envelope.sections || data.coreContents;
+    const parsed = parseMaybeJson(candidates, candidates);
+    const list = Array.isArray(parsed) ? parsed : [];
+    if (list.length > 0) {
+      return list
+        .map((item, idx) => {
+          if (typeof item === 'string') return { title: `${idx + 1}. 핵심 요약`, content: item };
+          if (!item || typeof item !== 'object') return null;
+          return {
+            title: item.title || item.heading || `${idx + 1}. 핵심 요약`,
+            content: item.content || item.description || item.summary || '',
+          };
+        })
+        .filter((item) => item && item.content);
+    }
+    if (typeof data.coreContents === 'string' && data.coreContents.trim() && !['[]', '{}'].includes(data.coreContents.trim())) {
+      return data.coreContents
+        .split('\n')
+        .map((line) => line.replace(/^[-\d.\s*]+/, '').trim())
+        .filter(Boolean)
+        .map((line, idx) => ({ title: `${idx + 1}. 핵심 요약`, content: line }));
+    }
+    return [];
+  };
+
+  const normalizeRoadmapSteps = (source) => {
+    const parsed = parseMaybeJson(source, source);
+    const root = parsed?.roadmap || parsed?.roadmapData?.roadmap || parsed?.roadmapData || parsed || {};
+    const weeks = root.weeks || root.steps || parsed?.weeks || parsed?.steps || [];
+    if (!Array.isArray(weeks)) return [];
+    return weeks.map((week, idx) => {
+      const rawTasks = Array.isArray(week.tasks) ? week.tasks : [];
+      return {
+        stepId: week.stepId || week.id || `week-${week.weekNumber || week.stepOrder || idx + 1}`,
+        stepOrder: Number(week.weekNumber || week.stepOrder || idx + 1),
+        title: week.title || `${idx + 1}주차`,
+        description: week.goal || week.description || '',
+        tasks: rawTasks.map((task, taskIdx) => (typeof task === 'string'
+          ? { taskId: `week-${idx + 1}-task-${taskIdx + 1}`, taskOrder: taskIdx + 1, content: task, isCompleted: false }
+          : { taskId: task.taskId || task.id || `week-${idx + 1}-task-${taskIdx + 1}`, taskOrder: task.taskOrder || taskIdx + 1, content: task.content || task.title || String(task), isCompleted: !!task.isCompleted }))
+      };
+    });
+  };
+
   const renderAiStatus = (response, onRetry) => {
     const normalized = normalizeAiResponse(response);
     if (normalized.success !== false) return null;
@@ -181,7 +258,7 @@ export default function ArchiveDetail() {
     try {
       const roadmap = await materialService.getRoadmap(materialId);
       setRoadmapData(roadmap);
-      setRoadmapSteps(roadmap?.steps || []);
+      setRoadmapSteps(normalizeRoadmapSteps(roadmap?.roadmapData || roadmap));
     } catch (e) {
       console.warn('AI 로드맵 정보 로드 실패:', e);
     }
@@ -365,16 +442,24 @@ export default function ArchiveDetail() {
   };
 
   // ---------------- 퀴즈 파서 ----------------
-  const parseQuizQuestions = (rawQuizData) => {
+  const parseQuizQuestions = (quizSource) => {
     try {
-      const parsedRaw = JSON.parse(rawQuizData);
-      const parsed = Array.isArray(parsedRaw) ? parsedRaw : (parsedRaw.questions || parsedRaw.quizzes || []);
-      return parsed.map((item, idx) => ({
-        q: item.question || item.q || `Q${idx + 1}. 문제`,
-        options: item.options || item.choices || item.answers || [],
-        answer: typeof item.answerIndex === 'number' ? item.answerIndex : (typeof item.answer === 'number' ? item.answer : 0),
-        explanation: item.explanation || ''
-      }));
+      const parsedRaw = typeof quizSource === 'string' ? parseMaybeJson(quizSource, []) : quizSource;
+      const parsed = Array.isArray(parsedRaw)
+        ? parsedRaw
+        : (parsedRaw?.quizzes || parsedRaw?.questions || parseMaybeJson(parsedRaw?.quizData, []));
+      return (Array.isArray(parsed) ? parsed : []).map((item, idx) => {
+        const options = item.options || item.choices || item.answers || [];
+        let answerIndex = typeof item.answerIndex === 'number' ? item.answerIndex : (typeof item.answer === 'number' ? item.answer : 0);
+        if (typeof item.answer === 'string' && Array.isArray(options) && options.includes(item.answer)) answerIndex = options.indexOf(item.answer);
+        return {
+          q: item.question || item.q || `Q${idx + 1}. 문제`,
+          options,
+          answer: answerIndex,
+          explanation: item.explanation || '',
+          difficulty: item.difficulty || quizSettings.difficulty,
+        };
+      });
     } catch (e) {
       console.error("Quiz JSON 파싱 실패:", e);
       return [];
@@ -385,26 +470,12 @@ export default function ArchiveDetail() {
   const renderPdfRightPanel = () => {
     switch (activePdfTool) {
       case 'summary': {
-        const parsedCoreContents = [];
         const summaryStatus = normalizeAiResponse(summaryData);
         const summaryTextStatusMessage = getTextStatusMessage(summaryData?.textStatus);
-        const cleanKeywords = removeDummyKeywords(summaryData?.keywords?.length ? summaryData.keywords : material?.keywords);
-        if (summaryData?.coreContents) {
-          try {
-            const parsed = JSON.parse(summaryData.coreContents);
-            if (Array.isArray(parsed)) {
-              parsedCoreContents.push(...parsed);
-            } else if (typeof parsed === 'object') {
-              Object.entries(parsed).forEach(([k, v]) => {
-                parsedCoreContents.push({ title: k, description: typeof v === 'string' ? v : JSON.stringify(v) });
-              });
-            }
-          } catch (e) {
-            summaryData.coreContents.split('\n').filter(Boolean).forEach((line, idx) => {
-              parsedCoreContents.push({ title: `${idx + 1}. 핵심 요약`, description: line.replace(/^[-\d.\s*]+/, '').trim() });
-            });
-          }
-        }
+        const summaryOverview = getSummaryOverview(summaryData);
+        const summaryKeywords = getSummaryKeywords(summaryData);
+        const cleanKeywords = summaryKeywords.length > 0 ? summaryKeywords : removeDummyKeywords(material?.keywords);
+        const parsedCoreContents = getSummarySections(summaryData);
 
         return (
             <div className="animate-fade-in" style={{ paddingBottom: '32px' }}>
@@ -424,7 +495,7 @@ export default function ArchiveDetail() {
                 <div className="glass-panel" style={{ padding: '20px', borderLeft: '4px solid var(--color-primary)' }}>
                   <h4 style={{ margin: '0 0 12px', fontSize: '16px', color: 'var(--color-text-main)' }}>📌 문서 개요</h4>
                   <p style={{ margin: 0, fontSize: '15px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>
-                    {summaryStatus.success === false ? '요약 내용이 아직 생성되지 않았습니다.' : (summaryData?.overview || (summaryData ? '요약 내용이 아직 생성되지 않았습니다.' : '문서 내용을 분석하고 있습니다.'))}
+                    {summaryStatus.success === false ? getAiErrorMessage(summaryStatus.errorCode, summaryStatus.textStatus, summaryStatus.message) : (summaryOverview || (summaryData ? '요약 내용이 아직 생성되지 않았습니다.' : '문서 내용을 분석하고 있습니다.'))}
                   </p>
                 </div>
 
@@ -448,11 +519,11 @@ export default function ArchiveDetail() {
                         parsedCoreContents.map((content, idx) => (
                             <div key={idx} style={{ backgroundColor: '#F9FAFB', padding: '16px', borderRadius: '8px', border: '1px solid var(--color-border)' }}>
                               <h5 style={{ margin: '0 0 8px', fontSize: '15px' }}>{content.title || `${idx + 1}. 핵심 포인트`}</h5>
-                              <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5', color: 'var(--color-text-muted)' }}>{content.description || content}</p>
+                              <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5', color: 'var(--color-text-muted)' }}>{content.content || content.description || ''}</p>
                             </div>
                         ))
                     ) : (
-                        <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{summaryStatus.success === false ? '요약 내용이 아직 생성되지 않았습니다.' : '세부 요약 내용이 존재하지 않습니다.'}</p>
+                        <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{summaryStatus.success === false ? getAiErrorMessage(summaryStatus.errorCode, summaryStatus.textStatus, summaryStatus.message) : '요약 내용이 아직 생성되지 않았습니다.'}</p>
                     )}
                   </div>
                 </div>
@@ -463,7 +534,7 @@ export default function ArchiveDetail() {
       case 'quiz': {
         const activeQuiz = quizzes.find(q => q.quizId === selectedQuizId);
         const activeQuizStatus = normalizeAiResponse(activeQuiz);
-        const parsedQuestions = activeQuiz ? parseQuizQuestions(activeQuiz.quizData) : [];
+        const parsedQuestions = activeQuiz ? parseQuizQuestions(activeQuiz.quizzes?.length ? activeQuiz.quizzes : activeQuiz.quizData) : [];
 
         return (
             <div className="animate-fade-in" style={{ paddingBottom: '24px', display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -671,8 +742,9 @@ export default function ArchiveDetail() {
       }
       case 'roadmap': {
         const roadmapStatus = normalizeAiResponse(roadmapData);
-        const displayRoadmapSteps = roadmapSteps.length > 0
-          ? Array.from({ length: 12 }, (_, idx) => roadmapSteps.find(step => Number(step.stepOrder) === idx + 1) || {
+        const normalizedRoadmapSteps = roadmapSteps.length > 0 ? roadmapSteps : normalizeRoadmapSteps(roadmapData?.roadmapData || roadmapData);
+        const displayRoadmapSteps = normalizedRoadmapSteps.length > 0
+          ? Array.from({ length: 12 }, (_, idx) => normalizedRoadmapSteps.find(step => Number(step.stepOrder) === idx + 1) || {
               stepId: `placeholder-${idx + 1}`,
               stepOrder: idx + 1,
               title: `${idx + 1}주차`,

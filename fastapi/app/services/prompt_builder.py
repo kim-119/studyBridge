@@ -36,16 +36,11 @@ def _get_personality_instruction(
     style: Optional[str],
     custom_instruction: Optional[str],
 ) -> str:
-    if custom_instruction and custom_instruction.strip():
-        return f"[사용자 지정 지시사항] {custom_instruction.strip()}"
-    base = ""
-    if personality:
-        base = _PERSONALITY_INSTRUCTIONS.get(personality, "")
-    if not base and tone:
-        base = _PERSONALITY_INSTRUCTIONS.get(tone, f"어조: {tone}")
-    if not base and style:
-        base = f"스타일: {style}"
-    return base or "명확하고 친절하게 설명하라."
+    # 풍부한 성격 프롬프트 빌더에 위임한다. (프론트 라벨/레거시 라벨을 모두 정규화)
+    # 직접입력(custom_instruction)이 있으면 build_personality_prompt가 최우선으로 처리한다.
+    from app.services.personality_prompt_builder import build_personality_prompt
+    label = personality or tone or style
+    return build_personality_prompt(label, custom_instruction)
 
 
 def build_agent_system_prompt(agent: AgentProfile, context: str = "") -> str:
@@ -76,6 +71,7 @@ def build_agent_system_prompt(agent: AgentProfile, context: str = "") -> str:
         "",
         "공통 규칙:",
         "- 반드시 한국어로 답변한다.",
+        f"- 사용자가 선택한 지식수준({agent.knowledgeLevel or '학사'})을 유지한다. 질문이 쉬워도 임의로 낮추지 않는다.",
         "- 다른 에이전트와 완전히 같은 말투나 내용을 반복하지 않는다.",
         "- 학습에 도움이 되는 실질적인 내용을 제공한다.",
     ]

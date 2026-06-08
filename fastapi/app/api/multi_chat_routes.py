@@ -1,18 +1,62 @@
 """
-POST /api/ai/multi-chat — 멀티 에이전트 토론.
-Spring Boot 계약 endpoint. camelCase 필드명 유지.
-FastAPI는 동기 REST JSON만 반환한다. SSE는 Spring Boot가 처리한다.
+POST /api/ai/multi-chat — 멀티 에이전트 토론 (동기 JSON, 기존 호환).
+POST /api/ai/multi-chat/stream — 1차/2차/3차 단계별 SSE 스트리밍 (선출력).
+camelCase 필드명 유지.
 """
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.schemas.multi_chat_schema import MultiChatRequest, MultiChatResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ai", tags=["Multi Agent Chat"])
+
+_STREAM_SENTINEL = object()
+
+
+def _sse(event: str, data) -> str:
+    """SSE 프레임 포맷: event: <name>\\ndata: <json>\\n\\n"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post(
+    "/multi-chat/stream",
+    summary="멀티 에이전트 토론 (단계별 SSE 스트리밍)",
+    description=(
+        "1차→2차→3차 단계가 완료될 때마다 stage_complete 이벤트를 즉시 전송한다. "
+        "마지막에 all_complete로 전체 응답(answers/processSteps/stages)을 한 번 더 보낸다. "
+        "default 계열 모드만 단계 스트리밍하며, 그 외 모드는 all_complete 1회만 전송한다."
+    ),
+)
+async def multi_chat_stream(request: MultiChatRequest):
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="message는 비워둘 수 없습니다.")
+
+    from app.services.multi_agent_service import build_stream_generator
+    gen = build_stream_generator(request)
+
+    async def event_source():
+        try:
+            while True:
+                # 블로킹 stage 계산은 스레드풀에서 수행해 이벤트 루프를 막지 않는다.
+                item = await asyncio.to_thread(next, gen, _STREAM_SENTINEL)
+                if item is _STREAM_SENTINEL:
+                    break
+                yield _sse(item["event"], item["data"])
+        except Exception as e:
+            logger.error("multi-chat 스트리밍 오류: %s", e)
+            yield _sse("error", {"message": "스트리밍 중 오류가 발생했습니다.", "detail": str(e)})
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post(
