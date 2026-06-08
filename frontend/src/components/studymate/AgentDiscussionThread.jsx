@@ -230,7 +230,7 @@ export default function AgentDiscussionThread({
                     fontSize: '13px', fontWeight: '800',
                     border: isUser ? 'none' : `1px solid ${color.accent}40`
                  }}>
-                    {isUser ? <User size={14} /> : (node.senderName || node.sender_name || 'AI').charAt(0)}
+                    {isUser ? <User size={14} /> : <Bot size={14} />}
                  </div>
                  
                  <span style={{ fontWeight: '800', fontSize: '14px', color: '#0f172a', letterSpacing: '-0.3px', flexShrink: 0 }}>
@@ -261,10 +261,11 @@ export default function AgentDiscussionThread({
                    color: isUser ? '#166534' : '#334155',
                    lineHeight: '1.6',
                    whiteSpace: 'pre-wrap',
-                   display: '-webkit-box',
-                   WebkitLineClamp: isExpanded ? 'unset' : 2,
-                   WebkitBoxOrient: 'vertical',
-                   overflow: 'hidden'
+                   overflowWrap: 'anywhere',
+                   // 확장 시 전체 노출(잘림 없음), 컴팩트일 때만 2줄 미리보기
+                   ...(isExpanded
+                     ? { height: 'auto', maxHeight: 'none', overflow: 'visible' }
+                     : { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' })
                  }}>
                    {node.isTyping ? (
                       <div style={{ display: 'flex', gap: '4px', padding: '4px 0' }}>
@@ -572,7 +573,7 @@ export default function AgentDiscussionThread({
                 return (
                   <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                     <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: colorInfo.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: '800', color: colorInfo.accent }}>
-                      {agent.name.charAt(0)}
+                      <Bot size={13} />
                     </div>
                     <span style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b' }}>{agent.name}</span>
                     

@@ -32,7 +32,10 @@ _DEFAULT_AGENT = AgentProfile(
 )
 _SYNTHESIS_AGENT_NAME = "종합정리봇"
 _MAX_ROUNDS = MAX_ROUNDS
-_MAX_TOKENS_PER_ANSWER = ADVANCED_AGENT_ANSWER_MAX_CHARS
+# 답변 잘림 방지: 생성 토큰 상한은 충분히 크게 둔다.
+# (ADVANCED_AGENT_ANSWER_MAX_CHARS는 '문자 수' 개념이라 토큰 상한으로 쓰면 답변이 잘린다.)
+import os as _os
+_MAX_TOKENS_PER_ANSWER = int(_os.getenv("AI_ANSWER_MAX_TOKENS", "2048"))
 
 
 def _get_agents(request: MultiChatRequest) -> List[AgentProfile]:
@@ -673,6 +676,216 @@ def _run_multi_pass_pipeline(
     )
 
 
+# ── group_study_ai 모드 (그룹스터디 AI 봇 3종) ────────────────────────────────
+#
+# 봇별 모델 라우팅:
+#   summary_bot / SummaryAgent          → Qwen/Ollama  (call_primary_llm)
+#   quiz_bot    / QuizAgent             → GPT/OpenAI   (openai chat_sync)
+#   search_bot  / TavilyAgent(SearchAgent) → Tavily 검색 + GPT/OpenAI
+#
+# 일정봇 계열(schedule_bot/calendar_bot/todo_bot)은 등록하지 않으며 라우팅하지 않는다.
+
+_GROUP_BOT_REGISTRY: Dict[str, Dict[str, str]] = {
+    "summary_bot": {"agentName": "SummaryAgent", "displayName": "요약봇", "modelProvider": "qwen_ollama"},
+    "quiz_bot":    {"agentName": "QuizAgent",    "displayName": "퀴즈봇", "modelProvider": "openai_gpt"},
+    "search_bot":  {"agentName": "TavilyAgent",  "displayName": "검색봇", "modelProvider": "openai_gpt_tavily"},
+}
+
+# agentName → botType (TavilyAgent/SearchAgent 모두 검색봇으로 처리)
+_AGENT_NAME_TO_BOT: Dict[str, str] = {
+    "SummaryAgent": "summary_bot",
+    "QuizAgent": "quiz_bot",
+    "TavilyAgent": "search_bot",
+    "SearchAgent": "search_bot",
+}
+
+# 절대 허용하지 않는 봇 (일정봇 계열 방어)
+_FORBIDDEN_BOT_TYPES = {"schedule_bot", "calendar_bot", "todo_bot"}
+_FORBIDDEN_AGENT_NAMES = {"ScheduleAgent", "CalendarAgent", "TodoAgent"}
+
+
+def _infer_bot_type(agent: AgentProfile) -> Optional[str]:
+    """AgentProfile에서 botType을 결정한다. (botType 우선, 없으면 name 기반)"""
+    if agent.botType and agent.botType in _GROUP_BOT_REGISTRY:
+        return agent.botType
+    return _AGENT_NAME_TO_BOT.get((agent.name or "").strip())
+
+
+def _is_forbidden_bot(agent: AgentProfile) -> bool:
+    bt = (agent.botType or "").strip()
+    nm = (agent.name or "").strip()
+    return bt in _FORBIDDEN_BOT_TYPES or nm in _FORBIDDEN_AGENT_NAMES
+
+
+def _summary_bot_answer(message: str, context: str) -> str:
+    """요약봇 → Qwen/Ollama."""
+    system = (
+        "너는 StudyBridge의 '요약봇'이다. "
+        "스터디 내용과 학습 자료를 핵심 개념, 키워드, 시험 포인트 중심으로 정리한다. "
+        "불필요한 군더더기 없이 구조화된 한국어 요약을 제공한다. "
+        "가능하면 '핵심 개념', '키워드', '시험 포인트' 소제목으로 정리하라."
+    )
+    user_parts = []
+    if context:
+        user_parts.append(context)
+    user_parts.append(f"[요약 요청]\n{message}")
+    return _call_llm(system, "\n\n".join(user_parts))
+
+
+def _quiz_bot_answer(message: str, context: str) -> str:
+    """퀴즈봇 → GPT/OpenAI."""
+    from app.services.openai_client import chat_sync, is_enabled
+    system = (
+        "너는 StudyBridge의 '퀴즈봇'이다. "
+        "학습 내용을 바탕으로 퀴즈를 만들고 각 문항의 정답과 해설까지 제공한다. "
+        "문항은 번호를 매기고, 각 문항 끝에 '정답:'과 '해설:'을 반드시 포함한다. "
+        "반드시 한국어로 작성한다."
+    )
+    user_parts = []
+    if context:
+        user_parts.append(context)
+    user_parts.append(f"[퀴즈 요청]\n{message}")
+    user = "\n\n".join(user_parts)
+    if not is_enabled():
+        # GPT 미설정 시 Qwen으로 폴백
+        logger.info("퀴즈봇: OpenAI 비활성 → Qwen 폴백")
+        return _call_llm(system, user)
+    text = chat_sync(system=system, user=user, temperature=0.4, max_tokens=_MAX_TOKENS_PER_ANSWER)
+    if text and not text.startswith("[GPT"):
+        return text
+    logger.warning("퀴즈봇 GPT 응답 실패 → Qwen 폴백: %s", text[:80] if text else "")
+    return _call_llm(system, user)
+
+
+def _search_bot_answer(message: str, context: str) -> str:
+    """검색봇 → Tavily 검색 + GPT/OpenAI 종합."""
+    search_block = ""
+    try:
+        from app.services.tavily_service import search_web
+        results = search_web(message, max_results=5)
+        if results:
+            lines = []
+            for i, r in enumerate(results, start=1):
+                lines.append(
+                    f"[출처 {i}] {r.get('title','')}\nURL: {r.get('url','')}\n{r.get('content','')}"
+                )
+            search_block = "[웹 검색 결과]\n" + "\n\n".join(lines)
+    except Exception as e:
+        logger.warning("검색봇 Tavily 검색 실패 (검색 없이 진행): %s", e)
+
+    system = (
+        "너는 StudyBridge의 '검색봇'이다. "
+        "웹 검색 결과를 근거로 최신 정보를 정리하고, 학습 답변을 보강한다. "
+        "답변에는 사용한 출처를 '출처:' 형태로 명시한다. "
+        "검색 결과가 없으면 보유 지식으로 답하되 출처가 없음을 밝힌다. "
+        "반드시 한국어로 답변한다."
+    )
+    user_parts = []
+    if context:
+        user_parts.append(context)
+    if search_block:
+        user_parts.append(search_block)
+    user_parts.append(f"[검색 요청]\n{message}")
+    user = "\n\n".join(user_parts)
+
+    from app.services.openai_client import chat_sync, is_enabled
+    if is_enabled():
+        text = chat_sync(system=system, user=user, temperature=0.3, max_tokens=_MAX_TOKENS_PER_ANSWER)
+        if text and not text.startswith("[GPT"):
+            return text
+        logger.warning("검색봇 GPT 응답 실패 → Qwen 폴백")
+    return _call_llm(system, user)
+
+
+def _route_group_bot_answer(bot_type: str, message: str, context: str) -> str:
+    if bot_type == "summary_bot":
+        return _summary_bot_answer(message, context)
+    if bot_type == "quiz_bot":
+        return _quiz_bot_answer(message, context)
+    if bot_type == "search_bot":
+        return _search_bot_answer(message, context)
+    # 알 수 없는 봇 — 기본 요약봇 처리
+    logger.warning("알 수 없는 botType=%s → 요약봇으로 처리", bot_type)
+    return _summary_bot_answer(message, context)
+
+
+def _run_group_study_ai_mode(
+    request: MultiChatRequest,
+    active_agents: List[AgentProfile],
+    context: str,
+    rag_context: str,
+) -> MultiChatResponse:
+    """
+    그룹스터디 AI 봇 모드.
+    요청된 agents를 '요청 순서대로' 실행한다.
+      - single   : agents에 1개
+      - all_bots : agents에 3개 (검색봇 → 요약봇 → 퀴즈봇 순서는 호출자가 보장)
+    각 봇은 botType/agentName에 따라 모델이 라우팅된다.
+    """
+    if rag_context:
+        context = f"{context}\n\n[RAG 자료]\n{rag_context}" if context else rag_context
+
+    delay_ms = _get_display_delay_ms()
+    answers: List[AgentAnswer] = []
+
+    for idx, agent in enumerate(active_agents):
+        # 일정봇 계열 방어 — 실행하지 않고 오류 응답
+        if _is_forbidden_bot(agent):
+            logger.warning("group_study_ai: 금지된 봇 차단 name=%s botType=%s", agent.name, agent.botType)
+            answers.append(AgentAnswer(
+                agentName=agent.name or "시스템",
+                answer="지원하지 않는 AI 봇입니다. 사용 가능: 요약봇, 퀴즈봇, 검색봇.",
+                role="blocked",
+                displayOrder=idx + 1,
+                displayDelayMs=idx * delay_ms,
+                status="BLOCKED",
+            ))
+            continue
+
+        bot_type = _infer_bot_type(agent)
+        if bot_type is None:
+            logger.warning("group_study_ai: botType 판별 실패 name=%s → 요약봇 처리", agent.name)
+            bot_type = "summary_bot"
+
+        reg = _GROUP_BOT_REGISTRY[bot_type]
+        try:
+            answer_text = _route_group_bot_answer(bot_type, request.message, context)
+            status = "SUCCESS"
+        except Exception as e:
+            logger.error("group_study_ai 봇 '%s' 실행 실패: %s", bot_type, e)
+            answer_text = "일시적인 오류로 답변을 생성할 수 없습니다. 잠시 후 다시 시도해 주세요."
+            status = "FAILED"
+
+        answers.append(AgentAnswer(
+            agentName=agent.name or reg["agentName"],
+            answer=answer_text,
+            agentId=agent.agentId,
+            role=bot_type,
+            displayOrder=idx + 1,
+            displayDelayMs=idx * delay_ms,
+            status=status,
+        ))
+
+    if not answers:
+        answers.append(AgentAnswer(
+            agentName="시스템",
+            answer="실행할 AI 봇이 지정되지 않았습니다.",
+            displayOrder=1, displayDelayMs=0, status="FAILED",
+        ))
+
+    success_count = sum(1 for a in answers if a.status == "SUCCESS")
+    status = "COMPLETED" if success_count == len(answers) else (
+        "PARTIAL_SUCCESS" if success_count > 0 else "FAILED"
+    )
+
+    return MultiChatResponse(
+        mode=request.mode,
+        answers=answers,
+        status=status,
+        question=request.message,
+    )
+
+
 # ── 진입점 ────────────────────────────────────────────────────────────────────
 
 def run_multi_chat(request: MultiChatRequest) -> MultiChatResponse:
@@ -693,7 +906,15 @@ def run_multi_chat(request: MultiChatRequest) -> MultiChatResponse:
     # RAG 검색 (materialId 있으면 수행)
     rag_context = _get_rag_context(request.message, request.materialId)
 
-    mode = (request.mode or "default").lower()
+    raw_mode = (request.mode or "default").lower()
+
+    # group_study_ai: 그룹스터디 AI 봇 모드 (요약/퀴즈/검색 봇 라우팅)
+    if raw_mode == "group_study_ai":
+        logger.info("multi-chat 실행: mode=group_study_ai runMode=%s agents=%d",
+                    request.runMode, len(active_agents))
+        return _run_group_study_ai_mode(request, active_agents, context, rag_context)
+
+    mode = raw_mode
     if mode not in ("tikitaka", "debate", "socratic"):
         mode = "default"
 

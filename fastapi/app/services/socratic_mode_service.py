@@ -151,9 +151,19 @@ def run_socratic_mode(
             status = "BLOCKED"
             direct_blocked = True
 
-    # 길이 제한
-    if len(final_answer) > max_chars:
-        final_answer = final_answer[:max_chars].rsplit("。", 1)[0] + "..."
+    # 길이 제한: 사용자에게 보이는 답변은 임의 절단하지 않는다.
+    # AI_MAX_RESPONSE_CHARS>0 으로 명시 설정한 경우에만 안전 절단한다(기본 비활성).
+    import os as _os
+    _max_visible = int(_os.getenv("AI_MAX_RESPONSE_CHARS", "0"))
+    if _max_visible > 0 and len(final_answer) > _max_visible:
+        cut = final_answer[:_max_visible]
+        # 한국어/영어 문장 종결 경계에서 자른다.
+        for sep in (". ", ".\n", "? ", "! ", "\n"):
+            idx = cut.rfind(sep)
+            if idx > _max_visible * 0.5:
+                cut = cut[:idx + 1]
+                break
+        final_answer = cut.rstrip() + " …"
 
     return [
         AgentAnswer(
