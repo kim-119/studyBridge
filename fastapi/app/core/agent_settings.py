@@ -8,6 +8,7 @@ StudyMate 에이전트 파이프라인 중앙 설정 (env 단일 관리).
 - 채팅방 표시명만 프론트에서 하드코딩을 허용하며, 그 외 운영값은 모두 이 모듈을 거친다.
 """
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # ── env 파서 ──────────────────────────────────────────────────────────────────
@@ -56,10 +57,11 @@ def resolve_provider_for_stage(stage: int) -> str:
 def resolve_stage_max_tokens(stage: int) -> int:
     if stage == 1:
         # stage1은 Ollama num_predict 우선, 없으면 AGENT_STAGE1_MAX_TOKENS
-        return _i("OLLAMA_STAGE1_NUM_PREDICT", _i("AGENT_STAGE1_MAX_TOKENS", 700))
+        # (답변 잘림 방지: 기본값을 1200으로 둔다.)
+        return _i("OLLAMA_STAGE1_NUM_PREDICT", _i("AGENT_STAGE1_MAX_TOKENS", 1200))
     if stage == 2:
-        return _i("AGENT_STAGE2_MAX_TOKENS", 1200)
-    return _i("AGENT_STAGE3_MAX_TOKENS", 900)
+        return _i("AGENT_STAGE2_MAX_TOKENS", 1800)
+    return _i("AGENT_STAGE3_MAX_TOKENS", 1200)
 
 
 def resolve_timeout_for_stage(stage: int) -> int:
@@ -122,6 +124,42 @@ _DEFAULTS: Dict[str, float] = {
 
 _NUMERIC_FIELDS = list(_DEFAULTS.keys())
 
+# ── 성격별 생성수치 YAML 기본값 (env가 없을 때 적용) ──────────────────────────
+# SSOT = policies/agent_generation_profiles.yaml. 우선순위: env > YAML > 코드 DEFAULT.
+_GEN_PROFILE_PATH = (
+    Path(__file__).resolve().parent.parent / "policies" / "agent_generation_profiles.yaml"
+)
+_gen_profiles_cache: Optional[Dict[str, Dict[str, float]]] = None
+
+
+def _load_generation_profiles() -> Dict[str, Dict[str, float]]:
+    """성격별 수치 기본값 YAML을 1회 로드/캐싱. 실패해도 서버를 죽이지 않는다."""
+    global _gen_profiles_cache
+    if _gen_profiles_cache is not None:
+        return _gen_profiles_cache
+    data: Dict[str, Dict[str, float]] = {}
+    try:
+        import yaml  # pyyaml
+        path = Path(_s("AGENT_GENERATION_PROFILE_PATH", str(_GEN_PROFILE_PATH)))
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+            if isinstance(loaded, dict):
+                data = {
+                    k: {fk: fv for fk, fv in (v or {}).items()}
+                    for k, v in loaded.items() if isinstance(v, dict)
+                }
+    except Exception:
+        data = {}
+    _gen_profiles_cache = data
+    return data
+
+
+def reload_generation_profiles() -> None:
+    """개발용: YAML 수치 프로필 캐시를 비운다(다음 호출 시 재로드)."""
+    global _gen_profiles_cache
+    _gen_profiles_cache = None
+
 
 def _default_params() -> Dict[str, float]:
     return {
@@ -142,11 +180,22 @@ def _default_params() -> Dict[str, float]:
 
 def get_personality_params(canonical_key: str) -> Dict[str, float]:
     """
-    성격별 운영 파라미터를 env에서 읽는다. 키 없으면 DEFAULT 사용.
+    성격별 운영 파라미터를 우선순위 env > YAML > 코드 DEFAULT 로 합성한다.
     canonical_key: friendly | critical | logical | creative | concise | professional | sardonic | custom
+
+    - 코드 DEFAULT(_default_params): 모든 성격 공통 최소 기본값.
+    - YAML(agent_generation_profiles.yaml): 성격별 기본값. env 미설정 시에도 성격 차등 보장.
+    - env(AGENT_{KEY}_{FIELD}): 운영 override (최우선).
     """
+    key = (canonical_key or "custom").lower()
     base = _default_params()
-    prefix = f"AGENT_{(canonical_key or 'custom').upper()}_"
+    # 1) YAML 성격 기본값 overlay (env가 없어도 성격이 살아있게 한다)
+    yaml_profile = _load_generation_profiles().get(key, {})
+    for field in _NUMERIC_FIELDS:
+        if field in yaml_profile and yaml_profile[field] is not None:
+            base[field] = yaml_profile[field]
+    # 2) env override (최우선)
+    prefix = f"AGENT_{key.upper()}_"
     out = dict(base)
     for field in _NUMERIC_FIELDS:
         env_key = prefix + field.upper()

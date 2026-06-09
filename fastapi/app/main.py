@@ -55,6 +55,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("정책 파일 로드 실패 (기본값 사용): %s", e)
 
+    # 성격 정책(YAML) 로드 검증 — 실패해도 서버는 기동(빌더/검증기가 fallback 사용)
+    try:
+        from app.services.personality_prompt_builder import _load_profiles
+        from app.core.agent_settings import _load_generation_profiles
+        prof = _load_profiles()
+        gen = _load_generation_profiles()
+        required = {"friendly", "critical", "logical", "creative",
+                    "concise", "professional", "sardonic", "custom"}
+        missing = required - set(prof.keys())
+        if not prof:
+            logger.warning("성격 프로필(agent_personality_profiles.yaml) 비어있음 — fallback 프롬프트 사용")
+        elif missing:
+            logger.warning("성격 프로필 일부 누락(%s) — 해당 성격은 fallback 사용", ", ".join(sorted(missing)))
+        else:
+            logger.info("성격 정책 로드 완료: 프로필 %d개, 생성수치 프로필 %d개", len(prof), len(gen))
+    except Exception as e:
+        logger.warning("성격 정책 로드 검증 실패 (fallback 사용): %s", e)
+
     logger.info("%s 기동 완료", APP_NAME)
     yield
 

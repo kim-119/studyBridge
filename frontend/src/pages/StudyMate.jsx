@@ -18,17 +18,51 @@ const DEFAULT_AGENT = {
   goal: '사용자의 학습을 돕는다'
 };
 
-// 멀티 에이전트 응답의 1차/2차/3차 생성 과정을 펼쳐볼 수 있는 아코디언
+// 정규 성격 키 → 한글 라벨 (백엔드 personalityType: creative/sardonic/logical/...)
+const PERSONALITY_TYPE_LABELS = {
+  creative: '독특함', sardonic: '냉소적', logical: '논리형',
+  critical: '비판형', friendly: '친근함', concise: '효율적',
+  professional: '전문적', custom: '맞춤형',
+};
+const personalityLabel = (t) => PERSONALITY_TYPE_LABELS[t] || t || '';
+const stepContent = (row) => row?.content ?? row?.answer ?? row?.feedback ?? '';
+const formatElapsed = (ms) => (typeof ms === 'number' && ms > 0 ? `${(ms / 1000).toFixed(1)}초` : '');
+
+// 한 카드의 메타 헤더(에이전트명 / 성격 / 지식수준 / provider / 경과시간)를 만든다.
+const buildCardMeta = (row, extra = []) => {
+  const parts = [
+    row?.agentName,
+    personalityLabel(row?.personalityType),
+    row?.knowledgeLevel,
+    row?.provider,
+    formatElapsed(row?.elapsedMs),
+    ...extra,
+  ];
+  return parts.filter((p) => p !== undefined && p !== null && p !== '');
+};
+
+// 멀티 에이전트 응답의 1차/2차/3차 생성 과정 — 선택된 에이전트 전원의 결과를 단계별로 모두 렌더링한다.
 const ProcessStepsAccordion = ({ processSteps }) => {
   const [open, setOpen] = useState(false);
   if (!processSteps) return null;
 
-  const { initialAnswer, validatedAnswer, peerFeedback = [], personalityValidation = null } = processSteps;
-  const hasAny = initialAnswer || validatedAnswer || (peerFeedback && peerFeedback.length > 0) || personalityValidation;
+  const initialAnswers = processSteps.initialAnswers || [];
+  const validatedAnswers = processSteps.validatedAnswers || [];
+  const peerFeedback = processSteps.peerFeedback || [];
+  const pvSummary = processSteps.personalityValidationSummary || [];
+
+  const hasAny = initialAnswers.length || validatedAnswers.length || peerFeedback.length || pvSummary.length;
   if (!hasAny) return null;
 
-  const stepCardStyle = { padding: '10px 12px', borderRadius: '10px', backgroundColor: 'rgba(0,0,0,0.03)', fontSize: '12px' };
-  const bodyTextStyle = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', color: 'var(--color-text-muted)' };
+  const sectionTitleStyle = { fontWeight: '800', fontSize: '12px', margin: '2px 0' };
+  const agentCardStyle = { padding: '10px 12px', borderRadius: '10px', backgroundColor: 'rgba(0,0,0,0.03)', fontSize: '12px' };
+  const metaStyle = { fontWeight: '700', marginBottom: '4px', color: 'var(--color-text-main)' };
+  const bodyTextStyle = {
+    whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere',
+    overflow: 'visible', maxHeight: 'none', color: 'var(--color-text-muted)',
+  };
+
+  const pvFor = (name) => pvSummary.find((p) => p.agentName === name) || null;
 
   return (
     <div style={{ marginTop: '8px' }}>
@@ -46,69 +80,92 @@ const ProcessStepsAccordion = ({ processSteps }) => {
       </button>
 
       {open && (
-        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {initialAnswer && (
-            <div style={stepCardStyle}>
-              <div style={{ fontWeight: '700', marginBottom: '4px' }}>1차 답변 생성</div>
-              <div style={bodyTextStyle}>{initialAnswer.answer}</div>
+        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {/* 1차 답변 생성 — 에이전트 전원 */}
+          {initialAnswers.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={sectionTitleStyle}>1차 답변 생성</div>
+              {initialAnswers.map((row, i) => (
+                <div key={`ia-${i}`} style={agentCardStyle}>
+                  <div style={metaStyle}>{buildCardMeta(row).join(' / ')}</div>
+                  <div style={bodyTextStyle}>{stepContent(row)}</div>
+                </div>
+              ))}
             </div>
           )}
 
-          {validatedAnswer && (
-            <div style={stepCardStyle}>
-              <div style={{ fontWeight: '700', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                2차 검증 답안
-                {typeof validatedAnswer.score === 'number' && (
-                  <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.06)' }}>
-                    score {validatedAnswer.score.toFixed(2)}
-                  </span>
-                )}
-                {validatedAnswer.revised && (
-                  <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.06)' }}>
-                    수정됨
-                  </span>
-                )}
-              </div>
-              <div style={bodyTextStyle}>{validatedAnswer.answer}</div>
-              {validatedAnswer.issues && validatedAnswer.issues.length > 0 && (
-                <ul style={{ margin: '6px 0 0', paddingLeft: '16px', color: 'var(--color-text-muted)' }}>
-                  {validatedAnswer.issues.map((issue, i) => <li key={i}>{issue}</li>)}
-                </ul>
-              )}
-            </div>
-          )}
-
-          <div style={stepCardStyle}>
-            <div style={{ fontWeight: '700', marginBottom: '4px' }}>3차 상호 피드백 및 성격 검증</div>
-            {personalityValidation && (
-              <div style={{ marginBottom: '6px', fontSize: '11px', color: 'var(--color-text-muted)' }}>
-                성격 검증: <strong>{personalityValidation.personalityType}</strong>
-                {typeof personalityValidation.score === 'number' && (
-                  <span style={{ marginLeft: 6, padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.06)' }}>
-                    score {personalityValidation.score.toFixed(2)}
-                  </span>
-                )}
-                <span style={{ marginLeft: 6, color: personalityValidation.passed ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
-                  {personalityValidation.passed ? '통과' : '보완 필요'}
-                </span>
-                {personalityValidation.note && (
-                  <div style={{ marginTop: 2 }}>{personalityValidation.note}</div>
-                )}
-              </div>
-            )}
-            {peerFeedback && peerFeedback.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {peerFeedback.map((fb, i) => (
-                  <div key={i} style={{ color: 'var(--color-text-muted)' }}>
-                    <span style={{ fontWeight: '600' }}>{fb.fromAgent} → {fb.toAgent}</span>
-                    <div style={bodyTextStyle}>{fb.feedback}</div>
+          {/* 2차 검증 답안 — 에이전트 전원 */}
+          {validatedAnswers.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={sectionTitleStyle}>2차 검증 답안</div>
+              {validatedAnswers.map((row, i) => {
+                const extra = [];
+                if (typeof row.score === 'number') extra.push(`score ${row.score.toFixed(2)}`);
+                if (row.revised) extra.push('수정됨');
+                return (
+                  <div key={`va-${i}`} style={agentCardStyle}>
+                    <div style={metaStyle}>{buildCardMeta(row, extra).join(' / ')}</div>
+                    <div style={bodyTextStyle}>{stepContent(row)}</div>
+                    {row.issues && row.issues.length > 0 && (
+                      <ul style={{ margin: '6px 0 0', paddingLeft: '16px', color: 'var(--color-text-muted)' }}>
+                        {row.issues.map((issue, j) => <li key={j}>{issue}</li>)}
+                      </ul>
+                    )}
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{ color: 'var(--color-text-muted)' }}>이 모드에서는 상호 피드백이 생성되지 않았습니다.</div>
-            )}
-          </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* 3차 상호 피드백 — 에이전트 전원 */}
+          {peerFeedback.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={sectionTitleStyle}>3차 상호 피드백</div>
+              {peerFeedback.map((fb, i) => {
+                const pv = fb.personalityValidation || pvFor(fb.fromAgent);
+                return (
+                  <div key={`pf-${i}`} style={agentCardStyle}>
+                    <div style={metaStyle}>
+                      {fb.fromAgent} → {fb.toAgent}
+                      {fb.personalityType && (
+                        <span style={{ marginLeft: 6, fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                          ({personalityLabel(fb.personalityType)})
+                        </span>
+                      )}
+                      {pv && typeof pv.score === 'number' && (
+                        <span style={{ marginLeft: 6, fontSize: '10px', padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.06)' }}>
+                          성격 {pv.score.toFixed(2)} {pv.passed ? '통과' : '보완'}
+                        </span>
+                      )}
+                    </div>
+                    <div style={bodyTextStyle}>{stepContent(fb)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* 성격 검증 요약 (있으면) */}
+          {pvSummary.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={sectionTitleStyle}>성격 검증 요약</div>
+              {pvSummary.map((p, i) => (
+                <div key={`pv-${i}`} style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>
+                  <strong>{p.agentName}</strong>
+                  {p.personalityType && <span> · {personalityLabel(p.personalityType)}</span>}
+                  {typeof p.score === 'number' && (
+                    <span style={{ marginLeft: 6, padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.06)' }}>
+                      score {p.score.toFixed(2)}
+                    </span>
+                  )}
+                  <span style={{ marginLeft: 6, color: p.passed ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+                    {p.passed ? '통과' : '보완 필요'}
+                  </span>
+                  {p.note && <div style={{ marginTop: 2 }}>{p.note}</div>}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -139,33 +196,10 @@ const parsePersonaTag = (persona, tagName) => {
   return match ? match[1].trim() : '';
 };
 
-// 멀티 에이전트 응답의 processSteps에서 특정 에이전트와 관련된 항목만 추려낸다
-const extractAgentProcessSteps = (processSteps, agentName) => {
-  if (!processSteps || !agentName) return null;
-  const initialAnswer = (processSteps.initialAnswers || []).find((s) => s.agentName === agentName) || null;
-  const validatedAnswer = (processSteps.validatedAnswers || []).find((s) => s.agentName === agentName) || null;
-  const peerFeedback = (processSteps.peerFeedback || []).filter(
-    (fb) => fb.fromAgent === agentName || fb.toAgent === agentName
-  );
-  const personalityValidation = (processSteps.personalityValidationSummary || []).find(
-    (s) => s.agentName === agentName
-  ) || null;
-  if (!initialAnswer && !validatedAnswer && peerFeedback.length === 0 && !personalityValidation) return null;
-  return { initialAnswer, validatedAnswer, peerFeedback, personalityValidation };
-};
-
-// DB에서 불러온 기록의 processSteps(전체 map)를 라이브 메시지와 동일한 에이전트별 슬라이스로 변환한다.
-// (라이브 메시지는 이미 슬라이스 형태이므로 initialAnswers 키 유무로 미슬라이스 여부를 판별 — 이중 슬라이스 방지)
-const hydrateHistoryProcessSteps = (history) => {
-  if (!Array.isArray(history)) return history;
-  return history.map((msg) => {
-    if (msg && msg.sender === 'AI' && msg.processSteps && msg.processSteps.initialAnswers !== undefined) {
-      const senderName = msg.senderName || msg.sender_name;
-      return { ...msg, processSteps: extractAgentProcessSteps(msg.processSteps, senderName) };
-    }
-    return msg;
-  });
-};
+// 생성과정 보기는 에이전트별로 슬라이스하지 않고, 선택된 에이전트 전원의 1차/2차/3차 결과를
+// 전체 map(initialAnswers/validatedAnswers/peerFeedback/personalityValidationSummary) 그대로 표시한다.
+// (DB 기록도 전체 map으로 저장되므로 새로고침 후에도 동일하게 복원된다 — 별도 변환 불필요.)
+const hydrateHistoryProcessSteps = (history) => history;
 
 const getAgentId = (agent) => agent?.id ?? agent?.agentId;
 
@@ -431,7 +465,7 @@ export default function StudyMate() {
     // 3. 최신 채팅 이력을 비동기 조회하여 동기화
     try {
       const rawHistory = await agentService.getChatHistory(userId, agentId);
-      // DB에 저장된 processSteps(전체 map)를 에이전트별 슬라이스로 변환해 아코디언을 복원
+      // DB에 저장된 processSteps(전체 map)를 그대로 사용해 아코디언을 복원 (슬라이스 없이 전원 표시)
       const history = hydrateHistoryProcessSteps(rawHistory);
       // 캐시 갱신
       setRoomHistories(prev => ({ ...prev, [agentId]: history || [] }));
@@ -484,7 +518,8 @@ export default function StudyMate() {
       if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => merge(prev));
     };
 
-    // 누적 processSteps(전체 map)로부터 에이전트별 AI 버블을 만든다 (라이브와 동일한 슬라이서 재사용).
+    // 누적 processSteps(전체 map)로부터 에이전트별 AI 버블을 만든다.
+    // 각 버블의 말풍선은 자기 최종 답변을 보여주고, '생성과정 보기'에는 전원의 전체 map을 그대로 넘긴다.
     const buildStreamAiMsgs = (ps) => {
       const source = (ps.validatedAnswers && ps.validatedAnswers.length) ? ps.validatedAnswers : (ps.initialAnswers || []);
       return source.map((row, i) => {
@@ -499,7 +534,7 @@ export default function StudyMate() {
           senderName: name,
           createdAt: new Date().toISOString(),
           parentId: userMsg.id,
-          processSteps: extractAgentProcessSteps(ps, name),
+          processSteps: ps,
         };
       });
     };
@@ -609,7 +644,7 @@ export default function StudyMate() {
             agentId: reply.agentId,
             createdAt: new Date().toISOString(),
             parentId: userMsg.id, // AI 응답은 방금 작성한 유저 질문의 자식이 됨
-            processSteps: extractAgentProcessSteps(res.processSteps, senderName),
+            processSteps: res.processSteps,
           };
         });
       } else {
@@ -620,7 +655,7 @@ export default function StudyMate() {
           senderName: selectedAgent.name,
           createdAt: new Date().toISOString(),
           parentId: userMsg.id,
-          processSteps: extractAgentProcessSteps(res.processSteps, selectedAgent.name),
+          processSteps: res.processSteps,
         }];
       }
       // 태깅 초기화

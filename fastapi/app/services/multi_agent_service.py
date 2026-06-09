@@ -29,7 +29,7 @@ from app.services.personality_prompt_builder import to_profile_key
 from app.services.personality_validator import validate_personality_alignment, repair_personality_if_needed
 from app.core import agent_settings as A
 from app.utils.text_utils import build_context_from_previous_answers, safe_str
-from app.core.config import MAX_ROUNDS, ADVANCED_AGENT_ANSWER_MAX_CHARS
+from app.core.config import MAX_ROUNDS
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ _DEFAULT_AGENT = AgentProfile(
 _SYNTHESIS_AGENT_NAME = "종합정리봇"
 _MAX_ROUNDS = MAX_ROUNDS
 # 답변 잘림 방지: 생성 토큰 상한은 충분히 크게 둔다.
-# (ADVANCED_AGENT_ANSWER_MAX_CHARS는 '문자 수' 개념이라 토큰 상한으로 쓰면 답변이 잘린다.)
+# (config.AGENT_ANSWER_MAX_CHARS 같은 '문자 수' 개념은 최종 출력에 적용하지 않는다 — 잘림 원인.)
 import os as _os
 _MAX_TOKENS_PER_ANSWER = int(_os.getenv("AI_ANSWER_MAX_TOKENS", "2048"))
 # 단계별 token/timeout/provider 및 성격별 파라미터는 모두 app/core/agent_settings.py(env)에서 읽는다.
@@ -269,19 +269,23 @@ def _stage2_validate(agent: AgentProfile, message: str, own_initial: str, others
                                  params, knowledge_level=agent.knowledgeLevel)
 
 
-def _stage3_feedback(from_agent: AgentProfile, target_agent: AgentProfile,
-                     target_answer: str, message: str) -> str:
-    """3차 상호 피드백 (from → target) — provider는 agent_settings stage=3."""
+def _stage3_feedback(from_agent: AgentProfile, targets: List[Tuple[AgentProfile, str]],
+                     message: str) -> Tuple[str, str]:
+    """3차 상호 피드백 (from → 나머지 에이전트 전원). 반환: (피드백, provider)."""
     system = build_agent_system_prompt(from_agent)
+    target_block = "\n\n".join(
+        f"[{tgt.name}의 답변]\n{ans}" for tgt, ans in targets
+    )
+    target_names = ", ".join(tgt.name for tgt, _ in targets)
     user = (
         f"[사용자 질문] {message}\n\n"
-        f"[{target_agent.name}의 답변]\n{target_answer}\n\n"
+        f"{target_block}\n\n"
         "[이번 단계: 3차 상호 피드백]\n"
-        f"위 {target_agent.name}의 답변을 너의 성격과 관점에서 평가하라. "
-        "좋은 점 / 부족한 점 / 개선 방향을 구체적으로 짚어라. "
-        "단순 칭찬은 금지하고, 실제로 도움이 되는 피드백을 2~4문장으로 작성하라."
+        f"위 다른 에이전트({target_names})의 답변을 너의 성격과 관점에서 평가하라. "
+        "각 답변의 좋은 점 / 부족한 점 / 개선 방향을 구체적으로 짚어라. "
+        "단순 칭찬은 금지하고, 실제로 도움이 되는 피드백을 작성하라."
     )
-    params = A.resolve_agent_generation_params(to_profile_key(from_agent.personality or from_agent.tone or from_agent.style), 3)
+    params = A.resolve_agent_generation_params(_personality_type(from_agent), 3)
     return _call_llm_with_params(params["provider"], system, user, params, knowledge_level=from_agent.knowledgeLevel)
 
 
@@ -295,30 +299,41 @@ def _run_pool(fn, items, parallel):
 
 # ── 단계별 compute 헬퍼 (블로킹/스트리밍 공용) ───────────────────────────────────
 
+def _personality_type(agent: AgentProfile) -> str:
+    """프론트 카드 표시용 정규 성격 키 (creative/sardonic/logical/...)."""
+    return to_profile_key(agent.personality or agent.tone or agent.style)
+
+
 def _compute_stage1(request: MultiChatRequest, agents: List[AgentProfile], context: str):
     """1차 빠른 초안 (Ollama 전용, 병렬). 반환: (steps, initial_map, provider, elapsedMs, status)."""
     provider = A.resolve_provider_for_stage(1)
     t1 = time.time()
 
     def _run1(a: AgentProfile):
+        t_agent = time.time()
         try:
-            return a, _stage1_initial(a, request.message, context)
+            text = _stage1_initial(a, request.message, context)
         except Exception as e:
             logger.error("stage1 에이전트 '%s' 실패: %s", a.name, e)
-            return a, A.stage1_timeout_fallback_text()
+            text = A.stage1_timeout_fallback_text()
+        return a, text, int((time.time() - t_agent) * 1000)
 
     results = _run_pool(_run1, agents, A.enable_parallel_stage1())
     elapsed = int((time.time() - t1) * 1000)
     status = "completed"
     initial_map: Dict[str, str] = {}
     steps: List[InitialAnswerStep] = []
-    for a, text in results:
+    for a, text, agent_ms in results:
         if _is_llm_fallback(text):
             status = "timeout_fallback"
             if not (text or "").strip():
                 text = A.stage1_timeout_fallback_text()
         initial_map[a.name] = text
-        steps.append(InitialAnswerStep(agentName=a.name, answer=text, agentId=a.agentId))
+        steps.append(InitialAnswerStep(
+            agentName=a.name, answer=text, agentId=a.agentId,
+            personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
+            provider=provider, elapsedMs=agent_ms,
+        ))
     logger.info("[StudyMate] stage=1 provider=%s elapsedMs=%d status=%s agents=%d",
                 provider, elapsed, status, len(agents))
     return steps, initial_map, provider, elapsed, status
@@ -331,27 +346,29 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
 
     def _run2(a: AgentProfile):
         own = initial_map.get(a.name, "")
+        # 다른 에이전트 1차 초안은 컨텍스트 참고용으로만 축약(contextPreview) — 최종 출력은 자르지 않는다.
         others = "\n\n".join(
             f"[{b.name}]\n{initial_map.get(b.name, '')[:300]}" for b in agents if b.name != a.name
         )
+        t_agent = time.time()
         try:
             text, prov = _stage2_validate(a, request.message, own, others)
-            return a, text, prov
+            return a, text, prov, int((time.time() - t_agent) * 1000)
         except Exception as e:
             logger.warning("stage2 에이전트 '%s' 실패 (1차로 대체): %s", a.name, e)
-            return a, own, "ollama"
+            return a, own, "ollama", int((time.time() - t_agent) * 1000)
 
     try:
         results = _run_pool(_run2, agents, A.enable_parallel_stage2())
     except Exception as e:
         logger.warning("stage2 전체 실패 (1차로 대체): %s", e)
-        results = [(a, initial_map.get(a.name, ""), "ollama") for a in agents]
+        results = [(a, initial_map.get(a.name, ""), "ollama", 0) for a in agents]
     elapsed = int((time.time() - t2) * 1000)
 
     validated_map: Dict[str, str] = {}
     steps: List[ValidatedAnswerStep] = []
     provs: set = set()
-    for a, text, prov in results:
+    for a, text, prov, agent_ms in results:
         provs.add(prov)
         final_text = text or initial_map.get(a.name, "")
         if _is_llm_fallback(text):
@@ -360,6 +377,8 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
         revised = final_text.strip() != initial_map.get(a.name, "").strip()
         steps.append(ValidatedAnswerStep(
             agentName=a.name, answer=final_text, agentId=a.agentId, revised=revised,
+            personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
+            provider=prov, elapsedMs=agent_ms,
         ))
     actual = ",".join(sorted(provs)) if provs else provider
     logger.info("[StudyMate] stage=2 provider=%s elapsedMs=%d status=completed", actual, elapsed)
@@ -395,26 +414,42 @@ def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
     elapsed = 0
     provs: set = set()
     n = len(agents)
+    # 에이전트가 2명 이상이면 항상 fromAgent당 1개씩 피드백을 만든다.
+    # (실패해도 빈 배열로 두지 않고 fallback 피드백을 채워 length == N을 보장한다.)
     if n >= 2:
         t3 = time.time()
-        pairs = [(agents[i], agents[(i + 1) % n]) for i in range(n)]
 
-        def _run3(pair):
-            frm, tgt = pair
+        def _run3(frm: AgentProfile):
+            targets = [(b, validated_map.get(b.name, "")) for b in agents if b.name != frm.name]
+            target_ids = [b.agentId for b in agents if b.name != frm.name and b.agentId is not None]
+            target_names = ", ".join(b.name for b, _ in targets)
+            t_agent = time.time()
             try:
-                fb, prov = _stage3_feedback(frm, tgt, validated_map.get(tgt.name, ""), request.message)
-                tv = validation_map.get(tgt.name)
-                pv = ({"passed": tv.get("passed"), "score": tv.get("score")} if tv else None)
-                return PeerFeedbackStep(fromAgent=frm.name, toAgent=tgt.name, feedback=fb, personalityValidation=pv), prov
+                fb, prov = _stage3_feedback(frm, targets, request.message)
+                if _is_llm_fallback(fb):
+                    raise ValueError("stage3 fallback marker in feedback")
             except Exception as e:
-                logger.warning("stage3 %s→%s 실패: %s", frm.name, tgt.name, e)
-                return None, None
+                logger.warning("stage3 %s 실패 (fallback 피드백 생성): %s", frm.name, e)
+                fb = (
+                    f"상호 피드백 생성 중 일부 오류가 발생했지만, 1차/2차 답변을 기준으로 "
+                    f"{target_names}의 답변에 대한 보완점을 정리합니다. "
+                    "핵심 개념의 정확성과 예시의 적절성을 다시 확인하고, 누락된 부분을 보강하면 좋겠습니다."
+                )
+                prov = "fallback"
+            pv = validation_map.get(frm.name)
+            pv_obj = ({"passed": pv.get("passed"), "score": pv.get("score")} if pv else None)
+            step = PeerFeedbackStep(
+                fromAgent=frm.name, toAgent=target_names, feedback=fb,
+                personalityValidation=pv_obj, fromAgentId=frm.agentId,
+                targetAgentIds=target_ids, personalityType=_personality_type(frm),
+                provider=prov, elapsedMs=int((time.time() - t_agent) * 1000),
+            )
+            return step, prov
 
-        for step, prov in _run_pool(_run3, pairs, True):
-            if step is not None:
-                peer_steps.append(step)
-                if prov:
-                    provs.add(prov)
+        for step, prov in _run_pool(_run3, agents, True):
+            peer_steps.append(step)
+            if prov:
+                provs.add(prov)
         elapsed = int((time.time() - t3) * 1000)
         if provs:
             provider = ",".join(sorted(provs))
