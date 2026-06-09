@@ -649,22 +649,37 @@ _DEBATE_STANCES = [
 
 
 def _compute_debate_opening(request: MultiChatRequest, agents: List[AgentProfile], context: str):
-    """1차 입론: 각 토론자가 '서로 다른 입장'을 정해 근거로 주장하고 청중(사용자)을 설득한다."""
+    """
+    1차 입론 — **순차** 진행. 첫 토론자는 입장을 세우고, 이후 토론자는 '앞 토론자의 발언을 직접 보고'
+    이름을 부르며 동의/반박하면서 자기 입장을 편다. (병렬이면 서로를 못 봐서 토론이 안 됨 → 순차 강제.)
+    """
     provider = A.resolve_provider_for_stage(1)
     t = time.time()
+    opening_map: Dict[str, str] = {}
+    steps: List[InitialAnswerStep] = []
+    transcript: List[str] = []  # 지금까지의 발언 기록(이름 포함)
 
-    def _run(item):
-        i, a = item
+    for i, a in enumerate(agents):
         stance = _DEBATE_STANCES[i % len(_DEBATE_STANCES)]
         system = build_agent_system_prompt(a, context)
+        if not transcript:
+            turn_instr = (
+                "너는 첫 번째 토론자다. 이 주제에 대한 '너만의 분명한 입장'을 한 문장으로 못박고, "
+                "타당한 근거 1~2개로 주장하라. 청중(사용자)을 설득하는 게 목표다."
+            )
+        else:
+            prior = "\n\n".join(transcript)
+            turn_instr = (
+                f"[지금까지의 토론]\n{prior}\n\n"
+                "이제 네 차례다. 위 앞 토론자(들)의 발언을 **이름을 부르며 직접** 받아쳐라. "
+                "어디에 동의하고 어디가 틀렸는지 콕 집어 반박하고(예: '○○ 말은 ~한데, 그건 ~라서 약해'), "
+                "그 위에 너만의 입장을 세워 청중을 설득하라. 앞사람과 같은 말 반복 금지."
+            )
         user = (
             f"[토론 주제] {request.message}\n\n"
             f"[너의 입장 각도] {stance}\n\n"
-            "[이번 단계: 1차 입론]\n"
-            "너는 토론자다. 위 각도에서 이 주제에 대한 '너만의 분명한 입장'을 한 문장으로 정하고, "
-            "그 입장이 옳다는 걸 타당한 근거 1~2개로 논리적으로 주장하라. "
-            "다른 토론자와 같은 입장·근거를 반복하지 말고 차별화하라. "
-            "목표는 청중(사용자)을 설득하는 것이다. 짧고 설득력 있게.\n\n"
+            "[이번 단계: 1차 입론 — 서로 주고받는 토론이다]\n"
+            f"{turn_instr}\n짧고 설득력 있게.\n\n"
             + build_persona_directive(a.personality or a.tone or a.style, a.customInstruction)
         )
         params = A.resolve_agent_generation_params(_personality_type(a), 1)
@@ -674,22 +689,17 @@ def _compute_debate_opening(request: MultiChatRequest, agents: List[AgentProfile
         except Exception as e:
             logger.error("debate 입론 '%s' 실패: %s", a.name, e)
             text = A.stage1_timeout_fallback_text()
-        return a, text, int((time.time() - t_a) * 1000)
-
-    results = _run_pool(_run, list(enumerate(agents)), A.enable_parallel_stage1())
-    elapsed = int((time.time() - t) * 1000)
-    opening_map: Dict[str, str] = {}
-    steps: List[InitialAnswerStep] = []
-    for a, text, ms in results:
         if not (text or "").strip():
             text = A.stage1_timeout_fallback_text()
         opening_map[a.name] = text
+        transcript.append(f"[{a.name}]\n{text}")
         steps.append(InitialAnswerStep(
             agentName=a.name, answer=text, agentId=a.agentId,
             personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
-            provider=provider, elapsedMs=ms,
+            provider=provider, elapsedMs=int((time.time() - t_a) * 1000),
         ))
-    logger.info("[StudyMate] debate 입론 elapsedMs=%d agents=%d", elapsed, len(agents))
+    elapsed = int((time.time() - t) * 1000)
+    logger.info("[StudyMate] debate 입론(순차) elapsedMs=%d agents=%d", elapsed, len(agents))
     return steps, opening_map, provider, elapsed
 
 
