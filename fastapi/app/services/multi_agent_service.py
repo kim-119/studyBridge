@@ -390,6 +390,11 @@ def _personality_type(agent: AgentProfile) -> str:
     return to_profile_key(agent.personality or agent.tone or agent.style)
 
 
+def _agent_index_map(agents: List[AgentProfile]) -> Dict[str, int]:
+    """에이전트 이름 → 1-based 표시 순서. 프론트가 에이전트 1→2→3을 확정 정렬하는 키."""
+    return {a.name: i + 1 for i, a in enumerate(agents)}
+
+
 def _compute_stage1(request: MultiChatRequest, agents: List[AgentProfile], context: str):
     """1차 빠른 초안 (Ollama 전용, 병렬). 반환: (steps, initial_map, provider, elapsedMs, status)."""
     provider = A.resolve_provider_for_stage(1)
@@ -414,14 +419,17 @@ def _compute_stage1(request: MultiChatRequest, agents: List[AgentProfile], conte
     status = "completed"
     initial_map: Dict[str, str] = {}
     steps: List[InitialAnswerStep] = []
+    idx_map = _agent_index_map(agents)
     for a, text, agent_ms in results:
         if _is_llm_fallback(text):
             status = "timeout_fallback"
             if not (text or "").strip():
                 text = A.stage1_timeout_fallback_text()
         initial_map[a.name] = text
+        ai = idx_map.get(a.name)
         steps.append(InitialAnswerStep(
             agentName=a.name, answer=text, agentId=a.agentId,
+            agentIndex=ai, displayOrder=ai, stage=1,
             personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
             provider=provider, elapsedMs=agent_ms,
         ))
@@ -463,6 +471,7 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
     validated_map: Dict[str, str] = {}
     steps: List[ValidatedAnswerStep] = []
     provs: set = set()
+    idx_map = _agent_index_map(agents)
     for a, text, prov, agent_ms in results:
         provs.add(prov)
         final_text = text or initial_map.get(a.name, "")
@@ -470,8 +479,10 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
             final_text = initial_map.get(a.name, "") or final_text
         validated_map[a.name] = final_text
         revised = final_text.strip() != initial_map.get(a.name, "").strip()
+        ai = idx_map.get(a.name)
         steps.append(ValidatedAnswerStep(
             agentName=a.name, answer=final_text, agentId=a.agentId, revised=revised,
+            agentIndex=ai, displayOrder=ai, stage=2,
             personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
             provider=prov, elapsedMs=agent_ms, sources=sources,
         ))
@@ -596,6 +607,7 @@ def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
     n = len(agents)
     # 에이전트가 2명 이상이면 항상 fromAgent당 1개씩 피드백을 만든다.
     # (실패해도 빈 배열로 두지 않고 fallback 피드백을 채워 length == N을 보장한다.)
+    idx_map = _agent_index_map(agents)
     if n >= 2:
         t3 = time.time()
 
@@ -618,9 +630,11 @@ def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
                 prov = "fallback"
             pv = validation_map.get(frm.name)
             pv_obj = ({"passed": pv.get("passed"), "score": pv.get("score")} if pv else None)
+            ai = idx_map.get(frm.name)
             step = PeerFeedbackStep(
                 fromAgent=frm.name, toAgent=target_names, feedback=fb,
                 personalityValidation=pv_obj, fromAgentId=frm.agentId,
+                agentIndex=ai, displayOrder=ai, stage=3,
                 targetAgentIds=target_ids, personalityType=_personality_type(frm),
                 provider=prov, elapsedMs=int((time.time() - t_agent) * 1000),
             )
@@ -717,6 +731,7 @@ def _debate_revised_records(agents: List[AgentProfile], revised_map: Dict[str, s
 def _peer_step_from_debate_feedback(item: DebatePeerFeedback, provider: str, elapsed_ms: int) -> PeerFeedbackStep:
     return PeerFeedbackStep(
         fromAgent=item.fromAgentName, toAgent=item.toAgentName, feedback=item.feedback,
+        agentIndex=item.fromAgentIndex, displayOrder=item.fromAgentIndex, stage=3,
         fromAgentId=None, targetAgentIds=[], personalityType=None, provider=provider, elapsedMs=elapsed_ms,
     )
 
@@ -768,6 +783,7 @@ def _compute_debate_opening(request: MultiChatRequest, agents: List[AgentProfile
         transcript.append(f"[{a.name}]\n{text}")
         steps.append(InitialAnswerStep(
             agentName=a.name, answer=text, agentId=a.agentId,
+            agentIndex=i + 1, displayOrder=i + 1, stage=1,
             personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
             provider=provider, elapsedMs=int((time.time() - t_a) * 1000),
         ))
@@ -918,13 +934,16 @@ def _compute_debate_revision(request: MultiChatRequest, agents: List[AgentProfil
     revised_map: Dict[str, str] = {}
     steps: List[ValidatedAnswerStep] = []
     provs: set = set()
+    idx_map = _agent_index_map(agents)
     for a, text, prov, ms in results:
         final = text if (text and not _is_llm_fallback(text)) else initial_map.get(a.name, "")
         revised_map[a.name] = final
         provs.add(prov)
+        ai = idx_map.get(a.name)
         steps.append(ValidatedAnswerStep(
             agentName=a.name, answer=final, agentId=a.agentId,
             revised=(final.strip() != initial_map.get(a.name, "").strip()),
+            agentIndex=ai, displayOrder=ai, stage=2,
             personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
             provider=prov, elapsedMs=ms,
         ))
@@ -1085,13 +1104,44 @@ def build_stream_generator(request: MultiChatRequest):
     SSE용 이벤트 제너레이터를 만든다.
     default 계열 모드만 단계별 스트리밍하고, 그 외 모드는 블로킹 실행 후 all_complete 1회만 emit한다.
     """
+    # ── feature flag: LangGraph 오케스트레이터 ──────────────────────────────
+    # USE_LANGGRAPH_ORCHESTRATOR=true이면 그래프로 실행 후 all_complete 1회만 emit한다.
+    # (스트리밍 단계 분해는 기존 경로에만 적용. 그래프는 흐름 제어/구조화가 목적.)
+    try:
+        from app.core import config as _cfg
+        if getattr(_cfg, "USE_LANGGRAPH_ORCHESTRATOR", False):
+            from app.services.langgraph_agent_orchestrator import run_langgraph_multi_agent
+
+            def _graph_single():
+                result = run_langgraph_multi_agent(request)
+                yield {"event": "all_complete", "data": result.model_dump()}
+            return _graph_single()
+    except Exception as e:
+        logger.warning("LangGraph 스트림 분기 실패 → 기존 경로 사용: %s", e)
+
     agents = _get_agents(request)
     active_agents = _filter_agents(agents, request.targetAgentId)
     context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
     rag_context = _get_rag_context(request.message, request.materialId)
 
-    # default만 단계 스트리밍. debate(자동 포함)/socratic/group_study_ai는 블로킹 후 all_complete 1회.
-    if _resolve_mode(request, len(active_agents)) != "default":
+    # 스트리밍 표시는 '명시적으로 고른 모드'를 따른다.
+    #  - 기본 채팅(basic) → 1차/2차/3차 staged (에이전트 2명 이상이어도 자동 토론 승격 안 함)
+    #  - 명시적 토론(debate/discussion/...) → 토론 섹션, 명시적 소크라테스 → 소크라테스
+    # (자동 토론 승격은 블로킹 run_multi_chat에만 남겨 두어 두 표시 경로를 분리한다.)
+    raw = (request.mode or "default").strip().lower()
+    lm = (getattr(request, "learningMode", None) or "").strip().lower()
+    explicit_socratic = lm == "socratic" or (not lm and raw == "socratic")
+    explicit_debate = (lm in _DEBATE_MODE_ALIASES) or (not lm and raw in _DEBATE_MODE_ALIASES)
+    logger.info("[StudyMate] stream route raw=%s lm=%s explicit_debate=%s explicit_socratic=%s agents=%d",
+                raw, lm, explicit_debate, explicit_socratic, len(active_agents))
+
+    # 모드별 전용 SSE 제너레이터. all_complete 1회만 기다리지 않고 단계/섹션 단위로 즉시 내보낸다.
+    if explicit_socratic:
+        return run_socratic_mode_stream(request, active_agents, rag_context)
+    if explicit_debate:
+        return run_debate_mode_stream(request, active_agents, rag_context)
+    if raw == "group_study_ai":
+        # 그룹스터디 봇 모드는 단계 분해 없이 블로킹 후 all_complete 1회.
         def _single():
             result = run_multi_chat(request)
             yield {"event": "all_complete", "data": result.model_dump()}
@@ -1225,53 +1275,38 @@ def _run_tikitaka_mode(
     )
 
 
-def _run_debate_mode(
-    request: MultiChatRequest,
-    active_agents: List[AgentProfile],
-    rag_context: str,
+def _debate_ensure_feedbacks(agents, peer_steps, peer_feedbacks):
+    """토론 모드에서 빈 peerFeedbacks는 허용하지 않는다(방어선)."""
+    if peer_feedbacks:
+        return peer_steps, peer_feedbacks
+    frm, target = agents[0], agents[1]
+    fallback = DebatePeerFeedback(
+        fromAgentIndex=1, fromAgentName=frm.name,
+        toAgentIndex=2, toAgentName=target.name,
+        title=f"{_debate_display_name(frm, 1)} → {_debate_display_name(target, 2)}",
+        feedback=_fallback_debate_feedback(frm, 1, target, 2),
+    )
+    return [_peer_step_from_debate_feedback(fallback, "fallback", 0)], [fallback]
+
+
+def _debate_default_summary(summary: str) -> str:
+    if summary:
+        return summary
+    return (
+        "토론 정리: 각 에이전트는 같은 주제를 서로 다른 관점에서 설명했고, 핵심은 1차 답변을 그대로 받아들이기보다 "
+        "부족한 점과 오해 가능성을 비교해 개념 정의, 실제 예시, 기술적 정확성을 함께 확인하는 것입니다."
+    )
+
+
+def _assemble_debate_response(
+    request, agents, rag_context,
+    initial_steps, initial_map, peer_steps, peer_feedbacks,
+    revised_steps, revised_map, summary,
 ) -> MultiChatResponse:
-    """
-    토론 모드 전용 파이프라인.
-    Step 1 initialAnswers -> Step 2 peerFeedbacks -> Step 3 revisedAnswers -> Step 4 debateSummary.
-    일반 multi-agent 답변 나열로 폴백하지 않는다.
-    """
-    agents = _ensure_debate_agents(active_agents)
+    """compute된 토론 단계들을 최종 MultiChatResponse로 조립한다(블로킹/스트리밍 공용)."""
     delay_ms = _get_display_delay_ms()
-    context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
-    context = _prep_default_context(context, rag_context)
-
-    # Step 1. 각 에이전트의 1차 의견 생성
-    initial_steps, initial_map, _p1, _e1 = _compute_debate_opening(request, agents, context)
     initial_answers = _debate_initial_records(agents, initial_map)
-
-    # Step 2. 전체 1차 의견을 다시 넣고 에이전트 간 상호 피드백 생성(pairwise + fallback 보장)
-    peer_steps, peer_feedbacks, _p3, _e3 = _compute_debate_rebuttal(request, agents, initial_map)
-    if not peer_feedbacks:
-        # 방어선: 토론 모드에서 빈 peerFeedbacks는 허용하지 않는다.
-        frm, target = agents[0], agents[1]
-        fallback = DebatePeerFeedback(
-            fromAgentIndex=1,
-            fromAgentName=frm.name,
-            toAgentIndex=2,
-            toAgentName=target.name,
-            title=f"{_debate_display_name(frm, 1)} → {_debate_display_name(target, 2)}",
-            feedback=_fallback_debate_feedback(frm, 1, target, 2),
-        )
-        peer_feedbacks = [fallback]
-        peer_steps = [_peer_step_from_debate_feedback(fallback, "fallback", 0)]
-
-    # Step 3. 1차 의견 + 받은 피드백을 넣고 보완 답변 생성
-    fb_map = _feedback_received_map(agents, peer_feedbacks)
-    revised_steps, revised_map, _p2, _e2 = _compute_debate_revision(request, agents, initial_map, fb_map)
     revised_answers = _debate_revised_records(agents, revised_map)
-
-    # Step 4. 전체 토론 정리 생성
-    summary = _compute_debate_summary(request, agents, revised_map)
-    if not summary:
-        summary = (
-            "토론 정리: 각 에이전트는 같은 주제를 서로 다른 관점에서 설명했고, 핵심은 1차 답변을 그대로 받아들이기보다 "
-            "부족한 점과 오해 가능성을 비교해 개념 정의, 실제 예시, 기술적 정확성을 함께 확인하는 것입니다."
-        )
 
     answers: List[AgentAnswer] = []
     for idx, a in enumerate(agents):
@@ -1330,6 +1365,98 @@ def _run_debate_mode(
         debateSummary=summary,
         processSteps=process_steps,
     )
+
+
+def _run_debate_mode(
+    request: MultiChatRequest,
+    active_agents: List[AgentProfile],
+    rag_context: str,
+) -> MultiChatResponse:
+    """
+    토론 모드 전용 파이프라인.
+    Step 1 initialAnswers -> Step 2 peerFeedbacks -> Step 3 revisedAnswers -> Step 4 debateSummary.
+    일반 multi-agent 답변 나열로 폴백하지 않는다.
+    """
+    agents = _ensure_debate_agents(active_agents)
+    context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
+    context = _prep_default_context(context, rag_context)
+
+    initial_steps, initial_map, _p1, _e1 = _compute_debate_opening(request, agents, context)
+    peer_steps, peer_feedbacks, _p3, _e3 = _compute_debate_rebuttal(request, agents, initial_map)
+    peer_steps, peer_feedbacks = _debate_ensure_feedbacks(agents, peer_steps, peer_feedbacks)
+    fb_map = _feedback_received_map(agents, peer_feedbacks)
+    revised_steps, revised_map, _p2, _e2 = _compute_debate_revision(request, agents, initial_map, fb_map)
+    summary = _debate_default_summary(_compute_debate_summary(request, agents, revised_map))
+
+    return _assemble_debate_response(
+        request, agents, rag_context,
+        initial_steps, initial_map, peer_steps, peer_feedbacks,
+        revised_steps, revised_map, summary,
+    )
+
+
+def run_debate_mode_stream(
+    request: MultiChatRequest,
+    active_agents: List[AgentProfile],
+    rag_context: str,
+):
+    """
+    토론 모드 SSE 제너레이터. 각 단계 완료 즉시 debate_section 이벤트를 yield하고,
+    마지막에 all_complete로 전체 응답을 1회 더 보낸다.
+    이벤트 순서: 1차 의견 → 서로 피드백 → 보완 답변 → 토론 정리 → all_complete.
+    """
+    agents = _ensure_debate_agents(active_agents)
+    context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
+    context = _prep_default_context(context, rag_context)
+
+    initial_steps, initial_map, _p1, _e1 = _compute_debate_opening(request, agents, context)
+    initial_answers = _debate_initial_records(agents, initial_map)
+    yield {"event": "debate_section", "data": {
+        "section": "initialAnswers", "title": "1차 의견",
+        "items": [r.model_dump() for r in initial_answers]}}
+
+    peer_steps, peer_feedbacks, _p3, _e3 = _compute_debate_rebuttal(request, agents, initial_map)
+    peer_steps, peer_feedbacks = _debate_ensure_feedbacks(agents, peer_steps, peer_feedbacks)
+    yield {"event": "debate_section", "data": {
+        "section": "peerFeedbacks", "title": "서로 피드백",
+        "items": [fb.model_dump() for fb in peer_feedbacks]}}
+
+    fb_map = _feedback_received_map(agents, peer_feedbacks)
+    revised_steps, revised_map, _p2, _e2 = _compute_debate_revision(request, agents, initial_map, fb_map)
+    revised_answers = _debate_revised_records(agents, revised_map)
+    yield {"event": "debate_section", "data": {
+        "section": "revisedAnswers", "title": "보완 답변",
+        "items": [r.model_dump() for r in revised_answers]}}
+
+    summary = _debate_default_summary(_compute_debate_summary(request, agents, revised_map))
+    yield {"event": "debate_section", "data": {
+        "section": "debateSummary", "title": "토론 정리", "content": summary}}
+
+    final = _assemble_debate_response(
+        request, agents, rag_context,
+        initial_steps, initial_map, peer_steps, peer_feedbacks,
+        revised_steps, revised_map, summary,
+    )
+    yield {"event": "all_complete", "data": final.model_dump()}
+
+
+def run_socratic_mode_stream(
+    request: MultiChatRequest,
+    active_agents: List[AgentProfile],
+    rag_context: str,
+):
+    """
+    소크라테스 모드 SSE 제너레이터. 답변이 준비되는 즉시 socratic_answer 이벤트로 내보내고,
+    all_complete로 전체 응답을 1회 더 보낸다.
+    """
+    final = _run_socratic_mode(request, active_agents, rag_context)
+    answer_text = final.answers[0].answer if final.answers else ""
+    yield {"event": "socratic_answer", "data": {
+        "answer": answer_text,
+        "agentName": final.answers[0].agentName if final.answers else "소크라테스 튜터",
+        "status": final.answers[0].status if final.answers else "SUCCESS",
+    }}
+    yield {"event": "all_complete", "data": final.model_dump()}
 
 def _run_socratic_mode(
     request: MultiChatRequest,

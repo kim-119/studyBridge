@@ -286,6 +286,9 @@ export const agentService = {
       try { data = JSON.parse(dataLines.join('\n')); } catch { data = null; }
       if (event === 'stage_start') handlers.onStageStart && handlers.onStageStart(data);
       else if (event === 'stage_complete') handlers.onStageComplete && handlers.onStageComplete(data);
+      else if (event === 'agent_stage_complete') handlers.onAgentStageComplete && handlers.onAgentStageComplete(data);
+      else if (event === 'debate_section') handlers.onDebateSection && handlers.onDebateSection(data);
+      else if (event === 'socratic_answer') handlers.onSocraticAnswer && handlers.onSocraticAnswer(data);
       else if (event === 'all_complete') handlers.onAllComplete && handlers.onAllComplete(data);
       else if (event === 'error') handlers.onError && handlers.onError(data);
     };

@@ -174,6 +174,10 @@ class InitialAnswerStep(BaseModel):
     agentName: str
     answer: str
     agentId: Optional[int] = None
+    # 프론트 정렬 키 (에이전트 1→2→3 순서 확정용) + 단계 식별
+    agentIndex: Optional[int] = None
+    displayOrder: Optional[int] = None
+    stage: Optional[int] = None
     # 카드 표시용 메타데이터 (프론트 ProcessStepsAccordion이 그대로 렌더링)
     personalityType: Optional[str] = None
     knowledgeLevel: Optional[str] = None
@@ -185,6 +189,10 @@ class ValidatedAnswerStep(BaseModel):
     agentName: str
     answer: str
     agentId: Optional[int] = None
+    # 프론트 정렬 키 + 단계 식별
+    agentIndex: Optional[int] = None
+    displayOrder: Optional[int] = None
+    stage: Optional[int] = None
     score: Optional[float] = None
     issues: List[str] = Field(default_factory=list)
     revised: bool = False
@@ -201,6 +209,10 @@ class PeerFeedbackStep(BaseModel):
     toAgent: str
     feedback: str
     personalityValidation: Optional[Dict[str, Any]] = None
+    # 프론트 정렬 키 (fromAgent 기준 1→2→3) + 단계 식별
+    agentIndex: Optional[int] = None
+    displayOrder: Optional[int] = None
+    stage: Optional[int] = None
     # 메타데이터: fromAgentId + 피드백 대상 에이전트 ID 목록 + 성격 유형
     fromAgentId: Optional[int] = None
     targetAgentIds: List[int] = Field(default_factory=list)

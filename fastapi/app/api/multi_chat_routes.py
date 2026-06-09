@@ -75,10 +75,18 @@ async def multi_chat(request: MultiChatRequest) -> MultiChatResponse:
 
     try:
         from app.services.multi_agent_service import run_multi_chat
-        from app.core.config import MULTI_CHAT_TIMEOUT_SECONDS
+        from app.core.config import MULTI_CHAT_TIMEOUT_SECONDS, USE_LANGGRAPH_ORCHESTRATOR
         from app.schemas.multi_chat_schema import AgentAnswer
+
+        # feature flag: LangGraph 오케스트레이터로 전환 가능 (기본 off → 기존 경로)
+        if USE_LANGGRAPH_ORCHESTRATOR:
+            from app.services.langgraph_agent_orchestrator import run_langgraph_multi_agent
+            runner = run_langgraph_multi_agent
+        else:
+            runner = run_multi_chat
+
         result = await asyncio.wait_for(
-            asyncio.to_thread(run_multi_chat, request),
+            asyncio.to_thread(runner, request),
             timeout=MULTI_CHAT_TIMEOUT_SECONDS,
         )
         return result

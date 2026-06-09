@@ -42,6 +42,10 @@ public class ChatDTO {
         private List<RequestAgent> agents;
         // 학습 진행 모드: basic / socratic / debate (미지정 시 FastAPI에서 basic으로 처리)
         private String learningMode;
+        // 소크라테스 모드: 사용자가 방금 입력한 시도 답변 (오개념 분석용)
+        private String userAttempt;
+        // RAG 자료 ID (있으면 FastAPI가 PDF/RAG 검색을 수행)
+        private Long materialId;
         private String personality;
         private String personalityStrength;
         private String personality_strength;

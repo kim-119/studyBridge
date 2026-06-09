@@ -19,6 +19,9 @@ public class AgentRoomDTO {
         @Size(min = 1, max = 100)
         private String roomName;
 
+        // 학습 진행 모드 (basic/socratic/debate). 미지정 시 basic.
+        private String learningMode;
+
         @NotEmpty(message = "최소 1명 이상의 에이전트를 생성해야 합니다.")
         @Size(max = 3, message = "에이전트는 최대 3명까지만 생성할 수 있습니다.")
         @Valid
@@ -31,6 +34,8 @@ public class AgentRoomDTO {
     public static class Response {
         private Long roomId;
         private String roomName;
+        // 방에 저장된 학습 진행 모드 (프론트 selectAgent에서 라디오 상태 복원에 사용)
+        private String learningMode;
         private List<AgentDTO.Response> agents;
         private String createdAt;
     }

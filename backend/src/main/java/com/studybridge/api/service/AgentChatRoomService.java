@@ -37,6 +37,7 @@ public class AgentChatRoomService {
                 AgentChatRoom room = AgentChatRoom.builder()
                                 .user(user)
                                 .roomName(request.getRoomName())
+                                .learningMode(request.getLearningMode())
                                 .build();
 
                 AgentChatRoom savedRoom = agentChatRoomRepository.save(room);
@@ -95,6 +96,7 @@ public class AgentChatRoomService {
                 return AgentRoomDTO.Response.builder()
                                 .roomId(room.getId())
                                 .roomName(room.getRoomName())
+                                .learningMode(room.getLearningMode())
                                 .agents(agentResponses)
                                 .createdAt(room.getCreatedAt() != null ? room.getCreatedAt().toString() : null)
                                 .build();

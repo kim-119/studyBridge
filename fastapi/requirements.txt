@@ -38,6 +38,15 @@ pgvector
 sentence-transformers
 numpy
 
+# ── LangGraph / LangChain (에이전트 오케스트레이션 '흐름 제어용') ──────────
+#  RAG 자체는 기존 sentence-transformers + pgvector를 그대로 사용한다.
+#  LangGraph는 토론/소크라테스/RAG 판단/검증/재작성 흐름을 그래프로 구조화하는 데만 쓴다.
+langgraph
+langchain
+langchain-core
+langchain-community
+langchain-text-splitters
+
 # ── JSON / 유틸 ───────────────────────────────────────────────────
 orjson
 python-multipart

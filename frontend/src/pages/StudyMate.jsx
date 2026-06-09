@@ -28,6 +28,15 @@ const personalityLabel = (t) => PERSONALITY_TYPE_LABELS[t] || t || '';
 const stepContent = (row) => row?.content ?? row?.answer ?? row?.feedback ?? '';
 const formatElapsed = (ms) => (typeof ms === 'number' && ms > 0 ? `${(ms / 1000).toFixed(1)}초` : '');
 
+// 단계/토론 row를 항상 에이전트 1 → 2 → 3 순서로 확정 정렬한다.
+function sortByAgentOrder(rows) {
+  return [...(rows || [])].sort((a, b) => {
+    const ai = Number(a.agentIndex ?? a.displayOrder ?? a.agentOrder ?? a.fromAgentIndex ?? a.agentId ?? 999);
+    const bi = Number(b.agentIndex ?? b.displayOrder ?? b.agentOrder ?? b.fromAgentIndex ?? b.agentId ?? 999);
+    return ai - bi;
+  });
+}
+
 // 한 카드의 메타 헤더(에이전트명 / 성격 / 지식수준 / provider / 경과시간)를 만든다.
 const buildCardMeta = (row, extra = []) => {
   const parts = [
@@ -121,7 +130,40 @@ const buildDebatePayload = (data) => {
     (Array.isArray(data.revisedAnswers) && data.revisedAnswers.length > 0) ||
     (typeof data.debateSummary === 'string' && data.debateSummary.trim().length > 0);
   if (!hasExplicitDebateMode && !hasDebateStructure) return null;
-  return { initialAnswers, peerFeedbacks, revisedAnswers, debateSummary };
+  return {
+    initialAnswers: sortByAgentOrder(initialAnswers),
+    peerFeedbacks: sortByAgentOrder(peerFeedbacks),
+    revisedAnswers: sortByAgentOrder(revisedAnswers),
+    debateSummary,
+  };
+};
+
+// SSE debate_section 이벤트들을 누적한 객체 → DebateRenderer용 단일 토론 말풍선.
+const buildDebateTurnMessage = (acc, parentId, createdAt) => ({
+  id: `${parentId}::debate`,
+  content: '토론 결과',
+  sender: 'AI',
+  senderName: '토론 모드',
+  createdAt: createdAt || new Date().toISOString(),
+  parentId,
+  // mode를 박아 초반(1차 의견만 도착)에도 토론 구조로 렌더링되게 한다.
+  debate: buildDebatePayload({ ...acc, mode: 'debate' }),
+});
+
+// 소크라테스 답변 → [진단]/[힌트]/[꼬리질문] 형식 단일 카드.
+const buildSocraticTurnMessage = (d, parentId, createdAt) => {
+  const answer = (d && (d.answer ?? (Array.isArray(d.answers) && d.answers[0] && d.answers[0].answer))) || '';
+  return {
+    id: `${parentId}::socratic`,
+    content: answer,
+    sender: 'AI',
+    senderName: (d && d.agentName) || '소크라테스 튜터',
+    badge: { text: '🧭 소크라테스 · 질문 유도', hint: '', color: '#0ea5e9' },
+    badgeKey: 'socratic',
+    createdAt: createdAt || new Date().toISOString(),
+    parentId,
+    isSocratic: true,
+  };
 };
 
 
@@ -199,25 +241,25 @@ const buildStageBubbles = (ps, parentId, createdAt) => {
   // 토론 모드 감지: revisedAnswers 또는 debateSummary가 있으면 토론 응답이다.
   const isDebate = (ps.revisedAnswers && ps.revisedAnswers.length > 0) || !!ps.debateSummary;
   if (isDebate) {
-    (ps.initialAnswers || []).forEach((r, idx) => out.push(mk('d_initial', r.agentName, stepContent(r), { idx })));
-    (ps.peerFeedback || []).forEach((fb, idx) => out.push(mk('d_feedback', fb.fromAgent, stepContent(fb), {
+    sortByAgentOrder(ps.initialAnswers).forEach((r, idx) => out.push(mk('d_initial', r.agentName, stepContent(r), { idx })));
+    sortByAgentOrder(ps.peerFeedback).forEach((fb, idx) => out.push(mk('d_feedback', fb.fromAgent, stepContent(fb), {
       idx, stageTo: fb.toAgent, pv: fb.personalityValidation || pvForName(ps.personalityValidationSummary, fb.fromAgent),
     })));
-    (ps.revisedAnswers || []).forEach((r, idx) => out.push(mk('d_revised', r.agentName, stepContent(r), { idx })));
+    sortByAgentOrder(ps.revisedAnswers).forEach((r, idx) => out.push(mk('d_revised', r.agentName, stepContent(r), { idx })));
     if (ps.debateSummary) out.push(mk('d_summary', '토론 정리', ps.debateSummary, { idx: 0 }));
     return out;
   }
 
-  // 일반 staged 모드
-  (ps.initialAnswers || []).forEach((row, idx) => {
+  // 일반 staged 모드 — 항상 에이전트 1 → 2 → 3 순서로 표시한다.
+  sortByAgentOrder(ps.initialAnswers).forEach((row, idx) => {
     out.push(mk('initial', row.agentName, stepContent(row), { idx, provider: row.provider, elapsedMs: row.elapsedMs }));
   });
-  (ps.validatedAnswers || []).forEach((row, idx) => {
+  sortByAgentOrder(ps.validatedAnswers).forEach((row, idx) => {
     out.push(mk('validated', row.agentName, stepContent(row), {
       idx, provider: row.provider, elapsedMs: row.elapsedMs, sources: row.sources || [],
     }));
   });
-  (ps.peerFeedback || []).forEach((fb, idx) => {
+  sortByAgentOrder(ps.peerFeedback).forEach((fb, idx) => {
     out.push(mk('feedback', fb.fromAgent, stepContent(fb), {
       idx, stageTo: fb.toAgent, pv: fb.personalityValidation || pvForName(ps.personalityValidationSummary, fb.fromAgent),
     }));
@@ -385,24 +427,8 @@ const ProcessStepsAccordion = ({ processSteps }) => {
   );
 };
 
-// 응답 생성 중 진행 단계를 경과 시간 기준으로 안내한다.
-// (백엔드는 1차→2차→3차를 한 번의 호출에서 순차 수행하므로 경과 시간으로 단계명을 추정해 표시한다.)
-const TYPING_STAGES = [
-  { after: 0, label: '1차 빠른 답변 생성 중...' },
-  { after: 12, label: '2차 검증 답안 작성 중...' },
-  { after: 26, label: '3차 에이전트 피드백 정리 중...' },
-];
-
-const StagedTypingLabel = () => {
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    const startedAt = Date.now();
-    const timer = setInterval(() => setElapsed((Date.now() - startedAt) / 1000), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  const current = [...TYPING_STAGES].reverse().find((s) => elapsed >= s.after) || TYPING_STAGES[0];
-  return <>{current.label}</>;
-};
+// 로딩 문구는 생성 과정을 노출하지 않고 단일 메시지("답변 작성 중...")만 표시한다.
+const StagedTypingLabel = () => <>답변 작성 중...</>;
 
 const parsePersonaTag = (persona, tagName) => {
   const match = String(persona || '').match(new RegExp(`\\[${tagName}:\\s*([^\\]]+)\\]`));
@@ -664,6 +690,8 @@ export default function StudyMate() {
   const selectAgent = async (agent) => {
     const agentId = getAgentId(agent);
     setSelectedAgent(agent);
+    // 방에 저장된 학습 진행 모드가 있으면 라디오 상태에 복원한다(없으면 현재 선택 유지).
+    if (agent?.learningMode) setLearningMode(agent.learningMode);
     console.debug('[StudyMate] selected agent', agent);
 
     // 1. 이전 방의 질문이 보이지 않도록 즉각적으로 해당 방의 캐시된 기록을 UI에 노출 (없으면 빈 리스트)
@@ -720,7 +748,12 @@ export default function StudyMate() {
     setTypingRooms((prev) => ({ ...prev, [agentId]: true }));
 
     const activeLearningMode = learningMode || selectedAgent?.learningMode || 'basic';
-    const isDebateTurn = isDebateModeValue(activeLearningMode);
+    // 소크라테스 모드: 사용자가 방금 입력한 내용을 시도 답변(userAttempt)으로도 보내 오개념을 좁혀간다.
+    // RAG 자료가 방에 연결돼 있으면 materialId도 함께 보낸다.
+    const turnExtras = {};
+    if (activeLearningMode === 'socratic') turnExtras.userAttempt = inputMsg;
+    const roomMaterialId = selectedAgent?.materialId ?? selectedAgent?.material_id;
+    if (roomMaterialId) turnExtras.materialId = roomMaterialId;
 
     // 이번 턴의 AI 메시지를 통째로 교체(누적 갱신)한다. 단계 도착마다 호출된다.
     const setTurnAiMessages = (aiMsgs) => {
@@ -737,19 +770,75 @@ export default function StudyMate() {
     const buildStreamAiMsgs = (ps) => buildStageBubbles(ps, userMsg.id, new Date().toISOString());
 
     try {
-      // ── P2: 단계별 SSE 선출력 우선 시도 (실패 시 블로킹 폴백) ──
+      // ── 단계/섹션별 SSE 선출력 우선 시도 (default/debate/socratic 모두 스트리밍, 실패 시 블로킹 폴백) ──
       const STREAMING_ENABLED = (import.meta.env.VITE_STUDYMATE_SSE ?? 'true') !== 'false';
-      if (STREAMING_ENABLED && !isDebateTurn) {
+      if (STREAMING_ENABLED) {
+        const ts = new Date().toISOString();
+        // 일반 단계 누적
         const fullPS = { initialAnswers: [], validatedAnswers: [], peerFeedback: [], personalityValidationSummary: [] };
+        // 토론 섹션 누적
+        const debateAcc = { initialAnswers: [], peerFeedbacks: [], revisedAnswers: [], debateSummary: '' };
         let streamRendered = false;
         let streamCompleted = false;
+
+        // all_complete 라우팅: socratic → 답변 카드 / debate → DebateRenderer / processSteps → 단계 / answers → 카드 / 없음 → 안내
+        const renderAllComplete = (d) => {
+          const respMode = String((d && (d.mode || d.learningMode)) || '').toLowerCase();
+          // 1) 소크라테스
+          if (respMode === 'socratic' || activeLearningMode === 'socratic') {
+            if (d && Array.isArray(d.answers) && d.answers[0]) {
+              setTurnAiMessages([buildSocraticTurnMessage(d.answers[0], userMsg.id, ts)]);
+              return;
+            }
+          }
+          // 2) 토론 구조
+          const debate = buildDebatePayload(d) ||
+            ((debateAcc.peerFeedbacks.length || debateAcc.revisedAnswers.length || debateAcc.debateSummary)
+              ? buildDebatePayload({ ...debateAcc, mode: 'debate' }) : null);
+          if (debate) {
+            setTurnAiMessages([buildDebateTurnMessage(debateAcc.initialAnswers.length ? debateAcc : {
+              initialAnswers: debate.initialAnswers, peerFeedbacks: debate.peerFeedbacks,
+              revisedAnswers: debate.revisedAnswers, debateSummary: debate.debateSummary,
+            }, userMsg.id, ts)]);
+            return;
+          }
+          // 3) processSteps / stages → 1차/2차/3차 단계 말풍선
+          const ps = (d && d.processSteps) || fullPS;
+          const bubbles = buildStageBubbles(ps, userMsg.id, ts);
+          if (bubbles.length) { setTurnAiMessages(bubbles); return; }
+          // 4) 일반 answers/replies 카드
+          const answers = (d && (d.answers || d.replies)) || [];
+          if (Array.isArray(answers) && answers.length) {
+            setTurnAiMessages(sortByAgentOrder(answers).map((a, i) => ({
+              id: `${userMsg.id}::ans::${i}`,
+              content: a.answer || a.content || '',
+              sender: 'AI',
+              senderName: a.agentName || a.agent_name || selectedAgent?.name || 'AI',
+              agentId: a.agentId,
+              createdAt: ts,
+              parentId: userMsg.id,
+            })));
+            return;
+          }
+          // 5) 아무것도 없으면 안내 (답변을 버리지 않는다)
+          if (!streamRendered) {
+            setTurnAiMessages([{
+              id: `${userMsg.id}::empty`, content: 'AI 응답을 받지 못했습니다. 잠시 후 다시 시도해주세요.',
+              sender: 'AI', senderName: selectedAgent?.name || 'StudyMate', isError: true,
+              createdAt: ts, parentId: userMsg.id,
+            }]);
+          }
+        };
+
         try {
           await agentService.streamMessage(userId, agentId, {
             message: inputMsg,
             // 사용자가 고른 학습모드(라디오 상태)를 우선 전송한다(토론/소크라테스 분기).
             learningMode: activeLearningMode,
             rounds: 1,
+            ...turnExtras,
           }, {
+            // default 모드: 1차/2차/3차 단계 완료 시 즉시 반영
             onStageComplete: (d) => {
               if (!d) return;
               if (d.stage === 1) fullPS.initialAnswers = d.answers || [];
@@ -761,10 +850,23 @@ export default function StudyMate() {
               streamRendered = true;
               setTurnAiMessages(buildStreamAiMsgs(fullPS));
             },
+            // 토론 모드: 섹션 도착 즉시 토론 말풍선 갱신
+            onDebateSection: (d) => {
+              if (!d || !d.section) return;
+              if (d.section === 'debateSummary') debateAcc.debateSummary = d.content || '';
+              else debateAcc[d.section] = d.items || [];
+              streamRendered = true;
+              setTurnAiMessages([buildDebateTurnMessage(debateAcc, userMsg.id, ts)]);
+            },
+            // 소크라테스: 답변 도착 즉시 카드 표시
+            onSocraticAnswer: (d) => {
+              if (!d) return;
+              streamRendered = true;
+              setTurnAiMessages([buildSocraticTurnMessage(d, userMsg.id, ts)]);
+            },
             onAllComplete: (d) => {
               streamCompleted = true;
-              const ps = (d && d.processSteps) || fullPS;
-              setTurnAiMessages(buildStreamAiMsgs(ps));
+              renderAllComplete(d);
             },
             onError: () => { throw new Error('stream error event'); },
           });
@@ -795,6 +897,7 @@ export default function StudyMate() {
         // 사용자가 고른 학습모드(라디오) 우선, 없으면 방 설정/기본 채팅
         learningMode: activeLearningMode,
         rounds: 1, // 프론트단에서 타임아웃 방지를 위해 강제로 1라운드(병렬 단답)만 요청
+        ...turnExtras,
       });
       console.debug('[StudyMate] chat response', res);
 
@@ -1295,8 +1398,7 @@ export default function StudyMate() {
                               성격 검증 {msg.pv.score.toFixed(2)} {msg.pv.passed ? '통과' : '보완 필요'}
                             </div>
                           )}
-                          {/* 결과 말풍선이 아닌(레거시/단일) 메시지에만 상세과정 아코디언 유지(내부 로그는 숨김) */}
-                          {!debatePayload && !isUser && !msg.badge && <ProcessStepsAccordion processSteps={msg.processSteps} />}
+                          {/* '생성과정 보기/접기' UI는 노출하지 않는다. processSteps는 결과 말풍선(1차/2차/3차)으로만 표시한다. */}
                           <div className="chat-bubble-time">{formatTime(msg.createdAt)}</div>
                         </div>
                       );

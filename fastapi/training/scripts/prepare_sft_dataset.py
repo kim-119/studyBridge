@@ -102,12 +102,16 @@ def build_from_db(limit: int, auto_approved_only: bool = True) -> list[dict]:
             print("[경고] AI_DATABASE_URL 미설정. smoke 예시 데이터를 사용합니다.")
             return []
 
+        # 테이블/컬럼은 운영 스키마(ai.training_candidate, 단수)에 통일한다.
+        #  - 컬럼: question/answer/system_prompt (training_candidate_manager INSERT 기준)
+        #  - 승인 필터: quality_status='auto_approved' + is_duplicate/is_unsafe FALSE
+        #    (jsonl_export_service._fetch_approved와 동일 규칙)
         query = """
-            SELECT system_prompt, user_message, assistant_answer
-            FROM ai.training_candidates
-            WHERE auto_approved = true
-              AND is_rejected = false
+            SELECT system_prompt, question, answer
+            FROM ai.training_candidate
+            WHERE quality_status = 'auto_approved'
               AND is_duplicate = false
+              AND is_unsafe = false
             ORDER BY created_at DESC
             LIMIT %s
         """

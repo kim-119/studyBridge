@@ -522,11 +522,37 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
             if (!dataStr) continue;
             try {
               const parsed = JSON.parse(dataStr);
+
+              // 토론 모드: debate_section 이벤트는 일반 agent 메시지로 합치지 않고
+              // 하나의 debate 메시지 객체(sections)에 섹션별로 모은다.
+              if (parsed.section || parsed.type === 'debate_section') {
+                const { section, items, content } = parsed;
+                setAiMessages(prev => {
+                  const updated = [...prev];
+                  let last = updated.length > 0 ? updated[updated.length - 1] : null;
+                  // 마지막 메시지가 debate 메시지가 아니면 새 debate 메시지를 만든다.
+                  if (!last || last.isUser || !last.isDebate) {
+                    last = { id: Date.now() + Math.random(), isUser: false, isDebate: true, sections: {} };
+                    updated.push(last);
+                  } else {
+                    last = { ...last, sections: { ...last.sections } };
+                    updated[updated.length - 1] = last;
+                  }
+                  if (section === 'debateSummary') {
+                    last.sections.debateSummary = content || '';
+                  } else if (section) {
+                    last.sections[section] = items || [];
+                  }
+                  return updated;
+                });
+                continue;
+              }
+
               if (parsed.done) {
                 console.log("AI Stream done");
                 continue;
               }
-              
+
               if (parsed.agentName && parsed.content) {
                 setAiMessages(prev => {
                   if (prev.length === 0) return prev;
@@ -1031,6 +1057,51 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
 
                     {/* AI Chat Messages */}
                     {aiMessages.map((msg) => {
+                      // 토론 모드 메시지: 1차 의견 → 서로 피드백 → 보완 답변 → 토론 정리 순서로 표시
+                      if (msg.isDebate) {
+                        const sec = msg.sections || {};
+                        const debateOrder = [
+                          { key: 'initialAnswers', title: '1차 의견', accent: '#3B82F6' },
+                          { key: 'peerFeedbacks', title: '서로 피드백', accent: '#F59E0B' },
+                          { key: 'revisedAnswers', title: '보완 답변', accent: '#10B981' },
+                        ];
+                        return (
+                          <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignSelf: 'flex-start', maxWidth: '95%', width: '100%' }}>
+                            <span style={{ fontSize: '11px', color: '#A5B4FC', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#6366F1' }} />
+                              🤖 AI 토론
+                            </span>
+                            {debateOrder.map(({ key, title, accent }) => {
+                              const items = sec[key];
+                              if (!items || items.length === 0) return null;
+                              return (
+                                <div key={key} style={{ backgroundColor: '#1E293B', border: `1px solid ${accent}55`, borderLeft: `3px solid ${accent}`, borderRadius: '10px', padding: '10px 14px' }}>
+                                  <div style={{ fontWeight: 700, fontSize: '12px', color: accent, marginBottom: '8px' }}>{title}</div>
+                                  {items.map((it, i) => (
+                                    <div key={i} style={{ marginBottom: i === items.length - 1 ? 0 : '10px' }}>
+                                      <div style={{ fontWeight: 600, color: '#93C5FD', fontSize: '12px', marginBottom: '2px' }}>
+                                        {it.displayName || it.title || it.agentName || ''}
+                                      </div>
+                                      <div style={{ fontSize: '13px', color: '#E5E7EB', lineHeight: '1.5', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                        {it.answer || it.feedback || ''}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            })}
+                            {sec.debateSummary && (
+                              <div style={{ backgroundColor: '#1E293B', border: '1px solid #FCD34D55', borderLeft: '3px solid #FCD34D', borderRadius: '10px', padding: '10px 14px' }}>
+                                <div style={{ fontWeight: 700, fontSize: '12px', color: '#FCD34D', marginBottom: '8px' }}>토론 정리</div>
+                                <div style={{ fontSize: '13px', color: '#FDE68A', lineHeight: '1.5', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                  {sec.debateSummary}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
                       const isMe = msg.isUser;
                       let colors = { bg: '#1E293B', border: 'rgba(255,255,255,0.08)', text: '#E5E7EB' };
                       if (msg.senderName === 'SummaryAgent') {

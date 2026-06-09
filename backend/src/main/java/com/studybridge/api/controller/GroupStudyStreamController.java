@@ -107,9 +107,20 @@ public class GroupStudyStreamController {
             return Flux.just(errorEvent(emptyMessageGuide(botType)));
         }
 
-        // 4-4. agents 구성
+        // 4-4. 실행 모드 분기
+        //  - 슬래시 명령어(/요약봇·/퀴즈봇·/검색봇)가 매칭되면 무조건 group_study_ai 봇 모드.
+        //  - 그 외에 프론트가 토론 모드(debate/discussion/multi_agent_discussion/토론 ...)를
+        //    요청하면 FastAPI debate 파이프라인을 타게 한다. (group_study_ai로 덮어쓰지 않는다.)
+        String requestedMode = request.getMode() != null ? request.getMode().trim() : "";
+        final boolean isDebateMode = !slash.matched && isDebateRequest(requestedMode);
+
+        // 4-5. agents 구성
         List<Map<String, Object>> agentsList;
-        if ("all_bots".equalsIgnoreCase(runMode)) {
+        if (isDebateMode) {
+            // 토론 모드: 봇 3종으로 덮어쓰지 않는다.
+            //  사용자가 만든 토론 에이전트가 있으면 그대로, 없으면 토론용 기본 에이전트 3명을 만든다.
+            agentsList = buildDebateAgents(request.getAgents());
+        } else if ("all_bots".equalsIgnoreCase(runMode)) {
             // 전체 토론: 검색봇 → 요약봇 → 퀴즈봇 순서
             agentsList = List.of(
                     botAgentMap("search_bot"),
@@ -130,16 +141,24 @@ public class GroupStudyStreamController {
 
         final String effectiveMessage = message;
 
-        // 4-5. FastAPI 요청 페이로드 구성 (group_study_ai 모드)
+        // 4-6. FastAPI 요청 페이로드 구성
         Map<String, Object> fastApiPayload = new LinkedHashMap<>();
         fastApiPayload.put("message", effectiveMessage);
-        fastApiPayload.put("mode", "group_study_ai");
-        fastApiPayload.put("runMode", "all_bots".equalsIgnoreCase(runMode) ? "all_bots" : "single");
-        fastApiPayload.put("rounds", request.getRounds() != null ? request.getRounds() : 1);
-        fastApiPayload.put("showFinalSynthesis", false);
+        if (isDebateMode) {
+            // 토론 모드: mode=debate, 봇 전용 runMode/showFinalSynthesis는 보내지 않는다.
+            fastApiPayload.put("mode", "debate");
+            fastApiPayload.put("rounds", request.getRounds() != null ? request.getRounds() : 3);
+        } else {
+            fastApiPayload.put("mode", "group_study_ai");
+            fastApiPayload.put("runMode", "all_bots".equalsIgnoreCase(runMode) ? "all_bots" : "single");
+            fastApiPayload.put("rounds", request.getRounds() != null ? request.getRounds() : 1);
+            fastApiPayload.put("showFinalSynthesis", false);
+        }
         fastApiPayload.put("previousAnswers", previousAnswers);
         fastApiPayload.put("targetAgentId", request.getTargetAgentId());
         fastApiPayload.put("agents", agentsList);
+        log.info("FastAPI 요청 모드 분기: requestedMode='{}' resolved mode={} isDebate={} agents={}",
+                requestedMode, fastApiPayload.get("mode"), isDebateMode, agentsList.size());
 
         // 스트림 누적 상태 저장 객체
         Map<String, StringBuilder> agentReplies = new ConcurrentHashMap<>();
@@ -152,30 +171,36 @@ public class GroupStudyStreamController {
                 .bodyToMono(JsonNode.class)
                 .flatMapMany(responseNode -> {
                     List<String> chunks = new ArrayList<>();
-                    JsonNode answersNode = responseNode.get("answers");
-                    if (answersNode != null && answersNode.isArray()) {
-                        for (JsonNode answerNode : answersNode) {
-                            String agentName = answerNode.has("agentName") ? answerNode.get("agentName").asText() : "";
-                            String answerText = answerNode.has("answer") ? answerNode.get("answer").asText() : "";
+                    if (isDebateMode) {
+                        // 토론 응답: answers 나열 대신 debate 섹션 단위 SSE 이벤트로 변환한다.
+                        //  (initialAnswers → peerFeedbacks → revisedAnswers → debateSummary)
+                        buildDebateSectionChunks(responseNode, chunks, agentReplies);
+                    } else {
+                        JsonNode answersNode = responseNode.get("answers");
+                        if (answersNode != null && answersNode.isArray()) {
+                            for (JsonNode answerNode : answersNode) {
+                                String agentName = answerNode.has("agentName") ? answerNode.get("agentName").asText() : "";
+                                String answerText = answerNode.has("answer") ? answerNode.get("answer").asText() : "";
 
-                            if (!agentName.isEmpty() && !answerText.isEmpty()) {
-                                agentReplies.computeIfAbsent(agentName, k -> new StringBuilder()).append(answerText);
+                                if (!agentName.isEmpty() && !answerText.isEmpty()) {
+                                    agentReplies.computeIfAbsent(agentName, k -> new StringBuilder()).append(answerText);
 
-                                // 텍스트를 청크 단위로 분할하여 실시간 타이핑 느낌을 주도록 스트림 구성
-                                int chunkSize = 4;
-                                for (int i = 0; i < answerText.length(); i += chunkSize) {
-                                    String sub = answerText.substring(i, Math.min(i + chunkSize, answerText.length()));
-                                    try {
-                                        Map<String, Object> chunkObj = new LinkedHashMap<>();
-                                        chunkObj.put("agentName", agentName);
-                                        chunkObj.put("botType", botTypeForAgent(agentName));
-                                        chunkObj.put("displayName", displayNameForAgent(agentName));
-                                        chunkObj.put("emoji", emojiForAgent(agentName));
-                                        chunkObj.put("content", sub);
-                                        chunkObj.put("done", false);
-                                        chunks.add(objectMapper.writeValueAsString(chunkObj));
-                                    } catch (Exception e) {
-                                        log.error("Error creating stream chunk", e);
+                                    // 텍스트를 청크 단위로 분할하여 실시간 타이핑 느낌을 주도록 스트림 구성
+                                    int chunkSize = 4;
+                                    for (int i = 0; i < answerText.length(); i += chunkSize) {
+                                        String sub = answerText.substring(i, Math.min(i + chunkSize, answerText.length()));
+                                        try {
+                                            Map<String, Object> chunkObj = new LinkedHashMap<>();
+                                            chunkObj.put("agentName", agentName);
+                                            chunkObj.put("botType", botTypeForAgent(agentName));
+                                            chunkObj.put("displayName", displayNameForAgent(agentName));
+                                            chunkObj.put("emoji", emojiForAgent(agentName));
+                                            chunkObj.put("content", sub);
+                                            chunkObj.put("done", false);
+                                            chunks.add(objectMapper.writeValueAsString(chunkObj));
+                                        } catch (Exception e) {
+                                            log.error("Error creating stream chunk", e);
+                                        }
                                     }
                                 }
                             }
@@ -323,6 +348,156 @@ public class GroupStudyStreamController {
         map.put("persona", "");
         map.put("goal", def.goal());
         return map;
+    }
+
+    // ── 토론(debate) 모드 헬퍼 ────────────────────────────────────────────────
+
+    // 토론 모드로 간주하는 mode 값 (대소문자 무시 + 한글)
+    private static final Set<String> DEBATE_MODE_ALIASES = Set.of(
+            "debate", "discussion", "tikitaka", "multi_agent_discussion");
+    private static final Set<String> DEBATE_MODE_ALIASES_KO = Set.of("토론", "토론 모드");
+
+    /** request.mode가 토론 계열인지 판별한다. */
+    private boolean isDebateRequest(String mode) {
+        if (mode == null) return false;
+        String m = mode.trim();
+        if (m.isEmpty()) return false;
+        return DEBATE_MODE_ALIASES.contains(m.toLowerCase()) || DEBATE_MODE_ALIASES_KO.contains(m);
+    }
+
+    /**
+     * 토론 모드 agents 구성.
+     *  1) 사용자가 만든 토론 에이전트가 있으면 그대로 FastAPI 형식으로 넘긴다.
+     *  2) 없으면 토론용 기본 에이전트 3명(정의/예시/비판)을 만든다.
+     * 봇 3종(요약/퀴즈/검색)은 절대 기본값으로 쓰지 않는다.
+     */
+    private List<Map<String, Object>> buildDebateAgents(List<ChatDTO.RequestAgent> reqAgents) {
+        if (reqAgents != null && !reqAgents.isEmpty()) {
+            List<Map<String, Object>> out = new ArrayList<>();
+            int idx = 1;
+            for (ChatDTO.RequestAgent a : reqAgents) {
+                out.add(debateAgentMap(a, idx++));
+            }
+            return out;
+        }
+        // 토론용 기본 에이전트 3명
+        return List.of(
+                defaultDebateAgent(1, "정의·원리 토론자", "논리적",
+                        "이 주제의 핵심 정의와 원리를 명확히 세우고, 개념의 본질을 기준으로 주장한다."),
+                defaultDebateAgent(2, "예시·응용 토론자", "친근한",
+                        "실제 사용 예시와 응용 사례를 들어 개념이 왜 중요한지 설득한다."),
+                defaultDebateAgent(3, "오개념·비판 토론자", "비판적",
+                        "사람들이 흔히 틀리는 오개념과 한계, 반례를 지적하며 다른 토론자의 주장을 비판적으로 검토한다.")
+        );
+    }
+
+    private Map<String, Object> defaultDebateAgent(int idx, String name, String personality, String instruction) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", -idx);
+        m.put("agentId", -idx);
+        m.put("name", name);
+        m.put("role", "debater");
+        m.put("personality", personality);
+        m.put("personalityStrength", "moderate");
+        m.put("knowledgeLevel", "학사");
+        m.put("customInstruction", instruction);
+        return m;
+    }
+
+    private Map<String, Object> debateAgentMap(ChatDTO.RequestAgent a, int idx) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        Long id = parseLongOrNull(a.getAgentId() != null ? a.getAgentId() : a.getId());
+        m.put("id", id != null ? id : -idx);
+        m.put("agentId", id != null ? id : -idx);
+        m.put("name", firstNonBlank(a.getName(), "토론자 " + idx));
+        m.put("role", firstNonBlank(a.getRole(), "debater"));
+        m.put("personality", firstNonBlank(a.getPersonality(), a.getStyle(), a.getTone(), "논리적"));
+        m.put("personalityStrength", firstNonBlank(a.getPersonalityStrength(), a.getPersonality_strength(), "moderate"));
+        m.put("style", a.getStyle());
+        m.put("tone", a.getTone());
+        m.put("knowledgeLevel", firstNonBlank(a.getKnowledgeLevel(), a.getKnowledge_level(), "학사"));
+        m.put("customInstruction", firstNonBlank(a.getCustomInstruction(), a.getCustom_instruction(), ""));
+        m.put("persona", a.getPersona());
+        return m;
+    }
+
+    /**
+     * FastAPI debate 응답(initialAnswers/peerFeedbacks/revisedAnswers/debateSummary)을
+     * debate_section SSE 청크로 변환해 chunks에 추가한다.
+     * revisedAnswers(없으면 initialAnswers)는 Redis 영속화를 위해 agentReplies에 누적한다.
+     */
+    private void buildDebateSectionChunks(JsonNode responseNode, List<String> chunks,
+                                          Map<String, StringBuilder> agentReplies) {
+        chunks.add(debateSectionChunk("initialAnswers", "1차 의견", responseNode.get("initialAnswers"), null));
+        chunks.add(debateSectionChunk("peerFeedbacks", "서로 피드백", responseNode.get("peerFeedbacks"), null));
+
+        JsonNode revised = responseNode.get("revisedAnswers");
+        chunks.add(debateSectionChunk("revisedAnswers", "보완 답변", revised, null));
+
+        String summary = (responseNode.has("debateSummary") && !responseNode.get("debateSummary").isNull())
+                ? responseNode.get("debateSummary").asText() : "";
+        chunks.add(debateSectionChunk("debateSummary", "토론 정리", null, summary));
+
+        // 영속화용: 보완 답변(없으면 1차 의견)을 에이전트별로 누적
+        JsonNode persistTarget = (revised != null && revised.isArray() && revised.size() > 0)
+                ? revised : responseNode.get("initialAnswers");
+        if (persistTarget != null && persistTarget.isArray()) {
+            for (JsonNode r : persistTarget) {
+                String name = r.has("displayName") ? r.get("displayName").asText()
+                        : (r.has("agentName") ? r.get("agentName").asText() : "토론자");
+                String ans = r.has("answer") ? r.get("answer").asText() : "";
+                if (!ans.isEmpty()) {
+                    agentReplies.computeIfAbsent(name, k -> new StringBuilder()).append(ans);
+                }
+            }
+        }
+        log.info("토론 SSE 섹션 생성: initial={} peerFeedbacks={} revised={} summary={}",
+                nodeSize(responseNode.get("initialAnswers")), nodeSize(responseNode.get("peerFeedbacks")),
+                nodeSize(revised), !summary.isEmpty());
+    }
+
+    /** 단일 debate_section 청크 JSON 문자열 생성. items 또는 content 중 하나를 담는다. */
+    private String debateSectionChunk(String section, String title, JsonNode items, String content) {
+        try {
+            Map<String, Object> obj = new LinkedHashMap<>();
+            obj.put("type", "debate_section");
+            obj.put("section", section);
+            obj.put("title", title);
+            if (items != null && items.isArray()) {
+                obj.put("items", items);
+            } else if (items == null && content == null) {
+                obj.put("items", List.of());
+            }
+            if (content != null) {
+                obj.put("content", content);
+            }
+            obj.put("done", false);
+            return objectMapper.writeValueAsString(obj);
+        } catch (Exception e) {
+            log.error("debate 섹션 청크 생성 실패: section={}", section, e);
+            return "{\"type\":\"debate_section\",\"section\":\"" + section + "\",\"items\":[]}";
+        }
+    }
+
+    private int nodeSize(JsonNode node) {
+        return (node != null && node.isArray()) ? node.size() : 0;
+    }
+
+    private Long parseLongOrNull(String s) {
+        if (s == null || s.isBlank()) return null;
+        try {
+            return Long.parseLong(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) return "";
+        for (String v : values) {
+            if (v != null && !v.isBlank()) return v;
+        }
+        return "";
     }
 
     // agentName(TavilyAgent/SearchAgent 모두 검색봇) → BotDef

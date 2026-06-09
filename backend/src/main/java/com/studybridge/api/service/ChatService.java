@@ -150,6 +150,9 @@ public class ChatService {
                 requestBody.put("customInstruction", requestCustomInstruction);
                 requestBody.put("custom_instruction", requestCustomInstruction);
                 requestBody.put("persona", request.getPersona());
+                // 소크라테스/ RAG 패스스루: userAttempt(시도 답변), materialId(RAG 자료)
+                requestBody.put("userAttempt", request.getUserAttempt());
+                requestBody.put("materialId", request.getMaterialId());
                 requestBody.put("agents", agentsList);
                 requestBody.put("previousAnswers", previousAnswers);
                 // 특정 에이전트 지칭 전달 (프론트 → Spring → FastAPI)
