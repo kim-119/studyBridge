@@ -48,10 +48,10 @@ const STAGE_BADGES = {
   initial:    { text: '⚡ 1차 · 빠른 초안', hint: 'Ollama', color: '#f59e0b' },
   validated:  { text: '✅ 2차 · 검증 답안', hint: '웹 근거', color: '#16a34a' },
   feedback:   { text: '💬 3차 · 상호 피드백', hint: '', color: '#6366f1' },
-  d_initial:  { text: '🗣 1차 의견', hint: '', color: '#f59e0b' },
-  d_feedback: { text: '💬 서로 피드백', hint: '', color: '#6366f1' },
-  d_revised:  { text: '✅ 보완 답변', hint: '', color: '#16a34a' },
-  d_summary:  { text: '📌 토론 정리', hint: '', color: '#0ea5e9' },
+  d_initial:  { text: '🗣 1차 입론 · 주장', hint: '', color: '#f59e0b' },
+  d_feedback: { text: '⚔️ 반박', hint: '', color: '#ef4444' },
+  d_revised:  { text: '🎯 최종 변론', hint: '', color: '#16a34a' },
+  d_summary:  { text: '⚖️ 심사 정리 · 판단은 당신 몫', hint: '', color: '#0ea5e9' },
 };
 
 const pvForName = (pvSummary, name) => (pvSummary || []).find((p) => p.agentName === name) || null;

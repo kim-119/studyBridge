@@ -639,8 +639,117 @@ def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
 
 # ── 토론(debate) 전용 헬퍼: 1차 의견 → 상호 피드백 → 보완 답변 → 종합 정리 ──────────
 
+# 토론 입장 분화용 관점 시드 — 각 토론자가 서로 다른 각도를 잡게 한다(성격과 결합해 입장이 갈림).
+_DEBATE_STANCES = [
+    "원리·정의 중심 입장(이 주제의 본질이 무엇인지가 핵심이라고 주장)",
+    "실용·응용 중심 입장(실제로 어떻게 쓰이고 왜 중요한지가 핵심이라고 주장)",
+    "오해·함정 중심 입장(사람들이 흔히 틀리는 지점이 핵심이라고 주장)",
+    "비판·한계 중심 입장(이 개념/주장의 한계와 반례가 핵심이라고 주장)",
+]
+
+
+def _compute_debate_opening(request: MultiChatRequest, agents: List[AgentProfile], context: str):
+    """1차 입론: 각 토론자가 '서로 다른 입장'을 정해 근거로 주장하고 청중(사용자)을 설득한다."""
+    provider = A.resolve_provider_for_stage(1)
+    t = time.time()
+
+    def _run(item):
+        i, a = item
+        stance = _DEBATE_STANCES[i % len(_DEBATE_STANCES)]
+        system = build_agent_system_prompt(a, context)
+        user = (
+            f"[토론 주제] {request.message}\n\n"
+            f"[너의 입장 각도] {stance}\n\n"
+            "[이번 단계: 1차 입론]\n"
+            "너는 토론자다. 위 각도에서 이 주제에 대한 '너만의 분명한 입장'을 한 문장으로 정하고, "
+            "그 입장이 옳다는 걸 타당한 근거 1~2개로 논리적으로 주장하라. "
+            "다른 토론자와 같은 입장·근거를 반복하지 말고 차별화하라. "
+            "목표는 청중(사용자)을 설득하는 것이다. 짧고 설득력 있게.\n\n"
+            + build_persona_directive(a.personality or a.tone or a.style, a.customInstruction)
+        )
+        params = A.resolve_agent_generation_params(_personality_type(a), 1)
+        t_a = time.time()
+        try:
+            text, _ = _call_llm_with_params("ollama", system, user, params, knowledge_level=a.knowledgeLevel)
+        except Exception as e:
+            logger.error("debate 입론 '%s' 실패: %s", a.name, e)
+            text = A.stage1_timeout_fallback_text()
+        return a, text, int((time.time() - t_a) * 1000)
+
+    results = _run_pool(_run, list(enumerate(agents)), A.enable_parallel_stage1())
+    elapsed = int((time.time() - t) * 1000)
+    opening_map: Dict[str, str] = {}
+    steps: List[InitialAnswerStep] = []
+    for a, text, ms in results:
+        if not (text or "").strip():
+            text = A.stage1_timeout_fallback_text()
+        opening_map[a.name] = text
+        steps.append(InitialAnswerStep(
+            agentName=a.name, answer=text, agentId=a.agentId,
+            personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
+            provider=provider, elapsedMs=ms,
+        ))
+    logger.info("[StudyMate] debate 입론 elapsedMs=%d agents=%d", elapsed, len(agents))
+    return steps, opening_map, provider, elapsed
+
+
+def _compute_debate_rebuttal(request: MultiChatRequest, agents: List[AgentProfile],
+                             opening_map: Dict[str, str]):
+    """상호 반박: 각 토론자가 다른 토론자들의 입론을 비판·반박하며 청중을 설득한다."""
+    provider = A.resolve_provider_for_stage(3)
+    t = time.time()
+    peer_steps: List[PeerFeedbackStep] = []
+    provs: set = set()
+    if len(agents) < 2:
+        return peer_steps, provider, 0
+
+    def _run(frm: AgentProfile):
+        targets = [(b, opening_map.get(b.name, "")) for b in agents if b.name != frm.name]
+        target_names = ", ".join(b.name for b, _ in targets)
+        block = "\n\n".join(f"[{b.name}의 주장]\n{ans}" for b, ans in targets)
+        system = build_agent_system_prompt(frm)
+        user = (
+            f"[토론 주제] {request.message}\n\n{block}\n\n"
+            "[이번 단계: 반박]\n"
+            f"위 다른 토론자({target_names})의 주장을 반박하라. "
+            "그들 근거의 약점·허점·놓친 관점을 구체적으로 짚고, 왜 네 입장이 더 타당한지 "
+            "청중(사용자)에게 설득력 있게 어필하라. 형식적 칭찬은 금지하고 실제 반론을 펴라.\n\n"
+            + build_persona_directive(frm.personality or frm.tone or frm.style, frm.customInstruction)
+        )
+        params = A.resolve_agent_generation_params(_personality_type(frm), 3)
+        t_a = time.time()
+        try:
+            fb, prov = _call_llm_with_params(params["provider"], system, user, params,
+                                             knowledge_level=frm.knowledgeLevel)
+            if _is_llm_fallback(fb):
+                raise ValueError("stage3 fallback marker")
+        except Exception as e:
+            logger.warning("debate 반박 %s 실패: %s", frm.name, e)
+            fb = (f"{target_names}의 주장은 근거 보강이 더 필요하다. "
+                  "핵심 개념의 정확성과 반례 가능성을 다시 점검해야 설득력이 생긴다.")
+            prov = "fallback"
+        target_ids = [b.agentId for b in agents if b.name != frm.name and b.agentId is not None]
+        step = PeerFeedbackStep(
+            fromAgent=frm.name, toAgent=target_names, feedback=fb,
+            fromAgentId=frm.agentId, targetAgentIds=target_ids,
+            personalityType=_personality_type(frm), provider=prov,
+            elapsedMs=int((time.time() - t_a) * 1000),
+        )
+        return step, prov
+
+    for step, prov in _run_pool(_run, agents, True):
+        peer_steps.append(step)
+        if prov:
+            provs.add(prov)
+    elapsed = int((time.time() - t) * 1000)
+    if provs:
+        provider = ",".join(sorted(provs))
+    logger.info("[StudyMate] debate 반박 elapsedMs=%d feedbacks=%d", elapsed, len(peer_steps))
+    return peer_steps, provider, elapsed
+
+
 def _feedback_received_map(agents: List[AgentProfile], peer_steps) -> Dict[str, str]:
-    """각 에이전트가 '받은' 피드백을 모은다(다른 에이전트들이 준 지적). 보완 답변 입력용."""
+    """각 에이전트가 '받은' 반박을 모은다(다른 토론자들의 반론). 최종 변론 입력용."""
     out: Dict[str, str] = {}
     for a in agents:
         parts = [f"[{s.fromAgent}의 지적]\n{s.feedback}" for s in peer_steps if s.fromAgent != a.name]
@@ -650,7 +759,7 @@ def _feedback_received_map(agents: List[AgentProfile], peer_steps) -> Dict[str, 
 
 def _compute_debate_revision(request: MultiChatRequest, agents: List[AgentProfile],
                              initial_map: Dict[str, str], fb_map: Dict[str, str]):
-    """각 에이전트가 받은 피드백을 반영해 1차 의견을 보완(성격/말투 유지). 반환: (steps, revised_map, provider, elapsedMs)."""
+    """최종 변론: 받은 반박에 재반론하고 입장을 강화해 청중을 설득한다. 반환: (steps, revised_map, provider, elapsedMs)."""
     provider = A.resolve_provider_for_stage(2)
     t = time.time()
 
@@ -660,11 +769,11 @@ def _compute_debate_revision(request: MultiChatRequest, agents: List[AgentProfil
         system = build_agent_system_prompt(a)
         user = (
             f"[토론 주제] {request.message}\n\n"
-            f"[너의 1차 의견]\n{own}\n\n"
-            f"[다른 에이전트가 너에게 준 피드백]\n{fb or '(특별한 반박은 없었다)'}\n\n"
-            "[이번 단계: 보완 답변]\n"
-            "위 피드백을 반영해 네 답을 짧게 보완하라. 타당한 지적은 받아들여 고치고, "
-            "동의 못 하면 근거로 짧게 반박하라. 네 성격과 말투는 그대로 유지한다.\n\n"
+            f"[너의 1차 입론]\n{own}\n\n"
+            f"[상대 토론자들이 너에게 한 반박]\n{fb or '(특별한 반박은 없었다)'}\n\n"
+            "[이번 단계: 최종 변론]\n"
+            "상대의 반박에 재반론하라. 타당한 지적은 인정해 보완하고, 동의 못 하는 부분은 근거로 되받아쳐라. "
+            "그리고 네 입장이 옳다는 걸 청중(사용자)에게 한 번 더 설득력 있게 마무리하라. 성격·말투는 유지한다.\n\n"
             + build_persona_directive(a.personality or a.tone or a.style, a.customInstruction)
         )
         params = A.resolve_agent_generation_params(_personality_type(a), 2)
@@ -699,16 +808,17 @@ def _compute_debate_revision(request: MultiChatRequest, agents: List[AgentProfil
 
 def _compute_debate_summary(request: MultiChatRequest, agents: List[AgentProfile],
                             revised_map: Dict[str, str]) -> str:
-    """토론 종합 정리 1개. 균형 있게 요약 + 사용자 사고 유도 질문 1개."""
+    """심사 정리: 양측 핵심 논거를 공정히 정리하고 최종 판단을 청중(사용자)에게 위임한다."""
     block = "\n\n".join(f"[{a.name}]\n{revised_map.get(a.name, '')}" for a in agents)
     system = (
-        "너는 학습 토론 사회자다. 여러 에이전트의 보완된 의견을 특정 입장에 치우치지 않고 균형 있게 종합한다. "
-        "반드시 한국어로."
+        "너는 토론 심사 진행자다. 양측 토론자의 가장 강한 논거를 어느 한쪽으로 치우치지 않게 공정히 정리하고, "
+        "최종 판단은 청중에게 맡긴다. 정답을 단정하지 않는다. 반드시 한국어로."
     )
     user = (
-        f"[토론 주제] {request.message}\n\n[참여자들의 보완 답변]\n{block}\n\n"
-        "위 토론을 3~4문장으로 균형 있게 종합 정리하라. 핵심 합의점과 남은 쟁점을 짚고, "
-        "마지막에 사용자의 사고를 유도하는 질문 1개를 덧붙여라."
+        f"[토론 주제] {request.message}\n\n[토론자들의 최종 변론]\n{block}\n\n"
+        "각 토론자의 핵심 주장과 가장 설득력 있던 근거를 한 줄씩 공정하게 정리하라. "
+        "그리고 '최종 판단은 청중(당신)의 몫'이라고 밝히며, 어느 쪽 논거가 더 설득력 있었는지 "
+        "사용자에게 묻는 질문 1개로 마무리하라. 특정 입장을 정답으로 단정하지 마라."
     )
     params = A.resolve_agent_generation_params("professional", 3)
     try:
@@ -1003,17 +1113,17 @@ def _run_debate_mode(
     context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
     context = _prep_default_context(context, rag_context)
 
-    # 1) 1차 의견 (각 에이전트의 첫 관점, 빠른 초안)
-    initial_steps, initial_map, _p1, _e1, _st1 = _compute_stage1(request, agents, context)
+    # 1) 1차 입론 — 각 토론자가 서로 다른 입장을 정해 근거로 주장(청중 설득)
+    initial_steps, initial_map, _p1, _e1 = _compute_debate_opening(request, agents, context)
 
-    # 2) 상호 피드백 (1차 의견을 서로 평가/반박) — n>=2일 때만 생성
-    peer_steps, _p3, _e3 = _compute_stage3(request, agents, initial_map, {})
+    # 2) 상호 반박 — 다른 토론자의 주장을 비판/반박 (n>=2일 때만)
+    peer_steps, _p3, _e3 = _compute_debate_rebuttal(request, agents, initial_map)
 
-    # 3) 보완 답변 (받은 피드백 반영, 성격/말투 유지)
+    # 3) 최종 변론 — 받은 반박에 재반론 + 입장 강화(설득)
     fb_map = _feedback_received_map(agents, peer_steps)
     revised_steps, revised_map, _p2, _e2 = _compute_debate_revision(request, agents, initial_map, fb_map)
 
-    # 4) 종합 정리 (2명 이상일 때)
+    # 4) 심사 정리 — 양측 논거 공정 정리 + 최종 판단 청중 위임 (2명 이상일 때)
     summary = _compute_debate_summary(request, agents, revised_map) if len(agents) >= 2 else ""
 
     # 사용자에게 보이는 최종 답변 = 보완 답변
