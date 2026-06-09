@@ -892,11 +892,33 @@ export const knowledgeService = {
     const res = await api.delete(`/api/blogs/${blogId}/comments/${commentId}`);
     return res.data;
   },
+
+  reportPost: async (reportedBlogId, reportData) => {
+    const res = await api.post('/api/reports/post', reportData);
+    return res.data;
+  },
+
+  reportComment: async (reportedCommentId, reportData) => {
+    const res = await api.post('/api/reports/comment', reportData);
+    return res.data;
+  },
 };
 
 export const adminService = {
   getGroupReports: async () => {
     const res = await api.get('/api/admin/reports/groups');
+    return res.data;
+  },
+
+  getGeneralReports: async () => {
+    const res = await api.get('/api/reports');
+    return res.data;
+  },
+
+  resolveReport: async (reportId, status) => {
+    const res = await api.put(`/api/reports/${reportId}/resolve`, null, {
+      params: { status }
+    });
     return res.data;
   },
 

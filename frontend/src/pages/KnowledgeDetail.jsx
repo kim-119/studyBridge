@@ -108,17 +108,49 @@ export default function KnowledgeDetail() {
     setIsReportModalOpen(true);
   };
 
-  const handleReportSubmit = (e) => {
+  const mapReasonToEnum = (koreanReason) => {
+    switch (koreanReason) {
+      case '부적절한 홍보 및 스팸':
+      case '도배 및 광고성 댓글':
+        return 'SPAM';
+      case '욕설, 비방 및 면학분위기 저해':
+        return 'ABUSE';
+      case '음란성 또는 유해한 콘텐츠':
+        return 'INAPPROPRIATE_CONTENT';
+      default:
+        return 'OTHER';
+    }
+  };
+
+  const handleReportSubmit = async (e) => {
     e.preventDefault();
     const finalReason = reportReason === '기타' ? customReason : reportReason;
     if (reportReason === '기타' && !customReason.trim()) {
       alert('신고 사유를 입력해주세요.');
       return;
     }
-
-    console.log(`[DUMMY REPORT] Type: ${reportType}, Target ID: ${targetId}, Reason: ${finalReason}`);
-    alert('신고가 정상적으로 접수되었습니다. 관리자 검토 후 조치 예정입니다.');
-    setIsReportModalOpen(false);
+    
+    try {
+      const enumReason = mapReasonToEnum(reportReason);
+      if (reportType === 'post') {
+        await knowledgeService.reportPost(targetId, {
+          reportedBlogId: targetId,
+          reason: enumReason,
+          details: finalReason
+        });
+      } else {
+        await knowledgeService.reportComment(targetId, {
+          reportedCommentId: targetId,
+          reason: enumReason,
+          details: finalReason
+        });
+      }
+      alert('신고가 정상적으로 접수되었습니다. 관리자 검토 후 조치 예정입니다.');
+      setIsReportModalOpen(false);
+    } catch (error) {
+      console.error("Failed to submit report:", error);
+      alert(error.response?.data?.message || '신고 처리에 실패했습니다. 로그인 상태 또는 본인의 글/댓글이 아닌지 확인해주세요.');
+    }
   };
 
 

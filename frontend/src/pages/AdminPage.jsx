@@ -12,6 +12,8 @@ export default function AdminPage() {
   const [posts, setPosts] = useState([]);
 
   const [reports, setReports] = useState([]);
+  const [generalReports, setGeneralReports] = useState([]);
+  const [reportSubTab, setReportSubTab] = useState('general');
 
   React.useEffect(() => {
     fetchInquiries();
@@ -24,6 +26,8 @@ export default function AdminPage() {
     try {
       const res = await adminService.getGroupReports();
       setReports(res || []);
+      const resGen = await adminService.getGeneralReports();
+      setGeneralReports(resGen || []);
     } catch (err) {
       console.error('신고 목록을 불러오는데 실패했습니다.', err);
     }
@@ -292,12 +296,133 @@ export default function AdminPage() {
 
         {activeAdminTab === 'reports' && (
           <div>
-            {reports.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>등록된 신고가 없습니다.</div>
-            ) : (
-              <>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
-                </div>
+            {/* 신고 관리 서브 탭 */}
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', borderBottom: '1px solid #E5E7EB', paddingBottom: '12px' }}>
+              <button 
+                style={{ padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', border: 'none', backgroundColor: reportSubTab === 'general' ? '#1F2937' : 'transparent', color: reportSubTab === 'general' ? 'white' : '#4B5563', fontWeight: 'bold' }}
+                onClick={() => { setReportSubTab('general'); setExpandedReportId(null); }}
+              >
+                지식공유 / 댓글 신고
+              </button>
+              <button 
+                style={{ padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', border: 'none', backgroundColor: reportSubTab === 'group' ? '#1F2937' : 'transparent', color: reportSubTab === 'group' ? 'white' : '#4B5563', fontWeight: 'bold' }}
+                onClick={() => { setReportSubTab('group'); setExpandedReportId(null); }}
+              >
+                그룹스터디 신고
+              </button>
+            </div>
+
+            {reportSubTab === 'general' && (
+              generalReports.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px', color: '#6B7280' }}>등록된 지식공유/댓글 신고가 없습니다.</div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid #E5E7EB', color: '#6B7280', fontSize: '14px' }}>
+                      <th style={{ padding: '16px 8px', width: '60px', textAlign: 'center' }}>No.</th>
+                      <th style={{ padding: '16px 8px', width: '100px' }}>유형</th>
+                      <th style={{ padding: '16px 8px', width: '150px' }}>신고 사유</th>
+                      <th style={{ padding: '16px 8px' }}>대상자 / 제목</th>
+                      <th style={{ padding: '16px 8px', width: '100px' }}>신고자</th>
+                      <th style={{ padding: '16px 8px', width: '120px' }}>신고일</th>
+                      <th style={{ padding: '16px 8px', width: '100px', textAlign: 'center' }}>상태</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {generalReports.map(rep => (
+                      <React.Fragment key={rep.reportId}>
+                        <tr 
+                          style={{ borderBottom: expandedReportId === rep.reportId ? 'none' : '1px solid #E5E7EB', cursor: 'pointer', transition: 'background-color 0.2s', backgroundColor: expandedReportId === rep.reportId ? '#FEF2F2' : 'transparent' }}
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#FEF2F2'}
+                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = expandedReportId === rep.reportId ? '#FEF2F2' : 'transparent'}
+                          onClick={() => {
+                            setExpandedReportId(expandedReportId === rep.reportId ? null : rep.reportId);
+                          }}
+                        >
+                          <td style={{ padding: '16px 8px', textAlign: 'center', color: '#6B7280' }}>{rep.reportId}</td>
+                          <td style={{ padding: '16px 8px' }}>
+                            <span style={{ padding: '4px 8px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', backgroundColor: rep.reportType === 'POST' ? '#E0E7FF' : rep.reportType === 'COMMENT' ? '#FEE2E2' : '#FEF3C7', color: rep.reportType === 'POST' ? '#4338CA' : rep.reportType === 'COMMENT' ? '#EF4444' : '#D97706' }}>
+                              {rep.reportType === 'POST' ? '게시글' : rep.reportType === 'COMMENT' ? '댓글' : '유저'}
+                            </span>
+                          </td>
+                          <td style={{ padding: '16px 8px', fontWeight: 'bold', color: '#991B1B' }}>[{rep.reason || '기타'}]</td>
+                          <td style={{ padding: '16px 8px', fontWeight: 'bold', color: '#111827' }}>
+                            {rep.targetTitleOrName || '알 수 없음'} <span style={{ color: '#9CA3AF', fontWeight: 'normal', fontSize: '12px' }}>(ID: {rep.targetId})</span>
+                          </td>
+                          <td style={{ padding: '16px 8px', color: '#4B5563' }}>{rep.reporterNickname || '알 수 없음'}</td>
+                          <td style={{ padding: '16px 8px', color: '#4B5563' }}>{(rep.createdAt || '').split('T')[0]}</td>
+                          <td style={{ padding: '16px 8px', textAlign: 'center' }}>
+                            <span style={{ 
+                              padding: '6px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold',
+                              backgroundColor: rep.status === 'RESOLVED' ? '#BBF7D0' : rep.status === 'REJECTED' ? '#F3F4F6' : '#FEF08A',
+                              color: rep.status === 'RESOLVED' ? '#166534' : rep.status === 'REJECTED' ? '#4B5563' : '#854D0E'
+                            }}>
+                              {rep.status === 'PENDING' ? '대기중' : rep.status === 'RESOLVED' ? '처리 완료' : '반려됨'}
+                            </span>
+                          </td>
+                        </tr>
+                        {expandedReportId === rep.reportId && (
+                          <tr style={{ borderBottom: '1px solid #E5E7EB', backgroundColor: '#FEF2F2' }}>
+                            <td colSpan={7} style={{ padding: '0 24px 24px 24px' }}>
+                              <div style={{ padding: '20px', backgroundColor: 'white', borderRadius: '12px', border: '1px solid #FCA5A5', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                <div style={{ padding: '16px', backgroundColor: '#F9FAFB', borderRadius: '8px', border: '1px solid #E5E7EB' }}>
+                                  <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#6B7280', marginBottom: '8px' }}>신고 상세 사유</div>
+                                  <p style={{ margin: 0, fontSize: '14px', color: '#4B5563', lineHeight: '1.6' }}>{rep.details || '상세 사유가 없습니다.'}</p>
+                                </div>
+                                
+                                {rep.status === 'PENDING' && (
+                                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                                    <button 
+                                      style={{ padding: '10px 20px', backgroundColor: '#E5E7EB', color: '#4B5563', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer' }}
+                                      onClick={async () => {
+                                        if (window.confirm('이 신고를 반려(무시) 처리하시겠습니까?')) {
+                                          try {
+                                            await adminService.resolveReport(rep.reportId, 'REJECTED');
+                                            alert('신고를 반려 처리했습니다.');
+                                            fetchReports();
+                                          } catch (err) {
+                                            console.error(err);
+                                            alert('처리에 실패했습니다.');
+                                          }
+                                        }
+                                      }}
+                                    >
+                                      신고 반려 (무시)
+                                    </button>
+                                    <button 
+                                      style={{ padding: '10px 20px', backgroundColor: '#DC2626', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer' }}
+                                      onClick={async () => {
+                                        if (window.confirm('이 신고를 승인(처리 완료) 처리하시겠습니까?')) {
+                                          try {
+                                            await adminService.resolveReport(rep.reportId, 'RESOLVED');
+                                            alert('신고를 승인(처리 완료) 처리했습니다.');
+                                            fetchReports();
+                                          } catch (err) {
+                                            console.error(err);
+                                            alert('처리에 실패했습니다.');
+                                          }
+                                        }
+                                      }}
+                                    >
+                                      신고 승인 (처리 완료)
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              )
+            )}
+
+            {reportSubTab === 'group' && (
+              reports.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>등록된 신고가 없습니다.</div>
+              ) : (
                 <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                   <thead>
                     <tr style={{ borderBottom: '2px solid #E5E7EB', color: '#6B7280', fontSize: '14px' }}>
@@ -407,7 +532,7 @@ export default function AdminPage() {
                     ))}
                   </tbody>
                 </table>
-              </>
+              )
             )}
           </div>
         )}
