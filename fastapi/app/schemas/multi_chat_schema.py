@@ -73,6 +73,8 @@ class MultiChatRequest(BaseModel):
         None, description="사용자의 시도 답변 (socratic 모드에서 오개념 분석에 사용)"
     )
     knowledgeLevel: Optional[str] = Field(None, description="전역 지식 수준 (에이전트별 미설정 시 사용)")
+    # 프론트 학습모드(basic/socratic/debate). mode가 generic이면 이 값으로 모드를 보강한다.
+    learningMode: Optional[str] = Field(None, description="학습 진행 모드 (basic/socratic/debate)")
     enableFeedback: bool = Field(False, description="에이전트 간 피드백 활성화")
     enableFeedbackValidation: bool = Field(True, description="피드백 검증/재작성 활성화")
     # v0.8 추가 필드
@@ -221,6 +223,9 @@ class ProcessSteps(BaseModel):
     validatedAnswers: List[ValidatedAnswerStep] = Field(default_factory=list)
     peerFeedback: List[PeerFeedbackStep] = Field(default_factory=list)
     personalityValidationSummary: List[PersonalityValidationItem] = Field(default_factory=list)
+    # 토론 모드 전용: 피드백 반영 보완 답변 + 토론 종합 정리
+    revisedAnswers: List[ValidatedAnswerStep] = Field(default_factory=list)
+    debateSummary: Optional[str] = None
 
 
 class StageInfo(BaseModel):

@@ -22,7 +22,7 @@ from app.schemas.multi_chat_schema import (
     ValidationSummary, PreviousAnswer, DebugMetadata,
     GenerationConfigMetadata, RetrievalMetadata, DepthValidationMetadata, PromptingMetadata,
     ProcessSteps, InitialAnswerStep, ValidatedAnswerStep, PeerFeedbackStep,
-    PersonalityValidationItem, StageInfo,
+    PersonalityValidationItem, StageInfo, AgentAnswerMetadata,
 )
 from app.services.prompt_builder import build_agent_system_prompt, build_tikitaka_role_prompt
 from app.services.personality_prompt_builder import to_profile_key, build_persona_directive
@@ -637,6 +637,92 @@ def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
     return peer_steps, provider, elapsed
 
 
+# ── 토론(debate) 전용 헬퍼: 1차 의견 → 상호 피드백 → 보완 답변 → 종합 정리 ──────────
+
+def _feedback_received_map(agents: List[AgentProfile], peer_steps) -> Dict[str, str]:
+    """각 에이전트가 '받은' 피드백을 모은다(다른 에이전트들이 준 지적). 보완 답변 입력용."""
+    out: Dict[str, str] = {}
+    for a in agents:
+        parts = [f"[{s.fromAgent}의 지적]\n{s.feedback}" for s in peer_steps if s.fromAgent != a.name]
+        out[a.name] = "\n\n".join(parts)
+    return out
+
+
+def _compute_debate_revision(request: MultiChatRequest, agents: List[AgentProfile],
+                             initial_map: Dict[str, str], fb_map: Dict[str, str]):
+    """각 에이전트가 받은 피드백을 반영해 1차 의견을 보완(성격/말투 유지). 반환: (steps, revised_map, provider, elapsedMs)."""
+    provider = A.resolve_provider_for_stage(2)
+    t = time.time()
+
+    def _run(a: AgentProfile):
+        own = initial_map.get(a.name, "")
+        fb = fb_map.get(a.name, "")
+        system = build_agent_system_prompt(a)
+        user = (
+            f"[토론 주제] {request.message}\n\n"
+            f"[너의 1차 의견]\n{own}\n\n"
+            f"[다른 에이전트가 너에게 준 피드백]\n{fb or '(특별한 반박은 없었다)'}\n\n"
+            "[이번 단계: 보완 답변]\n"
+            "위 피드백을 반영해 네 답을 짧게 보완하라. 타당한 지적은 받아들여 고치고, "
+            "동의 못 하면 근거로 짧게 반박하라. 네 성격과 말투는 그대로 유지한다.\n\n"
+            + build_persona_directive(a.personality or a.tone or a.style, a.customInstruction)
+        )
+        params = A.resolve_agent_generation_params(_personality_type(a), 2)
+        t_a = time.time()
+        try:
+            text, prov = _call_llm_with_params(params["provider"], system, user, params,
+                                               knowledge_level=a.knowledgeLevel)
+        except Exception as e:
+            logger.warning("debate 보완 '%s' 실패 (1차 유지): %s", a.name, e)
+            text, prov = own, "fallback"
+        return a, text, prov, int((time.time() - t_a) * 1000)
+
+    results = _run_pool(_run, agents, A.enable_parallel_stage2())
+    elapsed = int((time.time() - t) * 1000)
+    revised_map: Dict[str, str] = {}
+    steps: List[ValidatedAnswerStep] = []
+    provs: set = set()
+    for a, text, prov, ms in results:
+        final = text if (text and not _is_llm_fallback(text)) else initial_map.get(a.name, "")
+        revised_map[a.name] = final
+        provs.add(prov)
+        steps.append(ValidatedAnswerStep(
+            agentName=a.name, answer=final, agentId=a.agentId,
+            revised=(final.strip() != initial_map.get(a.name, "").strip()),
+            personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
+            provider=prov, elapsedMs=ms,
+        ))
+    actual = ",".join(sorted(provs)) if provs else provider
+    logger.info("[StudyMate] debate 보완 elapsedMs=%d agents=%d", elapsed, len(agents))
+    return steps, revised_map, actual, elapsed
+
+
+def _compute_debate_summary(request: MultiChatRequest, agents: List[AgentProfile],
+                            revised_map: Dict[str, str]) -> str:
+    """토론 종합 정리 1개. 균형 있게 요약 + 사용자 사고 유도 질문 1개."""
+    block = "\n\n".join(f"[{a.name}]\n{revised_map.get(a.name, '')}" for a in agents)
+    system = (
+        "너는 학습 토론 사회자다. 여러 에이전트의 보완된 의견을 특정 입장에 치우치지 않고 균형 있게 종합한다. "
+        "반드시 한국어로."
+    )
+    user = (
+        f"[토론 주제] {request.message}\n\n[참여자들의 보완 답변]\n{block}\n\n"
+        "위 토론을 3~4문장으로 균형 있게 종합 정리하라. 핵심 합의점과 남은 쟁점을 짚고, "
+        "마지막에 사용자의 사고를 유도하는 질문 1개를 덧붙여라."
+    )
+    params = A.resolve_agent_generation_params("professional", 3)
+    try:
+        text, _ = _call_llm_with_params(
+            params["provider"], system, user, params,
+            knowledge_level=_get_knowledge_level(request, agents[0] if agents else None),
+        )
+        if text and not _is_llm_fallback(text):
+            return text.strip()
+    except Exception as e:
+        logger.warning("debate 종합 정리 실패: %s", e)
+    return ""
+
+
 def _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
                        s1, s2, s3, sources=None):
     """3개 StageInfo를 만든다. s1/s2/s3 = (provider, elapsedMs, status) 튜플."""
@@ -767,8 +853,8 @@ def build_stream_generator(request: MultiChatRequest):
     context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
     rag_context = _get_rag_context(request.message, request.materialId)
 
-    raw_mode = (request.mode or "default").lower()
-    if raw_mode in ("tikitaka", "debate", "socratic", "group_study_ai"):
+    # default만 단계 스트리밍. debate(자동 포함)/socratic/group_study_ai는 블로킹 후 all_complete 1회.
+    if _resolve_mode(request, len(active_agents)) != "default":
         def _single():
             result = run_multi_chat(request)
             yield {"event": "all_complete", "data": result.model_dump()}
@@ -907,41 +993,72 @@ def _run_debate_mode(
     active_agents: List[AgentProfile],
     rag_context: str,
 ) -> MultiChatResponse:
-    """토론 모드 — debate_mode_service 위임."""
-    from app.services.debate_mode_service import run_debate_mode
-    knowledge_level = _get_knowledge_level(request)
+    """
+    토론 모드 — 사용자의 실제 에이전트들이 [1차 의견 → 상호 피드백 → 보완 답변 → 종합 정리]로 토론한다.
+    (이전의 supporter/critic/moderator 고정역할 체인을 대체. 에이전트 성격/말투가 그대로 살아난다.)
+    단순 답변 나열이 아니라 반드시 peerFeedback + revisedAnswers를 생성한다.
+    """
+    agents = active_agents or [_DEFAULT_AGENT]
     delay_ms = _get_display_delay_ms()
+    context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
+    context = _prep_default_context(context, rag_context)
 
-    answers = run_debate_mode(
-        question=request.message,
-        agents=active_agents,
-        knowledge_level=knowledge_level,
-        rag_context=rag_context,
-        delay_ms=delay_ms,
+    # 1) 1차 의견 (각 에이전트의 첫 관점, 빠른 초안)
+    initial_steps, initial_map, _p1, _e1, _st1 = _compute_stage1(request, agents, context)
+
+    # 2) 상호 피드백 (1차 의견을 서로 평가/반박) — n>=2일 때만 생성
+    peer_steps, _p3, _e3 = _compute_stage3(request, agents, initial_map, {})
+
+    # 3) 보완 답변 (받은 피드백 반영, 성격/말투 유지)
+    fb_map = _feedback_received_map(agents, peer_steps)
+    revised_steps, revised_map, _p2, _e2 = _compute_debate_revision(request, agents, initial_map, fb_map)
+
+    # 4) 종합 정리 (2명 이상일 때)
+    summary = _compute_debate_summary(request, agents, revised_map) if len(agents) >= 2 else ""
+
+    # 사용자에게 보이는 최종 답변 = 보완 답변
+    answers: List[AgentAnswer] = []
+    for idx, a in enumerate(agents):
+        answers.append(AgentAnswer(
+            agentName=a.name,
+            answer=revised_map.get(a.name) or initial_map.get(a.name, ""),
+            agentId=a.agentId,
+            role="debater",
+            displayOrder=idx + 1,
+            displayDelayMs=idx * delay_ms,
+            status="SUCCESS",
+            metadata=AgentAnswerMetadata(
+                knowledgeLevel=a.knowledgeLevel, personality=a.personality,
+                usedRag=bool(rag_context),
+            ),
+        ))
+
+    # 성격(페르소나) 검증 — 보완 답변 기준
+    pv_summary = _validate_mode_personas(
+        agents,
+        [AgentAnswer(agentName=a.name, answer=revised_map.get(a.name, "")) for a in agents],
     )
 
-    # 검증
-    try:
-        from app.services.mode_validator import validate_mode_response
-        v = validate_mode_response("debate", [a.model_dump() for a in answers])
-        validation = ValidationSummary(passed=v["passed"], issues=v.get("issues", []))
-    except Exception:
-        validation = ValidationSummary(passed=True, issues=[])
-
-    success_count = sum(1 for a in answers if a.status in ("SUCCESS", "REWRITTEN"))
-    status = "COMPLETED" if success_count == len(answers) else (
-        "PARTIAL_SUCCESS" if success_count > 0 else "FAILED"
+    process_steps = ProcessSteps(
+        initialAnswers=initial_steps,
+        peerFeedback=peer_steps,
+        revisedAnswers=revised_steps,
+        debateSummary=summary,
+        personalityValidationSummary=pv_summary,
     )
-
-    # 성격 검증(페르소나 정합성)도 부착한다.
-    pv_summary = _validate_mode_personas(active_agents, answers)
+    has_feedback = len(peer_steps) > 0
+    logger.info("[StudyMate] debate 완료 agents=%d initial=%d feedback=%d revised=%d summary=%s",
+                len(agents), len(initial_steps), len(peer_steps), len(revised_steps), bool(summary))
     return MultiChatResponse(
         mode=request.mode,
         answers=answers,
-        status=status,
+        status="COMPLETED",
         question=request.message,
-        validation=validation,
-        processSteps=ProcessSteps(personalityValidationSummary=pv_summary) if pv_summary else None,
+        validation=ValidationSummary(
+            passed=has_feedback,
+            issues=[] if has_feedback else ["토론에는 2명 이상의 에이전트가 필요합니다(상호 피드백 미생성)."],
+        ),
+        processSteps=process_steps,
     )
 
 
@@ -1422,6 +1539,44 @@ def _run_group_study_ai_mode(
 
 # ── 진입점 ────────────────────────────────────────────────────────────────────
 
+def _resolve_mode(request: MultiChatRequest, agent_count: Optional[int] = None) -> str:
+    """
+    mode와 learningMode(+에이전트 수)를 합쳐 실행 모드를 정한다.
+    - 프론트 learningMode(basic/socratic/debate)가 명시되면 우선.
+    - learningMode 없으면 request.mode 기준.
+    - tikitaka/multi_agent_discussion 등은 토론(피드백 포함)·default로 정규화.
+    - 자동 토론: 위에서 default로 정해졌고 에이전트가 2명 이상이면 debate로 승격
+      (AGENT_AUTO_DEBATE_MULTI=true). 단일 에이전트는 일반 답변(default) 유지.
+    반환: default | debate | socratic | group_study_ai
+    """
+    raw = (request.mode or "default").strip().lower()
+    lm = (getattr(request, "learningMode", None) or "").strip().lower()
+
+    base = None
+    # 1) 프론트 학습모드 우선
+    if lm == "debate":
+        base = "debate"
+    elif lm == "socratic":
+        base = "socratic"
+    elif lm == "basic":
+        base = "group_study_ai" if raw == "group_study_ai" else "default"
+    # 2) learningMode 미지정 → request.mode 기준
+    elif raw == "group_study_ai":
+        base = "group_study_ai"
+    elif raw in ("debate", "tikitaka"):  # tikitaka도 토론 파이프라인으로 통일
+        base = "debate"
+    elif raw == "socratic":
+        base = "socratic"
+    else:
+        # multi_agent_discussion / default 등 generic → staged default(상호 피드백 포함)
+        base = "default"
+
+    # 3) 자동 토론: 모드 미지정(default)인데 에이전트 2명 이상이면 토론으로 진입
+    if base == "default" and agent_count is not None and agent_count >= 2 and A.enable_auto_debate():
+        return "debate"
+    return base
+
+
 def run_multi_chat(request: MultiChatRequest) -> MultiChatResponse:
     """
     mode에 따라 적절한 실행 함수로 분기한다.
@@ -1440,27 +1595,22 @@ def run_multi_chat(request: MultiChatRequest) -> MultiChatResponse:
     # RAG 검색 (materialId 있으면 수행)
     rag_context = _get_rag_context(request.message, request.materialId)
 
-    raw_mode = (request.mode or "default").lower()
+    mode = _resolve_mode(request, len(active_agents))
 
     # group_study_ai: 그룹스터디 AI 봇 모드 (요약/퀴즈/검색 봇 라우팅)
-    if raw_mode == "group_study_ai":
+    if mode == "group_study_ai":
         logger.info("multi-chat 실행: mode=group_study_ai runMode=%s agents=%d",
                     request.runMode, len(active_agents))
         return _run_group_study_ai_mode(request, active_agents, context, rag_context)
 
-    mode = raw_mode
-    if mode not in ("tikitaka", "debate", "socratic"):
-        mode = "default"
-
     knowledge_level = _get_knowledge_level(request, active_agents[0] if active_agents else None)
-    logger.info("multi-chat 실행: mode=%s level=%s agents=%d", mode, knowledge_level, len(active_agents))
+    logger.info("multi-chat 실행: mode=%s (raw=%s/lm=%s) level=%s agents=%d",
+                mode, request.mode, getattr(request, "learningMode", None), knowledge_level, len(active_agents))
 
     if mode == "debate":
         return _run_debate_mode(request, active_agents, rag_context)
     if mode == "socratic":
         return _run_socratic_mode(request, active_agents, rag_context)
-    if mode == "tikitaka":
-        return _run_tikitaka_mode(request, active_agents, context, rag_context)
 
     # default: 모든 지식수준(입문~전문가)을 동일한 1/2/3차 staged 파이프라인으로 처리한다.
     # (이전엔 박사/전문가가 _run_multi_pass_pipeline로 분기되어 stages/processSteps가 생성되지 않았음.

@@ -221,6 +221,8 @@ def _compose_prompt_from_profile(profile: dict) -> str:
     name = profile.get("displayName", "")
     tone = profile.get("toneProfile", "")
     lines.append(f"말투와 성격: {name} — {tone}".strip(" —"))
+    if str(profile.get("speechRegister", "")).strip() == "반말":
+        lines.append("말투 규칙: 반드시 반말로 답한다(존댓말 '~입니다/~합니다/~하세요' 금지). 까칠하되 욕설·인신공격 금지, 마지막엔 개선 방향을 준다.")
     if profile.get("identity"):
         lines.append(f"정체성: {profile['identity']}")
     if profile.get("reasoningStyle"):
@@ -309,6 +311,12 @@ def build_persona_directive(
     profile = get_profile(personality)
     name = profile.get("displayName", "") or "지정된 성격"
     lines = [f"[성격 지시 — 반드시 답변 문장에 드러나라] 너의 성격: {name}"]
+    # 반말 레지스터(냉소적/비판형 등): 존댓말 금지를 강하게 못박는다.
+    if str(profile.get("speechRegister", "")).strip() == "반말":
+        lines.append(
+            "- ★ 반드시 반말로 답한다. '~입니다/~합니다/~하세요/~예요' 같은 존댓말은 절대 금지. "
+            "까칠하고 살짝 비꼬되(약하게), 인신공격·욕설은 금지. 마지막엔 반드시 개선 방향이나 다음 생각 포인트를 준다."
+        )
     if profile.get("identity"):
         lines.append(f"- 정체성: {profile['identity']}")
     shape = profile.get("answerShape") or []
@@ -342,6 +350,14 @@ def get_validation_hints(personality: Optional[str]) -> list[str]:
     """YAML 프로필의 validationHints(성격별 휴리스틱 체크리스트)를 반환한다. 없으면 빈 리스트."""
     hints = get_profile(personality).get("validationHints") or []
     return [str(h) for h in hints]
+
+
+def get_socratic_style(personality: Optional[str]) -> str:
+    """소크라테스 모드에서 성격별 '질문 방식'(socraticStyle)을 반환한다. 없으면 기본 문구."""
+    style = get_profile(personality).get("socraticStyle")
+    if style:
+        return str(style)
+    return "성격 톤을 유지하되 정답은 직접 주지 않고 꼬리질문으로 유도한다."
 
 
 def build_personality_system_prompt(agent, stage: int = 1, question: str = "") -> str:

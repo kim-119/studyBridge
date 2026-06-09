@@ -218,27 +218,34 @@ def validate_socratic_answer(answer_text: str) -> Dict[str, Any]:
     정답 직접 제공 여부, 질문 개수, 길이를 확인한다.
     """
     policy = _get_socratic_policy()
-    max_chars: int = policy.get("max_answer_length_chars", 450)
+    max_chars: int = policy.get("max_answer_length_chars", 350)
     direct_markers: List[str] = policy.get("direct_answer_markers", [])
+    lecture_markers: List[str] = policy.get("lecture_markers", [])
 
+    text = answer_text or ""
     issues: List[str] = []
     direct_answer_blocked = False
 
     # 정답 직접 제공 감지
-    if any(marker in answer_text for marker in direct_markers):
+    if any(marker in text for marker in direct_markers):
         issues.append("정답을 직접 제공하는 표현이 포함되어 있습니다.")
         direct_answer_blocked = True
 
-    # 질문 개수 (? 기준)
-    question_count = answer_text.count("?")
+    # 강의/완성설명형(정답 우회 설명) 감지
+    if any(marker in text for marker in lecture_markers):
+        issues.append("개념을 강의식으로 설명하고 있습니다. 정답 대신 질문으로 유도하세요.")
+        direct_answer_blocked = True
+
+    # 질문 개수 (? 기준) — 정확히 1개만 허용(0=질문없음, 2개 이상=과다)
+    question_count = text.count("?")
     if question_count == 0:
         issues.append("꼬리질문이 없습니다. 사용자 사고를 유도하는 질문을 포함해야 합니다.")
-    elif question_count > 3:
-        issues.append(f"질문이 너무 많습니다 ({question_count}개). 하나만 제시하세요.")
+    elif question_count > 2:
+        issues.append(f"질문이 너무 많습니다 ({question_count}개). 꼬리질문은 하나만 제시하세요.")
 
-    # 길이 검증
-    if len(answer_text) > max_chars:
-        issues.append(f"답변이 너무 깁니다 ({len(answer_text)}자, 최대 {max_chars}자).")
+    # 길이 검증 (짧게 유지)
+    if len(text) > max_chars:
+        issues.append(f"답변이 너무 깁니다 ({len(text)}자, 최대 {max_chars}자). 진단/힌트/꼬리질문만 짧게.")
 
     passed = len(issues) == 0
     return {"passed": passed, "issues": issues, "directAnswerBlocked": direct_answer_blocked}

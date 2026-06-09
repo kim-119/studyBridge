@@ -110,6 +110,11 @@ def enable_persona_contrast_check() -> bool:
     return _b("AGENT_ENABLE_PERSONA_CONTRAST_CHECK", True)
 
 
+def enable_auto_debate() -> bool:
+    """모드 미지정 + 에이전트 2명 이상이면 자동으로 토론 모드로 진입할지."""
+    return _b("AGENT_AUTO_DEBATE_MULTI", True)
+
+
 # ── 2차 웹 근거 검증 (Tavily/Wikipedia/OpenAlex) ──────────────────────────────
 
 def enable_stage2_web_verify() -> bool:
