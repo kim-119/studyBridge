@@ -22,8 +22,9 @@ public class AgentRoomDTO {
         // 학습 진행 모드 (basic/socratic/debate). 미지정 시 basic.
         private String learningMode;
 
+        // 검증 상한은 10명(PREMIUM/ROOT 대비). 실제 플랜별 제한은 Service.resolveAgentLimit에서 적용한다.
         @NotEmpty(message = "최소 1명 이상의 에이전트를 생성해야 합니다.")
-        @Size(max = 3, message = "에이전트는 최대 3명까지만 생성할 수 있습니다.")
+        @Size(max = 10, message = "에이전트는 최대 10명까지만 생성할 수 있습니다.")
         @Valid
         private List<AgentDTO.CreateRequest> agents;
     }

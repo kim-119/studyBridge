@@ -30,8 +30,10 @@ public class AgentChatRoomService {
                 User user = userRepository.findById(userId)
                                 .orElseThrow(() -> new RuntimeException("사용자를 찾을 수 없습니다."));
 
-                if (request.getAgents() != null && request.getAgents().size() > 3) {
-                        throw new RuntimeException("에이전트는 최대 3명까지 생성할 수 있습니다.");
+                // 플랜별 에이전트 생성 제한 (FREE=3, PREMIUM/ROOT=10). 하드코딩 3 대신 resolveAgentLimit 사용.
+                int agentLimit = resolveAgentLimit(user);
+                if (request.getAgents() != null && request.getAgents().size() > agentLimit) {
+                        throw new RuntimeException("현재 플랜에서는 에이전트를 최대 " + agentLimit + "명까지 생성할 수 있습니다.");
                 }
 
                 String normalizedLearningMode = normalizeLearningMode(request.getLearningMode());
@@ -93,10 +95,27 @@ public class AgentChatRoomService {
                         return "socratic";
                 }
                 if (v.equals("debate") || v.equals("discussion")
-                                || v.equals("tikitaka") || v.equals("multi_agent_discussion")) {
+                                || v.equals("tikitaka") || v.equals("multi_agent_discussion")
+                                || v.equals("토론") || v.equals("토론 모드")) {
                         return "debate";
                 }
                 return "basic";
+        }
+
+        /**
+         * 플랜별 에이전트 생성 한도를 결정한다.
+         * - FREE(기본): 3명
+         * - ADMIN/ROOT(또는 추후 PREMIUM): 10명
+         * TODO: 토스 결제 연동 후 User에 plan/agentLimit 필드가 생기면 그 값을 우선 사용한다.
+         */
+        private int resolveAgentLimit(User user) {
+                if (user != null && user.getRole() != null) {
+                        String role = user.getRole().trim().toUpperCase();
+                        if (role.equals("ADMIN") || role.equals("ROOT") || role.equals("PREMIUM")) {
+                                return 10;
+                        }
+                }
+                return 3;
         }
 
         private AgentRoomDTO.Response convertToRoomResponse(AgentChatRoom room, List<Agent> agents) {

@@ -619,7 +619,8 @@ public class ChatService {
                         return "socratic";
                 }
                 if (v.equals("debate") || v.equals("discussion")
-                                || v.equals("tikitaka") || v.equals("multi_agent_discussion")) {
+                                || v.equals("tikitaka") || v.equals("multi_agent_discussion")
+                                || v.equals("토론") || v.equals("토론 모드")) {
                         return "debate";
                 }
                 return "basic";
