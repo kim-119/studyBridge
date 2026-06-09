@@ -26,11 +26,13 @@ def _sse(event: str, data) -> str:
 
 @router.post(
     "/multi-chat/stream",
-    summary="멀티 에이전트 토론 (단계별 SSE 스트리밍)",
+    summary="멀티 에이전트 토론 (모드별 SSE 스트리밍)",
     description=(
-        "1차→2차→3차 단계가 완료될 때마다 stage_complete 이벤트를 즉시 전송한다. "
-        "마지막에 all_complete로 전체 응답(answers/processSteps/stages)을 한 번 더 보낸다. "
-        "default 계열 모드만 단계 스트리밍하며, 그 외 모드는 all_complete 1회만 전송한다."
+        "모드별로 단계/섹션 이벤트를 즉시 전송하고, 마지막에 all_complete로 전체 응답을 한 번 더 보낸다. "
+        "default: stage_complete(1차/2차/3차). "
+        "debate: debate_section(initialAnswers/peerFeedbacks/revisedAnswers/debateSummary). "
+        "socratic: socratic_answer. "
+        "공통 마지막: all_complete. (오류 시 error)"
     ),
 )
 async def multi_chat_stream(request: MultiChatRequest):
