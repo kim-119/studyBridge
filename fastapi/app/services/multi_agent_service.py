@@ -25,7 +25,7 @@ from app.schemas.multi_chat_schema import (
     PersonalityValidationItem, StageInfo,
 )
 from app.services.prompt_builder import build_agent_system_prompt, build_tikitaka_role_prompt
-from app.services.personality_prompt_builder import to_profile_key
+from app.services.personality_prompt_builder import to_profile_key, build_persona_directive
 from app.services.personality_validator import validate_personality_alignment, repair_personality_if_needed
 from app.core import agent_settings as A
 from app.utils.text_utils import build_context_from_previous_answers, safe_str
@@ -237,19 +237,25 @@ def _call_llm_with_params(
 def _stage1_initial(agent: AgentProfile, message: str, context: str) -> str:
     """1차 빠른 초안 — 반드시 Ollama (provider는 agent_settings에서 stage=1로 강제)."""
     system = build_agent_system_prompt(agent, context)
+    # 성격 지시를 user 프롬프트 '마지막'에 다시 못박는다(system만으로는 모델이 성격을 버림).
+    directive = build_persona_directive(
+        agent.personality or agent.tone or agent.style, agent.customInstruction
+    )
     user = (
         f"[사용자 질문] {message}\n\n"
         "[이번 단계: 1차 빠른 초안]\n"
         "핵심 정의 → 대표 예시 → 한 줄 결론 순서로 빠르게 답하라. "
-        "완벽하게 길게 쓰려 하지 말고, 질문에 바로 도움이 되는 핵심만 담아라."
+        "완벽하게 길게 쓰려 하지 말고, 질문에 바로 도움이 되는 핵심만 담아라.\n\n"
+        f"{directive}"
     )
     params = A.resolve_agent_generation_params(to_profile_key(agent.personality or agent.tone or agent.style), 1)
     text, _ = _call_llm_with_params("ollama", system, user, params, knowledge_level=agent.knowledgeLevel)
     return text
 
 
-def _stage2_validate(agent: AgentProfile, message: str, own_initial: str, others_text: str) -> str:
-    """2차 검증/정제 답안 — provider는 agent_settings stage=2."""
+def _stage2_validate(agent: AgentProfile, message: str, own_initial: str, others_text: str,
+                     repair_instruction: Optional[str] = None) -> Tuple[str, str]:
+    """2차 검증/정제 답안 — provider는 agent_settings stage=2. 반환: (텍스트, provider)."""
     system = build_agent_system_prompt(agent)
     user_parts = [
         f"[사용자 질문] {message}",
@@ -264,6 +270,10 @@ def _stage2_validate(agent: AgentProfile, message: str, own_initial: str, others
         "예: DML(SELECT/INSERT/UPDATE/DELETE)과 DDL(CREATE/ALTER/DROP)을 섞지 마라. "
         "1차 초안을 그대로 반복하지 말고 보완하라."
     )
+    # 정확성 지시 뒤에 성격 지시를 마지막에 못박는다(정확성에 눌려 성격이 사라지는 것 방지).
+    user_parts.append(build_persona_directive(
+        agent.personality or agent.tone or agent.style, agent.customInstruction, repair_instruction
+    ))
     params = A.resolve_agent_generation_params(to_profile_key(agent.personality or agent.tone or agent.style), 2)
     return _call_llm_with_params(params["provider"], system, "\n\n".join(user_parts),
                                  params, knowledge_level=agent.knowledgeLevel)
@@ -283,7 +293,10 @@ def _stage3_feedback(from_agent: AgentProfile, targets: List[Tuple[AgentProfile,
         "[이번 단계: 3차 상호 피드백]\n"
         f"위 다른 에이전트({target_names})의 답변을 너의 성격과 관점에서 평가하라. "
         "각 답변의 좋은 점 / 부족한 점 / 개선 방향을 구체적으로 짚어라. "
-        "단순 칭찬은 금지하고, 실제로 도움이 되는 피드백을 작성하라."
+        "단순 칭찬은 금지하고, 실제로 도움이 되는 피드백을 작성하라.\n\n"
+        + build_persona_directive(
+            from_agent.personality or from_agent.tone or from_agent.style, from_agent.customInstruction
+        )
     )
     params = A.resolve_agent_generation_params(_personality_type(from_agent), 3)
     return _call_llm_with_params(params["provider"], system, user, params, knowledge_level=from_agent.knowledgeLevel)
@@ -308,6 +321,11 @@ def _compute_stage1(request: MultiChatRequest, agents: List[AgentProfile], conte
     """1차 빠른 초안 (Ollama 전용, 병렬). 반환: (steps, initial_map, provider, elapsedMs, status)."""
     provider = A.resolve_provider_for_stage(1)
     t1 = time.time()
+    # 라이브 진단용: 각 에이전트의 '도착한 성격 라벨 → 정규키'를 남긴다.
+    # 모든 에이전트가 friendly로 찍히면 Spring/프론트가 성격 라벨을 안 보내는 것이다.
+    logger.info("[StudyMate] stage1 persona 매핑: %s", {
+        a.name: f"{(a.personality or a.tone or a.style) or 'None'}→{_personality_type(a)}" for a in agents
+    })
 
     def _run1(a: AgentProfile):
         t_agent = time.time()
@@ -385,25 +403,80 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
     return steps, validated_map, actual, elapsed
 
 
-def _compute_validation(agents: List[AgentProfile], validated_map: Dict[str, str]):
-    """성격 검증 (2차 답안 기준). 반환: (validation_map, pv_summary)."""
-    validation_map: Dict[str, Dict[str, Any]] = {}
+def _summarize_validation(agents, validation_map) -> List[PersonalityValidationItem]:
     summary: List[PersonalityValidationItem] = []
-    if A.enable_personality_validation():
-        for a in agents:
-            peers = [validated_map.get(b.name, "") for b in agents if b.name != a.name]
+    for a in agents:
+        v = validation_map.get(a.name)
+        if not v:
+            continue
+        summary.append(PersonalityValidationItem(
+            agentName=a.name, personalityType=v.get("personalityType"),
+            score=v.get("score"), passed=v.get("passed"),
+            issues=v.get("issues", []), note=v.get("note"),
+        ))
+    return summary
+
+
+def _compute_validation(request: MultiChatRequest, agents: List[AgentProfile],
+                        initial_map: Dict[str, str], validated_map: Dict[str, str],
+                        validated_steps: List[ValidatedAnswerStep]):
+    """
+    성격 검증 + 미달 시 보정(repair). 2차 답안 기준.
+    - validate_personality_alignment로 점수화
+    - 점수 미달 + repair 활성 시: 성격 지시를 못박아 stage2를 1회 재생성하고 더 좋아지면 채택
+    - validated_map / validated_steps(answer·revised) 를 보정 결과로 갱신
+    반환: (validation_map, pv_summary)
+    """
+    validation_map: Dict[str, Dict[str, Any]] = {}
+    if not A.enable_personality_validation():
+        return validation_map, []
+
+    step_by_name = {s.agentName: s for s in validated_steps}
+
+    for a in agents:
+        peers = [validated_map.get(b.name, "") for b in agents if b.name != a.name]
+        try:
+            v = validate_personality_alignment(validated_map.get(a.name, ""), a, 2, peer_answers=peers)
+        except Exception as e:
+            logger.warning("성격 검증 실패 '%s': %s", a.name, e)
+            continue
+
+        # 미달이면 성격 지시 + repairInstruction을 못박아 stage2 재생성으로 보정한다.
+        if not v.get("passed", True):
+            others = "\n\n".join(
+                f"[{b.name}]\n{initial_map.get(b.name, '')[:300]}" for b in agents if b.name != a.name
+            )
+            own = initial_map.get(a.name, "")
+
+            def _regen(instruction: str, _a=a, _own=own, _others=others) -> str:
+                text, _ = _stage2_validate(_a, request.message, _own, _others, repair_instruction=instruction)
+                return text
+
             try:
-                v = validate_personality_alignment(validated_map.get(a.name, ""), a, 2, peer_answers=peers)
+                new_text, repaired, used = repair_personality_if_needed(
+                    validated_map.get(a.name, ""), v, a, 2, regenerate=_regen
+                )
             except Exception as e:
-                logger.warning("성격 검증 실패 '%s': %s", a.name, e)
-                continue
-            validation_map[a.name] = v
-            summary.append(PersonalityValidationItem(
-                agentName=a.name, personalityType=v.get("personalityType"),
-                score=v.get("score"), passed=v.get("passed"),
-                issues=v.get("issues", []), note=v.get("note"),
-            ))
-    return validation_map, summary
+                logger.warning("성격 보정 실패 '%s' (원문 유지): %s", a.name, e)
+                new_text, repaired = validated_map.get(a.name, ""), False
+
+            if repaired and new_text and not _is_llm_fallback(new_text):
+                validated_map[a.name] = new_text
+                # 재검증으로 점수/통과 갱신
+                try:
+                    v = validate_personality_alignment(new_text, a, 2, peer_answers=peers)
+                except Exception:
+                    pass
+                step = step_by_name.get(a.name)
+                if step is not None:
+                    step.answer = new_text
+                    step.revised = new_text.strip() != initial_map.get(a.name, "").strip()
+                logger.info("[StudyMate] 성격 보정 적용 agent=%s score→%.3f passed=%s",
+                            a.name, v.get("score", 0.0), v.get("passed"))
+
+        validation_map[a.name] = v
+
+    return validation_map, _summarize_validation(agents, validation_map)
 
 
 def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
@@ -529,7 +602,7 @@ def _run_default_mode(
 
     initial_steps, initial_map, p1, e1, st1 = _compute_stage1(request, agents, context)
     validated_steps, validated_map, p2, e2 = _compute_stage2(request, agents, initial_map)
-    validation_map, pv_summary = _compute_validation(agents, validated_map)
+    validation_map, pv_summary = _compute_validation(request, agents, initial_map, validated_map, validated_steps)
     peer_steps, p3, e3 = _compute_stage3(request, agents, validated_map, validation_map)
 
     stages = _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
@@ -560,7 +633,7 @@ def run_default_mode_stream(
     # 2차 (검증 포함)
     yield {"event": "stage_start", "data": {"stage": 2, "title": "2차 답변 - 검증 답안", "status": "running"}}
     validated_steps, validated_map, p2, e2 = _compute_stage2(request, agents, initial_map)
-    validation_map, pv_summary = _compute_validation(agents, validated_map)
+    validation_map, pv_summary = _compute_validation(request, agents, initial_map, validated_map, validated_steps)
     stage2 = _build_stage_infos([], validated_steps, [], pv_summary, (None, 0, "completed"), (p2, e2, "completed"), (None, 0, "running"))[1]
     yield {"event": "stage_complete", "data": stage2.model_dump()}
 

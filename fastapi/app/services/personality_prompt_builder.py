@@ -289,6 +289,48 @@ def build_personality_prompt(
     return _PERSONALITY_PROMPTS.get(p_type, _PERSONALITY_PROMPTS[PersonalityType.FRIENDLY])
 
 
+def build_persona_directive(
+    personality: Optional[str],
+    custom_instruction: Optional[str] = None,
+    repair_instruction: Optional[str] = None,
+) -> str:
+    """
+    LLM user 프롬프트의 '마지막'에 넣을 강한 성격 지시를 YAML 프로필에서 조립한다.
+    (system 프롬프트만으로는 모델이 정확성 지시에 눌려 성격을 버리므로, user 턴 끝에 다시 못박는다.)
+    하드코딩 없이 전부 프로필(answerShape/mustUse/metaphorRules/forbidden)에서 가져온다.
+    """
+    if custom_instruction and custom_instruction.strip():
+        base = (
+            "[성격 지시 — 반드시 답변에 반영] 사용자 지정 말투/지시를 최우선으로 따르되 "
+            f"개념 정확성은 유지하라:\n{custom_instruction.strip()}"
+        )
+        return base + (f"\n- 보정 지시: {repair_instruction}" if repair_instruction else "")
+
+    profile = get_profile(personality)
+    name = profile.get("displayName", "") or "지정된 성격"
+    lines = [f"[성격 지시 — 반드시 답변 문장에 드러나라] 너의 성격: {name}"]
+    if profile.get("identity"):
+        lines.append(f"- 정체성: {profile['identity']}")
+    shape = profile.get("answerShape") or []
+    if shape:
+        lines.append("- 답변 구조(이 순서를 지켜라): " + " → ".join(str(s) for s in shape))
+    must = profile.get("mustUse") or []
+    if must:
+        lines.append("- 이런 표현을 자연스럽게 써라: " + ", ".join(f'"{m}"' for m in must))
+    mr = profile.get("metaphorRules") or {}
+    if isinstance(mr, dict) and mr.get("requirement"):
+        domains = mr.get("allowedDomains") or []
+        dtxt = f" (소재 예: {', '.join(str(d) for d in domains[:6])})" if domains else ""
+        lines.append(f"- {mr['requirement']}{dtxt}")
+    forbidden = profile.get("forbidden") or []
+    if forbidden:
+        lines.append("- 금지: " + ", ".join(str(f) for f in forbidden))
+    lines.append("- 다른 에이전트와 똑같은 말투·구조로 쓰지 마라. GPT식 무색무취 답변은 실패다.")
+    if repair_instruction:
+        lines.append(f"- 보정 지시(직전 답변이 성격을 충분히 못 살림): {repair_instruction}")
+    return "\n".join(lines)
+
+
 def get_validation_criteria(personality: str) -> str:
     """GPT 검증 시 사용할 성격별 체크 항목을 반환한다."""
     return _VALIDATION_CRITERIA.get(
