@@ -1,5 +1,7 @@
 import axios from 'axios';
 
+export const AI_TIMEOUT_MS = Number(import.meta.env.VITE_AI_TIMEOUT_MS || 180000);
+
 // AI 요청 timeout. GitHub Actions merge 기준 중복 export 방지.
 export const AI_TIMEOUT_MS = Number(
   import.meta.env.VITE_AI_TIMEOUT_MS ||
