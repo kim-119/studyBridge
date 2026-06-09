@@ -34,10 +34,12 @@ public class AgentChatRoomService {
                         throw new RuntimeException("에이전트는 최대 3명까지 생성할 수 있습니다.");
                 }
 
+                String normalizedLearningMode = normalizeLearningMode(request.getLearningMode());
+
                 AgentChatRoom room = AgentChatRoom.builder()
                                 .user(user)
                                 .roomName(request.getRoomName())
-                                .learningMode(request.getLearningMode())
+                                .learningMode(normalizedLearningMode)
                                 .build();
 
                 AgentChatRoom savedRoom = agentChatRoomRepository.save(room);
@@ -81,6 +83,22 @@ public class AgentChatRoomService {
                 agentChatRoomRepository.delete(room);
         }
 
+        /** 학습 진행 모드를 basic/socratic/debate 중 하나로 정규화한다. 잘못된 값/null은 basic. */
+        private String normalizeLearningMode(String learningMode) {
+                if (learningMode == null || learningMode.isBlank()) {
+                        return "basic";
+                }
+                String v = learningMode.trim().toLowerCase();
+                if (v.equals("socratic")) {
+                        return "socratic";
+                }
+                if (v.equals("debate") || v.equals("discussion")
+                                || v.equals("tikitaka") || v.equals("multi_agent_discussion")) {
+                        return "debate";
+                }
+                return "basic";
+        }
+
         private AgentRoomDTO.Response convertToRoomResponse(AgentChatRoom room, List<Agent> agents) {
                 List<AgentDTO.Response> agentResponses = agents.stream()
                                 .map(agent -> AgentDTO.Response.builder()
@@ -96,7 +114,8 @@ public class AgentChatRoomService {
                 return AgentRoomDTO.Response.builder()
                                 .roomId(room.getId())
                                 .roomName(room.getRoomName())
-                                .learningMode(room.getLearningMode())
+                                // 기존 DB에 learning_mode가 null인 방은 basic으로 간주(마이그레이션 없이 서비스 레벨 폴백).
+                                .learningMode(normalizeLearningMode(room.getLearningMode()))
                                 .agents(agentResponses)
                                 .createdAt(room.getCreatedAt() != null ? room.getCreatedAt().toString() : null)
                                 .build();

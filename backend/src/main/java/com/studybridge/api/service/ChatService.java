@@ -129,16 +129,32 @@ public class ChatService {
                                         agent.get("knowledgeLevel"));
                 }
 
+                // ── 학습 진행 모드 결정 ─────────────────────────────────────────────
+                //  request에 learningMode가 없으면 방(room)에 저장된 값으로 폴백, 둘 다 없으면 basic.
+                //  effectiveLearningMode에 맞춰 FastAPI mode도 debate/socratic으로 강제 보강한다.
+                String effectiveLearningMode = normalizeLearningMode(firstNonBlank(
+                                request.getLearningMode(),
+                                room.getLearningMode(),
+                                "basic"));
+                String effectiveMode = firstNonBlank(
+                                request.getMode(),
+                                agentsList.size() > 1 ? "multi_agent_discussion" : "single_answer");
+                if ("debate".equals(effectiveLearningMode)) {
+                        effectiveMode = "debate";
+                } else if ("socratic".equals(effectiveLearningMode)) {
+                        effectiveMode = "socratic";
+                }
+                log.info("[CHAT MODE] roomId={} requestLearningMode={} roomLearningMode={} effectiveLearningMode={} effectiveMode={}",
+                                roomId, request.getLearningMode(), room.getLearningMode(), effectiveLearningMode, effectiveMode);
+
                 Map<String, Object> requestBody = new LinkedHashMap<>();
                 requestBody.put("message", request.getMessage());
                 requestBody.put("agentId", request.getAgentId());
                 requestBody.put("roomId", request.getRoomId() != null ? request.getRoomId() : roomId);
-                requestBody.put("mode", firstNonBlank(
-                                request.getMode(),
-                                agentsList.size() > 1 ? "multi_agent_discussion" : "single_answer"));
+                requestBody.put("mode", effectiveMode);
                 requestBody.put("rounds", request.getRounds() != null ? Math.min(Math.max(request.getRounds(), 1), 3) : 3);
-                // 학습 진행 모드 (basic/socratic/debate) — 미지정 시 FastAPI에서 basic으로 정규화됨
-                requestBody.put("learningMode", request.getLearningMode());
+                // 학습 진행 모드 (basic/socratic/debate) — request 없으면 방 값으로 폴백된 결과
+                requestBody.put("learningMode", effectiveLearningMode);
                 requestBody.put("showFinalSynthesis", request.getShowFinalSynthesis() != null ? request.getShowFinalSynthesis() : false);
                 requestBody.put("personality", requestPersonality);
                 requestBody.put("personalityStrength", requestPersonalityStrength);
@@ -181,7 +197,10 @@ public class ChatService {
                 log.info("chat fastapi payload roomId={} payload={}", roomId, requestBody);
 
                 // 모드별 타임아웃: 소크라테스/토론/멀티에이전트는 단계적 검토로 오래 걸리므로 길게 허용한다.
-                long aiTimeoutSeconds = resolveAiTimeoutSeconds(request.getLearningMode(), request.getMode());
+                //  request에 learningMode가 없으면 방 값으로 폴백해 토론/소크라테스 타임아웃을 정확히 적용한다.
+                long aiTimeoutSeconds = resolveAiTimeoutSeconds(
+                                firstNonBlank(request.getLearningMode(), room.getLearningMode()),
+                                request.getMode());
                 long aiTimeoutMillis = aiTimeoutSeconds * 1000L;
 
                 Map<String, Object> response;
@@ -588,6 +607,22 @@ public class ChatService {
                         }
                 }
                 return null;
+        }
+
+        /** 학습 진행 모드를 basic/socratic/debate 중 하나로 정규화한다. 잘못된 값/null은 basic. */
+        private String normalizeLearningMode(String learningMode) {
+                if (learningMode == null || learningMode.isBlank()) {
+                        return "basic";
+                }
+                String v = learningMode.trim().toLowerCase();
+                if (v.equals("socratic")) {
+                        return "socratic";
+                }
+                if (v.equals("debate") || v.equals("discussion")
+                                || v.equals("tikitaka") || v.equals("multi_agent_discussion")) {
+                        return "debate";
+                }
+                return "basic";
         }
 
         private String nullToEmpty(String value) {

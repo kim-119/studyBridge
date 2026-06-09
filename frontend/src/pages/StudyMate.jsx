@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { agentService } from '../services/api';
-import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLeft, ChevronRight, ChevronDown, CheckCircle2, Bookmark } from 'lucide-react';
+import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark } from 'lucide-react';
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
 import '../components/studymate/studymate-premium.css';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -37,18 +37,6 @@ function sortByAgentOrder(rows) {
   });
 }
 
-// 한 카드의 메타 헤더(에이전트명 / 성격 / 지식수준 / provider / 경과시간)를 만든다.
-const buildCardMeta = (row, extra = []) => {
-  const parts = [
-    row?.agentName,
-    personalityLabel(row?.personalityType),
-    row?.knowledgeLevel,
-    row?.provider,
-    formatElapsed(row?.elapsedMs),
-    ...extra,
-  ];
-  return parts.filter((p) => p !== undefined && p !== null && p !== '');
-};
 
 // ── 단계별 말풍선 (상세과정을 안 눌러도 결과를 메인 대화에 순차 표시) ──────────────
 // 일반: ⚡1차 → ✅2차(웹검증) → 💬3차(피드백)
@@ -296,136 +284,8 @@ const explodeHistoryToStageBubbles = (history) => {
   return out;
 };
 
-// 멀티 에이전트 응답의 1차/2차/3차 생성 과정 — 선택된 에이전트 전원의 결과를 단계별로 모두 렌더링한다.
-const ProcessStepsAccordion = ({ processSteps }) => {
-  const [open, setOpen] = useState(false);
-  if (!processSteps) return null;
-
-  const initialAnswers = processSteps.initialAnswers || [];
-  const validatedAnswers = processSteps.validatedAnswers || [];
-  const peerFeedback = processSteps.peerFeedback || [];
-  const pvSummary = processSteps.personalityValidationSummary || [];
-
-  const hasAny = initialAnswers.length || validatedAnswers.length || peerFeedback.length || pvSummary.length;
-  if (!hasAny) return null;
-
-  const sectionTitleStyle = { fontWeight: '800', fontSize: '12px', margin: '2px 0' };
-  const agentCardStyle = { padding: '10px 12px', borderRadius: '10px', backgroundColor: 'rgba(0,0,0,0.03)', fontSize: '12px' };
-  const metaStyle = { fontWeight: '700', marginBottom: '4px', color: 'var(--color-text-main)' };
-  const bodyTextStyle = {
-    whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere',
-    overflow: 'visible', maxHeight: 'none', color: 'var(--color-text-muted)',
-  };
-
-  const pvFor = (name) => pvSummary.find((p) => p.agentName === name) || null;
-
-  return (
-    <div style={{ marginTop: '8px' }}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        style={{
-          display: 'inline-flex', alignItems: 'center', gap: '4px',
-          background: 'none', border: 'none', cursor: 'pointer',
-          fontSize: '12px', fontWeight: '600', color: 'var(--color-text-muted)', padding: '2px 0',
-        }}
-      >
-        <ChevronDown size={14} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
-        {open ? '생성과정 접기' : '생성과정 보기'}
-      </button>
-
-      {open && (
-        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          {/* 1차 답변 생성 — 에이전트 전원 */}
-          {initialAnswers.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={sectionTitleStyle}>1차 답변 생성</div>
-              {initialAnswers.map((row, i) => (
-                <div key={`ia-${i}`} style={agentCardStyle}>
-                  <div style={metaStyle}>{buildCardMeta(row).join(' / ')}</div>
-                  <div style={bodyTextStyle}>{stepContent(row)}</div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* 2차 검증 답안 — 에이전트 전원 */}
-          {validatedAnswers.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={sectionTitleStyle}>2차 검증 답안</div>
-              {validatedAnswers.map((row, i) => {
-                const extra = [];
-                if (typeof row.score === 'number') extra.push(`score ${row.score.toFixed(2)}`);
-                if (row.revised) extra.push('수정됨');
-                return (
-                  <div key={`va-${i}`} style={agentCardStyle}>
-                    <div style={metaStyle}>{buildCardMeta(row, extra).join(' / ')}</div>
-                    <div style={bodyTextStyle}>{stepContent(row)}</div>
-                    {row.issues && row.issues.length > 0 && (
-                      <ul style={{ margin: '6px 0 0', paddingLeft: '16px', color: 'var(--color-text-muted)' }}>
-                        {row.issues.map((issue, j) => <li key={j}>{issue}</li>)}
-                      </ul>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* 3차 상호 피드백 — 에이전트 전원 */}
-          {peerFeedback.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={sectionTitleStyle}>3차 상호 피드백</div>
-              {peerFeedback.map((fb, i) => {
-                const pv = fb.personalityValidation || pvFor(fb.fromAgent);
-                return (
-                  <div key={`pf-${i}`} style={agentCardStyle}>
-                    <div style={metaStyle}>
-                      {fb.fromAgent} → {fb.toAgent}
-                      {fb.personalityType && (
-                        <span style={{ marginLeft: 6, fontWeight: 500, color: 'var(--color-text-muted)' }}>
-                          ({personalityLabel(fb.personalityType)})
-                        </span>
-                      )}
-                      {pv && typeof pv.score === 'number' && (
-                        <span style={{ marginLeft: 6, fontSize: '10px', padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.06)' }}>
-                          성격 {pv.score.toFixed(2)} {pv.passed ? '통과' : '보완'}
-                        </span>
-                      )}
-                    </div>
-                    <div style={bodyTextStyle}>{stepContent(fb)}</div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* 성격 검증 요약 (있으면) */}
-          {pvSummary.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={sectionTitleStyle}>성격 검증 요약</div>
-              {pvSummary.map((p, i) => (
-                <div key={`pv-${i}`} style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>
-                  <strong>{p.agentName}</strong>
-                  {p.personalityType && <span> · {personalityLabel(p.personalityType)}</span>}
-                  {typeof p.score === 'number' && (
-                    <span style={{ marginLeft: 6, padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.06)' }}>
-                      score {p.score.toFixed(2)}
-                    </span>
-                  )}
-                  <span style={{ marginLeft: 6, color: p.passed ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
-                    {p.passed ? '통과' : '보완 필요'}
-                  </span>
-                  {p.note && <div style={{ marginTop: 2 }}>{p.note}</div>}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
+// (제거됨) ProcessStepsAccordion — 단계 펼침/접힘 UI는 더 이상 사용하지 않는다.
+//  processSteps는 내부 저장/복원용 데이터로만 쓰고, 사용자 화면에는 결과 카드(1차/2차/3차·토론)만 표시한다.
 
 // 로딩 문구는 생성 과정을 노출하지 않고 단일 메시지("답변 작성 중...")만 표시한다.
 const StagedTypingLabel = () => <>답변 작성 중...</>;
@@ -690,9 +550,15 @@ export default function StudyMate() {
   const selectAgent = async (agent) => {
     const agentId = getAgentId(agent);
     setSelectedAgent(agent);
-    // 방에 저장된 학습 진행 모드가 있으면 라디오 상태에 복원한다(없으면 현재 선택 유지).
-    if (agent?.learningMode) setLearningMode(agent.learningMode);
-    console.debug('[StudyMate] selected agent', agent);
+    // 방에 저장된 학습 진행 모드를 라디오 상태에 복원한다. 서버가 항상 basic/socratic/debate를
+    // 내려주므로 그 값을 우선하고, (구버전 응답 등으로) 없으면 basic으로 둔다.
+    if (agent?.learningMode) {
+      setLearningMode(agent.learningMode);
+    } else {
+      setLearningMode('basic');
+    }
+    // [검증용] 서버 응답에 learningMode가 실제로 내려오는지 확인 (토론/소크라테스 방 복원 디버깅)
+    console.debug('[StudyMate] selectAgent learningMode=', agent?.learningMode, 'room=', agent);
 
     // 1. 이전 방의 질문이 보이지 않도록 즉각적으로 해당 방의 캐시된 기록을 UI에 노출 (없으면 빈 리스트)
     const cachedHistory = roomHistories[agentId] || [];
@@ -838,23 +704,23 @@ export default function StudyMate() {
             rounds: 1,
             ...turnExtras,
           }, {
-            // default 모드: 1차/2차/3차 단계 완료 시 즉시 반영
+            // default 모드: 1차/2차/3차 단계 완료 시 즉시 반영. 저장 전에 에이전트 순서로 정렬한다.
             onStageComplete: (d) => {
               if (!d) return;
-              if (d.stage === 1) fullPS.initialAnswers = d.answers || [];
-              else if (d.stage === 2) fullPS.validatedAnswers = d.answers || [];
+              if (d.stage === 1) fullPS.initialAnswers = sortByAgentOrder(d.answers || []);
+              else if (d.stage === 2) fullPS.validatedAnswers = sortByAgentOrder(d.answers || []);
               else if (d.stage === 3) {
-                fullPS.peerFeedback = d.feedbacks || [];
+                fullPS.peerFeedback = sortByAgentOrder(d.feedbacks || []);
                 fullPS.personalityValidationSummary = d.personalityValidationSummary || [];
               }
               streamRendered = true;
               setTurnAiMessages(buildStreamAiMsgs(fullPS));
             },
-            // 토론 모드: 섹션 도착 즉시 토론 말풍선 갱신
+            // 토론 모드: 섹션 도착 즉시 토론 말풍선 갱신. 섹션 항목도 에이전트 순서로 정렬한다.
             onDebateSection: (d) => {
               if (!d || !d.section) return;
               if (d.section === 'debateSummary') debateAcc.debateSummary = d.content || '';
-              else debateAcc[d.section] = d.items || [];
+              else debateAcc[d.section] = sortByAgentOrder(d.items || []);
               streamRendered = true;
               setTurnAiMessages([buildDebateTurnMessage(debateAcc, userMsg.id, ts)]);
             },
@@ -1398,7 +1264,7 @@ export default function StudyMate() {
                               성격 검증 {msg.pv.score.toFixed(2)} {msg.pv.passed ? '통과' : '보완 필요'}
                             </div>
                           )}
-                          {/* '생성과정 보기/접기' UI는 노출하지 않는다. processSteps는 결과 말풍선(1차/2차/3차)으로만 표시한다. */}
+                          {/* 단계 펼침/접힘 UI는 노출하지 않는다. processSteps는 결과 말풍선(1차/2차/3차)으로만 표시한다. */}
                           <div className="chat-bubble-time">{formatTime(msg.createdAt)}</div>
                         </div>
                       );
