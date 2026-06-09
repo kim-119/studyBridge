@@ -56,6 +56,129 @@ const STAGE_BADGES = {
 
 const pvForName = (pvSummary, name) => (pvSummary || []).find((p) => p.agentName === name) || null;
 
+const DEBATE_MODE_VALUES = new Set(['debate', 'discussion', 'tikitaka', 'multi_agent_discussion', '토론', '토론 모드']);
+const isDebateModeValue = (value) => DEBATE_MODE_VALUES.has(String(value || '').trim().toLowerCase());
+
+const debateDisplayName = (row, fallbackIndex = 0) => {
+  const idx = row?.agentIndex ?? row?.fromAgentIndex ?? row?.toAgentIndex ?? fallbackIndex + 1;
+  const name = row?.agentName ?? row?.fromAgentName ?? row?.toAgentName ?? row?.fromAgent ?? row?.toAgent ?? 'AI';
+  return row?.displayName || `에이전트 ${idx}(${name})`;
+};
+
+const normalizeDebateList = (rows, type) => (rows || []).map((row, idx) => {
+  if (type === 'feedback') {
+    const fromIdx = row.fromAgentIndex ?? idx + 1;
+    const toIdx = row.toAgentIndex ?? 1;
+    const fromName = row.fromAgentName || row.fromAgent || 'AI';
+    const toName = row.toAgentName || row.toAgent || 'AI';
+    return {
+      fromAgentIndex: fromIdx,
+      fromAgentName: fromName,
+      toAgentIndex: toIdx,
+      toAgentName: toName,
+      title: row.title || `에이전트 ${fromIdx}(${fromName}) → 에이전트 ${toIdx}(${toName})`,
+      feedback: row.feedback || row.answer || row.content || '',
+    };
+  }
+  const agentIndex = row.agentIndex ?? idx + 1;
+  const agentName = row.agentName || row.agent_name || row.name || 'AI';
+  return {
+    agentIndex,
+    agentName,
+    displayName: row.displayName || `에이전트 ${agentIndex}(${agentName})`,
+    answer: row.answer || row.content || row.feedback || '',
+  };
+});
+
+const buildDebatePayload = (data) => {
+  if (!data) return null;
+  const ps = data.processSteps || {};
+  const initialAnswers = normalizeDebateList(data.initialAnswers || ps.initialAnswers, 'answer');
+  const revisedAnswers = normalizeDebateList(data.revisedAnswers || ps.revisedAnswers, 'answer');
+  let peerFeedbacks = data.peerFeedbacks;
+  if (!peerFeedbacks && ps.peerFeedback) {
+    const nameToIndex = new Map(initialAnswers.map((row) => [row.agentName, row.agentIndex]));
+    peerFeedbacks = ps.peerFeedback.map((fb, idx) => {
+      const fromName = fb.fromAgent || fb.fromAgentName || 'AI';
+      const toName = fb.toAgent || fb.toAgentName || 'AI';
+      const fromIdx = nameToIndex.get(fromName) || idx + 1;
+      const toIdx = nameToIndex.get(toName) || ((idx + 1) % Math.max(initialAnswers.length, 1)) + 1;
+      return {
+        fromAgentIndex: fromIdx,
+        fromAgentName: fromName,
+        toAgentIndex: toIdx,
+        toAgentName: toName,
+        title: fb.title || `에이전트 ${fromIdx}(${fromName}) → 에이전트 ${toIdx}(${toName})`,
+        feedback: fb.feedback || '',
+      };
+    });
+  }
+  peerFeedbacks = normalizeDebateList(peerFeedbacks || [], 'feedback');
+  const debateSummary = data.debateSummary || ps.debateSummary || '';
+  const hasExplicitDebateMode = isDebateModeValue(data.mode || data.learningMode);
+  const hasDebateStructure = peerFeedbacks.length > 0 || revisedAnswers.length > 0 || !!debateSummary ||
+    (Array.isArray(data.peerFeedbacks) && data.peerFeedbacks.length > 0) ||
+    (Array.isArray(data.revisedAnswers) && data.revisedAnswers.length > 0) ||
+    (typeof data.debateSummary === 'string' && data.debateSummary.trim().length > 0);
+  if (!hasExplicitDebateMode && !hasDebateStructure) return null;
+  return { initialAnswers, peerFeedbacks, revisedAnswers, debateSummary };
+};
+
+
+const DebateRenderer = ({ debate }) => {
+  if (!debate) return null;
+  const sectionStyle = { display: 'flex', flexDirection: 'column', gap: '8px' };
+  const titleStyle = { fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' };
+  const cardStyle = { padding: '11px 12px', borderRadius: '8px', background: 'rgba(0,0,0,0.035)', border: '1px solid rgba(0,0,0,0.06)' };
+  const metaStyle = { fontSize: '12px', fontWeight: 800, marginBottom: '5px', color: 'var(--color-text-main)' };
+  const bodyStyle = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', color: 'var(--color-text-muted)', fontSize: '13px', lineHeight: 1.55 };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      {debate.initialAnswers?.length > 0 && (
+        <div style={sectionStyle}>
+          <div style={titleStyle}>1차 의견</div>
+          {debate.initialAnswers.map((row, idx) => (
+            <div key={`debate-initial-${idx}`} style={cardStyle}>
+              <div style={metaStyle}>{debateDisplayName(row, idx)}</div>
+              <div style={bodyStyle}>{row.answer}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {debate.peerFeedbacks?.length > 0 && (
+        <div style={sectionStyle}>
+          <div style={titleStyle}>서로 피드백</div>
+          {debate.peerFeedbacks.map((row, idx) => (
+            <div key={`debate-feedback-${idx}`} style={{ ...cardStyle, borderLeft: '3px solid #ef4444' }}>
+              <div style={metaStyle}>{row.title}</div>
+              <div style={bodyStyle}>{row.feedback}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {debate.revisedAnswers?.length > 0 && (
+        <div style={sectionStyle}>
+          <div style={titleStyle}>보완 답변</div>
+          {debate.revisedAnswers.map((row, idx) => (
+            <div key={`debate-revised-${idx}`} style={cardStyle}>
+              <div style={metaStyle}>{debateDisplayName(row, idx)}</div>
+              <div style={bodyStyle}>{row.answer}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {debate.debateSummary && (
+        <div style={sectionStyle}>
+          <div style={titleStyle}>토론 정리</div>
+          <div style={{ ...cardStyle, background: 'rgba(14,165,233,0.08)' }}>
+            <div style={bodyStyle}>{debate.debateSummary}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // processSteps(전체 map) → 결과 말풍선 배열. 토론 응답이면 토론 4섹션, 아니면 1/2/3 단계.
 const buildStageBubbles = (ps, parentId, createdAt) => {
   if (!ps) return [];
@@ -108,8 +231,17 @@ const explodeHistoryToStageBubbles = (history) => {
   const out = [];
   const seenTurn = new Set();
   for (const msg of history) {
+    const debate = msg && msg.sender === 'AI' ? buildDebatePayload(msg) : null;
+    if (debate) {
+      const debateKey = `${debate.debateSummary || ''}::${debate.initialAnswers?.[0]?.answer || ''}`.slice(0, 240);
+      const turnKey = msg.parentId ?? `debate::${debateKey}`;
+      if (seenTurn.has(turnKey)) continue;
+      seenTurn.add(turnKey);
+      out.push({ ...msg, debate, processSteps: undefined, content: msg.content || '토론 결과' });
+      continue;
+    }
     const ps = msg && msg.sender === 'AI' ? msg.processSteps : null;
-    const hasStages = ps && ((ps.initialAnswers && ps.initialAnswers.length) || (ps.validatedAnswers && ps.validatedAnswers.length) || (ps.peerFeedback && ps.peerFeedback.length) || (ps.revisedAnswers && ps.revisedAnswers.length) || ps.debateSummary);
+    const hasStages = ps && ((ps.initialAnswers && ps.initialAnswers.length) || (ps.validatedAnswers && ps.validatedAnswers.length) || (ps.peerFeedback && ps.peerFeedback.length));
     if (hasStages) {
       const turnKey = msg.parentId ?? msg.id;
       if (seenTurn.has(turnKey)) continue; // 같은 턴 중복 에이전트 메시지는 건너뜀
@@ -587,6 +719,9 @@ export default function StudyMate() {
     // 4. 해당 방의 타이핑/로딩 상태 활성화 (전체 방 블로킹 X)
     setTypingRooms((prev) => ({ ...prev, [agentId]: true }));
 
+    const activeLearningMode = learningMode || selectedAgent?.learningMode || 'basic';
+    const isDebateTurn = isDebateModeValue(activeLearningMode);
+
     // 이번 턴의 AI 메시지를 통째로 교체(누적 갱신)한다. 단계 도착마다 호출된다.
     const setTurnAiMessages = (aiMsgs) => {
       const merge = (list) => {
@@ -604,7 +739,7 @@ export default function StudyMate() {
     try {
       // ── P2: 단계별 SSE 선출력 우선 시도 (실패 시 블로킹 폴백) ──
       const STREAMING_ENABLED = (import.meta.env.VITE_STUDYMATE_SSE ?? 'true') !== 'false';
-      if (STREAMING_ENABLED) {
+      if (STREAMING_ENABLED && !isDebateTurn) {
         const fullPS = { initialAnswers: [], validatedAnswers: [], peerFeedback: [], personalityValidationSummary: [] };
         let streamRendered = false;
         let streamCompleted = false;
@@ -612,7 +747,7 @@ export default function StudyMate() {
           await agentService.streamMessage(userId, agentId, {
             message: inputMsg,
             // 사용자가 고른 학습모드(라디오 상태)를 우선 전송한다(토론/소크라테스 분기).
-            learningMode: learningMode || selectedAgent?.learningMode || 'basic',
+            learningMode: activeLearningMode,
             rounds: 1,
           }, {
             onStageComplete: (d) => {
@@ -658,7 +793,7 @@ export default function StudyMate() {
       const res = await agentService.sendMessage(userId, agentId, {
         message: inputMsg,
         // 사용자가 고른 학습모드(라디오) 우선, 없으면 방 설정/기본 채팅
-        learningMode: learningMode || selectedAgent?.learningMode || 'basic',
+        learningMode: activeLearningMode,
         rounds: 1, // 프론트단에서 타임아웃 방지를 위해 강제로 1라운드(병렬 단답)만 요청
       });
       console.debug('[StudyMate] chat response', res);
@@ -695,12 +830,23 @@ export default function StudyMate() {
         return; // alert 없이 종료 (finally에서 typing 상태 해제)
       }
 
-      // 블로킹 폴백도 단계 말풍선(1→2→3)으로 통일한다. 단계가 없으면 일반 답변 버블로 표시.
       let newMsgs = [];
-      const blockingStages = buildStageBubbles(res.processSteps, userMsg.id, new Date().toISOString());
-      if (blockingStages.length > 0) {
-        newMsgs = blockingStages;
-      } else if (res.replies && res.replies.length > 0) {
+      const debatePayload = buildDebatePayload(res);
+      if (debatePayload) {
+        newMsgs = [{
+          id: Date.now() + 1,
+          content: '토론 결과',
+          sender: 'AI',
+          senderName: '토론 모드',
+          createdAt: new Date().toISOString(),
+          parentId: userMsg.id,
+          debate: debatePayload,
+        }];
+      } else {
+        const blockingStages = buildStageBubbles(res.processSteps, userMsg.id, new Date().toISOString());
+        if (blockingStages.length > 0) {
+          newMsgs = blockingStages;
+        } else if (res.replies && res.replies.length > 0) {
         newMsgs = res.replies.map((reply, index) => {
           const senderName = reply.agentName || reply.agent_name;
           return {
@@ -714,16 +860,17 @@ export default function StudyMate() {
             processSteps: res.processSteps,
           };
         });
-      } else {
-        newMsgs = [{
-          id: Date.now() + 1,
-          content: res.answer,
-          sender: 'AI',
-          senderName: selectedAgent.name,
-          createdAt: new Date().toISOString(),
-          parentId: userMsg.id,
-          processSteps: res.processSteps,
-        }];
+        } else {
+          newMsgs = [{
+            id: Date.now() + 1,
+            content: res.answer,
+            sender: 'AI',
+            senderName: selectedAgent.name,
+            createdAt: new Date().toISOString(),
+            parentId: userMsg.id,
+            processSteps: res.processSteps,
+          }];
+        }
       }
       // 태깅 초기화
       pendingDetailParentId.current = null;
@@ -1072,6 +1219,7 @@ export default function StudyMate() {
                   ) : (
                     chatHistory.map((msg, idx) => {
                       const isUser = msg.sender === 'USER';
+                      const debatePayload = !isUser ? (msg.debate || buildDebatePayload(msg)) : null;
                       const senderName = isUser ? '나' : (msg.senderName || msg.sender_name || selectedAgent.name);
 
                       let agentTheme = { bg: '#F3F4F6', icon: '🤖', tagBg: '#E5E7EB', accent: '#4B5563' };
@@ -1114,11 +1262,17 @@ export default function StudyMate() {
                               </span>
                             )}
                           </div>
-                          <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none' }}>
-                            {msg.content}
-                          </div>
+                          {debatePayload ? (
+                            <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', maxWidth: '100%' }}>
+                              <DebateRenderer debate={debatePayload} />
+                            </div>
+                          ) : (
+                            <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none' }}>
+                              {msg.content}
+                            </div>
+                          )}
                           {/* 검증 답변 말풍선엔 사용한 웹 근거 출처 칩을 단다 */}
-                          {!isUser && Array.isArray(msg.sources) && msg.sources.length > 0 && (
+                          {!debatePayload && !isUser && Array.isArray(msg.sources) && msg.sources.length > 0 && (
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
                               <span style={{ fontSize: '10px', color: '#9ca3af', alignSelf: 'center' }}>근거:</span>
                               {msg.sources.slice(0, 6).map((s, si) => (
@@ -1136,13 +1290,13 @@ export default function StudyMate() {
                             </div>
                           )}
                           {/* 피드백 말풍선엔 성격 검증 점수 배지 */}
-                          {!isUser && msg.pv && typeof msg.pv.score === 'number' && (
+                          {!debatePayload && !isUser && msg.pv && typeof msg.pv.score === 'number' && (
                             <div style={{ marginTop: '4px', fontSize: '10px', color: msg.pv.passed ? '#16a34a' : '#dc2626' }}>
                               성격 검증 {msg.pv.score.toFixed(2)} {msg.pv.passed ? '통과' : '보완 필요'}
                             </div>
                           )}
                           {/* 결과 말풍선이 아닌(레거시/단일) 메시지에만 상세과정 아코디언 유지(내부 로그는 숨김) */}
-                          {!isUser && !msg.badge && <ProcessStepsAccordion processSteps={msg.processSteps} />}
+                          {!debatePayload && !isUser && !msg.badge && <ProcessStepsAccordion processSteps={msg.processSteps} />}
                           <div className="chat-bubble-time">{formatTime(msg.createdAt)}</div>
                         </div>
                       );

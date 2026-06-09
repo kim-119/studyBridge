@@ -23,6 +23,7 @@ from app.schemas.multi_chat_schema import (
     GenerationConfigMetadata, RetrievalMetadata, DepthValidationMetadata, PromptingMetadata,
     ProcessSteps, InitialAnswerStep, ValidatedAnswerStep, PeerFeedbackStep,
     PersonalityValidationItem, StageInfo, AgentAnswerMetadata,
+    DebateInitialAnswer, DebatePeerFeedback, DebateRevisedAnswer,
 )
 from app.services.prompt_builder import build_agent_system_prompt, build_tikitaka_role_prompt
 from app.services.personality_prompt_builder import to_profile_key, build_persona_directive
@@ -646,6 +647,78 @@ _DEBATE_STANCES = [
     "오해·함정 중심 입장(사람들이 흔히 틀리는 지점이 핵심이라고 주장)",
     "비판·한계 중심 입장(이 개념/주장의 한계와 반례가 핵심이라고 주장)",
 ]
+_DEBATE_MODE_ALIASES = {"debate", "discussion", "tikitaka", "multi_agent_discussion", "토론", "토론 모드"}
+_DEBATE_CRITIQUE_TERMS = ("부족", "보완", "틀림", "불명확", "오해", "빠짐", "관점", "반박", "부정확", "약점", "한계")
+_DEBATE_REQUIRED_SYSTEM_PROMPT = (
+    "너희는 각자 독립된 에이전트다. 각자 답변만 하고 끝내면 안 된다. "
+    "먼저 1차 의견을 낸 뒤, 반드시 다른 에이전트의 답변을 직접 지목해서 부족한 점, "
+    "틀린 점, 보완할 점, 관점 차이를 말해야 한다. 그 다음 받은 피드백을 반영해 "
+    "보완 답변을 작성한다. 출력은 반드시 initialAnswers, peerFeedbacks, revisedAnswers, "
+    "debateSummary 구조를 따른다. peerFeedbacks가 비어 있으면 실패다."
+)
+
+
+def _debate_display_name(agent: AgentProfile, index: int) -> str:
+    return f"에이전트 {index}({agent.name})"
+
+
+def _ensure_debate_agents(agents: List[AgentProfile]) -> List[AgentProfile]:
+    if len(agents) >= 2:
+        return agents
+    base = list(agents) if agents else [_DEFAULT_AGENT]
+    base.append(AgentProfile(
+        id=-2, agentId=-2, name="비판 검토 에이전트", role="debater",
+        personality="비판형", personalityStrength="moderate", knowledgeLevel=base[0].knowledgeLevel or "학사",
+        customInstruction="다른 에이전트의 주장에 부족한 점과 보완할 점을 논리적으로 지적한다.",
+    ))
+    return base
+
+
+def _feedback_mentions_target(feedback: str, target: AgentProfile, target_index: int) -> bool:
+    text = feedback or ""
+    return target.name in text or f"에이전트 {target_index}" in text
+
+
+def _feedback_has_critique(feedback: str) -> bool:
+    text = feedback or ""
+    formal_only = ("좋은 답변입니다", "잘 설명했습니다", "동의합니다", "보완할 점이 없습니다")
+    if any(bad in text for bad in formal_only) and not any(term in text for term in _DEBATE_CRITIQUE_TERMS):
+        return False
+    return any(term in text for term in _DEBATE_CRITIQUE_TERMS)
+
+
+def _valid_debate_feedback(feedback: str, target: AgentProfile, target_index: int) -> bool:
+    return bool((feedback or "").strip()) and _feedback_mentions_target(feedback, target, target_index) and _feedback_has_critique(feedback)
+
+
+def _fallback_debate_feedback(from_agent: AgentProfile, from_index: int, target: AgentProfile, target_index: int) -> str:
+    variants = [
+        f"{_debate_display_name(target, target_index)}의 답변은 핵심 설명은 있지만, {_debate_display_name(from_agent, from_index)}의 관점과 비교했을 때 구체적인 예시가 부족합니다. 사용자가 개념을 실제 상황에 연결하기 어렵기 때문에 예시 보완이 필요합니다.",
+        f"{_debate_display_name(target, target_index)}의 답변은 쉽게 설명하려는 장점은 있지만, 기술적 정확성이 부족합니다. 특히 용어 정의와 실제 작동 방식이 분리되어 있어 보완이 필요합니다.",
+        f"{_debate_display_name(target, target_index)}의 답변은 전문성은 있지만, 초보자가 이해하기에는 설명이 압축되어 있습니다. 개념을 처음 접하는 사용자를 위해 쉬운 비유나 단계적 설명이 필요합니다.",
+    ]
+    return variants[(from_index + target_index) % len(variants)]
+
+
+def _debate_initial_records(agents: List[AgentProfile], initial_map: Dict[str, str]) -> List[DebateInitialAnswer]:
+    return [DebateInitialAnswer(
+        agentIndex=i + 1, agentName=a.name, displayName=_debate_display_name(a, i + 1),
+        answer=initial_map.get(a.name, ""),
+    ) for i, a in enumerate(agents)]
+
+
+def _debate_revised_records(agents: List[AgentProfile], revised_map: Dict[str, str]) -> List[DebateRevisedAnswer]:
+    return [DebateRevisedAnswer(
+        agentIndex=i + 1, agentName=a.name, displayName=_debate_display_name(a, i + 1),
+        answer=revised_map.get(a.name, ""),
+    ) for i, a in enumerate(agents)]
+
+
+def _peer_step_from_debate_feedback(item: DebatePeerFeedback, provider: str, elapsed_ms: int) -> PeerFeedbackStep:
+    return PeerFeedbackStep(
+        fromAgent=item.fromAgentName, toAgent=item.toAgentName, feedback=item.feedback,
+        fromAgentId=None, targetAgentIds=[], personalityType=None, provider=provider, elapsedMs=elapsed_ms,
+    )
 
 
 def _compute_debate_opening(request: MultiChatRequest, agents: List[AgentProfile], context: str):
@@ -661,7 +734,7 @@ def _compute_debate_opening(request: MultiChatRequest, agents: List[AgentProfile
 
     for i, a in enumerate(agents):
         stance = _DEBATE_STANCES[i % len(_DEBATE_STANCES)]
-        system = build_agent_system_prompt(a, context)
+        system = build_agent_system_prompt(a, context) + "\n\n" + _DEBATE_REQUIRED_SYSTEM_PROMPT
         if not transcript:
             turn_instr = (
                 "너는 첫 번째 토론자다. 이 주제에 대한 '너만의 분명한 입장'을 한 문장으로 못박고, "
@@ -705,64 +778,108 @@ def _compute_debate_opening(request: MultiChatRequest, agents: List[AgentProfile
 
 def _compute_debate_rebuttal(request: MultiChatRequest, agents: List[AgentProfile],
                              opening_map: Dict[str, str]):
-    """상호 반박: 각 토론자가 다른 토론자들의 입론을 비판·반박하며 청중을 설득한다."""
+    """상호 반박: 모든 토론자 쌍(from -> to)에 대해 실제 대상 지목 피드백을 보장한다."""
     provider = A.resolve_provider_for_stage(3)
     t = time.time()
     peer_steps: List[PeerFeedbackStep] = []
+    peer_feedbacks: List[DebatePeerFeedback] = []
     provs: set = set()
     if len(agents) < 2:
-        return peer_steps, provider, 0
+        return peer_steps, peer_feedbacks, provider, 0
 
-    def _run(frm: AgentProfile):
-        targets = [(b, opening_map.get(b.name, "")) for b in agents if b.name != frm.name]
-        target_names = ", ".join(b.name for b, _ in targets)
-        block = "\n\n".join(f"[{b.name}의 주장]\n{ans}" for b, ans in targets)
-        system = build_agent_system_prompt(frm)
-        user = (
-            f"[토론 주제] {request.message}\n\n{block}\n\n"
-            "[이번 단계: 반박]\n"
-            f"위 다른 토론자({target_names})의 주장을 반박하라. "
-            "그들 근거의 약점·허점·놓친 관점을 구체적으로 짚고, 왜 네 입장이 더 타당한지 "
-            "청중(사용자)에게 설득력 있게 어필하라. 형식적 칭찬은 금지하고 실제 반론을 펴라.\n\n"
-            + build_persona_directive(frm.personality or frm.tone or frm.style, frm.customInstruction)
-        )
+    all_openings = "\n\n".join(
+        f"[{_debate_display_name(a, i + 1)}]\n{opening_map.get(a.name, '')}"
+        for i, a in enumerate(agents)
+    )
+
+    def _run(pair):
+        from_index, frm, target_index, target = pair
+        target_answer = opening_map.get(target.name, "")
+        system = build_agent_system_prompt(frm) + "\n\n" + _DEBATE_REQUIRED_SYSTEM_PROMPT
         params = A.resolve_agent_generation_params(_personality_type(frm), 3)
         t_a = time.time()
-        try:
-            fb, prov = _call_llm_with_params(params["provider"], system, user, params,
-                                             knowledge_level=frm.knowledgeLevel)
-            if _is_llm_fallback(fb):
-                raise ValueError("stage3 fallback marker")
-        except Exception as e:
-            logger.warning("debate 반박 %s 실패: %s", frm.name, e)
-            fb = (f"{target_names}의 주장은 근거 보강이 더 필요하다. "
-                  "핵심 개념의 정확성과 반례 가능성을 다시 점검해야 설득력이 생긴다.")
+        prov = params.get("provider", provider)
+        feedback = ""
+        for attempt in range(2):
+            retry = "\n이전 피드백은 대상 지목이나 비평성이 부족했다. 이번에는 반드시 대상 이름과 부족/보완/오해/관점 차이를 포함하라." if attempt else ""
+            user = (
+                f"[토론 주제] {request.message}\n\n"
+                f"[전체 1차 의견]\n{all_openings}\n\n"
+                f"[네가 평가할 대상] {_debate_display_name(target, target_index)}\n"
+                f"[대상 답변]\n{target_answer}\n\n"
+                "[이번 단계: 서로 피드백]\n"
+                f"너는 {_debate_display_name(frm, from_index)}다. "
+                f"반드시 {_debate_display_name(target, target_index)}의 답변을 직접 지목해서 평가하라. "
+                "형식적 칭찬, 단순 동의, '보완할 점 없음'은 실패다. "
+                "부족한 점, 틀린 점, 불명확한 점, 오해 가능성, 관점 차이 중 최소 하나를 구체적으로 지적하고 "
+                "사용자가 왜 보완 설명을 필요로 하는지 말하라. 2~4문장으로 작성하라."
+                f"{retry}\n\n"
+                + build_persona_directive(frm.personality or frm.tone or frm.style, frm.customInstruction)
+            )
+            try:
+                candidate, prov = _call_llm_with_params(params["provider"], system, user, params,
+                                                        knowledge_level=frm.knowledgeLevel)
+                if candidate and not _is_llm_fallback(candidate) and _valid_debate_feedback(candidate, target, target_index):
+                    feedback = candidate.strip()
+                    break
+            except Exception as e:
+                logger.warning("debate 피드백 %s -> %s 생성 실패(attempt=%d): %s", frm.name, target.name, attempt + 1, e)
+        if not feedback:
+            feedback = _fallback_debate_feedback(frm, from_index, target, target_index)
             prov = "fallback"
-        target_ids = [b.agentId for b in agents if b.name != frm.name and b.agentId is not None]
-        step = PeerFeedbackStep(
-            fromAgent=frm.name, toAgent=target_names, feedback=fb,
-            fromAgentId=frm.agentId, targetAgentIds=target_ids,
-            personalityType=_personality_type(frm), provider=prov,
-            elapsedMs=int((time.time() - t_a) * 1000),
-        )
-        return step, prov
 
-    for step, prov in _run_pool(_run, agents, True):
+        item = DebatePeerFeedback(
+            fromAgentIndex=from_index,
+            fromAgentName=frm.name,
+            toAgentIndex=target_index,
+            toAgentName=target.name,
+            title=f"{_debate_display_name(frm, from_index)} → {_debate_display_name(target, target_index)}",
+            feedback=feedback,
+        )
+        elapsed_ms = int((time.time() - t_a) * 1000)
+        return item, _peer_step_from_debate_feedback(item, prov, elapsed_ms), prov
+
+    pairs = [
+        (i + 1, frm, j + 1, target)
+        for i, frm in enumerate(agents)
+        for j, target in enumerate(agents)
+        if i != j
+    ]
+    for item, step, prov in _run_pool(_run, pairs, True):
+        peer_feedbacks.append(item)
         peer_steps.append(step)
         if prov:
             provs.add(prov)
+
+    if not peer_feedbacks and len(agents) >= 2:
+        frm, target = agents[0], agents[1]
+        item = DebatePeerFeedback(
+            fromAgentIndex=1,
+            fromAgentName=frm.name,
+            toAgentIndex=2,
+            toAgentName=target.name,
+            title=f"{_debate_display_name(frm, 1)} → {_debate_display_name(target, 2)}",
+            feedback=_fallback_debate_feedback(frm, 1, target, 2),
+        )
+        peer_feedbacks.append(item)
+        peer_steps.append(_peer_step_from_debate_feedback(item, "fallback", 0))
+        provs.add("fallback")
+
     elapsed = int((time.time() - t) * 1000)
     if provs:
         provider = ",".join(sorted(provs))
-    logger.info("[StudyMate] debate 반박 elapsedMs=%d feedbacks=%d", elapsed, len(peer_steps))
-    return peer_steps, provider, elapsed
+    logger.info("[StudyMate] debate pairwise 피드백 elapsedMs=%d feedbacks=%d", elapsed, len(peer_feedbacks))
+    return peer_steps, peer_feedbacks, provider, elapsed
 
-
-def _feedback_received_map(agents: List[AgentProfile], peer_steps) -> Dict[str, str]:
-    """각 에이전트가 '받은' 반박을 모은다(다른 토론자들의 반론). 최종 변론 입력용."""
+def _feedback_received_map(agents: List[AgentProfile], peer_feedbacks: List[DebatePeerFeedback]) -> Dict[str, str]:
+    """각 에이전트가 받은 pairwise 피드백을 모은다. 최종 변론 입력용."""
     out: Dict[str, str] = {}
     for a in agents:
-        parts = [f"[{s.fromAgent}의 지적]\n{s.feedback}" for s in peer_steps if s.fromAgent != a.name]
+        parts = [
+            f"[{fb.title}]\n{fb.feedback}"
+            for fb in peer_feedbacks
+            if fb.toAgentName == a.name
+        ]
         out[a.name] = "\n\n".join(parts)
     return out
 
@@ -776,7 +893,7 @@ def _compute_debate_revision(request: MultiChatRequest, agents: List[AgentProfil
     def _run(a: AgentProfile):
         own = initial_map.get(a.name, "")
         fb = fb_map.get(a.name, "")
-        system = build_agent_system_prompt(a)
+        system = build_agent_system_prompt(a) + "\n\n" + _DEBATE_REQUIRED_SYSTEM_PROMPT
         user = (
             f"[토론 주제] {request.message}\n\n"
             f"[너의 1차 입론]\n{own}\n\n"
@@ -820,7 +937,7 @@ def _compute_debate_summary(request: MultiChatRequest, agents: List[AgentProfile
                             revised_map: Dict[str, str]) -> str:
     """심사 정리: 양측 핵심 논거를 공정히 정리하고 최종 판단을 청중(사용자)에게 위임한다."""
     block = "\n\n".join(f"[{a.name}]\n{revised_map.get(a.name, '')}" for a in agents)
-    system = (
+    system = _DEBATE_REQUIRED_SYSTEM_PROMPT + "\n\n" + (
         "너는 토론 심사 진행자다. 양측 토론자의 가장 강한 논거를 어느 한쪽으로 치우치지 않게 공정히 정리하고, "
         "최종 판단은 청중에게 맡긴다. 정답을 단정하지 않는다. 반드시 한국어로."
     )
@@ -1114,33 +1231,52 @@ def _run_debate_mode(
     rag_context: str,
 ) -> MultiChatResponse:
     """
-    토론 모드 — 사용자의 실제 에이전트들이 [1차 의견 → 상호 피드백 → 보완 답변 → 종합 정리]로 토론한다.
-    (이전의 supporter/critic/moderator 고정역할 체인을 대체. 에이전트 성격/말투가 그대로 살아난다.)
-    단순 답변 나열이 아니라 반드시 peerFeedback + revisedAnswers를 생성한다.
+    토론 모드 전용 파이프라인.
+    Step 1 initialAnswers -> Step 2 peerFeedbacks -> Step 3 revisedAnswers -> Step 4 debateSummary.
+    일반 multi-agent 답변 나열로 폴백하지 않는다.
     """
-    agents = active_agents or [_DEFAULT_AGENT]
+    agents = _ensure_debate_agents(active_agents)
     delay_ms = _get_display_delay_ms()
     context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
     context = _prep_default_context(context, rag_context)
 
-    # 1) 1차 입론 — 각 토론자가 서로 다른 입장을 정해 근거로 주장(청중 설득)
+    # Step 1. 각 에이전트의 1차 의견 생성
     initial_steps, initial_map, _p1, _e1 = _compute_debate_opening(request, agents, context)
+    initial_answers = _debate_initial_records(agents, initial_map)
 
-    # 2) 상호 반박 — 다른 토론자의 주장을 비판/반박 (n>=2일 때만)
-    peer_steps, _p3, _e3 = _compute_debate_rebuttal(request, agents, initial_map)
+    # Step 2. 전체 1차 의견을 다시 넣고 에이전트 간 상호 피드백 생성(pairwise + fallback 보장)
+    peer_steps, peer_feedbacks, _p3, _e3 = _compute_debate_rebuttal(request, agents, initial_map)
+    if not peer_feedbacks:
+        # 방어선: 토론 모드에서 빈 peerFeedbacks는 허용하지 않는다.
+        frm, target = agents[0], agents[1]
+        fallback = DebatePeerFeedback(
+            fromAgentIndex=1,
+            fromAgentName=frm.name,
+            toAgentIndex=2,
+            toAgentName=target.name,
+            title=f"{_debate_display_name(frm, 1)} → {_debate_display_name(target, 2)}",
+            feedback=_fallback_debate_feedback(frm, 1, target, 2),
+        )
+        peer_feedbacks = [fallback]
+        peer_steps = [_peer_step_from_debate_feedback(fallback, "fallback", 0)]
 
-    # 3) 최종 변론 — 받은 반박에 재반론 + 입장 강화(설득)
-    fb_map = _feedback_received_map(agents, peer_steps)
+    # Step 3. 1차 의견 + 받은 피드백을 넣고 보완 답변 생성
+    fb_map = _feedback_received_map(agents, peer_feedbacks)
     revised_steps, revised_map, _p2, _e2 = _compute_debate_revision(request, agents, initial_map, fb_map)
+    revised_answers = _debate_revised_records(agents, revised_map)
 
-    # 4) 심사 정리 — 양측 논거 공정 정리 + 최종 판단 청중 위임 (2명 이상일 때)
-    summary = _compute_debate_summary(request, agents, revised_map) if len(agents) >= 2 else ""
+    # Step 4. 전체 토론 정리 생성
+    summary = _compute_debate_summary(request, agents, revised_map)
+    if not summary:
+        summary = (
+            "토론 정리: 각 에이전트는 같은 주제를 서로 다른 관점에서 설명했고, 핵심은 1차 답변을 그대로 받아들이기보다 "
+            "부족한 점과 오해 가능성을 비교해 개념 정의, 실제 예시, 기술적 정확성을 함께 확인하는 것입니다."
+        )
 
-    # 사용자에게 보이는 최종 답변 = 보완 답변
     answers: List[AgentAnswer] = []
     for idx, a in enumerate(agents):
         answers.append(AgentAnswer(
-            agentName=a.name,
+            agentName=_debate_display_name(a, idx + 1),
             answer=revised_map.get(a.name) or initial_map.get(a.name, ""),
             agentId=a.agentId,
             role="debater",
@@ -1153,7 +1289,6 @@ def _run_debate_mode(
             ),
         ))
 
-    # 성격(페르소나) 검증 — 보완 답변 기준
     pv_summary = _validate_mode_personas(
         agents,
         [AgentAnswer(agentName=a.name, answer=revised_map.get(a.name, "")) for a in agents],
@@ -1166,21 +1301,35 @@ def _run_debate_mode(
         debateSummary=summary,
         personalityValidationSummary=pv_summary,
     )
-    has_feedback = len(peer_steps) > 0
+    issues = []
+    if len(initial_answers) < 2:
+        issues.append("initialAnswers 길이가 2보다 작습니다.")
+    if len(peer_feedbacks) < 1:
+        issues.append("peerFeedbacks가 비어 있습니다.")
+    if not revised_answers and not summary:
+        issues.append("revisedAnswers 또는 debateSummary가 필요합니다.")
+    invalid_feedbacks = [
+        fb.title for fb in peer_feedbacks
+        if not _valid_debate_feedback(fb.feedback, agents[fb.toAgentIndex - 1], fb.toAgentIndex)
+    ]
+    if invalid_feedbacks:
+        issues.append("비평성 또는 대상 지목이 약한 피드백: " + ", ".join(invalid_feedbacks[:3]))
+
     logger.info("[StudyMate] debate 완료 agents=%d initial=%d feedback=%d revised=%d summary=%s",
-                len(agents), len(initial_steps), len(peer_steps), len(revised_steps), bool(summary))
+                len(agents), len(initial_answers), len(peer_feedbacks), len(revised_answers), bool(summary))
     return MultiChatResponse(
-        mode=request.mode,
+        mode="debate",
         answers=answers,
-        status="COMPLETED",
+        status="COMPLETED" if not issues else "PARTIAL_SUCCESS",
         question=request.message,
-        validation=ValidationSummary(
-            passed=has_feedback,
-            issues=[] if has_feedback else ["토론에는 2명 이상의 에이전트가 필요합니다(상호 피드백 미생성)."],
-        ),
+        validation=ValidationSummary(passed=not issues, issues=issues),
+        feedbacks=[fb.model_dump() for fb in peer_feedbacks],
+        initialAnswers=initial_answers,
+        peerFeedbacks=peer_feedbacks,
+        revisedAnswers=revised_answers,
+        debateSummary=summary,
         processSteps=process_steps,
     )
-
 
 def _run_socratic_mode(
     request: MultiChatRequest,
@@ -1674,7 +1823,7 @@ def _resolve_mode(request: MultiChatRequest, agent_count: Optional[int] = None) 
 
     base = None
     # 1) 프론트 학습모드 우선
-    if lm == "debate":
+    if lm in _DEBATE_MODE_ALIASES:
         base = "debate"
     elif lm == "socratic":
         base = "socratic"
@@ -1683,7 +1832,7 @@ def _resolve_mode(request: MultiChatRequest, agent_count: Optional[int] = None) 
     # 2) learningMode 미지정 → request.mode 기준
     elif raw == "group_study_ai":
         base = "group_study_ai"
-    elif raw in ("debate", "tikitaka"):  # tikitaka도 토론 파이프라인으로 통일
+    elif raw in _DEBATE_MODE_ALIASES:
         base = "debate"
     elif raw == "socratic":
         base = "socratic"

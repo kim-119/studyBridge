@@ -218,6 +218,29 @@ class PersonalityValidationItem(BaseModel):
     note: Optional[str] = None
 
 
+class DebateInitialAnswer(BaseModel):
+    agentIndex: int
+    agentName: str
+    displayName: str
+    answer: str
+
+
+class DebatePeerFeedback(BaseModel):
+    fromAgentIndex: int
+    fromAgentName: str
+    toAgentIndex: int
+    toAgentName: str
+    title: str
+    feedback: str
+
+
+class DebateRevisedAnswer(BaseModel):
+    agentIndex: int
+    agentName: str
+    displayName: str
+    answer: str
+
+
 class ProcessSteps(BaseModel):
     initialAnswers: List[InitialAnswerStep] = Field(default_factory=list)
     validatedAnswers: List[ValidatedAnswerStep] = Field(default_factory=list)
@@ -250,6 +273,11 @@ class MultiChatResponse(BaseModel):
     question: Optional[str] = Field(None, description="원본 질문")
     validation: Optional[ValidationSummary] = Field(None, description="검증 결과")
     feedbacks: List[Dict[str, Any]] = Field(default_factory=list, description="에이전트 간 피드백")
+    # 토론 모드 전용 top-level 구조. Spring/프론트가 일반 answers 나열 대신 이 구조를 우선 렌더링한다.
+    initialAnswers: List[DebateInitialAnswer] = Field(default_factory=list, description="토론 1차 의견")
+    peerFeedbacks: List[DebatePeerFeedback] = Field(default_factory=list, description="토론 상호 피드백")
+    revisedAnswers: List[DebateRevisedAnswer] = Field(default_factory=list, description="토론 보완 답변")
+    debateSummary: Optional[str] = Field(None, description="토론 정리")
     # 1차/2차/3차 생성 과정 (default 모드에서 생성, Spring이 그대로 패스스루)
     processSteps: Optional[ProcessSteps] = Field(None, description="1차 초안/2차 검증/3차 상호 피드백")
     # 단계별 구조 (provider/elapsedMs 포함, 프론트 stages 우선 렌더링용)

@@ -234,6 +234,18 @@ public class ChatService {
                                 && response.get("personalityValidationSummary") instanceof List
                                 ? (List<Object>) response.get("personalityValidationSummary")
                                 : null;
+                List<Object> initialAnswers = response != null && response.get("initialAnswers") instanceof List
+                                ? (List<Object>) response.get("initialAnswers")
+                                : null;
+                List<Object> peerFeedbacks = response != null && response.get("peerFeedbacks") instanceof List
+                                ? (List<Object>) response.get("peerFeedbacks")
+                                : null;
+                List<Object> revisedAnswers = response != null && response.get("revisedAnswers") instanceof List
+                                ? (List<Object>) response.get("revisedAnswers")
+                                : null;
+                String debateSummary = response != null && response.get("debateSummary") != null
+                                ? response.get("debateSummary").toString()
+                                : null;
                 // processSteps를 JSON 문자열로 직렬화해 AI 메시지와 함께 영속화한다 (새로고침 후 복원용).
                 String processStepsJson = null;
                 if (processSteps != null) {
@@ -332,6 +344,10 @@ public class ChatService {
                                 .messages(discussionMessages.isEmpty() ? null : discussionMessages)
                                 .finalSynthesis(finalSynthesis)
                                 .replies(replies)
+                                .initialAnswers(initialAnswers)
+                                .peerFeedbacks(peerFeedbacks)
+                                .revisedAnswers(revisedAnswers)
+                                .debateSummary(debateSummary)
                                 .processSteps(processSteps)
                                 .stages(stages)
                                 .personalityValidationSummary(personalityValidationSummary)

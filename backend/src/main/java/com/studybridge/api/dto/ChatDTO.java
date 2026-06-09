@@ -99,6 +99,10 @@ public class ChatDTO {
         private List<DiscussionMessage> messages;
         private String finalSynthesis;
         private List<AgentReply> replies;
+        private List<Object> initialAnswers;
+        private List<Object> peerFeedbacks;
+        private List<Object> revisedAnswers;
+        private String debateSummary;
         // 1차/2차/3차 생성 과정 (FastAPI processSteps를 그대로 패스스루, 없으면 null)
         private Map<String, Object> processSteps;
         // 단계별 구조 (provider/elapsedMs 포함) — FastAPI stages 패스스루, 없으면 null
