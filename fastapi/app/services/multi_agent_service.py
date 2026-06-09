@@ -14,7 +14,7 @@ v0.8 추가:
 """
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.schemas.multi_chat_schema import (
@@ -105,6 +105,73 @@ def _get_rag_context(question: str, material_id: Optional[int]) -> str:
     except Exception as e:
         logger.warning("RAG 검색 실패 (계속 진행): %s", e)
         return ""
+
+
+def _gather_web_evidence(question: str, knowledge_level: Optional[str]) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    2차 검증용 웹 근거를 질문당 1회 수집한다(Tavily + Wikipedia + OpenAlex 병렬, best-effort).
+    각 소스는 개별 타임아웃, 전체는 예산 시간 내. 실패한 소스는 조용히 건너뛴다.
+    반환: (evidence_text, sources[{title,url,source}]).
+    """
+    if not A.enable_stage2_web_verify() or not (question or "").strip():
+        return "", []
+
+    src_timeout = A.stage2_web_per_source_timeout()
+    total_timeout = A.stage2_web_total_timeout()
+    max_snips = A.stage2_web_max_snippets()
+
+    def _tavily():
+        from app.services.tavily_service import search_web
+        out = []
+        for r in (search_web(question, max_results=3) or []):
+            out.append({"title": r.get("title", ""), "url": r.get("url", ""),
+                        "snippet": (r.get("content", "") or "")[:400], "source": "Tavily"})
+        return out
+
+    def _wiki():
+        from app.services.wikipedia_service import search_wikipedia
+        out = []
+        for r in (search_wikipedia(question, limit=3) or []):
+            out.append({"title": r.get("title", ""), "url": r.get("url", ""),
+                        "snippet": (r.get("snippet", "") or "")[:400], "source": "Wikipedia"})
+        return out
+
+    def _openalex():
+        from app.services import openalex_service
+        res = openalex_service.search(question, knowledge_level or "학사")
+        out = []
+        for w in (getattr(res, "works", None) or []):
+            title = getattr(w, "display_name", "") or ""
+            abstract = getattr(w, "abstract", "") or ""
+            url = getattr(w, "doi", "") or getattr(w, "id", "") or ""
+            out.append({"title": title, "url": url, "snippet": abstract[:400], "source": "OpenAlex"})
+        return out
+
+    sources: List[Dict[str, Any]] = []
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = {ex.submit(fn): name for fn, name in
+                   ((_tavily, "Tavily"), (_wiki, "Wikipedia"), (_openalex, "OpenAlex"))}
+        for fut in as_completed(futures, timeout=total_timeout + 1):
+            name = futures[fut]
+            remaining = max(1, total_timeout - int(time.time() - t0))
+            try:
+                sources.extend(fut.result(timeout=min(src_timeout, remaining)) or [])
+            except Exception as e:
+                logger.info("2차 웹근거 소스 '%s' 건너뜀: %s", name, e)
+
+    # 스니펫 있는 것만, 최대 N개로 컷
+    sources = [s for s in sources if (s.get("snippet") or s.get("title"))][:max_snips]
+    if not sources:
+        return "", []
+
+    lines = []
+    for i, s in enumerate(sources, 1):
+        lines.append(f"[근거{i} · {s['source']}] {s.get('title','')}\n{s.get('snippet','')}".strip())
+    evidence_text = "\n\n".join(lines)
+    logger.info("[StudyMate] 2차 웹근거 %d건 수집 (%.1fs): %s",
+                len(sources), time.time() - t0, ", ".join(sorted({s['source'] for s in sources})))
+    return evidence_text, sources
 
 
 def _get_display_delay_ms() -> int:
@@ -254,7 +321,7 @@ def _stage1_initial(agent: AgentProfile, message: str, context: str) -> str:
 
 
 def _stage2_validate(agent: AgentProfile, message: str, own_initial: str, others_text: str,
-                     repair_instruction: Optional[str] = None) -> Tuple[str, str]:
+                     repair_instruction: Optional[str] = None, evidence: str = "") -> Tuple[str, str]:
     """2차 검증/정제 답안 — provider는 agent_settings stage=2. 반환: (텍스트, provider)."""
     system = build_agent_system_prompt(agent)
     user_parts = [
@@ -263,6 +330,11 @@ def _stage2_validate(agent: AgentProfile, message: str, own_initial: str, others
     ]
     if others_text:
         user_parts.append(f"[다른 에이전트의 1차 초안]\n{others_text}")
+    if evidence:
+        user_parts.append(
+            "[웹 근거 자료 — 사실 검증용]\n" + evidence +
+            "\n위 근거와 충돌하는 내용은 근거에 맞게 바로잡아라. 근거에 없는 내용을 지어내지 마라."
+        )
     user_parts.append(
         "[이번 단계: 2차 검증 답안]\n"
         "1차 초안의 오류·누락·개념 혼동을 점검하고 바로잡아, 더 정확하고 정제된 답을 작성하라. "
@@ -358,9 +430,13 @@ def _compute_stage1(request: MultiChatRequest, agents: List[AgentProfile], conte
 
 
 def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initial_map: Dict[str, str]):
-    """2차 검증/정제 (병렬, best-effort). 반환: (steps, validated_map, provider, elapsedMs)."""
+    """2차 검증/정제 (병렬, best-effort). 반환: (steps, validated_map, provider, elapsedMs, sources)."""
     provider = A.resolve_provider_for_stage(2)
     t2 = time.time()
+
+    # 웹 근거는 질문당 1회만 수집해 모든 에이전트가 공유한다(지연/비용 관리).
+    kl = _get_knowledge_level(request, agents[0] if agents else None)
+    evidence, sources = _gather_web_evidence(request.message, kl)
 
     def _run2(a: AgentProfile):
         own = initial_map.get(a.name, "")
@@ -370,7 +446,7 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
         )
         t_agent = time.time()
         try:
-            text, prov = _stage2_validate(a, request.message, own, others)
+            text, prov = _stage2_validate(a, request.message, own, others, evidence=evidence)
             return a, text, prov, int((time.time() - t_agent) * 1000)
         except Exception as e:
             logger.warning("stage2 에이전트 '%s' 실패 (1차로 대체): %s", a.name, e)
@@ -396,11 +472,41 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
         steps.append(ValidatedAnswerStep(
             agentName=a.name, answer=final_text, agentId=a.agentId, revised=revised,
             personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
-            provider=prov, elapsedMs=agent_ms,
+            provider=prov, elapsedMs=agent_ms, sources=sources,
         ))
     actual = ",".join(sorted(provs)) if provs else provider
-    logger.info("[StudyMate] stage=2 provider=%s elapsedMs=%d status=completed", actual, elapsed)
-    return steps, validated_map, actual, elapsed
+    logger.info("[StudyMate] stage=2 provider=%s elapsedMs=%d status=completed sources=%d",
+                actual, elapsed, len(sources))
+    return steps, validated_map, actual, elapsed, sources
+
+
+def _validate_mode_personas(agents: List[AgentProfile], answers) -> List[PersonalityValidationItem]:
+    """
+    debate/socratic 등 비-staged 모드의 답변에도 성격 정합성 검증을 부착한다.
+    answer.agentName으로 에이전트를 찾아 성격 검증을 수행한다(매칭 안 되면 건너뜀).
+    """
+    if not A.enable_personality_validation():
+        return []
+    by_name = {a.name: a for a in agents}
+    texts = [getattr(ans, "answer", "") or "" for ans in answers]
+    summary: List[PersonalityValidationItem] = []
+    for ans in answers:
+        name = getattr(ans, "agentName", None)
+        agent = by_name.get(name)
+        if agent is None:
+            continue
+        peers = [t for t in texts if t and t != (getattr(ans, "answer", "") or "")]
+        try:
+            v = validate_personality_alignment(getattr(ans, "answer", "") or "", agent, 2, peer_answers=peers)
+        except Exception as e:
+            logger.warning("모드 성격 검증 실패 '%s': %s", name, e)
+            continue
+        summary.append(PersonalityValidationItem(
+            agentName=name, personalityType=v.get("personalityType"),
+            score=v.get("score"), passed=v.get("passed"),
+            issues=v.get("issues", []), note=v.get("note"),
+        ))
+    return summary
 
 
 def _summarize_validation(agents, validation_map) -> List[PersonalityValidationItem]:
@@ -532,13 +638,14 @@ def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
 
 
 def _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
-                       s1, s2, s3):
+                       s1, s2, s3, sources=None):
     """3개 StageInfo를 만든다. s1/s2/s3 = (provider, elapsedMs, status) 튜플."""
     return [
         StageInfo(stage=1, title="1차 답변 - 빠른 초안", provider=s1[0], status=s1[2],
                   elapsedMs=s1[1], answers=[s.model_dump() for s in initial_steps]),
         StageInfo(stage=2, title="2차 답변 - 검증 답안", provider=s2[0], status=s2[2],
-                  elapsedMs=s2[1], answers=[s.model_dump() for s in validated_steps]),
+                  elapsedMs=s2[1], answers=[s.model_dump() for s in validated_steps],
+                  sources=sources or []),
         StageInfo(stage=3, title="3차 답변 - 에이전트 피드백 및 성격 검증", provider=s3[0], status=s3[2],
                   elapsedMs=s3[1], feedbacks=[s.model_dump() for s in peer_steps],
                   personalityValidationSummary=pv_summary),
@@ -601,12 +708,12 @@ def _run_default_mode(
     agents = active_agents or [_DEFAULT_AGENT]
 
     initial_steps, initial_map, p1, e1, st1 = _compute_stage1(request, agents, context)
-    validated_steps, validated_map, p2, e2 = _compute_stage2(request, agents, initial_map)
+    validated_steps, validated_map, p2, e2, sources = _compute_stage2(request, agents, initial_map)
     validation_map, pv_summary = _compute_validation(request, agents, initial_map, validated_map, validated_steps)
     peer_steps, p3, e3 = _compute_stage3(request, agents, validated_map, validation_map)
 
     stages = _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
-                                (p1, e1, st1), (p2, e2, "completed"), (p3, e3, "completed"))
+                                (p1, e1, st1), (p2, e2, "completed"), (p3, e3, "completed"), sources)
     return _build_default_response(request, agents, initial_map, validated_map,
                                    initial_steps, validated_steps, peer_steps, pv_summary, stages)
 
@@ -632,9 +739,9 @@ def run_default_mode_stream(
 
     # 2차 (검증 포함)
     yield {"event": "stage_start", "data": {"stage": 2, "title": "2차 답변 - 검증 답안", "status": "running"}}
-    validated_steps, validated_map, p2, e2 = _compute_stage2(request, agents, initial_map)
+    validated_steps, validated_map, p2, e2, sources = _compute_stage2(request, agents, initial_map)
     validation_map, pv_summary = _compute_validation(request, agents, initial_map, validated_map, validated_steps)
-    stage2 = _build_stage_infos([], validated_steps, [], pv_summary, (None, 0, "completed"), (p2, e2, "completed"), (None, 0, "running"))[1]
+    stage2 = _build_stage_infos([], validated_steps, [], pv_summary, (None, 0, "completed"), (p2, e2, "completed"), (None, 0, "running"), sources)[1]
     yield {"event": "stage_complete", "data": stage2.model_dump()}
 
     # 3차
@@ -826,12 +933,15 @@ def _run_debate_mode(
         "PARTIAL_SUCCESS" if success_count > 0 else "FAILED"
     )
 
+    # 성격 검증(페르소나 정합성)도 부착한다.
+    pv_summary = _validate_mode_personas(active_agents, answers)
     return MultiChatResponse(
         mode=request.mode,
         answers=answers,
         status=status,
         question=request.message,
         validation=validation,
+        processSteps=ProcessSteps(personalityValidationSummary=pv_summary) if pv_summary else None,
     )
 
 
@@ -866,12 +976,14 @@ def _run_socratic_mode(
 
     status = "COMPLETED" if answers and answers[0].status in ("SUCCESS", "REWRITTEN") else "FAILED"
 
+    pv_summary = _validate_mode_personas(active_agents, answers)
     return MultiChatResponse(
         mode=request.mode,
         answers=answers,
         status=status,
         question=request.message,
         validation=validation,
+        processSteps=ProcessSteps(personalityValidationSummary=pv_summary) if pv_summary else None,
     )
 
 

@@ -110,6 +110,28 @@ def enable_persona_contrast_check() -> bool:
     return _b("AGENT_ENABLE_PERSONA_CONTRAST_CHECK", True)
 
 
+# ── 2차 웹 근거 검증 (Tavily/Wikipedia/OpenAlex) ──────────────────────────────
+
+def enable_stage2_web_verify() -> bool:
+    """2차 검증 단계에서 외부 웹 근거(Tavily/Wikipedia/OpenAlex)를 수집할지."""
+    return _b("AGENT_STAGE2_WEB_VERIFY", True)
+
+
+def stage2_web_per_source_timeout() -> int:
+    """검색 소스별 개별 타임아웃(초). best-effort."""
+    return _i("AGENT_STAGE2_WEB_SOURCE_TIMEOUT_SECONDS", 12)
+
+
+def stage2_web_total_timeout() -> int:
+    """웹 근거 수집 전체 예산(초). 초과 소스는 버린다."""
+    return _i("AGENT_STAGE2_WEB_TOTAL_TIMEOUT_SECONDS", 25)
+
+
+def stage2_web_max_snippets() -> int:
+    """프롬프트에 넣을 최대 근거 스니펫 수."""
+    return _i("AGENT_STAGE2_WEB_MAX_SNIPPETS", 6)
+
+
 # ── 성격별 생성 파라미터 ──────────────────────────────────────────────────────
 # env 키 접두사는 정규 영문 키(friendly/critical/...) 기준. 미지정 성격은 DEFAULT로 fallback.
 

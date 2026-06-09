@@ -190,6 +190,8 @@ class ValidatedAnswerStep(BaseModel):
     knowledgeLevel: Optional[str] = None
     provider: Optional[str] = None
     elapsedMs: Optional[int] = None
+    # 2차 검증에 사용한 웹 근거 출처 [{title,url,source}] (Tavily/Wikipedia/OpenAlex)
+    sources: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class PeerFeedbackStep(BaseModel):
@@ -231,6 +233,8 @@ class StageInfo(BaseModel):
     answers: List[Dict[str, Any]] = Field(default_factory=list)
     feedbacks: List[Dict[str, Any]] = Field(default_factory=list)
     personalityValidationSummary: List[PersonalityValidationItem] = Field(default_factory=list)
+    # 2차 단계에서 공유된 웹 근거 출처 [{title,url,source}]
+    sources: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class MultiChatResponse(BaseModel):

@@ -41,6 +41,67 @@ const buildCardMeta = (row, extra = []) => {
   return parts.filter((p) => p !== undefined && p !== null && p !== '');
 };
 
+// ── 단계별 말풍선 (상세과정을 안 눌러도 1→2→3을 메인 대화에 순차 표시) ──────────
+// 각 단계가 에이전트별 독립 말풍선으로 나온다: ⚡1차(빠른초안) → ✅2차(웹검증) → 💬3차(피드백)
+const STAGE_META = {
+  1: { badge: '⚡ 1차 · 빠른 초안', hint: 'Ollama', color: '#f59e0b' },
+  2: { badge: '✅ 2차 · 검증 답안', hint: '웹 근거', color: '#16a34a' },
+  3: { badge: '💬 3차 · 상호 피드백', hint: '', color: '#6366f1' },
+};
+
+const pvForName = (pvSummary, name) => (pvSummary || []).find((p) => p.agentName === name) || null;
+
+// processSteps(전체 map) → 에이전트별 단계 말풍선 배열. parentId/createdAt는 부모 유저 메시지 기준.
+const buildStageBubbles = (ps, parentId, createdAt) => {
+  if (!ps) return [];
+  const ts = createdAt || new Date().toISOString();
+  const out = [];
+  const mk = (stage, name, content, extra) => ({
+    id: `${parentId}::${name}::s${stage}::${extra?.idx ?? 0}`,
+    content,
+    sender: 'AI',
+    senderName: name,
+    stage,
+    createdAt: ts,
+    parentId,
+    ...extra,
+  });
+  (ps.initialAnswers || []).forEach((row, idx) => {
+    out.push(mk(1, row.agentName, stepContent(row), { idx, provider: row.provider, elapsedMs: row.elapsedMs }));
+  });
+  (ps.validatedAnswers || []).forEach((row, idx) => {
+    out.push(mk(2, row.agentName, stepContent(row), {
+      idx, provider: row.provider, elapsedMs: row.elapsedMs, sources: row.sources || [],
+    }));
+  });
+  (ps.peerFeedback || []).forEach((fb, idx) => {
+    out.push(mk(3, fb.fromAgent, stepContent(fb), {
+      idx, stageTo: fb.toAgent, pv: fb.personalityValidation || pvForName(ps.personalityValidationSummary, fb.fromAgent),
+    }));
+  });
+  return out;
+};
+
+// DB 기록(에이전트마다 전체 map을 중복 저장)을 같은 턴당 1회만 단계 말풍선으로 폭발시킨다.
+const explodeHistoryToStageBubbles = (history) => {
+  if (!Array.isArray(history)) return history;
+  const out = [];
+  const seenTurn = new Set();
+  for (const msg of history) {
+    const ps = msg && msg.sender === 'AI' ? msg.processSteps : null;
+    const hasStages = ps && ((ps.initialAnswers && ps.initialAnswers.length) || (ps.validatedAnswers && ps.validatedAnswers.length) || (ps.peerFeedback && ps.peerFeedback.length));
+    if (hasStages) {
+      const turnKey = msg.parentId ?? msg.id;
+      if (seenTurn.has(turnKey)) continue; // 같은 턴 중복 에이전트 메시지는 건너뜀
+      seenTurn.add(turnKey);
+      const bubbles = buildStageBubbles(ps, turnKey, msg.createdAt);
+      if (bubbles.length) { out.push(...bubbles); continue; }
+    }
+    out.push(msg);
+  }
+  return out;
+};
+
 // 멀티 에이전트 응답의 1차/2차/3차 생성 과정 — 선택된 에이전트 전원의 결과를 단계별로 모두 렌더링한다.
 const ProcessStepsAccordion = ({ processSteps }) => {
   const [open, setOpen] = useState(false);
@@ -196,10 +257,8 @@ const parsePersonaTag = (persona, tagName) => {
   return match ? match[1].trim() : '';
 };
 
-// 생성과정 보기는 에이전트별로 슬라이스하지 않고, 선택된 에이전트 전원의 1차/2차/3차 결과를
-// 전체 map(initialAnswers/validatedAnswers/peerFeedback/personalityValidationSummary) 그대로 표시한다.
-// (DB 기록도 전체 map으로 저장되므로 새로고침 후에도 동일하게 복원된다 — 별도 변환 불필요.)
-const hydrateHistoryProcessSteps = (history) => history;
+// 기록 로드 시에도 라이브와 동일하게 1→2→3 단계 말풍선으로 펼쳐 보여준다(상세과정 클릭 불필요).
+const hydrateHistoryProcessSteps = (history) => explodeHistoryToStageBubbles(history);
 
 const getAgentId = (agent) => agent?.id ?? agent?.agentId;
 
@@ -518,26 +577,9 @@ export default function StudyMate() {
       if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => merge(prev));
     };
 
-    // 누적 processSteps(전체 map)로부터 에이전트별 AI 버블을 만든다.
-    // 각 버블의 말풍선은 자기 최종 답변을 보여주고, '생성과정 보기'에는 전원의 전체 map을 그대로 넘긴다.
-    const buildStreamAiMsgs = (ps) => {
-      const source = (ps.validatedAnswers && ps.validatedAnswers.length) ? ps.validatedAnswers : (ps.initialAnswers || []);
-      return source.map((row, i) => {
-        const name = row.agentName;
-        const va = (ps.validatedAnswers || []).find((a) => a.agentName === name);
-        const ia = (ps.initialAnswers || []).find((a) => a.agentName === name);
-        const content = (va && va.answer) || (ia && ia.answer) || '';
-        return {
-          id: `${userMsg.id}::${name}::${i}`,
-          content,
-          sender: 'AI',
-          senderName: name,
-          createdAt: new Date().toISOString(),
-          parentId: userMsg.id,
-          processSteps: ps,
-        };
-      });
-    };
+    // 누적 processSteps(전체 map)로부터 단계별 말풍선(1차/2차/3차)을 만든다.
+    // 단계가 도착할 때마다 1차→2차→3차 순으로 메인 대화에 누적 표시된다(상세과정 클릭 불필요).
+    const buildStreamAiMsgs = (ps) => buildStageBubbles(ps, userMsg.id, new Date().toISOString());
 
     try {
       // ── P2: 단계별 SSE 선출력 우선 시도 (실패 시 블로킹 폴백) ──
@@ -632,8 +674,12 @@ export default function StudyMate() {
         return; // alert 없이 종료 (finally에서 typing 상태 해제)
       }
 
+      // 블로킹 폴백도 단계 말풍선(1→2→3)으로 통일한다. 단계가 없으면 일반 답변 버블로 표시.
       let newMsgs = [];
-      if (res.replies && res.replies.length > 0) {
+      const blockingStages = buildStageBubbles(res.processSteps, userMsg.id, new Date().toISOString());
+      if (blockingStages.length > 0) {
+        newMsgs = blockingStages;
+      } else if (res.replies && res.replies.length > 0) {
         newMsgs = res.replies.map((reply, index) => {
           const senderName = reply.agentName || reply.agent_name;
           return {
@@ -1031,6 +1077,15 @@ export default function StudyMate() {
                               </span>
                             )}
                             <span style={{ fontWeight: '700' }}>{senderName}</span>
+                            {!isUser && msg.stage && STAGE_META[msg.stage] && (
+                              <span style={{ fontSize: '10px', padding: '1px 7px', borderRadius: '999px', backgroundColor: `${STAGE_META[msg.stage].color}22`, color: STAGE_META[msg.stage].color, fontWeight: 'bold', whiteSpace: 'nowrap' }}>
+                                {STAGE_META[msg.stage].badge}
+                                {STAGE_META[msg.stage].hint ? ` · ${STAGE_META[msg.stage].hint}` : ''}
+                              </span>
+                            )}
+                            {!isUser && msg.stage === 3 && msg.stageTo && (
+                              <span style={{ fontSize: '10px', color: '#9ca3af' }}>→ {msg.stageTo}</span>
+                            )}
                             {!isUser && agentRole && <span style={{ fontSize: '10px', color: '#9ca3af' }}>({agentRole})</span>}
                             {!isUser && agentPersonality && (
                               <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '4px', backgroundColor: agentTheme.tagBg, color: agentTheme.accent, fontWeight: 'bold' }}>
@@ -1041,7 +1096,32 @@ export default function StudyMate() {
                           <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none' }}>
                             {msg.content}
                           </div>
-                          {!isUser && <ProcessStepsAccordion processSteps={msg.processSteps} />}
+                          {/* 2차(검증) 말풍선엔 사용한 웹 근거 출처 칩을 단다 */}
+                          {!isUser && msg.stage === 2 && Array.isArray(msg.sources) && msg.sources.length > 0 && (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
+                              <span style={{ fontSize: '10px', color: '#9ca3af', alignSelf: 'center' }}>근거:</span>
+                              {msg.sources.slice(0, 6).map((s, si) => (
+                                s.url ? (
+                                  <a key={si} href={s.url} target="_blank" rel="noopener noreferrer"
+                                    style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.05)', color: 'var(--color-text-muted)', textDecoration: 'none' }}>
+                                    {s.source}{s.title ? ` · ${String(s.title).slice(0, 24)}` : ''}
+                                  </a>
+                                ) : (
+                                  <span key={si} style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', backgroundColor: 'rgba(0,0,0,0.05)', color: 'var(--color-text-muted)' }}>
+                                    {s.source}{s.title ? ` · ${String(s.title).slice(0, 24)}` : ''}
+                                  </span>
+                                )
+                              ))}
+                            </div>
+                          )}
+                          {/* 3차(피드백) 말풍선엔 성격 검증 점수 배지 */}
+                          {!isUser && msg.stage === 3 && msg.pv && typeof msg.pv.score === 'number' && (
+                            <div style={{ marginTop: '4px', fontSize: '10px', color: msg.pv.passed ? '#16a34a' : '#dc2626' }}>
+                              성격 검증 {msg.pv.score.toFixed(2)} {msg.pv.passed ? '통과' : '보완 필요'}
+                            </div>
+                          )}
+                          {/* 단계 말풍선이 아닌(레거시/단일) 메시지에만 상세과정 아코디언 유지 */}
+                          {!isUser && !msg.stage && <ProcessStepsAccordion processSteps={msg.processSteps} />}
                           <div className="chat-bubble-time">{formatTime(msg.createdAt)}</div>
                         </div>
                       );
