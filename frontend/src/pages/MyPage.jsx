@@ -234,6 +234,25 @@ export default function MyPage() {
     const finalName = name.trim() || email.split('@')[0] || '';
     const finalMajor = major.trim() || '전공 미설정';
 
+    const extractS3Key = (url) => {
+      if (!url) return '';
+      if (!url.startsWith('http')) return url;
+      try {
+        const parsed = new URL(url);
+        let key = parsed.pathname;
+        if (key.startsWith('/')) {
+          key = key.substring(1);
+        }
+        const blogsIndex = key.indexOf('blogs/');
+        if (blogsIndex !== -1) return key.substring(blogsIndex);
+        const materialsIndex = key.indexOf('materials/');
+        if (materialsIndex !== -1) return key.substring(materialsIndex);
+        return key;
+      } catch (e) {
+        return url;
+      }
+    };
+
     try {
       if (userId) {
         let currentPhotoUrl = user?.photoUrl || user?.photo_url || '';
@@ -249,10 +268,12 @@ export default function MyPage() {
           }
         }
 
+        const photoKey = extractS3Key(currentPhotoUrl);
+
         await authService.updateProfile(userId, { 
           displayName: finalName, 
           major: finalMajor,
-          photoUrl: currentPhotoUrl
+          photoUrl: photoKey
         });
         
         let refreshed = { displayName: finalName, major: finalMajor, email: email, photoUrl: currentPhotoUrl };
