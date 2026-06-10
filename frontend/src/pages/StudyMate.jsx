@@ -284,6 +284,217 @@ const explodeHistoryToStageBubbles = (history) => {
   return out;
 };
 
+// ── 마인드맵 전용 토론 노드 변환 ───────────────────────────────────────────────
+//  채팅 히스토리를 그대로 마인드맵에 넘기지 않는다. 토론 응답(msg.debate 또는
+//  buildDebatePayload(msg))은 논제→입론→반박→재반박→최종변론→판정 트리로 펼치고,
+//  일반 메시지는 그대로 둔다. (라이브 응답과 새로고침 복원이 동일 구조를 갖게 한다.)
+
+const debateExcerpt = (text, n = 28) => {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n)}...` : t;
+};
+
+// stageType별 카드 제목(찬성측/반대측 접두어 포함)
+const debateStageTitle = (side, stageType) => {
+  if (stageType === 'TOPIC') return '논제';
+  if (stageType === 'JUDGEMENT') return '심사위원 판정';
+  const prefix = side === 'PRO' ? '찬성측' : side === 'CON' ? '반대측' : '';
+  const base = ({
+    OPENING_STATEMENT: '입론',
+    REBUTTAL: '반박',
+    CROSS_REBUTTAL: '재반박',
+    CLOSING_STATEMENT: '최종 변론',
+  })[stageType] || stageType;
+  return `${prefix} ${base}`.trim();
+};
+
+const debateRoleLabel = (side) =>
+  side === 'PRO' ? '찬성' : side === 'CON' ? '반대' : side === 'JUDGE' ? '심사위원' : '논제';
+
+// 백엔드가 향후 구조화된 debateStages를 내려줄 경우 우선 사용한다.
+const debateStagesToSpecs = (stages) => {
+  const sideKeyPrefix = (side) => (String(side || '').toUpperCase() === 'PRO' ? 'pro' : 'con');
+  const keyFor = (stageType, side) => {
+    if (stageType === 'TOPIC') return 'topic';
+    if (stageType === 'JUDGEMENT') return 'judge';
+    const p = sideKeyPrefix(side);
+    return {
+      OPENING_STATEMENT: `${p}_open`,
+      REBUTTAL: `${p}_rebut`,
+      CROSS_REBUTTAL: `${p}_cross`,
+      CLOSING_STATEMENT: `${p}_close`,
+    }[stageType] || `${p}_${String(stageType || '').toLowerCase()}`;
+  };
+  return (stages || []).map((s) => {
+    const stageType = String(s.stageType || '').toUpperCase();
+    const side = String(s.side || (stageType === 'JUDGEMENT' ? 'JUDGE' : stageType === 'TOPIC' ? 'TOPIC' : '')).toUpperCase();
+    return {
+      key: keyFor(stageType, side),
+      stageType,
+      side,
+      role: debateRoleLabel(side),
+      title: s.stageTitle || debateStageTitle(side, stageType),
+      agentId: s.agentId,
+      agentIndex: s.agentIndex,
+      agentName: s.agentName || s.agent_name,
+      content: s.content ?? s.text ?? s.answer ?? s.feedback ?? '',
+    };
+  });
+};
+
+// 하위 호환: initialAnswers / peerFeedbacks / revisedAnswers / debateSummary → 토론 단계 스펙.
+//  (UI엔 "1차 의견 / 서로 피드백 / 보완 답변" 같은 단어를 절대 노출하지 않는다.)
+const legacyDebateToSpecs = (debate, topicText) => {
+  const init = debate.initialAnswers || [];
+  const rev = debate.revisedAnswers || [];
+  const fbs = debate.peerFeedbacks || [];
+  const proInit = init[0];
+  const conInit = init[1];
+  const proRev = rev[0];
+  const conRev = rev[1];
+  // 반박: fromAgentIndex 1 → 찬성측, 2 → 반대측 (없으면 순서로 분배)
+  const proFb = fbs.find((f) => Number(f.fromAgentIndex) === 1) || fbs[0] || null;
+  const conFb = fbs.find((f) => Number(f.fromAgentIndex) === 2 && f !== proFb)
+    || fbs.find((f) => f !== proFb) || null;
+
+  const specs = [];
+  specs.push({ key: 'topic', stageType: 'TOPIC', side: 'TOPIC', role: '논제', title: '논제', content: topicText });
+  if (proInit) specs.push({ key: 'pro_open', stageType: 'OPENING_STATEMENT', side: 'PRO', role: '찬성', title: '찬성측 입론', agentName: proInit.agentName, agentIndex: proInit.agentIndex, content: proInit.answer });
+  if (conInit) specs.push({ key: 'con_open', stageType: 'OPENING_STATEMENT', side: 'CON', role: '반대', title: '반대측 입론', agentName: conInit.agentName, agentIndex: conInit.agentIndex, content: conInit.answer });
+  if (proFb) specs.push({ key: 'pro_rebut', stageType: 'REBUTTAL', side: 'PRO', role: '찬성', title: '찬성측 반박', agentName: proFb.fromAgentName, agentIndex: proFb.fromAgentIndex, content: proFb.feedback });
+  if (conFb) specs.push({ key: 'con_rebut', stageType: 'REBUTTAL', side: 'CON', role: '반대', title: '반대측 반박', agentName: conFb.fromAgentName, agentIndex: conFb.fromAgentIndex, content: conFb.feedback });
+  if (proRev) specs.push({ key: 'pro_close', stageType: 'CLOSING_STATEMENT', side: 'PRO', role: '찬성', title: '찬성측 최종 변론', agentName: proRev.agentName, agentIndex: proRev.agentIndex, content: proRev.answer });
+  if (conRev) specs.push({ key: 'con_close', stageType: 'CLOSING_STATEMENT', side: 'CON', role: '반대', title: '반대측 최종 변론', agentName: conRev.agentName, agentIndex: conRev.agentIndex, content: conRev.answer });
+  if (debate.debateSummary) specs.push({ key: 'judge', stageType: 'JUDGEMENT', side: 'JUDGE', role: '심사위원', title: '심사위원 판정', agentName: '심사위원', content: debate.debateSummary });
+  return specs;
+};
+
+// 토론 단계 스펙 사이의 부모 연결 우선순위(가까운 조상부터). 중간 단계가 없으면 위로 폴백한다.
+const DEBATE_PARENT_CHAIN = {
+  topic: [],
+  pro_open: ['topic'],
+  con_open: ['topic'],
+  pro_rebut: ['con_open', 'topic'],
+  con_rebut: ['pro_open', 'topic'],
+  pro_cross: ['con_rebut', 'con_open', 'topic'],
+  con_cross: ['pro_rebut', 'pro_open', 'topic'],
+  pro_close: ['pro_cross', 'pro_rebut', 'pro_open', 'topic'],
+  con_close: ['con_cross', 'con_rebut', 'con_open', 'topic'],
+  judge: ['topic'],
+};
+
+// 토론 메시지 1개 → 마인드맵 노드 배열. 안정적인 id를 사용해 새로고침 후에도 동일 구조 재현.
+const debateToMindmapNodes = (message, debate, topicText) => {
+  const baseId = String(message.id);
+  const rootQuestionId = message.parentId != null ? message.parentId : baseId;
+  const createdAt = message.createdAt || new Date().toISOString();
+
+  const specs = Array.isArray(debate.debateStages) && debate.debateStages.length
+    ? debateStagesToSpecs(debate.debateStages)
+    : legacyDebateToSpecs(debate, topicText);
+
+  const idFor = (s) => `${baseId}::debate::${s.stageType}::${s.side}::${s.agentId ?? s.agentIndex ?? s.key}`;
+
+  const emittedIdByKey = new Map();
+  const nodes = [];
+  for (const s of specs) {
+    if (!s.content || !String(s.content).trim()) continue;
+    const id = idFor(s);
+    let parentId;
+    if (s.key === 'topic') {
+      parentId = rootQuestionId;
+    } else {
+      const chain = DEBATE_PARENT_CHAIN[s.key] || ['topic'];
+      let resolved = null;
+      for (const k of chain) {
+        if (emittedIdByKey.has(k)) { resolved = emittedIdByKey.get(k); break; }
+      }
+      parentId = resolved || emittedIdByKey.get('topic') || rootQuestionId;
+    }
+    emittedIdByKey.set(s.key, id);
+    nodes.push({
+      id,
+      parentId,
+      sender: 'AI',
+      senderName: s.agentName || s.title,
+      content: s.content,
+      createdAt,
+      nodeType: 'debate',
+      stageType: s.stageType,
+      stageTitle: s.title,
+      side: s.side,
+      role: s.role,
+      agentId: s.agentId,
+      agentName: s.agentName,
+      actionContext: {
+        stageType: s.stageType,
+        side: s.side,
+        agentName: s.agentName,
+        contentExcerpt: debateExcerpt(s.content),
+      },
+    });
+  }
+  return nodes;
+};
+
+// AI 메시지 중 토론 메시지만 노드 여러 개로 확장하고, 일반 메시지는 그대로 둔다.
+const expandDebateMessagesForMindmap = (messages) => {
+  if (!Array.isArray(messages)) return [];
+  const byId = new Map(messages.map((m) => [m.id, m]));
+  const out = [];
+  const seenIds = new Set(); // 10단계: node.id 기준 중복 방지(SSE 단계+all_complete 동시 도착 대비)
+  const pushUnique = (node) => {
+    if (node && node.id != null) {
+      if (seenIds.has(node.id)) return;
+      seenIds.add(node.id);
+    }
+    out.push(node);
+  };
+  for (const msg of messages) {
+    const debate = msg && msg.sender === 'AI' ? (msg.debate || buildDebatePayload(msg)) : null;
+    if (debate) {
+      const parent = msg.parentId != null ? byId.get(msg.parentId) : null;
+      const topicText = (parent && parent.content) || msg.content || '토론 논제';
+      debateToMindmapNodes(msg, debate, topicText).forEach(pushUnique);
+      continue;
+    }
+    pushUnique(msg);
+  }
+  return out;
+};
+
+// 마인드맵 뷰가 받는 메시지 = 채팅 히스토리를 토론 구조로 확장한 결과.
+const buildMindmapMessages = (chatHistory) => expandDebateMessagesForMindmap(chatHistory);
+
+// ── 토론 노드 액션 버튼 클릭 시 입력창에 채워질 프롬프트 ──────────────────────────
+const DEBATE_ACTION_PROMPTS = {
+  pro_argument: (ex) => `@모두 이 논제 "${ex}"에 대해 찬성측 입장에서 핵심 근거와 논리를 입론으로 정리해줘.`,
+  con_argument: (ex) => `@모두 이 논제 "${ex}"에 대해 반대측 입장에서 핵심 근거와 논리를 입론으로 정리해줘.`,
+  issue_summary: (ex) => `@모두 이 논제 "${ex}"의 핵심 쟁점을 찬성/반대로 나눠 정리해줘.`,
+  con_rebut: (ex) => `@모두 방금 찬성측이 제시한 "${ex}" 주장에 대해, 반대측 입장에서 핵심 전제를 공격하고 논리적 반박을 작성해줘.`,
+  pro_rebut: (ex) => `@모두 방금 반대측이 제시한 "${ex}" 주장에 대해, 찬성측 입장에서 반례와 근거를 들어 반박해줘.`,
+  con_cross_rebut: (ex) => `@모두 방금 찬성측 반박 "${ex}"에 대해, 반대측 재반박을 작성해줘. 상대 논리의 약점을 직접 지적해야 해.`,
+  pro_cross_rebut: (ex) => `@모두 방금 반대측 반박 "${ex}"에 대해, 찬성측 재반박을 작성해줘. 상대 논리의 약점을 직접 지적해야 해.`,
+  strengthen_pro: (ex) => `@모두 찬성측 주장 "${ex}"을 더 강하게 만들 수 있는 추가 근거, 사례, 조건을 제시해줘.`,
+  strengthen_con: (ex) => `@모두 반대측 주장 "${ex}"을 더 강하게 만들 수 있는 추가 근거, 사례, 조건을 제시해줘.`,
+  find_exception: (ex) => `@모두 찬성측 주장 "${ex}"이 성립하지 않는 예외 조건이나 한계를 찾아줘.`,
+  find_counterexample: (ex) => `@모두 반대측 주장 "${ex}"을 검증할 수 있는 반례나 실제 사례를 찾아줘.`,
+  check_logic_gap: (ex) => `@모두 방금 주장 "${ex}"의 논리적 허점이나 비약을 찾아 구체적으로 지적해줘.`,
+  add_evidence: (ex) => `@모두 방금 주장 "${ex}"을 뒷받침할 구체적 근거와 사례, 출처를 추가해줘.`,
+  improve_persuasion: (ex) => `@모두 방금 최종 변론 "${ex}"의 설득력을 높일 수 있도록 논리 구조와 표현을 강화해줘.`,
+  summarize_claim: (ex) => `@모두 방금 변론 "${ex}"의 핵심 주장을 한눈에 보이도록 요약해줘.`,
+  judge: () => `@모두 지금까지의 찬성측과 반대측 주장을 기준으로 논리성, 근거성, 반박력, 설득력을 평가해서 심사위원 판정을 내려줘.`,
+  explain_judgement: (ex) => `@모두 방금 판정 "${ex}"의 근거를 더 자세히 풀어줘. 어떤 쟁점에서 승패가 갈렸는지 설명해줘.`,
+  alternative_judgement: (ex) => `@모두 방금 판정 "${ex}"과 반대로 판단할 수 있는 가능성을 검토해줘. 어떤 기준을 바꾸면 다른 판정이 가능한지 설명해줘.`,
+  learning_summary: () => `@모두 이 토론을 학습 관점에서 정리해줘. 핵심 개념, 찬반 쟁점, 시험/실무에서 주의할 점으로 나눠줘.`,
+};
+
+const buildDebateActionPrompt = (node, actionType) => {
+  const ex = node?.actionContext?.contentExcerpt || debateExcerpt(node?.content);
+  const fn = DEBATE_ACTION_PROMPTS[actionType];
+  return fn ? fn(ex) : `@모두 방금 "${ex}" 내용에 이어서 토론을 계속 진행해줘.`;
+};
+
 // (제거됨) ProcessStepsAccordion — 단계 펼침/접힘 UI는 더 이상 사용하지 않는다.
 //  processSteps는 내부 저장/복원용 데이터로만 쓰고, 사용자 화면에는 결과 카드(1차/2차/3차·토론)만 표시한다.
 
@@ -417,6 +628,8 @@ export default function StudyMate() {
   const [agents, setAgents] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
+  // 마인드맵 뷰가 받는 메시지(토론은 구조화 노드로 확장). chatHistory가 바뀔 때만 재계산한다.
+  const mindmapMessages = React.useMemo(() => buildMindmapMessages(chatHistory), [chatHistory]);
   const [viewTab, setViewTab] = useState('chat'); // 'chat' | 'mindmap'
   const [message, setMessage] = useState('');
   
@@ -1315,7 +1528,7 @@ export default function StudyMate() {
               {viewTab === 'mindmap' && (
                 <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                   <AgentDiscussionThread
-                    messages={chatHistory}
+                    messages={mindmapMessages}
                     typingAgents={
                       typingRooms[getAgentId(selectedAgent)]
                         ? (selectedAgent.agents || [{ id: 'ai', name: selectedAgent.name || 'AI' }]).map((ag, i) => ({
@@ -1330,7 +1543,24 @@ export default function StudyMate() {
                     onBookmark={handleBookmark}
                     onRequestDetail={(disc, actionType = 'detail') => {
                       pendingDetailParentId.current = disc.id;
-                      
+
+                      // ── 토론 노드: stageType/side에 맞는 전용 액션 프롬프트를 준비한다 ──
+                      const isDebateNode = disc.nodeType === 'debate' || !!disc.stageType;
+                      if (isDebateNode) {
+                        const promptText = buildDebateActionPrompt(disc, actionType);
+                        setMessage(promptText);
+                        // 토론 모드 유지(이어지는 응답도 토론 구조로 생성되게)
+                        setLearningMode('debate');
+                        setShowMentionPopup(false);
+                        const activeId = getAgentId(selectedAgent);
+                        if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+                        const inputEl = document.querySelector('.chat-input-premium input');
+                        if (inputEl) inputEl.focus();
+                        setToastMsg('🗣️ 토론 액션이 입력창에 준비되었습니다. 전송하면 이 노드에 이어서 진행됩니다.');
+                        setTimeout(() => setToastMsg(''), 2800);
+                        return;
+                      }
+
                       // 사용자의 질문 노드에서 파생될 경우와 AI 노드에서 파생될 경우 문구 분리
                       const isUserNode = disc.sender === 'USER';
                       const senderName = disc.senderName || disc.sender_name || 'AI';
