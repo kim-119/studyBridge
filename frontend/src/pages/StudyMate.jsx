@@ -1816,6 +1816,20 @@ export default function StudyMate() {
           pendingDetailParentId.current = null;
           return; // 성공 — 바깥 finally에서 typing 해제
         } catch (streamErr) {
+          const streamErrMessage = String(streamErr?.message || streamErr || '');
+          if (
+            streamErr?.name === 'AbortError' ||
+            streamErrMessage.includes('network error') ||
+            streamErrMessage.includes('terminated') ||
+            streamErrMessage.includes('incomplete') ||
+            streamErrMessage.includes('outstanding read data') ||
+            streamErrMessage.includes('Load failed') ||
+            streamErrMessage.includes('Failed to fetch')
+          ) {
+            console.warn('[StudyMate] SSE 연결 종료 감지 - 서버 응답 수신 후 종료로 간주', streamErr);
+            return;
+          }
+
           console.warn('[StudyMate] SSE 스트리밍 실패', streamErr);
           if (streamRendered) {
             // 일부 단계가 이미 렌더됨 → 블로킹 재실행 시 중복되므로 폴백하지 않는다.

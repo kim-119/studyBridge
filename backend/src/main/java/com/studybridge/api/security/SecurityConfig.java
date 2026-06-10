@@ -1,5 +1,6 @@
 package com.studybridge.api.security;
 
+import jakarta.servlet.DispatcherType;
 import com.studybridge.api.security.jwt.JwtAuthenticationFilter;
 import com.studybridge.api.security.jwt.JwtTokenProvider;
 import lombok.RequiredArgsConstructor;
@@ -39,7 +40,8 @@ public class SecurityConfig {
                 .headers(headers -> headers.frameOptions(frameOptions -> frameOptions.disable()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/users/register", "/api/users/login", "/api/users/refresh", "/error", "/temp-materials/**", "/ws-group/**").permitAll()
+                        
+                .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll().requestMatchers("/api/users/register", "/api/users/login", "/api/users/refresh", "/error", "/temp-materials/**", "/ws-group/**").permitAll()
 
                         .anyRequest().authenticated())
                 .formLogin(AbstractHttpConfigurer::disable)
