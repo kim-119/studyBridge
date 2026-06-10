@@ -22,6 +22,7 @@ public class GroupStudyQuizDTO {
         private Long creatorId;
         private String creatorName;
         private LocalDateTime createdAt;
+        private Integer questionCount;
         private List<QuestionResponse> questions;
     }
 

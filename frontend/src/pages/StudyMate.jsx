@@ -53,8 +53,130 @@ const STAGE_BADGES = {
 
 const pvForName = (pvSummary, name) => (pvSummary || []).find((p) => p.agentName === name) || null;
 
-const DEBATE_MODE_VALUES = new Set(['debate', 'discussion', 'tikitaka', 'multi_agent_discussion', '토론', '토론 모드']);
+// 토론으로 인정하는 값은 명시적 토론만 (discussion/tikitaka/multi_agent_discussion 제외)
+const DEBATE_MODE_VALUES = new Set(['debate', '토론', '토론 모드']);
 const isDebateModeValue = (value) => DEBATE_MODE_VALUES.has(String(value || '').trim().toLowerCase());
+
+const SIMULATION_MODE_VALUES = new Set(['simulation', '상황극', '상황극 모드', '시뮬레이션', '시뮬레이션 모드']);
+const isSimulationModeValue = (value) => SIMULATION_MODE_VALUES.has(String(value || '').trim().toLowerCase());
+
+// 토론 모드 논제/구조 설정 기본값 (프론트 → Spring → FastAPI)
+const DEFAULT_SIMULATION_CONFIG = {
+  scenarioType: 'realistic',
+  domain: 'auto',
+  interactionStyle: 'choice_based',
+  difficulty: 'normal',
+  userRoleMode: 'auto',
+  choiceCount: 3,
+  includeChoices: true,
+  includeConsequences: true,
+  includeConceptMapping: true,
+  includeMisconceptionTrap: true,
+  includeReflectionQuestion: true,
+  includeNextScenario: true,
+  simulationDepth: 'normal',
+  outputStages: [
+    'SCENARIO_SETUP', 'USER_ROLE', 'SITUATION_CONTEXT', 'CHOICES',
+    'CONSEQUENCE_PREVIEW', 'CONCEPT_MAPPING', 'MISCONCEPTION_TRAP',
+    'REFLECTION_QUESTION', 'NEXT_SCENARIO',
+  ],
+};
+
+const SIMULATION_STAGE_META = {
+  SCENARIO_SETUP: { title: '상황 설정', className: 'scenario', color: '#1d4ed8' },
+  USER_ROLE: { title: '나의 역할', className: 'role', color: '#7c3aed' },
+  SITUATION_CONTEXT: { title: '문제 상황', className: 'context', color: '#0d9488' },
+  CHOICES: { title: '선택지', className: 'choices', color: '#059669' },
+  SELECTED_CHOICE: { title: '선택한 행동', className: 'choices', color: '#059669' },
+  CONSEQUENCE_PREVIEW: { title: '결과 변화', className: 'consequence', color: '#ea580c' },
+  CONSEQUENCE: { title: '선택 결과', className: 'consequence', color: '#ea580c' },
+  CONCEPT_MAPPING: { title: '개념 연결', className: 'concept', color: '#2563eb' },
+  CONCEPT_EXPLANATION: { title: '개념 설명', className: 'concept', color: '#2563eb' },
+  MISCONCEPTION_TRAP: { title: '오개념 함정', className: 'trap', color: '#dc2626' },
+  RISK_OR_LIMITATION: { title: '위험과 한계', className: 'trap', color: '#dc2626' },
+  REFLECTION_QUESTION: { title: '성찰 질문', className: 'reflection', color: '#ca8a04' },
+  NEXT_SCENARIO: { title: '다음 분기', className: 'next', color: '#4c1d95' },
+  NEXT_BRANCH: { title: '다음 사건', className: 'next', color: '#4c1d95' },
+  SUMMARY: { title: '상황극 요약', className: 'context', color: '#64748b' },
+};
+
+const DEFAULT_DEBATE_CONFIG = {
+  topicMode: 'auto',
+  manualTopic: '',
+  motionType: 'learning_strategy',
+  stancePolicy: 'agent1_con_agent2_pro_agent3_neutral',
+  issueAxes: ['개념정확성', '학습효율', '실무적용', '오개념위험'],
+  debateDepth: 'normal',
+  debateStyle: 'academic_practical',
+  includeExamples: true,
+  includeCounterexamples: true,
+  includeStudyPlan: true,
+  judgeCriteria: ['논리성', '근거성', '반박력', '학습가치', '실무성'],
+  outputStages: [
+    'TOPIC', 'CON_OPENING', 'PRO_OPENING', 'NEUTRAL_ANALYSIS',
+    'CON_REBUTTAL', 'PRO_REBUTTAL', 'NEUTRAL_CHECK',
+    'CON_CLOSING', 'PRO_CLOSING', 'NEUTRAL_JUDGEMENT',
+  ],
+};
+
+// 토론 설정 모달용 스타일/헬퍼
+const dbLabelStyle = { fontSize: '12px', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: '5px' };
+const dbChipStyle = (active) => ({
+  padding: '5px 10px', borderRadius: '999px', fontSize: '12px', fontWeight: 700, cursor: 'pointer',
+  border: `1px solid ${active ? 'var(--color-primary)' : 'var(--color-border)'}`,
+  background: active ? 'var(--color-primary-soft, rgba(99,102,241,0.10))' : 'transparent',
+  color: active ? 'var(--color-primary)' : 'var(--color-text-muted)',
+});
+const toggleInArray = (arr, value) =>
+  (arr || []).includes(value) ? arr.filter((v) => v !== value) : [...(arr || []), value];
+
+// ── 에이전트 프리셋 (learningMode와 별개의 역할/성격 프리셋) ──────────────────────
+// learningMode(basic/socratic/debate)와 섞지 않는다. 프리셋은 말투/전문성/관점을 정한다.
+const AGENT_PRESETS = [
+  { value: 'expert_professor', label: '전문교수', personality: '전문적', desc: '개념을 정의·원리·예시·한계로 체계적으로 설명' },
+  { value: 'friendly_friend', label: '친근한친구', personality: '친근함', desc: '쉬운 비유와 편한 말투로 초보자가 질문하기 쉽게' },
+  { value: 'creative_teacher', label: '독창적강사', personality: '독특함', desc: '비유·상상·시각적 예시로 추상 개념을 창의적으로' },
+  { value: 'cold_mentor', label: '냉철한멘토', personality: '냉소적', desc: '오개념·부족한 점을 직설적으로 교정' },
+  { value: 'misconception_tracker', label: '오개념탐지자', personality: '냉소적', desc: '헷갈린 개념·잘못된 전제·빠진 조건을 추적(소크라테스 핵심)' },
+  { value: 'exam_maker', label: '시험출제자', personality: '효율적', desc: '개념을 객관식·단답·서술 문제로 변환' },
+  { value: 'code_reviewer', label: '코드리뷰어', personality: '냉소적', desc: '설계 문제·나쁜 습관·유지보수 위험 지적' },
+  { value: 'practical_architect', label: '실무아키텍트', personality: '전문적', desc: '프로젝트 구조·API·DB·배포 관점으로 설명' },
+  { value: 'interviewer', label: '면접관', personality: '냉소적', desc: '압박·꼬리 질문으로 핵심 개념 검증' },
+  { value: 'roadmap_coach', label: '로드맵코치', personality: '친근함', desc: '다음에 무엇을 어떤 순서로 공부할지 설계' },
+];
+const AGENT_PRESET_LABEL = Object.fromEntries(AGENT_PRESETS.map((p) => [p.value, p.label]));
+const presetPersonality = (preset) => (AGENT_PRESETS.find((p) => p.value === preset)?.personality) || '전문적';
+
+// 모드별 추천 에이전트 조합 (생성 모달 '추천 채우기'용)
+const RECOMMENDED_PRESETS = {
+  basic: ['expert_professor', 'friendly_friend', 'cold_mentor'],
+  debate: ['cold_mentor', 'expert_professor', 'practical_architect'],
+  socratic: ['friendly_friend', 'misconception_tracker', 'expert_professor'],
+  simulation: ['creative_teacher', 'friendly_friend', 'misconception_tracker'],
+};
+
+// 소크라테스로 인정하는 값 (한글 별칭 포함)
+const SOCRATIC_MODE_VALUES = new Set(['socratic', '소크라테스', '소크라테스 모드']);
+const isSocraticModeValue = (value) => SOCRATIC_MODE_VALUES.has(String(value || '').trim().toLowerCase());
+
+// 소크라테스 문답 설정 기본값
+const DEFAULT_SOCRATIC_CONFIG = {
+  goal: 'concept_understanding',
+  diagnosisMode: 'quick',
+  questionIntensity: 'normal',
+  hintPolicy: 'step_by_step',
+  answerRevealPolicy: 'final_only',
+  questionTypes: ['definition', 'comparison', 'why', 'application', 'metacognition'],
+  progressFlow: ['diagnosis', 'core_concept', 'misconception_check', 'hint', 'application', 'self_explanation', 'summary'],
+  feedbackStyle: 'concept_check',
+  maxQuestionsPerTurn: 3,
+  requireUserAnswerFirst: true,
+  includeExamples: true,
+  includeCounterexamples: true,
+  includeFinalSummary: true,
+  includeNextStudyPlan: true,
+  trackMisconceptions: true,
+};
 
 const debateDisplayName = (row, fallbackIndex = 0) => {
   const idx = row?.agentIndex ?? row?.fromAgentIndex ?? row?.toAgentIndex ?? fallbackIndex + 1;
@@ -126,85 +248,325 @@ const buildDebatePayload = (data) => {
   };
 };
 
-// SSE debate_section 이벤트들을 누적한 객체 → DebateRenderer용 단일 토론 말풍선.
+// 구조화 토론 단계(debateStages)를 담은 단일 토론 말풍선. 채팅/마인드맵이 동일 stages를 사용한다.
 const buildDebateTurnMessage = (acc, parentId, createdAt) => ({
   id: `${parentId}::debate`,
-  content: '토론 결과',
+  content: '토론',
   sender: 'AI',
-  senderName: '토론 모드',
+  senderName: '토론',
   createdAt: createdAt || new Date().toISOString(),
   parentId,
-  // mode를 박아 초반(1차 의견만 도착)에도 토론 구조로 렌더링되게 한다.
-  debate: buildDebatePayload({ ...acc, mode: 'debate' }),
+  debateStages: Array.isArray(acc?.debateStages) ? acc.debateStages : [],
+  debateConfig: acc?.debateConfig || null,
 });
 
-// 소크라테스 답변 → [진단]/[힌트]/[꼬리질문] 형식 단일 카드.
-const buildSocraticTurnMessage = (d, parentId, createdAt) => {
-  const answer = (d && (d.answer ?? (Array.isArray(d.answers) && d.answers[0] && d.answers[0].answer))) || '';
+// 하위 호환: initialAnswers/peerFeedbacks/revisedAnswers/debateSummary → 구조화 debateStages.
+// 역할 정책(에이전트1=반대, 에이전트2=찬성)에 맞춰 매핑한다.
+const legacyDebateToStages = (debate) => {
+  if (!debate) return null;
+  const init = debate.initialAnswers || [];
+  const rev = debate.revisedAnswers || [];
+  const fbs = debate.peerFeedbacks || [];
+  const out = [];
+  const mk = (stageType, stageTitle, side, role, agentIndex, agentName, content) =>
+    ({ stageType, stageTitle, side, role, agentIndex, agentName, content: content || '' });
+  if (init[0]) out.push(mk('OPENING_STATEMENT', '반대측 입론', 'CON', '반대측', 1, init[0].agentName, init[0].answer));
+  if (init[1]) out.push(mk('OPENING_STATEMENT', '찬성측 입론', 'PRO', '찬성측', 2, init[1].agentName, init[1].answer));
+  const conFb = fbs.find((f) => Number(f.fromAgentIndex) === 1) || fbs[0] || null;
+  const proFb = fbs.find((f) => Number(f.fromAgentIndex) === 2 && f !== conFb) || fbs.find((f) => f !== conFb) || null;
+  if (conFb) out.push(mk('REBUTTAL', '반대측 반박', 'CON', '반대측', 1, conFb.fromAgentName, conFb.feedback));
+  if (proFb) out.push(mk('REBUTTAL', '찬성측 반박', 'PRO', '찬성측', 2, proFb.fromAgentName, proFb.feedback));
+  if (rev[0]) out.push(mk('CLOSING_STATEMENT', '반대측 최종 변론', 'CON', '반대측', 1, rev[0].agentName, rev[0].answer));
+  if (rev[1]) out.push(mk('CLOSING_STATEMENT', '찬성측 최종 변론', 'PRO', '찬성측', 2, rev[1].agentName, rev[1].answer));
+  if (debate.debateSummary) out.push(mk('JUDGEMENT', '중립 판정', 'NEUTRAL', '중립 / 심사위원', 3, '중립', debate.debateSummary));
+  return out.length ? out : null;
+};
+
+// 메시지에서 구조화 토론 단계 배열을 추출한다(채팅/마인드맵 공통 SSOT).
+// 우선순위: message.debateStages → processSteps.debateStages → message.debate.debateStages → 레거시 변환.
+const normalizeDebateStages = (message) => {
+  if (!message) return null;
+  const direct = message.debateStages
+    || message.processSteps?.debateStages
+    || message.debate?.debateStages;
+  if (Array.isArray(direct) && direct.length > 0) {
+    return direct.map((s) => ({
+      stageType: s.stageType,
+      stageTitle: s.stageTitle || s.title || s.stageType,
+      side: s.side,
+      role: s.role,
+      agentIndex: s.agentIndex,
+      agentId: s.agentId,
+      agentName: s.agentName,
+      content: s.content ?? s.text ?? s.answer ?? s.feedback ?? '',
+    }));
+  }
+  const debate = message.debate || buildDebatePayload(message);
+  if (!debate) return null;
+  // 기본 모드(상호 피드백만 존재)를 토론으로 오인하지 않는다.
+  // 진짜 토론 신호: 최종 변론(revisedAnswers) / 심사 판정(debateSummary) / 명시적 토론 모드.
+  const strongDebate = (debate.revisedAnswers && debate.revisedAnswers.length > 0)
+    || (debate.debateSummary && String(debate.debateSummary).trim().length > 0)
+    || isDebateModeValue(message.mode || message.learningMode);
+  if (!strongDebate) return null;
+  return legacyDebateToStages(debate);
+};
+
+// 메시지에서 사용된 debateConfig를 추출한다(액션 프롬프트 컨텍스트용).
+const debateConfigOf = (message) =>
+  message?.debateConfig || message?.processSteps?.debateConfig || null;
+
+// 소크라테스 단계 메타 (stageType → 제목/색상). 채팅/마인드맵 공통.
+const SOCRATIC_STAGE_META = {
+  DIAGNOSIS:          { title: '현재 이해도 진단', color: '#2563eb' },
+  CORE_CONCEPT:       { title: '핵심 개념 질문',   color: '#2563eb' },
+  MISCONCEPTION_CHECK:{ title: '오개념 점검',       color: '#ea580c' },
+  HINT:               { title: '단계별 힌트',       color: '#ca8a04' },
+  APPLICATION:        { title: '적용 질문',         color: '#059669' },
+  COUNTEREXAMPLE:     { title: '반례 질문',         color: '#ea580c' },
+  SELF_EXPLANATION:   { title: '자기 설명 유도',     color: '#0d9488' },
+  SUMMARY:            { title: '정리 및 다음 학습 방향', color: '#7c3aed' },
+  NEXT_STUDY_PLAN:    { title: '다음 학습 방향',     color: '#7c3aed' },
+};
+
+// 구조화 소크라테스 단계를 담은 단일 소크라테스 말풍선. 채팅/마인드맵이 동일 steps를 사용한다.
+const buildSocraticTurnMessage = (acc, parentId, createdAt) => ({
+  id: `${parentId}::socratic`,
+  content: '소크라테스 문답',
+  sender: 'AI',
+  senderName: '소크라테스',
+  createdAt: createdAt || new Date().toISOString(),
+  parentId,
+  isSocratic: true,
+  socraticSteps: Array.isArray(acc?.socraticSteps) ? acc.socraticSteps : [],
+  socraticConfig: acc?.socraticConfig || null,
+});
+
+// 메시지에서 구조화 소크라테스 단계 배열을 추출한다(채팅/마인드맵 공통 SSOT).
+// 우선순위: socraticSteps → socratic.socraticSteps → processSteps.socraticSteps → answers[0].socraticSteps → answer를 SUMMARY로 변환.
+const normalizeSocraticSteps = (message) => {
+  if (!message) return null;
+  const direct = message.socraticSteps
+    || message.socratic?.socraticSteps
+    || message.processSteps?.socraticSteps
+    || (Array.isArray(message.answers) && message.answers[0] && message.answers[0].socraticSteps);
+  if (Array.isArray(direct) && direct.length > 0) {
+    return direct.map((s) => ({
+      stageType: s.stageType,
+      stageTitle: s.stageTitle || SOCRATIC_STAGE_META[s.stageType]?.title || s.stageType,
+      role: s.role,
+      agentIndex: s.agentIndex,
+      agentName: s.agentName,
+      question: s.question,
+      hint: s.hint,
+      feedback: s.feedback,
+      expectedConcept: s.expectedConcept,
+      misconceptionDetected: s.misconceptionDetected,
+      misconception: s.misconception,
+      directAnswerSuppressed: s.directAnswerSuppressed,
+      content: s.content ?? s.question ?? s.hint ?? s.feedback ?? '',
+    }));
+  }
+  // fallback: 기존 answer만 있으면 SUMMARY 단일 단계로 변환(긴 정답 카드로 표시 금지).
+  const answer = message.content
+    || message.answer
+    || (Array.isArray(message.answers) && message.answers[0] && message.answers[0].answer);
+  if (message.isSocratic && answer) {
+    return [{
+      stageType: 'SUMMARY', stageTitle: '정리 및 다음 학습 방향', role: '정리자',
+      agentIndex: 3, content: answer, directAnswerSuppressed: false,
+    }];
+  }
+  return null;
+};
+
+const socraticConfigOf = (message) =>
+  message?.socraticConfig || message?.processSteps?.socraticConfig || null;
+
+const simulationConfigOf = (message) =>
+  message?.simulationConfig || message?.simulation?.simulationConfig || message?.processSteps?.simulationConfig || DEFAULT_SIMULATION_CONFIG;
+
+const normalizeSimulationStages = (message) => {
+  if (!message) return null;
+  const direct = message.simulationStages
+    || message.simulation?.simulationStages
+    || message.processSteps?.simulationStages
+    || (Array.isArray(message.answers) && message.answers[0] && message.answers[0].simulationStages);
+  if (Array.isArray(direct) && direct.length > 0) {
+    return direct.map((s, idx) => ({
+      stageType: s.stageType || 'SUMMARY',
+      stageTitle: s.stageTitle || SIMULATION_STAGE_META[s.stageType]?.title || s.stageType || '상황극 요약',
+      role: s.role,
+      agentIndex: s.agentIndex,
+      agentName: s.agentName,
+      content: s.content ?? s.text ?? s.answer ?? '',
+      userRole: s.userRole,
+      choices: Array.isArray(s.choices) ? s.choices : [],
+      selectedChoiceId: s.selectedChoiceId,
+      consequence: s.consequence,
+      conceptMapping: Array.isArray(s.conceptMapping) ? s.conceptMapping : [],
+      misconceptionTrap: s.misconceptionTrap,
+      reflectionQuestion: s.reflectionQuestion,
+      nextScenarioPrompt: s.nextScenarioPrompt,
+      _idx: idx,
+    }));
+  }
+  const answer = message.content
+    || message.answer
+    || (Array.isArray(message.answers) && message.answers[0] && message.answers[0].answer);
+  if ((message.isSimulation || isSimulationModeValue(message.mode || message.learningMode)) && answer) {
+    return [{ stageType: 'SUMMARY', stageTitle: '상황극 요약', role: '결과 해석자', agentIndex: 3, content: answer, choices: [], conceptMapping: [] }];
+  }
+  return null;
+};
+
+const buildSimulationPayload = (data) => {
+  const stages = normalizeSimulationStages(data);
+  if (!stages || stages.length === 0) return null;
+  const choiceStage = stages.find((s) => Array.isArray(s.choices) && s.choices.length > 0);
+  const roleStage = stages.find((s) => s.userRole);
+  const nextStage = stages.find((s) => ['NEXT_SCENARIO', 'NEXT_BRANCH'].includes(s.stageType));
   return {
-    id: `${parentId}::socratic`,
-    content: answer,
-    sender: 'AI',
-    senderName: (d && d.agentName) || '소크라테스 튜터',
-    badge: { text: '🧭 소크라테스 · 질문 유도', hint: '', color: '#0ea5e9' },
-    badgeKey: 'socratic',
-    createdAt: createdAt || new Date().toISOString(),
-    parentId,
-    isSocratic: true,
+    mode: 'simulation',
+    simulationConfig: simulationConfigOf(data),
+    simulationStages: stages,
+    scenarioTitle: data?.scenarioTitle || data?.processSteps?.scenarioTitle || stages.find((s) => s.stageType === 'SCENARIO_SETUP')?.content || '상황극 세션',
+    userRole: data?.userRole || data?.processSteps?.userRole || roleStage?.userRole,
+    choices: data?.choices || data?.processSteps?.choices || choiceStage?.choices || [],
+    nextScenario: data?.nextScenario || data?.processSteps?.nextScenario || nextStage?.nextScenarioPrompt || nextStage?.content,
   };
 };
 
+const buildSimulationTurnMessage = (acc, parentId, createdAt) => ({
+  id: `${parentId}::simulation`,
+  content: '상황극',
+  sender: 'AI',
+  senderName: '상황극',
+  createdAt: createdAt || new Date().toISOString(),
+  parentId,
+  isSimulation: true,
+  simulationStages: Array.isArray(acc?.simulationStages) ? acc.simulationStages : [],
+  simulationConfig: acc?.simulationConfig || DEFAULT_SIMULATION_CONFIG,
+  scenarioTitle: acc?.scenarioTitle,
+  userRole: acc?.userRole,
+  choices: acc?.choices,
+  nextScenario: acc?.nextScenario,
+});
 
-const DebateRenderer = ({ debate }) => {
-  if (!debate) return null;
-  const sectionStyle = { display: 'flex', flexDirection: 'column', gap: '8px' };
-  const titleStyle = { fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' };
+// buildSocraticPayload(data) — 응답/메시지에서 소크라테스 페이로드를 만든다.
+const buildSocraticPayload = (data) => {
+  const steps = normalizeSocraticSteps(data);
+  if (!steps || steps.length === 0) return null;
+  const summary = steps.find((s) => s.stageType === 'SUMMARY');
+  return {
+    mode: 'socratic',
+    socraticConfig: socraticConfigOf(data),
+    socraticSteps: steps,
+    finalSummary: data?.finalSummary || data?.processSteps?.finalSummary || (summary ? summary.content : ''),
+    nextStudyPlan: data?.nextStudyPlan || data?.processSteps?.nextStudyPlan || [],
+  };
+};
+
+// 채팅 화면 소크라테스 렌더러 — 구조화 socraticSteps를 단계별 카드로 표시한다.
+// 1차/2차/3차, 반대/찬성/중립 라벨 금지. 긴 정답 단일 카드 금지.
+const SocraticRenderer = ({ steps }) => {
+  if (!steps || steps.length === 0) return null;
   const cardStyle = { padding: '11px 12px', borderRadius: '8px', background: 'rgba(0,0,0,0.035)', border: '1px solid rgba(0,0,0,0.06)' };
-  const metaStyle = { fontSize: '12px', fontWeight: 800, marginBottom: '5px', color: 'var(--color-text-main)' };
+  const metaStyle = { fontSize: '12px', fontWeight: 800, marginBottom: '5px' };
   const bodyStyle = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', color: 'var(--color-text-muted)', fontSize: '13px', lineHeight: 1.55 };
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-      {debate.initialAnswers?.length > 0 && (
-        <div style={sectionStyle}>
-          <div style={titleStyle}>1차 의견</div>
-          {debate.initialAnswers.map((row, idx) => (
-            <div key={`debate-initial-${idx}`} style={cardStyle}>
-              <div style={metaStyle}>{debateDisplayName(row, idx)}</div>
-              <div style={bodyStyle}>{row.answer}</div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {steps.map((s, idx) => {
+        const meta = SOCRATIC_STAGE_META[s.stageType] || { title: s.stageTitle, color: '#0ea5e9' };
+        return (
+          <div key={`socratic-step-${s.stageType}-${idx}`} style={{ ...cardStyle, borderLeft: `3px solid ${meta.color}` }}>
+            <div style={{ ...metaStyle, color: meta.color }}>
+              {s.stageTitle || meta.title}{s.agentName ? ` · ${s.agentName}` : (s.role ? ` · ${s.role}` : '')}
             </div>
-          ))}
-        </div>
-      )}
-      {debate.peerFeedbacks?.length > 0 && (
-        <div style={sectionStyle}>
-          <div style={titleStyle}>서로 피드백</div>
-          {debate.peerFeedbacks.map((row, idx) => (
-            <div key={`debate-feedback-${idx}`} style={{ ...cardStyle, borderLeft: '3px solid #ef4444' }}>
-              <div style={metaStyle}>{row.title}</div>
-              <div style={bodyStyle}>{row.feedback}</div>
-            </div>
-          ))}
-        </div>
-      )}
-      {debate.revisedAnswers?.length > 0 && (
-        <div style={sectionStyle}>
-          <div style={titleStyle}>보완 답변</div>
-          {debate.revisedAnswers.map((row, idx) => (
-            <div key={`debate-revised-${idx}`} style={cardStyle}>
-              <div style={metaStyle}>{debateDisplayName(row, idx)}</div>
-              <div style={bodyStyle}>{row.answer}</div>
-            </div>
-          ))}
-        </div>
-      )}
-      {debate.debateSummary && (
-        <div style={sectionStyle}>
-          <div style={titleStyle}>토론 정리</div>
-          <div style={{ ...cardStyle, background: 'rgba(14,165,233,0.08)' }}>
-            <div style={bodyStyle}>{debate.debateSummary}</div>
+            <div style={bodyStyle}>{s.content || s.question || s.hint || s.feedback}</div>
+            {s.misconception && (
+              <div style={{ marginTop: '6px', fontSize: '12px', color: '#ea580c', fontWeight: 700 }}>⚠ 오개념: {s.misconception}</div>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })}
+    </div>
+  );
+};
+
+
+const SimulationRenderer = ({ stages, onChoice }) => {
+  if (!stages || stages.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {stages.map((s, idx) => {
+        const meta = SIMULATION_STAGE_META[s.stageType] || SIMULATION_STAGE_META.SUMMARY;
+        const title = s.stageTitle || meta.title;
+        const body = s.content || s.consequence || s.misconceptionTrap || s.reflectionQuestion || s.nextScenarioPrompt || '';
+        return (
+          <div key={`simulation-stage-${s.stageType}-${s.agentIndex ?? 0}-${idx}`} className={`simulation-stage-card simulation-stage-card--${meta.className}`}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', flexWrap: 'wrap' }}>
+              <span className="simulation-role-badge">{s.role || '상황극'}</span>
+              <span style={{ color: meta.color, fontSize: '12px', fontWeight: 800 }}>{title}</span>
+              {s.agentName && <span style={{ color: '#94a3b8', fontSize: '11px', fontWeight: 700 }}>· {s.agentName}</span>}
+            </div>
+            {s.userRole && <div style={{ fontSize: '12px', fontWeight: 800, color: '#475569', marginBottom: '5px' }}>내 역할: {s.userRole}</div>}
+            {body && <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', color: 'var(--color-text-muted)', fontSize: '13px', lineHeight: 1.55 }}>{body}</div>}
+            {Array.isArray(s.choices) && s.choices.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginTop: '8px' }}>
+                {s.choices.map((choice) => (
+                  <button
+                    type="button"
+                    key={choice.choiceId || choice.label}
+                    className="simulation-choice-button"
+                    onClick={() => onChoice?.(choice)}
+                  >
+                    <strong>{choice.label || choice.choiceId}</strong>
+                    <span>{choice.text}</span>
+                    {choice.expectedConsequence && <small>예상 결과: {choice.expectedConsequence}</small>}
+                    {choice.conceptLink && <small>연결 개념: {choice.conceptLink}</small>}
+                    {choice.misconceptionRisk && <small>오개념 위험: {choice.misconceptionRisk}</small>}
+                  </button>
+                ))}
+              </div>
+            )}
+            {Array.isArray(s.conceptMapping) && s.conceptMapping.length > 0 && (
+              <ul style={{ margin: '8px 0 0', paddingLeft: '18px', color: 'var(--color-text-muted)', fontSize: '13px', lineHeight: 1.5 }}>
+                {s.conceptMapping.map((item, i) => <li key={i}>{item}</li>)}
+              </ul>
+            )}
+            {s.misconceptionTrap && <div style={{ marginTop: '7px', fontSize: '12px', color: '#dc2626', fontWeight: 800 }}>오개념 함정: {s.misconceptionTrap}</div>}
+            {s.reflectionQuestion && <div style={{ marginTop: '7px', fontSize: '12px', color: '#a16207', fontWeight: 800 }}>성찰 질문: {s.reflectionQuestion}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// side별 강조색 (CON 주황 / PRO 초록 / NEUTRAL 보라 / TOPIC 파랑)
+const DEBATE_SIDE_COLOR = { CON: '#ea580c', PRO: '#059669', NEUTRAL: '#7c3aed', TOPIC: '#2563eb' };
+
+// 채팅 화면 토론 렌더러 — 구조화 debateStages를 그대로 표시한다.
+// "1차 의견 / 서로 피드백 / 보완 답변 / 토론 정리" 라벨은 절대 쓰지 않는다.
+const DebateRenderer = ({ stages }) => {
+  if (!stages || stages.length === 0) return null;
+  const cardStyle = { padding: '11px 12px', borderRadius: '8px', background: 'rgba(0,0,0,0.035)', border: '1px solid rgba(0,0,0,0.06)' };
+  const metaStyle = { fontSize: '12px', fontWeight: 800, marginBottom: '5px' };
+  const bodyStyle = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', color: 'var(--color-text-muted)', fontSize: '13px', lineHeight: 1.55 };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {stages.map((s, idx) => {
+        const accent = DEBATE_SIDE_COLOR[s.side] || '#64748b';
+        return (
+          <div key={`debate-stage-${s.stageType}-${s.side}-${idx}`} style={{ ...cardStyle, borderLeft: `3px solid ${accent}` }}>
+            <div style={{ ...metaStyle, color: accent }}>
+              {s.stageTitle}{s.agentName && s.side !== 'TOPIC' ? ` · ${s.agentName}` : ''}
+            </div>
+            <div style={bodyStyle}>{s.content}</div>
+          </div>
+        );
+      })}
     </div>
   );
 };
@@ -261,13 +623,35 @@ const explodeHistoryToStageBubbles = (history) => {
   const out = [];
   const seenTurn = new Set();
   for (const msg of history) {
-    const debate = msg && msg.sender === 'AI' ? buildDebatePayload(msg) : null;
-    if (debate) {
-      const debateKey = `${debate.debateSummary || ''}::${debate.initialAnswers?.[0]?.answer || ''}`.slice(0, 240);
+    const stages = msg && msg.sender === 'AI' ? normalizeDebateStages(msg) : null;
+    if (stages && stages.length > 0) {
+      const summary = stages.find((s) => s.stageType === 'JUDGEMENT')?.content || '';
+      const debateKey = `${summary}::${stages[0]?.content || ''}`.slice(0, 240);
       const turnKey = msg.parentId ?? `debate::${debateKey}`;
       if (seenTurn.has(turnKey)) continue;
       seenTurn.add(turnKey);
-      out.push({ ...msg, debate, processSteps: undefined, content: msg.content || '토론 결과' });
+      // debateConfig는 마인드맵 액션 프롬프트용으로 보존한다.
+      out.push({ ...msg, debateStages: stages, debateConfig: debateConfigOf(msg), processSteps: undefined, content: msg.content || '토론' });
+      continue;
+    }
+    // 소크라테스 복원: processSteps.socraticSteps가 있으면 같은 턴 1회만 단일 소크라테스 말풍선으로 폭발.
+    const socSteps = msg && msg.sender === 'AI' ? normalizeSocraticSteps(msg) : null;
+    if (socSteps && socSteps.length > 0) {
+      const summary = socSteps.find((s) => s.stageType === 'SUMMARY')?.content || '';
+      const socKey = `${summary}::${socSteps[0]?.content || ''}`.slice(0, 240);
+      const turnKey = msg.parentId ?? `socratic::${socKey}`;
+      if (seenTurn.has(turnKey)) continue;
+      seenTurn.add(turnKey);
+      out.push({ ...msg, isSocratic: true, socraticSteps: socSteps, socraticConfig: socraticConfigOf(msg), processSteps: undefined, content: msg.content || '소크라테스 문답' });
+      continue;
+    }
+    const simPayload = msg && msg.sender === 'AI' ? buildSimulationPayload(msg) : null;
+    if (simPayload && simPayload.simulationStages.length > 0) {
+      const simKey = `${simPayload.scenarioTitle || ''}::${simPayload.simulationStages[0]?.content || ''}`.slice(0, 240);
+      const turnKey = msg.parentId ?? `simulation::${simKey}`;
+      if (seenTurn.has(turnKey)) continue;
+      seenTurn.add(turnKey);
+      out.push({ ...msg, isSimulation: true, simulationStages: simPayload.simulationStages, simulationConfig: simPayload.simulationConfig, processSteps: undefined, content: msg.content || '상황극' });
       continue;
     }
     const ps = msg && msg.sender === 'AI' ? msg.processSteps : null;
@@ -297,8 +681,10 @@ const debateExcerpt = (text, n = 28) => {
 // stageType별 카드 제목(찬성측/반대측 접두어 포함)
 const debateStageTitle = (side, stageType) => {
   if (stageType === 'TOPIC') return '논제';
-  if (stageType === 'JUDGEMENT') return '심사위원 판정';
-  const prefix = side === 'PRO' ? '찬성측' : side === 'CON' ? '반대측' : '';
+  if (stageType === 'JUDGEMENT') return '중립 판정';
+  if (stageType === 'NEUTRAL_ANALYSIS') return '중립 쟁점 정리';
+  if (stageType === 'NEUTRAL_CHECK') return '중립 검토';
+  const prefix = side === 'PRO' ? '찬성측' : side === 'CON' ? '반대측' : side === 'NEUTRAL' ? '중립' : '';
   const base = ({
     OPENING_STATEMENT: '입론',
     REBUTTAL: '반박',
@@ -309,15 +695,21 @@ const debateStageTitle = (side, stageType) => {
 };
 
 const debateRoleLabel = (side) =>
-  side === 'PRO' ? '찬성' : side === 'CON' ? '반대' : side === 'JUDGE' ? '심사위원' : '논제';
+  side === 'PRO' ? '찬성측' : side === 'CON' ? '반대측'
+    : (side === 'JUDGE' || side === 'NEUTRAL') ? '중립' : '논제';
 
-// 백엔드가 향후 구조화된 debateStages를 내려줄 경우 우선 사용한다.
+// 구조화 debateStages → 마인드맵 노드 스펙. NEUTRAL(중립) 단계도 지원한다.
 const debateStagesToSpecs = (stages) => {
-  const sideKeyPrefix = (side) => (String(side || '').toUpperCase() === 'PRO' ? 'pro' : 'con');
+  const sidePrefix = (side) => {
+    const s = String(side || '').toUpperCase();
+    return s === 'PRO' ? 'pro' : s === 'CON' ? 'con' : 'neutral';
+  };
   const keyFor = (stageType, side) => {
     if (stageType === 'TOPIC') return 'topic';
     if (stageType === 'JUDGEMENT') return 'judge';
-    const p = sideKeyPrefix(side);
+    if (stageType === 'NEUTRAL_ANALYSIS') return 'neutral_analysis';
+    if (stageType === 'NEUTRAL_CHECK') return 'neutral_check';
+    const p = sidePrefix(side);
     return {
       OPENING_STATEMENT: `${p}_open`,
       REBUTTAL: `${p}_rebut`,
@@ -327,7 +719,7 @@ const debateStagesToSpecs = (stages) => {
   };
   return (stages || []).map((s) => {
     const stageType = String(s.stageType || '').toUpperCase();
-    const side = String(s.side || (stageType === 'JUDGEMENT' ? 'JUDGE' : stageType === 'TOPIC' ? 'TOPIC' : '')).toUpperCase();
+    const side = String(s.side || (stageType === 'TOPIC' ? 'TOPIC' : '')).toUpperCase();
     return {
       key: keyFor(stageType, side),
       stageType,
@@ -372,26 +764,33 @@ const legacyDebateToSpecs = (debate, topicText) => {
 // 토론 단계 스펙 사이의 부모 연결 우선순위(가까운 조상부터). 중간 단계가 없으면 위로 폴백한다.
 const DEBATE_PARENT_CHAIN = {
   topic: [],
-  pro_open: ['topic'],
   con_open: ['topic'],
-  pro_rebut: ['con_open', 'topic'],
+  pro_open: ['topic'],
+  neutral_analysis: ['topic'],
   con_rebut: ['pro_open', 'topic'],
+  pro_rebut: ['con_open', 'topic'],
+  neutral_check: ['neutral_analysis', 'topic'],
   pro_cross: ['con_rebut', 'con_open', 'topic'],
   con_cross: ['pro_rebut', 'pro_open', 'topic'],
-  pro_close: ['pro_cross', 'pro_rebut', 'pro_open', 'topic'],
   con_close: ['con_cross', 'con_rebut', 'con_open', 'topic'],
-  judge: ['topic'],
+  pro_close: ['pro_cross', 'pro_rebut', 'pro_open', 'topic'],
+  judge: ['neutral_check', 'neutral_analysis', 'topic'],
 };
 
 // 토론 메시지 1개 → 마인드맵 노드 배열. 안정적인 id를 사용해 새로고침 후에도 동일 구조 재현.
-const debateToMindmapNodes = (message, debate, topicText) => {
+const debateToMindmapNodes = (message, stages, topicText, debateConfig) => {
   const baseId = String(message.id);
   const rootQuestionId = message.parentId != null ? message.parentId : baseId;
   const createdAt = message.createdAt || new Date().toISOString();
 
-  const specs = Array.isArray(debate.debateStages) && debate.debateStages.length
-    ? debateStagesToSpecs(debate.debateStages)
-    : legacyDebateToSpecs(debate, topicText);
+  let specs = debateStagesToSpecs(stages || []);
+  // TOPIC 단계가 없으면 사용자 질문/논제로 합성 토픽 노드를 맨 앞에 둔다.
+  if (!specs.some((s) => s.key === 'topic')) {
+    specs = [{ key: 'topic', stageType: 'TOPIC', side: 'TOPIC', role: '논제', title: '논제', content: topicText }, ...specs];
+  }
+  // 액션 프롬프트 컨텍스트(논제/쟁점 축)
+  const topicForCtx = specs.find((s) => s.key === 'topic')?.content || topicText;
+  const issueAxes = debateConfig?.issueAxes || [];
 
   const idFor = (s) => `${baseId}::debate::${s.stageType}::${s.side}::${s.agentId ?? s.agentIndex ?? s.key}`;
 
@@ -431,18 +830,156 @@ const debateToMindmapNodes = (message, debate, topicText) => {
         side: s.side,
         agentName: s.agentName,
         contentExcerpt: debateExcerpt(s.content),
+        topic: debateExcerpt(topicForCtx, 60),
+        issueAxes,
       },
     });
   }
   return nodes;
 };
 
-// AI 메시지 중 토론 메시지만 노드 여러 개로 확장하고, 일반 메시지는 그대로 둔다.
+// 소크라테스 단계는 직렬 체인으로 연결한다(이전 단계 → 다음 단계).
+const socraticToMindmapNodes = (message, steps, socraticConfig) => {
+  const baseId = String(message.id);
+  const rootQuestionId = message.parentId != null ? message.parentId : baseId;
+  const createdAt = message.createdAt || new Date().toISOString();
+  const issueGoal = socraticConfig?.goal || '';
+
+  // 세션 루트 노드(나의 질문 아래) → 그 아래에 각 단계를 직렬로 체인.
+  const sessionId = `${baseId}::socratic::SESSION::0`;
+  const nodes = [{
+    id: sessionId, parentId: rootQuestionId, sender: 'AI',
+    senderName: '소크라테스 세션', content: '질문·힌트·오개념 점검으로 스스로 답을 찾는 문답 세션',
+    createdAt, nodeType: 'socratic', stageType: 'SESSION', stageTitle: '소크라테스 세션',
+    role: '세션', agentIndex: 0,
+    actionContext: { stageType: 'SESSION', goal: issueGoal },
+  }];
+
+  let prevId = sessionId;
+  for (const s of steps) {
+    if (!s.content && !s.question && !s.hint && !s.feedback) continue;
+    const content = s.content || s.question || s.hint || s.feedback || '';
+    const id = `${baseId}::socratic::${s.stageType}::${s.agentIndex ?? 0}`;
+    nodes.push({
+      id, parentId: prevId, sender: 'AI',
+      senderName: s.agentName || s.role || '튜터',
+      content, createdAt,
+      nodeType: 'socratic',
+      stageType: s.stageType,
+      stageTitle: s.stageTitle || SOCRATIC_STAGE_META[s.stageType]?.title || s.stageType,
+      role: s.role,
+      agentIndex: s.agentIndex,
+      agentName: s.agentName,
+      misconception: s.misconception,
+      actionContext: {
+        stageType: s.stageType,
+        contentExcerpt: debateExcerpt(content),
+        goal: issueGoal,
+      },
+    });
+    prevId = id;
+  }
+  return nodes;
+};
+
+const simulationStageContent = (s) => {
+  if (!s) return '';
+  if (s.content) return s.content;
+  if (s.userRole) return s.userRole;
+  if (s.consequence) return s.consequence;
+  if (s.misconceptionTrap) return s.misconceptionTrap;
+  if (s.reflectionQuestion) return s.reflectionQuestion;
+  if (s.nextScenarioPrompt) return s.nextScenarioPrompt;
+  if (Array.isArray(s.conceptMapping) && s.conceptMapping.length) return s.conceptMapping.join('\n');
+  return '';
+};
+
+const simulationToMindmapNodes = (message, payload) => {
+  const baseId = String(message.id);
+  const rootQuestionId = message.parentId != null ? message.parentId : baseId;
+  const createdAt = message.createdAt || new Date().toISOString();
+  const stages = payload?.simulationStages || [];
+  const config = payload?.simulationConfig || DEFAULT_SIMULATION_CONFIG;
+  const sessionId = `${baseId}::simulation::SESSION::0`;
+  const nodes = [{
+    id: sessionId,
+    parentId: rootQuestionId,
+    sender: 'AI',
+    senderName: '상황극 세션',
+    content: payload?.scenarioTitle || '상황 속 역할을 맡아 선택하고, 결과로 개념을 체험하는 세션',
+    createdAt,
+    nodeType: 'simulation',
+    stageType: 'SESSION',
+    stageTitle: '상황극 세션',
+    role: '세션',
+    agentIndex: 0,
+    actionContext: { stageType: 'SESSION' },
+    simulationConfig: config,
+  }];
+  const byStage = new Map();
+  let lastStageId = sessionId;
+  const parentFor = (stageType) => {
+    if (stageType === 'SCENARIO_SETUP') return sessionId;
+    if (stageType === 'USER_ROLE') return byStage.get('SCENARIO_SETUP') || sessionId;
+    if (stageType === 'SITUATION_CONTEXT') return byStage.get('USER_ROLE') || byStage.get('SCENARIO_SETUP') || sessionId;
+    if (stageType === 'CHOICES') return byStage.get('SITUATION_CONTEXT') || lastStageId;
+    if (['CONCEPT_MAPPING', 'MISCONCEPTION_TRAP', 'REFLECTION_QUESTION', 'NEXT_SCENARIO'].includes(stageType)) return byStage.get('CHOICES') || lastStageId;
+    if (['SELECTED_CHOICE', 'CONSEQUENCE', 'CONCEPT_EXPLANATION', 'RISK_OR_LIMITATION', 'NEXT_BRANCH'].includes(stageType)) return lastStageId;
+    return lastStageId;
+  };
+
+  for (const s of stages) {
+    const content = simulationStageContent(s);
+    const stageType = s.stageType || 'SUMMARY';
+    const id = `${baseId}::simulation::${stageType}::${s.agentIndex ?? s._idx ?? 0}`;
+    const parentId = parentFor(stageType);
+    nodes.push({
+      id, parentId, sender: 'AI', senderName: s.agentName || s.role || '상황극', content,
+      createdAt, nodeType: 'simulation', stageType, stageTitle: s.stageTitle || SIMULATION_STAGE_META[stageType]?.title || stageType,
+      role: s.role, agentIndex: s.agentIndex, agentName: s.agentName,
+      actionContext: { stageType, contentExcerpt: debateExcerpt(content), choiceLabel: s.selectedChoiceId },
+      simulationConfig: config,
+    });
+    byStage.set(stageType, id);
+    lastStageId = id;
+
+    if (Array.isArray(s.choices) && s.choices.length > 0) {
+      s.choices.forEach((choice) => {
+        const choiceId = choice.choiceId || choice.label;
+        const cid = `${baseId}::simulation::CHOICE::${choiceId}`;
+        nodes.push({
+          id: cid, parentId: id, sender: 'AI', senderName: s.agentName || '사건 진행자',
+          content: choice.text || '', createdAt, nodeType: 'simulation', stageType: 'CHOICE', stageTitle: `선택 ${choice.label || choiceId}`,
+          role: '선택지', agentIndex: s.agentIndex, agentName: s.agentName, choiceId, label: choice.label || choiceId,
+          actionContext: { stageType: 'CHOICE', choiceLabel: choice.label || choiceId, contentExcerpt: debateExcerpt(choice.text) },
+          simulationConfig: config,
+        });
+        [
+          ['예상 결과', choice.expectedConsequence],
+          ['연결 개념', choice.conceptLink],
+          ['오개념 위험', choice.misconceptionRisk],
+        ].forEach(([title, text]) => {
+          if (!text) return;
+          nodes.push({
+            id: `${cid}::${title}`, parentId: cid, sender: 'AI', senderName: title, content: text,
+            createdAt, nodeType: 'simulation', stageType: title === '예상 결과' ? 'CONSEQUENCE' : title === '연결 개념' ? 'CONCEPT_MAPPING' : 'MISCONCEPTION_TRAP',
+            stageTitle: title, role: '선택 분석', choiceId, label: choice.label || choiceId,
+            actionContext: { stageType: title, choiceLabel: choice.label || choiceId, contentExcerpt: debateExcerpt(text) },
+            simulationConfig: config,
+          });
+        });
+      });
+    }
+  }
+  return nodes;
+};
+
+// AI 메시지 중 토론/소크라테스/상황극 메시지만 노드 여러 개로 확장하고, 일반 메시지는 그대로 둔다.
 const expandDebateMessagesForMindmap = (messages) => {
   if (!Array.isArray(messages)) return [];
   const byId = new Map(messages.map((m) => [m.id, m]));
   const out = [];
-  const seenIds = new Set(); // 10단계: node.id 기준 중복 방지(SSE 단계+all_complete 동시 도착 대비)
+  const seenIds = new Set(); // node.id 기준 중복 방지(SSE 단계+all_complete 동시 도착 대비)
   const pushUnique = (node) => {
     if (node && node.id != null) {
       if (seenIds.has(node.id)) return;
@@ -451,11 +988,22 @@ const expandDebateMessagesForMindmap = (messages) => {
     out.push(node);
   };
   for (const msg of messages) {
-    const debate = msg && msg.sender === 'AI' ? (msg.debate || buildDebatePayload(msg)) : null;
-    if (debate) {
+    const stages = msg && msg.sender === 'AI' ? normalizeDebateStages(msg) : null;
+    if (stages && stages.length > 0) {
       const parent = msg.parentId != null ? byId.get(msg.parentId) : null;
-      const topicText = (parent && parent.content) || msg.content || '토론 논제';
-      debateToMindmapNodes(msg, debate, topicText).forEach(pushUnique);
+      const topicText = stages.find((s) => s.stageType === 'TOPIC')?.content
+        || (parent && parent.content) || msg.content || '토론 논제';
+      debateToMindmapNodes(msg, stages, topicText, debateConfigOf(msg)).forEach(pushUnique);
+      continue;
+    }
+    const socSteps = msg && msg.sender === 'AI' ? normalizeSocraticSteps(msg) : null;
+    if (socSteps && socSteps.length > 0) {
+      socraticToMindmapNodes(msg, socSteps, socraticConfigOf(msg)).forEach(pushUnique);
+      continue;
+    }
+    const simPayload = msg && msg.sender === 'AI' ? buildSimulationPayload(msg) : null;
+    if (simPayload && simPayload.simulationStages.length > 0) {
+      simulationToMindmapNodes(msg, simPayload).forEach(pushUnique);
       continue;
     }
     pushUnique(msg);
@@ -463,7 +1011,7 @@ const expandDebateMessagesForMindmap = (messages) => {
   return out;
 };
 
-// 마인드맵 뷰가 받는 메시지 = 채팅 히스토리를 토론 구조로 확장한 결과.
+// 마인드맵 뷰가 받는 메시지 = 채팅 히스토리를 토론/소크라테스 구조로 확장한 결과.
 const buildMindmapMessages = (chatHistory) => expandDebateMessagesForMindmap(chatHistory);
 
 // ── 토론 노드 액션 버튼 클릭 시 입력창에 채워질 프롬프트 ──────────────────────────
@@ -490,9 +1038,102 @@ const DEBATE_ACTION_PROMPTS = {
 };
 
 const buildDebateActionPrompt = (node, actionType) => {
-  const ex = node?.actionContext?.contentExcerpt || debateExcerpt(node?.content);
+  const ctx = node?.actionContext || {};
+  const ex = ctx.contentExcerpt || debateExcerpt(node?.content);
   const fn = DEBATE_ACTION_PROMPTS[actionType];
-  return fn ? fn(ex) : `@모두 방금 "${ex}" 내용에 이어서 토론을 계속 진행해줘.`;
+  const base = fn ? fn(ex) : `@모두 방금 "${ex}" 내용에 이어서 토론을 계속 진행해줘.`;
+  // 현재 논제/쟁점 축을 프롬프트에 주입해 토론 맥락을 유지한다(@모두 바로 뒤에 삽입).
+  const axes = Array.isArray(ctx.issueAxes) && ctx.issueAxes.length ? ctx.issueAxes.join(', ') : '';
+  if (!ctx.topic) return base;
+  const prefix = `현재 토론 논제는 "${ctx.topic}"${axes ? `이고, 쟁점 축은 ${axes}` : ''}입니다. `;
+  return base.startsWith('@모두 ') ? base.replace('@모두 ', `@모두 ${prefix}`) : `${prefix}${base}`;
+};
+
+// ── 소크라테스 노드 액션 버튼 클릭 시 입력창에 채워질 프롬프트 ──────────────────────
+const SOCRATIC_ACTION_PROMPTS = {
+  easier_question: (ex) => `@모두 방금 소크라테스 질문 "${ex}"을 더 쉬운 질문으로 바꿔줘. 정답은 바로 말하지 말고 사용자가 답하게 유도해줘.`,
+  harder_question: (ex) => `@모두 방금 질문 "${ex}"을 더 깊고 어려운 질문으로 바꿔줘. 정답은 바로 말하지 마.`,
+  example_question: (ex) => `@모두 방금 개념 "${ex}"을 예시 상황으로 바꿔 질문해줘. 정답은 바로 말하지 마.`,
+  request_hint: (ex) => `@모두 방금 질문 "${ex}"에 대해 정답을 바로 말하지 말고 단계별 힌트만 제공해줘.`,
+  counterexample_question: (ex) => `@모두 방금 개념 "${ex}"에 대해 반례를 이용한 소크라테스 질문을 만들어줘. 정답은 바로 말하지 마.`,
+  re_explain: (ex) => `@모두 방금 내용 "${ex}"을 내가 다시 설명해볼 수 있도록 유도 질문을 만들어줘.`,
+  next_hint: (ex) => `@모두 방금 힌트 "${ex}"에 이어서 다음 단계 힌트만 하나 더 제공해줘. 정답 전체는 말하지 마.`,
+  example_hint: (ex) => `@모두 방금 개념 "${ex}"을 이해할 수 있는 예시 힌트를 제공해줘. 정답 전체는 말하지 마.`,
+  reveal_partial: (ex) => `@모두 방금 질문 "${ex}"에 대해 정답의 일부만 살짝 공개하고, 나머지는 내가 채우도록 질문으로 남겨줘.`,
+  apply_code: (ex) => `@모두 방금 개념 "${ex}"을 아주 작은 코드 예제로 적용할 수 있도록 질문을 만들어줘. 정답 코드를 바로 주지 말고 빈칸이나 선택지를 활용해줘.`,
+  apply_practical: (ex) => `@모두 방금 개념 "${ex}"을 실무 사례에 적용하는 질문을 만들어줘. 정답은 바로 말하지 마.`,
+  to_exam: (ex) => `@모두 방금 개념 "${ex}"을 시험 문제(객관식/단답)로 바꿔줘. 정답은 마지막에 숨겨서 제공해줘.`,
+  evaluate_answer: () => `@모두 내가 다음에 작성할 답변을 개념 정확성, 빠진 개념, 오개념 가능성 기준으로 평가해줘. 바로 정답을 주지 말고 부족한 부분을 질문으로 짚어줘.`,
+  find_weakness: (ex) => `@모두 방금 내용 "${ex}"에서 내가 약한 개념이나 빠뜨린 부분을 찾아 질문으로 짚어줘.`,
+  next_question: (ex) => `@모두 방금 내용 "${ex}"을 바탕으로 다음에 스스로 생각해볼 질문 1개를 만들어줘.`,
+  make_study_plan: () => `@모두 지금까지의 소크라테스 문답을 바탕으로 내가 다음에 무엇을 어떤 순서로 공부하면 좋을지 학습 계획을 만들어줘.`,
+  make_quiz: () => `@모두 지금까지의 소크라테스 문답을 바탕으로 퀴즈 3개를 만들어줘. 정답은 마지막에 숨겨서 제공해줘.`,
+  make_review: () => `@모두 지금까지의 핵심 개념으로 복습용 질문 3개를 만들어줘. 정답은 바로 주지 말고 내가 답하게 해줘.`,
+};
+
+const buildSocraticActionPrompt = (node, actionType) => {
+  const ctx = node?.actionContext || {};
+  const ex = ctx.contentExcerpt || debateExcerpt(node?.content);
+  const fn = SOCRATIC_ACTION_PROMPTS[actionType];
+  return fn ? fn(ex) : `@모두 방금 "${ex}" 내용에 이어서 소크라테스 질문을 하나 더 던져줘. 정답은 바로 말하지 마.`;
+};
+
+const SIMULATION_ACTION_PROMPTS = {
+  expand_background: () => '@모두 상황극 모드에서 현재 배경을 더 자세히 만들고, 조건과 등장인물을 보강해줘.',
+  easier_scenario: () => '@모두 상황극 모드에서 같은 개념을 더 쉬운 상황으로 바꿔줘. 정답/오답 채점이 아니라 선택과 결과 중심으로 보여줘.',
+  harder_scenario: () => '@모두 상황극 모드에서 같은 개념을 더 어려운 상황으로 확장해줘. 제약 조건과 돌발 변수를 추가해줘.',
+  change_role: () => '@모두 상황극 모드에서 내 역할을 바꿔서 다시 진행해줘. 선택지와 결과 변화도 새 역할에 맞춰줘.',
+  observer_view: () => '@모두 상황극 모드에서 나를 관찰자 시점으로 바꿔 같은 상황을 다시 보여줘.',
+  decision_view: () => '@모두 상황극 모드에서 나를 의사결정자 시점으로 바꿔 선택과 결과를 이어가줘.',
+  choose: (label) => `@모두 상황극 모드에서 "${label}" 선택을 진행해줘. 선택 결과, 개념 연결, 오개념 위험, 다음 분기를 보여줘.`,
+  preview: (label) => `@모두 "${label}" 선택을 했을 때 예상 결과를 설명해줘. 정답/오답 채점이 아니라 상황 변화 중심으로 보여줘.`,
+  risk: (label) => `@모두 "${label}" 선택에 숨어 있는 오개념이나 위험한 전제를 분석해줘.`,
+  why_result: () => '@모두 상황극 모드에서 왜 이런 결과가 나왔는지 개념과 원리로 연결해줘.',
+  compare_choices: () => '@모두 방금 선택과 다른 선택지를 비교해서 어떤 개념 차이가 있는지 설명해줘.',
+  connect_concept: () => '@모두 상황극 모드에서 이 결과를 핵심 개념, 원리, 한계로 연결해줘.',
+  summarize_concept: () => '@모두 상황극 모드에서 핵심 개념만 짧게 정리해줘. 퀴즈처럼 채점하지 마.',
+  expand_case: () => '@모두 같은 개념을 다른 전공/현실 사례의 상황극으로 바꿔줘.',
+  major_context: () => '@모두 이 상황극을 전공 맥락에서 다시 연결해줘.',
+  dig_trap: () => '@모두 상황극 모드에서 이 오개념 함정을 더 깊게 파고들고 반례를 보여줘.',
+  counterexample: () => '@모두 이 오개념을 깨는 반례 상황을 하나 만들어줘.',
+  safe_rule: () => '@모두 같은 상황에서 안전하게 판단할 수 있는 기준을 만들어줘.',
+  hint: () => '@모두 상황극 모드에서 성찰 질문에 대한 힌트만 줘. 정답 채점으로 만들지 마.',
+  evaluate_reflection: () => '@모두 내가 다음에 쓸 답변을 상황 변화, 개념 연결, 오개념 위험 기준으로 평가해줘.',
+  next_question: () => '@모두 이 상황극의 다음 질문을 만들어줘.',
+  next_branch: () => '@모두 상황극 모드에서 다음 분기를 진행해줘. 선택지와 결과 변화를 포함해줘.',
+  raise_difficulty: () => '@모두 상황극 모드에서 난이도를 한 단계 올려 다음 분기를 진행해줘.',
+  change_domain: () => '@모두 같은 개념을 다른 분야의 상황극으로 바꿔 다음 분기를 만들어줘.',
+};
+
+const buildSimulationActionPrompt = (node, actionType) => {
+  const label = node?.label || node?.choiceId || node?.actionContext?.choiceLabel || '이 선택';
+  const map = {
+    expand_background: SIMULATION_ACTION_PROMPTS.expand_background,
+    easier_scenario: SIMULATION_ACTION_PROMPTS.easier_scenario,
+    harder_scenario: SIMULATION_ACTION_PROMPTS.harder_scenario,
+    change_role: SIMULATION_ACTION_PROMPTS.change_role,
+    observer_view: SIMULATION_ACTION_PROMPTS.observer_view,
+    decision_view: SIMULATION_ACTION_PROMPTS.decision_view,
+    choose: () => SIMULATION_ACTION_PROMPTS.choose(label),
+    preview: () => SIMULATION_ACTION_PROMPTS.preview(label),
+    risk: () => SIMULATION_ACTION_PROMPTS.risk(label),
+    why_result: SIMULATION_ACTION_PROMPTS.why_result,
+    compare_choices: SIMULATION_ACTION_PROMPTS.compare_choices,
+    connect_concept: SIMULATION_ACTION_PROMPTS.connect_concept,
+    summarize_concept: SIMULATION_ACTION_PROMPTS.summarize_concept,
+    expand_case: SIMULATION_ACTION_PROMPTS.expand_case,
+    major_context: SIMULATION_ACTION_PROMPTS.major_context,
+    dig_trap: SIMULATION_ACTION_PROMPTS.dig_trap,
+    counterexample: SIMULATION_ACTION_PROMPTS.counterexample,
+    safe_rule: SIMULATION_ACTION_PROMPTS.safe_rule,
+    hint: SIMULATION_ACTION_PROMPTS.hint,
+    evaluate_reflection: SIMULATION_ACTION_PROMPTS.evaluate_reflection,
+    next_question: SIMULATION_ACTION_PROMPTS.next_question,
+    next_branch: SIMULATION_ACTION_PROMPTS.next_branch,
+    raise_difficulty: SIMULATION_ACTION_PROMPTS.raise_difficulty,
+    change_domain: SIMULATION_ACTION_PROMPTS.change_domain,
+  };
+  return (map[actionType] || SIMULATION_ACTION_PROMPTS.next_branch)();
 };
 
 // (제거됨) ProcessStepsAccordion — 단계 펼침/접힘 UI는 더 이상 사용하지 않는다.
@@ -606,11 +1247,16 @@ const buildCanonicalAgentPayload = (agent) => {
   const customInstruction = String(agent.customInstruction || '').trim();
   const goal = String(agent.goal || '사용자의 학습을 돕는다').trim();
   const personaBody = customInstruction || goal;
+  const agentPreset = String(agent.agentPreset || '').trim();
+  // agentPreset은 Agent 엔티티 컬럼이 없어 persona [프리셋: X] 태그로 인코딩(마이그레이션 없이 영속/복원).
+  const presetTag = agentPreset ? `[프리셋: ${agentPreset}] ` : '';
 
   return {
     name: String(agent.name || '').trim(),
     role: String(agent.role || '').trim(),
+    agentPreset,
     personality,
+    personalityStrength: agent.personalityStrength || 'extreme',
     style: personality,
     tone: personality,
     knowledgeLevel,
@@ -618,7 +1264,7 @@ const buildCanonicalAgentPayload = (agent) => {
     goal,
     customInstruction,
     custom_instruction: customInstruction,
-    persona: `[지식수준: ${knowledgeLevel}] [성격: ${personality}] ${personaBody}`
+    persona: `${presetTag}[지식수준: ${knowledgeLevel}] [성격: ${personality}] ${personaBody}`,
   };
 };
 
@@ -669,8 +1315,14 @@ export default function StudyMate() {
   // 멀티 에이전트 동적 추가를 위해 상태를 배열로 정의
   const [createdAgents, setCreatedAgents] = useState([{ ...DEFAULT_AGENT }]);
   const [roomName, setRoomName] = useState('');
-  // 학습 진행 모드: basic(기본 채팅) / socratic(소크라테스) / debate(토론)
+  // 학습 진행 모드: basic(기본 채팅) / socratic(소크라테스) / debate(토론) / simulation(상황극)
   const [learningMode, setLearningMode] = useState('basic');
+  // 토론 모드 논제/구조 설정 (생성 모달 + 메시지 전송에 사용)
+  const [debateConfig, setDebateConfig] = useState(DEFAULT_DEBATE_CONFIG);
+  // 소크라테스 문답 설정 (생성 모달 + 메시지 전송에 사용)
+  const [socraticConfig, setSocraticConfig] = useState(DEFAULT_SOCRATIC_CONFIG);
+  // 상황극 설정 (생성 모달 + 메시지 전송에 사용)
+  const [simulationConfig, setSimulationConfig] = useState(DEFAULT_SIMULATION_CONFIG);
 
   const chatEndRef = useRef(null);
 
@@ -705,6 +1357,9 @@ export default function StudyMate() {
     setCreatedAgents([{ ...DEFAULT_AGENT }]);
     setRoomName('');
     setLearningMode('basic');
+    setDebateConfig(DEFAULT_DEBATE_CONFIG);
+    setSocraticConfig(DEFAULT_SOCRATIC_CONFIG);
+    setSimulationConfig(DEFAULT_SIMULATION_CONFIG);
     setShowModal(true);
   };
 
@@ -733,7 +1388,11 @@ export default function StudyMate() {
     const payload = {
       roomName: finalRoomName,
       agents: payloadAgents,
-      learningMode
+      learningMode,
+      // 토론/소크라테스 모드일 때만 해당 설정을 함께 저장 요청한다.
+      debateConfig: learningMode === 'debate' ? debateConfig : null,
+      socraticConfig: learningMode === 'socratic' ? socraticConfig : null,
+      simulationConfig: learningMode === 'simulation' ? simulationConfig : null,
     };
 
     try {
@@ -743,6 +1402,9 @@ export default function StudyMate() {
       setCreatedAgents([{ ...DEFAULT_AGENT }]);
       setRoomName('');
       setLearningMode('basic');
+      setDebateConfig(DEFAULT_DEBATE_CONFIG);
+      setSocraticConfig(DEFAULT_SOCRATIC_CONFIG);
+      setSimulationConfig(DEFAULT_SIMULATION_CONFIG);
       await loadAgents();
     } catch (err) {
       console.error('에이전트 스터디방 생성 실패:', err);
@@ -850,7 +1512,14 @@ export default function StudyMate() {
     // 소크라테스 모드: 사용자가 방금 입력한 내용을 시도 답변(userAttempt)으로도 보내 오개념을 좁혀간다.
     // RAG 자료가 방에 연결돼 있으면 materialId도 함께 보낸다.
     const turnExtras = {};
-    if (activeLearningMode === 'socratic') turnExtras.userAttempt = inputMsg;
+    if (activeLearningMode === 'socratic') {
+      turnExtras.userAttempt = inputMsg;
+      // 소크라테스 문답 설정 전송. 방 저장값(selectedAgent.socraticConfig)이 있으면 우선, 없으면 현재 설정.
+      turnExtras.socraticConfig = selectedAgent?.socraticConfig || socraticConfig;
+    }
+    // 토론 모드: 논제/구조 설정을 함께 전송한다(프론트 → Spring → FastAPI).
+    if (activeLearningMode === 'debate') turnExtras.debateConfig = selectedAgent?.debateConfig || debateConfig;
+    if (activeLearningMode === 'simulation') turnExtras.simulationConfig = selectedAgent?.simulationConfig || simulationConfig || DEFAULT_SIMULATION_CONFIG;
     const roomMaterialId = selectedAgent?.materialId ?? selectedAgent?.material_id;
     if (roomMaterialId) turnExtras.materialId = roomMaterialId;
 
@@ -883,37 +1552,105 @@ export default function StudyMate() {
         const ts = new Date().toISOString();
         // 일반 단계 누적
         const fullPS = { initialAnswers: [], validatedAnswers: [], peerFeedback: [], personalityValidationSummary: [] };
-        // 토론 섹션 누적
-        const debateAcc = { initialAnswers: [], peerFeedbacks: [], revisedAnswers: [], debateSummary: '' };
+        // 토론 단계 누적 (stageType+side 기준 upsert, 도착 순서 유지) + 사용된 설정
+        const debateStageMap = new Map();
+        let debateConfigAcc = null;
+        const debateStagesArr = () => Array.from(debateStageMap.values());
+        // 소크라테스 단계 누적 (stageType+agentIndex 기준 upsert) + 사용된 설정
+        const socraticStepMap = new Map();
+        let socraticConfigAcc = null;
+        const socraticStepsArr = () => Array.from(socraticStepMap.values());
+        // 상황극 단계 누적 (requestId+stageType+agentIndex+contentHash 기준 dedupe/upsert) + 사용된 설정
+        const simulationStageMap = new Map();
+        let simulationConfigAcc = null;
+        const simulationStagesArr = () => Array.from(simulationStageMap.values());
+        const contentHash = (text) => {
+          let h = 0;
+          const str = String(text || '');
+          for (let i = 0; i < str.length; i += 1) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+          return String(h);
+        };
+        const agentAnswerMap = new Map();
+        const agentMsgsArr = () => sortByAgentOrder(Array.from(agentAnswerMap.values()));
+        const upsertAgentMessage = (d, patch = {}) => {
+          const idx = d?.agentIndex ?? patch.agentIndex ?? 0;
+          const aid = d?.agentId ?? patch.agentId ?? idx;
+          const hash = contentHash(d?.content ?? d?.answer ?? patch.content ?? '');
+          const key = `${d?.requestId || requestId}::basic::${d?.stageType || 'FIRST_DRAFT'}::${idx}::${aid}::${hash}`;
+          const stableKey = `${d?.requestId || requestId}::basic::${d?.stageType || 'FIRST_DRAFT'}::${idx}::${aid}`;
+          const prevKey = Array.from(agentAnswerMap.keys()).find((k) => k.startsWith(stableKey));
+          if (prevKey && prevKey !== key) agentAnswerMap.delete(prevKey);
+          agentAnswerMap.set(key, {
+            id: key,
+            content: d?.content ?? d?.answer ?? patch.content ?? '',
+            sender: 'AI',
+            senderName: d?.agentName || patch.agentName || selectedAgent?.name || 'AI',
+            agentId: aid,
+            agentIndex: idx,
+            role: d?.role || patch.role,
+            stageType: d?.stageType || 'FIRST_DRAFT',
+            createdAt: d?.createdAt || patch.createdAt || ts,
+            parentId: userMsg.id,
+            isPending: !!patch.isPending,
+            isError: !!patch.isError,
+            statusText: patch.statusText || '',
+          });
+          streamRendered = true;
+          setTurnAiMessages(agentMsgsArr());
+        };
         let streamRendered = false;
         let streamCompleted = false;
 
         // all_complete 라우팅: socratic → 답변 카드 / debate → DebateRenderer / processSteps → 단계 / answers → 카드 / 없음 → 안내
         const renderAllComplete = (d) => {
           const respMode = String((d && (d.mode || d.learningMode)) || '').toLowerCase();
-          // 1) 소크라테스
-          if (respMode === 'socratic' || activeLearningMode === 'socratic') {
-            if (d && Array.isArray(d.answers) && d.answers[0]) {
-              setTurnAiMessages([buildSocraticTurnMessage(d.answers[0], userMsg.id, ts)]);
+          // 1) 상황극 — 구조화 simulationStages 우선, 없으면 누적 단계/answer fallback
+          if (respMode === 'simulation' || isSimulationModeValue(activeLearningMode)) {
+            const finalStages = (Array.isArray(d?.simulationStages) && d.simulationStages.length)
+              ? d.simulationStages
+              : (simulationStageMap.size ? simulationStagesArr() : (normalizeSimulationStages(d) || []));
+            if (finalStages.length > 0) {
+              setTurnAiMessages([buildSimulationTurnMessage(
+                buildSimulationPayload({ ...d, simulationStages: finalStages, simulationConfig: d?.simulationConfig || simulationConfigAcc }) || { simulationStages: finalStages, simulationConfig: d?.simulationConfig || simulationConfigAcc },
+                userMsg.id, ts,
+              )]);
               return;
             }
           }
-          // 2) 토론 구조
-          const debate = buildDebatePayload(d) ||
-            ((debateAcc.peerFeedbacks.length || debateAcc.revisedAnswers.length || debateAcc.debateSummary)
-              ? buildDebatePayload({ ...debateAcc, mode: 'debate' }) : null);
-          if (debate) {
-            setTurnAiMessages([buildDebateTurnMessage(debateAcc.initialAnswers.length ? debateAcc : {
-              initialAnswers: debate.initialAnswers, peerFeedbacks: debate.peerFeedbacks,
-              revisedAnswers: debate.revisedAnswers, debateSummary: debate.debateSummary,
-            }, userMsg.id, ts)]);
+          // 2) 소크라테스 — 구조화 socraticSteps 우선, 없으면 누적 단계/answer fallback
+          if (respMode === 'socratic' || isSocraticModeValue(activeLearningMode)) {
+            const finalSteps = (Array.isArray(d?.socraticSteps) && d.socraticSteps.length)
+              ? d.socraticSteps
+              : (socraticStepMap.size ? socraticStepsArr() : (normalizeSocraticSteps(d) || []));
+            if (finalSteps.length > 0) {
+              setTurnAiMessages([buildSocraticTurnMessage(
+                { socraticSteps: finalSteps, socraticConfig: d?.socraticConfig || socraticConfigAcc },
+                userMsg.id, ts,
+              )]);
+              return;
+            }
+          }
+          // 3) 토론 구조 — 구조화 debateStages 우선, 없으면 누적된 단계/레거시 변환 사용
+          const finalStages = (Array.isArray(d?.debateStages) && d.debateStages.length)
+            ? d.debateStages
+            : (debateStageMap.size ? debateStagesArr() : (normalizeDebateStages(d) || []));
+          if (finalStages.length > 0) {
+            setTurnAiMessages([buildDebateTurnMessage(
+              { debateStages: finalStages, debateConfig: d?.debateConfig || debateConfigAcc },
+              userMsg.id, ts,
+            )]);
             return;
           }
-          // 3) processSteps / stages → 1차/2차/3차 단계 말풍선
+          // 4) 기본 agent_answer가 이미 표시됐으면 all_complete에서는 재append하지 않는다.
+          if (agentAnswerMap.size > 0) {
+            setTurnAiMessages(agentMsgsArr());
+            return;
+          }
+          // 5) processSteps / stages → 1차/2차/3차 단계 말풍선
           const ps = (d && d.processSteps) || fullPS;
           const bubbles = buildStageBubbles(ps, userMsg.id, ts);
           if (bubbles.length) { setTurnAiMessages(bubbles); return; }
-          // 4) 일반 answers/replies 카드
+          // 6) 일반 answers/replies 카드
           const answers = (d && (d.answers || d.replies)) || [];
           if (Array.isArray(answers) && answers.length) {
             setTurnAiMessages(sortByAgentOrder(answers).map((a, i) => ({
@@ -927,7 +1664,7 @@ export default function StudyMate() {
             })));
             return;
           }
-          // 5) 아무것도 없으면 안내 (답변을 버리지 않는다)
+          // 7) 아무것도 없으면 안내 (답변을 버리지 않는다)
           if (!streamRendered) {
             setTurnAiMessages([{
               id: `${userMsg.id}::empty`, content: 'AI 응답을 받지 못했습니다. 잠시 후 다시 시도해주세요.',
@@ -945,7 +1682,33 @@ export default function StudyMate() {
             rounds: 1,
             ...turnExtras,
           }, {
-            // default 모드: 1차/2차/3차 단계 완료 시 즉시 반영. 저장 전에 에이전트 순서로 정렬한다.
+            onTurnStart: () => {},
+            onHeartbeat: (d) => {
+              if (!d || d.agentIndex == null) return;
+              const stablePrefix = `${d.requestId || requestId}::basic::FIRST_DRAFT::${d.agentIndex}::`;
+              const found = Array.from(agentAnswerMap.keys()).find((k) => k.startsWith(stablePrefix));
+              if (found) {
+                const prev = agentAnswerMap.get(found);
+                agentAnswerMap.set(found, { ...prev, isPending: true, statusText: d.message || '답변 생성 중입니다.' });
+                setTurnAiMessages(agentMsgsArr());
+              }
+            },
+            onProgress: (d) => {
+              if (d) console.debug('[StudyMate] stream progress', d);
+            },
+            onAgentStart: (d) => {
+              if (!d) return;
+              upsertAgentMessage(d, { isPending: true, content: d.message || `에이전트 ${d.agentIndex || ''} 답변 생성 중...` });
+            },
+            onAgentAnswer: (d) => {
+              if (!d) return;
+              upsertAgentMessage(d, { isPending: false, content: d.content || d.answer || '' });
+            },
+            onAgentError: (d) => {
+              if (!d) return;
+              upsertAgentMessage(d, { isPending: false, isError: true, content: d.message || '이 에이전트의 응답 생성에 실패했습니다.' });
+            },
+            // default legacy 모드: 1차/2차/3차 단계 완료 시 즉시 반영. 저장 전에 에이전트 순서로 정렬한다.
             onStageComplete: (d) => {
               if (!d) return;
               if (d.stage === 1) fullPS.initialAnswers = sortByAgentOrder(d.answers || []);
@@ -957,19 +1720,89 @@ export default function StudyMate() {
               streamRendered = true;
               setTurnAiMessages(buildStreamAiMsgs(fullPS));
             },
-            // 토론 모드: 섹션 도착 즉시 토론 말풍선 갱신. 섹션 항목도 에이전트 순서로 정렬한다.
+            // 토론 모드: 단계(debate_section) 도착 즉시 stageType+side로 upsert 후 갱신.
             onDebateSection: (d) => {
-              if (!d || !d.section) return;
-              if (d.section === 'debateSummary') debateAcc.debateSummary = d.content || '';
-              else debateAcc[d.section] = sortByAgentOrder(d.items || []);
+              if (!d || !d.stageType) return;
+              const key = `${d.stageType}::${d.side}`;
+              debateStageMap.set(key, {
+                stageType: d.stageType,
+                stageTitle: d.stageTitle || d.stageType,
+                side: d.side,
+                role: d.role,
+                agentIndex: d.agentIndex,
+                agentId: d.agentId,
+                agentName: d.agentName,
+                content: d.content ?? '',
+              });
+              if (d.debateConfig) debateConfigAcc = d.debateConfig;
               streamRendered = true;
-              setTurnAiMessages([buildDebateTurnMessage(debateAcc, userMsg.id, ts)]);
+              setTurnAiMessages([buildDebateTurnMessage(
+                { debateStages: debateStagesArr(), debateConfig: debateConfigAcc },
+                userMsg.id, ts,
+              )]);
             },
-            // 소크라테스: 답변 도착 즉시 카드 표시
+            // 소크라테스: 단계(socratic_step) 도착 즉시 stageType+agentIndex로 upsert 후 갱신.
+            onSocraticStep: (d) => {
+              if (!d || !d.stageType) return;
+              const key = `${d.stageType}::${d.agentIndex ?? 0}`;
+              socraticStepMap.set(key, {
+                stageType: d.stageType,
+                stageTitle: d.stageTitle || d.stageType,
+                role: d.role,
+                agentIndex: d.agentIndex,
+                agentName: d.agentName,
+                question: d.question,
+                hint: d.hint,
+                feedback: d.feedback,
+                expectedConcept: d.expectedConcept,
+                misconceptionDetected: d.misconceptionDetected,
+                misconception: d.misconception,
+                directAnswerSuppressed: d.directAnswerSuppressed,
+                content: d.content ?? d.question ?? d.hint ?? d.feedback ?? '',
+              });
+              if (d.socraticConfig) socraticConfigAcc = d.socraticConfig;
+              streamRendered = true;
+              setTurnAiMessages([buildSocraticTurnMessage(
+                { socraticSteps: socraticStepsArr(), socraticConfig: socraticConfigAcc },
+                userMsg.id, ts,
+              )]);
+            },
+            // 상황극: 단계(simulation_stage) 도착 즉시 requestId+stageType+agentIndex+contentHash로 upsert 후 갱신.
+            onSimulationStage: (d) => {
+              if (!d || !d.stageType) return;
+              const key = `${requestId}::${d.stageType}::${d.agentIndex ?? 0}::${contentHash(d.content)}`;
+              simulationStageMap.set(key, {
+                stageType: d.stageType,
+                stageTitle: d.stageTitle || SIMULATION_STAGE_META[d.stageType]?.title || d.stageType,
+                role: d.role,
+                agentIndex: d.agentIndex,
+                agentName: d.agentName,
+                content: d.content ?? '',
+                userRole: d.userRole,
+                choices: Array.isArray(d.choices) ? d.choices : [],
+                selectedChoiceId: d.selectedChoiceId,
+                consequence: d.consequence,
+                conceptMapping: Array.isArray(d.conceptMapping) ? d.conceptMapping : [],
+                misconceptionTrap: d.misconceptionTrap,
+                reflectionQuestion: d.reflectionQuestion,
+                nextScenarioPrompt: d.nextScenarioPrompt,
+              });
+              if (d.simulationConfig) simulationConfigAcc = d.simulationConfig;
+              streamRendered = true;
+              setTurnAiMessages([buildSimulationTurnMessage(
+                { simulationStages: simulationStagesArr(), simulationConfig: simulationConfigAcc || DEFAULT_SIMULATION_CONFIG },
+                userMsg.id, ts,
+              )]);
+            },
+            // (하위 호환) 단일 socratic_answer 이벤트 — SUMMARY 단일 단계로 표시
             onSocraticAnswer: (d) => {
               if (!d) return;
+              const answer = d.answer ?? (Array.isArray(d.answers) && d.answers[0] && d.answers[0].answer) ?? '';
               streamRendered = true;
-              setTurnAiMessages([buildSocraticTurnMessage(d, userMsg.id, ts)]);
+              setTurnAiMessages([buildSocraticTurnMessage({
+                socraticSteps: [{ stageType: 'SUMMARY', stageTitle: '정리 및 다음 학습 방향', role: '정리자', agentIndex: 3, content: answer, directAnswerSuppressed: false }],
+                socraticConfig: socraticConfigAcc,
+              }, userMsg.id, ts)]);
             },
             onAllComplete: (d) => {
               streamCompleted = true;
@@ -1041,16 +1874,33 @@ export default function StudyMate() {
       }
 
       let newMsgs = [];
-      const debatePayload = buildDebatePayload(res);
-      if (debatePayload) {
+      const resSimulationPayload = buildSimulationPayload(res);
+      const resDebateStages = normalizeDebateStages(res);
+      const resSocraticSteps = normalizeSocraticSteps(res);
+      if (resSimulationPayload && resSimulationPayload.simulationStages.length > 0) {
+        newMsgs = [buildSimulationTurnMessage(resSimulationPayload, userMsg.id, new Date().toISOString())];
+      } else if (resDebateStages && resDebateStages.length > 0) {
         newMsgs = [{
           id: Date.now() + 1,
-          content: '토론 결과',
+          content: '토론',
           sender: 'AI',
-          senderName: '토론 모드',
+          senderName: '토론',
           createdAt: new Date().toISOString(),
           parentId: userMsg.id,
-          debate: debatePayload,
+          debateStages: resDebateStages,
+          debateConfig: res.debateConfig || debateConfigOf(res),
+        }];
+      } else if (resSocraticSteps && resSocraticSteps.length > 0) {
+        newMsgs = [{
+          id: Date.now() + 1,
+          content: '소크라테스 문답',
+          sender: 'AI',
+          senderName: '소크라테스',
+          createdAt: new Date().toISOString(),
+          parentId: userMsg.id,
+          isSocratic: true,
+          socraticSteps: resSocraticSteps,
+          socraticConfig: res.socraticConfig || socraticConfigOf(res),
         }];
       } else {
         const blockingStages = buildStageBubbles(res.processSteps, userMsg.id, new Date().toISOString());
@@ -1430,7 +2280,13 @@ export default function StudyMate() {
                   ) : (
                     chatHistory.map((msg, idx) => {
                       const isUser = msg.sender === 'USER';
-                      const debatePayload = !isUser ? (msg.debate || buildDebatePayload(msg)) : null;
+                      const simulationPayload = !isUser ? buildSimulationPayload(msg) : null;
+                      const simulationStages = simulationPayload?.simulationStages || null;
+                      const hasSimulationPayload = simulationStages && simulationStages.length > 0;
+                      const debateStages = (!isUser && !hasSimulationPayload) ? normalizeDebateStages(msg) : null;
+                      const debatePayload = debateStages && debateStages.length > 0;
+                      const socraticSteps = (!isUser && !hasSimulationPayload && !debatePayload) ? normalizeSocraticSteps(msg) : null;
+                      const socraticPayload = socraticSteps && socraticSteps.length > 0;
                       const senderName = isUser ? '나' : (msg.senderName || msg.sender_name || selectedAgent.name);
 
                       let agentTheme = { bg: '#F3F4F6', icon: '🤖', tagBg: '#E5E7EB', accent: '#4B5563' };
@@ -1473,9 +2329,31 @@ export default function StudyMate() {
                               </span>
                             )}
                           </div>
-                          {debatePayload ? (
+                          {hasSimulationPayload ? (
                             <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', maxWidth: '100%' }}>
-                              <DebateRenderer debate={debatePayload} />
+                              <SimulationRenderer
+                                stages={simulationStages}
+                                onChoice={(choice) => {
+                                  const label = choice.label || choice.choiceId || 'A';
+                                  const promptText = `${label} 선택`;
+                                  pendingDetailParentId.current = `${msg.id}::simulation::CHOICE::${label}`;
+                                  setMessage(promptText);
+                                  setLearningMode('simulation');
+                                  setShowMentionPopup(false);
+                                  const activeId = getAgentId(selectedAgent);
+                                  if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+                                  const inputEl = document.querySelector('.chat-input-premium input');
+                                  if (inputEl) inputEl.focus();
+                                }}
+                              />
+                            </div>
+                          ) : debatePayload ? (
+                            <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', maxWidth: '100%' }}>
+                              <DebateRenderer stages={debateStages} />
+                            </div>
+                          ) : socraticPayload ? (
+                            <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', maxWidth: '100%' }}>
+                              <SocraticRenderer steps={socraticSteps} />
                             </div>
                           ) : (
                             <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none' }}>
@@ -1483,7 +2361,7 @@ export default function StudyMate() {
                             </div>
                           )}
                           {/* 검증 답변 말풍선엔 사용한 웹 근거 출처 칩을 단다 */}
-                          {!debatePayload && !isUser && Array.isArray(msg.sources) && msg.sources.length > 0 && (
+                          {!hasSimulationPayload && !debatePayload && !isUser && Array.isArray(msg.sources) && msg.sources.length > 0 && (
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
                               <span style={{ fontSize: '10px', color: '#9ca3af', alignSelf: 'center' }}>근거:</span>
                               {msg.sources.slice(0, 6).map((s, si) => (
@@ -1501,7 +2379,7 @@ export default function StudyMate() {
                             </div>
                           )}
                           {/* 피드백 말풍선엔 성격 검증 점수 배지 */}
-                          {!debatePayload && !isUser && msg.pv && typeof msg.pv.score === 'number' && (
+                          {!hasSimulationPayload && !debatePayload && !isUser && msg.pv && typeof msg.pv.score === 'number' && (
                             <div style={{ marginTop: '4px', fontSize: '10px', color: msg.pv.passed ? '#16a34a' : '#dc2626' }}>
                               성격 검증 {msg.pv.score.toFixed(2)} {msg.pv.passed ? '통과' : '보완 필요'}
                             </div>
@@ -1543,6 +2421,36 @@ export default function StudyMate() {
                     onBookmark={handleBookmark}
                     onRequestDetail={(disc, actionType = 'detail') => {
                       pendingDetailParentId.current = disc.id;
+
+                      // ── 상황극 노드: stageType에 맞는 전용 액션 프롬프트를 준비한다 ──
+                      if (disc.nodeType === 'simulation') {
+                        const promptText = buildSimulationActionPrompt(disc, actionType);
+                        setMessage(promptText);
+                        setLearningMode('simulation');
+                        setShowMentionPopup(false);
+                        const activeId = getAgentId(selectedAgent);
+                        if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+                        const inputEl = document.querySelector('.chat-input-premium input');
+                        if (inputEl) inputEl.focus();
+                        setToastMsg('상황극 액션이 입력창에 준비되었습니다. 전송하면 이 노드에 이어서 진행됩니다.');
+                        setTimeout(() => setToastMsg(''), 2800);
+                        return;
+                      }
+
+                      // ── 소크라테스 노드: stageType에 맞는 전용 액션 프롬프트를 준비한다 ──
+                      if (disc.nodeType === 'socratic') {
+                        const promptText = buildSocraticActionPrompt(disc, actionType);
+                        setMessage(promptText);
+                        setLearningMode('socratic'); // 소크라테스 모드 유지
+                        setShowMentionPopup(false);
+                        const activeId = getAgentId(selectedAgent);
+                        if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+                        const inputEl = document.querySelector('.chat-input-premium input');
+                        if (inputEl) inputEl.focus();
+                        setToastMsg('🧭 소크라테스 액션이 입력창에 준비되었습니다. 전송하면 이 노드에 이어서 진행됩니다.');
+                        setTimeout(() => setToastMsg(''), 2800);
+                        return;
+                      }
 
                       // ── 토론 노드: stageType/side에 맞는 전용 액션 프롬프트를 준비한다 ──
                       const isDebateNode = disc.nodeType === 'debate' || !!disc.stageType;
@@ -1818,8 +2726,9 @@ export default function StudyMate() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {[
                       { value: 'basic', title: '기본 채팅 모드', desc: '각 AI가 바로 답변합니다.' },
-                      { value: 'socratic', title: '소크라테스 모드', desc: '정답을 바로 주기보다 질문으로 사고를 유도합니다.' },
-                      { value: 'debate', title: '토론 모드', desc: 'AI들이 서로 다른 관점으로 답하고 피드백합니다.' },
+                      { value: 'socratic', title: '소크라테스 모드', desc: '질문·힌트·오개념 추적으로 사용자가 스스로 답을 찾게 만드는 문답형 학습을 진행합니다.' },
+                      { value: 'debate', title: '토론 모드', desc: '논제를 기준으로 반대측, 찬성측, 중립측이 주장·반박·판정을 수행하는 구조화 토론을 진행합니다.' },
+                      { value: 'simulation', title: '상황극 모드', desc: '개념이 작동하는 가상 상황 속에서 역할을 맡고, 선택과 결과를 통해 학습합니다.' },
                     ].map((opt) => (
                       <label
                         key={opt.value}
@@ -1850,6 +2759,262 @@ export default function StudyMate() {
                     ))}
                   </div>
                 </div>
+
+                {/* ── 상황극 설정 (상황극 모드에서만) ── */}
+                {learningMode === 'simulation' && (
+                  <div style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: '1px solid var(--color-border)', background: 'rgba(29,78,216,0.04)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>상황극 설정</div>
+                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>상황 속 역할을 맡아 선택하고, 그 결과를 통해 개념·오개념·한계를 체험합니다.</div>
+
+                    <div>
+                      <div style={dbLabelStyle}>상황극 유형</div>
+                      <select value={simulationConfig.scenarioType} onChange={(e) => setSimulationConfig((c) => ({ ...c, scenarioType: e.target.value }))} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
+                        <option value="realistic">현실 상황</option><option value="roleplay">역할극</option><option value="thought_experiment">사고실험</option><option value="branching_event">사건 분기</option><option value="inside_system">시스템 내부 관찰</option><option value="crisis_response">위기 대응</option><option value="historical_social_case">역사/사회 사례</option><option value="lab_scenario">실험실 상황</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <div style={dbLabelStyle}>분야</div>
+                      <select value={simulationConfig.domain} onChange={(e) => setSimulationConfig((c) => ({ ...c, domain: e.target.value }))} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
+                        <option value="auto">자동 판단</option><option value="computer_science">컴퓨터공학</option><option value="mathematics">수학</option><option value="life_science">생명과학</option><option value="psychology">심리학</option><option value="philosophy">철학</option><option value="environmental_engineering">환경공학</option><option value="business_economics">경영/경제</option><option value="other">기타</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <div style={dbLabelStyle}>상호작용 방식</div>
+                      <select value={simulationConfig.interactionStyle} onChange={(e) => setSimulationConfig((c) => ({ ...c, interactionStyle: e.target.value }))} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
+                        <option value="choice_based">선택지 기반</option><option value="roleplay_dialogue">역할극 대화</option><option value="event_progression">사건 진행형</option><option value="cause_effect_trace">원인-결과 추적형</option><option value="system_exploration">내부 시스템 탐험형</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <div style={dbLabelStyle}>난이도</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {[{ v: 'easy', t: '쉬움' }, { v: 'normal', t: '보통' }, { v: 'hard', t: '어려움' }, { v: 'advanced', t: '심화' }].map((o) => (
+                          <button type="button" key={o.v} onClick={() => setSimulationConfig((c) => ({ ...c, difficulty: o.v }))} style={dbChipStyle(simulationConfig.difficulty === o.v)}>{o.t}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={dbLabelStyle}>사용자 역할</div>
+                      <select value={simulationConfig.userRoleMode} onChange={(e) => setSimulationConfig((c) => ({ ...c, userRoleMode: e.target.value }))} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
+                        <option value="auto">자동 설정</option><option value="decision_maker">의사결정자</option><option value="observer">관찰자</option><option value="analyst">분석가</option><option value="problem_solver">문제 해결자</option><option value="inner_component">내부 구성요소</option><option value="critical_reviewer">비판적 검토자</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <div style={dbLabelStyle}>선택지 개수</div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        {[2, 3, 4].map((count) => <button type="button" key={count} onClick={() => setSimulationConfig((c) => ({ ...c, choiceCount: count }))} style={dbChipStyle(Number(simulationConfig.choiceCount) === count)}>{count}개</button>)}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={dbLabelStyle}>포함 요소</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {[
+                          { k: 'includeChoices', t: '선택지 포함' }, { k: 'includeConsequences', t: '결과 변화 포함' },
+                          { k: 'includeConceptMapping', t: '개념 연결 포함' }, { k: 'includeMisconceptionTrap', t: '오개념 함정 포함' },
+                          { k: 'includeReflectionQuestion', t: '성찰 질문 포함' }, { k: 'includeNextScenario', t: '다음 시나리오 포함' },
+                        ].map((o) => <button type="button" key={o.k} onClick={() => setSimulationConfig((c) => ({ ...c, [o.k]: !c[o.k] }))} style={dbChipStyle(!!simulationConfig[o.k])}>{o.t}</button>)}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── 토론 설정 (토론 모드에서만) ── */}
+                {learningMode === 'debate' && (
+                  <div style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: '1px solid var(--color-border)', background: 'rgba(124,58,237,0.04)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>토론 설정</div>
+
+                    {/* 논제 설정 방식 */}
+                    <div>
+                      <div style={dbLabelStyle}>논제 설정 방식</div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        {[{ v: 'auto', t: '자동 생성' }, { v: 'manual', t: '직접 입력' }].map((o) => (
+                          <button type="button" key={o.v}
+                            onClick={() => setDebateConfig((c) => ({ ...c, topicMode: o.v }))}
+                            style={dbChipStyle(debateConfig.topicMode === o.v)}>{o.t}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 직접 입력 논제 */}
+                    {debateConfig.topicMode === 'manual' && (
+                      <div>
+                        <div style={dbLabelStyle}>직접 입력 논제</div>
+                        <input
+                          type="text"
+                          value={debateConfig.manualTopic}
+                          onChange={(e) => setDebateConfig((c) => ({ ...c, manualTopic: e.target.value }))}
+                          placeholder="예: OOP를 처음 배울 때 개념 이론보다 실무 예제 중심 학습이 더 효과적인가?"
+                          style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}
+                        />
+                      </div>
+                    )}
+
+                    {/* 논제 유형 */}
+                    <div>
+                      <div style={dbLabelStyle}>논제 유형</div>
+                      <select
+                        value={debateConfig.motionType}
+                        onChange={(e) => setDebateConfig((c) => ({ ...c, motionType: e.target.value }))}
+                        style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}
+                      >
+                        <option value="learning_strategy">학습 전략형</option>
+                        <option value="concept_definition">개념 정의형</option>
+                        <option value="tech_choice">기술 선택형</option>
+                        <option value="implementation_design">실무 설계형</option>
+                        <option value="pros_cons">찬반 판단형</option>
+                      </select>
+                    </div>
+
+                    {/* 쟁점 축 */}
+                    <div>
+                      <div style={dbLabelStyle}>쟁점 축</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {['개념정확성', '학습효율', '실무적용', '오개념위험', '유지보수성', '성능/비용', '시험대비'].map((axis) => (
+                          <button type="button" key={axis}
+                            onClick={() => setDebateConfig((c) => ({ ...c, issueAxes: toggleInArray(c.issueAxes, axis) }))}
+                            style={dbChipStyle(debateConfig.issueAxes.includes(axis))}>{axis}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 토론 강도 */}
+                    <div>
+                      <div style={dbLabelStyle}>토론 강도</div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        {[{ v: 'light', t: '가볍게' }, { v: 'normal', t: '보통' }, { v: 'deep', t: '깊게' }].map((o) => (
+                          <button type="button" key={o.v}
+                            onClick={() => setDebateConfig((c) => ({ ...c, debateDepth: o.v }))}
+                            style={dbChipStyle(debateConfig.debateDepth === o.v)}>{o.t}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 포함 요소 */}
+                    <div>
+                      <div style={dbLabelStyle}>포함 요소</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {[{ k: 'includeExamples', t: '예시 포함' }, { k: 'includeCounterexamples', t: '반례 포함' }, { k: 'includeStudyPlan', t: '학습 방향 포함' }].map((o) => (
+                          <button type="button" key={o.k}
+                            onClick={() => setDebateConfig((c) => ({ ...c, [o.k]: !c[o.k] }))}
+                            style={dbChipStyle(!!debateConfig[o.k])}>{o.t}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 판정 기준 */}
+                    <div>
+                      <div style={dbLabelStyle}>판정 기준</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {['논리성', '근거성', '반박력', '학습가치', '실무성'].map((cr) => (
+                          <button type="button" key={cr}
+                            onClick={() => setDebateConfig((c) => ({ ...c, judgeCriteria: toggleInArray(c.judgeCriteria, cr) }))}
+                            style={dbChipStyle(debateConfig.judgeCriteria.includes(cr))}>{cr}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── 소크라테스 설정 (소크라테스 모드에서만) ── */}
+                {learningMode === 'socratic' && (
+                  <div style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: '1px solid var(--color-border)', background: 'rgba(14,165,233,0.05)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>소크라테스 설정</div>
+
+                    {/* A. 학습 목표 */}
+                    <div>
+                      <div style={dbLabelStyle}>학습 목표</div>
+                      <select value={socraticConfig.goal}
+                        onChange={(e) => setSocraticConfig((c) => ({ ...c, goal: e.target.value }))}
+                        style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
+                        <option value="concept_understanding">개념 이해</option>
+                        <option value="misconception_correction">오개념 교정</option>
+                        <option value="exam_prep">시험 대비</option>
+                        <option value="practical_application">실무 적용</option>
+                        <option value="interview_prep">면접 대비</option>
+                        <option value="code_algorithm_reasoning">코드/알고리즘 사고 훈련</option>
+                      </select>
+                    </div>
+
+                    {/* B. 질문 강도 */}
+                    <div>
+                      <div style={dbLabelStyle}>질문 강도</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {[{ v: 'gentle', t: '부드럽게' }, { v: 'normal', t: '보통' }, { v: 'strict', t: '엄격하게' }, { v: 'interviewer', t: '면접관처럼' }].map((o) => (
+                          <button type="button" key={o.v}
+                            onClick={() => setSocraticConfig((c) => ({ ...c, questionIntensity: o.v }))}
+                            style={dbChipStyle(socraticConfig.questionIntensity === o.v)}>{o.t}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* C. 힌트 방식 */}
+                    <div>
+                      <div style={dbLabelStyle}>힌트 방식</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {[{ v: 'minimal', t: '거의 없음' }, { v: 'step_by_step', t: '단계별 힌트' }, { v: 'example_hint', t: '예시 힌트' }, { v: 'partial_answer_when_stuck', t: '막히면 부분 정답' }].map((o) => (
+                          <button type="button" key={o.v}
+                            onClick={() => setSocraticConfig((c) => ({ ...c, hintPolicy: o.v }))}
+                            style={dbChipStyle(socraticConfig.hintPolicy === o.v)}>{o.t}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* D. 정답 공개 */}
+                    <div>
+                      <div style={dbLabelStyle}>정답 공개</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {[{ v: 'never', t: '공개 안 함' }, { v: 'final_only', t: '마지막에만' }, { v: 'partial_after_two_failures', t: '2번 틀리면 일부' }, { v: 'full_after_three_stucks', t: '3번 막히면 공개' }].map((o) => (
+                          <button type="button" key={o.v}
+                            onClick={() => setSocraticConfig((c) => ({ ...c, answerRevealPolicy: o.v }))}
+                            style={dbChipStyle(socraticConfig.answerRevealPolicy === o.v)}>{o.t}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* E. 질문 유형 */}
+                    <div>
+                      <div style={dbLabelStyle}>질문 유형</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {[{ v: 'definition', t: '정의' }, { v: 'comparison', t: '비교' }, { v: 'why', t: '이유' }, { v: 'counterexample', t: '반례' }, { v: 'application', t: '적용' }, { v: 'metacognition', t: '메타인지' }, { v: 'code_reasoning', t: '코드 사고' }].map((o) => (
+                          <button type="button" key={o.v}
+                            onClick={() => setSocraticConfig((c) => ({ ...c, questionTypes: toggleInArray(c.questionTypes, o.v) }))}
+                            style={dbChipStyle(socraticConfig.questionTypes.includes(o.v))}>{o.t}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* F. 진행 방식 */}
+                    <div>
+                      <div style={dbLabelStyle}>진행 방식</div>
+                      <select value={socraticConfig.feedbackStyle === 'concept_check' ? (socraticConfig._flow || 'short_qa') : 'short_qa'}
+                        onChange={(e) => setSocraticConfig((c) => ({ ...c, _flow: e.target.value }))}
+                        style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
+                        <option value="short_qa">짧은 문답형</option>
+                        <option value="deep_step">단계별 깊이 탐색</option>
+                        <option value="exam_guided">시험 문제 유도형</option>
+                        <option value="practical_case">실무 사례 유도형</option>
+                        <option value="interview_pressure">면접 압박형</option>
+                      </select>
+                    </div>
+
+                    {/* G. 포함 요소 */}
+                    <div>
+                      <div style={dbLabelStyle}>포함 요소</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {[{ k: 'includeExamples', t: '예시 포함' }, { k: 'includeCounterexamples', t: '반례 포함' }, { k: 'includeFinalSummary', t: '마지막 요약' }, { k: 'includeNextStudyPlan', t: '다음 학습 방향' }, { k: 'trackMisconceptions', t: '오개념 추적' }].map((o) => (
+                          <button type="button" key={o.k}
+                            onClick={() => setSocraticConfig((c) => ({ ...c, [o.k]: !c[o.k] }))}
+                            style={dbChipStyle(!!socraticConfig[o.k])}>{o.t}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="divider" style={{ margin: '8px 0' }} />
 
@@ -2003,6 +3168,33 @@ export default function StudyMate() {
                           <X size={14} /> 제거
                         </button>
                       )}
+                    </div>
+
+                    {/* 에이전트 프리셋 (역할/성격 프리셋 — learningMode와 별개) */}
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>
+                        에이전트 프리셋 <span style={{ color: 'var(--color-text-muted)', fontWeight: 500 }}>(역할/성격)</span>
+                      </label>
+                      <select
+                        value={agent.agentPreset || ''}
+                        onChange={(e) => {
+                          const preset = e.target.value;
+                          const list = [...createdAgents];
+                          list[index] = {
+                            ...list[index],
+                            agentPreset: preset,
+                            // 프리셋 선택 시 성격을 함께 맞춰준다(사용자가 이후 수동 변경 가능).
+                            personality: preset ? presetPersonality(preset) : list[index].personality,
+                          };
+                          setCreatedAgents(list);
+                        }}
+                        style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}
+                      >
+                        <option value="">선택 안 함 (직접 설정)</option>
+                        {AGENT_PRESETS.map((p) => (
+                          <option key={p.value} value={p.value}>{p.label} — {p.desc}</option>
+                        ))}
+                      </select>
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>

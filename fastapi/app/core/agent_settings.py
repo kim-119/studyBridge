@@ -66,24 +66,24 @@ def resolve_stage_max_tokens(stage: int) -> int:
 
 def resolve_timeout_for_stage(stage: int) -> int:
     if stage == 1:
-        return _i("OLLAMA_STAGE1_TIMEOUT_SECONDS", _i("AGENT_STAGE1_TIMEOUT_SECONDS", 30))
+        return _i("OLLAMA_STAGE1_TIMEOUT_SECONDS", _i("AGENT_STAGE1_TIMEOUT_SECONDS", 120))
     if stage == 2:
-        return _i("AGENT_STAGE2_TIMEOUT_SECONDS", 90)
-    return _i("AGENT_STAGE3_TIMEOUT_SECONDS", 90)
+        return _i("AGENT_STAGE2_TIMEOUT_SECONDS", 180)
+    return _i("AGENT_STAGE3_TIMEOUT_SECONDS", 180)
 
 
 def total_timeout_seconds() -> int:
-    return _i("AGENT_TOTAL_TIMEOUT_SECONDS", 180)
+    return _i("AGENT_TOTAL_TIMEOUT_SECONDS", 900)
 
 
 # ── 파이프라인 토글 ───────────────────────────────────────────────────────────
 
 def enable_parallel_stage1() -> bool:
-    return _b("AGENT_ENABLE_PARALLEL_STAGE1", True)
+    return _b("AGENT_ENABLE_PARALLEL_STAGE1", False)
 
 
 def enable_parallel_stage2() -> bool:
-    return _b("AGENT_ENABLE_PARALLEL_STAGE2", True)
+    return _b("AGENT_ENABLE_PARALLEL_STAGE2", False)
 
 
 def enable_cache() -> bool:

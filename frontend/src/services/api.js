@@ -300,11 +300,19 @@ export const agentService = {
         data = null;
       }
 
-      if (event === 'stage_start') handlers.onStageStart?.(data);
+      if (event === 'turn_start') handlers.onTurnStart?.(data);
+      else if (event === 'heartbeat') handlers.onHeartbeat?.(data);
+      else if (event === 'progress') handlers.onProgress?.(data);
+      else if (event === 'agent_start') handlers.onAgentStart?.(data);
+      else if (event === 'agent_answer') handlers.onAgentAnswer?.(data);
+      else if (event === 'agent_error') handlers.onAgentError?.(data);
+      else if (event === 'stage_start') handlers.onStageStart?.(data);
       else if (event === 'stage_complete') handlers.onStageComplete?.(data);
       else if (event === 'agent_stage_complete') handlers.onAgentStageComplete?.(data);
       else if (event === 'debate_section') handlers.onDebateSection?.(data);
+      else if (event === 'socratic_step') handlers.onSocraticStep?.(data);
       else if (event === 'socratic_answer') handlers.onSocraticAnswer?.(data);
+      else if (event === 'simulation_stage') handlers.onSimulationStage?.(data);
       else if (event === 'all_complete') handlers.onAllComplete?.(data);
       else if (event === 'error') handlers.onError?.(data);
     };
@@ -814,6 +822,41 @@ export const groupService = {
 
   getVideoToken: async (id) => {
     const res = await api.post(`/api/groups/${id}/video/token`);
+    return res.data;
+  },
+
+  uploadQuizMaterial: async (groupId, title, file) => {
+    const formData = new FormData();
+    formData.append('title', title);
+    formData.append('file', file);
+
+    const token = localStorage.getItem('token');
+    const res = await axios.post(
+      `${API_BASE_URL}/api/groups/${groupId}/materials/upload-quiz`,
+      formData,
+      {
+        timeout: AI_TIMEOUT_MS,
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return res.data;
+  },
+
+  getGroupMaterials: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/materials`);
+    return res.data;
+  },
+
+  getGroupMaterialDownloadUrl: async (materialId) => {
+    const res = await api.get(`/api/groups/materials/${materialId}/download`);
+    return res.data;
+  },
+
+  getGroupQuizzes: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/quizzes`);
     return res.data;
   },
 };

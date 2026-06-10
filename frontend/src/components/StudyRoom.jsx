@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import {
   Users, User, X, MicOff, Video, VideoOff, Maximize, Minimize, Gift, UserPlus,
   Settings, MessageSquare, Calendar, ClipboardList, Mic,
-  Search, AlertTriangle, Play, RefreshCw, VolumeX, Volume2, Monitor, Edit2, Send, Check
+  Search, AlertTriangle, Play, RefreshCw, VolumeX, Volume2, Monitor, Edit2, Send, Check,
+  Upload, Download, FileText
 } from 'lucide-react';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
@@ -199,6 +200,13 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const [quizHasSubmitted, setQuizHasSubmitted] = useState(false);
   const [quizStartTime, setQuizStartTime] = useState(null);
   const [quizIdInput, setQuizIdInput] = useState('1');
+  const [groupMaterials, setGroupMaterials] = useState([]);
+  const [groupQuizzes, setGroupQuizzes] = useState([]);
+  const [showPdfUploadModal, setShowPdfUploadModal] = useState(false);
+  const [quizUploadTitle, setQuizUploadTitle] = useState('');
+  const [quizUploadFile, setQuizUploadFile] = useState(null);
+  const [isUploadingQuizPdf, setIsUploadingQuizPdf] = useState(false);
+  const [quizUploadError, setQuizUploadError] = useState('');
   
   const [session, setSession] = useState(null);
   const [publisher, setPublisher] = useState(null);
@@ -206,7 +214,30 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const [ovError, setOvError] = useState('');
 
   const myMember = members.find(m => Number(m.userId) === Number(userId));
+  const canUseGroupQuizMaterials = Boolean(myMember || members.some(m => Number(m.userId) === Number(userId)));
   const myDisplayName = user?.displayName || user?.nickname || `User_${userId}`;
+
+  const formatShortDateTime = (value) => {
+    if (!value) return '-';
+    try {
+      return new Date(value).toLocaleString([], {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return value;
+    }
+  };
+
+  const formatFileSize = (bytes) => {
+    if (!bytes && bytes !== 0) return '-';
+    const size = Number(bytes);
+    if (Number.isNaN(size)) return '-';
+    if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))}KB`;
+    return `${(size / 1024 / 1024).toFixed(1)}MB`;
+  };
 
   const loadMembers = async () => {
     try {
@@ -227,6 +258,32 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
       console.error('Failed to load applications', err);
     }
   };
+
+  const loadGroupMaterials = async () => {
+    if (!study?.id) return;
+    try {
+      const data = await groupService.getGroupMaterials(study.id);
+      setGroupMaterials(data || []);
+    } catch (err) {
+      console.error('Failed to load group materials', err);
+    }
+  };
+
+  const loadGroupQuizzes = async () => {
+    if (!study?.id) return;
+    try {
+      const data = await groupService.getGroupQuizzes(study.id);
+      setGroupQuizzes(data || []);
+    } catch (err) {
+      console.error('Failed to load group quizzes', err);
+    }
+  };
+
+  useEffect(() => {
+    if (!study?.id) return;
+    loadGroupMaterials();
+    loadGroupQuizzes();
+  }, [study?.id]);
 
   // 1. OpenVidu Video Call Lifecycle
   useEffect(() => {
@@ -460,9 +517,83 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
     stompClient.publish({
       destination: `/pub/group/${study.id}/quiz/start`,
       body: JSON.stringify({
-        quizId: Number(quizId)
+        quizId: Number(quizId),
+        userId: userId
       })
     });
+  };
+
+  const handleDownloadGroupMaterial = async (materialId) => {
+    try {
+      const data = await groupService.getGroupMaterialDownloadUrl(materialId);
+      const url = data?.downloadUrl || data?.url;
+      if (!url) {
+        showAlert('오류', '다운로드 URL을 발급받지 못했습니다.');
+        return;
+      }
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      showAlert('오류', err.response?.data?.message || '자료 다운로드 URL 발급에 실패했습니다.');
+    }
+  };
+
+  const handleUploadQuizPdf = async () => {
+    const title = quizUploadTitle.trim();
+
+    if (!title) {
+      showAlert('오류', '자료 제목을 입력해주세요.');
+      return;
+    }
+
+    if (!quizUploadFile) {
+      showAlert('오류', 'PDF 파일을 선택해주세요.');
+      return;
+    }
+
+    const isPdf =
+      quizUploadFile.type === 'application/pdf' ||
+      quizUploadFile.name.toLowerCase().endsWith('.pdf');
+
+    if (!isPdf) {
+      showAlert('오류', 'PDF 파일만 업로드할 수 있습니다.');
+      return;
+    }
+
+    if (quizUploadFile.size > 30 * 1024 * 1024) {
+      showAlert('오류', 'PDF 파일은 30MB 이하만 업로드할 수 있습니다.');
+      return;
+    }
+
+    setIsUploadingQuizPdf(true);
+    setQuizUploadError('');
+
+    try {
+      await groupService.uploadQuizMaterial(study.id, title, quizUploadFile);
+
+      showAlert('완료', 'PDF가 등록되었고 AI 퀴즈 생성이 완료되었습니다.');
+      setShowPdfUploadModal(false);
+      setQuizUploadTitle('');
+      setQuizUploadFile(null);
+
+      await Promise.all([loadGroupMaterials(), loadGroupQuizzes()]);
+
+      if (stompClient?.connected) {
+        stompClient.publish({
+          destination: `/pub/group/${study.id}/chat`,
+          body: JSON.stringify({
+            senderId: userId,
+            senderName: 'System',
+            content: `${myDisplayName}님이 "${title}" PDF를 등록하고 퀴즈를 생성했습니다.`
+          })
+        });
+      }
+    } catch (err) {
+      const message = err.response?.data?.message || err.message || 'PDF 등록/퀴즈 생성에 실패했습니다.';
+      setQuizUploadError(message);
+      showAlert('오류', message);
+    } finally {
+      setIsUploadingQuizPdf(false);
+    }
   };
 
   const handleSendChat = () => {
@@ -1044,6 +1175,85 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                       </div>
                     </div>
 
+                    {canUseGroupQuizMaterials && (
+                      <div style={{ backgroundColor: 'rgba(15, 23, 42, 0.75)', border: '1px solid rgba(148, 163, 184, 0.18)', borderRadius: '12px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', flexWrap: 'wrap' }}>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#E5E7EB', fontSize: '14px', fontWeight: '800', marginBottom: '6px' }}>
+                              <FileText size={16} /> 공유 PDF 퀴즈
+                            </div>
+                            <div style={{ color: '#9CA3AF', fontSize: '12px', lineHeight: '1.5' }}>
+                              그룹원이 업로드한 PDF로 AI 퀴즈를 생성하고, 생성된 퀴즈는 모든 멤버가 실시간으로 풀 수 있습니다.
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => setShowPdfUploadModal(true)}
+                            style={{ padding: '10px 14px', backgroundColor: '#2563EB', color: 'white', border: 'none', borderRadius: '8px', fontSize: '12px', fontWeight: '800', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
+                          >
+                            <Upload size={14} /> PDF 등록해서 퀴즈 생성
+                          </button>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                          <div style={{ backgroundColor: 'rgba(30, 41, 59, 0.7)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '12px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                              <div style={{ color: '#F3F4F6', fontSize: '13px', fontWeight: '800' }}>공유 PDF 자료</div>
+                              <button onClick={loadGroupMaterials} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', padding: 0 }} title="새로고침">
+                                <RefreshCw size={14} />
+                              </button>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+                              {groupMaterials.length === 0 ? (
+                                <div style={{ color: '#64748B', fontSize: '12px', padding: '10px 0' }}>등록된 PDF 자료가 없습니다.</div>
+                              ) : groupMaterials.map(material => (
+                                <div key={material.id} style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                                  <div style={{ minWidth: 0 }}>
+                                    <div style={{ color: '#E5E7EB', fontSize: '12px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{material.title}</div>
+                                    <div style={{ color: '#94A3B8', fontSize: '11px', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{material.originalFileName} · {formatFileSize(material.fileSize)}</div>
+                                    <div style={{ color: '#64748B', fontSize: '11px', marginTop: '3px' }}>{material.uploaderName || '알 수 없음'} · {formatShortDateTime(material.createdAt)}</div>
+                                  </div>
+                                  <button
+                                    onClick={() => handleDownloadGroupMaterial(material.id)}
+                                    style={{ flexShrink: 0, width: '30px', height: '30px', borderRadius: '8px', border: '1px solid rgba(96,165,250,0.35)', backgroundColor: 'rgba(37,99,235,0.14)', color: '#93C5FD', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                    title="다운로드"
+                                  >
+                                    <Download size={14} />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div style={{ backgroundColor: 'rgba(30, 41, 59, 0.7)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '12px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                              <div style={{ color: '#F3F4F6', fontSize: '13px', fontWeight: '800' }}>생성된 퀴즈</div>
+                              <button onClick={loadGroupQuizzes} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', padding: 0 }} title="새로고침">
+                                <RefreshCw size={14} />
+                              </button>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+                              {groupQuizzes.length === 0 ? (
+                                <div style={{ color: '#64748B', fontSize: '12px', padding: '10px 0' }}>생성된 퀴즈가 없습니다.</div>
+                              ) : groupQuizzes.map(quiz => (
+                                <div key={quiz.id} style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                                  <div style={{ minWidth: 0 }}>
+                                    <div style={{ color: '#E5E7EB', fontSize: '12px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{quiz.title}</div>
+                                    <div style={{ color: '#94A3B8', fontSize: '11px', marginTop: '3px' }}>{quiz.creatorName || '알 수 없음'} · {quiz.questionCount || 0}문항 · {formatShortDateTime(quiz.createdAt)}</div>
+                                  </div>
+                                  <button
+                                    onClick={() => handleQuizStart(quiz.id)}
+                                    style={{ flexShrink: 0, padding: '7px 10px', borderRadius: '8px', border: 'none', backgroundColor: '#16A34A', color: 'white', fontSize: '11px', fontWeight: '800', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}
+                                  >
+                                    <Play size={12} fill="white" /> 시작
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Chat Messages */}
                     {chatMessages.map((msg, idx) => (
                       <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignSelf: Number(msg.senderId) === Number(userId) ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
@@ -1528,7 +1738,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                     </p>
                   </div>
 
-                  {Number(study.leaderId) === Number(userId) ? (
+                  {canUseGroupQuizMaterials ? (
                     <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.05)', border: '1px solid rgba(59, 130, 246, 0.1)', borderRadius: '12px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                         <div style={{ width: '120px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px' }}>퀴즈 번호 (ID)</div>
@@ -1559,7 +1769,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', padding: '40px 0', opacity: 0.8 }}>
                       <AlertTriangle size={36} color="#F59E0B" />
                       <div style={{ color: '#E5E7EB', fontSize: '14px', fontWeight: '600' }}>퀴즈 시작 권한이 없습니다.</div>
-                      <div style={{ color: '#9CA3AF', fontSize: '12px' }}>실시간 퀴즈는 스터디 방장(Leader)만 출제할 수 있습니다.</div>
+                      <div style={{ color: '#9CA3AF', fontSize: '12px' }}>가입 승인 완료된 그룹원만 실시간 퀴즈를 시작할 수 있습니다.</div>
                     </div>
                   )}
                 </div>
@@ -1856,6 +2066,85 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
           </div>
         </div>
       )}
+      {showPdfUploadModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99998, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.78)', backdropFilter: 'blur(6px)' }}>
+          <div style={{ width: '440px', maxWidth: '92vw', backgroundColor: '#1E293B', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 24px 48px rgba(0,0,0,0.35)', padding: '24px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
+              <div>
+                <h3 style={{ margin: '0 0 6px 0', color: '#F3F4F6', fontSize: '18px', fontWeight: '800' }}>PDF 등록 및 AI 퀴즈 생성</h3>
+                <p style={{ margin: 0, color: '#9CA3AF', fontSize: '12px', lineHeight: '1.5' }}>그룹스터디 공유 자료로 PDF를 등록하고, 해당 자료 기반 실시간 퀴즈를 생성합니다.</p>
+              </div>
+              <button
+                onClick={() => {
+                  if (!isUploadingQuizPdf) {
+                    setShowPdfUploadModal(false);
+                    setQuizUploadError('');
+                  }
+                }}
+                disabled={isUploadingQuizPdf}
+                style={{ width: '32px', height: '32px', borderRadius: '50%', border: 'none', backgroundColor: 'rgba(255,255,255,0.06)', color: '#CBD5E1', cursor: isUploadingQuizPdf ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ color: '#E5E7EB', fontSize: '13px', fontWeight: '700' }}>퀴즈 자료 제목</label>
+              <input
+                type="text"
+                value={quizUploadTitle}
+                onChange={(e) => setQuizUploadTitle(e.target.value)}
+                placeholder="예: OOP 핵심 개념 자료"
+                disabled={isUploadingQuizPdf}
+                style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#0F172A', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '10px', padding: '12px 14px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ color: '#E5E7EB', fontSize: '13px', fontWeight: '700' }}>PDF 파일</label>
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                disabled={isUploadingQuizPdf}
+                onChange={(e) => {
+                  setQuizUploadFile(e.target.files?.[0] || null);
+                  setQuizUploadError('');
+                }}
+                style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#0F172A', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '10px', padding: '10px 12px', color: '#CBD5E1', fontSize: '13px' }}
+              />
+              <div style={{ color: '#64748B', fontSize: '11px' }}>PDF만 업로드할 수 있으며 최대 30MB까지 허용됩니다.</div>
+            </div>
+
+            {quizUploadError && (
+              <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.22)', borderRadius: '10px', padding: '10px 12px', color: '#FCA5A5', fontSize: '12px', lineHeight: '1.5' }}>
+                {quizUploadError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '4px' }}>
+              <button
+                onClick={() => {
+                  setShowPdfUploadModal(false);
+                  setQuizUploadError('');
+                }}
+                disabled={isUploadingQuizPdf}
+                style={{ padding: '11px 16px', borderRadius: '9px', border: '1px solid rgba(255,255,255,0.12)', backgroundColor: 'transparent', color: '#CBD5E1', fontSize: '13px', fontWeight: '700', cursor: isUploadingQuizPdf ? 'not-allowed' : 'pointer' }}
+              >
+                취소
+              </button>
+              <button
+                onClick={handleUploadQuizPdf}
+                disabled={isUploadingQuizPdf}
+                style={{ padding: '11px 16px', borderRadius: '9px', border: 'none', backgroundColor: isUploadingQuizPdf ? '#475569' : '#2563EB', color: 'white', fontSize: '13px', fontWeight: '800', cursor: isUploadingQuizPdf ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+              >
+                {isUploadingQuizPdf ? <RefreshCw size={14} className="animate-spin" /> : <Upload size={14} />}
+                {isUploadingQuizPdf ? 'PDF 업로드 및 AI 퀴즈 생성 중...' : '업로드 및 퀴즈 생성'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 실시간 퀴즈 진행 모달 */}
       {activeQuiz && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.8)', backdropFilter: 'blur(8px)' }}>

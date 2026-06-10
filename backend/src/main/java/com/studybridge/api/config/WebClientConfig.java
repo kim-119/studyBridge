@@ -25,7 +25,7 @@ public class WebClientConfig {
     // 실제 요청별 제한은 ChatService의 block(Duration) / per-request responseTimeout로 모드별 제어한다.
     private static final int CONNECT_TIMEOUT_MS = 5000;
 
-    @Value("${ai.server.fastapi.read-timeout-seconds:360}")
+    @Value("${ai.server.fastapi.read-timeout-seconds:1800}")
     private int readTimeoutSeconds;
 
     private static final int WRITE_TIMEOUT_SECONDS = 30;

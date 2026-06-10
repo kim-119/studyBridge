@@ -52,13 +52,26 @@ public class GroupStudySocketController {
             @DestinationVariable Long groupId,
             @Payload GroupStudySocketDTO.QuizStartPayload payload) {
 
-        log.info("Leader triggered quiz play. groupId={}, quizId={}", groupId, payload.getQuizId());
+        log.info("Group member triggered quiz play. groupId={}, quizId={}, userId={}", groupId,
+                payload.getQuizId(), payload.getUserId());
+
+        if (payload.getUserId() == null || !groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(
+                groupId, payload.getUserId(), GroupStudyMemberStatus.JOINED)) {
+            log.warn("Rejected quiz start from non-joined member. groupId={}, userId={}", groupId, payload.getUserId());
+            return;
+        }
 
         GroupStudyQuiz quiz = groupStudyQuizRepository.findById(payload.getQuizId())
                 .orElse(null);
 
         if (quiz == null) {
             log.warn("Quiz not found with ID: {}", payload.getQuizId());
+            return;
+        }
+
+        if (!quiz.getGroupStudy().getId().equals(groupId)) {
+            log.warn("Rejected quiz start for quiz from another group. requestGroupId={}, quizId={}, quizGroupId={}",
+                    groupId, quiz.getId(), quiz.getGroupStudy().getId());
             return;
         }
 

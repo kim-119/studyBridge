@@ -23,6 +23,7 @@ public class GroupStudySocketDTO {
     @AllArgsConstructor
     public static class QuizStartPayload {
         private Long quizId;
+        private Long userId;
     }
 
     @Data

@@ -47,10 +47,17 @@ public class ChatService {
                                 .findTop10ByAgentChatRoomIdAndSenderOrderByCreatedAtDesc(roomId, "AI");
                 java.util.Collections.reverse(lastAiMessages);
 
-                List<Map<String, String>> previousAnswers = lastAiMessages.stream()
-                                .map(msg -> Map.of(
-                                                "agentName", msg.getAgent() != null ? msg.getAgent().getName() : "AI",
-                                                "answer", msg.getContent()))
+                List<Map<String, Object>> previousAnswers = lastAiMessages.stream()
+                                .map(msg -> {
+                                        Map<String, Object> prev = new LinkedHashMap<>();
+                                        prev.put("agentName", msg.getAgent() != null ? msg.getAgent().getName() : "AI");
+                                        prev.put("answer", msg.getContent());
+                                        Map<String, Object> ps = parseProcessSteps(msg.getProcessStepsJson());
+                                        if (ps != null) {
+                                                prev.put("processSteps", ps);
+                                        }
+                                        return prev;
+                                })
                                 .collect(Collectors.toList());
 
                 String requestKnowledgeLevel = firstNonBlank(request.getKnowledgeLevel(), request.getKnowledge_level());
@@ -95,6 +102,8 @@ public class ChatService {
                                         agentMap.put("agentId", agent.getId());
                                         agentMap.put("name", agent.getName());
                                         agentMap.put("role", agent.getRole());
+                                        // agentPreset은 persona [프리셋: X] 태그에서 복원해 FastAPI 프롬프트로 전달
+                                        agentMap.put("agentPreset", extractPersonaTag(persona, "프리셋"));
                                         agentMap.put("personality", agentPersonality);
                                         agentMap.put("personalityStrength", requestPersonalityStrength);
                                         agentMap.put("personality_strength", requestPersonalityStrength);
@@ -143,6 +152,8 @@ public class ChatService {
                         effectiveMode = "debate";
                 } else if ("socratic".equals(effectiveLearningMode)) {
                         effectiveMode = "socratic";
+                } else if ("simulation".equals(effectiveLearningMode)) {
+                        effectiveMode = "simulation";
                 }
                 log.info("[CHAT MODE] roomId={} requestLearningMode={} roomLearningMode={} effectiveLearningMode={} effectiveMode={}",
                                 roomId, request.getLearningMode(), room.getLearningMode(), effectiveLearningMode, effectiveMode);
@@ -153,8 +164,14 @@ public class ChatService {
                 requestBody.put("roomId", request.getRoomId() != null ? request.getRoomId() : roomId);
                 requestBody.put("mode", effectiveMode);
                 requestBody.put("rounds", request.getRounds() != null ? Math.min(Math.max(request.getRounds(), 1), 3) : 3);
-                // 학습 진행 모드 (basic/socratic/debate) — request 없으면 방 값으로 폴백된 결과
+                // 학습 진행 모드 (basic/socratic/debate/simulation) — request 없으면 방 값으로 폴백된 결과
                 requestBody.put("learningMode", effectiveLearningMode);
+                // 토론 논제/구조 설정 — 프론트 → FastAPI로 유실 없이 패스스루 (없으면 null)
+                requestBody.put("debateConfig", request.getDebateConfig());
+                // 소크라테스 문답 설정 — 프론트 → FastAPI로 유실 없이 패스스루 (없으면 null)
+                requestBody.put("socraticConfig", request.getSocraticConfig());
+                // 상황극 설정 — 프론트 → FastAPI로 유실 없이 패스스루 (없으면 null)
+                requestBody.put("simulationConfig", request.getSimulationConfig());
                 requestBody.put("showFinalSynthesis", request.getShowFinalSynthesis() != null ? request.getShowFinalSynthesis() : false);
                 requestBody.put("personality", requestPersonality);
                 requestBody.put("personalityStrength", requestPersonalityStrength);
@@ -241,6 +258,7 @@ public class ChatService {
                 List<ChatDTO.AgentReply> replies = new java.util.ArrayList<>();
                 List<ChatDTO.DiscussionMessage> discussionMessages = new java.util.ArrayList<>();
                 String responseMode = response != null && response.get("mode") != null ? response.get("mode").toString() : null;
+                String responseLearningMode = response != null && response.get("learningMode") != null ? response.get("learningMode").toString() : null;
                 String finalSynthesis = response != null && response.get("finalSynthesis") != null
                                 ? response.get("finalSynthesis").toString()
                                 : null;
@@ -267,6 +285,27 @@ public class ChatService {
                                 : null;
                 String debateSummary = response != null && response.get("debateSummary") != null
                                 ? response.get("debateSummary").toString()
+                                : null;
+                // 구조화 토론 단계/설정 — 유실 없이 패스스루 (없으면 null)
+                List<Map<String, Object>> debateStages = response != null && response.get("debateStages") instanceof List
+                                ? (List<Map<String, Object>>) response.get("debateStages")
+                                : null;
+                Map<String, Object> debateConfig = response != null && response.get("debateConfig") instanceof Map
+                                ? (Map<String, Object>) response.get("debateConfig")
+                                : null;
+                // 구조화 소크라테스 단계/설정 — 유실 없이 패스스루 (없으면 null)
+                List<Map<String, Object>> socraticSteps = response != null && response.get("socraticSteps") instanceof List
+                                ? (List<Map<String, Object>>) response.get("socraticSteps")
+                                : null;
+                Map<String, Object> socraticConfig = response != null && response.get("socraticConfig") instanceof Map
+                                ? (Map<String, Object>) response.get("socraticConfig")
+                                : null;
+                // 구조화 상황극 단계/설정 — 유실 없이 패스스루 (없으면 null)
+                List<Map<String, Object>> simulationStages = response != null && response.get("simulationStages") instanceof List
+                                ? (List<Map<String, Object>>) response.get("simulationStages")
+                                : null;
+                Map<String, Object> simulationConfig = response != null && response.get("simulationConfig") instanceof Map
+                                ? (Map<String, Object>) response.get("simulationConfig")
                                 : null;
                 // processSteps를 JSON 문자열로 직렬화해 AI 메시지와 함께 영속화한다 (새로고침 후 복원용).
                 String processStepsJson = null;
@@ -363,6 +402,7 @@ public class ChatService {
 
                 return ChatDTO.MultiChatResponse.builder()
                                 .mode(responseMode)
+                                .learningMode(responseLearningMode)
                                 .messages(discussionMessages.isEmpty() ? null : discussionMessages)
                                 .finalSynthesis(finalSynthesis)
                                 .replies(replies)
@@ -370,6 +410,12 @@ public class ChatService {
                                 .peerFeedbacks(peerFeedbacks)
                                 .revisedAnswers(revisedAnswers)
                                 .debateSummary(debateSummary)
+                                .debateStages(debateStages)
+                                .debateConfig(debateConfig)
+                                .socraticSteps(socraticSteps)
+                                .socraticConfig(socraticConfig)
+                                .simulationStages(simulationStages)
+                                .simulationConfig(simulationConfig)
                                 .processSteps(processSteps)
                                 .stages(stages)
                                 .personalityValidationSummary(personalityValidationSummary)
@@ -396,7 +442,7 @@ public class ChatService {
                 // FastAPI 요청 바디 (블로킹과 동일 로직 재사용; room.getAgents() lazy 접근은 현재 트랜잭션 내)
                 Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request);
 
-                SseEmitter emitter = new SseEmitter(envSeconds("STUDYMATE_SSE_TIMEOUT_SECONDS", 300) * 1000L);
+                SseEmitter emitter = new SseEmitter(envSeconds("STUDYMATE_SSE_TIMEOUT_SECONDS", 1800) * 1000L);
 
                 Disposable subscription = fastApiWebClient.post()
                                 .uri("/api/ai/multi-chat/stream")
@@ -421,11 +467,27 @@ public class ChatService {
                                                 err -> {
                                                         log.error("FastAPI 스트리밍 오류 roomId={} err={}", roomId, err.getMessage());
                                                         try {
-                                                                emitter.send(SseEmitter.event().name("error")
-                                                                                .data("{\"message\":\"AI 스트리밍 중 오류가 발생했습니다.\"}"));
-                                                        } catch (Exception ignored) {
+                                                                Map<String, Object> fallback = fastApiWebClient.post()
+                                                                                .uri("/api/ai/multi-chat")
+                                                                                .bodyValue(requestBody)
+                                                                                .retrieve()
+                                                                                .bodyToMono(Map.class)
+                                                                                .block(Duration.ofSeconds(resolveAiTimeoutSeconds(
+                                                                                                firstNonBlank(request.getLearningMode(), room.getLearningMode()),
+                                                                                                request.getMode())));
+                                                                String data = objectMapper.writeValueAsString(fallback != null ? fallback : Map.of());
+                                                                emitter.send(SseEmitter.event().name("all_complete").data(data));
+                                                                persistStreamedAnswers(roomId, data);
+                                                                emitter.complete();
+                                                        } catch (Exception fallbackErr) {
+                                                                log.error("FastAPI 스트리밍 fallback 오류 roomId={} err={}", roomId, fallbackErr.getMessage());
+                                                                try {
+                                                                        emitter.send(SseEmitter.event().name("error")
+                                                                                        .data("{\"message\":\"AI 스트리밍 중 오류가 발생했습니다.\"}"));
+                                                                } catch (Exception ignored) {
+                                                                }
+                                                                emitter.completeWithError(err);
                                                         }
-                                                        emitter.completeWithError(err);
                                                 },
                                                 emitter::complete);
 
@@ -460,6 +522,9 @@ public class ChatService {
                                         String agentName = String.valueOf(a.getOrDefault("agentName", "AI"));
                                         Object answerObj = a.get("answer");
                                         String content = answerObj != null ? answerObj.toString() : "";
+                                        if (content.isBlank()) {
+                                                continue;
+                                        }
                                         Agent targetAgent = room.getAgents().stream()
                                                         .filter(ag -> ag.getName().equals(agentName))
                                                         .findFirst()
@@ -552,6 +617,7 @@ public class ChatService {
                 agentMap.put("agentId", agentId);
                 agentMap.put("name", firstNonBlank(agent.getName(), "AI 학습 도우미"));
                 agentMap.put("role", firstNonBlank(agent.getRole(), "AI 학습 도우미"));
+                agentMap.put("agentPreset", extractPersonaTag(persona, "프리셋"));
                 agentMap.put("personality", agentPersonality);
                 agentMap.put("personalityStrength", agentPersonalityStrength);
                 agentMap.put("personality_strength", agentPersonalityStrength);
@@ -576,10 +642,13 @@ public class ChatService {
                 if (lm.equals("socratic") || md.contains("socratic")) {
                         return envSeconds("AI_SOCRATIC_TIMEOUT_SECONDS", 240);
                 }
+                if (lm.equals("simulation") || md.contains("simulation")) {
+                        return envSeconds("AI_SIMULATION_TIMEOUT_SECONDS", 240);
+                }
                 if (lm.equals("debate") || md.contains("debate") || md.contains("multi_agent")) {
                         return envSeconds("AI_DEBATE_TIMEOUT_SECONDS", 300);
                 }
-                return envSeconds("AI_DEFAULT_TIMEOUT_SECONDS", 90);
+                return envSeconds("AI_DEFAULT_TIMEOUT_SECONDS", 900);
         }
 
         private long envSeconds(String key, long defaultValue) {
@@ -609,18 +678,20 @@ public class ChatService {
                 return null;
         }
 
-        /** 학습 진행 모드를 basic/socratic/debate 중 하나로 정규화한다. 잘못된 값/null은 basic. */
+        /** 학습 진행 모드를 basic/socratic/debate/simulation 중 하나로 정규화한다. 잘못된 값/null은 basic. */
         private String normalizeLearningMode(String learningMode) {
                 if (learningMode == null || learningMode.isBlank()) {
                         return "basic";
                 }
                 String v = learningMode.trim().toLowerCase();
-                if (v.equals("socratic")) {
+                if (v.equals("socratic") || v.equals("소크라테스") || v.equals("소크라테스 모드")) {
                         return "socratic";
                 }
-                if (v.equals("debate") || v.equals("discussion")
-                                || v.equals("tikitaka") || v.equals("multi_agent_discussion")
-                                || v.equals("토론") || v.equals("토론 모드")) {
+                if (v.equals("simulation") || v.equals("상황극") || v.equals("상황극 모드")
+                                || v.equals("시뮬레이션") || v.equals("시뮬레이션 모드")) {
+                        return "simulation";
+                }
+                if (v.equals("debate") || v.equals("토론") || v.equals("토론 모드")) {
                         return "debate";
                 }
                 return "basic";

@@ -19,8 +19,13 @@ public class AgentRoomDTO {
         @Size(min = 1, max = 100)
         private String roomName;
 
-        // 학습 진행 모드 (basic/socratic/debate). 미지정 시 basic.
+        // 학습 진행 모드 (basic/socratic/debate/simulation). 미지정 시 basic.
         private String learningMode;
+
+        // 모드별 설정 (토론/소크라테스/상황극). 현재는 per-message로 FastAPI에 전달되며, 방 단위 영속화는 미지원.
+        private java.util.Map<String, Object> debateConfig;
+        private java.util.Map<String, Object> socraticConfig;
+        private java.util.Map<String, Object> simulationConfig;
 
         // 검증 상한은 10명(PREMIUM/ROOT 대비). 실제 플랜별 제한은 Service.resolveAgentLimit에서 적용한다.
         @NotEmpty(message = "최소 1명 이상의 에이전트를 생성해야 합니다.")

@@ -73,6 +73,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("성격 정책 로드 검증 실패 (fallback 사용): %s", e)
 
+    # 스트림 per-agent 타임아웃 실제 적용값을 기동 로그에 남긴다(하한≠상한 진단).
+    try:
+        from app.services.multi_agent_service import log_stream_timeout_config
+        log_stream_timeout_config()
+    except Exception as e:
+        logger.warning("스트림 타임아웃 설정 로깅 실패: %s", e)
+
     logger.info("%s 기동 완료", APP_NAME)
     yield
 

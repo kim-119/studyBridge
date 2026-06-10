@@ -51,7 +51,9 @@ public class AgentChatRoomService {
                                                 .agentChatRoom(savedRoom)
                                                 .name(agentReq.getName())
                                                 .role(agentReq.getRole())
-                                                .persona(agentReq.getPersona())
+                                                // agentPreset은 Agent 엔티티 컬럼이 없으므로 persona에 [프리셋: X] 태그로 인코딩해
+                                                // 마이그레이션 없이 영속/복원한다(기존 [지식수준:]/[성격:] 태그 패턴과 동일).
+                                                .persona(withPresetTag(agentReq.getPersona(), agentReq.getAgentPreset()))
                                                 .tone(agentReq.getTone())
                                                 .goal(agentReq.getGoal())
                                                 .build())
@@ -85,18 +87,20 @@ public class AgentChatRoomService {
                 agentChatRoomRepository.delete(room);
         }
 
-        /** 학습 진행 모드를 basic/socratic/debate 중 하나로 정규화한다. 잘못된 값/null은 basic. */
+        /** 학습 진행 모드를 basic/socratic/debate/simulation 중 하나로 정규화한다. 잘못된 값/null은 basic. */
         private String normalizeLearningMode(String learningMode) {
                 if (learningMode == null || learningMode.isBlank()) {
                         return "basic";
                 }
                 String v = learningMode.trim().toLowerCase();
-                if (v.equals("socratic")) {
+                if (v.equals("socratic") || v.equals("소크라테스") || v.equals("소크라테스 모드")) {
                         return "socratic";
                 }
-                if (v.equals("debate") || v.equals("discussion")
-                                || v.equals("tikitaka") || v.equals("multi_agent_discussion")
-                                || v.equals("토론") || v.equals("토론 모드")) {
+                if (v.equals("simulation") || v.equals("상황극") || v.equals("상황극 모드")
+                                || v.equals("시뮬레이션") || v.equals("시뮬레이션 모드")) {
+                        return "simulation";
+                }
+                if (v.equals("debate") || v.equals("토론") || v.equals("토론 모드")) {
                         return "debate";
                 }
                 return "basic";
@@ -118,6 +122,32 @@ public class AgentChatRoomService {
                 return 3;
         }
 
+        // persona 문자열에 [프리셋: X] 태그를 부착(이미 있으면 그대로). agentPreset 영속화용.
+        private String withPresetTag(String persona, String agentPreset) {
+                String base = persona == null ? "" : persona;
+                if (agentPreset == null || agentPreset.isBlank() || base.contains("[프리셋:")) {
+                        return base;
+                }
+                return ("[프리셋: " + agentPreset.trim() + "] " + base).trim();
+        }
+
+        private String firstNonBlank(String... values) {
+                if (values == null) return null;
+                for (String v : values) {
+                        if (v != null && !v.isBlank()) return v;
+                }
+                return null;
+        }
+
+        // persona에서 [태그: 값] 추출 (없으면 null).
+        private String extractPersonaTag(String persona, String tagName) {
+                if (persona == null) return null;
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                                .compile("\\[" + java.util.regex.Pattern.quote(tagName) + ":\\s*([^\\]]+)\\]")
+                                .matcher(persona);
+                return m.find() ? m.group(1).trim() : null;
+        }
+
         private AgentRoomDTO.Response convertToRoomResponse(AgentChatRoom room, List<Agent> agents) {
                 List<AgentDTO.Response> agentResponses = agents.stream()
                                 .map(agent -> AgentDTO.Response.builder()
@@ -127,6 +157,10 @@ public class AgentChatRoomService {
                                                 .persona(agent.getPersona())
                                                 .tone(agent.getTone())
                                                 .goal(agent.getGoal())
+                                                // persona 태그에서 프리셋/성격/지식수준 복원(프론트 selectAgent 복원용)
+                                                .agentPreset(extractPersonaTag(agent.getPersona(), "프리셋"))
+                                                .personality(firstNonBlank(agent.getTone(), extractPersonaTag(agent.getPersona(), "성격")))
+                                                .knowledgeLevel(extractPersonaTag(agent.getPersona(), "지식수준"))
                                                 .build())
                                 .collect(Collectors.toList());
 

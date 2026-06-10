@@ -90,6 +90,26 @@ public class GroupStudyMaterialService {
                 .collect(Collectors.toList());
     }
 
+    public List<GroupStudyQuizDTO.QuizResponse> getGroupQuizzes(Long userId, Long groupId) {
+        if (!groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId,
+                GroupStudyMemberStatus.JOINED)) {
+            throw new SecurityException("그룹 멤버만 퀴즈 목록을 조회할 수 있습니다.");
+        }
+
+        return groupStudyQuizRepository.findByGroupStudyIdOrderByCreatedAtDesc(groupId).stream()
+                .map(quiz -> GroupStudyQuizDTO.QuizResponse.builder()
+                        .id(quiz.getId())
+                        .groupStudyId(quiz.getGroupStudy().getId())
+                        .title(quiz.getTitle())
+                        .rewardPoints(quiz.getRewardPoints())
+                        .creatorId(quiz.getCreator().getId())
+                        .creatorName(quiz.getCreator().getDisplayName())
+                        .createdAt(quiz.getCreatedAt())
+                        .questionCount(quiz.getQuestions() != null ? quiz.getQuestions().size() : 0)
+                        .build())
+                .collect(Collectors.toList());
+    }
+
     // 자료 다운로드를 위해 안전한 1회용 Presigned URL을 발급받습니다.
 
     public String downloadMaterialUrl(Long userId, Long materialId) {
@@ -202,22 +222,12 @@ public class GroupStudyMaterialService {
     }
 
     private GroupStudyMaterialDTO toDTO(GroupStudyMaterial material) {
-        String presignedUrl = null;
-        try {
-            presignedUrl = s3Service.getPresignedUrl(material.getS3Key(), material.getOriginalFileName());
-        } catch (Exception e) {
-            log.warn("Failed to generate presignedUrl for group study material ID={}: {}", material.getId(),
-                    e.getMessage());
-        }
-
         return GroupStudyMaterialDTO.builder()
                 .id(material.getId())
                 .groupStudyId(material.getGroupStudy().getId())
                 .title(material.getTitle())
-                .s3Key(material.getS3Key())
                 .fileSize(material.getFileSize())
                 .originalFileName(material.getOriginalFileName())
-                .presignedUrl(presignedUrl)
                 .uploaderId(material.getUploader().getId())
                 .uploaderName(material.getUploader().getDisplayName())
                 .createdAt(material.getCreatedAt())
