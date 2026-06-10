@@ -1836,7 +1836,21 @@ export default function StudyMate() {
             pendingDetailParentId.current = null;
             return;
           }
-          // 아무것도 못 받음 → 아래 블로킹 로직으로 폴백
+          // 순차 UX 보장: SSE 실패 시 일반 REST sendMessage로 폴백하지 않는다.
+          // REST 폴백은 최종 JSON을 한 번에 렌더링하여 Agent1→Agent2→Agent3 순차 표시 UX를 깨뜨린다.
+          const noticeMsg = {
+            id: `${userMsg.id}::stream-error`,
+            content: 'AI 스트리밍 연결이 끊겼습니다. 순차 답변을 위해 다시 시도해주세요.',
+            sender: 'AI',
+            senderName: selectedAgent?.name || 'StudyMate',
+            isError: true,
+            createdAt: new Date().toISOString(),
+            parentId: userMsg.id,
+          };
+
+          setTurnAiMessages([noticeMsg]);
+          pendingDetailParentId.current = null;
+          return;
         }
       }
 

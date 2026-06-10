@@ -130,7 +130,8 @@ async def _generate_agent_answer(
 
 async def run_async_multi_agent(request: MultiAgentAsyncRequest) -> MultiAgentAsyncResponse:
     """
-    3명 에이전트를 asyncio.gather()로 병렬 실행한다.
+    에이전트를 displayOrder 순서대로 순차 실행한다.
+    Agent1 완료 후 Agent2, Agent2 완료 후 Agent3를 실행한다.
     RAG context는 한 번 검색 후 공유한다 (shareRagContext=True).
     """
     agents = request.agents if request.agents else _DEFAULT_AGENTS
@@ -142,20 +143,20 @@ async def run_async_multi_agent(request: MultiAgentAsyncRequest) -> MultiAgentAs
             _retrieve_rag_context, request.question, request.materialId
         )
 
-    # 병렬 생성 태스크
-    tasks = [
-        _generate_agent_answer(
+    # 순차 생성: Agent1 완료 후 Agent2, Agent2 완료 후 Agent3 실행
+    answers = []
+
+    for idx, agent in enumerate(agents):
+        answer = await _generate_agent_answer(
             agent=agent,
             question=request.question,
             context=context,
             timeout_seconds=request.timeoutSecondsPerAgent,
             display_order=idx + 1,
-            display_delay_ms=idx * request.delayBetweenDisplayMs,
+            display_delay_ms=0,
         )
-        for idx, agent in enumerate(agents)
-    ]
+        answers.append(answer)
 
-    answers = await asyncio.gather(*tasks)
     answers = sorted(answers, key=lambda a: a.displayOrder)
 
     success_count = sum(1 for a in answers if a.status == "SUCCESS")
