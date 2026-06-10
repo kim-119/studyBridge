@@ -446,6 +446,13 @@ export default function StudyMate() {
     selectedAgentIdRef.current = getAgentId(selectedAgent);
   }, [selectedAgent]);
 
+  // 동시 전송/중복 요청 방어.
+  //  - typingRooms(state)는 setState가 비동기라 Enter키 + 전송버튼 동시 입력을 못 막는다.
+  //    → ref로 동기적으로 잠가 같은 방에 같은 질문이 두 번 전송되는 것을 차단한다(StrictMode 재호출 포함).
+  //  - activeRequestRef: 방별 현재 활성 requestId. 방을 바꾼 뒤 늦게 도착하는 이전 스트림 이벤트는 무시한다.
+  const sendingRoomsRef = useRef(new Set());
+  const activeRequestRef = useRef({});
+
   // 멀티 에이전트 동적 추가를 위해 상태를 배열로 정의
   const [createdAgents, setCreatedAgents] = useState([{ ...DEFAULT_AGENT }]);
   const [roomName, setRoomName] = useState('');
@@ -592,8 +599,21 @@ export default function StudyMate() {
     const agentId = getAgentId(selectedAgent);
     const inputMsg = directMessage || message.trim();
     if (!inputMsg || !selectedAgent || typingRooms[agentId]) return;
+    // ref 기반 동기 가드: state(typingRooms)가 갱신되기 전에 들어오는 두 번째 호출
+    // (Enter키 + 버튼클릭 동시 입력 / 빠른 더블클릭 / StrictMode 재호출)을 즉시 차단한다.
+    if (sendingRoomsRef.current.has(agentId)) {
+      if (import.meta.env.DEV) console.debug('[StudyMate] 중복 전송 차단', { agentId });
+      return;
+    }
+    sendingRoomsRef.current.add(agentId);
+
+    // 이번 전송만의 고유 requestId. 방을 바꾼 뒤 늦게 도착하는 이전 요청 이벤트는 무시한다.
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    activeRequestRef.current[agentId] = requestId;
+    const isActiveRequest = () => activeRequestRef.current[agentId] === requestId;
+
     const userMsg = {
-      id: Date.now(),
+      id: `${requestId}`,
       content: inputMsg,
       sender: 'USER',
       createdAt: new Date().toISOString(),
@@ -622,11 +642,19 @@ export default function StudyMate() {
     if (roomMaterialId) turnExtras.materialId = roomMaterialId;
 
     // 이번 턴의 AI 메시지를 통째로 교체(누적 갱신)한다. 단계 도착마다 호출된다.
+    //  - parentId(=userMsg.id) 기준으로 이 턴의 기존 AI 메시지를 제거 후 재삽입하므로,
+    //    같은 이벤트가 여러 번 와도 append되지 않고 항상 1세트만 유지된다(upsert).
+    //  - 더 새로운 요청이 시작됐으면(stale) 무시한다.
     const setTurnAiMessages = (aiMsgs) => {
+      if (!isActiveRequest()) {
+        if (import.meta.env.DEV) console.debug('[StudyMate] [DEDUPED] stale 요청 이벤트 무시', { agentId, requestId });
+        return;
+      }
       const merge = (list) => {
         const kept = (list || []).filter((m) => !(m.sender === 'AI' && m.parentId === userMsg.id));
         return [...kept, ...aiMsgs];
       };
+      if (import.meta.env.DEV) console.debug('[StudyMate] setTurnAiMessages', { requestId, count: aiMsgs.length });
       setRoomHistories((prev) => ({ ...prev, [agentId]: merge(prev[agentId]) }));
       if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => merge(prev));
     };
@@ -893,8 +921,9 @@ export default function StudyMate() {
         });
       }
     } finally {
-      // 8. 해당 방의 타이핑/로딩 상태만 해제
+      // 8. 해당 방의 타이핑/로딩 상태만 해제 + 전송 가드 해제(재진입 허용)
       setTypingRooms((prev) => ({ ...prev, [agentId]: false }));
+      sendingRoomsRef.current.delete(agentId);
     }
   };
 
@@ -1207,7 +1236,7 @@ export default function StudyMate() {
                       }
 
                       return (
-                        <div key={msg.id || idx} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
+                        <div key={msg.id ?? `${msg.parentId}-${msg.badgeKey}-${idx}`} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
                           <div className="chat-bubble-sender" style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isUser ? undefined : agentTheme.accent }}>
                             {!isUser && (
                               <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', backgroundColor: agentTheme.tagBg, fontSize: '11px' }}>

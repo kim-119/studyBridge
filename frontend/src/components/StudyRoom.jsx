@@ -174,6 +174,23 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const [aiMessages, setAiMessages] = useState([]);
   const [aiInput, setAiInput] = useState('');
   const [isAiStreaming, setIsAiStreaming] = useState(false);
+
+  // 동시 전송/중복 SSE 연결 방어.
+  //  - isAiStreaming(state)는 setState가 비동기라 Enter키 + 전송버튼 동시 입력을 못 막는다 → ref로 동기 차단.
+  //  - activeAiRequestRef: 이번 턴 requestId. 이전 요청에서 늦게 도착하는 이벤트는 전부 무시한다.
+  //  - aiAbortRef: 진행 중인 fetch 스트림. 새 전송/언마운트 시 반드시 abort()로 끊는다.
+  const aiSendingRef = React.useRef(false);
+  const activeAiRequestRef = React.useRef(null);
+  const aiAbortRef = React.useRef(null);
+
+  // 컴포넌트 unmount 시 진행 중인 AI 스트림을 반드시 끊는다(중복 연결/유령 append 방지).
+  useEffect(() => {
+    return () => {
+      if (aiAbortRef.current) { try { aiAbortRef.current.abort(); } catch (e) { /* noop */ } }
+      activeAiRequestRef.current = null;
+      aiSendingRef.current = false;
+    };
+  }, []);
   
   const [activeQuiz, setActiveQuiz] = useState(null);
   const [quizTimer, setQuizTimer] = useState(0);
@@ -463,25 +480,46 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   };
 
   const handleSendAiMessage = async () => {
+    // ref 동기 가드: state(isAiStreaming)가 갱신되기 전에 들어오는 두 번째 호출
+    // (Enter키 + 버튼클릭 동시 입력 / 빠른 더블클릭 / StrictMode 재호출)을 즉시 차단한다.
+    if (aiSendingRef.current) {
+      if (import.meta.env.DEV) console.debug('[AI-SSE] 중복 전송 차단');
+      return;
+    }
     if (!aiInput.trim() || isAiStreaming) return;
-    
+    aiSendingRef.current = true;
+
+    // 이번 전송만의 고유 requestId. 이전 요청에서 늦게 도착하는 이벤트는 모두 무시한다.
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    activeAiRequestRef.current = requestId;
+    const isActive = () => activeAiRequestRef.current === requestId;
+
+    // 이전에 열린 스트림이 있으면 반드시 닫는다(중복 fetch 연결 방지).
+    if (aiAbortRef.current) { try { aiAbortRef.current.abort(); } catch (e) { /* noop */ } }
+    const abortController = new AbortController();
+    aiAbortRef.current = abortController;
+
     const userMsg = aiInput.trim();
     setAiInput('');
     setIsAiStreaming(true);
-    
+
     // Add user message to state
     const userMsgObj = {
-      id: Date.now(),
+      id: `user-${requestId}`,
       senderName: myDisplayName,
       content: userMsg,
       isUser: true
     };
     setAiMessages(prev => [...prev, userMsgObj]);
-    
+
+    // 이번 턴의 토론 말풍선은 requestId로 식별되는 단 하나의 객체다.
+    // 섹션이 다시 도착해도 새로 추가하지 않고 그 객체의 섹션만 upsert한다.
+    const debateMsgId = `debate-${requestId}`;
+
     const token = localStorage.getItem('token');
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
     const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `http://${hostname}:8080`;
-    
+
     try {
       const response = await fetch(`${API_BASE_URL}/api/groups/${study.id}/chats/stream`, {
         method: 'POST',
@@ -495,25 +533,27 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
           rounds: 3,
           showFinalSynthesis: true,
           agents: [] // empty array defaults to Summary, Quiz, and Search agent
-        })
+        }),
+        signal: abortController.signal
       });
-      
+
       if (!response.ok) {
         throw new Error(`스트리밍 오류 (HTTP ${response.status})`);
       }
-      
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
-      
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        
+        if (!isActive()) break; // 더 새로운 요청이 시작됨 → 이 스트림은 버린다
+
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || ''; // Keep the last partial line in the buffer
-        
+
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
@@ -524,59 +564,59 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
               const parsed = JSON.parse(dataStr);
 
               // 토론 모드: debate_section 이벤트는 일반 agent 메시지로 합치지 않고
-              // 하나의 debate 메시지 객체(sections)에 섹션별로 모은다.
+              // requestId로 식별되는 단 하나의 debate 말풍선에 섹션별로 upsert한다.
               if (parsed.section || parsed.type === 'debate_section') {
                 const { section, items, content } = parsed;
+                if (import.meta.env.DEV) console.debug('[AI-SSE] debate_section', { requestId, section, count: items?.length });
                 setAiMessages(prev => {
+                  if (!isActive()) return prev;
+                  const idx = prev.findIndex(m => m.id === debateMsgId);
                   const updated = [...prev];
-                  let last = updated.length > 0 ? updated[updated.length - 1] : null;
-                  // 마지막 메시지가 debate 메시지가 아니면 새 debate 메시지를 만든다.
-                  if (!last || last.isUser || !last.isDebate) {
-                    last = { id: Date.now() + Math.random(), isUser: false, isDebate: true, sections: {} };
-                    updated.push(last);
-                  } else {
-                    last = { ...last, sections: { ...last.sections } };
-                    updated[updated.length - 1] = last;
-                  }
+                  const base = idx === -1
+                    ? { id: debateMsgId, requestId, isUser: false, isDebate: true, sections: {} }
+                    : { ...updated[idx], sections: { ...updated[idx].sections } };
                   if (section === 'debateSummary') {
-                    last.sections.debateSummary = content || '';
+                    base.sections.debateSummary = content || '';
                   } else if (section) {
-                    last.sections[section] = items || [];
+                    base.sections[section] = items || [];
                   }
+                  if (idx === -1) updated.push(base);
+                  else updated[idx] = base;
                   return updated;
                 });
                 continue;
               }
 
               if (parsed.done) {
-                console.log("AI Stream done");
+                if (import.meta.env.DEV) console.debug('[AI-SSE] done', { requestId });
                 continue;
               }
 
               if (parsed.agentName && parsed.content) {
                 setAiMessages(prev => {
-                  if (prev.length === 0) return prev;
+                  if (!isActive()) return prev;
                   const lastMsg = prev[prev.length - 1];
-                  // If the last message is from the same agent, append text
-                  if (!lastMsg.isUser && lastMsg.senderName === parsed.agentName) {
+                  // 이번 요청에서 만든 같은 에이전트의 마지막 말풍선이면 텍스트를 이어붙인다.
+                  if (lastMsg && !lastMsg.isUser && lastMsg.requestId === requestId
+                      && lastMsg.senderName === parsed.agentName) {
                     const updated = [...prev];
                     updated[updated.length - 1] = {
                       ...lastMsg,
                       content: lastMsg.content + parsed.content
                     };
                     return updated;
-                  } else {
-                    // Create a new message from this agent
-                    return [
-                      ...prev,
-                      {
-                        id: Date.now() + Math.random(),
-                        senderName: parsed.agentName,
-                        content: parsed.content,
-                        isUser: false
-                      }
-                    ];
                   }
+                  // 새 에이전트 말풍선 생성 (requestId 태깅으로 다른 요청과 섞이지 않게 한다)
+                  return [
+                    ...prev,
+                    {
+                      id: `agent-${requestId}-${prev.length}`,
+                      requestId,
+                      senderName: parsed.agentName,
+                      content: parsed.content,
+                      isUser: false
+                    }
+                  ];
                 });
               }
             } catch (jsonErr) {
@@ -586,19 +626,27 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
         }
       }
     } catch (err) {
+      // 새 요청/언마운트로 인한 정상 중단은 메시지를 남기지 않는다.
+      if (err?.name === 'AbortError') return;
       console.error("AI Stream connection error:", err);
-      setAiMessages(prev => [
+      setAiMessages(prev => isActive() ? [
         ...prev,
         {
-          id: Date.now() + 1,
+          id: `err-${requestId}`,
           senderName: 'System',
           content: `오류가 발생했습니다: ${err.message || err}`,
           isUser: false,
           isError: true
         }
-      ]);
+      ] : prev);
     } finally {
-      setIsAiStreaming(false);
+      // 이 요청이 여전히 활성일 때만 로딩 상태/스트림 핸들을 정리한다.
+      if (isActive()) {
+        setIsAiStreaming(false);
+        aiAbortRef.current = null;
+        activeAiRequestRef.current = null;
+      }
+      aiSendingRef.current = false;
     }
   };
 
