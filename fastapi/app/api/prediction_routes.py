@@ -17,6 +17,11 @@ router = APIRouter(prefix="/api/ai", tags=["Study Time Prediction"])
 
 
 @router.post(
+    "/predict-study-time",
+    response_model=StudyTimePredictResponse,
+    include_in_schema=False,
+)
+@router.post(
     "/predict/study-time",
     response_model=StudyTimePredictResponse,
     summary="학습 시간 예측",
@@ -50,6 +55,7 @@ async def predict_study_time(request: StudyTimePredictRequest) -> StudyTimePredi
             predictedStudySeconds=result["predicted_seconds"],
             method=result["method"],
             confidence=result["confidence"],
+            modelAvailable=result.get("method") == "tensorflow",
         )
     except asyncio.TimeoutError:
         logger.warning("학습 시간 예측 타임아웃 — 가중 평균 fallback 반환")

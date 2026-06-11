@@ -248,80 +248,32 @@ def generate_quiz_from_pdf(
     file_name: str,
     difficulty: str = "보통",
     knowledge_level: str = "학사",
-    num_questions: int = 3,
+    num_questions: int = 5,
     question_type: str = "객관식",
     language: str = "ko",
+    group_id: int | None = None,
+    file_url: str | None = None,
+    strict_grounding: bool = True,
 ) -> QuizGenerateResponse:
     """
     S3 PDF 기반 퀴즈 생성.
-    각 단계 실패 시 fallback으로 안전한 응답 구조를 유지한다.
+    운영 endpoint(main.py)의 strict grounding 구현으로 위임한다.
+    strict_grounding=True이면 S3/PDF/검증 실패 시 일반 공부법 fallback을 반환하지 않는다.
     """
-    num_questions = max(1, min(int(num_questions or 3), 10))
-    title = f"[{file_name}] 자료 기반 학습 퀴즈"
-    applied_difficulty = _DIFFICULTY_MAP.get(difficulty, "medium")
+    from main import generate_quiz_from_pdf as _generate_grounded_quiz
 
-    # 1. S3 PDF 로드
-    pdf_bytes = None
-    try:
-        from app.services.s3_pdf_loader import load_pdf_from_s3
-        pdf_bytes = load_pdf_from_s3(s3_key)
-    except Exception as e:
-        logger.error("S3 PDF 로드 실패 (fallback 반환): %s", e)
-        return QuizGenerateResponse(
-            quizTitle=_FALLBACK_QUIZ_TITLE,
-            questions=_fallback_questions(num_questions),
-            difficulty=applied_difficulty,
-            knowledgeLevel=knowledge_level,
-        )
-
-    # 2. PDF 텍스트 추출
-    pdf_text = None
-    try:
-        from app.services.pdf_text_extractor import extract_text_from_bytes, is_text_sufficient
-        pdf_text = extract_text_from_bytes(pdf_bytes)
-        if not is_text_sufficient(pdf_text):
-            logger.warning("PDF 텍스트가 너무 짧습니다 (%d자). fallback 반환.", len(pdf_text))
-            return QuizGenerateResponse(
-                quizTitle=_FALLBACK_QUIZ_TITLE,
-                questions=_fallback_questions(num_questions),
-                difficulty=applied_difficulty,
-                knowledgeLevel=knowledge_level,
-            )
-    except Exception as e:
-        logger.error("PDF 텍스트 추출 실패 (fallback 반환): %s", e)
-        return QuizGenerateResponse(
-            quizTitle=_FALLBACK_QUIZ_TITLE,
-            questions=_fallback_questions(num_questions),
-            difficulty=applied_difficulty,
-            knowledgeLevel=knowledge_level,
-        )
-
-    # 3. LLM 퀴즈 생성 (OpenAI 우선, Ollama fallback)
-    system_prompt = _build_system_prompt(num_questions, difficulty, knowledge_level, question_type, language)
-    llm_output = None
-    try:
-        llm_output = _generate_with_openai(system_prompt, file_name, pdf_text, max(1500, num_questions * 450))
-        logger.info("OpenAI로 퀴즈 생성 완료 (difficulty=%s, level=%s).", difficulty, knowledge_level)
-    except Exception as e:
-        logger.warning("OpenAI 퀴즈 생성 실패: %s. Ollama로 fallback합니다.", e)
-        try:
-            llm_output = _generate_with_ollama(system_prompt, file_name, pdf_text, max(1500, num_questions * 450))
-            logger.info("Ollama로 퀴즈 생성 완료.")
-        except Exception as e2:
-            logger.error("Ollama 퀴즈 생성도 실패: %s. fallback quiz 반환.", e2)
-
-    if not llm_output:
-        return QuizGenerateResponse(
-            quizTitle=_FALLBACK_QUIZ_TITLE,
-            questions=_fallback_questions(num_questions),
-            difficulty=applied_difficulty,
-            knowledgeLevel=knowledge_level,
-        )
-
-    questions = _parse_quiz_questions(llm_output, num_questions, question_type)
-    return QuizGenerateResponse(
-        quizTitle=title,
-        questions=questions,
-        difficulty=applied_difficulty,
-        knowledgeLevel=knowledge_level,
+    result = _generate_grounded_quiz(
+        material_id=material_id,
+        s3_key=s3_key,
+        file_name=file_name,
+        difficulty=difficulty,
+        count=num_questions,
+        question_type=question_type,
+        language=language,
+        group_id=group_id,
+        file_url=file_url,
+        strict_grounding=strict_grounding,
     )
+    result.setdefault("difficulty", _DIFFICULTY_MAP.get(difficulty, "medium"))
+    result.setdefault("knowledgeLevel", knowledge_level)
+    return QuizGenerateResponse(**result)

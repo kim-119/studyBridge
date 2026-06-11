@@ -24,10 +24,14 @@ router = APIRouter(prefix="/api/ai", tags=["Quiz Generation"])
         "S3에서 PDF를 로드하여 텍스트를 추출하고, LLM으로 4지선다 퀴즈를 생성한다. "
         "difficulty (쉬움/보통/어려움), knowledgeLevel (입문~전문가), "
         "numQuestions (기본 3)를 지원한다. "
-        "S3/LLM 실패 시 기본 안내형 퀴즈를 반환한다."
+        "strictGrounding=true이면 S3/PDF/검증 실패 시 일반 fallback 퀴즈를 반환하지 않는다."
     ),
 )
 async def generate_quiz(request: QuizGenerateRequest) -> QuizGenerateResponse:
+    if request.materialId is None:
+        raise HTTPException(status_code=400, detail="materialId는 필수입니다.")
+    if not (request.s3Key or request.fileUrl):
+        raise HTTPException(status_code=400, detail="s3Key 또는 fileUrl 중 하나는 필수입니다.")
     try:
         from app.services.quiz_generation_service import generate_quiz_from_pdf
         from app.core.config import QUIZ_GENERATION_TIMEOUT_SECONDS
@@ -35,22 +39,38 @@ async def generate_quiz(request: QuizGenerateRequest) -> QuizGenerateResponse:
             asyncio.to_thread(
                 generate_quiz_from_pdf,
                 material_id=request.materialId,
-                s3_key=request.s3Key,
-                file_name=request.sourceName or request.fileName,
+                s3_key=request.s3Key or "",
+                file_name=request.sourceName or request.fileName or "PDF",
                 difficulty=request.difficulty,
                 knowledge_level=request.knowledgeLevel or "학사",
-                num_questions=request.count or request.numQuestions,
+                num_questions=request.count or request.numQuestions or 5,
                 question_type=request.questionType,
                 language=request.language or "ko",
+                group_id=request.groupId,
+                file_url=request.fileUrl,
+                strict_grounding=True if request.strictGrounding is None else bool(request.strictGrounding),
             ),
             timeout=QUIZ_GENERATION_TIMEOUT_SECONDS,
         )
         return result
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="퀴즈 생성 요청이 시간 초과되었습니다.")
+        return QuizGenerateResponse(
+            success=False,
+            errorCode="QUIZ_GENERATE_TIMEOUT",
+            message="퀴즈 생성 요청이 시간 초과되었습니다.",
+            materialId=request.materialId,
+            groupId=request.groupId,
+            fileName=request.fileName,
+            questions=[],
+        )
     except Exception as e:
         logger.error("퀴즈 생성 중 예상치 못한 오류: %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail="퀴즈 생성 중 서버 오류가 발생했습니다. 잠시 후 다시 시도하세요.",
+        return QuizGenerateResponse(
+            success=False,
+            errorCode="QUIZ_GENERATE_FAILED",
+            message="퀴즈 생성 중 서버 오류가 발생했습니다.",
+            materialId=request.materialId,
+            groupId=request.groupId,
+            fileName=request.fileName,
+            questions=[],
         )

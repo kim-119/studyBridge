@@ -105,8 +105,15 @@ def log_stream_timeout_config() -> None:
     )
 
 _DEFAULT_AGENT = AgentProfile(
-    id=0, agentId=0, name="스터디봇", role="학습 도우미",
-    personality="친절_설명형", personalityStrength="moderate", knowledgeLevel="학사",
+    id=0,
+    agentId="agent-1",
+    name="스터디봇",
+    role=os.getenv("AI_DEFAULT_AGENT_ROLE", "학습 지원"),
+    personality=os.getenv("AI_DEFAULT_PERSONALITY", "friendly"),
+    personalityLabel=os.getenv("AI_DEFAULT_PERSONALITY_LABEL", "친절형"),
+    personalityStrength="moderate",
+    knowledgeLevel=os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL", "undergraduate"),
+    knowledgeLevelLabel=os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL_LABEL", "학사"),
 )
 _SYNTHESIS_AGENT_NAME = "종합정리봇"
 _MAX_ROUNDS = MAX_ROUNDS
@@ -124,10 +131,151 @@ _SIMULATION_DEFAULT_STAGES = [
 # (서비스 코드에 magic value를 박지 않는다.)
 
 
+
+PERSONALITY_LABEL_MAP = {
+    "친절": "friendly", "친절형": "friendly", "친근함": "friendly",
+    "비판": "critical", "비판형": "critical", "솔직함": "critical",
+    "논리": "logical", "논리형": "logical", "전문적": "logical",
+    "창의": "creative", "창의형": "creative", "독특함": "creative",
+    "간결": "concise", "간결형": "concise", "효율적": "concise",
+    "츤데레": "coach", "코치": "coach", "냉소적": "coach",
+}
+KNOWLEDGE_LABEL_MAP = {
+    "입문": "beginner", "초급": "beginner", "학사": "undergraduate", "학부": "undergraduate",
+    "석사": "master", "박사": "phd", "전문가": "expert",
+}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        logger.warning("[config] %s 파싱 실패, fallback=%s", name, default)
+        return default
+
+
+def _resolve_label(value: Any, mapping: Dict[str, str], default: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return default
+    lower = raw.lower()
+    for label, key in mapping.items():
+        if raw == label or lower == label.lower() or label.replace(" ", "") in raw.replace(" ", ""):
+            return key
+    return lower.replace(" ", "_")
+
+
+def _resolve_personality(agent: AgentProfile) -> str:
+    return _resolve_label(
+        getattr(agent, "personality", None) or getattr(agent, "personalityLabel", None),
+        PERSONALITY_LABEL_MAP,
+        os.getenv("AI_DEFAULT_PERSONALITY", "friendly"),
+    )
+
+
+def _resolve_knowledge(agent: AgentProfile) -> str:
+    return _resolve_label(
+        getattr(agent, "knowledgeLevel", None) or getattr(agent, "knowledgeLevelLabel", None),
+        KNOWLEDGE_LABEL_MAP,
+        os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL", "undergraduate"),
+    )
+
+
+def _get_personality_prompt(agent: AgentProfile) -> str:
+    key = _resolve_personality(agent).upper()
+    return os.getenv(f"AI_AGENT_PERSONALITY_{key}") or os.getenv("AI_AGENT_PERSONALITY_FRIENDLY", "")
+
+
+def _get_knowledge_prompt(agent: AgentProfile) -> str:
+    key = _resolve_knowledge(agent).upper()
+    return os.getenv(f"AI_KNOWLEDGE_{key}") or os.getenv("AI_KNOWLEDGE_UNDERGRADUATE", "")
+
+
+def _agent_persona_block(agent: AgentProfile, mode: str) -> str:
+    personality = _resolve_personality(agent)
+    knowledge = _resolve_knowledge(agent)
+    role = agent.role or os.getenv("AI_DEFAULT_AGENT_ROLE", "학습 지원")
+    logger.info("[agent:prompt] agentId=%s mode=%s personality=%s knowledge=%s", agent.agentId, mode, personality, knowledge)
+    return (
+        "[StudyBridge 에이전트 메타데이터]\n"
+        f"에이전트 이름: {agent.name}\n"
+        f"현재 모드: {mode}\n"
+        f"성격: {getattr(agent, 'personalityLabel', None) or personality}\n"
+        f"지식수준: {getattr(agent, 'knowledgeLevelLabel', None) or knowledge}\n"
+        f"역할: {role}\n\n"
+        f"성격 지침:\n{_get_personality_prompt(agent)}\n\n"
+        f"지식수준 지침:\n{_get_knowledge_prompt(agent)}\n\n"
+        "규칙: 위 성격, 지식수준, 역할을 답변 스타일과 판단 기준에 반드시 반영한다."
+    )
+
+
+def _message_from_agent_answer(agent: AgentProfile, answer: AgentAnswer, mode: str, sequence: int, request: MultiChatRequest) -> Dict[str, Any]:
+    personality = _resolve_personality(agent)
+    knowledge = _resolve_knowledge(agent)
+    content = getattr(answer, "answer", "") or getattr(answer, "content", "") or ""
+    return {
+        "senderType": "AGENT",
+        "agentId": getattr(answer, "agentId", None) or agent.agentId,
+        "agentName": getattr(answer, "agentName", None) or agent.name,
+        "personality": getattr(answer, "personality", None) or personality,
+        "personalityLabel": getattr(answer, "personalityLabel", None) or getattr(agent, "personalityLabel", None) or os.getenv("AI_DEFAULT_PERSONALITY_LABEL", "친절형"),
+        "knowledgeLevel": getattr(answer, "knowledgeLevel", None) or knowledge,
+        "knowledgeLevelLabel": getattr(answer, "knowledgeLevelLabel", None) or getattr(agent, "knowledgeLevelLabel", None) or os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL_LABEL", "학사"),
+        "role": getattr(answer, "role", None) or agent.role or os.getenv("AI_DEFAULT_AGENT_ROLE", "학습 지원"),
+        "mode": mode,
+        "round": getattr(answer, "round", None) or 1,
+        "sequence": getattr(answer, "sequence", None) or getattr(answer, "displayOrder", None) or sequence,
+        "content": content,
+        "createdAt": getattr(answer, "createdAt", None) or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "groupId": getattr(request, "groupId", None),
+        "roomId": getattr(request, "roomId", None),
+    }
+
+
+def _attach_response_metadata(response: MultiChatResponse, agents: List[AgentProfile], request: MultiChatRequest, mode: str) -> MultiChatResponse:
+    by_name = {a.name: a for a in agents}
+    messages = []
+    for idx, answer in enumerate(response.answers or [], start=1):
+        agent = by_name.get(answer.agentName) or next((a for a in agents if a.agentId == answer.agentId), None)
+        if agent is None:
+            agent = AgentProfile(agentId=answer.agentId or f"agent-{idx}", name=answer.agentName or f"에이전트 {idx}")
+        msg = _message_from_agent_answer(agent, answer, mode, idx, request)
+        answer.senderType = "AGENT"
+        answer.content = msg["content"]
+        answer.personality = msg["personality"]
+        answer.personalityLabel = msg["personalityLabel"]
+        answer.knowledgeLevel = msg["knowledgeLevel"]
+        answer.knowledgeLevelLabel = msg["knowledgeLevelLabel"]
+        answer.mode = mode
+        answer.round = msg["round"]
+        answer.sequence = msg["sequence"]
+        answer.createdAt = msg["createdAt"]
+        messages.append(msg)
+    response.success = response.status != "FAILED"
+    response.groupId = getattr(request, "groupId", None)
+    response.roomId = getattr(request, "roomId", None)
+    response.agentRoomId = getattr(request, "agentRoomId", None)
+    response.mode = mode
+    response.messages = messages
+    logger.info("[agent:done] messageCount=%d", len(messages))
+    return response
+
+
 def _get_agents(request: MultiChatRequest) -> List[AgentProfile]:
     if not request.agents:
-        logger.info("에이전트 목록이 비어있습니다. 기본 에이전트 사용.")
-        return [_DEFAULT_AGENT]
+        default_count = max(1, min(_env_int("AI_DEFAULT_AGENT_COUNT", 3), 10))
+        logger.info("에이전트 목록이 비어있습니다. env 기본 에이전트 사용 count=%d", default_count)
+        return [AgentProfile(
+            id=idx,
+            agentId=f"agent-{idx + 1}",
+            name=f"에이전트 {idx + 1}",
+            role=os.getenv("AI_DEFAULT_AGENT_ROLE", "학습 지원"),
+            personality=os.getenv("AI_DEFAULT_PERSONALITY", "friendly"),
+            personalityLabel=os.getenv("AI_DEFAULT_PERSONALITY_LABEL", "친절형"),
+            personalityStrength="moderate",
+            knowledgeLevel=os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL", "undergraduate"),
+            knowledgeLevelLabel=os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL_LABEL", "학사"),
+        ) for idx in range(default_count)]
     return request.agents
 
 
@@ -875,15 +1023,9 @@ def _debate_display_name(agent: AgentProfile, index: int) -> str:
 
 
 def _ensure_debate_agents(agents: List[AgentProfile]) -> List[AgentProfile]:
-    if len(agents) >= 2:
-        return agents
-    base = list(agents) if agents else [_DEFAULT_AGENT]
-    base.append(AgentProfile(
-        id=-2, agentId=-2, name="비판 검토 에이전트", role="debater",
-        personality="비판형", personalityStrength="moderate", knowledgeLevel=base[0].knowledgeLevel or "학사",
-        customInstruction="다른 에이전트의 주장에 부족한 점과 보완할 점을 논리적으로 지적한다.",
-    ))
-    return base
+    # 전달받은 agents는 mode 변경 시 default/debate preset으로 덮어쓰지 않는다.
+    # 부족한 역할은 assign_debate_roles에서 내부 virtual role로만 보완한다.
+    return agents or [_DEFAULT_AGENT]
 
 
 def _feedback_mentions_target(feedback: str, target: AgentProfile, target_index: int) -> bool:
@@ -1525,6 +1667,7 @@ def run_default_mode_stream(
         processSteps=process_steps,
         stages=stages,
     )
+    final = _attach_response_metadata(final, agents, request, "default")
     data = final.model_dump()
     data["type"] = "all_complete"
     data["requestId"] = request_id
@@ -2955,7 +3098,7 @@ def _is_forbidden_bot(agent: AgentProfile) -> bool:
     return bt in _FORBIDDEN_BOT_TYPES or nm in _FORBIDDEN_AGENT_NAMES
 
 
-def _summary_bot_answer(message: str, context: str) -> str:
+def _summary_bot_answer(message: str, context: str, agent: Optional[AgentProfile] = None) -> str:
     """요약봇 → Qwen/Ollama."""
     system = (
         "너는 StudyBridge의 '요약봇'이다. "
@@ -2964,13 +3107,15 @@ def _summary_bot_answer(message: str, context: str) -> str:
         "가능하면 '핵심 개념', '키워드', '시험 포인트' 소제목으로 정리하라."
     )
     user_parts = []
+    if agent is not None:
+        user_parts.append(_agent_persona_block(agent, "group_chat"))
     if context:
         user_parts.append(context)
     user_parts.append(f"[요약 요청]\n{message}")
     return _call_llm(system, "\n\n".join(user_parts))
 
 
-def _quiz_bot_answer(message: str, context: str) -> str:
+def _quiz_bot_answer(message: str, context: str, agent: Optional[AgentProfile] = None) -> str:
     """퀴즈봇 → GPT/OpenAI."""
     from app.services.openai_client import chat_sync, is_enabled
     system = (
@@ -2980,6 +3125,8 @@ def _quiz_bot_answer(message: str, context: str) -> str:
         "반드시 한국어로 작성한다."
     )
     user_parts = []
+    if agent is not None:
+        user_parts.append(_agent_persona_block(agent, "group_chat"))
     if context:
         user_parts.append(context)
     user_parts.append(f"[퀴즈 요청]\n{message}")
@@ -2995,7 +3142,7 @@ def _quiz_bot_answer(message: str, context: str) -> str:
     return _call_llm(system, user)
 
 
-def _search_bot_answer(message: str, context: str) -> str:
+def _search_bot_answer(message: str, context: str, agent: Optional[AgentProfile] = None) -> str:
     """검색봇 → Tavily 검색 + GPT/OpenAI 종합."""
     search_block = ""
     try:
@@ -3019,6 +3166,8 @@ def _search_bot_answer(message: str, context: str) -> str:
         "반드시 한국어로 답변한다."
     )
     user_parts = []
+    if agent is not None:
+        user_parts.append(_agent_persona_block(agent, "group_chat"))
     if context:
         user_parts.append(context)
     if search_block:
@@ -3035,16 +3184,16 @@ def _search_bot_answer(message: str, context: str) -> str:
     return _call_llm(system, user)
 
 
-def _route_group_bot_answer(bot_type: str, message: str, context: str) -> str:
+def _route_group_bot_answer(bot_type: str, message: str, context: str, agent: Optional[AgentProfile] = None) -> str:
     if bot_type == "summary_bot":
-        return _summary_bot_answer(message, context)
+        return _summary_bot_answer(message, context, agent)
     if bot_type == "quiz_bot":
-        return _quiz_bot_answer(message, context)
+        return _quiz_bot_answer(message, context, agent)
     if bot_type == "search_bot":
-        return _search_bot_answer(message, context)
+        return _search_bot_answer(message, context, agent)
     # 알 수 없는 봇 — 기본 요약봇 처리
     logger.warning("알 수 없는 botType=%s → 요약봇으로 처리", bot_type)
-    return _summary_bot_answer(message, context)
+    return _summary_bot_answer(message, context, agent)
 
 
 def _run_group_study_ai_mode(
@@ -3087,7 +3236,7 @@ def _run_group_study_ai_mode(
 
         reg = _GROUP_BOT_REGISTRY[bot_type]
         try:
-            answer_text = _route_group_bot_answer(bot_type, request.message, context)
+            answer_text = _route_group_bot_answer(bot_type, request.message, context, agent)
             status = "SUCCESS"
         except Exception as e:
             logger.error("group_study_ai 봇 '%s' 실행 실패: %s", bot_type, e)
@@ -3098,10 +3247,15 @@ def _run_group_study_ai_mode(
             agentName=agent.name or reg["agentName"],
             answer=answer_text,
             agentId=agent.agentId,
-            role=bot_type,
+            role=agent.role or bot_type,
             displayOrder=idx + 1,
             displayDelayMs=idx * delay_ms,
             status=status,
+            metadata=AgentAnswerMetadata(
+                knowledgeLevel=_resolve_knowledge(agent),
+                personality=_resolve_personality(agent),
+                usedRag=bool(context),
+            ),
         ))
 
     if not answers:
@@ -3192,20 +3346,20 @@ def run_multi_chat(request: MultiChatRequest) -> MultiChatResponse:
     if mode == "group_study_ai":
         logger.info("multi-chat 실행: mode=group_study_ai runMode=%s agents=%d",
                     request.runMode, len(active_agents))
-        return _run_group_study_ai_mode(request, active_agents, context, rag_context)
+        return _attach_response_metadata(_run_group_study_ai_mode(request, active_agents, context, rag_context), active_agents, request, "group_chat")
 
     knowledge_level = _get_knowledge_level(request, active_agents[0] if active_agents else None)
     logger.info("multi-chat 실행: mode=%s (raw=%s/lm=%s) level=%s agents=%d",
                 mode, request.mode, getattr(request, "learningMode", None), knowledge_level, len(active_agents))
 
     if mode == "simulation":
-        return _run_simulation_mode(request, active_agents, rag_context)
+        return _attach_response_metadata(_run_simulation_mode(request, active_agents, rag_context), active_agents, request, "simulation")
     if mode == "debate":
-        return _run_debate_mode(request, active_agents, rag_context)
+        return _attach_response_metadata(_run_debate_mode(request, active_agents, rag_context), active_agents, request, "debate")
     if mode == "socratic":
-        return _run_socratic_mode(request, active_agents, rag_context)
+        return _attach_response_metadata(_run_socratic_mode(request, active_agents, rag_context), active_agents, request, "socratic")
 
     # default: 모든 지식수준(입문~전문가)을 동일한 1/2/3차 staged 파이프라인으로 처리한다.
     # (이전엔 박사/전문가가 _run_multi_pass_pipeline로 분기되어 stages/processSteps가 생성되지 않았음.
     #  OpenAlex/depth 보강은 staged 모드에서 현재 미적용 — 후속 통합 과제.)
-    return _run_default_mode(request, active_agents, context, rag_context)
+    return _attach_response_metadata(_run_default_mode(request, active_agents, context, rag_context), active_agents, request, "default")

@@ -27,24 +27,34 @@ def _try_load_tf_model(model_path: str) -> bool:
 
     _model_loaded = True
     try:
-        import tensorflow as tf  # noqa: F401
-        _tf_available = True
-    except ImportError:
-        logger.warning("TensorFlow를 import할 수 없습니다. 가중평균 기반 예측으로 fallback합니다.")
+        import tensorflow as tf
+    except Exception as e:
+        logger.warning("TensorFlow를 import할 수 없습니다: %s. 가중평균 기반 예측으로 fallback합니다.", e)
         return False
 
     if not os.path.exists(model_path):
         logger.warning(
-            "TF 모델 파일을 찾을 수 없습니다: %s. 가중평균 기반 예측으로 fallback합니다.", model_path
+            "TF 모델 경로를 찾을 수 없습니다: %s. 가중평균 기반 예측으로 fallback합니다.", model_path
         )
         return False
 
     try:
-        import tensorflow as tf
-        _tf_model = tf.saved_model.load(model_path)
+        if os.path.isfile(model_path) or os.path.exists(os.path.join(model_path, "config.json")):
+            _tf_model = tf.keras.models.load_model(model_path)
+        elif os.path.exists(os.path.join(model_path, "saved_model.pb")):
+            try:
+                _tf_model = tf.keras.models.load_model(model_path)
+            except Exception:
+                _tf_model = tf.saved_model.load(model_path)
+        else:
+            logger.warning("TF 모델 파일이 없습니다: %s. 가중평균 기반 예측으로 fallback합니다.", model_path)
+            return False
+        _tf_available = True
         logger.info("TensorFlow 학습 시간 예측 모델 로드 완료: %s", model_path)
         return True
     except Exception as e:
+        _tf_available = False
+        _tf_model = None
         logger.error("TF 모델 로드 실패: %s. 가중평균 기반 예측으로 fallback합니다.", e)
         return False
 
@@ -77,11 +87,17 @@ def _compute_fallback_confidence(weekly_seconds: List[float]) -> float:
 def _model_predict(weekly_seconds: List[float]) -> float:
     """TensorFlow 모델 기반 예측."""
     import numpy as np
-    import tensorflow as tf
 
     input_arr = np.array([weekly_seconds], dtype=np.float32)
-    result = _tf_model(input_arr)
-    return float(result.numpy()[0][0])
+    if hasattr(_tf_model, "predict"):
+        result = _tf_model.predict(input_arr, verbose=0)
+    else:
+        result = _tf_model(input_arr)
+    if isinstance(result, dict):
+        result = next(iter(result.values()))
+    if hasattr(result, "numpy"):
+        result = result.numpy()
+    return float(np.asarray(result).reshape(-1)[0])
 
 
 def predict_study_time(weekly_seconds: List[float]) -> dict:
@@ -108,7 +124,7 @@ def predict_study_time(weekly_seconds: List[float]) -> dict:
             logger.info("TF 모델 예측 완료: %.1f초", result)
             return {
                 "predicted_seconds": result,
-                "method": "transformer",
+                "method": "tensorflow",
                 "confidence": 0.82,
             }
         except Exception as e:

@@ -7,23 +7,26 @@ v0.7: mode 분기(tikitaka/debate/socratic) + AgentAnswer 필드 확장.
 기존 agentName/answer 필드는 유지하여 하위 호환을 보장한다.
 """
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class PreviousAnswer(BaseModel):
     agentName: str = Field(..., description="에이전트 이름")
     answer: str = Field(..., description="이전 답변 내용")
     role: str = Field("ASSISTANT", description="역할 (ASSISTANT / USER)")
-    agentId: Optional[int] = Field(None, description="에이전트 ID")
+    agentId: Optional[Any] = Field(None, description="에이전트 ID")
     processSteps: Optional[Dict[str, Any]] = Field(None, description="영속화된 구조화 처리 단계")
 
 
 class AgentProfile(BaseModel):
-    id: Optional[int] = Field(None, description="DB 레코드 ID")
-    agentId: Optional[int] = Field(None, description="에이전트 ID")
-    name: str = Field(..., description="에이전트 표시 이름")
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    id: Optional[Any] = Field(None, description="DB 레코드 ID")
+    agentId: Optional[Any] = Field(None, validation_alias=AliasChoices("agentId", "agent_id", "id"), description="에이전트 ID")
+    name: str = Field("에이전트", validation_alias=AliasChoices("name", "agentName", "agent_name", "displayName"), description="에이전트 표시 이름")
     role: Optional[str] = Field(
         None,
+        validation_alias=AliasChoices("role", "agentRole", "agent_role"),
         description=(
             "모드별 역할 식별자. "
             "debate: supporter|critic|moderator. "
@@ -31,14 +34,16 @@ class AgentProfile(BaseModel):
             "tikitaka/default: 생략 가능."
         ),
     )
-    personality: Optional[str] = Field(None, description="성격 유형")
-    personalityStrength: Optional[str] = Field(None, description="성격 강도 (mild/moderate/extreme)")
+    personality: Optional[str] = Field(None, validation_alias=AliasChoices("personality", "persona", "type"), description="성격 유형")
+    personalityLabel: Optional[str] = Field(None, validation_alias=AliasChoices("personalityLabel", "personality_label"), description="성격 표시명")
+    personalityStrength: Optional[str] = Field(None, validation_alias=AliasChoices("personalityStrength", "personality_strength"), description="성격 강도 (mild/moderate/extreme)")
     # 에이전트 역할/성격 프리셋 (learningMode와 별개). expert_professor/misconception_tracker 등.
     agentPreset: Optional[str] = Field(None, description="에이전트 프리셋 식별자")
     style: Optional[str] = Field(None, description="말투 스타일")
     tone: Optional[str] = Field(None, description="어조")
-    knowledgeLevel: Optional[str] = Field(None, description="지식 수준 (입문/학사/석사/박사/전문가)")
-    customInstruction: Optional[str] = Field(None, description="직접 입력 지시사항")
+    knowledgeLevel: Optional[str] = Field(None, validation_alias=AliasChoices("knowledgeLevel", "knowledge_level", "level"), description="지식 수준 (입문/학사/석사/박사/전문가)")
+    knowledgeLevelLabel: Optional[str] = Field(None, validation_alias=AliasChoices("knowledgeLevelLabel", "knowledge_level_label"), description="지식 수준 표시명")
+    customInstruction: Optional[str] = Field(None, validation_alias=AliasChoices("customInstruction", "custom_instruction"), description="직접 입력 지시사항")
     # group_study_ai 모드용 봇 식별 필드 (선택)
     botType: Optional[str] = Field(
         None,
@@ -154,12 +159,17 @@ class DebateStage(BaseModel):
     side: str = Field(..., description="CON | PRO | NEUTRAL | TOPIC")
     role: str = Field(..., description="반대측 | 찬성측 | 중립 | 논제")
     agentIndex: Optional[int] = Field(None, description="1=반대 2=찬성 3=중립")
-    agentId: Optional[int] = Field(None, description="에이전트 ID")
+    agentId: Optional[Any] = Field(None, description="에이전트 ID")
     agentName: Optional[str] = Field(None, description="에이전트 이름")
     content: str = Field("", description="단계 본문")
 
 
 class MultiChatRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    groupId: Optional[Any] = Field(None, validation_alias=AliasChoices("groupId", "group_id"), description="그룹 ID")
+    roomId: Optional[Any] = Field(None, validation_alias=AliasChoices("roomId", "room_id"), description="방 ID")
+    agentRoomId: Optional[Any] = Field(None, validation_alias=AliasChoices("agentRoomId", "agent_room_id"), description="에이전트 방 ID")
     message: str = Field(..., min_length=1, description="사용자 메시지")
     mode: str = Field(
         "default",
@@ -170,8 +180,13 @@ class MultiChatRequest(BaseModel):
         description="group_study_ai 실행 모드: single | all_bots",
     )
     rounds: int = Field(3, ge=1, le=5, description="토론 라운드 수 (tikitaka 모드)")
-    showFinalSynthesis: bool = Field(True, description="최종 종합 의견 포함 여부 (default/tikitaka)")
-    targetAgentId: Optional[int] = Field(None, description="특정 에이전트 지정 (null이면 전체)")
+    strictPersona: bool = Field(True, validation_alias=AliasChoices("strictPersona", "strict_persona"), description="성격/지식수준 강제 적용")
+    temperature: Optional[float] = Field(None, description="LLM temperature override")
+    topP: Optional[float] = Field(None, validation_alias=AliasChoices("topP", "top_p"), description="LLM top_p override")
+    maxTokens: Optional[int] = Field(None, validation_alias=AliasChoices("maxTokens", "max_tokens"), description="LLM max token override")
+    model: Optional[str] = Field(None, description="LLM model override")
+    showFinalSynthesis: bool = Field(True, validation_alias=AliasChoices("showFinalSynthesis", "show_final_synthesis"), description="최종 종합 의견 포함 여부 (default/tikitaka)")
+    targetAgentId: Optional[Any] = Field(None, validation_alias=AliasChoices("targetAgentId", "target_agent_id"), description="특정 에이전트 지정 (null이면 전체)")
     previousAnswers: List[PreviousAnswer] = Field(
         default_factory=list, description="이전 대화 맥락 (최대 100개, 실제 사용 최근 20개)"
     )
@@ -179,13 +194,13 @@ class MultiChatRequest(BaseModel):
         default_factory=list, description="참여 에이전트 목록"
     )
     # v0.7 추가 필드
-    materialId: Optional[int] = Field(None, description="RAG 자료 ID (materialId 있으면 RAG 검색)")
+    materialId: Optional[int] = Field(None, validation_alias=AliasChoices("materialId", "material_id"), description="RAG 자료 ID (materialId 있으면 RAG 검색)")
     userAttempt: Optional[str] = Field(
         None, description="사용자의 시도 답변 (socratic 모드에서 오개념 분석에 사용)"
     )
     knowledgeLevel: Optional[str] = Field(None, description="전역 지식 수준 (에이전트별 미설정 시 사용)")
     # 프론트 학습모드(basic/socratic/debate). mode가 generic이면 이 값으로 모드를 보강한다.
-    learningMode: Optional[str] = Field(None, description="학습 진행 모드 (basic/socratic/debate/simulation)")
+    learningMode: Optional[str] = Field(None, validation_alias=AliasChoices("learningMode", "learning_mode"), description="학습 진행 모드 (basic/socratic/debate/simulation)")
     # 토론 모드 논제/구조 설정 (debate 모드에서만 사용)
     debateConfig: Optional[DebateConfig] = Field(None, description="토론 논제/구조 설정")
     # 소크라테스 모드 문답 설정 (socratic 모드에서만 사용)
@@ -255,8 +270,18 @@ class AgentAnswer(BaseModel):
     """에이전트 단일 답변. 하위 호환을 위해 agentName/answer는 필수 유지."""
     agentName: str = Field(..., description="에이전트 이름")
     answer: str = Field(..., description="에이전트 답변")
+    senderType: str = Field("AGENT", description="저장용 발신자 타입")
+    content: Optional[str] = Field(None, description="저장용 본문(answer와 동일)")
+    personality: Optional[str] = Field(None, description="성격 키")
+    personalityLabel: Optional[str] = Field(None, description="성격 표시명")
+    knowledgeLevel: Optional[str] = Field(None, description="지식 수준 키")
+    knowledgeLevelLabel: Optional[str] = Field(None, description="지식 수준 표시명")
+    mode: Optional[str] = Field(None, description="생성 모드")
+    round: Optional[int] = Field(None, description="라운드")
+    sequence: Optional[int] = Field(None, description="표시 순서")
+    createdAt: Optional[str] = Field(None, description="생성 시각")
     # v0.7 확장 필드 (optional — 기존 코드 호환)
-    agentId: Optional[int] = Field(None, description="에이전트 ID")
+    agentId: Optional[Any] = Field(None, description="에이전트 ID")
     role: Optional[str] = Field(
         None,
         description="역할: supporter | critic | moderator | socratic_tutor | default",
@@ -290,7 +315,7 @@ class ValidationSummary(BaseModel):
 class InitialAnswerStep(BaseModel):
     agentName: str
     answer: str
-    agentId: Optional[int] = None
+    agentId: Optional[Any] = None
     # 프론트 정렬 키 (에이전트 1→2→3 순서 확정용) + 단계 식별
     agentIndex: Optional[int] = None
     displayOrder: Optional[int] = None
@@ -305,7 +330,7 @@ class InitialAnswerStep(BaseModel):
 class ValidatedAnswerStep(BaseModel):
     agentName: str
     answer: str
-    agentId: Optional[int] = None
+    agentId: Optional[Any] = None
     # 프론트 정렬 키 + 단계 식별
     agentIndex: Optional[int] = None
     displayOrder: Optional[int] = None
@@ -331,8 +356,8 @@ class PeerFeedbackStep(BaseModel):
     displayOrder: Optional[int] = None
     stage: Optional[int] = None
     # 메타데이터: fromAgentId + 피드백 대상 에이전트 ID 목록 + 성격 유형
-    fromAgentId: Optional[int] = None
-    targetAgentIds: List[int] = Field(default_factory=list)
+    fromAgentId: Optional[Any] = None
+    targetAgentIds: List[Any] = Field(default_factory=list)
     personalityType: Optional[str] = None
     provider: Optional[str] = None
     elapsedMs: Optional[int] = None
@@ -411,10 +436,33 @@ class StageInfo(BaseModel):
     sources: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class MultiChatMessage(BaseModel):
+    senderType: str = "AGENT"
+    agentId: Optional[Any] = None
+    agentName: str
+    personality: Optional[str] = None
+    personalityLabel: Optional[str] = None
+    knowledgeLevel: Optional[str] = None
+    knowledgeLevelLabel: Optional[str] = None
+    role: Optional[str] = None
+    mode: str
+    round: int = 1
+    sequence: int = 1
+    content: str
+    createdAt: Optional[str] = None
+    groupId: Optional[Any] = None
+    roomId: Optional[Any] = None
+
+
 class MultiChatResponse(BaseModel):
+    success: bool = Field(True, description="요청 성공 여부")
+    groupId: Optional[Any] = Field(None, description="그룹 ID")
+    roomId: Optional[Any] = Field(None, description="방 ID")
+    agentRoomId: Optional[Any] = Field(None, description="에이전트 방 ID")
     mode: str = Field(..., description="응답 모드")
     learningMode: Optional[str] = Field(None, description="학습 진행 모드")
     answers: List[AgentAnswer] = Field(..., description="에이전트 답변 목록")
+    messages: List[MultiChatMessage] = Field(default_factory=list, description="Spring 저장용 완성 메시지 목록")
     # v0.7 확장 필드
     status: str = Field("COMPLETED", description="COMPLETED | PARTIAL_SUCCESS | FAILED")
     question: Optional[str] = Field(None, description="원본 질문")
