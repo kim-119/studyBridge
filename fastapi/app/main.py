@@ -166,6 +166,20 @@ app.include_router(retrain_router)          # POST /api/training/retrain/check-r
 app.include_router(spring_rag_router)     # POST /api/rag/ingest, /api/rag/query
 app.include_router(deep_search_api_router)  # POST /api/agent/deep-search
 
+try:
+    from extract_compat import router as extract_compat_router
+    app.include_router(extract_compat_router)
+    logger.info("extract_compat 라우터 로드 완료")
+except Exception as e:
+    logger.warning("extract_compat 라우터 로드 실패 (계속 기동): %s", e)
+
+try:
+    from app.api.realtime_quiz_routes import router as realtime_quiz_router
+    app.include_router(realtime_quiz_router)
+    logger.info("realtime_quiz 라우터 로드 완료")
+except Exception as e:
+    logger.warning("realtime_quiz 라우터 로드 실패 (계속 기동): %s", e)
+
 # ── 기존 routers/ 라우터 (하위 호환, agent_chat만 로드) ─────────────────────
 # deep_search_router → /api/agent/deep-search (deep_search_api_router와 중복, 스킵)
 # rag_legacy_router  → /api/rag/ingest, /api/rag/materials/{id} (spring_rag_router와 중복, 스킵)

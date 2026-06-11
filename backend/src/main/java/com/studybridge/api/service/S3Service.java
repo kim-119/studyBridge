@@ -36,16 +36,31 @@ public class S3Service {
     }
 
     public String uploadFile(MultipartFile file, Long userId) throws IOException {
-        if (file.getContentType() == null || !file.getContentType().equals("application/pdf")) {
-            throw new IllegalArgumentException("PDF 파일만 업로드 가능합니다.");
+        String contentType = file.getContentType();
+        String originalName = file.getOriginalFilename();
+        String lowerName = originalName != null ? originalName.toLowerCase() : "";
+        boolean supported = "application/pdf".equals(contentType)
+                || "application/vnd.openxmlformats-officedocument.wordprocessingml.document".equals(contentType)
+                || "text/plain".equals(contentType)
+                || lowerName.endsWith(".pdf")
+                || lowerName.endsWith(".docx")
+                || lowerName.endsWith(".txt");
+        if (!supported) {
+            throw new IllegalArgumentException("문서 파일만 업로드 가능합니다. (PDF/DOCX/TXT)");
         }
 
-        String originalName = file.getOriginalFilename();
         if (originalName != null) {
             originalName = new java.io.File(originalName).getName();
         }
         if (originalName == null || originalName.isBlank()) {
-            originalName = "document.pdf";
+            originalName = "document";
+            if ("application/pdf".equals(contentType)) {
+                originalName += ".pdf";
+            } else if ("application/vnd.openxmlformats-officedocument.wordprocessingml.document".equals(contentType)) {
+                originalName += ".docx";
+            } else if ("text/plain".equals(contentType)) {
+                originalName += ".txt";
+            }
         }
         originalName = originalName.replaceAll("[^a-zA-Z0-9.\\-_\\s가-힣ㄱ-ㅎㅏ-ㅣ]", "_");
 
@@ -55,7 +70,7 @@ public class S3Service {
             PutObjectRequest putObjectRequest = PutObjectRequest.builder()
                     .bucket(bucket)
                     .key(fileName)
-                    .contentType(file.getContentType())
+                    .contentType(contentType != null ? contentType : "application/octet-stream")
                     .build();
 
             s3Client.putObject(putObjectRequest, RequestBody.fromBytes(file.getBytes()));

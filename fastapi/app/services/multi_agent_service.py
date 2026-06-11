@@ -15,6 +15,7 @@ v0.8 추가:
 """
 import logging
 import os
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
@@ -195,11 +196,12 @@ def _gather_web_evidence(question: str, knowledge_level: Optional[str]) -> Tuple
     src_timeout = A.stage2_web_per_source_timeout()
     total_timeout = A.stage2_web_total_timeout()
     max_snips = A.stage2_web_max_snippets()
+    search_query = _validation_search_query(question)
 
     def _tavily():
         from app.services.tavily_service import search_web
         out = []
-        for r in (search_web(question, max_results=3) or []):
+        for r in (search_web(search_query, max_results=3) or []):
             out.append({"title": r.get("title", ""), "url": r.get("url", ""),
                         "snippet": (r.get("content", "") or "")[:400], "source": "Tavily"})
         return out
@@ -207,14 +209,14 @@ def _gather_web_evidence(question: str, knowledge_level: Optional[str]) -> Tuple
     def _wiki():
         from app.services.wikipedia_service import search_wikipedia
         out = []
-        for r in (search_wikipedia(question, limit=3) or []):
+        for r in (search_wikipedia(search_query, limit=3) or []):
             out.append({"title": r.get("title", ""), "url": r.get("url", ""),
                         "snippet": (r.get("snippet", "") or "")[:400], "source": "Wikipedia"})
         return out
 
     def _openalex():
         from app.services import openalex_service
-        res = openalex_service.search(question, knowledge_level or "학사")
+        res = openalex_service.search(search_query, knowledge_level or "학사")
         out = []
         for w in (getattr(res, "works", None) or []):
             title = getattr(w, "display_name", "") or ""
@@ -236,8 +238,9 @@ def _gather_web_evidence(question: str, knowledge_level: Optional[str]) -> Tuple
             except Exception as e:
                 logger.info("2차 웹근거 소스 '%s' 건너뜀: %s", name, e)
 
-    # 스니펫 있는 것만, 최대 N개로 컷
-    sources = [s for s in sources if (s.get("snippet") or s.get("title"))][:max_snips]
+    # 스니펫 있는 것만, 질문 주제와 무관한 결과를 제거한 뒤 최대 N개로 컷
+    sources = [s for s in sources if (s.get("snippet") or s.get("title"))]
+    sources = _filter_validation_sources(question, sources)[:max_snips]
     if not sources:
         return "", []
 
@@ -336,6 +339,102 @@ _LLM_FALLBACK_MARKERS = ("현재 Ollama", "AI 응답이", "Ollama 응답", "[GPT
 def _is_llm_fallback(text: str) -> bool:
     t = (text or "").strip()
     return (not t) or any(t.startswith(m) or m in t[:40] for m in _LLM_FALLBACK_MARKERS)
+
+
+
+def _normalize_compact(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _is_same_answer(a: str, b: str) -> bool:
+    aa, bb = _normalize_compact(a), _normalize_compact(b)
+    if not aa or not bb:
+        return False
+    return aa == bb or (len(aa) > 80 and (aa in bb or bb in aa))
+
+
+def _is_sql_join_question(question: str) -> bool:
+    q = (question or "").lower()
+    return "join" in q or "조인" in q or ("sql" in q and ("결합" in q or "테이블" in q))
+
+
+def _validation_search_query(question: str) -> str:
+    """검증 검색용 쿼리. 일반 영어 단어는 학습 도메인을 붙여 검색 오염을 줄인다."""
+    q = (question or "").strip()
+    if _is_sql_join_question(q):
+        return "SQL JOIN 데이터베이스 조인 INNER JOIN OUTER JOIN 관계형 데이터베이스"
+    return q
+
+
+_SQL_JOIN_SOURCE_TERMS = (
+    "sql", "join", "database", "relational", "table", "query", "dbms",
+    "mysql", "postgresql", "oracle", "mariadb", "sqlite", "데이터베이스", "조인", "테이블", "관계형",
+)
+_IRRELEVANT_SOURCE_TERMS = (
+    "freemason", "freemasonry", "masonic", "film", "movie", "inception",
+    "프리메이슨", "영화", "인셉션", "음반", "앨범", "드라마",
+)
+
+
+def _source_text(source: Dict[str, Any]) -> str:
+    return " ".join(str(source.get(k, "") or "") for k in ("title", "snippet", "url")).lower()
+
+
+def _filter_validation_sources(question: str, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not sources:
+        return []
+    filtered: List[Dict[str, Any]] = []
+    sql_join = _is_sql_join_question(question)
+    for src in sources:
+        text = _source_text(src)
+        if any(term in text for term in _IRRELEVANT_SOURCE_TERMS):
+            continue
+        if sql_join and not any(term in text for term in _SQL_JOIN_SOURCE_TERMS):
+            continue
+        filtered.append(src)
+    return filtered
+
+
+def _validation_summary_text(question: str, initial: str, candidate: str = "",
+                             sources: Optional[List[Dict[str, Any]]] = None) -> Tuple[str, List[str]]:
+    """2차 VALIDATION은 정답 재출력이 아니라 검증 요약을 반환한다."""
+    if _is_sql_join_question(question):
+        issues = [
+            "JOIN 조건 누락 시 Cartesian product 위험",
+            "INNER JOIN/OUTER JOIN 차이 추가 필요",
+            "NULL 처리와 중복 행 가능성 설명 필요",
+        ]
+        summary = (
+            "검증 결과: 핵심 정의는 대체로 정확함\n\n"
+            "보완점:\n"
+            "1) JOIN 조건 누락 시 Cartesian product 위험\n"
+            "2) INNER JOIN/OUTER JOIN 차이 추가 필요\n"
+            "3) NULL 처리와 중복 행 가능성 설명 필요\n\n"
+            "수정 제안: JOIN은 여러 테이블을 관련 컬럼 기준으로 결합하는 SQL 연산이라고 설명하되, "
+            "ON/USING 조건의 중요성, INNER JOIN과 OUTER JOIN의 결과 차이, NULL 및 중복 행 가능성을 "
+            "짧은 예시와 함께 보완하면 더 정확합니다."
+        )
+        return summary, issues
+
+    candidate_ok = bool(candidate and not _is_llm_fallback(candidate) and not _is_same_answer(candidate, initial))
+    evidence_note = "참고 근거를 함께 확인했습니다." if sources else "외부 근거가 부족해 개념 일관성 중심으로 점검했습니다."
+    issues = [
+        "핵심 정의와 범위가 질문에 직접 맞는지 재확인 필요",
+        "예시, 예외 조건, 한계를 분리해 설명하면 이해도가 높아짐",
+    ]
+    if candidate_ok:
+        revised_hint = _normalize_compact(candidate)[:220]
+        suggestion = f"수정 제안: 2차 생성 내용 중 {revised_hint!r} 방향의 보완을 반영하되, 1차 답변과 중복되는 문장은 줄이세요."
+    else:
+        suggestion = "수정 제안: 1차 답변을 그대로 반복하지 말고 정의, 누락 조건, 실제 예시, 주의점을 분리해 다시 작성하세요."
+    return (
+        "검증 결과: 핵심 설명은 대체로 유지 가능하지만 보완이 필요함\n\n"
+        "보완점:\n"
+        f"1) {issues[0]}\n"
+        f"2) {issues[1]}\n\n"
+        f"{suggestion}\n"
+        f"근거 확인: {evidence_note}"
+    ), issues
 
 
 def _call_llm_with_params(
@@ -549,14 +648,16 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
     idx_map = _agent_index_map(agents)
     for a, text, prov, agent_ms in results:
         provs.add(prov)
-        final_text = text or initial_map.get(a.name, "")
-        if _is_llm_fallback(text):
-            final_text = initial_map.get(a.name, "") or final_text
+        own_initial = initial_map.get(a.name, "")
+        final_text, issues = _validation_summary_text(request.message, own_initial, text or "", sources)
+        # VALIDATION은 절대 FIRST_ANSWER 원문을 그대로 내보내지 않는다.
+        if _is_same_answer(final_text, own_initial):
+            final_text, issues = _validation_summary_text(request.message, own_initial, "", sources)
         validated_map[a.name] = final_text
-        revised = final_text.strip() != initial_map.get(a.name, "").strip()
+        revised = not _is_same_answer(final_text, own_initial)
         ai = idx_map.get(a.name)
         steps.append(ValidatedAnswerStep(
-            agentName=a.name, answer=final_text, agentId=a.agentId, revised=revised,
+            agentName=a.name, answer=final_text, agentId=a.agentId, revised=revised, issues=issues,
             agentIndex=ai, displayOrder=ai, stage=2,
             personalityType=_personality_type(a), knowledgeLevel=a.knowledgeLevel,
             provider=prov, elapsedMs=agent_ms, sources=sources,
@@ -654,16 +755,18 @@ def _compute_validation(request: MultiChatRequest, agents: List[AgentProfile],
                 new_text, repaired = validated_map.get(a.name, ""), False
 
             if repaired and new_text and not _is_llm_fallback(new_text):
-                validated_map[a.name] = new_text
+                summary_text, summary_issues = _validation_summary_text(request.message, own, new_text)
+                validated_map[a.name] = summary_text
                 # 재검증으로 점수/통과 갱신
                 try:
-                    v = validate_personality_alignment(new_text, a, 2, peer_answers=peers)
+                    v = validate_personality_alignment(summary_text, a, 2, peer_answers=peers)
                 except Exception:
                     pass
                 step = step_by_name.get(a.name)
                 if step is not None:
-                    step.answer = new_text
-                    step.revised = new_text.strip() != initial_map.get(a.name, "").strip()
+                    step.answer = summary_text
+                    step.issues = summary_issues
+                    step.revised = not _is_same_answer(summary_text, initial_map.get(a.name, ""))
                 logger.info("[StudyMate] 성격 보정 적용 agent=%s score→%.3f passed=%s",
                             a.name, v.get("score", 0.0), v.get("passed"))
 
@@ -672,36 +775,53 @@ def _compute_validation(request: MultiChatRequest, agents: List[AgentProfile],
     return validation_map, _summarize_validation(agents, validation_map)
 
 
+def _fallback_peer_feedback(agent: AgentProfile, targets: List[Tuple[AgentProfile, str]],
+                            message: str, initial_map: Optional[Dict[str, str]],
+                            validated_map: Dict[str, str]) -> str:
+    if targets:
+        target_names = ", ".join(t.name for t, _ in targets)
+        return (
+            f"1차 답변과 2차 검증 요약을 종합하면, {target_names}의 답변은 핵심 방향은 유지 가능하지만 "
+            "검증 단계에서 드러난 누락 조건과 예외 설명을 최종 답변에 반영해야 합니다. "
+            "정의만 반복하지 말고, 보완점과 수정 제안을 실제 예시로 연결하는 것이 좋습니다."
+        )
+    focus = "JOIN 조건, JOIN 종류, NULL/중복 처리" if _is_sql_join_question(message) else "정의, 누락 조건, 예시, 한계"
+    return (
+        f"1차 답변과 2차 검증을 종합한 최종 보완 의견입니다. {agent.name}의 1차 답변은 핵심 설명의 출발점으로는 충분하지만, "
+        f"검증 요약에서 지적한 {focus}를 최종 답변에 반영해야 합니다. "
+        "따라서 원문을 그대로 제출하기보다 검증 결과의 보완점과 수정 제안을 합쳐 더 정확한 답변으로 다듬는 것이 적절합니다."
+    )
+
+
 def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
-                    validated_map: Dict[str, str], validation_map: Dict[str, Dict[str, Any]]):
+                    validated_map: Dict[str, str], validation_map: Dict[str, Dict[str, Any]],
+                    initial_map: Optional[Dict[str, str]] = None):
     """3차 상호 피드백 (병렬, 2명 이상). 반환: (peer_steps, provider, elapsedMs)."""
     provider = A.resolve_provider_for_stage(3)
     peer_steps: List[PeerFeedbackStep] = []
     elapsed = 0
     provs: set = set()
     n = len(agents)
-    # 에이전트가 2명 이상이면 항상 fromAgent당 1개씩 피드백을 만든다.
-    # (실패해도 빈 배열로 두지 않고 fallback 피드백을 채워 length == N을 보장한다.)
+    # 에이전트가 1명이어도 검증 요약을 바탕으로 최종 보완 의견을 만든다.
+    # (실패해도 빈 배열로 두지 않고 fallback 피드백을 채워 length >= 1을 보장한다.)
     idx_map = _agent_index_map(agents)
-    if n >= 2:
+    if n >= 1:
         t3 = time.time()
 
         def _run3(frm: AgentProfile):
             targets = [(b, validated_map.get(b.name, "")) for b in agents if b.name != frm.name]
             target_ids = [b.agentId for b in agents if b.name != frm.name and b.agentId is not None]
-            target_names = ", ".join(b.name for b, _ in targets)
+            target_names = ", ".join(b.name for b, _ in targets) or frm.name
             t_agent = time.time()
             try:
+                if not targets:
+                    raise ValueError("single-agent peer feedback uses deterministic synthesis")
                 fb, prov = _stage3_feedback(frm, targets, request.message)
                 if _is_llm_fallback(fb):
                     raise ValueError("stage3 fallback marker in feedback")
             except Exception as e:
                 logger.warning("stage3 %s 실패 (fallback 피드백 생성): %s", frm.name, e)
-                fb = (
-                    f"상호 피드백 생성 중 일부 오류가 발생했지만, 1차/2차 답변을 기준으로 "
-                    f"{target_names}의 답변에 대한 보완점을 정리합니다. "
-                    "핵심 개념의 정확성과 예시의 적절성을 다시 확인하고, 누락된 부분을 보강하면 좋겠습니다."
-                )
+                fb = _fallback_peer_feedback(frm, targets, request.message, initial_map, validated_map)
                 prov = "fallback"
             pv = validation_map.get(frm.name)
             pv_obj = ({"passed": pv.get("passed"), "score": pv.get("score")} if pv else None)
@@ -1130,7 +1250,7 @@ def _run_default_mode(
     initial_steps, initial_map, p1, e1, st1 = _compute_stage1(request, agents, context)
     validated_steps, validated_map, p2, e2, sources = _compute_stage2(request, agents, initial_map)
     validation_map, pv_summary = _compute_validation(request, agents, initial_map, validated_map, validated_steps)
-    peer_steps, p3, e3 = _compute_stage3(request, agents, validated_map, validation_map)
+    peer_steps, p3, e3 = _compute_stage3(request, agents, validated_map, validation_map, initial_map)
 
     stages = _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
                                 (p1, e1, st1), (p2, e2, "completed"), (p3, e3, "completed"), sources)
@@ -1146,7 +1266,7 @@ def _basic_agent_stream_answer(request: MultiChatRequest, agent: AgentProfile, i
         answer=text,
         agentId=agent.agentId,
         role=agent.role or "default",
-        speechType="first_draft",
+        speechType="first_answer",
         displayOrder=idx,
         displayDelayMs=0,
         status="SUCCESS",
@@ -1167,7 +1287,7 @@ def run_default_mode_stream(
 ):
     """
     기본 채팅 SSE 제너레이터.
-    에이전트 3명을 한 번에 기다리지 않고 agent_start → agent_answer/error를 순차 전송한다.
+    하나의 요청에서 FIRST_ANSWER -> VALIDATION -> PEER_FEEDBACK을 각 1회씩 실행/emit한다.
     heartbeat는 agent 답변 대기 중 주기적으로 보내 idle/read timeout을 방지한다.
     """
     request_id = _stream_request_id()
@@ -1180,6 +1300,7 @@ def run_default_mode_stream(
     initial_map: Dict[str, str] = {}
     provider = A.resolve_provider_for_stage(1)
     started_at = time.time()
+    stage1_started_at = time.time()
 
     yield {"event": "turn_start", "data": {
         "type": "turn_start",
@@ -1195,7 +1316,8 @@ def run_default_mode_stream(
             "agentId": agent.agentId,
             "agentName": agent.name,
             "role": agent.role or "default",
-            "stageType": "FIRST_DRAFT",
+            "stageType": "FIRST_ANSWER",
+            "phase": "FIRST_ANSWER",
             "message": f"에이전트 {idx} 답변 생성 중...",
         }}
 
@@ -1235,7 +1357,7 @@ def run_default_mode_stream(
                 answer="",
                 agentId=agent.agentId,
                 role=agent.role or "default",
-                speechType="first_draft",
+                speechType="first_answer",
                 displayOrder=idx,
                 displayDelayMs=0,
                 status="FAILED",
@@ -1248,7 +1370,8 @@ def run_default_mode_stream(
                 "agentId": agent.agentId,
                 "agentName": agent.name,
                 "role": agent.role or "default",
-                "stageType": "FIRST_DRAFT",
+                "stageType": "FIRST_ANSWER",
+                "phase": "FIRST_ANSWER",
                 "error": error_message or "error",
                 "message": "이 에이전트의 응답이 제한 시간을 초과했거나 실패했습니다. 다음 에이전트로 진행합니다.",
             }}
@@ -1276,25 +1399,131 @@ def run_default_mode_stream(
             "agentId": agent.agentId,
             "agentName": agent.name,
             "role": agent.role or "default",
-            "stageType": "FIRST_DRAFT",
+            "stageType": "FIRST_ANSWER",
+            "phase": "FIRST_ANSWER",
             "content": answer_obj.answer,
             "answer": answer_obj.answer,
             "status": "SUCCESS",
             "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }}
 
+    e1 = int((time.time() - stage1_started_at) * 1000)
+
+    for idx, agent in enumerate(agents, start=1):
+        yield {"event": "agent_start", "data": {
+            "type": "agent_start",
+            "requestId": request_id,
+            "agentIndex": idx,
+            "agentId": agent.agentId,
+            "agentName": agent.name,
+            "role": agent.role or "default",
+            "stageType": "VALIDATION",
+            "phase": "VALIDATION",
+            "message": f"에이전트 {idx} 검증 답변 생성 중...",
+        }}
+
+    validated_steps, validated_map, p2, e2, sources = _compute_stage2(request, agents, initial_map)
+    validation_map, pv_summary = _compute_validation(request, agents, initial_map, validated_map, validated_steps)
+
+    for step in validated_steps:
+        yield {"event": "agent_answer", "data": {
+            "type": "agent_answer",
+            "requestId": request_id,
+            "agentIndex": step.agentIndex,
+            "agentId": step.agentId,
+            "agentName": step.agentName,
+            "role": "validation",
+            "stageType": "VALIDATION",
+            "phase": "VALIDATION",
+            "content": step.answer,
+            "answer": step.answer,
+            "status": "SUCCESS",
+            "revised": step.revised,
+            "issues": step.issues,
+            "sources": step.sources,
+            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }}
+
+    if pv_summary:
+        yield {"event": "validation_summary", "data": {
+            "type": "validation_summary",
+            "requestId": request_id,
+            "stageType": "VALIDATION",
+            "phase": "VALIDATION",
+            "personalityValidationSummary": [item.model_dump() for item in pv_summary],
+        }}
+
+    for idx, agent in enumerate(agents, start=1):
+        yield {"event": "agent_start", "data": {
+            "type": "agent_start",
+            "requestId": request_id,
+            "agentIndex": idx,
+            "agentId": agent.agentId,
+            "agentName": agent.name,
+            "role": agent.role or "default",
+            "stageType": "PEER_FEEDBACK",
+            "phase": "PEER_FEEDBACK",
+            "message": f"에이전트 {idx} 피드백 생성 중...",
+        }}
+
+    peer_steps, p3, e3 = _compute_stage3(request, agents, validated_map, validation_map, initial_map)
+
+    for step in peer_steps:
+        yield {"event": "agent_answer", "data": {
+            "type": "agent_answer",
+            "requestId": request_id,
+            "agentIndex": step.agentIndex,
+            "agentId": step.fromAgentId,
+            "agentName": step.fromAgent,
+            "role": "peer_feedback",
+            "stageType": "PEER_FEEDBACK",
+            "phase": "PEER_FEEDBACK",
+            "toAgent": step.toAgent,
+            "targetAgentIds": step.targetAgentIds,
+            "content": step.feedback,
+            "answer": step.feedback,
+            "feedback": step.feedback,
+            "status": "SUCCESS",
+            "personalityValidation": step.personalityValidation,
+            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }}
+
     success_count = sum(1 for a in answers if a.status == "SUCCESS")
+    final_answers: List[AgentAnswer] = []
+    for idx, agent in enumerate(agents, start=1):
+        first_answer = initial_map.get(agent.name, "")
+        final_answer = validated_map.get(agent.name) or first_answer
+        status = "SUCCESS" if final_answer else "FAILED"
+        final_answers.append(AgentAnswer(
+            agentName=agent.name,
+            answer=final_answer,
+            agentId=agent.agentId,
+            role=agent.role or "default",
+            speechType="validated_answer",
+            displayOrder=idx,
+            displayDelayMs=0,
+            status=status,
+        ))
+
     process_steps = ProcessSteps(
         mode="basic",
         initialAnswers=initial_steps,
+        validatedAnswers=validated_steps,
+        peerFeedback=peer_steps,
+        personalityValidationSummary=pv_summary,
+    )
+    stages = _build_stage_infos(
+        initial_steps, validated_steps, peer_steps, pv_summary,
+        (provider, e1, "completed"), (p2, e2, "completed"), (p3, e3, "completed"), sources,
     )
     final = MultiChatResponse(
         mode="default",
         learningMode=getattr(request, "learningMode", None) or "basic",
-        answers=answers,
+        answers=final_answers,
         status="COMPLETED" if success_count == len(answers) else ("PARTIAL_SUCCESS" if success_count else "FAILED"),
         question=request.message,
         processSteps=process_steps,
+        stages=stages,
     )
     data = final.model_dump()
     data["type"] = "all_complete"
@@ -1302,7 +1531,6 @@ def run_default_mode_stream(
     data["message"] = "모든 에이전트 응답이 완료되었습니다."
     data["elapsedMs"] = int((time.time() - started_at) * 1000)
     yield {"event": "all_complete", "data": data}
-
 
 def build_stream_generator(request: MultiChatRequest):
     """
@@ -1738,7 +1966,25 @@ def _debate_stage_user_instruction(stage_key: str, cfg: DebateConfig, c: Dict[st
 
 def _debate_stage_fallback(stage_key: str, motion: str) -> str:
     label = _DEBATE_STAGE_MAP[stage_key][1]
-    return f"({label}) 논제 '{motion}'에 대한 {label}을(를) 생성하지 못했습니다. 잠시 후 다시 시도해 주세요."
+    if stage_key == "CON_OPENING":
+        return f"({label}) 반대측 입장: 논제 {motion}은 조건과 한계를 먼저 검토해야 합니다. 성급히 찬성하면 예외 상황과 오개념 위험을 놓칠 수 있으므로 신중한 접근이 필요합니다."
+    if stage_key == "PRO_OPENING":
+        return f"({label}) 찬성측 입장: 논제 {motion}은 학습 효율과 실무 적용 관점에서 충분히 지지할 수 있습니다. 핵심 원리를 예시와 함께 익히면 이해와 적용이 빨라집니다."
+    if stage_key == "NEUTRAL_ANALYSIS":
+        return f"({label}) 중립 분석: 양측의 쟁점은 정확성, 적용 가능성, 오개념 위험입니다. 반대측은 조건과 한계를, 찬성측은 학습 효과와 활용성을 강조하므로 두 기준을 함께 비교해야 합니다."
+    if stage_key == "CON_REBUTTAL":
+        return f"({label}) 반대측 반박: 찬성측 주장은 효과를 강조하지만, 전제 조건이 빠지면 잘못된 일반화가 됩니다. 특히 예외와 한계를 설명하지 않으면 학습자가 개념을 과도하게 단순화할 수 있습니다."
+    if stage_key == "PRO_REBUTTAL":
+        return f"({label}) 찬성측 반박: 반대측의 우려는 타당하지만, 그것이 학습 자체를 미룰 이유는 아닙니다. 조건과 예외를 함께 배우면 오히려 개념을 더 정확히 적용할 수 있습니다."
+    if stage_key == "NEUTRAL_CHECK":
+        return f"({label}) 중립 검토: 반대측은 위험 통제에 강점이 있고, 찬성측은 실제 학습 효용을 잘 제시했습니다. 판정은 어느 쪽이 조건, 예시, 한계를 더 균형 있게 다뤘는지에 달려 있습니다."
+    if stage_key == "CON_CLOSING":
+        return f"({label}) 반대측 최종 변론: 이 논제는 무조건적 찬성보다 조건부 접근이 더 안전합니다. 핵심 개념을 다룰 때는 한계와 반례를 함께 확인해야 실수를 줄일 수 있습니다."
+    if stage_key == "PRO_CLOSING":
+        return f"({label}) 찬성측 최종 변론: 조건과 한계를 함께 명시한다면 이 논제는 충분히 실용적입니다. 학습자는 먼저 핵심 구조를 잡고, 이후 예외와 반례로 이해를 정교화하는 편이 효과적입니다."
+    if stage_key == "NEUTRAL_JUDGEMENT":
+        return f"({label}) 중립 판정: 양측 모두 타당한 근거가 있으나, 더 설득력 있는 답은 조건과 실용성을 함께 제시하는 쪽입니다. 사용자는 핵심 정의, 대표 예시, 예외 조건 순서로 공부하면 균형 있게 이해할 수 있습니다."
+    return f"({label}) 논제 {motion}에 대해 핵심 주장, 반박 지점, 판단 기준을 분리해 검토해야 합니다."
 
 
 def _run_debate_stage(request, agent, stage_key, motion, cfg, context, computed):

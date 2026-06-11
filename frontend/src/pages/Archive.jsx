@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText, File as FileIcon, Plus, X, AlignLeft, MessageSquare } from 'lucide-react';
+import { FileText, File as FileIcon, Plus, X, AlignLeft, MessageSquare, CalendarDays } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { materialService } from '../services/api';
 
@@ -93,9 +93,10 @@ export default function Archive() {
         .filter((item) => item.materialType === 'PLANNER')
         .map((item) => ({
           id: item.materialId,
-          title: item.title || '공부 플래너',
+          title: item.title || item.originalFileName || '이름 없음',
           date: item.uploadedAt ? item.uploadedAt.split('T')[0] : '',
-          tag: 'PLANNER',
+          tag: '플래너',
+          extractionStatus: item.extractionStatus || 'SUCCESS',
         }));
 
       setJournals(fetchedJournals);
@@ -105,22 +106,6 @@ export default function Archive() {
       console.error('자료 목록 조회 실패:', error);
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  // 플래너 PDF 미리보기/다운로드: 기존 자료 상세(presigned URL) 흐름을 재사용한다.
-  const handleOpenPlannerPdf = async (e, materialId) => {
-    if (e) e.stopPropagation();
-    try {
-      const detail = await materialService.getMaterialDetail(materialId);
-      if (detail?.s3PresignedUrl) {
-        window.open(detail.s3PresignedUrl, '_blank', 'noopener');
-      } else {
-        alert('플래너 PDF 주소를 불러오지 못했습니다.');
-      }
-    } catch (err) {
-      console.error('플래너 PDF 열기 실패:', err);
-      alert('플래너 PDF를 여는 중 오류가 발생했습니다.');
     }
   };
 
@@ -160,6 +145,7 @@ export default function Archive() {
     } else {
       setJournals([]);
       setPdfs([]);
+      setPlanners([]);
     }
   }, [userId]);
 
@@ -245,8 +231,9 @@ export default function Archive() {
           alert('업로드할 파일을 선택해주세요.');
           return;
         }
-        await materialService.uploadMaterial(formTitle, 'PDF', formKeywords, formFile);
-        alert('자료 업로드가 시작되었습니다. AI가 문서를 분석하는 데 수 분이 걸릴 수 있습니다.');
+        const uploadType = addMaterialType === 'planner' ? 'PLANNER' : 'PDF';
+        await materialService.uploadMaterial(formTitle, uploadType, formKeywords, formFile);
+        alert(addMaterialType === 'planner' ? '플래너 PDF가 등록되었습니다.' : '자료 업로드가 시작되었습니다. AI가 문서를 분석하는 데 수 분이 걸릴 수 있습니다.');
       }
       closeModal();
       fetchMaterials();
@@ -395,12 +382,11 @@ export default function Archive() {
           </div>
         ))}
 
-        {/* 플래너 탭 */}
         {!isLoading && activeTab === 'planner' && planners.length === 0 && (
           <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
-            <FileText size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
-            <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>저장된 플래너가 없습니다</h3>
-            <p style={{ margin: 0 }}>플래너 탭에서 공부 플래너를 작성하고 PDF로 저장하면 여기에 표시됩니다.</p>
+            <CalendarDays size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
+            <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>등록된 플래너가 없습니다</h3>
+            <p style={{ margin: 0 }}>대시보드 플래너 탭에서 PDF로 저장한 파일을 업로드해 보관할 수 있습니다.</p>
           </div>
         )}
 
@@ -409,12 +395,12 @@ export default function Archive() {
             key={planner.id}
             className="glass-panel archive-card animate-fade-in"
             style={{ cursor: 'pointer' }}
-            onClick={(e) => handleOpenPlannerPdf(e, planner.id)}
+            onClick={() => handleOpenDetail('pdf', planner)}
           >
             <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="icon-wrapper" style={{ width: '40px', height: '40px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #22C55E, #15803D)' }}>
-                  <FileText size={22} color="rgba(255,255,255,0.9)" />
+                <div className="icon-wrapper planner-icon">
+                  <CalendarDays size={22} color="rgba(255,255,255,0.8)" />
                 </div>
                 <span className="card-date">{planner.date}</span>
               </div>
@@ -427,17 +413,7 @@ export default function Archive() {
             </div>
             <h3 className="card-title">{planner.title}</h3>
             <div className="card-tags" style={{ marginBottom: 'auto' }}>
-              <span className="card-tag" style={{ backgroundColor: '#ECFDF3', color: '#15803D' }}>#{planner.tag}</span>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-              <button className="btn-outline" style={{ flex: 1, height: '34px', fontSize: '13px', borderColor: '#BBF7D0', color: '#15803D', backgroundColor: '#fff' }}
-                onClick={(e) => handleOpenPlannerPdf(e, planner.id)}>
-                미리보기
-              </button>
-              <button className="btn-primary" style={{ flex: 1, height: '34px', fontSize: '13px' }}
-                onClick={(e) => handleOpenPlannerPdf(e, planner.id)}>
-                다운로드
-              </button>
+              <span className="card-tag">#{planner.tag}</span>
             </div>
           </div>
         ))}
@@ -445,14 +421,15 @@ export default function Archive() {
 
       {/* 3. 더보기(Load More) 버튼 */}
       {((activeTab === 'journal' && visibleCount < journals.length) ||
-        (activeTab === 'pdf' && visibleCount < pdfs.filter(p => p.tag === '학습PDF').length)) && (
+        (activeTab === 'pdf' && visibleCount < pdfs.filter(p => p.tag === '학습PDF').length) ||
+        (activeTab === 'planner' && visibleCount < planners.length)) && (
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: '40px' }}>
           <button
             className="btn-outline"
             style={{ width: 'max-content', flex: 'none', padding: '12px 32px', borderRadius: '30px', fontWeight: '600', backgroundColor: 'white', border: '1px solid var(--color-border)', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}
             onClick={() => setVisibleCount(prev => prev + 6)}
           >
-            더보기 ({visibleCount}/{activeTab === 'journal' ? journals.length : pdfs.filter(p => p.tag === '학습PDF').length})
+            더보기 ({visibleCount}/{activeTab === 'journal' ? journals.length : activeTab === 'planner' ? planners.length : pdfs.filter(p => p.tag === '학습PDF').length})
           </button>
         </div>
       )}
@@ -474,6 +451,9 @@ export default function Archive() {
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px', cursor: 'pointer' }}>
                     <input type="radio" name="materialType" checked={addMaterialType === 'pdf'} onChange={() => setAddMaterialType('pdf')} style={{ transform: 'scale(1.2)' }} /> 학습PDF
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px', cursor: 'pointer' }}>
+                    <input type="radio" name="materialType" checked={addMaterialType === 'planner'} onChange={() => setAddMaterialType('planner')} style={{ transform: 'scale(1.2)' }} /> 플래너
                   </label>
                 </div>
               </div>

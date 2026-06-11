@@ -2,7 +2,7 @@
 PDF 기반 퀴즈 생성 API 스키마.
 POST /api/ai/quiz/generate — Spring Boot 계약 필드명 유지 (camelCase).
 """
-from typing import List, Optional, Literal
+from typing import Any, List, Optional, Literal
 from pydantic import BaseModel, Field
 
 
@@ -12,7 +12,7 @@ class QuizGenerateRequest(BaseModel):
     fileName: str = Field(..., description="원본 파일명")
 
     # 난이도 및 지식수준 (선택, 기본값 적용)
-    difficulty: Literal["쉬움", "보통", "어려움", "easy", "normal", "hard"] = Field(
+    difficulty: Literal["쉬움", "보통", "어려움", "easy", "medium", "normal", "hard"] = Field(
         "보통", description="퀴즈 난이도 (쉬움/보통/어려움)"
     )
     knowledgeLevel: Optional[str] = Field(
@@ -25,16 +25,31 @@ class QuizGenerateRequest(BaseModel):
         le=10,
         description="생성할 문항 수 (기본 3, 최대 10)",
     )
-    questionType: Literal["객관식", "주관식", "혼합"] = Field(
-        "객관식",
-        description="문항 유형 (현재는 객관식만 완전 지원)",
+    count: Optional[int] = Field(
+        None,
+        ge=1,
+        le=10,
+        description="생성할 문항 수 (Spring 옵션 호환 필드, numQuestions보다 우선)",
     )
+    questionType: Literal[
+        "객관식", "주관식", "혼합",
+        "multiple_choice", "short_answer", "mixed",
+    ] = Field(
+        "객관식",
+        description="문항 유형",
+    )
+    language: str = Field("ko", description="응답 언어 (기본 ko)")
+    sourceName: Optional[str] = Field(None, description="자료 표시명 (fileName보다 우선)")
+    range: Optional[Any] = Field(None, description="자료 범위 옵션 (현재 PDF 전체 사용, 호환용 수신)")
 
 
 class QuizQuestion(BaseModel):
     question: str = Field(..., description="문제 내용")
-    options: List[str] = Field(..., min_length=4, max_length=4, description="4지선다 보기")
-    correctAnswer: int = Field(..., ge=0, le=3, description="정답 인덱스 (0-based)")
+    options: List[str] = Field(default_factory=list, description="객관식 보기")
+    correctAnswer: Optional[int] = Field(None, ge=0, le=3, description="객관식 정답 인덱스 (0-based)")
+    answer: Optional[str] = Field(None, description="주관식 정답")
+    explanation: Optional[str] = Field(None, description="정답 해설")
+    questionType: Optional[str] = Field(None, description="문항 유형")
     timeLimitSeconds: int = Field(30, description="제한 시간 (초)")
 
 

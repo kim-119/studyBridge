@@ -3,7 +3,7 @@ PostgreSQL + pgvector 연결 및 벡터 검색 서비스.
 
 연결 방식: psycopg v3 (동기)
 벡터 타입: pgvector Python 패키지로 등록
-테이블:   ai.document_chunks  (ai 스키마 분리)
+테이블:   rag.document_chunk  (ai 스키마 분리)
 거리 함수: cosine distance (<=>), similarity = 1 - distance
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pgvector.psycopg import register_vector
 from app.core.config import VECTOR_DATABASE_URL, RAG_TOP_K
 
 # 테이블 이름 상수 — 스키마 포함 (변경 시 이 곳만 수정)
-_TABLE = "ai.document_chunks"
+_TABLE = "rag.document_chunk"
 
 
 def _get_connection() -> psycopg.Connection:

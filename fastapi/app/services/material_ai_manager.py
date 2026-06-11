@@ -10,6 +10,7 @@ import logging
 import json
 import os
 import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 from app.core.config import OPENAI_API_KEY
@@ -60,26 +61,72 @@ def validate_extracted_text(text: Optional[str]) -> Dict[str, Any]:
     return {"ok": True, "status": "ok", "textLength": length, "warnings": [], "errorCode": None}
 
 
+def _sentences_from_text(text: str, limit: int = 8) -> List[str]:
+    candidates = re.split(r"(?<=[.!?。])\s+|\n+", text or "")
+    cleaned: List[str] = []
+    for sentence in candidates:
+        sentence = re.sub(r"\s+", " ", sentence).strip(" -\t")
+        if len(sentence) >= 25:
+            cleaned.append(sentence)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def _keywords_from_text(text: str, limit: int = 15) -> List[str]:
+    tokens = re.findall(r"[가-힣A-Za-z][가-힣A-Za-z0-9+_.#-]{1,}", text or "")
+    stop = {"그리고", "그러나", "입니다", "합니다", "위해", "대한", "있는", "없는", "사용", "문서", "내용", "학습"}
+    scored: Dict[str, int] = {}
+    for token in tokens:
+        token = token.strip("._-#")
+        if len(token) <= 1 or token.lower() in _JUNK_KEYWORDS or token in stop:
+            continue
+        scored[token] = scored.get(token, 0) + 1
+    ranked = sorted(scored, key=lambda k: (-scored[k], len(k), k))
+    return sanitize_keywords(ranked, limit=limit)
+
+
 def validate_summary_result(result: Dict[str, Any], source_text: str = "") -> Dict[str, Any]:
-    """요약 결과 구조/키워드/길이 검증. result를 보정해 반환한다."""
+    """요약 결과 구조/키워드/길이 검증. 부족한 섹션은 문서 텍스트 기반으로 보정한다."""
     warnings = list(result.get("warnings") or [])
     overview = (result.get("overview") or "").strip()
     keywords = result.get("keywords") if isinstance(result.get("keywords"), list) else []
     sections = result.get("sections") if isinstance(result.get("sections"), list) else []
 
-    keywords = sanitize_keywords(keywords, limit=8)  # 더미(#ㅇㅇ 등) 제거
-    if not overview:
-        warnings.append("요약 개요를 생성하지 못했습니다.")
-    elif len(overview) < 20:
-        warnings.append("요약이 너무 짧습니다.")
-    if not keywords:
-        warnings.append("핵심 키워드가 아직 생성되지 않았습니다.")
-    if not sections:
-        warnings.append("세부 핵심 내용을 생성하지 못했습니다.")
+    source_sentences = _sentences_from_text(source_text, limit=10)
+    if not overview or len(overview) < 120:
+        fallback = " ".join(source_sentences[:6]).strip()
+        if fallback:
+            overview = fallback
+            warnings.append("문서 개요가 짧아 원문 핵심 문장으로 보정했습니다.")
+
+    keywords = sanitize_keywords(keywords, limit=15)
+    if len(keywords) < 8:
+        merged = keywords + [kw for kw in _keywords_from_text(source_text, limit=15) if kw not in keywords]
+        keywords = sanitize_keywords(merged, limit=15)
+        warnings.append("핵심 키워드 수가 부족해 원문 키워드로 보정했습니다.")
+
+    normalized_sections: List[Dict[str, str]] = []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        title = str(section.get("title") or "세부 핵심 내용").strip()
+        content = str(section.get("content") or section.get("description") or "").strip()
+        if title and content:
+            normalized_sections.append({"title": title, "content": content, "description": content})
+
+    if len(normalized_sections) < 5:
+        for idx, sentence in enumerate(source_sentences[:5], start=1):
+            normalized_sections.append({
+                "title": f"핵심 내용 {idx}",
+                "content": sentence,
+                "description": sentence,
+            })
+        warnings.append("세부 핵심 내용이 부족해 원문 기반 항목을 보강했습니다.")
 
     result["overview"] = overview
     result["keywords"] = keywords
-    result["sections"] = sections
+    result["sections"] = normalized_sections[:8]
     result["warnings"] = warnings
     return result
 
@@ -87,52 +134,111 @@ def validate_summary_result(result: Dict[str, Any], source_text: str = "") -> Di
 ROADMAP_FIXED_WEEKS = 12
 
 
+def _listify(value: Any) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        return [line.strip(" -\t") for line in value.splitlines() if line.strip(" -\t")]
+    return []
+
+
+def _text_from_any(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        for key in ("title", "content", "description", "task", "name", "text"):
+            if value.get(key):
+                return str(value.get(key)).strip()
+        return " ".join(str(v).strip() for v in value.values() if v)
+    return str(value).strip()
+
+
+def _fallback_roadmap_weeks(source_text: str) -> List[Dict[str, Any]]:
+    keywords = _keywords_from_text(source_text, limit=12) or ["핵심 개념", "문서 구조", "실습", "복습"]
+    phases = [
+        "문서 개요와 학습 범위 파악", "핵심 용어와 배경 지식 정리", "주요 구성 요소 분석", "기본 사용 흐름 실습",
+        "세부 개념 심화", "예제 기반 적용", "오류 사례와 주의점 점검", "응용 과제 수행",
+        "전체 구조 재정리", "실전 문제 해결", "개인 프로젝트 적용", "최종 복습과 자기점검",
+    ]
+    weeks: List[Dict[str, Any]] = []
+    for i in range(ROADMAP_FIXED_WEEKS):
+        concept = keywords[i % len(keywords)]
+        weeks.append({
+            "weekNumber": i + 1,
+            "title": f"{i + 1}주차: {phases[i]}",
+            "goal": f"{concept}을 중심으로 {phases[i]}을 수행한다.",
+            "keyConcepts": [concept] + keywords[:3],
+            "tasks": [
+                f"문서에서 {concept} 관련 내용을 찾아 요약하기",
+                f"{phases[i]}에 맞는 예제나 체크리스트 작성하기",
+                "이해가 부족한 항목을 질문 목록으로 정리하기",
+            ],
+            "deliverable": "요약 노트 1개와 자기점검 체크리스트",
+            "estimatedHours": 3,
+        })
+    return weeks
+
+
 def validate_roadmap_result(result: Dict[str, Any], source_text: str = "") -> Dict[str, Any]:
-    """
-    로드맵 결과 검증 — 항상 12주차 고정.
-    부족하면 패딩, 초과하면 12주로 정규화. weekNumber 1~12 보장, tasks≥2, estimatedHours 기본 3.
-    weeks가 전혀 없으면 빈 채로 두고 호출부가 ROADMAP_VALIDATE_FAILED 처리.
-    """
+    """로드맵 결과를 Spring/React가 저장 가능한 12주 구조로 보정한다."""
     warnings = list(result.get("warnings") or [])
     weeks = result.get("weeks") if isinstance(result.get("weeks"), list) else []
-    cleaned = [wk for wk in weeks if isinstance(wk, dict) and ((wk.get("title") or "").strip() or (wk.get("goal") or "").strip())]
+    cleaned: List[Dict[str, Any]] = []
+
+    for idx, wk in enumerate(weeks):
+        if not isinstance(wk, dict):
+            continue
+        tasks = []
+        for key in ("tasks", "taskList", "activities", "todos", "assignments", "checkpoints"):
+            tasks.extend(_listify(wk.get(key)))
+        normalized_tasks = [_text_from_any(t) for t in tasks]
+        normalized_tasks = [t for t in normalized_tasks if t]
+        title = _text_from_any(wk.get("title") or wk.get("name") or wk.get("weekTitle"))
+        goal = _text_from_any(wk.get("goal") or wk.get("objective") or wk.get("learningGoal") or wk.get("description"))
+        key_concepts = [_text_from_any(v) for v in _listify(wk.get("keyConcepts") or wk.get("coreConcepts") or wk.get("concepts"))]
+        deliverable = _text_from_any(wk.get("deliverable") or wk.get("output") or wk.get("selfCheck") or wk.get("checklist"))
+        if title or goal or normalized_tasks:
+            cleaned.append({
+                "weekNumber": wk.get("weekNumber") or wk.get("week") or wk.get("stepOrder") or (idx + 1),
+                "title": title,
+                "goal": goal,
+                "keyConcepts": [c for c in key_concepts if c],
+                "tasks": normalized_tasks,
+                "deliverable": deliverable,
+                "estimatedHours": wk.get("estimatedHours") or wk.get("hours") or wk.get("studyHours") or 3,
+            })
 
     if not cleaned:
-        warnings.append("로드맵 주차 정보를 생성하지 못했습니다.")
-        result["weeks"] = []
-        result["totalWeeks"] = 0
-        result["warnings"] = warnings
-        return result
+        cleaned = _fallback_roadmap_weeks(source_text)
+        warnings.append("로드맵 주차 정보가 없어 원문 기반 기본 로드맵으로 보정했습니다.")
 
     if len(cleaned) > ROADMAP_FIXED_WEEKS:
         cleaned = cleaned[:ROADMAP_FIXED_WEEKS]
         warnings.append("로드맵이 12주를 초과하여 12주로 정규화되었습니다.")
     elif len(cleaned) < ROADMAP_FIXED_WEEKS:
+        fallback = _fallback_roadmap_weeks(source_text)
         warnings.append("로드맵 주차가 12주 미만이라 부족한 주차를 보정했습니다.")
-        for i in range(len(cleaned), ROADMAP_FIXED_WEEKS):
-            cleaned.append({
-                "weekNumber": i + 1,
-                "title": f"{i + 1}주차 복습 및 심화",
-                "goal": "이전 주차 내용 복습과 응용 학습",
-                "tasks": ["핵심 개념 복습", "응용 문제 풀이"],
-                "estimatedHours": 3,
-            })
+        cleaned.extend(fallback[len(cleaned):ROADMAP_FIXED_WEEKS])
 
+    fallback = _fallback_roadmap_weeks(source_text)
     for i, wk in enumerate(cleaned):
-        wk["weekNumber"] = i + 1  # 1~12 빠짐없이
-        if not (wk.get("title") or "").strip():
-            wk["title"] = f"{i + 1}주차"
-        if not (wk.get("goal") or "").strip():
-            wk["goal"] = "학습 목표"
-        tasks = wk.get("tasks") if isinstance(wk.get("tasks"), list) else []
-        tasks = [t for t in tasks if (isinstance(t, str) and t.strip()) or isinstance(t, dict)]
+        fb = fallback[i]
+        wk["weekNumber"] = i + 1
+        wk["title"] = _text_from_any(wk.get("title")) or fb["title"]
+        wk["goal"] = _text_from_any(wk.get("goal")) or fb["goal"]
+        concepts = [_text_from_any(v) for v in _listify(wk.get("keyConcepts"))]
+        wk["keyConcepts"] = [c for c in concepts if c] or fb["keyConcepts"]
+        tasks = [_text_from_any(t) for t in _listify(wk.get("tasks"))]
+        tasks = [t for t in tasks if t]
         while len(tasks) < 2:
-            tasks.append("핵심 내용 학습")
+            tasks.append(fb["tasks"][len(tasks) % len(fb["tasks"])])
         wk["tasks"] = tasks
+        wk["deliverable"] = _text_from_any(wk.get("deliverable")) or fb["deliverable"]
         try:
-            wk["estimatedHours"] = int(wk.get("estimatedHours") or 3)
+            hours = int(wk.get("estimatedHours") or 3)
         except (TypeError, ValueError):
-            wk["estimatedHours"] = 3
+            hours = 3
+        wk["estimatedHours"] = max(hours, 1)
 
     result["weeks"] = cleaned
     result["totalWeeks"] = ROADMAP_FIXED_WEEKS
@@ -355,7 +461,7 @@ def _parse_summary_sections(raw: str) -> Dict[str, Any]:
                 if not ln:
                     continue
                 raw_kw.extend(re.split(r"[,/·|]", ln))
-            keywords = sanitize_keywords(raw_kw, limit=8)
+            keywords = sanitize_keywords(raw_kw, limit=15)
         if content:
             sections.append({"title": title, "content": content})
 
@@ -387,12 +493,13 @@ def summarize_document(
     )
     user = (
         f"## 문서 제목\n{document_title}\n\n"
-        f"## 문서 내용 (최대 3000자)\n{text[:3000]}\n\n"
-        "아래 형식으로 작성하라:\n"
-        "## 문서 개요\n(3~5줄 핵심 요약)\n"
-        "## 핵심 키워드\n(쉼표로 구분된 명사 5~8개)\n"
-        "## 세부 핵심 내용\n(불릿 3~7개)\n"
-        "## 학습 포인트\n(2~3줄)"
+        f"## 문서 내용 (최대 6000자)\n{text[:6000]}\n\n"
+        "아래 형식을 지켜 충분히 구체적으로 작성하라:\n"
+        "## 문서 개요\n4~6문장으로 문서의 목적, 배경, 핵심 흐름, 학습자가 얻을 내용을 설명한다.\n"
+        "## 핵심 키워드\n문서에서 중요한 명사형 키워드 8~15개를 쉼표로 구분한다.\n"
+        "## 세부 핵심 내용\n최소 5개 불릿으로 개념 정의, 구성 요소, 처리 흐름, 설정/의존성, 예제 활용, 오류 주의점을 문서 근거에 맞게 정리한다.\n"
+        "## 학습 포인트\n3~5개 불릿으로 시험/실습/복습 관점의 포인트를 적는다.\n"
+        "## 실습/적용 포인트\n기술 문서라면 Gradle 의존성, 권한/설정, 인터페이스/API 정의, ViewModel/Coroutine 같은 연계, 실습 흐름, 주의할 오류를 가능한 범위에서 포함한다."
     )
 
     provider = "ollama_qwen"
@@ -401,13 +508,13 @@ def summarize_document(
     raw = ""
     try:
         from app.services.llm_engine_router import call_primary_llm
-        raw = call_primary_llm(system_prompt=system, user_prompt=user, max_tokens=1200, temperature=0.4)
+        raw = call_primary_llm(system_prompt=system, user_prompt=user, max_tokens=2200, temperature=0.35)
         if not raw or raw.strip().startswith("["):
             raise RuntimeError(f"primary LLM 응답 실패: {raw[:60] if raw else 'empty'}")
     except Exception as e:
         logger.warning("요약 Ollama/Qwen 실패: %s", e)
         if AI_ENABLE_GPT_FALLBACK:
-            raw = _call_gpt(system, user)
+            raw = _call_gpt(system, user, max_tokens=2200)
             provider = "openai_gpt"
             used_fallback = True
         else:
@@ -617,14 +724,18 @@ def build_limited_context(chunks: List[Dict[str, Any]], max_chunks: int, char_ca
 
 
 def ocr_unavailable_status() -> Dict[str, Any]:
-    """OCR 의존성/설정이 없을 때 서버를 죽이지 않고 표준 상태만 반환한다."""
-    return {
-        "enabled": OCR_ENABLED,
+    """OCR 의존성/설정 상태를 서버를 죽이지 않고 표준 상태로 반환한다."""
+    try:
+        from app.services.ocr_service import ocr_status
+        status = ocr_status()
+    except Exception:
+        status = {"enabled": OCR_ENABLED, "available": False}
+    status.update({
         "maxPages": OCR_MAX_PAGES,
         "timeoutSeconds": OCR_TIMEOUT_SECONDS,
-        "available": False,
-        "errorCode": "PDF_OCR_REQUIRED",
-    }
+        "errorCode": None if status.get("available") else "PDF_OCR_REQUIRED",
+    })
+    return status
 
 
 # ── 구조화 JSON 생성 (GPT) + 검증 연결 ────────────────────────────────────────
@@ -650,18 +761,31 @@ def _extract_json(raw: str) -> Optional[Any]:
 
 def generate_quiz_json(context: str, difficulty: str = "보통", num_questions: int = 5,
                        knowledge_level: str = "학사") -> Dict[str, Any]:
-    """GPT로 구조화 퀴즈 JSON 생성 → validate_quiz_result 연결."""
+    """Ollama/Qwen 우선 구조화 퀴즈 JSON 생성 → validate_quiz_result 연결."""
+    num_questions = max(1, min(int(num_questions or 5), 20))
+    variant_seed = uuid.uuid4().hex[:10]
     system = (
         "너는 교육용 퀴즈 출제 전문가다. 제공된 문서 내용에 근거해서만 한국어로 출제한다. "
         "반드시 JSON 배열만 출력한다. 각 항목은 "
-        '{"question","options"(4개),"answerIndex"(0~3 정수),"answer"(정답 텍스트),"explanation","difficulty"} 형식이다.'
+        '{"question","options"(4개),"answerIndex"(0~3 정수),"answer"(정답 텍스트),"explanation","difficulty"} 형식이다. '
+        "재생성 요청마다 서로 다른 개념 포인트, 문제 표현, 오답 보기를 사용한다."
     )
     user = (
-        f"## 난이도\n{difficulty}\n## 문항 수\n{num_questions}\n\n"
+        f"## 난이도\n{difficulty}\n## 문항 수\n{num_questions}\n## 재생성 변형 seed\n{variant_seed}\n\n"
         f"## 문서 내용\n{context[:6000]}\n\n"
-        "위 내용을 바탕으로 사지선다 문제를 JSON 배열로만 출력하라."
+        "위 내용을 바탕으로 정확히 요청 문항 수만큼 사지선다 문제를 JSON 배열로만 출력하라. "
+        "정의/설정/처리 흐름/주의점/적용 사례를 고르게 섞고, 같은 근거 문장만 반복하지 마라."
     )
-    raw = _call_gpt(system, user, max_tokens=2000)
+    provider = "ollama_qwen"
+    try:
+        from app.services.llm_engine_router import call_primary_llm
+        raw = call_primary_llm(system_prompt=system, user_prompt=user, max_tokens=max(2000, num_questions * 420), temperature=0.55)
+        if not raw or raw.strip().startswith("[") and raw.strip().startswith("[GPT"):
+            raise RuntimeError("primary LLM unavailable")
+    except Exception as e:
+        logger.warning("퀴즈 Ollama/Qwen 실패: %s", e)
+        raw = _call_gpt(system, user, max_tokens=max(2000, num_questions * 420))
+        provider = "openai_gpt"
     parsed = _extract_json(raw)
     questions: List[Dict[str, Any]] = []
     if isinstance(parsed, list):
@@ -686,7 +810,7 @@ def generate_quiz_json(context: str, difficulty: str = "보통", num_questions: 
                 "explanation": (q.get("explanation") or "").strip(),
                 "difficulty": q.get("difficulty") or difficulty,
             })
-    result = {"questions": questions, "warnings": [], "provider": "openai_gpt", "raw": raw}
+    result = {"questions": questions, "warnings": [], "provider": provider, "raw": raw}
     if AI_ENABLE_RESULT_VALIDATION:
         result = validate_quiz_result(result, context)
     return result
@@ -697,33 +821,40 @@ def generate_roadmap_json(context: str, user_goal: str = "학습 목표 달성",
     """GPT로 구조화 로드맵 JSON 생성 → validate_roadmap_result 연결."""
     system = (
         "너는 학습 커리큘럼 설계 전문가다. 제공된 문서 내용에 근거해 한국어로 설계한다. "
-        "반드시 JSON 객체만 출력한다. 형식: "
-        '{"title","totalWeeks":12,"weeks":[{"weekNumber"(1~12),"title","goal",'
-        '"tasks":["할일1","할일2"],"estimatedHours"}]}. '
-        "weeks는 반드시 정확히 12개(1주차~12주차)를 생성한다. 각 주차 tasks는 최소 2개."
+        "마크다운, 설명문, 코드블록 없이 JSON 객체만 출력한다. 형식: "
+        '{"title":"문서 기반 학습 로드맵","totalWeeks":12,"weeks":[{"weekNumber":1,"title":"1주차 제목","goal":"학습 목표",'
+        '"keyConcepts":["핵심 개념"],"tasks":["구체 태스크1","구체 태스크2","구체 태스크3"],'
+        '"deliverable":"산출물 또는 자기점검","estimatedHours":3}]}. '
+        "weeks는 정확히 12개가 가장 좋고 최소 4개 이상이어야 한다. 각 주차 tasks는 빈 배열 금지이며 최소 2개 이상이다."
     )
     user = (
         f"## 학습 목표\n{user_goal}\n\n## 문서 내용\n{context[:6000]}\n\n"
-        "주차별 학습 로드맵을 JSON으로만 출력하라."
+        "문서 개요부터 실습/복습까지 이어지는 주차별 학습 로드맵을 JSON으로만 출력하라. "
+        "각 주차에는 주차 번호, 제목, 학습 목표, 핵심 개념, 학습 태스크 목록, 산출물/자기점검, 예상 학습 시간을 포함하라."
     )
-    raw = _call_gpt(system, user, max_tokens=2000)
+    raw = _call_gpt(system, user, max_tokens=3200)
     parsed = _extract_json(raw)
     title = "AI 생성 학습 로드맵"
     weeks: List[Dict[str, Any]] = []
     if isinstance(parsed, dict):
         title = (parsed.get("title") or title).strip() or title
-        for wk in (parsed.get("weeks") or []):
+        raw_weeks = parsed.get("weeks") or parsed.get("steps") or parsed.get("roadmap") or []
+        if isinstance(raw_weeks, dict):
+            raw_weeks = raw_weeks.get("weeks") or raw_weeks.get("steps") or []
+        for wk in raw_weeks:
             if not isinstance(wk, dict):
                 continue
-            tasks = wk.get("tasks") or []
-            norm_tasks = [t if isinstance(t, str) else (t.get("content") or t.get("title") or "")
-                          for t in tasks]
+            tasks: List[Any] = []
+            for key in ("tasks", "taskList", "activities", "todos", "assignments", "checkpoints"):
+                tasks.extend(_listify(wk.get(key)))
             weeks.append({
-                "weekNumber": wk.get("weekNumber"),
-                "title": (wk.get("title") or "").strip(),
-                "goal": (wk.get("goal") or "").strip(),
-                "tasks": [t for t in norm_tasks if t],
-                "estimatedHours": wk.get("estimatedHours") or 0,
+                "weekNumber": wk.get("weekNumber") or wk.get("week") or wk.get("stepOrder"),
+                "title": _text_from_any(wk.get("title") or wk.get("name") or wk.get("weekTitle")),
+                "goal": _text_from_any(wk.get("goal") or wk.get("objective") or wk.get("learningGoal") or wk.get("description")),
+                "keyConcepts": [_text_from_any(v) for v in _listify(wk.get("keyConcepts") or wk.get("coreConcepts") or wk.get("concepts"))],
+                "tasks": [_text_from_any(t) for t in tasks if _text_from_any(t)],
+                "deliverable": _text_from_any(wk.get("deliverable") or wk.get("output") or wk.get("selfCheck") or wk.get("checklist")),
+                "estimatedHours": wk.get("estimatedHours") or wk.get("hours") or wk.get("studyHours") or 0,
             })
     result = {"title": title, "weeks": weeks, "warnings": [], "provider": "openai_gpt", "raw": raw}
     if AI_ENABLE_RESULT_VALIDATION:

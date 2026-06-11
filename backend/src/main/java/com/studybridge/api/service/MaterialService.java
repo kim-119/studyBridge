@@ -52,7 +52,8 @@ public class MaterialService {
         pdfExtractionService.sendToFastApiForExtraction(
                 savedMaterial.getMaterialId(),
                 file.getBytes(),
-                file.getOriginalFilename());
+                file.getOriginalFilename(),
+                file.getContentType());
 
         return convertToDTO(savedMaterial);
     }
