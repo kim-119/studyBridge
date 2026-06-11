@@ -1,39 +1,24 @@
 package com.studybridge.api.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
-import lombok.extern.slf4j.Slf4j;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.extern.slf4j.Slf4j;
 import com.studybridge.api.dto.*;
-import lombok.extern.slf4j.Slf4j;
 import com.studybridge.api.entity.*;
-import lombok.extern.slf4j.Slf4j;
 import com.studybridge.api.repository.*;
-import lombok.extern.slf4j.Slf4j;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.transaction.annotation.Transactional;
-import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.web.reactive.function.client.WebClient;
-import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
-import lombok.extern.slf4j.Slf4j;
 import java.util.List;
-import lombok.extern.slf4j.Slf4j;
 import java.util.Map;
-import lombok.extern.slf4j.Slf4j;
 import java.util.LinkedHashMap;
-import lombok.extern.slf4j.Slf4j;
 import java.util.stream.Collectors;
-import lombok.extern.slf4j.Slf4j;
 
 // 자료보관함 AI 호출 hard timeout (무한 대기 방지). 전체 2분 예산 내(120~125초).
 
-@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)

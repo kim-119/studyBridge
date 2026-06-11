@@ -27,8 +27,3 @@ __pycache__/
 # local backup files
 *.bak_*
 *.backup*
-
-# local backup files
-*.bak-*
-*.bak_*
-*.backup*
