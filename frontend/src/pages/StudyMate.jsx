@@ -53,6 +53,16 @@ const STAGE_BADGES = {
 
 const pvForName = (pvSummary, name) => (pvSummary || []).find((p) => p.agentName === name) || null;
 
+// 채팅 화면 라이브 모드 토글 옵션. value는 backend learningMode/mode와 그대로 일치한다.
+const LEARNING_MODE_CHIPS = [
+  { value: 'basic', label: '기본', icon: '💬' },
+  { value: 'validation', label: '검증', icon: '✅' },
+  { value: 'collaboration', label: '협업', icon: '🤝' },
+  { value: 'debate', label: '토론', icon: '🗣️' },
+  { value: 'socratic', label: '소크라테스', icon: '🧭' },
+  { value: 'simulation', label: '상황극', icon: '🎭' },
+];
+
 // 토론으로 인정하는 값은 명시적 토론만 (discussion/tikitaka/multi_agent_discussion 제외)
 const DEBATE_MODE_VALUES = new Set(['debate', '토론', '토론 모드']);
 const isDebateModeValue = (value) => DEBATE_MODE_VALUES.has(String(value || '').trim().toLowerCase());
@@ -1311,6 +1321,8 @@ export default function StudyMate() {
   //  - activeRequestRef: 방별 현재 활성 requestId. 방을 바꾼 뒤 늦게 도착하는 이전 스트림 이벤트는 무시한다.
   const sendingRoomsRef = useRef(new Set());
   const activeRequestRef = useRef({});
+  // 같은 질문을 연속으로 보내면(=다시 생성) attempt를 올려 백엔드가 이전 답변을 재사용하지 않게 한다.
+  const regenTrackRef = useRef({});
 
   // 멀티 에이전트 동적 추가를 위해 상태를 배열로 정의
   const [createdAgents, setCreatedAgents] = useState([{ ...DEFAULT_AGENT }]);
@@ -1523,6 +1535,16 @@ export default function StudyMate() {
     const roomMaterialId = selectedAgent?.materialId ?? selectedAgent?.material_id;
     if (roomMaterialId) turnExtras.materialId = roomMaterialId;
 
+    // 다시 생성 처리: 직전과 같은 질문이면 attempt를 증가시키고 forceRegenerate로 cache 우회/변형을 유도한다.
+    const regenTrack = regenTrackRef.current[agentId];
+    const regenerateAttempt = (regenTrack && regenTrack.question === inputMsg)
+      ? (regenTrack.attempt + 1)
+      : 1;
+    regenTrackRef.current[agentId] = { question: inputMsg, attempt: regenerateAttempt };
+    turnExtras.messageId = requestId;
+    turnExtras.regenerateAttempt = regenerateAttempt;
+    turnExtras.forceRegenerate = regenerateAttempt > 1;
+
     // 이번 턴의 AI 메시지를 통째로 교체(누적 갱신)한다. 단계 도착마다 호출된다.
     //  - parentId(=userMsg.id) 기준으로 이 턴의 기존 AI 메시지를 제거 후 재삽입하므로,
     //    같은 이벤트가 여러 번 와도 append되지 않고 항상 1세트만 유지된다(upsert).
@@ -1677,8 +1699,10 @@ export default function StudyMate() {
         try {
           await agentService.streamMessage(userId, agentId, {
             message: inputMsg,
-            // 사용자가 고른 학습모드(라디오 상태)를 우선 전송한다(토론/소크라테스 분기).
+            // 사용자가 고른 학습모드(라이브 토글)를 우선 전송한다(검증/협업/토론/소크라테스/상황극 분기).
             learningMode: activeLearningMode,
+            // basic은 백엔드가 single/multi를 파생하도록 mode를 생략하고, 그 외는 mode=learningMode로 명시 전송한다.
+            mode: activeLearningMode === 'basic' ? undefined : activeLearningMode,
             rounds: 1,
             ...turnExtras,
           }, {
@@ -1862,8 +1886,9 @@ export default function StudyMate() {
       });
       const res = await agentService.sendMessage(userId, agentId, {
         message: inputMsg,
-        // 사용자가 고른 학습모드(라디오) 우선, 없으면 방 설정/기본 채팅
+        // 사용자가 고른 학습모드(라이브 토글) 우선, 없으면 방 설정/기본 채팅
         learningMode: activeLearningMode,
+        mode: activeLearningMode === 'basic' ? undefined : activeLearningMode,
         rounds: 1, // 프론트단에서 타임아웃 방지를 위해 강제로 1라운드(병렬 단답)만 요청
         ...turnExtras,
       });
@@ -2598,6 +2623,33 @@ export default function StudyMate() {
                     </motion.div>
                   )}
                 </AnimatePresence>
+
+                {/* 라이브 모드 토글 — 채팅 중 언제든 모드 변경(방 생성 모드를 override) */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '0 4px 8px', alignItems: 'center' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginRight: '2px' }}>모드</span>
+                  {LEARNING_MODE_CHIPS.map((m) => {
+                    const active = learningMode === m.value;
+                    return (
+                      <button
+                        key={m.value}
+                        type="button"
+                        onClick={() => setLearningMode(m.value)}
+                        title={m.label}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: '4px',
+                          padding: '4px 10px', borderRadius: '16px', cursor: 'pointer',
+                          fontSize: '12px', fontWeight: active ? 700 : 500,
+                          border: `1px solid ${active ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                          backgroundColor: active ? 'var(--color-primary)' : 'transparent',
+                          color: active ? '#fff' : 'var(--color-text-muted)',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        <span>{m.icon}</span>{m.label}
+                      </button>
+                    );
+                  })}
+                </div>
 
                 <form onSubmit={sendMessage} className="chat-input-premium">
                   <input

@@ -129,7 +129,7 @@ public class GroupStudyService {
         // 3. 공개방인 경우: 승인 절차 없이 즉시 가입
         if (groupStudy.getIsPublic()) {
             if (groupStudy.getCurrentCount() >= groupStudy.getCapacity()) {
-                throw new IllegalStateException("정원이 가득 찬 그룹스터디입니다.");
+                throw new IllegalStateException("스터디 정원이 마감되었습니다.");
             }
 
             GroupStudyMember member = GroupStudyMember.builder()
@@ -206,7 +206,7 @@ public class GroupStudyService {
         }
 
         if (groupStudy.getCurrentCount() >= groupStudy.getCapacity()) {
-            throw new IllegalStateException("정원이 가득 찬 그룹스터디입니다. 더 이상 승인할 수 없습니다.");
+            throw new IllegalStateException("스터디 정원이 마감되었습니다. 더 이상 승인할 수 없습니다.");
         }
 
         // 지원서 상태 변경

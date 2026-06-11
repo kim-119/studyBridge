@@ -16,6 +16,7 @@ export default function Archive() {
 
   const [journals, setJournals] = useState([]);
   const [pdfs, setPdfs] = useState([]);
+  const [planners, setPlanners] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
 
   const [journalSummary, setJournalSummary] = useState('');
@@ -88,12 +89,38 @@ export default function Archive() {
           };
         });
 
+      const fetchedPlanners = list
+        .filter((item) => item.materialType === 'PLANNER')
+        .map((item) => ({
+          id: item.materialId,
+          title: item.title || '공부 플래너',
+          date: item.uploadedAt ? item.uploadedAt.split('T')[0] : '',
+          tag: 'PLANNER',
+        }));
+
       setJournals(fetchedJournals);
       setPdfs(fetchedPdfs);
+      setPlanners(fetchedPlanners);
     } catch (error) {
       console.error('자료 목록 조회 실패:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // 플래너 PDF 미리보기/다운로드: 기존 자료 상세(presigned URL) 흐름을 재사용한다.
+  const handleOpenPlannerPdf = async (e, materialId) => {
+    if (e) e.stopPropagation();
+    try {
+      const detail = await materialService.getMaterialDetail(materialId);
+      if (detail?.s3PresignedUrl) {
+        window.open(detail.s3PresignedUrl, '_blank', 'noopener');
+      } else {
+        alert('플래너 PDF 주소를 불러오지 못했습니다.');
+      }
+    } catch (err) {
+      console.error('플래너 PDF 열기 실패:', err);
+      alert('플래너 PDF를 여는 중 오류가 발생했습니다.');
     }
   };
 
@@ -273,6 +300,12 @@ export default function Archive() {
           >
             학습 PDF
           </button>
+          <button
+            className={`archive-tab ${activeTab === 'planner' ? 'active' : ''}`}
+            onClick={() => handleTabChange('planner')}
+          >
+            플래너
+          </button>
         </div>
         <button className="btn-primary btn-add-material" onClick={() => openModal('addMaterial')}>
           <Plus size={16} /> 자료 추가
@@ -358,6 +391,53 @@ export default function Archive() {
             <h3 className="card-title">{pdf.title}</h3>
             <div className="card-tags" style={{ marginBottom: 'auto' }}>
               <span className="card-tag">#{pdf.tag}</span>
+            </div>
+          </div>
+        ))}
+
+        {/* 플래너 탭 */}
+        {!isLoading && activeTab === 'planner' && planners.length === 0 && (
+          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
+            <FileText size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
+            <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>저장된 플래너가 없습니다</h3>
+            <p style={{ margin: 0 }}>플래너 탭에서 공부 플래너를 작성하고 PDF로 저장하면 여기에 표시됩니다.</p>
+          </div>
+        )}
+
+        {!isLoading && activeTab === 'planner' && planners.slice(0, visibleCount).map((planner) => (
+          <div
+            key={planner.id}
+            className="glass-panel archive-card animate-fade-in"
+            style={{ cursor: 'pointer' }}
+            onClick={(e) => handleOpenPlannerPdf(e, planner.id)}
+          >
+            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div className="icon-wrapper" style={{ width: '40px', height: '40px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #22C55E, #15803D)' }}>
+                  <FileText size={22} color="rgba(255,255,255,0.9)" />
+                </div>
+                <span className="card-date">{planner.date}</span>
+              </div>
+              <button
+                onClick={(e) => handleDeleteMaterial(e, planner.id)}
+                style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}
+              >
+                삭제
+              </button>
+            </div>
+            <h3 className="card-title">{planner.title}</h3>
+            <div className="card-tags" style={{ marginBottom: 'auto' }}>
+              <span className="card-tag" style={{ backgroundColor: '#ECFDF3', color: '#15803D' }}>#{planner.tag}</span>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+              <button className="btn-outline" style={{ flex: 1, height: '34px', fontSize: '13px', borderColor: '#BBF7D0', color: '#15803D', backgroundColor: '#fff' }}
+                onClick={(e) => handleOpenPlannerPdf(e, planner.id)}>
+                미리보기
+              </button>
+              <button className="btn-primary" style={{ flex: 1, height: '34px', fontSize: '13px' }}
+                onClick={(e) => handleOpenPlannerPdf(e, planner.id)}>
+                다운로드
+              </button>
             </div>
           </div>
         ))}

@@ -18,6 +18,7 @@ public class GroupStudyMaterialDTO {
     private String s3Key;
     private Long fileSize;
     private String originalFileName;
+    private String contentType;
     private String presignedUrl;
     private Long uploaderId;
     private String uploaderName;

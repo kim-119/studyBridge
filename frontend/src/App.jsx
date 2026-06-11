@@ -15,6 +15,9 @@ import Archive from './pages/Archive';
 import ArchiveDetail from './pages/ArchiveDetail';
 import Knowledge from './pages/Knowledge';
 import KnowledgeDetail from './pages/KnowledgeDetail';
+import StudyReport from './pages/StudyReport';
+import WeeklySchedule from './pages/WeeklySchedule';
+import Planner from './pages/Planner';
 function PrivateRoute({ children }) {
   const { isLoggedIn } = useAuth();
   return isLoggedIn ? children : <Navigate to="/login" replace />;
@@ -68,12 +71,14 @@ function App() {
 
   // Hide Navbar and top padding for Archive Detail pages to make it full screen
   const hideNavbar = location.pathname.includes('/archive/pdf/') || location.pathname.includes('/archive/journal/');
+  // 메인(/)은 전용 랜딩 네비를 사용하므로 글로벌 Navbar/상단 패딩 제거
+  const isLanding = location.pathname === '/';
 
   return (
     <div className={isAdminRoute ? "" : "app-container"} style={isAdminRoute ? { width: '100%', height: '100vh', overflow: 'hidden' } : {}}>
-      {(!isAdminRoute && !hideNavbar) && <Navbar />}
+      {(!isAdminRoute && !hideNavbar && !isLanding) && <Navbar />}
 
-      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
+      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: (hideNavbar || isLanding) ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
         <Routes>
           {/* 메인페이지: 누구나 접근 가능 */}
           <Route path="/" element={<Dashboard />} />
@@ -99,6 +104,11 @@ function App() {
           <Route path="/archive/:type/:id" element={<ArchiveDetail />} />
           <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/knowledge/:id" element={<KnowledgeDetail />} />
+
+          {/* 학습 플래너 관련 신규 탭 */}
+          <Route path="/study-report" element={<PrivateRoute><StudyReport /></PrivateRoute>} />
+          <Route path="/weekly-schedule" element={<PrivateRoute><WeeklySchedule /></PrivateRoute>} />
+          <Route path="/planner" element={<PrivateRoute><Planner /></PrivateRoute>} />
           {/* 잘못된 주소는 메인으로 이동 */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

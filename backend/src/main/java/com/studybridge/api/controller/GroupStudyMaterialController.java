@@ -64,6 +64,20 @@ public class GroupStudyMaterialController {
         return ResponseEntity.ok(response);
     }
 
+    // 이미 업로드된 PDF 자료를 기반으로 퀴즈를 (재)생성
+    @PostMapping("/{groupId}/materials/{materialId}/quiz")
+    public ResponseEntity<GroupStudyQuizDTO.QuizResponse> generateQuizForMaterial(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long groupId,
+            @PathVariable Long materialId) {
+
+        log.info("Request to (re)generate quiz from material. userId={}, groupId={}, materialId={}",
+                userDetails.getId(), groupId, materialId);
+        GroupStudyQuizDTO.QuizResponse response = groupStudyMaterialService.generateQuizForMaterial(
+                userDetails.getId(), groupId, materialId);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
     // 다운로드 URL 저장
     @GetMapping("/materials/{materialId}/download")
     public ResponseEntity<Map<String, String>> getDownloadUrl(

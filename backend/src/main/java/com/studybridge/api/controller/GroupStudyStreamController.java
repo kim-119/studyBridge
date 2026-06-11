@@ -119,13 +119,34 @@ public class GroupStudyStreamController {
         // 상황극: debate/socratic/basic과 섞지 않고 별도 simulation 파이프라인으로 보낸다.
         final boolean isSimulationMode = !slash.matched && !isDebateMode && !isSocraticMode
                 && (isSimulationRequest(request.getLearningMode()) || isSimulationRequest(requestedMode));
+        // 검증/협업: ai07 multi-chat/stream의 1차→검증→상호피드백 구조를 그대로 사용한다.
+        final boolean isCollabMode = !slash.matched && !isDebateMode && !isSocraticMode && !isSimulationMode
+                && (isCollaborationRequest(request.getLearningMode()) || isCollaborationRequest(requestedMode));
+        final String collabMode = !isCollabMode ? null
+                : (isValidationValue(request.getLearningMode()) || isValidationValue(requestedMode)
+                        ? "validation" : "collaboration");
 
         // 4-5. agents 구성
+        // 사용자가 그룹스터디 AI 봇을 직접 설정해 보냈는지 여부 (슬래시 봇 명령이 아닐 때만).
+        //  설정 봇이 있으면 하드코딩 3봇(요약/퀴즈/검색)으로 덮어쓰지 않고 사용자 봇을 그대로 사용한다.
+        final boolean hasCustomGroupAgents = !slash.matched
+                && !isDebateMode && !isSocraticMode && !isSimulationMode
+                && request.getAgents() != null && !request.getAgents().isEmpty();
         List<Map<String, Object>> agentsList;
         if (isDebateMode || isSocraticMode || isSimulationMode) {
             // 토론/소크라테스/상황극: 봇 3종으로 덮어쓰지 않는다.
             //  사용자가 만든 에이전트가 있으면 그대로, 없으면 기본 에이전트 3명을 만든다. (역할 고정은 FastAPI가 수행)
             agentsList = buildDebateAgents(request.getAgents());
+        } else if (hasCustomGroupAgents) {
+            // 사용자 설정 봇(이름/성격/지식수준/요구사항)을 그대로 FastAPI 멀티에이전트로 전달한다.
+            agentsList = buildCustomGroupAgents(request.getAgents());
+        } else if (isCollabMode) {
+            // 검증/협업인데 사용자 봇이 없으면 기본 3봇으로 협업/검증을 진행한다(하드코딩 봇으로 '덮어쓰는' 케이스 아님).
+            agentsList = List.of(
+                    botAgentMap("search_bot"),
+                    botAgentMap("summary_bot"),
+                    botAgentMap("quiz_bot")
+            );
         } else if ("all_bots".equalsIgnoreCase(runMode)) {
             // 전체 토론: 검색봇 → 요약봇 → 퀴즈봇 순서
             agentsList = List.of(
@@ -167,6 +188,17 @@ public class GroupStudyStreamController {
             fastApiPayload.put("learningMode", "simulation");
             fastApiPayload.put("rounds", 1);
             fastApiPayload.put("simulationConfig", request.getSimulationConfig());
+        } else if (isCollabMode) {
+            // 검증/협업: ai07이 FIRST_ANSWER → VALIDATION → PEER_FEEDBACK 구조로 응답한다. 사용자 봇은 그대로 유지.
+            fastApiPayload.put("mode", collabMode);          // validation | collaboration
+            fastApiPayload.put("learningMode", collabMode);
+            fastApiPayload.put("rounds", request.getRounds() != null ? request.getRounds() : 3);
+            fastApiPayload.put("showFinalSynthesis", false);
+        } else if (hasCustomGroupAgents) {
+            // 사용자 설정 봇: 일반 멀티에이전트 토론 경로로 보내 persona/지식수준/요구사항이 반영되게 한다.
+            fastApiPayload.put("mode", "multi_agent_discussion");
+            fastApiPayload.put("rounds", request.getRounds() != null ? request.getRounds() : 1);
+            fastApiPayload.put("showFinalSynthesis", false);
         } else {
             fastApiPayload.put("mode", "group_study_ai");
             fastApiPayload.put("runMode", "all_bots".equalsIgnoreCase(runMode) ? "all_bots" : "single");
@@ -176,8 +208,9 @@ public class GroupStudyStreamController {
         fastApiPayload.put("previousAnswers", previousAnswers);
         fastApiPayload.put("targetAgentId", request.getTargetAgentId());
         fastApiPayload.put("agents", agentsList);
-        log.info("FastAPI 요청 모드 분기: requestedMode='{}' resolved mode={} isDebate={} agents={}",
-                requestedMode, fastApiPayload.get("mode"), isDebateMode, agentsList.size());
+        log.info("[GROUP CHAT ROUTE] requestedMode='{}' learningMode='{}' resolved mode={} fastapiLearningMode={} isDebate={} isCollab={} agents.size={}",
+                requestedMode, request.getLearningMode(), fastApiPayload.get("mode"),
+                fastApiPayload.get("learningMode"), isDebateMode, isCollabMode, agentsList.size());
 
         // 스트림 누적 상태 저장 객체
         Map<String, StringBuilder> agentReplies = new ConcurrentHashMap<>();
@@ -420,6 +453,29 @@ public class GroupStudyStreamController {
         return SIMULATION_MODE_ALIASES.contains(m.toLowerCase()) || SIMULATION_MODE_ALIASES.contains(m);
     }
 
+    // 검증/협업 모드 별칭. 둘 다 ai07 multi-chat/stream(1차→검증→상호피드백)으로 relay된다.
+    private static final Set<String> VALIDATION_MODE_ALIASES = Set.of("validation", "검증", "검증 모드");
+    private static final Set<String> COLLABORATION_MODE_ALIASES = Set.of(
+            "collaboration", "collaborative", "협업", "협업 모드");
+
+    /** mode/learningMode가 검증 계열인지 판별한다. */
+    private boolean isValidationValue(String mode) {
+        if (mode == null) return false;
+        String m = mode.trim();
+        if (m.isEmpty()) return false;
+        return VALIDATION_MODE_ALIASES.contains(m.toLowerCase()) || VALIDATION_MODE_ALIASES.contains(m);
+    }
+
+    /** mode/learningMode가 검증 또는 협업 계열인지 판별한다(둘 다 relay 대상). */
+    private boolean isCollaborationRequest(String mode) {
+        if (mode == null) return false;
+        String m = mode.trim();
+        if (m.isEmpty()) return false;
+        String lower = m.toLowerCase();
+        return VALIDATION_MODE_ALIASES.contains(lower) || VALIDATION_MODE_ALIASES.contains(m)
+                || COLLABORATION_MODE_ALIASES.contains(lower) || COLLABORATION_MODE_ALIASES.contains(m);
+    }
+
     /**
      * 토론 모드 agents 구성.
      *  1) 사용자가 만든 토론 에이전트가 있으면 그대로 FastAPI 형식으로 넘긴다.
@@ -474,6 +530,34 @@ public class GroupStudyStreamController {
         m.put("customInstruction", firstNonBlank(a.getCustomInstruction(), a.getCustom_instruction(), ""));
         m.put("persona", a.getPersona());
         return m;
+    }
+
+    /**
+     * 사용자가 그룹스터디에서 직접 설정한 AI 봇을 FastAPI 멀티에이전트 형식으로 변환한다.
+     *  이름/성격/지식수준/요구사항(customInstruction)을 유실 없이 전달하며, 하드코딩 기본봇으로 덮어쓰지 않는다.
+     */
+    private List<Map<String, Object>> buildCustomGroupAgents(List<ChatDTO.RequestAgent> reqAgents) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        int idx = 1;
+        for (ChatDTO.RequestAgent a : reqAgents) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            Long id = parseLongOrNull(a.getAgentId() != null ? a.getAgentId() : a.getId());
+            m.put("id", id != null ? id : idx);
+            m.put("agentId", id != null ? id : idx);
+            m.put("name", firstNonBlank(a.getName(), "AI 도우미 " + idx));
+            m.put("role", firstNonBlank(a.getRole(), "AI 학습 도우미"));
+            m.put("personality", firstNonBlank(a.getPersonality(), a.getStyle(), a.getTone(), "전문적"));
+            m.put("personalityStrength",
+                    firstNonBlank(a.getPersonalityStrength(), a.getPersonality_strength(), "moderate"));
+            m.put("style", a.getStyle());
+            m.put("tone", a.getTone());
+            m.put("knowledgeLevel", firstNonBlank(a.getKnowledgeLevel(), a.getKnowledge_level(), "학사 수준"));
+            m.put("customInstruction", firstNonBlank(a.getCustomInstruction(), a.getCustom_instruction(), ""));
+            m.put("persona", a.getPersona());
+            out.add(m);
+            idx++;
+        }
+        return out;
     }
 
     /**

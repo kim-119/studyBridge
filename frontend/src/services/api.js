@@ -15,14 +15,23 @@ const hostname =
       : window.location.hostname
     : '127.0.0.1';
 
+// 로컬 개발(localhost/127.0.0.1에서 직접 실행) 여부
+const isLocalDev =
+  typeof window !== 'undefined' &&
+  ['localhost', '127.0.0.1'].includes(window.location.hostname);
+
+// 운영(배포)에서는 같은 오리진의 상대경로로 요청한다.
+//  - Nginx가 /api/ → Spring(127.0.0.1:8080)으로 프록시하므로 mixed-content/CORS가 발생하지 않는다.
+//  - 호출 경로가 이미 '/api/...' 형태이므로 baseURL은 오리진만 담당한다('/api/api' 중복 방지).
+//  - 다른 백엔드를 강제하려면 VITE_API_BASE_URL을 지정한다.
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   import.meta.env.VITE_BACKEND_URL ||
-  `http://${hostname}:8080`;
+  '';
 
 const FASTAPI_BASE_URL =
   import.meta.env.VITE_FASTAPI_BASE_URL ||
-  `http://${hostname}:8000`;
+  '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -151,7 +160,19 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
-    console.error('API 에러:', err.response || err.message);
+    // 개발자 콘솔에는 상세히 출력한다(네트워크/CORS/엔드포인트 문제 진단용).
+    const cfg = err.config || {};
+    console.error('API 에러 상세:', {
+      message: err.message,
+      code: err.code,
+      method: cfg.method,
+      baseURL: cfg.baseURL,
+      url: cfg.url,
+      // 요청은 나갔으나 응답이 없으면(=network/CORS/mixed-content) err.response가 없다.
+      noResponse: !err.response,
+      status: err.response?.status,
+      data: err.response?.data,
+    });
 
     const originalRequest = err.config;
 
@@ -440,7 +461,21 @@ export const authService = {
       const res = await api.post('/api/users/login', credentials);
       return res.data;
     } catch (err) {
-      throw err.response?.data || { message: '로그인 실패' };
+      // 백엔드가 응답을 준 경우(401/400 등)는 그 본문을 그대로 전달한다.
+      if (err.response?.data) {
+        const data = err.response.data;
+        throw typeof data === 'object'
+          ? { ...data, status: err.response.status }
+          : { message: String(data), status: err.response.status };
+      }
+      // 응답이 없는 경우(=네트워크/CORS/mixed-content) 상세를 보존해 던진다.
+      throw {
+        message:
+          '서버에 연결할 수 없습니다. 네트워크 상태를 확인해주세요.',
+        networkError: true,
+        detail: err.message,
+        url: `${err.config?.baseURL || ''}${err.config?.url || ''}`,
+      };
     }
   },
 
@@ -859,6 +894,17 @@ export const groupService = {
     const res = await api.get(`/api/groups/${groupId}/quizzes`);
     return res.data;
   },
+
+  getQuizSession: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/quiz/session`);
+    return res.data;
+  },
+
+  // 이미 업로드된 PDF 자료 기반 퀴즈 (재)생성
+  generateMaterialQuiz: async (groupId, materialId) => {
+    const res = await api.post(`/api/groups/${groupId}/materials/${materialId}/quiz`);
+    return res.data;
+  },
 };
 
 export const knowledgeService = {
@@ -1022,6 +1068,50 @@ export const inquiryService = {
 
   getInquiries: async () => {
     const res = await api.get('/api/inquiries');
+    return res.data;
+  },
+};
+
+// 메인 배너: 백엔드가 내려주는 S3 이미지 URL/문구만 사용(외부 원본 URL·MCP 값 노출 금지)
+export const bannerService = {
+  getMainBanner: async () => {
+    const res = await api.get('/api/banners/main');
+    return res.data;
+  },
+};
+
+// 공부 플래너: 작성/조회/PDF생성/자료보관함 저장/다운로드/삭제
+export const plannerService = {
+  createPlanner: async (data) => {
+    const res = await api.post('/api/planners', data);
+    return res.data;
+  },
+  updatePlanner: async (id, data) => {
+    const res = await api.put(`/api/planners/${id}`, data);
+    return res.data;
+  },
+  getPlanners: async () => {
+    const res = await api.get('/api/planners');
+    return res.data;
+  },
+  getPlanner: async (id) => {
+    const res = await api.get(`/api/planners/${id}`);
+    return res.data;
+  },
+  generatePdf: async (id) => {
+    const res = await api.post(`/api/planners/${id}/pdf`);
+    return res.data;
+  },
+  archive: async (id) => {
+    const res = await api.post(`/api/planners/${id}/archive`);
+    return res.data;
+  },
+  getDownloadUrl: async (id) => {
+    const res = await api.get(`/api/planners/${id}/download-url`);
+    return res.data;
+  },
+  deletePlanner: async (id) => {
+    const res = await api.delete(`/api/planners/${id}`);
     return res.data;
   },
 };

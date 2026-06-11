@@ -104,9 +104,24 @@ export default function Login() {
 
       navigate('/dashboard');
     } catch (err) {
-      console.error('로그인 실패:', err);
+      // 개발자 콘솔에는 상세히, 사용자에게는 간단히.
+      console.error('로그인 실패 상세', {
+        message: err?.message,
+        status: err?.status,
+        data: err?.data,
+        url: err?.url,
+        networkError: err?.networkError,
+        detail: err?.detail,
+      });
       const errMsg = err.message || (typeof err === 'string' ? err : '');
       const errStatus = err.status || 401;
+
+      // 네트워크/서버 연결 실패는 정지/인증 분기와 별개로 즉시 안내한다.
+      if (err?.networkError) {
+        setError('서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.');
+        setLoading(false);
+        return;
+      }
 
       if (errStatus === 403 || errMsg.includes('정지된 계정') || errMsg.includes('제재') || errMsg.includes('일시정지') || errMsg.includes('일시 정지') || errMsg.includes('영구정지') || errMsg.includes('영구 정지')) {
         let isPermanent = errMsg.includes('영구정지') || errMsg.includes('영구 정지');

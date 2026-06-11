@@ -15,7 +15,6 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -66,6 +65,7 @@ public class GroupStudyMaterialService {
                 .s3Key(s3Key)
                 .fileSize(file.getSize())
                 .originalFileName(file.getOriginalFilename())
+                .contentType(file.getContentType())
                 .build();
 
         GroupStudyMaterial savedMaterial = groupStudyMaterialRepository.save(material);
@@ -125,8 +125,46 @@ public class GroupStudyMaterialService {
         return s3Service.getPresignedUrl(material.getS3Key(), material.getOriginalFileName());
     }
 
-    // FastAPI AI 연동을 이용해 비동기로 퀴즈 세트를 생성하는 메서드 (실패 시 Fallback 제공)
-    private void generateAIQuiz(GroupStudy groupStudy, User creator, GroupStudyMaterial material, String s3Key,
+    // 이미 업로드된 그룹스터디 자료를 기준으로 퀴즈를 재생성한다. (S3에 저장된 PDF의 s3Key/fileName 재사용)
+    @Transactional
+    public GroupStudyQuizDTO.QuizResponse generateQuizForMaterial(Long userId, Long groupId, Long materialId) {
+        User creator = userRepository.findById(userId)
+                .orElseThrow(() -> new NoSuchElementException("User not found with ID: " + userId));
+
+        // 1. 그룹 멤버 권한 체크
+        if (!groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(groupId, userId,
+                GroupStudyMemberStatus.JOINED)) {
+            throw new SecurityException("그룹 멤버만 퀴즈를 생성할 수 있습니다.");
+        }
+
+        // 2. 자료 조회 + 그룹 소속 검증 (다른 그룹 자료로 생성 방지)
+        GroupStudyMaterial material = groupStudyMaterialRepository.findById(materialId)
+                .orElseThrow(() -> new NoSuchElementException("Material not found with ID: " + materialId));
+        if (!material.getGroupStudy().getId().equals(groupId)) {
+            throw new SecurityException("해당 그룹스터디의 자료가 아닙니다.");
+        }
+
+        // 3. 기존 자료 기반 퀴즈 생성 (업로드 경로와 동일 로직 재사용)
+        GroupStudyQuiz quiz = generateAIQuiz(material.getGroupStudy(), creator, material,
+                material.getS3Key(), material.getOriginalFileName());
+        if (quiz == null) {
+            throw new IllegalStateException("퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.");
+        }
+
+        return GroupStudyQuizDTO.QuizResponse.builder()
+                .id(quiz.getId())
+                .groupStudyId(quiz.getGroupStudy().getId())
+                .title(quiz.getTitle())
+                .rewardPoints(quiz.getRewardPoints())
+                .creatorId(quiz.getCreator().getId())
+                .creatorName(quiz.getCreator().getDisplayName())
+                .createdAt(quiz.getCreatedAt())
+                .questionCount(quiz.getQuestions() != null ? quiz.getQuestions().size() : 0)
+                .build();
+    }
+
+    // FastAPI AI 연동을 이용해 퀴즈 세트를 생성하는 메서드 (실패 시 Fallback 제공). 저장된 퀴즈를 반환.
+    private GroupStudyQuiz generateAIQuiz(GroupStudy groupStudy, User creator, GroupStudyMaterial material, String s3Key,
             String fileName) {
         log.info("Requesting AI quiz generation from FastAPI. materialId={}", material.getId());
 
@@ -146,13 +184,20 @@ public class GroupStudyMaterialService {
                     .bodyToMono(GroupStudyQuizDTO.AIQuizResponse.class)
                     .block(); // 동기식 대기
         } catch (Exception e) {
-            log.error(
-                    "FastAPI AI quiz generation communication failed. Initiating standard welcome quiz fallback. Error: ",
-                    e);
+            log.error("FastAPI AI quiz generation communication failed. materialId={}. Error: ", material.getId(), e);
         }
 
+        // 그룹스터디 경로에서는 더미/placeholder 퀴즈를 절대 만들지 않는다.
+        // ai07(FastAPI)이 PDF 처리에 실패하면 자체 "기본 안내형" placeholder 세트를 HTTP 200으로 돌려준다.
+        // 이를 정상 퀴즈로 저장하면 사용자가 시작 시 PDF가 아닌 더미 문제를 보게 되므로, 저장하지 않고 실패 처리한다.
         if (aiResponse == null || aiResponse.getQuestions() == null || aiResponse.getQuestions().isEmpty()) {
-            aiResponse = createFallbackQuiz(material.getTitle());
+            log.error("AI quiz generation returned empty result. Not persisting a quiz. materialId={}", material.getId());
+            return null;
+        }
+        if (isPlaceholderAiQuiz(aiResponse)) {
+            log.error("AI quiz generation returned a non-PDF placeholder (기본 안내형). Not persisting a quiz. materialId={}, title={}",
+                    material.getId(), aiResponse.getQuizTitle());
+            return null;
         }
 
         // 퀴즈 저장
@@ -174,7 +219,7 @@ public class GroupStudyMaterialService {
                         .question(aiQ.getQuestion())
                         .optionsJson(optionsJsonStr)
                         .correctAnswer(aiQ.getCorrectAnswer())
-                        .timeLimitSeconds(aiQ.getTimeLimitSeconds() != null ? aiQ.getTimeLimitSeconds() : 30)
+                        .timeLimitSeconds(30)
                         .build();
 
                 groupStudyQuizQuestionRepository.save(question);
@@ -183,42 +228,33 @@ public class GroupStudyMaterialService {
             log.info("Successfully persisted AI/Fallback Quiz. quizId={}, questionsCount={}",
                     savedQuiz.getId(), aiResponse.getQuestions().size());
 
+            return savedQuiz;
+
         } catch (Exception e) {
             log.error("Failed to persist generated quiz in Database: ", e);
+            return null;
         }
     }
 
-    private GroupStudyQuizDTO.AIQuizResponse createFallbackQuiz(String materialTitle) {
-        log.info("Creating default study fallback quiz for material={}", materialTitle);
+    // ai07(FastAPI)이 PDF 처리에 실패했을 때 돌려주는 자체 placeholder("기본 안내형") 응답인지 판별한다.
+    // 이 응답은 PDF와 무관한 일반 학습법 문제이므로 그룹스터디 퀴즈로 사용하면 안 된다.
+    private static final List<String> PLACEHOLDER_QUESTION_MARKERS = Arrays.asList(
+            "다음 중 효과적인 학습 방법으로 알려진 것은",
+            "학습 내용을 장기 기억으로 전환하는 데 가장 효과적인 방법",
+            "포모도로 기법에서 기본 집중 시간");
 
-        List<GroupStudyQuizDTO.AIQuestion> questions = new ArrayList<>();
-
-        questions.add(GroupStudyQuizDTO.AIQuestion.builder()
-                .question("학습 계획을 수립할 때 가장 효과적인 목표 설정 기법은 무엇일까요?")
-                .options(Arrays.asList("SMART 기법 (구체적, 측정가능, 달성가능, 현실적, 시간제한)", "무조건 많이 공부하기", "남의 계획 그대로 따라하기",
-                        "계획 세우지 않기"))
-                .correctAnswer(0)
-                .timeLimitSeconds(20)
-                .build());
-
-        questions.add(GroupStudyQuizDTO.AIQuestion.builder()
-                .question("StudyBridge에서 학습 능률 향상을 위해 권장하는 집중 기법은 무엇인가요?")
-                .options(Arrays.asList("벼락치기 기법", "뽀모도로 기법 (25분 집중, 5분 휴식)", "밤샘 기법", "멀티태스킹 기법"))
-                .correctAnswer(1)
-                .timeLimitSeconds(20)
-                .build());
-
-        questions.add(GroupStudyQuizDTO.AIQuestion.builder()
-                .question("스터디 중 모르는 내용이 생겼을 때 가장 바람직한 행동은 무엇일까요?")
-                .options(Arrays.asList("그냥 넘어가기", "포기하고 놀기", "그룹원들과 실시간 채팅/화상으로 공유하고 토론하기", "책 덮고 자기"))
-                .correctAnswer(2)
-                .timeLimitSeconds(20)
-                .build());
-
-        return GroupStudyQuizDTO.AIQuizResponse.builder()
-                .quizTitle("[" + materialTitle + "] 자료 기반 학습 퀴즈")
-                .questions(questions)
-                .build();
+    private boolean isPlaceholderAiQuiz(GroupStudyQuizDTO.AIQuizResponse aiResponse) {
+        String title = aiResponse.getQuizTitle();
+        if (title != null && title.contains("기본 안내형")) {
+            return true;
+        }
+        if (aiResponse.getQuestions() == null) {
+            return false;
+        }
+        return aiResponse.getQuestions().stream()
+                .map(GroupStudyQuizDTO.AIQuestion::getQuestion)
+                .filter(q -> q != null)
+                .anyMatch(q -> PLACEHOLDER_QUESTION_MARKERS.stream().anyMatch(q::contains));
     }
 
     private GroupStudyMaterialDTO toDTO(GroupStudyMaterial material) {
@@ -228,6 +264,7 @@ public class GroupStudyMaterialService {
                 .title(material.getTitle())
                 .fileSize(material.getFileSize())
                 .originalFileName(material.getOriginalFileName())
+                .contentType(material.getContentType())
                 .uploaderId(material.getUploader().getId())
                 .uploaderName(material.getUploader().getDisplayName())
                 .createdAt(material.getCreatedAt())

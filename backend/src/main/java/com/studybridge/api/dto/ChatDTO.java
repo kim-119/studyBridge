@@ -72,6 +72,10 @@ public class ChatDTO {
         private Long studyRoomId;
         private String roomTitle;
         private Boolean stream;
+        // 기본채팅 다시 생성 제어 — 이전 답변 재사용 방지(cache 우회 + 변형 유도)
+        private String messageId;          // 프론트가 부여한 이번 턴 고유 id
+        private Integer regenerateAttempt; // 다시 생성 횟수 (없으면 1)
+        private Boolean forceRegenerate;   // true면 cache 우회 + 변형 지시
     }
 
     @Getter

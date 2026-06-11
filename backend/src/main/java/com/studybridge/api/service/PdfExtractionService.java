@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.*;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -25,6 +26,9 @@ public class PdfExtractionService {
 
     private final MaterialRepository materialRepository;
     private final RestTemplate restTemplate;
+
+    @Autowired(required = false)
+    private RagIngestService ragIngestService;
     private final String fastApiUrl;
 
     public PdfExtractionService(MaterialRepository materialRepository, 
@@ -103,6 +107,9 @@ public class PdfExtractionService {
 
             if (extractedText != null && !extractedText.trim().isEmpty()) {
                 updateMaterialSuccess(materialId, extractedText);
+                if (ragIngestService != null) {
+                    ragIngestService.ingestMaterialAsync(materialId, "material-" + materialId, extractedText);
+                }
                 log.info("Material ID: {} - 최종 텍스트 저장 완료 (길이: {})", materialId, extractedText.length());
             } else {
                 log.error("Material ID: {} - 텍스트 추출 최종 실패", materialId);

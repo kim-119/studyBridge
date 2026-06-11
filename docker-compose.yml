@@ -33,11 +33,15 @@ services:
       AWS_S3_BUCKET: ${AWS_S3_BUCKET}
 
       FASTAPI_BASE_URL: http://host.docker.internal:18001
+      AI_SERVER_API_KEY: ${AI_SERVER_API_KEY:-}
       FASTAPI_EXTRACTION_URL: http://host.docker.internal:18001/api/extract
       FASTAPI_TIMEOUT: ${FASTAPI_TIMEOUT:-180000}
 
       OPENVIDU_URL: http://openvidu:4443
       OPENVIDU_SECRET: ${OPENVIDU_SECRET:-MY_SECRET}
+
+      # 메인 배너 MCP 식별자 (서버 전용, 프론트 노출 금지)
+      BANNER_MCP_TOKEN: ${BANNER_MCP_TOKEN:-}
       TZ: Asia/Seoul
 
     extra_hosts:
@@ -65,11 +69,16 @@ services:
   openvidu:
     image: openvidu/openvidu-dev:2.30.0
     container_name: capstone-openvidu
+    # 외부에는 직접 노출하지 않고 호스트 Nginx(정식 Let's Encrypt 인증서)가 4443을 종단한다.
+    #  - openvidu-dev 이미지는 owncert를 지원하지 않고 내부 self-signed 인증서만 쓴다.
+    #  - 따라서 브라우저는 wss://www.studybridge.co.kr:4443 (Nginx, 정식 인증서)로 붙고,
+    #    Nginx가 내부 self-signed openvidu(127.0.0.1:14443)로 프록시한다.
     ports:
-      - "4443:4443"
+      - "127.0.0.1:14443:4443"
     environment:
       OPENVIDU_SECRET: ${OPENVIDU_SECRET:-MY_SECRET}
       DOMAIN_OR_PUBLIC_IP: ${OPENVIDU_DOMAIN_OR_PUBLIC_IP:-localhost}
+      OPENVIDU_PUBLICURL: ${OPENVIDU_PUBLICURL:-https://www.studybridge.co.kr:4443}
       CERTIFICATE_TYPE: selfsigned
       OPENVIDU_WEBHOOK: "false"
       TZ: Asia/Seoul

@@ -1,8 +1,13 @@
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-/* 
+/* Tailwind CSS — preflight(base 리셋)는 tailwind.config.js에서 비활성화하여 기존 페이지 보호 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
    디자인 정책 (Design Policy) 적용
-   기본 폰트: Pretendard 
+   기본 폰트: Pretendard
 */
 :root {
   font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Helvetica Neue', 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
@@ -208,6 +213,21 @@ a {
 .nav-link:hover {
   color: var(--color-primary);
 }
+/* 활성 탭: 녹색 강조 + 하단 인디케이터 */
+.nav-link.active {
+  color: var(--color-primary-hover);
+  font-weight: 700;
+}
+.nav-link.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -8px;
+  height: 3px;
+  border-radius: 3px;
+  background-color: var(--color-primary);
+}
 .nav-user {
   font-size: 14px; color: var(--color-text-muted); text-decoration: none; cursor: pointer;
   font-weight: 600;
@@ -411,10 +431,18 @@ a {
   color: var(--color-text-muted);
 }
 
+.dashboard-page .summary-card {
+  border-radius: 16px;
+  border: 1px solid #E5E7EB;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  padding: 24px;
+}
+
 .dashboard-page .summary-card h3 {
   margin: 10px 0 6px;
-  font-size: 26px;
-  color: var(--color-primary);
+  font-size: 28px;
+  font-weight: 800;
+  color: #22C55E;
 }
 
 .dashboard-page .summary-card p:last-child {
@@ -460,17 +488,23 @@ a {
 }
 
 /* FullCalendar Custom Styles */
-.dashboard-page .fc-theme-standard .fc-scrollgrid { border-color: var(--color-border); }
-.dashboard-page .fc-theme-standard td, .dashboard-page .fc-theme-standard th { border-color: var(--color-border); }
-.dashboard-page .fc-col-header-cell-cushion { color: var(--color-text-main); font-weight: 600; padding: 12px 0 !important; }
+.dashboard-page .fc-theme-standard .fc-scrollgrid { border-color: #E5E7EB; border-radius: 12px; overflow: hidden; }
+.dashboard-page .fc-theme-standard td, .dashboard-page .fc-theme-standard th { border-color: #E5E7EB; }
+/* 요일 헤더: 연그린 배경 + 그린 텍스트 */
+.dashboard-page .fc-col-header-cell { background-color: #F0FDF4; }
+.dashboard-page .fc-col-header-cell-cushion { color: #16A34A; font-weight: 700; padding: 12px 0 !important; }
 .dashboard-page .fc-daygrid-day-number { color: var(--color-text-main); font-weight: 500; }
-.dashboard-page .fc .fc-button-primary { background-color: var(--color-primary); border-color: var(--color-primary); }
-.dashboard-page .fc .fc-button-primary:hover { background-color: var(--color-primary-hover); border-color: var(--color-primary-hover); }
+.dashboard-page .fc .fc-button-primary { background-color: #22C55E; border-color: #22C55E; font-weight: 600; }
+.dashboard-page .fc .fc-button-primary:hover { background-color: #16A34A; border-color: #16A34A; }
+.dashboard-page .fc .fc-button-primary:disabled { background-color: #A7F3C0; border-color: #A7F3C0; }
 .dashboard-page .fc .fc-button-primary:not(:disabled):active,
 .dashboard-page .fc .fc-button-primary:not(:disabled).fc-button-active {
-  background-color: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
+  background-color: #16A34A;
+  border-color: #16A34A;
 }
+/* 오늘 날짜 하이라이트: 그린 톤 */
+.dashboard-page .fc-day-today { background-color: #ECFDF5 !important; }
+.dashboard-page .fc-day-today .fc-daygrid-day-number { color: #16A34A; font-weight: 800; }
 .dashboard-page .fc-event {
   border-radius: 6px !important;
   padding: 3px 6px !important;
@@ -492,7 +526,7 @@ a {
   text-overflow: ellipsis !important;
   display: block !important;
 }
-.dashboard-page .fc-day-today { background-color: rgba(96, 201, 90, 0.08) !important; }
+.dashboard-page .fc-day-today { background-color: #ECFDF5 !important; }
 
 /* =========================================
    StudyMate Page Styles

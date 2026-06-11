@@ -19,6 +19,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
+import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -39,6 +40,11 @@ public class ChatService {
         private final WebClient fastApiWebClient;
         private final TransactionTemplate transactionTemplate;
         private final ObjectMapper objectMapper;
+
+        // 답변 길이 사실상 무제한 정책: 본문을 자르지 않으며, FastAPI에 큰 상한을 힌트로 전달한다.
+        //  서버 안정성 위한 넉넉한 상수(잘림 방지용 상한). 실제 트림은 어디서도 하지 않는다.
+        private static final int AI_MAX_RESPONSE_CHARS = 40000;
+        private static final int AI_MAX_TOKENS = 8192;
 
         // FastAPI(/api/ai/multi-chat[/stream]) 요청 바디 구성 — 블로킹/스트리밍 공용.
         private Map<String, Object> buildFastApiRequestBody(AgentChatRoom room, Long roomId, ChatDTO.MultiChatRequest request) {
@@ -148,12 +154,17 @@ public class ChatService {
                 String effectiveMode = firstNonBlank(
                                 request.getMode(),
                                 agentsList.size() > 1 ? "multi_agent_discussion" : "single_answer");
+                // learningMode가 명시 모드면 FastAPI mode도 그에 맞춰 강제 보강한다(request.mode 누락 대비).
                 if ("debate".equals(effectiveLearningMode)) {
                         effectiveMode = "debate";
                 } else if ("socratic".equals(effectiveLearningMode)) {
                         effectiveMode = "socratic";
                 } else if ("simulation".equals(effectiveLearningMode)) {
                         effectiveMode = "simulation";
+                } else if ("validation".equals(effectiveLearningMode)) {
+                        effectiveMode = "validation";
+                } else if ("collaboration".equals(effectiveLearningMode)) {
+                        effectiveMode = "collaboration";
                 }
                 log.info("[CHAT MODE] roomId={} requestLearningMode={} roomLearningMode={} effectiveLearningMode={} effectiveMode={}",
                                 roomId, request.getLearningMode(), room.getLearningMode(), effectiveLearningMode, effectiveMode);
@@ -192,6 +203,10 @@ public class ChatService {
                 if (request.getTargetAgentId() != null && !request.getTargetAgentId().isBlank()) {
                         requestBody.put("targetAgentId", request.getTargetAgentId());
                 }
+                // 답변 길이 사실상 무제한: FastAPI가 인식하면 사용, 아니면 무시(가산적 패스스루).
+                requestBody.put("answerLength", "unlimited");
+                requestBody.put("maxResponseChars", AI_MAX_RESPONSE_CHARS);
+                requestBody.put("max_tokens", AI_MAX_TOKENS);
                 return requestBody;
         }
 
@@ -423,8 +438,9 @@ public class ChatService {
         }
 
         // 멀티 에이전트 채팅 — 1차/2차/3차 단계별 SSE 스트리밍.
-        // FastAPI /api/ai/multi-chat/stream 의 SSE를 그대로 브라우저로 중계하고,
-        // all_complete 시점에 AI 답변 + processSteps를 영속화한다. (블로킹 경로와 동일 저장 로직)
+        //  · basic(기본채팅) 모드: Spring이 1차→2차→3차를 직접 오케스트레이션하여 단계별로 즉시 emit한다.
+        //    (원격 FastAPI 스트림은 FIRST_DRAFT만 내려주고 검증/피드백 단계를 생성하지 않으므로 Spring에서 보강)
+        //  · debate/socratic/simulation 모드: 원격 FastAPI /api/ai/multi-chat/stream 의 SSE를 그대로 중계한다.
         @Transactional
         public SseEmitter chatStream(Long userId, Long roomId, ChatDTO.MultiChatRequest request) {
                 AgentChatRoom room = agentChatRoomRepository.findById(roomId)
@@ -442,8 +458,338 @@ public class ChatService {
                 // FastAPI 요청 바디 (블로킹과 동일 로직 재사용; room.getAgents() lazy 접근은 현재 트랜잭션 내)
                 Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request);
 
+                String effectiveLearningMode = normalizeLearningMode(firstNonBlank(
+                                request.getLearningMode(), room.getLearningMode(), "basic"));
+
+                // buildFastApiRequestBody가 확정한 최종 mode/learningMode/agents 수로 라우팅을 결정한다.
+                int agentCount = (requestBody.get("agents") instanceof List)
+                                ? ((List<?>) requestBody.get("agents")).size() : 0;
+                Object fapiMode = requestBody.get("mode");
+                Object fapiLearningMode = requestBody.get("learningMode");
+
+                // basic + 단일 에이전트일 때만 Spring 자체 1차/2차/3차 오케스트레이션을 사용한다.
+                // 그 외(다중 에이전트, validation/collaboration/debate/socratic/simulation)는 ai07 stream을 그대로 중계한다.
+                boolean useBasicOrchestration = "basic".equals(effectiveLearningMode) && agentCount <= 1;
+
+                log.info("[CHAT ROUTE] roomId={} effectiveLearningMode={} effectiveMode={} agents.size={} fastapiPayload.mode={} fastapiPayload.learningMode={} route={}",
+                                roomId, effectiveLearningMode, fapiMode, agentCount, fapiMode, fapiLearningMode,
+                                useBasicOrchestration ? "orchestrateBasicStream" : "relayRemoteStream");
+
                 SseEmitter emitter = new SseEmitter(envSeconds("STUDYMATE_SSE_TIMEOUT_SECONDS", 1800) * 1000L);
 
+                if (useBasicOrchestration) {
+                        return orchestrateBasicStream(roomId, request, requestBody, emitter);
+                }
+
+                // 그 외 모드는 ai07 /api/ai/multi-chat/stream의 SSE를 그대로 중계한다.
+                return relayRemoteStream(roomId, requestBody, request, room, emitter);
+        }
+
+        // ── 기본채팅 1차/2차/3차 오케스트레이션 ────────────────────────────────────────
+        //  reactor 체인으로 순차 실행하며 .block() 없이 각 단계 완료 시점에 stage_complete 이벤트를 즉시 emit한다.
+        //  1차: 빠른 Ollama 초안(짧은 timeout) → 2차: 1차를 검증/보완 → 3차: 1차·2차에 대한 상호 피드백.
+        private SseEmitter orchestrateBasicStream(Long roomId, ChatDTO.MultiChatRequest request,
+                        Map<String, Object> baseBody, SseEmitter emitter) {
+                long stage1Timeout = envSeconds("AI_BASIC_STAGE1_TIMEOUT_SECONDS", 30);
+                long stageNTimeout = envSeconds("AI_BASIC_STAGEN_TIMEOUT_SECONDS", 60);
+
+                String question = request.getMessage();
+                // 다시 생성 제어: forceRegenerate 또는 attempt>1 이면 cache 우회 + 변형 지시를 프롬프트에 덧붙인다.
+                String regenSuffix = buildRegenSuffix(request);
+
+                // 단계 결과 누적 (단일 구독자가 순차 갱신하므로 plain List로 충분)
+                List<Map<String, Object>> initialAnswers = new java.util.ArrayList<>();
+                List<Map<String, Object>> validatedAnswers = new java.util.ArrayList<>();
+                List<Map<String, Object>> peerFeedback = new java.util.ArrayList<>();
+
+                safeSend(emitter, "turn_start",
+                                Map.of("type", "turn_start", "message", "AI 응답 생성을 시작합니다."));
+
+                // 1차(primary): 각 에이전트가 자신의 persona/지식수준으로 질문에 직접 답한다(검증·피드백 금지).
+                Mono<List<Map<String, Object>>> chain = fastApiWebClient.post()
+                                .uri("/api/ai/multi-chat")
+                                .bodyValue(stageBody(baseBody, primaryPrompt(question, regenSuffix), 1))
+                                .retrieve()
+                                .bodyToMono(Map.class)
+                                .timeout(Duration.ofSeconds(stage1Timeout))
+                                .map(resp -> extractAnswerRows(resp, 1))
+                                .onErrorResume(e -> {
+                                        log.warn("기본채팅 1차 생성 실패 roomId={} err={}", roomId, e.toString());
+                                        return Mono.just(java.util.Collections.<Map<String, Object>>emptyList());
+                                })
+                                .flatMap(primaryRows -> {
+                                        if (primaryRows.isEmpty()) {
+                                                // 30초 내 실패: 전체를 죽이지 않고 fallback 안내를 1차로 내려보낸 뒤 종료한다.
+                                                Map<String, Object> fb = new LinkedHashMap<>();
+                                                fb.put("agentName", "StudyMate");
+                                                fb.put("answer", "1차 답변 생성이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.");
+                                                fb.put("agentIndex", 1);
+                                                fb.put("displayOrder", 1);
+                                                fb.put("stage", 1);
+                                                initialAnswers.add(fb);
+                                                emitStage(emitter, 1, "primary", "FIRST_DRAFT", "answers", initialAnswers);
+                                                return Mono.<List<Map<String, Object>>>empty();
+                                        }
+                                        initialAnswers.addAll(primaryRows);
+                                        emitStage(emitter, 1, "primary", "FIRST_DRAFT", "answers", initialAnswers);
+
+                                        // 1차 답변(들)을 에이전트명과 함께 묶어 2·3차 프롬프트의 검토 대상으로 넣는다.
+                                        String primaryContext = labeledAnswers(primaryRows);
+                                        // 2차(verification): 1차를 사실성/누락/논리 관점에서 검증·지적 (재답변 금지)
+                                        return fastApiWebClient.post()
+                                                        .uri("/api/ai/multi-chat")
+                                                        .bodyValue(stageBody(baseBody, verifyPrompt(question, primaryContext, regenSuffix), 2))
+                                                        .retrieve()
+                                                        .bodyToMono(Map.class)
+                                                        .timeout(Duration.ofSeconds(stageNTimeout))
+                                                        .map(resp -> extractAnswerRows(resp, 2))
+                                                        .onErrorResume(e -> {
+                                                                log.warn("기본채팅 2차 검증 실패 roomId={} err={}", roomId, e.toString());
+                                                                return Mono.just(java.util.Collections.<Map<String, Object>>emptyList());
+                                                        })
+                                                        .flatMap(verifyRows -> {
+                                                                if (!verifyRows.isEmpty()) {
+                                                                        validatedAnswers.addAll(verifyRows);
+                                                                        emitStage(emitter, 2, "verification", "VALIDATION", "answers", validatedAnswers);
+                                                                }
+                                                                String verifyContext = labeledAnswers(verifyRows);
+                                                                // 3차(feedback): 1차·2차를 참고한 에이전트 간 상호 피드백(동의/반박/추가관점)
+                                                                return fastApiWebClient.post()
+                                                                                .uri("/api/ai/multi-chat")
+                                                                                .bodyValue(stageBody(baseBody,
+                                                                                                feedbackPrompt(question, primaryContext, verifyContext, regenSuffix), 3))
+                                                                                .retrieve()
+                                                                                .bodyToMono(Map.class)
+                                                                                .timeout(Duration.ofSeconds(stageNTimeout))
+                                                                                .map(resp -> toFeedbackRows(extractAnswerRows(resp, 3)))
+                                                                                .onErrorResume(e -> {
+                                                                                        log.warn("기본채팅 3차 피드백 실패 roomId={} err={}", roomId, e.toString());
+                                                                                        return Mono.just(java.util.Collections.<Map<String, Object>>emptyList());
+                                                                                })
+                                                                                .doOnNext(fbRows -> {
+                                                                                        if (!fbRows.isEmpty()) {
+                                                                                                peerFeedback.addAll(fbRows);
+                                                                                                emitStage(emitter, 3, "feedback", "PEER_FEEDBACK", "feedbacks", peerFeedback);
+                                                                                        }
+                                                                                })
+                                                                                .map(fbRows -> initialAnswers);
+                                                        });
+                                });
+
+                Disposable subscription = chain.subscribe(
+                                ignored -> { /* 단계별 emit은 위 체인에서 이미 수행됨 */ },
+                                err -> {
+                                        log.error("기본채팅 오케스트레이션 오류 roomId={} err={}", roomId, err.toString());
+                                        finishBasicStream(emitter, roomId, initialAnswers, validatedAnswers, peerFeedback);
+                                },
+                                () -> finishBasicStream(emitter, roomId, initialAnswers, validatedAnswers, peerFeedback));
+
+                emitter.onCompletion(subscription::dispose);
+                emitter.onTimeout(() -> {
+                        subscription.dispose();
+                        emitter.complete();
+                });
+                return emitter;
+        }
+
+        // 누적된 1차/2차/3차를 all_complete(processSteps 포함)로 내려보내고 영속화 후 스트림을 종료한다.
+        private void finishBasicStream(SseEmitter emitter, Long roomId,
+                        List<Map<String, Object>> initialAnswers,
+                        List<Map<String, Object>> validatedAnswers,
+                        List<Map<String, Object>> peerFeedback) {
+                try {
+                        Map<String, Object> processSteps = new LinkedHashMap<>();
+                        processSteps.put("mode", "basic");
+                        processSteps.put("initialAnswers", initialAnswers);
+                        processSteps.put("validatedAnswers", validatedAnswers);
+                        processSteps.put("peerFeedback", peerFeedback);
+
+                        // 2차는 검증(critique), 3차는 피드백이므로 대표 answer는 직접 답변인 1차를 사용한다.
+                        //  (UI는 processSteps로 1·2·3차를 모두 렌더링하며, answers는 영속화/대표 표시용)
+                        List<Map<String, Object>> finalAnswers = !initialAnswers.isEmpty() ? initialAnswers
+                                        : validatedAnswers;
+
+                        Map<String, Object> allComplete = new LinkedHashMap<>();
+                        allComplete.put("type", "all_complete");
+                        allComplete.put("mode", "basic");
+                        allComplete.put("learningMode", "basic");
+                        allComplete.put("answers", finalAnswers);
+                        allComplete.put("processSteps", processSteps);
+                        allComplete.put("status", "COMPLETED");
+
+                        String json = objectMapper.writeValueAsString(allComplete);
+                        try {
+                                emitter.send(SseEmitter.event().name("all_complete").data(json));
+                        } catch (Exception sendErr) {
+                                log.warn("all_complete 전송 실패 roomId={}: {}", roomId, sendErr.getMessage());
+                        }
+                        persistStreamedAnswers(roomId, json);
+                } catch (Exception e) {
+                        log.warn("기본채팅 종료 처리 실패 roomId={}: {}", roomId, e.getMessage());
+                } finally {
+                        emitter.complete();
+                }
+        }
+
+        // 단계별 FastAPI 요청 바디. phase 지시문(message)만 교체하고 basic/단답(rounds=1)으로 고정.
+        //  모든 단계에서 사용자가 고른 전체 에이전트 구성을 유지한다 → 단계마다 에이전트별로 다른 답이 나온다.
+        //  (에이전트별 persona/tone/knowledgeLevel은 base의 agents[]에 그대로 실려 FastAPI 프롬프트에 반영됨)
+        private Map<String, Object> stageBody(Map<String, Object> base, String message, int stage) {
+                Map<String, Object> body = new LinkedHashMap<>(base);
+                body.put("message", message);
+                body.put("mode", "single_answer");
+                body.put("rounds", 1);
+                body.put("learningMode", "basic");
+                // 단계 입력(1차/2차 답변)은 message에 직접 포함하므로 이전 답변 누적은 비운다.
+                body.put("previousAnswers", java.util.Collections.emptyList());
+                return body;
+        }
+
+        // FastAPI multi-chat 응답의 answers를 stage 말풍선 row로 정규화한다.
+        @SuppressWarnings("unchecked")
+        private List<Map<String, Object>> extractAnswerRows(Map<?, ?> resp, int stage) {
+                List<Map<String, Object>> out = new java.util.ArrayList<>();
+                if (resp == null) {
+                        return out;
+                }
+                Object ans = resp.get("answers");
+                if (!(ans instanceof List)) {
+                        return out;
+                }
+                int idx = 1;
+                for (Object o : (List<Object>) ans) {
+                        if (!(o instanceof Map)) {
+                                continue;
+                        }
+                        Map<String, Object> m = (Map<String, Object>) o;
+                        Object answerObj = m.get("answer") != null ? m.get("answer") : m.get("content");
+                        String answer = answerObj != null ? answerObj.toString() : "";
+                        if (answer.isBlank()) {
+                                continue;
+                        }
+                        Object order = m.get("displayOrder") != null ? m.get("displayOrder") : idx;
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("agentName", m.get("agentName") != null ? m.get("agentName").toString() : "AI");
+                        row.put("answer", answer);
+                        row.put("agentId", m.get("agentId"));
+                        row.put("agentIndex", order);
+                        row.put("displayOrder", order);
+                        row.put("stage", stage);
+                        out.add(row);
+                        idx++;
+                }
+                return out;
+        }
+
+        // 3차 답변 row를 peerFeedback(fromAgent/toAgent/content) 형태로 변환한다.
+        private List<Map<String, Object>> toFeedbackRows(List<Map<String, Object>> answers) {
+                List<Map<String, Object>> out = new java.util.ArrayList<>();
+                int idx = 1;
+                for (Map<String, Object> a : answers) {
+                        Map<String, Object> fb = new LinkedHashMap<>();
+                        fb.put("fromAgent", a.getOrDefault("agentName", "AI"));
+                        fb.put("toAgent", "전체");
+                        fb.put("content", a.getOrDefault("answer", ""));
+                        fb.put("agentIndex", a.getOrDefault("agentIndex", idx));
+                        out.add(fb);
+                        idx++;
+                }
+                return out;
+        }
+
+        // 단계 답변(들)을 "- 에이전트명: 답변" 형태로 묶어 다음 단계 프롬프트의 검토 대상으로 넣는다.
+        private String labeledAnswers(List<Map<String, Object>> rows) {
+                if (rows == null || rows.isEmpty()) {
+                        return "(없음)";
+                }
+                return rows.stream()
+                                .map(r -> "- " + r.getOrDefault("agentName", "AI") + ": "
+                                                + String.valueOf(r.getOrDefault("answer", "")))
+                                .filter(s -> s != null && !s.isBlank())
+                                .collect(Collectors.joining("\n\n"));
+        }
+
+        // 다시 생성/cache 우회용 변형 지시. forceRegenerate 이거나 attempt>1 일 때만 프롬프트에 붙는다.
+        //  (원격 cache가 question 기준이어도 프롬프트가 달라져 cache miss + 표현 변형이 유도된다)
+        private String buildRegenSuffix(ChatDTO.MultiChatRequest request) {
+                int attempt = request.getRegenerateAttempt() != null ? request.getRegenerateAttempt() : 1;
+                boolean force = Boolean.TRUE.equals(request.getForceRegenerate());
+                if (!force && attempt <= 1) {
+                        return "";
+                }
+                return "\n\n(재생성 요청 #" + attempt
+                                + ": 이전 답변과 완전히 다른 설명 방식·예시·구성·문장 구조로 작성하라. 이전과 동일한 문장/예시를 재사용하지 말 것.)";
+        }
+
+        // 1차 primary 프롬프트 — 검증/피드백 없이 질문에 직접 답하게 한다(빠른 초안).
+        private String primaryPrompt(String question, String regenSuffix) {
+                return question
+                                + "\n\n[작성 지침] 위 질문에 대해 30초 안에 이해할 수 있는 1차 답변을 직접 작성하라. "
+                                + "검증이나 다른 답변에 대한 피드백은 하지 말고, 질문 자체에 대한 답변만 하라."
+                                + regenSuffix;
+        }
+
+        // 2차 verification 프롬프트 — 1차 답변을 검증·지적한다(재답변 금지).
+        private String verifyPrompt(String question, String primaryContext, String regenSuffix) {
+                return "너는 검증 담당자다. 아래 사용자 질문과 1차 답변(들)을 검토하라.\n\n"
+                                + "[사용자 질문]\n" + question + "\n\n"
+                                + "[1차 답변]\n" + primaryContext + "\n\n"
+                                + "다음 항목만 수행하라.\n"
+                                + "① 사실 오류: 틀린 내용을 구체적으로 지적하고 바로잡는다.\n"
+                                + "② 누락된 핵심 개념: 1차 답변이 빠뜨린 중요한 개념을 짚는다.\n"
+                                + "③ 논리적 비약/오류: 근거가 약하거나 비약된 부분을 찾는다.\n"
+                                + "④ 더 나은 설명 방향: 어떻게 보완하면 좋을지 제시한다.\n\n"
+                                + "금지:\n"
+                                + "- 1차 답변 문장을 그대로 반복하지 말 것.\n"
+                                + "- 같은 비유·예시를 그대로 재사용하지 말 것.\n"
+                                + "- 질문에 처음부터 다시 답하는 형태로 쓰지 말 것(검증/지적 형태로만).\n"
+                                + "본인 성격과 지식수준에 맞는 어조로 작성하라."
+                                + regenSuffix;
+        }
+
+        // 3차 feedback 프롬프트 — 1차·2차를 참고한 에이전트 간 상호 피드백(동의/반박/추가관점).
+        private String feedbackPrompt(String question, String primaryContext, String verifyContext, String regenSuffix) {
+                return "너는 상호 피드백 담당자다. 다른 에이전트들의 답변에 대해 피드백하라.\n\n"
+                                + "[사용자 질문]\n" + question + "\n\n"
+                                + "[1차 답변]\n" + primaryContext + "\n\n"
+                                + "[2차 검증]\n" + (verifyContext == null || verifyContext.isBlank()
+                                                ? "(검증 답변 없음)" : verifyContext) + "\n\n"
+                                + "다음을 수행하라.\n"
+                                + "- 다른 답변 중 동의하는 점과 반박하는 점을 구분해 밝힌다.\n"
+                                + "- 아직 부족한 설명을 보완한다.\n"
+                                + "- 사용자의 이해를 돕는 새로운 관점이나 예시를 1개 이상 추가한다.\n"
+                                + "- 본인 persona(성격/말투)가 분명히 드러나게 작성한다.\n\n"
+                                + "금지:\n"
+                                + "- 1차 답변 반복 금지.\n"
+                                + "- 2차 검증 반복 금지.\n"
+                                + "- 단순 요약 금지."
+                                + regenSuffix;
+        }
+
+        // stage_complete 이벤트를 표준 형태로 emit한다. payloadKey는 answers(1·2차)/feedbacks(3차).
+        //  phase(primary/verification/feedback)와 stage(1/2/3)를 함께 실어 프론트가 단계를 구분한다.
+        private void emitStage(SseEmitter emitter, int stage, String phase, String stageType, String payloadKey,
+                        List<Map<String, Object>> rows) {
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("type", "stage_complete");
+                data.put("phase", phase);
+                data.put("stage", stage);
+                data.put("stageType", stageType);
+                data.put(payloadKey, rows);
+                safeSend(emitter, "stage_complete", data);
+        }
+
+        private void safeSend(SseEmitter emitter, String event, Map<String, Object> data) {
+                try {
+                        emitter.send(SseEmitter.event().name(event).data(objectMapper.writeValueAsString(data)));
+                } catch (Exception e) {
+                        log.warn("SSE 이벤트 전송 실패 event={}: {}", event, e.getMessage());
+                }
+        }
+
+        // 원격 FastAPI /api/ai/multi-chat/stream SSE를 그대로 브라우저로 중계 (토론/소크라테스/상황극).
+        private SseEmitter relayRemoteStream(Long roomId, Map<String, Object> requestBody,
+                        ChatDTO.MultiChatRequest request, AgentChatRoom room, SseEmitter emitter) {
                 Disposable subscription = fastApiWebClient.post()
                                 .uri("/api/ai/multi-chat/stream")
                                 .bodyValue(requestBody)
@@ -678,7 +1024,10 @@ public class ChatService {
                 return null;
         }
 
-        /** 학습 진행 모드를 basic/socratic/debate/simulation 중 하나로 정규화한다. 잘못된 값/null은 basic. */
+        /**
+         * 학습 진행 모드를 basic/validation/collaboration/socratic/debate/simulation 중 하나로 정규화한다.
+         * 잘못된 값/null은 basic.
+         */
         private String normalizeLearningMode(String learningMode) {
                 if (learningMode == null || learningMode.isBlank()) {
                         return "basic";
@@ -693,6 +1042,14 @@ public class ChatService {
                 }
                 if (v.equals("debate") || v.equals("토론") || v.equals("토론 모드")) {
                         return "debate";
+                }
+                // 검증 모드: 1차 답변 → 검증 → 상호 피드백 (ai07 multi-chat/stream relay)
+                if (v.equals("validation") || v.equals("검증") || v.equals("검증 모드")) {
+                        return "validation";
+                }
+                // 협업 모드: 다중 에이전트 협업 (1차 → 검증 → 상호 피드백) relay
+                if (v.equals("collaboration") || v.equals("collaborative") || v.equals("협업") || v.equals("협업 모드")) {
+                        return "collaboration";
                 }
                 return "basic";
         }

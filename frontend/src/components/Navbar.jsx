@@ -1,5 +1,5 @@
 import React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { Sparkles, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
@@ -23,18 +23,23 @@ export default function Navbar() {
             StudyBridge
           </Link>
           <div className="nav-links">
-            <Link to="/studymate" className="nav-link">
-              학습메이트
-            </Link>
-            <Link to="/groupstudy" className="nav-link">
-              그룹스터디
-            </Link>
-            <Link to="/archive" className="nav-link">
-              자료보관함
-            </Link>
-            <Link to="/knowledge" className="nav-link">
-              지식공유
-            </Link>
+            {[
+              { to: '/studymate', label: '학습메이트' },
+              { to: '/groupstudy', label: '그룹스터디' },
+              { to: '/archive', label: '자료보관함' },
+              { to: '/knowledge', label: '지식공유' },
+              { to: '/study-report', label: '학습리포트' },
+              { to: '/weekly-schedule', label: '주간일정' },
+              { to: '/planner', label: '플래너' },
+            ].map(({ to, label }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}
+              >
+                {label}
+              </NavLink>
+            ))}
           </div>
         </div>
 

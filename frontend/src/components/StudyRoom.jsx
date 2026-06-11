@@ -3,13 +3,42 @@ import {
   Users, User, X, MicOff, Video, VideoOff, Maximize, Minimize, Gift, UserPlus,
   Settings, MessageSquare, Calendar, ClipboardList, Mic,
   Search, AlertTriangle, Play, RefreshCw, VolumeX, Volume2, Monitor, Edit2, Send, Check,
-  Upload, Download, FileText
+  Upload, Download, FileText, MessageCircle
 } from 'lucide-react';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { OpenVidu } from 'openvidu-browser';
 import { useAuth } from '../hooks/useAuth';
 import { groupService, timerService, inquiryService } from '../services/api';
+
+const forceOpenViduWssTransport = (openviduInstance) => {
+  if (!openviduInstance || openviduInstance.__studybridgeWssPatched) return;
+
+  const originalStartWs = openviduInstance.startWs?.bind(openviduInstance);
+  if (!originalStartWs) return;
+
+  openviduInstance.startWs = (...args) => {
+    if (
+      typeof window !== 'undefined' &&
+      window.location.protocol === 'https:' &&
+      typeof openviduInstance.wsUri === 'string' &&
+      /^ws:\/\//i.test(openviduInstance.wsUri)
+    ) {
+      openviduInstance.wsUri = openviduInstance.wsUri.replace(/^ws:\/\//i, 'wss://');
+    }
+
+    return originalStartWs(...args);
+  };
+
+  openviduInstance.__studybridgeWssPatched = true;
+};
+
+
+// OpenVidu token은 URL 전체가 인증 토큰이므로 원본 그대로 사용한다.
+// HTTPS 운영환경에서는 token 문자열이 아니라 실제 WebSocket transport만 wss:// 로 보정한다.
+const toSecureWsToken = (token) => {
+  return token;
+};
 
 function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = true, photoUrl }) {
   const videoRef = React.useRef(null);
@@ -97,7 +126,8 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
             <User size={32} color="#9CA3AF" />
           </div>
         )}
-        <div style={{ position: 'absolute', bottom: '12px', left: '12px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)' }}>
+        <div style={{ position: 'absolute', bottom: '12px', left: '12px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {!isMicOn && <MicOff size={13} color="#F87171" />}
           <span style={{ color: 'white', fontSize: '13px', fontWeight: '600' }}>
             {displayName} {isLocal ? '(나)' : ''}
           </span>
@@ -115,7 +145,13 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
         muted={isMuted}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
       />
-      <div style={{ position: 'absolute', bottom: '12px', left: '12px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)' }}>
+      {!isMicOn && (
+        <div style={{ position: 'absolute', top: '12px', right: '12px', width: '28px', height: '28px', borderRadius: '50%', backgroundColor: 'rgba(15, 23, 42, 0.7)', backdropFilter: 'blur(8px)', border: '1px solid rgba(248,113,113,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <MicOff size={15} color="#F87171" />
+        </div>
+      )}
+      <div style={{ position: 'absolute', bottom: '12px', left: '12px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+        {!isMicOn && <MicOff size={13} color="#F87171" />}
         <span style={{ color: 'white', fontSize: '13px', fontWeight: '600' }}>
           {displayName} {isLocal ? '(나)' : ''}
         </span>
@@ -170,11 +206,19 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const [chatInput, setChatInput] = useState('');
   const [stompClient, setStompClient] = useState(null);
   
+  // 채팅 전용 드로어(왼쪽 사이드바 말풍선 아이콘으로 열고 닫음). 닫아도 메시지 상태는 상위 컴포넌트에 보존된다.
+  const [showChatDrawer, setShowChatDrawer] = useState(false);
+
   // AI Multi-Agent SSE Streaming Chat states
   const [chatTab, setChatTab] = useState('normal'); // 'normal' | 'ai'
   const [aiMessages, setAiMessages] = useState([]);
   const [aiInput, setAiInput] = useState('');
   const [isAiStreaming, setIsAiStreaming] = useState(false);
+  // 사용자가 직접 설정한 그룹스터디 AI 봇 (세션 단위). 비어있으면 기본 요약/퀴즈/검색봇을 사용한다.
+  const [aiBots, setAiBots] = useState([]); // [{ name, personality, knowledgeLevel, requirement }]
+  const [showAiBotConfig, setShowAiBotConfig] = useState(false);
+  // 그룹스터디 AI 라이브 모드 (세션 단위). StudyMate와 동일한 6모드.
+  const [aiMode, setAiMode] = useState('basic');
 
   // 동시 전송/중복 SSE 연결 방어.
   //  - isAiStreaming(state)는 setState가 비동기라 Enter키 + 전송버튼 동시 입력을 못 막는다 → ref로 동기 차단.
@@ -183,6 +227,10 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const aiSendingRef = React.useRef(false);
   const activeAiRequestRef = React.useRef(null);
   const aiAbortRef = React.useRef(null);
+
+  // 새 메시지 도착 시 채팅 목록을 하단으로 자동 스크롤하기 위한 sentinel ref
+  const chatEndRef = React.useRef(null);
+  const aiEndRef = React.useRef(null);
 
   // 컴포넌트 unmount 시 진행 중인 AI 스트림을 반드시 끊는다(중복 연결/유령 append 방지).
   useEffect(() => {
@@ -194,11 +242,23 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   }, []);
   
   const [activeQuiz, setActiveQuiz] = useState(null);
+  const [quizSessionId, setQuizSessionId] = useState(null);
+  const quizSessionIdRef = React.useRef(null);
+  const quizQuestionIdRef = React.useRef(null);
+  // 남은 시간 카운트다운 기준점(로컬 epoch ms). 서버 remainingSeconds를 기준으로 잡아
+  // 서버/브라우저 타임존 차이에 영향받지 않게 한다.
+  const quizDeadlineRef = React.useRef(null);
+  const [quizPhase, setQuizPhase] = useState('IDLE');
   const [quizTimer, setQuizTimer] = useState(0);
+  const [quizQuestionEndsAt, setQuizQuestionEndsAt] = useState(null);
   const [quizScoreboard, setQuizScoreboard] = useState(null);
+  const [quizReveal, setQuizReveal] = useState(null);
   const [quizSelectedAnswer, setQuizSelectedAnswer] = useState(null);
   const [quizHasSubmitted, setQuizHasSubmitted] = useState(false);
   const [quizStartTime, setQuizStartTime] = useState(null);
+  const [quizSubmissionAck, setQuizSubmissionAck] = useState(null);
+  const [quizFinalResult, setQuizFinalResult] = useState(null);
+  const [quizError, setQuizError] = useState(null);
   const [quizIdInput, setQuizIdInput] = useState('1');
   const [groupMaterials, setGroupMaterials] = useState([]);
   const [groupQuizzes, setGroupQuizzes] = useState([]);
@@ -279,6 +339,85 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
     }
   };
 
+  const applyQuizSessionPayload = (payload) => {
+    if (!payload) return;
+    const previousQuestionId = quizQuestionIdRef.current;
+    const incomingQuestionId = payload.questionId ?? null;
+    const isNewQuestion = previousQuestionId == null || incomingQuestionId == null
+      ? true
+      : Number(previousQuestionId) !== Number(incomingQuestionId);
+
+    setQuizSessionId(payload.sessionId ?? null);
+    quizSessionIdRef.current = payload.sessionId ?? null;
+    setQuizPhase(payload.phase || 'QUESTION');
+    setActiveQuiz({
+      quizId: payload.quizId,
+      quizTitle: payload.quizTitle,
+      questionId: payload.questionId,
+      questionText: payload.questionText,
+      options: payload.options || [],
+      currentIndex: payload.currentIndex ?? 0,
+      totalQuestions: payload.totalQuestions ?? 0,
+      timeLimitSeconds: payload.timeLimitSeconds ?? 30,
+    });
+    quizQuestionIdRef.current = payload.questionId ?? null;
+    setQuizQuestionEndsAt(payload.questionEndsAt || null);
+    // 타임존 안전: remainingSeconds가 있으면 로컬 시계 기준 deadline을 잡는다.
+    if (typeof payload.remainingSeconds === 'number') {
+      quizDeadlineRef.current = Date.now() + payload.remainingSeconds * 1000;
+      setQuizTimer(payload.remainingSeconds);
+    } else if (payload.questionEndsAt) {
+      quizDeadlineRef.current = new Date(payload.questionEndsAt).getTime();
+      setQuizTimer(Math.max(0, Math.ceil((quizDeadlineRef.current - Date.now()) / 1000)));
+    } else {
+      quizDeadlineRef.current = null;
+      setQuizTimer(0);
+    }
+    const shouldShowScoreboard = payload.phase === 'REVEAL' || payload.phase === 'ENDED';
+    setQuizScoreboard(shouldShowScoreboard && Array.isArray(payload.scoreboard) ? payload.scoreboard : null);
+    setQuizReveal(payload.phase === 'REVEAL' || payload.phase === 'ENDED'
+      ? {
+          correctAnswer: payload.correctAnswer,
+          pointsAwarded: payload.pointsAwarded,
+          message: payload.message || '',
+      }
+      : null);
+    if (typeof payload.userSubmitted === 'boolean') {
+      setQuizSelectedAnswer(typeof payload.userSubmittedAnswer === 'number' ? payload.userSubmittedAnswer : null);
+      setQuizHasSubmitted(payload.userSubmitted);
+    } else if (isNewQuestion) {
+      setQuizSelectedAnswer(null);
+      setQuizHasSubmitted(false);
+    }
+    const resolvedTimeLimit = payload.timeLimitSeconds ?? 30;
+    const resolvedRemaining = typeof payload.remainingSeconds === 'number' ? payload.remainingSeconds : null;
+    setQuizStartTime(
+      resolvedRemaining != null
+        ? Date.now() - Math.max(0, (resolvedTimeLimit - resolvedRemaining) * 1000)
+        : Date.now()
+    );
+    setQuizSubmissionAck(null);
+    setQuizFinalResult(payload.phase === 'ENDED' ? payload : null);
+  };
+
+  const resetQuizRuntimeState = () => {
+    setQuizSessionId(null);
+    quizSessionIdRef.current = null;
+    setQuizPhase('IDLE');
+    setActiveQuiz(null);
+    setQuizQuestionEndsAt(null);
+    quizQuestionIdRef.current = null;
+    quizDeadlineRef.current = null;
+    setQuizTimer(0);
+    setQuizScoreboard(null);
+    setQuizReveal(null);
+    setQuizSelectedAnswer(null);
+    setQuizHasSubmitted(false);
+    setQuizStartTime(null);
+    setQuizSubmissionAck(null);
+    setQuizFinalResult(null);
+  };
+
   useEffect(() => {
     if (!study?.id) return;
     loadGroupMaterials();
@@ -295,13 +434,15 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
 
     async function joinSession() {
       try {
-        const { token } = await groupService.getVideoToken(study.id);
+        let { token } = await groupService.getVideoToken(study.id);
         if (!isMounted) return;
 
-        OVInstance = new OpenVidu();
-        sessionInstance = OVInstance.initSession();
-
-        sessionInstance.on('streamCreated', (event) => {
+        // OpenVidu token은 서버가 발급한 문자열을 그대로 사용한다.
+        token = toSecureWsToken(token);
+          OVInstance = new OpenVidu();
+          forceOpenViduWssTransport(OVInstance);
+          sessionInstance = OVInstance.initSession();
+sessionInstance.on('streamCreated', (event) => {
           const subscriber = sessionInstance.subscribe(event.stream, undefined);
           if (isMounted) {
             setSubscribers(prev => [...prev, subscriber]);
@@ -311,6 +452,14 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
         sessionInstance.on('streamDestroyed', (event) => {
           if (isMounted) {
             setSubscribers(prev => prev.filter(sub => sub !== event.stream.streamManager));
+          }
+        });
+
+        // 원격 참가자가 카메라/마이크를 끄거나 켜면(videoActive/audioActive 변경) 즉시 리렌더하여
+        // avatar fallback 전환과 마이크 상태 아이콘이 실시간으로 반영되게 한다.
+        sessionInstance.on('streamPropertyChanged', (event) => {
+          if (isMounted) {
+            setSubscribers(prev => [...prev]); // 새 배열 참조로 리렌더 트리거 (stream 객체의 최신 active 값 반영)
           }
         });
 
@@ -414,12 +563,18 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
 
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
     const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
-    const serverURL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `${protocol}://${hostname}:8080`;
+    // 운영(배포)에서는 같은 오리진으로 연결한다. Nginx가 /ws-group → Spring(8080)으로 프록시하며,
+    // HTTPS 운영환경에서는 현재 origin(https://www.studybridge.co.kr) 기준으로 SockJS에 연결한다.
+    const isLocalDev = ['localhost', '127.0.0.1'].includes(hostname);
+    const serverURL =
+      import.meta.env.VITE_API_BASE_URL ||
+      import.meta.env.VITE_BACKEND_URL ||
+      (isLocalDev ? `${protocol}://${hostname}:8080` : window.location.origin);
 
     const token = localStorage.getItem('token');
 
     const client = new Client({
-      webSocketFactory: () => new SockJS(`${serverURL}/ws-group`, null, { credentials: false }),
+      webSocketFactory: () => new SockJS(`${window.location.origin}/ws-group`, null, { credentials: false }),
       connectHeaders: {
         Authorization: token ? `Bearer ${token}` : ''
       },
@@ -430,29 +585,119 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
 
     client.onConnect = (frame) => {
       console.log('Connected to group study socket: ' + frame);
-      
+
+      const shouldAcceptSession = (payload) => {
+        if (!payload?.sessionId || !quizSessionIdRef.current) return true;
+        return Number(payload.sessionId) === Number(quizSessionIdRef.current);
+      };
+
+      const applyPayload = (payload) => {
+        if (!shouldAcceptSession(payload)) return;
+        applyQuizSessionPayload(payload);
+      };
+
       client.subscribe(`/topic/group/${study.id}/chat`, (message) => {
         const payload = JSON.parse(message.body);
         setChatMessages(prev => [...prev, payload]);
       });
 
+      client.subscribe(`/topic/group/${study.id}/quiz/session`, (message) => {
+        const payload = JSON.parse(message.body);
+        applyPayload(payload);
+      });
+
       client.subscribe(`/topic/group/${study.id}/quiz/question`, (message) => {
         const payload = JSON.parse(message.body);
         console.log('Received quiz question:', payload);
-        setActiveQuiz(payload);
-        setQuizTimer(payload.timeLimitSeconds);
-        setQuizSelectedAnswer(null);
-        setQuizHasSubmitted(false);
-        setQuizStartTime(Date.now());
-        setQuizScoreboard(null);
+        applyPayload(payload);
+      });
+
+      client.subscribe(`/topic/group/${study.id}/quiz/next`, (message) => {
+        const payload = JSON.parse(message.body);
+        console.log('Received quiz next:', payload);
+        applyPayload(payload);
+      });
+
+      client.subscribe(`/topic/group/${study.id}/quiz/timer`, (message) => {
+        const payload = JSON.parse(message.body);
+        if (!shouldAcceptSession(payload)) return;
+        if (typeof payload.remainingSeconds === 'number') {
+          // 서버 기준 남은 시간으로 로컬 deadline 재동기화 (타임존 무관).
+          quizDeadlineRef.current = Date.now() + payload.remainingSeconds * 1000;
+          setQuizTimer(payload.remainingSeconds);
+        }
+        if (payload.questionEndsAt) {
+          setQuizQuestionEndsAt(payload.questionEndsAt);
+        }
+      });
+
+      client.subscribe(`/topic/group/${study.id}/quiz/submitted`, (message) => {
+        const payload = JSON.parse(message.body);
+        if (!shouldAcceptSession(payload)) return;
+        if (payload.questionId && quizQuestionIdRef.current && Number(payload.questionId) !== Number(quizQuestionIdRef.current)) return;
+        setQuizSubmissionAck(payload);
+        setQuizHasSubmitted(Boolean(payload.accepted));
+        if (!payload.accepted) {
+          setQuizSelectedAnswer(null);
+        }
+      });
+
+      client.subscribe(`/topic/group/${study.id}/quiz/reveal`, (message) => {
+        const payload = JSON.parse(message.body);
+        if (!shouldAcceptSession(payload)) return;
+        setQuizPhase('REVEAL');
+        setQuizReveal({
+          correctAnswer: payload.correctAnswer,
+          pointsAwarded: payload.pointsAwarded,
+          message: payload.message || '',
+        });
+        setQuizScoreboard(Array.isArray(payload.scoreboard) ? payload.scoreboard : null);
       });
 
       client.subscribe(`/topic/group/${study.id}/quiz/scoreboard`, (message) => {
         const payload = JSON.parse(message.body);
         console.log('Received quiz scoreboard:', payload);
-        setQuizScoreboard(payload);
+        if (!shouldAcceptSession(payload)) return;
+        setQuizScoreboard(Array.isArray(payload.scoreboard) ? payload.scoreboard : null);
+        if (payload.phase === 'REVEAL') {
+          setQuizPhase('REVEAL');
+          setQuizReveal({
+            correctAnswer: payload.correctAnswer,
+            pointsAwarded: payload.pointsAwarded,
+            message: payload.message || '',
+          });
+        }
+        if (payload.phase === 'ENDED') {
+          setQuizPhase('ENDED');
+          setQuizFinalResult(payload);
+        }
       });
 
+      client.subscribe(`/topic/group/${study.id}/quiz/end`, (message) => {
+        const payload = JSON.parse(message.body);
+        if (!shouldAcceptSession(payload)) return;
+        setQuizPhase('ENDED');
+        setQuizFinalResult(payload);
+        setQuizScoreboard(Array.isArray(payload.scoreboard) ? payload.scoreboard : null);
+      });
+
+      // 퀴즈 시작 실패: 가짜 문제/0초 화면 대신 명확한 에러를 보여준다.
+      client.subscribe(`/topic/group/${study.id}/quiz/error`, (message) => {
+        const payload = JSON.parse(message.body);
+        console.warn('Received quiz error:', payload);
+        resetQuizRuntimeState();
+        setQuizError(payload?.message || '퀴즈를 시작하지 못했습니다.');
+      });
+
+      groupService.getQuizSession(study.id)
+        .then((payload) => {
+          if (payload) {
+            applyPayload(payload);
+          }
+        })
+        .catch((err) => {
+          if (import.meta.env.DEV) console.debug('No active quiz session to restore', err?.response?.status || err?.message || err);
+        });
     };
 
     client.onStompError = (frame) => {
@@ -469,24 +714,35 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
     };
   }, [study?.id, userId, myDisplayName]);
 
-  // 퀴즈 타이머 이펙트
+  // 퀴즈 타이머 이펙트: 로컬 deadline(quizDeadlineRef) 기준으로 남은 시간을 매초 갱신한다.
+  // QUESTION/NEXT 단계에서만 카운트다운하며, 서버 remainingSeconds로 anchor된 deadline을 사용해
+  // 서버/브라우저 타임존 차이의 영향을 받지 않는다.
   useEffect(() => {
-    if (activeQuiz && quizTimer > 0 && !quizHasSubmitted) {
-      const interval = setInterval(() => {
-        setQuizTimer(prev => {
-          if (prev <= 1) {
-            handleQuizSubmit(-1);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-      return () => clearInterval(interval);
+    if (quizPhase !== 'QUESTION' && quizPhase !== 'NEXT') {
+      return;
     }
-  }, [activeQuiz, quizTimer, quizHasSubmitted]);
+    if (!quizDeadlineRef.current) {
+      return;
+    }
+
+    const syncTimer = () => {
+      if (!quizDeadlineRef.current) return;
+      const diff = Math.ceil((quizDeadlineRef.current - Date.now()) / 1000);
+      setQuizTimer(Math.max(0, diff));
+    };
+
+    syncTimer();
+    const interval = setInterval(syncTimer, 1000);
+    return () => clearInterval(interval);
+  }, [quizPhase, quizQuestionEndsAt]);
 
   const handleQuizSubmit = (answerIndex) => {
     if (quizHasSubmitted || !activeQuiz || !stompClient || !stompClient.connected) return;
+    if (quizTimer <= 0) {
+      showAlert('알림', '제한 시간이 종료되었습니다. 정답 공개를 기다려주세요.');
+      return;
+    }
+    if (quizPhase !== 'QUESTION' && quizPhase !== 'NEXT') return;
 
     setQuizSelectedAnswer(answerIndex);
     setQuizHasSubmitted(true);
@@ -498,7 +754,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
       body: JSON.stringify({
         userId: userId,
         questionId: activeQuiz.questionId,
-        submittedAnswer: String(answerIndex),
+        submittedAnswer: answerIndex,
         timeTakenSeconds: timeTaken
       })
     });
@@ -513,6 +769,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
       showAlert('오류', '퀴즈 ID를 입력해주세요.');
       return;
     }
+    setQuizError(null);
 
     stompClient.publish({
       destination: `/pub/group/${study.id}/quiz/start`,
@@ -534,6 +791,21 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
       window.open(url, '_blank', 'noopener,noreferrer');
     } catch (err) {
       showAlert('오류', err.response?.data?.message || '자료 다운로드 URL 발급에 실패했습니다.');
+    }
+  };
+
+  const [regeneratingMaterialId, setRegeneratingMaterialId] = useState(null);
+  const handleRegenerateQuiz = async (materialId) => {
+    if (regeneratingMaterialId) return;
+    setRegeneratingMaterialId(materialId);
+    try {
+      await groupService.generateMaterialQuiz(study.id, materialId);
+      await loadGroupQuizzes();
+      showAlert('완료', '해당 자료로 새 퀴즈를 생성했습니다.');
+    } catch (err) {
+      showAlert('오류', err.response?.data?.message || '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setRegeneratingMaterialId(null);
     }
   };
 
@@ -649,10 +921,8 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
 
     const token = localStorage.getItem('token');
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_BACKEND_URL || `http://${hostname}:8080`;
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/groups/${study.id}/chats/stream`, {
+try {
+      const response = await fetch(`/api/groups/${study.id}/chats/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -660,10 +930,24 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
         },
         body: JSON.stringify({
           message: userMsg,
-          mode: 'multi_agent_discussion',
+          // 라이브 모드 토글 값 전달. basic은 그룹 멀티에이전트 기본 흐름, 그 외는 mode=learningMode로 명시.
+          mode: aiMode === 'basic' ? 'multi_agent_discussion' : aiMode,
+          learningMode: aiMode,
           rounds: 3,
           showFinalSynthesis: true,
-          agents: [] // empty array defaults to Summary, Quiz, and Search agent
+          // 사용자가 설정한 봇이 있으면 그대로 전달(이름/성격/지식수준/요구사항).
+          // 비어있으면 빈 배열 → 백엔드가 기본 요약/퀴즈/검색봇을 사용한다.
+          agents: (aiBots || [])
+            .filter((b) => b && (b.name || '').trim())
+            .map((b, i) => ({
+              id: i + 1,
+              agentId: i + 1,
+              name: (b.name || '').trim(),
+              role: 'AI 학습 도우미',
+              personality: (b.personality || '').trim(),
+              knowledgeLevel: (b.knowledgeLevel || '').trim(),
+              customInstruction: (b.requirement || '').trim(),
+            })),
         }),
         signal: abortController.signal
       });
@@ -815,6 +1099,23 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
     setCustomAlert({ isOpen: true, title, message, type: 'prompt', inputPlaceholder, inputValue: '', onConfirm: (val) => { setCustomAlert(prev => ({ ...prev, isOpen: false })); onConfirm(val); }, onCancel: () => setCustomAlert(prev => ({ ...prev, isOpen: false })) });
   };
 
+  // 실제 참여자 목록(members) 길이 = 상단/사이드바에 표시할 입장 인원. mock/maxMembers/capacity 사용 안 함.
+  const participantCount = members.length;
+
+  // 일반 채팅에 새 메시지가 오면 목록만 하단으로 스크롤
+  useEffect(() => {
+    if (chatTab === 'normal') {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [chatMessages, chatTab]);
+
+  // AI 토론(SSE) 메시지가 갱신되면 목록만 하단으로 스크롤
+  useEffect(() => {
+    if (chatTab === 'ai') {
+      aiEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [aiMessages, chatTab]);
+
   return (
     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, backgroundColor: '#0B0F19', display: 'flex', flexDirection: 'column', color: 'white', fontFamily: "'Inter', sans-serif" }}>
       <style>{`
@@ -836,6 +1137,18 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
           scrollbar-width: thin;
           scrollbar-color: rgba(255, 255, 255, 0.1) rgba(255, 255, 255, 0.02);
         }
+        /* 상단 StudyBridge 로고 — 다크 UI에 어울리는 깔끔한 블루→옐로 그라데이션 */
+        .sb-logo {
+          font-size: 20px;
+          font-weight: 900;
+          letter-spacing: -0.5px;
+          background: linear-gradient(90deg, #60A5FA 0%, #818CF8 55%, #FACC15 100%);
+          -webkit-background-clip: text;
+          background-clip: text;
+          -webkit-text-fill-color: transparent;
+          color: transparent;
+          user-select: none;
+        }
       `}</style>
 
       {/* Header - Glassmorphic Dark */}
@@ -845,7 +1158,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
             {/* Text Logo Area */}
             <div style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '6px' }}>
-              <span style={{ fontSize: '20px', fontWeight: '900', letterSpacing: '-0.5px', background: 'linear-gradient(90deg, #84cc16, #eab308, #f97316)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+              <span className="sb-logo">
                 StudyBridge
               </span>
             </div>
@@ -856,7 +1169,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <h1 style={{ margin: 0, color: '#F3F4F6', fontSize: '16px', fontWeight: '600' }}>{study.title}</h1>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#60A5FA', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
-                <Users size={14} /> {study.currentMembers || 2} / {study.maxMembers || 16}
+                <Users size={14} /> {participantCount}명 입장
               </div>
             </div>
           </div>
@@ -905,6 +1218,17 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
               </div>
               <div onClick={() => { setRoomManageTab('quiz'); setShowRoomManageModal(true); }} style={{ padding: '10px', borderRadius: '12px', color: '#9CA3AF', cursor: 'pointer', transition: '0.2s', ':hover': { color: 'white', backgroundColor: 'rgba(255,255,255,0.1)' } }} title="실시간 퀴즈">
                 <Edit2 size={22} />
+              </div>
+              {/* 채팅 드로어 토글 — 일반 채팅 + AI 토론을 넓은 패널로 분리해서 보여준다. */}
+              <div
+                onClick={() => setShowChatDrawer(v => !v)}
+                style={{ position: 'relative', padding: '10px', borderRadius: '12px', color: showChatDrawer ? '#60A5FA' : '#9CA3AF', backgroundColor: showChatDrawer ? 'rgba(59,130,246,0.18)' : 'transparent', cursor: 'pointer', transition: '0.2s' }}
+                title="채팅 (일반 / AI 토론)"
+              >
+                <MessageCircle size={22} />
+                {chatMessages.length > 0 && !showChatDrawer && (
+                  <span style={{ position: 'absolute', top: '4px', right: '4px', width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#22C55E', border: '2px solid #0F172A' }} />
+                )}
               </div>
             </div>
 
@@ -977,6 +1301,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                   displayName={displayName}
                   isMuted={false}
                   isCamOn={sub.stream.videoActive}
+                  isMicOn={sub.stream.audioActive}
                   photoUrl={subPhotoUrl}
                 />
               );
@@ -997,14 +1322,14 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
 
         {/* Right Sidebar - Chat & Participants */}
         {!isCamFullScreen && (
-          <div style={{ width: '340px', backgroundColor: '#0F172A', display: 'flex', flexDirection: 'column', borderLeft: '1px solid rgba(255,255,255,0.05)' }}>
+          <div style={{ width: '340px', backgroundColor: '#0F172A', display: 'flex', flexDirection: 'column', minHeight: 0, borderLeft: '1px solid rgba(255,255,255,0.05)' }}>
 
             {/* Participants Area */}
             <div style={{ padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <div style={{ fontSize: '14px', fontWeight: '700', color: '#F3F4F6', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   참여자 목록
-                  <span style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#60A5FA', padding: '2px 8px', borderRadius: '10px', fontSize: '12px' }}>2 / {study.maxMembers || 16}</span>
+                  <span style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#60A5FA', padding: '2px 8px', borderRadius: '10px', fontSize: '12px' }}>{participantCount}명</span>
                 </div>
                 <div style={{ padding: '6px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '8px', cursor: 'pointer' }}>
                   <Search size={14} color="#9CA3AF" />
@@ -1123,9 +1448,48 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
               </div>
             )}
 
-            {/* Chat Area */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#111827' }}>
-              
+            {/* 채팅 영역은 별도 드로어로 분리되었다. 오른쪽 사이드바에는 안내만 남기고, 실제 채팅은 아래 드로어에서 연다. */}
+            <div style={{ padding: '16px 20px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+              <button
+                onClick={() => setShowChatDrawer(true)}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '12px', borderRadius: '12px', border: '1px solid rgba(96,165,250,0.35)', backgroundColor: 'rgba(37,99,235,0.14)', color: '#93C5FD', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}
+              >
+                <MessageCircle size={16} /> 채팅 / AI 토론 열기
+                {chatMessages.length > 0 && (
+                  <span style={{ backgroundColor: '#22C55E', color: '#06251A', borderRadius: '10px', fontSize: '11px', fontWeight: 800, padding: '1px 7px' }}>{chatMessages.length}</span>
+                )}
+              </button>
+            </div>
+
+            {/* === 채팅 드로어 (왼쪽 사이드바 말풍선으로 토글) === */}
+            {showChatDrawer && (
+              <div
+                onClick={() => setShowChatDrawer(false)}
+                style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', zIndex: 90 }}
+              />
+            )}
+            <div style={{
+              position: 'fixed', top: 0, right: 0, bottom: 0,
+              width: 'min(100vw, 480px)',
+              transform: showChatDrawer ? 'translateX(0)' : 'translateX(110%)',
+              transition: 'transform 0.25s ease',
+              display: 'flex', flexDirection: 'column', minHeight: 0,
+              backgroundColor: '#111827',
+              borderLeft: '1px solid rgba(255,255,255,0.08)',
+              boxShadow: '-8px 0 30px rgba(0,0,0,0.5)',
+              zIndex: 95
+            }}>
+
+              {/* Drawer Header */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)', backgroundColor: '#0F172A' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F3F4F6', fontWeight: 800, fontSize: '15px' }}>
+                  <MessageCircle size={18} color="#60A5FA" /> 채팅
+                </div>
+                <div onClick={() => setShowChatDrawer(false)} style={{ cursor: 'pointer', padding: '6px', borderRadius: '8px', display: 'flex' }} title="닫기">
+                  <X size={18} color="#9CA3AF" />
+                </div>
+              </div>
+
               {/* Chat Tabs */}
               <div style={{ padding: '0 20px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', gap: '16px', backgroundColor: '#0F172A' }}>
                 <button
@@ -1164,7 +1528,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
 
               {chatTab === 'normal' ? (
                 <>
-                  <div className="custom-scrollbar" style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div className="custom-scrollbar" style={{ flex: 1, minHeight: 0, padding: '20px', overflowY: 'auto', overscrollBehavior: 'contain', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {/* Notice Box */}
                     <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#F87171', fontSize: '13px', fontWeight: '700', marginBottom: '8px' }}>
@@ -1212,13 +1576,26 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                                     <div style={{ color: '#94A3B8', fontSize: '11px', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{material.originalFileName} · {formatFileSize(material.fileSize)}</div>
                                     <div style={{ color: '#64748B', fontSize: '11px', marginTop: '3px' }}>{material.uploaderName || '알 수 없음'} · {formatShortDateTime(material.createdAt)}</div>
                                   </div>
-                                  <button
-                                    onClick={() => handleDownloadGroupMaterial(material.id)}
-                                    style={{ flexShrink: 0, width: '30px', height: '30px', borderRadius: '8px', border: '1px solid rgba(96,165,250,0.35)', backgroundColor: 'rgba(37,99,235,0.14)', color: '#93C5FD', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                                    title="다운로드"
-                                  >
-                                    <Download size={14} />
-                                  </button>
+                                  <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                                    <button
+                                      onClick={() => handleRegenerateQuiz(material.id)}
+                                      disabled={regeneratingMaterialId === material.id}
+                                      style={{ flexShrink: 0, height: '30px', padding: '0 10px', borderRadius: '8px', border: '1px solid rgba(16,185,129,0.35)', backgroundColor: 'rgba(16,185,129,0.14)', color: '#6EE7B7', display: 'flex', alignItems: 'center', gap: '4px', cursor: regeneratingMaterialId === material.id ? 'not-allowed' : 'pointer', fontSize: '11px', fontWeight: 700, whiteSpace: 'nowrap' }}
+                                      title="이 PDF로 퀴즈 생성"
+                                    >
+                                      {regeneratingMaterialId === material.id
+                                        ? <RefreshCw size={13} className="animate-spin" style={{ animation: 'spin 1.5s linear infinite' }} />
+                                        : <ClipboardList size={13} />}
+                                      퀴즈
+                                    </button>
+                                    <button
+                                      onClick={() => handleDownloadGroupMaterial(material.id)}
+                                      style={{ flexShrink: 0, width: '30px', height: '30px', borderRadius: '8px', border: '1px solid rgba(96,165,250,0.35)', backgroundColor: 'rgba(37,99,235,0.14)', color: '#93C5FD', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                      title="다운로드"
+                                    >
+                                      <Download size={14} />
+                                    </button>
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -1273,6 +1650,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                         </div>
                       </div>
                     ))}
+                    <div ref={chatEndRef} />
                   </div>
 
                   {/* Chat Input */}
@@ -1302,16 +1680,99 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                 </>
               ) : (
                 <>
-                  <div className="custom-scrollbar" style={{ flex: 1, padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div className="custom-scrollbar" style={{ flex: 1, minHeight: 0, padding: '20px', overflowY: 'auto', overscrollBehavior: 'contain', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                     {/* Notice Box */}
                     <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#60A5FA', fontSize: '13px', fontWeight: '700', marginBottom: '8px' }}>
-                        <AlertTriangle size={16} /> AI 토론 안내
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '8px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#60A5FA', fontSize: '13px', fontWeight: '700' }}>
+                          <AlertTriangle size={16} /> AI 토론 안내
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setShowAiBotConfig((v) => !v); }}
+                          style={{ position: 'relative', zIndex: 2, pointerEvents: 'auto', display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.35)', color: '#93C5FD', fontSize: '11px', fontWeight: 600, borderRadius: '14px', padding: '4px 10px', cursor: 'pointer' }}
+                        >
+                          <Settings size={12} /> AI 봇 설정 {aiBots.length > 0 ? `(${aiBots.length})` : ''}
+                        </button>
                       </div>
                       <div style={{ color: '#93C5FD', fontSize: '12px', lineHeight: '1.6', wordBreak: 'keep-all' }}>
-                        에이전트들에게 질문하면 요약봇, 퀴즈봇, 검색봇 등 다중 에이전트들이 실시간으로 토론하며 솔루션을 탐색합니다.
+                        {aiBots.length > 0
+                          ? '설정한 AI 봇이 각자의 성격·지식수준·요구사항대로 답변합니다.'
+                          : '에이전트들에게 질문하면 요약봇, 퀴즈봇, 검색봇 등 다중 에이전트들이 실시간으로 토론하며 솔루션을 탐색합니다.'}
                       </div>
                     </div>
+
+                    {/* 라이브 모드 토글 — 채팅 중 언제든 모드 변경 (AI봇 설정과 함께 전송) */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
+                      <span style={{ fontSize: '11px', color: '#94A3B8', marginRight: '2px' }}>모드</span>
+                      {[
+                        { value: 'basic', label: '기본', icon: '💬' },
+                        { value: 'validation', label: '검증', icon: '✅' },
+                        { value: 'collaboration', label: '협업', icon: '🤝' },
+                        { value: 'debate', label: '토론', icon: '🗣️' },
+                        { value: 'socratic', label: '소크라테스', icon: '🧭' },
+                        { value: 'simulation', label: '상황극', icon: '🎭' },
+                      ].map((m) => {
+                        const active = aiMode === m.value;
+                        return (
+                          <button
+                            key={m.value}
+                            type="button"
+                            onClick={() => setAiMode(m.value)}
+                            disabled={isAiStreaming}
+                            title={m.label}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: '4px',
+                              padding: '4px 9px', borderRadius: '14px',
+                              cursor: isAiStreaming ? 'not-allowed' : 'pointer',
+                              fontSize: '11px', fontWeight: active ? 700 : 500,
+                              border: `1px solid ${active ? '#3B82F6' : 'rgba(255,255,255,0.12)'}`,
+                              backgroundColor: active ? '#3B82F6' : 'transparent',
+                              color: active ? '#fff' : '#94A3B8',
+                            }}
+                          >
+                            <span>{m.icon}</span>{m.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* AI 봇 설정 패널 (세션 단위) */}
+                    {showAiBotConfig && (
+                      <div style={{ backgroundColor: '#0F172A', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: '#E5E7EB', fontSize: '12px', fontWeight: 700 }}>AI 봇 설정 (최대 3개)</span>
+                          <button
+                            onClick={() => setAiBots((prev) => prev.length >= 3 ? prev : [...prev, { name: '', personality: '', knowledgeLevel: '학사 수준', requirement: '' }])}
+                            disabled={aiBots.length >= 3}
+                            style={{ background: 'rgba(34,197,94,0.15)', border: '1px solid rgba(34,197,94,0.35)', color: '#86EFAC', fontSize: '11px', fontWeight: 600, borderRadius: '12px', padding: '4px 10px', cursor: aiBots.length >= 3 ? 'not-allowed' : 'pointer' }}
+                          >
+                            + 봇 추가
+                          </button>
+                        </div>
+                        {aiBots.length === 0 && (
+                          <div style={{ color: '#9CA3AF', fontSize: '11px', lineHeight: 1.6 }}>
+                            봇을 추가하지 않으면 기본 요약/퀴즈/검색봇이 사용됩니다.
+                          </div>
+                        )}
+                        {aiBots.map((bot, idx) => {
+                          const updateBot = (field, value) => setAiBots((prev) => prev.map((b, i) => i === idx ? { ...b, [field]: value } : b));
+                          const inputStyle = { width: '100%', boxSizing: 'border-box', background: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: '#F3F4F6', fontSize: '12px', padding: '7px 10px', outline: 'none' };
+                          return (
+                            <div key={idx} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', backgroundColor: 'rgba(255,255,255,0.02)' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ color: '#93C5FD', fontSize: '11px', fontWeight: 700 }}>봇 {idx + 1}</span>
+                                <button onClick={() => setAiBots((prev) => prev.filter((_, i) => i !== idx))} style={{ background: 'none', border: 'none', color: '#F87171', cursor: 'pointer', fontSize: '11px' }}>삭제</button>
+                              </div>
+                              <input style={inputStyle} placeholder="봇 이름 (예: 친절한 튜터)" value={bot.name} onChange={(e) => updateBot('name', e.target.value)} />
+                              <input style={inputStyle} placeholder="성격 (예: 친근하고 비유적)" value={bot.personality} onChange={(e) => updateBot('personality', e.target.value)} />
+                              <input style={inputStyle} placeholder="지식수준 (예: 학사 수준)" value={bot.knowledgeLevel} onChange={(e) => updateBot('knowledgeLevel', e.target.value)} />
+                              <textarea style={{ ...inputStyle, resize: 'vertical', minHeight: '44px' }} placeholder="요구사항 (예: 예시를 많이 들어 설명)" value={bot.requirement} onChange={(e) => updateBot('requirement', e.target.value)} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
 
                     {/* AI Chat Messages */}
                     {aiMessages.map((msg) => {
@@ -1401,6 +1862,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                         <span>AI 에이전트들이 답변을 스트리밍하고 있습니다...</span>
                       </div>
                     )}
+                    <div ref={aiEndRef} />
                   </div>
 
                   {/* AI Input */}
@@ -1739,31 +2201,105 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                   </div>
 
                   {canUseGroupQuizMaterials ? (
-                    <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.05)', border: '1px solid rgba(59, 130, 246, 0.1)', borderRadius: '12px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                        <div style={{ width: '120px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px' }}>퀴즈 번호 (ID)</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+                      {/* STEP 1. PDF 업로드 → AI 퀴즈 자동 생성 */}
+                      <div style={{ backgroundColor: 'rgba(37, 99, 235, 0.06)', border: '1px solid rgba(59, 130, 246, 0.18)', borderRadius: '12px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#93C5FD', fontSize: '14px', fontWeight: '800' }}>
+                          <Upload size={16} /> 1. PDF 학습자료 업로드
+                        </div>
+                        <p style={{ margin: 0, color: '#9CA3AF', fontSize: '12px', lineHeight: '1.5' }}>
+                          PDF를 업로드하면 S3에 저장되고, 해당 자료를 기반으로 AI가 실시간 퀴즈를 자동 생성합니다. (PDF, 최대 30MB)
+                        </p>
                         <input
-                          type="number"
-                          min="1"
-                          value={quizIdInput}
-                          onChange={(e) => setQuizIdInput(e.target.value)}
-                          placeholder="퀴즈 ID (예: 1)"
-                          style={{ width: '120px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '10px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }}
+                          type="text"
+                          value={quizUploadTitle}
+                          onChange={(e) => setQuizUploadTitle(e.target.value)}
+                          placeholder="자료 제목 (예: OOP 핵심 개념 자료)"
+                          disabled={isUploadingQuizPdf}
+                          style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#0F172A', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '10px', padding: '11px 14px', color: '#F3F4F6', fontSize: '13px', outline: 'none' }}
                         />
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+                        <input
+                          type="file"
+                          accept="application/pdf,.pdf"
+                          disabled={isUploadingQuizPdf}
+                          onChange={(e) => { setQuizUploadFile(e.target.files?.[0] || null); setQuizUploadError(''); }}
+                          style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#0F172A', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '10px', padding: '9px 12px', color: '#CBD5E1', fontSize: '12px' }}
+                        />
+                        {quizUploadFile && (
+                          <div style={{ color: '#A7F3D0', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <FileText size={13} /> {quizUploadFile.name} ({formatFileSize(quizUploadFile.size)})
+                          </div>
+                        )}
+                        {quizUploadError && (
+                          <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.22)', borderRadius: '10px', padding: '9px 12px', color: '#FCA5A5', fontSize: '12px', lineHeight: '1.5' }}>
+                            {quizUploadError}
+                          </div>
+                        )}
                         <button
-                          onClick={() => {
-                            handleQuizStart(quizIdInput);
-                            setShowRoomManageModal(false);
-                          }}
-                          style={{ padding: '12px 24px', backgroundColor: '#3B82F6', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '700', cursor: 'pointer', transition: '0.2s', boxShadow: '0 4px 12px rgba(59,130,246,0.3)', display: 'flex', alignItems: 'center', gap: '8px' }}
-                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2563EB'}
-                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#3B82F6'}
+                          onClick={handleUploadQuizPdf}
+                          disabled={isUploadingQuizPdf}
+                          style={{ alignSelf: 'flex-start', padding: '11px 18px', borderRadius: '9px', border: 'none', backgroundColor: isUploadingQuizPdf ? '#475569' : '#2563EB', color: 'white', fontSize: '13px', fontWeight: '800', cursor: isUploadingQuizPdf ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
                         >
-                          <Play size={16} fill="white" /> 실시간 퀴즈 시작 (방 전체 공유)
+                          {isUploadingQuizPdf ? <RefreshCw size={14} className="animate-spin" style={{ animation: 'spin 1.5s linear infinite' }} /> : <Upload size={14} />}
+                          {isUploadingQuizPdf ? 'PDF 업로드 및 AI 퀴즈 생성 중...' : 'PDF 업로드 + AI 퀴즈 생성'}
                         </button>
                       </div>
+
+                      {/* STEP 2. 생성된 퀴즈를 방 전체에 실시간 출제 */}
+                      <div style={{ backgroundColor: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.18)', borderRadius: '12px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#6EE7B7', fontSize: '14px', fontWeight: '800' }}>
+                            <Play size={16} /> 2. 실시간 퀴즈 시작
+                          </div>
+                          <button onClick={loadGroupQuizzes} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }} title="새로고침">
+                            <RefreshCw size={13} /> 새로고침
+                          </button>
+                        </div>
+                        {groupQuizzes.length === 0 ? (
+                          <div style={{ color: '#94A3B8', fontSize: '12px', padding: '8px 0', lineHeight: '1.6' }}>
+                            아직 생성된 퀴즈가 없습니다. 먼저 PDF 학습자료를 업로드하거나, 아래 고급 옵션에서 기존 퀴즈 번호를 입력해주세요.
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '220px', overflowY: 'auto' }}>
+                            {groupQuizzes.map(quiz => (
+                              <div key={quiz.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', backgroundColor: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '12px' }}>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ color: '#E5E7EB', fontSize: '13px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{quiz.title}</div>
+                                  <div style={{ color: '#94A3B8', fontSize: '11px', marginTop: '3px' }}>#{quiz.id} · {quiz.creatorName || '알 수 없음'} · {quiz.questionCount || 0}문항</div>
+                                </div>
+                                <button
+                                  onClick={() => { handleQuizStart(quiz.id); setShowRoomManageModal(false); }}
+                                  style={{ flexShrink: 0, padding: '9px 16px', borderRadius: '8px', border: 'none', backgroundColor: '#16A34A', color: 'white', fontSize: '12px', fontWeight: '800', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
+                                >
+                                  <Play size={13} fill="white" /> 시작
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 고급: 퀴즈 번호로 직접 시작 (기존 수동 방식 유지) */}
+                      <details style={{ backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px 18px' }}>
+                        <summary style={{ color: '#9CA3AF', fontSize: '13px', fontWeight: '700', cursor: 'pointer' }}>고급 · 퀴즈 번호(ID)로 직접 시작</summary>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '14px', flexWrap: 'wrap' }}>
+                          <input
+                            type="number"
+                            min="1"
+                            value={quizIdInput}
+                            onChange={(e) => setQuizIdInput(e.target.value)}
+                            placeholder="퀴즈 ID (예: 1)"
+                            style={{ width: '120px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '10px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }}
+                          />
+                          <button
+                            onClick={() => { handleQuizStart(quizIdInput); setShowRoomManageModal(false); }}
+                            style={{ padding: '10px 20px', backgroundColor: '#3B82F6', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '700', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+                          >
+                            <Play size={15} fill="white" /> 번호로 시작
+                          </button>
+                        </div>
+                      </details>
                     </div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', padding: '40px 0', opacity: 0.8 }}>
@@ -2149,19 +2685,15 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
       {activeQuiz && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.8)', backdropFilter: 'blur(8px)' }}>
           <div style={{ backgroundColor: '#1E293B', borderRadius: '20px', padding: '32px', width: '500px', maxWidth: '90vw', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', gap: '24px', animation: 'slideUp 0.3s ease-out' }}>
-            
-            {/* Header */}
+
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <span style={{ color: '#3B82F6', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '1px' }}>AI Live Quiz</span>
                 <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#F3F4F6' }}>{activeQuiz.quizTitle}</h2>
               </div>
-              {quizScoreboard && (
+              {(quizPhase === 'ENDED' || quizFinalResult) && (
                 <div
-                  onClick={() => {
-                    setActiveQuiz(null);
-                    setQuizScoreboard(null);
-                  }}
+                  onClick={resetQuizRuntimeState}
                   style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
                 >
                   <X size={16} color="#9CA3AF" />
@@ -2169,7 +2701,6 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
               )}
             </div>
 
-            {/* Progress & Timer */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#9CA3AF', fontWeight: '600' }}>
                 <span>문제 {activeQuiz.currentIndex + 1} / {activeQuiz.totalQuestions}</span>
@@ -2180,40 +2711,39 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
               </div>
             </div>
 
-            {/* Question Text */}
             <div style={{ backgroundColor: '#0F172A', borderRadius: '12px', padding: '20px', border: '1px solid rgba(255,255,255,0.03)' }}>
               <p style={{ margin: 0, fontSize: '15px', color: '#E5E7EB', fontWeight: '600', lineHeight: '1.6', wordBreak: 'keep-all' }}>
                 {activeQuiz.questionText}
               </p>
             </div>
 
-            {/* Options */}
-            {!quizScoreboard && (
+            {quizPhase !== 'ENDED' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {activeQuiz.options.map((option, idx) => {
                   const isSelected = quizSelectedAnswer === idx;
+                  const isCorrect = quizReveal?.correctAnswer === idx;
                   return (
                     <button
                       key={idx}
-                      disabled={quizHasSubmitted}
+                      disabled={quizHasSubmitted || quizTimer <= 0 || quizPhase === 'REVEAL' || quizPhase === 'ENDED'}
                       onClick={() => handleQuizSubmit(idx)}
                       style={{
                         width: '100%',
                         textAlign: 'left',
                         padding: '14px 20px',
                         borderRadius: '12px',
-                        border: isSelected ? '2px solid #3B82F6' : '1px solid rgba(255,255,255,0.08)',
-                        backgroundColor: isSelected ? 'rgba(59, 130, 246, 0.15)' : 'rgba(255,255,255,0.02)',
-                        color: isSelected ? '#60A5FA' : '#D1D5DB',
+                        border: isCorrect ? '2px solid #10B981' : (isSelected ? '2px solid #3B82F6' : '1px solid rgba(255,255,255,0.08)'),
+                        backgroundColor: isCorrect ? 'rgba(16, 185, 129, 0.15)' : (isSelected ? 'rgba(59, 130, 246, 0.15)' : 'rgba(255,255,255,0.02)'),
+                        color: isCorrect ? '#6EE7B7' : (isSelected ? '#60A5FA' : '#D1D5DB'),
                         fontSize: '14px',
-                        fontWeight: isSelected ? '700' : '500',
-                        cursor: quizHasSubmitted ? 'not-allowed' : 'pointer',
+                        fontWeight: (isCorrect || isSelected) ? '700' : '500',
+                        cursor: (quizHasSubmitted || quizTimer <= 0 || quizPhase === 'REVEAL' || quizPhase === 'ENDED') ? 'not-allowed' : 'pointer',
                         transition: 'all 0.2s',
                         outline: 'none'
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: isSelected ? '#3B82F6' : 'rgba(255,255,255,0.1)', color: isSelected ? 'white' : '#9CA3AF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '700' }}>
+                        <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: isCorrect ? '#10B981' : (isSelected ? '#3B82F6' : 'rgba(255,255,255,0.1)'), color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '700' }}>
                           {idx + 1}
                         </div>
                         <span style={{ flex: 1 }}>{option}</span>
@@ -2224,15 +2754,34 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
               </div>
             )}
 
-            {/* Submitting Message */}
-            {quizHasSubmitted && !quizScoreboard && (
+            {quizPhase === 'QUESTION' && quizHasSubmitted && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', color: '#9CA3AF', fontSize: '13px', padding: '10px 0' }}>
                 <RefreshCw size={16} className="animate-spin" />
-                <span>다른 멤버들이 제출할 때까지 대기 중...</span>
+                <span>제출 완료. 30초 종료 후 정답이 공개됩니다.</span>
               </div>
             )}
 
-            {/* Live Scoreboard */}
+            {quizPhase === 'REVEAL' && quizReveal && (
+              <div style={{ backgroundColor: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: '14px', padding: '16px' }}>
+                <div style={{ color: '#6EE7B7', fontSize: '13px', fontWeight: '800', marginBottom: '6px' }}>정답 공개</div>
+                <div style={{ color: '#E5E7EB', fontSize: '14px', lineHeight: '1.6' }}>
+                  정답은 <span style={{ color: '#6EE7B7', fontWeight: '800' }}>보기 {quizReveal.correctAnswer + 1}</span>입니다.
+                </div>
+                <div style={{ color: '#94A3B8', fontSize: '12px', marginTop: '6px' }}>
+                  포인트가 반영되었습니다.
+                </div>
+              </div>
+            )}
+
+            {quizPhase === 'ENDED' && (
+              <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.25)', borderRadius: '14px', padding: '16px' }}>
+                <div style={{ color: '#93C5FD', fontSize: '13px', fontWeight: '800', marginBottom: '6px' }}>퀴즈 종료</div>
+                <div style={{ color: '#E5E7EB', fontSize: '14px', lineHeight: '1.6' }}>
+                  모든 문제가 종료되었습니다. 최종 점수판을 확인하세요.
+                </div>
+              </div>
+            )}
+
             {quizScoreboard && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '8px' }}>
@@ -2257,25 +2806,37 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
                   })}
                 </div>
 
-                {/* Next Button or Final Close */}
-                {activeQuiz.currentIndex + 1 === activeQuiz.totalQuestions ? (
+                {quizPhase === 'ENDED' ? (
                   <button
-                    onClick={() => {
-                      setActiveQuiz(null);
-                      setQuizScoreboard(null);
-                    }}
+                    onClick={resetQuizRuntimeState}
                     style={{ padding: '12px', backgroundColor: '#EF4444', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '700', cursor: 'pointer', transition: '0.2s', width: '100%' }}
                   >
                     퀴즈 종료
                   </button>
                 ) : (
                   <div style={{ textAlign: 'center', color: '#9CA3AF', fontSize: '12px' }}>
-                    방장이 다음 문제를 전송할 때까지 대기하고 있습니다...
+                    {quizPhase === 'REVEAL' ? '잠시 후 다음 문제가 자동으로 시작됩니다.' : '30초 카운트다운 중입니다.'}
                   </div>
                 )}
               </div>
             )}
+          </div>
+        </div>
+      )}
 
+      {/* 퀴즈 시작 실패 에러 모달 (가짜 문제/0초 화면 대신 표시) */}
+      {quizError && !activeQuiz && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.8)', backdropFilter: 'blur(8px)' }}>
+          <div style={{ backgroundColor: '#1E293B', borderRadius: '20px', padding: '32px', width: '420px', maxWidth: '90vw', border: '1px solid rgba(239,68,68,0.3)', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+            <AlertTriangle size={40} color="#F59E0B" />
+            <h2 style={{ margin: 0, fontSize: '17px', fontWeight: '700', color: '#F3F4F6' }}>퀴즈를 시작할 수 없습니다</h2>
+            <p style={{ margin: 0, fontSize: '14px', color: '#CBD5E1', textAlign: 'center', lineHeight: '1.6', wordBreak: 'keep-all' }}>{quizError}</p>
+            <button
+              onClick={() => setQuizError(null)}
+              style={{ marginTop: '4px', padding: '11px 28px', backgroundColor: '#3B82F6', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '700', cursor: 'pointer' }}
+            >
+              확인
+            </button>
           </div>
         </div>
       )}
