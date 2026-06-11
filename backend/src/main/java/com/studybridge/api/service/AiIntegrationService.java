@@ -821,7 +821,13 @@ public class AiIntegrationService {
                         }
                 }
 
-                roadmap = roadmapRepository.save(roadmap);
+                try {
+                        roadmap = roadmapRepository.save(roadmap);
+                } catch (Exception e) {
+                        // 엔티티 저장 실패(예: 컬럼 길이 초과 등)가 500으로 전파되지 않도록 사용자 메시지가 있는 실패 응답으로 변환한다.
+                        log.error("[roadmap:fail] code=ROADMAP_SAVE_FAILED materialId={} message={}", material.getMaterialId(), e.getMessage(), e);
+                        return roadmapFailure(material, "ROADMAP_GENERATION_FAILED", "주차별 로드맵 저장 중 오류가 발생했습니다. 다시 시도해주세요.", true, null);
+                }
 
                 return RoadmapDTO.builder()
                                 .roadmapId(roadmap.getRoadmapId())

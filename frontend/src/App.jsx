@@ -23,6 +23,13 @@ function PrivateRoute({ children }) {
   return isLoggedIn ? children : <Navigate to="/login" replace />;
 }
 
+function AdminRoute({ children }) {
+  const { isLoggedIn, user } = useAuth();
+  if (!isLoggedIn) return <Navigate to="/login" replace />;
+  const isAdmin = user?.role === 'ADMIN' || user?.role === 'ROLE_ADMIN';
+  return isAdmin ? children : <Navigate to="/" replace />;
+}
+
 function App() {
   const { logout, updateUser } = useAuth();
   const [isAuthChecking, setIsAuthChecking] = useState(true);
@@ -97,7 +104,7 @@ function App() {
             }
           />
 
-          <Route path="/admin" element={<AdminPage />} />
+          <Route path="/admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
           <Route path="/studymate" element={<StudyMate />} />
           <Route path="/groupstudy" element={<GroupStudy />} />
           <Route path="/archive" element={<Archive />} />

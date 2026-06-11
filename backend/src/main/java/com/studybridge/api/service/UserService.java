@@ -184,6 +184,7 @@ public class UserService {
                 .major(user.getMajor())
                 .photoUrl(presignedPhotoUrl)
                 .status(user.getStatus())
+                .role(user.getRole())
                 .isSubscribed(user.getIsSubscribed())
                 .suspensionEndDate(user.getSuspensionEndDate())
                 .suspensionReason(user.getSuspensionReason())

@@ -269,6 +269,7 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const [quizUploadError, setQuizUploadError] = useState('');
   
   const [session, setSession] = useState(null);
+  const sessionRef = React.useRef(null); // 강퇴 이벤트 수신 시 최신 세션에 즉시 접근하기 위한 ref
   const [publisher, setPublisher] = useState(null);
   const [subscribers, setSubscribers] = useState([]);
   const [ovError, setOvError] = useState('');
@@ -276,6 +277,23 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const myMember = members.find(m => Number(m.userId) === Number(userId));
   const canUseGroupQuizMaterials = Boolean(myMember || members.some(m => Number(m.userId) === Number(userId)));
   const myDisplayName = user?.displayName || user?.nickname || `User_${userId}`;
+
+  // OpenVidu subscriber의 connection.data에서 userId를 안전하게 추출한다.
+  const parseSubscriberUserId = (sub) => {
+    try {
+      return JSON.parse(sub.stream.connection.data).userId;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  // 강퇴/퇴장된 유저를 참가자 목록과 화상 타일(subscribers)에서 한 번에 제거한다.
+  const removeParticipantEverywhere = (targetUserId) => {
+    if (targetUserId == null) return;
+    console.log('[video:remove] userId=', targetUserId);
+    setMembers(prev => prev.filter(m => String(m.userId) !== String(targetUserId)));
+    setSubscribers(prev => prev.filter(sub => String(parseSubscriberUserId(sub)) !== String(targetUserId)));
+  };
 
   const formatShortDateTime = (value) => {
     if (!value) return '-';
@@ -455,6 +473,24 @@ sessionInstance.on('streamCreated', (event) => {
           }
         });
 
+        // 연결 자체가 끊긴 경우(강퇴 후 자가 disconnect, 브라우저 종료 등) 잔존 타일을 추가로 정리한다.
+        sessionInstance.on('connectionDestroyed', (event) => {
+          if (!isMounted) return;
+          let goneUserId = null;
+          try {
+            goneUserId = JSON.parse(event.connection.data).userId;
+          } catch (e) { /* ignore */ }
+          const goneConnId = event.connection.connectionId;
+          setSubscribers(prev => prev.filter(sub => {
+            try {
+              return sub.stream.connection.connectionId !== goneConnId
+                && String(JSON.parse(sub.stream.connection.data).userId) !== String(goneUserId);
+            } catch (e) {
+              return true;
+            }
+          }));
+        });
+
         // 원격 참가자가 카메라/마이크를 끄거나 켜면(videoActive/audioActive 변경) 즉시 리렌더하여
         // avatar fallback 전환과 마이크 상태 아이콘이 실시간으로 반영되게 한다.
         sessionInstance.on('streamPropertyChanged', (event) => {
@@ -472,6 +508,7 @@ sessionInstance.on('streamCreated', (event) => {
         if (!isMounted) return;
 
         setSession(sessionInstance);
+        sessionRef.current = sessionInstance;
 
         // 이전 프리뷰 화면에서 사용하던 카메라 하드웨어가 완전히 릴리즈될 시간을 확보 (500ms)
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -529,6 +566,7 @@ sessionInstance.on('streamCreated', (event) => {
       if (sessionInstance) {
         sessionInstance.disconnect();
       }
+      sessionRef.current = null;
       setSession(null);
       setPublisher(null);
       setSubscribers([]);
@@ -599,6 +637,39 @@ sessionInstance.on('streamCreated', (event) => {
       client.subscribe(`/topic/group/${study.id}/chat`, (message) => {
         const payload = JSON.parse(message.body);
         setChatMessages(prev => [...prev, payload]);
+      });
+
+      // 참가자 변동(강퇴/퇴장/정지) 실시간 수신: 화상 타일과 참가자 목록에서 즉시 제거한다.
+      client.subscribe(`/topic/group/${study.id}/members`, (message) => {
+        let event;
+        try {
+          event = JSON.parse(message.body);
+        } catch (e) {
+          console.warn('[video:event] parse failed', e);
+          return;
+        }
+        console.log('[video:event] type=', event?.type, 'targetUserId=', event?.targetUserId);
+        const removalTypes = ['PARTICIPANT_LEFT', 'PARTICIPANT_KICKED', 'PARTICIPANT_BANNED', 'PARTICIPANT_DISCONNECTED'];
+        if (!removalTypes.includes(event?.type)) return;
+
+        // 1) 대상이 본인이면 즉시 세션 종료 후 방에서 나간다.
+        if (String(event.targetUserId) === String(userId)) {
+          console.log('[video:self-kicked] userId=', userId);
+          try {
+            sessionRef.current?.disconnect();
+          } catch (e) {
+            console.warn('[video] disconnect failed after kick/leave', e);
+          }
+          const msg = event.type === 'PARTICIPANT_KICKED'
+            ? '방장에 의해 그룹스터디에서 강제 퇴장되었습니다.'
+            : '그룹스터디 참여가 종료되어 화상채팅에서 나갑니다.';
+          alert(msg);
+          onClose?.();
+          return;
+        }
+
+        // 2) 그 외 참가자는 목록/타일에서 제거한다.
+        removeParticipantEverywhere(event.targetUserId);
       });
 
       client.subscribe(`/topic/group/${study.id}/quiz/session`, (message) => {

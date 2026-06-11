@@ -5,6 +5,7 @@ import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLe
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
 import '../components/studymate/studymate-premium.css';
 import { motion, AnimatePresence } from 'framer-motion';
+import { getAgentColor, agentColorKey } from '../utils/agentColor';
 
 const PERSONALITY_OPTIONS = ['전문적', '친근함', '솔직함', '독특함', '효율적', '냉소적'];
 const KNOWLEDGE_LEVEL_OPTIONS = ['입문 수준', '학사 수준', '석사 수준', '박사 수준', '전문가 수준'];
@@ -62,6 +63,10 @@ const LEARNING_MODE_CHIPS = [
   { value: 'socratic', label: '소크라테스', icon: '🧭' },
   { value: 'simulation', label: '상황극', icon: '🎭' },
 ];
+
+// 메시지 메타데이터(사용된 모드) → 한글 라벨. "이 답변: ○○ 모드" 표시에 사용.
+const LEARNING_MODE_LABEL = Object.fromEntries(LEARNING_MODE_CHIPS.map((m) => [m.value, m.label]));
+const modeLabelOf = (v) => LEARNING_MODE_LABEL[String(v || '').toLowerCase()] || '기본';
 
 // 토론으로 인정하는 값은 명시적 토론만 (discussion/tikitaka/multi_agent_discussion 제외)
 const DEBATE_MODE_VALUES = new Set(['debate', '토론', '토론 모드']);
@@ -140,22 +145,7 @@ const dbChipStyle = (active) => ({
 const toggleInArray = (arr, value) =>
   (arr || []).includes(value) ? arr.filter((v) => v !== value) : [...(arr || []), value];
 
-// ── 에이전트 프리셋 (learningMode와 별개의 역할/성격 프리셋) ──────────────────────
-// learningMode(basic/socratic/debate)와 섞지 않는다. 프리셋은 말투/전문성/관점을 정한다.
-const AGENT_PRESETS = [
-  { value: 'expert_professor', label: '전문교수', personality: '전문적', desc: '개념을 정의·원리·예시·한계로 체계적으로 설명' },
-  { value: 'friendly_friend', label: '친근한친구', personality: '친근함', desc: '쉬운 비유와 편한 말투로 초보자가 질문하기 쉽게' },
-  { value: 'creative_teacher', label: '독창적강사', personality: '독특함', desc: '비유·상상·시각적 예시로 추상 개념을 창의적으로' },
-  { value: 'cold_mentor', label: '냉철한멘토', personality: '냉소적', desc: '오개념·부족한 점을 직설적으로 교정' },
-  { value: 'misconception_tracker', label: '오개념탐지자', personality: '냉소적', desc: '헷갈린 개념·잘못된 전제·빠진 조건을 추적(소크라테스 핵심)' },
-  { value: 'exam_maker', label: '시험출제자', personality: '효율적', desc: '개념을 객관식·단답·서술 문제로 변환' },
-  { value: 'code_reviewer', label: '코드리뷰어', personality: '냉소적', desc: '설계 문제·나쁜 습관·유지보수 위험 지적' },
-  { value: 'practical_architect', label: '실무아키텍트', personality: '전문적', desc: '프로젝트 구조·API·DB·배포 관점으로 설명' },
-  { value: 'interviewer', label: '면접관', personality: '냉소적', desc: '압박·꼬리 질문으로 핵심 개념 검증' },
-  { value: 'roadmap_coach', label: '로드맵코치', personality: '친근함', desc: '다음에 무엇을 어떤 순서로 공부할지 설계' },
-];
-const AGENT_PRESET_LABEL = Object.fromEntries(AGENT_PRESETS.map((p) => [p.value, p.label]));
-const presetPersonality = (preset) => (AGENT_PRESETS.find((p) => p.value === preset)?.personality) || '전문적';
+// 에이전트 프리셋(전문교수/친근한친구/…) 셀렉트는 제거됨. 성격/역할은 생성폼에서 직접 설정한다.
 
 // 모드별 추천 에이전트 조합 (생성 모달 '추천 채우기'용)
 const RECOMMENDED_PRESETS = {
@@ -1162,10 +1152,10 @@ const hydrateHistoryProcessSteps = (history) => explodeHistoryToStageBubbles(his
 
 const getAgentId = (agent) => agent?.id ?? agent?.agentId;
 
-// 화면에 표시되는 채팅방/그룹 제목은 항상 '스터디 브릿지'로 고정한다.
-// 내부 roomId, agentId, DB id 및 저장된 roomName 값은 절대 변경하지 않고 표시명만 고정한다.
+// 그룹/카드/세션 제목은 유저가 생성 시 입력한 roomName을 그대로 사용한다.
+// 내부 roomId/agentId/DB id는 건드리지 않고 표시명만 roomName으로 렌더. roomName이 없을 때만 기본 브랜드명.
 const STUDYBRIDGE_ROOM_TITLE = '스터디 브릿지';
-const getDisplayRoomTitle = () => STUDYBRIDGE_ROOM_TITLE;
+const getDisplayRoomTitle = (room) => room?.roomName || room?.name || STUDYBRIDGE_ROOM_TITLE;
 
 const getAgentKnowledgeLevel = (agent) => {
   return agent?.knowledgeLevel
@@ -1309,6 +1299,8 @@ export default function StudyMate() {
 
   const [showModal, setShowModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
+  // 메시지 헤더 클릭 시 "이 답변: ○○ 모드"를 펼쳐 보일 대상 메시지 id (토글)
+  const [openModeMsgId, setOpenModeMsgId] = useState(null);
 
   const selectedAgentIdRef = useRef(null);
   useEffect(() => {
@@ -1549,11 +1541,15 @@ export default function StudyMate() {
     //  - parentId(=userMsg.id) 기준으로 이 턴의 기존 AI 메시지를 제거 후 재삽입하므로,
     //    같은 이벤트가 여러 번 와도 append되지 않고 항상 1세트만 유지된다(upsert).
     //  - 더 새로운 요청이 시작됐으면(stale) 무시한다.
-    const setTurnAiMessages = (aiMsgs) => {
+    const setTurnAiMessages = (rawAiMsgs) => {
       if (!isActiveRequest()) {
         if (import.meta.env.DEV) console.debug('[StudyMate] [DEDUPED] stale 요청 이벤트 무시', { agentId, requestId });
         return;
       }
+      // 이 턴의 모든 AI 메시지에 사용된 모드를 메타데이터로 저장(이미 있으면 유지).
+      const aiMsgs = (rawAiMsgs || []).map((m) =>
+        m && m.mode == null && m.learningMode == null ? { ...m, mode: activeLearningMode } : m
+      );
       const merge = (list) => {
         const kept = (list || []).filter((m) => !(m.sender === 'AI' && m.parentId === userMsg.id));
         return [...kept, ...aiMsgs];
@@ -2169,9 +2165,12 @@ export default function StudyMate() {
                           <div className="dt-agent-name">{getDisplayRoomTitle(agent)}</div>
                           <div className="dt-agent-tags">
                             {agent.agents && agent.agents.length > 0 ? (
-                              agent.agents.map((ag, idx) => (
-                                <span key={idx} className="dt-tag">#{ag.name}</span>
-                              ))
+                              agent.agents.map((ag, idx) => {
+                                const tagColor = getAgentColor(agentColorKey(ag));
+                                return (
+                                  <span key={idx} className="dt-tag" style={{ color: tagColor.text, backgroundColor: tagColor.bg, borderColor: tagColor.border }}>#{ag.name}</span>
+                                );
+                              })
                             ) : (
                               <>
                                 <span className="dt-tag">#{personality}</span>
@@ -2281,10 +2280,10 @@ export default function StudyMate() {
                     {selectedAgent.agents && selectedAgent.agents.length > 0 && (
                       <div className="dt-agent-chips">
                         {selectedAgent.agents.map((ag, idx) => {
-                          const c = getAvatarColor(idx);
+                          const c = getAgentColor(agentColorKey(ag));
                           return (
                             <div key={ag.id || idx} className="dt-agent-chip">
-                              <div className="dt-chip-dot" style={{ backgroundColor: c.text }} />
+                              <div className="dt-chip-dot" style={{ backgroundColor: c.border }} />
                               <span>{ag.name}</span>
                               <span style={{ color: '#9ca3af', fontSize: 10 }}>({ag.role})</span>
                             </div>
@@ -2345,27 +2344,48 @@ export default function StudyMate() {
                       let agentTheme = { bg: '#F3F4F6', icon: '🤖', tagBg: '#E5E7EB', accent: '#4B5563' };
                       let agentPersonality = '';
                       let agentRole = '';
+                      let speakingAgent = null;
 
                       if (!isUser && selectedAgent && selectedAgent.agents) {
-                        const matchedAgent = selectedAgent.agents.find(
+                        speakingAgent = selectedAgent.agents.find(
                           (ag) => ag.name === senderName || ag.name === msg.senderName || ag.name === msg.sender_name
-                        );
-                        if (matchedAgent) {
-                          agentPersonality = getAgentPersonality(matchedAgent);
+                        ) || null;
+                        if (speakingAgent) {
+                          agentPersonality = getAgentPersonality(speakingAgent);
                           agentTheme = getAgentStyleTheme(agentPersonality);
-                          agentRole = matchedAgent.role;
+                          agentRole = speakingAgent.role;
                         }
                       }
 
+                      // 발화 에이전트 고유 색 (말풍선 보더/이름/아바타 공통). 매칭 실패 시 senderName으로 폴백.
+                      const agentColor = getAgentColor(speakingAgent ? agentColorKey(speakingAgent) : senderName);
+                      // 이 답변에 사용된 모드: 렌더되는 페이로드 종류에서 결정적으로 도출(+저장된 mode 폴백).
+                      const msgMode = hasSimulationPayload ? 'simulation'
+                        : debatePayload ? 'debate'
+                        : socraticPayload ? 'socratic'
+                        : (msg.mode || msg.learningMode || 'basic');
+                      const msgKey = msg.id ?? `${msg.parentId}-${msg.badgeKey}-${idx}`;
+                      const showThisMode = !isUser && openModeMsgId === msgKey;
+
                       return (
                         <div key={msg.id ?? `${msg.parentId}-${msg.badgeKey}-${idx}`} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
-                          <div className="chat-bubble-sender" style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isUser ? undefined : agentTheme.accent }}>
+                          <div
+                            className="chat-bubble-sender"
+                            onClick={!isUser ? () => setOpenModeMsgId((prev) => (prev === msgKey ? null : msgKey)) : undefined}
+                            title={!isUser ? '클릭하면 이 답변에 사용된 모드를 표시합니다' : undefined}
+                            style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isUser ? undefined : agentColor.text, cursor: isUser ? undefined : 'pointer' }}
+                          >
                             {!isUser && (
-                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', backgroundColor: agentTheme.tagBg, fontSize: '11px' }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', backgroundColor: agentColor.bg, color: agentColor.text, fontSize: '11px' }}>
                                 {agentTheme.icon}
                               </span>
                             )}
                             <span style={{ fontWeight: '700' }}>{senderName}</span>
+                            {showThisMode && (
+                              <span style={{ fontSize: '10px', padding: '1px 7px', borderRadius: '999px', backgroundColor: `${agentColor.border}1A`, color: agentColor.text, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                이 답변: {modeLabelOf(msgMode)} 모드
+                              </span>
+                            )}
                             {!isUser && msg.badge && (
                               <span style={{ fontSize: '10px', padding: '1px 7px', borderRadius: '999px', backgroundColor: `${msg.badge.color}22`, color: msg.badge.color, fontWeight: 'bold', whiteSpace: 'nowrap' }}>
                                 {msg.badge.text}
@@ -2383,7 +2403,7 @@ export default function StudyMate() {
                             )}
                           </div>
                           {hasSimulationPayload ? (
-                            <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', maxWidth: '100%' }}>
+                            <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', borderLeft: `4px solid ${agentColor.border}`, maxWidth: '100%' }}>
                               <SimulationRenderer
                                 stages={simulationStages}
                                 onChoice={(choice) => {
@@ -2401,15 +2421,15 @@ export default function StudyMate() {
                               />
                             </div>
                           ) : debatePayload ? (
-                            <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', maxWidth: '100%' }}>
+                            <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', borderLeft: `4px solid ${agentColor.border}`, maxWidth: '100%' }}>
                               <DebateRenderer stages={debateStages} />
                             </div>
                           ) : socraticPayload ? (
-                            <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', maxWidth: '100%' }}>
+                            <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', borderLeft: `4px solid ${agentColor.border}`, maxWidth: '100%' }}>
                               <SocraticRenderer steps={socraticSteps} />
                             </div>
                           ) : (
-                            <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none' }}>
+                            <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none', borderLeft: isUser ? undefined : `4px solid ${agentColor.border}` }}>
                               {msg.content}
                             </div>
                           )}
@@ -2624,33 +2644,7 @@ export default function StudyMate() {
                   )}
                 </AnimatePresence>
 
-                {/* 라이브 모드 토글 — 채팅 중 언제든 모드 변경(방 생성 모드를 override) */}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '0 4px 8px', alignItems: 'center' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginRight: '2px' }}>모드</span>
-                  {LEARNING_MODE_CHIPS.map((m) => {
-                    const active = learningMode === m.value;
-                    return (
-                      <button
-                        key={m.value}
-                        type="button"
-                        onClick={() => setLearningMode(m.value)}
-                        title={m.label}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: '4px',
-                          padding: '4px 10px', borderRadius: '16px', cursor: 'pointer',
-                          fontSize: '12px', fontWeight: active ? 700 : 500,
-                          border: `1px solid ${active ? 'var(--color-primary)' : 'var(--color-border)'}`,
-                          backgroundColor: active ? 'var(--color-primary)' : 'transparent',
-                          color: active ? '#fff' : 'var(--color-text-muted)',
-                          transition: 'all 0.15s ease',
-                        }}
-                      >
-                        <span>{m.icon}</span>{m.label}
-                      </button>
-                    );
-                  })}
-                </div>
-
+                {/* 라이브 모드 토글은 입력창 우측의 컴팩트 드롭다운으로 축소됨(아래 form 내부). */}
                 <form onSubmit={sendMessage} className="chat-input-premium">
                   <input
                     type="text"
@@ -2679,6 +2673,23 @@ export default function StudyMate() {
                     placeholder={viewTab === 'mindmap' ? '마인드맵으로 탐색할 질문을 입력하세요... (@를 입력해 에이전트 호출)' : '메시지를 입력해보세요... (@호출)'}
                     disabled={typingRooms[getAgentId(selectedAgent)]}
                   />
+                  {/* 모드 선택: 항상 펼쳐두지 않고 입력창 우측 컴팩트 드롭다운으로 축소 */}
+                  <select
+                    value={learningMode}
+                    onChange={(e) => setLearningMode(e.target.value)}
+                    title="대화 모드 선택"
+                    aria-label="대화 모드"
+                    style={{
+                      flexShrink: 0, height: '34px', maxWidth: '120px', padding: '0 8px',
+                      borderRadius: '10px', border: '1px solid var(--color-border)',
+                      backgroundColor: 'var(--color-bg, #fff)', color: 'var(--color-text-muted)',
+                      fontSize: '12px', cursor: 'pointer',
+                    }}
+                  >
+                    {LEARNING_MODE_CHIPS.map((m) => (
+                      <option key={m.value} value={m.value}>{m.icon} {m.label}</option>
+                    ))}
+                  </select>
                   <button type="submit" disabled={typingRooms[getAgentId(selectedAgent)] || !message.trim()}>
                     <Send size={17} />
                   </button>
@@ -3250,33 +3261,6 @@ export default function StudyMate() {
                       )}
                     </div>
 
-                    {/* 에이전트 프리셋 (역할/성격 프리셋 — learningMode와 별개) */}
-                    <div>
-                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>
-                        에이전트 프리셋 <span style={{ color: 'var(--color-text-muted)', fontWeight: 500 }}>(역할/성격)</span>
-                      </label>
-                      <select
-                        value={agent.agentPreset || ''}
-                        onChange={(e) => {
-                          const preset = e.target.value;
-                          const list = [...createdAgents];
-                          list[index] = {
-                            ...list[index],
-                            agentPreset: preset,
-                            // 프리셋 선택 시 성격을 함께 맞춰준다(사용자가 이후 수동 변경 가능).
-                            personality: preset ? presetPersonality(preset) : list[index].personality,
-                          };
-                          setCreatedAgents(list);
-                        }}
-                        style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}
-                      >
-                        <option value="">선택 안 함 (직접 설정)</option>
-                        {AGENT_PRESETS.map((p) => (
-                          <option key={p.value} value={p.value}>{p.label} — {p.desc}</option>
-                        ))}
-                      </select>
-                    </div>
-
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                       <div>
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>이름</label>
@@ -3453,12 +3437,14 @@ export default function StudyMate() {
                   const agPersonality = getAgentPersonality(ag);
                   const agTheme = getAgentStyleTheme(agPersonality);
                   const agKnowledge = getAgentKnowledgeLevel(ag);
+                  const agColor = getAgentColor(agentColorKey(ag));
 
                   return (
                     <div
                       key={ag.id || idx}
                       style={{
                         border: '1px solid var(--color-border)',
+                        borderLeft: `4px solid ${agColor.border}`,
                         borderRadius: '12px',
                         padding: '16px',
                         backgroundColor: '#FFFFFF',
@@ -3478,14 +3464,15 @@ export default function StudyMate() {
                               width: '28px',
                               height: '28px',
                               borderRadius: '50%',
-                              backgroundColor: agTheme.tagBg,
+                              backgroundColor: agColor.bg,
+                              color: agColor.text,
                               fontSize: '16px'
                             }}
                           >
                             {agTheme.icon}
                           </span>
                           <div>
-                            <span style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--color-text-main)' }}>{ag.name}</span>
+                            <span style={{ fontWeight: 'bold', fontSize: '15px', color: agColor.text }}>{ag.name}</span>
                             <span style={{ color: 'var(--color-text-muted)', fontSize: '11px', marginLeft: '6px' }}>({ag.role || '학습 메이트'})</span>
                           </div>
                         </div>

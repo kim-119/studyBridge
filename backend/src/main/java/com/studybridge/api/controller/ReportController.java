@@ -48,6 +48,15 @@ public class ReportController {
         return ResponseEntity.ok(response);
     }
 
+    // 댓글 신고 등록
+    @PostMapping("/comment")
+    public ResponseEntity<ReportDTO.Response> reportComment(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestBody ReportDTO.CommentReportRequest request) {
+        ReportDTO.Response response = reportService.reportComment(userDetails.getId(), request);
+        return ResponseEntity.ok(response);
+    }
+
     // 신고 내역 목록 조회
     @GetMapping
     public ResponseEntity<List<ReportDTO.Response>> listReports(

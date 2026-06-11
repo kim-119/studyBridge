@@ -27,7 +27,7 @@ public class Report {
 
     @Enumerated(EnumType.STRING)
     @Column(name = "report_type", nullable = false, length = 20)
-    private ReportType reportType; // USER or POST
+    private ReportType reportType; // USER, POST or COMMENT
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "reported_user_id")
@@ -36,6 +36,10 @@ public class Report {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "reported_blog_id")
     private Blog reportedBlog; // 신고 대상 게시물
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "reported_comment_id")
+    private BlogComment reportedComment; // 신고 대상 댓글
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)

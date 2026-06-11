@@ -1,16 +1,64 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Heart, MessageSquare, Share2, FileText, Download, User } from 'lucide-react';
+import { ArrowLeft, Heart, MessageSquare, Share2, FileText, Download, User, Flag, X } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { knowledgeService } from '../services/api';
+
+const REPORT_REASONS = [
+  { value: 'SPAM', label: '스팸/광고' },
+  { value: 'ABUSE', label: '욕설/비방' },
+  { value: 'INAPPROPRIATE_CONTENT', label: '부적절한 콘텐츠' },
+  { value: 'OTHER', label: '기타' },
+];
 
 export default function KnowledgeDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user, userId } = useAuth();
-  
+
   const [post, setPost] = useState(null);
   const [newComment, setNewComment] = useState('');
+
+  // 신고 관련 상태
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportType, setReportType] = useState('post'); // 'post' | 'comment'
+  const [reportTargetId, setReportTargetId] = useState(null);
+  const [reportReason, setReportReason] = useState('SPAM');
+  const [reportDetails, setReportDetails] = useState('');
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+
+  const openReportModal = (type, targetId) => {
+    if (!userId) {
+      alert('로그인 후 이용해주세요.');
+      return;
+    }
+    setReportType(type);
+    setReportTargetId(targetId);
+    setReportReason('SPAM');
+    setReportDetails('');
+    setShowReportModal(true);
+  };
+
+  const handleReportSubmit = async (e) => {
+    e.preventDefault();
+    if (reportSubmitting) return;
+    setReportSubmitting(true);
+    try {
+      const payload = { reason: reportReason, details: reportDetails };
+      if (reportType === 'post') {
+        await knowledgeService.reportPost(reportTargetId, payload);
+      } else {
+        await knowledgeService.reportComment(reportTargetId, payload);
+      }
+      alert('신고가 정상적으로 접수되었습니다. 관리자 검토 후 조치 예정입니다.');
+      setShowReportModal(false);
+    } catch (error) {
+      console.error('Failed to submit report:', error);
+      alert(error.response?.data?.message || '신고 처리에 실패했습니다. 이미 신고했거나 본인의 글/댓글이 아닌지 확인해주세요.');
+    } finally {
+      setReportSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     fetchPostDetail();
@@ -232,6 +280,15 @@ export default function KnowledgeDetail() {
               <Share2 size={20} />
               공유하기
             </button>
+            {!isMyPost && userId && (
+              <button
+                onClick={() => openReportModal('post', post.blogId)}
+                style={{ padding: '12px 32px', display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: 'white', border: '2px solid #FCA5A5', color: '#EF4444', borderRadius: '40px', fontSize: '16px', fontWeight: '700', cursor: 'pointer', transition: 'all 0.2s' }}
+              >
+                <Flag size={20} />
+                신고하기
+              </button>
+            )}
           </div>
         </div>
 
@@ -292,13 +349,22 @@ export default function KnowledgeDetail() {
                   <div style={{ color: '#4B5563', fontSize: '15px', lineHeight: '1.6' }}>
                     {comment.content}
                   </div>
-                  {isMyComment && (
+                  {isMyComment ? (
                     <button
                       onClick={() => handleDeleteComment(comment.commentId)}
                       style={{ position: 'absolute', right: '0', top: '0', background: 'none', border: 'none', color: '#EF4444', fontSize: '13px', cursor: 'pointer', padding: '4px', fontWeight: 'bold' }}
                     >
                       삭제
                     </button>
+                  ) : (
+                    userId && (
+                      <button
+                        onClick={() => openReportModal('comment', comment.commentId)}
+                        style={{ position: 'absolute', right: '0', top: '0', display: 'flex', alignItems: 'center', gap: '4px', background: 'none', border: 'none', color: '#9CA3AF', fontSize: '13px', cursor: 'pointer', padding: '4px', fontWeight: 'bold' }}
+                      >
+                        <Flag size={13} /> 신고
+                      </button>
+                    )
                   )}
                 </div>
               </div>
@@ -307,6 +373,59 @@ export default function KnowledgeDetail() {
 
         </div>
       </div>
+
+      {/* 신고 모달 */}
+      {showReportModal && (
+        <div
+          style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}
+          onClick={() => setShowReportModal(false)}
+        >
+          <div
+            style={{ backgroundColor: 'white', borderRadius: '16px', width: '100%', maxWidth: '480px', overflow: 'hidden' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px', borderBottom: '1px solid #E5E7EB' }}>
+              <h3 style={{ fontSize: '18px', fontWeight: 'bold', margin: 0 }}>{reportType === 'post' ? '게시글 신고' : '댓글 신고'}</h3>
+              <button onClick={() => setShowReportModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6B7280' }}>
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleReportSubmit} style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div style={{ padding: '12px 16px', backgroundColor: '#FEF2F2', borderRadius: '8px', fontSize: '13px', color: '#991B1B', lineHeight: '1.5' }}>
+                신고된 내용은 관리자 검토를 통해 확인하며, 허위 신고 시 서비스 이용에 제한을 받을 수 있습니다.
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#374151', marginBottom: '8px' }}>신고 사유 선택</label>
+                <select
+                  value={reportReason}
+                  onChange={(e) => setReportReason(e.target.value)}
+                  style={{ width: '100%', boxSizing: 'border-box', padding: '12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '15px', outline: 'none', backgroundColor: 'white' }}
+                >
+                  {REPORT_REASONS.map((r) => (
+                    <option key={r.value} value={r.value}>{r.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#374151', marginBottom: '8px' }}>상세 사유 (선택)</label>
+                <textarea
+                  value={reportDetails}
+                  onChange={(e) => setReportDetails(e.target.value)}
+                  placeholder="신고 사유를 상세하게 작성해주세요."
+                  style={{ width: '100%', boxSizing: 'border-box', padding: '12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '15px', outline: 'none', resize: 'vertical', minHeight: '90px' }}
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={reportSubmitting}
+                style={{ padding: '14px', backgroundColor: reportSubmitting ? '#9CA3AF' : '#EF4444', color: 'white', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: reportSubmitting ? 'not-allowed' : 'pointer' }}
+              >
+                신고 접수
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

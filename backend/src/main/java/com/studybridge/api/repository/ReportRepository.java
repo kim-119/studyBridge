@@ -11,6 +11,8 @@ import java.util.List;
 public interface ReportRepository extends JpaRepository<Report, Long> {
     boolean existsByReporter_IdAndReportedUser_Id(Long reporterId, Long reportedUserId);
     boolean existsByReporter_IdAndReportedBlog_BlogId(Long reporterId, Long reportedBlogId);
+    boolean existsByReporter_IdAndReportedComment_CommentId(Long reporterId, Long commentId);
+    void deleteByReportedComment_CommentId(Long commentId);
     List<Report> findAllByOrderByCreatedAtDesc();
     List<Report> findByReportTypeOrderByCreatedAtDesc(ReportType reportType);
 }

@@ -9,6 +9,7 @@ import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.BlogCommentRepository;
 import com.studybridge.api.repository.BlogLikeRepository;
 import com.studybridge.api.repository.BlogRepository;
+import com.studybridge.api.repository.ReportRepository;
 import com.studybridge.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +32,7 @@ public class BlogService {
     private final BlogCommentRepository blogCommentRepository;
     private final BlogLikeRepository blogLikeRepository;
     private final UserRepository userRepository;
+    private final ReportRepository reportRepository;
     private final S3Service s3Service;
 
     // 블로그 생성
@@ -236,6 +238,7 @@ public class BlogService {
             throw new SecurityException("댓글 삭제 권한이 없습니다.");
         }
 
+        reportRepository.deleteByReportedComment_CommentId(commentId);
         blogCommentRepository.delete(comment);
         log.info("[댓글 삭제 완료] 댓글 ID: {}, 요청자 ID: {}", commentId, userId);
     }
@@ -246,6 +249,7 @@ public class BlogService {
         BlogComment comment = blogCommentRepository.findById(commentId)
                 .orElseThrow(() -> new IllegalArgumentException("댓글을 찾을 수 없습니다."));
 
+        reportRepository.deleteByReportedComment_CommentId(commentId);
         blogCommentRepository.delete(comment);
         log.info("[댓글 강제 삭제 완료] 댓글 ID: {}", commentId);
     }

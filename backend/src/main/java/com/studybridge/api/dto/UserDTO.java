@@ -86,6 +86,7 @@ public class UserDTO {
         private String major;
         private String photoUrl;
         private String status;
+        private String role;
         private Boolean isSubscribed;
         private LocalDateTime suspensionEndDate;
         private String suspensionReason;

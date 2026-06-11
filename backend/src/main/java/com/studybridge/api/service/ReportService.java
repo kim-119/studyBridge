@@ -2,6 +2,7 @@ package com.studybridge.api.service;
 
 import com.studybridge.api.dto.ReportDTO;
 import com.studybridge.api.entity.*;
+import com.studybridge.api.repository.BlogCommentRepository;
 import com.studybridge.api.repository.BlogRepository;
 import com.studybridge.api.repository.ReportRepository;
 import com.studybridge.api.repository.UserRepository;
@@ -22,6 +23,7 @@ public class ReportService {
     private final ReportRepository reportRepository;
     private final UserRepository userRepository;
     private final BlogRepository blogRepository;
+    private final BlogCommentRepository blogCommentRepository;
 
     // 유저 신고 등록
     @Transactional
@@ -83,6 +85,36 @@ public class ReportService {
         return convertToDTO(savedReport);
     }
 
+    // 댓글 신고 등록
+    @Transactional
+    public ReportDTO.Response reportComment(Long reporterId, ReportDTO.CommentReportRequest request) {
+        User reporter = userRepository.findById(reporterId)
+                .orElseThrow(() -> new IllegalArgumentException("신고자를 찾을 수 없습니다."));
+        BlogComment reportedComment = blogCommentRepository.findById(request.getReportedCommentId())
+                .orElseThrow(() -> new IllegalArgumentException("신고 대상 댓글을 찾을 수 없습니다."));
+
+        if (reportedComment.getAuthor() != null && reportedComment.getAuthor().getId().equals(reporterId)) {
+            throw new IllegalArgumentException("자신의 댓글은 신고할 수 없습니다.");
+        }
+
+        if (reportRepository.existsByReporter_IdAndReportedComment_CommentId(reporterId, request.getReportedCommentId())) {
+            throw new IllegalStateException("이미 해당 댓글을 신고하셨습니다.");
+        }
+
+        Report report = Report.builder()
+                .reporter(reporter)
+                .reportedComment(reportedComment)
+                .reportType(ReportType.COMMENT)
+                .reason(request.getReason())
+                .details(request.getDetails())
+                .build();
+
+        Report savedReport = reportRepository.save(report);
+        log.info("[댓글 신고 완료] 신고자: {}, 댓글 ID: {}, 사유: {}", reporter.getDisplayName(), reportedComment.getCommentId(), request.getReason());
+
+        return convertToDTO(savedReport);
+    }
+
     // 신고 내역 목록 조회
     public List<ReportDTO.Response> listReports() {
         return reportRepository.findAllByOrderByCreatedAtDesc().stream()
@@ -114,6 +146,10 @@ public class ReportService {
         } else if (report.getReportType() == ReportType.POST && report.getReportedBlog() != null) {
             targetId = report.getReportedBlog().getBlogId();
             targetTitleOrName = report.getReportedBlog().getTitle();
+        } else if (report.getReportType() == ReportType.COMMENT && report.getReportedComment() != null) {
+            targetId = report.getReportedComment().getCommentId();
+            String content = report.getReportedComment().getContent();
+            targetTitleOrName = content != null && content.length() > 30 ? content.substring(0, 30) + "..." : content;
         }
 
         return ReportDTO.Response.builder()

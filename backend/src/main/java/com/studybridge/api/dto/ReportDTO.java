@@ -36,6 +36,17 @@ public class ReportDTO {
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
+    public static class CommentReportRequest {
+        private Long reportedCommentId;
+        private ReportReason reason;
+        private String details;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
     public static class Response {
         private Long reportId;
         private Long reporterId;
