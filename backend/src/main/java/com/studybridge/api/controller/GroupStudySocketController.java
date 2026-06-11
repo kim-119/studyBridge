@@ -1,15 +1,7 @@
 package com.studybridge.api.controller;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.GroupStudySocketDTO;
-import com.studybridge.api.entity.GroupStudyMember;
-import com.studybridge.api.entity.GroupStudyMemberStatus;
-import com.studybridge.api.entity.GroupStudyQuiz;
-import com.studybridge.api.entity.GroupStudyQuizQuestion;
-import com.studybridge.api.repository.GroupStudyMemberRepository;
-import com.studybridge.api.repository.GroupStudyQuizQuestionRepository;
-import com.studybridge.api.repository.GroupStudyQuizRepository;
+import com.studybridge.api.service.GroupStudyQuizSessionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
@@ -17,12 +9,8 @@ import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Controller;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.stream.Collectors;
 
 @Controller
 @RequiredArgsConstructor
@@ -30,10 +18,7 @@ import java.util.stream.Collectors;
 public class GroupStudySocketController {
 
     private final SimpMessagingTemplate messagingTemplate;
-    private final GroupStudyMemberRepository groupStudyMemberRepository;
-    private final GroupStudyQuizRepository groupStudyQuizRepository;
-    private final GroupStudyQuizQuestionRepository groupStudyQuizQuestionRepository;
-    private final ObjectMapper objectMapper;
+    private final GroupStudyQuizSessionService quizSessionService;
 
     @MessageMapping("/group/{groupId}/chat")
     public void broadcastGroupChat(
@@ -52,102 +37,48 @@ public class GroupStudySocketController {
             @DestinationVariable Long groupId,
             @Payload GroupStudySocketDTO.QuizStartPayload payload) {
 
-        log.info("Leader triggered quiz play. groupId={}, quizId={}", groupId, payload.getQuizId());
-
-        GroupStudyQuiz quiz = groupStudyQuizRepository.findById(payload.getQuizId())
-                .orElse(null);
-
-        if (quiz == null) {
-            log.warn("Quiz not found with ID: {}", payload.getQuizId());
-            return;
-        }
-
-        List<GroupStudyQuizQuestion> questions = groupStudyQuizQuestionRepository.findByQuizId(payload.getQuizId());
-
-        if (!questions.isEmpty()) {
-            sendQuestion(groupId, quiz, questions, 0);
+        log.info("Group member triggered quiz play. groupId={}, quizId={}, userId={}", groupId,
+                payload.getQuizId(), payload.getUserId());
+        try {
+            quizSessionService.startQuiz(groupId, payload.getQuizId(), payload.getUserId());
+        } catch (Exception e) {
+            log.warn("Quiz start rejected. groupId={}, quizId={}, userId={}, reason={}", groupId, payload.getQuizId(),
+                    payload.getUserId(), e.getMessage(), e);
+            // 실패를 조용히 삼키지 않고 프론트에 명확한 에러를 알려, placeholder/0초 화면 대신 에러를 표시하게 한다.
+            messagingTemplate.convertAndSend("/topic/group/" + groupId + "/quiz/error",
+                    GroupStudySocketDTO.QuizErrorPayload.builder()
+                            .quizId(payload.getQuizId())
+                            .userId(payload.getUserId())
+                            .message(resolveQuizStartError(e))
+                            .occurredAt(LocalDateTime.now())
+                            .build());
         }
     }
 
+    private String resolveQuizStartError(Exception e) {
+        String msg = e.getMessage();
+        if (e instanceof IllegalStateException && msg != null && msg.contains("문제가 없")) {
+            return "이 퀴즈에는 문제가 없습니다. PDF 자료 기반 퀴즈를 다시 생성한 뒤 시작해주세요.";
+        }
+        if (e instanceof SecurityException) {
+            return "그룹 멤버만 퀴즈를 시작할 수 있습니다.";
+        }
+        if (msg != null && !msg.isBlank()) {
+            return "퀴즈를 시작하지 못했습니다: " + msg;
+        }
+        return "퀴즈를 시작하지 못했습니다. 잠시 후 다시 시도해주세요.";
+    }
+
     @MessageMapping("/group/{groupId}/quiz/submit")
-    @Transactional
     public void submitAnswer(
             @DestinationVariable Long groupId,
             @Payload GroupStudySocketDTO.AnswerSubmitPayload payload) {
 
-        log.info("User submitted answer. groupId={}, userId={}, questionId={}, submitted={}",
-                groupId, payload.getUserId(), payload.getQuestionId(), payload.getSubmittedAnswer());
-
-        GroupStudyQuizQuestion question = groupStudyQuizQuestionRepository.findById(payload.getQuestionId())
-                .orElse(null);
-
-        if (question == null)
-            return;
-
-        GroupStudyQuiz quiz = question.getQuiz();
-
-        boolean isCorrect = question.getCorrectAnswer().equals(payload.getSubmittedAnswer());
-        int pointsEarned = 0;
-
-        if (isCorrect) {
-            pointsEarned = quiz.getRewardPoints();
-
-            int timeLeft = question.getTimeLimitSeconds() - payload.getTimeTakenSeconds();
-            if (timeLeft > 0) {
-                pointsEarned += (timeLeft / 2);
-            }
-
-            GroupStudyMember member = groupStudyMemberRepository.findByGroupStudyIdAndUserIdAndStatus(
-                    groupId, payload.getUserId(), GroupStudyMemberStatus.JOINED).orElse(null);
-
-            if (member != null) {
-                member.setPoints(member.getPoints() + pointsEarned);
-                groupStudyMemberRepository.save(member);
-                log.info("Correct! Added points={} to userId={}. Total points={}", pointsEarned, payload.getUserId(),
-                        member.getPoints());
-            }
-        }
-
-        GroupStudySocketDTO.GradingPayload gradingResult = GroupStudySocketDTO.GradingPayload.builder()
-                .questionId(payload.getQuestionId())
-                .isCorrect(isCorrect)
-                .pointsEarned(pointsEarned)
-                .correctAnswer(question.getCorrectAnswer())
-                .build();
-
-        List<GroupStudyMember> activeMembers = groupStudyMemberRepository.findByGroupStudyIdAndStatus(groupId,
-                GroupStudyMemberStatus.JOINED);
-        List<GroupStudySocketDTO.ScoreboardEntry> scoreboard = activeMembers.stream()
-                .map(m -> new GroupStudySocketDTO.ScoreboardEntry(m.getUser().getId(), m.getUser().getDisplayName(),
-                        m.getPoints()))
-                .sorted((a, b) -> b.getPoints().compareTo(a.getPoints()))
-                .collect(Collectors.toList());
-
-        messagingTemplate.convertAndSend("/topic/group/" + groupId + "/quiz/scoreboard", scoreboard);
-    }
-
-    private void sendQuestion(Long groupId, GroupStudyQuiz quiz, List<GroupStudyQuizQuestion> questions, int index) {
-        GroupStudyQuizQuestion q = questions.get(index);
-
-        List<String> options = new ArrayList<>();
         try {
-            options = objectMapper.readValue(q.getOptionsJson(), new TypeReference<List<String>>() {
-            });
+            quizSessionService.submitAnswer(groupId, payload);
         } catch (Exception e) {
-            log.error("Failed to parse optionsJson for question ID={}", q.getId());
+            log.warn("Quiz answer rejected. groupId={}, userId={}, questionId={}, reason={}", groupId,
+                    payload.getUserId(), payload.getQuestionId(), e.getMessage());
         }
-
-        GroupStudySocketDTO.QuestionBroadcastPayload packet = GroupStudySocketDTO.QuestionBroadcastPayload.builder()
-                .quizId(quiz.getId())
-                .quizTitle(quiz.getTitle())
-                .questionId(q.getId())
-                .questionText(q.getQuestion())
-                .options(options)
-                .currentIndex(index)
-                .totalQuestions(questions.size())
-                .timeLimitSeconds(q.getTimeLimitSeconds())
-                .build();
-
-        messagingTemplate.convertAndSend("/topic/group/" + groupId + "/quiz/question", packet);
     }
 }

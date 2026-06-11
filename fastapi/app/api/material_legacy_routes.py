@@ -19,11 +19,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ai", tags=["Material AI (live)"])
@@ -48,11 +49,12 @@ class SummaryReq(BaseModel):
 
 
 class QuizReq(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
     text: Optional[str] = None
-    material_id: Optional[int] = None
+    material_id: Optional[int] = Field(None, validation_alias=AliasChoices("material_id", "materialId"))
     difficulty: Optional[str] = "보통"
-    questionCount: Optional[int] = 5
-    document_title: Optional[str] = None
+    questionCount: Optional[int] = Field(5, validation_alias=AliasChoices("questionCount", "quizCount", "count", "numQuestions", "question_count"))
+    document_title: Optional[str] = Field(None, validation_alias=AliasChoices("document_title", "documentTitle", "title"))
 
 
 class QuestionReq(BaseModel):
@@ -177,12 +179,14 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
         return {**_fail("PDF_OCR_REQUIRED",
                      "이미지 기반 PDF라 텍스트 추출이 필요합니다. OCR 설정을 켠 뒤 다시 시도해주세요.",
                      text_status=_text_status(ts, 0)), "metadata": {"ocr": ocr_unavailable_status()}}
+    requested_count = max(1, min(int(req.questionCount or 5), 20))
+    logger.info("material quiz start material_id=%s requestedCount=%s difficulty=%s textLen=%s", req.material_id, requested_count, req.difficulty, ts["textLength"])
     cache = await get_or_build_chunks(req.material_id, req.text)
     chunks = cache["chunks"]
     context = build_limited_context(chunks, AI_QUIZ_MAX_CHUNKS) or (req.text or "")[:6000]
     try:
         r = await asyncio.wait_for(asyncio.to_thread(
-            generate_quiz_json, context, req.difficulty or "보통", req.questionCount or 5,
+            generate_quiz_json, context, req.difficulty or "보통", requested_count,
         ), timeout=_t(QUIZ_TIMEOUT))
     except asyncio.TimeoutError:
         return _fail("AI_TIMEOUT", "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
@@ -199,13 +203,14 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
 
     quiz_data = json.dumps(questions, ensure_ascii=False)  # 프론트 parseQuizQuestions가 파싱
     elapsed = int((time.time() - started) * 1000)
+    logger.info("material quiz done material_id=%s requestedCount=%s generatedCount=%s provider=%s elapsedMs=%s", req.material_id, requested_count, len(questions), r.get("provider"), elapsed)
     return {
         "success": True,
         "quizData": quiz_data,           # 하위호환 (Spring이 그대로 저장)
         "quizzes": questions,            # 확장
         "warnings": r.get("warnings", []),
         "textStatus": _text_status(ts, len(chunks)),
-        "metadata": {"provider": "openai_gpt", "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "metadata": {"provider": r.get("provider", "ollama_qwen"), "model": os.getenv("OLLAMA_MODEL", "qwen2.5:14b"),
                      "elapsedMs": elapsed, "chunkCount": len(chunks),
                      "cacheHit": cache["cacheHit"], "cacheBackend": cache["cacheBackend"],
                      "extractedTextHash": cache.get("extractedTextHash")},
@@ -267,6 +272,14 @@ async def ai_question(req: QuestionReq) -> Dict[str, Any]:
                 "answer": "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."}
 
     qa = validate_qa_result(raw_answer, question, context)
+    if qa["answer"].strip().startswith("문서 기준으로는 확인되지 않습니다") and context.strip():
+        context_lower = context.lower()
+        q_terms = [t for t in re.findall(r"[가-힣A-Za-z0-9+_.#-]{2,}", question) if t.lower() in context_lower]
+        if q_terms:
+            evidence = re.sub(r"\s+", " ", context).strip()
+            evidence = re.sub(r"\[chunk \d+\]", "", evidence).strip()
+            qa["answer"] = f"자료 기준으로는 {evidence[:700]}"
+            qa.setdefault("warnings", []).append("LLM이 근거 없음으로 응답해 자료 문맥 기반 답변으로 보정했습니다.")
     elapsed = int((time.time() - started) * 1000)
     return {
         "success": True,
@@ -311,18 +324,49 @@ async def ai_roadmap(req: RoadmapReq) -> Dict[str, Any]:
 
     weeks = r.get("weeks", [])
     if not weeks:
+        logger.error(
+            "roadmap validate failed material_id=%s field=weeks sample=%s",
+            req.material_id,
+            str(r.get("raw") or r)[:300],
+        )
         return _fail("ROADMAP_VALIDATE_FAILED", "로드맵 형식 검증에 실패했습니다. 다시 생성해주세요.",
                      text_status=_text_status(ts, len(chunks)))
 
-    # Spring RoadmapStep/RoadmapTask 계약으로 매핑
+    # Spring RoadmapStep/RoadmapTask 계약으로 매핑. description에 확장 정보를 포함해 기존 DTO를 유지한다.
     steps = []
     for i, wk in enumerate(weeks):
-        tasks = [{"taskOrder": j + 1, "content": t} for j, t in enumerate(wk.get("tasks", []))]
+        task_values = wk.get("tasks") if isinstance(wk.get("tasks"), list) else []
+        tasks = []
+        for j, task in enumerate(task_values):
+            content = task if isinstance(task, str) else str(task.get("content") or task.get("title") or task.get("task") or "")
+            content = content.strip()
+            if content:
+                tasks.append({"taskOrder": j + 1, "content": content})
+        if not tasks:
+            logger.warning("roadmap task normalized material_id=%s week=%s reason=empty_tasks", req.material_id, i + 1)
+            tasks = [
+                {"taskOrder": 1, "content": "문서 핵심 내용을 읽고 요약하기"},
+                {"taskOrder": 2, "content": "이해가 부족한 개념을 질문 목록으로 정리하기"},
+            ]
+        concepts = wk.get("keyConcepts") if isinstance(wk.get("keyConcepts"), list) else []
+        description_parts = []
+        if wk.get("goal"):
+            description_parts.append(f"학습 목표: {wk.get('goal')}")
+        if concepts:
+            description_parts.append("핵심 개념: " + ", ".join(str(c) for c in concepts if c))
+        if wk.get("deliverable"):
+            description_parts.append(f"산출물/자기점검: {wk.get('deliverable')}")
+        if wk.get("estimatedHours"):
+            description_parts.append(f"예상 학습 시간: {wk.get('estimatedHours')}시간")
         steps.append({
             "stepOrder": wk.get("weekNumber") or (i + 1),
             "title": wk.get("title") or f"{i + 1}주차",
-            "description": wk.get("goal") or "",
+            "description": "\n".join(description_parts) or (wk.get("goal") or "학습 목표 정리"),
             "tasks": tasks,
+            "goal": wk.get("goal") or "",
+            "keyConcepts": concepts,
+            "deliverable": wk.get("deliverable") or "",
+            "estimatedHours": wk.get("estimatedHours") or 3,
         })
     elapsed = int((time.time() - started) * 1000)
     return {
@@ -330,7 +374,7 @@ async def ai_roadmap(req: RoadmapReq) -> Dict[str, Any]:
         "roadmap": {"title": r.get("title", "AI 생성 학습 로드맵"), "totalWeeks": len(steps), "steps": steps},
         "warnings": r.get("warnings", []),
         "textStatus": _text_status(ts, len(chunks)),
-        "metadata": {"provider": "openai_gpt", "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "metadata": {"provider": r.get("provider", "ollama_qwen"), "model": os.getenv("OLLAMA_MODEL", "qwen2.5:14b"),
                      "elapsedMs": elapsed, "chunkCount": len(chunks),
                      "cacheHit": cache["cacheHit"], "cacheBackend": cache["cacheBackend"],
                      "extractedTextHash": cache.get("extractedTextHash")},

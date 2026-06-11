@@ -96,28 +96,40 @@ def load_text_from_s3_pdf(s3_key: str, file_name: str = "", bucket: Optional[str
     """
     pdf_bytes = load_pdf_bytes_from_s3(s3_key, bucket)
 
+    best = ""
     try:
         import fitz  # PyMuPDF
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            text = "\n".join(page.get_text() for page in doc)
-        if len(text.strip()) < 50:
-            logger.warning("PDF 텍스트가 너무 짧습니다 (%d자): %s", len(text), file_name)
-        return text
+            best = "\n".join(page.get_text() for page in doc)
     except ImportError:
         logger.warning("PyMuPDF(fitz) 없음. pypdf로 fallback.")
+    except Exception as e:
+        logger.warning("PDF 텍스트 추출 실패 (fitz): %s", e)
+
+    if len(best.strip()) < 50:
         try:
             import io
             from pypdf import PdfReader
             reader = PdfReader(io.BytesIO(pdf_bytes))
-            return "\n".join(
-                page.extract_text() or "" for page in reader.pages
-            )
+            pypdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            if len(pypdf_text.strip()) > len(best.strip()):
+                best = pypdf_text
         except Exception as e2:
-            logger.error("PDF 텍스트 추출 실패 (pypdf): %s", e2)
-            return ""
-    except Exception as e:
-        logger.error("PDF 텍스트 추출 실패 (fitz): %s", e)
-        return ""
+            logger.warning("PDF 텍스트 추출 실패 (pypdf): %s", e2)
+
+    if len(best.strip()) < 50:
+        try:
+            from app.services.ocr_service import extract_pdf_ocr_from_bytes
+            ocr = extract_pdf_ocr_from_bytes(pdf_bytes, min_chars=50)
+            if len((ocr.text or "").strip()) > len(best.strip()):
+                best = ocr.text
+            logger.info("S3 PDF OCR fallback attempted file=%s engine=%s chars=%s reason=%s", file_name, ocr.engine, len(ocr.text or ""), ocr.reason)
+        except Exception as e3:
+            logger.warning("S3 PDF OCR fallback exception: %s", e3)
+
+    if len(best.strip()) < 50:
+        logger.warning("PDF 텍스트가 너무 짧습니다 (%d자): %s", len(best.strip()), file_name)
+    return best
 
 
 def is_aws_configured() -> bool:

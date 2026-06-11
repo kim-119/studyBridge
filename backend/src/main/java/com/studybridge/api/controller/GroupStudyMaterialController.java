@@ -1,6 +1,7 @@
 package com.studybridge.api.controller;
 
 import com.studybridge.api.dto.GroupStudyMaterialDTO;
+import com.studybridge.api.dto.GroupStudyQuizDTO;
 import com.studybridge.api.security.domain.CustomUserDetails;
 import com.studybridge.api.service.GroupStudyMaterialService;
 import lombok.RequiredArgsConstructor;
@@ -49,6 +50,32 @@ public class GroupStudyMaterialController {
         log.info("Request for materials list. userId={}, groupId={}", userDetails.getId(), groupId);
         List<GroupStudyMaterialDTO> response = groupStudyMaterialService.getMaterials(userDetails.getId(), groupId);
         return ResponseEntity.ok(response);
+    }
+
+    // 특정 스터디 룸 내부의 모든 생성 퀴즈 목록을 조회
+    @GetMapping("/{groupId}/quizzes")
+    public ResponseEntity<List<GroupStudyQuizDTO.QuizResponse>> getGroupQuizzes(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long groupId) {
+
+        log.info("Request for group quizzes list. userId={}, groupId={}", userDetails.getId(), groupId);
+        List<GroupStudyQuizDTO.QuizResponse> response = groupStudyMaterialService.getGroupQuizzes(
+                userDetails.getId(), groupId);
+        return ResponseEntity.ok(response);
+    }
+
+    // 이미 업로드된 PDF 자료를 기반으로 퀴즈를 (재)생성
+    @PostMapping("/{groupId}/materials/{materialId}/quiz")
+    public ResponseEntity<GroupStudyQuizDTO.QuizResponse> generateQuizForMaterial(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long groupId,
+            @PathVariable Long materialId) {
+
+        log.info("Request to (re)generate quiz from material. userId={}, groupId={}, materialId={}",
+                userDetails.getId(), groupId, materialId);
+        GroupStudyQuizDTO.QuizResponse response = groupStudyMaterialService.generateQuizForMaterial(
+                userDetails.getId(), groupId, materialId);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     // 다운로드 URL 저장

@@ -55,6 +55,31 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("정책 파일 로드 실패 (기본값 사용): %s", e)
 
+    # 성격 정책(YAML) 로드 검증 — 실패해도 서버는 기동(빌더/검증기가 fallback 사용)
+    try:
+        from app.services.personality_prompt_builder import _load_profiles
+        from app.core.agent_settings import _load_generation_profiles
+        prof = _load_profiles()
+        gen = _load_generation_profiles()
+        required = {"friendly", "critical", "logical", "creative",
+                    "concise", "professional", "sardonic", "custom"}
+        missing = required - set(prof.keys())
+        if not prof:
+            logger.warning("성격 프로필(agent_personality_profiles.yaml) 비어있음 — fallback 프롬프트 사용")
+        elif missing:
+            logger.warning("성격 프로필 일부 누락(%s) — 해당 성격은 fallback 사용", ", ".join(sorted(missing)))
+        else:
+            logger.info("성격 정책 로드 완료: 프로필 %d개, 생성수치 프로필 %d개", len(prof), len(gen))
+    except Exception as e:
+        logger.warning("성격 정책 로드 검증 실패 (fallback 사용): %s", e)
+
+    # 스트림 per-agent 타임아웃 실제 적용값을 기동 로그에 남긴다(하한≠상한 진단).
+    try:
+        from app.services.multi_agent_service import log_stream_timeout_config
+        log_stream_timeout_config()
+    except Exception as e:
+        logger.warning("스트림 타임아웃 설정 로깅 실패: %s", e)
+
     logger.info("%s 기동 완료", APP_NAME)
     yield
 
@@ -107,6 +132,7 @@ from app.api.multi_agent_async_routes import router as multi_agent_async_router
 # 학습 파이프라인 확장 (v0.6 — [8-2] / [8-3])
 from app.api.auto_retrain_routes import router as auto_retrain_router
 from app.api.dataset_routes import router as dataset_router
+from app.api.retrain_routes import router as retrain_router
 
 # v0.6 추가 라우터
 from app.api.rag_routes import spring_rag_router
@@ -134,10 +160,25 @@ app.include_router(multi_agent_async_router)  # POST /api/ai/multi-chat/async
 # 자동 재학습 + dataset 관리 (v0.6)
 app.include_router(auto_retrain_router)     # GET/POST /api/ai/training/auto-retrain/*
 app.include_router(dataset_router)          # GET/POST /api/ai/training/datasets/*
+app.include_router(retrain_router)          # POST /api/training/retrain/check-readiness|run (관리자)
 
 # RAG / Deep Search Spring 계약 (v0.6)
 app.include_router(spring_rag_router)     # POST /api/rag/ingest, /api/rag/query
 app.include_router(deep_search_api_router)  # POST /api/agent/deep-search
+
+try:
+    from extract_compat import router as extract_compat_router
+    app.include_router(extract_compat_router)
+    logger.info("extract_compat 라우터 로드 완료")
+except Exception as e:
+    logger.warning("extract_compat 라우터 로드 실패 (계속 기동): %s", e)
+
+try:
+    from app.api.realtime_quiz_routes import router as realtime_quiz_router
+    app.include_router(realtime_quiz_router)
+    logger.info("realtime_quiz 라우터 로드 완료")
+except Exception as e:
+    logger.warning("realtime_quiz 라우터 로드 실패 (계속 기동): %s", e)
 
 # ── 기존 routers/ 라우터 (하위 호환, agent_chat만 로드) ─────────────────────
 # deep_search_router → /api/agent/deep-search (deep_search_api_router와 중복, 스킵)

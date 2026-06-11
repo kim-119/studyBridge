@@ -42,6 +42,15 @@ RAG_CHUNK_OVERLAP: int = int(os.getenv("RAG_CHUNK_OVERLAP", "120"))
 RAG_TOP_K: int        = int(os.getenv("RAG_TOP_K",        "5"))
 RAG_MIN_SCORE: float  = float(os.getenv("RAG_MIN_SCORE",  "0.30"))
 
+# ----- LangGraph 오케스트레이터 (feature flag, 기본 off) -----
+# true이면 multi-chat이 LangGraph 그래프(흐름 제어)로 실행되고,
+# false(기본)이면 기존 multi_agent_service 경로를 그대로 쓴다. (안전 rollback)
+USE_LANGGRAPH_ORCHESTRATOR: bool = os.getenv("USE_LANGGRAPH_ORCHESTRATOR", "false").strip().lower() == "true"
+
+# ----- 관리자 전용 토큰 (실제 QLoRA 학습 실행 API 게이트) -----
+# 설정된 경우에만 /api/training/retrain/run 등 학습 실행 API를 허용한다.
+TRAINING_ADMIN_TOKEN: str | None = os.getenv("TRAINING_ADMIN_TOKEN")
+
 # ----- 내부 API 인증 (Spring Boot ↔ FastAPI) -----
 AI_SERVER_API_KEY: str | None = os.getenv("AI_SERVER_API_KEY")
 

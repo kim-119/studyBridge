@@ -1,0 +1,101 @@
+services:
+  react:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-frontend:latest
+    build:
+      context: ./frontend
+    container_name: capstone-react
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - spring
+    restart: unless-stopped
+
+  spring:
+    image: ${DOCKER_IMAGE_PREFIX:-studybridge}-backend:latest
+    container_name: capstone-spring
+    build:
+      context: ./backend
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-capstone}
+      DB_USER: ${DB_USER:-capstone}
+      DB_PASSWORD: ${DB_PASSWORD:-1234}
+
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+
+      FASTAPI_BASE_URL: http://host.docker.internal:18001
+      FASTAPI_EXTRACTION_URL: http://host.docker.internal:18001/api/extract
+      FASTAPI_TIMEOUT: ${FASTAPI_TIMEOUT:-180000}
+
+      OPENVIDU_URL: http://openvidu:4443
+      OPENVIDU_SECRET: ${OPENVIDU_SECRET:-MY_SECRET}
+      TZ: Asia/Seoul
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    depends_on:
+      - db
+      - redis
+      - openvidu
+      - fastapi-tunnel-proxy
+
+    restart: unless-stopped
+
+  fastapi-tunnel-proxy:
+    image: alpine/socat:latest
+    container_name: capstone-fastapi-tunnel-proxy
+    network_mode: host
+    command:
+      - TCP-LISTEN:18001,fork,reuseaddr,bind=0.0.0.0
+      - TCP:127.0.0.1:18000
+    environment:
+      TZ: Asia/Seoul
+    restart: unless-stopped
+
+  openvidu:
+    image: openvidu/openvidu-dev:2.30.0
+    container_name: capstone-openvidu
+    ports:
+      - "4443:4443"
+    environment:
+      OPENVIDU_SECRET: ${OPENVIDU_SECRET:-MY_SECRET}
+      DOMAIN_OR_PUBLIC_IP: ${OPENVIDU_DOMAIN_OR_PUBLIC_IP:-localhost}
+      CERTIFICATE_TYPE: selfsigned
+      OPENVIDU_WEBHOOK: "false"
+      TZ: Asia/Seoul
+    restart: on-failure
+
+  db:
+    image: postgres:16
+    container_name: capstone-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-capstone}
+      POSTGRES_USER: ${POSTGRES_USER:-capstone}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1234}
+      TZ: Asia/Seoul
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: capstone-redis
+    volumes:
+      - redis_data:/data
+    environment:
+      TZ: Asia/Seoul
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

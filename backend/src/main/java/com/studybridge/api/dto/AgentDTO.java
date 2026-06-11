@@ -29,6 +29,16 @@ public class AgentDTO {
 
         @Size(max = 200)
         private String goal;
+
+        // 에이전트 역할/성격 프리셋 (learningMode와 별개): expert_professor 등
+        private String agentPreset;
+        private String personality;
+        private String personalityStrength;
+        private String personality_strength;
+        private String knowledgeLevel;
+        private String knowledge_level;
+        private String customInstruction;
+        private String custom_instruction;
     }
 
     @Getter
@@ -41,6 +51,11 @@ public class AgentDTO {
         private String persona;
         private String tone;
         private String goal;
+        // 페르소나 태그에서 복원된 프리셋/성격/지식수준 (프론트 복원용)
+        private String agentPreset;
+        private String personality;
+        private String knowledgeLevel;
+        private String customInstruction;
     }
 
     @Getter

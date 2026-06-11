@@ -81,6 +81,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+try:
+    from extract_compat import router as extract_compat_router
+    app.include_router(extract_compat_router)
+    logger.info("extract_compat 라우터 로드 완료")
+except Exception as e:
+    logger.warning("extract_compat 라우터 로드 실패 (계속 기동): %s", e)
+
+try:
+    from app.api.realtime_quiz_routes import router as realtime_quiz_router
+    app.include_router(realtime_quiz_router)
+    logger.info("realtime_quiz 라우터 로드 완료")
+except Exception as e:
+    logger.warning("realtime_quiz 라우터 로드 실패 (계속 기동): %s", e)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. 설정 상수 (환경변수 우선, 기본값 후순위)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -391,13 +405,38 @@ def predict_study_time(weekly_seconds: List[float]) -> float:
 # ─────────────────────────────────────────────────────────────────────────────
 # 10. 퀴즈 생성 헬퍼
 # ─────────────────────────────────────────────────────────────────────────────
+_QUIZ_DIFFICULTY_MAP = {
+    "쉬움": "easy", "보통": "medium", "어려움": "hard",
+    "easy": "easy", "medium": "medium", "normal": "medium", "hard": "hard",
+}
+_QUIZ_DIFFICULTY_INSTRUCTIONS = {
+    "easy": "쉬운 난이도: 정의, 핵심 용어, 기본 개념 확인 중심. 해설은 핵심 근거 1문장.",
+    "medium": "보통 난이도: 원리 이해, 개념 비교, 간단한 적용 중심. 해설은 개념 연결 1~2문장.",
+    "hard": "어려운 난이도: 사례 적용, 함정 선지, 개념 간 연결과 추론 중심. 해설은 오답 함정과 근거까지 포함.",
+}
+_QUIZ_TYPE_MAP = {
+    "객관식": "multiple_choice", "주관식": "short_answer", "혼합": "mixed",
+    "multiple_choice": "multiple_choice", "short_answer": "short_answer", "mixed": "mixed",
+}
+_QUIZ_TYPE_INSTRUCTIONS = {
+    "multiple_choice": "모든 문항은 4지선다 객관식이다. options 4개, correctAnswer(0~3), explanation을 포함한다.",
+    "short_answer": "모든 문항은 주관식이다. options는 빈 배열, correctAnswer는 null, answer와 explanation을 포함한다.",
+    "mixed": "객관식과 주관식을 섞는다. 객관식은 options/correctAnswer, 주관식은 answer를 포함하고 모든 문항에 explanation을 포함한다.",
+}
+_QUIZ_LANGUAGE_INSTRUCTIONS = {
+    "ko": "한국어로 출제한다.",
+    "kr": "한국어로 출제한다.",
+    "en": "Write all quiz content in English.",
+}
 _QUIZ_SYSTEM_PROMPT_TMPL = (
-    "너는 대학교 강의 자료 기반 객관식 퀴즈 출제 전문가다.\n"
-    "반드시 4지선다 객관식 문제 {count}개를 만든다.\n"
-    "정답은 0-indexed(0~3)로 반환한다.\n"
+    "너는 대학교 강의 자료 기반 퀴즈 출제 전문가다.\n"
+    "정확히 {count}개의 문제를 만든다.\n"
+    "난이도 기준: {difficulty_instruction}\n"
+    "문항 유형 기준: {question_type_instruction}\n"
+    "언어 기준: {language_instruction}\n"
     "반드시 아래 JSON 배열 형식으로만 응답한다. 다른 텍스트 없이 JSON만 출력한다:\n"
-    '[{{"question":"...", "options":["...","...","...","..."], '
-    '"correctAnswer":0, "timeLimitSeconds":30}}]'
+    '[{{"question":"...", "questionType":"multiple_choice", "options":["...","...","...","..."], '
+    '"correctAnswer":0, "answer":"정답 텍스트", "explanation":"해설", "timeLimitSeconds":30}}]'
 )
 
 _FALLBACK_QUESTIONS_DATA: List[Dict[str, Any]] = [
@@ -439,6 +478,15 @@ def build_fallback_quiz(file_name: str = "", reason: str = "") -> Dict[str, Any]
     return {"quizTitle": _FALLBACK_QUIZ_TITLE, "questions": _FALLBACK_QUESTIONS_DATA}
 
 
+def _fallback_quiz_questions(count: int) -> List[Dict[str, Any]]:
+    """요청 개수에 맞춰 fallback 문항을 반환한다."""
+    count = max(1, min(int(count or DEFAULT_QUIZ_COUNT), 10))
+    questions: List[Dict[str, Any]] = []
+    for idx in range(count):
+        questions.append(dict(_FALLBACK_QUESTIONS_DATA[idx % len(_FALLBACK_QUESTIONS_DATA)]))
+    return questions
+
+
 def _load_pdf_from_s3(s3_key: str) -> bytes:
     import boto3  # 선택적 의존성 — 설치 없으면 ImportError
     s3 = boto3.client(
@@ -452,66 +500,143 @@ def _load_pdf_from_s3(s3_key: str) -> bytes:
 
 
 def _extract_pdf_text(pdf_bytes: bytes) -> str:
-    import fitz  # PyMuPDF
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-        return "\n".join(page.get_text() for page in doc)
+    best = ""
+    try:
+        import fitz  # PyMuPDF
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            best = "\n".join(page.get_text() for page in doc)
+    except Exception as e:
+        logger.warning("PyMuPDF PDF extraction failed: %s", type(e).__name__)
+
+    if len(best.strip()) < 80:
+        try:
+            import io
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            pypdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            if len(pypdf_text.strip()) > len(best.strip()):
+                best = pypdf_text
+        except Exception as e:
+            logger.warning("pypdf PDF extraction failed: %s", type(e).__name__)
+
+    if len(best.strip()) < 80:
+        try:
+            from app.services.ocr_service import extract_pdf_ocr_from_bytes
+            ocr = extract_pdf_ocr_from_bytes(pdf_bytes, min_chars=80)
+            if len((ocr.text or "").strip()) > len(best.strip()):
+                best = ocr.text
+            logger.info("quiz PDF OCR fallback attempted engine=%s chars=%s reason=%s", ocr.engine, len(ocr.text or ""), ocr.reason)
+        except Exception as e:
+            logger.warning("quiz PDF OCR fallback exception: %s", type(e).__name__)
+    return best
 
 
-def _parse_quiz_json(llm_output: str) -> List[Dict[str, Any]]:
+def _normalize_quiz_type(question_type: str) -> str:
+    return _QUIZ_TYPE_MAP.get(str(question_type or "객관식").strip(), "multiple_choice")
+
+
+def _parse_quiz_json(llm_output: str, max_questions: int, question_type: str) -> List[Dict[str, Any]]:
     """LLM 출력에서 JSON 배열을 파싱하고 유효한 문항만 반환."""
-    match = re.search(r"\[.*?\]", llm_output.strip(), re.DOTALL)
-    if not match:
+    start = llm_output.find("[")
+    end = llm_output.rfind("]")
+    if start < 0 or end <= start:
         return []
     try:
-        items = json.loads(match.group())
+        items = json.loads(llm_output[start:end + 1])
     except json.JSONDecodeError:
         return []
 
+    requested_type = _normalize_quiz_type(question_type)
     validated: List[Dict[str, Any]] = []
-    for item in items[:5]:
-        options = item.get("options", [])
-        correct = int(item.get("correctAnswer", 0))
-        if len(options) != QUIZ_OPTIONS_COUNT or not (0 <= correct <= 3):
-            continue
+    for idx, item in enumerate(items[:max_questions]):
+        raw_type = _normalize_quiz_type(item.get("questionType") or requested_type)
+        if requested_type == "mixed" and not item.get("questionType"):
+            raw_type = "multiple_choice" if idx % 2 == 0 else "short_answer"
+
+        options = [safe_strip(o) for o in item.get("options", [])]
+        correct = item.get("correctAnswer")
+        if raw_type == "multiple_choice":
+            if len(options) != QUIZ_OPTIONS_COUNT:
+                continue
+            correct = int(0 if correct is None else correct)
+            if not (0 <= correct <= 3):
+                correct = 0
+        else:
+            options = []
+            correct = None
+
         validated.append({
             "question": safe_strip(item.get("question"), "문제를 불러올 수 없습니다."),
-            "options": [safe_strip(o) for o in options],
+            "questionType": raw_type,
+            "options": options,
             "correctAnswer": correct,
+            "answer": safe_strip(item.get("answer"), "") or None,
+            "explanation": safe_strip(item.get("explanation"), "") or None,
             "timeLimitSeconds": int(item.get("timeLimitSeconds", DEFAULT_QUIZ_TIME_LIMIT_SECONDS)),
         })
     return validated
 
 
-def generate_quiz_from_pdf(material_id: int, s3_key: str, file_name: str) -> Dict[str, Any]:
+def generate_quiz_from_pdf(
+    material_id: int,
+    s3_key: str,
+    file_name: str,
+    difficulty: str = "보통",
+    count: int = DEFAULT_QUIZ_COUNT,
+    question_type: str = "객관식",
+    language: str = "ko",
+) -> Dict[str, Any]:
     """S3 → PDF 추출 → LLM 퀴즈 생성. 각 단계 실패 시 fallback 반환."""
     try:
         pdf_bytes = _load_pdf_from_s3(s3_key)
     except Exception as e:
-        return build_fallback_quiz(file_name, f"S3 로드 실패: {e}")
+        result = build_fallback_quiz(file_name, f"S3 로드 실패: {e}")
+        result["questions"] = _fallback_quiz_questions(count)
+        return result
 
     try:
         pdf_text = _extract_pdf_text(pdf_bytes)
         if len(pdf_text.strip()) < 100:
-            return build_fallback_quiz(file_name, "PDF 텍스트 부족")
+            result = build_fallback_quiz(file_name, "PDF 텍스트 부족")
+            result["questions"] = _fallback_quiz_questions(count)
+            return result
     except Exception as e:
-        return build_fallback_quiz(file_name, f"PDF 추출 실패: {e}")
+        result = build_fallback_quiz(file_name, f"PDF 추출 실패: {e}")
+        result["questions"] = _fallback_quiz_questions(count)
+        return result
 
-    system = _QUIZ_SYSTEM_PROMPT_TMPL.format(count=DEFAULT_QUIZ_COUNT)
+    count = max(1, min(int(count or DEFAULT_QUIZ_COUNT), 10))
+    diff_key = _QUIZ_DIFFICULTY_MAP.get(str(difficulty or "보통"), "medium")
+    qtype_key = _normalize_quiz_type(question_type)
+    lang_instr = _QUIZ_LANGUAGE_INSTRUCTIONS.get(str(language or "ko").lower(), "한국어로 출제한다.")
+    system = _QUIZ_SYSTEM_PROMPT_TMPL.format(
+        count=count,
+        difficulty_instruction=_QUIZ_DIFFICULTY_INSTRUCTIONS[diff_key],
+        question_type_instruction=_QUIZ_TYPE_INSTRUCTIONS[qtype_key],
+        language_instruction=lang_instr,
+    )
     user = (
         f"## 자료명\n{file_name}\n\n"
-        f"## 자료 내용\n{pdf_text[:2500]}\n\n"
-        f"위 자료를 기반으로 객관식 퀴즈 {DEFAULT_QUIZ_COUNT}개를 JSON 배열 형식으로 출제하라."
+        f"## 자료 내용\n{pdf_text[:3500]}\n\n"
+        f"## 재생성 변형 seed\n{__import__('uuid').uuid4().hex[:10]}\n\n"
+        f"위 자료를 기반으로 {qtype_key} 퀴즈 {count}개를 JSON 배열 형식으로 출제하라. "
+        "같은 자료라도 정의/설정/흐름/예외/적용 사례를 섞고, 문제 표현과 오답 보기를 다양화하라."
     )
     # OpenAI 우선, Ollama fallback
-    llm_output = _call_openai(system, user, max_tokens=1200, temperature=0.3)
+    max_tokens = max(1200, count * 450)
+    llm_output = _call_openai(system, user, max_tokens=max_tokens, temperature=0.3)
     if not llm_output:
-        llm_output = _call_ollama(system, user, max_tokens=1200, temperature=0.3)
+        llm_output = _call_ollama(system, user, max_tokens=max_tokens, temperature=0.3)
     if not llm_output:
-        return build_fallback_quiz(file_name, "LLM 응답 없음")
+        result = build_fallback_quiz(file_name, "LLM 응답 없음")
+        result["questions"] = _fallback_quiz_questions(count)
+        return result
 
-    questions = _parse_quiz_json(llm_output)
+    questions = _parse_quiz_json(llm_output, count, question_type)
     if not questions:
-        return build_fallback_quiz(file_name, "JSON 파싱 실패")
+        result = build_fallback_quiz(file_name, "JSON 파싱 실패")
+        result["questions"] = _fallback_quiz_questions(count)
+        return result
 
     return {
         "quizTitle": f"[{file_name}] 자료 기반 학습 퀴즈",
@@ -942,12 +1067,22 @@ class QuizGenerateRequest(BaseModel):
     materialId: int = Field(..., description="자료 ID")
     s3Key: str = Field(..., description="S3 오브젝트 키")
     fileName: str = Field(..., description="원본 파일명")
+    difficulty: str = Field("보통", description="난이도: easy|medium|hard 또는 쉬움|보통|어려움")
+    count: Optional[int] = Field(None, ge=1, le=10, description="생성 문항 수")
+    numQuestions: Optional[int] = Field(None, ge=1, le=10, description="생성 문항 수 하위 호환 필드")
+    questionType: str = Field("객관식", description="multiple_choice|short_answer|mixed")
+    language: str = Field("ko", description="응답 언어")
+    sourceName: Optional[str] = Field(None, description="자료 표시명")
+    range: Optional[Any] = Field(None, description="자료 범위 호환 필드")
 
 
 class QuizQuestion(BaseModel):
     question: str
-    options: List[str] = Field(..., min_length=4, max_length=4)
-    correctAnswer: int = Field(..., ge=0, le=3)
+    options: List[str] = Field(default_factory=list)
+    correctAnswer: Optional[int] = Field(None, ge=0, le=3)
+    answer: Optional[str] = None
+    explanation: Optional[str] = None
+    questionType: Optional[str] = None
     timeLimitSeconds: int = Field(DEFAULT_QUIZ_TIME_LIMIT_SECONDS)
 
 
@@ -978,6 +1113,7 @@ class AgentProfile(BaseModel):
 
 class MultiChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="사용자 메시지")
+    materialId: Optional[int] = None
     mode: str = Field("multi_agent_discussion")
     # 학습 진행 방식: basic(기본 채팅) / socratic(소크라테스) / debate(토론). mode와 별개 필드.
     learningMode: Optional[str] = Field("basic")
@@ -986,7 +1122,6 @@ class MultiChatRequest(BaseModel):
     targetAgentId: Optional[int] = None
     previousAnswers: List[PreviousAnswer] = Field(default_factory=list)
     agents: List[AgentProfile] = Field(default_factory=list)
-
 
 class AgentAnswer(BaseModel):
     agentName: str
@@ -1450,7 +1585,11 @@ async def generate_quiz_endpoint(request: QuizGenerateRequest):
                 generate_quiz_from_pdf,
                 material_id=request.materialId,
                 s3_key=request.s3Key,
-                file_name=request.fileName,
+                file_name=request.sourceName or request.fileName,
+                difficulty=request.difficulty,
+                count=request.count or request.numQuestions or DEFAULT_QUIZ_COUNT,
+                question_type=request.questionType,
+                language=request.language or "ko",
             ),
             timeout=QUIZ_GENERATION_TIMEOUT_SECONDS,
         )
@@ -1464,6 +1603,93 @@ async def generate_quiz_endpoint(request: QuizGenerateRequest):
         quizTitle=result["quizTitle"],
         questions=[QuizQuestion(**q) for q in result["questions"]],
     )
+
+
+
+async def build_rag_context_for_multi_chat(request: MultiChatRequest) -> str:
+    """
+    /api/ai/multi-chat에서 materialId가 들어온 경우,
+    운영 RAG(/api/rag/query)를 조회해서 agent prompt context로 주입한다.
+    """
+    import json
+    import os
+    import urllib.request
+
+    material_id = getattr(request, "materialId", None)
+    message = (getattr(request, "message", "") or "").strip()
+
+    if material_id is None or not message:
+        return ""
+
+    top_k = int(os.getenv("RAG_TOP_K", "5"))
+    max_chars = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "7000"))
+    port = os.getenv("PORT") or os.getenv("FASTAPI_PORT") or "8000"
+    base_url = (
+        os.getenv("RAG_QUERY_BASE_URL")
+        or os.getenv("FASTAPI_SELF_BASE_URL")
+        or f"http://127.0.0.1:{port}"
+    ).rstrip("/")
+    api_key = os.getenv("AI_SERVER_API_KEY", "")
+
+    payload = {
+        "material_id": int(material_id),
+        "question": message,
+        "top_k": top_k,
+    }
+
+    def _post():
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base_url}/api/rag/query",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as res:
+            return json.loads(res.read().decode("utf-8"))
+
+    try:
+        data = await asyncio.to_thread(_post)
+    except Exception as e:
+        logger.warning(
+            "[RAG MULTI-CHAT SKIP] materialId=%s question_len=%s error=%s",
+            material_id, len(message), e,
+        )
+        return ""
+
+    chunks = data.get("chunks") or []
+    if not chunks:
+        logger.info("[RAG MULTI-CHAT EMPTY] materialId=%s question=%s", material_id, message[:80])
+        return ""
+
+    parts = [
+        "[업로드 자료 RAG 검색 결과]",
+        "아래 내용은 사용자가 업로드한 자료에서 검색된 근거입니다.",
+        "답변은 반드시 이 근거를 우선 사용하고, 근거에 없는 내용은 추측하지 마세요.",
+    ]
+
+    for idx, chunk in enumerate(chunks, start=1):
+        content = str(chunk.get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > 1800:
+            content = content[:1800] + "..."
+
+        chunk_id = chunk.get("chunk_id", idx)
+        similarity = chunk.get("similarity")
+        parts.append(
+            f"[근거 {idx}] chunk_id={chunk_id}, similarity={similarity}\n{content}"
+        )
+
+    context = "\n\n".join(parts)
+    logger.info(
+        "[RAG MULTI-CHAT OK] materialId=%s chunks=%s context_chars=%s",
+        material_id, len(chunks), len(context),
+    )
+    return context[:max_chars]
 
 
 @app.post(
@@ -1487,7 +1713,9 @@ async def multi_chat_endpoint(request: MultiChatRequest):
 
     agents = request.agents if request.agents else [_DEFAULT_AGENT_PROFILE]
     active_agents = select_agents_for_response(agents, request.targetAgentId)
-    context = build_context_from_previous_answers(request.previousAnswers)
+    previous_context = build_context_from_previous_answers(request.previousAnswers)
+    rag_context = await build_rag_context_for_multi_chat(request)
+    context = "\n\n".join(part for part in [rag_context, previous_context] if part)
     rounds = min(request.rounds, MULTI_CHAT_MAX_ROUNDS)
     learning_mode = normalize_learning_mode(request.learningMode)
     effective_timeout = resolve_multi_chat_timeout(request.mode, learning_mode)

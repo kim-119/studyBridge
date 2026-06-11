@@ -28,6 +28,9 @@ public class AgentChatRoom {
     @Column(nullable = false, length = 100)
     private String roomName; // 채팅방 이름
 
+    @Column(name = "learning_mode", length = 20)
+    private String learningMode; // 학습 진행 모드 (basic/socratic/debate/simulation). null이면 basic으로 간주.
+
     @OneToMany(mappedBy = "agentChatRoom", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Agent> agents; // 채팅방에 참여 중인 AI 에이전트 목록 (1:N 관계)
 

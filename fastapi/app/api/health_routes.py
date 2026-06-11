@@ -66,7 +66,7 @@ async def ai_health_check():
     else:
         checks["pgvector"] = {"status": "unknown", "message": "DB 연결 실패로 확인 불가"}
 
-    # 3) ai.document_chunks 테이블
+    # 3) rag.document_chunk 테이블
     if db_result["status"] == "ok":
         checks["documentChunksTable"] = _check_document_chunks_table(VECTOR_DATABASE_URL)
     else:
@@ -154,11 +154,11 @@ def _check_document_chunks_table(db_url: str | None) -> dict:
         import psycopg
         with psycopg.connect(db_url, connect_timeout=3) as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT to_regclass('ai.document_chunks')")
+                cur.execute("SELECT to_regclass('rag.document_chunk')")
                 row = cur.fetchone()
                 if row and row[0]:
-                    return {"status": "ok", "message": "ai.document_chunks 테이블 존재"}
-                return {"status": "fail", "message": "ai.document_chunks 테이블 없음"}
+                    return {"status": "ok", "message": "rag.document_chunk 테이블 존재"}
+                return {"status": "fail", "message": "rag.document_chunk 테이블 없음"}
     except Exception as e:
         logger.debug("document_chunks 테이블 확인 실패: %s", e)
         return {"status": "fail", "message": f"테이블 확인 실패 ({type(e).__name__})"}

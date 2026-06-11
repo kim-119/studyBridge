@@ -40,6 +40,10 @@ public class GroupStudyMaterial {
     @Column(length = 255)
     private String originalFileName;
 
+    // 업로드 파일의 MIME 타입 (예: application/pdf). 기존 레코드 호환을 위해 nullable.
+    @Column(length = 100)
+    private String contentType;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

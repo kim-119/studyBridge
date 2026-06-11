@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-// AI 요청 timeout. GitHub Actions merge 기준 중복 export 방지.
+// AI 요청 timeout. 중복 export 금지.
 export const AI_TIMEOUT_MS = Number(
   import.meta.env.VITE_AI_TIMEOUT_MS ||
   import.meta.env.VITE_FRONTEND_AI_TIMEOUT_MS ||
@@ -15,14 +15,23 @@ const hostname =
       : window.location.hostname
     : '127.0.0.1';
 
+// 로컬 개발(localhost/127.0.0.1에서 직접 실행) 여부
+const isLocalDev =
+  typeof window !== 'undefined' &&
+  ['localhost', '127.0.0.1'].includes(window.location.hostname);
+
+// 운영(배포)에서는 같은 오리진의 상대경로로 요청한다.
+//  - Nginx가 /api/ → Spring(127.0.0.1:8080)으로 프록시하므로 mixed-content/CORS가 발생하지 않는다.
+//  - 호출 경로가 이미 '/api/...' 형태이므로 baseURL은 오리진만 담당한다('/api/api' 중복 방지).
+//  - 다른 백엔드를 강제하려면 VITE_API_BASE_URL을 지정한다.
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   import.meta.env.VITE_BACKEND_URL ||
-  `http://${hostname}:8080`;
+  '';
 
 const FASTAPI_BASE_URL =
   import.meta.env.VITE_FASTAPI_BASE_URL ||
-  `http://${hostname}:8000`;
+  '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -136,77 +145,89 @@ const normalizeChatResponse = (data) => {
 };
 
 api.interceptors.request.use(
-    (config) => {
-      const token = localStorage.getItem('token');
+  (config) => {
+    const token = localStorage.getItem('token');
 
-      if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-      }
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
 
-      return config;
-    },
-    (error) => Promise.reject(error)
+    return config;
+  },
+  (error) => Promise.reject(error)
 );
 
 api.interceptors.response.use(
-    (res) => res,
-    async (err) => {
-      console.error('API 에러:', err.response || err.message);
+  (res) => res,
+  async (err) => {
+    // 개발자 콘솔에는 상세히 출력한다(네트워크/CORS/엔드포인트 문제 진단용).
+    const cfg = err.config || {};
+    console.error('API 에러 상세:', {
+      message: err.message,
+      code: err.code,
+      method: cfg.method,
+      baseURL: cfg.baseURL,
+      url: cfg.url,
+      // 요청은 나갔으나 응답이 없으면(=network/CORS/mixed-content) err.response가 없다.
+      noResponse: !err.response,
+      status: err.response?.status,
+      data: err.response?.data,
+    });
 
-      const originalRequest = err.config;
+    const originalRequest = err.config;
 
+    if (
+      err.response &&
+      (err.response.status === 401 || err.response.status === 403) &&
+      !originalRequest._retry
+    ) {
       if (
-          err.response &&
-          (err.response.status === 401 || err.response.status === 403) &&
-          !originalRequest._retry
+        originalRequest.url.includes('/api/users/refresh') ||
+        originalRequest.url.includes('/api/users/login')
       ) {
-        if (
-            originalRequest.url.includes('/api/users/refresh') ||
-            originalRequest.url.includes('/api/users/login')
-        ) {
-          return Promise.reject(err);
-        }
-
-        originalRequest._retry = true;
-
-        try {
-          const refreshToken = localStorage.getItem('refreshToken');
-
-          if (!refreshToken) {
-            throw new Error('No refresh token');
-          }
-
-          const res = await axios.post(
-              `${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`,
-              null,
-              {
-                timeout: AI_TIMEOUT_MS,
-              }
-          );
-
-          if (res.data && res.data.accessToken) {
-            localStorage.setItem('token', res.data.accessToken);
-            localStorage.setItem('refreshToken', res.data.refreshToken);
-
-            originalRequest.headers.Authorization = `Bearer ${res.data.accessToken}`;
-            return api(originalRequest);
-          }
-        } catch (refreshErr) {
-          console.warn('토큰 갱신 실패. 로그아웃 처리됩니다.');
-          localStorage.removeItem('token');
-          localStorage.removeItem('refreshToken');
-          window.dispatchEvent(new Event('auth-change'));
-          return Promise.reject(refreshErr);
-        }
+        return Promise.reject(err);
       }
 
-      return Promise.reject(err);
+      originalRequest._retry = true;
+
+      try {
+        const refreshToken = localStorage.getItem('refreshToken');
+
+        if (!refreshToken) {
+          throw new Error('No refresh token');
+        }
+
+        const res = await axios.post(
+          `${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`,
+          null,
+          {
+            timeout: AI_TIMEOUT_MS,
+          }
+        );
+
+        if (res.data && res.data.accessToken) {
+          localStorage.setItem('token', res.data.accessToken);
+          localStorage.setItem('refreshToken', res.data.refreshToken);
+
+          originalRequest.headers.Authorization = `Bearer ${res.data.accessToken}`;
+          return api(originalRequest);
+        }
+      } catch (refreshErr) {
+        console.warn('토큰 갱신 실패. 로그아웃 처리됩니다.');
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+        window.dispatchEvent(new Event('auth-change'));
+        return Promise.reject(refreshErr);
+      }
     }
+
+    return Promise.reject(err);
+  }
 );
 
 fastApi.interceptors.response.use(
-    (res) => res,
-    (err) => Promise.reject(err)
+  (res) => res,
+  (err) => Promise.reject(err)
 );
 
 export const agentService = {
@@ -228,9 +249,9 @@ export const agentService = {
 
   sendMessage: async (userId, agentId, payloadOrMessage) => {
     const basePayload =
-        typeof payloadOrMessage === 'string'
-            ? { message: payloadOrMessage, agentId, roomId: agentId }
-            : { agentId, roomId: agentId, ...payloadOrMessage };
+      typeof payloadOrMessage === 'string'
+        ? { message: payloadOrMessage, agentId, roomId: agentId }
+        : { agentId, roomId: agentId, ...payloadOrMessage };
 
     const payload = {
       personality: basePayload.personality || '',
@@ -240,7 +261,7 @@ export const agentService = {
       knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
       customInstruction: basePayload.customInstruction || '',
       custom_instruction:
-          basePayload.custom_instruction || basePayload.customInstruction || '',
+        basePayload.custom_instruction || basePayload.customInstruction || '',
       persona: basePayload.persona || '',
       agent_name: basePayload.agent_name || basePayload.agentName || '',
       ...basePayload,
@@ -252,13 +273,14 @@ export const agentService = {
     return normalizeChatResponse(res.data);
   },
 
-  // 1차/2차/3차 단계별 SSE 스트리밍. handlers: { onStageStart, onStageComplete, onAllComplete, onError }
-  // 실패 시 throw → 호출부에서 blocking sendMessage로 폴백한다.
   streamMessage: async (userId, agentId, payloadOrMessage, handlers = {}) => {
-    const basePayload = typeof payloadOrMessage === 'string'
+    const basePayload =
+      typeof payloadOrMessage === 'string'
         ? { message: payloadOrMessage, agentId, roomId: agentId }
         : { agentId, roomId: agentId, ...payloadOrMessage };
+
     const token = localStorage.getItem('token');
+
     const resp = await fetch(`${API_BASE_URL}/api/agent-rooms/${agentId}/chat/stream`, {
       method: 'POST',
       headers: {
@@ -268,36 +290,70 @@ export const agentService = {
       },
       body: JSON.stringify(basePayload),
     });
+
     if (!resp.ok || !resp.body) {
       throw new Error(`stream http ${resp.status}`);
     }
+
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+
     const dispatch = (frame) => {
       let event = 'message';
       const dataLines = [];
+
       for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) event = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+        if (line.startsWith('event:')) {
+          event = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).replace(/^ /, ''));
+        }
       }
+
       if (dataLines.length === 0) return;
+
       let data = null;
-      try { data = JSON.parse(dataLines.join('\n')); } catch { data = null; }
-      if (event === 'stage_start') handlers.onStageStart && handlers.onStageStart(data);
-      else if (event === 'stage_complete') handlers.onStageComplete && handlers.onStageComplete(data);
-      else if (event === 'all_complete') handlers.onAllComplete && handlers.onAllComplete(data);
-      else if (event === 'error') handlers.onError && handlers.onError(data);
+
+      try {
+        data = JSON.parse(dataLines.join('\n'));
+      } catch {
+        data = null;
+      }
+
+      if (event === 'turn_start') handlers.onTurnStart?.(data);
+      else if (event === 'heartbeat') handlers.onHeartbeat?.(data);
+      else if (event === 'progress') handlers.onProgress?.(data);
+      else if (event === 'agent_start') handlers.onAgentStart?.(data);
+      else if (event === 'agent_answer') handlers.onAgentAnswer?.(data);
+      else if (event === 'agent_error') handlers.onAgentError?.(data);
+      else if (event === 'stage_start') handlers.onStageStart?.(data);
+      else if (event === 'stage_complete') handlers.onStageComplete?.(data);
+      else if (event === 'agent_stage_complete') handlers.onAgentStageComplete?.(data);
+      else if (event === 'debate_section') handlers.onDebateSection?.(data);
+      else if (event === 'socratic_step') handlers.onSocraticStep?.(data);
+      else if (event === 'socratic_answer') handlers.onSocraticAnswer?.(data);
+      else if (event === 'simulation_stage') handlers.onSimulationStage?.(data);
+      else if (event === 'all_complete') handlers.onAllComplete?.(data);
+      else if (event === 'error') handlers.onError?.(data);
     };
+
     while (true) {
       const { done, value } = await reader.read();
+
       if (done) break;
+
       buffer += decoder.decode(value, { stream: true });
+
       let idx;
+
       while ((idx = buffer.indexOf('\n\n')) !== -1) {
         const frame = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
-        if (frame.trim()) dispatch(frame);
+
+        if (frame.trim()) {
+          dispatch(frame);
+        }
       }
     }
   },
@@ -334,8 +390,8 @@ export const agentService = {
       };
 
       const res = await api.post(
-          `/api/agent-rooms/${payload.roomId}/chat`,
-          unifiedPayload
+        `/api/agent-rooms/${payload.roomId}/chat`,
+        unifiedPayload
       );
 
       return normalizeChatResponse(res.data);
@@ -359,10 +415,10 @@ export const agentService = {
 
   requestFeedback: async (payload) => {
     const reviewerAgentId =
-        payload?.reviewer_agent_id ||
-        payload?.reviewerAgentId ||
-        payload?.agent_id ||
-        payload?.agentId;
+      payload?.reviewer_agent_id ||
+      payload?.reviewerAgentId ||
+      payload?.agent_id ||
+      payload?.agentId;
 
     if (reviewerAgentId) {
       const res = await fastApi.post(`/agents/${reviewerAgentId}/feedback`, payload);
@@ -405,7 +461,21 @@ export const authService = {
       const res = await api.post('/api/users/login', credentials);
       return res.data;
     } catch (err) {
-      throw err.response?.data || { message: '로그인 실패' };
+      // 백엔드가 응답을 준 경우(401/400 등)는 그 본문을 그대로 전달한다.
+      if (err.response?.data) {
+        const data = err.response.data;
+        throw typeof data === 'object'
+          ? { ...data, status: err.response.status }
+          : { message: String(data), status: err.response.status };
+      }
+      // 응답이 없는 경우(=네트워크/CORS/mixed-content) 상세를 보존해 던진다.
+      throw {
+        message:
+          '서버에 연결할 수 없습니다. 네트워크 상태를 확인해주세요.',
+        networkError: true,
+        detail: err.message,
+        url: `${err.config?.baseURL || ''}${err.config?.url || ''}`,
+      };
     }
   },
 
@@ -502,9 +572,9 @@ export const roomService = {
 
   sendMessage: async (userId, roomId, payloadOrMessage) => {
     const basePayload =
-        typeof payloadOrMessage === 'string'
-            ? { message: payloadOrMessage, agentId: roomId, roomId }
-            : { agentId: roomId, roomId, ...payloadOrMessage };
+      typeof payloadOrMessage === 'string'
+        ? { message: payloadOrMessage, agentId: roomId, roomId }
+        : { agentId: roomId, roomId, ...payloadOrMessage };
 
     const payload = {
       personality: basePayload.personality || '',
@@ -514,7 +584,7 @@ export const roomService = {
       knowledge_level: basePayload.knowledge_level || basePayload.knowledgeLevel || '',
       customInstruction: basePayload.customInstruction || '',
       custom_instruction:
-          basePayload.custom_instruction || basePayload.customInstruction || '',
+        basePayload.custom_instruction || basePayload.customInstruction || '',
       persona: basePayload.persona || '',
       agent_name: basePayload.agent_name || basePayload.agentName || '',
       ...basePayload,
@@ -638,7 +708,9 @@ export const materialService = {
   },
 
   getSummary: async (materialId) => {
-    const res = await api.get(`/api/materials/${materialId}/summary`, { timeout: AI_TIMEOUT_MS });
+    const res = await api.get(`/api/materials/${materialId}/summary`, {
+      timeout: AI_TIMEOUT_MS,
+    });
     return res.data;
   },
 
@@ -663,23 +735,29 @@ export const materialService = {
   },
 
   generateQuiz: async (materialId, quizRequest) => {
-    const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest, { timeout: AI_TIMEOUT_MS });
+    const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest, {
+      timeout: AI_TIMEOUT_MS,
+    });
     return res.data;
   },
 
   askQuestion: async (materialId, questionRequest) => {
-    const res = await api.post(`/api/materials/${materialId}/question`, questionRequest, { timeout: AI_TIMEOUT_MS });
+    const res = await api.post(`/api/materials/${materialId}/question`, questionRequest, {
+      timeout: AI_TIMEOUT_MS,
+    });
     return res.data;
   },
 
   getRoadmap: async (materialId) => {
-    const res = await api.get(`/api/materials/${materialId}/roadmap`, { timeout: AI_TIMEOUT_MS });
+    const res = await api.get(`/api/materials/${materialId}/roadmap`, {
+      timeout: AI_TIMEOUT_MS,
+    });
     return res.data;
   },
 
   toggleRoadmapTask: async (materialId, taskId) => {
     const res = await api.put(
-        `/api/materials/${materialId}/roadmap/tasks/${taskId}/toggle`
+      `/api/materials/${materialId}/roadmap/tasks/${taskId}/toggle`
     );
     return res.data;
   },
@@ -781,6 +859,52 @@ export const groupService = {
     const res = await api.post(`/api/groups/${id}/video/token`);
     return res.data;
   },
+
+  uploadQuizMaterial: async (groupId, title, file) => {
+    const formData = new FormData();
+    formData.append('title', title);
+    formData.append('file', file);
+
+    const token = localStorage.getItem('token');
+    const res = await axios.post(
+      `${API_BASE_URL}/api/groups/${groupId}/materials/upload-quiz`,
+      formData,
+      {
+        timeout: AI_TIMEOUT_MS,
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    return res.data;
+  },
+
+  getGroupMaterials: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/materials`);
+    return res.data;
+  },
+
+  getGroupMaterialDownloadUrl: async (materialId) => {
+    const res = await api.get(`/api/groups/materials/${materialId}/download`);
+    return res.data;
+  },
+
+  getGroupQuizzes: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/quizzes`);
+    return res.data;
+  },
+
+  getQuizSession: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/quiz/session`);
+    return res.data;
+  },
+
+  // 이미 업로드된 PDF 자료 기반 퀴즈 (재)생성
+  generateMaterialQuiz: async (groupId, materialId) => {
+    const res = await api.post(`/api/groups/${groupId}/materials/${materialId}/quiz`);
+    return res.data;
+  },
 };
 
 export const knowledgeService = {
@@ -821,13 +945,13 @@ export const knowledgeService = {
   },
 
   updatePost: async (
-      blogId,
-      title,
-      content,
-      imageFile,
-      pdfFile,
-      clearImage = false,
-      clearPdf = false
+    blogId,
+    title,
+    content,
+    imageFile,
+    pdfFile,
+    clearImage = false,
+    clearPdf = false
   ) => {
     const formData = new FormData();
 
@@ -944,6 +1068,50 @@ export const inquiryService = {
 
   getInquiries: async () => {
     const res = await api.get('/api/inquiries');
+    return res.data;
+  },
+};
+
+// 메인 배너: 백엔드가 내려주는 S3 이미지 URL/문구만 사용(외부 원본 URL·MCP 값 노출 금지)
+export const bannerService = {
+  getMainBanner: async () => {
+    const res = await api.get('/api/banners/main');
+    return res.data;
+  },
+};
+
+// 공부 플래너: 작성/조회/PDF생성/자료보관함 저장/다운로드/삭제
+export const plannerService = {
+  createPlanner: async (data) => {
+    const res = await api.post('/api/planners', data);
+    return res.data;
+  },
+  updatePlanner: async (id, data) => {
+    const res = await api.put(`/api/planners/${id}`, data);
+    return res.data;
+  },
+  getPlanners: async () => {
+    const res = await api.get('/api/planners');
+    return res.data;
+  },
+  getPlanner: async (id) => {
+    const res = await api.get(`/api/planners/${id}`);
+    return res.data;
+  },
+  generatePdf: async (id) => {
+    const res = await api.post(`/api/planners/${id}/pdf`);
+    return res.data;
+  },
+  archive: async (id) => {
+    const res = await api.post(`/api/planners/${id}/archive`);
+    return res.data;
+  },
+  getDownloadUrl: async (id) => {
+    const res = await api.get(`/api/planners/${id}/download-url`);
+    return res.data;
+  },
+  deletePlanner: async (id) => {
+    const res = await api.delete(`/api/planners/${id}`);
     return res.data;
   },
 };

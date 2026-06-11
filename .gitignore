@@ -23,3 +23,7 @@ __pycache__/
 *.pyc
 
 *.egg-info/
+
+# local backup files
+*.bak_*
+*.backup*

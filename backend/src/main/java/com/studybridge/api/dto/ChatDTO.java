@@ -40,8 +40,18 @@ public class ChatDTO {
         private Integer rounds;
         private Boolean showFinalSynthesis;
         private List<RequestAgent> agents;
-        // 학습 진행 모드: basic / socratic / debate (미지정 시 FastAPI에서 basic으로 처리)
+        // 학습 진행 모드: basic / socratic / debate / simulation (미지정 시 FastAPI에서 basic으로 처리)
         private String learningMode;
+        // 토론 모드 논제/구조 설정 (debate 모드에서만 사용, FastAPI로 그대로 패스스루)
+        private Map<String, Object> debateConfig;
+        // 소크라테스 모드 문답 설정 (socratic 모드에서만 사용, FastAPI로 그대로 패스스루)
+        private Map<String, Object> socraticConfig;
+        // 상황극 모드 설정 (simulation 모드에서만 사용, FastAPI로 그대로 패스스루)
+        private Map<String, Object> simulationConfig;
+        // 소크라테스 모드: 사용자가 방금 입력한 시도 답변 (오개념 분석용)
+        private String userAttempt;
+        // RAG 자료 ID (있으면 FastAPI가 PDF/RAG 검색을 수행)
+        private Long materialId;
         private String personality;
         private String personalityStrength;
         private String personality_strength;
@@ -62,6 +72,10 @@ public class ChatDTO {
         private Long studyRoomId;
         private String roomTitle;
         private Boolean stream;
+        // 기본채팅 다시 생성 제어 — 이전 답변 재사용 방지(cache 우회 + 변형 유도)
+        private String messageId;          // 프론트가 부여한 이번 턴 고유 id
+        private Integer regenerateAttempt; // 다시 생성 횟수 (없으면 1)
+        private Boolean forceRegenerate;   // true면 cache 우회 + 변형 지시
     }
 
     @Getter
@@ -96,9 +110,23 @@ public class ChatDTO {
     @Builder
     public static class MultiChatResponse {
         private String mode;
+        private String learningMode;
         private List<DiscussionMessage> messages;
         private String finalSynthesis;
         private List<AgentReply> replies;
+        private List<Object> initialAnswers;
+        private List<Object> peerFeedbacks;
+        private List<Object> revisedAnswers;
+        private String debateSummary;
+        // 구조화 토론 단계 (채팅/마인드맵/history 공통) + 사용된 논제 설정 — FastAPI 패스스루
+        private List<Map<String, Object>> debateStages;
+        private Map<String, Object> debateConfig;
+        // 구조화 소크라테스 단계 + 사용된 설정 — FastAPI 패스스루
+        private List<Map<String, Object>> socraticSteps;
+        private Map<String, Object> socraticConfig;
+        // 구조화 상황극 단계 + 사용된 설정 — FastAPI 패스스루
+        private List<Map<String, Object>> simulationStages;
+        private Map<String, Object> simulationConfig;
         // 1차/2차/3차 생성 과정 (FastAPI processSteps를 그대로 패스스루, 없으면 null)
         private Map<String, Object> processSteps;
         // 단계별 구조 (provider/elapsedMs 포함) — FastAPI stages 패스스루, 없으면 null

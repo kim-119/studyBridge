@@ -49,8 +49,15 @@ export default function Materials() {
     const file = e.target.files[0];
     if (!file) return;
 
-    if (file.type !== 'application/pdf') {
-      alert('PDF 파일만 업로드 가능합니다.');
+    const allowedTypes = [
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'text/plain',
+    ];
+    const lowerName = file.name.toLowerCase();
+    const allowedByExtension = lowerName.endsWith('.pdf') || lowerName.endsWith('.docx') || lowerName.endsWith('.txt');
+    if (!allowedTypes.includes(file.type) && !allowedByExtension) {
+      alert('문서 파일만 업로드 가능합니다. (PDF/DOCX/TXT)');
       return;
     }
 
@@ -129,13 +136,13 @@ export default function Materials() {
           <div>
             <h2>내 자료보관함</h2>
             <p style={{ color: 'var(--color-text-muted)', marginTop: '-8px' }}>
-              학습에 필요한 PDF 자료를 등록하고 관리하세요.
+              학습에 필요한 문서(PDF/DOCX/TXT)를 등록하고 관리하세요.
             </p>
           </div>
           <div>
             <input
                 type="file"
-                accept="application/pdf"
+                accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
                 ref={fileInputRef}
                 style={{ display: 'none' }}
                 onChange={handleFileChange}
@@ -151,13 +158,16 @@ export default function Materials() {
               <UploadCloud size={18} />
               {isUploading ? '업로드 중...' : '새 자료 업로드'}
             </button>
+            <p style={{ margin: '8px 0 0', color: 'var(--color-text-muted)', fontSize: '13px' }}>
+              PDF, DOCX, TXT 파일을 지원합니다.
+            </p>
           </div>
         </div>
 
         {isUploading && (
             <div className="glass-panel" style={{ marginBottom: '24px', textAlign: 'center', padding: '30px' }}>
               <UploadCloud size={40} color="var(--color-primary)" style={{ animation: 'bounce 2s infinite' }} />
-              <h3 style={{ marginTop: '16px', color: 'var(--color-text-main)' }}>자료 업로드 및 분석 중...</h3>
+              <h3 style={{ marginTop: '16px', color: 'var(--color-text-main)' }}>문서 업로드 및 분석 중...</h3>
               <p style={{ color: 'var(--color-text-muted)' }}>파일 크기에 따라 약간의 시간이 소요될 수 있습니다.</p>
             </div>
         )}
@@ -171,7 +181,7 @@ export default function Materials() {
               <div className="empty-state" style={{ padding: '60px 0' }}>
                 <FileText size={48} style={{ color: 'var(--color-border)', marginBottom: '16px' }} />
                 <h3 style={{ margin: '0 0 8px 0', color: 'var(--color-text-main)' }}>등록된 자료가 없습니다</h3>
-                <p style={{ margin: 0 }}>첫 번째 PDF 자료를 업로드해 보세요.</p>
+                <p style={{ margin: 0 }}>첫 번째 문서(PDF/DOCX/TXT)를 업로드해 보세요.</p>
               </div>
           ) : (
               <div style={{ display: 'grid', gap: '16px', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>

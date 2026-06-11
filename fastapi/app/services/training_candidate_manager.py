@@ -19,12 +19,24 @@ async def collect_candidate(
     system_prompt: str = "",
     knowledge_level: str = "학사",
     personality: str = "친절_설명형",
+    *,
+    user_feedback_score: int | None = None,
+    user_feedback_text: str | None = None,
+    rag_grounding_score: float | None = None,
 ) -> dict:
     """
-    Q/A를 학습 후보로 수집한다.
+    Q/A를 학습 후보로 수집한다. **즉시 학습하지 않는다** — 검수 게이트 통과 후보만 적재한다.
+
+    검수 게이트:
+      - 개인정보(PII) 감지 → unsafe (저장 안 함)
+      - 중복(content_hash) → duplicate (저장 안 함)
+      - 자동 품질 점수 + (있으면) RAG grounding 으로 status 결정
+      - **사용자가 싫어요/오류 신고(user_feedback_score<0)한 답변은 auto_approved 금지**
+        → 점수와 무관하게 holdout(또는 auto_rejected)으로 강등
 
     Returns:
-        {"candidate_uuid": str, "quality_status": str, "quality_score": int, "stored": bool}
+        {"candidate_uuid": str|None, "quality_status": str, "quality_score": int,
+         "stored": bool, "safety_status": str, "duplicate_status": str}
     """
     from app.utils.pii_filter import has_pii
     from app.utils.duplicate_checker import is_duplicate
@@ -32,7 +44,7 @@ async def collect_candidate(
     # 개인정보 필터
     if has_pii(question) or has_pii(answer):
         return {"quality_status": "unsafe", "quality_score": 0, "stored": False,
-                "reason": "개인정보 감지"}
+                "safety_status": "pii", "duplicate_status": "unknown", "reason": "개인정보 감지"}
 
     # 내용 해시 (중복 검사)
     content = f"{question.strip()}\n{answer.strip()}"
@@ -40,12 +52,18 @@ async def collect_candidate(
 
     if await is_duplicate(content_hash):
         return {"quality_status": "duplicate", "quality_score": 0, "stored": False,
-                "reason": "중복 데이터"}
+                "safety_status": "safe", "duplicate_status": "duplicate", "reason": "중복 데이터"}
 
     # 자동 품질 평가
     score = await _auto_score(question, answer, knowledge_level, personality)
 
-    if score >= AUTO_APPROVE_MIN:
+    # 사용자 부정 피드백 여부 (싫어요/오류 신고)
+    negative_feedback = (user_feedback_score is not None and user_feedback_score < 0)
+
+    if negative_feedback:
+        # 부정 피드백 답변은 절대 auto_approved 금지 → 최소 holdout, 점수 낮으면 rejected
+        status = "auto_rejected" if score < HOLDOUT_MIN else "holdout"
+    elif score >= AUTO_APPROVE_MIN:
         status = "auto_approved"
     elif score >= HOLDOUT_MIN:
         status = "holdout"
@@ -75,6 +93,11 @@ async def collect_candidate(
         "quality_status": status,
         "quality_score":  score,
         "stored":         stored,
+        "safety_status":  "safe",
+        "duplicate_status": "unique",
+        "auto_approved":  status == "auto_approved",
+        "rag_grounding_score": rag_grounding_score,
+        "negative_feedback": negative_feedback,
     }
 
 

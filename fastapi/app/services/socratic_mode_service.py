@@ -82,8 +82,8 @@ def run_socratic_mode(
         max_chars = v_policy.get("max_answer_length_chars", 450)
     except Exception:
         max_rewrite = 1
-        direct_markers = ["정답은", "결론은", "즉, 답은"]
-        max_chars = 450
+        direct_markers = ["정답은", "결론은", "결론부터", "즉, 답은", "정리하자면", "요약하자면"]
+        max_chars = 350
 
     # 에이전트 선택
     tutor_agent = None
@@ -99,20 +99,42 @@ def run_socratic_mode(
     system_prompt = _load_socratic_prompt()
     if knowledge_level:
         system_prompt += f"\n\n사용자 지식수준: {knowledge_level}"
+    # 성격은 '질문 방식'으로만 반영한다(정답 제공 금지는 모든 성격 공통).
     if tutor_personality:
-        system_prompt += f"\n성격: {tutor_personality}"
+        try:
+            from app.services.personality_prompt_builder import get_socratic_style, get_profile
+            style = get_socratic_style(tutor_personality)
+            disp = get_profile(tutor_personality).get("displayName") or tutor_personality
+            system_prompt += f"\n\n[에이전트 성격: {disp}] 질문 방식: {style}"
+        except Exception:
+            system_prompt += f"\n성격: {tutor_personality} (정답은 주지 말고 질문으로만 유도)"
     if rag_context:
-        system_prompt += f"\n\n[참고 자료]\n{rag_context}"
+        system_prompt += (
+            f"\n\n[참고 자료(PDF/RAG) — 판단 기준]\n{rag_context}\n"
+            "위 자료를 기준으로 사용자의 답이 맞는지 비교하라. 자료에 없는 내용을 확정적으로 말하지 마라. "
+            "자료와 사용자 답이 충돌하면 정답을 주지 말고 충돌 지점을 질문으로 유도하라."
+        )
+    else:
+        system_prompt += "\n\n참고 자료가 없으니, 일반 개념 수준에서 판단하되 정답을 단정하지 말고 질문으로 유도하라."
 
-    # 사용자 입력 구성
+    # 사용자 입력 구성 — 시도 답변 유무에 따라 진단/칭찬/좁히기 방향을 안내한다.
     user_parts = [f"[사용자 질문]\n{question}"]
     if user_attempt:
         user_parts.append(f"\n[사용자의 시도 답변]\n{user_attempt}")
+        user_parts.append(
+            "\n위 시도 답변을 자료 기준으로 평가하라. "
+            "맞게 접근했으면 짧게 칭찬하고 한 단계 더 깊은 질문으로, "
+            "틀렸으면 정답을 주지 말고 틀린 지점을 좁혀주는 질문으로 이어가라."
+        )
+    else:
+        user_parts.append(
+            "\n사용자가 아직 시도 답변을 내지 않았다. 정답을 설명하지 말고, "
+            "사용자가 첫걸음을 뗄 수 있도록 진단·힌트·꼬리질문을 제시하라. "
+            "사용자가 완전히 모를 것 같으면 정답 대신 쉬운 선택지(예: 'A와 B 중 어느 쪽?')를 질문으로 줘라."
+        )
     user_parts.append(
-        "\n위 질문(또는 시도 답변)을 분석하라. "
-        "오개념이나 누락 개념이 있으면 부드럽게 지적하고, "
-        "사용자가 스스로 생각해 볼 수 있도록 꼬리질문을 하나만 제시하라. "
-        "정답은 절대 직접 말하지 않는다."
+        "\n반드시 [진단] / [힌트] / [꼬리질문] 세 블록 형식으로만, 짧게 답하라. "
+        "꼬리질문은 딱 하나(물음표 하나)만. 정답·결론·완성답안·개념강의는 절대 금지."
     )
     user_prompt = "\n".join(user_parts)
 
@@ -133,8 +155,9 @@ def run_socratic_mode(
     if not v_result["passed"] and max_rewrite > 0:
         rewrite_user = (
             f"{user_prompt}\n\n"
-            "이전 답변에 정답이 포함되어 있거나 질문이 없습니다. "
-            "정답을 말하지 말고, 사용자 사고를 유도하는 꼬리질문 하나만 남겨라. "
+            "이전 답변에 정답·강의가 포함되었거나 형식/질문 수가 어긋났습니다. "
+            "반드시 [진단] / [힌트] / [꼬리질문] 세 블록으로만, 정답을 말하지 말고 "
+            "사용자 사고를 유도하는 꼬리질문 하나(물음표 하나)만 남겨라. "
             f"이 표현들을 사용하지 않는다: {', '.join(direct_markers)}"
         )
         rewritten = _call_llm(system_prompt, rewrite_user)

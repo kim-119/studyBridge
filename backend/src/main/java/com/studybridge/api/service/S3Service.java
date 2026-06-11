@@ -8,6 +8,9 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
@@ -33,16 +36,31 @@ public class S3Service {
     }
 
     public String uploadFile(MultipartFile file, Long userId) throws IOException {
-        if (file.getContentType() == null || !file.getContentType().equals("application/pdf")) {
-            throw new IllegalArgumentException("PDF 파일만 업로드 가능합니다.");
+        String contentType = file.getContentType();
+        String originalName = file.getOriginalFilename();
+        String lowerName = originalName != null ? originalName.toLowerCase() : "";
+        boolean supported = "application/pdf".equals(contentType)
+                || "application/vnd.openxmlformats-officedocument.wordprocessingml.document".equals(contentType)
+                || "text/plain".equals(contentType)
+                || lowerName.endsWith(".pdf")
+                || lowerName.endsWith(".docx")
+                || lowerName.endsWith(".txt");
+        if (!supported) {
+            throw new IllegalArgumentException("문서 파일만 업로드 가능합니다. (PDF/DOCX/TXT)");
         }
 
-        String originalName = file.getOriginalFilename();
         if (originalName != null) {
             originalName = new java.io.File(originalName).getName();
         }
         if (originalName == null || originalName.isBlank()) {
-            originalName = "document.pdf";
+            originalName = "document";
+            if ("application/pdf".equals(contentType)) {
+                originalName += ".pdf";
+            } else if ("application/vnd.openxmlformats-officedocument.wordprocessingml.document".equals(contentType)) {
+                originalName += ".docx";
+            } else if ("text/plain".equals(contentType)) {
+                originalName += ".txt";
+            }
         }
         originalName = originalName.replaceAll("[^a-zA-Z0-9.\\-_\\s가-힣ㄱ-ㅎㅏ-ㅣ]", "_");
 
@@ -52,7 +70,7 @@ public class S3Service {
             PutObjectRequest putObjectRequest = PutObjectRequest.builder()
                     .bucket(bucket)
                     .key(fileName)
-                    .contentType(file.getContentType())
+                    .contentType(contentType != null ? contentType : "application/octet-stream")
                     .build();
 
             s3Client.putObject(putObjectRequest, RequestBody.fromBytes(file.getBytes()));
@@ -130,6 +148,45 @@ public class S3Service {
         } catch (Exception e) {
             log.error("[S3 Presign 에러] 임시 URL 발급 중 예외가 발생했습니다: ", e);
             throw new RuntimeException("AWS S3 Presigned URL 생성에 실패했습니다.", e);
+        }
+    }
+
+    /**
+     * 바이트 배열을 임의의 키/콘텐츠 타입으로 S3에 업로드한다.
+     * (MultipartFile 이 아닌 서버 생성물 - 배너 이미지, 플래너 PDF 등에 사용)
+     */
+    public String uploadBytes(byte[] data, String key, String contentType) {
+        try {
+            PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(key)
+                    .contentType(contentType)
+                    .build();
+            s3Client.putObject(putObjectRequest, RequestBody.fromBytes(data));
+            log.info("[S3 업로드 완료] 서버 생성 파일 업로드: {} ({} bytes)", key, data.length);
+            return key;
+        } catch (Exception e) {
+            log.error("[S3 업로드 에러] 바이트 업로드 중 예외가 발생했습니다: ", e);
+            throw new RuntimeException("AWS S3 업로드에 실패했습니다.", e);
+        }
+    }
+
+    /** 객체 존재 여부 확인 (배너 동기화 idempotent 처리용) */
+    public boolean doesObjectExist(String key) {
+        if (key == null || key.isEmpty()) {
+            return false;
+        }
+        try {
+            s3Client.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+            return true;
+        } catch (NoSuchKeyException e) {
+            return false;
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404) {
+                return false;
+            }
+            log.warn("[S3 headObject 경고] 객체 존재 확인 실패 key={}, status={}", key, e.statusCode());
+            return false;
         }
     }
 

@@ -2,7 +2,7 @@ name: StudyBridge CD Pipeline
 
 on:
   push:
-    branches: [ develop ]
+    branches: [ LLM-clean ]
 
 jobs:
   build-and-deploy:
@@ -22,7 +22,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Backend (Spring Boot) 이미지 빌드 및 푸시
       - name: Backend 빌드 및 푸시
         uses: docker/build-push-action@v5
         with:
@@ -34,7 +33,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Frontend (React) 이미지 빌드 및 푸시
       - name: Frontend 빌드 및 푸시
         uses: docker/build-push-action@v5
         with:
@@ -46,7 +44,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # AI (FastAPI) 이미지 빌드 및 푸시
       - name: FastAPI 빌드 및 푸시
         uses: docker/build-push-action@v5
         with:
@@ -58,7 +55,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # AWS EC2 배포
       - name: AWS EC2 서버 배포
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -66,19 +62,32 @@ jobs:
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
+
             cd ~/studyBridge
-            
-            # 강제 리셋 후 최신 코드로 반영
-            sudo git fetch origin develop
-            sudo git reset --hard origin/develop
-            sudo git clean -fd
-            
-            # Docker Hub 로그인 및 최신 이미지 Pull
+
+            sudo systemctl stop studybridge-healthcheck.timer || true
+            sudo systemctl stop studybridge-auto-deploy.timer || true
+            sudo systemctl stop studybridge-healthcheck.service || true
+            sudo systemctl stop studybridge-auto-deploy.service || true
+
+            sudo chown -R $USER:$USER ~/studyBridge
+
+            git fetch origin LLM-clean
+            git switch LLM-clean
+            git reset --hard origin/LLM-clean
+            git clean -fd
+
             echo ${{ secrets.DOCKERHUB_TOKEN }} | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+
+            docker rm -f capstone-react capstone-spring capstone-fastapi-tunnel-proxy 2>/dev/null || true
+
             docker compose pull
-            
-            # 서비스 무중단 재시작
             docker compose up -d --force-recreate --remove-orphans
-            
-            # 사용하지 않는 이미지 정리
+
             docker image prune -f
+
+            sudo systemctl start studybridge-auto-deploy.timer || true
+            sudo systemctl start studybridge-healthcheck.timer || true
+
+            docker compose ps

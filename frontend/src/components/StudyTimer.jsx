@@ -125,33 +125,56 @@ export default function StudyTimer({ onTimeUpdate }) {
   const isFinishDisabled = !isRunning;
 
   return (
-    <div className="glass-panel timer-container animate-fade-in">
+    <div
+      className="animate-fade-in"
+      style={{
+        backgroundColor: '#FFFFFF',
+        border: '1px solid #E5E7EB',
+        borderRadius: '16px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+        padding: '24px',
+      }}
+    >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h3 style={{ margin: 0 }}>현재 공부 시간</h3>
+        <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#111827' }}>현재 공부 시간</h3>
       </div>
 
-      <div className="timer-display">
+      <div style={{ marginTop: '12px', fontSize: '32px', fontWeight: 800, color: '#22C55E', letterSpacing: '-0.5px' }}>
         {formatTime(sessionSeconds)}
       </div>
 
-      <div className="timer-hint">
+      <div style={{ marginTop: '6px', fontSize: '13px', color: '#6B7280' }}>
         종료를 누르면 오늘의 학습 시간에 누적됩니다.
       </div>
 
-      <div className="timer-controls">
-        <button 
-          className="btn-primary" 
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '18px' }}>
+        {/* Primary: 시작 */}
+        <button
           onClick={handleStart}
           disabled={isRunning}
-          style={{ opacity: isRunning ? 0.5 : 1 }}
+          style={{
+            height: '48px', borderRadius: '10px', border: 'none',
+            backgroundColor: isRunning ? '#A7F3C0' : '#22C55E',
+            color: '#FFFFFF', fontSize: '15px', fontWeight: 700,
+            cursor: isRunning ? 'not-allowed' : 'pointer',
+            transition: 'background-color 0.2s ease',
+          }}
         >
           {isRunning ? '진행중' : '시작'}
         </button>
 
+        {/* Secondary: 종료 */}
         <button
-          className="btn-primary btn-timer-finish"
           onClick={handleFinish}
           disabled={isFinishDisabled}
+          style={{
+            height: '48px', borderRadius: '10px',
+            backgroundColor: '#FFFFFF', border: '1px solid #22C55E',
+            color: '#16A34A', fontSize: '15px', fontWeight: 700,
+            cursor: isFinishDisabled ? 'not-allowed' : 'pointer',
+            opacity: isFinishDisabled ? 0.5 : 1,
+            transition: 'all 0.2s ease',
+          }}
         >
           종료
         </button>

@@ -60,8 +60,8 @@ export default function StudyChart({ rawData }) {
                     }
                     return Number(hours.toFixed(4));
                 }),
-                backgroundColor: 'rgba(74, 222, 128, 0.85)',
-                borderColor: '#4ade80',
+                backgroundColor: 'rgba(34, 197, 94, 0.85)',
+                borderColor: '#22C55E',
                 borderWidth: 0,
                 borderRadius: {
                     topLeft: 6,
@@ -88,7 +88,7 @@ export default function StudyChart({ rawData }) {
                 borderRadius: 8,
                 titleColor: '#fff',
                 bodyColor: '#fff',
-                borderColor: '#4ade80',
+                borderColor: '#22C55E',
                 borderWidth: 1,
                 boxPadding: 8,
                 usePointStyle: false,

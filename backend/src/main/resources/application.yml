@@ -1,7 +1,14 @@
 server:
   port: 8080
+  tomcat:
+    # 멀티에이전트 SSE 스트리밍은 agent별 생성으로 오래 걸린다 → 커넥션 idle 타임아웃을 길게 둔다.
+    connection-timeout: ${SERVER_TOMCAT_CONNECTION_TIMEOUT:600000}
 
 spring:
+  mvc:
+    async:
+      # SseEmitter/Flux 스트리밍이 전체 완료까지 끊기지 않도록 비동기 요청 타임아웃을 길게 둔다.
+      request-timeout: ${SPRING_MVC_ASYNC_REQUEST_TIMEOUT:1800000}
   servlet:
     multipart:
       max-file-size: 50MB
@@ -25,6 +32,8 @@ ai:
   server:
     fastapi:
       base-url: ${FASTAPI_BASE_URL:http://localhost:8000}
+      # FastAPI /api/ai/multi-chat/stream 은 agent별 순차 생성으로 오래 걸린다 → read 타임아웃을 길게 둔다.
+      read-timeout-seconds: ${AI_SERVER_FASTAPI_READ_TIMEOUT_SECONDS:1800}
 
 cloud:
   aws:
@@ -44,3 +53,20 @@ external-api:
 jwt:
   secret: ${JWT_SECRET:studybridge_super_secret_key_for_jwt_token_generation_2026_spring_boot_3_security_6}
   expiration-ms: ${JWT_EXPIRATION_MS:1800000}
+
+# 메인 배너 설정. 외부 이미지 원본 URL과 MCP 토큰은 서버 설정/환경변수로만 관리한다(프론트 노출 금지).
+banner:
+  main:
+    title: ${BANNER_MAIN_TITLE:StudyBridge 학습 플래너}
+    subtitle: ${BANNER_MAIN_SUBTITLE:학습 리포트, 주간 일정, 플래너를 한 곳에서 관리하세요.}
+    primary-button-text: ${BANNER_MAIN_PRIMARY_TEXT:플래너 시작하기}
+    primary-button-path: ${BANNER_MAIN_PRIMARY_PATH:/planner}
+    secondary-button-text: ${BANNER_MAIN_SECONDARY_TEXT:주간일정 보기}
+    secondary-button-path: ${BANNER_MAIN_SECONDARY_PATH:/weekly-schedule}
+    tertiary-button-text: ${BANNER_MAIN_TERTIARY_TEXT:학습리포트 보기}
+    tertiary-button-path: ${BANNER_MAIN_TERTIARY_PATH:/study-report}
+    # 외부 원본 이미지 URL (서버에서만 사용, 프론트에 노출하지 않음)
+    source-url: ${BANNER_MAIN_SOURCE_URL:https://lh3.googleusercontent.com/aida-public/AB6AXuCeyyIGwQgQCJSpq8xgf6PTTLWQThFKVCMYlDiHDQ6u70X3y65IE6_HObw5pkMW4Fzk5YuYrSqe_DSvm0TEkkiBUhvbfCLS9el3RTK72_wXFRAHtvGqC9QPNO47Ciz8fmarYFHICu4nU4Ehu-JLYj_hJz8j4pKS0ZiGYddaNGRbcNvt13UJSKwxXY0P2r3HPXUYz7mna4fUaXwJMSY6XXjT0alSa1i1Wy8Sc4yA9KzotC6RQiI1OG4kPyUyY8_iDw1lwkUcz9RtCyo}
+    s3-key: ${BANNER_MAIN_S3_KEY:banners/main/studybridge-planner-banner.png}
+    # MCP 식별자: 서버 환경변수로만 관리(프론트 노출 금지). 이미지 다운로드 자체에는 불필요.
+    mcp-token: ${BANNER_MCP_TOKEN:}

@@ -127,6 +127,9 @@ _PROFILE_KEY: dict[PersonalityType, str] = {
     PersonalityType.CUSTOM: "custom",
 }
 
+# 정규 영문 키 → PersonalityType (YAML aliases를 normalize에 쓰기 위한 역매핑)
+_KEY_TO_TYPE: dict[str, PersonalityType] = {v: k for k, v in _PROFILE_KEY.items()}
+
 _PROFILES_PATH = Path(__file__).resolve().parent.parent / "policies" / "agent_personality_profiles.yaml"
 _profiles_cache: Optional[dict] = None
 
@@ -150,6 +153,26 @@ def _load_profiles() -> dict:
     return data
 
 
+_yaml_alias_cache: Optional[dict] = None
+
+
+def _yaml_alias_map() -> dict:
+    """YAML 프로필의 aliases를 {라벨소문자: 정규키}로 1회 빌드/캐싱한다(없으면 빈 dict)."""
+    global _yaml_alias_cache
+    if _yaml_alias_cache is not None:
+        return _yaml_alias_cache
+    out: dict = {}
+    for key, profile in _load_profiles().items():
+        if not isinstance(profile, dict):
+            continue
+        for alias in (profile.get("aliases") or []):
+            if alias:
+                out[str(alias).strip().lower()] = key
+        out[key.lower()] = key  # 정규 키 자기 자신도 매칭
+    _yaml_alias_cache = out
+    return out
+
+
 def to_profile_key(personality: Optional[str]) -> str:
     """성격 라벨을 정규 영문 키로 변환한다(friendly/critical/...)."""
     return _PROFILE_KEY.get(normalize_personality(personality), "friendly")
@@ -169,9 +192,19 @@ def normalize_personality(raw: Optional[str]) -> PersonalityType:
         return PersonalityType(s)  # 정규 enum 값과 정확히 일치
     except ValueError:
         pass
+    # 1) YAML aliases(SSOT) 우선 — 정확 매칭
+    yaml_aliases = _yaml_alias_map()
+    sl = s.lower()
+    if sl in yaml_aliases:
+        return _KEY_TO_TYPE.get(yaml_aliases[sl], PersonalityType.FRIENDLY)
+    # 2) 코드 _ALIAS fallback — 정확 매칭
     if s in _ALIAS:
         return _ALIAS[s]
-    for key, val in _ALIAS.items():  # 부분 매칭 (예: '비판적 분석형(직설)')
+    # 3) 부분 매칭 (예: '비판적 분석형(직설)') — YAML → 코드 순
+    for alias_label, key in yaml_aliases.items():
+        if alias_label and (alias_label in sl or sl in alias_label):
+            return _KEY_TO_TYPE.get(key, PersonalityType.FRIENDLY)
+    for key, val in _ALIAS.items():
         if key in s or s in key:
             return val
     return PersonalityType.FRIENDLY
@@ -188,6 +221,10 @@ def _compose_prompt_from_profile(profile: dict) -> str:
     name = profile.get("displayName", "")
     tone = profile.get("toneProfile", "")
     lines.append(f"말투와 성격: {name} — {tone}".strip(" —"))
+    if str(profile.get("speechRegister", "")).strip() == "반말":
+        lines.append("말투 규칙: 반드시 반말로 답한다(존댓말 '~입니다/~합니다/~하세요' 금지). 까칠하되 욕설·인신공격 금지, 마지막엔 개선 방향을 준다.")
+    if profile.get("identity"):
+        lines.append(f"정체성: {profile['identity']}")
     if profile.get("reasoningStyle"):
         lines.append(f"설명 방식: {profile['reasoningStyle']}")
     if profile.get("feedbackStyle"):
@@ -198,11 +235,39 @@ def _compose_prompt_from_profile(profile: dict) -> str:
     must = profile.get("mustUse") or []
     if must:
         lines.append("이런 표현/뉘앙스를 자연스럽게 살려라: " + ", ".join(f'"{m}"' for m in must))
+
+    # 비유 규칙 (creative 등): 비유 밀도/허용 소재/필수 조건을 강하게 지시
+    mr = profile.get("metaphorRules") or {}
+    if isinstance(mr, dict) and mr:
+        parts = []
+        if mr.get("requirement"):
+            parts.append(str(mr["requirement"]))
+        domains = mr.get("allowedDomains") or []
+        if domains:
+            parts.append("비유 소재 예: " + ", ".join(str(d) for d in domains))
+        if mr.get("density"):
+            parts.append(f"비유 밀도: {mr['density']}")
+        if parts:
+            lines.append("비유 규칙: " + " / ".join(parts))
+
+    # 문장 리듬 규칙 (creative 등): bullet만 나열 금지 등
+    rr = profile.get("rhythmRules") or {}
+    if isinstance(rr, dict) and rr:
+        parts = []
+        if rr.get("sentenceLength"):
+            parts.append(f"문장 길이 {rr['sentenceLength']}")
+        if rr.get("variation"):
+            parts.append(f"리듬 변화 {rr['variation']}")
+        if rr.get("avoidUniformBulletOnly"):
+            parts.append("단순 bullet 나열만으로 답하지 말 것(문장과 비유를 섞어라)")
+        if parts:
+            lines.append("문장 리듬: " + " / ".join(parts))
+
     forbidden = profile.get("forbidden") or []
     if forbidden:
         lines.append("금지: " + ", ".join(str(f) for f in forbidden))
     if profile.get("sampleTone"):
-        lines.append(f"예시 톤: {profile['sampleTone']}")
+        lines.append(f"예시 톤(이 톤과 구조를 모방하라):\n{str(profile['sampleTone']).strip()}")
     lines.append("GPT처럼 무색무취한 답변은 금지. 위 성격이 실제 문장 톤에 분명히 드러나야 한다.")
     return "\n".join(lines)
 
@@ -226,11 +291,94 @@ def build_personality_prompt(
     return _PERSONALITY_PROMPTS.get(p_type, _PERSONALITY_PROMPTS[PersonalityType.FRIENDLY])
 
 
+def build_persona_directive(
+    personality: Optional[str],
+    custom_instruction: Optional[str] = None,
+    repair_instruction: Optional[str] = None,
+) -> str:
+    """
+    LLM user 프롬프트의 '마지막'에 넣을 강한 성격 지시를 YAML 프로필에서 조립한다.
+    (system 프롬프트만으로는 모델이 정확성 지시에 눌려 성격을 버리므로, user 턴 끝에 다시 못박는다.)
+    하드코딩 없이 전부 프로필(answerShape/mustUse/metaphorRules/forbidden)에서 가져온다.
+    """
+    if custom_instruction and custom_instruction.strip():
+        base = (
+            "[성격 지시 — 반드시 답변에 반영] 사용자 지정 말투/지시를 최우선으로 따르되 "
+            f"개념 정확성은 유지하라:\n{custom_instruction.strip()}"
+        )
+        return base + (f"\n- 보정 지시: {repair_instruction}" if repair_instruction else "")
+
+    profile = get_profile(personality)
+    name = profile.get("displayName", "") or "지정된 성격"
+    lines = [f"[성격 지시 — 반드시 답변 문장에 드러나라] 너의 성격: {name}"]
+    # 반말 레지스터(냉소적/비판형 등): 존댓말 금지를 강하게 못박는다.
+    if str(profile.get("speechRegister", "")).strip() == "반말":
+        lines.append(
+            "- ★ 반드시 반말로 답한다. '~입니다/~합니다/~하세요/~예요' 같은 존댓말은 절대 금지. "
+            "까칠하고 살짝 비꼬되(약하게), 인신공격·욕설은 금지. 마지막엔 반드시 개선 방향이나 다음 생각 포인트를 준다."
+        )
+    if profile.get("identity"):
+        lines.append(f"- 정체성: {profile['identity']}")
+    shape = profile.get("answerShape") or []
+    if shape:
+        lines.append("- 답변 구조(이 순서를 지켜라): " + " → ".join(str(s) for s in shape))
+    must = profile.get("mustUse") or []
+    if must:
+        lines.append("- 이런 표현을 자연스럽게 써라: " + ", ".join(f'"{m}"' for m in must))
+    mr = profile.get("metaphorRules") or {}
+    if isinstance(mr, dict) and mr.get("requirement"):
+        domains = mr.get("allowedDomains") or []
+        dtxt = f" (소재 예: {', '.join(str(d) for d in domains[:6])})" if domains else ""
+        lines.append(f"- {mr['requirement']}{dtxt}")
+    forbidden = profile.get("forbidden") or []
+    if forbidden:
+        lines.append("- 금지: " + ", ".join(str(f) for f in forbidden))
+    lines.append("- 다른 에이전트와 똑같은 말투·구조로 쓰지 마라. GPT식 무색무취 답변은 실패다.")
+    if repair_instruction:
+        lines.append(f"- 보정 지시(직전 답변이 성격을 충분히 못 살림): {repair_instruction}")
+    return "\n".join(lines)
+
+
 def get_validation_criteria(personality: str) -> str:
     """GPT 검증 시 사용할 성격별 체크 항목을 반환한다."""
     return _VALIDATION_CRITERIA.get(
         normalize_personality(personality), "성격에 맞게 답변했는가? GPT처럼 평범하지 않은가?"
     )
+
+
+def get_validation_hints(personality: Optional[str]) -> list[str]:
+    """YAML 프로필의 validationHints(성격별 휴리스틱 체크리스트)를 반환한다. 없으면 빈 리스트."""
+    hints = get_profile(personality).get("validationHints") or []
+    return [str(h) for h in hints]
+
+
+def get_socratic_style(personality: Optional[str]) -> str:
+    """소크라테스 모드에서 성격별 '질문 방식'(socraticStyle)을 반환한다. 없으면 기본 문구."""
+    style = get_profile(personality).get("socraticStyle")
+    if style:
+        return str(style)
+    return "성격 톤을 유지하되 정답은 직접 주지 않고 꼬리질문으로 유도한다."
+
+
+def build_personality_system_prompt(agent, stage: int = 1, question: str = "") -> str:
+    """
+    agent + stage(+question)를 받아 성격 시스템 프롬프트 블록을 만든다.
+    실제 전체 시스템 프롬프트(역할/지식수준 포함)는 prompt_builder.build_agent_system_prompt가
+    이 빌더(build_personality_prompt)를 호출해 조립한다. 본 함수는 성격 블록 + stage 역할 힌트만 반환하는
+    경량 진입점이다(직접 호출/테스트용).
+    """
+    label = getattr(agent, "personality", None) or getattr(agent, "tone", None) or getattr(agent, "style", None)
+    custom = getattr(agent, "customInstruction", None)
+    block = build_personality_prompt(label, custom)
+    stage_hint = {
+        1: "[1차] 네 성격을 살려 빠른 초안을 작성하라. 정확성은 유지하되 톤은 분명히 드러내라.",
+        2: "[2차] 1차 답변을 네 성격 기준으로 검증·보강하라. 빠진 정확성과 톤을 함께 채워라.",
+        3: "[3차] 다른 에이전트 답변을 네 성격 관점에서 평가/피드백하라.",
+    }.get(stage, "")
+    parts = [block]
+    if stage_hint:
+        parts.append(stage_hint)
+    return "\n".join(parts)
 
 
 def list_personalities() -> list[str]:

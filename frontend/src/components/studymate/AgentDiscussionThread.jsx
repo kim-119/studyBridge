@@ -7,6 +7,257 @@ import {
 } from 'lucide-react';
 import './studymate-premium.css';
 
+// ── 토론 노드 전용 상수 ─────────────────────────────────────────────────────────
+// 색상 규칙: PRO=초록 / CON=주황 / NEUTRAL·JUDGE=보라 / TOPIC=파랑
+const DEBATE_COLOR = {
+  PRO:     { accent: '#059669', bg: '#ecfdf5', badgeBg: '#D1FAE5' },
+  CON:     { accent: '#ea580c', bg: '#fff7ed', badgeBg: '#FFEDD5' },
+  NEUTRAL: { accent: '#7c3aed', bg: '#f5f3ff', badgeBg: '#EDE9FE' },
+  JUDGE:   { accent: '#7c3aed', bg: '#f5f3ff', badgeBg: '#EDE9FE' },
+  TOPIC:   { accent: '#2563eb', bg: '#eff6ff', badgeBg: '#DBEAFE' },
+};
+const debateColor = (side) => DEBATE_COLOR[side] || DEBATE_COLOR.TOPIC;
+
+// 연결선 라벨 규칙 (토론 모드에서는 "피드백" 금지)
+const DEBATE_EDGE_LABEL = {
+  TOPIC: '논제',
+  OPENING_STATEMENT: '입론',
+  NEUTRAL_ANALYSIS: '쟁점 정리',
+  REBUTTAL: '반박',
+  CROSS_REBUTTAL: '재반박',
+  NEUTRAL_CHECK: '검토',
+  CLOSING_STATEMENT: '최종 변론',
+  JUDGEMENT: '판정',
+};
+
+// stageType+side별 맞춤 액션 버튼
+const DEBATE_ACTIONS = {
+  TOPIC: [
+    { label: '찬성 근거 만들기', actionType: 'pro_argument' },
+    { label: '반대 근거 만들기', actionType: 'con_argument' },
+    { label: '쟁점 정리', actionType: 'issue_summary' },
+    { label: '판정 요청', actionType: 'judge' },
+  ],
+  OPENING_STATEMENT_PRO: [
+    { label: '반대측 반박 요청', actionType: 'con_rebut' },
+    { label: '근거 보강', actionType: 'strengthen_pro' },
+    { label: '예외 조건 찾기', actionType: 'find_exception' },
+  ],
+  OPENING_STATEMENT_CON: [
+    { label: '찬성측 반박 요청', actionType: 'pro_rebut' },
+    { label: '근거 보강', actionType: 'strengthen_con' },
+    { label: '반례 찾기', actionType: 'find_counterexample' },
+  ],
+  REBUTTAL_PRO: [
+    { label: '반대측 재반박', actionType: 'con_cross_rebut' },
+    { label: '논리 허점 검사', actionType: 'check_logic_gap' },
+    { label: '근거 추가', actionType: 'add_evidence' },
+  ],
+  REBUTTAL_CON: [
+    { label: '찬성측 재반박', actionType: 'pro_cross_rebut' },
+    { label: '논리 허점 검사', actionType: 'check_logic_gap' },
+    { label: '근거 추가', actionType: 'add_evidence' },
+  ],
+  CROSS_REBUTTAL_PRO: [
+    { label: '심사위원 판정', actionType: 'judge' },
+    { label: '논리 허점 검사', actionType: 'check_logic_gap' },
+    { label: '근거 추가', actionType: 'add_evidence' },
+  ],
+  CROSS_REBUTTAL_CON: [
+    { label: '심사위원 판정', actionType: 'judge' },
+    { label: '논리 허점 검사', actionType: 'check_logic_gap' },
+    { label: '근거 추가', actionType: 'add_evidence' },
+  ],
+  CLOSING_STATEMENT: [
+    { label: '심사위원 판정', actionType: 'judge' },
+    { label: '설득력 강화', actionType: 'improve_persuasion' },
+    { label: '핵심 요약', actionType: 'summarize_claim' },
+  ],
+  NEUTRAL_ANALYSIS: [
+    { label: '판정 요청', actionType: 'judge' },
+    { label: '쟁점 정리', actionType: 'issue_summary' },
+    { label: '학습 요약', actionType: 'learning_summary' },
+  ],
+  NEUTRAL_CHECK: [
+    { label: '심사위원 판정', actionType: 'judge' },
+    { label: '논리 허점 검사', actionType: 'check_logic_gap' },
+    { label: '학습 요약', actionType: 'learning_summary' },
+  ],
+  JUDGEMENT: [
+    { label: '판정 근거 자세히', actionType: 'explain_judgement' },
+    { label: '반대 판정 가능성', actionType: 'alternative_judgement' },
+    { label: '학습 요약', actionType: 'learning_summary' },
+  ],
+};
+
+const getDebateActions = (node) => {
+  const st = node.stageType;
+  const side = node.side;
+  if (st === 'TOPIC') return DEBATE_ACTIONS.TOPIC;
+  if (st === 'JUDGEMENT') return DEBATE_ACTIONS.JUDGEMENT;
+  if (st === 'NEUTRAL_ANALYSIS') return DEBATE_ACTIONS.NEUTRAL_ANALYSIS;
+  if (st === 'NEUTRAL_CHECK') return DEBATE_ACTIONS.NEUTRAL_CHECK;
+  if (st === 'CLOSING_STATEMENT') return DEBATE_ACTIONS.CLOSING_STATEMENT;
+  return DEBATE_ACTIONS[`${st}_${side}`] || [];
+};
+
+// ── 소크라테스 노드 전용 상수 ────────────────────────────────────────────────────
+// 색상: 진단/핵심개념=파랑, 오개념/반례=주황, 힌트=노랑, 적용=초록, 자기설명=청록, 정리=보라
+const SOCRATIC_COLOR = {
+  SESSION:            { accent: '#0ea5e9', bg: '#f0f9ff', badgeBg: '#e0f2fe' },
+  DIAGNOSIS:          { accent: '#2563eb', bg: '#eff6ff', badgeBg: '#DBEAFE' },
+  CORE_CONCEPT:       { accent: '#2563eb', bg: '#eff6ff', badgeBg: '#DBEAFE' },
+  MISCONCEPTION_CHECK:{ accent: '#ea580c', bg: '#fff7ed', badgeBg: '#FFEDD5' },
+  COUNTEREXAMPLE:     { accent: '#ea580c', bg: '#fff7ed', badgeBg: '#FFEDD5' },
+  HINT:               { accent: '#ca8a04', bg: '#fefce8', badgeBg: '#FEF9C3' },
+  APPLICATION:        { accent: '#059669', bg: '#ecfdf5', badgeBg: '#D1FAE5' },
+  SELF_EXPLANATION:   { accent: '#0d9488', bg: '#f0fdfa', badgeBg: '#CCFBF1' },
+  SUMMARY:            { accent: '#7c3aed', bg: '#f5f3ff', badgeBg: '#EDE9FE' },
+  NEXT_STUDY_PLAN:    { accent: '#7c3aed', bg: '#f5f3ff', badgeBg: '#EDE9FE' },
+};
+const socraticColor = (stageType) => SOCRATIC_COLOR[stageType] || SOCRATIC_COLOR.SESSION;
+
+const SOCRATIC_EDGE_LABEL = {
+  SESSION: '세션',
+  DIAGNOSIS: '진단', CORE_CONCEPT: '핵심 개념', MISCONCEPTION_CHECK: '오개념',
+  HINT: '힌트', APPLICATION: '적용', COUNTEREXAMPLE: '반례',
+  SELF_EXPLANATION: '자기 설명', SUMMARY: '정리', NEXT_STUDY_PLAN: '다음 학습',
+};
+
+const SOCRATIC_ACTIONS = {
+  DIAGNOSIS: [
+    { label: '더 쉬운 질문', actionType: 'easier_question' },
+    { label: '더 어려운 질문', actionType: 'harder_question' },
+    { label: '예시로 질문', actionType: 'example_question' },
+  ],
+  CORE_CONCEPT: [
+    { label: '더 쉬운 질문', actionType: 'easier_question' },
+    { label: '힌트 요청', actionType: 'request_hint' },
+    { label: '반례 질문', actionType: 'counterexample_question' },
+  ],
+  MISCONCEPTION_CHECK: [
+    { label: '힌트 요청', actionType: 'request_hint' },
+    { label: '반례 질문', actionType: 'counterexample_question' },
+    { label: '다시 설명 유도', actionType: 're_explain' },
+  ],
+  HINT: [
+    { label: '다음 힌트', actionType: 'next_hint' },
+    { label: '예시 힌트', actionType: 'example_hint' },
+    { label: '정답 일부 보기', actionType: 'reveal_partial' },
+  ],
+  APPLICATION: [
+    { label: '코드 예제로 적용', actionType: 'apply_code' },
+    { label: '실무 사례로 적용', actionType: 'apply_practical' },
+    { label: '시험 문제로 바꾸기', actionType: 'to_exam' },
+  ],
+  COUNTEREXAMPLE: [
+    { label: '힌트 요청', actionType: 'request_hint' },
+    { label: '다시 설명 유도', actionType: 're_explain' },
+    { label: '적용 질문', actionType: 'apply_practical' },
+  ],
+  SELF_EXPLANATION: [
+    { label: '내 답변 평가', actionType: 'evaluate_answer' },
+    { label: '부족한 개념 찾기', actionType: 'find_weakness' },
+    { label: '다음 질문 만들기', actionType: 'next_question' },
+  ],
+  SUMMARY: [
+    { label: '학습 계획 만들기', actionType: 'make_study_plan' },
+    { label: '퀴즈 생성', actionType: 'make_quiz' },
+    { label: '복습 질문 만들기', actionType: 'make_review' },
+  ],
+  SESSION: [
+    { label: '더 쉬운 질문', actionType: 'easier_question' },
+    { label: '학습 계획 만들기', actionType: 'make_study_plan' },
+  ],
+};
+const getSocraticActions = (node) => SOCRATIC_ACTIONS[node.stageType] || SOCRATIC_ACTIONS.SESSION;
+
+const SIMULATION_COLOR = {
+  SESSION: { accent: '#1d4ed8', bg: '#eff6ff', badgeBg: '#dbeafe' },
+  SCENARIO_SETUP: { accent: '#1d4ed8', bg: '#eff6ff', badgeBg: '#dbeafe' },
+  USER_ROLE: { accent: '#7c3aed', bg: '#f5f3ff', badgeBg: '#ede9fe' },
+  SITUATION_CONTEXT: { accent: '#0d9488', bg: '#f0fdfa', badgeBg: '#ccfbf1' },
+  CHOICES: { accent: '#059669', bg: '#ecfdf5', badgeBg: '#d1fae5' },
+  CHOICE: { accent: '#059669', bg: '#ecfdf5', badgeBg: '#d1fae5' },
+  SELECTED_CHOICE: { accent: '#059669', bg: '#ecfdf5', badgeBg: '#d1fae5' },
+  CONSEQUENCE: { accent: '#ea580c', bg: '#fff7ed', badgeBg: '#ffedd5' },
+  CONSEQUENCE_PREVIEW: { accent: '#ea580c', bg: '#fff7ed', badgeBg: '#ffedd5' },
+  CONCEPT_MAPPING: { accent: '#2563eb', bg: '#eff6ff', badgeBg: '#dbeafe' },
+  CONCEPT_EXPLANATION: { accent: '#2563eb', bg: '#eff6ff', badgeBg: '#dbeafe' },
+  MISCONCEPTION_TRAP: { accent: '#dc2626', bg: '#fef2f2', badgeBg: '#fee2e2' },
+  RISK_OR_LIMITATION: { accent: '#dc2626', bg: '#fef2f2', badgeBg: '#fee2e2' },
+  REFLECTION_QUESTION: { accent: '#ca8a04', bg: '#fefce8', badgeBg: '#fef9c3' },
+  NEXT_SCENARIO: { accent: '#4c1d95', bg: '#faf5ff', badgeBg: '#ede9fe' },
+  NEXT_BRANCH: { accent: '#4c1d95', bg: '#faf5ff', badgeBg: '#ede9fe' },
+};
+const simulationColor = (stageType) => SIMULATION_COLOR[stageType] || SIMULATION_COLOR.SESSION;
+
+const SIMULATION_EDGE_LABEL = {
+  SESSION: '세션', SCENARIO_SETUP: '상황 설정', USER_ROLE: '나의 역할', SITUATION_CONTEXT: '문제 상황',
+  CHOICES: '선택지', CHOICE: '선택', SELECTED_CHOICE: '선택한 행동', CONSEQUENCE: '선택 결과',
+  CONSEQUENCE_PREVIEW: '결과 변화', CONCEPT_MAPPING: '개념 연결', CONCEPT_EXPLANATION: '개념 설명',
+  MISCONCEPTION_TRAP: '오개념 함정', RISK_OR_LIMITATION: '위험과 한계', REFLECTION_QUESTION: '성찰 질문',
+  NEXT_SCENARIO: '다음 분기', NEXT_BRANCH: '다음 사건',
+};
+
+const SIMULATION_ACTIONS = {
+  SCENARIO_SETUP: [
+    { label: '배경 더 자세히', actionType: 'expand_background' },
+    { label: '더 쉬운 상황으로', actionType: 'easier_scenario' },
+    { label: '더 어려운 상황으로', actionType: 'harder_scenario' },
+  ],
+  USER_ROLE: [
+    { label: '내 역할 바꾸기', actionType: 'change_role' },
+    { label: '관찰자 시점으로 보기', actionType: 'observer_view' },
+    { label: '의사결정자 시점으로 보기', actionType: 'decision_view' },
+  ],
+  CHOICES: [
+    { label: '다음 분기 진행', actionType: 'next_branch' },
+    { label: '난이도 올리기', actionType: 'raise_difficulty' },
+    { label: '다른 분야로 바꾸기', actionType: 'change_domain' },
+  ],
+  CHOICE: [
+    { label: '이 선택하기', actionType: 'choose' },
+    { label: '결과 미리보기', actionType: 'preview' },
+    { label: '위험 분석', actionType: 'risk' },
+  ],
+  CONSEQUENCE: [
+    { label: '왜 이런 결과인지', actionType: 'why_result' },
+    { label: '다른 선택과 비교', actionType: 'compare_choices' },
+    { label: '개념으로 연결', actionType: 'connect_concept' },
+  ],
+  CONCEPT_MAPPING: [
+    { label: '핵심 개념 정리', actionType: 'summarize_concept' },
+    { label: '다른 사례로 확장', actionType: 'expand_case' },
+    { label: '전공 맥락으로 연결', actionType: 'major_context' },
+  ],
+  MISCONCEPTION_TRAP: [
+    { label: '오개념 더 파기', actionType: 'dig_trap' },
+    { label: '반례 보기', actionType: 'counterexample' },
+    { label: '안전한 판단 기준', actionType: 'safe_rule' },
+  ],
+  REFLECTION_QUESTION: [
+    { label: '힌트 받기', actionType: 'hint' },
+    { label: '내 답변 평가', actionType: 'evaluate_reflection' },
+    { label: '다음 질문 생성', actionType: 'next_question' },
+  ],
+  NEXT_SCENARIO: [
+    { label: '다음 분기 진행', actionType: 'next_branch' },
+    { label: '난이도 올리기', actionType: 'raise_difficulty' },
+    { label: '다른 분야로 바꾸기', actionType: 'change_domain' },
+  ],
+  NEXT_BRANCH: [
+    { label: '다음 분기 진행', actionType: 'next_branch' },
+    { label: '난이도 올리기', actionType: 'raise_difficulty' },
+    { label: '다른 분야로 바꾸기', actionType: 'change_domain' },
+  ],
+  SESSION: [
+    { label: '배경 더 자세히', actionType: 'expand_background' },
+    { label: '다음 분기 진행', actionType: 'next_branch' },
+  ],
+};
+const getSimulationActions = (node) => SIMULATION_ACTIONS[node.stageType] || SIMULATION_ACTIONS.SESSION;
+
 /**
  * AgentDiscussionThread
  *
@@ -179,9 +430,18 @@ export default function AgentDiscussionThread({
    */
   const renderFlowchartNode = (node, depth = 0) => {
     const isUser = node.sender === 'USER';
-    const color = isUser 
-      ? { accent: '#10b981', bg: '#ecfdf5' } 
-      : getAgentColor(node.senderName || node.sender_name);
+    const isDebate = node.nodeType === 'debate';
+    const isSocratic = node.nodeType === 'socratic';
+    const isSimulation = node.nodeType === 'simulation';
+    const color = isUser
+      ? { accent: '#10b981', bg: '#ecfdf5' }
+      : isDebate
+        ? debateColor(node.side)
+        : isSocratic
+          ? socraticColor(node.stageType)
+          : isSimulation
+            ? simulationColor(node.stageType)
+            : getAgentColor(node.senderName || node.sender_name);
     const isBookmarked = bookmarkedIds.has(node.id);
     const isExpanded = expandedNodes.has(node.id) || node.isTyping;
     const isRoot = depth === 0;
@@ -195,10 +455,10 @@ export default function AgentDiscussionThread({
               onClick={() => toggleExpand(node.id)}
               style={{
                 width: isRoot ? '400px' : '340px',
-                backgroundColor: isUser ? (isRoot ? '#f0fdf4' : '#f8fafc') : '#ffffff',
-                border: isUser 
-                  ? (isRoot ? '2px solid rgba(16,185,129,0.4)' : '1px solid rgba(16,185,129,0.3)') 
-                  : '1px solid #e2e8f0',
+                backgroundColor: isUser ? (isRoot ? '#f0fdf4' : '#f8fafc') : ((isDebate || isSocratic || isSimulation) ? color.bg : '#ffffff'),
+                border: isUser
+                  ? (isRoot ? '2px solid rgba(16,185,129,0.4)' : '1px solid rgba(16,185,129,0.3)')
+                  : (isDebate || isSocratic || isSimulation) ? `1.5px solid ${color.accent}55` : '1px solid #e2e8f0',
                 borderRadius: '16px',
                 padding: '16px',
                 boxShadow: isExpanded 
@@ -233,14 +493,30 @@ export default function AgentDiscussionThread({
                     {isUser ? <User size={14} /> : <Bot size={14} />}
                  </div>
                  
-                 <span style={{ fontWeight: '800', fontSize: '14px', color: '#0f172a', letterSpacing: '-0.3px', flexShrink: 0 }}>
-                    {isUser ? (isRoot ? '나의 질문' : '나 (추가 질문)') : (node.senderName || node.sender_name || 'AI')}
-                 </span>
+                 {(isDebate || isSocratic || isSimulation) ? (
+                   <>
+                     {/* 토론/소크라테스/상황극 노드: senderName보다 stageTitle을 강조한다 */}
+                     <span style={{ fontWeight: '800', fontSize: '14px', color: color.accent, letterSpacing: '-0.3px', flexShrink: 0 }}>
+                        {node.stageTitle}
+                     </span>
+                     {node.agentName && node.stageType !== 'TOPIC' && node.stageType !== 'SESSION' && (
+                        <span style={{ color: color.accent, background: color.badgeBg, border: `1px solid ${color.accent}30`, fontSize: '10px', padding: '2px 7px', borderRadius: '99px', fontWeight: '700', flexShrink: 0 }}>
+                          · {node.agentName}
+                        </span>
+                     )}
+                   </>
+                 ) : (
+                   <>
+                     <span style={{ fontWeight: '800', fontSize: '14px', color: '#0f172a', letterSpacing: '-0.3px', flexShrink: 0 }}>
+                        {isUser ? (isRoot ? '나의 질문' : '나 (추가 질문)') : (node.senderName || node.sender_name || 'AI')}
+                     </span>
 
-                 {!isUser && (
-                    <span style={{ color: color.accent, background: 'rgba(255,255,255,0.7)', border: `1px solid ${color.accent}30`, fontSize: '10px', padding: '2px 6px', borderRadius: '99px', fontWeight: '700', flexShrink: 0 }}>
-                      {node.actionType || '의견'}
-                    </span>
+                     {!isUser && (
+                        <span style={{ color: color.accent, background: 'rgba(255,255,255,0.7)', border: `1px solid ${color.accent}30`, fontSize: '10px', padding: '2px 6px', borderRadius: '99px', fontWeight: '700', flexShrink: 0 }}>
+                          {node.actionType || '의견'}
+                        </span>
+                     )}
+                   </>
                  )}
 
                  {isBookmarked && !isUser && (
@@ -306,37 +582,72 @@ export default function AgentDiscussionThread({
                                 {isBookmarked ? '메모됨' : '메모하기'}
                               </button>
                             )}
-                            <button 
-                              onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, isUser ? 'question' : 'detail'); }} 
-                              style={{ 
-                                display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', 
-                                border: isUser ? '1px solid #34d399' : '1px solid #e2e8f0', 
-                                background: isUser ? '#ecfdf5' : '#ffffff', 
-                                color: isUser ? '#059669' : '#64748b', 
-                                cursor: 'pointer', transition: 'all 0.2s ease',
-                                boxShadow: '0 1px 2px rgba(0,0,0,0.02)'
-                              }}
-                            >
-                              {isUser ? <MessageSquare size={13} /> : <RefreshCw size={13} />}
-                              {isUser ? '추가 질문 연결' : '더 자세히'}
-                            </button>
+                            {!isDebate && !isSocratic && !isSimulation && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, isUser ? 'question' : 'detail'); }}
+                                style={{
+                                  display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: '700',
+                                  border: isUser ? '1px solid #34d399' : '1px solid #e2e8f0',
+                                  background: isUser ? '#ecfdf5' : '#ffffff',
+                                  color: isUser ? '#059669' : '#64748b',
+                                  cursor: 'pointer', transition: 'all 0.2s ease',
+                                  boxShadow: '0 1px 2px rgba(0,0,0,0.02)'
+                                }}
+                              >
+                                {isUser ? <MessageSquare size={13} /> : <RefreshCw size={13} />}
+                                {isUser ? '추가 질문 연결' : '더 자세히'}
+                              </button>
+                            )}
 
-                            {!isUser && (
+                            {/* 상황극 노드: stageType에 맞는 전용 액션 버튼 */}
+                            {isSimulation && getSimulationActions(node).map((act) => (
+                              <button
+                                key={act.actionType}
+                                onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, act.actionType); }}
+                                style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 11px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: `1px solid ${color.accent}40`, background: color.badgeBg, color: color.accent, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)', whiteSpace: 'nowrap' }}
+                              >
+                                {act.label}
+                              </button>
+                            ))}
+
+                            {/* 토론 노드: stageType/side에 맞는 전용 액션 버튼 */}
+                            {isDebate && getDebateActions(node).map((act) => (
+                              <button
+                                key={act.actionType}
+                                onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, act.actionType); }}
+                                style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 11px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: `1px solid ${color.accent}40`, background: color.badgeBg, color: color.accent, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)', whiteSpace: 'nowrap' }}
+                              >
+                                {act.label}
+                              </button>
+                            ))}
+
+                            {/* 소크라테스 노드: stageType에 맞는 전용 액션 버튼 */}
+                            {isSocratic && getSocraticActions(node).map((act) => (
+                              <button
+                                key={act.actionType}
+                                onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, act.actionType); }}
+                                style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 11px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: `1px solid ${color.accent}40`, background: color.badgeBg, color: color.accent, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)', whiteSpace: 'nowrap' }}
+                              >
+                                {act.label}
+                              </button>
+                            ))}
+
+                            {!isUser && !isDebate && !isSocratic && !isSimulation && (
                               <>
-                                <button 
-                                  onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, 'criticize'); }} 
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, 'criticize'); }}
                                   style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: '1px solid #fecdd3', background: '#fff1f2', color: '#e11d48', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' }}
                                 >
                                   ⚔️ 반박
                                 </button>
-                                <button 
-                                  onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, 'compare'); }} 
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, 'compare'); }}
                                   style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: '1px solid #ddd6fe', background: '#f5f3ff', color: '#7c3aed', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' }}
                                 >
                                   ⚖️ 비교
                                 </button>
-                                <button 
-                                  onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, 'support'); }} 
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, 'support'); }}
                                   style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: '1px solid #fef08a', background: '#fefce8', color: '#ca8a04', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' }}
                                 >
                                   💡 예시
@@ -384,7 +695,61 @@ export default function AgentDiscussionThread({
 
                                 {/* 자식으로 내려가는 수직 연결선 */}
                                 <div style={{ width: '2px', height: '40px', background: '#cbd5e1', zIndex: 0, display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
-                                   {(child.sender !== 'USER' && node.sender !== 'USER') && (
+                                   {/* 토론 노드: stageType 기반 라벨(입론/반박/재반박/최종 변론/판정/논제). "피드백" 금지 */}
+                                   {child.nodeType === 'debate' ? (
+                                       DEBATE_EDGE_LABEL[child.stageType] && (
+                                         <div style={{
+                                             position: 'absolute',
+                                             background: '#ffffff',
+                                             border: `1px solid ${debateColor(child.side).accent}40`,
+                                             padding: '2px 8px',
+                                             borderRadius: '12px',
+                                             fontSize: '10px',
+                                             fontWeight: '800',
+                                             color: debateColor(child.side).accent,
+                                             display: 'flex',
+                                             alignItems: 'center',
+                                             gap: '4px',
+                                             boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
+                                             zIndex: 2,
+                                             whiteSpace: 'nowrap'
+                                         }}>
+                                             {DEBATE_EDGE_LABEL[child.stageType]}
+                                         </div>
+                                       )
+                                   ) : child.nodeType === 'simulation' ? (
+                                       SIMULATION_EDGE_LABEL[child.stageType] && (
+                                         <div style={{
+                                             position: 'absolute', background: '#ffffff', border: `1px solid ${simulationColor(child.stageType).accent}40`,
+                                             padding: '2px 8px', borderRadius: '12px', fontSize: '10px', fontWeight: '800',
+                                             color: simulationColor(child.stageType).accent, display: 'flex', alignItems: 'center', gap: '4px',
+                                             boxShadow: '0 2px 6px rgba(0,0,0,0.05)', zIndex: 2, whiteSpace: 'nowrap'
+                                         }}>
+                                             {SIMULATION_EDGE_LABEL[child.stageType]}
+                                         </div>
+                                       )
+                                   ) : child.nodeType === 'socratic' ? (
+                                       SOCRATIC_EDGE_LABEL[child.stageType] && (
+                                         <div style={{
+                                             position: 'absolute',
+                                             background: '#ffffff',
+                                             border: `1px solid ${socraticColor(child.stageType).accent}40`,
+                                             padding: '2px 8px',
+                                             borderRadius: '12px',
+                                             fontSize: '10px',
+                                             fontWeight: '800',
+                                             color: socraticColor(child.stageType).accent,
+                                             display: 'flex',
+                                             alignItems: 'center',
+                                             gap: '4px',
+                                             boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
+                                             zIndex: 2,
+                                             whiteSpace: 'nowrap'
+                                         }}>
+                                             {SOCRATIC_EDGE_LABEL[child.stageType]}
+                                         </div>
+                                       )
+                                   ) : (child.sender !== 'USER' && node.sender !== 'USER') && (
                                        <div style={{
                                            position: 'absolute',
                                            background: '#ffffff',
@@ -419,9 +784,62 @@ export default function AgentDiscussionThread({
     );
   };
 
+  const hasDebate = messages.some((m) => m.nodeType === 'debate');
+  const hasSocratic = messages.some((m) => m.nodeType === 'socratic');
+
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
-      
+
+      {/* 소크라테스 노드가 있을 때만 표시되는 색상 범례 */}
+      {hasSocratic && (
+        <div style={{
+          position: 'absolute', top: '16px', right: '16px', zIndex: 50,
+          background: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(12px)',
+          border: '1px solid rgba(226,232,240,0.9)', borderRadius: '14px',
+          padding: '10px 14px', boxShadow: '0 8px 24px rgba(0,0,0,0.07)',
+          display: 'flex', flexDirection: 'column', gap: '6px',
+        }}>
+          <div style={{ fontSize: '11px', fontWeight: 800, color: '#475569', marginBottom: '2px' }}>소크라테스 범례</div>
+          {[
+            { c: SOCRATIC_COLOR.DIAGNOSIS.accent, t: '진단/핵심 개념' },
+            { c: SOCRATIC_COLOR.MISCONCEPTION_CHECK.accent, t: '오개념/반례' },
+            { c: SOCRATIC_COLOR.HINT.accent, t: '힌트' },
+            { c: SOCRATIC_COLOR.APPLICATION.accent, t: '적용' },
+            { c: SOCRATIC_COLOR.SELF_EXPLANATION.accent, t: '자기 설명' },
+            { c: SOCRATIC_COLOR.SUMMARY.accent, t: '정리/다음 학습' },
+          ].map((row) => (
+            <div key={row.t} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', fontWeight: 700, color: '#334155' }}>
+              <span style={{ width: '10px', height: '10px', borderRadius: '3px', background: row.c, flexShrink: 0 }} />
+              {row.t}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 토론 노드가 있을 때만 표시되는 색상 범례 */}
+      {hasDebate && (
+        <div style={{
+          position: 'absolute', top: '16px', right: '16px', zIndex: 50,
+          background: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(12px)',
+          border: '1px solid rgba(226,232,240,0.9)', borderRadius: '14px',
+          padding: '10px 14px', boxShadow: '0 8px 24px rgba(0,0,0,0.07)',
+          display: 'flex', flexDirection: 'column', gap: '6px',
+        }}>
+          <div style={{ fontSize: '11px', fontWeight: 800, color: '#475569', marginBottom: '2px' }}>토론 범례</div>
+          {[
+            { c: DEBATE_COLOR.PRO.accent, t: '찬성측' },
+            { c: DEBATE_COLOR.CON.accent, t: '반대측' },
+            { c: DEBATE_COLOR.NEUTRAL.accent, t: '중립/심사위원' },
+            { c: DEBATE_COLOR.TOPIC.accent, t: '논제' },
+          ].map((row) => (
+            <div key={row.t} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', fontWeight: 700, color: '#334155' }}>
+              <span style={{ width: '10px', height: '10px', borderRadius: '3px', background: row.c, flexShrink: 0 }} />
+              {row.t}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* 확대/축소 컨트롤 패널 (항상 화면 우측 하단 고정) */}
       <div style={{
         position: 'absolute',

@@ -87,8 +87,15 @@ _DEFAULT_VALIDATION_POLICY: Dict[str, Any] = {
     "socratic": {
         "max_questions": 1,
         "block_direct_answer": True,
-        "max_answer_length_chars": 450,
-        "direct_answer_markers": ["정답은", "결론은", "즉, 답은", "완성 답안은", "정확한 답은"],
+        "max_answer_length_chars": 350,
+        "direct_answer_markers": [
+            "정답은", "결론은", "결론부터", "즉, 답은", "완성 답안은", "정확한 답은",
+            "답은 다음과", "정답을 말하자면", "정리하자면", "요약하자면", "쉽게 설명하면",
+        ],
+        "lecture_markers": [
+            "로 설명됩니다", "로 설명할 수 있습니다", "라고 할 수 있습니다",
+            "다음과 같습니다", "첫째,", "둘째,",
+        ],
     },
     "tikitaka": {
         "critique_keywords": [

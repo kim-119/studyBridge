@@ -1137,3 +1137,103 @@
   border-radius: 50%;
   flex-shrink: 0;
 }
+
+/* ── 소크라테스 단계 카드 (채팅/마인드맵 공통 색상 규칙) ───────────────────────────
+   진단/핵심개념=파랑, 오개념/반례=주황, 힌트=노랑, 적용=초록, 자기설명=청록, 정리=보라.
+   현재 렌더는 인라인 스타일로 처리되며, 아래 클래스는 커스터마이즈/재사용을 위한 훅이다. */
+.socratic-stage-card {
+  padding: 11px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.035);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-left: 3px solid #0ea5e9;
+}
+.socratic-stage-card--diagnosis,
+.socratic-stage-card--core { border-left-color: #2563eb; }
+.socratic-stage-card--misconception { border-left-color: #ea580c; }
+.socratic-stage-card--hint { border-left-color: #ca8a04; }
+.socratic-stage-card--application { border-left-color: #059669; }
+.socratic-stage-card--self { border-left-color: #0d9488; }
+.socratic-stage-card--summary { border-left-color: #7c3aed; }
+
+.socratic-role-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.mindmap-node--socratic {
+  border: 1.5px solid rgba(14, 165, 233, 0.35);
+}
+
+
+/* ── 상황극 단계 카드 ───────────────────────────────────────────────────────
+   상황 설정=남색/파랑, 역할=보라, 문제 상황=청록, 선택지=초록, 결과=주황,
+   개념 연결=파랑, 오개념=빨강, 성찰=노랑, 다음 분기=보라/검정. */
+.simulation-stage-card {
+  padding: 11px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.035);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-left: 3px solid #1d4ed8;
+}
+.simulation-stage-card--scenario { border-left-color: #1d4ed8; }
+.simulation-stage-card--role { border-left-color: #7c3aed; }
+.simulation-stage-card--context { border-left-color: #0d9488; }
+.simulation-stage-card--choices { border-left-color: #059669; }
+.simulation-stage-card--consequence { border-left-color: #ea580c; }
+.simulation-stage-card--concept { border-left-color: #2563eb; }
+.simulation-stage-card--trap { border-left-color: #dc2626; }
+.simulation-stage-card--reflection { border-left-color: #ca8a04; }
+.simulation-stage-card--next { border-left-color: #4c1d95; }
+
+.simulation-role-badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.simulation-choice-button {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(5, 150, 105, 0.25);
+  background: rgba(236, 253, 245, 0.75);
+  color: #0f172a;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+.simulation-choice-button:hover {
+  border-color: rgba(5, 150, 105, 0.55);
+  background: #ecfdf5;
+  transform: translateY(-1px);
+}
+.simulation-choice-button strong {
+  grid-row: 1 / span 3;
+  color: #059669;
+  font-size: 13px;
+}
+.simulation-choice-button span {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.simulation-choice-button small {
+  grid-column: 2;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.mindmap-node--simulation {
+  border: 1.5px solid rgba(29, 78, 216, 0.35);
+}

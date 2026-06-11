@@ -119,6 +119,7 @@ export default function GroupStudy() {
     thumbnail: 'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
     startDate: '2026-06-02',
     endDate: '2026-09-02',
+    capacity: 10,
     isPublic: true,
     cameraOn: true,
     description: ''
@@ -528,6 +529,30 @@ export default function GroupStudy() {
             </div>
           </div>
 
+          {/* 스터디 정원 */}
+          <div style={{ display: 'flex', gap: '24px' }}>
+            <div style={{ width: '120px', fontWeight: '600', color: '#374151', display: 'flex', alignItems: 'center' }}>
+              스터디 정원 <span style={{ color: '#EF4444', marginLeft: '4px' }}>*</span>
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <input
+                  type="number"
+                  min={2}
+                  max={10}
+                  placeholder="최대 참여 인원을 입력하세요"
+                  value={createForm.capacity}
+                  onChange={(e) => setCreateForm({ ...createForm, capacity: e.target.value })}
+                  style={{ width: '200px', padding: '12px 16px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '15px', outline: 'none', color: '#374151' }}
+                />
+                <span style={{ color: '#6B7280', fontSize: '15px' }}>명</span>
+              </div>
+              <div style={{ color: '#9CA3AF', fontSize: '13px' }}>
+                최소 2명 ~ 최대 10명 (화상통화 안정 성능 보장)
+              </div>
+            </div>
+          </div>
+
           {/* 초기 장치 설정 */}
           <div style={{ display: 'flex', gap: '24px' }}>
             <div style={{ width: '120px', fontWeight: '600', color: '#374151', display: 'flex', alignItems: 'center' }}>
@@ -576,6 +601,15 @@ export default function GroupStudy() {
                   showAlert('알림', '스터디 이름과 공지사항은 필수 항목입니다.');
                   return;
                 }
+                const cap = parseInt(createForm.capacity, 10);
+                if (!cap || cap < 2) {
+                  showAlert('알림', '스터디 정원은 최소 2명 이상이어야 합니다.');
+                  return;
+                }
+                if (cap > 10) {
+                  showAlert('알림', '스터디 정원은 최대 10명까지 설정할 수 있습니다.');
+                  return;
+                }
                 try {
                   const payload = {
                     title: createForm.title,
@@ -583,7 +617,7 @@ export default function GroupStudy() {
                     description: createForm.description,
                     startDate: createForm.startDate,
                     endDate: createForm.endDate,
-                    capacity: 10,
+                    capacity: cap,
                     isPublic: createForm.isPublic,
                     image: createForm.imageFile || null
                   };
@@ -597,6 +631,7 @@ export default function GroupStudy() {
                       imageFile: null,
                       startDate: '2026-06-02',
                       endDate: '2026-09-02',
+                      capacity: 10,
                       isPublic: true,
                       cameraOn: true,
                       description: ''
@@ -858,10 +893,16 @@ export default function GroupStudy() {
                 </div>
 
                 {/* 버튼 영역 */}
-                <div style={{ backgroundColor: '#3B82F6', padding: '0' }}>
+                {(() => {
+                  // 정원 마감 여부: 이미 가입한 사용자는 입장 버튼을 그대로 노출한다.
+                  const isFull = !selectedPost.isAlreadyJoined
+                    && Number(selectedPost.currentMembers) >= Number(selectedPost.maxMembers);
+                  return (
+                <div style={{ backgroundColor: isFull ? '#9CA3AF' : '#3B82F6', padding: '0' }}>
                   <button
-                    style={{ width: '100%', padding: '16px', fontSize: '15px', fontWeight: '600', color: 'white', backgroundColor: 'transparent', border: 'none', cursor: 'pointer', transition: 'background-color 0.2s' }}
-                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2563EB'}
+                    disabled={isFull}
+                    style={{ width: '100%', padding: '16px', fontSize: '15px', fontWeight: '600', color: 'white', backgroundColor: 'transparent', border: 'none', cursor: isFull ? 'not-allowed' : 'pointer', transition: 'background-color 0.2s' }}
+                    onMouseEnter={(e) => { if (!isFull) e.currentTarget.style.backgroundColor = '#2563EB'; }}
                     onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
                     onClick={async () => {
                       if (!checkAuth()) return;
@@ -930,9 +971,13 @@ export default function GroupStudy() {
                       }
                     }}
                   >
-                    {selectedPost.isAlreadyJoined ? '스터디 입장' : (selectedPost.isPrivate ? '참가신청' : '바로 참여하기')}
+                    {isFull
+                      ? '정원이 마감되었습니다'
+                      : (selectedPost.isAlreadyJoined ? '스터디 입장' : (selectedPost.isPrivate ? '참가신청' : '바로 참여하기'))}
                   </button>
                 </div>
+                  );
+                })()}
 
               </div>
             </div>

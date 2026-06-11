@@ -1,5 +1,15 @@
 """
-StudyBridge RAG 모듈
+StudyBridge RAG 모듈 — [LEGACY / FALLBACK ONLY]
+
+⚠️ 운영 핵심 RAG가 아니다.
+- 운영 기본 RAG = pgvector 기반 (app/services/pdf_rag_service.py, embedding_service.py,
+  pgvector_service.py, rag_ingest_service.py, rag_retriever.py, app/api/rag_routes.py).
+  LangGraph retrieve_rag_node도 rag_retriever.retrieve_similar_chunks(pgvector)를 호출한다.
+- 이 모듈은 임베딩/DB 없이 동작하는 '키워드 기반 인메모리 RAG'로, pgvector를 쓸 수 없는
+  환경(DB 미연결 등)의 보조 fallback/legacy 경로로만 사용한다.
+  신규 코드에서 기본 RAG로 채택하지 말 것.
+
+기능
 - PDF 텍스트를 청크로 분리, 인메모리 캐시로 관리
 - 키워드 기반 빠른 검색 (임베딩 없이도 동작)
 - 질문과 관련 있는 청크만 LLM에 전달해 응답 속도 개선

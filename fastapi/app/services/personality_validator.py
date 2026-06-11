@@ -13,7 +13,9 @@ import re
 from typing import Any, Callable, Dict, List, Optional
 
 from app.core import agent_settings as A
-from app.services.personality_prompt_builder import get_profile, to_profile_key, normalize_personality
+from app.services.personality_prompt_builder import (
+    get_profile, to_profile_key, normalize_personality, get_validation_hints,
+)
 
 # 성격별 톤 마커 (휴리스틱). YAML mustUse와 함께 사용한다.
 _TONE_MARKERS: Dict[str, List[str]] = {
@@ -27,8 +29,11 @@ _TONE_MARKERS: Dict[str, List[str]] = {
     "custom":       [],
 }
 
-_METAPHOR_MARKERS = ["비유", "처럼", "마치", "그림으로", "상상", "은유"]
+_METAPHOR_MARKERS = ["비유", "처럼", "마치", "그림으로", "상상", "은유", "라고 보면", "에 비유"]
 _CRITIQUE_MARKERS = ["부족", "틀", "오류", "주의", "개선", "섞", "구분", "아니다", "하지 마"]
+# creative(독특함) 전용 마커
+_MEMORY_SENTENCE_MARKERS = ["기억하면", "기억법", "한 문장으로", "박아두면", "외워두면", "정리하면 이거다"]
+_BULLET_PREFIXES = ("- ", "* ", "• ", "·", "1.", "2.", "3.", "4.", "5.")
 
 # 사실성(개념 안전) 간단 점검: SQL DML/DDL 혼동
 _SQL_DDL = ("CREATE", "ALTER", "DROP", "TRUNCATE")
@@ -64,6 +69,58 @@ def _factual_safety(text: str) -> tuple:
                 break
     score = 1.0 if not issues else 0.6
     return score, issues
+
+
+def _first_sentence(text: str) -> str:
+    for s in re.split(r"[\n。.!?]+", (text or "").strip()):
+        if s.strip():
+            return s.strip()
+    return ""
+
+
+def _is_bullet_only(text: str) -> bool:
+    """본문이 거의 bullet/번호 목록으로만 구성됐는지(문장 리듬 없음)."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return False
+    bullets = sum(1 for ln in lines if ln.startswith(_BULLET_PREFIXES))
+    return bullets >= max(3, int(len(lines) * 0.7))
+
+
+def _creative_adjustments(text: str) -> tuple:
+    """
+    creative(독특함/4차원) 전용 보정: 비유 필수·기억문장·bullet-only·평범정의 시작 점검.
+    반환: (delta, issues) — delta는 종합 score에 가산/감산.
+    """
+    t = text or ""
+    delta = 0.0
+    issues: List[str] = []
+
+    has_metaphor = _keyword_hits(t, _METAPHOR_MARKERS) > 0
+    if not has_metaphor:
+        delta -= 0.18
+        issues.append("비유가 없다(독특함은 기억 가능한 비유가 최소 1개 필요)")
+
+    # 첫 문장이 '~는/은 ~이다/입니다'식 평범한 정의로만 시작하고 비유가 없으면 감점
+    fs = _first_sentence(t)
+    plain_def = bool(re.search(r"(은|는|란|이란)\s.*(이다|입니다|이라고 한다|을 말한다)\s*$", fs)) \
+        and _keyword_hits(fs, _METAPHOR_MARKERS) == 0
+    if plain_def and not has_metaphor:
+        delta -= 0.06
+        issues.append("첫 문장이 평범한 정의문이다(이미지/비유로 시작 권장)")
+
+    # 마지막에 한 문장 기억법이 있으면 가점
+    if _keyword_hits(t, _MEMORY_SENTENCE_MARKERS) > 0:
+        delta += 0.06
+    else:
+        issues.append("마지막 '한 문장 기억법'이 없다")
+
+    # bullet만 나열하면 감점
+    if _is_bullet_only(t):
+        delta -= 0.1
+        issues.append("bullet만 나열했다(문장과 비유를 섞어라)")
+
+    return delta, issues
 
 
 def score_personality_alignment(
@@ -139,8 +196,18 @@ def score_personality_alignment(
         scores["contrast"] * 0.12 + scores["knowledgeLevel"] * 0.1 + scores["factualSafety"] * 0.16 +
         scores["verbosityMatch"] * 0.04 + scores["metaphorMatch"] * 0.03 + scores["critiqueMatch"] * 0.03
     )
-    overall = round(max(0.0, core - forbidden_penalty), 3)
-    return {"score": overall, "scores": scores, "issues": fact_issues, "forbiddenPenalty": forbidden_penalty}
+    # creative(독특함) 전용 보정: 비유 필수/기억문장/bullet-only/평범정의 시작
+    extra_issues: List[str] = []
+    if canonical_key == "creative":
+        delta, extra_issues = _creative_adjustments(text)
+        core = core + delta
+        scores["creativeAdjust"] = round(delta, 3)
+
+    overall = round(max(0.0, min(1.0, core - forbidden_penalty)), 3)
+    return {
+        "score": overall, "scores": scores,
+        "issues": fact_issues + extra_issues, "forbiddenPenalty": forbidden_penalty,
+    }
 
 
 def validate_personality_alignment(
@@ -181,6 +248,7 @@ def validate_personality_alignment(
         "passed": passed,
         "scores": result["scores"],
         "issues": issues,
+        "validationHints": get_validation_hints(personality),
         "repairInstruction": repair_instruction,
         "note": "성격이 충분히 반영됨" if passed else repair_instruction,
     }

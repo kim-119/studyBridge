@@ -1,11 +1,14 @@
 """
 POST /api/ai/multi-chat — 멀티 에이전트 토론 (동기 JSON, 기존 호환).
-POST /api/ai/multi-chat/stream — 1차/2차/3차 단계별 SSE 스트리밍 (선출력).
+POST /api/ai/multi-chat/stream — agent별 순차 SSE 스트리밍 (선출력).
 camelCase 필드명 유지.
 """
 import asyncio
 import json
 import logging
+import os
+import time
+import uuid
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -26,11 +29,13 @@ def _sse(event: str, data) -> str:
 
 @router.post(
     "/multi-chat/stream",
-    summary="멀티 에이전트 토론 (단계별 SSE 스트리밍)",
+    summary="멀티 에이전트 토론 (모드별 SSE 스트리밍)",
     description=(
-        "1차→2차→3차 단계가 완료될 때마다 stage_complete 이벤트를 즉시 전송한다. "
-        "마지막에 all_complete로 전체 응답(answers/processSteps/stages)을 한 번 더 보낸다. "
-        "default 계열 모드만 단계 스트리밍하며, 그 외 모드는 all_complete 1회만 전송한다."
+        "모드별로 단계/섹션 이벤트를 즉시 전송하고, 마지막에 all_complete로 전체 응답을 한 번 더 보낸다. "
+        "default/basic: turn_start → agent_start → heartbeat → agent_answer/error. "
+        "debate: debate_section(initialAnswers/peerFeedbacks/revisedAnswers/debateSummary). "
+        "socratic: socratic_step. "
+        "공통 마지막: all_complete. (오류 시 error)"
     ),
 )
 async def multi_chat_stream(request: MultiChatRequest):
@@ -41,13 +46,35 @@ async def multi_chat_stream(request: MultiChatRequest):
     gen = build_stream_generator(request)
 
     async def event_source():
+        heartbeat_s = max(5.0, float(os.getenv("AI_STREAM_HEARTBEAT_SECONDS", "10")))
+        route_request_id = f"route_{uuid.uuid4().hex[:12]}"
+        last_agent_index = None
+        last_agent_name = None
+        started = time.time()
         try:
             while True:
-                # 블로킹 stage 계산은 스레드풀에서 수행해 이벤트 루프를 막지 않는다.
-                item = await asyncio.to_thread(next, gen, _STREAM_SENTINEL)
+                # next(gen)이 stage/agent 생성 때문에 오래 걸려도 heartbeat를 보내 idle timeout을 막는다.
+                task = asyncio.create_task(asyncio.to_thread(next, gen, _STREAM_SENTINEL))
+                while True:
+                    done, _ = await asyncio.wait({task}, timeout=heartbeat_s)
+                    if done:
+                        item = task.result()
+                        break
+                    yield _sse("heartbeat", {
+                        "type": "heartbeat",
+                        "requestId": route_request_id,
+                        "agentIndex": last_agent_index,
+                        "agentName": last_agent_name,
+                        "elapsedMs": int((time.time() - started) * 1000),
+                        "message": "답변 생성 중입니다.",
+                    })
                 if item is _STREAM_SENTINEL:
                     break
-                yield _sse(item["event"], item["data"])
+                data = item.get("data") or {}
+                if isinstance(data, dict):
+                    last_agent_index = data.get("agentIndex", last_agent_index)
+                    last_agent_name = data.get("agentName", last_agent_name)
+                yield _sse(item["event"], data)
         except Exception as e:
             logger.error("multi-chat 스트리밍 오류: %s", e)
             yield _sse("error", {"message": "스트리밍 중 오류가 발생했습니다.", "detail": str(e)})
@@ -65,7 +92,7 @@ async def multi_chat_stream(request: MultiChatRequest):
     summary="멀티 에이전트 토론",
     description=(
         "여러 에이전트가 사용자 메시지에 대해 토론한다. "
-        "FastAPI는 동기 JSON만 반환하고, SSE 스트리밍은 Spring Boot가 처리한다. "
+        "이 endpoint는 fallback용 동기 JSON을 반환한다. 실제 SSE는 /api/ai/multi-chat/stream에서 FastAPI가 생성하고 Spring Boot가 중계한다. "
         "agents 배열이 비어있으면 기본 에이전트를 사용한다."
     ),
 )
@@ -75,10 +102,18 @@ async def multi_chat(request: MultiChatRequest) -> MultiChatResponse:
 
     try:
         from app.services.multi_agent_service import run_multi_chat
-        from app.core.config import MULTI_CHAT_TIMEOUT_SECONDS
+        from app.core.config import MULTI_CHAT_TIMEOUT_SECONDS, USE_LANGGRAPH_ORCHESTRATOR
         from app.schemas.multi_chat_schema import AgentAnswer
+
+        # feature flag: LangGraph 오케스트레이터로 전환 가능 (기본 off → 기존 경로)
+        if USE_LANGGRAPH_ORCHESTRATOR:
+            from app.services.langgraph_agent_orchestrator import run_langgraph_multi_agent
+            runner = run_langgraph_multi_agent
+        else:
+            runner = run_multi_chat
+
         result = await asyncio.wait_for(
-            asyncio.to_thread(run_multi_chat, request),
+            asyncio.to_thread(runner, request),
             timeout=MULTI_CHAT_TIMEOUT_SECONDS,
         )
         return result
