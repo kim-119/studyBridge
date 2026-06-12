@@ -72,20 +72,15 @@ class RoadmapReq(BaseModel):
 
 class FeedbackReq(BaseModel):
     content: Optional[str] = None
-    level: Optional[str] = None
 
 
 def _fail(error_code: str, message: str, retryable: bool = True,
-          text_status: Optional[dict] = None, debug_hint: str = "") -> Dict[str, Any]:
+          text_status: Optional[dict] = None) -> Dict[str, Any]:
     return {
         "success": False,
         "errorCode": error_code,
-        "error_code": error_code,        # snake_case 호환(스펙 F/C)
         "message": message,
         "retryable": retryable,
-        "recoverable": retryable,        # 스펙 F: recoverable 포함
-        "debug_hint": debug_hint or error_code,
-        "questions": [],                 # 실패 시 불합격 퀴즈 누출 방지
         "textStatus": text_status or {"hasText": False, "textLength": 0, "chunkCount": 0, "status": "EMPTY"},
         "warnings": [],
     }
@@ -103,12 +98,11 @@ def _text_status(ts: dict, chunk_count: int) -> dict:
 
 
 # ── POST /api/ai/summary ──────────────────────────────────────────────────────
-@router.post("/summary", summary="자료 요약 (구조화 JSON, core 10+/detail 40+)")
+@router.post("/summary", summary="자료 요약 (Ollama/Qwen 우선)")
 async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
     from app.services.material_ai_manager import (
-        validate_extracted_text, build_summary_context, ocr_unavailable_status,
+        validate_extracted_text, build_summary_context, summarize_document, ocr_unavailable_status,
     )
-    from app.services.material_summary_builder import build_structured_summary
     from app.services.chunk_cache import get_or_build_chunks
     started = time.time()
     ts = validate_extracted_text(req.text)
@@ -121,9 +115,9 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
     context = build_summary_context(chunks) or (req.text or "")[:6000]
     try:
         r = await asyncio.wait_for(asyncio.to_thread(
-            build_structured_summary,
-            req.document_title or "자료",
-            context,
+            summarize_document,
+            document_title=req.document_title or "자료",
+            text=context,
         ), timeout=_t(SUMMARY_TIMEOUT))
     except asyncio.TimeoutError:
         return _fail("AI_TIMEOUT", "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
@@ -133,52 +127,34 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
         return _fail("SUMMARY_VALIDATE_FAILED", "요약 생성에 실패했습니다. 다시 시도해주세요.",
                      text_status=_text_status(ts, len(chunks)))
 
-    # 구조화 결과 → 기존 EC2 호환 필드 매핑 (sections/coreContents 문자열은 유지)
-    core_contents = r.get("core_contents") or []
-    detailed_core_contents = r.get("detailed_core_contents") or []
-    keyword_objs = r.get("keywords") or []
-    keyword_strings = [k.get("keyword", "") for k in keyword_objs if k.get("keyword")]
+    sections = r.get("sections") or []
     core_items = [
-        {"title": c.get("title", ""), "content": c.get("content", ""), "description": c.get("content", "")}
-        for c in core_contents
+        {
+            "title": s.get("title", ""),
+            "content": s.get("content", s.get("description", "")),
+            "description": s.get("description", s.get("content", "")),
+        }
+        for s in sections
     ]
-    legacy_core_string = json.dumps(core_items, ensure_ascii=False)
-    # 하위호환 summary 본문 = 마크다운 없는 자연어 섹션 묶음
-    legacy_summary = "\n\n".join(
-        f"{s['heading']}\n{s['content']}" for s in r.get("detailed_sections", [])
-    )
-
+    core_contents = json.dumps(core_items, ensure_ascii=False)
     elapsed = int((time.time() - started) * 1000)
-    warnings = [w for w in [r.get("warning")] if w]
-    logger.info("summary done provider=%s elapsedMs=%s textLen=%s chunks=%s core=%s detail=%s",
-                r.get("provider"), elapsed, ts["textLength"], len(chunks),
-                len(core_contents), len(detailed_core_contents))
+    logger.info("summary done provider=%s elapsedMs=%s textLen=%s chunks=%s",
+                r.get("provider"), elapsed, ts["textLength"], len(chunks))
     return {
         "success": True,
-        # ── 하위호환 (기존 EC2/Spring 계약) ─────────────────────────────
-        "summary": legacy_summary,
-        "key_points": keyword_strings,
-        "gpt_raw": "",
+        # 하위호환
+        "summary": r.get("summary", ""),
+        "key_points": r.get("key_points", []),
+        "gpt_raw": r.get("gpt_raw", ""),
         "overview": r.get("overview", ""),
-        "coreContents": legacy_core_string,
-        "keywords": keyword_strings,
+        "coreContents": core_contents,
+        # 확장
+        "keywords": r.get("keywords", []),
         "sections": core_items,
-        "learningPoints": r.get("study_points", []),
-        "practicePoints": r.get("practice_points", []),
-        "studyQuestions": r.get("study_questions", []),
-        # ── 신규 구조화 필드 (마크다운 제거 완료) ────────────────────────
-        "title": r.get("title", ""),
-        "core_contents": core_contents,
-        "detailed_core_contents": detailed_core_contents,
-        "keywordsDetailed": keyword_objs,
-        "study_points": r.get("study_points", []),
-        "practice_points": r.get("practice_points", []),
-        "study_questions": r.get("study_questions", []),
-        "detailed_sections": r.get("detailed_sections", []),
-        "assumption_notice": r.get("assumption_notice"),
-        "error_code": r.get("error_code"),
-        # ── 공통 ────────────────────────────────────────────────────────
-        "warnings": warnings,
+        "learningPoints": r.get("learningPoints", []),
+        "practicePoints": r.get("practicePoints", []),
+        "studyQuestions": r.get("studyQuestions", []),
+        "warnings": r.get("warnings", []),
         "textStatus": _text_status(ts, len(chunks)),
         "metadata": {
             "provider": r.get("provider", "ollama"),
@@ -228,63 +204,13 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
         return _fail("QUIZ_VALIDATE_FAILED", "퀴즈 형식 검증에 실패했습니다. 다시 생성해주세요.",
                      text_status=_text_status(ts, len(chunks)))
 
-    # 난이도 정책 강제: hard는 시나리오형 보장(검증 실패 시 OpenAI→Ollama→deterministic repair)
-    from app.services.quiz_difficulty_policy import enforce_quiz_difficulty
-    from app.services.material_ai_manager import _keywords_from_text
-    keywords = _keywords_from_text(context, limit=15)
-    try:
-        questions, diff_meta = await asyncio.wait_for(
-            asyncio.to_thread(enforce_quiz_difficulty, questions, req.difficulty or "보통",
-                              context, keywords),
-            timeout=_t(QUIZ_TIMEOUT))
-    except asyncio.TimeoutError:
-        # 타임아웃에도 hard는 검증 미달 문제를 그대로 내려보내지 않는다.
-        # LLM repair를 건너뛴 결정적(deterministic) 보정으로 즉시 재구성한다.
-        try:
-            questions, diff_meta = enforce_quiz_difficulty(
-                questions, req.difficulty or "보통", context, keywords, allow_llm_repair=False)
-        except Exception as e:  # noqa: BLE001
-            logger.error("quiz 난이도 deterministic 보정 실패: %s", e)
-            questions, diff_meta = [], {
-                "difficulty_requested": req.difficulty or "보통", "difficulty_applied": "hard",
-                "difficulty_policy": "문서 기반 + 응용 + 고급 개념",
-                "difficulty_validation": {"passed": False, "reason": "난이도 보정 시간 초과 및 복구 실패"},
-                "repaired_count": 0,
-            }
-
-    # 검증 미통과 시: 불합격 퀴즈를 절대 내려보내지 않는다(빈 배열 + 실패 JSON). 스펙 F.
-    diff_val = diff_meta.get("difficulty_validation", {}) if isinstance(diff_meta, dict) else {}
-    if not diff_val.get("passed"):
-        elapsed = int((time.time() - started) * 1000)
-        logger.warning("material quiz validate fail material_id=%s difficulty=%s reason=%s",
-                       req.material_id, diff_meta.get("difficulty_requested"), diff_val.get("reason"))
-        return {
-            "success": False,
-            "errorCode": "QUIZ_VALIDATE_FAILED",
-            "error_code": "QUIZ_VALIDATE_FAILED",
-            "message": "요청한 어려움 난이도가 충분히 반영되지 않았습니다. 다시 생성해 주세요.",
-            "recoverable": True,
-            "retryable": True,
-            "debug_hint": "hard 문제 조건(시나리오/설계 판단/80자 이상) 미충족 + repair 실패",
-            "quizData": "[]",
-            "quizzes": [],
-            "questions": [],
-            **{k: v for k, v in diff_meta.items() if k != "difficulty_validation"},
-            "difficulty_validation": diff_val or {"passed": False, "reason": "hard 문제 조건을 만족하지 못했습니다."},
-            "warnings": r.get("warnings", []),
-            "textStatus": _text_status(ts, len(chunks)),
-        }
-
     quiz_data = json.dumps(questions, ensure_ascii=False)  # 프론트 parseQuizQuestions가 파싱
     elapsed = int((time.time() - started) * 1000)
-    logger.info("material quiz done material_id=%s requestedCount=%s generatedCount=%s provider=%s difficulty=%s applied=%s repaired=%s elapsedMs=%s", req.material_id, requested_count, len(questions), r.get("provider"), diff_meta.get("difficulty_requested"), diff_meta.get("difficulty_applied"), diff_meta.get("repaired_count"), elapsed)
+    logger.info("material quiz done material_id=%s requestedCount=%s generatedCount=%s provider=%s elapsedMs=%s", req.material_id, requested_count, len(questions), r.get("provider"), elapsed)
     return {
         "success": True,
-        "error_code": None,
         "quizData": quiz_data,           # 하위호환 (Spring이 그대로 저장)
         "quizzes": questions,            # 확장
-        "questions": questions,          # 스펙 F 호환
-        **diff_meta,                     # difficulty_requested/applied/policy/difficulty_validation/repaired_count
         "warnings": r.get("warnings", []),
         "textStatus": _text_status(ts, len(chunks)),
         "metadata": {"provider": r.get("provider", "ollama_qwen"), "model": os.getenv("OLLAMA_MODEL", "qwen2.5:14b"),
@@ -459,10 +385,9 @@ async def ai_roadmap(req: RoadmapReq) -> Dict[str, Any]:
 
 
 # ── POST /api/ai/feedback ─────────────────────────────────────────────────────
-@router.post("/feedback", summary="자료 학습 피드백 (장점/권장/우려/다음행동 균형, 마크다운 제거)")
+@router.post("/feedback", summary="자료 학습 피드백 (GPT)")
 async def ai_feedback(req: FeedbackReq) -> Dict[str, Any]:
-    from app.services.material_ai_manager import validate_extracted_text, build_summary_context
-    from app.services.feedback_builder import build_balanced_feedback, to_legacy_text
+    from app.services.material_ai_manager import validate_extracted_text, build_summary_context, _call_gpt
     from app.services.chunk_cache import get_or_build_chunks
     started = time.time()
     ts = validate_extracted_text(req.content)
@@ -471,26 +396,21 @@ async def ai_feedback(req: FeedbackReq) -> Dict[str, Any]:
     cache = await get_or_build_chunks(None, req.content)
     chunks = cache["chunks"]
     context = build_summary_context(chunks) or (req.content or "")[:6000]
-    level = getattr(req, "level", None) or "undergraduate"
+    system = "너는 학습 코치다. 제공된 학습 내용에 근거해 한국어로 간결한 학습 피드백을 제공한다."
+    user = f"## 학습 내용\n{context[:5000]}\n\n학습자에게 도움이 되는 피드백을 작성하라."
     try:
-        fb = await asyncio.wait_for(
-            asyncio.to_thread(build_balanced_feedback, req.content or context, context, level),
-            timeout=_t(SUMMARY_TIMEOUT))
+        feedback = await asyncio.wait_for(asyncio.to_thread(_call_gpt, system, user), timeout=_t(SUMMARY_TIMEOUT))
     except asyncio.TimeoutError:
         return _fail("AI_TIMEOUT", "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
                      text_status=_text_status(ts, len(chunks)))
     except Exception as e:
         logger.error("feedback 실패: %s", e)
         return _fail("UNKNOWN_ERROR", "피드백 생성에 실패했습니다.", text_status=_text_status(ts, len(chunks)))
-    legacy_text = to_legacy_text(fb)
     return {
         "success": True,
-        # ── 하위호환 (기존 EC2/Spring 계약: 문자열 피드백) ──────────────
-        "feedbackData": legacy_text,
-        "feedback": legacy_text,
-        # ── 신규 구조화 피드백 (마크다운 제거, 균형 보장) ──────────────
-        **fb,
-        "warnings": [w for w in [fb.get("warning")] if w],
+        "feedbackData": feedback,
+        "feedback": feedback,
+        "warnings": [],
         "textStatus": _text_status(ts, len(chunks)),
-        "metadata": {"provider": "ollama+openai", "elapsedMs": int((time.time() - started) * 1000)},
+        "metadata": {"provider": "openai_gpt", "elapsedMs": int((time.time() - started) * 1000)},
     }

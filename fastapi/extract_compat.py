@@ -7,28 +7,9 @@ import tempfile
 from typing import Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("studybridge.extract_compat")
 router = APIRouter()
-
-
-def _error_json(status_code: int, error_code: str, message: str, recovery_suggestion: str) -> JSONResponse:
-    """스펙 계약(error_code/recoverable/recovery_suggestion) 구조화 에러 응답.
-
-    상태코드는 비2xx를 유지해(Spring의 기존 에러 분기 호환) 본문에만 error_code 계약을 싣는다.
-    """
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "status": "ERROR",
-            "extraction_status": "FAILED",
-            "error_code": error_code,
-            "message": message,
-            "recoverable": True,
-            "recovery_suggestion": recovery_suggestion,
-        },
-    )
 
 TEXT_ENCODINGS = ("utf-8", "cp949", "euc-kr", "latin-1")
 PDF_TEXT_MIN_CHARS = int(os.getenv("PDF_MIN_TEXT_CHARS", "80"))
@@ -160,10 +141,8 @@ def _detect_file_type(filename: str, content_type: Optional[str]) -> str:
         return "docx"
     if lower.endswith(".txt") or content_type.startswith("text/plain"):
         return "txt"
-    # 구형 .doc(OLE2)는 미지원 — 스펙상 별도 error_code로 안내한다.
-    if lower.endswith(".doc") or content_type == "application/msword":
-        return "doc"
-    return "unsupported"
+    ext = os.path.splitext(lower)[1]
+    raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext or content_type or 'unknown'}")
 
 
 @router.post("/api/extract")
@@ -173,24 +152,6 @@ async def extract_document_compat(
 ):
     filename = os.path.basename(file.filename or "uploaded")
     file_type = _detect_file_type(filename, file.content_type)
-
-    if file_type == "doc":
-        logger.warning("[DOCUMENT EXTRACT UNSUPPORTED] filename=%s reason=legacy_doc", filename)
-        return _error_json(
-            400,
-            "UNSUPPORTED_DOC_FORMAT",
-            "현재는 .docx 형식만 지원합니다. .doc 파일은 .docx로 변환 후 업로드해주세요.",
-            "MS Word 또는 한컴에서 다른 이름으로 저장을 사용해 .docx로 변환하세요.",
-        )
-    if file_type == "unsupported":
-        logger.warning("[DOCUMENT EXTRACT UNSUPPORTED] filename=%s reason=unsupported_type", filename)
-        return _error_json(
-            400,
-            "UNSUPPORTED_FILE_TYPE",
-            "지원하지 않는 파일 형식입니다. PDF 또는 DOCX 파일을 업로드해주세요.",
-            "PDF 또는 DOCX 형식으로 변환 후 다시 업로드하세요.",
-        )
-
     suffix = os.path.splitext(filename)[1].lower() or f".{file_type}"
     temp_path = None
 
@@ -220,13 +181,6 @@ async def extract_document_compat(
                 filename,
                 file_type,
             )
-            if file_type == "docx":
-                return _error_json(
-                    422,
-                    "DOCX_TEXT_EMPTY",
-                    "DOCX 문서에서 분석 가능한 텍스트를 찾지 못했습니다.",
-                    "문서 본문에 텍스트가 포함되어 있는지 확인하거나 PDF/DOCX 원본을 다시 업로드하세요.",
-                )
             raise HTTPException(status_code=422, detail=f"No extractable text found in {file_type.upper()}")
 
         logger.info(
