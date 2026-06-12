@@ -151,6 +151,9 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
         # 확장
         "keywords": r.get("keywords", []),
         "sections": core_items,
+        "learningPoints": r.get("learningPoints", []),
+        "practicePoints": r.get("practicePoints", []),
+        "studyQuestions": r.get("studyQuestions", []),
         "warnings": r.get("warnings", []),
         "textStatus": _text_status(ts, len(chunks)),
         "metadata": {

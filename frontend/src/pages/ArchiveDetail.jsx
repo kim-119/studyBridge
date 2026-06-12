@@ -3,6 +3,8 @@ import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, Circle, Settings, ChevronRight, X, Trash2 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { AI_TIMEOUT_MS, materialService } from '../services/api';
+import SummarySectionCard from '../components/SummarySectionCard';
+import KeywordDefineModal from '../components/KeywordDefineModal';
 
 export default function ArchiveDetail() {
   const { type, id } = useParams();
@@ -42,6 +44,9 @@ export default function ArchiveDetail() {
 
   // ✅ 패널 너비 조절 관련 상태
   const [leftWidth, setLeftWidth] = useState(50); // 기본값 50%
+
+  // 핵심 키워드 클릭 → 개념 정의 패널
+  const [activeKeyword, setActiveKeyword] = useState(null);
 
 
   const AI_ERROR_MESSAGES = {
@@ -148,6 +153,15 @@ export default function ArchiveDetail() {
     if (!data) return [];
     const envelope = getSummaryEnvelope(data);
     return removeDummyKeywords(data.keywords?.length ? data.keywords : (data.key_points?.length ? data.key_points : (envelope.keywords || envelope.key_points || [])));
+  };
+
+  // 요약 강화: 학습 포인트 / 실습·적용 포인트 / AI 학습 질문 (DTO 또는 envelope에서)
+  const getSummaryStringList = (data, key) => {
+    if (!data) return [];
+    if (Array.isArray(data[key]) && data[key].length) return data[key].filter(Boolean);
+    const envelope = getSummaryEnvelope(data);
+    const list = envelope[key];
+    return Array.isArray(list) ? list.filter(Boolean) : [];
   };
 
   const getSummarySections = (data) => {
@@ -476,6 +490,14 @@ export default function ArchiveDetail() {
         const summaryKeywords = getSummaryKeywords(summaryData);
         const cleanKeywords = summaryKeywords.length > 0 ? summaryKeywords : removeDummyKeywords(material?.keywords);
         const parsedCoreContents = getSummarySections(summaryData);
+        const learningPoints = getSummaryStringList(summaryData, 'learningPoints');
+        const practicePoints = getSummaryStringList(summaryData, 'practicePoints');
+        const studyQuestions = getSummaryStringList(summaryData, 'studyQuestions');
+
+        // C. PDF_TEXT_EMPTY 류 친화적 안내
+        const emptyCodes = ['PDF_TEXT_EMPTY', 'PDF_OCR_REQUIRED', 'PDF_EXTRACTION_FAILED'];
+        const isTextEmpty = summaryStatus.success === false && emptyCodes.includes(summaryStatus.errorCode);
+        const isPlannerMaterial = (material?.materialType === 'PLANNER') || !!material?.plannerId;
 
         return (
             <div className="animate-fade-in" style={{ paddingBottom: '32px' }}>
@@ -484,27 +506,65 @@ export default function ArchiveDetail() {
                 문서 전체 맥락을 분석하여 도출된 종합 핵심 요약입니다.
               </p>
 
-              {renderAiStatus(summaryStatus, () => loadTabData(material.materialId))}
-              {summaryTextStatusMessage && summaryStatus.success !== false && (
-                <div className="glass-panel" style={{ padding: '14px 16px', borderLeft: '4px solid #F59E0B', backgroundColor: '#FFFBEB', color: '#92400E', marginBottom: '16px' }}>
-                  {summaryTextStatusMessage}
+              {isTextEmpty ? (
+                <div className="glass-panel" style={{ padding: '20px', borderLeft: '4px solid #F59E0B', backgroundColor: '#FFFBEB', marginBottom: '8px' }}>
+                  <h4 style={{ margin: '0 0 8px', fontSize: '16px', color: '#92400E' }}>⚠️ PDF에서 추출 가능한 텍스트가 없습니다.</h4>
+                  <p style={{ margin: '0 0 8px', fontSize: '14px', color: '#92400E' }}>다음과 같은 경우에 발생할 수 있어요:</p>
+                  <ul style={{ margin: '0 0 16px', paddingLeft: '18px', color: '#92400E', fontSize: '14px', lineHeight: '1.7' }}>
+                    <li>이미지 기반 PDF (그림/사진으로만 구성)</li>
+                    <li>빈 양식 PDF</li>
+                    <li>스캔본 PDF</li>
+                    <li>생성된 플래너 PDF가 텍스트 레이어 없이 이미지로 저장된 경우</li>
+                  </ul>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    <button className="btn-primary" style={{ width: 'auto', padding: '8px 16px', borderRadius: '20px' }}
+                      onClick={() => loadTabData(material.materialId)}>다시 생성</button>
+                    <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', borderRadius: '20px' }}
+                      onClick={() => { alert('OCR 재분석은 서버에서 자료를 다시 추출한 뒤 동작합니다. 잠시 후 다시 생성 버튼을 눌러주세요.'); loadTabData(material.materialId); }}>OCR로 다시 분석</button>
+                    {isPlannerMaterial && (
+                      <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', borderRadius: '20px' }}
+                        onClick={() => navigate('/planner')}>플래너 데이터 기반으로 분석</button>
+                    )}
+                    <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', borderRadius: '20px' }}
+                      onClick={() => alert('선택 가능한 텍스트가 포함된 원본 PDF(텍스트 레이어 있는 PDF)를 업로드하면 요약 품질이 가장 좋습니다.')}>원본 텍스트 PDF 업로드 안내</button>
+                  </div>
                 </div>
+              ) : (
+                <>
+                  {renderAiStatus(summaryStatus, () => loadTabData(material.materialId))}
+                  {summaryTextStatusMessage && summaryStatus.success !== false && (
+                    <div className="glass-panel" style={{ padding: '14px 16px', borderLeft: '4px solid #F59E0B', backgroundColor: '#FFFBEB', color: '#92400E', marginBottom: '16px' }}>
+                      {summaryTextStatusMessage}
+                    </div>
+                  )}
+                </>
               )}
 
+              {!isTextEmpty && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                {/* 1. 문서 개요 */}
                 <div className="glass-panel" style={{ padding: '20px', borderLeft: '4px solid var(--color-primary)' }}>
                   <h4 style={{ margin: '0 0 12px', fontSize: '16px', color: 'var(--color-text-main)' }}>📌 문서 개요</h4>
-                  <p style={{ margin: 0, fontSize: '15px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>
+                  <p style={{ margin: 0, fontSize: '15px', lineHeight: '1.7', color: 'var(--color-text-muted)', whiteSpace: 'pre-wrap' }}>
                     {summaryStatus.success === false ? getAiErrorMessage(summaryStatus.errorCode, summaryStatus.textStatus, summaryStatus.message) : (summaryOverview || (summaryData ? '요약 내용이 아직 생성되지 않았습니다.' : '문서 내용을 분석하고 있습니다.'))}
                   </p>
                 </div>
 
+                {/* 2. 핵심 키워드 (클릭 가능) */}
                 <div>
-                  <h4 style={{ margin: '0 0 12px', fontSize: '16px', color: 'var(--color-text-main)' }}>🔑 핵심 키워드</h4>
+                  <h4 style={{ margin: '0 0 8px', fontSize: '16px', color: 'var(--color-text-main)' }}>🔑 핵심 키워드</h4>
+                  <p style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--color-text-muted)' }}>키워드를 클릭하면 GPT/Wikipedia 기반 개념 정의를 볼 수 있어요.</p>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                     {cleanKeywords.length > 0 ? (
                         cleanKeywords.map((kw) => (
-                            <span key={kw} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)' }}>#{kw}</span>
+                            <button
+                              key={kw}
+                              onClick={() => setActiveKeyword(kw)}
+                              className="tag"
+                              style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)', border: '1px solid var(--color-border)', cursor: 'pointer', transition: 'all 0.15s' }}
+                              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#ECFDF5'; e.currentTarget.style.borderColor = 'var(--color-primary)'; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#F3F4F6'; e.currentTarget.style.borderColor = 'var(--color-border)'; }}
+                            >#{kw}</button>
                         ))
                     ) : (
                         <span style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>핵심 키워드가 아직 생성되지 않았습니다.</span>
@@ -512,22 +572,67 @@ export default function ArchiveDetail() {
                   </div>
                 </div>
 
+                {/* 3. 세부 핵심 내용 */}
                 <div>
                   <h4 style={{ margin: '0 0 16px', fontSize: '16px', color: 'var(--color-text-main)' }}>📑 세부 핵심 내용</h4>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                     {parsedCoreContents.length > 0 ? (
                         parsedCoreContents.map((content, idx) => (
-                            <div key={idx} style={{ backgroundColor: '#F9FAFB', padding: '16px', borderRadius: '8px', border: '1px solid var(--color-border)' }}>
-                              <h5 style={{ margin: '0 0 8px', fontSize: '15px' }}>{content.title || `${idx + 1}. 핵심 포인트`}</h5>
-                              <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5', color: 'var(--color-text-muted)' }}>{content.content || content.description || ''}</p>
-                            </div>
+                            <SummarySectionCard
+                              key={idx}
+                              title={content.title || `${idx + 1}. 핵심 포인트`}
+                              content={content.content || content.description || ''}
+                            />
                         ))
                     ) : (
                         <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{summaryStatus.success === false ? getAiErrorMessage(summaryStatus.errorCode, summaryStatus.textStatus, summaryStatus.message) : '요약 내용이 아직 생성되지 않았습니다.'}</p>
                     )}
                   </div>
                 </div>
+
+                {/* 4. 학습 포인트 */}
+                {learningPoints.length > 0 && (
+                  <div>
+                    <h4 style={{ margin: '0 0 12px', fontSize: '16px', color: 'var(--color-text-main)' }}>🎯 학습 포인트</h4>
+                    <div className="glass-panel" style={{ padding: '16px 18px', borderLeft: '4px solid #3B82F6' }}>
+                      <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {learningPoints.map((p, i) => (
+                          <li key={i} style={{ fontSize: '14px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>{p}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+
+                {/* 5. 실습 관점 정리 */}
+                {practicePoints.length > 0 && (
+                  <div>
+                    <h4 style={{ margin: '0 0 12px', fontSize: '16px', color: 'var(--color-text-main)' }}>🛠️ 실습 관점 정리</h4>
+                    <div className="glass-panel" style={{ padding: '16px 18px', borderLeft: '4px solid #8B5CF6' }}>
+                      <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {practicePoints.map((p, i) => (
+                          <li key={i} style={{ fontSize: '14px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>{p}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+
+                {/* 6. AI 학습 질문 */}
+                {studyQuestions.length > 0 && (
+                  <div>
+                    <h4 style={{ margin: '0 0 12px', fontSize: '16px', color: 'var(--color-text-main)' }}>❓ AI 학습 질문</h4>
+                    <div className="glass-panel" style={{ padding: '16px 18px', borderLeft: '4px solid #F59E0B' }}>
+                      <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {studyQuestions.map((q, i) => (
+                          <li key={i} style={{ fontSize: '14px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>{q}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
               </div>
+              )}
             </div>
         );
       }
@@ -1150,6 +1255,15 @@ export default function ArchiveDetail() {
             )}
           </div>
         </div>
+
+        {activeKeyword && (
+          <KeywordDefineModal
+            materialId={material?.materialId || id}
+            keyword={activeKeyword}
+            context={summaryData?.overview || material?.learningContent}
+            onClose={() => setActiveKeyword(null)}
+          />
+        )}
       </div>
   );
 }

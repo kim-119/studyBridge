@@ -761,6 +761,14 @@ export const materialService = {
     );
     return res.data;
   },
+
+  // 핵심 키워드 개념 정의 (chip 클릭 → GPT/Wikipedia)
+  defineKeyword: async (materialId, body) => {
+    const res = await api.post(`/api/materials/${materialId}/keywords/define`, body, {
+      timeout: AI_TIMEOUT_MS,
+    });
+    return res.data;
+  },
 };
 
 export const groupService = {
@@ -1134,6 +1142,24 @@ export const plannerService = {
   },
   deletePlanner: async (id) => {
     const res = await api.delete(`/api/planners/${id}`);
+    return res.data;
+  },
+
+  // 플래너 전용 AI: 학습 실행 계획 확장 / 12주 로드맵
+  expandPlanner: async (id) => {
+    const res = await api.post(`/api/planners/${id}/ai-expand`, {}, { timeout: AI_TIMEOUT_MS });
+    return res.data;
+  },
+  getPlannerAiResult: async (id) => {
+    const res = await api.get(`/api/planners/${id}/ai-result`);
+    return res.data;
+  },
+  generatePlannerRoadmap: async (id) => {
+    const res = await api.post(`/api/planners/${id}/roadmap/generate`, {}, { timeout: AI_TIMEOUT_MS });
+    return res.data;
+  },
+  getPlannerRoadmap: async (id) => {
+    const res = await api.get(`/api/planners/${id}/roadmap`);
     return res.data;
   },
 };

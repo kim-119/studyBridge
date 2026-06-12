@@ -19,6 +19,7 @@ import java.util.Map;
 public class PlannerController {
 
     private final PlannerService plannerService;
+    private final com.studybridge.api.service.PlannerAiService plannerAiService;
 
     @PostMapping
     public ResponseEntity<PlannerDTO.Response> create(
@@ -77,5 +78,39 @@ public class PlannerController {
             @PathVariable Long plannerId) {
         plannerService.delete(userDetails.getId(), plannerId);
         return ResponseEntity.noContent().build();
+    }
+
+    // ---------- 공부 플래너 전용 AI ----------
+
+    /** E. 플래너 AI 확장 (학습 실행 계획/질문/회고) */
+    @PostMapping("/{plannerId}/ai-expand")
+    public ResponseEntity<com.studybridge.api.dto.PlannerAiDTO.ExpandResponse> aiExpand(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long plannerId) {
+        return ResponseEntity.ok(plannerAiService.expand(userDetails.getId(), plannerId));
+    }
+
+    /** 저장된 AI 확장 결과 조회 */
+    @GetMapping("/{plannerId}/ai-result")
+    public ResponseEntity<com.studybridge.api.dto.PlannerAiDTO.ExpandResponse> aiResult(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long plannerId) {
+        return ResponseEntity.ok(plannerAiService.getAiResult(userDetails.getId(), plannerId));
+    }
+
+    /** F. 플래너 기반 12주 로드맵 생성 */
+    @PostMapping("/{plannerId}/roadmap/generate")
+    public ResponseEntity<com.studybridge.api.dto.PlannerAiDTO.RoadmapResponse> generateRoadmap(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long plannerId) {
+        return ResponseEntity.ok(plannerAiService.generateRoadmap(userDetails.getId(), plannerId));
+    }
+
+    /** 플래너 로드맵 조회 */
+    @GetMapping("/{plannerId}/roadmap")
+    public ResponseEntity<com.studybridge.api.dto.PlannerAiDTO.RoadmapResponse> getRoadmap(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long plannerId) {
+        return ResponseEntity.ok(plannerAiService.getRoadmap(userDetails.getId(), plannerId));
     }
 }

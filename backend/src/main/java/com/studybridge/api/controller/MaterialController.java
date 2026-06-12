@@ -160,4 +160,13 @@ public class MaterialController {
             @PathVariable Long taskId) {
         return ResponseEntity.ok(aiIntegrationService.toggleRoadmapTask(userDetails.getId(), materialId, taskId));
     }
+
+    // 핵심 키워드 개념 정의 (chip 클릭 → GPT/Wikipedia)
+    @PostMapping("/{materialId}/keywords/define")
+    public ResponseEntity<com.studybridge.api.dto.KeywordDefineDTO.Response> defineKeyword(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @RequestBody com.studybridge.api.dto.KeywordDefineDTO.Request request) {
+        return ResponseEntity.ok(aiIntegrationService.defineKeyword(userDetails.getId(), materialId, request));
+    }
 }

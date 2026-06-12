@@ -22,6 +22,10 @@ public class SummaryDTO {
     private String gpt_raw;
     private List<String> keywords;
     private List<Map<String, Object>> sections;
+    // 요약 강화: 학습 포인트 / 실습·적용 포인트 / AI 학습 질문 (자료보관함 6카드)
+    private List<String> learningPoints;
+    private List<String> practicePoints;
+    private List<String> studyQuestions;
     // AI 상태 전파 필드 (nullable, 하위호환 additive)
     private Boolean success;
     private String errorCode;

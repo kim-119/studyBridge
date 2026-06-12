@@ -31,6 +31,7 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from openai import OpenAI
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -1687,6 +1688,8 @@ class QuizGenerateRequest(BaseModel):
     s3Key: Optional[str] = Field(None, validation_alias=AliasChoices("s3Key", "s3_key"), description="S3 오브젝트 키")
     fileUrl: Optional[str] = Field(None, validation_alias=AliasChoices("fileUrl", "file_url"), description="PDF 파일 URL")
     fileName: Optional[str] = Field(None, validation_alias=AliasChoices("fileName", "file_name"), description="원본 파일명")
+    text: Optional[str] = Field(None, validation_alias=AliasChoices("text", "content", "body"), description="자료 본문(직접 전달 시 S3 대신 사용)")
+    title: Optional[str] = Field(None, validation_alias=AliasChoices("title"), description="자료 제목(텍스트 기반 생성용)")
     difficulty: str = Field("medium", description="난이도: easy|medium|hard 또는 쉬움|보통|어려움")
     count: Optional[int] = Field(None, ge=1, le=10, description="생성 문항 수")
     numQuestions: Optional[int] = Field(None, validation_alias=AliasChoices("numQuestions", "num_questions"), ge=1, le=10, description="생성 문항 수 하위 호환 필드")
@@ -2219,10 +2222,28 @@ def _run_multi_chat_sync(
 # 15. Spring 계약 API endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
+_AI_CAPABILITIES = ["multi-chat", "rag", "quiz"]
+
+
 @app.get("/health", tags=["Health"])
 async def health_root():
     """루트 헬스 체크 (uvicorn 직접 실행 확인용)."""
-    return {"status": "ok", "service": "StudyBridge AI Server", "version": "0.6.0"}
+    return {
+        "status": "ok",
+        "service": "studybridge-fastapi",
+        "version": "0.6.0",
+        "capabilities": _AI_CAPABILITIES,
+    }
+
+
+@app.get("/api/ai/health", tags=["Health"])
+async def health_ai():
+    """AI capability 헬스 체크 (quiz 포함)."""
+    return {
+        "status": "ok",
+        "service": "studybridge-fastapi",
+        "capabilities": _AI_CAPABILITIES,
+    }
 
 
 @app.get("/api/health", tags=["Health"])
@@ -2295,9 +2316,35 @@ async def predict_study_time_endpoint(request: StudyTimePredictRequest):
 )
 async def generate_quiz_endpoint(request: QuizGenerateRequest):
     """
-    S3 PDF 기반 퀴즈 생성.
-    strictGrounding 기본값은 true이며, 이 경우 PDF 근거 없는 일반 fallback 문제를 반환하지 않는다.
+    S3 PDF 기반 또는 텍스트 본문 기반 퀴즈 생성.
+    text 필드가 채워져 있으면 S3를 거치지 않고 본문으로 직접 생성하며,
+    이때는 단순 계약({success, materialId, quiz, error})으로 응답한다.
+    text가 없으면 기존 S3 PDF 경로(strictGrounding)로 동작한다.
     """
+    # 텍스트 본문 직접 전달 경로 (Spring이 추출 본문을 넘긴 경우)
+    if request.text and request.text.strip():
+        import uuid as _uuid
+
+        try:
+            from quiz_text_compat import generate_quiz_from_text
+        except Exception as e:
+            logger.error("quiz_text 모듈 로드 실패: %s", e)
+            raise HTTPException(status_code=500, detail="텍스트 퀴즈 생성 모듈을 로드하지 못했습니다.")
+
+        request_id = _uuid.uuid4().hex[:8]
+        text_result = await asyncio.to_thread(
+            generate_quiz_from_text,
+            text=request.text,
+            title=request.title or request.sourceName or request.fileName,
+            difficulty=request.difficulty,
+            count=request.count or request.numQuestions,
+            question_type=request.questionType,
+            material_id=request.materialId,
+            request_id=request_id,
+        )
+        status_code = 200 if text_result.get("success") else 422
+        return JSONResponse(content=text_result, status_code=status_code)
+
     if request.materialId is None:
         raise HTTPException(status_code=400, detail="materialId는 필수입니다.")
     if not (request.s3Key or request.fileUrl):
@@ -2612,6 +2659,8 @@ try:
     from app.routers.agent_chat_router import router as _agent_chat_router
     from app.api.roadmap_routes import router as _roadmap_router
     from app.api.material_legacy_routes import router as _material_legacy_router
+    from app.api.keyword_routes import router as _keyword_router
+    from app.api.planner_ai_routes import router as _planner_ai_router
 
     app.include_router(_spring_rag_router)      # /api/rag/ingest, /api/rag/query, DELETE /api/rag/materials/{id}
     app.include_router(_rag_legacy_router)      # /api/materials/{id}/rag/* (하위 호환)
@@ -2620,6 +2669,8 @@ try:
     app.include_router(_agent_chat_router)      # /api/ai/chat, /api/ai/material/*
     app.include_router(_roadmap_router)         # POST /api/materials/{id}/ai/roadmap
     app.include_router(_material_legacy_router) # POST /api/ai/summary|quiz|question|roadmap|feedback (자료보관함 라이브)
+    app.include_router(_keyword_router)         # POST /api/ai/keyword/define (핵심 키워드 개념 정의)
+    app.include_router(_planner_ai_router)      # POST /api/ai/planner/expand|roadmap (공부 플래너 전용 AI)
 
     logger.info("v0.6 확장 라우터 로드 완료 (로드맵 + 자료보관함 라이브 포함)")
 except Exception as _ext_err:

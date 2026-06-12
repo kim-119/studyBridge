@@ -34,6 +34,10 @@ ai:
       base-url: ${FASTAPI_BASE_URL:http://localhost:8000}
       # FastAPI /api/ai/multi-chat/stream 은 agent별 순차 생성으로 오래 걸린다 → read 타임아웃을 길게 둔다.
       read-timeout-seconds: ${AI_SERVER_FASTAPI_READ_TIMEOUT_SECONDS:1800}
+      # 키워드 정의 / 플래너 AI 확장 / 플래너 로드맵 호출 타임아웃 (초). 하드코딩 금지 — env 제어.
+      keyword-define-timeout-seconds: ${AI_KEYWORD_DEFINE_TIMEOUT_SECONDS:60}
+      planner-expand-timeout-seconds: ${AI_PLANNER_EXPAND_TIMEOUT_SECONDS:120}
+      roadmap-timeout-seconds: ${AI_ROADMAP_TIMEOUT_SECONDS:180}
 
 cloud:
   aws:

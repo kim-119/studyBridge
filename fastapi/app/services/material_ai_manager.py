@@ -428,13 +428,28 @@ def answer_from_pdf(
 
 # ── PDF 요약 ─────────────────────────────────────────────────────────────────
 
+def _bullets_from_content(content: str) -> List[str]:
+    """섹션 본문을 불릿 리스트로 분해한다 (불릿 마커/줄바꿈 기준)."""
+    items: List[str] = []
+    for ln in (content or "").splitlines():
+        ln = ln.strip()
+        ln = re.sub(r"^\s*(?:[-•*]|\d+[.)])\s*", "", ln).strip()
+        if ln:
+            items.append(ln)
+    return items
+
+
 def _parse_summary_sections(raw: str) -> Dict[str, Any]:
-    """요약 마크다운을 overview/keywords/sections로 파싱한다."""
+    """요약 마크다운을 overview/keywords/sections + 학습/실습/질문 버킷으로 파싱한다."""
     overview = ""
     keywords: List[str] = []
     sections: List[Dict[str, str]] = []
+    learning_points: List[str] = []
+    practice_points: List[str] = []
+    study_questions: List[str] = []
     if not raw:
-        return {"overview": "", "keywords": [], "sections": []}
+        return {"overview": "", "keywords": [], "sections": [],
+                "learningPoints": [], "practicePoints": [], "studyQuestions": []}
 
     blocks: List[Dict[str, str]] = []
     current = None
@@ -452,9 +467,14 @@ def _parse_summary_sections(raw: str) -> Dict[str, Any]:
     for b in blocks:
         title = b["title"]
         content = b["content"].strip()
-        if any(k in title for k in ("개요", "요약")) and not overview.strip():
+        if not content:
+            continue
+        # 1) 개요
+        if any(k in title for k in ("개요", "전체 요약")) and not overview.strip():
             overview = content
-        if any(k in title for k in ("키워드", "개념")):
+            continue
+        # 2) 키워드
+        if any(k in title for k in ("키워드", "핵심 개념")):
             raw_kw: List[str] = []
             for ln in content.splitlines():
                 ln = ln.strip().lstrip("-•*").strip()
@@ -462,15 +482,30 @@ def _parse_summary_sections(raw: str) -> Dict[str, Any]:
                     continue
                 raw_kw.extend(re.split(r"[,/·|]", ln))
             keywords = sanitize_keywords(raw_kw, limit=15)
-        if content:
-            sections.append({"title": title, "content": content})
+            continue
+        # 3) 학습 포인트
+        if "학습 포인트" in title or "학습포인트" in title:
+            learning_points = _bullets_from_content(content)
+            continue
+        # 4) 실습/적용 포인트
+        if any(k in title for k in ("실습", "적용", "실무")):
+            practice_points = _bullets_from_content(content)
+            continue
+        # 5) AI 학습 질문
+        if "질문" in title:
+            study_questions = _bullets_from_content(content)
+            continue
+        # 6) 그 외 → 세부 핵심 내용 섹션
+        sections.append({"title": title, "content": content})
 
     overview = overview.strip()
     if not overview and sections:
         overview = sections[0]["content"][:400]
     if not sections and raw.strip():
         sections = [{"title": "요약", "content": raw.strip()}]
-    return {"overview": overview, "keywords": keywords, "sections": sections}
+    return {"overview": overview, "keywords": keywords, "sections": sections,
+            "learningPoints": learning_points, "practicePoints": practice_points,
+            "studyQuestions": study_questions}
 
 
 def summarize_document(
@@ -499,7 +534,8 @@ def summarize_document(
         "## 핵심 키워드\n문서에서 중요한 명사형 키워드 8~15개를 쉼표로 구분한다.\n"
         "## 세부 핵심 내용\n최소 5개 불릿으로 개념 정의, 구성 요소, 처리 흐름, 설정/의존성, 예제 활용, 오류 주의점을 문서 근거에 맞게 정리한다.\n"
         "## 학습 포인트\n3~5개 불릿으로 시험/실습/복습 관점의 포인트를 적는다.\n"
-        "## 실습/적용 포인트\n기술 문서라면 Gradle 의존성, 권한/설정, 인터페이스/API 정의, ViewModel/Coroutine 같은 연계, 실습 흐름, 주의할 오류를 가능한 범위에서 포함한다."
+        "## 실습/적용 포인트\n기술 문서라면 Gradle 의존성, 권한/설정, 인터페이스/API 정의, ViewModel/Coroutine 같은 연계, 실습 흐름, 주의할 오류를 가능한 범위에서 포함한다.\n"
+        "## AI 학습 질문\n학습자가 이 문서를 깊이 이해했는지 점검할 수 있는 질문 3~5개를 불릿으로 적는다."
     )
 
     provider = "ollama_qwen"
@@ -536,6 +572,9 @@ def summarize_document(
         "overview":   parsed["overview"],
         "keywords":   parsed["keywords"],
         "sections":   parsed["sections"],
+        "learningPoints":  parsed["learningPoints"],
+        "practicePoints":  parsed["practicePoints"],
+        "studyQuestions":  parsed["studyQuestions"],
         "warnings":   warnings,
         "provider":   provider,
         "usedFallback": used_fallback,

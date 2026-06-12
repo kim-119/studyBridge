@@ -28,6 +28,15 @@ public class Roadmap {
     @JoinColumn(name = "material_id")
     private Material material;
 
+    // 로드맵 출처 구분: MATERIAL(자료보관함 PDF) | PLANNER(공부 플래너)
+    @Column(name = "source_type", length = 20)
+    @Builder.Default
+    private String sourceType = "MATERIAL";
+
+    // 플래너 로드맵일 때 연결되는 planner id (MATERIAL 로드맵이면 null)
+    @Column(name = "planner_id")
+    private Long plannerId;
+
     @Column(nullable = false)
     private String title;
 

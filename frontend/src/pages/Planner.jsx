@@ -3,6 +3,7 @@ import {
   Plus, Save, Download, Archive, Trash2, NotebookPen, FileText, Clock,
 } from 'lucide-react';
 import { plannerService } from '../services/api';
+import PlannerAiPanel from '../components/PlannerAiPanel';
 
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 const HOURS = Array.from({ length: 18 }, (_, i) => i + 6); // 6시 ~ 23시
@@ -372,6 +373,9 @@ export default function Planner() {
                 </button>
               </div>
             </section>
+
+            {/* 공부 플래너 전용 AI (학습 실행 관리 + 12주 로드맵) */}
+            <PlannerAiPanel plannerId={plannerId} />
           </div>
 
           {/* ===== 우측 컬럼: A4 세로 미리보기 ===== */}

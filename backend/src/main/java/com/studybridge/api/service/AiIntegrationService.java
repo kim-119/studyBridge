@@ -6,6 +6,7 @@ import com.studybridge.api.dto.*;
 import com.studybridge.api.entity.*;
 import com.studybridge.api.repository.*;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,6 +20,7 @@ import java.util.stream.Collectors;
 
 // 자료보관함 AI 호출 hard timeout (무한 대기 방지). 전체 2분 예산 내(120~125초).
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -35,6 +37,10 @@ public class AiIntegrationService {
         private final RoadmapRepository roadmapRepository;
         private final RoadmapTaskRepository roadmapTaskRepository;
         private final WebClient fastApiWebClient;
+
+        // 키워드 정의 호출 타임아웃 (env 제어, 하드코딩 금지)
+        @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.keyword-define-timeout-seconds:60}")
+        private long keywordDefineTimeoutSeconds;
 
         private Material getMaterialSafely(Long userId, Long materialId) {
                 Material material = materialRepository.findById(materialId)
@@ -217,9 +223,23 @@ public class AiIntegrationService {
                                 .gpt_raw(gptRaw)
                                 .keywords(keywords)
                                 .sections(sections)
+                                .learningPoints(stringListFromEnvelope(envelope, "learningPoints"))
+                                .practicePoints(stringListFromEnvelope(envelope, "practicePoints"))
+                                .studyQuestions(stringListFromEnvelope(envelope, "studyQuestions"))
                                 .success(true)
                                 .textStatus(textStatusFor(material, getTextToAnalyze(material)))
                                 .build();
+        }
+
+        @SuppressWarnings("unchecked")
+        private List<String> stringListFromEnvelope(Map<String, Object> envelope, String key) {
+                Object raw = envelope.get(key);
+                if (raw instanceof List) {
+                        List<String> out = new java.util.ArrayList<>();
+                        for (Object item : (List<Object>) raw) if (item != null && !item.toString().isBlank()) out.add(item.toString());
+                        return out;
+                }
+                return java.util.Collections.emptyList();
         }
 
         @SuppressWarnings("unchecked")
@@ -245,6 +265,9 @@ public class AiIntegrationService {
                 envelope.put("key_points", aiStringList(response, "key_points") != null ? aiStringList(response, "key_points") : aiStringList(response, "keywords"));
                 envelope.put("summary", aiStr(response, "summary"));
                 envelope.put("gpt_raw", aiStr(response, "gpt_raw"));
+                envelope.put("learningPoints", aiStringList(response, "learningPoints"));
+                envelope.put("practicePoints", aiStringList(response, "practicePoints"));
+                envelope.put("studyQuestions", aiStringList(response, "studyQuestions"));
                 return toJson(envelope, "[]");
         }
 
@@ -519,6 +542,9 @@ public class AiIntegrationService {
                                 .gpt_raw(aiStr(response, "gpt_raw"))
                                 .keywords(aiStringList(response, "keywords") != null ? aiStringList(response, "keywords") : aiStringList(response, "key_points"))
                                 .sections(aiMapList(response, "sections"))
+                                .learningPoints(aiStringList(response, "learningPoints"))
+                                .practicePoints(aiStringList(response, "practicePoints"))
+                                .studyQuestions(aiStringList(response, "studyQuestions"))
                                 .success(aiBool(response, "success", true))
                                 .errorCode(aiStr(response, "errorCode"))
                                 .message(aiStr(response, "message"))
@@ -876,7 +902,9 @@ public class AiIntegrationService {
                 RoadmapTask task = roadmapTaskRepository.findById(taskId)
                                 .orElseThrow(() -> new IllegalArgumentException("해당 할 일을 찾을 수 없습니다."));
 
-                if (!task.getStep().getRoadmap().getMaterial().getMaterialId().equals(materialId)) {
+                // 플래너 로드맵(material=null)은 이 자료-스코프 토글 대상이 아니다 → null 가드로 NPE 방지
+                Material taskMaterial = task.getStep().getRoadmap().getMaterial();
+                if (taskMaterial == null || !taskMaterial.getMaterialId().equals(materialId)) {
                         throw new SecurityException("잘못된 접근입니다.");
                 }
 
@@ -888,6 +916,56 @@ public class AiIntegrationService {
                                 .taskOrder(task.getTaskOrder())
                                 .content(task.getContent())
                                 .isCompleted(task.getIsCompleted())
+                                .build();
+        }
+
+        // 핵심 키워드 개념 정의 (FastAPI /api/ai/keyword/define 프록시)
+        @SuppressWarnings("unchecked")
+        public KeywordDefineDTO.Response defineKeyword(Long userId, Long materialId, KeywordDefineDTO.Request request) {
+                Material material = getMaterialSafely(userId, materialId);
+                if (request == null || request.getKeyword() == null || request.getKeyword().isBlank()) {
+                        throw new IllegalArgumentException("키워드가 비어 있습니다.");
+                }
+
+                Map<String, Object> requestBody = new LinkedHashMap<>();
+                requestBody.put("keyword", request.getKeyword());
+                requestBody.put("source", request.getSource() != null ? request.getSource() : "auto");
+                requestBody.put("level", request.getLevel() != null ? request.getLevel() : "undergraduate");
+                // 문서 맥락은 요청에 없으면 자료 텍스트 앞부분으로 보강
+                String context = request.getContext();
+                if (context == null || context.isBlank()) {
+                        String text = getTextToAnalyze(material);
+                        if (text != null && !text.isBlank()) context = text.substring(0, Math.min(text.length(), 1500));
+                }
+                if (context != null && !context.isBlank()) requestBody.put("context", context);
+
+                Map response;
+                try {
+                        response = fastApiWebClient.post().uri("/api/ai/keyword/define")
+                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class)
+                                        .block(Duration.ofSeconds(keywordDefineTimeoutSeconds));
+                } catch (Exception e) {
+                        throw aiError("키워드 정의", e);
+                }
+
+                if (response == null || Boolean.FALSE.equals(response.get("success"))) {
+                        return KeywordDefineDTO.Response.builder()
+                                        .success(false)
+                                        .errorCode(aiStr(response, "errorCode"))
+                                        .message(aiStr(response, "message") != null ? aiStr(response, "message") : "개념 정의 생성에 실패했습니다.")
+                                        .build();
+                }
+
+                return KeywordDefineDTO.Response.builder()
+                                .success(true)
+                                .name(aiStr(response, "name"))
+                                .shortDefinition(aiStr(response, "shortDefinition"))
+                                .detailedDefinition(aiStr(response, "detailedDefinition"))
+                                .importance(aiStr(response, "importance"))
+                                .examples(aiStringList(response, "examples"))
+                                .relatedConcepts(aiStringList(response, "relatedConcepts"))
+                                .sourceUsed(aiStr(response, "sourceUsed"))
+                                .wikiUrl(aiStr(response, "wikiUrl"))
                                 .build();
         }
 }
