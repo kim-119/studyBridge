@@ -1176,4 +1176,49 @@ export const plannerService = {
   },
 };
 
+// 오답노트(복습 전용) 서비스.
+//  - 백엔드(/api/review-notes)가 아직 없으므로 404/501/네트워크 오류는 빈 상태로 흡수한다.
+//  - 화면에서 500/404를 터뜨리지 않도록 getReviewNotes 는 항상 배열을 반환한다.
+//  - apiReady=false 를 함께 돌려주어 페이지가 "API 미준비" 안내를 띄울 수 있게 한다.
+const REVIEW_NOTE_NOT_READY = new Set([404, 501, 503]);
+const isReviewApiMissing = (err) => {
+  const status = err?.response?.status;
+  // 응답 자체가 없는(네트워크/프록시 미연결) 경우도 미준비로 간주
+  if (status == null) return true;
+  return REVIEW_NOTE_NOT_READY.has(status);
+};
+
+export const reviewNoteService = {
+  // 목록: 실패해도 throw 하지 않고 { items, apiReady } 형태로 안전 반환
+  getReviewNotes: async () => {
+    try {
+      const res = await api.get('/api/review-notes');
+      const items = Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
+      return { items, apiReady: true };
+    } catch (err) {
+      if (isReviewApiMissing(err)) return { items: [], apiReady: false };
+      throw err;
+    }
+  },
+  getReviewNote: async (id) => {
+    const res = await api.get(`/api/review-notes/${id}`);
+    return res.data;
+  },
+  // PDF 다운로드 URL(또는 메타) 조회
+  getDownloadUrl: async (id) => {
+    const res = await api.get(`/api/review-notes/${id}/download`);
+    return res.data;
+  },
+  // 다시 풀기: 틀린 문제 세트 조회
+  retry: async (id) => {
+    const res = await api.get(`/api/review-notes/${id}/retry`);
+    return res.data;
+  },
+  // 메모 수정/저장
+  updateMemo: async (id, memo) => {
+    const res = await api.patch(`/api/review-notes/${id}/memo`, { memo });
+    return res.data;
+  },
+};
+
 export default api;
