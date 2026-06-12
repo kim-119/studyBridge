@@ -53,6 +53,27 @@ public class PlannerAiResult {
     @Column(name = "reflection_prompts", columnDefinition = "TEXT")
     private String reflectionPrompts;  // JSON 배열 문자열
 
+    // ---------- 학습 실행 관리 AI 피드백(ai-assist) 결과 ----------
+    // 플래너를 "실행 가능한 계획"으로 정리하고 피드백한다. 로드맵/퀴즈/문서질문과 무관.
+    // 사용자 원본 메모(planner.tmi)는 절대 덮어쓰지 않고, AI 결과만 여기에 보관한다.
+    @Column(name = "ai_summary", columnDefinition = "TEXT")
+    private String aiSummary;          // AI 요약
+
+    @Column(name = "refined_goal", columnDefinition = "TEXT")
+    private String refinedGoal;        // 정리된 학습 목표
+
+    @Column(name = "task_breakdown", columnDefinition = "TEXT")
+    private String taskBreakdown;      // JSON 배열 문자열 (할 일 정리)
+
+    @Column(name = "time_feedback", columnDefinition = "TEXT")
+    private String timeFeedback;       // 시간(목표/실제) 피드백 문장
+
+    @Column(name = "ai_feedback", columnDefinition = "TEXT")
+    private String aiFeedback;         // JSON {strengths, concerns, recommendations}
+
+    @Column(name = "next_actions", columnDefinition = "TEXT")
+    private String nextActions;        // JSON 배열 문자열 (다음 학습 행동)
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

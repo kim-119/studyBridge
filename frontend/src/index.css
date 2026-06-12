@@ -425,6 +425,11 @@ a {
   padding: 22px;
 }
 
+/* 요약 카드 2종(학습리포트 상단) 전용 2열 그리드 */
+.dashboard-page .summary-grid.cols-2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+
 .dashboard-page .summary-card p:first-child {
   margin: 0;
   font-size: 14px;
@@ -1340,7 +1345,10 @@ a {
 .archive-detail-container {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 80px);
+  /* 이 경로(/archive/pdf/, /archive/journal/)는 App.jsx 가 글로벌 Navbar 를 숨기고
+     main 을 height:100vh 로 주므로, 없는 네비 높이(80px)를 빼면 하단에 빈 공간이 생긴다.
+     따라서 전체 화면 높이를 그대로 사용한다. */
+  height: 100vh;
   overflow: hidden;
 }
 
@@ -1554,6 +1562,7 @@ a {
 
 @media (max-width: 900px) {
   .dashboard-page .summary-grid,
+  .dashboard-page .summary-grid.cols-2,
   .dashboard-page .main-grid,
   .planner-sheet-header,
   .planner-row {

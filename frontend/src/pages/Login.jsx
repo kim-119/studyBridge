@@ -102,7 +102,8 @@ export default function Login() {
 
       login(normalizedUser);
 
-      navigate('/dashboard');
+      // 로그인 직후 메인 랜딩(/)으로 이동. (구 /dashboard 라우트 제거됨)
+      navigate('/');
     } catch (err) {
       // 개발자 콘솔에는 상세히, 사용자에게는 간단히.
       console.error('로그인 실패 상세', {

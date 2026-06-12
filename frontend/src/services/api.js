@@ -762,6 +762,26 @@ export const materialService = {
     return res.data;
   },
 
+  // 84일(12주x7일) 로드맵 재생성 — 난이도(level) 포함, 레거시 로드맵 교체
+  regenerateRoadmap: async (materialId, level = 'intermediate') => {
+    const res = await api.post(`/api/materials/${materialId}/roadmap/regenerate`, { level, difficulty: level }, {
+      timeout: AI_TIMEOUT_MS,
+    });
+    return res.data;
+  },
+
+  // 균형 잡힌 AI 피드백 다시 생성
+  regenerateFeedback: async (materialId) => {
+    const res = await api.post(`/api/materials/${materialId}/feedback/regenerate`, null, { timeout: AI_TIMEOUT_MS });
+    return res.data;
+  },
+
+  // 84일 로드맵 일자(day) 완료 토글
+  toggleRoadmapDay: async (materialId, week, dayIndex) => {
+    const res = await api.put(`/api/materials/${materialId}/roadmap/days/toggle`, { week, dayIndex });
+    return res.data;
+  },
+
   // 핵심 키워드 개념 정의 (chip 클릭 → GPT/Wikipedia)
   defineKeyword: async (materialId, body) => {
     const res = await api.post(`/api/materials/${materialId}/keywords/define`, body, {
@@ -1145,21 +1165,13 @@ export const plannerService = {
     return res.data;
   },
 
-  // 플래너 전용 AI: 학습 실행 계획 확장 / 12주 로드맵
-  expandPlanner: async (id) => {
-    const res = await api.post(`/api/planners/${id}/ai-expand`, {}, { timeout: AI_TIMEOUT_MS });
+  // 플래너 전용 AI: 학습 실행 관리 피드백 (로드맵/퀴즈/문서질문 없음)
+  assistPlanner: async (id) => {
+    const res = await api.post(`/api/planners/${id}/ai-assist`, {}, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
   getPlannerAiResult: async (id) => {
     const res = await api.get(`/api/planners/${id}/ai-result`);
-    return res.data;
-  },
-  generatePlannerRoadmap: async (id) => {
-    const res = await api.post(`/api/planners/${id}/roadmap/generate`, {}, { timeout: AI_TIMEOUT_MS });
-    return res.data;
-  },
-  getPlannerRoadmap: async (id) => {
-    const res = await api.get(`/api/planners/${id}/roadmap`);
     return res.data;
   },
 };

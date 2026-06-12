@@ -54,10 +54,20 @@ public class Planner {
     private String wakeUpTime;     // 기상 시간
 
     @Column(name = "d_day", length = 50)
-    private String dDay;           // 디데이
+    private String dDay;           // 마감일/시험일 (라벨 변경, 기존 컬럼 재사용)
+
+    // 대학생 친화 가산 필드 (모두 nullable, ddl-auto=update 로 자동 생성 / 기존 데이터 무영향)
+    @Column(name = "study_type", length = 50)
+    private String studyType;      // 학습 유형 (강의 복습/과제/시험 준비/팀플/프로젝트/발표 준비/개인 공부)
+
+    @Column(name = "priority", length = 20)
+    private String priority;       // 우선순위 (낮음/보통/높음/긴급)
+
+    @Column(name = "term", length = 50)
+    private String term;           // 학기/주차 (예: 2026-1학기 · 3주차)
 
     @Column(length = 200)
-    private String subject;        // 과목
+    private String subject;        // 과목명
 
     @Column(columnDefinition = "TEXT")
     private String content;        // 내용
@@ -75,6 +85,14 @@ public class Planner {
 
     @Column(name = "material_id")
     private Long materialId;       // 자료보관함(Material) 연결 id
+
+    // 로드맵 기반 자동 생성 추적용 (84일 플래너 자동 생성)
+    @Column(name = "source_type", length = 30)
+    private String sourceType;        // ROADMAP_AUTO 등 (수동 생성이면 null)
+    @Column(name = "source_material_id")
+    private Long sourceMaterialId;    // 출처 자료 id
+    @Column(name = "source_roadmap_id")
+    private Long sourceRoadmapId;     // 출처 로드맵 id
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)

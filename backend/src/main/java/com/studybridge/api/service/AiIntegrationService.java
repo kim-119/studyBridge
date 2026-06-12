@@ -42,6 +42,14 @@ public class AiIntegrationService {
         @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.keyword-define-timeout-seconds:60}")
         private long keywordDefineTimeoutSeconds;
 
+        // 자료보관함 12주x7일(84일) 로드맵 생성 호출 타임아웃 (env 제어, 하드코딩 금지)
+        @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.roadmap-timeout-seconds:180}")
+        private long roadmapTimeoutSeconds;
+
+        // 84일 로드맵 고정 차원(12주 x 7일). 화면/검증 기준값과 동기화.
+        private static final int ROADMAP_TOTAL_WEEKS = 12;
+        private static final int ROADMAP_DAYS_PER_WEEK = 7;
+
         private Material getMaterialSafely(Long userId, Long materialId) {
                 Material material = materialRepository.findById(materialId)
                                 .orElseThrow(() -> new IllegalArgumentException("자료를 찾을 수 없습니다."));
@@ -320,6 +328,17 @@ public class AiIntegrationService {
 
 
         private RoadmapDTO roadmapDtoFromEntity(Material material, Roadmap roadmap) {
+                // 신(新) 84일 구조: roadmapJson이 있으면 weeks[].days[]를 그대로 복원해 반환한다.
+                if (roadmap.getRoadmapJson() != null && !roadmap.getRoadmapJson().isBlank()) {
+                        try {
+                                Map<String, Object> data = AI_OBJECT_MAPPER.readValue(
+                                                roadmap.getRoadmapJson(), new TypeReference<Map<String, Object>>() {});
+                                return roadmapDtoFromJson(material, roadmap, data);
+                        } catch (Exception e) {
+                                log.warn("[roadmap] roadmapJson 파싱 실패 roadmapId={} → 레거시 경로로 처리", roadmap.getRoadmapId());
+                        }
+                }
+                // 레거시(steps/tasks 24개) 구조: days 없음 → 프론트가 재생성 안내 + 버튼을 띄운다.
                 List<RoadmapDTO.RoadmapStepDTO> steps = roadmap.getSteps().stream()
                                 .map(step -> RoadmapDTO.RoadmapStepDTO.builder()
                                                 .stepId(step.getStepId())
@@ -574,13 +593,29 @@ public class AiIntegrationService {
                                 .orElseGet(() -> generateFeedback(material));
         }
 
+        // L. 균형 잡힌 피드백 다시 생성 — 기존 피드백 삭제 후 balanced 모드로 재생성
+        @Transactional
+        public FeedbackDTO regenerateFeedback(Long userId, Long materialId) {
+                Material material = getMaterialSafely(userId, materialId);
+                feedbackRepository.findByMaterial_MaterialId(materialId).ifPresent(feedbackRepository::delete);
+                feedbackRepository.flush();
+                return generateFeedback(material);
+        }
+
         private FeedbackDTO generateFeedback(Material material) {
                 String textToAnalyze = getTextToAnalyze(material);
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
                         throw new IllegalArgumentException("학습 내용 또는 추출된 텍스트가 없어 피드백을 생성할 수 없습니다.");
                 }
 
-                Map<String, Object> requestBody = Map.of("content", textToAnalyze);
+                // J/K. 균형 잡힌 피드백 요청(장점/권장/우려 각 8개 이상 + 마크다운 제거). ai07이 지원하면 구조화 응답.
+                Map<String, Object> requestBody = new LinkedHashMap<>();
+                requestBody.put("content", textToAnalyze);
+                requestBody.put("feedback_mode", "balanced");
+                requestBody.put("min_strengths", 8);
+                requestBody.put("min_recommendations", 8);
+                requestBody.put("min_concerns", 8);
+                requestBody.put("sanitize_markdown", true);
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/feedback")
@@ -589,11 +624,24 @@ public class AiIntegrationService {
                         throw aiError("피드백", e);
                 }
 
+                // J/K. ai07이 구조화 피드백(strengths/recommendations/concerns 등)을 주면 응답 전체를 JSON으로 보존,
+                //      아니면 기존 문자열(feedbackData) 보존. 프론트가 두 형태를 모두 sanitize/파싱한다.
+                String feedbackData;
+                boolean structured = response != null && (response.containsKey("strengths")
+                                || response.containsKey("recommendations") || response.containsKey("concerns")
+                                || response.containsKey("feedback_balance") || response.containsKey("summary"));
+                if (structured) {
+                        feedbackData = toJson(response, "{}");
+                } else if (response != null && response.containsKey("feedbackData")) {
+                        feedbackData = response.get("feedbackData").toString();
+                } else if (response != null && response.containsKey("feedback")) {
+                        feedbackData = response.get("feedback").toString();
+                } else {
+                        feedbackData = "피드백 생성 실패";
+                }
                 MaterialFeedback feedback = MaterialFeedback.builder()
                                 .material(material)
-                                .feedbackData(response != null && response.containsKey("feedbackData")
-                                                ? response.get("feedbackData").toString()
-                                                : "피드백 생성 실패")
+                                .feedbackData(feedbackData)
                                 .build();
                 feedback = feedbackRepository.save(feedback);
 
@@ -635,11 +683,15 @@ public class AiIntegrationService {
                         return quizFailure(material, request, "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
                 }
 
-                Map<String, Object> requestBody = Map.of(
-                                "material_id", material.getMaterialId(),
-                                "text", textToAnalyze,
-                                "difficulty", request.getDifficulty(),
-                                "questionCount", request.getQuestionCount());
+                // F. 난이도 매핑: 쉬움→easy, 보통→normal, 어려움→hard. 한글 라벨을 ai07 contract 영문값으로 변환.
+                String quizDifficulty = mapQuizDifficulty(request.getDifficulty());
+                Map<String, Object> requestBody = new LinkedHashMap<>();
+                requestBody.put("material_id", material.getMaterialId());
+                requestBody.put("text", textToAnalyze);
+                requestBody.put("difficulty", quizDifficulty);           // 영문 (easy|normal|hard)
+                requestBody.put("difficulty_requested", quizDifficulty);
+                requestBody.put("difficulty_label", request.getDifficulty()); // 원본 한글
+                requestBody.put("questionCount", request.getQuestionCount());
 
                 Map response;
                 try {
@@ -680,6 +732,11 @@ public class AiIntegrationService {
                                 .quizData(quiz.getQuizData())
                                 .quizzes(parseQuizData(quiz.getQuizData()))
                                 .createdAt(quiz.getCreatedAt())
+                                // G/H. 난이도 검증 전파 (ai07 제공 시), 없으면 요청값만 노출 → 프론트가 fallback 경고
+                                .difficultyRequested(quizDifficulty)
+                                .difficultyApplied(aiStr(response, "difficulty_applied"))
+                                .difficultyPolicy(aiStr(response, "difficulty_policy"))
+                                .difficultyValidation(aiMap(response, "difficulty_validation"))
                                 .success(aiBool(response, "success", true))
                                 .errorCode(aiStr(response, "errorCode"))
                                 .message(aiStr(response, "message"))
@@ -693,6 +750,15 @@ public class AiIntegrationService {
                                 .usedFallback(aiMetaBool(response, "usedFallback"))
                                 .cacheHit(aiMetaBool(response, "cacheHit"))
                                 .build();
+        }
+
+        // F. 퀴즈 난이도 한글 라벨 → ai07 영문 contract (쉬움/보통/어려움 → easy/normal/hard)
+        private String mapQuizDifficulty(String label) {
+                if (label == null) return "normal";
+                String v = label.trim().toLowerCase();
+                if (v.equals("easy") || v.contains("쉬움") || v.contains("쉬운")) return "easy";
+                if (v.equals("hard") || v.contains("어려움") || v.contains("어려운")) return "hard";
+                return "normal"; // 보통/normal/medium 및 미상값 기본
         }
 
         // AI에게 질문하기 (자료보관함 PDF 기반)
@@ -769,11 +835,33 @@ public class AiIntegrationService {
                                 .orElseGet(() -> generateRoadmap(material));
         }
 
-        // 로드맵 생성
+        // 로드맵 재생성: 84일 구조로 새로 만든다. ai07 호출·검증 성공 시에만 기존(레거시 포함) 로드맵을 교체한다. (C/J)
+        @Transactional
+        public RoadmapDTO regenerateRoadmap(Long userId, Long materialId, String level) {
+                Material material = getMaterialSafely(userId, materialId);
+                // C/J. ai07 호출·검증이 성공한 뒤에만 기존 로드맵을 교체한다(실패 시 기존 로드맵 보존).
+                return generateRoadmapInternal(material, normalizeRoadmapLevel(level), true);
+        }
+
+        // 난이도 정규화: 초보자/중급자/상급자 또는 영문 → beginner|intermediate|advanced (기본 intermediate)
+        private String normalizeRoadmapLevel(String level) {
+                if (level == null) return "intermediate";
+                String v = level.trim().toLowerCase();
+                if (v.equals("beginner") || v.contains("초보")) return "beginner";
+                if (v.equals("advanced") || v.contains("상급") || v.contains("고급")) return "advanced";
+                return "intermediate";
+        }
+
+        // 로드맵 생성 — ai07 /api/ai/roadmap/generate 호출로 12주 x 7일(84일) 구조를 만든다.
+        // 응답 전체(weeks[].days[])를 roadmapJson 컬럼에 보존하고, roadmapData로 그대로 반환한다.
         private RoadmapDTO generateRoadmap(Material material) {
+                return generateRoadmapInternal(material, "intermediate", false);
+        }
+
+        private RoadmapDTO generateRoadmapInternal(Material material, String level, boolean replaceExisting) {
                 String textToAnalyze = getTextToAnalyze(material);
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
-                        return roadmapFailure(material, "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
+                        return roadmapFailure(material, "PDF_TEXT_EMPTY", "문서에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
                 }
 
                 String userGoal = "학습 목표 달성";
@@ -781,104 +869,153 @@ public class AiIntegrationService {
                         userGoal = material.getTitle() + " 학습 및 핵심 목표 달성";
                 }
 
-                Map<String, Object> requestBody = Map.of(
-                        "material_id", material.getMaterialId(),
-                        "pdf_text", textToAnalyze,
-                        "user_goal", userGoal
-                );
+                // ai07이 요구하는 입력: title, summary, keywords[], user_goal, level + 84일 차원(weeks, days_per_week).
+                String summaryText = textToAnalyze.length() > 6000 ? textToAnalyze.substring(0, 6000) : textToAnalyze;
+                List<String> keywordList = new java.util.ArrayList<>();
+                if (material.getKeywords() != null && !material.getKeywords().isBlank()) {
+                        for (String k : material.getKeywords().split(",")) {
+                                if (!k.trim().isBlank()) keywordList.add(k.trim());
+                        }
+                }
 
+                Map<String, Object> requestBody = new LinkedHashMap<>();
+                requestBody.put("title", material.getTitle() != null ? material.getTitle() : "학습 로드맵");
+                requestBody.put("summary", summaryText);
+                requestBody.put("keywords", keywordList);
+                requestBody.put("user_goal", userGoal);
+                // 난이도(B/C): level + difficulty 둘 다 전송해 ai07 contract 변형에 모두 대응. academic_level은 별도 유지.
+                String roadmapLevel = normalizeRoadmapLevel(level);
+                requestBody.put("level", roadmapLevel);
+                requestBody.put("difficulty", roadmapLevel);
+                requestBody.put("academic_level", "undergraduate");
+                requestBody.put("weeks", ROADMAP_TOTAL_WEEKS);
+                requestBody.put("days_per_week", ROADMAP_DAYS_PER_WEEK);
+
+                long t0 = System.currentTimeMillis();
                 Map response;
                 try {
-                        response = fastApiWebClient.post().uri("/api/ai/roadmap")
-                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block(Duration.ofSeconds(125));
+                        response = fastApiWebClient.post().uri("/api/ai/roadmap/generate")
+                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class)
+                                        .block(Duration.ofSeconds(roadmapTimeoutSeconds));
                 } catch (Exception e) {
-                        return roadmapFailure(material, isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
+                        String __code = isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR";
+                        logRoadmapFailure(material.getMaterialId(), __code, e.getMessage(), null, null, System.currentTimeMillis() - t0);
+                        return roadmapFailure(material, __code, null, true, null);
                 }
 
                 if (isAiFailure(response)) {
-                        return roadmapFailure(material, aiStr(response, "errorCode"), aiStr(response, "message"), aiBool(response, "retryable", true), response);
+                        String __code = aiStr(response, "errorCode");
+                        logRoadmapFailure(material.getMaterialId(), __code, aiStr(response, "message"), roadmapValidationReason(response), response, System.currentTimeMillis() - t0);
+                        return roadmapFailure(material, __code, aiStr(response, "message"), aiBool(response, "retryable", true), response);
                 }
 
-                Map<String, Object> roadmapMap = null;
-                if (response != null && response.containsKey("roadmap")) {
-                        roadmapMap = (Map<String, Object>) response.get("roadmap");
+                String __invalidReason = roadmapStructureInvalidReason(response);
+                if (__invalidReason != null) {
+                        logRoadmapFailure(material.getMaterialId(), "ROADMAP_VALIDATE_FAILED", "84일 구조 검증 실패", __invalidReason, response, System.currentTimeMillis() - t0);
+                        return roadmapFailure(material, "ROADMAP_VALIDATE_FAILED", "84일(12주 × 7일) 로드맵 구조 검증에 실패했습니다. 다시 시도해주세요.", true, response);
                 }
 
                 String roadmapTitle = "AI 생성 학습 로드맵";
-                if (roadmapMap != null && roadmapMap.containsKey("title")) {
-                        roadmapTitle = roadmapMap.get("title").toString();
+                if (response != null && response.get("title") != null) {
+                        roadmapTitle = response.get("title").toString();
+                }
+
+                // 84일 응답 전체를 JSON 문자열로 보존(컬럼: roadmap_json). days를 절대 버리지 않는다.
+                String roadmapJson;
+                try {
+                        roadmapJson = AI_OBJECT_MAPPER.writeValueAsString(response);
+                } catch (Exception e) {
+                        log.error("[roadmap:fail] code=ROADMAP_JSON_SERIALIZE materialId={} msg={}", material.getMaterialId(), e.getMessage());
+                        return roadmapFailure(material, "ROADMAP_GENERATION_FAILED", "로드맵 데이터 처리 중 오류가 발생했습니다. 다시 시도해주세요.", true, null);
+                }
+                if (replaceExisting) {
+                        roadmapRepository.findByMaterial_MaterialId(material.getMaterialId()).ifPresent(roadmapRepository::delete);
+                        roadmapRepository.flush();
                 }
 
                 Roadmap roadmap = Roadmap.builder()
                                 .material(material)
                                 .userId(material.getUserId())
                                 .title(roadmapTitle)
+                                .roadmapJson(roadmapJson)
                                 .build();
-
-                if (roadmapMap != null && roadmapMap.containsKey("steps")) {
-                        java.util.List<Map<String, Object>> stepMaps = (java.util.List<Map<String, Object>>) roadmapMap
-                                        .get("steps");
-                        for (Map<String, Object> stepMap : stepMaps) {
-                                RoadmapStep step = RoadmapStep.builder()
-                                                .roadmap(roadmap)
-                                                .stepOrder(aiInt(stepMap.get("stepOrder"), 1))
-                                                .title(stepMap.containsKey("title") ? stepMap.get("title").toString()
-                                                                : "주차 제목 없음")
-                                                .description(stepMap.containsKey("description")
-                                                                ? stepMap.get("description").toString()
-                                                                : "")
-                                                .build();
-
-                                if (stepMap.containsKey("tasks")) {
-                                        java.util.List<Map<String, Object>> taskMaps = (java.util.List<Map<String, Object>>) stepMap
-                                                        .get("tasks");
-                                        for (Map<String, Object> taskMap : taskMaps) {
-                                                RoadmapTask task = RoadmapTask.builder()
-                                                                .step(step)
-                                                                .taskOrder(aiInt(taskMap.get("taskOrder"), 1))
-                                                                .content(taskMap.containsKey("content")
-                                                                                ? taskMap.get("content").toString()
-                                                                                : "할 일 내용 없음")
-                                                                .build();
-                                                step.getTasks().add(task);
-                                        }
-                                }
-                                roadmap.getSteps().add(step);
-                        }
-                }
 
                 try {
                         roadmap = roadmapRepository.save(roadmap);
                 } catch (Exception e) {
-                        // 엔티티 저장 실패(예: 컬럼 길이 초과 등)가 500으로 전파되지 않도록 사용자 메시지가 있는 실패 응답으로 변환한다.
                         log.error("[roadmap:fail] code=ROADMAP_SAVE_FAILED materialId={} message={}", material.getMaterialId(), e.getMessage(), e);
                         return roadmapFailure(material, "ROADMAP_GENERATION_FAILED", "주차별 로드맵 저장 중 오류가 발생했습니다. 다시 시도해주세요.", true, null);
                 }
 
+                return roadmapDtoFromJson(material, roadmap, response);
+        }
+        // C. ai07 로드맵 검증 사유 추출 (없으면 null)
+        @SuppressWarnings("unchecked")
+        private String roadmapValidationReason(Map response) {
+                Map<String, Object> v = aiMap(response, "validation");
+                if (v == null) v = aiMap(response, "difficulty_validation");
+                Object reason = v != null ? v.get("reason") : null;
+                return reason != null ? reason.toString() : null;
+        }
+
+        // C. 84일 로드맵 응답 구조 검증: weeks 12개 · 총 84일 · 각 day에 title/objective/tasks. 실패 사유 반환(정상 null).
+        @SuppressWarnings("unchecked")
+        private String roadmapStructureInvalidReason(Map response) {
+                if (response == null) return "응답 없음";
+                Object weeksRaw = response.get("weeks");
+                if (!(weeksRaw instanceof List)) return "weeks 배열 없음";
+                List<Object> weeks = (List<Object>) weeksRaw;
+                if (weeks.size() != ROADMAP_TOTAL_WEEKS) return "weeks 길이=" + weeks.size() + " (기대 " + ROADMAP_TOTAL_WEEKS + ")";
+                int totalDays = 0;
+                for (Object wkRaw : weeks) {
+                        if (!(wkRaw instanceof Map)) return "week 항목 형식 오류";
+                        Object daysRaw = ((Map<String, Object>) wkRaw).get("days");
+                        if (!(daysRaw instanceof List)) return "days 배열 없음";
+                        for (Object dRaw : (List<Object>) daysRaw) {
+                                totalDays++;
+                                if (!(dRaw instanceof Map)) return "day 항목 형식 오류";
+                                Map<String, Object> d = (Map<String, Object>) dRaw;
+                                if (isBlankObj(d.get("title"))) return "day title 누락";
+                                if (isBlankObj(d.get("objective"))) return "day objective 누락";
+                                Object tasks = d.get("tasks");
+                                if (!(tasks instanceof List) || ((List<?>) tasks).isEmpty()) return "day tasks 누락";
+                        }
+                }
+                if (totalDays != ROADMAP_TOTAL_WEEKS * ROADMAP_DAYS_PER_WEEK) {
+                        return "총 일수=" + totalDays + " (기대 " + (ROADMAP_TOTAL_WEEKS * ROADMAP_DAYS_PER_WEEK) + ")";
+                }
+                return null;
+        }
+
+        private boolean isBlankObj(Object v) {
+                return v == null || v.toString().isBlank();
+        }
+
+        // C. 로드맵 실패 상세 로그 (민감정보 제외: AWS key/token/presigned URL/문서 원문 전체 금지). body는 앞 1000자만.
+        private void logRoadmapFailure(Long materialId, String errorCode, String message, String validationReason, Map response, long elapsedMs) {
+                String body = "";
+                try {
+                        if (response != null) {
+                                String json = AI_OBJECT_MAPPER.writeValueAsString(response);
+                                body = json.length() > 1000 ? json.substring(0, 1000) : json;
+                        }
+                } catch (Exception ignored) { }
+                log.error("[roadmap:fail] endpoint=/api/ai/roadmap/generate materialId={} errorCode={} message={} validationReason={} elapsedMs={} body={}",
+                                materialId, errorCode, message, validationReason, elapsedMs, body);
+        }
+
+
+
+        // 84일 JSON 응답(map)을 그대로 roadmapData에 실어 DTO로 만든다.
+        @SuppressWarnings("unchecked")
+        private RoadmapDTO roadmapDtoFromJson(Material material, Roadmap roadmap, Map response) {
+                Integer totalWeeks = aiInt(response.get("total_weeks"), ROADMAP_TOTAL_WEEKS);
                 return RoadmapDTO.builder()
                                 .roadmapId(roadmap.getRoadmapId())
                                 .materialId(material.getMaterialId())
                                 .title(roadmap.getTitle())
-                                .roadmapData(roadmapMap)
-                                .totalWeeks(12)
-                                .steps(roadmap.getSteps().stream()
-                                                .map(step -> RoadmapDTO.RoadmapStepDTO.builder()
-                                                                .stepId(step.getStepId())
-                                                                .stepOrder(step.getStepOrder())
-                                                                .title(step.getTitle())
-                                                                .description(step.getDescription())
-                                                                .tasks(step.getTasks().stream()
-                                                                                .map(task -> RoadmapDTO.RoadmapTaskDTO
-                                                                                                .builder()
-                                                                                                .taskId(task.getTaskId())
-                                                                                                .taskOrder(task.getTaskOrder())
-                                                                                                .content(task.getContent())
-                                                                                                .isCompleted(task
-                                                                                                                .getIsCompleted())
-                                                                                                .build())
-                                                                                .collect(Collectors.toList()))
-                                                                .build())
-                                                .collect(Collectors.toList()))
+                                .roadmapData(response)
+                                .totalWeeks(totalWeeks)
                                 .success(aiBool(response, "success", true))
                                 .errorCode(aiStr(response, "errorCode"))
                                 .message(aiStr(response, "message"))
@@ -892,6 +1029,46 @@ public class AiIntegrationService {
                                 .usedFallback(aiMetaBool(response, "usedFallback"))
                                 .cacheHit(aiMetaBool(response, "cacheHit"))
                                 .build();
+        }
+
+        // 자료보관함 84일 로드맵 — day 단위 완료 토글. roadmapJson 안의 weeks[w].days[d].completed 를 뒤집어 저장.
+        @Transactional
+        public RoadmapDTO toggleRoadmapDay(Long userId, Long materialId, int week, int dayIndex) {
+                Material material = getMaterialSafely(userId, materialId);
+                Roadmap roadmap = roadmapRepository.findByMaterial_MaterialId(materialId)
+                                .orElseThrow(() -> new IllegalArgumentException("로드맵을 찾을 수 없습니다."));
+                if (roadmap.getRoadmapJson() == null || roadmap.getRoadmapJson().isBlank()) {
+                        throw new IllegalStateException("이 로드맵은 일자 토글을 지원하지 않는 이전 형식입니다. 다시 생성해주세요.");
+                }
+                Map<String, Object> data;
+                try {
+                        data = AI_OBJECT_MAPPER.readValue(roadmap.getRoadmapJson(), new TypeReference<Map<String, Object>>() {});
+                } catch (Exception e) {
+                        throw new IllegalStateException("로드맵 데이터를 읽을 수 없습니다.");
+                }
+                List<Map<String, Object>> weeks = (List<Map<String, Object>>) data.get("weeks");
+                if (weeks != null) {
+                        for (Map<String, Object> w : weeks) {
+                                if (aiInt(w.get("week"), -1) == week) {
+                                        List<Map<String, Object>> days = (List<Map<String, Object>>) w.get("days");
+                                        if (days != null) {
+                                                for (Map<String, Object> dy : days) {
+                                                        if (aiInt(dy.get("day_index"), -1) == dayIndex) {
+                                                                Object c = dy.get("completed");
+                                                                dy.put("completed", !(c instanceof Boolean && (Boolean) c));
+                                                        }
+                                                }
+                                        }
+                                }
+                        }
+                }
+                try {
+                        roadmap.setRoadmapJson(AI_OBJECT_MAPPER.writeValueAsString(data));
+                        roadmapRepository.save(roadmap);
+                } catch (Exception e) {
+                        throw new IllegalStateException("로드맵 저장에 실패했습니다.");
+                }
+                return roadmapDtoFromJson(material, roadmap, data);
         }
 
         // 로드맵 태스크 완료 상태 토글
@@ -945,7 +1122,18 @@ public class AiIntegrationService {
                                         .bodyValue(requestBody).retrieve().bodyToMono(Map.class)
                                         .block(Duration.ofSeconds(keywordDefineTimeoutSeconds));
                 } catch (Exception e) {
-                        throw aiError("키워드 정의", e);
+                        // ai07 미배포(404)/연결불가 시 500 대신 화면 친화 fallback 으로 변환 (기존 UI가 success=false 를 안내 표시)
+                        boolean unavailable = (e instanceof org.springframework.web.reactive.function.client.WebClientResponseException
+                                        && ((org.springframework.web.reactive.function.client.WebClientResponseException) e).getStatusCode().value() == 404)
+                                        || String.valueOf(e.getMessage()).toLowerCase().contains("not found")
+                                        || (e.getCause() instanceof java.net.ConnectException);
+                        return KeywordDefineDTO.Response.builder()
+                                        .success(false)
+                                        .errorCode(unavailable ? "AI_ROUTE_NOT_AVAILABLE" : "AI_ERROR")
+                                        .message(unavailable
+                                                        ? "AI 서버의 키워드 정의 기능이 아직 배포되지 않았습니다. 잠시 후 다시 시도해주세요."
+                                                        : "키워드 정의 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
+                                        .build();
                 }
 
                 if (response == null || Boolean.FALSE.equals(response.get("success"))) {

@@ -108,6 +108,14 @@ public class MaterialController {
         return ResponseEntity.ok(aiIntegrationService.getFeedback(userDetails.getId(), materialId));
     }
 
+    // 균형 잡힌 피드백 다시 생성 (L)
+    @PostMapping("/{materialId}/feedback/regenerate")
+    public ResponseEntity<com.studybridge.api.dto.FeedbackDTO> regenerateFeedback(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId) {
+        return ResponseEntity.ok(aiIntegrationService.regenerateFeedback(userDetails.getId(), materialId));
+    }
+
     @GetMapping("/{materialId}/memo")
     public ResponseEntity<com.studybridge.api.dto.MemoDTO> getMemo(
             @AuthenticationPrincipal CustomUserDetails userDetails,
@@ -159,6 +167,27 @@ public class MaterialController {
             @PathVariable Long materialId,
             @PathVariable Long taskId) {
         return ResponseEntity.ok(aiIntegrationService.toggleRoadmapTask(userDetails.getId(), materialId, taskId));
+    }
+
+    // 84일(12주x7일) 로드맵 재생성 — 기존(레거시 포함) 로드맵을 새 84일 구조로 교체
+    @PostMapping("/{materialId}/roadmap/regenerate")
+    public ResponseEntity<com.studybridge.api.dto.RoadmapDTO> regenerateRoadmap(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @RequestBody(required = false) java.util.Map<String, String> body) {
+        String level = body != null ? body.getOrDefault("level", body.get("difficulty")) : null;
+        return ResponseEntity.ok(aiIntegrationService.regenerateRoadmap(userDetails.getId(), materialId, level));
+    }
+
+    // 84일 로드맵 일자(day) 완료 토글
+    @PutMapping("/{materialId}/roadmap/days/toggle")
+    public ResponseEntity<com.studybridge.api.dto.RoadmapDTO> toggleRoadmapDay(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @RequestBody java.util.Map<String, Integer> body) {
+        int week = body.getOrDefault("week", 0);
+        int dayIndex = body.getOrDefault("dayIndex", 0);
+        return ResponseEntity.ok(aiIntegrationService.toggleRoadmapDay(userDetails.getId(), materialId, week, dayIndex));
     }
 
     // 핵심 키워드 개념 정의 (chip 클릭 → GPT/Wikipedia)

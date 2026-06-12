@@ -64,12 +64,95 @@ public class PlannerService {
                 .netStudyTime(req.getNetStudyTime())
                 .wakeUpTime(req.getWakeUpTime())
                 .dDay(req.getDDay())
+                .studyType(req.getStudyType())
+                .priority(req.getPriority())
+                .term(req.getTerm())
                 .subject(req.getSubject())
                 .content(req.getContent())
                 .tmi(req.getTmi())
                 .timeTableJson(req.getTimeTableJson())
                 .build();
         return toResponse(plannerRepository.save(planner), false);
+    }
+
+    // ---------- 로드맵 기반 84개 플래너 자동 생성 (D/E) ----------
+    @Transactional
+    public PlannerDTO.FromRoadmapResponse createFromRoadmap(Long userId, PlannerDTO.FromRoadmapRequest req) {
+        java.util.List<PlannerDTO.RoadmapItem> items = req.getItems() != null ? req.getItems() : java.util.Collections.emptyList();
+        if (items.isEmpty()) {
+            throw new IllegalArgumentException("로드맵 항목이 비어 있습니다. 먼저 84일 로드맵을 생성해주세요.");
+        }
+
+        final String SOURCE_TYPE = "ROADMAP_AUTO";
+        long existing = req.getMaterialId() != null
+                ? plannerRepository.countByUserIdAndSourceMaterialIdAndSourceType(userId, req.getMaterialId(), SOURCE_TYPE)
+                : 0L;
+        boolean force = Boolean.TRUE.equals(req.getForce());
+        if (existing > 0 && !force) {
+            return PlannerDTO.FromRoadmapResponse.builder()
+                    .createdCount(0).duplicate(true).existingCount(existing)
+                    .message("이미 이 자료로 생성된 플래너가 있습니다. 다시 생성하면 기존 항목을 유지한 채 추가됩니다.")
+                    .build();
+        }
+
+        String subject = (req.getSubject() != null && !req.getSubject().isBlank()) ? req.getSubject() : null;
+        if (subject == null && req.getMaterialId() != null) {
+            subject = materialRepository.findById(req.getMaterialId()).map(Material::getTitle).orElse(null);
+        }
+        if (subject == null) subject = "자료 기반 학습";
+
+        java.time.LocalDate start = req.getStartDate() != null ? req.getStartDate() : java.time.LocalDate.now();
+
+        int created = 0;
+        for (int i = 0; i < items.size(); i++) {
+            PlannerDTO.RoadmapItem it = items.get(i);
+            java.time.LocalDate date = start.plusDays(i);
+            java.util.List<String> tasks = it.getTasks() != null ? it.getTasks() : java.util.Collections.emptyList();
+
+            StringBuilder content = new StringBuilder();
+            if (it.getObjective() != null && !it.getObjective().isBlank()) content.append("[오늘 목표] ").append(it.getObjective()).append("\n\n");
+            if (!tasks.isEmpty()) {
+                content.append("[할 일]\n");
+                for (int t = 0; t < tasks.size(); t++) content.append(t + 1).append(". ").append(tasks.get(t)).append("\n");
+            }
+
+            StringBuilder memo = new StringBuilder();
+            if (it.getCoreConcepts() != null && !it.getCoreConcepts().isEmpty()) memo.append("핵심 개념: ").append(String.join(", ", it.getCoreConcepts())).append("\n");
+            if (it.getReviewQuestions() != null && !it.getReviewQuestions().isEmpty()) {
+                memo.append("복습 질문:\n");
+                for (String q : it.getReviewQuestions()) memo.append("- ").append(q).append("\n");
+            }
+            if (it.getCheckpoint() != null && !it.getCheckpoint().isBlank()) memo.append("체크포인트: ").append(it.getCheckpoint()).append("\n");
+            if (it.getDeliverable() != null && !it.getDeliverable().isBlank()) memo.append("산출물: ").append(it.getDeliverable()).append("\n");
+
+            String targetTime = it.getTargetMinutes() != null && it.getTargetMinutes() > 0 ? (it.getTargetMinutes() + "분") : null;
+            int weekNo = it.getWeek() != null ? it.getWeek() : (i / 7 + 1);
+
+            Planner planner = Planner.builder()
+                    .userId(userId)
+                    .title(it.getTitle() != null && !it.getTitle().isBlank() ? it.getTitle() : ((it.getDayIndex() != null ? it.getDayIndex() : i + 1) + "일차 학습"))
+                    .year(date.getYear()).month(date.getMonthValue()).day(date.getDayOfMonth())
+                    .plannerDate(date)
+                    .term(weekNo + "주차")
+                    .subject(subject)
+                    .studyType("자료 기반 학습")
+                    .priority("보통")
+                    .goalTime(targetTime)
+                    .content(content.toString().trim())
+                    .tmi(memo.toString().trim())
+                    .materialId(req.getMaterialId())
+                    .sourceType(SOURCE_TYPE)
+                    .sourceMaterialId(req.getMaterialId())
+                    .sourceRoadmapId(req.getRoadmapId())
+                    .build();
+            plannerRepository.save(planner);
+            created++;
+        }
+
+        return PlannerDTO.FromRoadmapResponse.builder()
+                .createdCount(created).duplicate(false).existingCount(existing)
+                .message(created + "개의 플래너가 생성되었습니다.")
+                .build();
     }
 
     @Transactional
@@ -85,6 +168,9 @@ public class PlannerService {
         planner.setNetStudyTime(req.getNetStudyTime());
         planner.setWakeUpTime(req.getWakeUpTime());
         planner.setDDay(req.getDDay());
+        planner.setStudyType(req.getStudyType());
+        planner.setPriority(req.getPriority());
+        planner.setTerm(req.getTerm());
         planner.setSubject(req.getSubject());
         planner.setContent(req.getContent());
         planner.setTmi(req.getTmi());
@@ -196,6 +282,7 @@ public class PlannerService {
                 .dayOfWeek(p.getDayOfWeek()).plannerDate(p.getPlannerDate())
                 .goalTime(p.getGoalTime()).netStudyTime(p.getNetStudyTime())
                 .wakeUpTime(p.getWakeUpTime()).dDay(p.getDDay())
+                .studyType(p.getStudyType()).priority(p.getPriority()).term(p.getTerm())
                 .subject(p.getSubject()).content(p.getContent()).tmi(p.getTmi())
                 .timeTableJson(p.getTimeTableJson())
                 .s3Key(p.getS3Key()).materialId(p.getMaterialId())
@@ -247,27 +334,30 @@ public class PlannerService {
 
             String dateLine = String.format("%s년 %s월 %s일 %s",
                     nz(p.getYear()), nz(p.getMonth()), nz(p.getDay()), p.getDayOfWeek() != null ? "(" + p.getDayOfWeek() + ")" : "");
+            if (p.getTerm() != null && !p.getTerm().isBlank()) {
+                dateLine = dateLine.trim() + "  ·  " + p.getTerm();
+            }
             Paragraph dateP = new Paragraph(dateLine.trim(), font(11, Font.NORMAL, new Color(0x4B, 0x55, 0x63)));
             dateP.setSpacingAfter(12);
             doc.add(dateP);
 
-            // 상단 정보 표: 목표/순공부/기상/디데이
+            // 상단 정보 표: 학습 유형/우선순위/목표 학습 시간/마감일·시험일
             PdfPTable info = new PdfPTable(4);
             info.setWidthPercentage(100);
             info.setSpacingAfter(14);
-            addInfoCell(info, "목표 시간", str(p.getGoalTime()));
-            addInfoCell(info, "순공부 시간", str(p.getNetStudyTime()));
-            addInfoCell(info, "기상 시간", str(p.getWakeUpTime()));
-            addInfoCell(info, "디데이", str(p.getDDay()));
+            addInfoCell(info, "학습 유형", str(p.getStudyType()));
+            addInfoCell(info, "우선순위", str(p.getPriority()));
+            addInfoCell(info, "목표 학습 시간", str(p.getGoalTime()));
+            addInfoCell(info, "마감일/시험일", str(p.getDDay()));
             doc.add(info);
 
-            // 과목 / 내용
+            // 과목명 / 학습 목표
             PdfPTable sc = new PdfPTable(new float[]{1f, 3f});
             sc.setWidthPercentage(100);
             sc.setSpacingAfter(14);
-            sc.addCell(labelCell("과목"));
+            sc.addCell(labelCell("과목명"));
             sc.addCell(valueCell(str(p.getSubject())));
-            sc.addCell(labelCell("내용"));
+            sc.addCell(labelCell("학습 목표"));
             sc.addCell(valueCell(str(p.getContent())));
             doc.add(sc);
 
@@ -277,8 +367,8 @@ public class PlannerService {
             doc.add(ttTitle);
             doc.add(buildTimeTable(p.getTimeTableJson()));
 
-            // 오늘의 TMI
-            Paragraph tmiTitle = new Paragraph("오늘의 TMI", font(12, Font.BOLD, GREEN_DARK));
+            // 세부 할 일 / 메모
+            Paragraph tmiTitle = new Paragraph("세부 할 일 / 메모", font(12, Font.BOLD, GREEN_DARK));
             tmiTitle.setSpacingBefore(14);
             tmiTitle.setSpacingAfter(6);
             doc.add(tmiTitle);

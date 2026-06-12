@@ -80,37 +80,22 @@ public class PlannerController {
         return ResponseEntity.noContent().build();
     }
 
-    // ---------- 공부 플래너 전용 AI ----------
+    // ---------- 공부 플래너 전용 AI (학습 실행 관리) ----------
+    // 로드맵/퀴즈/문서질문/요약 없음. 플래너를 실행 가능한 계획으로 정리하고 피드백만 한다.
 
-    /** E. 플래너 AI 확장 (학습 실행 계획/질문/회고) */
-    @PostMapping("/{plannerId}/ai-expand")
-    public ResponseEntity<com.studybridge.api.dto.PlannerAiDTO.ExpandResponse> aiExpand(
+    /** AI 피드백 및 다음 학습 추천 */
+    @PostMapping("/{plannerId}/ai-assist")
+    public ResponseEntity<com.studybridge.api.dto.PlannerAiDTO.AssistResponse> aiAssist(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long plannerId) {
-        return ResponseEntity.ok(plannerAiService.expand(userDetails.getId(), plannerId));
+        return ResponseEntity.ok(plannerAiService.assist(userDetails.getId(), plannerId));
     }
 
-    /** 저장된 AI 확장 결과 조회 */
+    /** 저장된 AI 피드백 조회 */
     @GetMapping("/{plannerId}/ai-result")
-    public ResponseEntity<com.studybridge.api.dto.PlannerAiDTO.ExpandResponse> aiResult(
+    public ResponseEntity<com.studybridge.api.dto.PlannerAiDTO.AssistResponse> aiResult(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long plannerId) {
         return ResponseEntity.ok(plannerAiService.getAiResult(userDetails.getId(), plannerId));
-    }
-
-    /** F. 플래너 기반 12주 로드맵 생성 */
-    @PostMapping("/{plannerId}/roadmap/generate")
-    public ResponseEntity<com.studybridge.api.dto.PlannerAiDTO.RoadmapResponse> generateRoadmap(
-            @AuthenticationPrincipal CustomUserDetails userDetails,
-            @PathVariable Long plannerId) {
-        return ResponseEntity.ok(plannerAiService.generateRoadmap(userDetails.getId(), plannerId));
-    }
-
-    /** 플래너 로드맵 조회 */
-    @GetMapping("/{plannerId}/roadmap")
-    public ResponseEntity<com.studybridge.api.dto.PlannerAiDTO.RoadmapResponse> getRoadmap(
-            @AuthenticationPrincipal CustomUserDetails userDetails,
-            @PathVariable Long plannerId) {
-        return ResponseEntity.ok(plannerAiService.getRoadmap(userDetails.getId(), plannerId));
     }
 }

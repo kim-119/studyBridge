@@ -61,7 +61,7 @@ jwt:
 # 메인 배너 설정. 외부 이미지 원본 URL과 MCP 토큰은 서버 설정/환경변수로만 관리한다(프론트 노출 금지).
 banner:
   main:
-    title: ${BANNER_MAIN_TITLE:StudyBridge 학습 플래너}
+    title: ${BANNER_MAIN_TITLE:학습의 흐름을 하나로 잇다}
     subtitle: ${BANNER_MAIN_SUBTITLE:학습 리포트, 주간 일정, 플래너를 한 곳에서 관리하세요.}
     primary-button-text: ${BANNER_MAIN_PRIMARY_TEXT:플래너 시작하기}
     primary-button-path: ${BANNER_MAIN_PRIMARY_PATH:/planner}

@@ -30,6 +30,9 @@ public class MaterialService {
     @Transactional
     public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords,
             org.springframework.web.multipart.MultipartFile file) throws java.io.IOException {
+        // 업로드 형식 검증: PDF/DOCX만 허용. Content-Type만 믿지 않고 확장자도 함께 확인한다.
+        validateUploadFormat(file);
+
         // S3에 파일 업로드
         String s3Key = s3Service.uploadFile(file, userId);
 
@@ -56,6 +59,32 @@ public class MaterialService {
                 file.getContentType());
 
         return convertToDTO(savedMaterial);
+    }
+
+    // PDF / DOCX만 허용. 구형 .doc는 친화 메시지로 거부. Content-Type + 확장자 동시 확인.
+    private void validateUploadFormat(org.springframework.web.multipart.MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("업로드할 파일이 비어 있습니다.");
+        }
+        final String PDF = "application/pdf";
+        final String DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+        String name = file.getOriginalFilename() != null ? file.getOriginalFilename().toLowerCase() : "";
+        String contentType = file.getContentType() != null ? file.getContentType().toLowerCase() : "";
+
+        // 구형 .doc는 명시적으로 거부하고 변환 안내를 준다.
+        if (name.endsWith(".doc") && !name.endsWith(".docx")) {
+            throw new IllegalArgumentException("현재는 .docx 형식만 지원합니다. .doc 파일은 .docx로 변환 후 업로드해주세요.");
+        }
+
+        boolean extOk = name.endsWith(".pdf") || name.endsWith(".docx");
+        boolean typeOk = contentType.equals(PDF) || contentType.equals(DOCX)
+                // 일부 브라우저/OS는 docx에 빈/일반 content-type을 보낼 수 있어 확장자가 맞으면 허용
+                || contentType.isBlank() || contentType.equals("application/octet-stream");
+
+        if (!extOk || !typeOk) {
+            throw new IllegalArgumentException("지원하지 않는 파일 형식입니다. PDF 또는 DOCX 파일만 업로드할 수 있습니다.");
+        }
     }
 
     @Transactional

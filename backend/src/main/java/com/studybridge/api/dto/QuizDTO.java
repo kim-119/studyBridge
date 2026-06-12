@@ -33,6 +33,11 @@ public class QuizDTO {
         private String quizData; // JSON 형식의 퀴즈 데이터
         private List<Map<String, Object>> quizzes;
         private LocalDateTime createdAt;
+        // 난이도 검증 (G/H): 요청/적용 난이도 + 정책 + 검증 결과 (ai07이 제공하면 전파, 없으면 null)
+        private String difficultyRequested;   // easy | normal | hard
+        private String difficultyApplied;     // ai07이 실제 적용한 난이도
+        private String difficultyPolicy;      // 난이도 정책 설명
+        private Map<String, Object> difficultyValidation; // { passed, reason }
         // AI 상태 전파 필드 (nullable, 하위호환 additive)
         private Boolean success;
         private String errorCode;

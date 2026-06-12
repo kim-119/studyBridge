@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { FileText, File as FileIcon, Plus, X, AlignLeft, MessageSquare, CalendarDays } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { materialService } from '../services/api';
+import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
 
 export default function Archive() {
   const { userId } = useAuth();
@@ -21,6 +22,8 @@ export default function Archive() {
 
   const [journalSummary, setJournalSummary] = useState('');
   const [journalFeedback, setJournalFeedback] = useState([]);
+  const [journalFeedbackStruct, setJournalFeedbackStruct] = useState(null); // 구조화 피드백 {summary,strengths,...}
+  const [regeneratingFeedback, setRegeneratingFeedback] = useState(false);
 
   const [formTitle, setFormTitle] = useState('');
   const [formDate, setFormDate] = useState(new Date().toISOString().split('T')[0]);
@@ -109,34 +112,134 @@ export default function Archive() {
     }
   };
 
+  // I/J/K. AI 피드백 정규화 — 구조화(JSON)면 섹션화, 문자열이면 마크다운 제거 후 줄 분리
+  const normalizeFeedback = (raw) => {
+    if (!raw) return { struct: null, lines: [] };
+    let obj = null;
+    try { obj = JSON.parse(raw); } catch { obj = null; }
+    if (obj && typeof obj === 'object' && !Array.isArray(obj) &&
+        (obj.strengths || obj.recommendations || obj.concerns || obj.summary || obj.feedback_balance)) {
+      return {
+        struct: {
+          title: sanitizeMarkdownText(obj.feedback_title || 'AI 학습 피드백'),
+          summary: sanitizeMarkdownText(obj.summary || obj.feedbackData || ''),
+          strengths: sanitizeList(obj.strengths),
+          recommendations: sanitizeList(obj.recommendations),
+          concerns: sanitizeList(obj.concerns),
+          nextActions: sanitizeList(obj.next_actions),
+          balance: obj.feedback_balance || null,
+        },
+        lines: [],
+      };
+    }
+    // 문자열 fallback: 마크다운 제거 후 번호/줄 기준 분리
+    const text = Array.isArray(obj) ? obj.map(String).join('\n') : String(raw);
+    const lines = sanitizeMarkdownText(text)
+      .split(/\n+/).map((l) => l.replace(/^\s*\d+[.)]\s*/, '').trim()).filter(Boolean);
+    return { struct: null, lines: lines.length ? lines : ['아직 등록된 AI 피드백이 없습니다. 잠시 후 다시 확인해주세요.'] };
+  };
+
   const fetchJournalAiData = async (materialId) => {
     try {
       setJournalSummary('AI가 학습일지를 분석 중입니다...');
       setJournalFeedback([]);
+      setJournalFeedbackStruct(null);
 
       const summaryRes = await materialService.getSummary(materialId);
       if (summaryRes && summaryRes.overview) {
-        setJournalSummary(summaryRes.overview);
+        setJournalSummary(sanitizeMarkdownText(summaryRes.overview));
       } else {
         setJournalSummary('작성된 학습일지를 바탕으로 분석된 AI 요약이 아직 생성되지 않았습니다.');
       }
 
       const feedbackRes = await materialService.getFeedback(materialId);
-      if (feedbackRes && feedbackRes.feedbackData) {
-        try {
-          const parsed = JSON.parse(feedbackRes.feedbackData);
-          setJournalFeedback(Array.isArray(parsed) ? parsed : [feedbackRes.feedbackData]);
-        } catch {
-          setJournalFeedback(feedbackRes.feedbackData.split('\n').filter(Boolean));
-        }
-      } else {
-        setJournalFeedback(['아직 등록된 AI 피드백이 없습니다. 잠시 후 다시 확인해주세요.']);
-      }
+      const norm = normalizeFeedback(feedbackRes?.feedbackData);
+      setJournalFeedbackStruct(norm.struct);
+      setJournalFeedback(norm.lines);
     } catch (error) {
       console.error('AI 분석 정보 조회 실패:', error);
       setJournalSummary('AI 요약을 가져오는 도중 오류가 발생했습니다.');
+      setJournalFeedbackStruct(null);
       setJournalFeedback(['AI 피드백 정보를 불러오지 못했습니다.']);
     }
+  };
+
+  // L. 균형 잡힌 피드백 다시 생성
+  const handleRegenerateFeedback = async () => {
+    if (regeneratingFeedback || !selectedJournal?.id) return;
+    try {
+      setRegeneratingFeedback(true);
+      const feedbackRes = await materialService.regenerateFeedback(selectedJournal.id);
+      const norm = normalizeFeedback(feedbackRes?.feedbackData);
+      setJournalFeedbackStruct(norm.struct);
+      setJournalFeedback(norm.lines);
+    } catch (e) {
+      console.error('피드백 재생성 실패:', e);
+      alert(e.response?.data?.message || '피드백 재생성 중 오류가 발생했습니다.');
+    } finally {
+      setRegeneratingFeedback(false);
+    }
+  };
+
+  // J/K. AI 피드백 본문 렌더 — 구조화면 섹션화(장점/권장/우려/다음행동), 문자열이면 전체 피드백 카드 + 균형 경고
+  const FB_SECTIONS = [
+    { key: 'strengths', label: '장점', color: '#10B981', min: 8 },
+    { key: 'recommendations', label: '권장사항', color: '#3B82F6', min: 8 },
+    { key: 'concerns', label: '우려사항 / 비판적 개선점', color: '#F59E0B', min: 8 },
+    { key: 'nextActions', label: '다음 행동', color: '#8B5CF6', min: 0 },
+  ];
+  const fbWarn = (msg) => (
+    <div style={{ padding: '12px 14px', borderRadius: '8px', backgroundColor: '#FFFBEB', border: '1px solid #FDE68A', color: '#92400E', fontSize: '13.5px', lineHeight: 1.6 }}>{msg}</div>
+  );
+  const renderFeedbackBody = () => {
+    const s = journalFeedbackStruct;
+    if (s) {
+      const insufficient = s.strengths.length < 8 || s.recommendations.length < 8 || s.concerns.length < 8;
+      const strengthOnly = s.strengths.length > 0 && s.recommendations.length === 0 && s.concerns.length === 0;
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {strengthOnly && fbWarn('AI 피드백이 장점 위주로 생성되었습니다. 권장사항과 우려사항을 포함해 다시 생성해 주세요.')}
+          {!strengthOnly && insufficient && fbWarn('AI 피드백이 충분하지 않습니다. 다시 생성해 주세요.')}
+          {s.summary && (
+            <div style={{ padding: '14px 16px', borderRadius: '10px', backgroundColor: '#F9FAFB', borderLeft: '4px solid var(--color-primary)' }}>
+              <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '6px', color: 'var(--color-text-main)' }}>전체 요약</div>
+              <p style={{ margin: 0, fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{s.summary}</p>
+            </div>
+          )}
+          {FB_SECTIONS.map((sec) => {
+            const list = s[sec.key] || [];
+            if (!list.length) return null;
+            return (
+              <div key={sec.key}>
+                <h4 style={{ margin: '0 0 8px', fontSize: '14.5px', color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: sec.color }} /> {sec.label} <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', fontWeight: 400 }}>({list.length}개)</span>
+                </h4>
+                <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px', borderLeft: `3px solid ${sec.color}22` }}>
+                  {list.map((t, i) => <li key={i} style={{ fontSize: '13.5px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{t}</li>)}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+    // 문자열 fallback — 마크다운 제거된 줄들. 장점 위주 탐지.
+    const joined = journalFeedback.join(' ');
+    const hasNeg = /(개선|아쉬|부족|권장|주의|우려|보완|위험|문제|보강|한계)/.test(joined);
+    const strengthOnly = journalFeedback.length > 1 && !hasNeg;
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {strengthOnly && fbWarn('AI 피드백이 장점 위주로 생성되었습니다. 권장사항과 우려사항을 포함해 “균형 잡힌 피드백 다시 생성”을 눌러주세요.')}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {journalFeedback.map((fb, idx) => (
+            <div key={idx} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+              <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '12px', fontWeight: 'bold', flexShrink: 0 }}>{idx + 1}</div>
+              <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5', color: 'var(--color-text-main)' }}>{fb}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   };
 
   useEffect(() => {
@@ -205,6 +308,26 @@ export default function Archive() {
   const closeModal = () => {
     setOpenedModalType(null);
     resetFormState();
+  };
+
+  // 업로드 파일 선택 — PDF/DOCX만 허용, 구형 .doc는 변환 안내 후 거부
+  const handlePickUploadFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const name = (file.name || '').toLowerCase();
+    if (name.endsWith('.doc') && !name.endsWith('.docx')) {
+      alert('현재는 .docx 형식만 지원합니다. .doc 파일은 .docx로 변환 후 업로드해주세요.');
+      e.target.value = '';
+      setFormFile(null);
+      return;
+    }
+    if (!name.endsWith('.pdf') && !name.endsWith('.docx')) {
+      alert('지원하지 않는 파일 형식입니다. PDF 또는 DOCX 파일만 업로드할 수 있습니다.');
+      e.target.value = '';
+      setFormFile(null);
+      return;
+    }
+    setFormFile(file);
   };
 
   const handleSubmitMaterial = async () => {
@@ -437,12 +560,12 @@ export default function Archive() {
       {/* 자료 추가 모달 */}
       {openedModalType === 'addMaterial' && (
         <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ maxWidth: '800px', width: '100%', minHeight: '750px', maxHeight: '90vh', padding: '32px', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-            <div className="modal-header" style={{ marginBottom: '24px', flexShrink: 0 }}>
+          <div className="glass-panel modal-content" style={{ maxWidth: '800px', width: '100%', maxHeight: 'calc(100vh - 48px)', padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-header" style={{ flexShrink: 0, padding: '28px 32px 20px', borderBottom: '1px solid var(--color-border)' }}>
               <h3 style={{ margin: 0, fontSize: '22px' }}>자료 추가</h3>
               <button className="btn-close" onClick={closeModal}><X size={24} /></button>
             </div>
-            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '24px', flex: 1 }}>
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '24px', flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 32px' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '16px', fontWeight: 'bold', marginBottom: '12px' }}>자료 유형</label>
                 <div style={{ display: 'flex', gap: '20px' }}>
@@ -502,22 +625,22 @@ export default function Archive() {
 
                   <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
                     <label style={{ display: 'block', fontSize: '16px', fontWeight: 'bold', marginBottom: '12px' }}>파일 업로드</label>
-                    <input type="file" accept="application/pdf" ref={addFileInputRef} onChange={(e) => setFormFile(e.target.files[0])} style={{ display: 'none' }} />
+                    <input type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" ref={addFileInputRef} onChange={handlePickUploadFile} style={{ display: 'none' }} />
                     <div
                       onClick={() => addFileInputRef.current?.click()}
-                      style={{ flex: 1, border: '2px dashed var(--color-border)', borderRadius: '12px', padding: '40px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', color: 'var(--color-text-muted)', backgroundColor: '#F9FAFB', cursor: 'pointer', transition: 'all 0.2s', minHeight: '200px' }}
+                      style={{ flex: 1, border: '2px dashed var(--color-border)', borderRadius: '12px', padding: '28px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', color: 'var(--color-text-muted)', backgroundColor: '#F9FAFB', cursor: 'pointer', transition: 'all 0.2s', minHeight: '160px', maxHeight: '220px' }}
                     >
                       <FileIcon size={48} style={{ margin: '0 auto 16px', opacity: 0.5 }} />
                       <p style={{ margin: '0 0 12px', fontSize: '16px', fontWeight: 'bold' }}>
                         {formFile ? `선택된 파일: ${formFile.name}` : '클릭하거나 파일을 드래그하여 업로드하세요'}
                       </p>
-                      <p style={{ margin: 0, fontSize: '14px' }}>지원 형식: PDF</p>
+                      <p style={{ margin: 0, fontSize: '14px' }}>지원 형식: PDF, DOCX</p>
                     </div>
                   </div>
                 </div>
               )}
             </div>
-            <div className="modal-footer" style={{ justifyContent: 'flex-end', display: 'flex', gap: '12px', marginTop: 'auto', paddingTop: '32px', flexShrink: 0 }}>
+            <div className="modal-footer" style={{ justifyContent: 'flex-end', display: 'flex', gap: '12px', flexShrink: 0, padding: '20px 32px', borderTop: '1px solid var(--color-border)', background: 'white' }}>
               <button className="btn-outline" style={{ padding: '12px 32px', fontSize: '16px' }} onClick={closeModal} disabled={isSubmitting}>취소</button>
               <button className="btn-primary" style={{ padding: '12px 32px', fontSize: '16px' }} onClick={handleSubmitMaterial} disabled={isSubmitting}>
                 {isSubmitting ? '저장 중...' : '저장'}
@@ -607,21 +730,19 @@ export default function Archive() {
                   </div>
 
                   <div className="glass-panel" style={{ padding: '24px' }}>
-                    <h3 style={{ margin: '0 0 16px', fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <MessageSquare size={18} color="var(--color-primary)" /> AI 피드백
-                    </h3>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                      {journalFeedback.map((fb, idx) => (
-                        <div key={idx} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-                          <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '12px', fontWeight: 'bold', flexShrink: 0 }}>
-                            {idx + 1}
-                          </div>
-                          <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5', color: 'var(--color-text-main)' }}>
-                            {fb}
-                          </p>
-                        </div>
-                      ))}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                      <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <MessageSquare size={18} color="var(--color-primary)" /> AI 피드백
+                      </h3>
+                      <button
+                        onClick={handleRegenerateFeedback}
+                        disabled={regeneratingFeedback}
+                        style={{ padding: '7px 16px', borderRadius: '20px', fontSize: '13px', border: '1px solid var(--color-border)', background: 'white', cursor: regeneratingFeedback ? 'default' : 'pointer', opacity: regeneratingFeedback ? 0.6 : 1, whiteSpace: 'nowrap' }}
+                      >
+                        {regeneratingFeedback ? '재생성 중…' : '균형 잡힌 피드백 다시 생성'}
+                      </button>
                     </div>
+                    {renderFeedbackBody()}
                   </div>
                 </div>
               </div>

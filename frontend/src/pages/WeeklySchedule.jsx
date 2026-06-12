@@ -13,6 +13,12 @@ import { todoService } from '../services/api';
  */
 const eventColors = ['#DDF5E3', '#D9F0FF', '#FDF0D5', '#EEE3FF', '#E6FFF4'];
 
+// 플래너에서 추가된 Todo 는 text 가 '[플래너]' 로 시작한다(Todo 모델에 별도 출처 필드가 없어 접두어로 구분).
+const PLANNER_PREFIX = '[플래너]';
+const isPlannerTodo = (t) => typeof t?.text === 'string' && t.text.startsWith(PLANNER_PREFIX);
+const displayTodoText = (text) =>
+  (typeof text === 'string' && text.startsWith(PLANNER_PREFIX)) ? text.slice(PLANNER_PREFIX.length).trim() : text;
+
 function toDateStr(d) {
   const tz = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
   return tz.toISOString().split('T')[0];
@@ -80,15 +86,16 @@ export default function WeeklySchedule() {
         const endDate = todo.endDate ? new Date(todo.endDate.split('T')[0]) : (startDate ? new Date(startDate) : new Date());
         const adjustedEndDate = new Date(endDate);
         adjustedEndDate.setDate(adjustedEndDate.getDate() + 1);
+        const planner = isPlannerTodo(todo);
         return {
           id: String(todo.id),
-          title: todo.text,
+          title: displayTodoText(todo.text),
           start: startDate,
           end: adjustedEndDate.toISOString().split('T')[0],
-          backgroundColor: eventColors[(todo.id || 0) % eventColors.length],
-          borderColor: 'rgba(0,0,0,0.05)',
+          backgroundColor: planner ? '#DCFCE7' : eventColors[(todo.id || 0) % eventColors.length],
+          borderColor: planner ? '#86EFAC' : 'rgba(0,0,0,0.05)',
           textColor: '#1F2937',
-          extendedProps: { completed: todo.completed },
+          extendedProps: { completed: todo.completed, source: planner ? 'planner' : 'todo' },
         };
       }).filter((e) => e.start)
     : [];
@@ -184,7 +191,12 @@ export default function WeeklySchedule() {
               filteredTodos.map((todo) => (
                 <div key={todo.id} className={`todo-item ${todo.completed ? 'completed' : ''}`}>
                   <input type="checkbox" checked={todo.completed} onChange={() => handleToggleTodo(todo.id)} />
-                  <span className="todo-text">{todo.text}</span>
+                  <span className="todo-text">
+                    {isPlannerTodo(todo) && (
+                      <span style={{ display: 'inline-block', marginRight: '6px', padding: '1px 7px', borderRadius: '999px', backgroundColor: '#DCFCE7', color: '#15803D', fontSize: '11px', fontWeight: 700, verticalAlign: 'middle' }}>플래너</span>
+                    )}
+                    {displayTodoText(todo.text)}
+                  </span>
                   <button className="btn-outline" onClick={() => handleDeleteTodo(todo.id)} style={{ width: '50px', height: '30px', fontSize: '12px' }}>삭제</button>
                 </div>
               ))

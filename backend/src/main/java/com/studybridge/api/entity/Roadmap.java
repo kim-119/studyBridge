@@ -45,6 +45,11 @@ public class Roadmap {
     @Column(columnDefinition = "TEXT")
     private String summary;
 
+    // ai07 84일(12주 x 7일) 로드맵 원본 응답 JSON. weeks[].days[] 구조를 통째로 보존한다.
+    // 존재하면 신(新) 84일 구조, null이면 레거시(steps/tasks 24개) 로드맵으로 간주한다.
+    @Column(name = "roadmap_json", columnDefinition = "TEXT")
+    private String roadmapJson;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

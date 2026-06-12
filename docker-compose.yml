@@ -44,6 +44,8 @@ services:
       OPENVIDU_URL: http://openvidu:4443
       OPENVIDU_SECRET: ${OPENVIDU_SECRET:-MY_SECRET}
 
+      # 메인 배너 헤드라인(1행). 재빌드 없이 운영 이미지에 런타임 주입(application.yml 기본값과 동기화).
+      BANNER_MAIN_TITLE: ${BANNER_MAIN_TITLE:-학습의 흐름을 하나로 잇다}
       # 메인 배너 MCP 식별자 (서버 전용, 프론트 노출 금지)
       BANNER_MCP_TOKEN: ${BANNER_MCP_TOKEN:-}
       TZ: Asia/Seoul

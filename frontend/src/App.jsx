@@ -78,14 +78,12 @@ function App() {
 
   // Hide Navbar and top padding for Archive Detail pages to make it full screen
   const hideNavbar = location.pathname.includes('/archive/pdf/') || location.pathname.includes('/archive/journal/');
-  // 메인(/)은 전용 랜딩 네비를 사용하므로 글로벌 Navbar/상단 패딩 제거
-  const isLanding = location.pathname === '/';
 
   return (
     <div className={isAdminRoute ? "" : "app-container"} style={isAdminRoute ? { width: '100%', height: '100vh', overflow: 'hidden' } : {}}>
-      {(!isAdminRoute && !hideNavbar && !isLanding) && <Navbar />}
+      {(!isAdminRoute && !hideNavbar) && <Navbar />}
 
-      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: (hideNavbar || isLanding) ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
+      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
         <Routes>
           {/* 메인페이지: 누구나 접근 가능 */}
           <Route path="/" element={<Dashboard />} />

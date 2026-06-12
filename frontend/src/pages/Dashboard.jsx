@@ -2,7 +2,6 @@ import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 
-import LandingNav from '../components/landing/LandingNav';
 import MainBanner from '../components/MainBanner';
 import FeatureSection from '../components/landing/FeatureSection';
 import CtaSection from '../components/landing/CtaSection';
@@ -10,8 +9,9 @@ import Footer from '../components/landing/Footer';
 
 /**
  * 메인 랜딩 페이지 (/).
- *  - 상단 네비 → 히어로 → 핵심 기능 → CTA → 푸터 순서로 구성.
- *  - 기존 내부 기능(타이머/캘린더/리포트/투두)은 메인에서 제거하고, 네비/카드 링크로만 연결한다.
+ *  - 상단 Header(글로벌 Navbar)는 App.jsx 에서 렌더한다.
+ *  - 본문: 히어로(MainBanner) → 핵심 기능(FeatureSection) → CTA(CtaSection) → Footer.
+ *  - 로그인 여부와 무관하게 / 에서는 항상 메인 랜딩이 보인다(관리자만 기존대로 /admin 으로).
  */
 export default function Dashboard() {
   const { user } = useAuth();
@@ -25,7 +25,6 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-[#F5F6F7]">
-      <LandingNav />
       <MainBanner />
       <FeatureSection />
       <CtaSection />

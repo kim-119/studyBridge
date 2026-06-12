@@ -128,6 +128,98 @@ async def planner_expand(info: PlannerInfo) -> Dict[str, Any]:
     return {"success": True, **result}
 
 
+# ── 플래너 AI 피드백 (학습 실행 관리) ────────────────────────────────────────
+ASSIST_TIMEOUT = int(os.getenv("AI_PLANNER_ASSIST_TIMEOUT_SECONDS", os.getenv("AI_PLANNER_EXPAND_TIMEOUT_SECONDS", "120")))
+
+
+class PlannerAssistInfo(BaseModel):
+    planner_id: Optional[int] = None
+    title: Optional[str] = ""
+    date: Optional[str] = ""
+    subject: Optional[str] = ""
+    study_type: Optional[str] = ""
+    priority: Optional[str] = ""
+    target_time: Optional[str] = ""
+    actual_time: Optional[str] = ""
+    deadline: Optional[str] = ""
+    goal: Optional[str] = ""
+    todo: Optional[str] = ""
+    memo: Optional[str] = ""
+    completed_tasks: Optional[List[str]] = None
+    incomplete_tasks: Optional[List[str]] = None
+
+
+def _assist_context(info: PlannerAssistInfo) -> str:
+    parts = [
+        f"제목: {info.title}",
+        f"날짜: {info.date}",
+        f"과목: {info.subject}",
+        f"학습 유형: {info.study_type}",
+        f"우선순위: {info.priority}",
+        f"목표 학습 시간: {info.target_time}",
+        f"실제 학습 시간: {info.actual_time}",
+        f"마감/시험: {info.deadline}",
+        f"학습 목표(goal): {info.goal}",
+        f"할 일(todo): {info.todo}",
+        f"사용자 메모(memo): {info.memo}",
+    ]
+    return "\n".join(p for p in parts if p.split(": ", 1)[-1].strip())
+
+
+def _assist_sync(info: PlannerAssistInfo) -> Optional[Dict[str, Any]]:
+    from app.utils.json_parser import extract_json
+
+    system = (
+        "너는 학습 코치다. 학생이 작성한 하루 공부 플래너를 받아 '실행 가능한 계획'으로 정리하고 피드백한다. "
+        "로드맵·퀴즈·문서 분석은 하지 않는다. 사용자가 직접 쓴 메모는 절대 바꾸지 말고 참고만 한다. "
+        "반드시 한국어로, 마크다운(**, ###, 백틱) 없이, 아래 JSON 스키마로만 응답한다."
+    )
+    user = (
+        f"## 플래너\n{_assist_context(info)}\n\n"
+        "아래 JSON 형식으로만 응답하라(마크다운/설명 금지):\n"
+        "{\n"
+        '  "aiSummary": "플래너 전체를 2~3문장으로 요약",\n'
+        '  "refinedGoal": "실행 가능하게 정리한 학습 목표 한 문장",\n'
+        '  "taskBreakdown": ["실행 단위로 나눈 할 일 3~6개"],\n'
+        '  "timeFeedback": "목표 대비 실제 학습 시간 진행 상태 한 문장(부족/적정/초과)",\n'
+        '  "strengths": ["잘한 점 2~3개"],\n'
+        '  "concerns": ["우려/위험 2~3개"],\n'
+        '  "recommendations": ["권장사항 2~3개"],\n'
+        '  "nextActions": ["다음 학습 행동 2~3개"]\n'
+        "}"
+    )
+    raw = _llm(system, user, max_tokens=1400)
+    if not raw or raw.strip().startswith("[GPT") or raw.strip().startswith("["):
+        return None
+    parsed = extract_json(raw)
+    if not isinstance(parsed, dict):
+        return None
+    return {
+        "aiSummary": str(parsed.get("aiSummary") or "").strip(),
+        "refinedGoal": str(parsed.get("refinedGoal") or "").strip(),
+        "taskBreakdown": _listify(parsed.get("taskBreakdown")),
+        "timeFeedback": str(parsed.get("timeFeedback") or "").strip(),
+        "strengths": _listify(parsed.get("strengths")),
+        "concerns": _listify(parsed.get("concerns")),
+        "recommendations": _listify(parsed.get("recommendations")),
+        "nextActions": _listify(parsed.get("nextActions")),
+    }
+
+
+@router.post("/assist", summary="공부 플래너 AI 피드백 (학습 실행 관리)")
+async def planner_assist(info: PlannerAssistInfo) -> Dict[str, Any]:
+    try:
+        result = await asyncio.wait_for(asyncio.to_thread(_assist_sync, info), timeout=ASSIST_TIMEOUT)
+    except asyncio.TimeoutError:
+        return {"success": False, "errorCode": "AI_TIMEOUT", "message": "AI 응답 시간이 초과되었습니다."}
+    except Exception as e:
+        logger.error("planner/assist 실패: %s", e)
+        return {"success": False, "errorCode": "PLANNER_ASSIST_FAILED", "message": "플래너 피드백 생성에 실패했습니다."}
+    if not result:
+        return {"success": False, "errorCode": "PLANNER_ASSIST_FAILED", "message": "플래너 피드백 생성에 실패했습니다."}
+    return {"success": True, **result}
+
+
 # ── 플래너 기반 12주 로드맵 ─────────────────────────────────────────────────
 def _normalize_weeks(weeks_raw: Any, info: PlannerInfo) -> List[Dict[str, Any]]:
     """정확히 12주, 각 주차 최소 3 task 보장."""
