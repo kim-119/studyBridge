@@ -8,6 +8,38 @@ import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
 // 오답노트 카드 보조 버튼 공통 스타일
 const rnBtn = { padding: '5px 10px', fontSize: '12px', borderRadius: '8px', cursor: 'pointer' };
 
+// 탭별 빈 상태 카드 정의 — 4개 탭 모두 동일한 구조/스타일로 노출 (특정 탭만 빠지는 회귀 방지)
+const EMPTY_STATES = {
+  journal: { icon: FileText, title: '등록된 학습일지가 없습니다', desc: '학습일지 자료를 업로드해 보관할 수 있습니다.' },
+  pdf: { icon: FileIcon, title: '등록된 학습 PDF가 없습니다', desc: '강의자료, 교재, 슬라이드 PDF를 업로드해 보관할 수 있습니다.' },
+  reviewNote: { icon: FileIcon, title: '등록된 오답노트가 없습니다', desc: '틀린 문제와 미응답 문제를 오답노트로 저장해 복습할 수 있습니다.' },
+  planner: { icon: CalendarDays, title: '등록된 플래너가 없습니다', desc: '대시보드 플래너 탭에서 PDF로 저장한 파일을 업로드해 보관할 수 있습니다.' },
+};
+
+// 모든 탭이 동일한 흰색 rounded 빈 상태 카드를 쓰도록 공통화 (기존 플래너 빈 상태와 동일한 높이/그림자/여백/중앙정렬)
+function EmptyState({ tab }) {
+  const cfg = EMPTY_STATES[tab];
+  if (!cfg) return null;
+  const Icon = cfg.icon;
+  return (
+    <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
+      <Icon size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
+      <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>{cfg.title}</h3>
+      <p style={{ margin: 0 }}>{cfg.desc}</p>
+    </div>
+  );
+}
+
+// 의미 없는 제목 차단 — 저장 요청을 보내기 전에 막는다.
+const BLOCKED_TITLES = ['', ' ', 'ㅇㅇ', 'ㅎㅎ', 'test', 'sample', 'planner', '플래너', '무제', '제목 없음'];
+const TITLE_GUIDE = '제목은 핵심 키워드가 드러나게 입력해 주세요. 예: ViewModel·StateFlow 피드백 수렴 플래너';
+function isMeaninglessTitle(raw) {
+  const t = (raw || '').trim();
+  if (!t) return true;
+  const low = t.toLowerCase();
+  return BLOCKED_TITLES.some((b) => b.trim().toLowerCase() === low);
+}
+
 export default function Archive() {
   const { userId } = useAuth();
   const navigate = useNavigate();
@@ -361,11 +393,27 @@ export default function Archive() {
     }
   };
 
+  // 오답노트 삭제 — 성공 시 오답노트 목록만 갱신(PDF/플래너 목록은 건드리지 않음). 실패 시 카드 유지.
+  const handleDeleteReviewNote = async (e, reviewNoteId) => {
+    e.stopPropagation();
+    if (!window.confirm('이 오답노트를 삭제하시겠습니까?')) return;
+    try {
+      await reviewNoteService.deleteReviewNote(reviewNoteId);
+      fetchReviewNotes();
+    } catch (error) {
+      console.error('오답노트 삭제 실패:', error);
+      alert('오답노트 삭제에 실패했습니다.');
+    }
+  };
+
   const openModal = (type) => {
     if (!checkAuth()) return;
     setOpenedModalType(type);
     if (type === 'addMaterial') {
-      setAddMaterialType('journal');
+      // 현재 탭에 맞는 자료 유형을 기본 선택(모달 라디오는 journal/pdf/planner만 지원).
+      // 오답노트 탭은 업로드 라디오가 없으므로 journal로 폴백. PDF→PDF, 플래너→PLANNER 매핑 유지.
+      const TAB_TO_FORM = { pdf: 'pdf', planner: 'planner', journal: 'journal' };
+      setAddMaterialType(TAB_TO_FORM[activeTab] || 'journal');
       resetFormState();
     }
   };
@@ -423,15 +471,18 @@ export default function Archive() {
 
   const handleSubmitMaterial = async () => {
     if (!checkAuth()) return;
-    if (!formTitle.trim()) {
-      alert('제목을 입력해주세요.');
+
+    // 1. 제목 검증 — 빈 값/의미 없는 제목은 저장 요청 전에 차단(저장 중 상태로 두지 않는다).
+    if (isMeaninglessTitle(formTitle)) {
+      alert(TITLE_GUIDE);
       return;
     }
 
     // 학습일지는 파일이 없으므로 분류 대상 아님
     if (addMaterialType === 'journal') {
+      // 검증 통과 후 API 호출 직전에만 저장 중 ON, finally 에서 항상 해제
+      setIsSubmitting(true);
       try {
-        setIsSubmitting(true);
         await materialService.createStudyLog({
           title: formTitle,
           keywords: formKeywords,
@@ -452,28 +503,34 @@ export default function Archive() {
       return;
     }
 
+    // 2. 파일 검증
     if (!formFile) {
       alert('업로드할 파일을 선택해주세요.');
       return;
     }
 
-    // D. 저장 전 AI 유형 판별 (PDF_TEXT_EMPTY보다 먼저). ai07 장애 시 백엔드가 통과 처리.
+    // 3. 유형 판별 + 업로드. 모든 경로(분류 실패/불일치/업로드 실패)에서 저장 중 상태가 풀리도록 try/finally 로 감싼다.
     const selectedAi = addMaterialType === 'planner' ? 'PLANNER' : 'STUDY_PDF';
+    setIsSubmitting(true);
     try {
-      setIsSubmitting(true);
-      const cls = await materialService.classifyBeforeSave(selectedAi, formTitle, formKeywords, formFile);
+      // D. 저장 전 AI 유형 판별 (PDF_TEXT_EMPTY보다 먼저). ai07 장애 시 백엔드가 통과 처리.
+      let cls = null;
+      try {
+        cls = await materialService.classifyBeforeSave(selectedAi, formTitle, formKeywords, formFile);
+      } catch (e) {
+        // 분류 호출 자체가 실패해도(타임아웃 포함) 저장을 막지 않는다(선택 유형으로 진행)
+        console.warn('유형 판별 호출 실패, 선택 유형으로 진행:', e);
+      }
       const recommended = cls?.recommendedType;
       if (cls?.isMismatch && recommended && recommended !== selectedAi) {
         // 불일치 → 확인 모달로 사용자 선택 (추천 저장 / 그래도 선택 저장 / 취소)
         setClassifyInfo({ ...cls, selectedAi });
-        setIsSubmitting(false);
-        return;
+        return; // finally 에서 저장 중 해제 → 모달에서 다시 선택
       }
-    } catch (e) {
-      // 분류 호출 자체가 실패해도 저장을 막지 않는다(선택 유형으로 진행)
-      console.warn('유형 판별 호출 실패, 선택 유형으로 진행:', e);
+      await doUpload(addMaterialType === 'planner' ? 'PLANNER' : 'PDF');
+    } finally {
+      setIsSubmitting(false);
     }
-    await doUpload(addMaterialType === 'planner' ? 'PLANNER' : 'PDF');
   };
 
   // 불일치 모달에서 사용자가 고른 ai vocab 유형으로 저장
@@ -559,11 +616,7 @@ export default function Archive() {
         )}
 
         {!isLoading && !materialsError && activeTab === 'journal' && journals.length === 0 && (
-          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
-            <FileText size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
-            <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>등록된 학습일지가 없습니다</h3>
-            <p style={{ margin: 0 }}>새로운 학습일지를 등록하여 AI의 상세 분석과 요약을 확인해보세요.</p>
-          </div>
+          <EmptyState tab="journal" />
         )}
 
         {!isLoading && activeTab === 'journal' && journals.slice(0, visibleCount).map((journal) => (
@@ -597,12 +650,8 @@ export default function Archive() {
 
 
 
-        {!isLoading && !materialsError && activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').length === 0 && reviewNotes.length === 0 && (
-          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
-            <FileIcon size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
-            <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>등록된 학습 PDF가 없습니다</h3>
-            <p style={{ margin: 0 }}>학습용 PDF 파일을 업로드하면 AI 핵심 요약 및 맞춤 퀴즈 출제 기능을 이용할 수 있습니다.</p>
-          </div>
+        {!isLoading && !materialsError && activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').length === 0 && (
+          <EmptyState tab="pdf" />
         )}
 
         {!isLoading && activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').slice(0, visibleCount).map((pdf) => (
@@ -646,11 +695,7 @@ export default function Archive() {
           </div>
         )}
         {activeTab === 'reviewNote' && !reviewNotesLoading && !reviewNotesError && reviewNoteItems.length === 0 && (
-          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
-            <FileIcon size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
-            <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>아직 생성된 오답노트가 없습니다</h3>
-            <p style={{ margin: 0 }}>퀴즈를 풀고 틀린 문제가 있으면 오답노트를 만들 수 있습니다.</p>
-          </div>
+          <EmptyState tab="reviewNote" />
         )}
         {activeTab === 'reviewNote' && !reviewNotesLoading && !reviewNotesError && reviewNoteItems.map((note) => {
           const rid = note.id ?? note.reviewNoteId;
@@ -693,17 +738,14 @@ export default function Archive() {
                 <button className="btn-outline" style={rnBtn} onClick={() => navigate(`/review-notes?note=${rid}&tab=variant`)}>유사문제 풀기</button>
                 <button className="btn-outline" style={rnBtn} onClick={() => navigate(`/review-notes?note=${rid}&tab=ai`)}>AI 해설</button>
                 <button className="btn-outline" style={rnBtn} onClick={() => navigate(`/review-notes?note=${rid}&tab=list`)}>메모</button>
+                <button className="btn-outline" style={{ ...rnBtn, color: '#EF4444', borderColor: '#FCA5A5' }} onClick={(e) => handleDeleteReviewNote(e, rid)}>삭제</button>
               </div>
             </div>
           );
         })}
 
         {!isLoading && !materialsError && activeTab === 'planner' && planners.length === 0 && (
-          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
-            <CalendarDays size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
-            <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>등록된 플래너가 없습니다</h3>
-            <p style={{ margin: 0 }}>대시보드 플래너 탭에서 PDF로 저장한 파일을 업로드해 보관할 수 있습니다.</p>
-          </div>
+          <EmptyState tab="planner" />
         )}
 
         {!isLoading && activeTab === 'planner' && planners.slice(0, visibleCount).map((planner) => (

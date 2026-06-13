@@ -1272,6 +1272,11 @@ export const reviewNoteService = {
     const res = await api.patch(`/api/review-notes/${id}/memo`, { memo });
     return res.data;
   },
+  // 오답노트 삭제(서버에서 연동 Material/S3까지 함께 정리)
+  deleteReviewNote: async (id) => {
+    const res = await api.delete(`/api/review-notes/${id}`);
+    return res.data;
+  },
 };
 
 export default api;

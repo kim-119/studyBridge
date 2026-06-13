@@ -233,6 +233,33 @@ public class ReviewNoteService {
         return toDTO(note, false);
     }
 
+    // 오답노트 삭제: 소유 검증 → S3 PDF 삭제 → 자료보관함 연동 Material 삭제 → ReviewNote 삭제
+    @Transactional
+    public void delete(Long userId, Long id) {
+        ReviewNote note = loadOwned(userId, id);
+
+        if (note.getS3Key() != null && !note.getS3Key().isBlank()) {
+            try {
+                s3Service.deleteFile(note.getS3Key());
+            } catch (Exception e) {
+                log.warn("[REVIEW_NOTE] S3 삭제 실패 reviewNoteId={} s3Key={} msg={}", id, note.getS3Key(), e.getMessage());
+            }
+        }
+
+        // 자료보관함 노출용 Material도 함께 정리(소유자 일치 시에만)
+        if (note.getArchiveMaterialId() != null) {
+            materialRepository.findById(note.getArchiveMaterialId()).ifPresent(m -> {
+                if (userId.equals(m.getUserId())) {
+                    materialRepository.delete(m);
+                }
+            });
+        }
+
+        reviewNoteRepository.delete(note);
+        log.info("[REVIEW_NOTE] DELETE OK userId={} reviewNoteId={} archiveMaterialId={}",
+                userId, id, note.getArchiveMaterialId());
+    }
+
     // ---------------------------------------------------------------------
     // 유사문제: POST /api/review-notes/{id}/variant-question
     //   body { wrongQuestionId, difficulty: easy|normal|hard, count }

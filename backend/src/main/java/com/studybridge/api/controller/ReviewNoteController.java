@@ -18,6 +18,7 @@ import java.util.Map;
  *  - GET  /api/review-notes/{id}/download              : PDF presigned URL
  *  - GET  /api/review-notes/{id}/retry                 : 다시 풀기용 문제
  *  - PATCH /api/review-notes/{id}/memo                 : 메모 저장
+ *  - DELETE /api/review-notes/{id}                      : 오답노트 삭제(+연동 Material/S3 정리)
  */
 @RestController
 @RequestMapping("/api/review-notes")
@@ -47,6 +48,14 @@ public class ReviewNoteController {
             @RequestBody(required = false) Map<String, Object> body) {
         Map<String, Object> answers = extractAnswers(body);
         return ResponseEntity.ok(reviewNoteService.createFromQuiz(userDetails.getId(), quizSessionId, answers));
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id) {
+        reviewNoteService.delete(userDetails.getId(), id);
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/{id}/download")
