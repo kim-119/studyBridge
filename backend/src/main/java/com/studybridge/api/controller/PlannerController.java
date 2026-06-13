@@ -34,6 +34,17 @@ public class PlannerController {
         return ResponseEntity.ok(plannerService.getMyPlanners(userDetails.getId()));
     }
 
+    /**
+     * 로드맵(12주×7일=84일) → 플래너 84개 자동 생성.
+     * 오직 플래너 도메인(planners 테이블)에만 저장한다. 주간일정/schedule/calendar 도메인과는 무관하다.
+     */
+    @PostMapping("/from-roadmap")
+    public ResponseEntity<PlannerDTO.FromRoadmapResponse> fromRoadmap(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestBody PlannerDTO.FromRoadmapRequest request) {
+        return ResponseEntity.ok(plannerService.createFromRoadmap(userDetails.getId(), request));
+    }
+
     @PutMapping("/{plannerId}")
     public ResponseEntity<PlannerDTO.Response> update(
             @AuthenticationPrincipal CustomUserDetails userDetails,

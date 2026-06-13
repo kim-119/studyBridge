@@ -18,6 +18,7 @@ export default function Archive() {
   const [journals, setJournals] = useState([]);
   const [pdfs, setPdfs] = useState([]);
   const [planners, setPlanners] = useState([]);
+  const [reviewNotes, setReviewNotes] = useState([]); // 오답노트(REVIEW_NOTE) 자료
   const [isLoading, setIsLoading] = useState(false);
 
   const [journalSummary, setJournalSummary] = useState('');
@@ -102,9 +103,20 @@ export default function Archive() {
           extractionStatus: item.extractionStatus || 'SUCCESS',
         }));
 
+      const fetchedReviewNotes = list
+        .filter((item) => item.materialType === 'REVIEW_NOTE')
+        .map((item) => ({
+          id: item.materialId,
+          title: item.title || item.originalFileName || '오답노트',
+          date: item.uploadedAt ? item.uploadedAt.split('T')[0] : '',
+          tag: '오답노트',
+          url: item.s3PresignedUrl || null,
+        }));
+
       setJournals(fetchedJournals);
       setPdfs(fetchedPdfs);
       setPlanners(fetchedPlanners);
+      setReviewNotes(fetchedReviewNotes);
     } catch (error) {
       console.error('자료 목록 조회 실패:', error);
     } finally {
@@ -469,7 +481,7 @@ export default function Archive() {
 
 
 
-        {!isLoading && activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').length === 0 && (
+        {!isLoading && activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').length === 0 && reviewNotes.length === 0 && (
           <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
             <FileIcon size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
             <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>등록된 학습 PDF가 없습니다</h3>
@@ -501,6 +513,35 @@ export default function Archive() {
             <h3 className="card-title">{pdf.title}</h3>
             <div className="card-tags" style={{ marginBottom: 'auto' }}>
               <span className="card-tag">#{pdf.tag}</span>
+            </div>
+          </div>
+        ))}
+
+        {/* 오답노트 자료(퀴즈 오답 기반 자동 생성 PDF) — 클릭 시 PDF 바로 열기 */}
+        {!isLoading && activeTab === 'pdf' && reviewNotes.map((note) => (
+          <div
+            key={`rn-${note.id}`}
+            className="glass-panel archive-card animate-fade-in"
+            style={{ cursor: 'pointer' }}
+            onClick={() => { if (note.url) window.open(note.url, '_blank', 'noopener'); else navigate('/review-notes'); }}
+          >
+            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div className="icon-wrapper pdf-icon" style={{ background: 'linear-gradient(135deg, #F87171, #DC2626)' }}>
+                  <FileIcon size={22} color="rgba(255,255,255,0.9)" />
+                </div>
+                <span className="card-date">{note.date}</span>
+              </div>
+              <button
+                onClick={(e) => handleDeleteMaterial(e, note.id)}
+                style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}
+              >
+                삭제
+              </button>
+            </div>
+            <h3 className="card-title">{note.title}</h3>
+            <div className="card-tags" style={{ marginBottom: 'auto' }}>
+              <span className="card-tag" style={{ background: '#FEE2E2', color: '#991B1B' }}>#{note.tag}</span>
             </div>
           </div>
         ))}

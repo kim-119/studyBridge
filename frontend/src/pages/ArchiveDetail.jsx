@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, Circle, Settings, ChevronRight, X, Trash2 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
-import { AI_TIMEOUT_MS, materialService } from '../services/api';
+import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService } from '../services/api';
 import SummarySectionCard from '../components/SummarySectionCard';
 import KeywordDefineModal from '../components/KeywordDefineModal';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
@@ -74,6 +74,16 @@ export default function ArchiveDetail() {
   const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false);
   const [isSavingMemo, setIsSavingMemo] = useState(false);
   const [userAnswers, setUserAnswers] = useState({});
+  // 오답노트
+  const [isCreatingReviewNote, setIsCreatingReviewNote] = useState(false);
+  const [reviewNotesByQuiz, setReviewNotesByQuiz] = useState({}); // quizId -> 생성된 오답노트
+  const [reviewNoteResult, setReviewNoteResult] = useState(null); // 생성 성공/실패 모달
+  // 로드맵 → 플래너 생성 (플래너 도메인 전용, 주간일정과 무관)
+  const [isCreatingPlanner, setIsCreatingPlanner] = useState(false);
+  const [isPlannerModalOpen, setIsPlannerModalOpen] = useState(false);
+  const [plannerStartDate, setPlannerStartDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [plannerResult, setPlannerResult] = useState(null);
+  const [plannerError, setPlannerError] = useState(null);
 
   const chatEndRef = useRef(null);
 
@@ -441,6 +451,16 @@ export default function ArchiveDetail() {
       console.warn('AI 퀴즈 정보 로드 실패:', e);
     }
 
+    // 2-1. 이미 생성된 오답노트 로드 → quizId별 매핑(버튼 "오답노트 보기" 판별)
+    try {
+      const { items } = await reviewNoteService.getReviewNotes();
+      const map = {};
+      (items || []).forEach((n) => { if (n.quizId != null) map[n.quizId] = n; });
+      setReviewNotesByQuiz(map);
+    } catch (e) {
+      console.warn('오답노트 목록 로드 실패:', e);
+    }
+
     // 3. 로드맵 정보 로드
     try {
       const roadmap = await materialService.getRoadmap(materialId);
@@ -499,6 +519,121 @@ export default function ArchiveDetail() {
       ...prev,
       [questionIdx]: optionIdx
     }));
+  };
+
+  // 오답노트 작성하기: 현재 퀴즈에서 틀린 문제를 모아 백엔드로 전송 → AI(또는 폴백) PDF 오답노트 생성
+  const handleCreateReviewNote = async (quizId, questions) => {
+    if (isCreatingReviewNote) return;
+    const wrong = questions.filter((q, idx) => userAnswers[idx] !== undefined && userAnswers[idx] !== q.answer);
+    if (wrong.length === 0) { alert('틀린 문제가 없어 오답노트를 생성하지 않았습니다.'); return; }
+    try {
+      setIsCreatingReviewNote(true);
+      const note = await reviewNoteService.createFromQuiz(quizId, userAnswers, {
+        materialId: Number(id),
+        materialTitle: material?.title,
+        difficulty: quizSettings.difficulty,
+      });
+      setReviewNotesByQuiz((prev) => ({ ...prev, [quizId]: note }));
+      setReviewNoteResult(note);
+    } catch (e) {
+      console.error('오답노트 생성 실패:', e);
+      const msg = e?.response?.data?.message || '오답노트 생성에 실패했습니다. 잠시 후 다시 시도해주세요.';
+      setReviewNoteResult({ error: true, message: msg, errorCode: e?.response?.data?.error_code || 'REVIEW_NOTE_CREATE_FAILED', _retryQuizId: quizId, _retryQuestions: questions });
+    } finally {
+      setIsCreatingReviewNote(false);
+    }
+  };
+
+  // 오답노트 PDF 컴퓨터에 저장 (GET /api/review-notes/{id}/download)
+  const handleDownloadReviewNote = async (reviewNoteId, fallbackUrl) => {
+    try {
+      const data = await reviewNoteService.getDownloadUrl(reviewNoteId);
+      const url = data?.url || data?.downloadUrl || fallbackUrl;
+      if (!url) { alert('이 오답노트에는 아직 PDF가 없습니다.'); return; }
+      window.open(url, '_blank', 'noopener');
+    } catch (e) {
+      console.error('오답노트 다운로드 실패:', e);
+      alert('PDF를 여는 중 문제가 발생했습니다.');
+    }
+  };
+
+  // ---------------- 로드맵 → 플래너 생성 (플래너 도메인 전용) ----------------
+  // roadmapData.weeks[].days[] 를 플래너 84개 항목으로 변환한다. 주간일정과 절대 연결하지 않는다.
+  const buildPlannerItemsFromRoadmap = () => {
+    const src = roadmapData?.roadmapData || roadmapData;
+    let parsed = src;
+    try { if (typeof src === 'string') parsed = JSON.parse(src); } catch { parsed = {}; }
+    const root = parsed?.roadmap || parsed?.roadmapData?.roadmap || parsed?.roadmapData || parsed || {};
+    const weeks = root.weeks || root.steps || parsed?.weeks || [];
+    if (!Array.isArray(weeks)) return [];
+    const items = [];
+    weeks.forEach((w, wi) => {
+      const weekNo = Number(w.week || w.weekNumber || wi + 1);
+      const days = Array.isArray(w.days) ? w.days : [];
+      days.forEach((d, di) => {
+        const rawTasks = Array.isArray(d.tasks) ? d.tasks : [];
+        const tasks = rawTasks
+          .map((t) => (typeof t === 'string' ? t : [t.title, t.description].filter(Boolean).join(': ')))
+          .filter(Boolean);
+        const minutes = rawTasks.reduce((s, t) => s + (typeof t === 'object' ? Number(t.estimated_minutes || t.estimatedMinutes || 0) : 0), 0);
+        items.push({
+          week: weekNo,
+          dayIndex: Number(d.day_index || di + 1),
+          title: d.title || `${di + 1}일차 학습`,
+          objective: d.objective || '',
+          tasks,
+          coreConcepts: Array.isArray(d.core_concepts) ? d.core_concepts : [],
+          reviewQuestions: Array.isArray(d.review_questions) ? d.review_questions : [],
+          checkpoint: d.checkpoint || '',
+          deliverable: d.deliverable || '',
+          targetMinutes: minutes > 0 ? minutes : null,
+        });
+      });
+    });
+    return items;
+  };
+
+  const handleOpenPlannerModal = () => {
+    setPlannerError(null);
+    setPlannerResult(null);
+    const items = buildPlannerItemsFromRoadmap();
+    if (items.length !== 84) {
+      setPlannerError('84일 로드맵이 필요합니다. 먼저 AI 84일 로드맵을 재생성해주세요.');
+      return;
+    }
+    setPlannerStartDate(new Date().toISOString().slice(0, 10));
+    setIsPlannerModalOpen(true);
+  };
+
+  const handleCreatePlanner = async (force = false) => {
+    if (isCreatingPlanner) return;
+    const items = buildPlannerItemsFromRoadmap();
+    if (items.length !== 84) { setPlannerError('84일 로드맵이 필요합니다. 먼저 AI 84일 로드맵을 재생성해주세요.'); return; }
+    try {
+      setIsCreatingPlanner(true);
+      setPlannerError(null);
+      const res = await plannerService.createFromRoadmap({
+        materialId: Number(id),
+        roadmapId: roadmapData?.roadmapId,
+        sourceTitle: material?.title,
+        subject: material?.title,
+        startDate: plannerStartDate,
+        force,
+        items,
+      });
+      if (res?.duplicate && !force) {
+        if (window.confirm('이미 이 로드맵으로 생성된 플래너가 있습니다. 다시 생성하면 기존 항목을 유지한 채 추가됩니다. 계속하시겠습니까?')) {
+          await handleCreatePlanner(true);
+        }
+        return;
+      }
+      setPlannerResult({ createdCount: res?.createdCount ?? items.length, message: res?.message || `${items.length}개의 플래너가 생성되었습니다.` });
+    } catch (e) {
+      console.error('플래너 생성 실패:', e);
+      setPlannerError(e?.response?.data?.message || '플래너 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setIsCreatingPlanner(false);
+    }
   };
 
   // 퀴즈 생성 신청
@@ -954,6 +1089,30 @@ export default function ArchiveDetail() {
         const activeQuizHardInvalid = isQuizHardInvalid(activeQuiz);
         const parsedQuestions = activeQuizHardInvalid ? [] : rawParsedQuestions;
 
+        // 오답노트 작성하기 버튼 상태 (B)
+        const rnAnsweredCount = parsedQuestions.filter((q, i) => userAnswers[i] !== undefined).length;
+        const rnWrongCount = parsedQuestions.filter((q, i) => userAnswers[i] !== undefined && userAnswers[i] !== q.answer).length;
+        const rnExistingNote = activeQuiz ? reviewNotesByQuiz[activeQuiz.quizId] : null;
+        let rnButtonLabel = '오답노트 작성하기';
+        let rnButtonDisabled = true;
+        let rnButtonGuide = '';
+        if (rnExistingNote) {
+          rnButtonLabel = '오답노트 보기';
+          rnButtonDisabled = false;
+        } else if (!activeQuiz || parsedQuestions.length === 0 || rnAnsweredCount === 0) {
+          rnButtonDisabled = true;
+          rnButtonGuide = '퀴즈를 풀고 틀린 문제가 있으면 오답노트를 만들 수 있습니다.';
+        } else if (rnWrongCount === 0) {
+          rnButtonDisabled = true;
+          rnButtonGuide = '틀린 문제가 없어 오답노트를 생성하지 않았습니다.';
+        } else {
+          rnButtonDisabled = false;
+        }
+        const onReviewNoteButton = () => {
+          if (rnExistingNote) { navigate('/review-notes'); return; }
+          handleCreateReviewNote(activeQuiz.quizId, parsedQuestions);
+        };
+
         return (
             <div className="animate-fade-in" style={{ paddingBottom: '24px', display: 'flex', flexDirection: 'column', height: '100%' }}>
               {/* 상단 액션 영역 */}
@@ -979,8 +1138,27 @@ export default function ArchiveDetail() {
                   >
                     {isGeneratingQuiz ? '생성 중...' : '생성'}
                   </button>
+                  {/* A/B. 오답노트 작성하기 (틀린 문제가 있을 때 활성화, 이미 생성 시 "오답노트 보기") */}
+                  <button
+                      className={rnExistingNote ? 'btn-outline' : 'btn-primary'}
+                      title={rnButtonGuide || undefined}
+                      style={{ padding: '10px 20px', borderRadius: '30px', fontWeight: 'bold', whiteSpace: 'nowrap', flexShrink: 0, width: 'auto',
+                        backgroundColor: rnExistingNote ? '#fff' : (rnButtonDisabled ? '#E5E7EB' : '#DC2626'),
+                        color: rnExistingNote ? '#DC2626' : (rnButtonDisabled ? '#9CA3AF' : '#fff'),
+                        borderColor: rnExistingNote ? '#DC2626' : undefined,
+                        cursor: (rnButtonDisabled || isCreatingReviewNote) ? 'not-allowed' : 'pointer', opacity: isCreatingReviewNote ? 0.6 : 1 }}
+                      onClick={onReviewNoteButton}
+                      disabled={rnButtonDisabled || isCreatingReviewNote}
+                  >
+                    {isCreatingReviewNote ? '오답노트 생성 중…' : rnButtonLabel}
+                  </button>
                 </div>
               </div>
+              {rnButtonGuide && (
+                <div style={{ marginTop: '-12px', marginBottom: '20px', fontSize: '12.5px', color: 'var(--color-text-muted)', textAlign: 'right' }}>
+                  {rnButtonGuide}
+                </div>
+              )}
 
               {renderAiStatus(quizError, handleGenerateQuiz)}
 
@@ -1123,7 +1301,56 @@ export default function ArchiveDetail() {
                           ))}
                         </div>
                     )}
+                    {/* 채점 요약 (오답노트 생성은 상단 "오답노트 작성하기" 버튼으로 일원화) */}
+                    {parsedQuestions.length > 0 && (() => {
+                      const answered = parsedQuestions.filter((q, idx) => userAnswers[idx] !== undefined);
+                      const wrong = parsedQuestions.filter((q, idx) => userAnswers[idx] !== undefined && userAnswers[idx] !== q.answer);
+                      if (answered.length === 0) return null;
+                      return (
+                        <div className="glass-panel" style={{ marginTop: '24px', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                          <div style={{ fontSize: '14px', color: 'var(--color-text-main)' }}>
+                            <b>채점:</b> {answered.length}문제 중 <b style={{ color: '#16A34A' }}>{answered.length - wrong.length}개 정답</b>
+                            {wrong.length > 0 && <> · <b style={{ color: '#DC2626' }}>{wrong.length}개 오답</b></>}
+                          </div>
+                          {wrong.length > 0 && !rnExistingNote && (
+                            <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>상단의 <b style={{ color: '#DC2626' }}>오답노트 작성하기</b> 버튼으로 오답노트를 만들 수 있어요.</span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
+              )}
+
+              {/* E. 오답노트 생성 성공/실패 모달 */}
+              {reviewNoteResult && (
+                <div className="modal-overlay" style={{ zIndex: 1000 }} onClick={() => setReviewNoteResult(null)}>
+                  <div className="glass-panel modal-content animate-fade-in" style={{ width: '440px', maxWidth: '92vw', padding: '28px', borderRadius: '20px' }} onClick={(e) => e.stopPropagation()}>
+                    {reviewNoteResult.error ? (
+                      <>
+                        <h3 style={{ margin: '0 0 8px', fontSize: '18px', color: '#991B1B' }}>오답노트 생성에 실패했습니다.</h3>
+                        <p style={{ margin: '0 0 6px', fontSize: '13px', color: '#B45309' }}>오류 코드: {reviewNoteResult.errorCode}</p>
+                        <p style={{ margin: '0 0 20px', fontSize: '13.5px', color: 'var(--color-text-muted)' }}>{reviewNoteResult.message}</p>
+                        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                          <button className="btn-outline" style={{ padding: '9px 16px', borderRadius: '16px' }} onClick={() => setReviewNoteResult(null)}>닫기</button>
+                          <button className="btn-primary" style={{ padding: '9px 16px', borderRadius: '16px' }} onClick={() => { const q = reviewNoteResult._retryQuizId, qs = reviewNoteResult._retryQuestions; setReviewNoteResult(null); handleCreateReviewNote(q, qs); }}>다시 시도</button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <h3 style={{ margin: '0 0 8px', fontSize: '18px', color: '#15803D' }}>오답노트가 저장되었습니다.</h3>
+                        <p style={{ margin: '0 0 20px', fontSize: '13.5px', color: 'var(--color-text-muted)' }}>{reviewNoteResult.message || '오답노트가 자료보관함과 오답노트 탭에 저장되었습니다.'}</p>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          <button className="btn-primary" style={{ padding: '11px', borderRadius: '14px', fontWeight: 'bold' }} onClick={() => navigate('/review-notes')}>오답노트에서 보기</button>
+                          {reviewNoteResult.archiveMaterialId && (
+                            <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => navigate(`/archive/pdf/${reviewNoteResult.archiveMaterialId}`)}>자료보관함에서 보기</button>
+                          )}
+                          <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => handleDownloadReviewNote(reviewNoteResult.id, reviewNoteResult.pdfUrl)}>컴퓨터에 저장</button>
+                          <button className="btn-close" style={{ alignSelf: 'flex-end', marginTop: '4px', fontSize: '13px', color: 'var(--color-text-muted)' }} onClick={() => setReviewNoteResult(null)}>닫기</button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
               )}
 
               {/* 설정 모달 */}
@@ -1213,18 +1440,32 @@ export default function ArchiveDetail() {
         }
         const progressPercent = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
-        const regenerateBtn = (
-          <button
-            onClick={handleRegenerateRoadmap}
-            disabled={isRegeneratingRoadmap}
-            className="btn-outline"
-            style={{ padding: '8px 18px', fontSize: '13.5px', borderRadius: '20px', whiteSpace: 'nowrap', cursor: isRegeneratingRoadmap ? 'default' : 'pointer', opacity: isRegeneratingRoadmap ? 0.6 : 1 }}
-          >
-            {isRegeneratingRoadmap ? 'AI 생성 중…' : 'AI 84일 로드맵 재생성'}
-          </button>
-        );
-
         const totalDaysNow = (roadmapSteps || []).reduce((sum, w) => sum + (w.days?.length || 0), 0);
+
+        const regenerateBtn = (
+          <>
+            <button
+              onClick={handleRegenerateRoadmap}
+              disabled={isRegeneratingRoadmap}
+              className="btn-outline"
+              style={{ padding: '8px 18px', fontSize: '13.5px', borderRadius: '20px', whiteSpace: 'nowrap', cursor: isRegeneratingRoadmap ? 'default' : 'pointer', opacity: isRegeneratingRoadmap ? 0.6 : 1 }}
+            >
+              {isRegeneratingRoadmap ? 'AI 생성 중…' : 'AI 84일 로드맵 재생성'}
+            </button>
+            {/* J/K/L. 플래너 생성: 84일 로드맵 → 플래너 84개 (플래너 도메인 전용, 주간일정과 무관) */}
+            <button
+              onClick={handleOpenPlannerModal}
+              disabled={isCreatingPlanner || totalDaysNow !== 84}
+              title={totalDaysNow !== 84 ? '84일 로드맵이 필요합니다. 먼저 AI 84일 로드맵을 재생성해주세요.' : undefined}
+              className="btn-primary"
+              style={{ padding: '8px 18px', fontSize: '13.5px', borderRadius: '20px', whiteSpace: 'nowrap',
+                opacity: (isCreatingPlanner || totalDaysNow !== 84) ? 0.55 : 1,
+                cursor: (isCreatingPlanner || totalDaysNow !== 84) ? 'not-allowed' : 'pointer' }}
+            >
+              {isCreatingPlanner ? '플래너 생성 중…' : '플래너 생성'}
+            </button>
+          </>
+        );
 
         return (
             <div className="animate-fade-in" style={{ paddingBottom: '32px' }}>
@@ -1234,6 +1475,45 @@ export default function ArchiveDetail() {
                   {regenerateBtn}
                 </div>
               </div>
+
+              {/* 플래너 생성 안내/오류 (예: 84일 미충족) */}
+              {plannerError && (
+                <div className="glass-panel" style={{ padding: '12px 16px', marginBottom: '12px', borderLeft: '4px solid #F59E0B', backgroundColor: '#FFFBEB', color: '#92400E', fontSize: '13.5px' }}>
+                  {plannerError}
+                </div>
+              )}
+
+              {/* L. 플래너 생성 모달 (시작일 선택 → 84개 생성) */}
+              {isPlannerModalOpen && (
+                <div className="modal-overlay" style={{ zIndex: 1000 }} onClick={() => { if (!isCreatingPlanner) { setIsPlannerModalOpen(false); setPlannerResult(null); } }}>
+                  <div className="glass-panel modal-content animate-fade-in" style={{ width: '420px', maxWidth: '92vw', padding: '28px', borderRadius: '20px' }} onClick={(e) => e.stopPropagation()}>
+                    {plannerResult ? (
+                      <>
+                        <h3 style={{ margin: '0 0 8px', fontSize: '18px', color: '#15803D' }}>{plannerResult.message}</h3>
+                        <p style={{ margin: '0 0 20px', fontSize: '13.5px', color: 'var(--color-text-muted)' }}>로드맵 84일이 플래너 항목으로 저장되었습니다.</p>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                          <button className="btn-outline" style={{ padding: '10px 16px', borderRadius: '14px' }} onClick={() => { setIsPlannerModalOpen(false); setPlannerResult(null); }}>닫기</button>
+                          <button className="btn-primary" style={{ padding: '10px 18px', borderRadius: '14px', fontWeight: 'bold' }} onClick={() => navigate('/planner')}>플래너에서 보기</button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <h3 style={{ margin: '0 0 6px', fontSize: '18px', color: 'var(--color-text-main)' }}>플래너 생성</h3>
+                        <p style={{ margin: '0 0 18px', fontSize: '13.5px', color: 'var(--color-text-muted)' }}>84일 로드맵을 학습 플래너 84개로 만듭니다. 시작일을 선택하세요.</p>
+                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-main)', marginBottom: '8px' }}>시작일</label>
+                        <input type="date" value={plannerStartDate} onChange={(e) => setPlannerStartDate(e.target.value)}
+                          style={{ width: '100%', boxSizing: 'border-box', padding: '12px', borderRadius: '12px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB', marginBottom: '22px' }} />
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                          <button className="btn-outline" style={{ padding: '10px 16px', borderRadius: '14px' }} disabled={isCreatingPlanner} onClick={() => setIsPlannerModalOpen(false)}>취소</button>
+                          <button className="btn-primary" style={{ padding: '10px 18px', borderRadius: '14px', fontWeight: 'bold', opacity: isCreatingPlanner ? 0.6 : 1 }} disabled={isCreatingPlanner} onClick={() => handleCreatePlanner(false)}>
+                            {isCreatingPlanner ? '생성 중…' : '84개 플래너 생성'}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* B. 난이도 선택 (초보자 / 중급자 / 상급자, 기본 중급자) */}
               <div className="glass-panel" style={{ padding: '14px 16px', marginBottom: '16px' }}>

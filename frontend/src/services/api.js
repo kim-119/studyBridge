@@ -1144,6 +1144,11 @@ export const plannerService = {
     const res = await api.get('/api/planners');
     return res.data;
   },
+  // 로드맵(84일) → 플래너 84개 생성. 플래너 도메인에만 저장(주간일정 무관).
+  createFromRoadmap: async (data) => {
+    const res = await api.post('/api/planners/from-roadmap', data);
+    return res.data;
+  },
   getPlanner: async (id) => {
     const res = await api.get(`/api/planners/${id}`);
     return res.data;
@@ -1189,6 +1194,12 @@ const isReviewApiMissing = (err) => {
 };
 
 export const reviewNoteService = {
+  // 퀴즈 오답으로 오답노트 생성. quizSessionId = 퀴즈(quizId), answers = { [문항index]: 선택index }
+  createFromQuiz: async (quizSessionId, answers, extra = {}) => {
+    const body = { answers, saveToArchive: true, createPdf: true, uploadToS3: true, ...extra };
+    const res = await api.post(`/api/review-notes/from-quiz/${quizSessionId}`, body, { timeout: AI_TIMEOUT_MS });
+    return res.data;
+  },
   // 목록: 실패해도 throw 하지 않고 { items, apiReady } 형태로 안전 반환
   getReviewNotes: async () => {
     try {
