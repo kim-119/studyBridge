@@ -1983,7 +1983,7 @@ export default function ArchiveDetail() {
                           <span style={{ fontSize: '48px', color: '#9CA3AF' }}>PDF</span>
                         </div>
                         <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>{material.title}</h3>
-                        <p style={{ color: 'var(--color-text-muted)', margin: 0, textAlign: 'center' }}>문서 미리보기 영역 (S3 파일이 준비되지 않았습니다)</p>
+                        <p style={{ color: 'var(--color-text-muted)', margin: 0, textAlign: 'center' }}>첨부된 PDF 파일이 없어 미리보기를 표시할 수 없습니다.</p>
                       </div>
                   )}
                 </div>

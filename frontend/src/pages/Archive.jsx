@@ -23,6 +23,10 @@ export default function Archive() {
   const [planners, setPlanners] = useState([]);
   const [reviewNotes, setReviewNotes] = useState([]); // 오답노트(REVIEW_NOTE) 자료 (materials 기반, 하위호환)
   const [isLoading, setIsLoading] = useState(false);
+  // 서버 조회 실패(401/403/500 등)를 빈 목록과 명확히 구분 — 실패를 empty로 표시하지 않는다.
+  const [materialsError, setMaterialsError] = useState('');
+  // D. 업로드 전 유형 판별 불일치 확인 모달 데이터 (null이면 닫힘)
+  const [classifyInfo, setClassifyInfo] = useState(null);
   // L. 오답노트 탭 전용 — 상단 /review-notes 페이지와 동일한 GET /api/review-notes 데이터(올바른 reviewNoteId)
   const [reviewNoteItems, setReviewNoteItems] = useState([]);
   const [reviewNotesLoading, setReviewNotesLoading] = useState(false);
@@ -61,6 +65,7 @@ export default function Archive() {
     if (!userId) return;
     try {
       setIsLoading(true);
+      setMaterialsError('');
       const data = await materialService.getMaterials();
       const list = Array.isArray(data) ? data : [];
 
@@ -126,6 +131,8 @@ export default function Archive() {
       setReviewNotes(fetchedReviewNotes);
     } catch (error) {
       console.error('자료 목록 조회 실패:', error);
+      // 실패를 빈 목록으로 위장하지 않는다. 기존 목록은 유지하고 에러 상태만 세운다.
+      setMaterialsError('자료 목록을 불러오지 못했습니다. 다시 시도해주세요.');
     } finally {
       setIsLoading(false);
     }
@@ -388,6 +395,32 @@ export default function Archive() {
     setFormFile(file);
   };
 
+  // ai07 분류 vocab ↔ Material enum 매핑
+  const AI_TO_ENUM = { STUDY_PDF: 'PDF', PLANNER: 'PLANNER', WRONG_NOTE: 'REVIEW_NOTE', STUDY_LOG: 'STUDY_LOG' };
+  const ENUM_TO_TAB = { PDF: 'pdf', PLANNER: 'planner', REVIEW_NOTE: 'reviewNote', STUDY_LOG: 'journal' };
+
+  // 실제 업로드 + 성공 후처리 (저장 type에 맞는 탭으로 이동 후 서버 재조회)
+  const doUpload = async (enumType) => {
+    try {
+      setIsSubmitting(true);
+      await materialService.uploadMaterial(formTitle, enumType, formKeywords, formFile);
+      alert(enumType === 'PLANNER' ? '플래너 PDF가 등록되었습니다.'
+        : '자료 업로드가 시작되었습니다. AI가 문서를 분석하는 데 수 분이 걸릴 수 있습니다.');
+      setClassifyInfo(null);
+      closeModal();
+      const tab = ENUM_TO_TAB[enumType] || 'pdf';
+      setActiveTab(tab);
+      setVisibleCount(6);
+      await fetchMaterials();
+      if (enumType === 'REVIEW_NOTE') fetchReviewNotes();
+    } catch (error) {
+      console.error('자료 업로드 실패:', error);
+      alert(error.response?.data?.message || '자료 업로드 중 오류가 발생했습니다.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleSubmitMaterial = async () => {
     if (!checkAuth()) return;
     if (!formTitle.trim()) {
@@ -395,35 +428,58 @@ export default function Archive() {
       return;
     }
 
-    try {
-      setIsSubmitting(true);
-      if (addMaterialType === 'journal') {
-        const payload = {
+    // 학습일지는 파일이 없으므로 분류 대상 아님
+    if (addMaterialType === 'journal') {
+      try {
+        setIsSubmitting(true);
+        await materialService.createStudyLog({
           title: formTitle,
           keywords: formKeywords,
           studyDate: formDate || new Date().toISOString().split('T')[0],
           learningContent: formContent,
           nextPlan: formNextPlan,
-        };
-        await materialService.createStudyLog(payload);
+        });
         alert('학습일지가 등록되었습니다.');
-      } else {
-        if (!formFile) {
-          alert('업로드할 파일을 선택해주세요.');
-          return;
-        }
-        const uploadType = addMaterialType === 'planner' ? 'PLANNER' : 'PDF';
-        await materialService.uploadMaterial(formTitle, uploadType, formKeywords, formFile);
-        alert(addMaterialType === 'planner' ? '플래너 PDF가 등록되었습니다.' : '자료 업로드가 시작되었습니다. AI가 문서를 분석하는 데 수 분이 걸릴 수 있습니다.');
+        closeModal();
+        setActiveTab('journal');
+        await fetchMaterials();
+      } catch (error) {
+        console.error('학습일지 등록 실패:', error);
+        alert(error.response?.data?.message || '학습일지 등록 중 오류가 발생했습니다.');
+      } finally {
+        setIsSubmitting(false);
       }
-      closeModal();
-      fetchMaterials();
-    } catch (error) {
-      console.error('자료 추가 실패:', error);
-      alert(error.response?.data?.message || '자료 추가 중 오류가 발생했습니다.');
-    } finally {
-      setIsSubmitting(false);
+      return;
     }
+
+    if (!formFile) {
+      alert('업로드할 파일을 선택해주세요.');
+      return;
+    }
+
+    // D. 저장 전 AI 유형 판별 (PDF_TEXT_EMPTY보다 먼저). ai07 장애 시 백엔드가 통과 처리.
+    const selectedAi = addMaterialType === 'planner' ? 'PLANNER' : 'STUDY_PDF';
+    try {
+      setIsSubmitting(true);
+      const cls = await materialService.classifyBeforeSave(selectedAi, formTitle, formKeywords, formFile);
+      const recommended = cls?.recommendedType;
+      if (cls?.isMismatch && recommended && recommended !== selectedAi) {
+        // 불일치 → 확인 모달로 사용자 선택 (추천 저장 / 그래도 선택 저장 / 취소)
+        setClassifyInfo({ ...cls, selectedAi });
+        setIsSubmitting(false);
+        return;
+      }
+    } catch (e) {
+      // 분류 호출 자체가 실패해도 저장을 막지 않는다(선택 유형으로 진행)
+      console.warn('유형 판별 호출 실패, 선택 유형으로 진행:', e);
+    }
+    await doUpload(addMaterialType === 'planner' ? 'PLANNER' : 'PDF');
+  };
+
+  // 불일치 모달에서 사용자가 고른 ai vocab 유형으로 저장
+  const confirmClassifySave = (aiType) => {
+    if (aiType === 'CANCEL') { setClassifyInfo(null); return; }
+    doUpload(AI_TO_ENUM[aiType] || 'PDF');
   };
 
   const handleUpdateJournal = async () => {
@@ -490,11 +546,19 @@ export default function Archive() {
       <div className="archive-grid">
         {isLoading && (
           <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>
-            자료를 불러오는 중입니다...
+            자료를 불러오는 중입니다.
           </div>
         )}
 
-        {!isLoading && activeTab === 'journal' && journals.length === 0 && (
+        {/* 조회 실패는 빈 목록이 아니라 에러로 표시(reviewNote 탭은 자체 에러 처리) */}
+        {!isLoading && materialsError && activeTab !== 'reviewNote' && (
+          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '40px 20px', textAlign: 'center', color: '#B91C1C', borderRadius: '12px' }}>
+            <p style={{ margin: '0 0 12px' }}>{materialsError}</p>
+            <button className="btn-primary" style={{ width: 'auto', padding: '8px 16px', borderRadius: '20px' }} onClick={fetchMaterials}>다시 시도</button>
+          </div>
+        )}
+
+        {!isLoading && !materialsError && activeTab === 'journal' && journals.length === 0 && (
           <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
             <FileText size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
             <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>등록된 학습일지가 없습니다</h3>
@@ -533,7 +597,7 @@ export default function Archive() {
 
 
 
-        {!isLoading && activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').length === 0 && reviewNotes.length === 0 && (
+        {!isLoading && !materialsError && activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').length === 0 && reviewNotes.length === 0 && (
           <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
             <FileIcon size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
             <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>등록된 학습 PDF가 없습니다</h3>
@@ -634,7 +698,7 @@ export default function Archive() {
           );
         })}
 
-        {!isLoading && activeTab === 'planner' && planners.length === 0 && (
+        {!isLoading && !materialsError && activeTab === 'planner' && planners.length === 0 && (
           <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
             <CalendarDays size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
             <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>등록된 플래너가 없습니다</h3>
@@ -683,6 +747,43 @@ export default function Archive() {
           >
             더보기 ({visibleCount}/{activeTab === 'journal' ? journals.length : activeTab === 'planner' ? planners.length : pdfs.filter(p => p.tag === '학습PDF').length})
           </button>
+        </div>
+      )}
+
+      {/* D. 업로드 전 유형 판별 불일치 확인 모달 */}
+      {classifyInfo && (
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content" style={{ maxWidth: '460px', width: '100%', padding: '28px' }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: '18px' }}>업로드 유형 확인</h3>
+            <p style={{ margin: '0 0 8px', fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>
+              {classifyInfo.userMessage || '선택한 유형과 파일 내용이 다를 수 있습니다. 알맞은 곳에 넣으세요.'}
+            </p>
+            {classifyInfo.reason && (
+              <p style={{ margin: '0 0 16px', fontSize: '12.5px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                {classifyInfo.reason}
+              </p>
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {(Array.isArray(classifyInfo.allowedActions) && classifyInfo.allowedActions.length
+                ? classifyInfo.allowedActions
+                : [
+                    { label: '추천 유형으로 저장', type: classifyInfo.recommendedType, recommended: true },
+                    { label: '그래도 선택한 유형으로 저장', type: classifyInfo.selectedAi, recommended: false },
+                    { label: '취소', type: 'CANCEL', recommended: false },
+                  ]
+              ).map((act, i) => (
+                <button
+                  key={i}
+                  className={act.recommended ? 'btn-primary' : 'btn-outline'}
+                  disabled={isSubmitting}
+                  style={{ width: '100%', padding: '10px', borderRadius: '10px', fontWeight: 600 }}
+                  onClick={() => confirmClassifySave(act.type)}
+                >
+                  {act.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 

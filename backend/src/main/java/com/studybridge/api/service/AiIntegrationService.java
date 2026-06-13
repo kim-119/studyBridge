@@ -50,6 +50,79 @@ public class AiIntegrationService {
         private static final int ROADMAP_TOTAL_WEEKS = 12;
         private static final int ROADMAP_DAYS_PER_WEEK = 7;
 
+        /**
+         * 업로드 전 자료 유형 판별. ai07 /api/ai/material/classify 호출.
+         * 파일명/메타데이터(+ai07 vector/rule/OCR) 기반. PDF_TEXT_EMPTY 보다 먼저 호출된다.
+         * ai07 장애 시 저장을 막지 않도록 isMismatch=false 로 통과시킨다.
+         * selectedTypeAi 는 ai07 vocab(STUDY_PDF/PLANNER/WRONG_NOTE/STUDY_LOG).
+         */
+        @SuppressWarnings("unchecked")
+        public Map<String, Object> classifyBeforeSave(String fileName, String mimeType, String selectedTypeAi,
+                        Integer pageCount, String title, java.util.List<String> keywords) {
+                Map<String, Object> reqBody = new LinkedHashMap<>();
+                reqBody.put("file_name", fileName != null ? fileName : "");
+                reqBody.put("mime_type", mimeType != null ? mimeType : "");
+                reqBody.put("selected_type", selectedTypeAi);
+                reqBody.put("extracted_text", "");
+                reqBody.put("ocr_text", "");
+                reqBody.put("page_count", pageCount);
+                reqBody.put("preview_text", "");
+                Map<String, Object> meta = new LinkedHashMap<>();
+                meta.put("title", title != null ? title : "");
+                meta.put("keywords", keywords != null ? keywords : java.util.Collections.emptyList());
+                reqBody.put("metadata", meta);
+
+                try {
+                        Map<String, Object> resp = fastApiWebClient.post().uri("/api/ai/material/classify")
+                                        .bodyValue(reqBody)
+                                        .retrieve()
+                                        .bodyToMono(Map.class)
+                                        .timeout(Duration.ofSeconds(20))
+                                        .block();
+                        if (resp == null) return classifyFallback(selectedTypeAi);
+                        return toClassifyResponse(resp, selectedTypeAi);
+                } catch (Exception e) {
+                        log.warn("[classify-before-save] ai07 호출 실패 → 저장 통과(fallback): {}", e.getMessage());
+                        return classifyFallback(selectedTypeAi);
+                }
+        }
+
+        private Map<String, Object> toClassifyResponse(Map<String, Object> ai, String selectedTypeAi) {
+                String recommended = asStr(ai.get("recommended_type"));
+                if (recommended == null || recommended.isBlank()) recommended = selectedTypeAi;
+                boolean isMismatch = Boolean.TRUE.equals(ai.get("is_mismatch"));
+                double confidence = ai.get("confidence") instanceof Number ? ((Number) ai.get("confidence")).doubleValue() : 0.0;
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("success", true);
+                out.put("selectedType", selectedTypeAi);
+                out.put("recommendedType", recommended);
+                out.put("isMismatch", isMismatch);
+                out.put("confidence", confidence);
+                out.put("reason", asStr(ai.get("reason")));
+                out.put("userMessage", asStr(ai.get("user_message")));
+                out.put("allowedActions", ai.getOrDefault("allowed_actions", java.util.Collections.emptyList()));
+                out.put("capabilityHint", ai.getOrDefault("capability_hint", java.util.Collections.emptyMap()));
+                return out;
+        }
+
+        private Map<String, Object> classifyFallback(String selectedTypeAi) {
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("success", true);
+                out.put("selectedType", selectedTypeAi);
+                out.put("recommendedType", selectedTypeAi);
+                out.put("isMismatch", false);
+                out.put("confidence", 0.0);
+                out.put("reason", "유형 판별 서버를 사용할 수 없어 선택한 유형으로 진행합니다.");
+                out.put("userMessage", "");
+                out.put("allowedActions", java.util.List.of(
+                                Map.of("label", "저장", "type", selectedTypeAi, "recommended", true),
+                                Map.of("label", "취소", "type", "CANCEL", "recommended", false)));
+                out.put("capabilityHint", java.util.Collections.emptyMap());
+                return out;
+        }
+
+        private String asStr(Object o) { return o == null ? null : o.toString(); }
+
         private Material getMaterialSafely(Long userId, Long materialId) {
                 Material material = materialRepository.findById(materialId)
                                 .orElseThrow(() -> new IllegalArgumentException("자료를 찾을 수 없습니다."));

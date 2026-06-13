@@ -14,6 +14,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/materials")
@@ -58,6 +59,39 @@ public class MaterialController {
         );
 
         return ResponseEntity.ok(savedMaterial);
+    }
+
+    /**
+     * 업로드 전 AI 파일 유형 판별. 실제 저장은 하지 않는다.
+     * 파일/선택유형을 받아 ai07 분류 결과(추천 유형·불일치 여부·안내 문구)를 돌려준다.
+     * PDF_TEXT_EMPTY 보다 먼저 호출되어 빈 텍스트 PDF도 파일명/메타로 추천한다.
+     */
+    @PostMapping(value = "/classify-before-save", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<Map<String, Object>> classifyBeforeSave(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestParam("selectedType") String selectedType,
+            @RequestParam(value = "title", required = false) String title,
+            @RequestParam(value = "keywords", required = false) String keywords,
+            @RequestParam("file") MultipartFile file) {
+        List<String> kw = (keywords == null || keywords.isBlank())
+                ? List.of()
+                : java.util.Arrays.stream(keywords.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
+        String effectiveTitle = (title == null || title.isBlank()) ? file.getOriginalFilename() : title;
+        Map<String, Object> res = aiIntegrationService.classifyBeforeSave(
+                file.getOriginalFilename(), file.getContentType(), toAiVocab(selectedType), null, effectiveTitle, kw);
+        return ResponseEntity.ok(res);
+    }
+
+    /** 프론트/엔티티 유형명을 ai07 분류 vocab으로 변환 (PDF↔STUDY_PDF, REVIEW_NOTE↔WRONG_NOTE). */
+    private static String toAiVocab(String t) {
+        if (t == null) return "UNKNOWN";
+        switch (t.trim().toUpperCase()) {
+            case "PDF": case "STUDY_PDF": return "STUDY_PDF";
+            case "PLANNER": return "PLANNER";
+            case "REVIEW_NOTE": case "WRONG_NOTE": return "WRONG_NOTE";
+            case "STUDY_LOG": return "STUDY_LOG";
+            default: return "UNKNOWN";
+        }
     }
 
     // 자료 정보 수정 (제목, 키워드 등)

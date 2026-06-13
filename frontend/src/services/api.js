@@ -697,6 +697,21 @@ export const materialService = {
     return res.data;
   },
 
+  // 업로드 전 AI 파일 유형 판별 (저장하지 않음). selectedType 은 ai07 vocab(STUDY_PDF/PLANNER/...).
+  classifyBeforeSave: async (selectedType, title, keywords, file) => {
+    const formData = new FormData();
+    formData.append('selectedType', selectedType);
+    if (title) formData.append('title', title);
+    if (keywords) formData.append('keywords', keywords);
+    formData.append('file', file);
+    const token = localStorage.getItem('token');
+    const res = await axios.post(`${API_BASE_URL}/api/materials/classify-before-save`, formData, {
+      timeout: 30000,
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    return res.data;
+  },
+
   updateMaterial: async (materialId, updateData) => {
     const res = await api.put(`/api/materials/${materialId}`, updateData);
     return res.data;
