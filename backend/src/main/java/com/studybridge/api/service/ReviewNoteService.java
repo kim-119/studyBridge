@@ -234,6 +234,99 @@ public class ReviewNoteService {
     }
 
     // ---------------------------------------------------------------------
+    // 유사문제: POST /api/review-notes/{id}/variant-question
+    //   body { wrongQuestionId, difficulty: easy|normal|hard, count }
+    //   ai07 variant 엔드포인트가 살아있으면 AI 변형, 없으면(404 등) 원본 오답을 재출제로 폴백.
+    // ---------------------------------------------------------------------
+    public Map<String, Object> variantQuestion(Long userId, Long id, Map<String, Object> body) {
+        ReviewNote note = loadOwned(userId, id);
+
+        int wrongQuestionId = intVal(body, "wrongQuestionId", 1);
+        String difficulty = strVal(body, "difficulty", "normal");
+        int count = Math.max(1, Math.min(5, intVal(body, "count", 1)));
+
+        // 1) retryJson 에서 대상 오답 문제 조회 (wrongQuestionId 는 1-base)
+        List<Map<String, Object>> retry = parseRetryQuestions(note.getRetryJson());
+        Map<String, Object> base = (wrongQuestionId >= 1 && wrongQuestionId <= retry.size())
+                ? retry.get(wrongQuestionId - 1)
+                : (retry.isEmpty() ? null : retry.get(0));
+
+        // 2) ai07 호출 시도
+        Map<String, Object> req = new LinkedHashMap<>();
+        req.put("review_note_id", id);
+        req.put("difficulty", difficulty);
+        req.put("count", count);
+        if (base != null) {
+            req.put("original_question", base.get("question"));
+            req.put("choices", base.get("choices"));
+            req.put("correct_answer", base.get("correct_answer"));
+            req.put("explanation", base.get("explanation"));
+        }
+        Map aiResp = null;
+        try {
+            aiResp = fastApiWebClient.post().uri("/api/ai/review/variant-question")
+                    .bodyValue(req).retrieve().bodyToMono(Map.class)
+                    .block(Duration.ofSeconds(reviewTimeoutSeconds));
+        } catch (Exception e) {
+            log.warn("[REVIEW_NOTE] variant ai07 unavailable id={} cause={} -> 폴백", id, e.getMessage());
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("reviewNoteId", id);
+        out.put("difficulty", difficulty);
+        if (aiResp != null && aiResp.get("error_code") == null && aiResp.get("questions") != null) {
+            out.put("success", true);
+            out.put("usedFallback", false);
+            out.put("questions", aiResp.get("questions"));
+            return out;
+        }
+        // 3) 폴백: 원본 오답 문제를 그대로 재출제 (AI 변형 불가 시에도 화면이 동작하도록)
+        List<Map<String, Object>> questions = new ArrayList<>();
+        if (base != null) {
+            Map<String, Object> q = new LinkedHashMap<>();
+            q.put("wrongQuestionId", wrongQuestionId);
+            q.put("question", base.get("question"));
+            q.put("choices", base.get("choices"));
+            q.put("correctAnswer", base.get("correct_answer"));
+            q.put("explanation", base.get("explanation"));
+            questions.add(q);
+        }
+        out.put("success", true);
+        out.put("usedFallback", true);
+        out.put("questions", questions);
+        return out;
+    }
+
+    private List<Map<String, Object>> parseRetryQuestions(String retryJson) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (retryJson == null || retryJson.isBlank()) return out;
+        try {
+            JsonNode arr = MAPPER.readTree(retryJson);
+            if (arr.isArray()) for (JsonNode n : arr) out.add(MAPPER.convertValue(n, Map.class));
+        } catch (Exception e) {
+            log.warn("[REVIEW_NOTE] variant retry parse fail id-json msg={}", e.getMessage());
+        }
+        return out;
+    }
+
+    private int intVal(Map<String, Object> m, String k, int dflt) {
+        if (m == null || m.get(k) == null) return dflt;
+        Object v = m.get(k);
+        if (v instanceof Number) return ((Number) v).intValue();
+        try { return Integer.parseInt(v.toString().trim()); } catch (Exception e) { return dflt; }
+    }
+
+    private String strVal(Map<String, Object> m, String k, String dflt) {
+        if (m == null || m.get(k) == null) return dflt;
+        String v = m.get(k).toString().trim();
+        // 하/중/상 한글도 허용
+        if (v.equals("하")) return "easy";
+        if (v.equals("중")) return "normal";
+        if (v.equals("상")) return "hard";
+        return v.isBlank() ? dflt : v;
+    }
+
+    // ---------------------------------------------------------------------
     // 내부 헬퍼
     // ---------------------------------------------------------------------
     private ReviewNote loadOwned(Long userId, Long id) {

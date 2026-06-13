@@ -71,6 +71,9 @@ export default function Planner() {
   const [addedToSchedule, setAddedToSchedule] = useState(false); // 주간일정 추가 성공 후 '보기' 버튼 노출
   const [showBulkModal, setShowBulkModal] = useState(false); // 자료 기반 플래너 전체삭제 확인 모달
   const [isDeleting, setIsDeleting] = useState(false); // 전체삭제 진행 중(중복 클릭 방지)
+  const [selectedIds, setSelectedIds] = useState([]); // 체크박스 선택 삭제 대상 id
+  const [showSelectModal, setShowSelectModal] = useState(false); // 선택삭제 확인 모달
+  const [isSelectDeleting, setIsSelectDeleting] = useState(false); // 선택삭제 진행 중(중복 클릭 방지)
 
   const isEditing = plannerId != null;
 
@@ -300,6 +303,45 @@ export default function Planner() {
     }
   };
 
+  // ===== 체크박스 선택 삭제 =====
+  const toggleSelect = (id, e) => {
+    e?.stopPropagation();
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+  const allVisibleIds = useMemo(() => (Array.isArray(saved) ? saved.map((p) => p.id) : []), [saved]);
+  const allSelected = allVisibleIds.length > 0 && selectedIds.length === allVisibleIds.length;
+  const toggleSelectAll = (e) => {
+    e?.stopPropagation();
+    setSelectedIds(allSelected ? [] : allVisibleIds);
+  };
+  // 목록이 바뀌면 더 이상 존재하지 않는 선택 id 정리
+  useEffect(() => {
+    setSelectedIds((prev) => prev.filter((id) => allVisibleIds.includes(id)));
+  }, [allVisibleIds]);
+
+  const handleSelectDelete = async () => {
+    if (isSelectDeleting) return; // 중복 클릭 방지
+    const ids = selectedIds.filter((id) => allVisibleIds.includes(id));
+    if (ids.length === 0) { setShowSelectModal(false); return; }
+    try {
+      setIsSelectDeleting(true);
+      const res = await plannerService.bulkDeleteSelectedPlanners(ids);
+      if (res && res.success === false) {
+        alert(res.message || '선택삭제에 실패했습니다.');
+        return; // 목록 유지
+      }
+      setShowSelectModal(false);
+      if (plannerId != null && ids.includes(plannerId)) handleNew();
+      setSelectedIds([]);
+      await refreshList(); // 목록/badge 갱신
+      alert(res?.message || `${res?.deletedCount ?? ids.length}개의 플래너를 삭제했습니다.`);
+    } catch (err) {
+      alert(err.response?.data?.message || err.message || '선택삭제에 실패했습니다.');
+    } finally {
+      setIsSelectDeleting(false);
+    }
+  };
+
   const checkedCount = useMemo(
     () => Object.values(timeTable).reduce((acc, row) => acc + (row ? row.filter(Boolean).length : 0), 0),
     [timeTable]
@@ -355,6 +397,16 @@ export default function Planner() {
                   )}
                 </h2>
                 <div className="flex flex-wrap items-center gap-2">
+                  {/* 체크박스 선택 삭제 — 선택된 항목이 없으면 disabled */}
+                  <button
+                    onClick={() => setShowSelectModal(true)}
+                    disabled={selectedIds.length === 0 || isSelectDeleting || !!busy}
+                    title={selectedIds.length === 0 ? '삭제할 플래너를 선택하세요' : '선택한 플래너 삭제'}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#FDBA74] bg-white px-3.5 text-[13px] font-bold text-[#C2410C] transition hover:bg-[#FFF7ED] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Trash2 size={15} strokeWidth={2.2} style={{ color: '#C2410C' }} />
+                    {isSelectDeleting ? '삭제 중…' : `선택삭제${selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}`}
+                  </button>
                   {/* 자료 기반(ROADMAP_AUTO) 플래너 전체삭제 — 위험 액션(빨간색 outline) */}
                   <button
                     onClick={() => setShowBulkModal(true)}
@@ -384,9 +436,20 @@ export default function Planner() {
                   <p className="m-0 text-[12px] text-[#9CA3AF]">아래에서 플래너를 작성하고 저장해 보세요.</p>
                 </div>
               ) : (
-                <div className="flex max-h-[240px] flex-col gap-2 overflow-y-auto pr-1">
+                <div className="flex max-h-[280px] flex-col gap-2 overflow-y-auto pr-1">
+                  {/* 전체선택 + 선택 개수 */}
+                  <div className="flex items-center justify-between px-1 pb-1">
+                    <label className="flex cursor-pointer items-center gap-2 text-[12px] font-semibold text-[#6B7280]" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} className="h-4 w-4 cursor-pointer accent-[#69CB5B]" />
+                      전체선택
+                    </label>
+                    {selectedIds.length > 0 && (
+                      <span className="text-[12px] font-bold text-[#C2410C]">{selectedIds.length}개 선택됨</span>
+                    )}
+                  </div>
                   {saved.map((p) => {
                     const active = p.id === plannerId;
+                    const checked = selectedIds.includes(p.id);
                     return (
                       <div
                         key={p.id}
@@ -394,9 +457,19 @@ export default function Planner() {
                         className={`group flex cursor-pointer items-center gap-3 rounded-xl border px-3.5 py-2.5 transition ${
                           active
                             ? 'border-[#69CB5B] bg-[#F4FBF2]'
+                            : checked
+                            ? 'border-[#FDBA74] bg-[#FFF7ED]'
                             : 'border-[#E5E7EB] bg-white hover:border-[#BBF7D0] hover:bg-[#F9FEF8]'
                         }`}
                       >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => toggleSelect(p.id, e)}
+                          title="선택"
+                          className="h-4 w-4 shrink-0 cursor-pointer accent-[#69CB5B]"
+                        />
                         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#F4FBF2]">
                           <NotebookPen size={15} strokeWidth={2.2} style={{ color: GREEN }} />
                         </div>
@@ -695,6 +768,52 @@ export default function Planner() {
           </div>
         </div>
       </div>
+
+      {/* ===== 선택삭제 확인 모달 ===== */}
+      {showSelectModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => { if (!isSelectDeleting) setShowSelectModal(false); }}
+        >
+          <div
+            className="w-full max-w-[420px] rounded-2xl bg-white p-6 shadow-[0_20px_60px_rgba(0,0,0,0.25)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#FFF7ED]">
+                <Trash2 size={20} strokeWidth={2.2} style={{ color: '#C2410C' }} />
+              </div>
+              <h3 className="m-0 text-[17px] font-extrabold text-[#111827]">선택한 플래너 삭제</h3>
+            </div>
+            <p className="m-0 text-[14px] leading-relaxed text-[#374151]">
+              선택한 플래너를 삭제합니다. 이 작업은 되돌릴 수 없습니다.
+            </p>
+            <p className="mt-2 text-[13px] leading-relaxed text-[#6B7280]">
+              선택하지 않은 플래너와 주간일정은 삭제되지 않습니다.
+            </p>
+            <div className="mt-3 rounded-xl border border-[#FDBA74] bg-[#FFF7ED] px-3.5 py-2.5 text-[13px] font-bold text-[#C2410C]">
+              삭제 대상: {selectedIds.length}개
+            </div>
+            <div className="mt-5 flex justify-end gap-2.5">
+              <button
+                onClick={() => setShowSelectModal(false)}
+                disabled={isSelectDeleting}
+                className="inline-flex h-11 items-center rounded-xl border border-[#E5E7EB] bg-white px-5 text-[14px] font-bold text-[#374151] transition hover:bg-[#F9FAFB] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                취소
+              </button>
+              <button
+                onClick={handleSelectDelete}
+                disabled={isSelectDeleting || selectedIds.length === 0}
+                className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#C2410C] px-5 text-[14px] font-extrabold text-white transition hover:bg-[#9A3412] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Trash2 size={16} strokeWidth={2.2} style={{ color: '#fff' }} />
+                {isSelectDeleting ? '삭제 중…' : '선택삭제'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ===== 전체삭제 확인 모달 (위험 액션) ===== */}
       {showBulkModal && (

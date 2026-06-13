@@ -696,6 +696,10 @@ public class AiIntegrationService {
                                         "PDF 기반 퀴즈를 생성하려면 자료에서 추출된 텍스트나 요약이 필요합니다.", true, null);
                 }
 
+                // R. 문항 수 5~20 보정: null→10, <5→5, >20→20. (프론트와 동일 정책을 백엔드에서도 강제)
+                Integer requestedCount = request.getQuestionCount();
+                int appliedCount = clampQuizCount(requestedCount);
+
                 // D/F. 난이도 매핑: 쉬움→easy, 보통→normal, 어려움→hard. (로드맵 난이도 beginner/intermediate/advanced와 절대 섞지 않음)
                 String quizDifficulty = mapQuizDifficulty(request.getDifficulty());
 
@@ -711,8 +715,8 @@ public class AiIntegrationService {
                 requestBody.put("difficulty", quizDifficulty);           // 영문 (easy|normal|hard)
                 requestBody.put("difficulty_requested", quizDifficulty);
                 requestBody.put("difficulty_label", request.getDifficulty()); // 원본 한글
-                requestBody.put("count", request.getQuestionCount());
-                requestBody.put("questionCount", request.getQuestionCount()); // 하위호환
+                requestBody.put("count", appliedCount);
+                requestBody.put("questionCount", appliedCount); // 하위호환
                 requestBody.put("document_text", truncQuiz(documentText, 8000));
                 requestBody.put("text", truncQuiz(documentText, 8000));       // 하위호환(기존 ai07 contract)
                 if (isNotBlank(summaryText)) requestBody.put("summary", summaryText);
@@ -757,7 +761,7 @@ public class AiIntegrationService {
                 MaterialQuiz quiz = MaterialQuiz.builder()
                                 .material(material)
                                 .difficulty(request.getDifficulty())
-                                .questionCount(request.getQuestionCount())
+                                .questionCount(appliedCount)
                                 .pageRange(request.getPageRange())
                                 .quizData(generatedQuizJson)
                                 .build();
@@ -768,6 +772,8 @@ public class AiIntegrationService {
                                 .materialId(materialId)
                                 .difficulty(quiz.getDifficulty())
                                 .questionCount(quiz.getQuestionCount())
+                                .requestedCount(requestedCount)
+                                .appliedCount(appliedCount)
                                 .pageRange(quiz.getPageRange())
                                 .quizData(quiz.getQuizData())
                                 .quizzes(parseQuizData(quiz.getQuizData()))
@@ -791,6 +797,14 @@ public class AiIntegrationService {
                                 .usedFallback(aiMetaBool(response, "usedFallback"))
                                 .cacheHit(aiMetaBool(response, "cacheHit"))
                                 .build();
+        }
+
+        // R. 퀴즈 문항 수 보정: null→10(기본), 5 미만→5, 20 초과→20.
+        private int clampQuizCount(Integer count) {
+                if (count == null) return 10;
+                if (count < 5) return 5;
+                if (count > 20) return 20;
+                return count;
         }
 
         // F. 퀴즈 난이도 한글 라벨 → ai07 영문 contract (쉬움/보통/어려움 → easy/normal/hard)

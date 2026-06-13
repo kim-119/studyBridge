@@ -29,6 +29,8 @@ public class QuizDTO {
         private Long materialId;
         private String difficulty;
         private Integer questionCount;
+        private Integer requestedCount;   // 사용자가 요청한 원본 문항 수 (보정 전)
+        private Integer appliedCount;      // 5~20 보정 후 실제 적용 문항 수
         private String pageRange;
         private String quizData; // JSON 형식의 퀴즈 데이터
         private List<Map<String, Object>> quizzes;

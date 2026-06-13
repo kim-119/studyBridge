@@ -70,7 +70,7 @@ export default function ArchiveDetail() {
 
   // UI 상호작용 상태
   const [isQuizSettingsOpen, setIsQuizSettingsOpen] = useState(false);
-  const [quizSettings, setQuizSettings] = useState({ difficulty: '보통', count: 5, range: '전체' });
+  const [quizSettings, setQuizSettings] = useState({ difficulty: '보통', count: 10, range: '전체' }); // R. 기본 10문항
   const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false);
   const [isSavingMemo, setIsSavingMemo] = useState(false);
   const [userAnswers, setUserAnswers] = useState({});
@@ -295,6 +295,25 @@ export default function ArchiveDetail() {
     const out = [];
     lines.forEach((l) => { const k = l.slice(0, 60); if (!seen.has(k)) { seen.add(k); out.push({ title: `세부 핵심 내용 ${out.length + 1}`, content: l }); } });
     return out;
+  };
+
+  // O. 핵심 내용을 '한 카드'에 담기 위한 단일 텍스트.
+  //    우선순위: core_content_text → coreContentText → core_contents 줄바꿈 join → coreContents 줄바꿈 join
+  const getCoreContentText = (data) => {
+    if (!data) return '';
+    const env = getSummaryEnvelope(data);
+    const direct = data.core_content_text || env.core_content_text || data.coreContentText || env.coreContentText;
+    if (direct && String(direct).trim()) return sanitizeMarkdownText(direct);
+    return getCoreContents(data).map((it) => it.content).filter(Boolean).join('\n');
+  };
+  // O. 세부 핵심 내용을 '한 카드'에 담기 위한 단일 텍스트.
+  //    우선순위: detailed_content_text → detailedContentText → detailed_core_contents join → detailedCoreContents join
+  const getDetailedContentText = (data) => {
+    if (!data) return '';
+    const env = getSummaryEnvelope(data);
+    const direct = data.detailed_content_text || env.detailed_content_text || data.detailedContentText || env.detailedContentText;
+    if (direct && String(direct).trim()) return sanitizeMarkdownText(direct);
+    return getDetailedCoreContents(data).map((it) => it.content).filter(Boolean).join('\n');
   };
 
   // D. 학습일지 본문 구성 — 마크다운 없는 일반 텍스트
@@ -644,9 +663,15 @@ export default function ArchiveDetail() {
       // G. 생성 시작 즉시 이전/실패 퀴즈를 화면에서 내린다(stale quiz 방지).
       setQuizError(null);
       setSelectedQuizId(null);
+      // R. 문항 수 5~20 보정 (빈 값/미입력 → 10). 보정값을 상태에도 반영.
+      let appliedCount = parseInt(quizSettings.count, 10);
+      if (Number.isNaN(appliedCount)) appliedCount = 10;
+      if (appliedCount < 5) appliedCount = 5;
+      if (appliedCount > 20) appliedCount = 20;
+      if (appliedCount !== quizSettings.count) setQuizSettings((s) => ({ ...s, count: appliedCount }));
       const req = {
         difficulty: quizSettings.difficulty,
-        questionCount: quizSettings.count,
+        questionCount: appliedCount,
         pageRange: quizSettings.range,
         sourceMode: 'PDF_BASED', // 퀴즈는 PDF/DOCX 자료 본문 기준(로드맵 day 아님)
       };
@@ -888,6 +913,9 @@ export default function ArchiveDetail() {
         const coreContents = getCoreContents(summaryData);           // B. 핵심 내용 (≥10 목표)
         const detailedCore = getDetailedCoreContents(summaryData);   // C. 세부 핵심 내용 (≥40 목표)
         const visibleDetailed = showAllDetailed ? detailedCore : detailedCore.slice(0, 10);
+        // O. 핵심/세부 핵심 내용을 '한 카드'에 담는 단일 텍스트 (여러 카드 생성 금지, 개수 표시 금지)
+        const coreContentText = getCoreContentText(summaryData);
+        const detailedContentText = getDetailedContentText(summaryData);
         const learningPoints = sanitizeList(getSummaryStringList(summaryData, 'learningPoints'));
         const practicePoints = sanitizeList(getSummaryStringList(summaryData, 'practicePoints'));
         const studyQuestions = sanitizeList(getSummaryStringList(summaryData, 'studyQuestions'));
@@ -974,53 +1002,34 @@ export default function ArchiveDetail() {
                   </div>
                 </div>
 
-                {/* 3. 핵심 내용 (B. 최소 10개) */}
+                {/* 3. 핵심 내용 (O. 한 카드에 전체 렌더링, 개수 표시/카드 분할 금지) */}
                 <div>
                   <h4 style={{ margin: '0 0 4px', fontSize: '16px', color: 'var(--color-text-main)' }}>🧩 핵심 내용</h4>
-                  <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--color-text-muted)' }}>문서에서 도출한 핵심 내용입니다. ({coreContents.length}개)</p>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {coreContents.length > 0 ? (
-                        coreContents.map((content, idx) => (
-                            <SummarySectionCard key={idx} title={`${idx + 1}. ${content.title}`} content={content.content} />
-                        ))
+                  <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--color-text-muted)' }}>문서에서 도출한 핵심 내용입니다.</p>
+                  <div className="glass-panel" style={{ padding: '18px 20px', borderLeft: '4px solid var(--color-primary)' }}>
+                    {coreContentText ? (
+                      <p style={{ margin: 0, fontSize: '14.5px', lineHeight: '1.8', color: 'var(--color-text-main)', whiteSpace: 'pre-line' }}>
+                        {coreContentText}
+                      </p>
                     ) : (
-                        <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{summaryStatus.success === false ? getAiErrorMessage(summaryStatus.errorCode, summaryStatus.textStatus, summaryStatus.message) : '요약 내용이 아직 생성되지 않았습니다.'}</p>
+                      <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px' }}>{summaryStatus.success === false ? getAiErrorMessage(summaryStatus.errorCode, summaryStatus.textStatus, summaryStatus.message) : '요약 내용이 아직 생성되지 않았습니다.'}</p>
                     )}
                   </div>
-                  {coreContents.length > 0 && coreContents.length < 10 && (
-                    <p style={{ margin: '12px 0 0', fontSize: '13px', color: '#92400E', backgroundColor: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '8px', padding: '10px 12px' }}>
-                      AI가 생성한 핵심 내용이 부족합니다. 다시 생성해 주세요.
-                    </p>
-                  )}
                 </div>
 
-                {/* 4. 세부 핵심 내용 (C. 최소 40줄, 기본 10개 + 전체 보기) */}
+                {/* 4. 세부 핵심 내용 (O. 한 카드에 전체 렌더링, 개수 표시/카드 분할 금지) */}
                 <div>
                   <h4 style={{ margin: '0 0 4px', fontSize: '16px', color: 'var(--color-text-main)' }}>📑 세부 핵심 내용</h4>
-                  <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--color-text-muted)' }}>문서의 세부 내용을 줄 단위로 정리했습니다. (총 {detailedCore.length}개)</p>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {visibleDetailed.length > 0 ? (
-                        visibleDetailed.map((d, idx) => (
-                            <div key={idx} style={{ display: 'flex', gap: '10px', backgroundColor: '#F9FAFB', padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--color-border)', borderLeft: '4px solid var(--color-primary)' }}>
-                              <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-primary)', flexShrink: 0 }}>{idx + 1}.</span>
-                              <span style={{ fontSize: '14px', lineHeight: '1.7', color: 'var(--color-text-muted)', whiteSpace: 'pre-wrap' }}>{d.content}</span>
-                            </div>
-                        ))
+                  <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--color-text-muted)' }}>문서의 세부 내용을 줄 단위로 정리했습니다.</p>
+                  <div className="glass-panel" style={{ padding: '18px 20px', borderLeft: '4px solid var(--color-primary)' }}>
+                    {detailedContentText ? (
+                      <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.8', color: 'var(--color-text-main)', whiteSpace: 'pre-line' }}>
+                        {detailedContentText}
+                      </p>
                     ) : (
-                        <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{summaryStatus.success === false ? getAiErrorMessage(summaryStatus.errorCode, summaryStatus.textStatus, summaryStatus.message) : '세부 핵심 내용이 아직 생성되지 않았습니다.'}</p>
+                      <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px' }}>{summaryStatus.success === false ? getAiErrorMessage(summaryStatus.errorCode, summaryStatus.textStatus, summaryStatus.message) : '세부 핵심 내용이 아직 생성되지 않았습니다.'}</p>
                     )}
                   </div>
-                  {detailedCore.length > 10 && (
-                    <button onClick={() => setShowAllDetailed((v) => !v)} className="btn-outline"
-                      style={{ marginTop: '12px', padding: '8px 18px', fontSize: '13.5px', borderRadius: '20px', cursor: 'pointer' }}>
-                      {showAllDetailed ? '접기' : `전체 보기 (${detailedCore.length}개)`}
-                    </button>
-                  )}
-                  {detailedCore.length > 0 && detailedCore.length < 40 && (
-                    <p style={{ margin: '12px 0 0', fontSize: '13px', color: '#92400E', backgroundColor: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '8px', padding: '10px 12px' }}>
-                      현재 분석 결과가 40줄 미만입니다. AI 재분석을 실행하면 더 자세한 결과를 받을 수 있습니다.
-                    </p>
-                  )}
                 </div>
 
                 {/* 4. 학습 포인트 */}
@@ -1402,14 +1411,28 @@ export default function ArchiveDetail() {
                         </div>
 
                         <div>
-                          <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', fontSize: '15px', color: 'var(--color-text-main)' }}>문항 수</label>
+                          <label style={{ display: 'block', marginBottom: '12px', fontWeight: '600', fontSize: '15px', color: 'var(--color-text-main)' }}>문항 수 (5~20)</label>
                           <input
                               type="number"
                               className="input-field"
+                              min={5}
+                              max={20}
                               value={quizSettings.count}
-                              onChange={(e) => setQuizSettings({ ...quizSettings, count: parseInt(e.target.value) || 5 })}
+                              // R. 입력 중에는 자유롭게, blur 시 5~20 보정(빈 값→10)
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                setQuizSettings({ ...quizSettings, count: raw === '' ? '' : (parseInt(raw, 10) || '') });
+                              }}
+                              onBlur={(e) => {
+                                let n = parseInt(e.target.value, 10);
+                                if (Number.isNaN(n)) n = 10;        // 빈 값/미입력 → 10
+                                if (n < 5) n = 5;                    // 5 미만 → 5
+                                if (n > 20) n = 20;                  // 20 초과 → 20
+                                setQuizSettings({ ...quizSettings, count: n });
+                              }}
                               style={{ width: '100%', padding: '16px', borderRadius: '12px', backgroundColor: '#F9FAFB', border: '1px solid var(--color-border)' }}
                           />
+                          <p style={{ margin: '8px 0 0', fontSize: '12.5px', color: 'var(--color-text-muted)' }}>최소 5개, 최대 20개까지 생성할 수 있습니다.</p>
                         </div>
 
                         <div>
@@ -1761,7 +1784,8 @@ export default function ArchiveDetail() {
                           overflowY: msg.sender === 'ai' ? 'auto' : 'visible'
                         }}
                     >
-                      {msg.text}
+                      {/* P. AI 답변은 마크다운 기호 제거 후 표시(코드 텍스트는 보존). 사용자 메시지는 원본 유지. */}
+                      {msg.sender === 'ai' ? sanitizeMarkdownText(msg.text) : msg.text}
                     </div>
                 ))}
                 <div ref={chatEndRef} />

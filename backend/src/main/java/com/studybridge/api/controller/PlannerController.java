@@ -105,6 +105,29 @@ public class PlannerController {
                 : ResponseEntity.badRequest().body(res);
     }
 
+    /**
+     * 체크박스 선택 삭제. body { plannerIds: [1,2,3] }
+     * 선택한 본인 소유 플래너만 삭제, 주간일정/다른 유저 데이터는 건드리지 않는다.
+     */
+    @DeleteMapping("/bulk-selected")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<PlannerDTO.BulkDeleteResponse> bulkDeleteSelected(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestBody Map<String, Object> body) {
+        List<Long> ids = new java.util.ArrayList<>();
+        Object raw = body != null ? body.get("plannerIds") : null;
+        if (raw instanceof List) {
+            for (Object o : (List<Object>) raw) {
+                if (o instanceof Number) ids.add(((Number) o).longValue());
+                else if (o != null) { try { ids.add(Long.parseLong(o.toString())); } catch (NumberFormatException ignored) {} }
+            }
+        }
+        PlannerDTO.BulkDeleteResponse res = plannerService.bulkDeleteSelected(userDetails.getId(), ids);
+        return res.isSuccess()
+                ? ResponseEntity.ok(res)
+                : ResponseEntity.badRequest().body(res);
+    }
+
     // ---------- 공부 플래너 전용 AI (학습 실행 관리) ----------
     // 로드맵/퀴즈/문서질문/요약 없음. 플래너를 실행 가능한 계획으로 정리하고 피드백만 한다.
 

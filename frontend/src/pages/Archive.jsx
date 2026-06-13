@@ -2,8 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FileText, File as FileIcon, Plus, X, AlignLeft, MessageSquare, CalendarDays } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
-import { materialService } from '../services/api';
+import { materialService, reviewNoteService } from '../services/api';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
+
+// 오답노트 카드 보조 버튼 공통 스타일
+const rnBtn = { padding: '5px 10px', fontSize: '12px', borderRadius: '8px', cursor: 'pointer' };
 
 export default function Archive() {
   const { userId } = useAuth();
@@ -18,8 +21,12 @@ export default function Archive() {
   const [journals, setJournals] = useState([]);
   const [pdfs, setPdfs] = useState([]);
   const [planners, setPlanners] = useState([]);
-  const [reviewNotes, setReviewNotes] = useState([]); // 오답노트(REVIEW_NOTE) 자료
+  const [reviewNotes, setReviewNotes] = useState([]); // 오답노트(REVIEW_NOTE) 자료 (materials 기반, 하위호환)
   const [isLoading, setIsLoading] = useState(false);
+  // L. 오답노트 탭 전용 — 상단 /review-notes 페이지와 동일한 GET /api/review-notes 데이터(올바른 reviewNoteId)
+  const [reviewNoteItems, setReviewNoteItems] = useState([]);
+  const [reviewNotesLoading, setReviewNotesLoading] = useState(false);
+  const [reviewNotesError, setReviewNotesError] = useState('');
 
   const [journalSummary, setJournalSummary] = useState('');
   const [journalFeedback, setJournalFeedback] = useState([]);
@@ -254,19 +261,58 @@ export default function Archive() {
     );
   };
 
+  // L. 오답노트 탭 데이터 — 상단 /review-notes 와 동일 소스. 실패(error)와 빈 목록(empty)을 구분.
+  const fetchReviewNotes = async () => {
+    if (!userId) return;
+    setReviewNotesLoading(true);
+    setReviewNotesError('');
+    const { ok, items, error } = await reviewNoteService.listReviewNotes();
+    if (!ok) {
+      setReviewNoteItems([]);
+      setReviewNotesError(error || '오답노트 목록을 불러오지 못했습니다. 다시 시도해주세요.');
+    } else {
+      setReviewNoteItems(Array.isArray(items) ? items : []);
+    }
+    setReviewNotesLoading(false);
+  };
+
   useEffect(() => {
     if (userId) {
       fetchMaterials();
+      fetchReviewNotes();
     } else {
       setJournals([]);
       setPdfs([]);
       setPlanners([]);
+      setReviewNoteItems([]);
     }
+  }, [userId]);
+
+  // N. 새로고침/이동 후 유지: 다른 화면에 갔다가 자료보관함으로 돌아와 탭이 다시 보이면 서버에서 재조회.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && userId) {
+        fetchMaterials();
+        fetchReviewNotes();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
   const handleTabChange = (tab) => {
     setActiveTab(tab);
     setVisibleCount(6);
+    // 탭 변경 시에도 항상 서버 기준으로 최신화 (DB metadata가 source of truth)
+    if (userId) {
+      if (tab === 'reviewNote') fetchReviewNotes();
+      else fetchMaterials();
+    }
   };
 
   const handleOpenDetail = (type, item) => {
@@ -423,6 +469,12 @@ export default function Archive() {
             학습 PDF
           </button>
           <button
+            className={`archive-tab ${activeTab === 'reviewNote' ? 'active' : ''}`}
+            onClick={() => handleTabChange('reviewNote')}
+          >
+            오답노트
+          </button>
+          <button
             className={`archive-tab ${activeTab === 'planner' ? 'active' : ''}`}
             onClick={() => handleTabChange('planner')}
           >
@@ -517,34 +569,70 @@ export default function Archive() {
           </div>
         ))}
 
-        {/* 오답노트 자료(퀴즈 오답 기반 자동 생성 PDF) — 클릭 시 PDF 바로 열기 */}
-        {!isLoading && activeTab === 'pdf' && reviewNotes.map((note) => (
-          <div
-            key={`rn-${note.id}`}
-            className="glass-panel archive-card animate-fade-in"
-            style={{ cursor: 'pointer' }}
-            onClick={() => { if (note.url) window.open(note.url, '_blank', 'noopener'); else navigate('/review-notes'); }}
-          >
-            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="icon-wrapper pdf-icon" style={{ background: 'linear-gradient(135deg, #F87171, #DC2626)' }}>
-                  <FileIcon size={22} color="rgba(255,255,255,0.9)" />
-                </div>
-                <span className="card-date">{note.date}</span>
-              </div>
-              <button
-                onClick={(e) => handleDeleteMaterial(e, note.id)}
-                style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}
-              >
-                삭제
-              </button>
-            </div>
-            <h3 className="card-title">{note.title}</h3>
-            <div className="card-tags" style={{ marginBottom: 'auto' }}>
-              <span className="card-tag" style={{ background: '#FEE2E2', color: '#991B1B' }}>#{note.tag}</span>
-            </div>
+        {/* L. 오답노트 탭 — 상단 /review-notes 와 동일 데이터. loading/error/empty/list 분리 + 6개 버튼 */}
+        {activeTab === 'reviewNote' && reviewNotesLoading && (
+          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '40px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
+            오답노트를 불러오는 중입니다.
           </div>
-        ))}
+        )}
+        {activeTab === 'reviewNote' && !reviewNotesLoading && reviewNotesError && (
+          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '40px 20px', textAlign: 'center', color: '#B91C1C', borderRadius: '12px' }}>
+            <p style={{ margin: '0 0 12px' }}>오답노트 목록을 불러오지 못했습니다. 다시 시도해주세요.</p>
+            <button className="btn-primary" style={{ width: 'auto', padding: '8px 16px', borderRadius: '20px' }} onClick={fetchReviewNotes}>다시 시도</button>
+          </div>
+        )}
+        {activeTab === 'reviewNote' && !reviewNotesLoading && !reviewNotesError && reviewNoteItems.length === 0 && (
+          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
+            <FileIcon size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
+            <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>아직 생성된 오답노트가 없습니다</h3>
+            <p style={{ margin: 0 }}>퀴즈를 풀고 틀린 문제가 있으면 오답노트를 만들 수 있습니다.</p>
+          </div>
+        )}
+        {activeTab === 'reviewNote' && !reviewNotesLoading && !reviewNotesError && reviewNoteItems.map((note) => {
+          const rid = note.id ?? note.reviewNoteId;
+          const openPdf = async () => {
+            try {
+              const data = await reviewNoteService.getDownloadUrl(rid);
+              const url = data?.url || data?.downloadUrl || note.pdfUrl;
+              if (url) window.open(url, '_blank', 'noopener'); else alert('이 오답노트에는 아직 PDF가 없습니다.');
+            } catch { alert('PDF를 여는 중 문제가 발생했습니다.'); }
+          };
+          const savePdf = async () => {
+            try {
+              const data = await reviewNoteService.getDownloadUrl(rid);
+              const url = data?.url || data?.downloadUrl || note.pdfUrl;
+              if (!url) { alert('이 오답노트에는 아직 PDF가 없습니다.'); return; }
+              const a = document.createElement('a');
+              a.href = url; a.download = `${note.title || 'review-note'}.pdf`;
+              document.body.appendChild(a); a.click(); a.remove();
+            } catch { alert('PDF 저장 중 문제가 발생했습니다.'); }
+          };
+          return (
+            <div key={`rn-${rid}`} className="glass-panel archive-card animate-fade-in">
+              <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div className="icon-wrapper pdf-icon" style={{ background: 'linear-gradient(135deg, #F87171, #DC2626)' }}>
+                    <FileIcon size={22} color="rgba(255,255,255,0.9)" />
+                  </div>
+                  <span className="card-date">오답 {note.wrongCount ?? 0}개</span>
+                </div>
+              </div>
+              <h3 className="card-title">{note.title}</h3>
+              <div className="card-tags" style={{ marginBottom: '10px' }}>
+                <span className="card-tag" style={{ background: '#FEE2E2', color: '#991B1B' }}>#오답노트</span>
+              </div>
+              {/* 6개 버튼: PDF 보기 · 컴퓨터에 저장 · 다시 풀기 · 유사문제 풀기 · AI 해설 · 메모 */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: 'auto' }}>
+                <button className="btn-outline" style={rnBtn} onClick={openPdf}>PDF 보기</button>
+                <button className="btn-outline" style={rnBtn} onClick={savePdf}>컴퓨터에 저장</button>
+                <button className="btn-outline" style={rnBtn} onClick={() => navigate(`/review-notes?note=${rid}&tab=retry`)}>다시 풀기</button>
+                <button className="btn-outline" style={rnBtn} onClick={() => navigate(`/review-notes?note=${rid}&tab=variant`)}>유사문제 풀기</button>
+                <button className="btn-outline" style={rnBtn} onClick={() => navigate(`/review-notes?note=${rid}&tab=ai`)}>AI 해설</button>
+                <button className="btn-outline" style={rnBtn} onClick={() => navigate(`/review-notes?note=${rid}&tab=list`)}>메모</button>
+              </div>
+            </div>
+          );
+        })}
 
         {!isLoading && activeTab === 'planner' && planners.length === 0 && (
           <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>

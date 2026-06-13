@@ -72,6 +72,15 @@ public class ReviewNoteController {
         return ResponseEntity.ok(reviewNoteService.updateMemo(userDetails.getId(), id, memo));
     }
 
+    // 유사문제: ai07 변형(없으면 원본 오답 재출제 폴백). body { wrongQuestionId, difficulty: easy|normal|hard, count }
+    @PostMapping("/{id}/variant-question")
+    public ResponseEntity<Map<String, Object>> variantQuestion(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id,
+            @RequestBody(required = false) Map<String, Object> body) {
+        return ResponseEntity.ok(reviewNoteService.variantQuestion(userDetails.getId(), id, body));
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> extractAnswers(Map<String, Object> body) {
         if (body == null) return Map.of();

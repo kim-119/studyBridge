@@ -1174,6 +1174,11 @@ export const plannerService = {
     const res = await api.delete('/api/planners/bulk', { data: payload });
     return res.data;
   },
+  // 체크박스 선택 삭제. 선택한 본인 소유 플래너만 삭제. payload: { plannerIds: [1,2,3] }
+  bulkDeleteSelectedPlanners: async (plannerIds) => {
+    const res = await api.delete('/api/planners/bulk-selected', { data: { plannerIds } });
+    return res.data;
+  },
 
   // 플래너 전용 AI: 학습 실행 관리 피드백 (로드맵/퀴즈/문서질문 없음)
   assistPlanner: async (id) => {
@@ -1205,7 +1210,7 @@ export const reviewNoteService = {
     const res = await api.post(`/api/review-notes/from-quiz/${quizSessionId}`, body, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
-  // 목록: 실패해도 throw 하지 않고 { items, apiReady } 형태로 안전 반환
+  // 목록: 실패해도 throw 하지 않고 { items, apiReady } 형태로 안전 반환 (구버전 호환)
   getReviewNotes: async () => {
     try {
       const res = await api.get('/api/review-notes');
@@ -1216,8 +1221,25 @@ export const reviewNoteService = {
       throw err;
     }
   },
+  // 신버전: API 실패(에러)와 빈 목록(empty)을 명확히 구분한다.
+  //  - 성공: { ok: true, items: [...] }   (items.length === 0 이면 화면에서 empty 처리)
+  //  - 실패: { ok: false, items: [], error: '...' }  (절대 empty로 처리하지 않음)
+  listReviewNotes: async () => {
+    try {
+      const res = await api.get('/api/review-notes');
+      const items = Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
+      return { ok: true, items, error: '' };
+    } catch (err) {
+      return { ok: false, items: [], error: '오답노트 목록을 불러오지 못했습니다. 다시 시도해주세요.' };
+    }
+  },
   getReviewNote: async (id) => {
     const res = await api.get(`/api/review-notes/${id}`);
+    return res.data;
+  },
+  // 유사문제: 난이도 하/중/상(easy|normal|hard). body { wrongQuestionId, difficulty, count }
+  variantQuestion: async (id, body) => {
+    const res = await api.post(`/api/review-notes/${id}/variant-question`, body, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
   // PDF 다운로드 URL(또는 메타) 조회

@@ -256,6 +256,33 @@ public class PlannerService {
                 .message(deleted + "개의 플래너를 삭제했습니다.").build();
     }
 
+    /**
+     * 사용자가 체크박스로 선택한 플래너만 삭제(선택 삭제).
+     * 전체삭제와 달리 ROADMAP_AUTO 제한이 없다(사용자가 명시적으로 고른 본인 소유 플래너).
+     * 주간일정(todos)/다른 유저 데이터는 절대 건드리지 않는다. @Transactional 일부 실패 시 전체 rollback.
+     */
+    @Transactional
+    public PlannerDTO.BulkDeleteResponse bulkDeleteSelected(Long userId, java.util.List<Long> plannerIds) {
+        if (plannerIds == null || plannerIds.isEmpty()) {
+            return PlannerDTO.BulkDeleteResponse.builder()
+                    .success(true).deletedCount(0).message("선택한 플래너가 없습니다.").build();
+        }
+        java.util.List<Long> distinctIds = plannerIds.stream()
+                .filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
+
+        // 인증 사용자 소유 + 선택 id 만 조회 (다른 유저 데이터는 결과에 포함되지 않음)
+        List<Planner> planners = plannerRepository.findByUserIdAndIdIn(userId, distinctIds);
+        if (planners.size() != distinctIds.size()) {
+            return bulkFail("INVALID_DELETE_SCOPE", "본인 소유가 아니거나 존재하지 않는 플래너가 포함되어 있습니다.");
+        }
+
+        int deleted = 0;
+        for (Planner p : planners) { cleanupAndDelete(p); deleted++; }
+        return PlannerDTO.BulkDeleteResponse.builder()
+                .success(true).deletedCount(deleted)
+                .message(deleted + "개의 플래너를 삭제했습니다.").build();
+    }
+
     private PlannerDTO.BulkDeleteResponse bulkFail(String code, String message) {
         return PlannerDTO.BulkDeleteResponse.builder()
                 .success(false).errorCode(code).message(message).build();
