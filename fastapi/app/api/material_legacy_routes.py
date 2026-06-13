@@ -97,6 +97,112 @@ def _text_status(ts: dict, chunk_count: int) -> dict:
     }
 
 
+def _quiz_fallback_payload(context: str, difficulty: str, count: int,
+                           ts: dict, chunk_count: int, reason: str) -> Dict[str, Any]:
+    """AI 퀴즈 생성 실패(timeout/parse/검증 실패/빈 응답) 시에도 문서 기반 기본 문제를
+    항상 반환한다. 빈 결과나 에러만 돌려주지 않는다(사용자 요구: 무조건 문제 노출)."""
+    count = max(3, min(int(count or 5), 20))
+    raw: List[Dict[str, Any]] = []
+    try:
+        from app.services.realtime_quiz_service import _document_grounded_fallback
+        raw = _document_grounded_fallback(context or "", count, difficulty or "보통", ["multiple_choice"])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("quiz 문서기반 fallback 생성 실패(generic 사용): %s", e)
+    questions: List[Dict[str, Any]] = []
+    for q in raw:
+        opts = q.get("choices") or []
+        ai = q.get("answer_index")
+        ai = ai if isinstance(ai, int) and 0 <= ai < len(opts) else 0
+        questions.append({
+            "question": (q.get("question") or "").strip(),
+            "options": opts,
+            "answer": ai,            # 프론트 parseQuizQuestions는 숫자 인덱스를 기대
+            "answerIndex": ai,
+            "explanation": (q.get("explanation") or "").strip(),
+            "difficulty": q.get("difficulty") or difficulty or "보통",
+            "source": "FALLBACK",
+        })
+    if not questions:  # 문서 기반도 비면 안내형 generic 으로 최종 보장
+        for i in range(count):
+            questions.append({
+                "question": f"학습 자료 복습 문항 {i + 1}: 이 자료의 핵심 개념을 가장 잘 설명한 것은?",
+                "options": ["자료의 핵심 개념", "관련 없는 내용", "부분적으로만 맞는 설명", "반대되는 설명"],
+                "answer": 0, "answerIndex": 0,
+                "explanation": "AI 생성이 일시적으로 어려워 기본 복습 문항으로 대체했습니다. 자료를 다시 확인해 보세요.",
+                "difficulty": difficulty or "보통", "source": "FALLBACK",
+            })
+    logger.warning("material quiz fallback 사용 reason=%s count=%s", reason, len(questions))
+    return {
+        "success": True,
+        "quizData": json.dumps(questions, ensure_ascii=False),  # 하위호환 (Spring이 그대로 저장)
+        "quizzes": questions,
+        "warnings": ["AI 퀴즈 생성에 실패하여 문서 기반 기본 문제로 대체했습니다."],
+        "textStatus": _text_status(ts, chunk_count),
+        "metadata": {"provider": "fallback", "usedFallback": True,
+                     "fallbackReason": reason, "chunkCount": chunk_count},
+    }
+
+
+def _roadmap_fallback_payload(document_title: str, ts: dict, chunk_count: int,
+                              reason: str) -> Dict[str, Any]:
+    """AI 로드맵 생성 실패(timeout/parse/검증 실패/빈 weeks) 시에도 기본 로드맵을 항상
+    반환한다. UNKNOWN_ERROR/빈 weeks/500 으로 끝내지 않는다(success 구조 동일 유지)."""
+    title = (document_title or "").strip() or "학습 자료"
+    try:
+        from app.services.roadmap_service import build_fallback_roadmap
+        fb = build_fallback_roadmap(0, title, reason)
+        fb_weeks = fb.get("weeks", []) if isinstance(fb, dict) else []
+    except Exception as e:  # noqa: BLE001
+        logger.warning("roadmap 기본 fallback 생성 실패(generic 사용): %s", e)
+        fb, fb_weeks = {}, []
+    steps: List[Dict[str, Any]] = []
+    for i, wk in enumerate(fb_weeks):
+        task_values = wk.get("tasks") if isinstance(wk.get("tasks"), list) else []
+        tasks = [{"taskOrder": j + 1, "content": str(t).strip()}
+                 for j, t in enumerate(task_values) if str(t).strip()]
+        if not tasks:
+            tasks = [
+                {"taskOrder": 1, "content": "문서 핵심 내용을 읽고 요약하기"},
+                {"taskOrder": 2, "content": "이해가 부족한 개념을 질문 목록으로 정리하기"},
+            ]
+        steps.append({
+            "stepOrder": wk.get("week") or (i + 1),
+            "title": wk.get("title") or f"{i + 1}주차",
+            "description": f"학습 목표: {wk.get('goal', '')}".strip() or "학습 목표 정리",
+            "tasks": tasks,
+            "goal": wk.get("goal") or "",
+            "keyConcepts": [],
+            "deliverable": "",
+            "estimatedHours": 3,
+        })
+    if not steps:  # roadmap_service 도 비면 최소 4주 generic 보장
+        for i, (t, g) in enumerate([
+            ("기초 개념 이해", "핵심 개념과 용어를 파악한다."),
+            ("심화 학습", "주요 개념의 원리와 구조를 이해한다."),
+            ("응용 및 정리", "학습 내용을 실제 문제에 적용한다."),
+            ("복습 및 완성", "전체 내용을 통합하고 부족한 부분을 보완한다."),
+        ]):
+            steps.append({
+                "stepOrder": i + 1, "title": f"{i + 1}주차 {t}",
+                "description": f"학습 목표: {g}",
+                "tasks": [{"taskOrder": 1, "content": "문서 핵심 내용을 읽고 요약하기"},
+                          {"taskOrder": 2, "content": "핵심 개념 정리 및 자기 점검"}],
+                "goal": g, "keyConcepts": [], "deliverable": "", "estimatedHours": 3,
+            })
+    logger.warning("material roadmap fallback 사용 reason=%s weeks=%s", reason, len(steps))
+    return {
+        "success": True,
+        "roadmap": {"title": (fb.get("title") if isinstance(fb, dict) else None) or f"{title} 학습 로드맵 (기본 구성)",
+                    "totalWeeks": len(steps), "steps": steps},
+        "warnings": ["AI 로드맵 생성에 실패하여 기본 로드맵으로 대체했습니다."],
+        "fallbackUsed": True,
+        "message": "AI 로드맵 생성이 불안정하여 기본 로드맵을 생성했습니다.",
+        "textStatus": _text_status(ts, chunk_count),
+        "metadata": {"provider": "fallback", "usedFallback": True,
+                     "fallbackReason": reason, "chunkCount": chunk_count},
+    }
+
+
 # ── POST /api/ai/summary ──────────────────────────────────────────────────────
 @router.post("/summary", summary="자료 요약 (Ollama/Qwen 우선)")
 async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
@@ -192,17 +298,19 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
             generate_quiz_json, context, req.difficulty or "보통", requested_count,
         ), timeout=_t(QUIZ_TIMEOUT))
     except asyncio.TimeoutError:
-        return _fail("AI_TIMEOUT", "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
-                     text_status=_text_status(ts, len(chunks)))
+        # 빈 결과/에러만 반환하지 않고 문서 기반 fallback 문제를 보장한다.
+        return _quiz_fallback_payload(context, req.difficulty or "보통", requested_count,
+                                      ts, len(chunks), "AI_TIMEOUT")
     except Exception as e:
         logger.error("quiz 실패: %s", e)
-        return _fail("AI_RESPONSE_PARSE_FAILED", "퀴즈 생성에 실패했습니다. 다시 시도해주세요.",
-                     text_status=_text_status(ts, len(chunks)))
+        return _quiz_fallback_payload(context, req.difficulty or "보통", requested_count,
+                                      ts, len(chunks), "AI_RESPONSE_PARSE_FAILED")
 
     questions = r.get("questions", [])
     if not questions:
-        return _fail("QUIZ_VALIDATE_FAILED", "퀴즈 형식 검증에 실패했습니다. 다시 생성해주세요.",
-                     text_status=_text_status(ts, len(chunks)))
+        # schema 검증 실패로 전체를 폐기하지 않고 fallback 으로 복구한다.
+        return _quiz_fallback_payload(context, req.difficulty or "보통", requested_count,
+                                      ts, len(chunks), "QUIZ_VALIDATE_FAILED")
 
     quiz_data = json.dumps(questions, ensure_ascii=False)  # 프론트 parseQuizQuestions가 파싱
     elapsed = int((time.time() - started) * 1000)
@@ -313,17 +421,17 @@ async def ai_roadmap(req: RoadmapReq) -> Dict[str, Any]:
     cache = await get_or_build_chunks(req.material_id, text)
     chunks = cache["chunks"]
     context = build_limited_context(chunks, AI_ROADMAP_MAX_CHUNKS) or (text or "")[:6000]
+    _rm_title = (req.user_goal or req.document_title or "학습 자료") if hasattr(req, "document_title") else (req.user_goal or "학습 자료")
     try:
         r = await asyncio.wait_for(asyncio.to_thread(
             generate_roadmap_json, context, req.user_goal or "학습 목표 달성",
         ), timeout=_t(ROADMAP_TIMEOUT))
     except asyncio.TimeoutError:
-        return _fail("AI_TIMEOUT", "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
-                     text_status=_text_status(ts, len(chunks)))
+        # UNKNOWN_ERROR/빈 결과로 끝내지 않고 기본 로드맵 fallback 을 보장한다.
+        return _roadmap_fallback_payload(_rm_title, ts, len(chunks), "AI_TIMEOUT")
     except Exception as e:
         logger.error("roadmap 실패: %s", e)
-        return _fail("AI_RESPONSE_PARSE_FAILED", "로드맵 생성에 실패했습니다. 다시 시도해주세요.",
-                     text_status=_text_status(ts, len(chunks)))
+        return _roadmap_fallback_payload(_rm_title, ts, len(chunks), "AI_RESPONSE_PARSE_FAILED")
 
     weeks = r.get("weeks", [])
     if not weeks:
@@ -332,8 +440,8 @@ async def ai_roadmap(req: RoadmapReq) -> Dict[str, Any]:
             req.material_id,
             str(r.get("raw") or r)[:300],
         )
-        return _fail("ROADMAP_VALIDATE_FAILED", "로드맵 형식 검증에 실패했습니다. 다시 생성해주세요.",
-                     text_status=_text_status(ts, len(chunks)))
+        # schema 검증 실패로 전체를 폐기하지 않고 fallback 으로 복구한다.
+        return _roadmap_fallback_payload(_rm_title, ts, len(chunks), "ROADMAP_VALIDATE_FAILED")
 
     # Spring RoadmapStep/RoadmapTask 계약으로 매핑. description에 확장 정보를 포함해 기존 DTO를 유지한다.
     steps = []

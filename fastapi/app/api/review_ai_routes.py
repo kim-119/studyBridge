@@ -66,12 +66,29 @@ def _fallback_note(q: Dict[str, Any], index: int) -> Dict[str, Any]:
     user_memo = sanitize_markdown_text(q.get("user_memo"))
     explanation = sanitize_markdown_text(q.get("explanation"))
     key = concepts[0] if concepts else "핵심 개념"
+    # 참고 페이지 (없으면 None) — PDF/응답에 그대로 노출
+    raw_page = q.get("page") if q.get("page") is not None else q.get("pageNumber")
+    try:
+        page = int(raw_page) if raw_page not in (None, "", []) else None
+    except (TypeError, ValueError):
+        page = None
+    # 미응답 판정: selectedAnswer/userAnswer 가 비어있거나 submitted=false 면 UNANSWERED
+    submitted = q.get("submitted", q.get("isSubmitted", True))
+    status_raw = str(q.get("status") or "").strip().upper()
+    is_unanswered = (
+        status_raw == "UNANSWERED"
+        or submitted is False
+        or not (user_answer or "").strip()
+    )
+    status = "UNANSWERED" if is_unanswered else "WRONG"
     return {
         "index": index,
         "question": question,
         "choices": choices,
         "user_answer": user_answer,
         "correct_answer": correct_answer,
+        "page": page,
+        "status": status,
         "ai_explanation": explanation or f"정답은 '{correct_answer}'이며, {key} 개념을 문서 기준으로 적용하면 확인할 수 있습니다.",
         "why_user_answer_is_wrong": (
             f"선택한 '{user_answer}'은(는) {key}의 책임 범위를 정확히 구분하지 못해 부족합니다."
@@ -136,33 +153,60 @@ def _build_pdf_plain_text(
     해설/틀린 이유/다시 볼 개념/재풀이 전략/메모) → 추천 복습 순서.
     """
     from app.utils.sanitize import sanitize_markdown_text
+    from datetime import date
+
+    # 의미 없는 제목 방어 (ㅇㅇ/test/sample/무제/제목없음 등) → 핵심 개념 기반 제목
+    _junk = {"", "ㅇㅇ", "ㅇ", "test", "sample", "무제", "제목없음", "제목 없음", "untitled", "none", "null"}
+    safe_title = (material_title or "").strip()
+    if safe_title.lower() in _junk or len(safe_title) <= 1:
+        kw = ""
+        for n in notes:
+            if n.get("key_concepts"):
+                kw = n["key_concepts"][0]
+                break
+        safe_title = kw or "학습 자료"
+
+    unanswered_count = sum(1 for n in notes if n.get("status") == "UNANSWERED")
+    wrong_count = sum(1 for n in notes if n.get("status") != "UNANSWERED")
+    review_count = len(notes)
+
     lines: List[str] = []
-    lines.append(f"{material_title} 오답노트")
-    lines.append(f"자료명: {material_title}")
+    lines.append(f"{safe_title} 오답노트")
+    lines.append("=" * 32)
+    lines.append(f"자료명: {safe_title}")
     lines.append(f"난이도: {difficulty}")
-    lines.append(f"틀린 문제 수: {len(notes)}")
+    lines.append(f"생성일: {date.today().isoformat()}")
+    lines.append(f"오답 수: {wrong_count}")
+    lines.append(f"미응답 수: {unanswered_count}")
+    lines.append(f"복습 필요 수: {review_count}")
     lines.append("")
-    lines.append(f"전체 피드백: {overall}")
+    lines.append(f"[전체 피드백]\n{overall}")
     lines.append("")
+    lines.append("-" * 32)
     for n in notes:
         idx = n["index"]
-        lines.append(f"{idx}. 문제: {n['question']}")
+        is_un = n.get("status") == "UNANSWERED"
+        lines.append(f"[문제 {idx}]{' (미응답)' if is_un else ''}")
+        lines.append(f"문제: {n['question']}")
         if n.get("choices"):
             lines.append("보기:")
             for ci, c in enumerate(n["choices"], start=1):
                 lines.append(f"  {ci}) {c}")
-        lines.append(f"내가 고른 답: {n.get('user_answer') or '(미응답)'}")
+        lines.append(f"내가 고른 답: {'미응답' if is_un else (n.get('user_answer') or '미응답')}")
         lines.append(f"정답: {n['correct_answer']}")
         lines.append(f"AI 해설: {n['ai_explanation']}")
         lines.append(f"내가 틀린 이유: {n['why_user_answer_is_wrong']}")
         if n.get("key_concepts"):
             lines.append(f"다시 봐야 할 개념: {', '.join(n['key_concepts'])}")
+        if n.get("page"):
+            lines.append(f"참고 페이지: {n['page']}p")
         lines.append(f"재풀이 전략: {n['retry_strategy']}")
         memo = memo_map.get(idx, "")
         lines.append(f"내 메모: {memo or '(메모 없음)'}")
-        lines.append("")
+        lines.append("-" * 32)
     if order:
-        lines.append("추천 복습 순서:")
+        lines.append("")
+        lines.append("[추천 복습 순서]")
         for i, item in enumerate(order, start=1):
             lines.append(f"{i}. {item}")
     return sanitize_markdown_text("\n".join(lines))
@@ -297,10 +341,15 @@ def _wrong_note_sync(body: Dict[str, Any]) -> Dict[str, Any]:
 
     pdf_plain_text = _build_pdf_plain_text(material_title, difficulty, overall, notes, order, memo_map)
 
+    unanswered_count = sum(1 for n in notes if n.get("status") == "UNANSWERED")
+    answered_wrong_count = len(notes) - unanswered_count
     result = {
         "material_id": material_id,
         "material_title": material_title,
-        "wrong_count": len(notes),
+        "wrong_count": len(notes),              # 하위호환: 복습 대상 총합(오답+미응답)
+        "answered_wrong_count": answered_wrong_count,
+        "unanswered_count": unanswered_count,
+        "review_count": len(notes),             # = answered_wrong_count + unanswered_count
         "feedback_title": f"{material_title} 오답노트",
         "overall_feedback": overall,
         "wrong_notes": notes,
