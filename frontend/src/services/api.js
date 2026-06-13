@@ -1169,6 +1169,11 @@ export const plannerService = {
     const res = await api.delete(`/api/planners/${id}`);
     return res.data;
   },
+  // 자료 기반(ROADMAP_AUTO) 플래너 전체삭제. payload: { scope, materialId, sourceRoadmapId, sourceType, plannerIds }
+  bulkDeletePlanners: async (payload) => {
+    const res = await api.delete('/api/planners/bulk', { data: payload });
+    return res.data;
+  },
 
   // 플래너 전용 AI: 학습 실행 관리 피드백 (로드맵/퀴즈/문서질문 없음)
   assistPlanner: async (id) => {

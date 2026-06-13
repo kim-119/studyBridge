@@ -69,6 +69,8 @@ export default function Planner() {
   const [loadingList, setLoadingList] = useState(true);
   const [showOptional, setShowOptional] = useState(false); // 기상시간 + 10분 체크표(선택 항목)
   const [addedToSchedule, setAddedToSchedule] = useState(false); // 주간일정 추가 성공 후 '보기' 버튼 노출
+  const [showBulkModal, setShowBulkModal] = useState(false); // 자료 기반 플래너 전체삭제 확인 모달
+  const [isDeleting, setIsDeleting] = useState(false); // 전체삭제 진행 중(중복 클릭 방지)
 
   const isEditing = plannerId != null;
 
@@ -257,6 +259,47 @@ export default function Planner() {
     } finally { setBusy(''); }
   };
 
+  // 현재 화면에 표시 중인 '자료 기반(ROADMAP_AUTO)' 플래너만 전체삭제 대상으로 삼는다.
+  // 수동으로 작성한 플래너(sourceType 없음)는 대상에서 제외 → 절대 삭제되지 않는다.
+  const roadmapPlanners = useMemo(
+    () => (Array.isArray(saved) ? saved.filter((p) => p.sourceType === 'ROADMAP_AUTO') : []),
+    [saved]
+  );
+  const hasManualMixed = useMemo(
+    () => (Array.isArray(saved) ? saved.some((p) => p.sourceType !== 'ROADMAP_AUTO') : false),
+    [saved]
+  );
+  // 전체삭제 버튼 비활성화 조건: 대상 0개 / 삭제 중 / 다른 작업 진행 중
+  const bulkDisabled = roadmapPlanners.length === 0 || isDeleting || !!busy;
+
+  // 자료 기반 플래너 전체삭제 (현재 화면에 보이는 ROADMAP_AUTO id 만 전송 → 백엔드 재검증)
+  const handleBulkDelete = async () => {
+    if (isDeleting) return; // 중복 클릭 방지
+    const targetIds = roadmapPlanners.map((p) => p.id);
+    if (targetIds.length === 0) { setShowBulkModal(false); return; }
+    try {
+      setIsDeleting(true);
+      const res = await plannerService.bulkDeletePlanners({
+        scope: 'VISIBLE_ROADMAP_AUTO',
+        sourceType: 'ROADMAP_AUTO',
+        plannerIds: targetIds,
+      });
+      if (res && res.success === false) {
+        alert(res.message || '전체삭제에 실패했습니다.');
+        return; // 목록 유지
+      }
+      setShowBulkModal(false);
+      // 현재 편집 중 플래너가 삭제 대상이면 폼 초기화
+      if (plannerId != null && targetIds.includes(plannerId)) handleNew();
+      await refreshList(); // 목록/badge 갱신
+      alert(res?.message || `${res?.deletedCount ?? targetIds.length}개의 플래너를 삭제했습니다.`);
+    } catch (err) {
+      alert(err.response?.data?.message || err.message || '전체삭제에 실패했습니다.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const checkedCount = useMemo(
     () => Object.values(timeTable).reduce((acc, row) => acc + (row ? row.filter(Boolean).length : 0), 0),
     [timeTable]
@@ -303,7 +346,7 @@ export default function Planner() {
           <div className="flex flex-col gap-6">
             {/* 저장본 목록 */}
             <section className="rounded-[20px] border border-[#E5E7EB] bg-white p-5 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
-              <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="m-0 flex items-center gap-2 text-[15px] font-extrabold text-[#111827]">
                   <NotebookPen size={17} strokeWidth={2.2} style={{ color: GREEN_DARK }} />
                   저장된 플래너
@@ -311,13 +354,25 @@ export default function Planner() {
                     <span className="rounded-full bg-[#F4FBF2] px-2 py-0.5 text-[12px] font-bold text-[#15803D]">{saved.length}</span>
                   )}
                 </h2>
-                <button
-                  onClick={handleNew}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#69CB5B] px-3.5 text-[13px] font-bold text-white transition hover:bg-[#5cb84f]"
-                >
-                  <Plus size={16} strokeWidth={2.6} style={{ color: '#fff' }} />
-                  새 플래너
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* 자료 기반(ROADMAP_AUTO) 플래너 전체삭제 — 위험 액션(빨간색 outline) */}
+                  <button
+                    onClick={() => setShowBulkModal(true)}
+                    disabled={bulkDisabled}
+                    title={roadmapPlanners.length === 0 ? '삭제할 자료 기반 플래너가 없습니다' : '자료 기반 플래너 전체삭제'}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#FECACA] bg-white px-3.5 text-[13px] font-bold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Trash2 size={15} strokeWidth={2.2} style={{ color: '#DC2626' }} />
+                    {isDeleting ? '삭제 중…' : `전체삭제${roadmapPlanners.length > 0 ? ` (${roadmapPlanners.length})` : ''}`}
+                  </button>
+                  <button
+                    onClick={handleNew}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#69CB5B] px-3.5 text-[13px] font-bold text-white transition hover:bg-[#5cb84f]"
+                  >
+                    <Plus size={16} strokeWidth={2.6} style={{ color: '#fff' }} />
+                    새 플래너
+                  </button>
+                </div>
               </div>
 
               {loadingList ? (
@@ -640,6 +695,55 @@ export default function Planner() {
           </div>
         </div>
       </div>
+
+      {/* ===== 전체삭제 확인 모달 (위험 액션) ===== */}
+      {showBulkModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => { if (!isDeleting) setShowBulkModal(false); }}
+        >
+          <div
+            className="w-full max-w-[420px] rounded-2xl bg-white p-6 shadow-[0_20px_60px_rgba(0,0,0,0.25)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#FEF2F2]">
+                <Trash2 size={20} strokeWidth={2.2} style={{ color: '#DC2626' }} />
+              </div>
+              <h3 className="m-0 text-[17px] font-extrabold text-[#111827]">플래너 전체삭제</h3>
+            </div>
+            <p className="m-0 text-[14px] leading-relaxed text-[#374151]">
+              현재 화면에 표시된 자료 기반 플래너를 모두 삭제합니다. 이 작업은 되돌릴 수 없습니다.
+            </p>
+            <p className="mt-2 text-[13px] leading-relaxed text-[#6B7280]">
+              수동으로 작성한 플래너와 주간일정은 삭제되지 않습니다.
+            </p>
+            <div className="mt-3 rounded-xl border border-[#FECACA] bg-[#FEF2F2] px-3.5 py-2.5 text-[13px] font-bold text-[#B91C1C]">
+              삭제 대상: {roadmapPlanners.length}개
+              {hasManualMixed && (
+                <span className="ml-1 font-semibold text-[#9CA3AF]">· 수동 플래너는 제외</span>
+              )}
+            </div>
+            <div className="mt-5 flex justify-end gap-2.5">
+              <button
+                onClick={() => setShowBulkModal(false)}
+                disabled={isDeleting}
+                className="inline-flex h-11 items-center rounded-xl border border-[#E5E7EB] bg-white px-5 text-[14px] font-bold text-[#374151] transition hover:bg-[#F9FAFB] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                취소
+              </button>
+              <button
+                onClick={handleBulkDelete}
+                disabled={isDeleting || roadmapPlanners.length === 0}
+                className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#DC2626] px-5 text-[14px] font-extrabold text-white transition hover:bg-[#B91C1C] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Trash2 size={16} strokeWidth={2.2} style={{ color: '#fff' }} />
+                {isDeleting ? '삭제 중…' : '전체삭제'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

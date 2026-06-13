@@ -62,9 +62,33 @@ public class PlannerDTO {
         private String timeTableJson;
         private String s3Key;
         private Long materialId;
+        // 로드맵 자동 생성 추적용 (프론트에서 자료 기반 플래너 식별 + 전체삭제 대상 계산)
+        private String sourceType;        // ROADMAP_AUTO 또는 null(수동)
+        private Long sourceMaterialId;
+        private Long sourceRoadmapId;
         private String downloadUrl;   // S3 presigned URL (있을 때만)
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
+    }
+
+    // ---------- 자료 기반(ROADMAP_AUTO) 플래너 전체삭제 ----------
+    // 현재 화면에 표시 중인 자료 기반 플래너만 삭제한다. 수동 플래너/주간일정/다른 유저 데이터는 절대 건드리지 않는다.
+    @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+    public static class BulkDeleteRequest {
+        private String scope;                    // "VISIBLE_ROADMAP_AUTO" 만 허용
+        private Long materialId;                 // 선택: 자료 필터 (있으면 일치 검증)
+        private Long sourceRoadmapId;            // 선택: 로드맵 필터 (있으면 일치 검증)
+        private String sourceType;               // "ROADMAP_AUTO" 만 허용
+        private java.util.List<Long> plannerIds; // 현재 화면에 렌더링 중인 삭제 대상 id
+    }
+
+    @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+    public static class BulkDeleteResponse {
+        private boolean success;
+        private Integer deletedCount;
+        private String message;
+        @JsonProperty("error_code")
+        private String errorCode;
     }
 
     // ---------- 로드맵 기반 84개 플래너 자동 생성 ----------

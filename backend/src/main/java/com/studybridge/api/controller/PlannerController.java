@@ -91,6 +91,20 @@ public class PlannerController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * 자료 기반(ROADMAP_AUTO) 플래너 전체삭제.
+     * 현재 화면에 표시 중인 plannerIds 만 삭제하며, 수동 플래너/주간일정/다른 유저 데이터는 절대 삭제하지 않는다.
+     */
+    @DeleteMapping("/bulk")
+    public ResponseEntity<PlannerDTO.BulkDeleteResponse> bulkDelete(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestBody PlannerDTO.BulkDeleteRequest request) {
+        PlannerDTO.BulkDeleteResponse res = plannerService.bulkDelete(userDetails.getId(), request);
+        return res.isSuccess()
+                ? ResponseEntity.ok(res)
+                : ResponseEntity.badRequest().body(res);
+    }
+
     // ---------- 공부 플래너 전용 AI (학습 실행 관리) ----------
     // 로드맵/퀴즈/문서질문/요약 없음. 플래너를 실행 가능한 계획으로 정리하고 피드백만 한다.
 

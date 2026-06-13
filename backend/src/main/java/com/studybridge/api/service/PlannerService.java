@@ -191,6 +191,78 @@ public class PlannerService {
     @Transactional
     public void delete(Long userId, Long plannerId) {
         Planner planner = getOwned(userId, plannerId);
+        cleanupAndDelete(planner);
+    }
+
+    /**
+     * 자료 기반(ROADMAP_AUTO) 플래너 전체삭제.
+     * 현재 화면에 표시 중인 plannerIds 만 삭제한다. 수동 플래너/주간일정(todos)/다른 유저 데이터는 절대 건드리지 않는다.
+     * 기존 단일 삭제와 동일하게 hard delete + 연결 S3/Material 정리. @Transactional 로 일부 실패 시 전체 rollback.
+     */
+    @Transactional
+    public PlannerDTO.BulkDeleteResponse bulkDelete(Long userId, PlannerDTO.BulkDeleteRequest req) {
+        final String AUTO = "ROADMAP_AUTO";
+
+        // 1) scope 검증
+        if (req == null || !"VISIBLE_ROADMAP_AUTO".equals(req.getScope())) {
+            return bulkFail("INVALID_DELETE_SCOPE", "삭제 범위가 올바르지 않습니다.");
+        }
+        // 2) sourceType 검증 (지정 시 ROADMAP_AUTO 만 허용)
+        if (req.getSourceType() != null && !AUTO.equals(req.getSourceType())) {
+            return bulkFail("INVALID_DELETE_SCOPE", "삭제 범위가 올바르지 않습니다.");
+        }
+
+        java.util.List<Long> ids = req.getPlannerIds();
+        if (ids == null || ids.isEmpty()) {
+            // 삭제 대상 없음 → 명확한 empty 성공 응답
+            return PlannerDTO.BulkDeleteResponse.builder()
+                    .success(true).deletedCount(0).message("삭제할 플래너가 없습니다.").build();
+        }
+        java.util.List<Long> distinctIds = ids.stream().filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
+
+        // 3) 인증 사용자 소유 + 지정 id 만 조회 (다른 유저 데이터는 결과에 포함되지 않음)
+        List<Planner> planners = plannerRepository.findByUserIdAndIdIn(userId, distinctIds);
+
+        // 4) 요청한 모든 id 가 본인 소유인지 (개수 불일치 = 남의 것이거나 존재하지 않음)
+        if (planners.size() != distinctIds.size()) {
+            return bulkFail("INVALID_DELETE_SCOPE", "삭제 대상에 본인 소유가 아니거나 존재하지 않는 플래너가 포함되어 있습니다.");
+        }
+
+        // 5) 모든 대상이 ROADMAP_AUTO 인지 + (지정 시) material/roadmap 조건 일치 검증
+        for (Planner p : planners) {
+            if (!AUTO.equals(p.getSourceType())) {
+                // 수동(MANUAL/null) 플래너가 섞이면 전체 거부 → 수동 플래너는 절대 삭제되지 않음
+                return bulkFail("INVALID_DELETE_SCOPE", "자료 기반 플래너만 삭제할 수 있습니다. 수동으로 작성한 플래너가 포함되어 있습니다.");
+            }
+            if (req.getMaterialId() != null
+                    && !req.getMaterialId().equals(p.getSourceMaterialId())
+                    && !req.getMaterialId().equals(p.getMaterialId())) {
+                return bulkFail("INVALID_DELETE_SCOPE", "삭제 대상이 자료(materialId) 조건과 일치하지 않습니다.");
+            }
+            if (req.getSourceRoadmapId() != null
+                    && !req.getSourceRoadmapId().equals(p.getSourceRoadmapId())) {
+                return bulkFail("INVALID_DELETE_SCOPE", "삭제 대상이 로드맵(sourceRoadmapId) 조건과 일치하지 않습니다.");
+            }
+        }
+
+        // 6) 삭제 (단일 삭제와 동일 정책: hard delete + S3/Material 정리)
+        int deleted = 0;
+        for (Planner p : planners) {
+            cleanupAndDelete(p);
+            deleted++;
+        }
+        return PlannerDTO.BulkDeleteResponse.builder()
+                .success(true).deletedCount(deleted)
+                .message(deleted + "개의 플래너를 삭제했습니다.").build();
+    }
+
+    private PlannerDTO.BulkDeleteResponse bulkFail(String code, String message) {
+        return PlannerDTO.BulkDeleteResponse.builder()
+                .success(false).errorCode(code).message(message).build();
+    }
+
+    /** hard delete + 연결 S3 객체 / 자료보관함 Material 정리 (단일/전체삭제 공통). */
+    private void cleanupAndDelete(Planner planner) {
         // 연결된 자료보관함 PDF(Material)와 S3 객체도 함께 정리
         if (planner.getS3Key() != null) {
             try { s3Service.deleteFile(planner.getS3Key()); } catch (Exception e) { log.warn("플래너 S3 삭제 실패: {}", e.getMessage()); }
@@ -286,6 +358,9 @@ public class PlannerService {
                 .subject(p.getSubject()).content(p.getContent()).tmi(p.getTmi())
                 .timeTableJson(p.getTimeTableJson())
                 .s3Key(p.getS3Key()).materialId(p.getMaterialId())
+                .sourceType(p.getSourceType())
+                .sourceMaterialId(p.getSourceMaterialId())
+                .sourceRoadmapId(p.getSourceRoadmapId())
                 .downloadUrl(url)
                 .createdAt(p.getCreatedAt()).updatedAt(p.getUpdatedAt())
                 .build();
