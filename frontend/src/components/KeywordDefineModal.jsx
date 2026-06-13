@@ -49,7 +49,14 @@ export default function KeywordDefineModal({ materialId, keyword, context, level
   const sourceBadgeColor = (src) => {
     if (src === 'Wikipedia') return { bg: '#EFF6FF', fg: '#1D4ED8' };
     if (src === 'Mixed') return { bg: '#F0FDF4', fg: '#15803D' };
-    return { bg: '#FEF3C7', fg: '#92400E' }; // GPT
+    return { bg: '#EEF2FF', fg: '#4338CA' }; // AI
+  };
+
+  // GPT/OpenAI 등 브랜드명을 노출하지 않고 "AI 개념 정의"로 통일 표시
+  const sourceBadgeLabel = (src) => {
+    if (src === 'Wikipedia') return 'Wikipedia';
+    if (src === 'Mixed') return 'AI + Wikipedia';
+    return 'AI 개념 정의';
   };
 
   return (
@@ -87,7 +94,7 @@ export default function KeywordDefineModal({ materialId, keyword, context, level
                 backgroundColor: sourceBadgeColor(data.sourceUsed).bg, color: sourceBadgeColor(data.sourceUsed).fg,
                 display: 'inline-flex', alignItems: 'center', gap: '4px',
               }}>
-                <Sparkles size={12} /> {data.sourceUsed}
+                <Sparkles size={12} /> {sourceBadgeLabel(data.sourceUsed)}
               </span>
             )}
           </div>

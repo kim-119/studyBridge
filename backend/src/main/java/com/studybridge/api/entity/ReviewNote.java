@@ -47,6 +47,9 @@ public class ReviewNote {
 
     private Integer wrongCount;
 
+    // 미응답(안 푼) 문제 수 — 복습 대상에 포함. (ddl-auto=update 로 nullable 컬럼 추가)
+    private Integer unansweredCount;
+
     // easy | medium | hard (프론트 DIFFICULTY_LABEL과 동기화)
     private String difficulty;
 

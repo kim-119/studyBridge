@@ -40,6 +40,102 @@ function isMeaninglessTitle(raw) {
   return BLOCKED_TITLES.some((b) => b.trim().toLowerCase() === low);
 }
 
+// 업로드 전 AI 유형 판별(classify-before-save) 사용 여부 — 기본 OFF.
+//  - ai07(material/classify)은 추출 텍스트 없이 파일명/메타만 받으면 항상 recommended=UNKNOWN·is_mismatch=true 를
+//    돌려주기 때문에, 모든 정상 업로드가 "업로드 유형 확인" 모달에 걸려 자료가 등록되지 않는 문제가 있었다.
+//  - 따라서 안정화를 위해 기본적으로 classify 단계를 건너뛰고, 선택한 materialType 그대로 바로 업로드한다.
+//  - 다시 켜려면 프론트 빌드/실행 환경에 VITE_MATERIAL_CLASSIFY_ENABLED=true 를 준다.
+const CLASSIFY_BEFORE_SAVE_ENABLED =
+  String(import.meta.env.VITE_MATERIAL_CLASSIFY_ENABLED || '').toLowerCase() === 'true';
+
+// ── 플래너 카드 표시/정렬 유틸 (프론트 표시 전용, DB title 은 변경하지 않음) ───────────────
+// UUID(36자)_ 접두어 제거(파일명/제목 앞에 붙는 경우)
+const UUID_PREFIX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}_/;
+// 대표 제목으로 쓰면 안 되는 의미 없는 제목들(키워드 폴백 대상)
+const MEANINGLESS_PLANNER_TITLES = new Set(
+  ['공부 플래너', '플래너', 'ㅇㅇ', 'ㅎㅎ', '무제', '제목 없음', '이름 없음', 'planner', 'sample', 'test']
+);
+
+function cleanText(s) {
+  return String(s || '').replace(UUID_PREFIX, '').trim();
+}
+
+// keywords 가 배열/콤마문자열 무엇이든 정리된 배열로 변환
+function toKeywordArray(kw) {
+  if (Array.isArray(kw)) return kw.map((k) => String(k).trim()).filter(Boolean);
+  if (typeof kw === 'string') return kw.split(',').map((k) => k.trim()).filter(Boolean);
+  return [];
+}
+
+// A. weekNumber 추출 — 명시값 우선, 없으면 title 의 'N주차'/'N일차'에서 숫자. 없으면 null.
+function getPlannerWeekNumber(material) {
+  if (material == null) return null;
+  // 1) 명시 필드
+  const direct = material.weekNumber;
+  if (direct != null && !Number.isNaN(Number(direct))) return Number(direct);
+  // 2) metadata.weekNumber (객체 또는 JSON 문자열)
+  let meta = material.metadata ?? material.plannerMetadataJson ?? null;
+  if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { meta = null; } }
+  if (meta && meta.weekNumber != null && !Number.isNaN(Number(meta.weekNumber))) {
+    return Number(meta.weekNumber);
+  }
+  const title = cleanText(material.rawTitle || material.title);
+  // 3) 'N주차'
+  const w = title.match(/(\d+)\s*주차/);
+  if (w) return Number(w[1]);
+  // 4) 'N일차' → N 을 그대로 주차 번호로 사용(요구사항)
+  const d = title.match(/(\d+)\s*일차/);
+  if (d) return Number(d[1]);
+  return null;
+}
+
+// B. 핵심키워드 제목 추출
+function getPlannerKeywordTitle(material) {
+  if (material == null) return '핵심 키워드 미설정';
+  // 1) keywords 배열/문자열의 앞 2~4개
+  const kws = toKeywordArray(material.keywords);
+  if (kws.length) return kws.slice(0, 4).join(' ');
+  // 2) title 에서 'N일차:' / 'N주차 -' 등 접두어 제거한 나머지
+  const title = cleanText(material.rawTitle || material.title);
+  const stripped = title.replace(/^\s*\d+\s*(주차|일차)\s*[:\-–~]?\s*/, '').trim();
+  if (stripped && !MEANINGLESS_PLANNER_TITLES.has(stripped) && !MEANINGLESS_PLANNER_TITLES.has(stripped.toLowerCase())) {
+    return stripped;
+  }
+  // 3) title 이 의미 없으면 파일명(확장자 제거)
+  const fname = cleanText(material.originalFileName).replace(/\.[^.]+$/, '').trim();
+  if (fname && !MEANINGLESS_PLANNER_TITLES.has(fname) && !MEANINGLESS_PLANNER_TITLES.has(fname.toLowerCase())) {
+    return fname;
+  }
+  // 4) 그래도 없으면
+  return '핵심 키워드 미설정';
+}
+
+// C. 표시 제목 — 'N주차 - 핵심키워드'. 주차 정보 없으면 키워드만(공부 플래너/파일명 단독 노출 금지).
+function getPlannerDisplayTitle(material) {
+  const week = getPlannerWeekNumber(material);
+  const kw = getPlannerKeywordTitle(material);
+  return week != null ? `${week}주차 - ${kw}` : kw;
+}
+
+// 정렬 동순위 tiebreak: date 오름차순 → id 오름차순
+function comparePlannerDateOrId(a, b) {
+  const ad = a?.date || '';
+  const bd = b?.date || '';
+  if (ad !== bd) return ad < bd ? -1 : 1;
+  return (Number(a?.id) || 0) - (Number(b?.id) || 0);
+}
+
+// 2. 플래너 정렬: weekNumber 숫자 오름차순, 없는 자료는 맨 뒤(문자열 정렬 금지 → 10주차가 2주차 뒤).
+function comparePlanners(a, b) {
+  const aw = getPlannerWeekNumber(a);
+  const bw = getPlannerWeekNumber(b);
+  if (aw == null && bw == null) return comparePlannerDateOrId(a, b);
+  if (aw == null) return 1;
+  if (bw == null) return -1;
+  if (aw !== bw) return aw - bw;
+  return comparePlannerDateOrId(a, b);
+}
+
 export default function Archive() {
   const { userId } = useAuth();
   const navigate = useNavigate();
@@ -142,6 +238,13 @@ export default function Archive() {
         .map((item) => ({
           id: item.materialId,
           title: item.title || item.originalFileName || '이름 없음',
+          // 원본 제목/파일명/키워드/주차 원천을 표시 함수가 쓸 수 있게 그대로 실어둔다(DB 값 변경 없음).
+          rawTitle: item.title || '',
+          originalFileName: item.originalFileName || '',
+          keywords: item.keywords || '',
+          // Spring DTO가 optional 로 내려주면 사용(없으면 undefined → title 파싱으로 폴백)
+          weekNumber: item.weekNumber,
+          metadata: item.metadata || item.plannerMetadata || null,
           date: item.uploadedAt ? item.uploadedAt.split('T')[0] : '',
           tag: '플래너',
           extractionStatus: item.extractionStatus || 'SUCCESS',
@@ -513,19 +616,21 @@ export default function Archive() {
     const selectedAi = addMaterialType === 'planner' ? 'PLANNER' : 'STUDY_PDF';
     setIsSubmitting(true);
     try {
-      // D. 저장 전 AI 유형 판별 (PDF_TEXT_EMPTY보다 먼저). ai07 장애 시 백엔드가 통과 처리.
-      let cls = null;
-      try {
-        cls = await materialService.classifyBeforeSave(selectedAi, formTitle, formKeywords, formFile);
-      } catch (e) {
-        // 분류 호출 자체가 실패해도(타임아웃 포함) 저장을 막지 않는다(선택 유형으로 진행)
-        console.warn('유형 판별 호출 실패, 선택 유형으로 진행:', e);
-      }
-      const recommended = cls?.recommendedType;
-      if (cls?.isMismatch && recommended && recommended !== selectedAi) {
-        // 불일치 → 확인 모달로 사용자 선택 (추천 저장 / 그래도 선택 저장 / 취소)
-        setClassifyInfo({ ...cls, selectedAi });
-        return; // finally 에서 저장 중 해제 → 모달에서 다시 선택
+      // D. 저장 전 AI 유형 판별은 기본 비활성화(위 CLASSIFY_BEFORE_SAVE_ENABLED 주석 참고).
+      //    켜져 있을 때만 호출하며, ai07 장애/타임아웃 시에도 저장은 막지 않는다(선택 유형으로 진행).
+      if (CLASSIFY_BEFORE_SAVE_ENABLED) {
+        let cls = null;
+        try {
+          cls = await materialService.classifyBeforeSave(selectedAi, formTitle, formKeywords, formFile);
+        } catch (e) {
+          console.warn('유형 판별 호출 실패, 선택 유형으로 진행:', e);
+        }
+        const recommended = cls?.recommendedType;
+        if (cls?.isMismatch && recommended && recommended !== selectedAi) {
+          // 불일치 → 확인 모달로 사용자 선택 (추천 저장 / 그래도 선택 저장 / 취소)
+          setClassifyInfo({ ...cls, selectedAi });
+          return; // finally 에서 저장 중 해제 → 모달에서 다시 선택
+        }
       }
       await doUpload(addMaterialType === 'planner' ? 'PLANNER' : 'PDF');
     } finally {
@@ -748,7 +853,7 @@ export default function Archive() {
           <EmptyState tab="planner" />
         )}
 
-        {!isLoading && activeTab === 'planner' && planners.slice(0, visibleCount).map((planner) => (
+        {!isLoading && activeTab === 'planner' && [...planners].sort(comparePlanners).slice(0, visibleCount).map((planner) => (
           <div
             key={planner.id}
             className="glass-panel archive-card animate-fade-in"
@@ -769,7 +874,7 @@ export default function Archive() {
                 삭제
               </button>
             </div>
-            <h3 className="card-title">{planner.title}</h3>
+            <h3 className="card-title">{getPlannerDisplayTitle(planner)}</h3>
             <div className="card-tags" style={{ marginBottom: 'auto' }}>
               <span className="card-tag">#{planner.tag}</span>
             </div>

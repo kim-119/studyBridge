@@ -74,28 +74,36 @@ public class ReviewNoteService {
             throw new SecurityException("권한이 없습니다.");
         }
 
-        // 1) 저장된 퀴즈 + 제출 답안으로 틀린 문제 추출 (프론트 parseQuizQuestions 규칙 미러링)
+        // 1) 저장된 퀴즈 + 제출 답안으로 복습 대상(오답 + 미응답) 추출 (프론트 parseQuizQuestions 규칙 미러링)
+        //    - WRONG     : 응답했지만 정답이 아님
+        //    - UNANSWERED: 제출하지 않음(answers 에 키가 없거나 null) → "내가 고른 답: 미응답" 으로 포함
+        //    - 정답(CORRECT)만 제외한다.
         List<ParsedQuestion> questions = parseQuizData(quiz.getQuizData());
-        List<WrongItem> wrongItems = new ArrayList<>();
+        List<WrongItem> reviewItems = new ArrayList<>();   // 오답 + 미응답 (원본 순서 유지)
         List<Map<String, Object>> wrongQuestions = new ArrayList<>();
+        int wrongOnly = 0;
+        int unansweredOnly = 0;
         for (int idx = 0; idx < questions.size(); idx++) {
             ParsedQuestion q = questions.get(idx);
             Integer selected = answerIndexFor(answers, idx);
-            if (selected == null) continue;            // 미응답은 오답에서 제외
-            if (selected.equals(q.correctIndex)) continue; // 정답은 제외
-            wrongItems.add(new WrongItem(q.question, q.options, q.correctIndex, selected, q.explanation));
+            boolean unanswered = (selected == null);
+            if (!unanswered && selected.equals(q.correctIndex)) continue; // 정답은 제외
+            if (unanswered) unansweredOnly++; else wrongOnly++;
+            reviewItems.add(new WrongItem(q.question, q.options, q.correctIndex, selected, q.explanation, unanswered, q.page));
             Map<String, Object> wq = new LinkedHashMap<>();
             wq.put("question", q.question);
             wq.put("options", q.options);
             wq.put("choices", q.options);
             wq.put("correct_answer", optionAt(q.options, q.correctIndex));
-            wq.put("user_answer", optionAt(q.options, selected));
+            wq.put("user_answer", unanswered ? "미응답" : optionAt(q.options, selected));
+            wq.put("status", unanswered ? "UNANSWERED" : "WRONG");
             wq.put("explanation", q.explanation);
+            wq.put("page", q.page);
             wrongQuestions.add(wq);
         }
 
-        if (wrongItems.isEmpty()) {
-            throw new IllegalStateException("틀린 문제가 없어 오답노트를 만들 수 없습니다.");
+        if (reviewItems.isEmpty()) {
+            throw new IllegalStateException("복습할 문제가 없습니다. 모든 문제를 맞혔어요.");
         }
 
         // 2) ai07 호출 (있으면 AI 강화본, 실패/부재 시 보유 데이터로 폴백)
@@ -109,8 +117,8 @@ public class ReviewNoteService {
         requestBody.put("wrong_questions", wrongQuestions);
 
         long t0 = System.currentTimeMillis();
-        log.info("[REVIEW_NOTE] start userId={} quizId={} materialId={} wrongCount={}",
-                userId, quizId, source.getMaterialId(), wrongItems.size());
+        log.info("[REVIEW_NOTE] start userId={} quizId={} materialId={} wrong={} unanswered={}",
+                userId, quizId, source.getMaterialId(), wrongOnly, unansweredOnly);
 
         Map response = null;
         try {
@@ -123,25 +131,30 @@ public class ReviewNoteService {
         }
 
         Object errorCode = response != null ? response.get("error_code") : null;
-        String aiPdfText = response != null && response.get("pdf_plain_text") != null
-                ? response.get("pdf_plain_text").toString() : null;
+        boolean aiEnriched = (errorCode == null && response != null);
 
-        boolean aiEnriched = (errorCode == null && aiPdfText != null && !aiPdfText.isBlank());
-        String pdfText;
-        String retryJson;
-        if (aiEnriched) {
-            pdfText = aiPdfText;
-            retryJson = extractRetryJson(response);
-        } else {
-            log.info("[REVIEW_NOTE] fallback build quizId={} wrongCount={}", quizId, wrongItems.size());
-            pdfText = buildFallbackPlainText(source.getTitle(), quiz.getDifficulty(), wrongItems);
-            retryJson = buildRetryJsonFromWrong(wrongItems);
+        // ai07 의 per-문제 해설/개념(있으면)으로 보강. PDF 레이아웃은 항상 우리 구조로 렌더(품질 일관).
+        String overallFeedback = aiEnriched ? firstNonBlank(
+                asStr(response.get("overall_feedback")), asStr(response.get("overallFeedback")),
+                asStr(response.get("feedback")), asStr(response.get("summary"))) : null;
+        if (overallFeedback == null || overallFeedback.isBlank()) {
+            overallFeedback = "아래 문제들을 다시 확인하고, 정답과 해설을 비교하며 복습하세요."
+                    + (unansweredOnly > 0 ? " 미응답 문제는 시간 내에 풀이를 시도하는 연습이 필요합니다." : "");
         }
+        if (aiEnriched) enrichFromAi(reviewItems, response);
 
-        // 3) PDF 생성 (NanumGothic). 파일명: "원본자료제목 오답노트.pdf"
+        // 2-1) 구조화된 오답노트 문서 모델 → PDF + 검색용 평문 + 다시풀기 JSON
+        String createdDate = java.time.LocalDate.now().toString();
         String noteTitle = safeTitle(source.getTitle()) + " 오답노트";
         String fileName = noteTitle + ".pdf";
-        byte[] pdf = buildPdf(pdfText);
+        String diffKo = quiz.getDifficulty() == null || quiz.getDifficulty().isBlank() ? "보통" : quiz.getDifficulty();
+        String plainText = buildFallbackPlainText(noteTitle, source.getTitle(), diffKo, createdDate,
+                wrongOnly, unansweredOnly, overallFeedback, reviewItems);
+        String retryJson = buildRetryJsonFromWrong(reviewItems);
+
+        // 3) PDF 생성 (NanumGothic, 카드형 레이아웃)
+        byte[] pdf = buildPdf(noteTitle, source.getTitle(), diffKo, createdDate,
+                wrongOnly, unansweredOnly, overallFeedback, reviewItems);
 
         // 4) S3 업로드
         String s3Key = "wrong-notes/" + userId + "/" + source.getMaterialId() + "/" + quizId + "/" + UUID.randomUUID() + "/wrong-note.pdf";
@@ -156,14 +169,12 @@ public class ReviewNoteService {
                 .storedFileName(s3Key)
                 .s3FileUrl(s3Key)
                 .fileSize((long) pdf.length)
-                .extractedText(pdfText)
+                .extractedText(plainText)
                 .extractionStatus(ExtractionStatus.SUCCESS)
                 .build();
         archive = materialRepository.save(archive);
 
-        // 6) review_note 메타 저장
-        int wrongCount = response != null && response.get("wrong_count") instanceof Number
-                ? ((Number) response.get("wrong_count")).intValue() : wrongItems.size();
+        // 6) review_note 메타 저장 (오답/미응답 수 분리)
         ReviewNote note = ReviewNote.builder()
                 .userId(userId)
                 .sourceMaterialId(source.getMaterialId())
@@ -172,16 +183,44 @@ public class ReviewNoteService {
                 .archiveMaterialId(archive.getMaterialId())
                 .title(noteTitle)
                 .s3Key(s3Key)
-                .wrongCount(wrongCount)
+                .wrongCount(wrongOnly)
+                .unansweredCount(unansweredOnly)
                 .difficulty(mapDifficulty(quiz.getDifficulty()))
                 .retryJson(retryJson)
                 .build();
         note = reviewNoteRepository.save(note);
 
-        log.info("[REVIEW_NOTE] OK userId={} reviewNoteId={} archiveMaterialId={} wrongCount={} aiEnriched={} elapsedMs={}",
-                userId, note.getReviewNoteId(), archive.getMaterialId(), wrongCount, aiEnriched, System.currentTimeMillis() - t0);
+        log.info("[REVIEW_NOTE] OK userId={} reviewNoteId={} archiveMaterialId={} wrong={} unanswered={} aiEnriched={} elapsedMs={}",
+                userId, note.getReviewNoteId(), archive.getMaterialId(), wrongOnly, unansweredOnly, aiEnriched, System.currentTimeMillis() - t0);
 
         return toDTO(note, true);
+    }
+
+    private String asStr(Object o) { return o == null ? null : o.toString(); }
+
+    private String firstNonBlank(String... vals) {
+        if (vals == null) return null;
+        for (String v : vals) if (v != null && !v.isBlank()) return v;
+        return null;
+    }
+
+    // ai07 wrong-note-feedback 응답의 per-문제 해설/개념을 reviewItems 순서대로 보강(있을 때만).
+    @SuppressWarnings("unchecked")
+    private void enrichFromAi(List<WrongItem> items, Map response) {
+        Object notes = response.get("wrong_notes");
+        if (!(notes instanceof List)) notes = response.get("notes");
+        if (!(notes instanceof List)) return;
+        List<?> list = (List<?>) notes;
+        for (int i = 0; i < items.size() && i < list.size(); i++) {
+            if (!(list.get(i) instanceof Map)) continue;
+            Map<String, Object> n = (Map<String, Object>) list.get(i);
+            String exp = firstNonBlank(asStr(n.get("explanation")), asStr(n.get("ai_explanation")), asStr(n.get("feedback")));
+            String concept = firstNonBlank(asStr(n.get("concept")), asStr(n.get("review_concept")),
+                    asStr(n.get("key_concept")), asStr(n.get("concept_to_review")));
+            WrongItem w = items.get(i);
+            if (concept != null) w.concept = concept;
+            if (exp != null && (w.explanation == null || w.explanation.isBlank())) w.explanation = exp;
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -362,6 +401,8 @@ public class ReviewNoteService {
     }
 
     private ReviewNoteDTO toDTO(ReviewNote n, boolean withPresign) {
+        int wrong = n.getWrongCount() == null ? 0 : n.getWrongCount();
+        int unanswered = n.getUnansweredCount() == null ? 0 : n.getUnansweredCount();
         return ReviewNoteDTO.builder()
                 .id(n.getReviewNoteId())
                 .title(n.getTitle())
@@ -370,7 +411,9 @@ public class ReviewNoteService {
                 .sourceMaterialId(n.getSourceMaterialId())
                 .quizId(n.getQuizId())
                 .archiveMaterialId(n.getArchiveMaterialId())
-                .wrongCount(n.getWrongCount())
+                .wrongCount(wrong)
+                .unansweredCount(unanswered)
+                .reviewCount(wrong + unanswered)
                 .difficulty(n.getDifficulty())
                 .memo(n.getMemo())
                 .pdfUrl(withPresign ? presign(n) : null)
@@ -416,23 +459,6 @@ public class ReviewNoteService {
         try { return Integer.parseInt(v.toString().trim()); } catch (Exception e) { return null; }
     }
 
-    private String extractRetryJson(Map response) {
-        try {
-            ArrayNode out = MAPPER.createArrayNode();
-            Object notes = response.get("wrong_notes");
-            if (notes instanceof List) {
-                for (Object o : (List<?>) notes) {
-                    if (o instanceof Map && ((Map<?, ?>) o).get("retry_question") != null) {
-                        out.add(MAPPER.valueToTree(((Map<?, ?>) o).get("retry_question")));
-                    }
-                }
-            }
-            return MAPPER.writeValueAsString(out);
-        } catch (Exception e) {
-            return "[]";
-        }
-    }
-
     private List<ParsedQuestion> parseQuizData(String quizData) {
         List<ParsedQuestion> result = new ArrayList<>();
         if (quizData == null || quizData.isBlank()) return result;
@@ -453,7 +479,8 @@ public class ReviewNoteService {
                 Integer correct = readCorrectIndex(node, options);
                 String question = textOf(node, "question", textOf(node, "q", "문제"));
                 String explanation = textOf(node, "explanation", "");
-                result.add(new ParsedQuestion(question, options, correct, explanation));
+                int page = readPage(node);
+                result.add(new ParsedQuestion(question, options, correct, explanation, page));
             }
         } catch (Exception e) {
             log.warn("[REVIEW_NOTE] quizData parse fail: {}", e.getMessage());
@@ -503,38 +530,63 @@ public class ReviewNoteService {
         return dflt;
     }
 
-    // ---------------- 폴백(ai07 부재 시) 본문/재출제 ----------------
-    private String buildFallbackPlainText(String title, String difficultyKo, List<WrongItem> wrongItems) {
-        String t = (title == null || title.isBlank()) ? "학습자료" : title;
-        String diff = (difficultyKo == null || difficultyKo.isBlank()) ? "보통" : difficultyKo;
+    private int readPage(JsonNode node) {
+        for (String k : new String[]{"page", "pageNumber", "page_number", "pageNo"}) {
+            if (node.has(k) && !node.get(k).isNull()) {
+                JsonNode v = node.get(k);
+                if (v.isInt()) return v.asInt();
+                try { return Integer.parseInt(v.asText().trim()); } catch (Exception ignore) {}
+            }
+        }
+        return 0;
+    }
+
+    // ---------------- 검색/미리보기용 평문(자료보관함 extractedText) ----------------
+    private String buildFallbackPlainText(String noteTitle, String sourceTitle, String difficultyKo, String createdDate,
+                                          int wrongCount, int unansweredCount, String overallFeedback, List<WrongItem> items) {
+        String src = (sourceTitle == null || sourceTitle.isBlank()) ? "학습자료" : sourceTitle;
         StringBuilder sb = new StringBuilder();
-        sb.append(t).append(" 오답노트\n");
-        sb.append("자료명: ").append(t).append("\n");
-        sb.append("난이도: ").append(diff).append("\n");
-        sb.append("틀린 문제 수: ").append(wrongItems.size()).append("\n\n");
-        sb.append("전체 피드백: 아래 문제들을 다시 확인하고, 정답과 해설을 비교하며 복습하세요.\n\n");
+        sb.append(noteTitle).append("\n");
+        sb.append("자료명: ").append(src).append("\n");
+        sb.append("난이도: ").append(difficultyKo).append("\n");
+        sb.append("생성일: ").append(createdDate).append("\n");
+        sb.append("오답 수: ").append(wrongCount).append("\n");
+        sb.append("미응답 수: ").append(unansweredCount).append("\n");
+        sb.append("복습 필요 수: ").append(wrongCount + unansweredCount).append("\n\n");
+        sb.append("전체 피드백: ").append(nz(overallFeedback)).append("\n\n");
         int i = 1;
-        for (WrongItem w : wrongItems) {
+        for (WrongItem w : items) {
             sb.append(i++).append(". 문제: ").append(nz(w.question)).append("\n");
-            sb.append("내가 고른 답: ").append(optionAt(w.options, w.selectedIndex)).append("\n");
+            sb.append("내가 고른 답: ").append(w.unanswered ? "미응답" : optionAt(w.options, w.selectedIndex)).append("\n");
             sb.append("정답: ").append(optionAt(w.options, w.correctIndex)).append("\n");
-            String exp = (w.explanation == null || w.explanation.isBlank()) ? "해설 정보가 없습니다. 자료를 다시 확인하세요." : w.explanation;
-            sb.append("해설: ").append(exp).append("\n\n");
+            sb.append("해설: ").append(explanationOf(w)).append("\n");
+            if (w.concept != null && !w.concept.isBlank()) sb.append("다시 봐야 할 개념: ").append(w.concept).append("\n");
+            if (w.page > 0) sb.append("참고 페이지: ").append(w.page).append("p\n");
+            sb.append("\n");
         }
         return sb.toString();
     }
 
-    private String buildRetryJsonFromWrong(List<WrongItem> wrongItems) {
+    private String explanationOf(WrongItem w) {
+        return (w.explanation == null || w.explanation.isBlank())
+                ? "해설 정보가 없습니다. 자료의 해당 개념을 다시 확인하세요." : w.explanation;
+    }
+
+    private String buildRetryJsonFromWrong(List<WrongItem> items) {
         try {
             ArrayNode out = MAPPER.createArrayNode();
-            for (WrongItem w : wrongItems) {
+            for (WrongItem w : items) {
                 com.fasterxml.jackson.databind.node.ObjectNode n = MAPPER.createObjectNode();
                 n.put("question", nz(w.question));
                 ArrayNode ch = MAPPER.createArrayNode();
                 if (w.options != null) for (String o : w.options) ch.add(o);
                 n.set("choices", ch);
                 n.put("correct_answer", optionAt(w.options, w.correctIndex));
-                n.put("explanation", nz(w.explanation));
+                n.put("user_answer", w.unanswered ? "미응답" : optionAt(w.options, w.selectedIndex));
+                n.put("status", w.unanswered ? "UNANSWERED" : "WRONG");
+                n.put("explanation", explanationOf(w));
+                if (w.concept != null) n.put("concept", w.concept);
+                if (w.page > 0) n.put("page", w.page);
                 out.add(n);
             }
             return MAPPER.writeValueAsString(out);
@@ -545,32 +597,76 @@ public class ReviewNoteService {
 
     private String nz(String s) { return s == null ? "" : s; }
 
-    // ---------------- PDF 생성 (OpenPDF + NanumGothic) ----------------
-    private byte[] buildPdf(String plainText) {
+    // ---------------- PDF 생성 (OpenPDF + NanumGothic, 카드형 레이아웃) ----------------
+    //  - 제목(초록) → 상단 메타 박스(자료명/난이도/생성일/오답·미응답·복습필요 수) → 전체 피드백
+    //  - 문제별 카드: 문제 / 내가 고른 답(빨강·미응답) / 정답(초록) / 해설 / 다시 봐야 할 개념 / 참고 페이지
+    private static final Color C_GREEN = new Color(21, 128, 61);
+    private static final Color C_GREEN_BG = new Color(236, 253, 245);
+    private static final Color C_RED = new Color(185, 28, 28);
+    private static final Color C_RED_BG = new Color(254, 242, 242);
+    private static final Color C_AMBER = new Color(146, 64, 14);
+    private static final Color C_AMBER_BG = new Color(255, 251, 235);
+    private static final Color C_TEXT = new Color(31, 41, 55);
+    private static final Color C_MUTED = new Color(107, 114, 128);
+    private static final Color C_BORDER = new Color(229, 231, 235);
+    private static final Color C_BOX_BG = new Color(247, 248, 250);
+
+    private byte[] buildPdf(String noteTitle, String sourceTitle, String difficultyKo, String createdDate,
+                            int wrongCount, int unansweredCount, String overallFeedback, List<WrongItem> items) {
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-            Document doc = new Document(PageSize.A4, 40, 40, 48, 48);
+            Document doc = new Document(PageSize.A4, 42, 42, 50, 50);
             PdfWriter.getInstance(doc, baos);
             doc.open();
             BaseFont base = BaseFont.createFont("NanumGothic.ttf", BaseFont.IDENTITY_H,
                     BaseFont.EMBEDDED, BaseFont.CACHED, fontBytes(), null);
 
-            String[] lines = (plainText == null ? "" : plainText).replace("\r", "").split("\n", -1);
-            boolean first = true;
-            for (String line : lines) {
-                Font f;
-                if (first) {
-                    f = new Font(base, 18, Font.BOLD, new Color(21, 128, 61));
-                    first = false;
-                } else if (isHeadingLine(line)) {
-                    f = new Font(base, 13, Font.BOLD, new Color(17, 24, 39));
-                } else {
-                    f = new Font(base, 11, Font.NORMAL, new Color(31, 41, 55));
-                }
-                Paragraph p = new Paragraph(line.isEmpty() ? " " : line, f);
-                p.setSpacingAfter(line.isEmpty() ? 6f : 2f);
-                p.setLeading(f.getSize() * 1.5f);
-                doc.add(p);
+            Font fTitle = new Font(base, 20, Font.BOLD, C_GREEN);
+            Font fMetaLabel = new Font(base, 10.5f, Font.BOLD, C_MUTED);
+            Font fMetaValue = new Font(base, 10.5f, Font.BOLD, C_TEXT);
+            Font fSection = new Font(base, 12, Font.BOLD, C_GREEN);
+            Font fBody = new Font(base, 10.5f, Font.NORMAL, C_TEXT);
+
+            // 제목
+            Paragraph title = new Paragraph(noteTitle, fTitle);
+            title.setSpacingAfter(4f);
+            doc.add(title);
+            Paragraph sub = new Paragraph("AI 오답노트 · 복습 전용 학습 문서", new Font(base, 10, Font.NORMAL, C_MUTED));
+            sub.setSpacingAfter(14f);
+            doc.add(sub);
+
+            // 상단 메타 박스 (2열 라벨/값 테이블)
+            String src = (sourceTitle == null || sourceTitle.isBlank()) ? "학습자료" : sourceTitle;
+            com.lowagie.text.pdf.PdfPTable meta = new com.lowagie.text.pdf.PdfPTable(new float[]{1f, 2.6f, 1f, 1.2f});
+            meta.setWidthPercentage(100);
+            metaCell(meta, "자료명", fMetaLabel, true);
+            metaCell(meta, src, fMetaValue, false);
+            metaCell(meta, "난이도", fMetaLabel, true);
+            metaCell(meta, difficultyKo, fMetaValue, false);
+            metaCell(meta, "생성일", fMetaLabel, true);
+            metaCell(meta, createdDate, fMetaValue, false);
+            metaCell(meta, "복습 필요", fMetaLabel, true);
+            metaCell(meta, (wrongCount + unansweredCount) + "문제", fMetaValue, false);
+            metaCell(meta, "오답 수", fMetaLabel, true);
+            metaCell(meta, wrongCount + "개", new Font(base, 10.5f, Font.BOLD, C_RED), false);
+            metaCell(meta, "미응답 수", fMetaLabel, true);
+            metaCell(meta, unansweredCount + "개", new Font(base, 10.5f, Font.BOLD, C_AMBER), false);
+            meta.setSpacingAfter(16f);
+            doc.add(meta);
+
+            // 전체 피드백
+            doc.add(new Paragraph("전체 피드백", fSection));
+            Paragraph fb = new Paragraph(nz(overallFeedback), fBody);
+            fb.setLeading(16f);
+            fb.setSpacingBefore(4f);
+            fb.setSpacingAfter(16f);
+            doc.add(fb);
+
+            // 문제별 카드
+            int i = 1;
+            for (WrongItem w : items) {
+                doc.add(buildQuestionCard(base, i++, w));
             }
+
             doc.close();
             return baos.toByteArray();
         } catch (Exception e) {
@@ -578,14 +674,95 @@ public class ReviewNoteService {
         }
     }
 
-    private boolean isHeadingLine(String line) {
-        if (line == null) return false;
-        String t = line.trim();
-        return t.matches("^\\d+\\.\\s*문제:.*")
-                || t.startsWith("전체 피드백")
-                || t.startsWith("추천 복습")
-                || t.startsWith("자료명")
-                || t.startsWith("틀린 문제 수");
+    private void metaCell(com.lowagie.text.pdf.PdfPTable t, String text, Font font, boolean isLabel) {
+        com.lowagie.text.pdf.PdfPCell c = new com.lowagie.text.pdf.PdfPCell(new com.lowagie.text.Phrase(nz(text), font));
+        c.setPadding(7f);
+        c.setBorderColor(C_BORDER);
+        c.setBackgroundColor(isLabel ? C_BOX_BG : Color.WHITE);
+        c.setVerticalAlignment(com.lowagie.text.Element.ALIGN_MIDDLE);
+        t.addCell(c);
+    }
+
+    // 문제 1개를 카드(테두리 박스)로 렌더. 라벨별 색상 구분 + 줄바꿈(셀 자동 wrap).
+    private com.lowagie.text.pdf.PdfPTable buildQuestionCard(BaseFont base, int no, WrongItem w) {
+        Font fNo = new Font(base, 11, Font.BOLD, C_GREEN);
+        Font fQ = new Font(base, 11.5f, Font.BOLD, C_TEXT);
+        Font fLabel = new Font(base, 10, Font.BOLD, C_MUTED);
+        Font fBody = new Font(base, 10.5f, Font.NORMAL, C_TEXT);
+
+        com.lowagie.text.pdf.PdfPTable card = new com.lowagie.text.pdf.PdfPTable(1);
+        card.setWidthPercentage(100);
+        card.setSpacingAfter(14f);
+
+        com.lowagie.text.pdf.PdfPCell cell = new com.lowagie.text.pdf.PdfPCell();
+        cell.setPadding(14f);
+        cell.setBorderColor(C_BORDER);
+        cell.setBorderWidth(1f);
+        cell.setBackgroundColor(Color.WHITE);
+
+        // 문제 번호 + 상태 배지
+        String statusBadge = w.unanswered ? "  [미응답]" : "  [오답]";
+        Paragraph head = new Paragraph();
+        head.add(new com.lowagie.text.Chunk("문제 " + no, fNo));
+        head.add(new com.lowagie.text.Chunk(statusBadge, new Font(base, 10, Font.BOLD, w.unanswered ? C_AMBER : C_RED)));
+        head.setSpacingAfter(6f);
+        cell.addElement(head);
+
+        Paragraph q = new Paragraph(nz(w.question), fQ);
+        q.setLeading(16f);
+        q.setSpacingAfter(10f);
+        cell.addElement(q);
+
+        // 내가 고른 답 (미응답=앰버, 오답=빨강 배경)
+        cell.addElement(answerLine(base, "내가 고른 답", w.unanswered ? "미응답" : optionAt(w.options, w.selectedIndex),
+                w.unanswered ? C_AMBER : C_RED, w.unanswered ? C_AMBER_BG : C_RED_BG));
+        // 정답 (초록)
+        cell.addElement(answerLine(base, "정답", optionAt(w.options, w.correctIndex), C_GREEN, C_GREEN_BG));
+
+        // 해설
+        Paragraph expLabel = new Paragraph("해설", fLabel);
+        expLabel.setSpacingBefore(8f);
+        cell.addElement(expLabel);
+        Paragraph exp = new Paragraph(explanationOf(w), fBody);
+        exp.setLeading(16f);
+        cell.addElement(exp);
+
+        // 다시 봐야 할 개념
+        if (w.concept != null && !w.concept.isBlank()) {
+            Paragraph cLabel = new Paragraph("다시 봐야 할 개념", fLabel);
+            cLabel.setSpacingBefore(6f);
+            cell.addElement(cLabel);
+            Paragraph cv = new Paragraph(w.concept, fBody);
+            cv.setLeading(15f);
+            cell.addElement(cv);
+        }
+        // 참고 페이지
+        if (w.page > 0) {
+            Paragraph pg = new Paragraph("참고 페이지: " + w.page + "p", new Font(base, 9.5f, Font.NORMAL, C_MUTED));
+            pg.setSpacingBefore(6f);
+            cell.addElement(pg);
+        }
+
+        card.addCell(cell);
+        return card;
+    }
+
+    // "라벨: 값" 한 줄을 옅은 배경 박스로 강조 (정답=초록, 오답/미응답=빨강/앰버)
+    private com.lowagie.text.pdf.PdfPTable answerLine(BaseFont base, String label, String value, Color fg, Color bg) {
+        com.lowagie.text.pdf.PdfPTable t = new com.lowagie.text.pdf.PdfPTable(1);
+        t.setWidthPercentage(100);
+        t.setSpacingBefore(3f);
+        com.lowagie.text.pdf.PdfPCell c = new com.lowagie.text.pdf.PdfPCell();
+        c.setPadding(8f);
+        c.setBackgroundColor(bg);
+        c.setBorderColor(bg);
+        Paragraph p = new Paragraph();
+        p.add(new com.lowagie.text.Chunk(label + ": ", new Font(base, 10, Font.BOLD, fg)));
+        p.add(new com.lowagie.text.Chunk(nz(value).isBlank() ? "-" : value, new Font(base, 10.5f, Font.NORMAL, C_TEXT)));
+        p.setLeading(15f);
+        c.addElement(p);
+        t.addCell(c);
+        return t;
     }
 
     private byte[] fontBytes() {
@@ -600,18 +777,25 @@ public class ReviewNoteService {
         return cachedFont;
     }
 
+    // 복습 대상(오답 + 미응답) 단위. unanswered=true 이면 "내가 고른 답: 미응답".
     private static class WrongItem {
         final String question;
         final List<String> options;
         final Integer correctIndex;
-        final Integer selectedIndex;
-        final String explanation;
-        WrongItem(String question, List<String> options, Integer correctIndex, Integer selectedIndex, String explanation) {
+        final Integer selectedIndex;   // 미응답이면 null
+        String explanation;            // ai07 enrich 가능
+        final boolean unanswered;
+        final int page;
+        String concept;                // 다시 봐야 할 개념 (ai07 enrich 가능)
+        WrongItem(String question, List<String> options, Integer correctIndex, Integer selectedIndex,
+                  String explanation, boolean unanswered, int page) {
             this.question = question;
             this.options = options;
             this.correctIndex = correctIndex;
             this.selectedIndex = selectedIndex;
             this.explanation = explanation;
+            this.unanswered = unanswered;
+            this.page = page;
         }
     }
 
@@ -620,11 +804,13 @@ public class ReviewNoteService {
         final List<String> options;
         final Integer correctIndex;
         final String explanation;
-        ParsedQuestion(String question, List<String> options, Integer correctIndex, String explanation) {
+        final int page;
+        ParsedQuestion(String question, List<String> options, Integer correctIndex, String explanation, int page) {
             this.question = question;
             this.options = options;
             this.correctIndex = correctIndex;
             this.explanation = explanation;
+            this.page = page;
         }
     }
 }

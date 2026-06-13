@@ -8,6 +8,20 @@ export const AI_TIMEOUT_MS = Number(
   180000
 );
 
+// 자료 업로드(POST /api/materials/upload) 전용 timeout.
+//  - 업로드 본 요청은 S3 저장 + DB insert 만 동기로 수행하고 텍스트 추출은 @Async 로 분리되어 있다.
+//  - 따라서 AI(180s) 타임아웃을 그대로 쓰면 S3/네트워크가 막혔을 때 "저장 중..." 이 과도하게 길어진다.
+//  - 60초로 묶어 무한 pending 을 방지하고, 초과 시 catch → 에러 알림 + 저장 중 해제가 보장되게 한다.
+export const MATERIAL_UPLOAD_TIMEOUT_MS = Number(
+  import.meta.env.VITE_MATERIAL_UPLOAD_TIMEOUT_MS || 60000
+);
+
+// 퀴즈/로드맵 생성 전용 timeout(90초). 초과 시 axios가 ECONNABORTED 로 끊고,
+//  화면은 catch → deterministic fallback 으로 전환한다(무한 "생성 중" 방지, 90초 UX 보장).
+export const AI_FALLBACK_TIMEOUT_MS = Number(
+  import.meta.env.VITE_AI_FALLBACK_TIMEOUT_MS || 90000
+);
+
 const hostname =
   typeof window !== 'undefined'
     ? window.location.hostname === 'localhost'
@@ -688,7 +702,7 @@ export const materialService = {
     const token = localStorage.getItem('token');
 
     const res = await axios.post(`${API_BASE_URL}/api/materials/upload`, formData, {
-      timeout: AI_TIMEOUT_MS,
+      timeout: MATERIAL_UPLOAD_TIMEOUT_MS,
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
@@ -751,7 +765,7 @@ export const materialService = {
 
   generateQuiz: async (materialId, quizRequest) => {
     const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest, {
-      timeout: AI_TIMEOUT_MS,
+      timeout: AI_FALLBACK_TIMEOUT_MS, // 90초 초과 시 끊고 프론트 fallback 으로 전환
     });
     return res.data;
   },
@@ -780,7 +794,7 @@ export const materialService = {
   // 84일(12주x7일) 로드맵 재생성 — 난이도(level) 포함, 레거시 로드맵 교체
   regenerateRoadmap: async (materialId, level = 'intermediate') => {
     const res = await api.post(`/api/materials/${materialId}/roadmap/regenerate`, { level, difficulty: level }, {
-      timeout: AI_TIMEOUT_MS,
+      timeout: AI_FALLBACK_TIMEOUT_MS, // 90초 초과 시 끊고 프론트 fallback 로드맵으로 전환
     });
     return res.data;
   },

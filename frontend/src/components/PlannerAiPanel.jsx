@@ -45,7 +45,7 @@ export default function PlannerAiPanel({ plannerId }) {
         <div className="flex items-center gap-2 text-[16px] font-extrabold text-[#111827]">
           <Sparkles size={18} style={{ color: GREEN_DARK }} /> AI 피드백 및 다음 학습 추천
         </div>
-        <p className="mt-2 text-[13px] text-[#6B7280]">플래너를 먼저 저장하면 AI가 오늘 계획을 정리하고 피드백을 줍니다.</p>
+        <p className="mt-2 text-[13px] text-[#6B7280]">저장된 플래너 자료를 기반으로 AI가 오늘 학습 계획과 다음 행동을 정리합니다.</p>
       </section>
     );
   }

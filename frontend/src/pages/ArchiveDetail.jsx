@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, Circle, Settings, ChevronRight, X, Trash2 } from 'lucide-react';
+import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, XCircle, Circle, Settings, ChevronRight, X, Trash2, Sparkles, ListChecks, ArrowRight, FileText, BarChart3 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService } from '../services/api';
 import SummarySectionCard from '../components/SummarySectionCard';
@@ -35,6 +35,10 @@ function AnalyzingProgress() {
   );
 }
 
+// AI 질문 기록 영속화 — materialId별 localStorage 저장/복구
+const CHAT_INTRO = '이 AI는 자료보관함에 업로드된 PDF 기반 채팅만 가능합니다.\n현재 선택한 자료의 내용 안에서만 질문에 답변합니다.\n자료에 없는 내용은 임의로 생성하지 않습니다.\n일반적인 학습 질문이나 자료와 무관한 질문은 학습메이트 기능을 이용해주세요.';
+const chatStorageKey = (mid) => `studybridge:material-chat:${mid}`;
+
 export default function ArchiveDetail() {
   const { type, id } = useParams();
   const location = useLocation();
@@ -57,14 +61,16 @@ export default function ArchiveDetail() {
   const [isAddingStudyLog, setIsAddingStudyLog] = useState(false);
   const [showAllDetailed, setShowAllDetailed] = useState(false);
   const [memoText, setMemoText] = useState('');
-  const [chatMessages, setChatMessages] = useState([
-    { sender: 'ai', text: '이 AI는 자료보관함에 업로드된 PDF 기반 채팅만 가능합니다.\n현재 선택한 자료의 내용 안에서만 질문에 답변합니다.\n자료에 없는 내용은 임의로 생성하지 않습니다.\n일반적인 학습 질문이나 자료와 무관한 질문은 학습메이트 기능을 이용해주세요.' }
-  ]);
+  const [chatMessages, setChatMessages] = useState([{ sender: 'ai', text: CHAT_INTRO }]);
   const [chatInput, setChatInput] = useState('');
 
   const [roadmapData, setRoadmapData] = useState(null);
   const [roadmapError, setRoadmapError] = useState(null);
+  // AI 로드맵 실패 시 deterministic fallback 로 대체했음을 알리는 안내(로드맵은 그대로 제공)
+  const [roadmapFallbackNotice, setRoadmapFallbackNotice] = useState(null);
   const [quizError, setQuizError] = useState(null);
+  // AI 퀴즈 생성 실패 시 deterministic fallback 으로 대체했음을 알리는 안내(문제는 그대로 제공)
+  const [quizFallbackNotice, setQuizFallbackNotice] = useState(null);
   const [isAskingQuestion, setIsAskingQuestion] = useState(false);
 
 
@@ -84,6 +90,8 @@ export default function ArchiveDetail() {
   const [plannerStartDate, setPlannerStartDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [plannerResult, setPlannerResult] = useState(null);
   const [plannerError, setPlannerError] = useState(null);
+  // 자료보관함 PLANNER 상세 전용 — 학습계획/일정 보기 전환(기본 학습계획). 메모/퀴즈/AI질문 없음.
+  const [plannerDetailView, setPlannerDetailView] = useState('plan'); // 'plan' | 'roadmap'
 
   const chatEndRef = useRef(null);
 
@@ -101,7 +109,7 @@ export default function ArchiveDetail() {
     PDF_OCR_REQUIRED: '이미지 기반 PDF라 텍스트 추출이 필요합니다. OCR 설정을 켠 뒤 다시 시도해주세요.',
     AI_TIMEOUT: 'AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.',
     OLLAMA_UNAVAILABLE: '로컬 AI 모델 연결에 실패했습니다.',
-    OPENAI_UNAVAILABLE: 'GPT 모델 연결에 실패했습니다.',
+    OPENAI_UNAVAILABLE: 'AI 모델 연결에 실패했습니다.',
     AI_RESPONSE_PARSE_FAILED: 'AI 응답 형식 처리에 실패했습니다. 다시 생성해주세요.',
     QUIZ_VALIDATE_FAILED: '요청한 난이도가 충분히 반영되지 않았습니다. 같은 PDF 자료를 기준으로 다시 생성해주세요.',
     PDF_CONTEXT_REQUIRED: 'PDF 기반 퀴즈를 생성하려면 자료에서 추출된 텍스트나 요약이 필요합니다.',
@@ -531,6 +539,29 @@ export default function ArchiveDetail() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
 
+  // ---------------- AI 질문 기록 영속화 (materialId별 localStorage) ----------------
+  // 상세 진입/새로고침/나갔다 들어오기 후에도 질문·답변·시간 유지. materialId 변경 시 해당 자료 기록만 로드.
+  useEffect(() => {
+    if (!id) return;
+    try {
+      const raw = localStorage.getItem(chatStorageKey(id));
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (Array.isArray(saved) && saved.length > 0) { setChatMessages(saved); return; }
+      }
+    } catch (_) { /* 손상된 저장본 무시 */ }
+    setChatMessages([{ sender: 'ai', text: CHAT_INTRO }]);
+  }, [id]);
+
+  // 대화가 바뀔 때마다 즉시 저장(생성 중 placeholder 제외)
+  useEffect(() => {
+    if (!id) return;
+    try {
+      const toSave = chatMessages.filter((m) => !m.isThinking);
+      localStorage.setItem(chatStorageKey(id), JSON.stringify(toSave));
+    } catch (_) { /* 용량 초과 등은 무시 */ }
+  }, [chatMessages, id]);
+
   // ---------------- 핸들러 ----------------
 
   // 퀴즈 옵션 선택
@@ -544,8 +575,10 @@ export default function ArchiveDetail() {
   // 오답노트 작성하기: 현재 퀴즈에서 틀린 문제를 모아 백엔드로 전송 → AI(또는 폴백) PDF 오답노트 생성
   const handleCreateReviewNote = async (quizId, questions) => {
     if (isCreatingReviewNote) return;
+    // 오답(WRONG) + 미응답(UNANSWERED) 모두 복습 대상. 미응답은 selectedAnswer 부재로 판별(서버도 동일하게 판별).
     const wrong = questions.filter((q, idx) => userAnswers[idx] !== undefined && userAnswers[idx] !== q.answer);
-    if (wrong.length === 0) { alert('틀린 문제가 없어 오답노트를 생성하지 않았습니다.'); return; }
+    const unanswered = questions.filter((q, idx) => userAnswers[idx] === undefined);
+    if (wrong.length + unanswered.length === 0) { alert('복습할 문제가 없습니다. 모든 문제를 맞혔어요.'); return; }
     try {
       setIsCreatingReviewNote(true);
       const note = await reviewNoteService.createFromQuiz(quizId, userAnswers, {
@@ -565,15 +598,34 @@ export default function ArchiveDetail() {
   };
 
   // 오답노트 PDF 컴퓨터에 저장 (GET /api/review-notes/{id}/download)
-  const handleDownloadReviewNote = async (reviewNoteId, fallbackUrl) => {
+  // PDF 새창으로 보기 — popup 차단 방지를 위해 클릭 이벤트 안에서 빈 창을 먼저 선점한 뒤 URL 주입.
+  const handleViewReviewNotePdf = async (reviewNoteId, fallbackUrl) => {
+    const win = window.open('', '_blank'); // 클릭 컨텍스트에서 즉시 선점
+    try {
+      const data = await reviewNoteService.getDownloadUrl(reviewNoteId);
+      const url = data?.url || data?.downloadUrl || fallbackUrl;
+      if (!url) { if (win) win.close(); alert('이 오답노트에는 아직 PDF가 없습니다.'); return; }
+      if (win) win.location.href = url; else window.open(url, '_blank', 'noopener');
+    } catch (e) {
+      console.error('오답노트 PDF 열기 실패:', e);
+      if (win) win.close();
+      alert('PDF를 여는 중 문제가 발생했습니다.');
+    }
+  };
+
+  // PDF 컴퓨터에 저장 — <a download> 로 직접 다운로드.
+  const handleSaveReviewNotePdf = async (reviewNoteId, fallbackUrl, title) => {
     try {
       const data = await reviewNoteService.getDownloadUrl(reviewNoteId);
       const url = data?.url || data?.downloadUrl || fallbackUrl;
       if (!url) { alert('이 오답노트에는 아직 PDF가 없습니다.'); return; }
-      window.open(url, '_blank', 'noopener');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${title || '오답노트'}.pdf`;
+      document.body.appendChild(a); a.click(); a.remove();
     } catch (e) {
-      console.error('오답노트 다운로드 실패:', e);
-      alert('PDF를 여는 중 문제가 발생했습니다.');
+      console.error('오답노트 저장 실패:', e);
+      alert('PDF 저장 중 문제가 발생했습니다.');
     }
   };
 
@@ -658,16 +710,28 @@ export default function ArchiveDetail() {
 
   // 퀴즈 생성 신청
   const handleGenerateQuiz = async () => {
+    // R. 문항 수 5~20 보정 (빈 값/미입력 → 10). try 밖에서 계산해 catch(fallback)에서도 사용.
+    let appliedCount = parseInt(quizSettings.count, 10);
+    if (Number.isNaN(appliedCount)) appliedCount = 10;
+    if (appliedCount < 5) appliedCount = 5;
+    if (appliedCount > 20) appliedCount = 20;
+
+    // 공통: 퀴즈를 화면에 올리고 정리(성공/폴백 공용)
+    const applyQuiz = (quiz, notice) => {
+      setQuizError(null);
+      setQuizFallbackNotice(notice || null);
+      setQuizzes((prev) => [quiz, ...prev]);
+      setSelectedQuizId(quiz.quizId);
+      setUserAnswers({});
+      setIsQuizSettingsOpen(false);
+    };
+
     try {
       setIsGeneratingQuiz(true);
       // G. 생성 시작 즉시 이전/실패 퀴즈를 화면에서 내린다(stale quiz 방지).
       setQuizError(null);
+      setQuizFallbackNotice(null);
       setSelectedQuizId(null);
-      // R. 문항 수 5~20 보정 (빈 값/미입력 → 10). 보정값을 상태에도 반영.
-      let appliedCount = parseInt(quizSettings.count, 10);
-      if (Number.isNaN(appliedCount)) appliedCount = 10;
-      if (appliedCount < 5) appliedCount = 5;
-      if (appliedCount > 20) appliedCount = 20;
       if (appliedCount !== quizSettings.count) setQuizSettings((s) => ({ ...s, count: appliedCount }));
       const req = {
         difficulty: quizSettings.difficulty,
@@ -677,32 +741,28 @@ export default function ArchiveDetail() {
       };
       const newQuiz = await materialService.generateQuiz(id, req);
 
-      // F. 서버 실패 또는 H. hard 클라이언트 보조검증 실패 → 문제 카드를 렌더링하지 않는다.
+      // AI 응답이 정상(성공 + 난이도검증 통과 + 문제 ≥1)이면 그대로 사용.
       const serverFailed = newQuiz?.success === false;
       const hardInvalid = !serverFailed && isQuizHardInvalid(newQuiz);
-      if (serverFailed || hardInvalid) {
-        setQuizError(serverFailed
-          ? normalizeAiResponse(newQuiz)
-          : normalizeAiResponse({
-              success: false,
-              errorCode: 'QUIZ_VALIDATE_FAILED',
-              message: '요청한 어려움 난이도가 충분히 반영되지 않았습니다. 다시 생성해 주세요.',
-              retryable: true,
-              difficultyValidation: newQuiz?.difficultyValidation,
-            }));
-        setSelectedQuizId(null); // 불합격/이전 퀴즈 숨김
-        return;                  // quizzes 목록에 추가하지 않음
+      const aiQuestions = serverFailed ? [] : parseQuizQuestions(newQuiz?.quizzes?.length ? newQuiz.quizzes : newQuiz?.quizData);
+      if (!serverFailed && !hardInvalid && aiQuestions.length > 0) {
+        // ai07 신규 계약: 서버가 자체 fallback 문제를 내려준 경우(metadata.usedFallback) 안내만 표시(문제는 그대로 사용)
+        const aiUsedFallback = newQuiz?.metadata?.usedFallback || newQuiz?.usedFallback;
+        applyQuiz(newQuiz, aiUsedFallback ? 'AI가 문서 정보가 부족하여 기본 문제로 구성했습니다. 문제 풀이는 그대로 가능합니다.' : null);
+        return;
       }
 
-      setQuizError(null);
-      setQuizzes(prev => [newQuiz, ...prev]);
-      setSelectedQuizId(newQuiz.quizId);
-      setUserAnswers({});
-      setIsQuizSettingsOpen(false);
+      // 실패/검증실패/빈 응답 → deterministic fallback 으로 "무조건" 문제 제공.
+      const reason = serverFailed
+        ? 'AI 문제 생성이 불안정하여 기본 문제로 생성했습니다. 문제 풀이는 그대로 가능합니다.'
+        : hardInvalid
+          ? '요청한 난이도가 충분히 반영되지 않아 기본 문제로 대체했습니다. 다시 생성하면 AI 문제를 재시도합니다.'
+          : 'AI 문제 응답이 비어 있어 기본 문제로 생성했습니다.';
+      applyQuiz(buildFallbackQuiz(appliedCount, quizSettings.difficulty), reason);
     } catch (e) {
-      console.error('퀴즈 생성 실패:', e);
-      setSelectedQuizId(null);
-      setQuizError(normalizeAiException(e));
+      // timeout/404/500/parse 실패 모두 fallback 으로 흡수 — "생성 중" 고정·빈 화면 금지.
+      console.error('퀴즈 생성 실패 → fallback:', e);
+      applyQuiz(buildFallbackQuiz(appliedCount, quizSettings.difficulty), 'AI 서버 연결이 불안정하여 기본 문제로 생성했습니다.');
     } finally {
       setIsGeneratingQuiz(false);
     }
@@ -772,22 +832,31 @@ export default function ArchiveDetail() {
     try {
       setIsRegeneratingRoadmap(true);
       setRoadmapError(null);
+      setRoadmapFallbackNotice(null);
       const roadmap = await materialService.regenerateRoadmap(id, roadmapLevel);
-      // C. 실패 응답(HTTP 200 + success:false)으로 기존 정상 로드맵을 덮어쓰지 않는다.
       const normalized = normalizeAiResponse(roadmap);
       const newSteps = normalizeRoadmapSteps(roadmap?.roadmapData || roadmap);
       if (normalized.success === false || newSteps.length === 0) {
-        setRoadmapError(normalized.success === false
-          ? normalized
-          : normalizeAiResponse({ success: false, errorCode: 'ROADMAP_VALIDATE_FAILED', message: '로드맵 재생성에 실패했습니다. 잠시 후 다시 시도해주세요.', retryable: true }));
-        return; // roadmapData/roadmapSteps 유지
+        // AI 실패/빈 응답 → UNKNOWN_ERROR로 끝내지 않고 deterministic fallback 로드맵을 "무조건" 제공.
+        const fb = buildFallbackRoadmap(roadmapLevel);
+        setRoadmapData(fb);
+        setRoadmapSteps(normalizeRoadmapSteps(fb));
+        setRoadmapError(null);
+        setRoadmapFallbackNotice('AI 로드맵 생성이 불안정하여 기본 12주(84일) 로드맵으로 생성했습니다. 다시 생성하면 AI 로드맵을 재시도합니다.');
+        return;
       }
       setRoadmapData(roadmap);
       setRoadmapSteps(newSteps);
+      // ai07 신규 계약: 서버가 fallback 로드맵을 내려준 경우 안내(fallbackUsed/usedFallback)
+      setRoadmapFallbackNotice((roadmap?.fallbackUsed || roadmap?.metadata?.usedFallback)
+        ? 'AI가 문서 정보가 부족하여 기본 학습 절차 기반으로 로드맵을 구성했습니다.' : null);
     } catch (e) {
-      console.error('로드맵 재생성 실패:', e);
-      // 네트워크/타임아웃 등 예외도 generic alert 대신 오류 코드/메시지 카드로 표시.
-      setRoadmapError(normalizeAiException(e));
+      console.error('로드맵 재생성 실패 → fallback:', e);
+      // timeout/404/500/parse 실패 모두 fallback 으로 흡수 — UNKNOWN_ERROR·무한 pending 금지.
+      const fb = buildFallbackRoadmap(roadmapLevel);
+      setRoadmapData(fb);
+      setRoadmapSteps(normalizeRoadmapSteps(fb));
+      setRoadmapFallbackNotice('AI 서버 연결이 불안정하여 기본 12주(84일) 로드맵으로 생성했습니다. 다시 생성하면 AI 로드맵을 재시도합니다.');
     } finally {
       setIsRegeneratingRoadmap(false);
     }
@@ -828,7 +897,7 @@ export default function ArchiveDetail() {
 
     const userMsg = chatInput.trim();
     setChatInput('');
-    setChatMessages(prev => [...prev, { sender: 'user', text: userMsg }]);
+    setChatMessages(prev => [...prev, { sender: 'user', text: userMsg, createdAt: new Date().toISOString(), materialId: id }]);
 
     try {
       setIsAskingQuestion(true);
@@ -837,14 +906,14 @@ export default function ArchiveDetail() {
       const normalized = normalizeAiResponse(res);
       setChatMessages(prev => {
         const filtered = prev.filter(m => !m.isThinking);
-        return [...filtered, { sender: 'ai', text: normalized.success === false ? normalized.message : (res.aiAnswer || '문서 기준으로는 확인되지 않습니다.'), response: normalized }];
+        return [...filtered, { sender: 'ai', text: normalized.success === false ? normalized.message : (res.aiAnswer || '문서 기준으로는 확인되지 않습니다.'), response: normalized, createdAt: new Date().toISOString(), materialId: id }];
       });
     } catch (e) {
       console.error('AI 질문 실패:', e);
       const normalized = normalizeAiException(e);
       setChatMessages(prev => {
         const filtered = prev.filter(m => !m.isThinking);
-        return [...filtered, { sender: 'ai', text: normalized.message, response: normalized }];
+        return [...filtered, { sender: 'ai', text: normalized.message, response: normalized, createdAt: new Date().toISOString(), materialId: id }];
       });
     } finally {
       setIsAskingQuestion(false);
@@ -888,6 +957,7 @@ export default function ArchiveDetail() {
   const labelToDifficultyCode = { '쉬움': 'easy', '보통': 'normal', '어려움': 'hard' };
   const isQuizHardInvalid = (quiz) => {
     if (!quiz) return false;
+    if (quiz.isFallback) return false; // deterministic fallback 은 항상 렌더(문제 무조건 제공)
     const requested = quiz.difficultyRequested || labelToDifficultyCode[quiz.difficulty] || 'normal';
     if (requested !== 'hard') return false;
     if (quiz.difficultyValidation?.passed === false) return true;
@@ -899,6 +969,338 @@ export default function ArchiveDetail() {
       if (text.length < 80) return true;
       return HARD_SIMPLE_PATTERNS.some((p) => p.test(text));
     });
+  };
+
+  // ---------------- 퀴즈 deterministic fallback ----------------
+  // AI 퀴즈가 형식/난이도 검증 실패·timeout·404·빈 응답이면, 추출 텍스트/요약/키워드 기반으로
+  // 결정적(deterministic) 객관식 문제를 만들어 "무조건" 풀 수 있게 한다. 최소 3문제 보장.
+  const buildFallbackQuiz = (count, difficultyLabel) => {
+    const want = Math.max(3, Math.min(parseInt(count, 10) || 5, 20));
+    const snip = (t) => { const x = String(t || '').trim(); return x.length > 70 ? x.slice(0, 70) + '…' : x; };
+
+    // 1) 콘텐츠 풀: 섹션(제목+본문) 우선 → 학습/실습 포인트 → 본문 문장
+    const pool = getSummarySections(summaryData)
+      .map((s) => ({ term: sanitizeMarkdownText(s.title || '').replace(/^\d+\.\s*/, '').trim(), desc: sanitizeMarkdownText(s.content || '').trim() }))
+      .filter((p) => p.term && p.desc && p.desc.length > 8);
+    if (pool.length < 4) {
+      [...sanitizeList(getSummaryStringList(summaryData, 'learningPoints')), ...sanitizeList(getSummaryStringList(summaryData, 'practicePoints'))]
+        .forEach((p) => { const desc = String(p).trim(); if (desc.length > 8) pool.push({ term: desc.split(/[:：.]/)[0].slice(0, 40) || `핵심 ${pool.length + 1}`, desc }); });
+    }
+    if (pool.length < 4) {
+      const text = sanitizeMarkdownText(material?.extractedText || getSummaryOverview(summaryData) || '');
+      text.split(/(?<=[.。!?])\s+/).map((s) => s.trim()).filter((s) => s.length > 15).slice(0, 12)
+        .forEach((s, i) => { pool.push({ term: s.split(/[\s,]/).slice(0, 3).join(' ').slice(0, 30) || `문장 ${i + 1}`, desc: s }); });
+    }
+
+    const questions = [];
+    if (pool.length >= 2) {
+      const n = Math.min(want, pool.length);
+      for (let i = 0; i < n; i++) {
+        const correct = pool[i];
+        const others = pool.filter((_, j) => j !== i);
+        const distract = [];
+        for (let k = 0; k < others.length && distract.length < 3; k++) distract.push(others[(i + k) % others.length]);
+        const choices = distract.map((d) => snip(d.desc));
+        const answerIndex = i % (choices.length + 1);
+        choices.splice(answerIndex, 0, snip(correct.desc));
+        questions.push({
+          question: `‘${correct.term}’에 대한 설명으로 가장 적절한 것은?`,
+          choices, answerIndex, answer: answerIndex,
+          explanation: `정답: ${snip(correct.desc)}`,
+          page: 1, difficulty: difficultyLabel, source: 'FALLBACK',
+        });
+      }
+    }
+    // 최후 보루: 키워드 기반 최소 3문제(콘텐츠가 거의 없을 때)
+    if (questions.length < 3) {
+      const kws = getSummaryKeywords(summaryData).map(sanitizeMarkdownText).filter(Boolean);
+      const base = kws.length ? kws : (material?.keywords ? String(material.keywords).split(',').map((s) => s.trim()).filter(Boolean) : []);
+      for (let i = questions.length; i < 3; i++) {
+        const correct = base[i % Math.max(base.length, 1)] || `핵심 개념 ${i + 1}`;
+        const answerIndex = i % 4;
+        const choices = ['해당 없음', '관련 없는 보기', '문서에 없는 내용'];
+        choices.splice(answerIndex, 0, correct);
+        questions.push({
+          question: `이 자료의 핵심 내용과 가장 관련 있는 것은? (${i + 1})`,
+          choices, answerIndex, answer: answerIndex,
+          explanation: `이 자료의 핵심 키워드: ${correct}`,
+          page: 1, difficulty: difficultyLabel, source: 'FALLBACK',
+        });
+      }
+    }
+    return {
+      quizId: `fallback-${Date.now()}`,
+      isFallback: true,
+      difficulty: difficultyLabel,
+      difficultyRequested: 'normal', // hard 보조검증 우회(이중 안전)
+      quizzes: questions,
+    };
+  };
+
+  // ---------------- 로드맵 deterministic fallback (12주 × 7일 = 84일) ----------------
+  // AI 로드맵 실패(timeout/네트워크/빈 응답)여도 UNKNOWN_ERROR로 끝내지 않고, 요약/키워드 기반 기본 로드맵을 만들어 제공한다.
+  const buildFallbackRoadmap = (level = 'intermediate') => {
+    const WEEK_THEMES = [
+      '핵심 개념 파악', '기본 예제 학습', '주요 구조·원리 이해', '심화 개념 학습',
+      '응용 연습', '중간 점검 및 복습', '실전 적용', '사례·예제 분석',
+      '문제 해결 연습', '통합 미니 프로젝트', '취약점 보완', '최종 정리 및 종합 복습',
+    ];
+    const kws = getSummaryKeywords(summaryData).map(sanitizeMarkdownText).filter(Boolean);
+    const sections = getSummarySections(summaryData);
+    const topicPool = (kws.length ? kws : (material?.keywords ? String(material.keywords).split(',').map(s => s.trim()).filter(Boolean) : []));
+    const sectionTitles = sections.map(s => sanitizeMarkdownText(s.title || '').replace(/^\d+\.\s*/, '').trim()).filter(Boolean);
+    const pick = (arr, i) => (arr.length ? arr[i % arr.length] : null);
+
+    const weeks = [];
+    for (let w = 0; w < 12; w++) {
+      const theme = WEEK_THEMES[w];
+      const weekTopic = pick(sectionTitles, w) || pick(topicPool, w) || theme;
+      const days = [];
+      for (let d = 0; d < 7; d++) {
+        const dayIndex = w * 7 + d + 1;
+        const topic = pick(topicPool, w * 7 + d) || pick(sectionTitles, w + d) || weekTopic;
+        const isReviewDay = d === 6;
+        const tasks = isReviewDay
+          ? ['이번 주 학습 내용 복습', `‘${weekTopic}’ 핵심 요약 정리`, '이해 안 된 부분 다시 학습']
+          : [
+              topic ? `‘${topic}’ 개념 학습 및 정리` : `${theme} 학습`,
+              '핵심 내용 요약 노트 작성',
+              '관련 예제/문제 풀이',
+            ];
+        days.push({
+          day_index: dayIndex,
+          day_label: `${dayIndex}일차`,
+          title: isReviewDay ? `${w + 1}주차 복습` : `${theme} (${d + 1}일차)`,
+          objective: isReviewDay ? `${w + 1}주차에 학습한 내용을 점검하고 복습합니다.` : (topic ? `‘${topic}’를 이해하고 적용해 봅니다.` : `${theme}을(를) 진행합니다.`),
+          core_concepts: topic ? [topic] : [],
+          tasks,
+          review_questions: [],
+          checkpoint: isReviewDay ? '이번 주 목표를 달성했는지 스스로 점검' : '',
+          completed: false,
+        });
+      }
+      weeks.push({
+        week: w + 1,
+        title: `${w + 1}주차 · ${theme}`,
+        objective: weekTopic ? `${theme} — ‘${weekTopic}’ 중심` : theme,
+        week_summary: '',
+        days,
+      });
+    }
+    return { roadmap: { weeks }, weeks, fallbackUsed: true, level, isFallback: true };
+  };
+
+  // ---------------- 자료보관함 PLANNER 전용 ----------------
+  // 자료보관함의 PLANNER 자료는 이미 저장된 자료다. "먼저 저장" 유도 없이 저장된 자료 기반으로 바로 분석을 보여준다.
+  const isPlanner = material?.materialType === 'PLANNER';
+
+  // AI 계획 분석 — 저장된 플래너(PDF) 본문 기준으로 요약/계획 분석을 (재)생성한다. 별도 백엔드 추가 없이 기존 요약 엔드포인트 사용.
+  const handlePlannerAnalyze = async () => {
+    if (!material) return;
+    try {
+      setSummaryLoading(true);
+      const summary = await materialService.getSummary(material.materialId || id);
+      setSummaryData(summary);
+    } catch (e) {
+      console.warn('AI 계획 분석 실패:', e);
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
+
+  const renderPlannerRightPanel = () => {
+    const overview = getSummaryOverview(summaryData);
+    const keywords = getSummaryKeywords(summaryData);
+    const sections = getSummarySections(summaryData);
+    const goals = sanitizeList(getSummaryStringList(summaryData, 'learningPoints'));
+    const nextActions = sanitizeList(
+      getSummaryStringList(summaryData, 'studyQuestions').length
+        ? getSummaryStringList(summaryData, 'studyQuestions')
+        : getSummaryStringList(summaryData, 'practicePoints')
+    );
+    const hasAnalysis = !!(overview || keywords.length || sections.length || goals.length || nextActions.length);
+
+    const Card = ({ icon, title, children }) => (
+      <div className="glass-panel animate-fade-in" style={{ padding: '22px' }}>
+        <h3 style={{ margin: '0 0 14px', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>
+          {icon} {title}
+        </h3>
+        {children}
+      </div>
+    );
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px' }}>
+        {/* 저장된 플래너 기반 안내 (먼저 저장 유도 금지) */}
+        <div style={{ borderRadius: '14px', border: '1px solid #DCFCE7', background: '#F0FDF4', padding: '14px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, fontSize: '15px', color: '#15803D' }}>
+            <Sparkles size={17} /> AI 피드백 및 다음 학습 추천
+          </div>
+          <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#3F6212', lineHeight: 1.6 }}>
+            저장된 플래너 자료를 기반으로 AI가 학습 계획을 정리하고 다음 행동을 추천합니다.
+          </p>
+        </div>
+
+        {(() => {
+          // 로드맵 일(日) 데이터 — 체크리스트/진행률 뷰에서 사용
+          const allDays = (roadmapSteps || []).flatMap((s) => (s.days || []).map((d) => ({ ...d, week: Number(s.stepOrder) })));
+          const doneDays = allDays.filter((d) => d.completed).length;
+          const progressPct = allDays.length ? Math.round((doneDays / allDays.length) * 100) : 0;
+
+          // ── 체크리스트 보기 ──
+          if (plannerDetailView === 'checklist') {
+            if (allDays.length === 0) return (
+              <Card icon={<ListChecks size={17} color="var(--color-primary)" />} title="체크리스트">
+                <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 체크리스트로 만들 일정/로드맵이 없습니다. ‘일정/로드맵 보기’에서 먼저 로드맵을 생성하세요.</p>
+              </Card>
+            );
+            return (
+              <Card icon={<ListChecks size={17} color="#15803D" />} title={`체크리스트 (${doneDays}/${allDays.length} 완료)`}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '60vh', overflowY: 'auto' }}>
+                  {allDays.map((d, i) => (
+                    <button key={i} onClick={() => handleToggleDay(d.week, d.dayIndex)}
+                      style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', textAlign: 'left', border: '1px solid var(--color-border)', background: d.completed ? '#F0FDF4' : '#fff', borderRadius: '10px', padding: '10px 12px', cursor: 'pointer', width: '100%' }}>
+                      {d.completed ? <CheckCircle2 size={18} color="#16A34A" style={{ flexShrink: 0, marginTop: '1px' }} /> : <Circle size={18} color="#9CA3AF" style={{ flexShrink: 0, marginTop: '1px' }} />}
+                      <span style={{ flex: 1, fontSize: '13.5px', lineHeight: 1.5, color: 'var(--color-text-main)', textDecoration: d.completed ? 'line-through' : 'none', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+                        <b>{d.week}주 {d.dayLabel || `${d.dayIndex}일차`}</b> · {d.title || '학습'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </Card>
+            );
+          }
+
+          // ── 진행률 보기 ──
+          if (plannerDetailView === 'progress') {
+            return (
+              <Card icon={<BarChart3 size={17} color="#15803D" />} title="진행률">
+                {allDays.length === 0 ? (
+                  <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>진행률을 계산할 일정/로드맵이 없습니다.</p>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px', color: 'var(--color-text-main)' }}>
+                      <span>전체 진행률</span><b style={{ color: '#15803D' }}>{progressPct}% ({doneDays}/{allDays.length}일)</b>
+                    </div>
+                    <div style={{ height: '12px', borderRadius: '999px', background: '#E5E7EB', overflow: 'hidden' }}>
+                      <div style={{ width: `${progressPct}%`, height: '100%', background: 'linear-gradient(90deg,#22C55E,#15803D)', transition: 'width 0.4s' }} />
+                    </div>
+                    <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {(roadmapSteps || []).map((s, i) => {
+                        const wd = s.days || []; const wdone = wd.filter((d) => d.completed).length;
+                        const wpct = wd.length ? Math.round((wdone / wd.length) * 100) : 0;
+                        return (
+                          <div key={i} style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
+                            <span style={{ display: 'inline-block', width: '70px' }}>{s.stepOrder}주차</span>
+                            <span style={{ color: wpct === 100 ? '#15803D' : 'var(--color-text-main)' }}>{wdone}/{wd.length}일 ({wpct}%)</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </Card>
+            );
+          }
+
+          // ── 다음 학습 추천 보기 ──
+          if (plannerDetailView === 'next') {
+            return nextActions.length > 0 ? (
+              <Card icon={<ArrowRight size={17} color="#15803D" />} title="다음 학습 추천">
+                <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {nextActions.map((a, i) => <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{a}</li>)}
+                </ul>
+              </Card>
+            ) : (
+              <Card icon={<ArrowRight size={17} color="var(--color-primary)" />} title="다음 학습 추천">
+                <p style={{ margin: '0 0 14px', fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 추천이 없습니다. ‘AI 계획 분석’을 눌러 생성하세요.</p>
+                <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze}>AI 계획 분석</button>
+              </Card>
+            );
+          }
+
+          // ── 일정/로드맵 보기 ──
+          if (plannerDetailView === 'roadmap') {
+            return (roadmapSteps && roadmapSteps.length > 0) ? (
+              <Card icon={<Map size={17} color="var(--color-primary)" />} title="일정 / 로드맵">
+                <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '60vh', overflowY: 'auto' }}>
+                  {roadmapSteps.slice(0, 84).map((s, i) => (
+                    <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>
+                      {s.title || s.label || s.task || s.content || `단계 ${i + 1}`}
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            ) : (
+              <Card icon={<Map size={17} color="var(--color-primary)" />} title="일정 / 로드맵">
+                <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 등록된 일정/로드맵이 없습니다. 좌측 PDF 원문에서 계획을 확인하세요.</p>
+              </Card>
+            );
+          }
+
+          // ── 학습계획 보기(기본 'plan') — AI 분석 결과 ──
+          if (summaryLoading && !hasAnalysis) return (
+            <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석 중…">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {[0, 1, 2].map((i) => (
+                  <div key={i} style={{ height: '14px', borderRadius: '6px', background: 'linear-gradient(90deg,#F3F4F6,#E5E7EB,#F3F4F6)', backgroundSize: '200% 100%', animation: 'pulse 1.4s ease-in-out infinite' }} />
+                ))}
+              </div>
+            </Card>
+          );
+          if (!hasAnalysis) return (
+            <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석">
+              <p style={{ margin: '0 0 14px', fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. AI 계획 분석을 눌러 생성하세요.</p>
+              <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze}>AI 계획 분석</button>
+            </Card>
+          );
+          return (
+            <>
+              {overview && (
+                <Card icon={<AlignLeft size={17} color="var(--color-primary)" />} title="문서 개요 / 학습계획">
+                  <p style={{ margin: 0, fontSize: '14.5px', lineHeight: 1.7, color: 'var(--color-text-main)', whiteSpace: 'pre-wrap' }}>{overview}</p>
+                </Card>
+              )}
+              {keywords.length > 0 && (
+                <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="핵심 키워드">
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {keywords.map((kw) => (
+                      <span key={kw} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)' }}>#{String(kw).trim()}</span>
+                    ))}
+                  </div>
+                </Card>
+              )}
+              {goals.length > 0 && (
+                <Card icon={<CheckCircle2 size={17} color="#15803D" />} title="학습 목표">
+                  <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {goals.map((g, i) => <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{g}</li>)}
+                  </ul>
+                </Card>
+              )}
+              {sections.length > 0 && (
+                <Card icon={<ListChecks size={17} color="#15803D" />} title="AI 정리 계획 / 피드백">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {sections.slice(0, 12).map((s, i) => (
+                      <div key={i}>
+                        <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: '4px' }}>{s.title}</div>
+                        <p style={{ margin: 0, fontSize: '13.5px', lineHeight: 1.65, color: 'var(--color-text-muted)', whiteSpace: 'pre-wrap' }}>{s.content}</p>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              )}
+              {nextActions.length > 0 && (
+                <Card icon={<ArrowRight size={17} color="#15803D" />} title="다음 학습 추천">
+                  <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {nextActions.map((a, i) => <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{a}</li>)}
+                  </ul>
+                </Card>
+              )}
+            </>
+          );
+        })()}
+      </div>
+    );
   };
 
   // ---------------- 렌더링 도우미 ----------------
@@ -983,7 +1385,7 @@ export default function ArchiveDetail() {
                 {/* 2. 핵심 키워드 (클릭 가능) */}
                 <div>
                   <h4 style={{ margin: '0 0 8px', fontSize: '16px', color: 'var(--color-text-main)' }}>🔑 핵심 키워드</h4>
-                  <p style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--color-text-muted)' }}>키워드를 클릭하면 GPT/Wikipedia 기반 개념 정의를 볼 수 있어요.</p>
+                  <p style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--color-text-muted)' }}>키워드를 클릭하면 AI/Wikipedia 기반 개념 정의를 볼 수 있어요.</p>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                     {cleanKeywords.length > 0 ? (
                         cleanKeywords.map((kw) => (
@@ -1100,9 +1502,11 @@ export default function ArchiveDetail() {
         const activeQuizHardInvalid = isQuizHardInvalid(activeQuiz);
         const parsedQuestions = activeQuizHardInvalid ? [] : rawParsedQuestions;
 
-        // 오답노트 작성하기 버튼 상태 (B)
+        // 오답노트 작성하기 버튼 상태 (B) — 오답(WRONG) + 미응답(UNANSWERED) 모두 복습 대상
         const rnAnsweredCount = parsedQuestions.filter((q, i) => userAnswers[i] !== undefined).length;
         const rnWrongCount = parsedQuestions.filter((q, i) => userAnswers[i] !== undefined && userAnswers[i] !== q.answer).length;
+        const rnUnansweredCount = parsedQuestions.filter((q, i) => userAnswers[i] === undefined).length;
+        const rnReviewCount = rnWrongCount + rnUnansweredCount;
         const rnExistingNote = activeQuiz ? reviewNotesByQuiz[activeQuiz.quizId] : null;
         let rnButtonLabel = '오답노트 작성하기';
         let rnButtonDisabled = true;
@@ -1112,12 +1516,13 @@ export default function ArchiveDetail() {
           rnButtonDisabled = false;
         } else if (!activeQuiz || parsedQuestions.length === 0 || rnAnsweredCount === 0) {
           rnButtonDisabled = true;
-          rnButtonGuide = '퀴즈를 풀고 틀린 문제가 있으면 오답노트를 만들 수 있습니다.';
-        } else if (rnWrongCount === 0) {
+          rnButtonGuide = '퀴즈를 풀어보세요. 틀리거나 못 푼 문제로 오답노트를 만들 수 있습니다.';
+        } else if (rnReviewCount === 0) {
           rnButtonDisabled = true;
-          rnButtonGuide = '틀린 문제가 없어 오답노트를 생성하지 않았습니다.';
+          rnButtonGuide = '모든 문제를 맞혔어요. 복습할 문제가 없습니다.';
         } else {
           rnButtonDisabled = false;
+          rnButtonLabel = `오답노트 작성하기 (오답 ${rnWrongCount}·미응답 ${rnUnansweredCount})`;
         }
         const onReviewNoteButton = () => {
           if (rnExistingNote) { navigate('/review-notes'); return; }
@@ -1172,6 +1577,14 @@ export default function ArchiveDetail() {
               )}
 
               {renderAiStatus(quizError, handleGenerateQuiz)}
+
+              {/* AI 실패 시 기본(fallback) 문제 안내 — 문제는 그대로 풀 수 있음 */}
+              {quizFallbackNotice && (
+                <div style={{ margin: '0 0 16px', borderRadius: '12px', border: '1px solid #FDE68A', background: '#FFFBEB', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                  <HelpCircle size={16} color="#B45309" style={{ marginTop: '2px', flexShrink: 0 }} />
+                  <span style={{ fontSize: '13px', color: '#92400E', lineHeight: 1.6 }}>{quizFallbackNotice}</span>
+                </div>
+              )}
 
               {/* 퀴즈 내용 영역 */}
               {selectedQuizId === null ? (
@@ -1264,34 +1677,44 @@ export default function ArchiveDetail() {
                         <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{activeQuizStatus.success === false ? getAiErrorMessage(activeQuizStatus.errorCode, activeQuizStatus.textStatus, activeQuizStatus.message) : '퀴즈 형식 검증에 실패했습니다. 다시 생성해주세요.'}</p>
                     ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-                          {parsedQuestions.map((q, idx) => (
-                              <div key={idx} className="glass-panel" style={{ padding: '24px', borderLeft: '4px solid var(--color-primary)' }}>
-                                <h5 style={{ margin: '0 0 20px', fontSize: '16px', color: 'var(--color-text-main)', lineHeight: '1.5' }}>{q.q}</h5>
+                          {(() => { const anyAnswered = parsedQuestions.some((_, i) => userAnswers[i] !== undefined); return parsedQuestions.map((q, idx) => {
+                              const hasAnswered = userAnswers[idx] !== undefined;
+                              const isCorrectPick = hasAnswered && userAnswers[idx] === q.answer;
+                              return (
+                              <div key={idx} className="glass-panel" style={{ padding: '24px', borderLeft: `4px solid ${hasAnswered ? (isCorrectPick ? '#16A34A' : '#DC2626') : 'var(--color-primary)'}` }}>
+                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', marginBottom: '20px' }}>
+                                  <span style={{ flexShrink: 0, fontSize: '13px', fontWeight: 700, color: 'var(--color-text-muted)', marginTop: '2px' }}>Q{idx + 1}.</span>
+                                  {/* 문제 문장: 길어도 잘리지 않고 줄바꿈 */}
+                                  <h5 style={{ margin: 0, fontSize: '16px', color: 'var(--color-text-main)', lineHeight: '1.6', whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word', flex: 1 }}>{q.q}</h5>
+                                  {/* 채점 후 정답/오답/미응답 배지 */}
+                                  {hasAnswered ? (
+                                    <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12.5px', fontWeight: 700, padding: '4px 10px', borderRadius: '999px', backgroundColor: isCorrectPick ? '#DCFCE7' : '#FEE2E2', color: isCorrectPick ? '#15803D' : '#991B1B' }}>
+                                      {isCorrectPick ? <><CheckCircle2 size={14} /> 정답</> : <><XCircle size={14} /> 오답</>}
+                                    </span>
+                                  ) : anyAnswered ? (
+                                    <span style={{ flexShrink: 0, fontSize: '12.5px', fontWeight: 700, padding: '4px 10px', borderRadius: '999px', backgroundColor: '#FEF3C7', color: '#92400E' }}>미응답</span>
+                                  ) : null}
+                                </div>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                                   {q.options.map((opt, optIdx) => {
                                     const isSelected = userAnswers[idx] === optIdx;
                                     const isCorrectAnswer = optIdx === q.answer;
-                                    const hasAnswered = userAnswers[idx] !== undefined;
 
                                     let optionBgColor = 'white';
                                     let optionTextColor = 'var(--color-text-main)';
                                     let optionBorderColor = 'var(--color-border)';
-
-                                    if (isSelected) {
-                                      if (isCorrectAnswer) {
-                                        optionBgColor = '#DCFCE7';
-                                        optionBorderColor = '#86EFAC';
-                                        optionTextColor = '#166534';
-                                      } else {
-                                        optionBgColor = '#FEE2E2';
-                                        optionBorderColor = '#FCA5A5';
-                                        optionTextColor = '#991B1B';
-                                      }
+                                    if (isSelected && isCorrectAnswer) {
+                                      optionBgColor = '#DCFCE7'; optionBorderColor = '#86EFAC'; optionTextColor = '#166534';
+                                    } else if (isSelected && !isCorrectAnswer) {
+                                      optionBgColor = '#FEE2E2'; optionBorderColor = '#FCA5A5'; optionTextColor = '#991B1B';
                                     } else if (hasAnswered && isCorrectAnswer) {
-                                      optionBgColor = '#DCFCE7';
-                                      optionBorderColor = '#86EFAC';
-                                      optionTextColor = '#166534';
+                                      optionBgColor = '#DCFCE7'; optionBorderColor = '#86EFAC'; optionTextColor = '#166534';
                                     }
+
+                                    // 채점 후 정답=초록 O, 사용자가 고른 오답=빨강 X
+                                    let mark = <Circle size={18} color="#9CA3AF" style={{ flexShrink: 0, marginTop: '1px' }} />;
+                                    if (hasAnswered && isCorrectAnswer) mark = <CheckCircle2 size={18} color="#16A34A" style={{ flexShrink: 0, marginTop: '1px' }} />;
+                                    else if (isSelected && !isCorrectAnswer) mark = <XCircle size={18} color="#DC2626" style={{ flexShrink: 0, marginTop: '1px' }} />;
 
                                     return (
                                         <button
@@ -1299,40 +1722,46 @@ export default function ArchiveDetail() {
                                             onClick={() => handleSelectOption(idx, optIdx)}
                                             className="btn-outline"
                                             style={{
-                                              width: '100%', height: 'auto', display: 'flex', alignItems: 'center',
+                                              width: '100%', height: 'auto', display: 'flex', alignItems: 'flex-start', gap: '10px',
                                               textAlign: 'left', fontWeight: 'normal', justifyContent: 'flex-start',
-                                              fontSize: '15px', padding: '16px', borderRadius: '12px',
+                                              fontSize: '15px', lineHeight: '1.55', padding: '14px 16px', borderRadius: '12px',
                                               backgroundColor: optionBgColor,
                                               borderColor: optionBorderColor,
                                               color: optionTextColor,
+                                              whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word',
                                               transition: 'all 0.2s'
                                             }}
                                         >
-                                          {opt}
+                                          {mark}
+                                          <span style={{ flex: 1, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{opt}</span>
+                                          {hasAnswered && isCorrectAnswer && <span style={{ flexShrink: 0, fontSize: '12px', fontWeight: 700, color: '#15803D' }}>○ 정답</span>}
+                                          {isSelected && !isCorrectAnswer && <span style={{ flexShrink: 0, fontSize: '12px', fontWeight: 700, color: '#DC2626' }}>✕ 내 답</span>}
                                         </button>
                                     );
                                   })}
                                 </div>
-                                {q.explanation && userAnswers[idx] !== undefined && (
-                                  <p style={{ margin: '14px 0 0', fontSize: '13px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>해설: {q.explanation}</p>
+                                {q.explanation && hasAnswered && (
+                                  <p style={{ margin: '14px 0 0', fontSize: '13px', color: 'var(--color-text-muted)', lineHeight: 1.6, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>해설: {q.explanation}</p>
                                 )}
                               </div>
-                          ))}
+                          ); }); })()}
                         </div>
                     )}
                     {/* 채점 요약 (오답노트 생성은 상단 "오답노트 작성하기" 버튼으로 일원화) */}
                     {parsedQuestions.length > 0 && (() => {
                       const answered = parsedQuestions.filter((q, idx) => userAnswers[idx] !== undefined);
                       const wrong = parsedQuestions.filter((q, idx) => userAnswers[idx] !== undefined && userAnswers[idx] !== q.answer);
+                      const unanswered = parsedQuestions.filter((q, idx) => userAnswers[idx] === undefined);
                       if (answered.length === 0) return null;
                       return (
                         <div className="glass-panel" style={{ marginTop: '24px', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
                           <div style={{ fontSize: '14px', color: 'var(--color-text-main)' }}>
-                            <b>채점:</b> {answered.length}문제 중 <b style={{ color: '#16A34A' }}>{answered.length - wrong.length}개 정답</b>
+                            <b>채점:</b> {parsedQuestions.length}문제 중 <b style={{ color: '#16A34A' }}>{answered.length - wrong.length}개 정답</b>
                             {wrong.length > 0 && <> · <b style={{ color: '#DC2626' }}>{wrong.length}개 오답</b></>}
+                            {unanswered.length > 0 && <> · <b style={{ color: '#B45309' }}>{unanswered.length}개 미응답</b></>}
                           </div>
-                          {wrong.length > 0 && !rnExistingNote && (
-                            <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>상단의 <b style={{ color: '#DC2626' }}>오답노트 작성하기</b> 버튼으로 오답노트를 만들 수 있어요.</span>
+                          {(wrong.length + unanswered.length) > 0 && !rnExistingNote && (
+                            <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>상단의 <b style={{ color: '#DC2626' }}>오답노트 작성하기</b> 버튼으로 오답·미응답을 모아 복습할 수 있어요.</span>
                           )}
                         </div>
                       );
@@ -1357,13 +1786,21 @@ export default function ArchiveDetail() {
                     ) : (
                       <>
                         <h3 style={{ margin: '0 0 8px', fontSize: '18px', color: '#15803D' }}>오답노트가 저장되었습니다.</h3>
-                        <p style={{ margin: '0 0 20px', fontSize: '13.5px', color: 'var(--color-text-muted)' }}>{reviewNoteResult.message || '오답노트가 자료보관함과 오답노트 탭에 저장되었습니다.'}</p>
+                        <p style={{ margin: '0 0 10px', fontSize: '13.5px', color: 'var(--color-text-muted)' }}>{reviewNoteResult.message || '오답노트가 자료보관함과 오답노트 탭에 저장되었습니다.'}</p>
+                        {(reviewNoteResult.wrongCount != null || reviewNoteResult.unansweredCount != null) && (
+                          <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--color-text-main)' }}>
+                            <b style={{ color: '#DC2626' }}>오답 {reviewNoteResult.wrongCount ?? 0}개</b>
+                            {(reviewNoteResult.unansweredCount ?? 0) > 0 && <> · <b style={{ color: '#B45309' }}>미응답 {reviewNoteResult.unansweredCount}개</b></>}
+                            {' · 복습 필요 '}<b>{reviewNoteResult.reviewCount ?? ((reviewNoteResult.wrongCount ?? 0) + (reviewNoteResult.unansweredCount ?? 0))}개</b>
+                          </p>
+                        )}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                          <button className="btn-primary" style={{ padding: '11px', borderRadius: '14px', fontWeight: 'bold' }} onClick={() => navigate('/review-notes')}>오답노트에서 보기</button>
+                          <button className="btn-primary" style={{ padding: '11px', borderRadius: '14px', fontWeight: 'bold' }} onClick={() => handleViewReviewNotePdf(reviewNoteResult.id, reviewNoteResult.pdfUrl)}>PDF 보기 (새 창)</button>
+                          <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => handleSaveReviewNotePdf(reviewNoteResult.id, reviewNoteResult.pdfUrl, reviewNoteResult.title)}>컴퓨터에 저장</button>
                           {reviewNoteResult.archiveMaterialId && (
-                            <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => navigate(`/archive/pdf/${reviewNoteResult.archiveMaterialId}`)}>자료보관함에서 보기</button>
+                            <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => navigate(`/archive/pdf/${reviewNoteResult.archiveMaterialId}`)}>자료보관함에 저장됨 · 보기</button>
                           )}
-                          <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => handleDownloadReviewNote(reviewNoteResult.id, reviewNoteResult.pdfUrl)}>컴퓨터에 저장</button>
+                          <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => navigate('/review-notes')}>오답노트에서 보기</button>
                           <button className="btn-close" style={{ alignSelf: 'flex-end', marginTop: '4px', fontSize: '13px', color: 'var(--color-text-muted)' }} onClick={() => setReviewNoteResult(null)}>닫기</button>
                         </div>
                       </>
@@ -1581,6 +2018,14 @@ export default function ArchiveDetail() {
               <p style={{ color: 'var(--color-text-muted)', marginBottom: '24px' }}>
                 업로드한 자료를 기반으로 AI가 설계한 12주 × 7일(84일) 학습 로드맵입니다.{totalDaysNow > 0 ? ` (현재 ${totalDaysNow}일)` : ''}
               </p>
+
+              {/* AI 실패 시 기본(fallback) 로드맵 안내 — 로드맵은 그대로 사용 가능 */}
+              {roadmapFallbackNotice && (
+                <div style={{ margin: '0 0 16px', borderRadius: '12px', border: '1px solid #FDE68A', background: '#FFFBEB', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                  <Map size={16} color="#B45309" style={{ marginTop: '2px', flexShrink: 0 }} />
+                  <span style={{ fontSize: '13px', color: '#92400E', lineHeight: 1.6 }}>{roadmapFallbackNotice}</span>
+                </div>
+              )}
 
               {/* 재생성 실패 카드 — 기존 로드맵은 보존하고 오류 코드/사유만 표시 */}
               {renderAiStatus(roadmapError, handleRegenerateRoadmap)}
@@ -1896,14 +2341,29 @@ export default function ArchiveDetail() {
                       </button>
                   ))}
                 </div>
-                {/* 기존 AI 버튼들 */}
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button className={`archive-action-btn ${activePdfTool === 'summary' ? 'active' : ''}`} onClick={() => setActivePdfTool('summary')}><AlignLeft size={16} /> 요약</button>
-                  <button className={`archive-action-btn ${activePdfTool === 'quiz' ? 'active' : ''}`} onClick={() => setActivePdfTool('quiz')}><HelpCircle size={16} /> 퀴즈/문제 생성</button>
-                  <button className={`archive-action-btn ${activePdfTool === 'roadmap' ? 'active' : ''}`} onClick={() => setActivePdfTool('roadmap')}><Map size={16} /> 주차별 로드맵</button>
-                  <button className={`archive-action-btn ${activePdfTool === 'memo' ? 'active' : ''}`} onClick={() => setActivePdfTool('memo')}><Edit3 size={16} /> 메모</button>
-                  <button className={`archive-action-btn ${activePdfTool === 'chat' ? 'active' : ''}`} onClick={() => setActivePdfTool('chat')}><MessageSquare size={16} /> AI 질문</button>
-                </div>
+                {/* AI 도구 버튼: PLANNER 는 플래너 전용(메모/퀴즈/AI질문 없음), 그 외 PDF 는 기존 학습 도구 유지 */}
+                {isPlanner ? (
+                  /* 플래너 전용 도구 (메모/퀴즈/AI질문 없음) */
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <button className={`archive-action-btn ${plannerDetailView === 'plan' ? 'active' : ''}`} onClick={() => setPlannerDetailView('plan')}><AlignLeft size={16} /> 학습계획 보기</button>
+                    <button className={`archive-action-btn ${plannerDetailView === 'checklist' ? 'active' : ''}`} onClick={() => setPlannerDetailView('checklist')}><ListChecks size={16} /> 체크리스트</button>
+                    <button className={`archive-action-btn ${plannerDetailView === 'progress' ? 'active' : ''}`} onClick={() => setPlannerDetailView('progress')}><BarChart3 size={16} /> 진행률</button>
+                    <button className={`archive-action-btn ${plannerDetailView === 'roadmap' ? 'active' : ''}`} onClick={() => setPlannerDetailView('roadmap')}><Map size={16} /> 일정/로드맵 보기</button>
+                    <button className={`archive-action-btn ${plannerDetailView === 'next' ? 'active' : ''}`} onClick={() => setPlannerDetailView('next')}><ArrowRight size={16} /> 다음 학습 추천</button>
+                    <button className="archive-action-btn" onClick={handlePlannerAnalyze} disabled={summaryLoading}><Sparkles size={16} /> {summaryLoading ? '분석 중…' : 'AI 계획 분석'}</button>
+                    {material?.s3PresignedUrl && (
+                      <button className="archive-action-btn" onClick={() => window.open(material.s3PresignedUrl, '_blank', 'noopener')}><FileText size={16} /> 원문/PDF 보기</button>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button className={`archive-action-btn ${activePdfTool === 'summary' ? 'active' : ''}`} onClick={() => setActivePdfTool('summary')}><AlignLeft size={16} /> 요약</button>
+                    <button className={`archive-action-btn ${activePdfTool === 'quiz' ? 'active' : ''}`} onClick={() => setActivePdfTool('quiz')}><HelpCircle size={16} /> 퀴즈/문제 생성</button>
+                    <button className={`archive-action-btn ${activePdfTool === 'roadmap' ? 'active' : ''}`} onClick={() => setActivePdfTool('roadmap')}><Map size={16} /> 주차별 로드맵</button>
+                    <button className={`archive-action-btn ${activePdfTool === 'memo' ? 'active' : ''}`} onClick={() => setActivePdfTool('memo')}><Edit3 size={16} /> 메모</button>
+                    <button className={`archive-action-btn ${activePdfTool === 'chat' ? 'active' : ''}`} onClick={() => setActivePdfTool('chat')}><MessageSquare size={16} /> AI 질문</button>
+                  </div>
+                )}
                 {/* 삭제 버튼 */}
                 <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none', color: '#EF4444' }} onClick={handleDeleteMaterial}>
                   <Trash2 size={18} /> 삭제
@@ -2044,7 +2504,7 @@ export default function ArchiveDetail() {
           )}
           <div className="archive-right-panel" style={{ width: type === 'pdf' ? `${100 - leftWidth}%` : '50%', flex: 'none', overflowY: 'auto', overflowX: 'hidden', boxSizing: 'border-box', backgroundColor: type === 'journal' ? 'var(--color-bg-base)' : 'white', borderLeft: type === 'pdf' ? 'none' : '1px solid var(--color-border)' }}>
             {type === 'pdf' ? (
-                renderPdfRightPanel()
+                isPlanner ? renderPlannerRightPanel() : renderPdfRightPanel()
             ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                   <div className="glass-panel animate-fade-in" style={{ padding: '24px' }}>

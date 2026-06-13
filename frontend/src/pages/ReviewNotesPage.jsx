@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { ListChecks, RotateCcw, Shuffle, Sparkles, FileText, Download, StickyNote } from 'lucide-react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import { ListChecks, RotateCcw, Shuffle, Sparkles, FileText, Download, StickyNote, Archive, FolderCheck } from 'lucide-react';
 import { reviewNoteService } from '../services/api';
 import { sanitizeMarkdownText } from '../utils/markdown';
 
@@ -183,9 +183,15 @@ function ReviewNoteList({ loading, error, items, onRetry, onOpen, onMemoSaved })
 }
 
 function ReviewNoteCard({ note, onOpen, onMemoSaved }) {
+  const navigate = useNavigate();
   const [showMemo, setShowMemo] = useState(false);
   const [memo, setMemo] = useState(note.memo ?? '');
   const [memoSaving, setMemoSaving] = useState(false);
+  // 오답노트는 생성 시 자료보관함(REVIEW_NOTE Material)에 자동 저장됨 → 중복 저장 방지, 보기로 전환
+  const savedToArchive = note.archiveMaterialId != null;
+  const openInArchive = () => {
+    if (savedToArchive) navigate(`/archive/pdf/${note.archiveMaterialId}`);
+  };
 
   const viewPdf = async () => {
     try {
@@ -228,7 +234,10 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved }) {
           </p>
         </div>
         <div style={{ textAlign: 'right', fontSize: '12.5px', color: '#6B7280' }}>
-          <div>오답 {note.wrongCount ?? 0}개</div>
+          <div><span style={{ color: '#DC2626', fontWeight: 700 }}>오답 {note.wrongCount ?? 0}개</span>
+            {(note.unansweredCount ?? 0) > 0 && <> · <span style={{ color: '#B45309', fontWeight: 700 }}>미응답 {note.unansweredCount}개</span></>}
+          </div>
+          <div>복습 필요: {note.reviewCount ?? ((note.wrongCount ?? 0) + (note.unansweredCount ?? 0))}개</div>
           <div>난이도: {DIFFICULTY_LABEL[note.difficulty] || note.difficulty || '-'}</div>
           <div>생성일: {formatDate(note.createdAt)}</div>
         </div>
@@ -241,10 +250,19 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved }) {
         <button style={btnPrimary} onClick={() => onOpen(note, 'ai')}><Sparkles size={15} /> AI 해설</button>
       </div>
 
-      {/* 보조 버튼: PDF 보기 / 컴퓨터에 저장 / 메모 */}
+      {/* 보조 버튼: PDF 보기 / 컴퓨터에 저장 / 자료보관함에 저장(됨) / 메모 */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '8px' }}>
         <button style={btn} onClick={viewPdf}><FileText size={15} /> PDF 보기</button>
         <button style={btn} onClick={savePdf}><Download size={15} /> 컴퓨터에 저장</button>
+        {savedToArchive ? (
+          <button
+            style={{ ...btn, border: '1px solid #BBF7D0', background: '#ECFDF5', color: '#15803D', cursor: 'pointer' }}
+            onClick={openInArchive}
+            title="이미 자료보관함에 저장되어 있습니다. 클릭하면 자료보관함에서 엽니다."
+          ><FolderCheck size={15} /> 자료보관함에 저장됨</button>
+        ) : (
+          <button style={{ ...btn, opacity: 0.6, cursor: 'default' }} disabled><Archive size={15} /> 자료보관함에 저장</button>
+        )}
         <button style={btn} onClick={() => setShowMemo((v) => !v)}><StickyNote size={15} /> 메모</button>
       </div>
 
