@@ -35,3 +35,34 @@ try:
 except Exception as e:
     import logging
     logging.getLogger(__name__).warning("quiz_text 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 업로드 자료 유형 자동 판별 endpoint (Spring classify-before-save 가 호출)
+try:
+    from app.api.material_classify_routes import router as material_classify_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/material/classify" not in paths:
+        app.include_router(material_classify_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("material_classify 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 자료보관함 퀴즈/로드맵 streaming + SSE job + 폴링 endpoint
+# (Spring /api/materials/{id}/quiz|roadmap/jobs|poll 가 릴레이)
+try:
+    from app.api.material_stream_routes import router as material_stream_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/quiz/generate-stream" not in paths:
+        app.include_router(material_stream_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("material_stream 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 오답노트 AI endpoint (해설/유사문제 생성 — Spring review-notes 가 호출)
+try:
+    from app.api.review_ai_routes import router as review_ai_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/review/wrong-note-feedback" not in paths:
+        app.include_router(review_ai_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("review_ai 라우터 로드 실패 (계속 기동): %s", e)

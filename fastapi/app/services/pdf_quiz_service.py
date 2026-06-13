@@ -42,6 +42,13 @@ HARD_MIN_LEN = int(os.getenv("AI_QUIZ_HARD_MIN_LEN", "80"))
 
 SOURCE_MODE = "PDF_BASED"
 
+# 문항 수 정책 (스펙 I): 최소 5, 최대 20, 기본 10. streaming/non-stream 공통.
+QUIZ_MIN_COUNT = int(os.getenv("AI_QUIZ_MIN_COUNT", "5"))
+QUIZ_MAX_COUNT = int(os.getenv("AI_QUIZ_MAX_COUNT", "20"))
+QUIZ_DEFAULT_COUNT = int(os.getenv("AI_QUIZ_DEFAULT_COUNT", "10"))
+# streaming batch 단위 (스펙 J): 5문항씩 생성 → 검증 → 통과분 누적.
+QUIZ_BATCH_SIZE = int(os.getenv("AI_QUIZ_BATCH_SIZE", "5"))
+
 # ── 강의계획서 판별 키워드 (A) ────────────────────────────────────────────────
 _SYLLABUS_KEYWORDS = [
     "강의계획서", "수업계획서", "교과목명", "담당교수", "교수명", "주차별 강의계획",
@@ -691,6 +698,62 @@ def _generate_questions(ctx, doc_type, diff, count, weekly, wiki_context, allow_
 def _question_shape_ok(q: Dict[str, Any]) -> bool:
     ch = q.get("choices") or []
     return bool((q.get("question") or "").strip()) and len(ch) == 4 and bool(q.get("correct_answer"))
+
+
+# ── streaming 오케스트레이터 공용 헬퍼 (스펙 I/J/K) ────────────────────────────
+def normalize_quiz_count(raw: Any) -> Tuple[int, int]:
+    """(요청값, 적용값) 반환. 적용값은 5~20 clamp, 파싱 실패 시 기본 10."""
+    try:
+        requested = int(raw)
+    except (TypeError, ValueError):
+        requested = QUIZ_DEFAULT_COUNT
+    applied = max(QUIZ_MIN_COUNT, min(requested, QUIZ_MAX_COUNT))
+    return requested, applied
+
+
+def _norm_q(question: Any) -> str:
+    """중복 판정용 질문 정규화 키."""
+    text = sanitize_markdown_text(str(question or "")).lower()
+    return re.sub(r"\s+", " ", re.sub(r"[^0-9a-z가-힣 ]", " ", text)).strip()
+
+
+def _question_difficulty_ok(q: Dict[str, Any], diff: str, is_syllabus: bool) -> bool:
+    """단일 문항이 형식 + 요청 난이도 본문 규칙을 만족하는지(검증 통과분만 partial_validated 노출)."""
+    if not _question_shape_ok(q) or not (q.get("explanation") or "").strip():
+        return False
+    text = sanitize_markdown_text(q.get("question") or "")
+    if not text:
+        return False
+    for field_val in [text] + [sanitize_markdown_text(c) for c in (q.get("choices") or [])]:
+        if any(m in field_val for m in ("**", "###", "```")):
+            return False
+    diff = normalize_difficulty(diff)
+    if is_syllabus:
+        if diff == "hard" and not any(s in text for s in _SYLLABUS_FLOW_SIGNALS):
+            return False
+    else:
+        if diff == "hard":
+            if len(text) < HARD_MIN_LEN:
+                return False
+            if not any(sig.lower() in text.lower() for sig in _HARD_SIGNALS):
+                return False
+            if re.search(r"무엇인가요\?$", text) and len(text) < HARD_MIN_LEN + 20:
+                return False
+    return True
+
+
+def validate_quiz_response(response: Dict[str, Any], requested_difficulty: str,
+                           expected_count: Optional[int] = None) -> Dict[str, Any]:
+    """streaming 최종 검증 — validate_quiz_difficulty + 문항 수 확인. {passed, reason}."""
+    check = validate_quiz_difficulty(response, requested_difficulty,
+                                     str(response.get("material_title") or ""))
+    if not check.get("passed"):
+        return check
+    if expected_count is not None:
+        n = len(response.get("questions") or [])
+        if n < int(expected_count):
+            return {"passed": False, "reason": f"검증 통과 문항 {n} < 요청 {expected_count}"}
+    return check
 
 
 def _llm_generate(ctx, doc_type, diff, count, weekly, wiki_context) -> List[Dict[str, Any]]:
