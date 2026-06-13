@@ -2676,6 +2676,19 @@ try:
 except Exception as _ext_err:
     logger.warning("v0.6 확장 라우터 로드 실패 (Spring 계약 API는 정상 동작): %s", _ext_err)
 
+# 16-b. 문서 기반 84일 로드맵 (POST /api/ai/roadmap/generate) — 독립 등록.
+#       EC2 자료보관함 '상급자 재생성'이 호출하는 주 엔드포인트라 위 묶음 import가
+#       하나라도 실패해 통째로 누락되는 일이 없도록 별도 try/except로 반드시 등록한다.
+#       (미등록 시 404 → Spring이 UNKNOWN_ERROR로 표기하던 원인)
+try:
+    from app.api.study_ai_routes import router as _study_ai_router
+    _existing_paths = {getattr(r, "path", None) for r in app.routes}
+    if "/api/ai/roadmap/generate" not in _existing_paths:
+        app.include_router(_study_ai_router)
+    logger.info("study 로드맵 라우터 로드 완료 (POST /api/ai/roadmap/generate)")
+except Exception as _study_err:
+    logger.error("study 로드맵 라우터 로드 실패 (POST /api/ai/roadmap/generate 누락 위험): %s", _study_err)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 직접 실행 (개발용)

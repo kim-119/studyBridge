@@ -164,13 +164,21 @@ def clean_keywords(kw: Any) -> List[str]:
 
 # ── 난이도(level) 정책: beginner / intermediate / advanced (스펙 E) ───────────
 _LEVEL_NORMALIZE = {
-    "beginner": "beginner", "입문": "beginner", "초급": "beginner", "기초": "beginner",
-    "쉬움": "beginner", "easy": "beginner", "하": "beginner",
-    "intermediate": "intermediate", "중급": "intermediate", "학사": "intermediate",
+    "beginner": "beginner", "입문": "beginner", "초급": "beginner", "초급자": "beginner",
+    "기초": "beginner", "쉬움": "beginner", "easy": "beginner", "하": "beginner",
+    "intermediate": "intermediate", "중급": "intermediate", "중급자": "intermediate", "학사": "intermediate",
     "보통": "intermediate", "normal": "intermediate", "medium": "intermediate", "중": "intermediate",
-    "advanced": "advanced", "고급": "advanced", "상급": "advanced", "석사": "advanced",
+    "advanced": "advanced", "고급": "advanced", "상급": "advanced", "상급자": "advanced", "석사": "advanced",
     "박사": "advanced", "전문가": "advanced", "어려움": "advanced", "hard": "advanced", "상": "advanced",
 }
+
+
+def level_is_recognized(level: Any) -> bool:
+    """입력 난이도 값이 허용 목록에 매핑되는지 여부(스펙 B: 미허용 값 경고용)."""
+    s = str(level or "").strip()
+    if not s:
+        return True  # 미입력은 기본값 보정이며 경고 대상이 아님
+    return s.lower() in _LEVEL_NORMALIZE or s in _LEVEL_NORMALIZE
 
 
 def normalize_level(level: Any) -> str:
@@ -503,7 +511,11 @@ def build_roadmap_ctx(body: Dict[str, Any]) -> Dict[str, Any]:
     weeks = _int(g("weeks", "total_weeks", "totalWeeks"), _env_int("AI_ROADMAP_WEEKS", 12)) or 12
     dpw = _int(g("days_per_week", "daysPerWeek"), _env_int("AI_DAYS_PER_WEEK", 7)) or 7
     # difficulty(beginner/intermediate/advanced 또는 easy/normal/hard)도 level로 매핑
-    level = normalize_level(g("level", "difficulty", "knowledgeLevel", "knowledge_level"))
+    raw_level = g("level", "difficulty", "knowledgeLevel", "knowledge_level")
+    level = normalize_level(raw_level)
+    level_warning = None
+    if not level_is_recognized(raw_level):
+        level_warning = f"허용하지 않는 난이도 '{raw_level}' → 기본값 intermediate로 보정했습니다."
     title = g("material_title", "materialTitle", "title", "file_name", "fileName")
     summary = g("document_text", "documentText", "context", "summary", "material_summary",
                 "materialSummary", "extractedText", "extracted_text")
@@ -516,6 +528,7 @@ def build_roadmap_ctx(body: Dict[str, Any]) -> Dict[str, Any]:
         "user_goal": g("user_goal", "userGoal", "goal"),
         "goal": g("goal", "user_goal", "userGoal"),
         "level": level,
+        "level_warning": level_warning,
         "week": g("week"),
         "weeks": weeks,
         "days_per_week": dpw,
@@ -590,6 +603,8 @@ def finalize_roadmap_response(result: Dict[str, Any], weeks_n: int = 12, days_n:
     from app.utils.sanitize import sanitize_obj
     result = sanitize_obj(result) if isinstance(result, dict) else {}
     v = validate_roadmap_84(result, weeks_n, days_n)
+    if result.get("level_warning"):
+        v = {**v, "warning": result["level_warning"]}
     return {
         "success": True,
         "error_code": None,
@@ -619,6 +634,7 @@ def roadmap_failure_response(message: str, debug_hint: str, reason: str,
         "recoverable": True,
         "debug_hint": debug_hint,
         "validation": {"passed": False, "reason": reason},
+        "weeks": [],
     }
 
 
@@ -730,6 +746,7 @@ def generate_12week_7day_roadmap(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "상급(advanced) 로드맵의 설계 판단·테스트·예외 처리 등 일부 항목은 문서 밖 고급 관점을 "
             "'문서 기반 확장 학습'으로 표시해 포함했습니다." if level == "advanced" else None
         ),
+        "level_warning": ctx.get("level_warning"),
         "error_code": None,
     }
     if not validate_12week_roadmap(resp, weeks_n, days_n, tasks_min):
