@@ -10,6 +10,7 @@ import com.studybridge.api.repository.GroupStudyMemberRepository;
 import com.studybridge.api.repository.UserRepository;
 import com.studybridge.api.security.domain.CustomUserDetails;
 import com.studybridge.api.service.RedisChatService;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -39,7 +41,12 @@ public class GroupStudyStreamController {
     public Flux<ServerSentEvent<String>> streamGroupChat(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long groupId,
-            @RequestBody ChatDTO.MultiChatRequest request) {
+            @RequestBody ChatDTO.MultiChatRequest request,
+            HttpServletResponse response) {
+
+        // SSE 버퍼링 방지 헤더(Nginx/프록시/브라우저). Content-Type은 produces로 text/event-stream.
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setHeader("Cache-Control", "no-cache, no-transform");
 
         log.info("SSE Chat Stream requested for groupId={}, userId={}", groupId, userDetails.getId());
 
@@ -216,7 +223,7 @@ public class GroupStudyStreamController {
         Map<String, StringBuilder> agentReplies = new ConcurrentHashMap<>();
 
         // 5. FastAPI SSE를 그대로 중계한다. agent_answer/debate_section/... 이벤트가 도착하는 즉시 프론트로 전달된다.
-        return fastApiWebClient.post()
+        Flux<ServerSentEvent<String>> upstream = fastApiWebClient.post()
                 .uri("/api/ai/multi-chat/stream")
                 .bodyValue(fastApiPayload)
                 .retrieve()
@@ -255,7 +262,30 @@ public class GroupStudyStreamController {
                                         .event("error")
                                         .data("{\"errorMessage\":\"AI 스트리밍 대화 중 오류가 발생했습니다. 다시 시도해 주세요.\"}")
                                         .build()
-                        )));
+                        )))
+                // cache(): upstream(원격 HTTP)을 1회만 구독하고, 하트비트 종료 신호용으로 재사용한다.
+                .cache();
+
+        // keep-alive 하트비트(SSE 주석 ':hb'). upstream 완료 시 takeUntilOther로 함께 종료된다.
+        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(heartbeatSeconds()))
+                .map(i -> ServerSentEvent.<String>builder().comment("hb").build());
+
+        return upstream.mergeWith(heartbeat).takeUntilOther(upstream.then());
+    }
+
+    // SSE 하트비트 간격(초). 하드코딩 금지 — env AI_SSE_HEARTBEAT_SECONDS, 기본 12초.
+    private long heartbeatSeconds() {
+        try {
+            String v = System.getenv("AI_SSE_HEARTBEAT_SECONDS");
+            if (v != null && !v.isBlank()) {
+                long parsed = Long.parseLong(v.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        return 12L;
     }
 
 

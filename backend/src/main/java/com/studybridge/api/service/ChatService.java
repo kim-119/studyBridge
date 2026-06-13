@@ -46,6 +46,31 @@ public class ChatService {
         private static final int AI_MAX_RESPONSE_CHARS = 40000;
         private static final int AI_MAX_TOKENS = 8192;
 
+        // SSE keep-alive 하트비트 전용 데몬 스케줄러(공용). 긴 LLM 응답 중 Nginx/브라우저 idle 타임아웃을 방지한다.
+        private static final java.util.concurrent.ScheduledExecutorService SSE_HEARTBEAT =
+                        java.util.concurrent.Executors.newScheduledThreadPool(2, r -> {
+                                Thread t = new Thread(r, "sse-heartbeat");
+                                t.setDaemon(true);
+                                return t;
+                        });
+
+        // emitter에 N초 간격 하트비트(SSE 주석 ':hb')를 건다. 주석이라 프론트 이벤트 핸들러를 건드리지 않는다.
+        //  반환된 future를 onCompletion/onTimeout에서 cancel 하여 누수를 막는다.
+        private java.util.concurrent.ScheduledFuture<?> startHeartbeat(SseEmitter emitter) {
+                long hb = envSeconds("AI_SSE_HEARTBEAT_SECONDS", 12);
+                if (hb <= 0) {
+                        hb = 12;
+                }
+                final long interval = hb;
+                return SSE_HEARTBEAT.scheduleAtFixedRate(() -> {
+                        try {
+                                emitter.send(SseEmitter.event().comment("hb"));
+                        } catch (Exception e) {
+                                // 클라이언트 종료/완료 등으로 전송 실패 — 라이프사이클 콜백의 cancel이 정리한다.
+                        }
+                }, interval, interval, java.util.concurrent.TimeUnit.SECONDS);
+        }
+
         // FastAPI(/api/ai/multi-chat[/stream]) 요청 바디 구성 — 블로킹/스트리밍 공용.
         private Map<String, Object> buildFastApiRequestBody(AgentChatRoom room, Long roomId, ChatDTO.MultiChatRequest request) {
                 // 에이전트 간 상호 피드백을 위해 최근 10개의 AI 답변 가져오기
@@ -505,6 +530,9 @@ public class ChatService {
                 safeSend(emitter, "turn_start",
                                 Map.of("type", "turn_start", "message", "AI 응답 생성을 시작합니다."));
 
+                // 단계 사이 LLM 지연이 길어도 연결이 끊기지 않도록 keep-alive 하트비트를 건다.
+                final java.util.concurrent.ScheduledFuture<?> heartbeat = startHeartbeat(emitter);
+
                 // 1차(primary): 각 에이전트가 자신의 persona/지식수준으로 질문에 직접 답한다(검증·피드백 금지).
                 Mono<List<Map<String, Object>>> chain = fastApiWebClient.post()
                                 .uri("/api/ai/multi-chat")
@@ -584,8 +612,12 @@ public class ChatService {
                                 },
                                 () -> finishBasicStream(emitter, roomId, initialAnswers, validatedAnswers, peerFeedback));
 
-                emitter.onCompletion(subscription::dispose);
+                emitter.onCompletion(() -> {
+                        heartbeat.cancel(false);
+                        subscription.dispose();
+                });
                 emitter.onTimeout(() -> {
+                        heartbeat.cancel(false);
                         subscription.dispose();
                         emitter.complete();
                 });
@@ -790,6 +822,8 @@ public class ChatService {
         // 원격 FastAPI /api/ai/multi-chat/stream SSE를 그대로 브라우저로 중계 (토론/소크라테스/상황극).
         private SseEmitter relayRemoteStream(Long roomId, Map<String, Object> requestBody,
                         ChatDTO.MultiChatRequest request, AgentChatRoom room, SseEmitter emitter) {
+                // 원격 FastAPI가 첫 이벤트를 늦게 보내거나 이벤트 간 간격이 길어도 연결 유지.
+                final java.util.concurrent.ScheduledFuture<?> heartbeat = startHeartbeat(emitter);
                 Disposable subscription = fastApiWebClient.post()
                                 .uri("/api/ai/multi-chat/stream")
                                 .bodyValue(requestBody)
@@ -837,8 +871,12 @@ public class ChatService {
                                                 },
                                                 emitter::complete);
 
-                emitter.onCompletion(subscription::dispose);
+                emitter.onCompletion(() -> {
+                        heartbeat.cancel(false);
+                        subscription.dispose();
+                });
                 emitter.onTimeout(() -> {
+                        heartbeat.cancel(false);
                         subscription.dispose();
                         emitter.complete();
                 });

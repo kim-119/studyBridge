@@ -1187,6 +1187,35 @@ try {
     }
   }, [aiMessages, chatTab]);
 
+  // AI 대화 새로고침 영속화: 그룹별 sessionStorage 키. 새로고침/탭 복귀 후에도 직전 AI 답변이
+  //  사라지지 않게 한다(서버 Redis 원본과 별개의 클라이언트 임시 캐시; 그룹 id로 격리).
+  const aiChatStorageKey = study?.id ? `sb-ai-chat-${study.id}` : null;
+
+  // 복원: 그룹 진입 시 1회. 현재 목록이 비어 있을 때만 채워 진행 중 상태를 보호한다.
+  useEffect(() => {
+    if (!aiChatStorageKey) return;
+    try {
+      const saved = sessionStorage.getItem(aiChatStorageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setAiMessages(prev => (prev.length === 0 ? parsed : prev));
+        }
+      }
+    } catch (e) { /* 손상된 캐시는 무시 */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiChatStorageKey]);
+
+  // 저장: 메시지가 있을 때만 기록한다(빈 배열로 덮어써 캐시를 지우지 않는다).
+  useEffect(() => {
+    if (!aiChatStorageKey) return;
+    try {
+      if (aiMessages.length > 0) {
+        sessionStorage.setItem(aiChatStorageKey, JSON.stringify(aiMessages));
+      }
+    } catch (e) { /* 용량 초과 등은 무시 */ }
+  }, [aiMessages, aiChatStorageKey]);
+
   return (
     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, backgroundColor: '#0B0F19', display: 'flex', flexDirection: 'column', color: 'white', fontFamily: "'Inter', sans-serif" }}>
       <style>{`
