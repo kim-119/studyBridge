@@ -103,7 +103,8 @@ export default function ArchiveDetail() {
     OLLAMA_UNAVAILABLE: '로컬 AI 모델 연결에 실패했습니다.',
     OPENAI_UNAVAILABLE: 'GPT 모델 연결에 실패했습니다.',
     AI_RESPONSE_PARSE_FAILED: 'AI 응답 형식 처리에 실패했습니다. 다시 생성해주세요.',
-    QUIZ_VALIDATE_FAILED: '퀴즈 형식 검증에 실패했습니다. 다시 생성해주세요.',
+    QUIZ_VALIDATE_FAILED: '요청한 난이도가 충분히 반영되지 않았습니다. 같은 PDF 자료를 기준으로 다시 생성해주세요.',
+    PDF_CONTEXT_REQUIRED: 'PDF 기반 퀴즈를 생성하려면 자료에서 추출된 텍스트나 요약이 필요합니다.',
     ROADMAP_VALIDATE_FAILED: '로드맵 형식 검증에 실패했습니다. 다시 생성해주세요.',
     SUMMARY_VALIDATE_FAILED: '요약 형식 검증에 실패했습니다. 다시 생성해주세요.',
     QA_VALIDATE_FAILED: '답변 검증에 실패했습니다. 다시 질문해주세요.',
@@ -646,7 +647,8 @@ export default function ArchiveDetail() {
       const req = {
         difficulty: quizSettings.difficulty,
         questionCount: quizSettings.count,
-        pageRange: quizSettings.range
+        pageRange: quizSettings.range,
+        sourceMode: 'PDF_BASED', // 퀴즈는 PDF/DOCX 자료 본문 기준(로드맵 day 아님)
       };
       const newQuiz = await materialService.generateQuiz(id, req);
 
@@ -1213,7 +1215,8 @@ export default function ArchiveDetail() {
                       const codeToLabel = { easy: '쉬움', normal: '보통', hard: '어려움' };
                       const requested = activeQuiz?.difficultyRequested || labelToCode[activeQuiz?.difficulty] || 'normal';
                       const applied = activeQuiz?.difficultyApplied || null;
-                      const POLICY = { easy: '문서에 직접 나온 내용 중심', normal: '문서 기반에 살짝 응용 포함', hard: '문서 기반에 응용 및 고급 개념 추가' };
+                      const POLICY = { easy: 'PDF에 직접 나온 내용 중심', normal: 'PDF 내용 기반에 응용 개념을 살짝 추가', hard: 'PDF 내용 기반에 응용 또는 실무 상황을 많이 포함' };
+                      const sourceTrace = activeQuiz?.sourceTrace || null;
                       const policyText = activeQuiz?.difficultyPolicy || POLICY[requested] || '';
                       const validationReason = activeQuiz?.difficultyValidation?.reason;
                       // 단순 문제 패턴 탐지 (hard인데 "주요 역할은 무엇인가요?" 류)
@@ -1228,13 +1231,20 @@ export default function ArchiveDetail() {
                       return (
                         <div style={{ marginBottom: '16px' }}>
                           <div className="glass-panel" style={{ padding: '12px 16px', borderLeft: '4px solid var(--color-primary)', fontSize: '13.5px', color: 'var(--color-text-muted)' }}>
-                            <div><b style={{ color: 'var(--color-text-main)' }}>적용 난이도:</b> {codeToLabel[applied] || codeToLabel[requested] || activeQuiz?.difficulty}</div>
+                            <div><b style={{ color: 'var(--color-text-main)' }}>출제 기준:</b> PDF 자료 기반</div>
+                            <div><b style={{ color: 'var(--color-text-main)' }}>난이도:</b> {codeToLabel[applied] || codeToLabel[requested] || activeQuiz?.difficulty}</div>
                             <div><b style={{ color: 'var(--color-text-main)' }}>정책:</b> {policyText}</div>
                             {validationReason && <div><b style={{ color: 'var(--color-text-main)' }}>검증:</b> {sanitizeMarkdownText(validationReason)}</div>}
+                            {sourceTrace && (sourceTrace.concepts || sourceTrace.evidence) && (
+                              <div style={{ marginTop: '6px', fontSize: '12px', color: '#9CA3AF' }}>
+                                {Array.isArray(sourceTrace.concepts) && sourceTrace.concepts.length > 0 && <span>근거 개념: {sourceTrace.concepts.join(', ')} </span>}
+                                {sourceTrace.evidence && <span>· {sanitizeMarkdownText(String(sourceTrace.evidence))}</span>}
+                              </div>
+                            )}
                           </div>
                           {hardNotApplied && (
                             <div className="glass-panel" style={{ marginTop: '10px', padding: '12px 16px', borderLeft: '4px solid #F59E0B', backgroundColor: '#FFFBEB', color: '#92400E', fontSize: '13.5px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                              <span>요청한 어려움 난이도가 충분히 반영되지 않았습니다. 다시 생성해 주세요.</span>
+                              <span>요청한 난이도가 충분히 반영되지 않았습니다. 같은 PDF 자료를 기준으로 다시 생성해주세요.</span>
                               <button className="btn-outline" style={{ padding: '6px 14px', borderRadius: '16px', fontSize: '12.5px', whiteSpace: 'nowrap' }} onClick={handleGenerateQuiz}>다시 생성</button>
                             </div>
                           )}
@@ -1382,6 +1392,12 @@ export default function ArchiveDetail() {
                                   {level}
                                 </button>
                             ))}
+                          </div>
+                          {/* E. 퀴즈 난이도 정책 (PDF 자료 기반) */}
+                          <div style={{ marginTop: '10px', fontSize: '12.5px', color: 'var(--color-text-muted)', lineHeight: 1.6 }}>
+                            {quizSettings.difficulty === '쉬움' && 'PDF에 직접 나온 내용 중심으로 출제합니다.'}
+                            {quizSettings.difficulty === '보통' && 'PDF 내용 기반에 응용 개념을 살짝 추가해 출제합니다.'}
+                            {quizSettings.difficulty === '어려움' && 'PDF 내용 기반에 응용 또는 실무 상황을 많이 포함해 출제합니다.'}
                           </div>
                         </div>
 

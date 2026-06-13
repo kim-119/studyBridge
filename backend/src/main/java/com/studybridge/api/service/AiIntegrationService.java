@@ -679,19 +679,51 @@ public class AiIntegrationService {
                 Material material = getMaterialSafely(userId, materialId);
 
                 String textToAnalyze = getTextToAnalyze(material);
-                if (textToAnalyze == null || textToAnalyze.isBlank()) {
-                        return quizFailure(material, request, "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
+
+                // A/B. 퀴즈는 PDF/DOCX 자료 본문 기준(로드맵 day 아님). 자료 본문 + 요약/핵심/세부 + 키워드로 PDF context 구성.
+                MaterialSummary quizSummary = summaryRepository.findByMaterial_MaterialId(material.getMaterialId()).orElse(null);
+                String documentText = textToAnalyze != null ? textToAnalyze : "";
+                String summaryText = quizSummary != null ? quizSummary.getOverview() : null;
+                String coreContentText = quizSummary != null ? quizSummary.getCoreContents() : null;
+                String detailedContentText = documentText.length() > 4000 ? documentText.substring(0, 4000) : null;
+
+                // C. PDF context 필수 검증 — documentText/summary/coreContentText/detailedContentText 중 하나 이상 필요.
+                //    전부 없으면 로드맵으로 대체하지 않고 PDF_CONTEXT_REQUIRED 반환.
+                boolean hasPdfContext = isNotBlank(documentText) || isNotBlank(summaryText) || isNotBlank(coreContentText) || isNotBlank(detailedContentText);
+                if (!hasPdfContext) {
+                        log.warn("[AI_QUIZ_PDF_BASED] materialId={} sourceMode=PDF_BASED result=PDF_CONTEXT_REQUIRED", material.getMaterialId());
+                        return quizFailure(material, request, "PDF_CONTEXT_REQUIRED",
+                                        "PDF 기반 퀴즈를 생성하려면 자료에서 추출된 텍스트나 요약이 필요합니다.", true, null);
                 }
 
-                // F. 난이도 매핑: 쉬움→easy, 보통→normal, 어려움→hard. 한글 라벨을 ai07 contract 영문값으로 변환.
+                // D/F. 난이도 매핑: 쉬움→easy, 보통→normal, 어려움→hard. (로드맵 난이도 beginner/intermediate/advanced와 절대 섞지 않음)
                 String quizDifficulty = mapQuizDifficulty(request.getDifficulty());
+
+                // B. ai07 요청 payload — source_mode=PDF_BASED. roadmap_context/ROADMAP_ONLY 미사용.
+                java.util.List<String> quizKeywords = new java.util.ArrayList<>();
+                if (material.getKeywords() != null && !material.getKeywords().isBlank()) {
+                        for (String k : material.getKeywords().split(",")) { if (!k.trim().isBlank()) quizKeywords.add(k.trim()); }
+                }
                 Map<String, Object> requestBody = new LinkedHashMap<>();
                 requestBody.put("material_id", material.getMaterialId());
-                requestBody.put("text", textToAnalyze);
+                requestBody.put("material_title", material.getTitle());
+                requestBody.put("source_mode", "PDF_BASED");
                 requestBody.put("difficulty", quizDifficulty);           // 영문 (easy|normal|hard)
                 requestBody.put("difficulty_requested", quizDifficulty);
                 requestBody.put("difficulty_label", request.getDifficulty()); // 원본 한글
-                requestBody.put("questionCount", request.getQuestionCount());
+                requestBody.put("count", request.getQuestionCount());
+                requestBody.put("questionCount", request.getQuestionCount()); // 하위호환
+                requestBody.put("document_text", truncQuiz(documentText, 8000));
+                requestBody.put("text", truncQuiz(documentText, 8000));       // 하위호환(기존 ai07 contract)
+                if (isNotBlank(summaryText)) requestBody.put("summary", summaryText);
+                if (isNotBlank(coreContentText)) requestBody.put("core_content_text", coreContentText);
+                if (isNotBlank(detailedContentText)) requestBody.put("detailed_content_text", detailedContentText);
+                requestBody.put("keywords", quizKeywords);
+
+                // J. PDF 기반 퀴즈 로그 (원문/토큰/키/presigned 미포함)
+                long quizT0 = System.currentTimeMillis();
+                log.info("[AI_QUIZ_PDF_BASED] materialId={} difficulty={} sourceMode=PDF_BASED hasDocumentText={} hasSummary={} hasCoreContentText={} hasDetailedContentText={} count={}",
+                                material.getMaterialId(), quizDifficulty, isNotBlank(documentText), isNotBlank(summaryText), isNotBlank(coreContentText), isNotBlank(detailedContentText), request.getQuestionCount());
 
                 Map response;
                 try {
@@ -702,12 +734,20 @@ public class AiIntegrationService {
                                         .bodyToMono(Map.class)
                                         .block(Duration.ofSeconds(125));
                 } catch (Exception e) {
-                        return quizFailure(material, request, isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
+                        String __code = isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR";
+                        log.warn("[AI_QUIZ_PDF_BASED] result=FAIL materialId={} difficulty={} sourceMode=PDF_BASED error_code={} elapsedMs={}",
+                                        material.getMaterialId(), quizDifficulty, __code, System.currentTimeMillis() - quizT0);
+                        return quizFailure(material, request, __code, null, true, null);
                 }
 
                 if (isAiFailure(response)) {
+                        log.warn("[AI_QUIZ_PDF_BASED] result=AI_FAIL materialId={} difficulty={} sourceMode=PDF_BASED statusCode=200 error_code={} reason={} elapsedMs={}",
+                                        material.getMaterialId(), quizDifficulty, aiStr(response, "errorCode"), aiStr(aiMap(response, "difficulty_validation"), "reason"), System.currentTimeMillis() - quizT0);
                         return quizFailure(material, request, aiStr(response, "errorCode"), aiStr(response, "message"), aiBool(response, "retryable", true), response);
                 }
+
+                log.info("[AI_QUIZ_PDF_BASED] result=OK materialId={} difficulty={} sourceMode=PDF_BASED applied={} elapsedMs={}",
+                                material.getMaterialId(), quizDifficulty, aiStr(response, "difficulty_applied"), System.currentTimeMillis() - quizT0);
 
                 String generatedQuizJson = "[]";
                 if (response != null && response.containsKey("quizData")) {
@@ -737,6 +777,7 @@ public class AiIntegrationService {
                                 .difficultyApplied(aiStr(response, "difficulty_applied"))
                                 .difficultyPolicy(aiStr(response, "difficulty_policy"))
                                 .difficultyValidation(aiMap(response, "difficulty_validation"))
+                                .sourceTrace(aiMap(response, "source_trace"))
                                 .success(aiBool(response, "success", true))
                                 .errorCode(aiStr(response, "errorCode"))
                                 .message(aiStr(response, "message"))
@@ -759,6 +800,13 @@ public class AiIntegrationService {
                 if (v.equals("easy") || v.contains("쉬움") || v.contains("쉬운")) return "easy";
                 if (v.equals("hard") || v.contains("어려움") || v.contains("어려운")) return "hard";
                 return "normal"; // 보통/normal/medium 및 미상값 기본
+        }
+
+        private boolean isNotBlank(String s) { return s != null && !s.isBlank(); }
+
+        private String truncQuiz(String s, int n) {
+                if (s == null) return "";
+                return s.length() > n ? s.substring(0, n) : s;
         }
 
         // AI에게 질문하기 (자료보관함 PDF 기반)

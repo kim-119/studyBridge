@@ -38,6 +38,7 @@ public class QuizDTO {
         private String difficultyApplied;     // ai07이 실제 적용한 난이도
         private String difficultyPolicy;      // 난이도 정책 설명
         private Map<String, Object> difficultyValidation; // { passed, reason }
+        private Map<String, Object> sourceTrace;          // 출제 근거 (source_type=PDF_BASED, based_on, concepts, evidence)
         // AI 상태 전파 필드 (nullable, 하위호환 additive)
         private Boolean success;
         private String errorCode;
