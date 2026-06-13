@@ -48,6 +48,20 @@ QUIZ_MAX_COUNT = int(os.getenv("AI_QUIZ_MAX_COUNT", "20"))
 QUIZ_DEFAULT_COUNT = int(os.getenv("AI_QUIZ_DEFAULT_COUNT", "10"))
 # streaming batch 단위 (스펙 J): 5문항씩 생성 → 검증 → 통과분 누적.
 QUIZ_BATCH_SIZE = int(os.getenv("AI_QUIZ_BATCH_SIZE", "5"))
+# PDF 텍스트가 이 길이 미만이면(그리고 강의계획서 주차 정보도 없으면) 일반 지식 fallback 으로
+# 속이지 않고 PDF_TEXT_INSUFFICIENT 로 명확히 실패한다. (난이도 낮춤/기본문제 대체 금지)
+QUIZ_MIN_CONTEXT_CHARS = int(os.getenv("AI_QUIZ_MIN_CONTEXT_CHARS", "200"))
+
+# 어떤 난이도에서도 절대 생성하면 안 되는 저품질 generic 템플릿/토큰 (스펙 [2],[3])
+_BANNED_QUESTION_SUBSTR = [
+    "세부 핵심 내용",
+    "다음 중 올바른 것은",
+    "자료의 핵심 내용은",
+    "핵심 개념은 무엇인가",
+    "핵심 개념을 가장 잘 설명",
+    "...",
+    "…",
+]
 
 # ── 강의계획서 판별 키워드 (A) ────────────────────────────────────────────────
 _SYLLABUS_KEYWORDS = [
@@ -503,6 +517,15 @@ def validate_quiz_difficulty(response: Dict[str, Any], requested_difficulty: str
             return {"passed": False, "reason": f"#{i+1} correct_answer 없음"}
         if not q.get("explanation"):
             return {"passed": False, "reason": f"#{i+1} explanation 없음"}
+        # 저품질 generic 템플릿/토큰 금지 — 난이도 무관 reject (기본문제 대체 차단, 스펙 [2])
+        _blob = " ".join([text] + [sanitize_markdown_text(c) for c in choices])
+        for _bad in _BANNED_QUESTION_SUBSTR:
+            if _bad in _blob:
+                return {"passed": False, "reason": f"#{i+1} 금지 generic 템플릿/토큰('{_bad}') 포함"}
+        # correct_answer 는 반드시 보기 중 하나와 정확히 일치
+        _correct = sanitize_markdown_text(q.get("correct_answer") or "")
+        if _correct not in [sanitize_markdown_text(c) for c in choices]:
+            return {"passed": False, "reason": f"#{i+1} correct_answer 가 choices 안에 없음"}
         # source_trace PDF 기반 (F)
         expected_st = "PDF_BASED_SYLLABUS" if is_syllabus else "PDF_BASED"
         if st.get("source_type") != expected_st:
@@ -562,16 +585,21 @@ def generate_pdf_quiz(req: Dict[str, Any]) -> Dict[str, Any]:
     ctx = build_material_context(req)
     difficulty = req.get("difficulty") or "normal"
     diff = normalize_difficulty(difficulty)
-    count = int(req.get("count") or req.get("num_questions") or req.get("numQuestions") or 5)
-    count = max(1, min(count, 10))
+    # requestedCount 를 절대 임의로 낮추지 않는다. 정책 범위(1~20)로만 clamp.
+    count = int(req.get("count") or req.get("num_questions") or req.get("numQuestions") or QUIZ_DEFAULT_COUNT)
+    count = max(1, min(count, QUIZ_MAX_COUNT))
     allow_admin_quiz = bool(req.get("generate_admin_quiz") or req.get("admin_quiz"))
 
-    # H: PDF 근거가 전혀 없으면 실패
-    if not ctx["has_pdf_context"]:
+    # H: PDF 근거가 전혀 없거나 너무 짧으면 일반 지식 fallback 으로 속이지 않고 명확히 실패한다.
+    #    (난이도 미반영을 이유로 기본문제로 낮추는 정책은 제거됨 — 스펙 [1].4)
+    context_len = len((ctx.get("context") or "").strip())
+    if not ctx["has_pdf_context"] or context_len < QUIZ_MIN_CONTEXT_CHARS:
         return {
             "success": False,
-            "error_code": "PDF_CONTEXT_REQUIRED",
-            "message": "PDF 기반 퀴즈를 생성하려면 자료에서 추출된 텍스트나 요약이 필요합니다.",
+            "error_code": "PDF_TEXT_INSUFFICIENT",
+            "message": "PDF 텍스트가 부족해 퀴즈를 생성할 수 없습니다.",
+            "retryable": False,
+            "context_len": context_len,
             "questions": [],
         }
 
@@ -600,7 +628,10 @@ def generate_pdf_quiz(req: Dict[str, Any]) -> Dict[str, Any]:
 
     # 1) LLM 생성 시도 → 2) 실패 시 deterministic fallback (H 복구 순서)
     no_llm = bool(req.get("_no_llm"))
-    questions = _generate_questions(ctx, doc_type, diff, count, weekly, wiki_context, allow_admin_quiz, no_llm)
+    questions, det_used = _generate_questions(ctx, doc_type, diff, count, weekly, wiki_context, allow_admin_quiz, no_llm)
+    # source 판정: deterministic 으로 일부라도 채웠으면 DETERMINISTIC_PDF, 전부 LLM 이면 AI_REPAIRED.
+    # 어느 쪽이든 PDF 근거 + 요청 난이도를 그대로 유지하므로 '기본문제 대체'가 아니다.
+    source = "DETERMINISTIC_PDF" if det_used > 0 else "AI_REPAIRED"
 
     # admin 문제 필터 (C) — 강의계획서 기본 동작에서 행정정보 암기형 제거
     if is_syllabus and not allow_admin_quiz:
@@ -626,10 +657,12 @@ def generate_pdf_quiz(req: Dict[str, Any]) -> Dict[str, Any]:
         "material_id": ctx.get("material_id"),
         "material_title": ctx.get("title"),
         "difficulty_requested": difficulty,
-        "difficulty_applied": diff,
+        "difficulty_applied": diff,   # 항상 요청 난이도와 동일 (낮추지 않음)
         "difficulty_policy": difficulty_policy_text(diff),
         "provider_policy": provider_policy,
         "questions": final_q,
+        "source": source,
+        "fallback_used": False,
         "_allow_admin_quiz": allow_admin_quiz,
     }
     if is_syllabus:
@@ -650,17 +683,22 @@ def generate_pdf_quiz(req: Dict[str, Any]) -> Dict[str, Any]:
             qq.pop("_concept", None)
             rebuilt.append(qq)
         response["questions"] = rebuilt
+        response["source"] = "DETERMINISTIC_PDF"  # 재구성은 PDF 기반 결정론 생성기로 보충
         check = validate_quiz_difficulty(response, difficulty, ctx.get("context", ""))
 
     response.pop("_allow_admin_quiz", None)
     response["validation"] = check
+    response["generated_count"] = len(response.get("questions") or [])
     if not check["passed"]:
-        # deterministic 으로도 실패하면 입력 부족으로 간주
+        # PDF 기반 결정론 생성기로도 검증을 통과하지 못하면 입력 텍스트 부족으로 간주한다.
+        # (난이도 미반영을 이유로 기본문제로 낮추지 않는다 — 명확히 실패)
         return {
             "success": False,
-            "error_code": "PDF_CONTEXT_REQUIRED",
-            "message": "PDF 기반 퀴즈를 생성하려면 자료에서 추출된 텍스트나 요약이 필요합니다.",
+            "error_code": "PDF_TEXT_INSUFFICIENT",
+            "message": "PDF 텍스트가 부족해 퀴즈를 생성할 수 없습니다.",
+            "retryable": False,
             "questions": [],
+            "validation": check,
         }
     return response
 
@@ -682,17 +720,20 @@ def _replace_admin_questions(questions: List[Dict[str, Any]], ctx, doc_type, dif
 
 
 def _generate_questions(ctx, doc_type, diff, count, weekly, wiki_context, allow_admin_quiz, no_llm=False):
-    """Qwen 1차 → (필요시 OpenAI 보정) → 실패 시 deterministic. 각 슬롯 검증 후 대체."""
+    """Qwen 1차 → (필요시 OpenAI 보정) → 실패 시 deterministic. 각 슬롯 검증 후 대체.
+    Returns: (questions, det_used) — det_used 는 deterministic 으로 채운 슬롯 수(source 판정용)."""
     llm_qs = [] if no_llm else _llm_generate(ctx, doc_type, diff, count, weekly, wiki_context)
     det = deterministic_questions(ctx, doc_type, diff, count, weekly)
     out: List[Dict[str, Any]] = []
+    det_used = 0
     for i in range(count):
         cand = llm_qs[i] if i < len(llm_qs) else None
         if cand and _question_shape_ok(cand):
             out.append(cand)
         else:
             out.append(det[i % len(det)])
-    return out
+            det_used += 1
+    return out, det_used
 
 
 def _question_shape_ok(q: Dict[str, Any]) -> bool:

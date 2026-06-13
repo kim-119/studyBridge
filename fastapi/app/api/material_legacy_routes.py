@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
@@ -54,7 +55,15 @@ class QuizReq(BaseModel):
     material_id: Optional[int] = Field(None, validation_alias=AliasChoices("material_id", "materialId"))
     difficulty: Optional[str] = "보통"
     questionCount: Optional[int] = Field(5, validation_alias=AliasChoices("questionCount", "quizCount", "count", "numQuestions", "question_count"))
-    document_title: Optional[str] = Field(None, validation_alias=AliasChoices("document_title", "documentTitle", "title"))
+    document_title: Optional[str] = Field(None, validation_alias=AliasChoices("document_title", "documentTitle", "title", "material_title", "materialTitle"))
+    # PDF 기반 퀴즈 파이프라인(pdf_quiz_service) 입력 — Spring AiIntegrationService 가 함께 전송
+    document_text: Optional[str] = Field(None, validation_alias=AliasChoices("document_text", "documentText", "pdf_text"))
+    summary: Optional[str] = Field(None, validation_alias=AliasChoices("summary", "summary_text"))
+    core_content_text: Optional[str] = Field(None, validation_alias=AliasChoices("core_content_text", "coreContentText", "core_content"))
+    detailed_content_text: Optional[str] = Field(None, validation_alias=AliasChoices("detailed_content_text", "detailedContentText", "detailed_content"))
+    keywords: Optional[List[str]] = Field(default=None, validation_alias=AliasChoices("keywords", "keyword_list"))
+    source_mode: Optional[str] = Field(None, validation_alias=AliasChoices("source_mode", "sourceMode"))
+    generate_admin_quiz: Optional[bool] = Field(None, validation_alias=AliasChoices("generate_admin_quiz", "admin_quiz", "generateAdminQuiz"))
 
 
 class QuestionReq(BaseModel):
@@ -97,50 +106,31 @@ def _text_status(ts: dict, chunk_count: int) -> dict:
     }
 
 
-def _quiz_fallback_payload(context: str, difficulty: str, count: int,
-                           ts: dict, chunk_count: int, reason: str) -> Dict[str, Any]:
-    """AI 퀴즈 생성 실패(timeout/parse/검증 실패/빈 응답) 시에도 문서 기반 기본 문제를
-    항상 반환한다. 빈 결과나 에러만 돌려주지 않는다(사용자 요구: 무조건 문제 노출)."""
-    count = max(3, min(int(count or 5), 20))
-    raw: List[Dict[str, Any]] = []
-    try:
-        from app.services.realtime_quiz_service import _document_grounded_fallback
-        raw = _document_grounded_fallback(context or "", count, difficulty or "보통", ["multiple_choice"])
-    except Exception as e:  # noqa: BLE001
-        logger.warning("quiz 문서기반 fallback 생성 실패(generic 사용): %s", e)
-    questions: List[Dict[str, Any]] = []
-    for q in raw:
-        opts = q.get("choices") or []
-        ai = q.get("answer_index")
-        ai = ai if isinstance(ai, int) and 0 <= ai < len(opts) else 0
-        questions.append({
+def _pdf_quiz_to_frontend(questions: List[Dict[str, Any]], diff_applied: str) -> List[Dict[str, Any]]:
+    """pdf_quiz_service 의 {question, choices, correct_answer, ...} 를 프론트
+    parseQuizQuestions 가 기대하는 {question, options, answer(int), answerIndex, ...} 로 변환한다.
+    난이도는 절대 낮추지 않고 요청 난이도(diff_applied)를 그대로 싣는다."""
+    out: List[Dict[str, Any]] = []
+    for q in questions or []:
+        choices = q.get("choices") or q.get("options") or []
+        correct = q.get("correct_answer")
+        ans_idx = 0
+        if correct in choices:
+            ans_idx = choices.index(correct)
+        elif isinstance(q.get("answerIndex"), int):
+            ans_idx = q.get("answerIndex")
+        out.append({
             "question": (q.get("question") or "").strip(),
-            "options": opts,
-            "answer": ai,            # 프론트 parseQuizQuestions는 숫자 인덱스를 기대
-            "answerIndex": ai,
+            "options": choices,
+            "answer": ans_idx,          # 프론트 parseQuizQuestions 는 숫자 인덱스를 기대
+            "answerIndex": ans_idx,
+            "correctAnswer": ans_idx,
             "explanation": (q.get("explanation") or "").strip(),
-            "difficulty": q.get("difficulty") or difficulty or "보통",
-            "source": "FALLBACK",
+            "difficulty": q.get("difficulty") or diff_applied,
+            "wrongExplanations": q.get("wrong_explanations") or [],
+            "sourceTrace": q.get("source_trace"),
         })
-    if not questions:  # 문서 기반도 비면 안내형 generic 으로 최종 보장
-        for i in range(count):
-            questions.append({
-                "question": f"학습 자료 복습 문항 {i + 1}: 이 자료의 핵심 개념을 가장 잘 설명한 것은?",
-                "options": ["자료의 핵심 개념", "관련 없는 내용", "부분적으로만 맞는 설명", "반대되는 설명"],
-                "answer": 0, "answerIndex": 0,
-                "explanation": "AI 생성이 일시적으로 어려워 기본 복습 문항으로 대체했습니다. 자료를 다시 확인해 보세요.",
-                "difficulty": difficulty or "보통", "source": "FALLBACK",
-            })
-    logger.warning("material quiz fallback 사용 reason=%s count=%s", reason, len(questions))
-    return {
-        "success": True,
-        "quizData": json.dumps(questions, ensure_ascii=False),  # 하위호환 (Spring이 그대로 저장)
-        "quizzes": questions,
-        "warnings": ["AI 퀴즈 생성에 실패하여 문서 기반 기본 문제로 대체했습니다."],
-        "textStatus": _text_status(ts, chunk_count),
-        "metadata": {"provider": "fallback", "usedFallback": True,
-                     "fallbackReason": reason, "chunkCount": chunk_count},
-    }
+    return out
 
 
 def _roadmap_fallback_payload(document_title: str, ts: dict, chunk_count: int,
@@ -276,55 +266,126 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
 
 
 # ── POST /api/ai/quiz ─────────────────────────────────────────────────────────
-@router.post("/quiz", summary="자료 퀴즈 생성 (GPT, 구조화 JSON)")
+@router.post("/quiz", summary="자료 퀴즈 생성 (PDF 기반 + 요청 난이도 강제, 기본문제 fallback 없음)")
 async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
-    from app.services.material_ai_manager import (
-        validate_extracted_text, build_limited_context, generate_quiz_json, AI_QUIZ_MAX_CHUNKS, ocr_unavailable_status,
-    )
-    from app.services.chunk_cache import get_or_build_chunks
+    """퀴즈 생성 정책(스펙):
+      - 난이도 미반영을 이유로 '기본 문제'로 낮추지 않는다(generic fallback 제거).
+      - 항상 PDF 기반 + 요청 난이도(requestedDifficulty) + 요청 개수(requestedCount)로 생성한다.
+      - LLM 실패/부실 시 PDF 기반 deterministic generator 가 같은 난이도로 보충한다.
+      - PDF 텍스트가 비었거나 너무 짧을 때만 PDF_TEXT_INSUFFICIENT 로 명확히 실패한다.
+    파이프라인: pdf_quiz_service.generate_pdf_quiz (LLM → validate → deterministic 보충 → 최종 검증).
+    """
+    from app.services.material_ai_manager import validate_extracted_text, ocr_unavailable_status
+    from app.services.pdf_quiz_service import generate_pdf_quiz
+    from app.services.quiz_difficulty_policy import normalize_difficulty
+
     started = time.time()
-    ts = validate_extracted_text(req.text)
-    if not ts["ok"]:
+    request_id = uuid.uuid4().hex[:12]
+    requested_difficulty = normalize_difficulty(req.difficulty or "보통")  # easy|normal|hard
+    requested_count = max(1, min(int(req.questionCount or 5), 20))
+
+    # PDF 근거 텍스트 후보 — document_text 우선, 없으면 text/summary/core/detailed.
+    primary_text = (req.document_text or req.text or "").strip()
+    combined_for_check = " ".join(filter(None, [
+        primary_text, (req.summary or ""), (req.core_content_text or ""), (req.detailed_content_text or ""),
+    ])).strip()
+    ts = validate_extracted_text(combined_for_check or None)
+
+    # 완전히 비어 있으면 OCR 안내(이미지 PDF), 짧으면 PDF_TEXT_INSUFFICIENT.
+    if ts["status"] == "empty":
         return {**_fail("PDF_OCR_REQUIRED",
                      "이미지 기반 PDF라 텍스트 추출이 필요합니다. OCR 설정을 켠 뒤 다시 시도해주세요.",
-                     text_status=_text_status(ts, 0)), "metadata": {"ocr": ocr_unavailable_status()}}
-    requested_count = max(1, min(int(req.questionCount or 5), 20))
-    logger.info("material quiz start material_id=%s requestedCount=%s difficulty=%s textLen=%s", req.material_id, requested_count, req.difficulty, ts["textLength"])
-    cache = await get_or_build_chunks(req.material_id, req.text)
-    chunks = cache["chunks"]
-    context = build_limited_context(chunks, AI_QUIZ_MAX_CHUNKS) or (req.text or "")[:6000]
+                     text_status=_text_status(ts, 0)),
+                "requestId": request_id, "metadata": {"ocr": ocr_unavailable_status(), "requestId": request_id}}
+
+    logger.info("material quiz start requestId=%s material_id=%s requestedDifficulty=%s requestedCount=%s textLen=%s",
+                request_id, req.material_id, requested_difficulty, requested_count, ts["textLength"])
+
+    pdf_req: Dict[str, Any] = {
+        "material_id": req.material_id,
+        "material_title": req.document_title,
+        "difficulty": requested_difficulty,
+        "count": requested_count,
+        "document_text": primary_text,
+        "text": primary_text,
+        "summary": req.summary,
+        "core_content_text": req.core_content_text,
+        "detailed_content_text": req.detailed_content_text,
+        "keywords": req.keywords or [],
+        "generate_admin_quiz": bool(req.generate_admin_quiz),
+    }
+
     try:
-        r = await asyncio.wait_for(asyncio.to_thread(
-            generate_quiz_json, context, req.difficulty or "보통", requested_count,
-        ), timeout=_t(QUIZ_TIMEOUT))
+        r = await asyncio.wait_for(asyncio.to_thread(generate_pdf_quiz, pdf_req), timeout=_t(QUIZ_TIMEOUT))
     except asyncio.TimeoutError:
-        # 빈 결과/에러만 반환하지 않고 문서 기반 fallback 문제를 보장한다.
-        return _quiz_fallback_payload(context, req.difficulty or "보통", requested_count,
-                                      ts, len(chunks), "AI_TIMEOUT")
-    except Exception as e:
-        logger.error("quiz 실패: %s", e)
-        return _quiz_fallback_payload(context, req.difficulty or "보통", requested_count,
-                                      ts, len(chunks), "AI_RESPONSE_PARSE_FAILED")
+        # 타임아웃 시에도 기본문제로 낮추지 않고, LLM 없이 PDF 기반 deterministic 으로 같은 난이도/개수 보충.
+        logger.warning("material quiz timeout requestId=%s → deterministic(_no_llm) 재시도", request_id)
+        try:
+            r = await asyncio.to_thread(generate_pdf_quiz, {**pdf_req, "_no_llm": True})
+        except Exception as e:  # noqa: BLE001
+            logger.error("material quiz deterministic 복구 실패 requestId=%s: %s", request_id, e)
+            return {**_fail("AI_TIMEOUT", "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
+                            text_status=_text_status(ts, 0)),
+                    "requestId": request_id, "metadata": {"requestId": request_id}}
+    except Exception as e:  # noqa: BLE001
+        logger.error("material quiz 실패 requestId=%s: %s", request_id, e)
+        return {**_fail("AI_RESPONSE_PARSE_FAILED", "퀴즈 생성에 실패했습니다. 같은 PDF 자료로 다시 시도해주세요.",
+                        text_status=_text_status(ts, 0)),
+                "requestId": request_id, "metadata": {"requestId": request_id}}
 
-    questions = r.get("questions", [])
-    if not questions:
-        # schema 검증 실패로 전체를 폐기하지 않고 fallback 으로 복구한다.
-        return _quiz_fallback_payload(context, req.difficulty or "보통", requested_count,
-                                      ts, len(chunks), "QUIZ_VALIDATE_FAILED")
+    # PDF 텍스트 부족 등 명확한 실패 — 일반문제로 속이지 않고 그대로 전달.
+    if not r.get("success"):
+        error_code = r.get("error_code") or "PDF_TEXT_INSUFFICIENT"
+        message = r.get("message") or "PDF 텍스트가 부족해 퀴즈를 생성할 수 없습니다."
+        logger.warning("material quiz fail requestId=%s material_id=%s code=%s contextLen=%s",
+                       request_id, req.material_id, error_code, r.get("context_len"))
+        return {**_fail(error_code, message, retryable=bool(r.get("retryable", False)),
+                        text_status=_text_status(ts, 0)),
+                "difficulty_requested": requested_difficulty,
+                "difficulty_validation": r.get("validation"),
+                "requestId": request_id, "metadata": {"requestId": request_id}}
 
-    quiz_data = json.dumps(questions, ensure_ascii=False)  # 프론트 parseQuizQuestions가 파싱
+    diff_applied = r.get("difficulty_applied") or requested_difficulty
+    fe_questions = _pdf_quiz_to_frontend(r.get("questions", []), diff_applied)
+    quiz_data = json.dumps(fe_questions, ensure_ascii=False)  # 프론트 parseQuizQuestions가 파싱
+    generated_count = len(fe_questions)
+    source = r.get("source") or "AI_REPAIRED"
     elapsed = int((time.time() - started) * 1000)
-    logger.info("material quiz done material_id=%s requestedCount=%s generatedCount=%s provider=%s elapsedMs=%s", req.material_id, requested_count, len(questions), r.get("provider"), elapsed)
+
+    logger.info("material quiz done requestId=%s material_id=%s requestedDifficulty=%s appliedDifficulty=%s "
+                "requestedCount=%s generatedCount=%s source=%s validated=%s elapsedMs=%s",
+                request_id, req.material_id, requested_difficulty, diff_applied, requested_count,
+                generated_count, source, (r.get("validation") or {}).get("passed"), elapsed)
+
     return {
         "success": True,
-        "quizData": quiz_data,           # 하위호환 (Spring이 그대로 저장)
-        "quizzes": questions,            # 확장
-        "warnings": r.get("warnings", []),
-        "textStatus": _text_status(ts, len(chunks)),
-        "metadata": {"provider": r.get("provider", "ollama_qwen"), "model": os.getenv("OLLAMA_MODEL", "qwen2.5:14b"),
-                     "elapsedMs": elapsed, "chunkCount": len(chunks),
-                     "cacheHit": cache["cacheHit"], "cacheBackend": cache["cacheBackend"],
-                     "extractedTextHash": cache.get("extractedTextHash")},
+        "errorCode": None,
+        "quizData": quiz_data,                 # 하위호환 (Spring이 그대로 저장)
+        "quizzes": fe_questions,               # 확장
+        "warnings": [],                        # '기본문제 대체' 경고를 노출하지 않는다
+        # 난이도 메타 — 항상 requested == applied. fallback 표시 금지.
+        "difficulty_requested": requested_difficulty,
+        "difficulty_applied": diff_applied,
+        "difficulty_policy": r.get("difficulty_policy"),
+        "difficulty_validation": r.get("validation"),
+        "source": source,                      # AI_REPAIRED | DETERMINISTIC_PDF
+        "fallbackUsed": False,
+        "source_trace": (fe_questions[0].get("sourceTrace") if fe_questions else None),
+        "textStatus": _text_status(ts, 0),
+        "metadata": {
+            "provider": (r.get("provider_policy") or {}).get("description") or "pdf_based",
+            "source": source,
+            "fallbackUsed": False,
+            "validated": bool((r.get("validation") or {}).get("passed")),
+            "requestId": request_id,
+            "materialId": req.material_id,
+            "requestedDifficulty": requested_difficulty,
+            "appliedDifficulty": diff_applied,
+            "requestedCount": requested_count,
+            "generatedCount": generated_count,
+            "documentType": r.get("document_type"),
+            "elapsedMs": elapsed,
+        },
     }
 
 

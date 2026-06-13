@@ -2661,6 +2661,7 @@ try:
     from app.api.material_legacy_routes import router as _material_legacy_router
     from app.api.keyword_routes import router as _keyword_router
     from app.api.planner_ai_routes import router as _planner_ai_router
+    from app.api.plan_analysis_routes import router as _plan_analysis_router
 
     app.include_router(_spring_rag_router)      # /api/rag/ingest, /api/rag/query, DELETE /api/rag/materials/{id}
     app.include_router(_rag_legacy_router)      # /api/materials/{id}/rag/* (하위 호환)
@@ -2671,6 +2672,7 @@ try:
     app.include_router(_material_legacy_router) # POST /api/ai/summary|quiz|question|roadmap|feedback (자료보관함 라이브)
     app.include_router(_keyword_router)         # POST /api/ai/keyword/define (핵심 키워드 개념 정의)
     app.include_router(_planner_ai_router)      # POST /api/ai/planner/expand|roadmap (공부 플래너 전용 AI)
+    app.include_router(_plan_analysis_router)   # POST /api/ai/plan-analysis|plan-recommendation (계획 분석/다음 학습 추천)
 
     logger.info("v0.6 확장 라우터 로드 완료 (로드맵 + 자료보관함 라이브 포함)")
 except Exception as _ext_err:
