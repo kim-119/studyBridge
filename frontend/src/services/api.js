@@ -1220,6 +1220,34 @@ export const plannerService = {
   },
 };
 
+// AI 계획 분석(PDF/플래너 문장 단위 학습 진행) 서비스. 모두 Spring(/api) 경유.
+export const planAnalysisService = {
+  // 분석 생성/재생성 (PDF/플래너 텍스트 → 문장/행동 단위 체크리스트)
+  analyze: async (materialId) => {
+    const res = await api.post(`/api/materials/${materialId}/plan-analysis`, {}, { timeout: AI_TIMEOUT_MS });
+    return res.data;
+  },
+  // 저장된 분석 조회 (없으면 empty=true)
+  get: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/plan-analysis`);
+    return res.data;
+  },
+  // 항목 완료/숨김 상태 변경 (체크: {completed}, 지우기: {completed:true, hidden:true})
+  patchItem: async (itemId, patch) => {
+    const res = await api.patch(`/api/plan-analysis/items/${itemId}`, patch);
+    return res.data;
+  },
+  // 다음 학습 추천(미완료 항목 기반) 재생성
+  recommend: async (materialId) => {
+    const res = await api.post(`/api/materials/${materialId}/plan-recommendation`, {});
+    return res.data;
+  },
+  getProgress: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/progress`);
+    return res.data;
+  },
+};
+
 // 오답노트(복습 전용) 서비스.
 //  - 백엔드(/api/review-notes)가 아직 없으므로 404/501/네트워크 오류는 빈 상태로 흡수한다.
 //  - 화면에서 500/404를 터뜨리지 않도록 getReviewNotes 는 항상 배열을 반환한다.

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, XCircle, Circle, Settings, ChevronRight, X, Trash2, Sparkles, ListChecks, ArrowRight, FileText, BarChart3 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
-import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService } from '../services/api';
+import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService, planAnalysisService } from '../services/api';
 import SummarySectionCard from '../components/SummarySectionCard';
 import KeywordDefineModal from '../components/KeywordDefineModal';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
@@ -91,7 +91,14 @@ export default function ArchiveDetail() {
   const [plannerResult, setPlannerResult] = useState(null);
   const [plannerError, setPlannerError] = useState(null);
   // 자료보관함 PLANNER 상세 전용 — 학습계획/일정 보기 전환(기본 학습계획). 메모/퀴즈/AI질문 없음.
-  const [plannerDetailView, setPlannerDetailView] = useState('plan'); // 'plan' | 'roadmap'
+  // 우측 학습 도구 탭: 'analysis'(AI 계획 분석) | 'next'(다음 학습 추천) | 'memo' | 'progress'
+  // (레거시 보조 뷰: 'plan' | 'checklist' | 'roadmap')
+  const [plannerDetailView, setPlannerDetailView] = useState('analysis');
+  // AI 계획 분석(PDF/플래너 문장 단위) 상태 — DB 영속(plan_analysis)
+  const [planAnalysis, setPlanAnalysis] = useState(null); // GET/POST 응답(Response)
+  const [planLoading, setPlanLoading] = useState(false);
+  const [planError, setPlanError] = useState(null); // { errorCode, message }
+  const [planItemBusy, setPlanItemBusy] = useState(null); // 갱신 중인 itemId
 
   const chatEndRef = useRef(null);
 
@@ -504,6 +511,14 @@ export default function ArchiveDetail() {
       setMemoText(memo?.content || '');
     } catch (e) {
       console.warn('메모 정보 로드 실패:', e);
+    }
+
+    // 5. 저장된 AI 계획 분석 로드 (새로고침 후에도 결과/체크/숨김/진행률 유지)
+    try {
+      const pa = await planAnalysisService.get(materialId);
+      setPlanAnalysis(pa && !pa.empty ? pa : null);
+    } catch (e) {
+      console.warn('AI 계획 분석 로드 실패:', e);
     }
   };
 
@@ -1094,21 +1109,241 @@ export default function ArchiveDetail() {
   // 자료보관함의 PLANNER 자료는 이미 저장된 자료다. "먼저 저장" 유도 없이 저장된 자료 기반으로 바로 분석을 보여준다.
   const isPlanner = material?.materialType === 'PLANNER';
 
-  // AI 계획 분석 — 저장된 플래너(PDF) 본문 기준으로 요약/계획 분석을 (재)생성한다. 별도 백엔드 추가 없이 기존 요약 엔드포인트 사용.
+  // AI 계획 분석 — PDF/플래너 텍스트를 chunk→문장→행동 단위로 분해(서버 결정적 분석, DB 영속).
   const handlePlannerAnalyze = async () => {
-    if (!material) return;
+    const materialId = material?.materialId || id;
+    if (!materialId || planLoading) return;
     try {
-      setSummaryLoading(true);
-      const summary = await materialService.getSummary(material.materialId || id);
-      setSummaryData(summary);
+      setPlanLoading(true);
+      setPlanError(null);
+      setPlannerDetailView('analysis');
+      const res = await planAnalysisService.analyze(materialId);
+      if (res?.errorCode) {
+        setPlanError({ errorCode: res.errorCode, message: res.summary || 'AI 계획 분석에 실패했습니다. 다시 시도해 주세요.' });
+        setPlanAnalysis(null);
+      } else {
+        setPlanAnalysis(res);
+      }
     } catch (e) {
-      console.warn('AI 계획 분석 실패:', e);
+      const data = e?.response?.data;
+      setPlanError({
+        errorCode: data?.errorCode || 'PLAN_ANALYSIS_FASTAPI_FAILED',
+        message: data?.summary || data?.message || 'AI 계획 분석에 실패했습니다. 다시 시도해 주세요.',
+      });
     } finally {
-      setSummaryLoading(false);
+      setPlanLoading(false);
     }
   };
 
+  // 항목 체크/지우기 (서버 PATCH → 진행률 즉시 재계산, DB 영속)
+  const patchPlanItem = async (itemId, patch) => {
+    if (planItemBusy) return;
+    try {
+      setPlanItemBusy(itemId);
+      const res = await planAnalysisService.patchItem(itemId, patch);
+      setPlanAnalysis(res);
+    } catch (e) {
+      console.error('항목 갱신 실패:', e);
+      alert('항목 상태 저장에 실패했습니다.');
+    } finally {
+      setPlanItemBusy(null);
+    }
+  };
+  const handleToggleItem = (item) => patchPlanItem(item.id, { completed: !item.completed });
+  // 지우기: 완료 처리 + 숨김 (로드맵처럼 목록에서 사라지되 진행률에 완료로 반영)
+  const handleEraseItem = (item) => {
+    if (!window.confirm('이 항목을 완료 처리하고 목록에서 숨길까요? (진행률에는 완료로 반영됩니다)')) return;
+    patchPlanItem(item.id, { completed: true, hidden: true });
+  };
+
+  // 다음 학습 추천 재생성 (미완료 항목 기반)
+  const handleNextRecommend = async () => {
+    const materialId = material?.materialId || id;
+    if (!materialId) return;
+    if (!planAnalysis) { await handlePlannerAnalyze(); return; }
+    try {
+      setPlanLoading(true);
+      const res = await planAnalysisService.recommend(materialId);
+      setPlanAnalysis((prev) => prev ? { ...prev, recommendations: res.recommendations } : prev);
+    } catch (e) {
+      console.warn('다음 학습 추천 실패:', e);
+    } finally {
+      setPlanLoading(false);
+    }
+  };
+
+  // ===== 우측 학습 도구(신규 4탭) — plan_analysis(서버 DB) 기반 렌더 =====
+  const renderLearningToolPanel = () => {
+    const pa = planAnalysis;
+    const progress = pa?.progress || { totalCount: 0, completedCount: 0, hiddenCount: 0, visibleCount: 0, percent: 0 };
+    const allItems = Array.isArray(pa?.items) ? pa.items : [];
+    const visibleItems = allItems.filter((it) => !it.hidden);
+    const recommendations = Array.isArray(pa?.recommendations) ? pa.recommendations : [];
+
+    // 코드/패키지명이 깨지지 않게: 단어 내부(특히 CJK) 분절 금지 + 넘칠 때만 줄바꿈 + 전체 tooltip
+    const codeSafe = { overflowWrap: 'anywhere', wordBreak: 'keep-all', whiteSpace: 'pre-wrap', lineHeight: 1.6 };
+    const sourceBadge = (it) => it.sourceType === 'PDF'
+      ? (it.pageNumber ? `PDF p.${it.pageNumber}` : 'PDF')
+      : it.sourceType === 'PLANNER' ? 'Planner' : (it.sourceType || '출처');
+
+    const Card = ({ icon, title, right, children }) => (
+      <div className="glass-panel animate-fade-in" style={{ padding: '22px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', gap: '8px' }}>
+          <h3 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>{icon} {title}</h3>
+          {right}
+        </div>
+        {children}
+      </div>
+    );
+    const ProgressBar = ({ percent }) => (
+      <div style={{ height: '12px', borderRadius: '999px', background: '#E5E7EB', overflow: 'hidden' }}>
+        <div style={{ width: `${percent}%`, height: '100%', background: 'linear-gradient(90deg,#22C55E,#15803D)', transition: 'width 0.4s' }} />
+      </div>
+    );
+    const reanalyzeBtn = (
+      <button className="btn-outline" style={{ width: 'auto', padding: '6px 12px', fontSize: '12px' }} onClick={handlePlannerAnalyze} disabled={planLoading}>
+        <Sparkles size={14} /> {planLoading ? '분석 중…' : '재분석'}
+      </button>
+    );
+    const wrap = (children) => (<div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px' }}>{children}</div>);
+
+    // ── 다음 학습 추천 ──
+    if (plannerDetailView === 'next') {
+      return wrap(
+        <Card icon={<ArrowRight size={17} color="#15803D" />} title="다음 학습 추천"
+          right={<button className="btn-outline" style={{ width: 'auto', padding: '6px 12px', fontSize: '12px' }} onClick={handleNextRecommend} disabled={planLoading}>새로 추천</button>}>
+          {!pa ? (
+            <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. ‘AI 계획 분석’을 먼저 실행하세요.</p>
+          ) : recommendations.length === 0 ? (
+            <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>미완료 항목이 없습니다. 모든 학습을 완료했어요! 🎉</p>
+          ) : (
+            <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {recommendations.map((r, i) => <li key={i} style={{ fontSize: '14px', color: 'var(--color-text-main)', ...codeSafe }} title={r}>{r}</li>)}
+            </ul>
+          )}
+        </Card>
+      );
+    }
+
+    // ── 메모 (materialId 기준 영속, 기존 /api/materials/{id}/memo 재사용) ──
+    if (plannerDetailView === 'memo') {
+      return wrap(
+        <Card icon={<Edit3 size={17} color="#15803D" />} title="메모">
+          <textarea value={memoText} onChange={(e) => setMemoText(e.target.value)}
+            placeholder="이 자료/플래너에 대한 메모를 남기세요. (자료별로 저장되어 새로고침 후에도 유지됩니다)"
+            style={{ width: '100%', minHeight: '200px', boxSizing: 'border-box', borderRadius: '12px', border: '1px solid var(--color-border)', padding: '12px', fontSize: '14px', lineHeight: 1.6, resize: 'vertical' }} />
+          <button className="btn-primary" style={{ marginTop: '12px', width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handleSaveMemo} disabled={isSavingMemo}>
+            {isSavingMemo ? '저장 중…' : '메모 저장'}
+          </button>
+        </Card>
+      );
+    }
+
+    // ── 진행률 ──
+    if (plannerDetailView === 'progress') {
+      if (!pa) return wrap(<Card icon={<BarChart3 size={17} color="#15803D" />} title="진행률"><p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. ‘AI 계획 분석’을 먼저 실행하세요.</p></Card>);
+      const byChunk = {};
+      allItems.forEach((it) => { const c = it.chunkIndex ?? 0; (byChunk[c] = byChunk[c] || []).push(it); });
+      return wrap(
+        <Card icon={<BarChart3 size={17} color="#15803D" />} title="진행률" right={reanalyzeBtn}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px' }}>
+            <span>전체 진행률</span><b style={{ color: '#15803D' }}>{progress.percent}% ({progress.completedCount}/{progress.totalCount})</b>
+          </div>
+          <ProgressBar percent={progress.percent} />
+          <div style={{ marginTop: '10px', fontSize: '12.5px', color: 'var(--color-text-muted)' }}>
+            완료 {progress.completedCount} · 표시 중 {progress.visibleCount} · 숨김(완료처리) {progress.hiddenCount} · 전체 {progress.totalCount}
+          </div>
+          <div style={{ marginTop: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {Object.keys(byChunk).sort((a, b) => a - b).map((c) => {
+              const arr = byChunk[c]; const done = arr.filter((x) => x.completed).length; const pct = arr.length ? Math.round(done / arr.length * 100) : 0;
+              return (
+                <div key={c} style={{ fontSize: '13px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px', color: 'var(--color-text-muted)' }}>
+                    <span>청크 {Number(c) + 1}</span><span style={{ color: pct === 100 ? '#15803D' : 'var(--color-text-main)' }}>{done}/{arr.length} ({pct}%)</span>
+                  </div>
+                  <div style={{ height: '7px', borderRadius: '999px', background: '#EEF2F7', overflow: 'hidden' }}>
+                    <div style={{ width: `${pct}%`, height: '100%', background: '#22C55E' }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      );
+    }
+
+    // ── AI 계획 분석 (기본 'analysis') ──
+    if (planLoading && !pa) {
+      return wrap(
+        <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석 중…">
+          <p style={{ margin: '0 0 12px', fontSize: '14px', color: 'var(--color-text-muted)' }}>PDF/플래너 문장을 분석 중입니다.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {[0, 1, 2].map((i) => (<div key={i} style={{ height: '14px', borderRadius: '6px', background: 'linear-gradient(90deg,#F3F4F6,#E5E7EB,#F3F4F6)', backgroundSize: '200% 100%', animation: 'pulse 1.4s ease-in-out infinite' }} />))}
+          </div>
+        </Card>
+      );
+    }
+    if (planError) {
+      return wrap(
+        <Card icon={<Sparkles size={17} color="#EF4444" />} title="AI 계획 분석">
+          <div style={{ borderRadius: '12px', border: '1px solid #FECACA', background: '#FEF2F2', padding: '14px', marginBottom: '14px' }}>
+            <div style={{ fontWeight: 700, color: '#B91C1C', fontSize: '14px' }}>{planError.message}</div>
+            <div style={{ fontSize: '12px', color: '#9CA3AF', marginTop: '4px' }}>{planError.errorCode}</div>
+          </div>
+          <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze}>다시 시도</button>
+        </Card>
+      );
+    }
+    if (!pa) {
+      return wrap(
+        <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석">
+          <p style={{ margin: '0 0 14px', fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. AI 계획 분석을 눌러 PDF/플래너 문장을 체크리스트로 만들어 보세요.</p>
+          <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze} disabled={planLoading}>
+            <Sparkles size={16} /> AI 계획 분석
+          </button>
+        </Card>
+      );
+    }
+    return wrap(
+      <>
+        <Card icon={<AlignLeft size={17} color="var(--color-primary)" />} title="요약 / 핵심 학습 흐름" right={reanalyzeBtn}>
+          <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-main)', ...codeSafe }}>{pa.summary}</p>
+          <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '13px' }}>
+            <span style={{ color: 'var(--color-text-muted)' }}>진행률</span><b style={{ color: '#15803D' }}>{progress.percent}% ({progress.completedCount}/{progress.totalCount})</b>
+          </div>
+          <ProgressBar percent={progress.percent} />
+        </Card>
+        <Card icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
+          {visibleItems.length === 0 ? (
+            <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>표시할 항목이 없습니다. (모두 완료/숨김 처리됨)</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '56vh', overflowY: 'auto' }}>
+              {visibleItems.map((it) => (
+                <div key={it.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', border: '1px solid var(--color-border)', background: it.completed ? '#F0FDF4' : '#fff', borderRadius: '10px', padding: '10px 12px' }}>
+                  <button onClick={() => handleToggleItem(it)} disabled={planItemBusy === it.id} title={it.completed ? '완료 해제' : '완료'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: '1px', flexShrink: 0 }}>
+                    {it.completed ? <CheckCircle2 size={18} color="#16A34A" /> : <Circle size={18} color="#9CA3AF" />}
+                  </button>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: '13.5px', color: 'var(--color-text-main)', textDecoration: it.completed ? 'line-through' : 'none', ...codeSafe }} title={it.text}>{it.text}</span>
+                    <span style={{ display: 'inline-block', marginTop: '4px', fontSize: '10px', fontWeight: 700, color: '#15803D', background: '#EEF8EB', borderRadius: '6px', padding: '1px 6px' }}>{sourceBadge(it)}</span>
+                  </div>
+                  <button onClick={() => handleEraseItem(it)} disabled={planItemBusy === it.id} title="완료 후 숨기기(지우기)" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', flexShrink: 0 }}>
+                    <Trash2 size={15} color="#EF4444" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </>
+    );
+  };
+
   const renderPlannerRightPanel = () => {
+    // 신규 4탭(AI 계획 분석 / 다음 학습 추천 / 메모 / 진행률)은 plan_analysis(서버 DB) 기반으로 렌더
+    if (['analysis', 'next', 'memo', 'progress'].includes(plannerDetailView)) {
+      return renderLearningToolPanel();
+    }
     const overview = getSummaryOverview(summaryData);
     const keywords = getSummaryKeywords(summaryData);
     const sections = getSummarySections(summaryData);
@@ -2343,17 +2578,22 @@ export default function ArchiveDetail() {
                 </div>
                 {/* AI 도구 버튼: PLANNER 는 플래너 전용(메모/퀴즈/AI질문 없음), 그 외 PDF 는 기존 학습 도구 유지 */}
                 {isPlanner ? (
-                  /* 플래너 전용 도구 (메모/퀴즈/AI질문 없음) */
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    <button className={`archive-action-btn ${plannerDetailView === 'plan' ? 'active' : ''}`} onClick={() => setPlannerDetailView('plan')}><AlignLeft size={16} /> 학습계획 보기</button>
-                    <button className={`archive-action-btn ${plannerDetailView === 'checklist' ? 'active' : ''}`} onClick={() => setPlannerDetailView('checklist')}><ListChecks size={16} /> 체크리스트</button>
-                    <button className={`archive-action-btn ${plannerDetailView === 'progress' ? 'active' : ''}`} onClick={() => setPlannerDetailView('progress')}><BarChart3 size={16} /> 진행률</button>
-                    <button className={`archive-action-btn ${plannerDetailView === 'roadmap' ? 'active' : ''}`} onClick={() => setPlannerDetailView('roadmap')}><Map size={16} /> 일정/로드맵 보기</button>
-                    <button className={`archive-action-btn ${plannerDetailView === 'next' ? 'active' : ''}`} onClick={() => setPlannerDetailView('next')}><ArrowRight size={16} /> 다음 학습 추천</button>
-                    <button className="archive-action-btn" onClick={handlePlannerAnalyze} disabled={summaryLoading}><Sparkles size={16} /> {summaryLoading ? '분석 중…' : 'AI 계획 분석'}</button>
-                    {material?.s3PresignedUrl && (
-                      <button className="archive-action-btn" onClick={() => window.open(material.s3PresignedUrl, '_blank', 'noopener')}><FileText size={16} /> 원문/PDF 보기</button>
-                    )}
+                  /* 우측 학습 도구: 주요 4개(AI 계획 분석/다음 학습 추천/메모/진행률) + 보조(학습계획/체크리스트/일정·로드맵/원문) */
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end' }}>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button className={`archive-action-btn ${plannerDetailView === 'analysis' ? 'active' : ''}`} onClick={() => setPlannerDetailView('analysis')}><Sparkles size={16} /> AI 계획 분석</button>
+                      <button className={`archive-action-btn ${plannerDetailView === 'next' ? 'active' : ''}`} onClick={() => setPlannerDetailView('next')}><ArrowRight size={16} /> 다음 학습 추천</button>
+                      <button className={`archive-action-btn ${plannerDetailView === 'memo' ? 'active' : ''}`} onClick={() => setPlannerDetailView('memo')}><Edit3 size={16} /> 메모</button>
+                      <button className={`archive-action-btn ${plannerDetailView === 'progress' ? 'active' : ''}`} onClick={() => setPlannerDetailView('progress')}><BarChart3 size={16} /> 진행률</button>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                      <button className={`archive-action-btn ${plannerDetailView === 'plan' ? 'active' : ''}`} style={{ fontSize: '12px', padding: '4px 10px' }} onClick={() => setPlannerDetailView('plan')}><AlignLeft size={14} /> 학습계획</button>
+                      <button className={`archive-action-btn ${plannerDetailView === 'checklist' ? 'active' : ''}`} style={{ fontSize: '12px', padding: '4px 10px' }} onClick={() => setPlannerDetailView('checklist')}><ListChecks size={14} /> 일정 체크리스트</button>
+                      <button className={`archive-action-btn ${plannerDetailView === 'roadmap' ? 'active' : ''}`} style={{ fontSize: '12px', padding: '4px 10px' }} onClick={() => setPlannerDetailView('roadmap')}><Map size={14} /> 일정/로드맵</button>
+                      {material?.s3PresignedUrl && (
+                        <button className="archive-action-btn" style={{ fontSize: '12px', padding: '4px 10px' }} onClick={() => window.open(material.s3PresignedUrl, '_blank', 'noopener')}><FileText size={14} /> 원문/PDF</button>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <div style={{ display: 'flex', gap: '8px' }}>

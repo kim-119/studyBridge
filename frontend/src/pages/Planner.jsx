@@ -23,6 +23,14 @@ const PRIORITIES = [
 const GREEN = '#69CB5B';
 const GREEN_DARK = '#15803D';
 
+// 로드맵 기반 플래너 제목("[로드맵 N주차 M일] topic")을 prefix/topic으로 분리한다.
+// 일반 플래너(prefix 없음)는 prefix=null로 반환되어 기존 표시가 그대로 유지된다.
+const splitRoadmapTitle = (title) => {
+  const m = typeof title === 'string' ? title.match(/^\s*(\[로드맵\s*\d+\s*주차\s*\d+\s*일\])\s*(.*)$/) : null;
+  if (m) return { prefix: m[1], topic: m[2].trim() || '학습 계획' };
+  return { prefix: null, topic: title };
+};
+
 const blankForm = () => {
   const today = new Date();
   return {
@@ -473,11 +481,23 @@ export default function Planner() {
                         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#F4FBF2]">
                           <NotebookPen size={15} strokeWidth={2.2} style={{ color: GREEN }} />
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5">
-                            <span className="truncate text-[14px] font-bold text-[#111827]">{p.title || '공부 플래너'}</span>
-                            {p.studyType && <span className="shrink-0 rounded-full bg-[#F4FBF2] px-1.5 py-0.5 text-[10px] font-bold text-[#15803D]">{p.studyType}</span>}
-                          </div>
+                        <div className="min-w-0 flex-1" title={p.title || '공부 플래너'}>
+                          {(() => {
+                            const { prefix, topic } = splitRoadmapTitle(p.title || '공부 플래너');
+                            return (
+                              <>
+                                {prefix && (
+                                  <span className="mb-0.5 inline-block rounded-md bg-[#EEF8EB] px-1.5 py-0.5 text-[10px] font-bold text-[#15803D]">
+                                    {prefix.replace(/^\[|\]$/g, '')}
+                                  </span>
+                                )}
+                                <div className="flex items-center gap-1.5">
+                                  <span className="truncate text-[14px] font-bold text-[#111827]">{topic || '공부 플래너'}</span>
+                                  {p.studyType && <span className="shrink-0 rounded-full bg-[#F4FBF2] px-1.5 py-0.5 text-[10px] font-bold text-[#15803D]">{p.studyType}</span>}
+                                </div>
+                              </>
+                            );
+                          })()}
                           <div className="flex items-center gap-1 text-[12px] text-[#6B7280]">
                             <Clock size={12} strokeWidth={2} style={{ color: '#9CA3AF' }} />
                             {dateLabel(p)}

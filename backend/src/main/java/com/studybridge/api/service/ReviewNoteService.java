@@ -611,60 +611,64 @@ public class ReviewNoteService {
     private static final Color C_BORDER = new Color(229, 231, 235);
     private static final Color C_BOX_BG = new Color(247, 248, 250);
 
+    // ---- A4 학습지 레이아웃 상수 (단위: pt, 1mm≈2.8346pt) ----
+    private static final float MM = 2.834645f;
+    private static final float PAGE_MARGIN = 10f * MM;   // 여백 ≈10mm
+    private static final float MAIN_MIN_H = 540f;        // 문제/풀이 영역 최소 높이
+    private static final float MEMO_MIN_H = 150f;        // 메모 영역 최소 높이
+    private static final float GRID_STEP = 6f * MM;      // 모눈 간격 6mm
+    private static final GridBackground GRID_BG = new GridBackground();
+
+    /** 셀 영역에 연한 모눈 배경을 그린다(배경 캔버스 → 텍스트/테두리 아래에 깔림). */
+    private static class GridBackground implements com.lowagie.text.pdf.PdfPCellEvent {
+        private static final Color GRID = new Color(214, 219, 226);
+        @Override
+        public void cellLayout(com.lowagie.text.pdf.PdfPCell cell, com.lowagie.text.Rectangle pos,
+                               com.lowagie.text.pdf.PdfContentByte[] canvases) {
+            com.lowagie.text.pdf.PdfContentByte cb = canvases[com.lowagie.text.pdf.PdfPTable.BACKGROUNDCANVAS];
+            cb.saveState();
+            cb.setColorStroke(GRID);
+            cb.setLineWidth(0.4f);
+            for (float x = pos.getLeft() + GRID_STEP; x < pos.getRight() - 1f; x += GRID_STEP) {
+                cb.moveTo(x, pos.getBottom()); cb.lineTo(x, pos.getTop());
+            }
+            for (float y = pos.getBottom() + GRID_STEP; y < pos.getTop() - 1f; y += GRID_STEP) {
+                cb.moveTo(pos.getLeft(), y); cb.lineTo(pos.getRight(), y);
+            }
+            cb.stroke();
+            cb.restoreState();
+        }
+    }
+
+    // A4 세로 학습지. 틀린 문제 1개당 한 장: [상단 헤더] / [문제 | 풀이 2분할(모눈)] / [하단 메모(모눈)].
     private byte[] buildPdf(String noteTitle, String sourceTitle, String difficultyKo, String createdDate,
                             int wrongCount, int unansweredCount, String overallFeedback, List<WrongItem> items) {
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-            Document doc = new Document(PageSize.A4, 42, 42, 50, 50);
+            Document doc = new Document(PageSize.A4, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN);
             PdfWriter.getInstance(doc, baos);
             doc.open();
             BaseFont base = BaseFont.createFont("NanumGothic.ttf", BaseFont.IDENTITY_H,
                     BaseFont.EMBEDDED, BaseFont.CACHED, fontBytes(), null);
 
-            Font fTitle = new Font(base, 20, Font.BOLD, C_GREEN);
-            Font fMetaLabel = new Font(base, 10.5f, Font.BOLD, C_MUTED);
-            Font fMetaValue = new Font(base, 10.5f, Font.BOLD, C_TEXT);
-            Font fSection = new Font(base, 12, Font.BOLD, C_GREEN);
-            Font fBody = new Font(base, 10.5f, Font.NORMAL, C_TEXT);
-
-            // 제목
-            Paragraph title = new Paragraph(noteTitle, fTitle);
-            title.setSpacingAfter(4f);
-            doc.add(title);
-            Paragraph sub = new Paragraph("AI 오답노트 · 복습 전용 학습 문서", new Font(base, 10, Font.NORMAL, C_MUTED));
-            sub.setSpacingAfter(14f);
-            doc.add(sub);
-
-            // 상단 메타 박스 (2열 라벨/값 테이블)
             String src = (sourceTitle == null || sourceTitle.isBlank()) ? "학습자료" : sourceTitle;
-            com.lowagie.text.pdf.PdfPTable meta = new com.lowagie.text.pdf.PdfPTable(new float[]{1f, 2.6f, 1f, 1.2f});
-            meta.setWidthPercentage(100);
-            metaCell(meta, "자료명", fMetaLabel, true);
-            metaCell(meta, src, fMetaValue, false);
-            metaCell(meta, "난이도", fMetaLabel, true);
-            metaCell(meta, difficultyKo, fMetaValue, false);
-            metaCell(meta, "생성일", fMetaLabel, true);
-            metaCell(meta, createdDate, fMetaValue, false);
-            metaCell(meta, "복습 필요", fMetaLabel, true);
-            metaCell(meta, (wrongCount + unansweredCount) + "문제", fMetaValue, false);
-            metaCell(meta, "오답 수", fMetaLabel, true);
-            metaCell(meta, wrongCount + "개", new Font(base, 10.5f, Font.BOLD, C_RED), false);
-            metaCell(meta, "미응답 수", fMetaLabel, true);
-            metaCell(meta, unansweredCount + "개", new Font(base, 10.5f, Font.BOLD, C_AMBER), false);
-            meta.setSpacingAfter(16f);
-            doc.add(meta);
+            int total = (items == null) ? 0 : items.size();
 
-            // 전체 피드백
-            doc.add(new Paragraph("전체 피드백", fSection));
-            Paragraph fb = new Paragraph(nz(overallFeedback), fBody);
-            fb.setLeading(16f);
-            fb.setSpacingBefore(4f);
-            fb.setSpacingAfter(16f);
-            doc.add(fb);
+            if (total == 0) {
+                // 안전장치: 항목이 없어도 빈 학습지 한 장(헤더/2분할/메모)을 보장한다.
+                doc.add(buildHeaderBox(base, createdDate, src, difficultyKo, wrongCount, unansweredCount, 0, 0));
+                doc.add(buildMainSplit(base, 0, null, overallFeedback));
+                doc.add(buildMemoBox(base));
+                doc.close();
+                return baos.toByteArray();
+            }
 
-            // 문제별 카드
-            int i = 1;
-            for (WrongItem w : items) {
-                doc.add(buildQuestionCard(base, i++, w));
+            for (int i = 0; i < total; i++) {
+                if (i > 0) doc.newPage();   // 문제마다 A4 한 장
+                WrongItem w = items.get(i);
+                doc.add(buildHeaderBox(base, createdDate, src, difficultyKo, wrongCount, unansweredCount, i + 1, total));
+                // 전체 피드백은 동일 내용이므로 첫 장 풀이 영역에만 싣는다.
+                doc.add(buildMainSplit(base, i + 1, w, i == 0 ? overallFeedback : null));
+                doc.add(buildMemoBox(base));
             }
 
             doc.close();
@@ -674,77 +678,163 @@ public class ReviewNoteService {
         }
     }
 
-    private void metaCell(com.lowagie.text.pdf.PdfPTable t, String text, Font font, boolean isLabel) {
-        com.lowagie.text.pdf.PdfPCell c = new com.lowagie.text.pdf.PdfPCell(new com.lowagie.text.Phrase(nz(text), font));
-        c.setPadding(7f);
-        c.setBorderColor(C_BORDER);
-        c.setBackgroundColor(isLabel ? C_BOX_BG : Color.WHITE);
-        c.setVerticalAlignment(com.lowagie.text.Element.ALIGN_MIDDLE);
-        t.addCell(c);
+    // 상단 헤더: "{자료명} 오답노트" + 날짜 / 난이도 / 틀린 문제 수 / 문항 번호
+    private com.lowagie.text.pdf.PdfPTable buildHeaderBox(BaseFont base, String date, String src, String diff,
+                                                          int wrongCount, int unansweredCount, int no, int total) {
+        com.lowagie.text.pdf.PdfPTable h = new com.lowagie.text.pdf.PdfPTable(1);
+        h.setWidthPercentage(100);
+        h.setSpacingAfter(8f);
+        com.lowagie.text.pdf.PdfPCell c = new com.lowagie.text.pdf.PdfPCell();
+        c.setBorder(com.lowagie.text.Rectangle.BOTTOM);
+        c.setBorderWidthBottom(2f);
+        c.setBorderColorBottom(C_GREEN);
+        c.setPaddingTop(2f);
+        c.setPaddingBottom(8f);
+        Paragraph title = new Paragraph(src + " 오답노트", new Font(base, 17, Font.BOLD, C_GREEN));
+        c.addElement(title);
+        Paragraph m = new Paragraph();
+        m.setSpacingBefore(6f);
+        addMeta(base, m, "날짜", date);
+        addMeta(base, m, "난이도", diff);
+        addMeta(base, m, "틀린 문제 수", (wrongCount + unansweredCount) + "문제");
+        if (total > 0) addMeta(base, m, "문항", no + " / " + total);
+        c.addElement(m);
+        h.addCell(c);
+        return h;
     }
 
-    // 문제 1개를 카드(테두리 박스)로 렌더. 라벨별 색상 구분 + 줄바꿈(셀 자동 wrap).
-    private com.lowagie.text.pdf.PdfPTable buildQuestionCard(BaseFont base, int no, WrongItem w) {
-        Font fNo = new Font(base, 11, Font.BOLD, C_GREEN);
-        Font fQ = new Font(base, 11.5f, Font.BOLD, C_TEXT);
-        Font fLabel = new Font(base, 10, Font.BOLD, C_MUTED);
-        Font fBody = new Font(base, 10.5f, Font.NORMAL, C_TEXT);
+    private void addMeta(BaseFont base, Paragraph p, String label, String value) {
+        p.add(new com.lowagie.text.Chunk(label + " ", new Font(base, 10, Font.BOLD, C_MUTED)));
+        p.add(new com.lowagie.text.Chunk(nz(value).isBlank() ? "-" : value, new Font(base, 10, Font.BOLD, C_TEXT)));
+        p.add(new com.lowagie.text.Chunk("        ", new Font(base, 10, Font.NORMAL, C_MUTED)));
+    }
 
-        com.lowagie.text.pdf.PdfPTable card = new com.lowagie.text.pdf.PdfPTable(1);
-        card.setWidthPercentage(100);
-        card.setSpacingAfter(14f);
+    // 중단 2분할: 좌(문제) / 우(풀이). 둘 다 연한 모눈 배경, 같은 높이로 채워진다.
+    private com.lowagie.text.pdf.PdfPTable buildMainSplit(BaseFont base, int no, WrongItem w, String overallFeedback) {
+        com.lowagie.text.pdf.PdfPTable main = new com.lowagie.text.pdf.PdfPTable(2);
+        main.setWidthPercentage(100);
+        try { main.setWidths(new float[]{1f, 1f}); } catch (Exception ignore) {}
+        main.setSplitLate(false);   // 내용이 길어 넘치면 다음 페이지로 이어지게(잘림 방지)
+        main.addCell(problemCell(base, no, w));
+        main.addCell(solutionCell(base, w, overallFeedback));
+        return main;
+    }
 
-        com.lowagie.text.pdf.PdfPCell cell = new com.lowagie.text.pdf.PdfPCell();
-        cell.setPadding(14f);
-        cell.setBorderColor(C_BORDER);
-        cell.setBorderWidth(1f);
-        cell.setBackgroundColor(Color.WHITE);
+    private com.lowagie.text.pdf.PdfPCell gridCell() {
+        com.lowagie.text.pdf.PdfPCell c = new com.lowagie.text.pdf.PdfPCell();
+        c.setMinimumHeight(MAIN_MIN_H);
+        c.setPadding(11f);
+        c.setBorderColor(C_BORDER);
+        c.setBorderWidth(1f);
+        c.setCellEvent(GRID_BG);   // 모눈 배경(셀 배경색은 지정하지 않아야 모눈이 보인다)
+        return c;
+    }
 
-        // 문제 번호 + 상태 배지
-        String statusBadge = w.unanswered ? "  [미응답]" : "  [오답]";
-        Paragraph head = new Paragraph();
-        head.add(new com.lowagie.text.Chunk("문제 " + no, fNo));
-        head.add(new com.lowagie.text.Chunk(statusBadge, new Font(base, 10, Font.BOLD, w.unanswered ? C_AMBER : C_RED)));
-        head.setSpacingAfter(6f);
-        cell.addElement(head);
+    // 좌측 문제 영역: 문제 번호 / 문제 본문 / 보기 / 내가 고른 답
+    private com.lowagie.text.pdf.PdfPCell problemCell(BaseFont base, int no, WrongItem w) {
+        com.lowagie.text.pdf.PdfPCell c = gridCell();
+        Paragraph area = new Paragraph("문제", new Font(base, 11, Font.BOLD, C_GREEN));
+        area.setSpacingAfter(8f);
+        c.addElement(area);
+        if (w != null) {
+            Paragraph head = new Paragraph();
+            head.add(new com.lowagie.text.Chunk("문제 " + no, new Font(base, 10.5f, Font.BOLD, C_TEXT)));
+            head.add(new com.lowagie.text.Chunk(w.unanswered ? "  [미응답]" : "  [오답]",
+                    new Font(base, 9.5f, Font.BOLD, w.unanswered ? C_AMBER : C_RED)));
+            head.setSpacingAfter(5f);
+            c.addElement(head);
 
-        Paragraph q = new Paragraph(nz(w.question), fQ);
-        q.setLeading(16f);
-        q.setSpacingAfter(10f);
-        cell.addElement(q);
+            Paragraph q = new Paragraph(nz(w.question), new Font(base, 11, Font.BOLD, C_TEXT));
+            q.setLeading(15f);
+            q.setSpacingAfter(8f);
+            c.addElement(q);
 
-        // 내가 고른 답 (미응답=앰버, 오답=빨강 배경)
-        cell.addElement(answerLine(base, "내가 고른 답", w.unanswered ? "미응답" : optionAt(w.options, w.selectedIndex),
-                w.unanswered ? C_AMBER : C_RED, w.unanswered ? C_AMBER_BG : C_RED_BG));
-        // 정답 (초록)
-        cell.addElement(answerLine(base, "정답", optionAt(w.options, w.correctIndex), C_GREEN, C_GREEN_BG));
-
-        // 해설
-        Paragraph expLabel = new Paragraph("해설", fLabel);
-        expLabel.setSpacingBefore(8f);
-        cell.addElement(expLabel);
-        Paragraph exp = new Paragraph(explanationOf(w), fBody);
-        exp.setLeading(16f);
-        cell.addElement(exp);
-
-        // 다시 봐야 할 개념
-        if (w.concept != null && !w.concept.isBlank()) {
-            Paragraph cLabel = new Paragraph("다시 봐야 할 개념", fLabel);
-            cLabel.setSpacingBefore(6f);
-            cell.addElement(cLabel);
-            Paragraph cv = new Paragraph(w.concept, fBody);
-            cv.setLeading(15f);
-            cell.addElement(cv);
+            if (w.options != null && !w.options.isEmpty()) {
+                Paragraph ol = new Paragraph("보기", new Font(base, 9.5f, Font.BOLD, C_MUTED));
+                ol.setSpacingAfter(3f);
+                c.addElement(ol);
+                String[] marks = {"①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧"};
+                for (int k = 0; k < w.options.size(); k++) {
+                    String mark = k < marks.length ? marks[k] : (k + 1) + ".";
+                    boolean mine = w.selectedIndex != null && w.selectedIndex == k;
+                    Paragraph op = new Paragraph();
+                    op.add(new com.lowagie.text.Chunk(mark + " " + nz(w.options.get(k)),
+                            new Font(base, 10, Font.NORMAL, C_TEXT)));
+                    if (mine) op.add(new com.lowagie.text.Chunk("  (내 선택)", new Font(base, 9, Font.BOLD, C_RED)));
+                    op.setLeading(14f);
+                    c.addElement(op);
+                }
+            }
+            com.lowagie.text.pdf.PdfPTable mineLine = answerLine(base, "내가 고른 답",
+                    w.unanswered ? "미응답" : optionAt(w.options, w.selectedIndex),
+                    w.unanswered ? C_AMBER : C_RED, w.unanswered ? C_AMBER_BG : C_RED_BG);
+            mineLine.setSpacingBefore(8f);
+            c.addElement(mineLine);
         }
-        // 참고 페이지
-        if (w.page > 0) {
-            Paragraph pg = new Paragraph("참고 페이지: " + w.page + "p", new Font(base, 9.5f, Font.NORMAL, C_MUTED));
-            pg.setSpacingBefore(6f);
-            cell.addElement(pg);
-        }
+        return c;
+    }
 
-        card.addCell(cell);
-        return card;
+    // 우측 풀이 영역: 정답 / AI 해설 / 핵심 개념·다시 볼 포인트 / (첫 장) 전체 피드백
+    private com.lowagie.text.pdf.PdfPCell solutionCell(BaseFont base, WrongItem w, String overallFeedback) {
+        Font fLabel = new Font(base, 9.5f, Font.BOLD, C_MUTED);
+        Font fBody = new Font(base, 10, Font.NORMAL, C_TEXT);
+
+        com.lowagie.text.pdf.PdfPCell c = gridCell();
+        Paragraph area = new Paragraph("풀이", new Font(base, 11, Font.BOLD, C_GREEN));
+        area.setSpacingAfter(8f);
+        c.addElement(area);
+        if (w != null) {
+            c.addElement(answerLine(base, "정답", optionAt(w.options, w.correctIndex), C_GREEN, C_GREEN_BG));
+
+            Paragraph expLabel = new Paragraph("AI 해설", fLabel);
+            expLabel.setSpacingBefore(8f);
+            expLabel.setSpacingAfter(2f);
+            c.addElement(expLabel);
+            Paragraph exp = new Paragraph(explanationOf(w), fBody);
+            exp.setLeading(15f);
+            c.addElement(exp);
+
+            if (w.concept != null && !w.concept.isBlank()) {
+                Paragraph cl = new Paragraph("핵심 개념 · 다시 볼 포인트", fLabel);
+                cl.setSpacingBefore(8f);
+                cl.setSpacingAfter(2f);
+                c.addElement(cl);
+                Paragraph cv = new Paragraph(w.concept, fBody);
+                cv.setLeading(14f);
+                c.addElement(cv);
+            }
+            if (w.page > 0) {
+                Paragraph pg = new Paragraph("참고 페이지: " + w.page + "p", new Font(base, 9, Font.NORMAL, C_MUTED));
+                pg.setSpacingBefore(6f);
+                c.addElement(pg);
+            }
+        }
+        if (overallFeedback != null && !overallFeedback.isBlank()) {
+            Paragraph fl = new Paragraph("전체 피드백", fLabel);
+            fl.setSpacingBefore(8f);
+            fl.setSpacingAfter(2f);
+            c.addElement(fl);
+            Paragraph fb = new Paragraph(overallFeedback, fBody);
+            fb.setLeading(14f);
+            c.addElement(fb);
+        }
+        return c;
+    }
+
+    // 하단 메모 영역: 연한 모눈 배경 위에 사용자가 직접 작성
+    private com.lowagie.text.pdf.PdfPTable buildMemoBox(BaseFont base) {
+        com.lowagie.text.pdf.PdfPTable t = new com.lowagie.text.pdf.PdfPTable(1);
+        t.setWidthPercentage(100);
+        t.setSpacingBefore(8f);
+        com.lowagie.text.pdf.PdfPCell c = new com.lowagie.text.pdf.PdfPCell();
+        c.setMinimumHeight(MEMO_MIN_H);
+        c.setPadding(11f);
+        c.setBorderColor(C_BORDER);
+        c.setBorderWidth(1f);
+        c.setCellEvent(GRID_BG);
+        c.addElement(new Paragraph("메모", new Font(base, 11, Font.BOLD, C_GREEN)));
+        t.addCell(c);
+        return t;
     }
 
     // "라벨: 값" 한 줄을 옅은 배경 박스로 강조 (정답=초록, 오답/미응답=빨강/앰버)

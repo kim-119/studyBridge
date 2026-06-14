@@ -126,11 +126,19 @@ public class PlannerService {
             if (it.getDeliverable() != null && !it.getDeliverable().isBlank()) memo.append("산출물: ").append(it.getDeliverable()).append("\n");
 
             String targetTime = it.getTargetMinutes() != null && it.getTargetMinutes() > 0 ? (it.getTargetMinutes() + "분") : null;
+            // week/day는 명시값 우선, 없으면 index 기반 계산(84개=12주×7일): index/7+1 주차, index%7+1 일차
             int weekNo = it.getWeek() != null ? it.getWeek() : (i / 7 + 1);
+            int dayNo = it.getDayIndex() != null ? it.getDayIndex() : (i % 7 + 1);
+            // topic은 가장 사람이 이해하기 쉬운 값(제목 > 목표 > 기본값) 사용
+            String topic = (it.getTitle() != null && !it.getTitle().isBlank())
+                    ? it.getTitle()
+                    : (it.getObjective() != null && !it.getObjective().isBlank() ? it.getObjective() : "학습 계획");
+            // DB에 저장되는 title 자체를 "[로드맵 N주차 M일] topic" 형식으로 통일 (목록/상세/캘린더 공통)
+            String roadmapTitle = buildRoadmapPlannerTitle(weekNo, dayNo, topic);
 
             Planner planner = Planner.builder()
                     .userId(userId)
-                    .title(it.getTitle() != null && !it.getTitle().isBlank() ? it.getTitle() : ((it.getDayIndex() != null ? it.getDayIndex() : i + 1) + "일차 학습"))
+                    .title(roadmapTitle)
                     .year(date.getYear()).month(date.getMonthValue()).day(date.getDayOfMonth())
                     .plannerDate(date)
                     .term(weekNo + "주차")
@@ -153,6 +161,27 @@ public class PlannerService {
                 .createdCount(created).duplicate(false).existingCount(existing)
                 .message(created + "개의 플래너가 생성되었습니다.")
                 .build();
+    }
+
+    /**
+     * 로드맵 기반 플래너 제목 생성 규칙 (단일 진실 지점).
+     * 형식: "[로드맵 N주차 M일] topic"
+     * - week/day가 있으면 반드시 사용하고, topic이 비면 "학습 계획"을 사용한다.
+     * - 이미 "[로드맵" prefix가 있으면 중복으로 붙이지 않는다(prefix 중복 방지).
+     * - topic 앞 "N일차:" 중복 접두어 제거, 40자 초과 시 정리.
+     * 로드맵 기반(ROADMAP_AUTO) 플래너에만 사용 — 일반 플래너 제목은 절대 변경하지 않는다.
+     */
+    static String buildRoadmapPlannerTitle(Integer week, Integer day, String topic) {
+        String t = (topic == null || topic.isBlank()) ? "학습 계획" : topic.trim();
+        if (t.startsWith("[로드맵")) return t;            // 이미 prefix가 있으면 그대로 사용
+        t = t.replaceFirst("^\\s*\\d+\\s*일차\\s*[:\\-–~]?\\s*", "").trim();
+        if (t.isBlank()) t = "학습 계획";
+        if (t.length() > 40) t = t.substring(0, 40).trim() + "…";
+        if (week == null || day == null) {
+            log.warn("[planner] 로드맵 플래너 week/day 확정 불가 — prefix 미적용. topic={}", t);
+            return t;
+        }
+        return "[로드맵 " + week + "주차 " + day + "일] " + t;
     }
 
     @Transactional
