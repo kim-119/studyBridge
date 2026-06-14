@@ -51,6 +51,7 @@ async def multi_chat_stream(request: MultiChatRequest):
         last_agent_index = None
         last_agent_name = None
         started = time.time()
+        errored = False
         try:
             while True:
                 # next(gen)이 stage/agent 생성 때문에 오래 걸려도 heartbeat를 보내 idle timeout을 막는다.
@@ -76,8 +77,21 @@ async def multi_chat_stream(request: MultiChatRequest):
                     last_agent_name = data.get("agentName", last_agent_name)
                 yield _sse(item["event"], data)
         except Exception as e:
+            errored = True
             logger.error("multi-chat 스트리밍 오류: %s", e)
-            yield _sse("error", {"message": "스트리밍 중 오류가 발생했습니다.", "detail": str(e)})
+            yield _sse("error", {
+                "type": "error", "requestId": route_request_id,
+                "phase": "ERROR", "visible": True, "status": "error",
+                "message": "스트리밍 중 오류가 발생했습니다.", "detail": str(e),
+            })
+        finally:
+            # placeholder loading이 무한 지속되지 않도록 항상 종료 이벤트를 보낸다.
+            yield _sse("done", {
+                "type": "done", "requestId": route_request_id,
+                "phase": "DONE", "visible": False,
+                "status": "error" if errored else "done",
+                "elapsedMs": int((time.time() - started) * 1000),
+            })
 
     return StreamingResponse(
         event_source(),

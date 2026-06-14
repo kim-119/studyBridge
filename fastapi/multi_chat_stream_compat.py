@@ -146,6 +146,8 @@ async def multi_chat_stream_compat(request: Request):
         started = time.time()
         last_agent_index = None
         last_agent_name = None
+        sent_done = False
+        errored = False
 
         try:
             from app.schemas.multi_chat_schema import MultiChatRequest
@@ -195,13 +197,33 @@ async def multi_chat_stream_compat(request: Request):
 
                 yield _sse(event, data)
                 if event == "all_complete":
+                    # 기존 호환: done은 all_complete payload를 그대로 한 번 더 보낸다(프론트 계약 유지).
                     yield _sse("done", data)
+                    sent_done = True
 
         except Exception as exc:
+            errored = True
             yield _sse("error", {
+                "type": "error",
+                "requestId": route_request_id,
+                "phase": "ERROR",
+                "visible": True,
+                "status": "error",
                 "message": "AI 스트리밍 중 오류가 발생했습니다.",
                 "detail": str(exc),
             })
+        finally:
+            # 정상 종료(all_complete→done)가 아닌 경로(예외/타임아웃/중단)에서도
+            # placeholder loading이 무한 지속되지 않도록 종료 이벤트를 반드시 보낸다.
+            if not sent_done:
+                yield _sse("done", {
+                    "type": "done",
+                    "requestId": route_request_id,
+                    "phase": "DONE",
+                    "visible": False,
+                    "status": "error" if errored else "done",
+                    "elapsedMs": int((time.time() - started) * 1000),
+                })
 
     return StreamingResponse(
         event_generator(),

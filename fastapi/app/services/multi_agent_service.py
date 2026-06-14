@@ -33,6 +33,7 @@ from app.schemas.multi_chat_schema import (
 )
 from app.services.prompt_builder import build_agent_system_prompt, build_tikitaka_role_prompt
 from app.services.personality_prompt_builder import to_profile_key, build_persona_directive
+from app.services import guardrail_router as _guard
 from app.services.personality_validator import validate_personality_alignment, repair_personality_if_needed
 from app.core import agent_settings as A
 from app.utils.text_utils import build_context_from_previous_answers, safe_str
@@ -790,13 +791,18 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
         results = [(a, initial_map.get(a.name, ""), "ollama", 0) for a in agents]
     elapsed = int((time.time() - t2) * 1000)
 
-    validated_map: Dict[str, str] = {}
+    validated_map: Dict[str, str] = {}    # 내부 검증 '요약' (processSteps 검증 카드 전용)
+    answer_map: Dict[str, str] = {}       # 사용자 최종 답변 (2차 정제 본문, 없으면 1차)
     steps: List[ValidatedAnswerStep] = []
     provs: set = set()
     idx_map = _agent_index_map(agents)
     for a, text, prov, agent_ms in results:
         provs.add(prov)
         own_initial = initial_map.get(a.name, "")
+        # 2차 정제 본문(text)이 실제 개선이면 그것을 최종 사용자 답변으로 사용한다.
+        # (text는 _stage2_validate가 생성한 '정제된 답'. 요약/critique가 아니다.)
+        candidate_ok = bool(text and not _is_llm_fallback(text) and not _is_same_answer(text, own_initial))
+        answer_map[a.name] = text if candidate_ok else own_initial
         final_text, issues = _validation_summary_text(request.message, own_initial, text or "", sources)
         # VALIDATION은 절대 FIRST_ANSWER 원문을 그대로 내보내지 않는다.
         if _is_same_answer(final_text, own_initial):
@@ -813,7 +819,7 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
     actual = ",".join(sorted(provs)) if provs else provider
     logger.info("[StudyMate] stage=2 provider=%s elapsedMs=%d status=completed sources=%d",
                 actual, elapsed, len(sources))
-    return steps, validated_map, actual, elapsed, sources
+    return steps, validated_map, answer_map, actual, elapsed, sources
 
 
 def _validate_mode_personas(agents: List[AgentProfile], answers) -> List[PersonalityValidationItem]:
@@ -1334,14 +1340,17 @@ def _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
     ]
 
 
-def _build_default_response(request, agents, initial_map, validated_map,
+def _build_default_response(request, agents, initial_map, answer_map,
                             initial_steps, validated_steps, peer_steps, pv_summary, stages):
+    # answer_map: 사용자 최종 답변(2차 정제 본문 또는 1차). 내부 검증 '요약'(validated_map)은
+    # processSteps(validatedAnswers)에만 남기고 최종 answer로 노출하지 않는다.
     delay_ms = _get_display_delay_ms()
     answers: List[AgentAnswer] = []
     for idx, a in enumerate(agents):
         answers.append(AgentAnswer(
             agentName=a.name,
-            answer=validated_map.get(a.name) or initial_map.get(a.name, ""),
+            answer=_guard.sanitize_user_visible_text(
+                answer_map.get(a.name) or initial_map.get(a.name, ""), allow_markdown=True),
             agentId=a.agentId,
             role=a.role or "default",
             displayOrder=idx + 1,
@@ -1390,13 +1399,13 @@ def _run_default_mode(
     agents = active_agents or [_DEFAULT_AGENT]
 
     initial_steps, initial_map, p1, e1, st1 = _compute_stage1(request, agents, context)
-    validated_steps, validated_map, p2, e2, sources = _compute_stage2(request, agents, initial_map)
+    validated_steps, validated_map, answer_map, p2, e2, sources = _compute_stage2(request, agents, initial_map)
     validation_map, pv_summary = _compute_validation(request, agents, initial_map, validated_map, validated_steps)
     peer_steps, p3, e3 = _compute_stage3(request, agents, validated_map, validation_map, initial_map)
 
     stages = _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
                                 (p1, e1, st1), (p2, e2, "completed"), (p3, e3, "completed"), sources)
-    return _build_default_response(request, agents, initial_map, validated_map,
+    return _build_default_response(request, agents, initial_map, answer_map,
                                    initial_steps, validated_steps, peer_steps, pv_summary, stages)
 
 
@@ -1426,10 +1435,15 @@ def run_default_mode_stream(
     active_agents: List[AgentProfile],
     context: str,
     rag_context: str,
+    show_internal: bool = False,
+    route: str = "LEARNING_QUESTION",
 ):
     """
     기본 채팅 SSE 제너레이터.
-    하나의 요청에서 FIRST_ANSWER -> VALIDATION -> PEER_FEEDBACK을 각 1회씩 실행/emit한다.
+    하나의 요청에서 FIRST_ANSWER -> (VALIDATION) -> (PEER_FEEDBACK)을 실행한다.
+    show_internal=False(기본): VALIDATION/PEER_FEEDBACK 단계는 사용자 UI로 스트리밍하지
+      않고(visible=false), 내부적으로만 계산하여 최종 답변 개선/processSteps에 반영한다.
+    show_internal=True (FEEDBACK_REQUEST): 검증/피어피드백 단계도 visible=true로 노출한다.
     heartbeat는 agent 답변 대기 중 주기적으로 보내 idle/read timeout을 방지한다.
     """
     request_id = _stream_request_id()
@@ -1459,7 +1473,11 @@ def run_default_mode_stream(
             "agentName": agent.name,
             "role": agent.role or "default",
             "stageType": "FIRST_ANSWER",
-            "phase": "FIRST_ANSWER",
+            "phase": "ANSWER",
+            "visible": True,
+            "route": route,
+            "mode": "basic",
+            "status": "start",
             "message": f"에이전트 {idx} 답변 생성 중...",
         }}
 
@@ -1513,7 +1531,11 @@ def run_default_mode_stream(
                 "agentName": agent.name,
                 "role": agent.role or "default",
                 "stageType": "FIRST_ANSWER",
-                "phase": "FIRST_ANSWER",
+                "phase": "ANSWER",
+                "visible": True,
+                "route": route,
+                "mode": "basic",
+                "status": "error",
                 "error": error_message or "error",
                 "message": "이 에이전트의 응답이 제한 시간을 초과했거나 실패했습니다. 다음 에이전트로 진행합니다.",
             }}
@@ -1534,6 +1556,7 @@ def run_default_mode_stream(
             provider=provider,
             elapsedMs=elapsed_ms,
         ))
+        visible_answer = _guard.sanitize_user_visible_text(answer_obj.answer, allow_markdown=True)
         yield {"event": "agent_answer", "data": {
             "type": "agent_answer",
             "requestId": request_id,
@@ -1542,99 +1565,95 @@ def run_default_mode_stream(
             "agentName": agent.name,
             "role": agent.role or "default",
             "stageType": "FIRST_ANSWER",
-            "phase": "FIRST_ANSWER",
-            "content": answer_obj.answer,
-            "answer": answer_obj.answer,
+            "phase": "ANSWER",
+            "visible": True,
+            "route": route,
+            "mode": "basic",
+            "personality": _personality_type(agent),
+            "knowledgeLevel": agent.knowledgeLevel,
+            "content": visible_answer,
+            "answer": visible_answer,
             "status": "SUCCESS",
             "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }}
 
     e1 = int((time.time() - stage1_started_at) * 1000)
 
-    for idx, agent in enumerate(agents, start=1):
-        yield {"event": "agent_start", "data": {
-            "type": "agent_start",
-            "requestId": request_id,
-            "agentIndex": idx,
-            "agentId": agent.agentId,
-            "agentName": agent.name,
-            "role": agent.role or "default",
-            "stageType": "VALIDATION",
-            "phase": "VALIDATION",
-            "message": f"에이전트 {idx} 검증 답변 생성 중...",
+    # ── VALIDATION 단계 ───────────────────────────────────────────────────
+    # show_internal=False면 사용자 UI로 스트리밍하지 않고(내부 phase) 계산만 한다.
+    if show_internal:
+        for idx, agent in enumerate(agents, start=1):
+            yield {"event": "agent_start", "data": {
+                "type": "agent_start", "requestId": request_id,
+                "agentIndex": idx, "agentId": agent.agentId, "agentName": agent.name,
+                "role": agent.role or "default",
+                "stageType": "VALIDATION", "phase": "PEER_FEEDBACK", "visible": True,
+                "route": route, "mode": "feedback",
+                "message": f"에이전트 {idx} 검증 답변 생성 중...",
+            }}
+    else:
+        yield {"event": "phase_progress", "data": {
+            "type": "phase_progress", "requestId": request_id,
+            "phase": "INTERNAL_VALIDATION", "visible": False, "route": route,
+            "message": "내부 검증 중입니다.",
         }}
 
-    validated_steps, validated_map, p2, e2, sources = _compute_stage2(request, agents, initial_map)
+    validated_steps, validated_map, answer_map, p2, e2, sources = _compute_stage2(request, agents, initial_map)
     validation_map, pv_summary = _compute_validation(request, agents, initial_map, validated_map, validated_steps)
 
-    for step in validated_steps:
-        yield {"event": "agent_answer", "data": {
-            "type": "agent_answer",
-            "requestId": request_id,
-            "agentIndex": step.agentIndex,
-            "agentId": step.agentId,
-            "agentName": step.agentName,
-            "role": "validation",
-            "stageType": "VALIDATION",
-            "phase": "VALIDATION",
-            "content": step.answer,
-            "answer": step.answer,
-            "status": "SUCCESS",
-            "revised": step.revised,
-            "issues": step.issues,
-            "sources": step.sources,
-            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }}
+    if show_internal:
+        for step in validated_steps:
+            yield {"event": "agent_answer", "data": {
+                "type": "agent_answer", "requestId": request_id,
+                "agentIndex": step.agentIndex, "agentId": step.agentId, "agentName": step.agentName,
+                "role": "validation", "stageType": "VALIDATION", "phase": "PEER_FEEDBACK",
+                "visible": True, "route": route, "mode": "feedback",
+                "content": step.answer, "answer": step.answer, "status": "SUCCESS",
+                "revised": step.revised, "issues": step.issues, "sources": step.sources,
+                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }}
+        if pv_summary:
+            yield {"event": "validation_summary", "data": {
+                "type": "validation_summary", "requestId": request_id,
+                "stageType": "VALIDATION", "phase": "PEER_FEEDBACK", "visible": True,
+                "personalityValidationSummary": [item.model_dump() for item in pv_summary],
+            }}
 
-    if pv_summary:
-        yield {"event": "validation_summary", "data": {
-            "type": "validation_summary",
-            "requestId": request_id,
-            "stageType": "VALIDATION",
-            "phase": "VALIDATION",
-            "personalityValidationSummary": [item.model_dump() for item in pv_summary],
-        }}
-
-    for idx, agent in enumerate(agents, start=1):
-        yield {"event": "agent_start", "data": {
-            "type": "agent_start",
-            "requestId": request_id,
-            "agentIndex": idx,
-            "agentId": agent.agentId,
-            "agentName": agent.name,
-            "role": agent.role or "default",
-            "stageType": "PEER_FEEDBACK",
-            "phase": "PEER_FEEDBACK",
-            "message": f"에이전트 {idx} 피드백 생성 중...",
-        }}
+    # ── PEER_FEEDBACK 단계 ────────────────────────────────────────────────
+    if show_internal:
+        for idx, agent in enumerate(agents, start=1):
+            yield {"event": "agent_start", "data": {
+                "type": "agent_start", "requestId": request_id,
+                "agentIndex": idx, "agentId": agent.agentId, "agentName": agent.name,
+                "role": agent.role or "default",
+                "stageType": "PEER_FEEDBACK", "phase": "PEER_FEEDBACK", "visible": True,
+                "route": route, "mode": "feedback",
+                "message": f"에이전트 {idx} 피드백 생성 중...",
+            }}
 
     peer_steps, p3, e3 = _compute_stage3(request, agents, validated_map, validation_map, initial_map)
 
-    for step in peer_steps:
-        yield {"event": "agent_answer", "data": {
-            "type": "agent_answer",
-            "requestId": request_id,
-            "agentIndex": step.agentIndex,
-            "agentId": step.fromAgentId,
-            "agentName": step.fromAgent,
-            "role": "peer_feedback",
-            "stageType": "PEER_FEEDBACK",
-            "phase": "PEER_FEEDBACK",
-            "toAgent": step.toAgent,
-            "targetAgentIds": step.targetAgentIds,
-            "content": step.feedback,
-            "answer": step.feedback,
-            "feedback": step.feedback,
-            "status": "SUCCESS",
-            "personalityValidation": step.personalityValidation,
-            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }}
+    if show_internal:
+        for step in peer_steps:
+            yield {"event": "agent_answer", "data": {
+                "type": "agent_answer", "requestId": request_id,
+                "agentIndex": step.agentIndex, "agentId": step.fromAgentId, "agentName": step.fromAgent,
+                "role": "peer_feedback", "stageType": "PEER_FEEDBACK", "phase": "PEER_FEEDBACK",
+                "visible": True, "route": route, "mode": "feedback",
+                "toAgent": step.toAgent, "targetAgentIds": step.targetAgentIds,
+                "content": step.feedback, "answer": step.feedback, "feedback": step.feedback,
+                "status": "SUCCESS", "personalityValidation": step.personalityValidation,
+                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }}
 
     success_count = sum(1 for a in answers if a.status == "SUCCESS")
     final_answers: List[AgentAnswer] = []
     for idx, agent in enumerate(agents, start=1):
         first_answer = initial_map.get(agent.name, "")
-        final_answer = validated_map.get(agent.name) or first_answer
+        # 최종 사용자 답변 = 2차 정제 본문(answer_map) 또는 1차. 내부 검증 요약(validated_map)은
+        # processSteps(검증 카드)에만 남기고 최종 answer로 노출하지 않는다.
+        final_answer = answer_map.get(agent.name) or first_answer
+        final_answer = _guard.sanitize_user_visible_text(final_answer, allow_markdown=True)
         status = "SUCCESS" if final_answer else "FAILED"
         final_answers.append(AgentAnswer(
             agentName=agent.name,
@@ -1671,9 +1690,72 @@ def run_default_mode_stream(
     data = final.model_dump()
     data["type"] = "all_complete"
     data["requestId"] = request_id
+    data["route"] = route
+    data["phase"] = "FINAL"
+    data["visible"] = True
+    data["internalPhasesVisible"] = show_internal
     data["message"] = "모든 에이전트 응답이 완료되었습니다."
     data["elapsedMs"] = int((time.time() - started_at) * 1000)
     yield {"event": "all_complete", "data": data}
+
+
+def _direct_reply_response(request: MultiChatRequest, route: str, reply: str) -> MultiChatResponse:
+    """hard stop route용 최소 응답. 단일 AgentAnswer만 담고 내부 단계/검증은 비운다."""
+    agents = _filter_agents(_get_agents(request), request.targetAgentId) or [_DEFAULT_AGENT]
+    agent = agents[0]
+    answer = AgentAnswer(
+        agentName=agent.name,
+        answer=reply,
+        agentId=agent.agentId,
+        role=agent.role or "default",
+        speechType="direct_reply",
+        displayOrder=1,
+        displayDelayMs=0,
+        status="SUCCESS",
+    )
+    resp = MultiChatResponse(
+        mode="default",
+        learningMode=getattr(request, "learningMode", None) or "basic",
+        answers=[answer],
+        status="COMPLETED",
+        question=request.message,
+    )
+    return _attach_response_metadata(resp, agents, request, "default")
+
+
+def run_direct_reply_stream(request: MultiChatRequest, route_result):
+    """
+    인사/자기소개/잡담/욕설/불명확 입력 hard stop 스트림.
+    multi-agent generation / validation / peer feedback을 전혀 호출하지 않고
+    짧은 직접 응답 1건만 내보낸다. (markdown 없음)
+    """
+    request_id = _stream_request_id()
+    reply = _guard.sanitize_user_visible_text(
+        route_result.directReply or _guard.direct_reply_for(route_result.route, request.message),
+        allow_markdown=False,
+    )
+    yield {"event": "turn_start", "data": {
+        "type": "turn_start", "requestId": request_id,
+        "route": route_result.route, "mode": "direct",
+        "message": "응답을 준비합니다.",
+    }}
+    yield {"event": "direct_reply", "data": {
+        "type": "direct_reply", "requestId": request_id,
+        "agentIndex": 1, "phase": "DIRECT_REPLY", "visible": True,
+        "route": route_result.route, "mode": "direct", "status": "done",
+        "content": reply, "answer": reply,
+        "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }}
+    final = _direct_reply_response(request, route_result.route, reply)
+    data = final.model_dump()
+    data["type"] = "all_complete"
+    data["requestId"] = request_id
+    data["route"] = route_result.route
+    data["phase"] = "DIRECT_REPLY"
+    data["visible"] = True
+    data["message"] = "응답이 완료되었습니다."
+    yield {"event": "all_complete", "data": data}
+
 
 def build_stream_generator(request: MultiChatRequest):
     """
@@ -1695,10 +1777,24 @@ def build_stream_generator(request: MultiChatRequest):
     except Exception as e:
         logger.warning("LangGraph 스트림 분기 실패 → 기존 경로 사용: %s", e)
 
+    # ── Router hard stop ───────────────────────────────────────────────────
+    # 인사/자기소개/잡담/욕설/불명확 입력은 generation/validation/peer feedback을
+    # 호출하지 않고 짧은 직접 응답만 반환한다. (욕설은 어떤 모드에서도 hard stop)
+    route_result = _guard.classify_route(
+        request.message, mode=request.mode, learning_mode=getattr(request, "learningMode", None)
+    )
+    logger.info("[Guardrail] stream route=%s visibleMode=%s reason=%s matched=%s",
+                route_result.route, route_result.visibleMode, route_result.reason, route_result.matched)
+    if route_result.is_hard_stop:
+        return run_direct_reply_stream(request, route_result)
+
     agents = _get_agents(request)
     active_agents = _filter_agents(agents, request.targetAgentId)
     context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
     rag_context = _get_rag_context(request.message, request.materialId)
+
+    # FEEDBACK_REQUEST일 때만 내부 검증/피어피드백 단계를 사용자에게 노출한다.
+    show_internal = (route_result.route == _guard.FEEDBACK_REQUEST) or _guard.internal_phases_visible_default()
 
     # 스트리밍 표시는 '명시적으로 고른 모드'를 따른다.
     #  - 기본 채팅(basic) → 1차/2차/3차 staged (에이전트 2명 이상이어도 자동 토론 승격 안 함)
@@ -1721,9 +1817,11 @@ def build_stream_generator(request: MultiChatRequest):
         return run_debate_mode_stream(request, active_agents, rag_context)
     if raw == "group_study_ai":
         # 그룹스터디 봇도 FastAPI 내부에서 전체 완료를 기다리지 않고 agent별 순차 SSE로 내보낸다.
-        return run_default_mode_stream(request, active_agents, context, rag_context)
+        return run_default_mode_stream(request, active_agents, context, rag_context,
+                                       show_internal=show_internal, route=route_result.route)
 
-    return run_default_mode_stream(request, active_agents, context, rag_context)
+    return run_default_mode_stream(request, active_agents, context, rag_context,
+                                   show_internal=show_internal, route=route_result.route)
 
 
 def _run_tikitaka_mode(
@@ -3333,6 +3431,18 @@ def run_multi_chat(request: MultiChatRequest) -> MultiChatResponse:
       "socratic"  → 소크라테스식 꼬리질문
       그 외        → default와 동일
     """
+    # ── Router hard stop (동기 fallback 경로) ──────────────────────────────
+    route_result = _guard.classify_route(
+        request.message, mode=request.mode, learning_mode=getattr(request, "learningMode", None)
+    )
+    if route_result.is_hard_stop:
+        logger.info("[Guardrail] sync hard stop route=%s reason=%s", route_result.route, route_result.reason)
+        reply = _guard.sanitize_user_visible_text(
+            route_result.directReply or _guard.direct_reply_for(route_result.route, request.message),
+            allow_markdown=False,
+        )
+        return _direct_reply_response(request, route_result.route, reply)
+
     agents = _get_agents(request)
     active_agents = _filter_agents(agents, request.targetAgentId)
     context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
