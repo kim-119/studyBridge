@@ -5,6 +5,8 @@ import { useAuth } from '../hooks/useAuth';
 import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService, planAnalysisService } from '../services/api';
 import SummarySectionCard from '../components/SummarySectionCard';
 import KeywordDefineModal from '../components/KeywordDefineModal';
+import ReviewNoteArchiveDetail from '../components/review-note/ReviewNoteArchiveDetail';
+import ReviewNoteLearningEntry from '../components/review-note/ReviewNoteLearningEntry';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
 
 // F. 빠른 체감 — 실제 streaming 전, 단계별 진행 문구 + skeleton (멀티에이전트 SSE와 무관, 자료보관함 전용)
@@ -1760,7 +1762,12 @@ export default function ArchiveDetail() {
           rnButtonLabel = `오답노트 작성하기 (오답 ${rnWrongCount}·미응답 ${rnUnansweredCount})`;
         }
         const onReviewNoteButton = () => {
-          if (rnExistingNote) { navigate('/review-notes'); return; }
+          if (rnExistingNote) {
+            // "오답노트 보기" → 자료보관함 REVIEW_NOTE 상세에서 실제 복습 실행
+            if (rnExistingNote.archiveMaterialId) navigate(`/archive/reviewNote/${rnExistingNote.archiveMaterialId}?tab=retry`);
+            else navigate('/review-notes');
+            return;
+          }
           handleCreateReviewNote(activeQuiz.quizId, parsedQuestions);
         };
 
@@ -1809,6 +1816,11 @@ export default function ArchiveDetail() {
                 <div style={{ marginTop: '-12px', marginBottom: '20px', fontSize: '12.5px', color: 'var(--color-text-muted)', textAlign: 'right' }}>
                   {rnButtonGuide}
                 </div>
+              )}
+
+              {/* 오답노트 학습 진입 — 이미 오답노트가 있으면 설명 카드만 보여주고, 클릭 시 자료보관함 오답노트 상세로 이동(여기서 직접 실행하지 않음) */}
+              {rnExistingNote?.archiveMaterialId && (
+                <ReviewNoteLearningEntry archiveMaterialId={rnExistingNote.archiveMaterialId} navigate={navigate} />
               )}
 
               {renderAiStatus(quizError, handleGenerateQuiz)}
@@ -2033,7 +2045,7 @@ export default function ArchiveDetail() {
                           <button className="btn-primary" style={{ padding: '11px', borderRadius: '14px', fontWeight: 'bold' }} onClick={() => handleViewReviewNotePdf(reviewNoteResult.id, reviewNoteResult.pdfUrl)}>PDF 보기 (새 창)</button>
                           <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => handleSaveReviewNotePdf(reviewNoteResult.id, reviewNoteResult.pdfUrl, reviewNoteResult.title)}>컴퓨터에 저장</button>
                           {reviewNoteResult.archiveMaterialId && (
-                            <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => navigate(`/archive/pdf/${reviewNoteResult.archiveMaterialId}`)}>자료보관함에 저장됨 · 보기</button>
+                            <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => navigate(`/archive/reviewNote/${reviewNoteResult.archiveMaterialId}?tab=retry`)}>자료보관함에서 학습(다시 풀기·유사문제·AI 해설)</button>
                           )}
                           <button className="btn-outline" style={{ padding: '11px', borderRadius: '14px' }} onClick={() => navigate('/review-notes')}>오답노트에서 보기</button>
                           <button className="btn-close" style={{ alignSelf: 'flex-end', marginTop: '4px', fontSize: '13px', color: 'var(--color-text-muted)' }} onClick={() => setReviewNoteResult(null)}>닫기</button>
@@ -2532,6 +2544,22 @@ export default function ArchiveDetail() {
           }
         `}} />
         </div>
+    );
+  }
+
+
+  // ── 오답노트(REVIEW_NOTE) 상세 ────────────────────────────────────────────────
+  //  자료보관함의 REVIEW_NOTE material 카드 진입점. 실제 복습 기능(다시 풀기/유사문제/AI 해설/메모)은
+  //  여기서만 실행한다. 상단바/레이아웃은 학습PDF 상세와 동일 스타일(ReviewNoteArchiveDetail).
+  if (type === 'reviewNote') {
+    return (
+      <ReviewNoteArchiveDetail
+        material={material}
+        leftWidth={leftWidth}
+        setLeftWidth={setLeftWidth}
+        onDelete={handleDeleteMaterial}
+        onBack={() => navigate('/archive')}
+      />
     );
   }
 

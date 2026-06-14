@@ -78,7 +78,7 @@ function App() {
   }
 
   // Hide Navbar and top padding for Archive Detail pages to make it full screen
-  const hideNavbar = location.pathname.includes('/archive/pdf/') || location.pathname.includes('/archive/journal/');
+  const hideNavbar = location.pathname.includes('/archive/pdf/') || location.pathname.includes('/archive/journal/') || location.pathname.includes('/archive/reviewNote/');
 
   return (
     <div className={isAdminRoute ? "" : "app-container"} style={isAdminRoute ? { width: '100%', height: '100vh', overflow: 'hidden' } : {}}>
