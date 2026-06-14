@@ -25,6 +25,7 @@ from app.core.config import (
     OLLAMA_TEMPERATURE,
     OLLAMA_TOP_P,
     OLLAMA_CONTEXT_LENGTH,
+    OLLAMA_KEEP_ALIVE,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ def ask_ollama(
     top_k: Optional[int] = None,
     repeat_penalty: Optional[float] = None,
     timeout: Optional[int] = None,
+    think: Optional[bool] = None,
 ) -> str:
     """
     Ollama /api/chat 엔드포인트를 호출한다.
@@ -96,6 +98,13 @@ def ask_ollama(
         "stream": False,
         "options": options,
     }
+    # keep_alive 검증값(설정 시에만 전송). 모델 상주로 재호출 cold load 회피. 미설정 시 기존 동작 유지.
+    if OLLAMA_KEEP_ALIVE:
+        payload["keep_alive"] = OLLAMA_KEEP_ALIVE
+    # think: qwen3 등 thinking 모델에서 추론블록이 num_predict를 소진해 빈 답변이 되는 것을 방지.
+    # None이면 미전송(기존 동작 유지). False면 thinking 비활성 → 답변 토큰 확보 + 지연 감소.
+    if think is not None:
+        payload["think"] = think
 
     try:
         resp = requests.post(url, json=payload, timeout=_timeout)

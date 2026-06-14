@@ -77,3 +77,38 @@ try:
 except Exception as e:
     import logging
     logging.getLogger(__name__).warning("review_note 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge LLM Intent Router (자료보관함/그룹스터디/학습메이트 공통 의도·위험도 판정)
+# POST /api/ai/intent/route — 기존 SSE/HTTP와 독립, additive.
+try:
+    from app.api.intent_router_routes import router as intent_router_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/intent/route" not in paths:
+        app.include_router(intent_router_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("intent_router 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge Fetch Streaming (NDJSON) endpoint — 기존 SSE 고속도로와 별개의 우회도로.
+# POST /api/ai/agents/chat/fetch-stream, /api/group-study/ai/fetch-stream,
+#      /api/materials/{id}/ai/fetch-stream, /api/materials/{id}/roadmap/ai/fetch-stream,
+#      /api/ai/tasks/fetch-stream
+try:
+    from app.api.fetch_stream_routes import router as fetch_stream_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/agents/chat/fetch-stream" not in paths:
+        app.include_router(fetch_stream_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("fetch_stream 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 학습메이트 mode 기반 답변 생성 (Mode Policy Registry + Prompt Builder)
+# POST /api/ai/learning-mate/chat — 기존 endpoint/SSE와 독립, additive.
+try:
+    from app.learning_mate.router import router as learning_mate_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/learning-mate/chat" not in paths:
+        app.include_router(learning_mate_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("learning_mate 라우터 로드 실패 (계속 기동): %s", e)

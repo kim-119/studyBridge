@@ -180,6 +180,14 @@ try:
 except Exception as e:
     logger.warning("realtime_quiz 라우터 로드 실패 (계속 기동): %s", e)
 
+# LLM Intent Router (자료보관함/그룹스터디/학습메이트 공통): POST /api/ai/intent/route
+try:
+    from app.api.intent_router_routes import router as intent_router_router
+    app.include_router(intent_router_router)
+    logger.info("intent_router 라우터 로드 완료")
+except Exception as e:
+    logger.warning("intent_router 라우터 로드 실패 (계속 기동): %s", e)
+
 # ── 기존 routers/ 라우터 (하위 호환, agent_chat만 로드) ─────────────────────
 # deep_search_router → /api/agent/deep-search (deep_search_api_router와 중복, 스킵)
 # rag_legacy_router  → /api/rag/ingest, /api/rag/materials/{id} (spring_rag_router와 중복, 스킵)

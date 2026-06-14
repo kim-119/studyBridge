@@ -92,6 +92,9 @@ OLLAMA_NUM_PREDICT: int   = int(os.getenv("OLLAMA_NUM_PREDICT", "512"))
 OLLAMA_TEMPERATURE: float = float(os.getenv("OLLAMA_TEMPERATURE", "0.4"))
 OLLAMA_TOP_P: float       = float(os.getenv("OLLAMA_TOP_P", "0.9"))
 OLLAMA_CONTEXT_LENGTH: int = int(os.getenv("OLLAMA_CONTEXT_LENGTH", "4096"))
+# keep_alive: 모델을 메모리에 상주시켜 재호출 cold load를 막는다(Accel Lab 검증: cold 1447ms→warm 73ms).
+# 빈 문자열이면 미전송(Ollama 기본 5m 유지). 예: "30m", "1h", "-1"(무제한).
+OLLAMA_KEEP_ALIVE: str = os.getenv("OLLAMA_KEEP_ALIVE", "").strip()
 # 지식수준 전문가/박사는 더 긴 응답 허용
 OLLAMA_NUM_PREDICT_ADVANCED: int = int(os.getenv("OLLAMA_NUM_PREDICT_ADVANCED", "768"))
 

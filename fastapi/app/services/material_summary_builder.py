@@ -131,6 +131,8 @@ def _build_prompt(document_title: str, text: str) -> tuple[str, str]:
         "너는 학술/기술 문서 분석 전문가다. 제공된 문서 내용에 근거해서만 한국어로 정리한다. "
         "문서에 없는 사실을 지어내지 말고, 문서에서 추론 가능한 범위로만 확장한다. "
         "마크다운 기호(**, ###, -, *, ```)나 HTML 태그를 절대 쓰지 말고, 모든 값은 일반 문장으로 작성한다. "
+        "PDF의 날짜·연도·교수명·강의자료 표지/footer/header·슬라이드 번호는 키워드/핵심 내용으로 쓰지 말고, "
+        "'2026.04 조수연' 같은 날짜+이름 문구를 출력에 포함하지 마라. "
         "반드시 아래 스키마의 JSON 객체 '하나만' 출력한다(설명문/코드블록 금지)."
     )
     schema = (
@@ -330,12 +332,16 @@ def _pad_overview(overview: str, facts: List[str], keywords: List[str]) -> tuple
 
 
 def _build_keywords(kw_objs: List[Any], kw_strings: List[str], source_provider: str) -> List[Dict[str, str]]:
+    from app.utils.pdf_noise_filter import clean_topic, is_metadata_noise
     out: List[Dict[str, str]] = []
     seen = set()
     for k in kw_objs or []:
         if isinstance(k, dict):
             term = sanitize_markdown_text(k.get("keyword") or k.get("term") or k.get("name"))
-            if not term or term.lower() in seen:
+            if not term or is_metadata_noise(term):
+                continue
+            term = clean_topic(term) or term
+            if term.lower() in seen:
                 continue
             seen.add(term.lower())
             out.append({

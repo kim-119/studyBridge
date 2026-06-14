@@ -83,6 +83,10 @@ def _keywords_from_text(text: str, limit: int = 15) -> List[str]:
             continue
         scored[token] = scored.get(token, 0) + 1
     ranked = sorted(scored, key=lambda k: (-scored[k], len(k), k))
+    # PDF 메타데이터(날짜/연도/페이지/교수명/반복문구)는 키워드로 승격 금지
+    from app.utils.pdf_noise_filter import detect_repeated_lines, filter_keywords
+    repeated = detect_repeated_lines([text or ""])
+    ranked = filter_keywords(ranked, repeated=repeated)
     return sanitize_keywords(ranked, limit=limit)
 
 
@@ -242,6 +246,21 @@ def validate_roadmap_result(result: Dict[str, Any], source_text: str = "") -> Di
 
     result["weeks"] = cleaned
     result["totalWeeks"] = ROADMAP_FIXED_WEEKS
+
+    # PDF 메타데이터(날짜/연도/교수명/표지/footer) 최종 정제 — 학습 주제 오염 차단
+    from app.utils.pdf_noise_filter import (
+        detect_repeated_lines, find_noise_violations, sanitize_text_fields,
+    )
+    repeated = detect_repeated_lines([source_text or ""])
+    fb_title = _text_from_any(result.get("title")) or (
+        (_keywords_from_text(source_text, limit=1) or ["학습 주제"])[0]
+    )
+    before = find_noise_violations(result["weeks"], repeated=repeated)
+    result["weeks"] = sanitize_text_fields(result["weeks"], repeated=repeated, title=fb_title)
+    if before:
+        warnings.append(f"메타데이터 노이즈 {len(before)}건을 학습 주제에서 제거했습니다.")
+        logger.info("roadmap noise 제거(%d건): %s", len(before), before[:5])
+
     result["warnings"] = warnings
     return result
 
@@ -295,6 +314,7 @@ def sanitize_keywords(keywords: List[str], limit: int = 8) -> List[str]:
     - 중복 제거(순서 보존), 최대 limit개
     키워드가 없으면 빈 배열을 반환한다.
     """
+    from app.utils.pdf_noise_filter import clean_topic, is_metadata_noise
     cleaned: List[str] = []
     seen = set()
     for kw in keywords or []:
@@ -313,6 +333,11 @@ def sanitize_keywords(keywords: List[str], limit: int = 8) -> List[str]:
         # 숫자만으로 이루어진 값 제외
         if re.fullmatch(r"\d+", token):
             continue
+        # PDF 메타데이터(날짜/연도/페이지/교수명) 제외 + 정제(기술 용어 보존)
+        if is_metadata_noise(token):
+            continue
+        token = clean_topic(token) or token
+        low = token.lower()
         if low in seen:
             continue
         seen.add(low)
@@ -641,7 +666,9 @@ def generate_roadmap(
         "너는 학습 커리큘럼 설계 전문가다. "
         f"{level_instr} "
         "문서 내용을 분석해 단계적 학습 로드맵을 설계한다. "
-        "한국어로 작성한다."
+        "한국어로 작성한다. "
+        "PDF의 날짜·연도·교수명·강의자료 표지/footer/header·슬라이드 번호는 학습 주제로 쓰지 말고, "
+        "학습 항목은 개념·구조·원리·구현·비교·적용 단위로 작성한다."
     )
     gpt_user = (
         f"## 문서: {document_title}\n\n"

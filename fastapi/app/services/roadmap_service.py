@@ -21,6 +21,19 @@ logger = logging.getLogger(__name__)
 _DEFAULT_WEEKS = 4
 _MAX_CONTEXT_CHARS = 3000
 
+# PDF 메타데이터(날짜/연도/교수명/표지/footer)를 학습 주제로 쓰지 못하게 하는 공통 프롬프트 규칙
+_NOISE_RULES = (
+    "[학습 주제 선정 규칙]\n"
+    "- PDF의 날짜, 연도(예: 2026), 교수명/강사명/작성자, 강의자료 표지·footer·header,"
+    " 슬라이드 번호는 학습 주제로 절대 사용하지 마라.\n"
+    "- 매 페이지 반복되는 강의명(course title)은 자료명으로만 참고하고"
+    " 할 일/복습질문/산출물에 직접 넣지 마라.\n"
+    "- '2026.04 조수연' 같은 날짜+이름 문구를 출력에 절대 포함하지 마라.\n"
+    "- 학습 항목은 개념·구조·원리·구현·비교·적용·테스트·오류 해결 단위여야 한다.\n"
+    "- 기술 개념이 부족하면 자료명 기반으로 기본 개념형 학습 흐름을 만들어라"
+    "(예: '안드로이드' → '안드로이드란?', 'Activity의 역할', 'Fragment의 역할')."
+)
+
 
 def build_roadmap_prompt(
     document_title: str,
@@ -43,6 +56,7 @@ def build_roadmap_prompt(
         "너는 학습 커리큘럼 설계 전문가다.\n"
         f"{level_instr}\n"
         "주어진 자료를 분석해 단계별 학습 로드맵을 주차 단위로 설계한다.\n"
+        f"{_NOISE_RULES}\n"
         "반드시 아래 JSON 형식으로만 응답한다. 다른 텍스트 없이 JSON만 출력한다:\n"
         '{\n'
         '  "title": "로드맵 제목",\n'
@@ -236,7 +250,7 @@ def generate_roadmap_from_material(
         roadmap = refine_roadmap_with_qwen(roadmap, document_title, knowledge_level)
         roadmap["materialId"] = material_id
         roadmap.setdefault("isFallback", False)
-        return roadmap
+        return _sanitize_roadmap(roadmap, document_title, context)
 
     # GPT 실패 시 Qwen만으로 시도
     if not OPENAI_API_KEY:
@@ -246,7 +260,7 @@ def generate_roadmap_from_material(
         if qwen_result and validate_roadmap_shape(qwen_result):
             qwen_result["materialId"] = material_id
             qwen_result.setdefault("isFallback", False)
-            return qwen_result
+            return _sanitize_roadmap(qwen_result, document_title, context)
 
     # 둘 다 실패
     return build_fallback_roadmap(material_id, document_title, "GPT/Qwen 응답 없음")
@@ -263,6 +277,7 @@ def _try_qwen_only_roadmap(
     week_count = weeks or _DEFAULT_WEEKS
     system = (
         "너는 학습 로드맵 설계 전문가다. "
+        f"{_NOISE_RULES}\n"
         "아래 JSON 형식으로만 응답한다:\n"
         '{"title":"...","weeks":[{"week":1,"title":"...","goal":"...","tasks":["..."]}]}'
     )
@@ -280,6 +295,35 @@ def _try_qwen_only_roadmap(
     except Exception as e:
         logger.warning("Qwen 전용 로드맵 생성 실패: %s", e)
         return None
+
+
+def _sanitize_roadmap(roadmap: dict, document_title: str, context: str) -> dict:
+    """로드맵 weeks 의 title/goal/tasks 에서 PDF 메타데이터 노이즈를 제거한다.
+
+    날짜/연도/교수명/표지/footer/반복 course title 을 학습 주제에서 걷어내고,
+    항목이 비면 자료 제목 기반 개념형 항목으로 채운다.
+    """
+    try:
+        from app.utils.pdf_noise_filter import (
+            conceptual_fallback_tasks, detect_repeated_lines,
+            find_noise_violations, sanitize_text_fields,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("noise filter 임포트 실패, 정제 생략: %s", e)
+        return roadmap
+
+    repeated = detect_repeated_lines([context or "", document_title or ""])
+    weeks = roadmap.get("weeks") or []
+    before = find_noise_violations(weeks, repeated=repeated)
+    weeks = sanitize_text_fields(weeks, repeated=repeated, title=document_title)
+    # tasks 가 정제로 비어버린 주차는 개념형 task 로 보강
+    for w in weeks:
+        if isinstance(w, dict) and not w.get("tasks"):
+            w["tasks"] = conceptual_fallback_tasks(document_title, n=3)
+    roadmap["weeks"] = weeks
+    if before:
+        logger.info("roadmap noise 제거(%d건): %s", len(before), before[:5])
+    return roadmap
 
 
 def _parse_roadmap_json(raw: str) -> Optional[dict]:

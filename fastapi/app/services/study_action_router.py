@@ -27,6 +27,13 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# PDF 메타데이터(날짜/연도/교수명/표지/footer)를 학습 주제로 쓰지 못하게 하는 LLM 규칙
+_NOISE_RULES = (
+    "PDF의 날짜·연도(예: 2026)·교수명/강사명/작성자·강의자료 표지/footer/header·슬라이드 번호는 "
+    "학습 주제로 절대 사용하지 마라. '2026.04 조수연' 같은 날짜+이름 문구를 출력에 포함하지 마라. "
+    "반복되는 강의명은 자료명으로만 참고하고, 학습 항목은 개념·구조·원리·구현·비교·적용·테스트 단위로 작성하라."
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 환경변수 기반 설정 (하드코딩 금지)
@@ -143,8 +150,13 @@ def _strip_doc_noise(token: str) -> str:
     return t
 
 
-def clean_keywords(kw: Any) -> List[str]:
-    """'Page', 날짜, '[Page 1]' 같은 문서 노이즈 제거, 개념 단위만 남긴다(스펙 F)."""
+def clean_keywords(kw: Any, repeated: Any = None) -> List[str]:
+    """'Page', 날짜, '[Page 1]' 같은 문서 노이즈 제거, 개념 단위만 남긴다(스펙 F).
+
+    추가로 PDF 메타데이터(날짜+교수명/연도/반복 표지)도 학습 개념에서 제외한다.
+    'Activity 생명주기'처럼 기술 용어에 날짜/이름이 섞이면 날짜/이름만 제거하고 살린다.
+    """
+    from app.utils.pdf_noise_filter import clean_topic, is_metadata_noise
     out: List[str] = []
     for k in listify(kw):
         norm = _strip_doc_noise(k.strip())
@@ -157,7 +169,11 @@ def clean_keywords(kw: Any) -> List[str]:
         # 한글/영문/숫자가 하나도 없는 순수 기호 제거
         if not re.search(r"[가-힣A-Za-z0-9]", norm):
             continue
-        if norm not in out:
+        # PDF 메타데이터(날짜/연도/교수명/표지/footer) 제외 + 정제(기술 용어 보존)
+        if is_metadata_noise(norm, repeated=repeated):
+            continue
+        norm = clean_topic(norm, repeated=repeated) or norm
+        if norm and norm not in out:
             out.append(norm)
     return out
 
@@ -703,8 +719,19 @@ def generate_12week_7day_roadmap(ctx: Dict[str, Any]) -> Dict[str, Any]:
     tasks_min = c["tasks_per_day_min"]
     subject = (ctx.get("subject") or ctx.get("title") or "학습").strip()
     level = normalize_level(ctx.get("level"))
-    keywords = clean_keywords(ctx.get("keywords")) or clean_keywords(ctx.get("summary")) \
-        or clean_keywords(ctx.get("material_summary")) or [subject]
+    # PDF 메타데이터(매 페이지 반복되는 표지/날짜/교수명) 탐지 → 학습 개념 오염 차단
+    from app.utils.pdf_noise_filter import (
+        clean_topic, conceptual_fallback_items, detect_repeated_lines,
+        find_noise_violations, sanitize_text_fields,
+    )
+    _summary = str(ctx.get("summary") or ctx.get("material_summary") or "")
+    repeated = detect_repeated_lines([_summary, str(ctx.get("title") or "")])
+    subject = clean_topic(subject, repeated=repeated) or subject
+    keywords = clean_keywords(ctx.get("keywords"), repeated) or clean_keywords(ctx.get("summary"), repeated) \
+        or clean_keywords(ctx.get("material_summary"), repeated)
+    if not keywords:
+        # 키워드가 메타데이터뿐이라 비면 자료 제목 기반 개념형으로 대체(날짜/교수명 사용 금지)
+        keywords = conceptual_fallback_items(subject, count=8) or [subject]
     start_dt = _parse_date(ctx.get("start_date") or ctx.get("date"))
 
     # 1) 주차 아웃라인 LLM 초안(주차별 제목/목표/일자 타이틀) — 토큰 제어
@@ -760,6 +787,13 @@ def generate_12week_7day_roadmap(ctx: Dict[str, Any]) -> Dict[str, Any]:
         resp["warning"] = f"AI 응답 구조가 불완전하여 결정적 {weeks_n}주×{days_n}일 로드맵으로 보정했습니다."
         fallback_used = True
     resp["fallback_used"] = fallback_used
+
+    # 최종 정제: LLM overlay 가 끼워넣은 날짜/연도/교수명/표지문구를 학습 주제에서 제거
+    before = find_noise_violations(resp["weeks"], repeated=repeated)
+    resp["weeks"] = sanitize_text_fields(resp["weeks"], repeated=repeated, title=subject)
+    if before:
+        resp["warning"] = (resp.get("warning") or "") + f" 메타데이터 노이즈 {len(before)}건 제거됨."
+        logger.info("[ROADMAP_NOISE] %d건 제거: %s", len(before), before[:5])
     return resp
 
 
@@ -789,6 +823,7 @@ def _llm_week_days(ctx: Dict[str, Any], subject: str, keywords: List[str],
     system = (
         "너는 학습 실행 코치다. 학생의 공부 플래너를 받아 '하루 단위 실행 계획' 7일치를 만든다. "
         "각 날짜는 서로 다른 학습 주제/할 일을 가져야 하고, 단순 반복 문구와 'Page 1' 같은 페이지 번호 나열은 금지한다. "
+        f"{_NOISE_RULES} "
         f"{_level_guide(level)}. 상급이면 설계 판단·책임 분리·테스트·예외 처리·성능 관점을 포함하고, "
         "문서에 없는 고급 내용은 '문서 기반 확장 학습'으로 표시한다. 반드시 한국어로, JSON으로만 응답한다."
     )
@@ -848,6 +883,7 @@ def _llm_week_outline(ctx: Dict[str, Any], subject: str, keywords: List[str],
         "전체 흐름은 1주차 기초 → 중반 적용/실습 → 후반 복습/프로젝트/시험 대비로 잡는다. "
         f"{_level_guide(level)}. 상급이면 후반부에 아키텍처 설계 판단·책임 분리·테스트·예외 처리를 배치한다. "
         "각 주차/일자 제목은 서로 달라야 하고, 페이지 번호('Page 1')를 학습 목표처럼 쓰지 않는다. "
+        f"{_NOISE_RULES} "
         "한국어로 JSON만 응답한다."
     )
     user = (

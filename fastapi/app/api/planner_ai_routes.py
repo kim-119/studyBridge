@@ -23,6 +23,14 @@ ROADMAP_TIMEOUT = int(os.getenv("AI_PLANNER_ROADMAP_TIMEOUT_SECONDS", os.getenv(
 ROADMAP_WEEKS = 12
 MIN_TASKS_PER_WEEK = 3
 
+# PDF/플래너 메타데이터(날짜/연도/교수명/표지/footer)를 학습 주제로 쓰지 못하게 하는 규칙
+_NOISE_RULES = (
+    "[학습 주제 규칙] 날짜·연도(예: 2026)·교수명/강사명·강의자료 표지/footer/header·"
+    "슬라이드 번호는 학습 주제로 절대 사용하지 마라. '2026.04 조수연' 같은 날짜+이름 문구를 "
+    "출력에 포함하지 마라. 반복되는 강의명은 자료명으로만 참고하고, 학습 항목은 개념·구조·원리·"
+    "구현·비교·적용·테스트 단위로 작성하라."
+)
+
 
 class PlannerInfo(BaseModel):
     plannerId: Optional[int] = None
@@ -80,7 +88,8 @@ def _expand_sync(info: PlannerInfo) -> Optional[Dict[str, Any]]:
 
     system = (
         "너는 학습 코치다. 학생이 대충 적은 공부 플래너를 받아 '학습 실행 관리' 관점에서 "
-        "깊고 구체적으로 확장한다. 반드시 한국어로, 아래 JSON 스키마로만 응답한다."
+        "깊고 구체적으로 확장한다. 반드시 한국어로, 아래 JSON 스키마로만 응답한다.\n"
+        f"{_NOISE_RULES}"
     )
     user = (
         f"## 플래너 정보\n{_planner_context(info)}\n\n"
@@ -241,6 +250,15 @@ def _normalize_weeks(weeks_raw: Any, info: PlannerInfo) -> List[Dict[str, Any]]:
         n = len(weeks) + 1
         weeks.append({"week": n, "title": f"{n}주차 {subject} 심화",
                       "goal": f"{n}주차 학습 목표를 설정하고 복습한다.", "tasks": []})
+    # PDF/플래너 메타데이터 노이즈 정제 (날짜/연도/교수명/표지/footer 제거)
+    fb_title = info.subject or info.title or "학습"
+    try:
+        from app.utils.pdf_noise_filter import detect_repeated_lines, sanitize_text_fields
+        repeated = detect_repeated_lines([info.content or "", info.title or ""])
+        weeks = sanitize_text_fields(weeks, repeated=repeated, title=fb_title)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("planner roadmap noise 정제 생략: %s", e)
+
     # week 번호 재정렬 + task 최소 보장
     for idx, w in enumerate(weeks[:ROADMAP_WEEKS]):
         w["week"] = idx + 1
@@ -258,7 +276,8 @@ def _roadmap_sync(info: PlannerInfo) -> Optional[List[Dict[str, Any]]]:
     focus = f"\n특히 사용자가 입력한 {info.week}주차 내용은 다른 주차보다 더 구체적으로 반영하라." if info.week else ""
     system = (
         "너는 학습 커리큘럼 설계자다. 공부 플래너를 받아 12주 학습 로드맵을 만든다. "
-        "반드시 정확히 12개 주차, 각 주차마다 최소 3개의 task를 한국어로 작성한다. JSON으로만 응답한다."
+        "반드시 정확히 12개 주차, 각 주차마다 최소 3개의 task를 한국어로 작성한다. JSON으로만 응답한다.\n"
+        f"{_NOISE_RULES}"
     )
     user = (
         f"## 플래너 정보\n{_planner_context(info)}{focus}\n\n"
@@ -322,6 +341,13 @@ def _planner_keywords(*texts: str, limit: int = 6) -> List[str]:
         freq[low] = freq.get(low, 0) + 1
     first_idx = {w: i for i, w in enumerate(order)}  # 정렬 중 index 변동 방지
     order.sort(key=lambda w: (-freq[w.lower()], first_idx[w]))
+    # 날짜/연도/교수명/표지/footer 키워드 제외 (학습 주제 오염 차단)
+    try:
+        from app.utils.pdf_noise_filter import detect_repeated_lines, filter_keywords
+        repeated = detect_repeated_lines([blob])
+        order = filter_keywords(order, repeated=repeated)
+    except Exception:  # noqa: BLE001
+        pass
     return order[:limit]
 
 
@@ -422,7 +448,7 @@ def _analyze_sync(body: Dict[str, Any]) -> Dict[str, Any]:
         "오늘 학습 후 핵심 내용을 한 문장으로 요약하기",
     ]
 
-    return {
+    result = {
         "success": True,
         "title": title,
         "keywords": keywords,
@@ -435,6 +461,15 @@ def _analyze_sync(body: Dict[str, Any]) -> Dict[str, Any]:
         "unfinishedItems": unfinished,
         "message": "저장된 플래너 자료를 기반으로 분석했습니다.",
     }
+    # PDF/플래너 메타데이터(날짜/연도/교수명/표지/footer) 정제
+    try:
+        from app.utils.pdf_noise_filter import detect_repeated_lines, sanitize_text_fields
+        repeated = detect_repeated_lines([content or "", raw_title or ""])
+        fb = subject or title or "학습 주제"
+        result = sanitize_text_fields(result, repeated=repeated, title=fb)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("planner/analyze noise 정제 생략: %s", e)
+    return result
 
 
 @router.post("/analyze", summary="저장된 플래너 자료 기반 AI 계획 분석")
