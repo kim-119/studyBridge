@@ -287,7 +287,7 @@ export const agentService = {
     return normalizeChatResponse(res.data);
   },
 
-  streamMessage: async (userId, agentId, payloadOrMessage, handlers = {}) => {
+  streamMessage: async (userId, agentId, payloadOrMessage, handlers = {}, opts = {}) => {
     const basePayload =
       typeof payloadOrMessage === 'string'
         ? { message: payloadOrMessage, agentId, roomId: agentId }
@@ -303,6 +303,8 @@ export const agentService = {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(basePayload),
+      // 무한 loading 방지용 watchdog abort 신호(선택)
+      ...(opts.signal ? { signal: opts.signal } : {}),
     });
 
     if (!resp.ok || !resp.body) {

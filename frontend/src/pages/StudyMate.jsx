@@ -10,13 +10,53 @@ import { getAgentColor, agentColorKey } from '../utils/agentColor';
 const PERSONALITY_OPTIONS = ['전문적', '친근함', '솔직함', '독특함', '효율적', '냉소적'];
 const KNOWLEDGE_LEVEL_OPTIONS = ['입문 수준', '학사 수준', '석사 수준', '박사 수준', '전문가 수준'];
 
+// 말투(성격) → 내부 role 기본값. UI에서 '역할' 입력은 숨기되 payload의 role은 말투에서 자동 유도한다.
+const ROLE_BY_PERSONALITY = {
+  '전문적': '전문 교수',
+  '친근함': '친근한 친구',
+  '솔직함': '솔직한 멘토',
+  '독특함': '독창적 강사',
+  '효율적': '효율적 튜터',
+  '냉소적': '냉철한 멘토',
+};
+const deriveRole = (personality) => ROLE_BY_PERSONALITY[personality] || '학습 메이트';
+
+// 학습메이트 유형 = "어떤 역할로 도와줄지"(역할). 답변 톤/학습자 수준과 개념 분리.
+// 유형 선택 시 payload의 role만 내부 매핑하고, 톤(personality)은 별도 선택값을 유지한다.
+const MATE_TYPES = [
+  { key: '정확 설명형', role: '정확한 개념 설명자', icon: '🎓', color: '#2563EB', desc: '개념과 근거를 정확히 정리합니다.' },
+  { key: '쉬운 튜터형', role: '쉬운 설명 튜터', icon: '✨', color: '#EA580C', desc: '어려운 내용을 쉽게 풀어줍니다.' },
+  { key: '비판 코치형', role: '비판적 학습 코치', icon: '🧐', color: '#E11D48', desc: '오개념과 논리적 허점을 짚어줍니다.' },
+  { key: '냉철 분석형', role: '논리적 분석 멘토', icon: '❄️', color: '#374151', desc: '감정보다 근거와 구조 중심으로 분석합니다.' },
+];
+
+// 답변 톤 = "어떤 말투로 말할지". label은 사용자 표시용, value는 기존 personality enum으로 매핑(payload 유지).
+// "전문적"은 유형의 "정확 설명형"과 의미가 겹쳐 톤 옵션에서 제외한다.
+const TONE_OPTIONS = [
+  { value: '친근함', label: '친근하게' },
+  { value: '효율적', label: '차분하게' },
+  { value: '솔직함', label: '엄격하게' },
+  { value: '냉소적', label: '냉철하게' },
+  { value: '독특함', label: '유머러스하게' },
+];
+
+// 추가 요청 입력 보조용 추천 칩(클릭 시 입력창 뒤에 자연스럽게 덧붙임).
+const REQUEST_GUIDE_CHIPS = [
+  { label: '코드 예시 포함', text: '코드 예시를 포함해줘' },
+  { label: '쉬운 비유로 설명', text: '쉬운 비유로 설명해줘' },
+  { label: '3줄 요약', text: '마지막에 3줄로 요약해줘' },
+  { label: '오개념 주의', text: '헷갈리기 쉬운 오개념도 짚어줘' },
+  { label: '시험 대비', text: '시험 대비 포인트를 정리해줘' },
+];
+
 const DEFAULT_AGENT = {
   name: '',
-  role: '',
-  personality: '전문적',
+  role: '정확한 개념 설명자',
+  personality: '친근함',
   knowledgeLevel: '학사 수준',
   customInstruction: '',
-  goal: '사용자의 학습을 돕는다'
+  goal: '사용자의 학습을 돕는다',
+  agentPreset: '정확 설명형'
 };
 
 // 정규 성격 키 → 한글 라벨 (백엔드 personalityType: creative/sardonic/logical/...)
@@ -145,7 +185,7 @@ const dbChipStyle = (active) => ({
 const toggleInArray = (arr, value) =>
   (arr || []).includes(value) ? arr.filter((v) => v !== value) : [...(arr || []), value];
 
-// 에이전트 프리셋(전문교수/친근한친구/…) 셀렉트는 제거됨. 성격/역할은 생성폼에서 직접 설정한다.
+// 에이전트 카드 상단 프리셋은 "학습메이트 유형"(MATE_TYPES)으로 대체됨. 역할/톤/수준은 생성폼에서 분리 설정한다.
 
 // 모드별 추천 에이전트 조합 (생성 모달 '추천 채우기'용)
 const RECOMMENDED_PRESETS = {
@@ -176,6 +216,60 @@ const DEFAULT_SOCRATIC_CONFIG = {
   includeFinalSummary: true,
   includeNextStudyPlan: true,
   trackMisconceptions: true,
+};
+
+// ── 스터디방 학습 방식(모드) 표시용 라벨 매핑 ──
+// 실제 코드 enum 값 기준(생성 모달 칩 value와 동일). 알 수 없는 값은 원문을 그대로 노출.
+const labelOr = (map, v, fallback) => map[String(v || '').toLowerCase()] || (v ? String(v) : fallback);
+const TOPIC_MODE_LABELS = { auto: '자동 생성', manual: '직접 입력' };
+const DEBATE_DEPTH_LABELS = { light: '가볍게', normal: '보통', deep: '깊게' };
+const QUESTION_INTENSITY_LABELS = { gentle: '부드럽게', normal: '보통', strict: '집중적으로' };
+const HINT_STYLE_LABELS = { step_by_step: '단계별 힌트', example_hint: '예시 힌트', partial_answer_when_stuck: '막히면 일부 공개' };
+const SCENARIO_TYPE_LABELS = { realistic: '현실 상황', roleplay: '면접 상황', lab_scenario: '프로젝트 상황' };
+const DIFFICULTY_LABELS = { easy: '쉬움', normal: '보통', hard: '어려움' };
+
+// 방 객체(room/selectedAgent)에서 학습 방식 카드에 표시할 정보를 만든다.
+// learningMode가 없으면 fallback(기본 설명 모드 + 안내)을 반환한다.
+const buildRoomModeInfo = (room) => {
+  const raw = String(room?.learningMode || room?.mode || '').toLowerCase();
+  const accent = { debate: '#7C3AED', socratic: '#0EA5E9', simulation: '#1D4ED8', basic: '#6366F1' };
+
+  if (isDebateModeValue(raw)) {
+    const c = room?.debateConfig || {};
+    const rows = [
+      { k: '논제 방식', v: labelOr(TOPIC_MODE_LABELS, c.topicMode, '자동 생성') },
+      { k: '토론 깊이', v: labelOr(DEBATE_DEPTH_LABELS, c.debateDepth, '보통') },
+    ];
+    if (String(c.topicMode).toLowerCase() === 'manual' && c.manualTopic) rows.push({ k: '논제', v: c.manualTopic });
+    return { label: '토론 모드', badge: '주장 · 근거 · 반박 · 결론', color: accent.debate,
+      desc: 'AI들이 하나의 논제를 두고 찬성·반대·중립 관점에서 주장, 반박, 판정을 진행합니다.', rows };
+  }
+  if (isSocraticModeValue(raw)) {
+    const c = room?.socraticConfig || {};
+    return { label: '소크라테스 모드', badge: '질문 · 힌트 · 자기설명', color: accent.socratic,
+      desc: 'AI가 정답을 바로 알려주기보다 질문과 힌트로 사용자의 이해를 유도합니다.',
+      rows: [
+        { k: '질문 강도', v: labelOr(QUESTION_INTENSITY_LABELS, c.questionIntensity, '보통') },
+        { k: '힌트 방식', v: labelOr(HINT_STYLE_LABELS, c.hintPolicy, '단계별 힌트') },
+      ] };
+  }
+  if (isSimulationModeValue(raw)) {
+    const c = room?.simulationConfig || {};
+    return { label: '상황극 모드', badge: '상황 · 선택 · 피드백', color: accent.simulation,
+      desc: 'AI가 현실적인 상황을 만들고, 사용자가 선택과 피드백을 통해 개념을 체험하도록 진행합니다.',
+      rows: [
+        { k: '상황 유형', v: labelOr(SCENARIO_TYPE_LABELS, c.scenarioType, '현실 상황') },
+        { k: '난이도', v: labelOr(DIFFICULTY_LABELS, c.difficulty, '보통') },
+        { k: '선택지 개수', v: `${Number(c.choiceCount) || 3}개` },
+      ] };
+  }
+  // 기본/검증/협업 또는 모드 정보 없음 → 기본 설명 모드로 표시
+  const isMissing = !raw;
+  return { label: '기본 설명 모드', badge: '개념 정리 · 예시 · 핵심 요약', color: accent.basic,
+    desc: isMissing
+      ? '이전 방식으로 생성된 방이라 상세 모드 정보가 없습니다.'
+      : 'AI들이 사용자의 질문을 중심으로 개념을 정리하고, 예시와 핵심 요약을 제공합니다.',
+    rows: [{ k: '답변 구조', v: '개념 정리 · 예시 · 핵심 요약' }] };
 };
 
 const debateDisplayName = (row, fallbackIndex = 0) => {
@@ -572,7 +666,100 @@ const DebateRenderer = ({ stages }) => {
 };
 
 // processSteps(전체 map) → 결과 말풍선 배열. 토론 응답이면 토론 4섹션, 아니면 1/2/3 단계.
-const buildStageBubbles = (ps, parentId, createdAt) => {
+// ── 내부 단계(검증/피드백) 노출 정책 ──────────────────────────────────────────
+// 기본 채팅(basic)은 "선택된 에이전트의 최종 답변"만 노출한다(2차 검증/3차 피드백 숨김).
+// 검증(validation)/협업(collaboration) 모드는 평가/피드백이 모드의 목적이므로 노출한다.
+const isInternalVisibleMode = (mode) => {
+  const m = String(mode || '').toLowerCase();
+  return m === 'validation' || m === '검증' || m === 'collaboration' || m === 'collaborative' || m === '협업';
+};
+
+// 방어적 필터: FastAPI/Spring이 실수로 내부 evaluator 문구를 visible로 흘려도 기본 채팅에선 숨긴다.
+// (사용자가 명시적으로 평가/피드백을 요청한 모드에서는 isInternalVisibleMode로 노출 허용)
+// 강한(템플릿/디버그) 마커만 사용한다. "보완점/수정 제안" 같은 일반 단어는 정상 답변에도 나올 수 있어
+// 오탐(정상 답변 숨김)을 막기 위해 단독으로는 쓰지 않는다.
+const INTERNAL_LEAK_PATTERNS = [
+  '두 에이전트의 답변을 평가', '답변을 평가해보겠습니다', '1차 답변을 검증', '1차 답변(들)을 검토',
+  '내부 검증 결과', '2차 생성 내용', 'PEER_FEEDBACK', 'INTERNAL_VALIDATION', 'RAW_MODEL_OUTPUT', 'ROUTE_DECISION',
+];
+const looksInternalLeak = (content) => {
+  const s = String(content || '');
+  return INTERNAL_LEAK_PATTERNS.some((p) => s.includes(p));
+};
+
+// ── 경량 마크다운 렌더러 (react-markdown 의존성 없이 raw **, ###, ``` 노출 방지) ──
+// 코드블록/인라인코드/굵게/헤딩/리스트만 안전 렌더링한다. 그 외는 평문으로 보여준다.
+const renderInlineNodes = (line, keyBase) => {
+  const nodes = [];
+  const regex = /\*\*(.+?)\*\*|`([^`]+)`/g;
+  let last = 0;
+  let m;
+  let i = 0;
+  while ((m = regex.exec(line)) !== null) {
+    if (m.index > last) nodes.push(line.slice(last, m.index));
+    if (m[1] != null) nodes.push(<strong key={`${keyBase}-b${i}`}>{m[1]}</strong>);
+    else nodes.push(<code key={`${keyBase}-c${i}`} style={{ background: 'rgba(0,0,0,0.06)', padding: '1px 4px', borderRadius: 4, fontSize: '0.92em' }}>{m[2]}</code>);
+    last = m.index + m[0].length;
+    i += 1;
+  }
+  if (last < line.length) nodes.push(line.slice(last));
+  return nodes;
+};
+
+const RichText = ({ text }) => {
+  const src = String(text ?? '');
+  if (!src) return null;
+  const segments = src.split('```');
+  return (
+    <>
+      {segments.map((seg, si) => {
+        if (si % 2 === 1) {
+          // 코드블록: 첫 줄이 언어 라벨일 수 있음
+          const nl = seg.indexOf('\n');
+          const lang = nl > -1 ? seg.slice(0, nl).trim() : '';
+          const isLang = nl > -1 && /^[a-zA-Z0-9+#.-]{0,15}$/.test(lang);
+          const code = isLang ? seg.slice(nl + 1) : seg;
+          return (
+            <pre key={`code-${si}`} style={{ background: '#0f172a', color: '#e2e8f0', padding: '10px 12px', borderRadius: 8, overflowX: 'auto', fontSize: 12, lineHeight: 1.5, margin: '6px 0' }}>
+              <code>{code.replace(/\n$/, '')}</code>
+            </pre>
+          );
+        }
+        const lines = seg.split('\n');
+        return (
+          <span key={`txt-${si}`}>
+            {lines.map((rawLine, li) => {
+              const key = `${si}-${li}`;
+              const heading = rawLine.match(/^(#{1,6})\s+(.*)$/);
+              if (heading) {
+                return <div key={key} style={{ fontWeight: 700, margin: '4px 0' }}>{renderInlineNodes(heading[2], key)}</div>;
+              }
+              const list = rawLine.match(/^\s*[-*]\s+(.*)$/);
+              const content = list ? `• ${list[1]}` : rawLine;
+              return (
+                <React.Fragment key={key}>
+                  {renderInlineNodes(content, key)}
+                  {li < lines.length - 1 ? <br /> : null}
+                </React.Fragment>
+              );
+            })}
+          </span>
+        );
+      })}
+    </>
+  );
+};
+
+// 인사/욕설/라우팅 등 short direct reply는 마크다운 기호를 제거한 평문으로 표시한다.
+const stripMarkdown = (s) => String(s || '')
+  .replace(/```[\s\S]*?```/g, '')
+  .replace(/\*\*(.+?)\*\*/g, '$1')
+  .replace(/`([^`]+)`/g, '$1')
+  .replace(/^#{1,6}\s+/gm, '')
+  .replace(/^\s*[-*]\s+/gm, '• ')
+  .trim();
+
+const buildStageBubbles = (ps, parentId, createdAt, opts = {}) => {
   if (!ps) return [];
   const ts = createdAt || new Date().toISOString();
   const out = [];
@@ -600,20 +787,23 @@ const buildStageBubbles = (ps, parentId, createdAt) => {
     return out;
   }
 
-  // 일반 staged 모드 — 항상 에이전트 1 → 2 → 3 순서로 표시한다.
+  // 일반 staged 모드 — 1차(최종 답변)는 항상 노출. 2차 검증/3차 피드백은 내부 단계이므로
+  // 기본 채팅에서는 숨기고, 검증/협업 모드(showInternal)에서만 노출한다.
   sortByAgentOrder(ps.initialAnswers).forEach((row, idx) => {
     out.push(mk('initial', row.agentName, stepContent(row), { idx, provider: row.provider, elapsedMs: row.elapsedMs }));
   });
-  sortByAgentOrder(ps.validatedAnswers).forEach((row, idx) => {
-    out.push(mk('validated', row.agentName, stepContent(row), {
-      idx, provider: row.provider, elapsedMs: row.elapsedMs, sources: row.sources || [],
-    }));
-  });
-  sortByAgentOrder(ps.peerFeedback).forEach((fb, idx) => {
-    out.push(mk('feedback', fb.fromAgent, stepContent(fb), {
-      idx, stageTo: fb.toAgent, pv: fb.personalityValidation || pvForName(ps.personalityValidationSummary, fb.fromAgent),
-    }));
-  });
+  if (opts.showInternal) {
+    sortByAgentOrder(ps.validatedAnswers).forEach((row, idx) => {
+      out.push(mk('validated', row.agentName, stepContent(row), {
+        idx, provider: row.provider, elapsedMs: row.elapsedMs, sources: row.sources || [],
+      }));
+    });
+    sortByAgentOrder(ps.peerFeedback).forEach((fb, idx) => {
+      out.push(mk('feedback', fb.fromAgent, stepContent(fb), {
+        idx, stageTo: fb.toAgent, pv: fb.personalityValidation || pvForName(ps.personalityValidationSummary, fb.fromAgent),
+      }));
+    });
+  }
   return out;
 };
 
@@ -660,7 +850,7 @@ const explodeHistoryToStageBubbles = (history) => {
       const turnKey = msg.parentId ?? msg.id;
       if (seenTurn.has(turnKey)) continue; // 같은 턴 중복 에이전트 메시지는 건너뜀
       seenTurn.add(turnKey);
-      const bubbles = buildStageBubbles(ps, turnKey, msg.createdAt);
+      const bubbles = buildStageBubbles(ps, turnKey, msg.createdAt, { showInternal: isInternalVisibleMode(msg.mode || msg.learningMode) });
       if (bubbles.length) { out.push(...bubbles); continue; }
     }
     out.push(msg);
@@ -1253,7 +1443,7 @@ const buildCanonicalAgentPayload = (agent) => {
 
   return {
     name: String(agent.name || '').trim(),
-    role: String(agent.role || '').trim(),
+    role: String(agent.role || '').trim() || deriveRole(personality),
     agentPreset,
     personality,
     personalityStrength: agent.personalityStrength || 'extreme',
@@ -1561,7 +1751,7 @@ export default function StudyMate() {
 
     // 누적 processSteps(전체 map)로부터 단계별 말풍선(1차/2차/3차)을 만든다.
     // 단계가 도착할 때마다 1차→2차→3차 순으로 메인 대화에 누적 표시된다(상세과정 클릭 불필요).
-    const buildStreamAiMsgs = (ps) => buildStageBubbles(ps, userMsg.id, new Date().toISOString());
+    const buildStreamAiMsgs = (ps) => buildStageBubbles(ps, userMsg.id, new Date().toISOString(), { showInternal: isInternalVisibleMode(activeLearningMode) });
 
     try {
       // ── 단계/섹션별 SSE 선출력 우선 시도 (default/debate/socratic 모두 스트리밍, 실패 시 블로킹 폴백) ──
@@ -1668,7 +1858,7 @@ export default function StudyMate() {
           }
           // 5) processSteps / stages → 1차/2차/3차 단계 말풍선
           const ps = (d && d.processSteps) || fullPS;
-          const bubbles = buildStageBubbles(ps, userMsg.id, ts);
+          const bubbles = buildStageBubbles(ps, userMsg.id, ts, { showInternal: isInternalVisibleMode(respMode || activeLearningMode) });
           if (bubbles.length) { setTurnAiMessages(bubbles); return; }
           // 6) 일반 answers/replies 카드
           const answers = (d && (d.answers || d.replies)) || [];
@@ -1694,6 +1884,21 @@ export default function StudyMate() {
           }
         };
 
+        // ── 무한 loading 방지 watchdog: 일정 시간 아무 이벤트도 없으면 abort 후 안내 ──
+        // 이벤트가 올 때마다 rearm한다. (서버 ':hb' 주석은 이벤트로 디스패치되지 않으므로 진짜 hang만 잡힘)
+        const streamAbort = new AbortController();
+        let watchdogTimedOut = false;
+        const WATCHDOG_MS = 330000; // 가장 긴 모드(토론/소크라테스 백엔드 타임아웃)보다 여유 있게
+        let watchdogTimer = null;
+        const armWatchdog = () => {
+          if (watchdogTimer) clearTimeout(watchdogTimer);
+          watchdogTimer = setTimeout(() => {
+            watchdogTimedOut = true;
+            try { streamAbort.abort(); } catch { /* noop */ }
+          }, WATCHDOG_MS);
+        };
+        armWatchdog();
+
         try {
           await agentService.streamMessage(userId, agentId, {
             message: inputMsg,
@@ -1704,7 +1909,7 @@ export default function StudyMate() {
             rounds: 1,
             ...turnExtras,
           }, {
-            onTurnStart: () => {},
+            onTurnStart: () => { armWatchdog(); },
             onHeartbeat: (d) => {
               if (!d || d.agentIndex == null) return;
               const stablePrefix = `${d.requestId || requestId}::basic::FIRST_DRAFT::${d.agentIndex}::`;
@@ -1723,6 +1928,7 @@ export default function StudyMate() {
               upsertAgentMessage(d, { isPending: true, content: d.message || `에이전트 ${d.agentIndex || ''} 답변 생성 중...` });
             },
             onAgentAnswer: (d) => {
+              armWatchdog();
               if (!d) return;
               upsertAgentMessage(d, { isPending: false, content: d.content || d.answer || '' });
             },
@@ -1732,7 +1938,10 @@ export default function StudyMate() {
             },
             // default legacy 모드: 1차/2차/3차 단계 완료 시 즉시 반영. 저장 전에 에이전트 순서로 정렬한다.
             onStageComplete: (d) => {
+              armWatchdog();
               if (!d) return;
+              // 백엔드가 visible=false로 표시한 내부 단계(2차 검증/3차 피드백)는 누적은 하되,
+              //  buildStreamAiMsgs(showInternal)에서 기본 채팅이면 렌더하지 않는다.
               if (d.stage === 1) fullPS.initialAnswers = sortByAgentOrder(d.answers || []);
               else if (d.stage === 2) fullPS.validatedAnswers = sortByAgentOrder(d.answers || []);
               else if (d.stage === 3) {
@@ -1876,19 +2085,36 @@ export default function StudyMate() {
               if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => addNotice(prev));
             },
             onAllComplete: (d) => {
+              if (watchdogTimer) clearTimeout(watchdogTimer);
               streamCompleted = true;
               if (routedTerminal) return; // 라우팅으로 종료 — 기존 답변 렌더 스킵(중복 방지)
               renderAllComplete(d);
             },
             onError: () => { throw new Error('stream error event'); },
-          });
+          }, { signal: streamAbort.signal });
+          if (watchdogTimer) clearTimeout(watchdogTimer);
           if (!streamCompleted && !streamRendered) {
             throw new Error('empty stream');
           }
           pendingDetailParentId.current = null;
           return; // 성공 — 바깥 finally에서 typing 해제
         } catch (streamErr) {
+          if (watchdogTimer) clearTimeout(watchdogTimer);
           const streamErrMessage = String(streamErr?.message || streamErr || '');
+          // watchdog 타임아웃으로 끊은 경우: 무한 loading 대신 안내 메시지로 종료한다.
+          if (watchdogTimedOut && !streamRendered) {
+            setTurnAiMessages([{
+              id: `${userMsg.id}::timeout`,
+              content: '응답 생성이 지연되었습니다. 잠시 후 다시 시도해 주세요.',
+              sender: 'AI',
+              senderName: selectedAgent?.name || 'StudyMate',
+              isError: true,
+              createdAt: new Date().toISOString(),
+              parentId: userMsg.id,
+            }]);
+            pendingDetailParentId.current = null;
+            return;
+          }
           if (
             streamErr?.name === 'AbortError' ||
             streamErrMessage.includes('network error') ||
@@ -2004,7 +2230,7 @@ export default function StudyMate() {
           socraticConfig: res.socraticConfig || socraticConfigOf(res),
         }];
       } else {
-        const blockingStages = buildStageBubbles(res.processSteps, userMsg.id, new Date().toISOString());
+        const blockingStages = buildStageBubbles(res.processSteps, userMsg.id, new Date().toISOString(), { showInternal: isInternalVisibleMode(res.learningMode || res.mode || activeLearningMode) });
         if (blockingStages.length > 0) {
           newMsgs = blockingStages;
         } else if (res.replies && res.replies.length > 0) {
@@ -2396,6 +2622,7 @@ export default function StudyMate() {
                       let agentTheme = { bg: '#F3F4F6', icon: '🤖', tagBg: '#E5E7EB', accent: '#4B5563' };
                       let agentPersonality = '';
                       let agentRole = '';
+                      let agentKnowledge = '';
                       let speakingAgent = null;
 
                       if (!isUser && selectedAgent && selectedAgent.agents) {
@@ -2406,6 +2633,7 @@ export default function StudyMate() {
                           agentPersonality = getAgentPersonality(speakingAgent);
                           agentTheme = getAgentStyleTheme(agentPersonality);
                           agentRole = speakingAgent.role;
+                          agentKnowledge = getAgentKnowledgeLevel(speakingAgent);
                         }
                       }
 
@@ -2418,6 +2646,18 @@ export default function StudyMate() {
                         : (msg.mode || msg.learningMode || 'basic');
                       const msgKey = msg.id ?? `${msg.parentId}-${msg.badgeKey}-${idx}`;
                       const showThisMode = !isUser && openModeMsgId === msgKey;
+
+                      // 방어적 필터: 기본 채팅(평가/피드백 모드가 아닐 때)에서 내부 evaluator 문구가
+                      //  섞여 들어오면 사용자에게 노출하지 않는다. (라우팅/경고 버블은 예외)
+                      const isStructured = hasSimulationPayload || debatePayload || socraticPayload;
+                      if (!isUser && !isStructured && !msg.routeAction && !msg.isNotice
+                          && !isInternalVisibleMode(msgMode) && looksInternalLeak(msg.content)) {
+                        return null;
+                      }
+                      // 라우팅/인사/욕설 등 direct reply는 마크다운 제거 평문, 그 외 AI 답변은 RichText 렌더.
+                      const isPlainReply = !!msg.routeAction || !!msg.isNotice;
+                      // 항상 보이는 메타 배지: 모드 · 말투(성격) · 학습자 수준
+                      const showMetaBadges = !isUser && !msg.routeAction && !msg.isNotice;
 
                       return (
                         <div key={msg.id ?? `${msg.parentId}-${msg.badgeKey}-${idx}`} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
@@ -2433,9 +2673,9 @@ export default function StudyMate() {
                               </span>
                             )}
                             <span style={{ fontWeight: '700' }}>{senderName}</span>
-                            {showThisMode && (
+                            {showMetaBadges && (
                               <span style={{ fontSize: '10px', padding: '1px 7px', borderRadius: '999px', backgroundColor: `${agentColor.border}1A`, color: agentColor.text, fontWeight: 700, whiteSpace: 'nowrap' }}>
-                                이 답변: {modeLabelOf(msgMode)} 모드
+                                {modeLabelOf(msgMode)} 모드
                               </span>
                             )}
                             {!isUser && msg.badge && (
@@ -2448,9 +2688,14 @@ export default function StudyMate() {
                               <span style={{ fontSize: '10px', color: '#9ca3af' }}>→ {msg.stageTo}</span>
                             )}
                             {!isUser && agentRole && <span style={{ fontSize: '10px', color: '#9ca3af' }}>({agentRole})</span>}
-                            {!isUser && agentPersonality && (
+                            {showMetaBadges && agentPersonality && (
                               <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '4px', backgroundColor: agentTheme.tagBg, color: agentTheme.accent, fontWeight: 'bold' }}>
                                 {agentPersonality}
+                              </span>
+                            )}
+                            {showMetaBadges && agentKnowledge && (
+                              <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '4px', backgroundColor: 'rgba(96,201,90,0.10)', color: 'var(--color-primary)', fontWeight: 'bold' }}>
+                                {agentKnowledge}
                               </span>
                             )}
                           </div>
@@ -2482,7 +2727,7 @@ export default function StudyMate() {
                             </div>
                           ) : (
                             <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none', borderLeft: isUser ? undefined : `4px solid ${agentColor.border}` }}>
-                              {msg.content}
+                              {isUser || isPlainReply ? (isPlainReply ? stripMarkdown(msg.content) : msg.content) : <RichText text={msg.content} />}
                             </div>
                           )}
                           {/* 검증 답변 말풍선엔 사용한 웹 근거 출처 칩을 단다 */}
@@ -2861,89 +3106,94 @@ export default function StudyMate() {
                   />
                 </div>
 
-                {/* 학습 진행 모드 선택 */}
+                {/* 학습 방식 선택 — 질문 하나를 4가지 방식으로 */}
                 <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)', marginBottom: '6px' }}>
-                    학습 진행 모드
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)', marginBottom: '2px' }}>
+                    학습 방식 선택
                   </label>
+                  <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '8px' }}>
+                    같은 질문도 학습 방식에 따라 완전히 다르게 배울 수 있습니다.
+                  </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {[
-                      { value: 'basic', title: '기본 채팅 모드', desc: '각 AI가 바로 답변합니다.' },
-                      { value: 'socratic', title: '소크라테스 모드', desc: '질문·힌트·오개념 추적으로 사용자가 스스로 답을 찾게 만드는 문답형 학습을 진행합니다.' },
-                      { value: 'debate', title: '토론 모드', desc: '논제를 기준으로 반대측, 찬성측, 중립측이 주장·반박·판정을 수행하는 구조화 토론을 진행합니다.' },
-                      { value: 'simulation', title: '상황극 모드', desc: '개념이 작동하는 가상 상황 속에서 역할을 맡고, 선택과 결과를 통해 학습합니다.' },
-                    ].map((opt) => (
-                      <label
-                        key={opt.value}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'flex-start',
-                          gap: '10px',
-                          padding: '10px 12px',
-                          borderRadius: '10px',
-                          border: `1px solid ${learningMode === opt.value ? 'var(--color-primary)' : 'var(--color-border)'}`,
-                          backgroundColor: learningMode === opt.value ? 'var(--color-primary-soft, rgba(99,102,241,0.08))' : 'transparent',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <input
-                          type="radio"
-                          name="learningMode"
-                          value={opt.value}
-                          checked={learningMode === opt.value}
-                          onChange={() => setLearningMode(opt.value)}
-                          style={{ marginTop: '3px' }}
-                        />
-                        <div>
-                          <div style={{ fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)' }}>{opt.title}</div>
-                          <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '2px' }}>{opt.desc}</div>
-                        </div>
-                      </label>
-                    ))}
+                      { value: 'basic', title: '기본 설명', desc: '개념을 빠르게 정리하고 예시와 함께 설명합니다.', result: '개념 정리 · 예시 · 핵심 요약' },
+                      { value: 'socratic', title: '소크라테스', desc: '정답을 바로 주지 않고 질문과 힌트로 이해를 유도합니다.', result: '단계별 질문 · 힌트 · 오개념 확인' },
+                      { value: 'debate', title: '토론', desc: '장점, 단점, 반론을 비교하며 사고를 넓힙니다.', result: '주장 · 근거 · 반박 · 결론' },
+                      { value: 'simulation', title: '상황극', desc: '현실 상황 속 역할을 맡아 개념을 체험합니다.', result: '시나리오 · 선택지 · 피드백' },
+                    ].map((opt) => {
+                      const active = learningMode === opt.value;
+                      return (
+                        <label
+                          key={opt.value}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: '10px',
+                            padding: '10px 12px',
+                            borderRadius: '10px',
+                            border: `${active ? '2px' : '1px'} solid ${active ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                            backgroundColor: active ? 'var(--color-primary-soft, rgba(99,102,241,0.08))' : 'transparent',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <input
+                            type="radio"
+                            name="learningMode"
+                            value={opt.value}
+                            checked={active}
+                            onChange={() => setLearningMode(opt.value)}
+                            style={{ marginTop: '3px' }}
+                          />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <div style={{ fontSize: '13px', fontWeight: active ? '800' : '700', color: active ? 'var(--color-primary)' : 'var(--color-text-main)' }}>{opt.title}</div>
+                              {active && (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', fontSize: '11px', fontWeight: 700, color: 'var(--color-primary)' }}>
+                                  <CheckCircle2 size={13} /> 선택됨
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '2px' }}>{opt.desc}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '4px', opacity: 0.85 }}>결과: {opt.result}</div>
+                          </div>
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
+
+                {/* ── 기본 설명 모드 안내 (기본 모드에서만) ── */}
+                {learningMode === 'basic' && (
+                  <div style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: '1px solid var(--color-border)', background: 'rgba(99,102,241,0.04)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>기본 설명 모드</div>
+                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                      AI들이 사용자의 질문을 중심으로 개념을 정리하고, 예시와 핵심 요약을 제공합니다.
+                    </div>
+                  </div>
+                )}
 
                 {/* ── 상황극 설정 (상황극 모드에서만) ── */}
                 {learningMode === 'simulation' && (
                   <div style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: '1px solid var(--color-border)', background: 'rgba(29,78,216,0.04)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>상황극 설정</div>
-                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>상황 속 역할을 맡아 선택하고, 그 결과를 통해 개념·오개념·한계를 체험합니다.</div>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>상황극 모드</div>
+                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>AI가 현실적인 상황을 만들고, 사용자가 선택과 피드백을 통해 개념을 체험하도록 진행합니다.</div>
 
                     <div>
-                      <div style={dbLabelStyle}>상황극 유형</div>
-                      <select value={simulationConfig.scenarioType} onChange={(e) => setSimulationConfig((c) => ({ ...c, scenarioType: e.target.value }))} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
-                        <option value="realistic">현실 상황</option><option value="roleplay">역할극</option><option value="thought_experiment">사고실험</option><option value="branching_event">사건 분기</option><option value="inside_system">시스템 내부 관찰</option><option value="crisis_response">위기 대응</option><option value="historical_social_case">역사/사회 사례</option><option value="lab_scenario">실험실 상황</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <div style={dbLabelStyle}>분야</div>
-                      <select value={simulationConfig.domain} onChange={(e) => setSimulationConfig((c) => ({ ...c, domain: e.target.value }))} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
-                        <option value="auto">자동 판단</option><option value="computer_science">컴퓨터공학</option><option value="mathematics">수학</option><option value="life_science">생명과학</option><option value="psychology">심리학</option><option value="philosophy">철학</option><option value="environmental_engineering">환경공학</option><option value="business_economics">경영/경제</option><option value="other">기타</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <div style={dbLabelStyle}>상호작용 방식</div>
-                      <select value={simulationConfig.interactionStyle} onChange={(e) => setSimulationConfig((c) => ({ ...c, interactionStyle: e.target.value }))} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
-                        <option value="choice_based">선택지 기반</option><option value="roleplay_dialogue">역할극 대화</option><option value="event_progression">사건 진행형</option><option value="cause_effect_trace">원인-결과 추적형</option><option value="system_exploration">내부 시스템 탐험형</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <div style={dbLabelStyle}>난이도</div>
+                      <div style={dbLabelStyle}>상황 유형</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ v: 'easy', t: '쉬움' }, { v: 'normal', t: '보통' }, { v: 'hard', t: '어려움' }, { v: 'advanced', t: '심화' }].map((o) => (
-                          <button type="button" key={o.v} onClick={() => setSimulationConfig((c) => ({ ...c, difficulty: o.v }))} style={dbChipStyle(simulationConfig.difficulty === o.v)}>{o.t}</button>
+                        {[{ v: 'realistic', t: '현실 상황' }, { v: 'roleplay', t: '면접 상황' }, { v: 'lab_scenario', t: '프로젝트 상황' }].map((o) => (
+                          <button type="button" key={o.v} onClick={() => setSimulationConfig((c) => ({ ...c, scenarioType: o.v }))} style={dbChipStyle(simulationConfig.scenarioType === o.v)}>{o.t}</button>
                         ))}
                       </div>
                     </div>
 
                     <div>
-                      <div style={dbLabelStyle}>사용자 역할</div>
-                      <select value={simulationConfig.userRoleMode} onChange={(e) => setSimulationConfig((c) => ({ ...c, userRoleMode: e.target.value }))} style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
-                        <option value="auto">자동 설정</option><option value="decision_maker">의사결정자</option><option value="observer">관찰자</option><option value="analyst">분석가</option><option value="problem_solver">문제 해결자</option><option value="inner_component">내부 구성요소</option><option value="critical_reviewer">비판적 검토자</option>
-                      </select>
+                      <div style={dbLabelStyle}>난이도</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {[{ v: 'easy', t: '쉬움' }, { v: 'normal', t: '보통' }, { v: 'hard', t: '어려움' }].map((o) => (
+                          <button type="button" key={o.v} onClick={() => setSimulationConfig((c) => ({ ...c, difficulty: o.v }))} style={dbChipStyle(simulationConfig.difficulty === o.v)}>{o.t}</button>
+                        ))}
+                      </div>
                     </div>
 
                     <div>
@@ -2952,28 +3202,18 @@ export default function StudyMate() {
                         {[2, 3, 4].map((count) => <button type="button" key={count} onClick={() => setSimulationConfig((c) => ({ ...c, choiceCount: count }))} style={dbChipStyle(Number(simulationConfig.choiceCount) === count)}>{count}개</button>)}
                       </div>
                     </div>
-
-                    <div>
-                      <div style={dbLabelStyle}>포함 요소</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[
-                          { k: 'includeChoices', t: '선택지 포함' }, { k: 'includeConsequences', t: '결과 변화 포함' },
-                          { k: 'includeConceptMapping', t: '개념 연결 포함' }, { k: 'includeMisconceptionTrap', t: '오개념 함정 포함' },
-                          { k: 'includeReflectionQuestion', t: '성찰 질문 포함' }, { k: 'includeNextScenario', t: '다음 시나리오 포함' },
-                        ].map((o) => <button type="button" key={o.k} onClick={() => setSimulationConfig((c) => ({ ...c, [o.k]: !c[o.k] }))} style={dbChipStyle(!!simulationConfig[o.k])}>{o.t}</button>)}
-                      </div>
-                    </div>
                   </div>
                 )}
 
                 {/* ── 토론 설정 (토론 모드에서만) ── */}
                 {learningMode === 'debate' && (
                   <div style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: '1px solid var(--color-border)', background: 'rgba(124,58,237,0.04)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>토론 설정</div>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>토론 모드</div>
+                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>AI들이 하나의 논제를 두고 찬성·반대·중립 관점에서 주장, 반박, 판정을 진행합니다.</div>
 
-                    {/* 논제 설정 방식 */}
+                    {/* 논제 방식 */}
                     <div>
-                      <div style={dbLabelStyle}>논제 설정 방식</div>
+                      <div style={dbLabelStyle}>논제 방식</div>
                       <div style={{ display: 'flex', gap: '8px' }}>
                         {[{ v: 'auto', t: '자동 생성' }, { v: 'manual', t: '직접 입력' }].map((o) => (
                           <button type="button" key={o.v}
@@ -2983,10 +3223,10 @@ export default function StudyMate() {
                       </div>
                     </div>
 
-                    {/* 직접 입력 논제 */}
+                    {/* 직접 입력 논제 (직접 입력 선택 시에만) */}
                     {debateConfig.topicMode === 'manual' && (
                       <div>
-                        <div style={dbLabelStyle}>직접 입력 논제</div>
+                        <div style={dbLabelStyle}>논제 입력</div>
                         <input
                           type="text"
                           value={debateConfig.manualTopic}
@@ -2997,66 +3237,14 @@ export default function StudyMate() {
                       </div>
                     )}
 
-                    {/* 논제 유형 */}
+                    {/* 토론 깊이 */}
                     <div>
-                      <div style={dbLabelStyle}>논제 유형</div>
-                      <select
-                        value={debateConfig.motionType}
-                        onChange={(e) => setDebateConfig((c) => ({ ...c, motionType: e.target.value }))}
-                        style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}
-                      >
-                        <option value="learning_strategy">학습 전략형</option>
-                        <option value="concept_definition">개념 정의형</option>
-                        <option value="tech_choice">기술 선택형</option>
-                        <option value="implementation_design">실무 설계형</option>
-                        <option value="pros_cons">찬반 판단형</option>
-                      </select>
-                    </div>
-
-                    {/* 쟁점 축 */}
-                    <div>
-                      <div style={dbLabelStyle}>쟁점 축</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {['개념정확성', '학습효율', '실무적용', '오개념위험', '유지보수성', '성능/비용', '시험대비'].map((axis) => (
-                          <button type="button" key={axis}
-                            onClick={() => setDebateConfig((c) => ({ ...c, issueAxes: toggleInArray(c.issueAxes, axis) }))}
-                            style={dbChipStyle(debateConfig.issueAxes.includes(axis))}>{axis}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* 토론 강도 */}
-                    <div>
-                      <div style={dbLabelStyle}>토론 강도</div>
+                      <div style={dbLabelStyle}>토론 깊이</div>
                       <div style={{ display: 'flex', gap: '8px' }}>
                         {[{ v: 'light', t: '가볍게' }, { v: 'normal', t: '보통' }, { v: 'deep', t: '깊게' }].map((o) => (
                           <button type="button" key={o.v}
                             onClick={() => setDebateConfig((c) => ({ ...c, debateDepth: o.v }))}
                             style={dbChipStyle(debateConfig.debateDepth === o.v)}>{o.t}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* 포함 요소 */}
-                    <div>
-                      <div style={dbLabelStyle}>포함 요소</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ k: 'includeExamples', t: '예시 포함' }, { k: 'includeCounterexamples', t: '반례 포함' }, { k: 'includeStudyPlan', t: '학습 방향 포함' }].map((o) => (
-                          <button type="button" key={o.k}
-                            onClick={() => setDebateConfig((c) => ({ ...c, [o.k]: !c[o.k] }))}
-                            style={dbChipStyle(!!debateConfig[o.k])}>{o.t}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* 판정 기준 */}
-                    <div>
-                      <div style={dbLabelStyle}>판정 기준</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {['논리성', '근거성', '반박력', '학습가치', '실무성'].map((cr) => (
-                          <button type="button" key={cr}
-                            onClick={() => setDebateConfig((c) => ({ ...c, judgeCriteria: toggleInArray(c.judgeCriteria, cr) }))}
-                            style={dbChipStyle(debateConfig.judgeCriteria.includes(cr))}>{cr}</button>
                         ))}
                       </div>
                     </div>
@@ -3066,28 +3254,14 @@ export default function StudyMate() {
                 {/* ── 소크라테스 설정 (소크라테스 모드에서만) ── */}
                 {learningMode === 'socratic' && (
                   <div style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: '1px solid var(--color-border)', background: 'rgba(14,165,233,0.05)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>소크라테스 설정</div>
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>소크라테스 모드</div>
+                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>AI가 정답을 바로 알려주기보다 질문과 힌트로 사용자의 이해를 유도합니다.</div>
 
-                    {/* A. 학습 목표 */}
-                    <div>
-                      <div style={dbLabelStyle}>학습 목표</div>
-                      <select value={socraticConfig.goal}
-                        onChange={(e) => setSocraticConfig((c) => ({ ...c, goal: e.target.value }))}
-                        style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
-                        <option value="concept_understanding">개념 이해</option>
-                        <option value="misconception_correction">오개념 교정</option>
-                        <option value="exam_prep">시험 대비</option>
-                        <option value="practical_application">실무 적용</option>
-                        <option value="interview_prep">면접 대비</option>
-                        <option value="code_algorithm_reasoning">코드/알고리즘 사고 훈련</option>
-                      </select>
-                    </div>
-
-                    {/* B. 질문 강도 */}
+                    {/* 질문 강도 */}
                     <div>
                       <div style={dbLabelStyle}>질문 강도</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ v: 'gentle', t: '부드럽게' }, { v: 'normal', t: '보통' }, { v: 'strict', t: '엄격하게' }, { v: 'interviewer', t: '면접관처럼' }].map((o) => (
+                        {[{ v: 'gentle', t: '부드럽게' }, { v: 'normal', t: '보통' }, { v: 'strict', t: '집중적으로' }].map((o) => (
                           <button type="button" key={o.v}
                             onClick={() => setSocraticConfig((c) => ({ ...c, questionIntensity: o.v }))}
                             style={dbChipStyle(socraticConfig.questionIntensity === o.v)}>{o.t}</button>
@@ -3095,64 +3269,14 @@ export default function StudyMate() {
                       </div>
                     </div>
 
-                    {/* C. 힌트 방식 */}
+                    {/* 힌트 방식 */}
                     <div>
                       <div style={dbLabelStyle}>힌트 방식</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ v: 'minimal', t: '거의 없음' }, { v: 'step_by_step', t: '단계별 힌트' }, { v: 'example_hint', t: '예시 힌트' }, { v: 'partial_answer_when_stuck', t: '막히면 부분 정답' }].map((o) => (
+                        {[{ v: 'step_by_step', t: '단계별 힌트' }, { v: 'example_hint', t: '예시 힌트' }, { v: 'partial_answer_when_stuck', t: '막히면 일부 공개' }].map((o) => (
                           <button type="button" key={o.v}
                             onClick={() => setSocraticConfig((c) => ({ ...c, hintPolicy: o.v }))}
                             style={dbChipStyle(socraticConfig.hintPolicy === o.v)}>{o.t}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* D. 정답 공개 */}
-                    <div>
-                      <div style={dbLabelStyle}>정답 공개</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ v: 'never', t: '공개 안 함' }, { v: 'final_only', t: '마지막에만' }, { v: 'partial_after_two_failures', t: '2번 틀리면 일부' }, { v: 'full_after_three_stucks', t: '3번 막히면 공개' }].map((o) => (
-                          <button type="button" key={o.v}
-                            onClick={() => setSocraticConfig((c) => ({ ...c, answerRevealPolicy: o.v }))}
-                            style={dbChipStyle(socraticConfig.answerRevealPolicy === o.v)}>{o.t}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* E. 질문 유형 */}
-                    <div>
-                      <div style={dbLabelStyle}>질문 유형</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ v: 'definition', t: '정의' }, { v: 'comparison', t: '비교' }, { v: 'why', t: '이유' }, { v: 'counterexample', t: '반례' }, { v: 'application', t: '적용' }, { v: 'metacognition', t: '메타인지' }, { v: 'code_reasoning', t: '코드 사고' }].map((o) => (
-                          <button type="button" key={o.v}
-                            onClick={() => setSocraticConfig((c) => ({ ...c, questionTypes: toggleInArray(c.questionTypes, o.v) }))}
-                            style={dbChipStyle(socraticConfig.questionTypes.includes(o.v))}>{o.t}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* F. 진행 방식 */}
-                    <div>
-                      <div style={dbLabelStyle}>진행 방식</div>
-                      <select value={socraticConfig.feedbackStyle === 'concept_check' ? (socraticConfig._flow || 'short_qa') : 'short_qa'}
-                        onChange={(e) => setSocraticConfig((c) => ({ ...c, _flow: e.target.value }))}
-                        style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}>
-                        <option value="short_qa">짧은 문답형</option>
-                        <option value="deep_step">단계별 깊이 탐색</option>
-                        <option value="exam_guided">시험 문제 유도형</option>
-                        <option value="practical_case">실무 사례 유도형</option>
-                        <option value="interview_pressure">면접 압박형</option>
-                      </select>
-                    </div>
-
-                    {/* G. 포함 요소 */}
-                    <div>
-                      <div style={dbLabelStyle}>포함 요소</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ k: 'includeExamples', t: '예시 포함' }, { k: 'includeCounterexamples', t: '반례 포함' }, { k: 'includeFinalSummary', t: '마지막 요약' }, { k: 'includeNextStudyPlan', t: '다음 학습 방향' }, { k: 'trackMisconceptions', t: '오개념 추적' }].map((o) => (
-                          <button type="button" key={o.k}
-                            onClick={() => setSocraticConfig((c) => ({ ...c, [o.k]: !c[o.k] }))}
-                            style={dbChipStyle(!!socraticConfig[o.k])}>{o.t}</button>
                         ))}
                       </div>
                     </div>
@@ -3177,119 +3301,9 @@ export default function StudyMate() {
                     }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                        <h4 style={{ margin: 0, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: '700' }}>
-                          <Bot size={16} /> AI 학습메이트 #{index + 1}
-                        </h4>
-
-                        {/* 추천 에이전트 생성 버튼 모음 */}
-                        <div style={{ display: 'flex', gap: '4px', marginLeft: '4px', flexWrap: 'wrap' }}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const list = [...createdAgents];
-                              list[index] = {
-                                ...list[index],
-                                name: '김민성',
-                                role: '명문대 교수',
-                                personality: '전문적',
-                                knowledgeLevel: '박사 수준'
-                              };
-                              setCreatedAgents(list);
-                            }}
-                            style={{
-                              padding: '2px 8px',
-                              borderRadius: '12px',
-                              border: '1px solid rgba(59, 130, 246, 0.2)',
-                              backgroundColor: 'rgba(59, 130, 246, 0.05)',
-                              fontSize: '10px',
-                              fontWeight: '600',
-                              color: '#2563EB',
-                              cursor: 'pointer'
-                            }}
-                          >
-                            🎓 전문교수
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const list = [...createdAgents];
-                              list[index] = {
-                                ...list[index],
-                                name: '둘리',
-                                role: '친한친구',
-                                personality: '친근함',
-                                knowledgeLevel: '입문 수준'
-                              };
-                              setCreatedAgents(list);
-                            }}
-                            style={{
-                              padding: '2px 8px',
-                              borderRadius: '12px',
-                              border: '1px solid rgba(249, 115, 22, 0.2)',
-                              backgroundColor: 'rgba(249, 115, 22, 0.05)',
-                              fontSize: '10px',
-                              fontWeight: '600',
-                              color: '#EA580C',
-                              cursor: 'pointer'
-                            }}
-                          >
-                            ✨ 친근한친구
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const list = [...createdAgents];
-                              list[index] = {
-                                ...list[index],
-                                name: '장동탁',
-                                role: '4차원 강사',
-                                personality: '독특함',
-                                knowledgeLevel: '전문가 수준'
-                              };
-                              setCreatedAgents(list);
-                            }}
-                            style={{
-                              padding: '2px 8px',
-                              borderRadius: '12px',
-                              border: '1px solid rgba(139, 92, 246, 0.2)',
-                              backgroundColor: 'rgba(139, 92, 246, 0.05)',
-                              fontSize: '10px',
-                              fontWeight: '600',
-                              color: '#7C3AED',
-                              cursor: 'pointer'
-                            }}
-                          >
-                            👽 독창적강사
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const list = [...createdAgents];
-                              list[index] = {
-                                ...list[index],
-                                name: '김영환',
-                                role: '까칠한 스승',
-                                personality: '냉소적',
-                                knowledgeLevel: '학사 수준'
-                              };
-                              setCreatedAgents(list);
-                            }}
-                            style={{
-                              padding: '2px 8px',
-                              borderRadius: '12px',
-                              border: '1px solid rgba(244, 63, 94, 0.2)',
-                              backgroundColor: 'rgba(244, 63, 94, 0.05)',
-                              fontSize: '10px',
-                              fontWeight: '600',
-                              color: '#E11D48',
-                              cursor: 'pointer'
-                            }}
-                          >
-                            😈 냉철한멘토
-                          </button>
-                        </div>
-                      </div>
+                      <h4 style={{ margin: 0, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: '700' }}>
+                        <Bot size={16} /> AI 학습메이트 #{index + 1}
+                      </h4>
                       {createdAgents.length > 1 && (
                         <button
                           type="button"
@@ -3313,58 +3327,81 @@ export default function StudyMate() {
                       )}
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>이름</label>
-                        <input
-                          type="text"
-                          className="input-field"
-                          maxLength="30"
-                          required
-                          value={agent.name}
-                          onChange={(e) => {
-                            const list = [...createdAgents];
-                            list[index].name = e.target.value;
-                            setCreatedAgents(list);
-                          }}
-                          placeholder="예: 김영한"
-                        />
+                    {/* 학습메이트 유형 — 역할 개념. 선택된 하나만 active 강조 */}
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '6px' }}>학습메이트 유형</label>
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        {MATE_TYPES.map((t) => {
+                          const selected = agent.agentPreset === t.key;
+                          return (
+                            <button
+                              type="button"
+                              key={t.key}
+                              onClick={() => {
+                                const list = [...createdAgents];
+                                // 유형 선택은 payload의 role만 내부 매핑한다(톤/수준/이름은 보존).
+                                list[index] = { ...list[index], role: t.role, agentPreset: t.key };
+                                setCreatedAgents(list);
+                              }}
+                              style={{
+                                padding: '4px 10px',
+                                borderRadius: '999px',
+                                border: `1px solid ${selected ? t.color : 'var(--color-border)'}`,
+                                backgroundColor: selected ? t.color : 'transparent',
+                                fontSize: '11px',
+                                fontWeight: selected ? '800' : '600',
+                                color: selected ? '#fff' : t.color,
+                                cursor: 'pointer'
+                              }}
+                            >
+                              {t.icon} {t.key}
+                            </button>
+                          );
+                        })}
                       </div>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>역할</label>
-                        <input
-                          type="text"
-                          className="input-field"
-                          maxLength="20"
-                          required
-                          value={agent.role}
-                          onChange={(e) => {
-                            const list = [...createdAgents];
-                            list[index].role = e.target.value;
-                            setCreatedAgents(list);
-                          }}
-                          placeholder="예: 자바 전공교수"
-                        />
+                      <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '6px', minHeight: '15px' }}>
+                        {(MATE_TYPES.find((t) => t.key === agent.agentPreset) || {}).desc || '도와줄 역할을 하나 선택하세요.'}
                       </div>
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>이름</label>
+                      <input
+                        type="text"
+                        className="input-field"
+                        maxLength="30"
+                        required
+                        value={agent.name}
+                        onChange={(e) => {
+                          const list = [...createdAgents];
+                          list[index].name = e.target.value;
+                          setCreatedAgents(list);
+                        }}
+                        placeholder="예: 김영한"
+                      />
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                       <div>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>성격/말투</label>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>답변 톤</label>
                         <select
                           className="input-field"
                           value={agent.personality}
                           onChange={(e) => {
                             const list = [...createdAgents];
-                            list[index].personality = e.target.value;
+                            // 답변 톤(personality)만 변경. 역할/유형은 학습메이트 유형에서 별도 관리한다.
+                            list[index] = { ...list[index], personality: e.target.value };
                             setCreatedAgents(list);
                           }}
                         >
-                          {PERSONALITY_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                          {TONE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                         </select>
+                        <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '4px' }}>
+                          AI가 어떤 말투로 설명할지 정합니다.
+                        </div>
                       </div>
                       <div>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>지식수준</label>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>학습자 수준</label>
                         <select
                           className="input-field"
                           value={agent.knowledgeLevel}
@@ -3376,11 +3413,17 @@ export default function StudyMate() {
                         >
                           {KNOWLEDGE_LEVEL_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
                         </select>
+                        <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '4px' }}>
+                          설명 깊이와 용어 난이도를 사용자의 수준에 맞춥니다.
+                        </div>
                       </div>
                     </div>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>사용자 추가 요구사항</label>
+                      <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>추가 요청</label>
+                      <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginBottom: '6px' }}>
+                        답변에 꼭 반영하고 싶은 조건이 있으면 적어주세요.
+                      </div>
                       <textarea
                         className="input-field"
                         style={{ height: '50px', paddingTop: '6px', resize: 'none' }}
@@ -3391,8 +3434,37 @@ export default function StudyMate() {
                           list[index].customInstruction = e.target.value;
                           setCreatedAgents(list);
                         }}
-                        placeholder="예: 원어민처럼 영어로만 답변해줘"
+                        placeholder="예: 코드 예시를 포함해줘 / 마지막에 3줄 요약해줘 / 영어 용어는 한글 뜻도 같이 알려줘"
                       />
+                      {/* 추천 요청 칩 — 클릭 시 입력창 뒤에 자연스럽게 추가(중복 방지) */}
+                      <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--color-text-muted)', margin: '8px 0 4px' }}>추천 요청</div>
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        {REQUEST_GUIDE_CHIPS.map((chip) => (
+                          <button
+                            type="button"
+                            key={chip.label}
+                            onClick={() => {
+                              const list = [...createdAgents];
+                              const cur = String(list[index].customInstruction || '').trim();
+                              if (cur.includes(chip.text)) return; // 이미 포함되어 있으면 중복 추가 안 함
+                              list[index].customInstruction = cur ? `${cur} ${chip.text}` : chip.text;
+                              setCreatedAgents(list);
+                            }}
+                            style={{
+                              padding: '3px 9px',
+                              borderRadius: '999px',
+                              border: '1px solid var(--color-border)',
+                              background: 'transparent',
+                              fontSize: '11px',
+                              fontWeight: '600',
+                              color: 'var(--color-text-muted)',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            + {chip.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -3483,6 +3555,61 @@ export default function StudyMate() {
                   {getDisplayRoomTitle(selectedAgent)}
                 </p>
               </div>
+
+              {/* 방 전체 학습 방식(모드) — 에이전트 카드보다 위, 연한 색 카드로 표시 */}
+              {(() => {
+                const mode = buildRoomModeInfo(selectedAgent);
+                return (
+                  <div style={{ padding: '0 4px' }}>
+                    <h4 style={{ margin: '0 0 8px 0', fontSize: '15px', fontWeight: '700', color: 'var(--color-text-main)' }}>
+                      학습 방식
+                    </h4>
+                    <div style={{
+                      border: `1px solid ${mode.color}33`,
+                      borderLeft: `4px solid ${mode.color}`,
+                      borderRadius: '12px',
+                      padding: '14px 16px',
+                      background: `${mode.color}0D`,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{
+                          fontSize: '12px', fontWeight: '800', color: '#fff',
+                          background: mode.color, padding: '3px 10px', borderRadius: '999px'
+                        }}>
+                          {mode.label}
+                        </span>
+                        {mode.badge && (
+                          <span style={{
+                            fontSize: '11px', fontWeight: '700', color: mode.color,
+                            background: `${mode.color}1A`, padding: '3px 10px', borderRadius: '999px'
+                          }}>
+                            {mode.badge}
+                          </span>
+                        )}
+                      </div>
+                      <p style={{ margin: 0, fontSize: '12.5px', lineHeight: 1.5, color: 'var(--color-text-muted)' }}>
+                        {mode.desc}
+                      </p>
+                      {mode.rows.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '2px' }}>
+                          {mode.rows.map((r) => (
+                            <span key={r.k} style={{
+                              fontSize: '11px', fontWeight: '600', color: 'var(--color-text-main)',
+                              background: '#FFFFFF', border: '1px solid var(--color-border)',
+                              padding: '3px 9px', borderRadius: '8px'
+                            }}>
+                              <span style={{ color: 'var(--color-text-muted)' }}>{r.k}</span>{' '}{r.v}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 {(selectedAgent.agents && selectedAgent.agents.length > 0 ? selectedAgent.agents : [selectedAgent]).map((ag, idx) => {

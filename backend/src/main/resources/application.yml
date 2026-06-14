@@ -45,6 +45,9 @@ ai:
     base-url: ${AI_INTENT_ROUTER_BASE_URL:${FASTAPI_BASE_URL:http://localhost:8000}}
     timeout-ms: ${AI_INTENT_ROUTER_TIMEOUT_MS:6000}
     path: ${AI_INTENT_ROUTER_PATH:/api/ai/intent/route}
+    # ai07 라우터가 비활성/장애(미배포 404)일 때 EC2 로컬 결정적 분류기로 폴백:
+    #   인사/자기소개/잡담→DIRECT_REPLY, 욕설/공격성→BLOCK, 그 외 학습질문→PROCEED.
+    local-fallback-enabled: ${AI_INTENT_ROUTER_LOCAL_FALLBACK_ENABLED:true}
 
 cloud:
   aws:

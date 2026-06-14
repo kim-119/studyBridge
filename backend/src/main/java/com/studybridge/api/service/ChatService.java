@@ -538,6 +538,9 @@ public class ChatService {
                         Map<String, Object> baseBody, SseEmitter emitter) {
                 long stage1Timeout = envSeconds("AI_BASIC_STAGE1_TIMEOUT_SECONDS", 30);
                 long stageNTimeout = envSeconds("AI_BASIC_STAGEN_TIMEOUT_SECONDS", 60);
+                // 기본 채팅은 "선택된 에이전트의 최종 답변"만 보여준다는 정책상, 내부 검증(2차)/상호 피드백(3차)은
+                //  기본 비활성이다. (켜더라도 React는 visible=false phase로 받아 기본 UI에 노출하지 않는다)
+                boolean internalStagesEnabled = envBool("AI_BASIC_INTERNAL_STAGES_ENABLED", false);
 
                 String question = request.getMessage();
                 // 다시 생성 제어: forceRegenerate 또는 attempt>1 이면 cache 우회 + 변형 지시를 프롬프트에 덧붙인다.
@@ -576,11 +579,16 @@ public class ChatService {
                                                 fb.put("displayOrder", 1);
                                                 fb.put("stage", 1);
                                                 initialAnswers.add(fb);
-                                                emitStage(emitter, 1, "primary", "FIRST_DRAFT", "answers", initialAnswers);
+                                                emitStage(emitter, 1, "primary", "FIRST_DRAFT", "answers", initialAnswers, true);
                                                 return Mono.<List<Map<String, Object>>>empty();
                                         }
                                         initialAnswers.addAll(primaryRows);
-                                        emitStage(emitter, 1, "primary", "FIRST_DRAFT", "answers", initialAnswers);
+                                        emitStage(emitter, 1, "primary", "FIRST_DRAFT", "answers", initialAnswers, true);
+
+                                        if (!internalStagesEnabled) {
+                                                // 기본 채팅 정책: 1차(최종) 답변만 노출하고 종료. 내부 검증/피드백은 생성하지 않는다.
+                                                return Mono.<List<Map<String, Object>>>empty();
+                                        }
 
                                         // 1차 답변(들)을 에이전트명과 함께 묶어 2·3차 프롬프트의 검토 대상으로 넣는다.
                                         String primaryContext = labeledAnswers(primaryRows);
@@ -599,7 +607,7 @@ public class ChatService {
                                                         .flatMap(verifyRows -> {
                                                                 if (!verifyRows.isEmpty()) {
                                                                         validatedAnswers.addAll(verifyRows);
-                                                                        emitStage(emitter, 2, "verification", "VALIDATION", "answers", validatedAnswers);
+                                                                        emitStage(emitter, 2, "verification", "VALIDATION", "answers", validatedAnswers, false);
                                                                 }
                                                                 String verifyContext = labeledAnswers(verifyRows);
                                                                 // 3차(feedback): 1차·2차를 참고한 에이전트 간 상호 피드백(동의/반박/추가관점)
@@ -618,7 +626,7 @@ public class ChatService {
                                                                                 .doOnNext(fbRows -> {
                                                                                         if (!fbRows.isEmpty()) {
                                                                                                 peerFeedback.addAll(fbRows);
-                                                                                                emitStage(emitter, 3, "feedback", "PEER_FEEDBACK", "feedbacks", peerFeedback);
+                                                                                                emitStage(emitter, 3, "feedback", "PEER_FEEDBACK", "feedbacks", peerFeedback, false);
                                                                                         }
                                                                                 })
                                                                                 .map(fbRows -> initialAnswers);
@@ -822,12 +830,15 @@ public class ChatService {
         // stage_complete 이벤트를 표준 형태로 emit한다. payloadKey는 answers(1·2차)/feedbacks(3차).
         //  phase(primary/verification/feedback)와 stage(1/2/3)를 함께 실어 프론트가 단계를 구분한다.
         private void emitStage(SseEmitter emitter, int stage, String phase, String stageType, String payloadKey,
-                        List<Map<String, Object>> rows) {
+                        List<Map<String, Object>> rows, boolean visible) {
                 Map<String, Object> data = new LinkedHashMap<>();
                 data.put("type", "stage_complete");
                 data.put("phase", phase);
                 data.put("stage", stage);
                 data.put("stageType", stageType);
+                // visible/uiPhase: 기본 UI 노출 여부 메타데이터. 1차=ANSWER(노출), 2·3차=내부검증/피어피드백(숨김).
+                data.put("visible", visible);
+                data.put("uiPhase", visible ? "ANSWER" : (stage == 2 ? "INTERNAL_VALIDATION" : "PEER_FEEDBACK"));
                 data.put(payloadKey, rows);
                 safeSend(emitter, "stage_complete", data);
         }
@@ -1111,6 +1122,15 @@ public class ChatService {
                         return envSeconds("AI_DEBATE_TIMEOUT_SECONDS", 300);
                 }
                 return envSeconds("AI_DEFAULT_TIMEOUT_SECONDS", 900);
+        }
+
+        private boolean envBool(String key, boolean defaultValue) {
+                String v = System.getenv(key);
+                if (v == null || v.isBlank()) {
+                        return defaultValue;
+                }
+                String t = v.trim().toLowerCase();
+                return t.equals("1") || t.equals("true") || t.equals("yes") || t.equals("on");
         }
 
         private long envSeconds(String key, long defaultValue) {
