@@ -66,3 +66,14 @@ try:
 except Exception as e:
     import logging
     logging.getLogger(__name__).warning("review_ai 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 자료보관함 통합 계약 endpoint
+# (자료 자동 분류 /api/ai/material-classify, 오답노트 유사문제/AI 해설 /api/ai/review-note/*)
+try:
+    from app.api.review_note_routes import router as review_note_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/material-classify" not in paths:
+        app.include_router(review_note_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("review_note 라우터 로드 실패 (계속 기동): %s", e)
