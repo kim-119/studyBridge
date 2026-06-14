@@ -348,6 +348,10 @@ export const agentService = {
       else if (event === 'socratic_step') handlers.onSocraticStep?.(data);
       else if (event === 'socratic_answer') handlers.onSocraticAnswer?.(data);
       else if (event === 'simulation_stage') handlers.onSimulationStage?.(data);
+      // Intent Router 라우팅 이벤트 (DIRECT_REPLY/BLOCK/CLARIFY/QUIZ 등)
+      else if (event === 'route_message') handlers.onRouteMessage?.(data);
+      else if (event === 'route_notice') handlers.onRouteNotice?.(data);
+      else if (event === 'route_pipeline') handlers.onRoutePipeline?.(data);
       else if (event === 'all_complete') handlers.onAllComplete?.(data);
       else if (event === 'error') handlers.onError?.(data);
     };
@@ -1317,6 +1321,14 @@ export const reviewNoteService = {
   // 오답노트 삭제(서버에서 연동 Material/S3까지 함께 정리)
   deleteReviewNote: async (id) => {
     const res = await api.delete(`/api/review-notes/${id}`);
+    return res.data;
+  },
+};
+
+// AI 학습메이트(질문 중심) — 같은 질문 4가지 모드 + 빠른 조정. 기존 멀티에이전트 채팅 API와 분리.
+export const learningMateService = {
+  chat: async (payload) => {
+    const res = await api.post('/api/learning-mate/chat', payload, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
 };

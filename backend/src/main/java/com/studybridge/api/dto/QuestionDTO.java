@@ -41,5 +41,9 @@ public class QuestionDTO {
         private Long elapsedMs;
         private Boolean usedFallback;
         private Boolean cacheHit;
+        // Intent Router 라우팅 결과 (nullable, additive). routeReason은 사용자 비노출이라 내려보내지 않는다.
+        private String routeAction;        // DIRECT_REPLY/WARN/BLOCK/CLARIFY/QUIZ_PIPELINE/SUMMARY_PIPELINE/ROADMAP_PIPELINE 등
+        private String routeMessage;       // 터미널/경고 시 사용자에게 보여줄 문구
+        private Object pipeline;           // QUIZ/SUMMARY/ROADMAP 내부 실행 결과 페이로드
     }
 }

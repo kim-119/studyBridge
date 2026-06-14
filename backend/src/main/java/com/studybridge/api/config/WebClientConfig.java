@@ -22,6 +22,14 @@ public class WebClientConfig {
     @Value("${ai.server.fastapi.base-url:http://localhost:8000}")
     private String fastApiBaseUrl;
 
+    // Intent Router 베이스 URL. 기본값은 기존 FastAPI 베이스(EC2에선 tunnel-proxy host.docker.internal:18001).
+    @Value("${ai.intent-router.base-url:${ai.server.fastapi.base-url:http://localhost:8000}}")
+    private String intentRouterBaseUrl;
+
+    // Intent Router 호출은 빠른 분기 판단이므로 짧은 응답 타임아웃(ms)을 둔다.
+    @Value("${ai.intent-router.timeout-ms:6000}")
+    private long intentRouterTimeoutMs;
+
     // 하드 상한(connector 레벨). 소크라테스/토론 모드는 오래 걸리므로 충분히 크게 둔다.
     // 실제 요청별 제한은 ChatService의 block(Duration) / per-request responseTimeout로 모드별 제어한다.
     private static final int CONNECT_TIMEOUT_MS = 5000;
@@ -53,6 +61,27 @@ public class WebClientConfig {
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .exchangeStrategies(exchangeStrategies)
+                .build();
+    }
+
+    /**
+     * Intent Router 전용 WebClient. 짧은 connect/response 타임아웃(분기 판단용).
+     * 실제 요청별 상한은 IntentRouterService의 block(timeoutMs)로 한 번 더 제어한다.
+     */
+    @Bean
+    public WebClient intentRouterWebClient(WebClient.Builder builder) {
+        int responseTimeoutMs = (int) Math.max(1000, intentRouterTimeoutMs);
+        HttpClient httpClient = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, CONNECT_TIMEOUT_MS)
+                .responseTimeout(Duration.ofMillis(responseTimeoutMs))
+                .doOnConnected(conn -> conn
+                        .addHandlerLast(new ReadTimeoutHandler(responseTimeoutMs, TimeUnit.MILLISECONDS))
+                        .addHandlerLast(new WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)));
+
+        return builder
+                .baseUrl(intentRouterBaseUrl)
+                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .build();
     }
 }

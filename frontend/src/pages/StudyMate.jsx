@@ -1570,6 +1570,8 @@ export default function StudyMate() {
         const ts = new Date().toISOString();
         // 일반 단계 누적
         const fullPS = { initialAnswers: [], validatedAnswers: [], peerFeedback: [], personalityValidationSummary: [] };
+        // Intent Router: terminal/파이프라인으로 종료되면 기존 답변 렌더를 스킵하기 위한 플래그
+        let routedTerminal = false;
         // 토론 단계 누적 (stageType+side 기준 upsert, 도착 순서 유지) + 사용된 설정
         const debateStageMap = new Map();
         let debateConfigAcc = null;
@@ -1824,8 +1826,58 @@ export default function StudyMate() {
                 socraticConfig: socraticConfigAcc,
               }, userMsg.id, ts)]);
             },
+            // ── Intent Router 라우팅 이벤트 ──
+            // terminal(DIRECT_REPLY/BLOCK/CLARIFY): 라우터 메시지 한 건만 표시하고 기존 답변 렌더는 스킵.
+            onRouteMessage: (d) => {
+              if (!d) return;
+              routedTerminal = true;
+              streamRendered = true;
+              setTurnAiMessages([{
+                id: `${userMsg.id}::route`,
+                content: d.message || '',
+                sender: 'AI',
+                senderName: selectedAgent?.name || 'StudyMate',
+                routeAction: d.routeAction || null,
+                createdAt: new Date().toISOString(),
+                parentId: userMsg.id,
+              }]);
+            },
+            // QUIZ/SUMMARY/ROADMAP 파이프라인 결과: 안내 메시지 + 페이로드 표시.
+            onRoutePipeline: (d) => {
+              if (!d) return;
+              routedTerminal = true;
+              streamRendered = true;
+              setTurnAiMessages([{
+                id: `${userMsg.id}::route-pipeline`,
+                content: d.message || '요청을 처리했습니다.',
+                sender: 'AI',
+                senderName: selectedAgent?.name || 'StudyMate',
+                routeAction: d.routeAction || null,
+                pipeline: d.pipeline || null,
+                createdAt: new Date().toISOString(),
+                parentId: userMsg.id,
+              }]);
+            },
+            // WARN: 경고를 별도 버블(다른 parentId)로 올려 이후 학습 답변 렌더에 덮이지 않게 한다(중복 append 아님).
+            onRouteNotice: (d) => {
+              if (!d || !d.message) return;
+              const notice = {
+                id: `${userMsg.id}::warn-notice`,
+                content: d.message,
+                sender: 'AI',
+                senderName: selectedAgent?.name || 'StudyMate',
+                routeAction: 'WARN',
+                isNotice: true,
+                createdAt: new Date().toISOString(),
+                parentId: `${userMsg.id}::warn`,
+              };
+              const addNotice = (list) => ((list || []).some((m) => m.id === notice.id) ? list : [...(list || []), notice]);
+              setRoomHistories((prev) => ({ ...prev, [agentId]: addNotice(prev[agentId]) }));
+              if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => addNotice(prev));
+            },
             onAllComplete: (d) => {
               streamCompleted = true;
+              if (routedTerminal) return; // 라우팅으로 종료 — 기존 답변 렌더 스킵(중복 방지)
               renderAllComplete(d);
             },
             onError: () => { throw new Error('stream error event'); },

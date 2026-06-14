@@ -8,6 +8,7 @@ import KeywordDefineModal from '../components/KeywordDefineModal';
 import ReviewNoteArchiveDetail from '../components/review-note/ReviewNoteArchiveDetail';
 import ReviewNoteLearningEntry from '../components/review-note/ReviewNoteLearningEntry';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
+import { cleanLearningOrNull, filterLearningList } from '../utils/learningContent';
 
 // F. 빠른 체감 — 실제 streaming 전, 단계별 진행 문구 + skeleton (멀티에이전트 SSE와 무관, 자료보관함 전용)
 const ANALYZE_STEPS = ['텍스트 추출 중', '요약 생성 중', '핵심 내용 생성 중', '세부 핵심 내용 생성 중', '키워드 생성 중', '로드맵 생성 중', '마무리 중'];
@@ -215,7 +216,9 @@ export default function ArchiveDetail() {
   const getSummaryKeywords = (data) => {
     if (!data) return [];
     const envelope = getSummaryEnvelope(data);
-    return removeDummyKeywords(data.keywords?.length ? data.keywords : (data.key_points?.length ? data.key_points : (envelope.keywords || envelope.key_points || [])));
+    const deduped = removeDummyKeywords(data.keywords?.length ? data.keywords : (data.key_points?.length ? data.key_points : (envelope.keywords || envelope.key_points || [])));
+    // 표시 전 2차 방어: 날짜/교수명/코스 제목 키워드 칩 제거
+    return filterLearningList(deduped, material?.title);
   };
 
   // 요약 강화: 학습 포인트 / 실습·적용 포인트 / AI 학습 질문 (DTO 또는 envelope에서)
@@ -363,7 +366,7 @@ export default function ArchiveDetail() {
       setIsAddingStudyLog(true);
       const overview = getSummaryOverview(summaryData);
       const kws = getSummaryKeywords(summaryData);
-      const keywords = (kws.length ? kws : removeDummyKeywords(material?.keywords)).map(sanitizeMarkdownText);
+      const keywords = filterLearningList((kws.length ? kws : removeDummyKeywords(material?.keywords)).map(sanitizeMarkdownText), material?.title);
       const core = getCoreContents(summaryData);
       const detailed = getDetailedCoreContents(summaryData);
       const questions = sanitizeList(getSummaryStringList(summaryData, 'studyQuestions'));
@@ -396,6 +399,8 @@ export default function ArchiveDetail() {
     const root = parsed?.roadmap || parsed?.roadmapData?.roadmap || parsed?.roadmapData || parsed || {};
     const weeks = root.weeks || root.steps || parsed?.weeks || parsed?.steps || [];
     if (!Array.isArray(weeks)) return [];
+    // 표시 전 2차 방어: PDF 표지 날짜/교수명/코스 제목이 섞인 항목은 정제/숨김. 자료 제목을 코스 제목 기준으로 사용.
+    const courseTitle = material?.title || null;
     return weeks.map((week, idx) => {
       const rawTasks = Array.isArray(week.tasks) ? week.tasks : [];
       // 신(新) 84일 구조: week.days[]가 있으면 일자별로 정규화
@@ -404,26 +409,26 @@ export default function ArchiveDetail() {
       const days = rawDays.map((day, dayIdx) => ({
         dayIndex: Number(day.day_index || dayIdx + 1),
         dayLabel: day.day_label || `${dayIdx + 1}일차`,
-        title: day.title || `${dayIdx + 1}일차 학습`,
-        objective: day.objective || '',
-        coreConcepts: Array.isArray(day.core_concepts) ? day.core_concepts : [],
-        tasks: (Array.isArray(day.tasks) ? day.tasks : []).map(normalizeDayTask).filter(Boolean),
-        reviewQuestions: Array.isArray(day.review_questions) ? day.review_questions : [],
+        title: cleanLearningOrNull(day.title, courseTitle) || `${dayIdx + 1}일차 학습`,
+        objective: cleanLearningOrNull(day.objective, courseTitle) || '',
+        coreConcepts: filterLearningList(Array.isArray(day.core_concepts) ? day.core_concepts : [], courseTitle),
+        tasks: filterLearningList((Array.isArray(day.tasks) ? day.tasks : []).map(normalizeDayTask), courseTitle),
+        reviewQuestions: filterLearningList(Array.isArray(day.review_questions) ? day.review_questions : [], courseTitle),
         practice: day.practice || '',
-        deliverable: day.deliverable || '',
-        checkpoint: day.checkpoint || '',
+        deliverable: cleanLearningOrNull(day.deliverable, courseTitle) || '',
+        checkpoint: cleanLearningOrNull(day.checkpoint, courseTitle) || '',
         completed: !!day.completed,
       }));
       return {
         stepId: week.stepId || week.id || `week-${weekNo}`,
         stepOrder: weekNo,
-        title: week.title || `${idx + 1}주차`,
-        description: week.objective || week.goal || week.description || week.week_summary || '',
-        weekSummary: week.week_summary || '',
+        title: cleanLearningOrNull(week.title, courseTitle) || `${idx + 1}주차`,
+        description: cleanLearningOrNull(week.objective || week.goal || week.description || week.week_summary, courseTitle) || '',
+        weekSummary: cleanLearningOrNull(week.week_summary, courseTitle) || '',
         days,
         tasks: rawTasks.map((task, taskIdx) => (typeof task === 'string'
-          ? { taskId: `week-${idx + 1}-task-${taskIdx + 1}`, taskOrder: taskIdx + 1, content: task, isCompleted: false }
-          : { taskId: task.taskId || task.id || `week-${idx + 1}-task-${taskIdx + 1}`, taskOrder: task.taskOrder || taskIdx + 1, content: task.content || task.title || String(task), isCompleted: !!task.isCompleted }))
+          ? { taskId: `week-${idx + 1}-task-${taskIdx + 1}`, taskOrder: taskIdx + 1, content: cleanLearningOrNull(task, courseTitle) || task, isCompleted: false }
+          : { taskId: task.taskId || task.id || `week-${idx + 1}-task-${taskIdx + 1}`, taskOrder: task.taskOrder || taskIdx + 1, content: cleanLearningOrNull(task.content || task.title || String(task), courseTitle) || (task.content || task.title || String(task)), isCompleted: !!task.isCompleted }))
       };
     });
   };
@@ -923,7 +928,16 @@ export default function ArchiveDetail() {
       const normalized = normalizeAiResponse(res);
       setChatMessages(prev => {
         const filtered = prev.filter(m => !m.isThinking);
-        return [...filtered, { sender: 'ai', text: normalized.success === false ? normalized.message : (res.aiAnswer || '문서 기준으로는 확인되지 않습니다.'), response: normalized, createdAt: new Date().toISOString(), materialId: id }];
+        // Intent Router 라우팅 결과 반영 (없으면 기존 답변 그대로 — 무손상).
+        const ra = res.routeAction;
+        let text;
+        if (normalized.success === false) text = normalized.message;
+        else if (ra === 'WARN' && res.routeMessage) text = `⚠️ ${res.routeMessage}\n\n${res.aiAnswer || ''}`.trim();
+        else if (ra === 'QUIZ_PIPELINE') text = `${res.aiAnswer || '문제를 생성했습니다.'} 상단 ‘퀴즈’ 탭에서 확인하세요.`;
+        else if (ra === 'SUMMARY_PIPELINE') text = `${res.aiAnswer || '요약을 정리했습니다.'} 상단 ‘AI 요약’ 탭에서 확인하세요.`;
+        else if (ra === 'ROADMAP_PIPELINE') text = `${res.aiAnswer || '로드맵을 불러왔습니다.'} 상단 ‘로드맵’ 탭에서 확인하세요.`;
+        else text = res.aiAnswer || '문서 기준으로는 확인되지 않습니다.';
+        return [...filtered, { sender: 'ai', text, routeAction: ra || null, pipeline: res.pipeline || null, response: normalized, createdAt: new Date().toISOString(), materialId: id }];
       });
     } catch (e) {
       console.error('AI 질문 실패:', e);
@@ -1548,7 +1562,7 @@ export default function ArchiveDetail() {
         const summaryTextStatusMessage = getTextStatusMessage(summaryData?.textStatus);
         const summaryOverview = sanitizeMarkdownText(getSummaryOverview(summaryData));
         const summaryKeywords = getSummaryKeywords(summaryData);
-        const cleanKeywords = (summaryKeywords.length > 0 ? summaryKeywords : removeDummyKeywords(material?.keywords)).map(sanitizeMarkdownText).filter(Boolean);
+        const cleanKeywords = filterLearningList((summaryKeywords.length > 0 ? summaryKeywords : removeDummyKeywords(material?.keywords)).map(sanitizeMarkdownText).filter(Boolean), material?.title);
         const coreContents = getCoreContents(summaryData);           // B. 핵심 내용 (≥10 목표)
         const detailedCore = getDetailedCoreContents(summaryData);   // C. 세부 핵심 내용 (≥40 목표)
         const visibleDetailed = showAllDetailed ? detailedCore : detailedCore.slice(0, 10);

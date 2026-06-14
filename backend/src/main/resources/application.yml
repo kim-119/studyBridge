@@ -38,6 +38,13 @@ ai:
       keyword-define-timeout-seconds: ${AI_KEYWORD_DEFINE_TIMEOUT_SECONDS:60}
       planner-expand-timeout-seconds: ${AI_PLANNER_EXPAND_TIMEOUT_SECONDS:120}
       roadmap-timeout-seconds: ${AI_ROADMAP_TIMEOUT_SECONDS:180}
+  # Intent Router: AI 채팅(자료보관함/그룹스터디/학습메이트) 앞단 분기. ai07 /api/ai/intent/route 호출.
+  # base-url 미지정 시 기존 FastAPI 베이스 사용(EC2=tunnel-proxy host.docker.internal:18001). 실패 시 PROCEED 폴백.
+  intent-router:
+    enabled: ${AI_INTENT_ROUTER_ENABLED:false}
+    base-url: ${AI_INTENT_ROUTER_BASE_URL:${FASTAPI_BASE_URL:http://localhost:8000}}
+    timeout-ms: ${AI_INTENT_ROUTER_TIMEOUT_MS:6000}
+    path: ${AI_INTENT_ROUTER_PATH:/api/ai/intent/route}
 
 cloud:
   aws:

@@ -1049,6 +1049,28 @@ try {
             try {
               const parsed = JSON.parse(dataStr);
 
+              // Intent Router 라우팅 이벤트: 안내(route_message)/경고(route_notice)를 AI 말풍선으로 표시.
+              // terminal이면 백엔드가 이 이벤트 하나만 보내고 종료, WARN이면 notice 뒤로 기존 답변 스트림이 이어진다.
+              if (parsed.type === 'route_message' || parsed.type === 'route_notice') {
+                const msgText = parsed.message || '';
+                if (msgText) {
+                  setAiMessages(prev => {
+                    if (!isActive()) return prev;
+                    return [...prev, {
+                      id: `route-${requestId}-${prev.length}`,
+                      requestId,
+                      isUser: false,
+                      senderName: 'AI',
+                      content: msgText,
+                      routeAction: parsed.routeAction || null,
+                      isNotice: parsed.type === 'route_notice',
+                      createdAt: new Date().toISOString(),
+                    }];
+                  });
+                }
+                continue;
+              }
+
               // 토론 모드: debate_section 이벤트는 일반 agent 메시지로 합치지 않고
               // requestId로 식별되는 단 하나의 debate 말풍선에 섹션별로 upsert한다.
               if (parsed.section || parsed.type === 'debate_section') {

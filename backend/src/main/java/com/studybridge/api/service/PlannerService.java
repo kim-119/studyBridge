@@ -9,6 +9,8 @@ import com.studybridge.api.entity.MaterialType;
 import com.studybridge.api.entity.Planner;
 import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.PlannerRepository;
+import com.studybridge.api.util.ConceptFallbackProvider;
+import com.studybridge.api.util.LearningContentSanitizer;
 import com.lowagie.text.Document;
 import com.lowagie.text.Element;
 import com.lowagie.text.Font;
@@ -104,35 +106,44 @@ public class PlannerService {
         java.time.LocalDate start = req.getStartDate() != null ? req.getStartDate() : java.time.LocalDate.now();
 
         int created = 0;
+        int[] noiseStats = new int[4]; // [0]=noiseCandidate, [1]=cleaned, [2]=rejected, [3]=fallbackUsedFields
         for (int i = 0; i < items.size(); i++) {
             PlannerDTO.RoadmapItem it = items.get(i);
             java.time.LocalDate date = start.plusDays(i);
-            java.util.List<String> tasks = it.getTasks() != null ? it.getTasks() : java.util.Collections.emptyList();
+
+            // 노이즈 정제: PDF 표지 날짜/교수명/코스 제목이 섞인 항목 제거, 비면 개념형 fallback으로 대체.
+            ConceptFallbackProvider.Concept fb = ConceptFallbackProvider.forTopicAt(subject, i);
+            String objective = sanitizeRequiredField(it.getObjective(), subject, fb.objective, noiseStats);
+            java.util.List<String> tasks = sanitizeStrListHard(it.getTasks(), subject, fb.tasks, noiseStats);
+            java.util.List<String> coreConcepts = sanitizeStrListSoft(it.getCoreConcepts(), subject, fb.coreConcepts, noiseStats);
+            java.util.List<String> reviewQuestions = sanitizeStrListSoft(it.getReviewQuestions(), subject, fb.reviewQuestions, noiseStats);
+            String checkpoint = sanitizeOptionalField(it.getCheckpoint(), subject, "", noiseStats);
+            String deliverable = sanitizeOptionalField(it.getDeliverable(), subject, fb.deliverable, noiseStats);
 
             StringBuilder content = new StringBuilder();
-            if (it.getObjective() != null && !it.getObjective().isBlank()) content.append("[오늘 목표] ").append(it.getObjective()).append("\n\n");
+            if (!objective.isBlank()) content.append("[오늘 목표] ").append(objective).append("\n\n");
             if (!tasks.isEmpty()) {
                 content.append("[할 일]\n");
                 for (int t = 0; t < tasks.size(); t++) content.append(t + 1).append(". ").append(tasks.get(t)).append("\n");
             }
 
             StringBuilder memo = new StringBuilder();
-            if (it.getCoreConcepts() != null && !it.getCoreConcepts().isEmpty()) memo.append("핵심 개념: ").append(String.join(", ", it.getCoreConcepts())).append("\n");
-            if (it.getReviewQuestions() != null && !it.getReviewQuestions().isEmpty()) {
+            if (!coreConcepts.isEmpty()) memo.append("핵심 개념: ").append(String.join(", ", coreConcepts)).append("\n");
+            if (!reviewQuestions.isEmpty()) {
                 memo.append("복습 질문:\n");
-                for (String q : it.getReviewQuestions()) memo.append("- ").append(q).append("\n");
+                for (String q : reviewQuestions) memo.append("- ").append(q).append("\n");
             }
-            if (it.getCheckpoint() != null && !it.getCheckpoint().isBlank()) memo.append("체크포인트: ").append(it.getCheckpoint()).append("\n");
-            if (it.getDeliverable() != null && !it.getDeliverable().isBlank()) memo.append("산출물: ").append(it.getDeliverable()).append("\n");
+            if (!checkpoint.isBlank()) memo.append("체크포인트: ").append(checkpoint).append("\n");
+            if (!deliverable.isBlank()) memo.append("산출물: ").append(deliverable).append("\n");
 
             String targetTime = it.getTargetMinutes() != null && it.getTargetMinutes() > 0 ? (it.getTargetMinutes() + "분") : null;
             // week/day는 명시값 우선, 없으면 index 기반 계산(84개=12주×7일): index/7+1 주차, index%7+1 일차
             int weekNo = it.getWeek() != null ? it.getWeek() : (i / 7 + 1);
             int dayNo = it.getDayIndex() != null ? it.getDayIndex() : (i % 7 + 1);
-            // topic은 가장 사람이 이해하기 쉬운 값(제목 > 목표 > 기본값) 사용
-            String topic = (it.getTitle() != null && !it.getTitle().isBlank())
-                    ? it.getTitle()
-                    : (it.getObjective() != null && !it.getObjective().isBlank() ? it.getObjective() : "학습 계획");
+            // topic: 정제된 제목 우선, 노이즈/비면 개념형 fallback 제목 사용(메타데이터를 제목으로 쓰지 않는다)
+            String topic = (it.getTitle() != null && !LearningContentSanitizer.isNoise(it.getTitle(), subject))
+                    ? LearningContentSanitizer.clean(it.getTitle())
+                    : fb.title;
             // DB에 저장되는 title 자체를 "[로드맵 N주차 M일] topic" 형식으로 통일 (목록/상세/캘린더 공통)
             String roadmapTitle = buildRoadmapPlannerTitle(weekNo, dayNo, topic);
 
@@ -157,10 +168,59 @@ public class PlannerService {
             created++;
         }
 
+        boolean fallbackUsed = noiseStats[3] > 0;
+        log.info("[planner:validation] materialId={} roadmapId={} created={} noiseCandidates={} cleaned={} rejected={} fallbackUsed={} reason={}",
+                req.getMaterialId(), req.getRoadmapId(), created,
+                noiseStats[0], noiseStats[1], noiseStats[2], fallbackUsed,
+                fallbackUsed ? "metadata_noise" : "none");
+
         return PlannerDTO.FromRoadmapResponse.builder()
                 .createdCount(created).duplicate(false).existingCount(existing)
                 .message(created + "개의 플래너가 생성되었습니다.")
                 .build();
+    }
+
+    // ── 로드맵→플래너 노이즈 정제 헬퍼 (stats: [0]=noiseCandidate,[1]=cleaned,[2]=rejected,[3]=fallbackUsed) ──
+    private String sanitizeRequiredField(String raw, String course, String fallback, int[] st) {
+        if (raw == null || raw.isBlank()) { st[3]++; return fallback; }
+        if (LearningContentSanitizer.isNoise(raw, course)) { st[0]++; st[2]++; st[3]++; return fallback; }
+        String c = LearningContentSanitizer.clean(raw);
+        if (!c.equals(raw.trim())) st[1]++;
+        return c;
+    }
+
+    private String sanitizeOptionalField(String raw, String course, String fallback, int[] st) {
+        if (raw == null || raw.isBlank()) return "";
+        if (LearningContentSanitizer.isNoise(raw, course)) {
+            st[0]++; st[2]++;
+            if (fallback != null && !fallback.isBlank()) st[3]++;
+            return fallback == null ? "" : fallback;
+        }
+        String c = LearningContentSanitizer.clean(raw);
+        if (!c.equals(raw.trim())) st[1]++;
+        return c;
+    }
+
+    // tasks: 전부 비거나 노이즈로 제거되면 개념형 fallback 으로 채운다(핵심 학습 항목).
+    private java.util.List<String> sanitizeStrListHard(java.util.List<String> raw, String course, java.util.List<String> fallback, int[] st) {
+        java.util.List<String> in = raw != null ? raw : java.util.Collections.emptyList();
+        int before = in.size();
+        java.util.List<String> out = LearningContentSanitizer.cleanList(in, course);
+        int dropped = before - out.size();
+        if (dropped > 0) { st[0] += dropped; st[2] += dropped; }
+        if (out.isEmpty()) { st[3]++; return new java.util.ArrayList<>(fallback); }
+        return out;
+    }
+
+    // core_concepts/review_questions: 원래 비어 있으면 그대로 비움. 있던 항목이 전부 노이즈면 fallback.
+    private java.util.List<String> sanitizeStrListSoft(java.util.List<String> raw, String course, java.util.List<String> fallback, int[] st) {
+        if (raw == null || raw.isEmpty()) return new java.util.ArrayList<>();
+        int before = raw.size();
+        java.util.List<String> out = LearningContentSanitizer.cleanList(raw, course);
+        int dropped = before - out.size();
+        if (dropped > 0) { st[0] += dropped; st[2] += dropped; }
+        if (out.isEmpty()) { st[3]++; return new java.util.ArrayList<>(fallback); }
+        return out;
     }
 
     /**

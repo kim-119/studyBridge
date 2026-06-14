@@ -3,12 +3,14 @@ package com.studybridge.api.controller;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.ChatDTO;
+import com.studybridge.api.dto.IntentDTO;
 import com.studybridge.api.dto.RedisChatMessage;
 import com.studybridge.api.entity.GroupStudyMemberStatus;
 import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.GroupStudyMemberRepository;
 import com.studybridge.api.repository.UserRepository;
 import com.studybridge.api.security.domain.CustomUserDetails;
+import com.studybridge.api.service.IntentRouterService;
 import com.studybridge.api.service.RedisChatService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -36,6 +38,7 @@ public class GroupStudyStreamController {
     private final UserRepository userRepository;
     private final WebClient fastApiWebClient;
     private final ObjectMapper objectMapper;
+    private final IntentRouterService intentRouterService;
 
     @PostMapping(value = "/{groupId}/chats/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> streamGroupChat(
@@ -113,6 +116,21 @@ public class GroupStudyStreamController {
         if (message.isEmpty()) {
             return Flux.just(errorEvent(emptyMessageGuide(botType)));
         }
+
+        // ── Intent Router 게이트 (surface=group_study_chat) ─────────────────────────
+        // terminal이면 단일 라우팅 이벤트로 종료, WARN이면 notice를 스트림 앞에 붙이고 기존 그룹 AI 흐름 진행.
+        // 라우터 비활성/실패면 PROCEED → 아래 기존 로직 그대로(무손상).
+        IntentDTO.RouteResult route = intentRouterService.route(
+                message, "group_study_chat", Map.of("groupId", groupId));
+        if (route.isTerminal()) {
+            return Flux.just(routeEvent(route.actionName(), route.userMessage()));
+        }
+        if (route.isPipeline()) {
+            // 그룹 채팅엔 자료(materialId) 컨텍스트가 없어 기준이 모호 → 되묻기로 안전 처리.
+            return Flux.just(routeEvent("CLARIFY", "어떤 자료를 기준으로 만들까요? 자료를 먼저 선택해 주세요."));
+        }
+        final ServerSentEvent<String> warnNotice = route.isWarn()
+                ? routeEvent("WARN", route.userMessage()) : null;
 
         // 4-4. 실행 모드 분기
         //  - 슬래시 명령어(/요약봇·/퀴즈봇·/검색봇)가 매칭되면 무조건 group_study_ai 봇 모드.
@@ -270,7 +288,9 @@ public class GroupStudyStreamController {
         Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(heartbeatSeconds()))
                 .map(i -> ServerSentEvent.<String>builder().comment("hb").build());
 
-        return upstream.mergeWith(heartbeat).takeUntilOther(upstream.then());
+        Flux<ServerSentEvent<String>> stream = upstream.mergeWith(heartbeat).takeUntilOther(upstream.then());
+        // WARN: 경고 notice를 스트림 맨 앞에 1회 붙인다(기존 토큰 흐름과 중복되지 않음).
+        return warnNotice != null ? Flux.concat(Flux.just(warnNotice), stream) : stream;
     }
 
     // SSE 하트비트 간격(초). 하드코딩 금지 — env AI_SSE_HEARTBEAT_SECONDS, 기본 12초.
@@ -908,6 +928,25 @@ public class GroupStudyStreamController {
         }
         return ServerSentEvent.<String>builder()
                 .event("error")
+                .data(json)
+                .build();
+    }
+
+    /** Intent Router 라우팅 이벤트 SSE 생성. WARN은 route_notice, 그 외 terminal은 route_message. */
+    private ServerSentEvent<String> routeEvent(String routeAction, String message) {
+        String json;
+        try {
+            Map<String, Object> obj = new LinkedHashMap<>();
+            obj.put("type", "WARN".equals(routeAction) ? "route_notice" : "route_message");
+            obj.put("routeAction", routeAction);
+            obj.put("message", message);
+            json = objectMapper.writeValueAsString(obj);
+        } catch (Exception e) {
+            json = "{\"type\":\"route_message\",\"message\":\"\"}";
+        }
+        String eventName = "WARN".equals(routeAction) ? "route_notice" : "route_message";
+        return ServerSentEvent.<String>builder()
+                .event(eventName)
                 .data(json)
                 .build();
     }

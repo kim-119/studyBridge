@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { plannerService, todoService } from '../services/api';
 import PlannerAiPanel from '../components/PlannerAiPanel';
+import { cleanLearningOrNull } from '../utils/learningContent';
 
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 const HOURS = Array.from({ length: 18 }, (_, i) => i + 6); // 6시 ~ 23시
@@ -27,7 +28,8 @@ const GREEN_DARK = '#15803D';
 // 일반 플래너(prefix 없음)는 prefix=null로 반환되어 기존 표시가 그대로 유지된다.
 const splitRoadmapTitle = (title) => {
   const m = typeof title === 'string' ? title.match(/^\s*(\[로드맵\s*\d+\s*주차\s*\d+\s*일\])\s*(.*)$/) : null;
-  if (m) return { prefix: m[1], topic: m[2].trim() || '학습 계획' };
+  // 로드맵 플래너만 topic 노이즈(날짜/교수명) 2차 방어로 정제. 수동 플래너(prefix 없음)는 그대로 둔다.
+  if (m) return { prefix: m[1], topic: cleanLearningOrNull(m[2].trim()) || '학습 계획' };
   return { prefix: null, topic: title };
 };
 

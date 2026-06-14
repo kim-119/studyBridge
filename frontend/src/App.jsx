@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard';
 import MyPage from './pages/MyPage';
 import AdminPage from './pages/AdminPage';
 import StudyMate from './pages/StudyMate';
+import LearningMate from './pages/LearningMate';
 import GroupStudy from './pages/GroupStudy';
 import Archive from './pages/Archive';
 import ArchiveDetail from './pages/ArchiveDetail';
@@ -105,6 +106,7 @@ function App() {
 
           <Route path="/admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
           <Route path="/studymate" element={<StudyMate />} />
+          <Route path="/learning-mate" element={<PrivateRoute><LearningMate /></PrivateRoute>} />
           <Route path="/groupstudy" element={<GroupStudy />} />
           <Route path="/archive" element={<Archive />} />
           <Route path="/archive/:type/:id" element={<ArchiveDetail />} />

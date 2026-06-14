@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.*;
 import com.studybridge.api.entity.*;
 import com.studybridge.api.repository.*;
+import com.studybridge.api.util.ConceptFallbackProvider;
+import com.studybridge.api.util.LearningContentSanitizer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -13,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
@@ -37,6 +40,7 @@ public class AiIntegrationService {
         private final RoadmapRepository roadmapRepository;
         private final RoadmapTaskRepository roadmapTaskRepository;
         private final WebClient fastApiWebClient;
+        private final IntentRouterService intentRouterService;
 
         // 키워드 정의 호출 타임아웃 (env 제어, 하드코딩 금지)
         @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.keyword-define-timeout-seconds:60}")
@@ -901,6 +905,20 @@ public class AiIntegrationService {
         public QuestionDTO.Response askQuestion(Long userId, Long materialId, QuestionDTO.Request request) {
                 Material material = getMaterialSafely(userId, materialId);
 
+                // ── Intent Router 게이트 (surface=archive_chat) ───────────────────────────
+                // terminal(DIRECT_REPLY/BLOCK/CLARIFY)이면 AI 호출 없이 라우터 메시지만 반환,
+                // QUIZ/SUMMARY/ROADMAP이면 내부 파이프라인 직접 실행, WARN이면 경고 후 기존 답변 계속.
+                IntentDTO.RouteResult route = intentRouterService.route(
+                                request.getUserQuestion(), "archive_chat",
+                                java.util.Map.of("materialId", materialId));
+                if (route.isTerminal()) {
+                        return routedQuestionResponse(material, request.getUserQuestion(), route.actionName(), route.userMessage(), null);
+                }
+                if (route.isPipeline()) {
+                        return runArchivePipeline(userId, materialId, material, request, route);
+                }
+                String routeWarning = route.isWarn() ? route.userMessage() : null;
+
                 String textToAnalyze = getTextToAnalyze(material);
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
                         return questionFailure(material, request.getUserQuestion(), "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
@@ -957,7 +975,82 @@ public class AiIntegrationService {
                                 .elapsedMs(aiMetaLong(response, "elapsedMs"))
                                 .usedFallback(aiMetaBool(response, "usedFallback"))
                                 .cacheHit(aiMetaBool(response, "cacheHit"))
+                                .routeAction(route.actionName())
+                                .routeMessage(routeWarning)
                                 .build();
+        }
+
+        // ── Intent Router: 자료보관함 라우팅 헬퍼 ────────────────────────────────────
+        // terminal/파이프라인 결과를 QuestionDTO.Response로 감싼다. AI 에이전트는 호출하지 않으며 질문 이력도 저장하지 않는다.
+        private QuestionDTO.Response routedQuestionResponse(Material material, String userQuestion,
+                        String actionName, String message, Object pipeline) {
+                return QuestionDTO.Response.builder()
+                                .materialId(material != null ? material.getMaterialId() : null)
+                                .userQuestion(userQuestion)
+                                .aiAnswer(message)
+                                .createdAt(java.time.LocalDateTime.now())
+                                .success(true)
+                                .routeAction(actionName)
+                                .routeMessage(message)
+                                .pipeline(pipeline)
+                                .build();
+        }
+
+        // QUIZ/SUMMARY/ROADMAP 파이프라인을 Spring 내부에서 직접 실행. 자료보관함은 materialId를 유지한다.
+        private QuestionDTO.Response runArchivePipeline(Long userId, Long materialId, Material material,
+                        QuestionDTO.Request request, IntentDTO.RouteResult route) {
+                switch (route.getAction()) {
+                        case QUIZ_PIPELINE: {
+                                if (materialId == null) {
+                                        return routedQuestionResponse(material, request.getUserQuestion(), "CLARIFY",
+                                                        "어떤 자료를 기준으로 문제를 만들까요?", null);
+                                }
+                                String difficulty = routeParamStr(route, "보통", "difficulty");
+                                Integer count = routeParamInt(route, 10, "count", "questionCount", "question_count");
+                                QuizDTO.Response quiz = generateQuiz(userId, materialId,
+                                                new QuizDTO.Request(difficulty, count, "전체"));
+                                return routedQuestionResponse(material, request.getUserQuestion(), "QUIZ_PIPELINE",
+                                                "요청하신 문제를 생성했습니다.", quiz);
+                        }
+                        case SUMMARY_PIPELINE: {
+                                SummaryDTO summary = getSummary(userId, materialId);
+                                return routedQuestionResponse(material, request.getUserQuestion(), "SUMMARY_PIPELINE",
+                                                "자료 요약을 정리했습니다.", summary);
+                        }
+                        case ROADMAP_PIPELINE: {
+                                RoadmapDTO roadmap = getRoadmap(userId, materialId);
+                                return routedQuestionResponse(material, request.getUserQuestion(), "ROADMAP_PIPELINE",
+                                                "학습 로드맵을 불러왔습니다.", roadmap);
+                        }
+                        default:
+                                return routedQuestionResponse(material, request.getUserQuestion(), route.actionName(),
+                                                route.userMessage(), null);
+                }
+        }
+
+        private String routeParamStr(IntentDTO.RouteResult route, String def, String... keys) {
+                Map<String, Object> p = route.getParams();
+                if (p != null) {
+                        for (String k : keys) {
+                                Object v = p.get(k);
+                                if (v != null && !v.toString().isBlank()) return v.toString();
+                        }
+                }
+                return def;
+        }
+
+        private Integer routeParamInt(IntentDTO.RouteResult route, int def, String... keys) {
+                Map<String, Object> p = route.getParams();
+                if (p != null) {
+                        for (String k : keys) {
+                                Object v = p.get(k);
+                                if (v instanceof Number) return ((Number) v).intValue();
+                                if (v != null) {
+                                        try { return Integer.parseInt(v.toString().trim()); } catch (Exception ignored) {}
+                                }
+                        }
+                }
+                return def;
         }
 
         // 로드맵 조회
@@ -1055,6 +1148,10 @@ public class AiIntegrationService {
                         roadmapTitle = response.get("title").toString();
                 }
 
+                // 저장 직전 노이즈 정제: PDF 표지 날짜/교수명/코스 제목 등이 day title/objective/tasks/질문/산출물에
+                // 섞여 있으면 제거하고, 비면 개념형 fallback으로 채운다. response Map을 in-place 수정.
+                int[] noiseStats = sanitizeRoadmapNoise(response, material);
+
                 // 84일 응답 전체를 JSON 문자열로 보존(컬럼: roadmap_json). days를 절대 버리지 않는다.
                 String roadmapJson;
                 try {
@@ -1081,6 +1178,13 @@ public class AiIntegrationService {
                         log.error("[roadmap:fail] code=ROADMAP_SAVE_FAILED materialId={} message={}", material.getMaterialId(), e.getMessage(), e);
                         return roadmapFailure(material, "ROADMAP_GENERATION_FAILED", "주차별 로드맵 저장 중 오류가 발생했습니다. 다시 시도해주세요.", true, null);
                 }
+
+                // 노이즈 검증 결과 로깅 (noiseCandidate/cleaned/rejected/fallback)
+                boolean roadmapFallbackUsed = noiseStats[3] > 0;
+                log.info("[roadmap:validation] materialId={} roadmapId={} noiseCandidates={} cleaned={} rejected={} fallbackUsed={} reason={}",
+                                material.getMaterialId(), roadmap.getRoadmapId(),
+                                noiseStats[0], noiseStats[1], noiseStats[2], roadmapFallbackUsed,
+                                roadmapFallbackUsed ? "metadata_noise" : "none");
 
                 return roadmapDtoFromJson(material, roadmap, response);
         }
@@ -1124,6 +1228,123 @@ public class AiIntegrationService {
 
         private boolean isBlankObj(Object v) {
                 return v == null || v.toString().isBlank();
+        }
+
+        // ── 로드맵 노이즈 정제 (저장 직전, response Map in-place 수정) ───────────────────────────────
+        // 반환 stats: [0]=noiseCandidate, [1]=cleaned, [2]=rejected, [3]=fallbackUsedFields
+        @SuppressWarnings("unchecked")
+        private int[] sanitizeRoadmapNoise(Map response, Material material) {
+                int[] stats = new int[4];
+                if (response == null) return stats;
+                String courseTitle = (material != null) ? material.getTitle() : null;
+                Object weeksRaw = response.get("weeks");
+                if (!(weeksRaw instanceof List)) return stats;
+                int dayCounter = 0;
+                for (Object wkRaw : (List<Object>) weeksRaw) {
+                        if (!(wkRaw instanceof Map)) continue;
+                        Map<String, Object> wk = (Map<String, Object>) wkRaw;
+                        Object daysRaw = wk.get("days");
+                        if (!(daysRaw instanceof List)) continue;
+                        for (Object dRaw : (List<Object>) daysRaw) {
+                                if (!(dRaw instanceof Map)) continue;
+                                Map<String, Object> d = (Map<String, Object>) dRaw;
+                                ConceptFallbackProvider.Concept fb = ConceptFallbackProvider.forTopicAt(courseTitle, dayCounter++);
+
+                                d.put("title", sanitizeRequiredField(d.get("title"), courseTitle, fb.title, stats));
+                                d.put("objective", sanitizeRequiredField(d.get("objective"), courseTitle, fb.objective, stats));
+                                d.put("core_concepts", sanitizeStrList(d.get("core_concepts"), courseTitle, fb.coreConcepts, stats));
+                                d.put("tasks", sanitizeTaskList(d.get("tasks"), courseTitle, fb.tasks, stats));
+                                d.put("review_questions", sanitizeStrList(d.get("review_questions"), courseTitle, fb.reviewQuestions, stats));
+                                if (d.containsKey("deliverable")) {
+                                        d.put("deliverable", sanitizeOptionalField(d.get("deliverable"), courseTitle, fb.deliverable, stats));
+                                }
+                                if (d.containsKey("checkpoint")) {
+                                        d.put("checkpoint", sanitizeOptionalField(d.get("checkpoint"), courseTitle, "", stats));
+                                }
+                        }
+                }
+                return stats;
+        }
+
+        // 필수 필드(title/objective): 비거나 노이즈면 fallback 으로 대체.
+        private String sanitizeRequiredField(Object raw, String courseTitle, String fallback, int[] stats) {
+                String s = (raw == null) ? null : raw.toString();
+                if (s == null || s.isBlank()) { stats[3]++; return fallback; }
+                if (LearningContentSanitizer.isNoise(s, courseTitle)) {
+                        stats[0]++; stats[2]++; stats[3]++; return fallback;
+                }
+                String c = LearningContentSanitizer.clean(s);
+                if (!c.equals(s.trim())) stats[1]++;
+                return c;
+        }
+
+        // 선택 필드(deliverable/checkpoint): 비면 그대로 비움. 노이즈면 정제 후에도 부적합 → fallback(빈문자 허용).
+        private String sanitizeOptionalField(Object raw, String courseTitle, String fallback, int[] stats) {
+                String s = (raw == null) ? null : raw.toString();
+                if (s == null || s.isBlank()) return "";
+                if (LearningContentSanitizer.isNoise(s, courseTitle)) {
+                        stats[0]++; stats[2]++;
+                        if (fallback != null && !fallback.isBlank()) stats[3]++;
+                        return fallback == null ? "" : fallback;
+                }
+                String c = LearningContentSanitizer.clean(s);
+                if (!c.equals(s.trim())) stats[1]++;
+                return c;
+        }
+
+        // 문자열 리스트(core_concepts/review_questions): 정제+노이즈 제거, 전부 비면 fallback.
+        private List<String> sanitizeStrList(Object raw, String courseTitle, List<String> fallback, int[] stats) {
+                List<String> in = new ArrayList<>();
+                if (raw instanceof List) {
+                        for (Object o : (List<?>) raw) {
+                                if (o == null) continue;
+                                if (o instanceof Map) {
+                                        Object t = ((Map<?, ?>) o).get("title");
+                                        if (t == null) t = ((Map<?, ?>) o).get("content");
+                                        if (t != null) in.add(t.toString());
+                                } else {
+                                        in.add(o.toString());
+                                }
+                        }
+                }
+                int before = in.size();
+                List<String> out = LearningContentSanitizer.cleanList(in, courseTitle);
+                int dropped = before - out.size();
+                if (dropped > 0) { stats[0] += dropped; stats[2] += dropped; }
+                if (out.isEmpty()) { stats[3]++; return new ArrayList<>(fallback); }
+                return out;
+        }
+
+        // tasks: 문자열/객체({title,...}) 혼용. 요소 타입을 보존하며 정제, 노이즈는 드롭, 전부 비면 fallback(문자열).
+        @SuppressWarnings("unchecked")
+        private List<Object> sanitizeTaskList(Object raw, String courseTitle, List<String> fallback, int[] stats) {
+                List<Object> out = new ArrayList<>();
+                if (raw instanceof List) {
+                        for (Object el : (List<Object>) raw) {
+                                if (el instanceof Map) {
+                                        Map<String, Object> m = (Map<String, Object>) el;
+                                        Object t = m.get("title");
+                                        if (t == null) t = m.get("content");
+                                        if (t == null) t = m.get("description");
+                                        String ts = (t == null) ? null : t.toString();
+                                        if (ts == null || LearningContentSanitizer.isNoise(ts, courseTitle)) {
+                                                if (ts != null) { stats[0]++; stats[2]++; }
+                                                continue;
+                                        }
+                                        String c = LearningContentSanitizer.clean(ts);
+                                        if (m.containsKey("title")) m.put("title", c);
+                                        else if (m.containsKey("content")) m.put("content", c);
+                                        else m.put("title", c);
+                                        out.add(m);
+                                } else if (el != null) {
+                                        String s = el.toString();
+                                        if (LearningContentSanitizer.isNoise(s, courseTitle)) { stats[0]++; stats[2]++; continue; }
+                                        out.add(LearningContentSanitizer.clean(s));
+                                }
+                        }
+                }
+                if (out.isEmpty()) { stats[3]++; out.addAll(fallback); }
+                return out;
         }
 
         // C. 로드맵 실패 상세 로그 (민감정보 제외: AWS key/token/presigned URL/문서 원문 전체 금지). body는 앞 1000자만.

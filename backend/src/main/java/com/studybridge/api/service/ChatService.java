@@ -3,6 +3,8 @@ package com.studybridge.api.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.ChatDTO;
+import com.studybridge.api.dto.IntentDTO;
+import com.studybridge.api.dto.QuizDTO;
 import com.studybridge.api.entity.Agent;
 import com.studybridge.api.entity.ChatMessage;
 import com.studybridge.api.entity.AgentChatRoom;
@@ -40,6 +42,8 @@ public class ChatService {
         private final WebClient fastApiWebClient;
         private final TransactionTemplate transactionTemplate;
         private final ObjectMapper objectMapper;
+        private final IntentRouterService intentRouterService;
+        private final AiIntegrationService aiIntegrationService;
 
         // 답변 길이 사실상 무제한 정책: 본문을 자르지 않으며, FastAPI에 큰 상한을 힌트로 전달한다.
         //  서버 안정성 위한 넉넉한 상수(잘림 방지용 상한). 실제 트림은 어디서도 하지 않는다.
@@ -480,6 +484,17 @@ public class ChatService {
                         return null;
                 });
 
+                // ── Intent Router 게이트 (surface=learning_mate) ─────────────────────────
+                // terminal/파이프라인은 AI 스트림을 시작하지 않고 단일 라우팅 이벤트로 종료. WARN은 notice 후 진행.
+                IntentDTO.RouteResult route = intentRouterService.route(
+                                request.getMessage(), "learning_mate", learningMateContext(roomId, request));
+                if (route.isTerminal() || route.isPipeline()) {
+                        SseEmitter gate = new SseEmitter(60_000L);
+                        handleLearningMateRouted(gate, route, userId, request);
+                        return gate;
+                }
+                final String routeWarning = route.isWarn() ? route.userMessage() : null;
+
                 // FastAPI 요청 바디 (블로킹과 동일 로직 재사용; room.getAgents() lazy 접근은 현재 트랜잭션 내)
                 Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request);
 
@@ -501,6 +516,12 @@ public class ChatService {
                                 useBasicOrchestration ? "orchestrateBasicStream" : "relayRemoteStream");
 
                 SseEmitter emitter = new SseEmitter(envSeconds("STUDYMATE_SSE_TIMEOUT_SECONDS", 1800) * 1000L);
+
+                // WARN: 경고 notice를 먼저 보내고 기존 학습 답변 스트림을 그대로 이어간다(중복 토큰 append 아님).
+                if (routeWarning != null) {
+                        safeSend(emitter, "route_notice", Map.of(
+                                        "type", "route_notice", "routeAction", "WARN", "message", routeWarning));
+                }
 
                 if (useBasicOrchestration) {
                         return orchestrateBasicStream(roomId, request, requestBody, emitter);
@@ -816,6 +837,63 @@ public class ChatService {
                         emitter.send(SseEmitter.event().name(event).data(objectMapper.writeValueAsString(data)));
                 } catch (Exception e) {
                         log.warn("SSE 이벤트 전송 실패 event={}: {}", event, e.getMessage());
+                }
+        }
+
+        // ── Intent Router: 학습메이트 라우팅 ──────────────────────────────────────────
+        private Map<String, Object> learningMateContext(Long roomId, ChatDTO.MultiChatRequest request) {
+                Map<String, Object> ctx = new LinkedHashMap<>();
+                ctx.put("roomId", roomId);
+                if (request.getMaterialId() != null) ctx.put("materialId", request.getMaterialId());
+                if (request.getLearningMode() != null) ctx.put("mode", request.getLearningMode());
+                if (request.getTone() != null) ctx.put("tone", request.getTone());
+                if (request.getKnowledgeLevel() != null) ctx.put("learnerLevel", request.getKnowledgeLevel());
+                return ctx;
+        }
+
+        // terminal/파이프라인을 단일 SSE 이벤트로 처리하고 emitter를 닫는다(기존 AI 스트림 미시작).
+        private void handleLearningMateRouted(SseEmitter emitter, IntentDTO.RouteResult route,
+                        Long userId, ChatDTO.MultiChatRequest request) {
+                try {
+                        if (route.isPipeline()) {
+                                Long materialId = request.getMaterialId();
+                                if (materialId == null) {
+                                        safeSend(emitter, "route_message", Map.of("type", "route_message",
+                                                        "routeAction", "CLARIFY",
+                                                        "message", "어떤 자료를 기준으로 만들까요? 자료를 선택해 주세요."));
+                                } else {
+                                        Object payload = null;
+                                        String msg;
+                                        switch (route.getAction()) {
+                                                case QUIZ_PIPELINE:
+                                                        payload = aiIntegrationService.generateQuiz(userId, materialId,
+                                                                        new QuizDTO.Request("보통", 10, "전체"));
+                                                        msg = "요청하신 문제를 생성했습니다."; break;
+                                                case SUMMARY_PIPELINE:
+                                                        payload = aiIntegrationService.getSummary(userId, materialId);
+                                                        msg = "자료 요약을 정리했습니다."; break;
+                                                case ROADMAP_PIPELINE:
+                                                        payload = aiIntegrationService.getRoadmap(userId, materialId);
+                                                        msg = "학습 로드맵을 불러왔습니다."; break;
+                                                default:
+                                                        msg = route.userMessage();
+                                        }
+                                        Map<String, Object> data = new LinkedHashMap<>();
+                                        data.put("type", "route_pipeline");
+                                        data.put("routeAction", route.actionName());
+                                        data.put("message", msg);
+                                        if (payload != null) data.put("pipeline", payload);
+                                        safeSend(emitter, "route_pipeline", data);
+                                }
+                        } else { // terminal: DIRECT_REPLY/BLOCK/CLARIFY
+                                safeSend(emitter, "route_message", Map.of("type", "route_message",
+                                                "routeAction", route.actionName(), "message", route.userMessage()));
+                        }
+                        safeSend(emitter, "all_complete", Map.of("type", "all_complete", "routed", true));
+                } catch (Exception e) {
+                        log.warn("[intent-router] learning_mate routed 처리 실패: {}", e.toString());
+                } finally {
+                        emitter.complete();
                 }
         }
 
