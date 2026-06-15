@@ -1409,6 +1409,43 @@ export const reviewNoteService = {
   },
 };
 
+// 소크라테스 복습 세션 — React는 Spring 프록시(/api/materials/{id}/socratic-review/*)만 호출한다.
+//  - ai07/18001 직접 호출 금지(백엔드가 화이트리스트 sanitize + 소유권 검증).
+//  - 모든 응답에 aiAvailable 플래그가 붙는다(false면 "AI 서버 재시작 필요" 안내).
+export const socraticReviewService = {
+  // 세션 시작. body { maxTurnsPerChunk?, maxChunks? }
+  start: async (materialId, body = {}) => {
+    const res = await api.post(`/api/materials/${materialId}/socratic-review/sessions`, body, { timeout: AI_TIMEOUT_MS });
+    return res.data;
+  },
+  // 답변 제출. body { answer }
+  answer: async (materialId, sessionId, answer) => {
+    const res = await api.post(
+      `/api/materials/${materialId}/socratic-review/sessions/${sessionId}/answers`,
+      { answer },
+      { timeout: AI_TIMEOUT_MS },
+    );
+    return res.data;
+  },
+  // 세션 완료(요약/추천 복습일 산출)
+  finish: async (materialId, sessionId) => {
+    const res = await api.post(
+      `/api/materials/${materialId}/socratic-review/sessions/${sessionId}/finish`,
+      {},
+      { timeout: AI_TIMEOUT_MS },
+    );
+    return res.data;
+  },
+  // 다음 복습일 주간 일정(플래너 DB) 등록. body { reviewDate? } (없으면 백엔드가 추천일 사용)
+  scheduleReview: async (materialId, sessionId, reviewDate) => {
+    const res = await api.post(
+      `/api/materials/${materialId}/socratic-review/sessions/${sessionId}/schedule-review`,
+      reviewDate ? { reviewDate } : {},
+    );
+    return res.data;
+  },
+};
+
 // AI 학습메이트(질문 중심) — 같은 질문 4가지 모드 + 빠른 조정. 기존 멀티에이전트 채팅 API와 분리.
 export const learningMateService = {
   chat: async (payload) => {

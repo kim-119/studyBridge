@@ -57,9 +57,11 @@ public class SocraticReviewService {
         if (!m.getUserId().equals(userId)) {
             throw new SecurityException("해당 자료에 대한 권한이 없습니다.");
         }
-        // 폴더는 materials 가 아니므로 도달 불가하지만, PDF 외 유형은 세션 대상 아님.
-        if (m.getMaterialType() != MaterialType.PDF) {
-            throw new IllegalArgumentException("이 자료로 소크라테스 복습 세션을 시작할 수 없습니다. 분석 가능한 PDF 자료가 아닙니다.");
+        // 폴더는 materials 가 아니므로 도달 불가. 소크라테스 복습은 분석 가능한 문서(PDF/PLANNER)만 대상으로 한다.
+        // (학습일지/오답노트/실러버스 등은 세션 대상 아님. UI는 자료보관함의 PLANNER 상세에 노출된다.)
+        MaterialType mt = m.getMaterialType();
+        if (mt != MaterialType.PDF && mt != MaterialType.PLANNER) {
+            throw new IllegalArgumentException("이 자료로 소크라테스 복습 세션을 시작할 수 없습니다. 분석 가능한 문서 자료가 아닙니다.");
         }
         return m;
     }
