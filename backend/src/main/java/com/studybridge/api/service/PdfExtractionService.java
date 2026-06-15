@@ -27,16 +27,19 @@ import java.util.Map;
 public class PdfExtractionService {
 
     private final MaterialRepository materialRepository;
+    private final StudyNoteAnalysisService studyNoteAnalysisService;
     private final RestTemplate restTemplate;
     private final String fastApiUrl;
     private final String aiServerApiKey;
 
     public PdfExtractionService(MaterialRepository materialRepository,
+                                StudyNoteAnalysisService studyNoteAnalysisService,
                                 RestTemplateBuilder restTemplateBuilder,
                                 @Value("${external-api.fastapi.url}") String fastApiUrl,
                                 @Value("${external-api.fastapi.timeout}") int timeout,
                                 @Value("${AI_SERVER_API_KEY:}") String aiServerApiKey) {
         this.materialRepository = materialRepository;
+        this.studyNoteAnalysisService = studyNoteAnalysisService;
         this.fastApiUrl = fastApiUrl;
         this.aiServerApiKey = aiServerApiKey;
         this.restTemplate = restTemplateBuilder
@@ -114,6 +117,9 @@ public class PdfExtractionService {
                 updateMaterialSuccess(materialId, extractedText);
                 log.info("Material ID: {} - 문서 텍스트 추출 성공 chars={}", materialId, extractedText.length());
                 ingestMaterial(materialId, originalFilename, extractedText);
+                // 추출 성공 후 백그라운드로 전공 분야·핵심 객체 중심 학습 노트 생성(실패해도 업로드/추출에는 영향 없음)
+                try { studyNoteAnalysisService.analyzeAsync(materialId); }
+                catch (Exception ne) { log.warn("Material ID: {} - 학습 노트 분석 트리거 실패: {}", materialId, ne.getMessage()); }
             } else {
                 log.error("Material ID: {} - 텍스트 추출 최종 실패", materialId);
                 updateMaterialFailure(materialId);

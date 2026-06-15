@@ -4,9 +4,13 @@ import com.studybridge.api.dto.MaterialDTO;
 import com.studybridge.api.entity.ExtractionStatus;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialType;
+import com.studybridge.api.dto.ArchiveListDTO;
+import com.studybridge.api.dto.FolderDTO;
+import com.studybridge.api.entity.Folder;
 import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.MaterialFeedbackRepository;
 import com.studybridge.api.repository.MaterialSummaryRepository;
+import com.studybridge.api.repository.FolderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -26,10 +30,12 @@ public class MaterialService {
     private final PdfExtractionService pdfExtractionService;
     private final MaterialFeedbackRepository materialFeedbackRepository;
     private final MaterialSummaryRepository materialSummaryRepository;
+    private final FolderRepository folderRepository;
+    private final StudyNoteAnalysisService studyNoteAnalysisService;
 
     @Transactional
     public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords,
-            org.springframework.web.multipart.MultipartFile file) throws java.io.IOException {
+            org.springframework.web.multipart.MultipartFile file, Long folderId) throws java.io.IOException {
         // 자료보관함에서는 오답노트(REVIEW_NOTE) 유형 생성을 금지한다. (REVIEW_NOTE는 ReviewNoteService가 퀴즈 기반으로만 생성)
         // 프론트에서 라디오를 막아도 API 직접 호출(type=REVIEW_NOTE)을 차단하기 위함. → 400, S3 업로드 전에 거부.
         if (type == MaterialType.REVIEW_NOTE) {
@@ -38,6 +44,9 @@ public class MaterialService {
 
         // 업로드 형식 검증: PDF/DOCX만 허용. Content-Type만 믿지 않고 확장자도 함께 확인한다.
         validateUploadFormat(file);
+
+        // 업로드 위치(폴더) 검증: 지정 시 본인 소유 폴더여야 한다. null 이면 루트.
+        Long resolvedFolderId = resolveOwnedFolderId(userId, folderId);
 
         // S3에 파일 업로드
         String s3Key = s3Service.uploadFile(file, userId);
@@ -48,6 +57,7 @@ public class MaterialService {
                 .title(title)
                 .materialType(type)
                 .keywords(keywords)
+                .folderId(resolvedFolderId)
                 .originalFileName(file.getOriginalFilename())
                 .storedFileName(s3Key)
                 .s3FileUrl(s3Key)
@@ -56,6 +66,10 @@ public class MaterialService {
                 .build();
 
         Material savedMaterial = materialRepository.save(material);
+
+        // AI 핵심 요약 노트(전공 분야·핵심 객체 중심) PENDING 행 생성 — 분석은 추출 성공 후 백그라운드.
+        try { studyNoteAnalysisService.initPending(savedMaterial); }
+        catch (Exception e) { log.warn("학습 노트 PENDING 초기화 실패 materialId={}: {}", savedMaterial.getMaterialId(), e.getMessage()); }
 
         // FastAPI로 텍스트 추출
         pdfExtractionService.sendToFastApiForExtraction(
@@ -95,12 +109,13 @@ public class MaterialService {
 
     @Transactional
     public MaterialDTO saveStudyLog(Long userId, String title, String keywords, java.time.LocalDate studyDate,
-            String learningContent, String nextPlan) {
+            String learningContent, String nextPlan, Long folderId) {
         Material material = Material.builder()
                 .userId(userId)
                 .title(title)
                 .materialType(MaterialType.STUDY_LOG)
                 .keywords(keywords)
+                .folderId(resolveOwnedFolderId(userId, folderId))
                 .studyDate(studyDate)
                 .learningContent(learningContent)
                 .nextPlan(nextPlan)
@@ -193,6 +208,73 @@ public class MaterialService {
                 .collect(Collectors.toList());
     }
 
+    /** 폴더 id 검증: null 이면 그대로 루트, 아니면 본인 소유 폴더인지 확인 후 반환. */
+    private Long resolveOwnedFolderId(Long userId, Long folderId) {
+        if (folderId == null) return null;
+        Folder folder = folderRepository.findById(folderId)
+                .orElseThrow(() -> new IllegalArgumentException("폴더를 찾을 수 없습니다."));
+        if (!folder.getUserId().equals(userId)) {
+            throw new SecurityException("해당 폴더에 대한 권한이 없습니다.");
+        }
+        return folderId;
+    }
+
+    /** 자료보관함 폴더 뷰 한 화면 조회(현재 위치의 하위 폴더 + 자료 + breadcrumb). parentId=null 이면 루트. */
+    public ArchiveListDTO getArchiveItems(Long userId, Long parentId) {
+        resolveOwnedFolderId(userId, parentId); // 위치 소유/존재 검증
+
+        List<FolderDTO> folders = (parentId == null
+                ? folderRepository.findByUserIdAndParentIdIsNullOrderByCreatedAtDesc(userId)
+                : folderRepository.findByUserIdAndParentIdOrderByCreatedAtDesc(userId, parentId))
+                .stream().map(FolderDTO::from).collect(Collectors.toList());
+
+        List<Material> rawMaterials = (parentId == null
+                ? materialRepository.findByUserIdAndFolderIdIsNullOrderByUploadedAtDesc(userId)
+                : materialRepository.findByUserIdAndFolderIdOrderByUploadedAtDesc(userId, parentId));
+
+        List<MaterialDTO> materials = rawMaterials.stream()
+                .filter(m -> m.getMaterialType() != MaterialType.REVIEW_NOTE)
+                .map(m -> {
+                    try { return convertToDTO(m); }
+                    catch (Exception e) {
+                        log.warn("getArchiveItems: convertToDTO failed for materialId={} err={}", m.getMaterialId(), e.getMessage());
+                        return convertToDTOWithoutS3(m);
+                    }
+                })
+                .collect(Collectors.toList());
+
+        // breadcrumb: 현재 폴더 → 루트로 거슬러 올라간 뒤 뒤집어 루트→현재 순
+        List<FolderDTO> breadcrumb = new java.util.ArrayList<>();
+        Long cursor = parentId;
+        int guard = 0;
+        while (cursor != null && guard++ < 1000) {
+            Folder f = folderRepository.findById(cursor).orElse(null);
+            if (f == null || !f.getUserId().equals(userId)) break;
+            breadcrumb.add(FolderDTO.from(f));
+            cursor = f.getParentId();
+        }
+        java.util.Collections.reverse(breadcrumb);
+
+        return ArchiveListDTO.builder()
+                .currentFolderId(parentId)
+                .breadcrumb(breadcrumb)
+                .folders(folders)
+                .materials(materials)
+                .build();
+    }
+
+    /** 자료를 다른 폴더로 이동(folderId=null 이면 루트로). 자료/대상 폴더 모두 본인 소유여야 한다. */
+    @Transactional
+    public MaterialDTO moveMaterial(Long userId, Long materialId, Long targetFolderId) {
+        Material material = materialRepository.findById(materialId)
+                .orElseThrow(() -> new IllegalArgumentException("자료를 찾을 수 없습니다."));
+        if (!material.getUserId().equals(userId)) {
+            throw new SecurityException("해당 자료에 대한 권한이 없습니다.");
+        }
+        material.setFolderId(resolveOwnedFolderId(userId, targetFolderId));
+        return convertToDTO(materialRepository.save(material));
+    }
+
     // 자료 상세 조회
     // context="review-note" 인 경우에만 오답노트(REVIEW_NOTE) 상세를 허용한다(전용 복습 화면 ReviewNoteArchiveDetail 진입).
     // 그 외(일반 자료보관함 상세) 경로로 오답노트 materialId가 들어오면 404 로 차단한다.
@@ -226,6 +308,7 @@ public class MaterialService {
                 .title(material.getTitle())
                 .materialType(material.getMaterialType())
                 .keywords(material.getKeywords())
+                .folderId(material.getFolderId())
                 .studyDate(material.getStudyDate())
                 .learningContent(material.getLearningContent())
                 .nextPlan(material.getNextPlan())
@@ -244,6 +327,7 @@ public class MaterialService {
                 .title(material.getTitle())
                 .materialType(material.getMaterialType())
                 .keywords(material.getKeywords())
+                .folderId(material.getFolderId())
                 .studyDate(material.getStudyDate())
                 .learningContent(material.getLearningContent())
                 .nextPlan(material.getNextPlan())

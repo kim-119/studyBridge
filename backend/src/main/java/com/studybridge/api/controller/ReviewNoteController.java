@@ -81,6 +81,15 @@ public class ReviewNoteController {
         return ResponseEntity.ok(reviewNoteService.updateMemo(userDetails.getId(), id, memo));
     }
 
+    // 복습 필요 분석: 오답노트 데이터 기반 AI 생성("OOO에 대한 개념이 부족하여 복습이 필요합니다. ...", 500자 내외)
+    //   본인 오답노트만 접근(없으면 404, 타인 403). AI 실패 시 데이터 기반 폴백 문장 반환.
+    @PostMapping("/{id}/review-needed")
+    public ResponseEntity<Map<String, Object>> reviewNeeded(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id) {
+        return ResponseEntity.ok(reviewNoteService.generateReviewNeeded(userDetails.getId(), id));
+    }
+
     // 유사문제: ai07 변형(없으면 원본 오답 재출제 폴백). body { wrongQuestionId, difficulty: easy|normal|hard, count }
     @PostMapping("/{id}/variant-question")
     public ResponseEntity<Map<String, Object>> variantQuestion(

@@ -19,6 +19,13 @@ public class MaterialDTO {
         private java.time.LocalDate studyDate;
         private String learningContent;
         private String nextPlan;
+        private Long folderId;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    public static class MoveRequest {
+        private Long folderId; // null 이면 루트(홈)로 이동
     }
 
     @Getter
@@ -34,6 +41,7 @@ public class MaterialDTO {
     private String title;
     private com.studybridge.api.entity.MaterialType materialType;
     private String keywords;
+    private Long folderId;
 
     // 학습일지
     private java.time.LocalDate studyDate;

@@ -53,6 +53,10 @@ public class Material {
     @Column(name = "file_size")
     private Long fileSize;
 
+    /** 소속 폴더 id. null 이면 루트(홈) 위치. 자료보관함 폴더 기능용(ddl-auto 로 nullable 컬럼 자동 추가). */
+    @Column(name = "folder_id")
+    private Long folderId;
+
     @Column(columnDefinition = "TEXT")
     private String extractedText;
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
-import { ListChecks, RotateCcw, Shuffle, Sparkles, FileText, Download, StickyNote, Archive, FolderCheck } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { ListChecks, RotateCcw, Shuffle, Sparkles, FileText, Download, StickyNote, Lightbulb } from 'lucide-react';
 import { reviewNoteService } from '../services/api';
 import {
   RetryPanel, VariantPanel, AiExplanationPanel,
@@ -166,14 +166,31 @@ function ReviewNoteList({ loading, error, items, onRetry, onOpen, onMemoSaved })
 }
 
 function ReviewNoteCard({ note, onOpen, onMemoSaved }) {
-  const navigate = useNavigate();
   const [showMemo, setShowMemo] = useState(false);
   const [memo, setMemo] = useState(note.memo ?? '');
   const [memoSaving, setMemoSaving] = useState(false);
-  // 오답노트는 생성 시 자료보관함(REVIEW_NOTE Material)에 자동 저장됨 → 중복 저장 방지, 보기로 전환
-  const savedToArchive = note.archiveMaterialId != null;
-  const openInArchive = () => {
-    if (savedToArchive) navigate(`/archive/reviewNote/${note.archiveMaterialId}?tab=retry`);
+
+  // 복습 필요 분석(AI) — 결과 캐싱(재클릭 토글), 로딩/에러 분리, 중복 호출 방지
+  const [rnOpen, setRnOpen] = useState(false);
+  const [rnText, setRnText] = useState('');
+  const [rnLoading, setRnLoading] = useState(false);
+  const [rnError, setRnError] = useState('');
+  const handleReviewNeeded = async () => {
+    if (rnText) { setRnOpen((v) => !v); return; } // 이미 생성됨 → 표시 토글(재호출 안 함)
+    if (rnLoading) return;                          // 중복 클릭 방지
+    setRnOpen(true);
+    setRnLoading(true);
+    setRnError('');
+    try {
+      const data = await reviewNoteService.reviewNeeded(noteId(note));
+      const text = data?.reviewNeededText || '';
+      if (text) setRnText(text);
+      else setRnError('복습 필요 분석을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+    } catch {
+      setRnError('복습 필요 분석을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+    } finally {
+      setRnLoading(false);
+    }
   };
 
   const viewPdf = async () => {
@@ -226,26 +243,34 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved }) {
         </div>
       </div>
 
-      {/* 메인 액션: 다시 풀기 / 유사문제 / AI 해설 */}
+      {/* 메인 액션: 다시 풀기 / 유사문제 / AI 해설 / 복습 필요 */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '14px' }}>
         <button style={btnPrimary} onClick={() => onOpen(note, 'retry')}><RotateCcw size={15} /> 다시 풀기</button>
         <button style={btnPrimary} onClick={() => onOpen(note, 'variant')}><Shuffle size={15} /> 유사문제 풀기</button>
         <button style={btnPrimary} onClick={() => onOpen(note, 'ai')}><Sparkles size={15} /> AI 해설</button>
+        <button style={{ ...btnPrimary, opacity: rnLoading ? 0.6 : 1 }} disabled={rnLoading} onClick={handleReviewNeeded}>
+          <Lightbulb size={15} /> {rnLoading ? '분석 중…' : '복습 필요'}
+        </button>
       </div>
 
-      {/* 보조 버튼: PDF 보기 / 컴퓨터에 저장 / 자료보관함에 저장(됨) / 메모 */}
+      {/* 복습 필요 분석 결과 (로딩/에러/결과 분리) */}
+      {rnOpen && (
+        <div style={{ marginTop: '12px', border: '1px solid #BBF7D0', background: '#F0FDF4', borderRadius: '10px', padding: '14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', color: '#15803D', fontWeight: 700, fontSize: '14px' }}>
+            <Lightbulb size={16} /> 복습 필요 분석
+          </div>
+          {rnLoading && <p style={{ margin: 0, fontSize: '13px', color: '#6B7280' }}>AI가 복습이 필요한 개념을 분석 중입니다…</p>}
+          {!rnLoading && rnError && <p style={{ margin: 0, fontSize: '13px', color: '#B91C1C' }}>{rnError}</p>}
+          {!rnLoading && !rnError && rnText && (
+            <p style={{ margin: 0, fontSize: '13.5px', lineHeight: 1.65, color: '#374151', whiteSpace: 'pre-wrap' }}>{rnText}</p>
+          )}
+        </div>
+      )}
+
+      {/* 보조 버튼: PDF 보기 / 컴퓨터에 저장 / 메모 */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '8px' }}>
         <button style={btn} onClick={viewPdf}><FileText size={15} /> PDF 보기</button>
         <button style={btn} onClick={savePdf}><Download size={15} /> 컴퓨터에 저장</button>
-        {savedToArchive ? (
-          <button
-            style={{ ...btn, border: '1px solid #BBF7D0', background: '#ECFDF5', color: '#15803D', cursor: 'pointer' }}
-            onClick={openInArchive}
-            title="이미 자료보관함에 저장되어 있습니다. 클릭하면 자료보관함에서 엽니다."
-          ><FolderCheck size={15} /> 자료보관함에 저장됨</button>
-        ) : (
-          <button style={{ ...btn, opacity: 0.6, cursor: 'default' }} disabled><Archive size={15} /> 자료보관함에 저장</button>
-        )}
         <button style={btn} onClick={() => setShowMemo((v) => !v)}><StickyNote size={15} /> 메모</button>
       </div>
 

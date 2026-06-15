@@ -10,6 +10,162 @@ import ReviewNoteLearningEntry from '../components/review-note/ReviewNoteLearnin
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
 import { cleanLearningOrNull, filterLearningList } from '../utils/learningContent';
 
+// detectedTextSource(페이지 텍스트 출처) 한글 라벨
+const DETECTED_SOURCE_LABEL = {
+  TEXT: '텍스트 추출', OCR: 'OCR 인식', CAPTION: '캡션 기반', TABLE: '표 기반',
+  IMAGE_DESCRIPTION: '이미지 설명 기반', MIXED: '혼합 분석', INSUFFICIENT: '텍스트 부족',
+};
+
+// AI 핵심 요약 노트(전공 분야·핵심 객체 중심) 결과 렌더 — 11개 섹션. studyNote.status==='SUCCESS' 일 때만 사용.
+function StudyNoteView({ note, onKeyword }) {
+  const list = (a) => (Array.isArray(a) ? a.filter(Boolean) : []);
+  const kws = list(note.keywords);
+  const core = list(note.coreContents);
+  const detailed = list(note.detailedCoreContents);
+  const pages = list(note.pageSummaries);
+  const points = list(note.studyPoints);
+  const questions = list(note.aiStudyQuestions);
+  const wikis = list(note.wikiSummaries);
+  const limits = list(note.limitations);
+  const coreObj = note.coreObjectLabel || note.coreObject;
+  const showOrig = note.coreObjectLabel && note.coreObject && note.coreObjectLabel !== note.coreObject;
+  const Section = ({ title, color = 'var(--color-primary)', children }) => (
+    <div className="glass-panel" style={{ padding: '18px 20px', borderLeft: `4px solid ${color}` }}>
+      <h4 style={{ margin: '0 0 12px', fontSize: '16px', color: 'var(--color-text-main)' }}>{title}</h4>
+      {children}
+    </div>
+  );
+  const ulStyle = { margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' };
+  const liStyle = { fontSize: '14px', lineHeight: '1.6', color: 'var(--color-text-muted)' };
+
+  // 세부 핵심 내용: pageSummaries 우선 → detailedCoreContents fallback → 없음 안내
+  const renderDetailed = () => {
+    if (pages.length > 0) {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {pages.map((p, i) => {
+            const src = String(p.detectedTextSource || '').toUpperCase();
+            const insufficient = src === 'INSUFFICIENT';
+            const concepts = list(p.keyConcepts);
+            const bullets = list(p.summaryBullets);
+            return (
+              <div key={i} style={{ border: `1px solid ${insufficient ? '#FDE68A' : 'var(--color-border)'}`, borderRadius: '10px', padding: '14px 16px', background: insufficient ? '#FFFBEB' : '#fff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                  <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)' }}>p.{p.page ?? (i + 1)}{p.title ? ` ${p.title}` : ''}</span>
+                  {src && (
+                    <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '6px', background: insufficient ? '#FEF3C7' : '#EFF6FF', color: insufficient ? '#92400E' : '#1D4ED8' }}>
+                      {DETECTED_SOURCE_LABEL[src] || src}
+                    </span>
+                  )}
+                </div>
+                {insufficient ? (
+                  <p style={{ margin: 0, fontSize: '13.5px', lineHeight: 1.6, color: '#92400E' }}>
+                    이 페이지는 PDF 텍스트 추출과 OCR 결과가 부족하여 핵심 내용을 명확히 식별하기 어렵습니다.
+                  </p>
+                ) : (
+                  <>
+                    {p.pageOverview && <p style={{ margin: '0 0 8px', fontSize: '13.5px', lineHeight: 1.6, color: 'var(--color-text-muted)' }}>{p.pageOverview}</p>}
+                    {concepts.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                        {concepts.map((c, k) => <span key={k} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}>{c}</span>)}
+                      </div>
+                    )}
+                    {bullets.length > 0 && (
+                      <ul style={{ margin: '0 0 8px', paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {bullets.map((b, k) => <li key={k} style={{ fontSize: '13.5px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{b}</li>)}
+                      </ul>
+                    )}
+                    {p.studyFocus && (
+                      <div style={{ fontSize: '13px', color: '#15803D', background: '#F0FDF4', borderRadius: '6px', padding: '6px 10px' }}>🎯 {p.studyFocus}</div>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+    if (detailed.length > 0) {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {detailed.map((d, i) => (
+            <div key={i}>
+              {d.title && <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)', marginBottom: '4px' }}>{d.title}</div>}
+              <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.7', color: 'var(--color-text-muted)', whiteSpace: 'pre-wrap' }}>{d.content}</p>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px' }}>세부 핵심 내용을 생성할 수 없습니다.</p>;
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {note.disclaimer && (
+        <div className="glass-panel" style={{ padding: '12px 16px', borderLeft: '4px solid #9CA3AF', backgroundColor: '#F9FAFB', fontSize: '13px', color: 'var(--color-text-muted)' }}>ℹ️ {note.disclaimer}</div>
+      )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+        {note.domainLabel && (
+          <span style={{ padding: '6px 14px', borderRadius: '20px', fontSize: '13px', fontWeight: 700, background: '#ECFDF5', color: '#15803D', border: '1px solid #BBF7D0' }}>자동 분류 분야: {note.domainLabel}</span>
+        )}
+        {coreObj && (
+          <span style={{ padding: '6px 14px', borderRadius: '20px', fontSize: '13px', fontWeight: 700, background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE' }}>핵심 객체: {coreObj}{showOrig ? ` (${note.coreObject})` : ''}</span>
+        )}
+      </div>
+      {note.documentOverview && (
+        <Section title="📌 문서 개요"><p style={{ margin: 0, fontSize: '15px', lineHeight: '1.7', color: 'var(--color-text-muted)', whiteSpace: 'pre-wrap' }}>{note.documentOverview}</p></Section>
+      )}
+      {kws.length > 0 && (
+        <div>
+          <h4 style={{ margin: '0 0 8px', fontSize: '16px', color: 'var(--color-text-main)' }}>🔑 핵심 키워드</h4>
+          <p style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--color-text-muted)' }}>키워드를 클릭하면 AI/Wikipedia 기반 개념 정의를 볼 수 있어요.</p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {kws.map((kw) => (
+              <button key={kw} onClick={() => onKeyword && onKeyword(kw)} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)', border: '1px solid var(--color-border)', cursor: 'pointer' }}>#{kw}</button>
+            ))}
+          </div>
+        </div>
+      )}
+      {core.length > 0 && (
+        <Section title="🧩 핵심 내용"><ul style={ulStyle}>{core.map((c, i) => <li key={i} style={liStyle}>{c}</li>)}</ul></Section>
+      )}
+      <div>
+        <h4 style={{ margin: '0 0 4px', fontSize: '16px', color: 'var(--color-text-main)' }}>📑 세부 핵심 내용</h4>
+        <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--color-text-muted)' }}>PDF의 각 페이지에서 추출한 핵심 내용을 페이지별로 정리했습니다.</p>
+        {renderDetailed()}
+      </div>
+      {points.length > 0 && (
+        <Section title="🎯 학습 포인트" color="#3B82F6"><ul style={ulStyle}>{points.map((p, i) => <li key={i} style={liStyle}>{p}</li>)}</ul></Section>
+      )}
+      {questions.length > 0 && (
+        <Section title="❓ AI 학습 질문" color="#F59E0B"><ul style={ulStyle}>{questions.map((q, i) => <li key={i} style={liStyle}>{q}</li>)}</ul></Section>
+      )}
+      {wikis.length > 0 && (
+        <Section title="📚 Wikipedia 보강 정보" color="#8B5CF6">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {wikis.map((w, i) => (
+              <div key={i}>
+                {w.title && (
+                  <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)', marginBottom: '2px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {w.title}
+                    {w.used && <span style={{ fontSize: '11px', fontWeight: 600, color: '#6D28D9', background: '#EDE9FE', borderRadius: '4px', padding: '1px 6px' }}>보강 반영</span>}
+                  </div>
+                )}
+                <p style={{ margin: 0, fontSize: '13.5px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>{w.summary}</p>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+      {limits.length > 0 && (
+        <Section title="⚠️ 한계" color="#9CA3AF"><ul style={ulStyle}>{limits.map((l, i) => <li key={i} style={liStyle}>{l}</li>)}</ul></Section>
+      )}
+    </div>
+  );
+}
+
 // F. 빠른 체감 — 실제 streaming 전, 단계별 진행 문구 + skeleton (멀티에이전트 SSE와 무관, 자료보관함 전용)
 const ANALYZE_STEPS = ['텍스트 추출 중', '요약 생성 중', '핵심 내용 생성 중', '세부 핵심 내용 생성 중', '키워드 생성 중', '로드맵 생성 중', '마무리 중'];
 function AnalyzingProgress() {
@@ -55,6 +211,7 @@ export default function ArchiveDetail() {
 
   // 각 탭별 실 API 데이터 상태
   const [summaryData, setSummaryData] = useState(null);
+  const [studyNote, setStudyNote] = useState(null); // AI 핵심 요약 노트(전공 분야·핵심 객체 중심), PDF 전용
   const [quizzes, setQuizzes] = useState([]);
   const [selectedQuizId, setSelectedQuizId] = useState(null);
   const [roadmapSteps, setRoadmapSteps] = useState([]);
@@ -570,6 +727,29 @@ export default function ArchiveDetail() {
       if (pollInterval) clearInterval(pollInterval);
     };
   }, [material, id]);
+
+  // AI 핵심 요약 노트(전공 분야·핵심 객체 중심) 로드 + PENDING/RUNNING 폴링 (PDF 전용, 별도 버튼 없음)
+  useEffect(() => {
+    if (!userId || !id || !material) return;
+    if (material.materialType !== 'PDF') { setStudyNote(null); return; }
+    let cancelled = false;
+    let timer;
+    const tick = async () => {
+      try {
+        const data = await materialService.getStudyNote(id);
+        if (cancelled) return;
+        setStudyNote(data || null);
+        if (data && (data.status === 'PENDING' || data.status === 'RUNNING')) {
+          timer = setTimeout(tick, 5000);
+        }
+      } catch (e) {
+        if (!cancelled) console.warn('AI 핵심 요약 노트 로드 실패:', e);
+      }
+    };
+    tick();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, id, material?.materialId, material?.materialType, material?.extractionStatus]);
 
   // 채팅 메시지 끝으로 자동 스크롤
   useEffect(() => {
@@ -1677,9 +1857,32 @@ export default function ArchiveDetail() {
             <div className="animate-fade-in" style={{ paddingBottom: '32px' }}>
               <h3 style={{ margin: '0 0 24px', fontSize: '20px' }}>AI 핵심 요약 노트</h3>
               <p style={{ color: 'var(--color-text-muted)', fontSize: '15px', marginBottom: '24px' }}>
-                문서 전체 맥락을 분석하여 도출된 종합 핵심 요약입니다.
+                PDF의 전공 분야와 핵심 객체를 분석하여 생성한 학습용 핵심 요약 노트입니다.
               </p>
 
+              {/* 전공 분야·핵심 객체 중심 학습 노트 상태 (PENDING/RUNNING/FAILED) */}
+              {studyNote && studyNote.status !== 'SUCCESS' && (
+                <div className="glass-panel" style={{ padding: '16px 18px', borderLeft: `4px solid ${studyNote.status === 'FAILED' ? '#EF4444' : 'var(--color-primary)'}`, marginBottom: '20px', color: 'var(--color-text-muted)', fontSize: '14px' }}>
+                  {studyNote.status === 'PENDING' && 'AI 핵심 요약 노트 생성 대기 중입니다.'}
+                  {studyNote.status === 'RUNNING' && 'AI 핵심 요약 노트를 생성 중입니다.'}
+                  {studyNote.status === 'FAILED' && 'AI 핵심 요약 노트를 생성하지 못했습니다. PDF 텍스트, OCR, 캡션 또는 표 정보가 부족할 수 있습니다.'}
+                </div>
+              )}
+
+              {/* 전공 분야·핵심 객체 중심 학습 노트 결과 (SUCCESS) */}
+              {studyNote && studyNote.status === 'SUCCESS' && (
+                <>
+                  {studyNote.fallback && (
+                    <div className="glass-panel" style={{ padding: '14px 16px', borderLeft: '4px solid #F59E0B', backgroundColor: '#FFFBEB', color: '#92400E', marginBottom: '20px', fontSize: '14px', lineHeight: 1.6 }}>
+                      PDF에서 명확한 전공 핵심 객체를 충분히 식별하지 못해 기본 학습 가이드로 생성되었습니다.
+                    </div>
+                  )}
+                  <StudyNoteView note={studyNote} onKeyword={setActiveKeyword} />
+                </>
+              )}
+
+              {/* studyNote 결과가 없을 때만 기존 종합 요약을 폴백으로 표시(회귀 방지) */}
+              {!(studyNote && studyNote.status === 'SUCCESS') && (<>
               {showAnalyzing ? (
                 <AnalyzingProgress />
               ) : isTextEmpty ? (
@@ -1835,6 +2038,7 @@ export default function ArchiveDetail() {
                 )}
               </div>
               )}
+              </>)}
             </div>
         );
       }

@@ -1,34 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { FileText, File as FileIcon, Plus, X, AlignLeft, MessageSquare, CalendarDays } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  FileText, File as FileIcon, Plus, X, AlignLeft, MessageSquare, CalendarDays,
+  Folder as FolderIcon, FolderPlus, MoreVertical, ChevronRight, ArrowLeft, Upload, Check,
+} from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
-import { materialService, reviewNoteService } from '../services/api';
+import { materialService, folderService } from '../services/api';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
-
-// 오답노트 카드 보조 버튼 공통 스타일
-const rnBtn = { padding: '5px 10px', fontSize: '12px', borderRadius: '8px', cursor: 'pointer' };
-
-// 탭별 빈 상태 카드 정의 — 4개 탭 모두 동일한 구조/스타일로 노출 (특정 탭만 빠지는 회귀 방지)
-const EMPTY_STATES = {
-  journal: { icon: FileText, title: '등록된 학습일지가 없습니다', desc: '학습일지 자료를 업로드해 보관할 수 있습니다.' },
-  pdf: { icon: FileIcon, title: '등록된 학습 PDF가 없습니다', desc: '강의자료, 교재, 슬라이드 PDF를 업로드해 보관할 수 있습니다.' },
-  reviewNote: { icon: FileIcon, title: '등록된 오답노트가 없습니다', desc: '틀린 문제와 미응답 문제를 오답노트로 저장해 복습할 수 있습니다.' },
-  planner: { icon: CalendarDays, title: '등록된 플래너가 없습니다', desc: '대시보드 플래너 탭에서 PDF로 저장한 파일을 업로드해 보관할 수 있습니다.' },
-};
-
-// 모든 탭이 동일한 흰색 rounded 빈 상태 카드를 쓰도록 공통화 (기존 플래너 빈 상태와 동일한 높이/그림자/여백/중앙정렬)
-function EmptyState({ tab }) {
-  const cfg = EMPTY_STATES[tab];
-  if (!cfg) return null;
-  const Icon = cfg.icon;
-  return (
-    <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
-      <Icon size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
-      <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>{cfg.title}</h3>
-      <p style={{ margin: 0 }}>{cfg.desc}</p>
-    </div>
-  );
-}
 
 // 의미 없는 제목 차단 — 저장 요청을 보내기 전에 막는다.
 const BLOCKED_TITLES = ['', ' ', 'ㅇㅇ', 'ㅎㅎ', 'test', 'sample', 'planner', '플래너', '무제', '제목 없음'];
@@ -41,17 +19,11 @@ function isMeaninglessTitle(raw) {
 }
 
 // 업로드 전 AI 유형 판별(classify-before-save) 사용 여부 — 기본 OFF.
-//  - ai07(material/classify)은 추출 텍스트 없이 파일명/메타만 받으면 항상 recommended=UNKNOWN·is_mismatch=true 를
-//    돌려주기 때문에, 모든 정상 업로드가 "업로드 유형 확인" 모달에 걸려 자료가 등록되지 않는 문제가 있었다.
-//  - 따라서 안정화를 위해 기본적으로 classify 단계를 건너뛰고, 선택한 materialType 그대로 바로 업로드한다.
-//  - 다시 켜려면 프론트 빌드/실행 환경에 VITE_MATERIAL_CLASSIFY_ENABLED=true 를 준다.
 const CLASSIFY_BEFORE_SAVE_ENABLED =
   String(import.meta.env.VITE_MATERIAL_CLASSIFY_ENABLED || '').toLowerCase() === 'true';
 
-// ── 플래너 카드 표시/정렬 유틸 (프론트 표시 전용, DB title 은 변경하지 않음) ───────────────
-// UUID(36자)_ 접두어 제거(파일명/제목 앞에 붙는 경우)
+// ── 플래너/PDF 표시 제목 유틸 (프론트 표시 전용, DB title 은 변경하지 않음) ───────────────
 const UUID_PREFIX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}_/;
-// 대표 제목으로 쓰면 안 되는 의미 없는 제목들(키워드 폴백 대상)
 const MEANINGLESS_PLANNER_TITLES = new Set(
   ['공부 플래너', '플래너', 'ㅇㅇ', 'ㅎㅎ', '무제', '제목 없음', '이름 없음', 'planner', 'sample', 'test']
 );
@@ -60,111 +32,156 @@ function cleanText(s) {
   return String(s || '').replace(UUID_PREFIX, '').trim();
 }
 
-// keywords 가 배열/콤마문자열 무엇이든 정리된 배열로 변환
 function toKeywordArray(kw) {
   if (Array.isArray(kw)) return kw.map((k) => String(k).trim()).filter(Boolean);
   if (typeof kw === 'string') return kw.split(',').map((k) => k.trim()).filter(Boolean);
   return [];
 }
 
-// A. weekNumber 추출 — 명시값 우선, 없으면 title 의 'N주차'/'N일차'에서 숫자. 없으면 null.
 function getPlannerWeekNumber(material) {
   if (material == null) return null;
-  // 1) 명시 필드
   const direct = material.weekNumber;
   if (direct != null && !Number.isNaN(Number(direct))) return Number(direct);
-  // 2) metadata.weekNumber (객체 또는 JSON 문자열)
   let meta = material.metadata ?? material.plannerMetadataJson ?? null;
   if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { meta = null; } }
   if (meta && meta.weekNumber != null && !Number.isNaN(Number(meta.weekNumber))) {
     return Number(meta.weekNumber);
   }
   const title = cleanText(material.rawTitle || material.title);
-  // 3) 'N주차'
   const w = title.match(/(\d+)\s*주차/);
   if (w) return Number(w[1]);
-  // 4) 'N일차' → N 을 그대로 주차 번호로 사용(요구사항)
   const d = title.match(/(\d+)\s*일차/);
   if (d) return Number(d[1]);
   return null;
 }
 
-// B. 핵심키워드 제목 추출
 function getPlannerKeywordTitle(material) {
   if (material == null) return '핵심 키워드 미설정';
-  // 1) keywords 배열/문자열의 앞 2~4개
   const kws = toKeywordArray(material.keywords);
   if (kws.length) return kws.slice(0, 4).join(' ');
-  // 2) title 에서 'N일차:' / 'N주차 -' 등 접두어 제거한 나머지
   const title = cleanText(material.rawTitle || material.title);
   const stripped = title.replace(/^\s*\d+\s*(주차|일차)\s*[:\-–~]?\s*/, '').trim();
   if (stripped && !MEANINGLESS_PLANNER_TITLES.has(stripped) && !MEANINGLESS_PLANNER_TITLES.has(stripped.toLowerCase())) {
     return stripped;
   }
-  // 3) title 이 의미 없으면 파일명(확장자 제거)
   const fname = cleanText(material.originalFileName).replace(/\.[^.]+$/, '').trim();
   if (fname && !MEANINGLESS_PLANNER_TITLES.has(fname) && !MEANINGLESS_PLANNER_TITLES.has(fname.toLowerCase())) {
     return fname;
   }
-  // 4) 그래도 없으면
   return '핵심 키워드 미설정';
 }
 
-// C. 표시 제목 — 'N주차 - 핵심키워드'. 주차 정보 없으면 키워드만(공부 플래너/파일명 단독 노출 금지).
 function getPlannerDisplayTitle(material) {
   const week = getPlannerWeekNumber(material);
   const kw = getPlannerKeywordTitle(material);
   return week != null ? `${week}주차 - ${kw}` : kw;
 }
 
-// 정렬 동순위 tiebreak: date 오름차순 → id 오름차순
-function comparePlannerDateOrId(a, b) {
-  const ad = a?.date || '';
-  const bd = b?.date || '';
-  if (ad !== bd) return ad < bd ? -1 : 1;
-  return (Number(a?.id) || 0) - (Number(b?.id) || 0);
+// 자료 카드 표시 제목 (타입별)
+function getMaterialDisplayTitle(m) {
+  if (m.materialType === 'PLANNER') return getPlannerDisplayTitle(m);
+  const t = cleanText(m.title || m.originalFileName || '이름 없음');
+  return t || '이름 없음';
 }
 
-// 2. 플래너 정렬: weekNumber 숫자 오름차순, 없는 자료는 맨 뒤(문자열 정렬 금지 → 10주차가 2주차 뒤).
-function comparePlanners(a, b) {
-  const aw = getPlannerWeekNumber(a);
-  const bw = getPlannerWeekNumber(b);
-  if (aw == null && bw == null) return comparePlannerDateOrId(a, b);
-  if (aw == null) return 1;
-  if (bw == null) return -1;
-  if (aw !== bw) return aw - bw;
-  return comparePlannerDateOrId(a, b);
+// 타입별 배지/썸네일 메타
+const TYPE_META = {
+  STUDY_LOG: { label: '학습일지', Icon: FileText, badge: 'doc-badge-journal' },
+  PDF: { label: 'PDF', Icon: FileIcon, badge: 'doc-badge-pdf' },
+  PLANNER: { label: '플래너', Icon: CalendarDays, badge: 'doc-badge-planner' },
+};
+
+function materialDate(m) {
+  if (m.uploadedAt) return String(m.uploadedAt).split('T')[0];
+  if (m.studyDate) return String(m.studyDate);
+  return '';
+}
+
+// 상단 유형 필터 탭 (폴더는 모든 탭에서 표시, 자료만 유형별 필터)
+const ARCHIVE_TABS = [
+  { key: 'ALL', label: '전체' },
+  { key: 'LEARNING_PDF', label: '학습PDF' },
+  { key: 'STUDY_LOG', label: '학습일지' },
+  { key: 'PLANNER', label: '플래너' },
+];
+
+// 자료(material)의 유형을 탭 키로 매핑. materialType 우선, 없으면 제목/파일명 보조 판별.
+function materialTabKind(m) {
+  const raw = String(m.materialType ?? m.type ?? m.sourceType ?? m.category ?? '').toUpperCase();
+  if (raw.includes('PLANNER') || raw.includes('PLAN') || raw.includes('SCHEDULE')) return 'PLANNER';
+  if (raw.includes('STUDY_LOG') || raw.includes('LEARNING_LOG') || raw.includes('JOURNAL') || raw.includes('DIARY')) return 'STUDY_LOG';
+  if (raw.includes('PDF') || raw.includes('MATERIAL') || raw.includes('DOCUMENT')) return 'LEARNING_PDF';
+  const title = String(m.title ?? m.originalFileName ?? '').toLowerCase();
+  if (title.endsWith('.pdf')) return 'LEARNING_PDF';
+  return 'LEARNING_PDF'; // 알 수 없는 파일 자료는 학습PDF 탭에 노출(누락 방지)
+}
+
+// 폴더 전체 목록에서 특정 폴더의 자기+하위 id 집합 (이동 시 순환 후보 제외용)
+function descendantIds(allFolders, rootId) {
+  const childrenMap = {};
+  allFolders.forEach((f) => {
+    const p = f.parentId == null ? 'root' : f.parentId;
+    (childrenMap[p] = childrenMap[p] || []).push(f);
+  });
+  const result = new Set([rootId]);
+  const stack = [rootId];
+  while (stack.length) {
+    const cur = stack.pop();
+    (childrenMap[cur] || []).forEach((c) => {
+      if (!result.has(c.folderId)) { result.add(c.folderId); stack.push(c.folderId); }
+    });
+  }
+  return result;
+}
+
+// 폴더 경로 라벨 ("홈 > a > b") — 이동 대상 select 표시용
+function folderPathLabel(allFolders, folderId) {
+  const byId = {};
+  allFolders.forEach((f) => { byId[f.folderId] = f; });
+  const parts = [];
+  let cursor = folderId;
+  let guard = 0;
+  while (cursor != null && guard++ < 1000) {
+    const f = byId[cursor];
+    if (!f) break;
+    parts.unshift(f.name);
+    cursor = f.parentId;
+  }
+  return ['홈', ...parts].join(' > ');
 }
 
 export default function Archive() {
   const { userId } = useAuth();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState('journal');
-  const [openedModalType, setOpenedModalType] = useState(null);
-  const [addMaterialType, setAddMaterialType] = useState('journal');
-  const [visibleCount, setVisibleCount] = useState(6);
-  const [selectedJournal, setSelectedJournal] = useState(null);
-  const [isJournalEditMode, setIsJournalEditMode] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [journals, setJournals] = useState([]);
-  const [pdfs, setPdfs] = useState([]);
-  const [planners, setPlanners] = useState([]);
-  const [reviewNotes, setReviewNotes] = useState([]); // 오답노트(REVIEW_NOTE) 자료 (materials 기반, 하위호환)
+  const folderIdParam = searchParams.get('folderId');
+  const currentFolderId = folderIdParam != null && folderIdParam !== '' ? Number(folderIdParam) : null;
+
+  // 폴더 뷰 상태
+  const [folders, setFolders] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [breadcrumb, setBreadcrumb] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  // 서버 조회 실패(401/403/500 등)를 빈 목록과 명확히 구분 — 실패를 empty로 표시하지 않는다.
-  const [materialsError, setMaterialsError] = useState('');
-  // D. 업로드 전 유형 판별 불일치 확인 모달 데이터 (null이면 닫힘)
+  const [loadError, setLoadError] = useState('');
+
+  // UI 상태
+  const [activeArchiveTab, setActiveArchiveTab] = useState('ALL'); // ALL | LEARNING_PDF | STUDY_LOG | PLANNER
+  const [sortMode, setSortMode] = useState('recent'); // 'recent' | 'name'
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState(new Set());
+  const [openMenuKey, setOpenMenuKey] = useState(null); // ⋮ / 신규 메뉴
+
+  // 모달 상태
+  const [openedModalType, setOpenedModalType] = useState(null); // 'addMaterial'
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [createFolderName, setCreateFolderName] = useState('');
+  const [renameState, setRenameState] = useState(null); // {kind, id, name}
+  const [moveState, setMoveState] = useState(null); // {kind, id, name, targetId, options}
+
+  // 자료 추가(업로드) 폼 상태
+  const [addMaterialType, setAddMaterialType] = useState('pdf');
   const [classifyInfo, setClassifyInfo] = useState(null);
-  // L. 오답노트 탭 전용 — 상단 /review-notes 페이지와 동일한 GET /api/review-notes 데이터(올바른 reviewNoteId)
-  const [reviewNoteItems, setReviewNoteItems] = useState([]);
-  const [reviewNotesLoading, setReviewNotesLoading] = useState(false);
-  const [reviewNotesError, setReviewNotesError] = useState('');
-
-  const [journalSummary, setJournalSummary] = useState('');
-  const [journalFeedback, setJournalFeedback] = useState([]);
-  const [journalFeedbackStruct, setJournalFeedbackStruct] = useState(null); // 구조화 피드백 {summary,strengths,...}
-  const [regeneratingFeedback, setRegeneratingFeedback] = useState(false);
-
   const [formTitle, setFormTitle] = useState('');
   const [formDate, setFormDate] = useState(new Date().toISOString().split('T')[0]);
   const [formKeywords, setFormKeywords] = useState('');
@@ -174,11 +191,18 @@ export default function Archive() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const addFileInputRef = useRef(null);
 
+  // 학습일지 모달 상태
+  const [selectedJournal, setSelectedJournal] = useState(null);
+  const [isJournalEditMode, setIsJournalEditMode] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editDate, setEditDate] = useState('');
   const [editKeywords, setEditKeywords] = useState('');
   const [editContent, setEditContent] = useState('');
   const [editNextPlan, setEditNextPlan] = useState('');
+  const [journalSummary, setJournalSummary] = useState('');
+  const [journalFeedback, setJournalFeedback] = useState([]);
+  const [journalFeedbackStruct, setJournalFeedbackStruct] = useState(null);
+  const [regeneratingFeedback, setRegeneratingFeedback] = useState(false);
 
   const checkAuth = () => {
     if (!userId) {
@@ -189,91 +213,105 @@ export default function Archive() {
     return true;
   };
 
-  const fetchMaterials = async () => {
+  // ── 폴더 뷰 데이터 로드 ─────────────────────────────────────────────
+  const fetchItems = async () => {
     if (!userId) return;
     try {
       setIsLoading(true);
-      setMaterialsError('');
-      const data = await materialService.getMaterials();
-      const list = Array.isArray(data) ? data : [];
-
-      const fetchedJournals = list
-        .filter((item) => item.materialType === 'STUDY_LOG')
-        .map((item) => ({
-          id: item.materialId,
-          title: item.title || '제목 없음',
-          date: item.studyDate || (item.uploadedAt ? item.uploadedAt.split('T')[0] : ''),
-          tag: '학습일지',
-          description: item.learningContent
-            ? item.learningContent.length > 100
-              ? item.learningContent.substring(0, 100) + '...'
-              : item.learningContent
-            : '학습 내용이 비어 있습니다.',
-          stats: { time: '-', solved: 0, score: '-' },
-          keywords: item.keywords ? item.keywords.split(',').map((k) => k.trim()) : [],
-          content: item.learningContent || '',
-          nextPlan: item.nextPlan || '',
-        }));
-
-      const fetchedPdfs = list
-        .filter((item) => item.materialType === 'PDF')
-        .map((item) => {
-          let displayTitle = item.title || item.originalFileName || '이름 없음';
-          // UUID(36자) + '_' 형태가 앞에 붙어있으면 제거
-          const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}_/;
-          if (uuidRegex.test(displayTitle)) {
-            displayTitle = displayTitle.replace(uuidRegex, '');
-          }
-          return {
-            id: item.materialId,
-            title: displayTitle,
-            date: item.uploadedAt ? item.uploadedAt.split('T')[0] : '',
-            tag: '학습PDF',
-            extractionStatus: item.extractionStatus || 'SUCCESS',
-          };
-        });
-
-      const fetchedPlanners = list
-        .filter((item) => item.materialType === 'PLANNER')
-        .map((item) => ({
-          id: item.materialId,
-          title: item.title || item.originalFileName || '이름 없음',
-          // 원본 제목/파일명/키워드/주차 원천을 표시 함수가 쓸 수 있게 그대로 실어둔다(DB 값 변경 없음).
-          rawTitle: item.title || '',
-          originalFileName: item.originalFileName || '',
-          keywords: item.keywords || '',
-          // Spring DTO가 optional 로 내려주면 사용(없으면 undefined → title 파싱으로 폴백)
-          weekNumber: item.weekNumber,
-          metadata: item.metadata || item.plannerMetadata || null,
-          date: item.uploadedAt ? item.uploadedAt.split('T')[0] : '',
-          tag: '플래너',
-          extractionStatus: item.extractionStatus || 'SUCCESS',
-        }));
-
-      const fetchedReviewNotes = list
-        .filter((item) => item.materialType === 'REVIEW_NOTE')
-        .map((item) => ({
-          id: item.materialId,
-          title: item.title || item.originalFileName || '오답노트',
-          date: item.uploadedAt ? item.uploadedAt.split('T')[0] : '',
-          tag: '오답노트',
-          url: item.s3PresignedUrl || null,
-        }));
-
-      setJournals(fetchedJournals);
-      setPdfs(fetchedPdfs);
-      setPlanners(fetchedPlanners);
-      setReviewNotes(fetchedReviewNotes);
+      setLoadError('');
+      const data = await materialService.getArchiveItems(currentFolderId);
+      setFolders(Array.isArray(data?.folders) ? data.folders : []);
+      setMaterials(Array.isArray(data?.materials) ? data.materials : []);
+      setBreadcrumb(Array.isArray(data?.breadcrumb) ? data.breadcrumb : []);
     } catch (error) {
-      console.error('자료 목록 조회 실패:', error);
-      // 실패를 빈 목록으로 위장하지 않는다. 기존 목록은 유지하고 에러 상태만 세운다.
-      setMaterialsError('자료 목록을 불러오지 못했습니다. 다시 시도해주세요.');
+      console.error('자료보관함 조회 실패:', error);
+      setLoadError(error.response?.data?.message || '자료 목록을 불러오지 못했습니다. 다시 시도해주세요.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // I/J/K. AI 피드백 정규화 — 구조화(JSON)면 섹션화, 문자열이면 마크다운 제거 후 줄 분리
+  useEffect(() => {
+    if (userId) {
+      setSelectionMode(false);
+      setSelectedKeys(new Set());
+      setOpenMenuKey(null);
+      fetchItems();
+    } else {
+      setFolders([]);
+      setMaterials([]);
+      setBreadcrumb([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, currentFolderId]);
+
+  // 다른 화면 갔다가 돌아오면 서버 기준 재조회
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && userId) fetchItems();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, currentFolderId]);
+
+  // 메뉴 바깥 클릭 시 닫기 — 풀스크린 오버레이 대신 document 리스너(오버레이가 메뉴 클릭을 가로채는 문제 방지)
+  useEffect(() => {
+    if (!openMenuKey) return;
+    const onDocMouseDown = (e) => {
+      if (e.target.closest('.doc-menu') || e.target.closest('.doc-more') || e.target.closest('.doc-new')) return;
+      setOpenMenuKey(null);
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, [openMenuKey]);
+
+  // ── 네비게이션 ─────────────────────────────────────────────────────
+  const openFolder = (folderId) => {
+    setOpenMenuKey(null);
+    setSelectionMode(false);
+    setSelectedKeys(new Set());
+    if (folderId == null) setSearchParams({});
+    else setSearchParams({ folderId: String(folderId) });
+  };
+
+  const goBack = () => {
+    if (breadcrumb.length <= 1) openFolder(null);
+    else openFolder(breadcrumb[breadcrumb.length - 2].folderId);
+  };
+
+  // ── 자료 클릭: 타입별 분기 (폴더는 절대 자료 상세/AI 로 가지 않음) ─────
+  const openMaterial = (m) => {
+    if (!checkAuth()) return;
+    if (m.materialType === 'STUDY_LOG') {
+      const journal = {
+        id: m.materialId,
+        title: m.title || '제목 없음',
+        date: materialDate(m),
+        tag: '학습일지',
+        keywords: m.keywords ? m.keywords.split(',').map((k) => k.trim()).filter(Boolean) : [],
+        content: m.learningContent || '',
+        nextPlan: m.nextPlan || '',
+      };
+      setSelectedJournal(journal);
+      setEditTitle(journal.title);
+      setEditDate(journal.date);
+      setEditKeywords(journal.keywords.join(', '));
+      setEditContent(journal.content);
+      setEditNextPlan(journal.nextPlan);
+      setIsJournalEditMode(false);
+      fetchJournalAiData(journal.id);
+    } else {
+      // PDF / PLANNER → 기존 자료 상세 페이지 (materialId 그대로 사용)
+      navigate(`/archive/pdf/${m.materialId}`, { state: { item: m } });
+    }
+  };
+
+  // ── 학습일지 AI 데이터 (모달) ────────────────────────────────────────
   const normalizeFeedback = (raw) => {
     if (!raw) return { struct: null, lines: [] };
     let obj = null;
@@ -293,7 +331,6 @@ export default function Archive() {
         lines: [],
       };
     }
-    // 문자열 fallback: 마크다운 제거 후 번호/줄 기준 분리
     const text = Array.isArray(obj) ? obj.map(String).join('\n') : String(raw);
     const lines = sanitizeMarkdownText(text)
       .split(/\n+/).map((l) => l.replace(/^\s*\d+[.)]\s*/, '').trim()).filter(Boolean);
@@ -325,7 +362,6 @@ export default function Archive() {
     }
   };
 
-  // L. 균형 잡힌 피드백 다시 생성
   const handleRegenerateFeedback = async () => {
     if (regeneratingFeedback || !selectedJournal?.id) return;
     try {
@@ -342,12 +378,11 @@ export default function Archive() {
     }
   };
 
-  // J/K. AI 피드백 본문 렌더 — 구조화면 섹션화(장점/권장/우려/다음행동), 문자열이면 전체 피드백 카드 + 균형 경고
   const FB_SECTIONS = [
-    { key: 'strengths', label: '장점', color: '#10B981', min: 8 },
-    { key: 'recommendations', label: '권장사항', color: '#3B82F6', min: 8 },
-    { key: 'concerns', label: '우려사항 / 비판적 개선점', color: '#F59E0B', min: 8 },
-    { key: 'nextActions', label: '다음 행동', color: '#8B5CF6', min: 0 },
+    { key: 'strengths', label: '장점', color: '#10B981' },
+    { key: 'recommendations', label: '권장사항', color: '#3B82F6' },
+    { key: 'concerns', label: '우려사항 / 비판적 개선점', color: '#F59E0B' },
+    { key: 'nextActions', label: '다음 행동', color: '#8B5CF6' },
   ];
   const fbWarn = (msg) => (
     <div style={{ padding: '12px 14px', borderRadius: '8px', backgroundColor: '#FFFBEB', border: '1px solid #FDE68A', color: '#92400E', fontSize: '13.5px', lineHeight: 1.6 }}>{msg}</div>
@@ -384,7 +419,6 @@ export default function Archive() {
         </div>
       );
     }
-    // 문자열 fallback — 마크다운 제거된 줄들. 장점 위주 탐지.
     const joined = journalFeedback.join(' ');
     const hasNeg = /(개선|아쉬|부족|권장|주의|우려|보완|위험|문제|보강|한계)/.test(joined);
     const strengthOnly = journalFeedback.length > 1 && !hasNeg;
@@ -403,76 +437,26 @@ export default function Archive() {
     );
   };
 
-  // L. 오답노트 탭 데이터 — 상단 /review-notes 와 동일 소스. 실패(error)와 빈 목록(empty)을 구분.
-  const fetchReviewNotes = async () => {
-    if (!userId) return;
-    setReviewNotesLoading(true);
-    setReviewNotesError('');
-    const { ok, items, error } = await reviewNoteService.listReviewNotes();
-    if (!ok) {
-      setReviewNoteItems([]);
-      setReviewNotesError(error || '오답노트 목록을 불러오지 못했습니다. 다시 시도해주세요.');
-    } else {
-      setReviewNoteItems(Array.isArray(items) ? items : []);
-    }
-    setReviewNotesLoading(false);
-  };
-
-  useEffect(() => {
-    if (userId) {
-      fetchMaterials();
-      fetchReviewNotes();
-    } else {
-      setJournals([]);
-      setPdfs([]);
-      setPlanners([]);
-      setReviewNoteItems([]);
-    }
-  }, [userId]);
-
-  // N. 새로고침/이동 후 유지: 다른 화면에 갔다가 자료보관함으로 돌아와 탭이 다시 보이면 서버에서 재조회.
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === 'visible' && userId) {
-        fetchMaterials();
-        fetchReviewNotes();
-      }
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', onVisible);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', onVisible);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
-
-  const handleTabChange = (tab) => {
-    setActiveTab(tab);
-    setVisibleCount(6);
-    // 탭 변경 시에도 항상 서버 기준으로 최신화 (DB metadata가 source of truth)
-    if (userId) {
-      if (tab === 'reviewNote') fetchReviewNotes();
-      else fetchMaterials();
-    }
-  };
-
-  const handleOpenDetail = (type, item) => {
+  const handleUpdateJournal = async () => {
     if (!checkAuth()) return;
-    if (type === 'journal') {
-      setSelectedJournal(item);
-      setEditTitle(item.title);
-      setEditDate(item.date);
-      setEditKeywords(item.keywords.join(', '));
-      setEditContent(item.content);
-      setEditNextPlan(item.nextPlan);
+    if (!editTitle.trim()) { alert('제목을 입력해주세요.'); return; }
+    try {
+      await materialService.updateMaterial(selectedJournal.id, { title: editTitle, keywords: editKeywords });
+      alert('학습일지가 수정되었습니다.');
       setIsJournalEditMode(false);
-      fetchJournalAiData(item.id);
-    } else {
-      navigate(`/archive/${type}/${item.id}`, { state: { item } });
+      fetchItems();
+      setSelectedJournal((prev) => ({
+        ...prev,
+        title: editTitle,
+        keywords: editKeywords.split(',').map((k) => k.trim()).filter(Boolean),
+      }));
+    } catch (error) {
+      console.error('학습일지 수정 실패:', error);
+      alert('수정 도중 오류가 발생했습니다.');
     }
   };
 
+  // ── 자료 추가(업로드) ───────────────────────────────────────────────
   const resetFormState = () => {
     setFormTitle('');
     setFormDate(new Date().toISOString().split('T')[0]);
@@ -482,42 +466,12 @@ export default function Archive() {
     setFormFile(null);
   };
 
-  const handleDeleteMaterial = async (e, id) => {
-    e.stopPropagation();
-    if (window.confirm('정말로 이 자료를 삭제하시겠습니까? 삭제 후에는 복구할 수 없습니다.')) {
-      try {
-        await materialService.deleteMaterial(id);
-        alert('자료가 삭제되었습니다.');
-        fetchMaterials();
-      } catch (error) {
-        console.error('자료 삭제 실패:', error);
-        alert('자료 삭제 중 오류가 발생했습니다.');
-      }
-    }
-  };
-
-  // 오답노트 삭제 — 성공 시 오답노트 목록만 갱신(PDF/플래너 목록은 건드리지 않음). 실패 시 카드 유지.
-  const handleDeleteReviewNote = async (e, reviewNoteId) => {
-    e.stopPropagation();
-    if (!window.confirm('이 오답노트를 삭제하시겠습니까?')) return;
-    try {
-      await reviewNoteService.deleteReviewNote(reviewNoteId);
-      fetchReviewNotes();
-    } catch (error) {
-      console.error('오답노트 삭제 실패:', error);
-      alert('오답노트 삭제에 실패했습니다.');
-    }
-  };
-
-  const openModal = (type) => {
+  const openAddMaterial = () => {
     if (!checkAuth()) return;
-    setOpenedModalType(type);
-    if (type === 'addMaterial') {
-      // 현재 탭에 맞는 자료 유형을 기본 선택. 오답노트 탭에서 열면 오답노트 라디오가 기본 선택된다.
-      const TAB_TO_FORM = { pdf: 'pdf', planner: 'planner', journal: 'journal' };
-      setAddMaterialType(TAB_TO_FORM[activeTab] || 'journal');
-      resetFormState();
-    }
+    setOpenMenuKey(null);
+    setAddMaterialType('pdf');
+    resetFormState();
+    setOpenedModalType('addMaterial');
   };
 
   const closeModal = () => {
@@ -525,44 +479,33 @@ export default function Archive() {
     resetFormState();
   };
 
-  // 업로드 파일 선택 — PDF/DOCX만 허용, 구형 .doc는 변환 안내 후 거부
   const handlePickUploadFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const name = (file.name || '').toLowerCase();
     if (name.endsWith('.doc') && !name.endsWith('.docx')) {
       alert('현재는 .docx 형식만 지원합니다. .doc 파일은 .docx로 변환 후 업로드해주세요.');
-      e.target.value = '';
-      setFormFile(null);
-      return;
+      e.target.value = ''; setFormFile(null); return;
     }
     if (!name.endsWith('.pdf') && !name.endsWith('.docx')) {
       alert('지원하지 않는 파일 형식입니다. PDF 또는 DOCX 파일만 업로드할 수 있습니다.');
-      e.target.value = '';
-      setFormFile(null);
-      return;
+      e.target.value = ''; setFormFile(null); return;
     }
     setFormFile(file);
   };
 
-  // ai07 분류 vocab ↔ Material enum 매핑
   const AI_TO_ENUM = { STUDY_PDF: 'PDF', PLANNER: 'PLANNER', WRONG_NOTE: 'REVIEW_NOTE', STUDY_LOG: 'STUDY_LOG' };
-  const ENUM_TO_TAB = { PDF: 'pdf', PLANNER: 'planner', REVIEW_NOTE: 'reviewNote', STUDY_LOG: 'journal' };
 
-  // 실제 업로드 + 성공 후처리 (저장 type에 맞는 탭으로 이동 후 서버 재조회)
+  // 실제 업로드 — 현재 폴더(currentFolderId)에 저장. 루트면 null.
   const doUpload = async (enumType) => {
     try {
       setIsSubmitting(true);
-      await materialService.uploadMaterial(formTitle, enumType, formKeywords, formFile);
+      await materialService.uploadMaterial(formTitle, enumType, formKeywords, formFile, currentFolderId);
       alert(enumType === 'PLANNER' ? '플래너 PDF가 등록되었습니다.'
         : '자료 업로드가 시작되었습니다. AI가 문서를 분석하는 데 수 분이 걸릴 수 있습니다.');
       setClassifyInfo(null);
       closeModal();
-      const tab = ENUM_TO_TAB[enumType] || 'pdf';
-      setActiveTab(tab);
-      setVisibleCount(6);
-      await fetchMaterials();
-      if (enumType === 'REVIEW_NOTE') fetchReviewNotes();
+      await fetchItems();
     } catch (error) {
       console.error('자료 업로드 실패:', error);
       alert(error.response?.data?.message || '자료 업로드 중 오류가 발생했습니다.');
@@ -573,16 +516,10 @@ export default function Archive() {
 
   const handleSubmitMaterial = async () => {
     if (!checkAuth()) return;
+    if (isMeaninglessTitle(formTitle)) { alert(TITLE_GUIDE); return; }
 
-    // 1. 제목 검증 — 빈 값/의미 없는 제목은 저장 요청 전에 차단(저장 중 상태로 두지 않는다).
-    if (isMeaninglessTitle(formTitle)) {
-      alert(TITLE_GUIDE);
-      return;
-    }
-
-    // 학습일지는 파일이 없으므로 분류 대상 아님
+    // 학습일지 — 파일 없음. 현재 폴더에 저장.
     if (addMaterialType === 'journal') {
-      // 검증 통과 후 API 호출 직전에만 저장 중 ON, finally 에서 항상 해제
       setIsSubmitting(true);
       try {
         await materialService.createStudyLog({
@@ -591,11 +528,11 @@ export default function Archive() {
           studyDate: formDate || new Date().toISOString().split('T')[0],
           learningContent: formContent,
           nextPlan: formNextPlan,
+          folderId: currentFolderId,
         });
         alert('학습일지가 등록되었습니다.');
         closeModal();
-        setActiveTab('journal');
-        await fetchMaterials();
+        await fetchItems();
       } catch (error) {
         console.error('학습일지 등록 실패:', error);
         alert(error.response?.data?.message || '학습일지 등록 중 오류가 발생했습니다.');
@@ -605,18 +542,11 @@ export default function Archive() {
       return;
     }
 
-    // 2. 파일 검증
-    if (!formFile) {
-      alert('업로드할 파일을 선택해주세요.');
-      return;
-    }
+    if (!formFile) { alert('업로드할 파일을 선택해주세요.'); return; }
 
-    // 3. 유형 판별 + 업로드. 모든 경로(분류 실패/불일치/업로드 실패)에서 저장 중 상태가 풀리도록 try/finally 로 감싼다.
     const selectedAi = addMaterialType === 'planner' ? 'PLANNER' : 'STUDY_PDF';
     setIsSubmitting(true);
     try {
-      // D. 저장 전 AI 유형 판별은 기본 비활성화(위 CLASSIFY_BEFORE_SAVE_ENABLED 주석 참고).
-      //    켜져 있을 때만 호출하며, ai07 장애/타임아웃 시에도 저장은 막지 않는다(선택 유형으로 진행).
       if (CLASSIFY_BEFORE_SAVE_ENABLED) {
         let cls = null;
         try {
@@ -626,9 +556,8 @@ export default function Archive() {
         }
         const recommended = cls?.recommendedType;
         if (cls?.isMismatch && recommended && recommended !== selectedAi) {
-          // 불일치 → 확인 모달로 사용자 선택 (추천 저장 / 그래도 선택 저장 / 취소)
           setClassifyInfo({ ...cls, selectedAi });
-          return; // finally 에서 저장 중 해제 → 모달에서 다시 선택
+          return;
         }
       }
       const UPLOAD_ENUM = { planner: 'PLANNER' };
@@ -638,205 +567,427 @@ export default function Archive() {
     }
   };
 
-  // 불일치 모달에서 사용자가 고른 ai vocab 유형으로 저장
   const confirmClassifySave = (aiType) => {
     if (aiType === 'CANCEL') { setClassifyInfo(null); return; }
     doUpload(AI_TO_ENUM[aiType] || 'PDF');
   };
 
-  const handleUpdateJournal = async () => {
+  // ── 폴더 생성 / 이름변경 / 삭제 / 이동 ────────────────────────────────
+  const openCreateFolder = () => {
     if (!checkAuth()) return;
-    if (!editTitle.trim()) {
-      alert('제목을 입력해주세요.');
-      return;
-    }
+    setOpenMenuKey(null);
+    setCreateFolderName('');
+    setCreateFolderOpen(true);
+  };
+
+  const handleCreateFolder = async () => {
+    const name = createFolderName.trim();
+    if (!name) { alert('폴더 이름을 입력해주세요.'); return; }
     try {
-      await materialService.updateMaterial(selectedJournal.id, {
-        title: editTitle,
-        keywords: editKeywords,
-      });
-      alert('학습일지가 수정되었습니다.');
-      setIsJournalEditMode(false);
-      fetchMaterials();
-      setSelectedJournal((prev) => ({
-        ...prev,
-        title: editTitle,
-        keywords: editKeywords.split(',').map((k) => k.trim()),
-      }));
+      setIsSubmitting(true);
+      await folderService.createFolder(name, currentFolderId);
+      setCreateFolderOpen(false);
+      setCreateFolderName('');
+      await fetchItems();
     } catch (error) {
-      console.error('학습일지 수정 실패:', error);
-      alert('수정 도중 오류가 발생했습니다.');
+      console.error('폴더 생성 실패:', error);
+      alert(error.response?.data?.message || '폴더 생성 중 오류가 발생했습니다.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  // 수동 업로드한 REVIEW_NOTE 자료 — 퀴즈 파생 오답노트(/review-notes, reviewNoteItems)와 중복되지 않게
-  // archiveMaterialId 로 dedup 한다(퀴즈 파생분은 그쪽 카드가 rich 기능 제공). 직접 올린 것만 별도 카드로 노출.
-  const rnArchiveIds = new Set(reviewNoteItems.map((n) => n.archiveMaterialId).filter((v) => v != null));
-  const manualReviewNotes = reviewNotes.filter((m) => !rnArchiveIds.has(m.id));
+  const handleDeleteFolder = async (folder) => {
+    setOpenMenuKey(null);
+    if (!window.confirm(`'${folder.name}' 폴더를 삭제하시겠습니까?`)) return;
+    try {
+      await folderService.deleteFolder(folder.folderId);
+      await fetchItems();
+    } catch (error) {
+      console.error('폴더 삭제 실패:', error);
+      alert(error.response?.data?.message || '폴더 삭제 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleDeleteMaterial = async (m) => {
+    setOpenMenuKey(null);
+    if (!window.confirm('정말로 이 자료를 삭제하시겠습니까? 삭제 후에는 복구할 수 없습니다.')) return;
+    try {
+      await materialService.deleteMaterial(m.materialId);
+      await fetchItems();
+    } catch (error) {
+      console.error('자료 삭제 실패:', error);
+      alert(error.response?.data?.message || '자료 삭제 중 오류가 발생했습니다.');
+    }
+  };
+
+  const openRename = (kind, item) => {
+    setOpenMenuKey(null);
+    if (kind === 'folder') setRenameState({ kind, id: item.folderId, name: item.name });
+    else setRenameState({ kind, id: item.materialId, name: getMaterialDisplayTitle(item) });
+  };
+
+  const handleRenameSubmit = async () => {
+    const name = (renameState?.name || '').trim();
+    if (!name) { alert('이름을 입력해주세요.'); return; }
+    try {
+      setIsSubmitting(true);
+      if (renameState.kind === 'folder') {
+        await folderService.renameFolder(renameState.id, name);
+      } else {
+        await materialService.updateMaterial(renameState.id, { title: name });
+      }
+      setRenameState(null);
+      await fetchItems();
+    } catch (error) {
+      console.error('이름 변경 실패:', error);
+      alert(error.response?.data?.message || '이름 변경 중 오류가 발생했습니다.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const openMove = async (kind, item) => {
+    setOpenMenuKey(null);
+    try {
+      const all = await folderService.listFolders();
+      const allFolders = Array.isArray(all) ? all : [];
+      let candidates = allFolders;
+      if (kind === 'folder') {
+        const excluded = descendantIds(allFolders, item.folderId); // 자기+하위 제외(순환 방지)
+        candidates = allFolders.filter((f) => !excluded.has(f.folderId));
+      }
+      const options = [
+        { value: '', label: '홈 (최상위)' },
+        ...candidates.map((f) => ({ value: String(f.folderId), label: folderPathLabel(allFolders, f.folderId) })),
+      ];
+      setMoveState({
+        kind,
+        id: kind === 'folder' ? item.folderId : item.materialId,
+        name: kind === 'folder' ? item.name : getMaterialDisplayTitle(item),
+        targetId: '',
+        options,
+      });
+    } catch (error) {
+      console.error('폴더 목록 조회 실패:', error);
+      alert('폴더 목록을 불러오지 못했습니다.');
+    }
+  };
+
+  const handleMoveSubmit = async () => {
+    if (!moveState) return;
+    const target = moveState.targetId === '' ? null : Number(moveState.targetId);
+    try {
+      setIsSubmitting(true);
+      if (moveState.kind === 'folder') {
+        await folderService.moveFolder(moveState.id, target);
+      } else {
+        await materialService.moveMaterial(moveState.id, target);
+      }
+      setMoveState(null);
+      await fetchItems();
+    } catch (error) {
+      console.error('이동 실패:', error);
+      alert(error.response?.data?.message || '이동 중 오류가 발생했습니다.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // ── 선택 모드 ───────────────────────────────────────────────────────
+  const toggleSelectionMode = () => {
+    setOpenMenuKey(null);
+    setSelectionMode((prev) => {
+      if (prev) setSelectedKeys(new Set());
+      return !prev;
+    });
+  };
+
+  const toggleSelect = (key) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedKeys.size === 0) return;
+    if (!window.confirm(`선택한 ${selectedKeys.size}개 항목을 삭제하시겠습니까?`)) return;
+    let blocked = 0;
+    for (const key of selectedKeys) {
+      const [kind, idStr] = key.split('-');
+      const id = Number(idStr);
+      try {
+        if (kind === 'folder') await folderService.deleteFolder(id);
+        else await materialService.deleteMaterial(id);
+      } catch (e) {
+        if (kind === 'folder' && e.response?.status === 409) blocked++;
+        else console.error('삭제 실패:', e);
+      }
+    }
+    setSelectedKeys(new Set());
+    setSelectionMode(false);
+    await fetchItems();
+    if (blocked > 0) alert('폴더 안에 자료가 있어 삭제할 수 없습니다. (비어 있지 않은 폴더는 건너뛰었습니다.)');
+  };
+
+  // ── 정렬 + 탭 필터 ──────────────────────────────────────────────────
+  const sortedFolders = [...folders].sort((a, b) =>
+    sortMode === 'name'
+      ? a.name.localeCompare(b.name, 'ko')
+      : String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+  const sortedMaterials = [...materials].sort((a, b) =>
+    sortMode === 'name'
+      ? getMaterialDisplayTitle(a).localeCompare(getMaterialDisplayTitle(b), 'ko')
+      : String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')));
+
+  // 상단 탭 필터: '전체'면 전부, 그 외엔 해당 유형만. 폴더는 탭과 무관하게 항상 표시.
+  const visibleMaterials = activeArchiveTab === 'ALL'
+    ? sortedMaterials
+    : sortedMaterials.filter((m) => materialTabKind(m) === activeArchiveTab);
+
+  const isEmpty = !isLoading && !loadError && sortedFolders.length === 0 && visibleMaterials.length === 0;
 
   return (
     <div className="container-main archive-page">
-      {/* 1. 상단 헤더 영역 */}
-      <div className="archive-control-bar">
-        <div className="archive-tabs">
-          <button
-            className={`archive-tab ${activeTab === 'journal' ? 'active' : ''}`}
-            onClick={() => handleTabChange('journal')}
-          >
-            학습일지
+      {/* 상단 헤더: 제목 + 도구(선택/정렬) */}
+      <div className="doc-header">
+        <h2 className="doc-title">문서</h2>
+        <div className="doc-toolbar">
+          {selectionMode && (
+            <button className="doc-tool-btn danger" onClick={handleBulkDelete} disabled={selectedKeys.size === 0}>
+              삭제 ({selectedKeys.size})
+            </button>
+          )}
+          <button className={`doc-tool-btn ${selectionMode ? 'active' : ''}`} onClick={toggleSelectionMode}>
+            {selectionMode ? '선택 취소' : '선택'}
           </button>
-          <button
-            className={`archive-tab ${activeTab === 'pdf' ? 'active' : ''}`}
-            onClick={() => handleTabChange('pdf')}
-          >
-            학습 PDF
-          </button>
-          <button
-            className={`archive-tab ${activeTab === 'planner' ? 'active' : ''}`}
-            onClick={() => handleTabChange('planner')}
-          >
-            플래너
-          </button>
+          <select className="doc-sort" value={sortMode} onChange={(e) => setSortMode(e.target.value)}>
+            <option value="recent">정렬: 최신순</option>
+            <option value="name">정렬: 이름순</option>
+          </select>
         </div>
-        <button className="btn-primary btn-add-material" onClick={() => openModal('addMaterial')}>
-          <Plus size={16} /> 자료 추가
-        </button>
       </div>
 
-      {/* 2. 카드 목록 영역 */}
-      <div className="archive-grid">
-        {isLoading && (
-          <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>
-            자료를 불러오는 중입니다.
-          </div>
-        )}
-
-        {/* 조회 실패는 빈 목록이 아니라 에러로 표시(reviewNote 탭은 자체 에러 처리) */}
-        {!isLoading && materialsError && activeTab !== 'reviewNote' && (
-          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '40px 20px', textAlign: 'center', color: '#B91C1C', borderRadius: '12px' }}>
-            <p style={{ margin: '0 0 12px' }}>{materialsError}</p>
-            <button className="btn-primary" style={{ width: 'auto', padding: '8px 16px', borderRadius: '20px' }} onClick={fetchMaterials}>다시 시도</button>
-          </div>
-        )}
-
-        {!isLoading && !materialsError && activeTab === 'journal' && journals.length === 0 && (
-          <EmptyState tab="journal" />
-        )}
-
-        {!isLoading && activeTab === 'journal' && journals.slice(0, visibleCount).map((journal) => (
-          <div
-            key={journal.id}
-            className="glass-panel archive-card animate-fade-in"
-            style={{ cursor: 'pointer' }}
-            onClick={() => handleOpenDetail('journal', journal)}
-          >
-            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="icon-wrapper journal-icon">
-                  <FileText size={22} color="rgba(255,255,255,0.8)" />
-                </div>
-                <span className="card-date">{journal.date}</span>
-              </div>
-              <button 
-                onClick={(e) => handleDeleteMaterial(e, journal.id)} 
-                style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}
-              >
-                삭제
-              </button>
-            </div>
-            <h3 className="card-title">{journal.title}</h3>
-            <div className="card-tags">
-              <span className="card-tag">#{journal.tag}</span>
-            </div>
-            <p className="card-desc">{journal.description}</p>
-          </div>
-        ))}
-
-
-
-        {!isLoading && !materialsError && activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').length === 0 && (
-          <EmptyState tab="pdf" />
-        )}
-
-        {!isLoading && activeTab === 'pdf' && pdfs.filter(p => p.tag === '학습PDF').slice(0, visibleCount).map((pdf) => (
-          <div
-            key={pdf.id}
-            className="glass-panel archive-card animate-fade-in"
-            style={{ cursor: 'pointer' }}
-            onClick={() => handleOpenDetail('pdf', pdf)}
-          >
-            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="icon-wrapper pdf-icon">
-                  <FileIcon size={22} color="rgba(255,255,255,0.8)" />
-                </div>
-                <span className="card-date">{pdf.date}</span>
-              </div>
-              <button 
-                onClick={(e) => handleDeleteMaterial(e, pdf.id)} 
-                style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}
-              >
-                삭제
-              </button>
-            </div>
-            <h3 className="card-title">{pdf.title}</h3>
-            <div className="card-tags" style={{ marginBottom: 'auto' }}>
-              <span className="card-tag">#{pdf.tag}</span>
-            </div>
-          </div>
-        ))}
-
-        {/* 오답노트는 자료보관함에서 제거됨 — 상단 네비게이션의 독립 /review-notes 페이지에서만 관리한다. */}
-
-        {!isLoading && !materialsError && activeTab === 'planner' && planners.length === 0 && (
-          <EmptyState tab="planner" />
-        )}
-
-        {!isLoading && activeTab === 'planner' && [...planners].sort(comparePlanners).slice(0, visibleCount).map((planner) => (
-          <div
-            key={planner.id}
-            className="glass-panel archive-card animate-fade-in"
-            style={{ cursor: 'pointer' }}
-            onClick={() => handleOpenDetail('pdf', planner)}
-          >
-            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="icon-wrapper planner-icon">
-                  <CalendarDays size={22} color="rgba(255,255,255,0.8)" />
-                </div>
-                <span className="card-date">{planner.date}</span>
-              </div>
-              <button
-                onClick={(e) => handleDeleteMaterial(e, planner.id)}
-                style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}
-              >
-                삭제
-              </button>
-            </div>
-            <h3 className="card-title">{getPlannerDisplayTitle(planner)}</h3>
-            <div className="card-tags" style={{ marginBottom: 'auto' }}>
-              <span className="card-tag">#{planner.tag}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* 3. 더보기(Load More) 버튼 */}
-      {((activeTab === 'journal' && visibleCount < journals.length) ||
-        (activeTab === 'pdf' && visibleCount < pdfs.filter(p => p.tag === '학습PDF').length) ||
-        (activeTab === 'planner' && visibleCount < planners.length)) && (
-        <div style={{ display: 'flex', justifyContent: 'center', marginTop: '40px' }}>
+      {/* 상단 유형 필터 탭 (currentFolderId/breadcrumb 유지, 폴더는 모든 탭에서 표시) */}
+      <div className="archive-tabs" style={{ marginBottom: '16px' }}>
+        {ARCHIVE_TABS.map((t) => (
           <button
-            className="btn-outline"
-            style={{ width: 'max-content', flex: 'none', padding: '12px 32px', borderRadius: '30px', fontWeight: '600', backgroundColor: 'white', border: '1px solid var(--color-border)', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}
-            onClick={() => setVisibleCount(prev => prev + 6)}
+            key={t.key}
+            className={`archive-tab ${activeArchiveTab === t.key ? 'active' : ''}`}
+            onClick={() => { setActiveArchiveTab(t.key); setOpenMenuKey(null); }}
           >
-            더보기 ({visibleCount}/{activeTab === 'journal' ? journals.length : activeTab === 'planner' ? planners.length : pdfs.filter(p => p.tag === '학습PDF').length})
+            {t.label}
           </button>
+        ))}
+      </div>
+
+      {/* breadcrumb + 뒤로가기 */}
+      <div className="doc-breadcrumb">
+        {currentFolderId != null && (
+          <button className="doc-back" onClick={goBack} title="뒤로가기"><ArrowLeft size={18} /></button>
+        )}
+        <button className={`doc-crumb ${currentFolderId == null ? 'current' : ''}`} onClick={() => openFolder(null)}>홈</button>
+        {breadcrumb.map((c, idx) => (
+          <React.Fragment key={c.folderId}>
+            <ChevronRight size={14} style={{ opacity: 0.5 }} />
+            <button className={`doc-crumb ${idx === breadcrumb.length - 1 ? 'current' : ''}`} onClick={() => openFolder(c.folderId)}>{c.name}</button>
+          </React.Fragment>
+        ))}
+      </div>
+
+      {/* 카드 그리드 */}
+      <div className="doc-grid">
+        {/* 신규 카드 */}
+        <div
+          className="doc-card doc-new"
+          style={openMenuKey === 'new' ? { position: 'relative', zIndex: 40 } : undefined}
+          onClick={() => setOpenMenuKey(openMenuKey === 'new' ? null : 'new')}
+        >
+          <div className="doc-thumb"><Plus size={36} /></div>
+          <div className="doc-card-body">
+            <span className="doc-name">신규</span>
+            <span className="doc-date">폴더 또는 자료 추가</span>
+          </div>
+          {openMenuKey === 'new' && (
+            <div className="doc-menu" onClick={(e) => e.stopPropagation()}>
+              <button onClick={openCreateFolder}><FolderPlus size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />폴더 만들기</button>
+              <button onClick={openAddMaterial}><Upload size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />자료 업로드</button>
+            </div>
+          )}
+        </div>
+
+        {isLoading && (
+          <div className="doc-state" style={{ gridColumn: '1 / -1' }}>자료를 불러오는 중입니다.</div>
+        )}
+
+        {!isLoading && loadError && (
+          <div className="doc-state error" style={{ gridColumn: '1 / -1' }}>
+            <p style={{ margin: '0 0 12px' }}>{loadError}</p>
+            <button className="btn-primary" style={{ width: 'auto', padding: '8px 16px', borderRadius: '20px' }} onClick={fetchItems}>다시 시도</button>
+          </div>
+        )}
+
+        {/* 폴더 카드 (모든 탭에서 표시) */}
+        {!isLoading && !loadError && sortedFolders.map((folder) => {
+          const key = `folder-${folder.folderId}`;
+          return (
+            <div
+              key={key}
+              className="doc-card"
+              style={openMenuKey === key ? { position: 'relative', zIndex: 40 } : undefined}
+              onClick={() => (selectionMode ? toggleSelect(key) : openFolder(folder.folderId))}
+            >
+              {selectionMode && (
+                <span className={`doc-check ${selectedKeys.has(key) ? 'on' : ''}`}>
+                  {selectedKeys.has(key) && <Check size={14} />}
+                </span>
+              )}
+              <div className="doc-thumb"><FolderIcon size={40} /></div>
+              <div className="doc-card-body">
+                <span className="doc-name">{folder.name}</span>
+                <div className="doc-meta">
+                  <span className="doc-badge doc-badge-folder">폴더</span>
+                  <span className="doc-date">{String(folder.createdAt || '').split('T')[0]}</span>
+                </div>
+              </div>
+              {!selectionMode && (
+                <>
+                  <button className="doc-more" onClick={(e) => { e.stopPropagation(); setOpenMenuKey(openMenuKey === key ? null : key); }}>
+                    <MoreVertical size={16} />
+                  </button>
+                  {openMenuKey === key && (
+                    <div className="doc-menu" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => openRename('folder', folder)}>이름 변경</button>
+                      <button onClick={() => openMove('folder', folder)}>이동</button>
+                      <button className="danger" onClick={() => handleDeleteFolder(folder)}>삭제</button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+
+        {/* 자료(파일) 카드 — 상단 탭 필터 적용 */}
+        {!isLoading && !loadError && visibleMaterials.map((m) => {
+          const key = `material-${m.materialId}`;
+          const meta = TYPE_META[m.materialType] || TYPE_META.PDF;
+          const Icon = meta.Icon;
+          return (
+            <div
+              key={key}
+              className="doc-card"
+              style={openMenuKey === key ? { position: 'relative', zIndex: 40 } : undefined}
+              onClick={() => (selectionMode ? toggleSelect(key) : openMaterial(m))}
+            >
+              {selectionMode && (
+                <span className={`doc-check ${selectedKeys.has(key) ? 'on' : ''}`}>
+                  {selectedKeys.has(key) && <Check size={14} />}
+                </span>
+              )}
+              <div className="doc-thumb"><Icon size={40} /></div>
+              <div className="doc-card-body">
+                <span className="doc-name">{getMaterialDisplayTitle(m)}</span>
+                <div className="doc-meta">
+                  <span className={`doc-badge ${meta.badge}`}>{meta.label}</span>
+                  <span className="doc-date">{materialDate(m)}</span>
+                </div>
+              </div>
+              {!selectionMode && (
+                <>
+                  <button className="doc-more" onClick={(e) => { e.stopPropagation(); setOpenMenuKey(openMenuKey === key ? null : key); }}>
+                    <MoreVertical size={16} />
+                  </button>
+                  {openMenuKey === key && (
+                    <div className="doc-menu" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => openRename('material', m)}>이름 변경</button>
+                      <button onClick={() => openMove('material', m)}>이동</button>
+                      <button className="danger" onClick={() => handleDeleteMaterial(m)}>삭제</button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+
+        {isEmpty && (
+          <div className="doc-state" style={{ gridColumn: '1 / -1' }}>
+            <FolderIcon size={44} style={{ opacity: 0.3, marginBottom: 12 }} />
+            <p style={{ margin: 0 }}>이 위치에 표시할 항목이 없습니다. “신규”로 폴더를 만들거나 자료를 업로드하세요.</p>
+          </div>
+        )}
+      </div>
+
+      {/* 폴더 만들기 모달 */}
+      {createFolderOpen && (
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content" style={{ maxWidth: '420px', width: '100%', padding: '28px' }}>
+            <h3 style={{ margin: '0 0 16px', fontSize: '18px' }}>폴더 만들기</h3>
+            <input
+              type="text" autoFocus className="input-field" placeholder="폴더 이름"
+              value={createFolderName}
+              onChange={(e) => setCreateFolderName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreateFolder(); }}
+              style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB', marginBottom: '20px' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button className="btn-outline" style={{ padding: '10px 20px', width: 'auto' }} onClick={() => setCreateFolderOpen(false)} disabled={isSubmitting}>취소</button>
+              <button className="btn-primary" style={{ padding: '10px 20px', width: 'auto' }} onClick={handleCreateFolder} disabled={isSubmitting}>{isSubmitting ? '생성 중...' : '생성'}</button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* D. 업로드 전 유형 판별 불일치 확인 모달 */}
+      {/* 이름 변경 모달 */}
+      {renameState && (
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content" style={{ maxWidth: '420px', width: '100%', padding: '28px' }}>
+            <h3 style={{ margin: '0 0 16px', fontSize: '18px' }}>{renameState.kind === 'folder' ? '폴더 이름 변경' : '자료 이름 변경'}</h3>
+            <input
+              type="text" autoFocus className="input-field"
+              value={renameState.name}
+              onChange={(e) => setRenameState((s) => ({ ...s, name: e.target.value }))}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleRenameSubmit(); }}
+              style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB', marginBottom: '20px' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button className="btn-outline" style={{ padding: '10px 20px', width: 'auto' }} onClick={() => setRenameState(null)} disabled={isSubmitting}>취소</button>
+              <button className="btn-primary" style={{ padding: '10px 20px', width: 'auto' }} onClick={handleRenameSubmit} disabled={isSubmitting}>{isSubmitting ? '저장 중...' : '저장'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 이동 모달 */}
+      {moveState && (
+        <div className="modal-overlay">
+          <div className="glass-panel modal-content" style={{ maxWidth: '460px', width: '100%', padding: '28px' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: '18px' }}>이동</h3>
+            <p style={{ margin: '0 0 16px', fontSize: '13.5px', color: 'var(--color-text-muted)' }}>
+              '{moveState.name}' 을(를) 옮길 위치를 선택하세요.
+            </p>
+            <select
+              className="doc-sort" value={moveState.targetId}
+              onChange={(e) => setMoveState((s) => ({ ...s, targetId: e.target.value }))}
+              style={{ width: '100%', marginBottom: '20px' }}
+            >
+              {moveState.options.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button className="btn-outline" style={{ padding: '10px 20px', width: 'auto' }} onClick={() => setMoveState(null)} disabled={isSubmitting}>취소</button>
+              <button className="btn-primary" style={{ padding: '10px 20px', width: 'auto' }} onClick={handleMoveSubmit} disabled={isSubmitting}>{isSubmitting ? '이동 중...' : '이동'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 업로드 전 유형 판별 불일치 확인 모달 */}
       {classifyInfo && (
         <div className="modal-overlay">
           <div className="glass-panel modal-content" style={{ maxWidth: '460px', width: '100%', padding: '28px' }}>
@@ -845,9 +996,7 @@ export default function Archive() {
               {classifyInfo.userMessage || '선택한 유형과 파일 내용이 다를 수 있습니다. 알맞은 곳에 넣으세요.'}
             </p>
             {classifyInfo.reason && (
-              <p style={{ margin: '0 0 16px', fontSize: '12.5px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
-                {classifyInfo.reason}
-              </p>
+              <p style={{ margin: '0 0 16px', fontSize: '12.5px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>{classifyInfo.reason}</p>
             )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {(Array.isArray(classifyInfo.allowedActions) && classifyInfo.allowedActions.length
@@ -878,7 +1027,7 @@ export default function Archive() {
         <div className="modal-overlay">
           <div className="glass-panel modal-content" style={{ maxWidth: '800px', width: '100%', maxHeight: 'calc(100vh - 48px)', padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
             <div className="modal-header" style={{ flexShrink: 0, padding: '28px 32px 20px', borderBottom: '1px solid var(--color-border)' }}>
-              <h3 style={{ margin: 0, fontSize: '22px' }}>자료 추가</h3>
+              <h3 style={{ margin: 0, fontSize: '22px' }}>자료 추가{currentFolderId != null && breadcrumb.length ? ` — ${breadcrumb[breadcrumb.length - 1].name}` : ''}</h3>
               <button className="btn-close" onClick={closeModal}><X size={24} /></button>
             </div>
             <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '24px', flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 32px' }}>
@@ -911,17 +1060,14 @@ export default function Archive() {
                       <input type="date" className="input-field" value={formDate} onChange={(e) => setFormDate(e.target.value)} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
                     </div>
                   </div>
-
                   <div>
                     <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>핵심 키워드 (쉼표로 구분)</label>
                     <input type="text" className="input-field" placeholder="키워드 입력 (예: React, 상태관리)" value={formKeywords} onChange={(e) => setFormKeywords(e.target.value)} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
                   </div>
-
                   <div>
                     <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>학습 내용</label>
                     <textarea className="input-field" placeholder="학습한 내용을 상세히 작성하세요." value={formContent} onChange={(e) => setFormContent(e.target.value)} style={{ width: '100%', minHeight: '120px', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', resize: 'vertical', backgroundColor: '#F9FAFB', fontFamily: 'inherit', lineHeight: '1.5' }} />
                   </div>
-
                   <div>
                     <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', fontSize: '14px' }}>다음 학습 계획</label>
                     <textarea className="input-field" placeholder="다음에 학습할 내용을 작성하세요." value={formNextPlan} onChange={(e) => setFormNextPlan(e.target.value)} style={{ width: '100%', minHeight: '80px', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)', resize: 'vertical', backgroundColor: '#F9FAFB', fontFamily: 'inherit', lineHeight: '1.5' }} />
@@ -933,18 +1079,16 @@ export default function Archive() {
                     <label style={{ display: 'block', fontSize: '16px', fontWeight: 'bold', marginBottom: '12px' }}>제목</label>
                     <input type="text" className="input-field" placeholder="자료의 제목을 입력하세요" value={formTitle} onChange={(e) => setFormTitle(e.target.value)} style={{ width: '100%', fontSize: '16px', padding: '16px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
                   </div>
-
                   <div>
                     <label style={{ display: 'block', fontSize: '16px', fontWeight: 'bold', marginBottom: '12px' }}>핵심 키워드 (쉼표로 구분)</label>
                     <input type="text" className="input-field" placeholder="키워드 입력" value={formKeywords} onChange={(e) => setFormKeywords(e.target.value)} style={{ width: '100%', fontSize: '16px', padding: '16px', borderRadius: '8px', border: '1px solid var(--color-border)', backgroundColor: '#F9FAFB' }} />
                   </div>
-
                   <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
                     <label style={{ display: 'block', fontSize: '16px', fontWeight: 'bold', marginBottom: '12px' }}>파일 업로드</label>
                     <input type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" ref={addFileInputRef} onChange={handlePickUploadFile} style={{ display: 'none' }} />
                     <div
                       onClick={() => addFileInputRef.current?.click()}
-                      style={{ flex: 1, border: '2px dashed var(--color-border)', borderRadius: '12px', padding: '28px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', color: 'var(--color-text-muted)', backgroundColor: '#F9FAFB', cursor: 'pointer', transition: 'all 0.2s', minHeight: '160px', maxHeight: '220px' }}
+                      style={{ flex: 1, border: '2px dashed var(--color-border)', borderRadius: '12px', padding: '28px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', color: 'var(--color-text-muted)', backgroundColor: '#F9FAFB', cursor: 'pointer', minHeight: '160px', maxHeight: '220px' }}
                     >
                       <FileIcon size={48} style={{ margin: '0 auto 16px', opacity: 0.5 }} />
                       <p style={{ margin: '0 0 12px', fontSize: '16px', fontWeight: 'bold' }}>
@@ -974,9 +1118,7 @@ export default function Archive() {
               <h3 style={{ margin: 0, fontSize: '22px' }}>{selectedJournal.title}</h3>
               <button className="btn-close" onClick={() => setSelectedJournal(null)}><X size={24} /></button>
             </div>
-
             <div className="modal-body" style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: 0 }}>
-              {/* 왼쪽: 내용 / 수정폼 */}
               <div style={{ flex: 1, padding: '32px', overflowY: 'auto', borderRight: '1px solid var(--color-border)' }}>
                 {isJournalEditMode ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
@@ -1009,9 +1151,7 @@ export default function Archive() {
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
-                    <div>
-                      <span style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{selectedJournal.date} • {selectedJournal.tag}</span>
-                    </div>
+                    <div><span style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{selectedJournal.date} • {selectedJournal.tag}</span></div>
                     <div>
                       <h4 style={{ margin: '0 0 8px', fontSize: '15px', color: 'var(--color-text-muted)' }}>키워드</h4>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
@@ -1032,19 +1172,14 @@ export default function Archive() {
                   </div>
                 )}
               </div>
-
-              {/* 오른쪽: 요약 & 피드백 */}
               <div style={{ flex: 1, padding: '32px', overflowY: 'auto', backgroundColor: 'var(--color-bg-base)' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                   <div className="glass-panel" style={{ padding: '24px' }}>
                     <h3 style={{ margin: '0 0 16px', fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <AlignLeft size={18} color="var(--color-primary)" /> AI 요약
                     </h3>
-                    <p style={{ margin: 0, fontSize: '15px', lineHeight: '1.6', color: 'var(--color-text-main)' }}>
-                      {journalSummary}
-                    </p>
+                    <p style={{ margin: 0, fontSize: '15px', lineHeight: '1.6', color: 'var(--color-text-main)' }}>{journalSummary}</p>
                   </div>
-
                   <div className="glass-panel" style={{ padding: '24px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
                       <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>

@@ -300,6 +300,204 @@ public class ReviewNoteService {
     }
 
     // ---------------------------------------------------------------------
+    // 복습 필요 분석: POST /api/review-notes/{id}/review-needed
+    //   오답노트 데이터 기반 "{구체 개념}에 대한 개념이 부족하여 복습이 필요합니다. ..." 500자 내외 생성.
+    //   AI(/api/ai/multi-chat, basic) 호출 → 실패/빈응답 시 데이터 기반 결정적 폴백.
+    // ---------------------------------------------------------------------
+    public Map<String, Object> generateReviewNeeded(Long userId, Long id) {
+        ReviewNote note = loadOwnedStrict(userId, id);
+
+        List<Map<String, Object>> items = parseRetryQuestions(note.getRetryJson());
+        String sourceTitle = (note.getSourceTitle() == null || note.getSourceTitle().isBlank())
+                ? "학습자료" : note.getSourceTitle();
+        String difficultyKo = difficultyLabel(note.getDifficulty());
+
+        String text;
+        if (items.isEmpty()) {
+            text = "문제의 핵심 개념을 정확히 식별하기 어려워 기본 개념 복습이 필요합니다. "
+                    + "원본 자료와 기존 해설을 다시 확인한 뒤, 오답 선택지가 왜 틀렸는지 비교하며 복습해 주세요.";
+        } else {
+            String aiText = callReviewNeededAi(sourceTitle, difficultyKo, items);
+            text = (aiText != null && !aiText.isBlank())
+                    ? ensureLeadSentence(trimToLength(aiText.trim(), 600), items)
+                    : buildReviewNeededFallback(sourceTitle, items);
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("reviewNoteId", id);
+        out.put("reviewNeededText", text);
+        return out;
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private String callReviewNeededAi(String sourceTitle, String difficultyKo, List<Map<String, Object>> items) {
+        String prompt = buildReviewNeededPrompt(sourceTitle, difficultyKo, items);
+
+        Map<String, Object> agent = new LinkedHashMap<>();
+        agent.put("agentName", "학습 코치");
+        agent.put("tone", "친근한");
+        agent.put("knowledgeLevel", "intermediate");
+        agent.put("knowledge_level", "intermediate");
+        agent.put("persona", "학습 코치");
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("message", prompt);
+        body.put("mode", "basic");
+        body.put("learningMode", "basic");
+        body.put("rounds", 1);
+        body.put("tone", "친근한");
+        body.put("knowledgeLevel", "intermediate");
+        body.put("knowledge_level", "intermediate");
+        body.put("persona", "학습 코치");
+        body.put("agents", List.of(agent));
+        body.put("answerLength", "short");
+
+        try {
+            Map resp = fastApiWebClient.post().uri("/api/ai/multi-chat")
+                    .bodyValue(body).retrieve().bodyToMono(Map.class)
+                    .block(Duration.ofSeconds(reviewTimeoutSeconds));
+            return flattenChatAnswer(resp);
+        } catch (Exception e) {
+            log.warn("[REVIEW_NOTE] review-needed ai unavailable -> 폴백 cause={}", e.getMessage());
+            return null;
+        }
+    }
+
+    private String buildReviewNeededPrompt(String sourceTitle, String difficultyKo, List<Map<String, Object>> items) {
+        StringBuilder b = new StringBuilder();
+        b.append("너는 대학생 학습자의 오답노트를 분석하는 학습 코치다.\n");
+        b.append("아래 오답노트 정보를 바탕으로 학습자가 어떤 개념이 부족해서 복습이 필요한지 한국어로 500자 내외로 설명하라.\n\n");
+        b.append("반드시 첫 문장은 다음 형식을 따른다.\n");
+        b.append("\"{구체 개념명}에 대한 개념이 부족하여 복습이 필요합니다.\"\n\n");
+        b.append("작성 규칙:\n1. {구체 개념명}은 과목명 전체가 아니라 문제에서 드러난 세부 개념으로 작성한다.\n");
+        b.append("2. 사용자를 비난하지 않는다.\n3. 정답만 반복하지 않는다.\n4. 오답 원인, 부족 개념, 복습 순서를 포함한다.\n");
+        b.append("5. 500자 내외로 작성한다.\n6. 불필요한 인사말, 제목, 마크다운은 쓰지 않는다.\n\n");
+        b.append("[오답노트 정보]\n과목명: ").append(sourceTitle).append("\n원본 자료명: ").append(sourceTitle).append("\n난이도: ").append(difficultyKo).append("\n");
+        int n = Math.min(items.size(), 5);
+        for (int i = 0; i < n; i++) {
+            Map<String, Object> q = items.get(i);
+            b.append("\n문제").append(i + 1).append(": ").append(clip(asStr(q.get("question")), 300)).append("\n");
+            b.append("보기: ").append(clip(joinChoices(q.get("choices")), 300)).append("\n");
+            b.append("정답: ").append(clip(asStr(q.get("correct_answer")), 120)).append("\n");
+            b.append("사용자 오답: ").append(clip(asStr(q.get("user_answer")), 120)).append("\n");
+            b.append("기존 해설: ").append(clip(asStr(q.get("explanation")), 400)).append("\n");
+            String concept = asStr(q.get("concept"));
+            if (concept != null && !concept.isBlank()) b.append("관련 개념: ").append(clip(concept, 120)).append("\n");
+        }
+        return b.toString();
+    }
+
+    private String buildReviewNeededFallback(String sourceTitle, List<Map<String, Object>> items) {
+        String concept = deriveConcept(items, sourceTitle);
+        Map<String, Object> first = items.get(0);
+        String userAns = asStr(first.get("user_answer"));
+        String correct = asStr(first.get("correct_answer"));
+        StringBuilder b = new StringBuilder();
+        b.append(concept).append("에 대한 개념이 부족하여 복습이 필요합니다. ");
+        if (userAns != null && userAns.contains("미응답")) {
+            b.append("일부 문제에 답하지 못한 것으로 보아 해당 개념을 떠올릴 단서가 충분히 정리되지 않은 상태입니다. ");
+        } else if (correct != null && !correct.isBlank()) {
+            b.append("정답과 다른 선택지를 고른 것으로 보아 비슷한 개념을 혼동하고 있을 가능성이 큽니다. ");
+        } else {
+            b.append("틀린 문제에서 핵심 개념을 정확히 적용하지 못한 것으로 보입니다. ");
+        }
+        b.append("먼저 ").append(sourceTitle).append(" 자료에서 해당 개념이 설명된 부분을 다시 읽고, ");
+        b.append("정답과 내가 고른 답의 차이를 비교하며 왜 틀렸는지 한 줄로 정리해 보세요. ");
+        b.append("그다음 기존 해설을 천천히 따라가며 개념의 정의와 적용 조건을 구분하고, ");
+        b.append("마지막으로 유사문제를 다시 풀어 개념이 정착되었는지 확인하면 효과적으로 복습할 수 있습니다.");
+        return trimToLength(b.toString(), 600);
+    }
+
+    private String ensureLeadSentence(String text, List<Map<String, Object>> items) {
+        if (text == null || text.isBlank()) return text;
+        String head = text.length() > 60 ? text.substring(0, 60) : text;
+        if (head.contains("복습이 필요합니다")) return text;
+        String concept = deriveConcept(items, "핵심 개념");
+        return trimToLength(concept + "에 대한 개념이 부족하여 복습이 필요합니다. " + text, 600);
+    }
+
+    private String deriveConcept(List<Map<String, Object>> items, String fallback) {
+        if (items != null) {
+            for (Map<String, Object> q : items) {
+                String c = asStr(q.get("concept"));
+                if (c != null && !c.isBlank()) return clip(c.trim(), 40);
+            }
+        }
+        if (fallback != null && !fallback.isBlank() && !fallback.equals("학습자료")) return clip(fallback.trim(), 40);
+        return "핵심 개념";
+    }
+
+    private String joinChoices(Object choices) {
+        if (!(choices instanceof List)) return "";
+        StringBuilder sb = new StringBuilder();
+        int i = 1;
+        for (Object o : (List<?>) choices) {
+            if (o == null) continue;
+            if (sb.length() > 0) sb.append(" / ");
+            sb.append(i++).append(") ").append(o);
+        }
+        return sb.toString();
+    }
+
+    private String clip(String s, int max) {
+        if (s == null) return "";
+        s = s.trim();
+        return s.length() <= max ? s : s.substring(0, max) + "…";
+    }
+
+    private String trimToLength(String s, int max) {
+        if (s == null) return "";
+        if (s.length() <= max) return s;
+        String cut = s.substring(0, max);
+        int lastDot = Math.max(cut.lastIndexOf("."), Math.max(cut.lastIndexOf("다."), cut.lastIndexOf("요.")));
+        if (lastDot > max / 2) return cut.substring(0, lastDot + 1);
+        return cut.trim();
+    }
+
+    private String difficultyLabel(String difficulty) {
+        if (difficulty == null) return "보통";
+        switch (difficulty.trim().toLowerCase()) {
+            case "easy": return "쉬움";
+            case "hard": return "어려움";
+            case "medium": case "normal": return "보통";
+            default: return difficulty;
+        }
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private String flattenChatAnswer(Map resp) {
+        if (resp == null) return null;
+        String direct = asStr(resp.get("answer"));
+        if (direct != null && !direct.isBlank()) return direct.trim();
+        for (String key : new String[]{"replies", "answers", "revisedAnswers", "initialAnswers"}) {
+            Object rows = resp.get(key);
+            if (rows instanceof List) {
+                StringBuilder sb = new StringBuilder();
+                for (Object o : (List) rows) {
+                    if (o instanceof Map) {
+                        String a = firstNonBlank(asStr(((Map) o).get("answer")), asStr(((Map) o).get("content")), asStr(((Map) o).get("text")));
+                        if (a != null && !a.isBlank()) { if (sb.length() > 0) sb.append("\n\n"); sb.append(a.trim()); }
+                    } else if (o != null && !o.toString().isBlank()) {
+                        if (sb.length() > 0) sb.append("\n\n"); sb.append(o);
+                    }
+                }
+                if (sb.length() > 0) return sb.toString();
+            }
+        }
+        String c = firstNonBlank(asStr(resp.get("content")), asStr(resp.get("text")));
+        return (c == null || c.isBlank()) ? null : c.trim();
+    }
+
+    private ReviewNote loadOwnedStrict(Long userId, Long id) {
+        ReviewNote note = reviewNoteRepository.findById(id)
+                .orElseThrow(() -> new java.util.NoSuchElementException("오답노트를 찾을 수 없습니다."));
+        if (!note.getUserId().equals(userId)) {
+            throw new SecurityException("해당 오답노트에 대한 권한이 없습니다.");
+        }
+        return note;
+    }
+
+    // ---------------------------------------------------------------------
     // 유사문제: POST /api/review-notes/{id}/variant-question
     //   body { wrongQuestionId, difficulty: easy|normal|hard, count }
     //   ai07 variant 엔드포인트가 살아있으면 AI 변형, 없으면(404 등) 원본 오답을 재출제로 폴백.

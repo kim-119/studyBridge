@@ -684,6 +684,20 @@ export const materialService = {
     return res.data;
   },
 
+  // 자료보관함 폴더 뷰: 현재 위치(parentId)의 하위 폴더 + 자료 + breadcrumb. parentId=null 이면 루트(홈).
+  getArchiveItems: async (parentId) => {
+    const res = await api.get('/api/materials/items', {
+      params: parentId != null ? { parentId } : undefined,
+    });
+    return res.data; // { currentFolderId, breadcrumb, folders, materials }
+  },
+
+  // 자료를 다른 폴더로 이동 (folderId=null 이면 루트로)
+  moveMaterial: async (materialId, folderId) => {
+    const res = await api.patch(`/api/materials/${materialId}/move`, { folderId: folderId ?? null });
+    return res.data;
+  },
+
   // context='review-note' 일 때만 오답노트(REVIEW_NOTE) 상세 허용(전용 복습 화면). 일반 상세는 오답노트 차단(404).
   getMaterialDetail: async (materialId, context) => {
     const res = await api.get(`/api/materials/${materialId}`, context ? { params: { context } } : undefined);
@@ -695,13 +709,17 @@ export const materialService = {
     return res.data;
   },
 
-  uploadMaterial: async (title, materialType, keywords, file) => {
+  uploadMaterial: async (title, materialType, keywords, file, folderId) => {
     const formData = new FormData();
     formData.append('title', title);
     formData.append('materialType', materialType);
 
     if (keywords) {
       formData.append('keywords', keywords);
+    }
+    // 폴더 안에서 업로드한 경우에만 folderId 전송. 루트면 생략(서버에서 null=루트).
+    if (folderId != null) {
+      formData.append('folderId', folderId);
     }
 
     formData.append('file', file);
@@ -747,6 +765,12 @@ export const materialService = {
     const res = await api.get(`/api/materials/${materialId}/summary`, {
       timeout: AI_TIMEOUT_MS,
     });
+    return res.data;
+  },
+
+  // AI 핵심 요약 노트(전공 분야·핵심 객체 중심). PDF 외 자료는 null. status: PENDING/RUNNING/SUCCESS/FAILED
+  getStudyNote: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/study-note`);
     return res.data;
   },
 
@@ -851,6 +875,30 @@ export const materialService = {
     const res = await api.post(`/api/materials/${materialId}/keywords/define`, body, {
       timeout: AI_TIMEOUT_MS,
     });
+    return res.data;
+  },
+};
+
+// 자료보관함 폴더 CRUD. 폴더는 자료(material) id 체계와 분리된 별도 엔티티이며 AI 처리 대상이 아니다.
+export const folderService = {
+  listFolders: async () => {
+    const res = await api.get('/api/folders');
+    return res.data;
+  },
+  createFolder: async (name, parentId) => {
+    const res = await api.post('/api/folders', { name, parentId: parentId ?? null });
+    return res.data;
+  },
+  renameFolder: async (folderId, name) => {
+    const res = await api.patch(`/api/folders/${folderId}`, { name });
+    return res.data;
+  },
+  moveFolder: async (folderId, parentId) => {
+    const res = await api.patch(`/api/folders/${folderId}/move`, { parentId: parentId ?? null });
+    return res.data;
+  },
+  deleteFolder: async (folderId) => {
+    const res = await api.delete(`/api/folders/${folderId}`);
     return res.data;
   },
 };
@@ -1347,6 +1395,11 @@ export const reviewNoteService = {
   // 메모 수정/저장
   updateMemo: async (id, memo) => {
     const res = await api.patch(`/api/review-notes/${id}/memo`, { memo });
+    return res.data;
+  },
+  // 복습 필요 분석: 오답노트 데이터 기반 AI 생성 텍스트. { reviewNoteId, reviewNeededText }
+  reviewNeeded: async (id) => {
+    const res = await api.post(`/api/review-notes/${id}/review-needed`, null, { timeout: AI_TIMEOUT_MS });
     return res.data;
   },
   // 오답노트 삭제(서버에서 연동 Material/S3까지 함께 정리)

@@ -23,6 +23,7 @@ public class MaterialController {
 
     private final MaterialService materialService;
     private final com.studybridge.api.service.AiIntegrationService aiIntegrationService;
+    private final com.studybridge.api.service.StudyNoteAnalysisService studyNoteAnalysisService;
 
     // 학습일지 생성
     @PostMapping("/log")
@@ -36,26 +37,29 @@ public class MaterialController {
                 request.getKeywords(),
                 request.getStudyDate(),
                 request.getLearningContent(),
-                request.getNextPlan()
+                request.getNextPlan(),
+                request.getFolderId()
         );
         return ResponseEntity.ok(savedMaterial);
     }
 
-    // 자료 업로드
+    // 자료 업로드 (folderId 지정 시 해당 폴더 안에 저장, 미지정/null 이면 루트)
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<MaterialDTO> uploadMaterial(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @RequestParam("title") String title,
             @RequestParam("materialType") MaterialType materialType,
             @RequestParam(value = "keywords", required = false) String keywords,
+            @RequestParam(value = "folderId", required = false) Long folderId,
             @RequestParam("file") MultipartFile file) throws IOException {
-        
+
         MaterialDTO savedMaterial = materialService.uploadAndSaveMaterial(
                 userDetails.getId(),
                 title,
                 materialType,
                 keywords,
-                file
+                file,
+                folderId
         );
 
         return ResponseEntity.ok(savedMaterial);
@@ -114,10 +118,35 @@ public class MaterialController {
         return ResponseEntity.ok().build();
     }
 
-    // 자료보관함 조회
+    // 자료보관함 조회 (전체 평면 목록 — 하위 호환 유지)
     @GetMapping
     public ResponseEntity<List<MaterialDTO>> getMyMaterials(@AuthenticationPrincipal CustomUserDetails userDetails) {
         return ResponseEntity.ok(materialService.getUserMaterials(userDetails.getId()));
+    }
+
+    // 자료보관함 폴더 뷰: 현재 위치(parentId)의 하위 폴더 + 자료 + breadcrumb
+    @GetMapping("/items")
+    public ResponseEntity<com.studybridge.api.dto.ArchiveListDTO> getArchiveItems(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestParam(value = "parentId", required = false) Long parentId) {
+        return ResponseEntity.ok(materialService.getArchiveItems(userDetails.getId(), parentId));
+    }
+
+    // 자료를 다른 폴더로 이동 (folderId=null 이면 루트로)
+    @PatchMapping("/{materialId}/move")
+    public ResponseEntity<MaterialDTO> moveMaterial(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @RequestBody MaterialDTO.MoveRequest request) {
+        return ResponseEntity.ok(materialService.moveMaterial(userDetails.getId(), materialId, request.getFolderId()));
+    }
+
+    // AI 핵심 요약 노트(전공 분야·핵심 객체 중심). PDF 외 자료는 null(프론트는 기존 요약 표시).
+    @GetMapping("/{materialId}/study-note")
+    public ResponseEntity<com.studybridge.api.dto.StudyNoteAnalysisDTO> getStudyNote(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId) {
+        return ResponseEntity.ok(studyNoteAnalysisService.get(userDetails.getId(), materialId));
     }
 
     // 상세 조회
