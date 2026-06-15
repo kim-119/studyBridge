@@ -30,6 +30,12 @@ public class MaterialService {
     @Transactional
     public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords,
             org.springframework.web.multipart.MultipartFile file) throws java.io.IOException {
+        // 자료보관함에서는 오답노트(REVIEW_NOTE) 유형 생성을 금지한다. (REVIEW_NOTE는 ReviewNoteService가 퀴즈 기반으로만 생성)
+        // 프론트에서 라디오를 막아도 API 직접 호출(type=REVIEW_NOTE)을 차단하기 위함. → 400, S3 업로드 전에 거부.
+        if (type == MaterialType.REVIEW_NOTE) {
+            throw new IllegalArgumentException("자료보관함에서는 오답노트 자료 유형을 생성할 수 없습니다. 오답노트는 별도 오답노트 메뉴에서 관리됩니다.");
+        }
+
         // 업로드 형식 검증: PDF/DOCX만 허용. Content-Type만 믿지 않고 확장자도 함께 확인한다.
         validateUploadFormat(file);
 
@@ -173,6 +179,8 @@ public class MaterialService {
 
     public List<MaterialDTO> getUserMaterials(Long userId) {
         return materialRepository.findByUserIdOrderByUploadedAtDesc(userId).stream()
+                // 자료보관함 목록에서 오답노트(REVIEW_NOTE)는 제외한다. 오답노트는 별도 /api/review-notes 로만 노출.
+                .filter(material -> material.getMaterialType() != MaterialType.REVIEW_NOTE)
                 .map(material -> {
                     try {
                         return convertToDTO(material);
@@ -186,12 +194,18 @@ public class MaterialService {
     }
 
     // 자료 상세 조회
-    public MaterialDTO getMaterial(Long userId, Long materialId) {
+    // context="review-note" 인 경우에만 오답노트(REVIEW_NOTE) 상세를 허용한다(전용 복습 화면 ReviewNoteArchiveDetail 진입).
+    // 그 외(일반 자료보관함 상세) 경로로 오답노트 materialId가 들어오면 404 로 차단한다.
+    public MaterialDTO getMaterial(Long userId, Long materialId, String context) {
         Material material = materialRepository.findById(materialId)
                 .orElseThrow(() -> new IllegalArgumentException("자료를 찾을 수 없습니다."));
 
         if (!material.getUserId().equals(userId)) {
             throw new SecurityException("해당 자료에 대한 조회 권한이 없습니다.");
+        }
+
+        if (material.getMaterialType() == MaterialType.REVIEW_NOTE && !"review-note".equals(context)) {
+            throw new java.util.NoSuchElementException("오답노트 자료는 자료보관함 상세에서 열 수 없습니다.");
         }
 
         return convertToDTO(material);

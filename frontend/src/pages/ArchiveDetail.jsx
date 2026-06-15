@@ -63,12 +63,13 @@ export default function ArchiveDetail() {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [isAddingStudyLog, setIsAddingStudyLog] = useState(false);
   const [showAllDetailed, setShowAllDetailed] = useState(false);
+  // 메모 탭(PDF 상세): 입력=memoText, 검증 통과(ACCEPT)분만 S3 저장. 검증결과=journalNotice
   const [memoText, setMemoText] = useState('');
-  // 학습일지(검증 통과분만 S3 저장)
-  const [journalInput, setJournalInput] = useState('');
   const [studyJournals, setStudyJournals] = useState([]);
-  const [isSavingJournal, setIsSavingJournal] = useState(false);
-  const [journalNotice, setJournalNotice] = useState(null); // {type, reason, suggestion}
+  const [journalNotice, setJournalNotice] = useState(null); // 검증 사유/제안 {type, reason, suggestion}
+  // 플래너 상세의 자유 메모(기존 /memo API) — 메모 탭의 검증 저장과 분리 유지
+  const [plannerMemoText, setPlannerMemoText] = useState('');
+  const [isSavingPlannerMemo, setIsSavingPlannerMemo] = useState(false);
   const [chatMessages, setChatMessages] = useState([{ sender: 'ai', text: CHAT_INTRO }]);
   const [chatInput, setChatInput] = useState('');
 
@@ -466,7 +467,8 @@ export default function ArchiveDetail() {
   const loadMaterialDetail = async () => {
     try {
       setIsLoadingDetail(true);
-      const detail = await materialService.getMaterialDetail(id);
+      // 오답노트(REVIEW_NOTE) 전용 복습 화면 진입 시에만 context 전달(백엔드 상세 차단 우회). 일반 자료는 차단 대상 아님.
+      const detail = await materialService.getMaterialDetail(id, type === 'reviewNote' ? 'review-note' : undefined);
       setMaterial(detail);
       if (detail.extractionStatus === 'SUCCESS') {
         loadTabData(detail.materialId);
@@ -520,7 +522,7 @@ export default function ArchiveDetail() {
     // 4. 메모 정보 로드
     try {
       const memo = await materialService.getMemo(materialId);
-      setMemoText(memo?.content || '');
+      setPlannerMemoText(memo?.content || '');
     } catch (e) {
       console.warn('메모 정보 로드 실패:', e);
     }
@@ -554,7 +556,7 @@ export default function ArchiveDetail() {
     if (material && (material.extractionStatus === 'PENDING' || material.extractionStatus === 'PROCESSING')) {
       pollInterval = setInterval(async () => {
         try {
-          const freshDetail = await materialService.getMaterialDetail(id);
+          const freshDetail = await materialService.getMaterialDetail(id, type === 'reviewNote' ? 'review-note' : undefined);
           if (freshDetail.extractionStatus !== 'PENDING' && freshDetail.extractionStatus !== 'PROCESSING') {
             setMaterial(freshDetail);
             loadTabData(freshDetail.materialId);
@@ -897,33 +899,45 @@ export default function ArchiveDetail() {
     }
   };
 
-  // 메모 저장
-  const handleSaveMemo = async () => {
+  // 플래너 상세의 자유 메모 저장(기존 /api/materials/{id}/memo). 메모 탭의 검증 저장과 분리.
+  const handleSavePlannerMemo = async () => {
     try {
-      setIsSavingMemo(true);
-      await materialService.saveMemo(id, memoText);
+      setIsSavingPlannerMemo(true);
+      await materialService.saveMemo(id, plannerMemoText);
       alert('메모가 저장되었습니다.');
     } catch (e) {
       console.error('메모 저장 실패:', e);
       alert('메모 저장 도중 오류가 발생했습니다.');
     } finally {
-      setIsSavingMemo(false);
+      setIsSavingPlannerMemo(false);
     }
   };
 
-  // 학습일지 저장: Spring → ai07 검증 통과(ACCEPT)분만 S3 저장. 실패 시 입력 유지 + 안내.
-  const handleSaveJournal = async () => {
-    const content = (journalInput || '').trim();
+  // 메모 목록 재조회(메타데이터만; 원문은 펼칠 때 S3 GET). 저장/삭제 성공 후 호출.
+  const reloadStudyJournals = async () => {
+    try {
+      const list = await materialService.listStudyJournals(id);
+      setStudyJournals(Array.isArray(list) ? list : []);
+    } catch (e) {
+      console.warn('메모 목록 재조회 실패:', e);
+    }
+  };
+
+  // 메모 탭 단일 저장: Spring → ai07 PDF 기반 검증 통과(ACCEPT)분만 S3 저장.
+  // REQUEST_REVISION/BLOCK이면 저장하지 않고 입력 유지 + 사유/제안 안내.
+  const handleSaveMemo = async () => {
+    const content = (memoText || '').trim();
     if (!content) {
-      setJournalNotice({ type: 'error', reason: '학습일지 내용을 입력해 주세요.', suggestion: '' });
+      setJournalNotice({ type: 'error', reason: '메모 내용을 입력해 주세요.', suggestion: '' });
       return;
     }
     try {
-      setIsSavingJournal(true);
+      setIsSavingMemo(true);
       setJournalNotice(null);
-      const saved = await materialService.createStudyJournal(id, content);
-      setJournalInput('');
-      setStudyJournals((prev) => [{ ...saved, content }, ...prev]);
+      await materialService.createStudyJournal(id, content);
+      setMemoText('');
+      // 저장 성공 후 목록 재조회(서버 기준 relationType/relationPath/작성일 반영)
+      await reloadStudyJournals();
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data;
@@ -931,15 +945,15 @@ export default function ArchiveDetail() {
         // REQUEST_REVISION / BLOCK — 입력 유지 + 사유/제안 표시
         setJournalNotice({
           type: data.decision === 'BLOCK' ? 'block' : 'error',
-          reason: data.reason || '학습 자료와 연결되는 개념이나 질문이 부족합니다.',
+          reason: data.reason || 'PDF 학습 자료와 연결되는 개념이나 질문이 부족합니다.',
           suggestion: data.suggestion || '',
         });
       } else {
-        console.error('학습일지 저장 실패:', e);
-        setJournalNotice({ type: 'error', reason: '학습일지 저장 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.', suggestion: '' });
+        console.error('메모 저장 실패:', e);
+        setJournalNotice({ type: 'error', reason: '메모 저장 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.', suggestion: '' });
       }
     } finally {
-      setIsSavingJournal(false);
+      setIsSavingMemo(false);
     }
   };
 
@@ -969,7 +983,8 @@ export default function ArchiveDetail() {
     if (!window.confirm('이 학습일지를 삭제할까요?')) return;
     try {
       await materialService.deleteStudyJournal(id, journalId);
-      setStudyJournals((prev) => prev.filter((j) => j.id !== journalId));
+      // 삭제 성공 후 목록 재조회
+      await reloadStudyJournals();
     } catch (e) {
       console.error('학습일지 삭제 실패:', e);
       alert('학습일지 삭제 중 오류가 발생했습니다.');
@@ -1323,11 +1338,11 @@ export default function ArchiveDetail() {
     if (plannerDetailView === 'memo') {
       return wrap(
         <Card icon={<Edit3 size={17} color="#15803D" />} title="메모">
-          <textarea value={memoText} onChange={(e) => setMemoText(e.target.value)}
+          <textarea value={plannerMemoText} onChange={(e) => setPlannerMemoText(e.target.value)}
             placeholder="이 자료/플래너에 대한 메모를 남기세요. (자료별로 저장되어 새로고침 후에도 유지됩니다)"
             style={{ width: '100%', minHeight: '200px', boxSizing: 'border-box', borderRadius: '12px', border: '1px solid var(--color-border)', padding: '12px', fontSize: '14px', lineHeight: 1.6, resize: 'vertical' }} />
-          <button className="btn-primary" style={{ marginTop: '12px', width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handleSaveMemo} disabled={isSavingMemo}>
-            {isSavingMemo ? '저장 중…' : '메모 저장'}
+          <button className="btn-primary" style={{ marginTop: '12px', width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handleSavePlannerMemo} disabled={isSavingPlannerMemo}>
+            {isSavingPlannerMemo ? '저장 중…' : '메모 저장'}
           </button>
         </Card>
       );
@@ -2500,8 +2515,8 @@ export default function ArchiveDetail() {
       case 'memo':
         return (
             <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', paddingBottom: '24px' }}>
-              {/* ── 학습일지 (검증 통과분만 S3 저장) ─────────────────────────── */}
-              <h3 style={{ margin: '0 0 8px', fontSize: '20px' }}>학습일지</h3>
+              {/* ── 나의 학습 메모 (PDF 기반 검증 통과분만 S3 저장) ─────────────── */}
+              <h3 style={{ margin: '0 0 8px', fontSize: '20px' }}>나의 학습 메모</h3>
               <p style={{ color: 'var(--color-text-muted)', fontSize: '13.5px', lineHeight: '1.6', marginBottom: '14px' }}>
                 PDF 내용과 관련된 개념 정리, 질문, 헷갈린 점, 학습 회고를 저장할 수 있습니다.{' '}
                 PDF에 직접 나온 개념뿐 아니라 PDF 개념에서 이어지는 하위·선수·응용·비교 개념도 저장할 수 있습니다.{' '}
@@ -2509,6 +2524,7 @@ export default function ArchiveDetail() {
               </p>
               <textarea
                   style={{
+                    flex: 1,
                     padding: '18px',
                     borderRadius: '14px',
                     border: '1px solid var(--color-border)',
@@ -2518,12 +2534,12 @@ export default function ArchiveDetail() {
                     lineHeight: '1.7',
                     fontFamily: 'inherit',
                     resize: 'vertical',
-                    minHeight: '120px',
+                    minHeight: '200px',
                     boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.03)'
                   }}
                   placeholder={'예: OOP에서 클래스는 객체를 만들기 위한 설계도이고, 객체는 실제 인스턴스라는 점을 정리했다.\n예: OOP를 공부하다 보니 상속에서 부모 클래스와 자식 클래스 관계가 헷갈린다.\n예: 다형성을 이해하려면 오버라이딩과 상속 관계를 같이 봐야 한다.'}
-                  value={journalInput}
-                  onChange={(e) => setJournalInput(e.target.value)}
+                  value={memoText}
+                  onChange={(e) => setMemoText(e.target.value)}
               />
               {journalNotice && (
                   <div style={{
@@ -2546,15 +2562,19 @@ export default function ArchiveDetail() {
                 <button
                     className="btn-primary"
                     style={{ width: 'auto', padding: '10px 28px', borderRadius: '30px', fontWeight: 'bold' }}
-                    onClick={handleSaveJournal}
-                    disabled={isSavingJournal}
+                    onClick={handleSaveMemo}
+                    disabled={isSavingMemo}
                 >
-                  {isSavingJournal ? '검증/저장 중...' : '학습일지 저장'}
+                  {isSavingMemo ? '저장 중...' : '메모 저장'}
                 </button>
               </div>
 
-              {/* 학습일지 목록 */}
-              {studyJournals.length > 0 && (
+              {/* 메모 목록 (검증 통과분) — 비어 있으면 안내 문구 */}
+              {studyJournals.length === 0 ? (
+                  <div style={{ marginTop: '20px', padding: '24px', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '14px', border: '1px dashed var(--color-border)', borderRadius: '12px', backgroundColor: '#FBFBF9' }}>
+                    아직 저장된 메모가 없습니다.
+                  </div>
+              ) : (
                   <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {studyJournals.map((j) => (
                         <div key={j.id} style={{
@@ -2565,8 +2585,8 @@ export default function ArchiveDetail() {
                         }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
                             <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                              {j.relationPath && (
-                                  <span style={{ fontSize: '12px', padding: '2px 10px', borderRadius: '20px', backgroundColor: '#EEF4FF', color: '#3B5BDB' }}>{j.relationPath}</span>
+                              {(j.relationPath || j.relationType) && (
+                                  <span style={{ fontSize: '12px', padding: '2px 10px', borderRadius: '20px', backgroundColor: '#EEF4FF', color: '#3B5BDB' }}>{j.relationPath || j.relationType}</span>
                               )}
                               <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
                                 {j.createdAt ? String(j.createdAt).slice(0, 10) : ''}
@@ -2588,41 +2608,6 @@ export default function ArchiveDetail() {
                     ))}
                   </div>
               )}
-
-              <div style={{ height: '1px', backgroundColor: 'var(--color-border)', margin: '28px 0 20px' }} />
-
-              {/* ── 기존 일반 메모 (변경 없음) ──────────────────────────────── */}
-              <h3 style={{ margin: '0 0 16px', fontSize: '20px' }}>나의 학습 메모</h3>
-              <p style={{ color: 'var(--color-text-muted)', fontSize: '14px', marginBottom: '16px' }}>문서와 관련된 아이디어나 핵심 정리 사항을 메모로 기록해보세요.</p>
-              <textarea
-                  style={{
-                    flex: 1,
-                    padding: '24px',
-                    borderRadius: '16px',
-                    border: '1px solid var(--color-border)',
-                    backgroundColor: '#FFFDF5',
-                    color: 'var(--color-text-main)',
-                    fontSize: '16px',
-                    lineHeight: '1.7',
-                    fontFamily: 'inherit',
-                    resize: 'none',
-                    boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.03)',
-                    minHeight: '300px'
-                  }}
-                  placeholder="이 자료를 보며 중요하게 기억할 부분을 자유롭게 입력하세요."
-                  value={memoText}
-                  onChange={(e) => setMemoText(e.target.value)}
-              />
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '20px' }}>
-                <button
-                    className="btn-primary"
-                    style={{ width: 'auto', padding: '12px 32px', borderRadius: '30px', fontWeight: 'bold' }}
-                    onClick={handleSaveMemo}
-                    disabled={isSavingMemo}
-                >
-                  {isSavingMemo ? '저장 중...' : '메모 저장'}
-                </button>
-              </div>
             </div>
         );
 

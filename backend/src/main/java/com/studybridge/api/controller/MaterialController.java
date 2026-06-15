@@ -121,11 +121,13 @@ public class MaterialController {
     }
 
     // 상세 조회
+    // context=review-note 일 때만 오답노트(REVIEW_NOTE) 상세 허용(전용 복습 화면). 그 외엔 오답노트 materialId 차단(404).
     @GetMapping("/{materialId}")
     public ResponseEntity<MaterialDTO> getMaterialDetail(
             @AuthenticationPrincipal CustomUserDetails userDetails,
-            @PathVariable Long materialId) {
-        return ResponseEntity.ok(materialService.getMaterial(userDetails.getId(), materialId));
+            @PathVariable Long materialId,
+            @RequestParam(value = "context", required = false) String context) {
+        return ResponseEntity.ok(materialService.getMaterial(userDetails.getId(), materialId, context));
     }
 
     @GetMapping("/{materialId}/summary")

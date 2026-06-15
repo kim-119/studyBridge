@@ -100,9 +100,10 @@ export default function ReviewNotesPage() {
             >
               <div style={{
                 display: 'inline-flex', padding: '8px', borderRadius: '10px',
-                background: active ? '#15803D' : '#ECFDF5', color: active ? '#fff' : '#15803D', marginBottom: '10px',
+                background: active ? '#15803D' : '#ECFDF5', marginBottom: '10px',
               }}>
-                <Icon size={20} />
+                {/* 전역 .lucide{color:muted} 가 인라인 color 를 덮으므로, 아이콘에 직접 style color 를 줘 대비 확보 */}
+                <Icon size={24} color={active ? '#FFFFFF' : '#15803D'} style={{ color: active ? '#FFFFFF' : '#15803D' }} />
               </div>
               <h3 style={{ margin: '0 0 4px 0', fontSize: '15px', fontWeight: 700, color: '#111827' }}>{title}</h3>
               <p style={{ margin: 0, fontSize: '13px', color: '#6B7280', lineHeight: 1.5 }}>{desc}</p>

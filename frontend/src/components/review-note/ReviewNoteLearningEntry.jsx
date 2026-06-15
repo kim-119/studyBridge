@@ -42,8 +42,9 @@ export default function ReviewNoteLearningEntry({ archiveMaterialId, navigate })
             onClick={() => go(tab)}
             style={{ textAlign: 'left', cursor: 'pointer', background: '#fff', border: '1px solid #E5E7EB', borderRadius: '12px', padding: '16px' }}
           >
-            <div style={{ display: 'inline-flex', padding: '8px', borderRadius: '10px', background: '#ECFDF5', color: '#15803D', marginBottom: '10px' }}>
-              <Icon size={20} />
+            <div style={{ display: 'inline-flex', padding: '8px', borderRadius: '10px', background: '#ECFDF5', marginBottom: '10px' }}>
+              {/* 전역 .lucide{color:muted} 가 인라인 color 를 덮으므로 아이콘에 직접 색 지정 */}
+              <Icon size={24} color="#15803D" style={{ color: '#15803D' }} />
             </div>
             <h4 style={{ margin: '0 0 4px', fontSize: '15px', fontWeight: 700, color: '#111827' }}>{title}</h4>
             <p style={{ margin: 0, fontSize: '13px', color: '#6B7280', lineHeight: 1.5 }}>{desc}</p>

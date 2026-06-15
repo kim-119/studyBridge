@@ -514,7 +514,7 @@ export default function Archive() {
     setOpenedModalType(type);
     if (type === 'addMaterial') {
       // 현재 탭에 맞는 자료 유형을 기본 선택. 오답노트 탭에서 열면 오답노트 라디오가 기본 선택된다.
-      const TAB_TO_FORM = { pdf: 'pdf', planner: 'planner', journal: 'journal', reviewNote: 'reviewNote' };
+      const TAB_TO_FORM = { pdf: 'pdf', planner: 'planner', journal: 'journal' };
       setAddMaterialType(TAB_TO_FORM[activeTab] || 'journal');
       resetFormState();
     }
@@ -612,8 +612,7 @@ export default function Archive() {
     }
 
     // 3. 유형 판별 + 업로드. 모든 경로(분류 실패/불일치/업로드 실패)에서 저장 중 상태가 풀리도록 try/finally 로 감싼다.
-    const selectedAi = addMaterialType === 'planner' ? 'PLANNER'
-      : addMaterialType === 'reviewNote' ? 'WRONG_NOTE' : 'STUDY_PDF';
+    const selectedAi = addMaterialType === 'planner' ? 'PLANNER' : 'STUDY_PDF';
     setIsSubmitting(true);
     try {
       // D. 저장 전 AI 유형 판별은 기본 비활성화(위 CLASSIFY_BEFORE_SAVE_ENABLED 주석 참고).
@@ -632,7 +631,7 @@ export default function Archive() {
           return; // finally 에서 저장 중 해제 → 모달에서 다시 선택
         }
       }
-      const UPLOAD_ENUM = { planner: 'PLANNER', reviewNote: 'REVIEW_NOTE' };
+      const UPLOAD_ENUM = { planner: 'PLANNER' };
       await doUpload(UPLOAD_ENUM[addMaterialType] || 'PDF');
     } finally {
       setIsSubmitting(false);
@@ -691,12 +690,6 @@ export default function Archive() {
             onClick={() => handleTabChange('pdf')}
           >
             학습 PDF
-          </button>
-          <button
-            className={`archive-tab ${activeTab === 'reviewNote' ? 'active' : ''}`}
-            onClick={() => handleTabChange('reviewNote')}
-          >
-            오답노트
           </button>
           <button
             className={`archive-tab ${activeTab === 'planner' ? 'active' : ''}`}
@@ -793,97 +786,7 @@ export default function Archive() {
           </div>
         ))}
 
-        {/* L. 오답노트 탭 — 상단 /review-notes 와 동일 데이터. loading/error/empty/list 분리 + 6개 버튼 */}
-        {activeTab === 'reviewNote' && reviewNotesLoading && (
-          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '40px 20px', textAlign: 'center', color: 'var(--color-text-muted)', borderRadius: '12px' }}>
-            오답노트를 불러오는 중입니다.
-          </div>
-        )}
-        {activeTab === 'reviewNote' && !reviewNotesLoading && reviewNotesError && (
-          <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '40px 20px', textAlign: 'center', color: '#B91C1C', borderRadius: '12px' }}>
-            <p style={{ margin: '0 0 12px' }}>오답노트 목록을 불러오지 못했습니다. 다시 시도해주세요.</p>
-            <button className="btn-primary" style={{ width: 'auto', padding: '8px 16px', borderRadius: '20px' }} onClick={fetchReviewNotes}>다시 시도</button>
-          </div>
-        )}
-        {activeTab === 'reviewNote' && !reviewNotesLoading && !reviewNotesError && reviewNoteItems.length === 0 && manualReviewNotes.length === 0 && (
-          <EmptyState tab="reviewNote" />
-        )}
-        {activeTab === 'reviewNote' && !reviewNotesLoading && !reviewNotesError && reviewNoteItems.map((note) => {
-          const rid = note.id ?? note.reviewNoteId;
-          // 실제 복습 기능은 자료보관함 REVIEW_NOTE 상세(/archive/reviewNote/{materialId})에서만 실행한다.
-          // archiveMaterialId 가 없는 구버전 노트는 /review-notes 로 폴백(빈 화면 이동 금지).
-          const goLearn = (archiveTab, legacyTab) => {
-            if (note.archiveMaterialId) navigate(`/archive/reviewNote/${note.archiveMaterialId}?tab=${archiveTab}`);
-            else navigate(`/review-notes?note=${rid}&tab=${legacyTab}`);
-          };
-          const openPdf = async () => {
-            try {
-              const data = await reviewNoteService.getDownloadUrl(rid);
-              const url = data?.url || data?.downloadUrl || note.pdfUrl;
-              if (url) window.open(url, '_blank', 'noopener'); else alert('이 오답노트에는 아직 PDF가 없습니다.');
-            } catch { alert('PDF를 여는 중 문제가 발생했습니다.'); }
-          };
-          const savePdf = async () => {
-            try {
-              const data = await reviewNoteService.getDownloadUrl(rid);
-              const url = data?.url || data?.downloadUrl || note.pdfUrl;
-              if (!url) { alert('이 오답노트에는 아직 PDF가 없습니다.'); return; }
-              const a = document.createElement('a');
-              a.href = url; a.download = `${note.title || 'review-note'}.pdf`;
-              document.body.appendChild(a); a.click(); a.remove();
-            } catch { alert('PDF 저장 중 문제가 발생했습니다.'); }
-          };
-          return (
-            <div key={`rn-${rid}`} className="glass-panel archive-card animate-fade-in">
-              <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div className="icon-wrapper pdf-icon" style={{ background: 'linear-gradient(135deg, #F87171, #DC2626)' }}>
-                    <FileIcon size={22} color="rgba(255,255,255,0.9)" />
-                  </div>
-                  <span className="card-date">오답 {note.wrongCount ?? 0}개</span>
-                </div>
-              </div>
-              <h3 className="card-title">{note.title}</h3>
-              <div className="card-tags" style={{ marginBottom: '10px' }}>
-                <span className="card-tag" style={{ background: '#FEE2E2', color: '#991B1B' }}>#오답노트</span>
-              </div>
-              {/* 6개 버튼: PDF 보기 · 컴퓨터에 저장 · 다시 풀기 · 유사문제 풀기 · AI 해설 · 메모 */}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: 'auto' }}>
-                <button className="btn-outline" style={rnBtn} onClick={openPdf}>PDF 보기</button>
-                <button className="btn-outline" style={rnBtn} onClick={savePdf}>컴퓨터에 저장</button>
-                <button className="btn-outline" style={rnBtn} onClick={() => goLearn('retry', 'retry')}>다시 풀기</button>
-                <button className="btn-outline" style={rnBtn} onClick={() => goLearn('similar', 'variant')}>유사문제 풀기</button>
-                <button className="btn-outline" style={rnBtn} onClick={() => goLearn('explanation', 'ai')}>AI 해설</button>
-                <button className="btn-outline" style={rnBtn} onClick={() => goLearn('memo', 'list')}>메모</button>
-                <button className="btn-outline" style={{ ...rnBtn, color: '#EF4444', borderColor: '#FCA5A5' }} onClick={(e) => handleDeleteReviewNote(e, rid)}>삭제</button>
-              </div>
-            </div>
-          );
-        })}
-
-        {/* 직접 업로드한 오답노트 자료(REVIEW_NOTE material) — 클릭 시 오답노트 상세로 진입 */}
-        {activeTab === 'reviewNote' && !reviewNotesLoading && manualReviewNotes.map((note) => (
-          <div
-            key={`rnm-${note.id}`}
-            className="glass-panel archive-card animate-fade-in"
-            style={{ cursor: 'pointer' }}
-            onClick={() => handleOpenDetail('reviewNote', note)}
-          >
-            <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="icon-wrapper pdf-icon" style={{ background: 'linear-gradient(135deg, #F87171, #DC2626)' }}>
-                  <FileIcon size={22} color="rgba(255,255,255,0.9)" />
-                </div>
-                <span className="card-date">{note.date}</span>
-              </div>
-              <button onClick={(e) => handleDeleteMaterial(e, note.id)} style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '4px' }}>삭제</button>
-            </div>
-            <h3 className="card-title">{note.title}</h3>
-            <div className="card-tags" style={{ marginBottom: 'auto' }}>
-              <span className="card-tag" style={{ background: '#FEE2E2', color: '#991B1B' }}>#오답노트</span>
-            </div>
-          </div>
-        ))}
+        {/* 오답노트는 자료보관함에서 제거됨 — 상단 네비게이션의 독립 /review-notes 페이지에서만 관리한다. */}
 
         {!isLoading && !materialsError && activeTab === 'planner' && planners.length === 0 && (
           <EmptyState tab="planner" />
@@ -990,9 +893,6 @@ export default function Archive() {
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px', cursor: 'pointer' }}>
                     <input type="radio" name="materialType" checked={addMaterialType === 'planner'} onChange={() => setAddMaterialType('planner')} style={{ transform: 'scale(1.2)' }} /> 플래너
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px', cursor: 'pointer' }}>
-                    <input type="radio" name="materialType" checked={addMaterialType === 'reviewNote'} onChange={() => setAddMaterialType('reviewNote')} style={{ transform: 'scale(1.2)' }} /> 오답노트
                   </label>
                 </div>
               </div>

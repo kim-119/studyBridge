@@ -684,8 +684,9 @@ export const materialService = {
     return res.data;
   },
 
-  getMaterialDetail: async (materialId) => {
-    const res = await api.get(`/api/materials/${materialId}`);
+  // context='review-note' 일 때만 오답노트(REVIEW_NOTE) 상세 허용(전용 복습 화면). 일반 상세는 오답노트 차단(404).
+  getMaterialDetail: async (materialId, context) => {
+    const res = await api.get(`/api/materials/${materialId}`, context ? { params: { context } } : undefined);
     return res.data;
   },
 
@@ -766,6 +767,12 @@ export const materialService = {
 
   // 학습일지: 검증(ai07) 통과분만 S3 저장 + DB 메타데이터. 원문은 상세 조회 시 S3에서 읽음.
   getStudyJournals: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/study-journals`);
+    return res.data;
+  },
+
+  // listStudyJournals: getStudyJournals 별칭(메모 탭 목록 표시용 명시 이름)
+  listStudyJournals: async (materialId) => {
     const res = await api.get(`/api/materials/${materialId}/study-journals`);
     return res.data;
   },
