@@ -107,6 +107,17 @@ jobs:
 
           npm run build
 
+      - name: 빌드 가드 (vite dev 문자열 차단)
+        run: |
+          cd frontend
+          test -f dist/index.html
+          # 운영에는 정적 dist만 배포한다. dev 빌드 산출물이 섞이면 실패시킨다.
+          if grep -nE "/@vite/client|react-refresh|/src/main\.jsx" dist/index.html; then
+            echo "FAIL: dist/index.html에 vite dev 문자열 존재 — 정적 프로덕션 빌드가 아닙니다."
+            exit 1
+          fi
+          echo "PASS: dist는 정적 프로덕션 빌드"
+
   fastapi-ci:
     name: FastAPI Python 3.12 Check
     runs-on: ubuntu-latest

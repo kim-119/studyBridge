@@ -1,32 +1,190 @@
 name: StudyBridge CD Pipeline
 
-# CI("StudyBridge CI Pipeline") 성공 후에만 CD가 실행된다.
-# LLM-clean push로 인한 직접 배포 트리거는 제거하고 workflow_run 기반으로만 동작한다.
+# 경로 기반으로 배포 대상을 분리한다:
+#   - frontend/**  → GitHub에서 dist 빌드 → tar로 EC2 전송 → /var/www/studybridge/releases/<sha>
+#                    풀고 current 심볼릭 링크 원자 교체 → nginx reload. (react Docker pull/재시작 금지)
+#   - backend/**   → backend 이미지 build/push → EC2에서 spring 만 pull/recreate. (react pull 금지)
+#   - fastapi/**   → EC2 react/spring 배포 금지(no-op). ai07 배포는 별도/수동.
+#   - docker-compose.yml → spring 재기동(운영 compose 서비스 정의 위치). react는 운영 미사용.
+# ⚠️ 배포 대상 브랜치 LLM-clean은 기본 브랜치(main)가 아니다.
+#    workflow_run 트리거는 "기본 브랜치에 있는 워크플로우"만 발동하므로 LLM-clean에선 동작하지 않는다.
+#    따라서 LLM-clean push 트리거로 동작한다. CI 통과 보장은 각 배포 잡의 빌드 스텝(npm run build /
+#    backend 이미지 build)이 깨진 커밋에서 자체 실패하는 것으로 대체한다. 정적 배포라 빌드 실패 시
+#    직전 릴리즈(current)가 그대로 유지된다.
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: "수동 배포 대상"
+        type: choice
+        default: all
+        options:
+          - all
+          - frontend
+          - backend
   push:
-    branches:
-      - LLM-clean
-  workflow_run:
-    workflows: ["StudyBridge CI Pipeline"]
     branches: [ LLM-clean ]
-    types:
-      - completed
+
+# 같은 브랜치의 연속 push가 배포를 중첩 실행하지 않도록 직렬화한다.
+concurrency:
+  group: cd-LLM-clean
+  cancel-in-progress: false
+
+env:
+  DEPLOY_SHA: ${{ github.sha }}
 
 jobs:
-  build-and-deploy:
-    name: Build and Deploy to AWS EC2
+  detect-changes:
+    name: Detect changed paths
     runs-on: ubuntu-latest
-    env:
-      DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-    # CI가 LLM-clean에서 success로 끝난 경우에만 배포한다. 그 외에는 배포하지 않는다.
-    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'LLM-clean') }}
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - name: 소스코드 체크아웃(전체 히스토리)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          fetch-depth: 0
 
+      - name: 변경 경로 판별
+        id: filter
+        run: |
+          set -e
+          # 수동 실행은 입력값으로 배포 대상을 강제한다.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            T="${{ github.event.inputs.target }}"
+            fe=false; be=false
+            if [ "$T" = "all" ] || [ "$T" = "frontend" ]; then fe=true; fi
+            if [ "$T" = "all" ] || [ "$T" = "backend" ]; then be=true; fi
+            echo "frontend=$fe" >> "$GITHUB_OUTPUT"
+            echo "backend=$be"  >> "$GITHUB_OUTPUT"
+            echo "MANUAL target=$T frontend=$fe backend=$be"
+            exit 0
+          fi
+
+          SHA="${DEPLOY_SHA}"
+          # push 이벤트는 push 직전 SHA(before)를 기준으로 비교한다(다중 커밋 push 범위 전체 포함).
+          # before가 없거나(신규 브랜치) 0-SHA면 첫 부모로 폴백한다.
+          BEFORE="${{ github.event.before }}"
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git rev-parse --verify "$BEFORE" >/dev/null 2>&1; then
+            BASE="$BEFORE"
+          elif BASE=$(git rev-parse --verify "${SHA}^" 2>/dev/null); then :; else
+            BASE="$SHA"
+          fi
+          echo "base=$BASE sha=$SHA"
+          CHANGED=$(git diff --name-only "$BASE" "$SHA" || true)
+          echo "----- changed files -----"
+          echo "$CHANGED"
+          echo "-------------------------"
+
+          fe=false; be=false
+          if echo "$CHANGED" | grep -qE '^frontend/'; then fe=true; fi
+          if echo "$CHANGED" | grep -qE '^backend/'; then be=true; fi
+          # docker-compose.yml 변경은 spring 재기동으로 처리(운영 compose 서비스 정의). react는 운영 미사용.
+          if echo "$CHANGED" | grep -qE '^docker-compose\.yml$'; then be=true; fi
+
+          echo "frontend=$fe" >> "$GITHUB_OUTPUT"
+          echo "backend=$be"  >> "$GITHUB_OUTPUT"
+          echo "RESULT frontend=$fe backend=$be"
+
+  frontend-deploy:
+    name: Deploy frontend (static dist)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.frontend == 'true' }}
+    runs-on: ubuntu-latest
     steps:
       - name: 소스코드 체크아웃
         uses: actions/checkout@v4
         with:
-          # CI가 검증한 정확한 commit을 빌드/배포한다.
+          ref: ${{ env.DEPLOY_SHA }}
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: dist 빌드
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+          test -f dist/index.html
+
+      - name: 빌드 가드 (vite dev 문자열 차단)
+        run: |
+          cd frontend
+          if grep -nE "/@vite/client|react-refresh|/src/main\.jsx" dist/index.html; then
+            echo "FAIL: dist/index.html에 vite dev 문자열 존재 — dev 빌드가 배포될 뻔했습니다."
+            exit 1
+          fi
+          echo "PASS: dist는 정적 프로덕션 빌드"
+
+      - name: dist 패키징
+        run: tar -czf dist.tar.gz -C frontend/dist .
+
+      - name: dist EC2 전송
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "dist.tar.gz"
+          target: "/tmp/sb-frontend"
+
+      - name: EC2 릴리즈 교체 및 검증
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: DEPLOY_SHA
+          script: |
+            set -e
+            SHA="${DEPLOY_SHA}"
+            SHORT="${SHA:0:8}"
+            WWW="/var/www/studybridge"
+            REL="$WWW/releases/$SHORT"
+
+            sudo rm -rf "$REL"
+            sudo mkdir -p "$REL"
+            sudo tar -xzf /tmp/sb-frontend/dist.tar.gz -C "$REL"
+            test -f "$REL/index.html"
+
+            # 배포 가드: 업로드된 산출물이 정적 dist인지 재확인
+            if grep -nE "/@vite/client|react-refresh|/src/main\.jsx" "$REL/index.html"; then
+              echo "FAIL: 업로드된 index.html에 vite dev 문자열"
+              exit 1
+            fi
+
+            sudo chown -R www-data:www-data "$REL"
+            # 원자적 심볼릭 링크 교체
+            sudo ln -sfn "$REL" "$WWW/current"
+            sudo nginx -t
+            sudo systemctl reload nginx
+            rm -f /tmp/sb-frontend/dist.tar.gz
+
+            # react Docker pull/재시작 금지 — 정적 배포만 수행한다.
+            sleep 2
+            echo "----- 운영 검증 -----"
+            curl -sI https://www.studybridge.co.kr | head -1
+            if curl -s https://www.studybridge.co.kr | grep -nE "/@vite/client|react-refresh|/src/main\.jsx"; then
+              echo "FAIL: 운영 HTML에 vite dev 문자열"
+              exit 1
+            fi
+            echo "frontend released OK: $REL"
+
+  backend-deploy:
+    name: Deploy backend (spring only)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 소스코드 체크아웃
+        uses: actions/checkout@v4
+        with:
           ref: ${{ env.DEPLOY_SHA }}
 
       - name: Docker Buildx 설정
@@ -49,62 +207,28 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Frontend 빌드 및 푸시
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/studybridge-frontend:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/studybridge-frontend:${{ env.DEPLOY_SHA }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # FastAPI 운영 배포는 현재 DockerHub image가 아니라
-      # EC2 compose의 fastapi-tunnel-proxy(alpine/socat)를 통해 ai07 FastAPI로 연결된다.
-      # 운영 compose에는 studybridge-fastapi image가 존재하지 않으므로
-      # studybridge-fastapi image build/push는 현재 CD 배포 대상이 아니어서 비활성화한다.
-      # (FastAPI 코드 검증은 ci.yml의 fastapi-ci에서 계속 수행된다.)
-      # - name: FastAPI 빌드 및 푸시
-      #   uses: docker/build-push-action@v5
-      #   with:
-      #     context: ./fastapi
-      #     push: true
-      #     tags: |
-      #       ${{ secrets.DOCKERHUB_USERNAME }}/studybridge-fastapi:latest
-      #       ${{ secrets.DOCKERHUB_USERNAME }}/studybridge-fastapi:${{ env.DEPLOY_SHA }}
-      #     cache-from: type=gha
-      #     cache-to: type=gha,mode=max
-
-      - name: AWS EC2 서버 배포
+      - name: EC2 spring 배포
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          # DEPLOY_SHA는 워크플로우 env, DOCKERHUB_*는 위 스텝 env에서 EC2로 전달된다.
+          envs: DEPLOY_SHA,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN
           script: |
             set -e
-
             APP_DIR="/home/ubuntu/studyBridge"
-
-            if [ ! -d "$APP_DIR/.git" ]; then
-              echo "studyBridge repo not found: $APP_DIR"
-              exit 1
-            fi
-
             cd "$APP_DIR"
-
-            sudo systemctl stop studybridge-healthcheck.timer || true
-            sudo systemctl stop studybridge-auto-deploy.timer || true
-            sudo systemctl stop studybridge-healthcheck.service || true
-            sudo systemctl stop studybridge-auto-deploy.service || true
 
             sudo chown -R "$USER:$USER" "$APP_DIR"
 
-            # CI가 검증한 정확한 SHA로만 동기화한다. develop/main/다른 SHA로 fallback 금지.
+            # CI가 검증한 정확한 SHA로만 동기화한다.
             git fetch origin LLM-clean
             git switch LLM-clean
-            git reset --hard "${{ env.DEPLOY_SHA }}"
+            git reset --hard "${DEPLOY_SHA}"
 
             # 운영 파일(.env, override, db init, node_modules)은 보호한다. -fdx 금지.
             git clean -fd \
@@ -114,16 +238,11 @@ jobs:
               -e node_modules \
               -e "fastapi/db/init"
 
-            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
 
-            # 운영 compose service name은 react(frontend), spring(backend)이다.
-            # DockerHub에서 pull한 image를 사용하고, 운영에서 실수로 빌드되지 않도록 --no-build를 강제한다.
-            docker compose pull react spring
-            docker compose up -d --no-build --force-recreate --remove-orphans
+            # spring(backend)만 pull/recreate한다. react는 운영 미사용(profiles:["dev"]).
+            docker compose pull spring
+            docker compose up -d --no-build --force-recreate spring
 
             docker image prune -f
-
-            sudo systemctl start studybridge-auto-deploy.timer || true
-            sudo systemctl start studybridge-healthcheck.timer || true
-
             docker compose ps

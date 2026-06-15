@@ -1,9 +1,15 @@
 services:
+  # 운영 프론트는 nginx가 /var/www/studybridge/current 정적 dist를 직접 서빙한다.
+  # react(vite dev server) 컨테이너는 운영에서 사용하지 않는다.
+  # profiles:["dev"]를 부여해 기본 `docker compose up -d`(프로필 미지정)에서는
+  # 절대 기동되지 않는다. 로컬 개발 시에만 `docker compose --profile dev up -d react`로 띄운다.
   react:
     image: ${DOCKER_IMAGE_PREFIX:-studybridge}-frontend:latest
     build:
       context: ./frontend
     container_name: capstone-react
+    profiles:
+      - dev
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
