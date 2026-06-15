@@ -112,3 +112,15 @@ try:
 except Exception as e:
     import logging
     logging.getLogger(__name__).warning("learning_mate 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 자료 상세 "나의 학습 메모" 검증 endpoint
+# POST /api/ai/study-journal/validate — 검증만 수행(원문/S3/DB 저장 없음), OpenAI 4단계 최종 판정.
+# 기존 endpoint/SSE와 독립, additive.
+try:
+    from app.api.study_journal_routes import router as study_journal_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/study-journal/validate" not in paths:
+        app.include_router(study_journal_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("study_journal 라우터 로드 실패 (계속 기동): %s", e)
