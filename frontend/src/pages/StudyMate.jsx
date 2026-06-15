@@ -8,7 +8,31 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { getAgentColor, agentColorKey } from '../utils/agentColor';
 
 const PERSONALITY_OPTIONS = ['전문적', '친근함', '솔직함', '독특함', '효율적', '냉소적'];
-const KNOWLEDGE_LEVEL_OPTIONS = ['입문 수준', '학사 수준', '석사 수준', '박사 수준', '전문가 수준'];
+
+// 학습자 수준: 표시 라벨(한국어)과 전송 value(enum) 분리. ai07/Spring은 enum으로 라우팅한다.
+const KNOWLEDGE_LEVELS = [
+  { value: 'INTRO', label: '입문 수준', desc: '쉬운 말과 비유 중심으로 설명합니다.' },
+  { value: 'BACHELOR', label: '학사 수준', desc: '대학 학부 수준으로 정의, 원리, 예시를 설명합니다.' },
+  { value: 'MASTER', label: '석사 수준', desc: '비교, 한계, 적용까지 포함해 깊게 설명합니다.' },
+  { value: 'DOCTOR', label: '박사 수준', desc: '연구 맥락, 이론적 근거, 쟁점까지 포함해 설명합니다.' },
+  { value: 'EXPERT', label: '전문가 수준', desc: '박사 수준 설명에 실무 판단, 트레이드오프, 적용 전략까지 포함합니다.' },
+];
+const KNOWLEDGE_LEVEL_VALUES = KNOWLEDGE_LEVELS.map((l) => l.value);
+// 한국어("학사 수준")/영문(bachelor)/enum 입력을 표준 enum으로 통일. 구버전 저장방 persona 태그도 호환.
+const normalizeKnowledgeLevel = (raw) => {
+  const v = String(raw || '').trim();
+  if (!v) return 'BACHELOR';
+  const low = v.toLowerCase();
+  if (v.includes('입문') || low.includes('intro') || low.includes('beginner')) return 'INTRO';
+  if (v.includes('학사') || v.includes('학부') || low.includes('bachelor') || low.includes('undergrad')) return 'BACHELOR';
+  if (v.includes('석사') || low.includes('master')) return 'MASTER';
+  if (v.includes('박사') || low.includes('doctor') || low.includes('phd')) return 'DOCTOR';
+  if (v.includes('전문가') || low.includes('expert')) return 'EXPERT';
+  const up = v.toUpperCase();
+  return KNOWLEDGE_LEVEL_VALUES.includes(up) ? up : 'BACHELOR';
+};
+const knowledgeLevelLabel = (v) => (KNOWLEDGE_LEVELS.find((l) => l.value === normalizeKnowledgeLevel(v)) || {}).label || '학사 수준';
+const knowledgeLevelDesc = (v) => (KNOWLEDGE_LEVELS.find((l) => l.value === normalizeKnowledgeLevel(v)) || {}).desc || '';
 
 // 말투(성격) → 내부 role 기본값. UI에서 '역할' 입력은 숨기되 payload의 role은 말투에서 자동 유도한다.
 const ROLE_BY_PERSONALITY = {
@@ -53,7 +77,7 @@ const DEFAULT_AGENT = {
   name: '',
   role: '정확한 개념 설명자',
   personality: '친근함',
-  knowledgeLevel: '학사 수준',
+  knowledgeLevel: 'BACHELOR',
   customInstruction: '',
   goal: '사용자의 학습을 돕는다',
   agentPreset: '정확 설명형'
@@ -1347,11 +1371,13 @@ const getAgentId = (agent) => agent?.id ?? agent?.agentId;
 const STUDYBRIDGE_ROOM_TITLE = '스터디 브릿지';
 const getDisplayRoomTitle = (room) => room?.roomName || room?.name || STUDYBRIDGE_ROOM_TITLE;
 
+// 항상 표준 enum(INTRO|BACHELOR|MASTER|DOCTOR|EXPERT)으로 반환. 표시에는 knowledgeLevelLabel()을 쓴다.
 const getAgentKnowledgeLevel = (agent) => {
-  return agent?.knowledgeLevel
+  return normalizeKnowledgeLevel(
+    agent?.knowledgeLevel
     || agent?.knowledge_level
     || parsePersonaTag(agent?.persona, '지식수준')
-    || '학사 수준';
+  );
 };
 
 const getAgentPersonality = (agent) => {
@@ -1433,7 +1459,7 @@ const getAgentStyleTheme = (personality) => {
 
 const buildCanonicalAgentPayload = (agent) => {
   const personality = PERSONALITY_OPTIONS.includes(agent.personality) ? agent.personality : '전문적';
-  const knowledgeLevel = KNOWLEDGE_LEVEL_OPTIONS.includes(agent.knowledgeLevel) ? agent.knowledgeLevel : '학사 수준';
+  const knowledgeLevel = normalizeKnowledgeLevel(agent.knowledgeLevel); // enum value (INTRO/BACHELOR/...)
   const customInstruction = String(agent.customInstruction || '').trim();
   const goal = String(agent.goal || '사용자의 학습을 돕는다').trim();
   const personaBody = customInstruction || goal;
@@ -1451,6 +1477,7 @@ const buildCanonicalAgentPayload = (agent) => {
     tone: personality,
     knowledgeLevel,
     knowledge_level: knowledgeLevel,
+    knowledgeLevelLabel: knowledgeLevelLabel(knowledgeLevel),
     goal,
     customInstruction,
     custom_instruction: customInstruction,
@@ -2422,7 +2449,7 @@ export default function StudyMate() {
                   const agentId = getAgentId(agent);
                   const isActive = getAgentId(selectedAgent) === agentId;
                   const avatarColor = getAvatarColor(index);
-                  const knowledgeLevel = getAgentKnowledgeLevel(agent);
+                  const knowledgeLevel = knowledgeLevelLabel(getAgentKnowledgeLevel(agent));
                   const personality = getAgentPersonality(agent);
                   const isTyping = typingRooms[agentId];
 
@@ -2695,7 +2722,11 @@ export default function StudyMate() {
                             )}
                             {showMetaBadges && agentKnowledge && (
                               <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '4px', backgroundColor: 'rgba(96,201,90,0.10)', color: 'var(--color-primary)', fontWeight: 'bold' }}>
-                                {agentKnowledge}
+                                {knowledgeLevelLabel(agentKnowledge)}
+                                {(!isStructured && typeof msg.content === 'string' && msg.content.length > 0)
+                                  ? ` · ${msg.content.length.toLocaleString()}자` : ''}
+                                {(msg.aiMeta && Array.isArray(msg.aiMeta.toolsUsed) && msg.aiMeta.toolsUsed.length > 0)
+                                  ? ` · ${msg.aiMeta.toolsUsed.join('+')}` : ''}
                               </span>
                             )}
                           </div>
@@ -3404,17 +3435,17 @@ export default function StudyMate() {
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>학습자 수준</label>
                         <select
                           className="input-field"
-                          value={agent.knowledgeLevel}
+                          value={normalizeKnowledgeLevel(agent.knowledgeLevel)}
                           onChange={(e) => {
                             const list = [...createdAgents];
                             list[index].knowledgeLevel = e.target.value;
                             setCreatedAgents(list);
                           }}
                         >
-                          {KNOWLEDGE_LEVEL_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                          {KNOWLEDGE_LEVELS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                         </select>
                         <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '4px' }}>
-                          설명 깊이와 용어 난이도를 사용자의 수준에 맞춥니다.
+                          {knowledgeLevelDesc(agent.knowledgeLevel)}
                         </div>
                       </div>
                     </div>

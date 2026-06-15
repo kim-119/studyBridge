@@ -764,6 +764,28 @@ export const materialService = {
     return res.data;
   },
 
+  // 학습일지: 검증(ai07) 통과분만 S3 저장 + DB 메타데이터. 원문은 상세 조회 시 S3에서 읽음.
+  getStudyJournals: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/study-journals`);
+    return res.data;
+  },
+
+  // 성공 시 메타데이터 반환. 검증 실패 시 axios가 422를 throw → err.response.data 에 {decision,category,reason,suggestion}.
+  createStudyJournal: async (materialId, content) => {
+    const res = await api.post(`/api/materials/${materialId}/study-journals`, { content });
+    return res.data;
+  },
+
+  getStudyJournal: async (materialId, journalId) => {
+    const res = await api.get(`/api/materials/${materialId}/study-journals/${journalId}`);
+    return res.data;
+  },
+
+  deleteStudyJournal: async (materialId, journalId) => {
+    const res = await api.delete(`/api/materials/${materialId}/study-journals/${journalId}`);
+    return res.data;
+  },
+
   getQuizzes: async (materialId) => {
     const res = await api.get(`/api/materials/${materialId}/quiz`);
     return res.data;

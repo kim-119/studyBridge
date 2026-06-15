@@ -64,6 +64,11 @@ export default function ArchiveDetail() {
   const [isAddingStudyLog, setIsAddingStudyLog] = useState(false);
   const [showAllDetailed, setShowAllDetailed] = useState(false);
   const [memoText, setMemoText] = useState('');
+  // 학습일지(검증 통과분만 S3 저장)
+  const [journalInput, setJournalInput] = useState('');
+  const [studyJournals, setStudyJournals] = useState([]);
+  const [isSavingJournal, setIsSavingJournal] = useState(false);
+  const [journalNotice, setJournalNotice] = useState(null); // {type, reason, suggestion}
   const [chatMessages, setChatMessages] = useState([{ sender: 'ai', text: CHAT_INTRO }]);
   const [chatInput, setChatInput] = useState('');
 
@@ -520,6 +525,14 @@ export default function ArchiveDetail() {
       console.warn('메모 정보 로드 실패:', e);
     }
 
+    // 4-1. 학습일지 목록 로드 (메타데이터만; 원문은 펼칠 때 S3에서 읽음)
+    try {
+      const journals = await materialService.getStudyJournals(materialId);
+      setStudyJournals(Array.isArray(journals) ? journals : []);
+    } catch (e) {
+      console.warn('학습일지 목록 로드 실패:', e);
+    }
+
     // 5. 저장된 AI 계획 분석 로드 (새로고침 후에도 결과/체크/숨김/진행률 유지)
     try {
       const pa = await planAnalysisService.get(materialId);
@@ -895,6 +908,71 @@ export default function ArchiveDetail() {
       alert('메모 저장 도중 오류가 발생했습니다.');
     } finally {
       setIsSavingMemo(false);
+    }
+  };
+
+  // 학습일지 저장: Spring → ai07 검증 통과(ACCEPT)분만 S3 저장. 실패 시 입력 유지 + 안내.
+  const handleSaveJournal = async () => {
+    const content = (journalInput || '').trim();
+    if (!content) {
+      setJournalNotice({ type: 'error', reason: '학습일지 내용을 입력해 주세요.', suggestion: '' });
+      return;
+    }
+    try {
+      setIsSavingJournal(true);
+      setJournalNotice(null);
+      const saved = await materialService.createStudyJournal(id, content);
+      setJournalInput('');
+      setStudyJournals((prev) => [{ ...saved, content }, ...prev]);
+    } catch (e) {
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      if (status === 422 && data) {
+        // REQUEST_REVISION / BLOCK — 입력 유지 + 사유/제안 표시
+        setJournalNotice({
+          type: data.decision === 'BLOCK' ? 'block' : 'error',
+          reason: data.reason || '학습 자료와 연결되는 개념이나 질문이 부족합니다.',
+          suggestion: data.suggestion || '',
+        });
+      } else {
+        console.error('학습일지 저장 실패:', e);
+        setJournalNotice({ type: 'error', reason: '학습일지 저장 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.', suggestion: '' });
+      }
+    } finally {
+      setIsSavingJournal(false);
+    }
+  };
+
+  // 학습일지 펼치기(원문 S3 GET) / 접기
+  const handleToggleJournal = async (journalId) => {
+    const target = studyJournals.find((j) => j.id === journalId);
+    if (!target) return;
+    if (target._expanded) {
+      setStudyJournals((prev) => prev.map((j) => (j.id === journalId ? { ...j, _expanded: false } : j)));
+      return;
+    }
+    if (target.content != null) {
+      setStudyJournals((prev) => prev.map((j) => (j.id === journalId ? { ...j, _expanded: true } : j)));
+      return;
+    }
+    try {
+      const detail = await materialService.getStudyJournal(id, journalId);
+      setStudyJournals((prev) => prev.map((j) => (j.id === journalId ? { ...j, content: detail?.content || '', _expanded: true } : j)));
+    } catch (e) {
+      console.error('학습일지 원문 로드 실패:', e);
+      alert('학습일지 본문을 불러오지 못했습니다.');
+    }
+  };
+
+  // 학습일지 삭제(soft delete)
+  const handleDeleteJournal = async (journalId) => {
+    if (!window.confirm('이 학습일지를 삭제할까요?')) return;
+    try {
+      await materialService.deleteStudyJournal(id, journalId);
+      setStudyJournals((prev) => prev.filter((j) => j.id !== journalId));
+    } catch (e) {
+      console.error('학습일지 삭제 실패:', e);
+      alert('학습일지 삭제 중 오류가 발생했습니다.');
     }
   };
 
@@ -2421,7 +2499,99 @@ export default function ArchiveDetail() {
       }
       case 'memo':
         return (
-            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', paddingBottom: '24px' }}>
+            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', paddingBottom: '24px' }}>
+              {/* ── 학습일지 (검증 통과분만 S3 저장) ─────────────────────────── */}
+              <h3 style={{ margin: '0 0 8px', fontSize: '20px' }}>학습일지</h3>
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '13.5px', lineHeight: '1.6', marginBottom: '14px' }}>
+                PDF 내용과 관련된 개념 정리, 질문, 헷갈린 점, 학습 회고를 저장할 수 있습니다.{' '}
+                PDF에 직접 나온 개념뿐 아니라 PDF 개념에서 이어지는 하위·선수·응용·비교 개념도 저장할 수 있습니다.{' '}
+                욕설, 인신공격, 잡담, 무의미한 내용은 저장되지 않습니다.
+              </p>
+              <textarea
+                  style={{
+                    padding: '18px',
+                    borderRadius: '14px',
+                    border: '1px solid var(--color-border)',
+                    backgroundColor: '#FFFDF5',
+                    color: 'var(--color-text-main)',
+                    fontSize: '15px',
+                    lineHeight: '1.7',
+                    fontFamily: 'inherit',
+                    resize: 'vertical',
+                    minHeight: '120px',
+                    boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.03)'
+                  }}
+                  placeholder={'예: OOP에서 클래스는 객체를 만들기 위한 설계도이고, 객체는 실제 인스턴스라는 점을 정리했다.\n예: OOP를 공부하다 보니 상속에서 부모 클래스와 자식 클래스 관계가 헷갈린다.\n예: 다형성을 이해하려면 오버라이딩과 상속 관계를 같이 봐야 한다.'}
+                  value={journalInput}
+                  onChange={(e) => setJournalInput(e.target.value)}
+              />
+              {journalNotice && (
+                  <div style={{
+                    marginTop: '10px',
+                    padding: '12px 16px',
+                    borderRadius: '12px',
+                    border: `1px solid ${journalNotice.type === 'block' ? '#F5C2C7' : '#FDE2B3'}`,
+                    backgroundColor: journalNotice.type === 'block' ? '#FFF1F2' : '#FFF8E8',
+                    color: journalNotice.type === 'block' ? '#B02A37' : '#8A6100',
+                    fontSize: '14px',
+                    lineHeight: '1.6'
+                  }}>
+                    <div>{journalNotice.reason}</div>
+                    {journalNotice.suggestion && (
+                        <div style={{ marginTop: '6px', color: 'var(--color-text-muted)' }}>💡 {journalNotice.suggestion}</div>
+                    )}
+                  </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
+                <button
+                    className="btn-primary"
+                    style={{ width: 'auto', padding: '10px 28px', borderRadius: '30px', fontWeight: 'bold' }}
+                    onClick={handleSaveJournal}
+                    disabled={isSavingJournal}
+                >
+                  {isSavingJournal ? '검증/저장 중...' : '학습일지 저장'}
+                </button>
+              </div>
+
+              {/* 학습일지 목록 */}
+              {studyJournals.length > 0 && (
+                  <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {studyJournals.map((j) => (
+                        <div key={j.id} style={{
+                          padding: '14px 16px',
+                          borderRadius: '12px',
+                          border: '1px solid var(--color-border)',
+                          backgroundColor: '#FFFFFF'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              {j.relationPath && (
+                                  <span style={{ fontSize: '12px', padding: '2px 10px', borderRadius: '20px', backgroundColor: '#EEF4FF', color: '#3B5BDB' }}>{j.relationPath}</span>
+                              )}
+                              <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                                {j.createdAt ? String(j.createdAt).slice(0, 10) : ''}
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <button onClick={() => handleToggleJournal(j.id)} style={{ border: 'none', background: 'none', color: '#3B5BDB', cursor: 'pointer', fontSize: '13px' }}>
+                                {j._expanded ? '접기' : '원문 보기'}
+                              </button>
+                              <button onClick={() => handleDeleteJournal(j.id)} style={{ border: 'none', background: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '13px' }}>삭제</button>
+                            </div>
+                          </div>
+                          {j._expanded && (
+                              <p style={{ marginTop: '10px', marginBottom: 0, fontSize: '14.5px', lineHeight: '1.7', whiteSpace: 'pre-wrap', color: 'var(--color-text-main)' }}>
+                                {j.content}
+                              </p>
+                          )}
+                        </div>
+                    ))}
+                  </div>
+              )}
+
+              <div style={{ height: '1px', backgroundColor: 'var(--color-border)', margin: '28px 0 20px' }} />
+
+              {/* ── 기존 일반 메모 (변경 없음) ──────────────────────────────── */}
               <h3 style={{ margin: '0 0 16px', fontSize: '20px' }}>나의 학습 메모</h3>
               <p style={{ color: 'var(--color-text-muted)', fontSize: '14px', marginBottom: '16px' }}>문서와 관련된 아이디어나 핵심 정리 사항을 메모로 기록해보세요.</p>
               <textarea

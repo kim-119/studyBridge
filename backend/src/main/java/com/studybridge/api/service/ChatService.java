@@ -117,10 +117,10 @@ public class ChatService {
                 List<Map<String, Object>> agentsList = room.getAgents().stream()
                                 .map(agent -> {
                                         String persona = nullToEmpty(agent.getPersona());
-                                        String agentKnowledgeLevel = firstNonBlank(
+                                        String agentKnowledgeLevel = normalizeKnowledgeLevel(firstNonBlank(
                                                         extractPersonaTag(persona, "지식수준"),
                                                         requestKnowledgeLevel,
-                                                        "학사 수준");
+                                                        "학사 수준"));
                                         String agentPersonality = firstNonBlank(
                                                         agent.getTone(),
                                                         extractPersonaTag(persona, "성격"),
@@ -146,6 +146,7 @@ public class ChatService {
                                         agentMap.put("tone", agentPersonality);
                                         agentMap.put("knowledgeLevel", agentKnowledgeLevel);
                                         agentMap.put("knowledge_level", agentKnowledgeLevel);
+                                        agentMap.put("knowledgeLevelLabel", knowledgeLevelLabel(agentKnowledgeLevel));
                                         agentMap.put("customInstruction", agentCustomInstruction);
                                         agentMap.put("custom_instruction", agentCustomInstruction);
                                         agentMap.put("persona", persona);
@@ -218,8 +219,10 @@ public class ChatService {
                 requestBody.put("personality_strength", requestPersonalityStrength);
                 requestBody.put("style", firstNonBlank(request.getStyle(), requestPersonality));
                 requestBody.put("tone", firstNonBlank(request.getTone(), requestPersonality));
-                requestBody.put("knowledgeLevel", requestKnowledgeLevel);
-                requestBody.put("knowledge_level", requestKnowledgeLevel);
+                String normalizedRequestLevel = normalizeKnowledgeLevel(requestKnowledgeLevel);
+                requestBody.put("knowledgeLevel", normalizedRequestLevel);
+                requestBody.put("knowledge_level", normalizedRequestLevel);
+                requestBody.put("knowledgeLevelLabel", knowledgeLevelLabel(normalizedRequestLevel));
                 requestBody.put("customInstruction", requestCustomInstruction);
                 requestBody.put("custom_instruction", requestCustomInstruction);
                 requestBody.put("persona", request.getPersona());
@@ -395,16 +398,10 @@ public class ChatService {
                                 discussionMessages.add(discussionMessage);
 
                                 if (targetAgent != null) {
-                                        replies.add(ChatDTO.AgentReply.builder()
-                                                        .agentId(targetAgent.getId())
-                                                        .agentName(targetAgent.getName())
-                                                        .answer(aiContent)
-                                                        .build());
+                                        replies.add(buildReplyWithMeta(targetAgent.getId(), targetAgent.getName(), aiContent,
+                                                        messageMap, extractPersonaTag(targetAgent.getPersona(), "지식수준")));
                                 } else {
-                                        replies.add(ChatDTO.AgentReply.builder()
-                                                        .agentName(agentName)
-                                                        .answer(aiContent)
-                                                        .build());
+                                        replies.add(buildReplyWithMeta(null, agentName, aiContent, messageMap, null));
                                 }
                         }
                 } else if (response != null && response.containsKey("answers")) {
@@ -430,16 +427,10 @@ public class ChatService {
                                 saveRoomMessage(room, targetAgent, aiAnswer, "AI", processStepsJson);
 
                                 if (targetAgent != null) {
-                                        replies.add(ChatDTO.AgentReply.builder()
-                                                        .agentId(targetAgent.getId())
-                                                        .agentName(targetAgent.getName())
-                                                        .answer(aiAnswer)
-                                                        .build());
+                                        replies.add(buildReplyWithMeta(targetAgent.getId(), targetAgent.getName(), aiAnswer,
+                                                        answerMap, extractPersonaTag(targetAgent.getPersona(), "지식수준")));
                                 } else {
-                                        replies.add(ChatDTO.AgentReply.builder()
-                                                        .agentName(agentName)
-                                                        .answer(aiAnswer)
-                                                        .build());
+                                        replies.add(buildReplyWithMeta(null, agentName, aiAnswer, answerMap, null));
                                 }
                         }
                 }
@@ -1063,11 +1054,11 @@ public class ChatService {
                         String requestPersonalityStrength) {
                 String persona = nullToEmpty(agent.getPersona());
                 String agentId = firstNonBlank(agent.getAgentId(), agent.getId());
-                String agentKnowledgeLevel = firstNonBlank(
+                String agentKnowledgeLevel = normalizeKnowledgeLevel(firstNonBlank(
                                 agent.getKnowledgeLevel(),
                                 agent.getKnowledge_level(),
                                 requestKnowledgeLevel,
-                                "학사 수준");
+                                "학사 수준"));
                 String agentPersonality = firstNonBlank(
                                 agent.getPersonality(),
                                 agent.getStyle(),
@@ -1098,6 +1089,7 @@ public class ChatService {
                 agentMap.put("tone", agentPersonality);
                 agentMap.put("knowledgeLevel", agentKnowledgeLevel);
                 agentMap.put("knowledge_level", agentKnowledgeLevel);
+                agentMap.put("knowledgeLevelLabel", knowledgeLevelLabel(agentKnowledgeLevel));
                 agentMap.put("customInstruction", agentCustomInstruction);
                 agentMap.put("custom_instruction", agentCustomInstruction);
                 agentMap.put("persona", persona);
@@ -1158,6 +1150,116 @@ public class ChatService {
                         }
                 }
                 return null;
+        }
+
+        /**
+         * 학습자 수준(지식수준)을 표준 enum으로 통일한다: INTRO|BACHELOR|MASTER|DOCTOR|EXPERT.
+         * 한국어("입문 수준"/"학사 수준"…), 영문(beginner/bachelor…), enum 입력을 모두 호환한다.
+         * 빈 입력은 ""로 돌려 firstNonBlank 폴백 체인을 깨지 않는다. 알 수 없는 비공백 값은 BACHELOR로 본다.
+         * ai07 FastAPI로는 항상 이 enum 값을 보내 수준별 라우팅이 일관되게 동작하도록 한다.
+         */
+        private static String normalizeKnowledgeLevel(String raw) {
+                if (raw == null) {
+                        return "";
+                }
+                String v = raw.trim();
+                if (v.isEmpty()) {
+                        return "";
+                }
+                String low = v.toLowerCase();
+                if (v.contains("입문") || low.contains("intro") || low.contains("beginner") || low.contains("basic")) {
+                        return "INTRO";
+                }
+                if (v.contains("학사") || v.contains("학부") || low.contains("bachelor") || low.contains("undergrad")) {
+                        return "BACHELOR";
+                }
+                if (v.contains("석사") || low.contains("master")) {
+                        return "MASTER";
+                }
+                if (v.contains("박사") || low.contains("doctor") || low.contains("phd") || low.contains("ph.d")) {
+                        return "DOCTOR";
+                }
+                if (v.contains("전문가") || low.contains("expert")) {
+                        return "EXPERT";
+                }
+                switch (v.toUpperCase()) {
+                        case "INTRO":
+                        case "BACHELOR":
+                        case "MASTER":
+                        case "DOCTOR":
+                        case "EXPERT":
+                                return v.toUpperCase();
+                        default:
+                                return "BACHELOR";
+                }
+        }
+
+        /** enum 학습자 수준 → 한국어 라벨(프론트 표시/ai07 호환용). */
+        private static String knowledgeLevelLabel(String enumValue) {
+                if (enumValue == null) {
+                        return "";
+                }
+                switch (enumValue.toUpperCase()) {
+                        case "INTRO":    return "입문 수준";
+                        case "BACHELOR": return "학사 수준";
+                        case "MASTER":   return "석사 수준";
+                        case "DOCTOR":   return "박사 수준";
+                        case "EXPERT":   return "전문가 수준";
+                        default:         return enumValue;
+                }
+        }
+
+        private Boolean asBoolean(Object value) {
+                if (value instanceof Boolean) {
+                        return (Boolean) value;
+                }
+                if (value != null) {
+                        String s = String.valueOf(value).trim();
+                        if (s.equalsIgnoreCase("true")) return Boolean.TRUE;
+                        if (s.equalsIgnoreCase("false")) return Boolean.FALSE;
+                }
+                return null;
+        }
+
+        @SuppressWarnings("unchecked")
+        private List<Object> asObjectList(Object value) {
+                return value instanceof List ? (List<Object>) value : null;
+        }
+
+        private String strOrNull(Object value) {
+                return value == null ? null : String.valueOf(value);
+        }
+
+        /**
+         * ai07 응답(message/answer map)에서 수준·길이·도구 metadata를 패스스루로 담아 AgentReply를 만든다.
+         * metadata가 없으면 null로 두되, actualChars/knowledgeLevel은 최대한 채운다(EC2 측 확인용).
+         */
+        private ChatDTO.AgentReply buildReplyWithMeta(Long agentId, String agentName, String answer,
+                        Map<String, Object> src, String fallbackLevel) {
+                if (src == null) {
+                        src = java.util.Collections.emptyMap();
+                }
+                String level = normalizeKnowledgeLevel(firstNonBlank(
+                                strOrNull(src.get("knowledgeLevel")),
+                                strOrNull(src.get("knowledge_level")),
+                                fallbackLevel));
+                Integer actual = asInteger(src.get("actualChars"));
+                if (actual == null) {
+                        actual = answer != null ? answer.length() : 0;
+                }
+                return ChatDTO.AgentReply.builder()
+                                .agentId(agentId)
+                                .agentName(agentName)
+                                .answer(answer)
+                                .knowledgeLevel(level.isEmpty() ? null : level)
+                                .knowledgeLevelLabel(level.isEmpty() ? null : knowledgeLevelLabel(level))
+                                .minChars(asInteger(src.get("minChars")))
+                                .actualChars(actual)
+                                .lengthSatisfied(asBoolean(src.get("lengthSatisfied")))
+                                .toolsUsed(asObjectList(src.get("toolsUsed")))
+                                .toolsFailed(asObjectList(src.get("toolsFailed")))
+                                .qualityChecked(asBoolean(src.get("qualityChecked")))
+                                .build();
         }
 
         /**

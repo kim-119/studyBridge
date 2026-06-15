@@ -165,5 +165,14 @@ public class ChatDTO {
         private Long agentId;
         private String agentName;
         private String answer;
+        // ── ai07 응답 metadata 패스스루 (없으면 null) — 프론트 확인/표시용, answer는 항상 유지 ──
+        private String knowledgeLevel;       // INTRO|BACHELOR|MASTER|DOCTOR|EXPERT
+        private String knowledgeLevelLabel;  // 입문/학사/석사/박사/전문가 수준
+        private Integer minChars;
+        private Integer actualChars;
+        private Boolean lengthSatisfied;
+        private java.util.List<Object> toolsUsed;
+        private java.util.List<Object> toolsFailed;
+        private Boolean qualityChecked;
     }
 }

@@ -38,6 +38,12 @@ ai:
       keyword-define-timeout-seconds: ${AI_KEYWORD_DEFINE_TIMEOUT_SECONDS:60}
       planner-expand-timeout-seconds: ${AI_PLANNER_EXPAND_TIMEOUT_SECONDS:120}
       roadmap-timeout-seconds: ${AI_ROADMAP_TIMEOUT_SECONDS:180}
+      # 학습일지(자료보관함 메모탭) 검증 호출. 장애/타임아웃 시 Spring 로컬 폴백(보수적: 꼬리개념 확장 자동 ACCEPT 금지).
+      study-journal:
+        validate-path: ${AI_STUDY_JOURNAL_VALIDATE_PATH:/api/ai/study-journal/validate}
+        timeout-seconds: ${AI_STUDY_JOURNAL_TIMEOUT_SECONDS:20}
+    # Spring → FastAPI 내부 인증키(설정 시 Authorization: Bearer 로 전달). 코드 하드코딩 금지.
+    api-key: ${AI_SERVER_API_KEY:}
   # Intent Router: AI 채팅(자료보관함/그룹스터디/학습메이트) 앞단 분기. ai07 /api/ai/intent/route 호출.
   # base-url 미지정 시 기존 FastAPI 베이스 사용(EC2=tunnel-proxy host.docker.internal:18001). 실패 시 PROCEED 폴백.
   intent-router:
