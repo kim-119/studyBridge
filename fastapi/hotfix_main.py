@@ -124,3 +124,28 @@ try:
 except Exception as e:
     import logging
     logging.getLogger(__name__).warning("study_journal 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 오답노트 '복습 필요' 부족개념 분석 endpoint
+# POST /api/ai/review-needed — 단일 오답노트 → reviewNeededText 1개. 기존 review/* 와 독립, additive.
+# 실패/timeout/빈응답은 성공 응답(200)+fallback 텍스트로 반환(발표 안정성).
+try:
+    from app.api.review_needed_routes import router as review_needed_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/review-needed" not in paths:
+        app.include_router(review_needed_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("review_needed 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 전공 분야+핵심 객체 중심 AI 핵심 요약 노트 endpoint
+# POST /api/ai/major-analysis/note — PDF 업로드 후 Spring 자동 호출. 14종 도메인 분류 + coreObject
+# 중심 학습 노트 + Wikipedia 보조. 기존 요약/퀴즈/로드맵/RAG와 독립, additive.
+# LLM/Wikipedia/timeout 실패는 항상 200 + 안전 fallback(업로드 실패 방지).
+try:
+    from app.api.major_analysis_routes import router as major_analysis_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/major-analysis/note" not in paths:
+        app.include_router(major_analysis_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("major_analysis 라우터 로드 실패 (계속 기동): %s", e)
