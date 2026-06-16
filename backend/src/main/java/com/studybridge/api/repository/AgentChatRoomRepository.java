@@ -9,4 +9,6 @@ import java.util.List;
 @Repository
 public interface AgentChatRoomRepository extends JpaRepository<AgentChatRoom, Long> {
     List<AgentChatRoom> findByUserIdOrderByCreatedAtDesc(Long userId);
+
+    long countByUserId(Long userId);
 }

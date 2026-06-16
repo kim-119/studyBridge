@@ -1486,7 +1486,10 @@ const buildCanonicalAgentPayload = (agent) => {
 };
 
 export default function StudyMate() {
-  const { userId } = useAuth();
+  const { userId, user } = useAuth();
+
+  // 플랜별 방(AI 그룹) 생성 한도 — 백엔드 resolveRoomLimit과 동일 게이트(ADMIN/ROOT/PREMIUM=10, FREE=3).
+  const roomLimit = ['ADMIN', 'ROOT', 'PREMIUM'].includes((user?.role || '').trim().toUpperCase()) ? 10 : 3;
 
   const [agents, setAgents] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
@@ -1586,8 +1589,8 @@ export default function StudyMate() {
 
   const handleCreateAgent = async (e) => {
     e.preventDefault();
-    if (agents.length >= 3) {
-      alert('생성된 학습방은 최대 3개까지 가질 수 있습니다.');
+    if (agents.length >= roomLimit) {
+      alert(`생성된 학습방은 최대 ${roomLimit}개까지 가질 수 있습니다.`);
       return;
     }
 
@@ -2507,9 +2510,9 @@ export default function StudyMate() {
               <button
                 className="dt-create-btn"
                 onClick={handleOpenModal}
-                disabled={agents.length >= 3}
+                disabled={agents.length >= roomLimit}
               >
-                <Plus size={15} /> 새 AI 그룹 생성 ({agents.length}/3)
+                <Plus size={15} /> 새 AI 그룹 생성 ({agents.length}/{roomLimit})
               </button>
             </div>
 

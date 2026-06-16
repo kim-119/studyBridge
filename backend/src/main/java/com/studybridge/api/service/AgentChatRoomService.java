@@ -30,6 +30,12 @@ public class AgentChatRoomService {
                 User user = userRepository.findById(userId)
                                 .orElseThrow(() -> new RuntimeException("사용자를 찾을 수 없습니다."));
 
+                // 플랜별 방(AI 그룹) 개수 제한 (FREE=3, PREMIUM/ROOT/ADMIN=10).
+                int roomLimit = resolveRoomLimit(user);
+                if (agentChatRoomRepository.countByUserId(userId) >= roomLimit) {
+                        throw new RuntimeException("현재 플랜에서는 학습방을 최대 " + roomLimit + "개까지 생성할 수 있습니다.");
+                }
+
                 // 플랜별 에이전트 생성 제한 (FREE=3, PREMIUM/ROOT=10). 하드코딩 3 대신 resolveAgentLimit 사용.
                 int agentLimit = resolveAgentLimit(user);
                 if (request.getAgents() != null && request.getAgents().size() > agentLimit) {
@@ -113,13 +119,26 @@ public class AgentChatRoomService {
          * TODO: 토스 결제 연동 후 User에 plan/agentLimit 필드가 생기면 그 값을 우선 사용한다.
          */
         private int resolveAgentLimit(User user) {
+                return isPremiumRole(user) ? 10 : 3;
+        }
+
+        /**
+         * 플랜별 방(AI 그룹) 생성 한도를 결정한다.
+         * - FREE(기본): 3개
+         * - ADMIN/ROOT/PREMIUM: 10개
+         * 에이전트 한도와 동일한 role 게이트를 사용한다.
+         */
+        private int resolveRoomLimit(User user) {
+                return isPremiumRole(user) ? 10 : 3;
+        }
+
+        // ADMIN/ROOT/PREMIUM 여부. 한도 상향 대상 role 판정의 단일 지점.
+        private boolean isPremiumRole(User user) {
                 if (user != null && user.getRole() != null) {
                         String role = user.getRole().trim().toUpperCase();
-                        if (role.equals("ADMIN") || role.equals("ROOT") || role.equals("PREMIUM")) {
-                                return 10;
-                        }
+                        return role.equals("ADMIN") || role.equals("ROOT") || role.equals("PREMIUM");
                 }
-                return 3;
+                return false;
         }
 
         // persona 문자열에 [프리셋: X] 태그를 부착(이미 있으면 그대로). agentPreset 영속화용.
