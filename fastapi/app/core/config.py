@@ -42,6 +42,19 @@ RAG_CHUNK_OVERLAP: int = int(os.getenv("RAG_CHUNK_OVERLAP", "120"))
 RAG_TOP_K: int        = int(os.getenv("RAG_TOP_K",        "5"))
 RAG_MIN_SCORE: float  = float(os.getenv("RAG_MIN_SCORE",  "0.30"))
 
+# ----- RAG 정확도 개선: 400자 청킹 / vector 후보 / cross-encoder rerank / top-3 (additive) -----
+# 기존 RAG_CHUNK_SIZE/RAG_TOP_K 동작은 유지하고, 아래 값은 신규 grounded RAG 파이프라인 전용.
+RAG_CHUNK_SIZE_CHARS: int = int(os.getenv("RAG_CHUNK_SIZE_CHARS", "400"))
+RAG_CHUNK_OVERLAP_CHARS: int = int(os.getenv("RAG_CHUNK_OVERLAP_CHARS", "100"))
+RAG_LONG_DOCUMENT_THRESHOLD_CHARS: int = int(os.getenv("RAG_LONG_DOCUMENT_THRESHOLD_CHARS", "2000"))
+RAG_VECTOR_TOP_K: int = int(os.getenv("RAG_VECTOR_TOP_K", "30"))
+RAG_RERANK_TOP_N: int = int(os.getenv("RAG_RERANK_TOP_N", "3"))
+RAG_RERANK_TOP_N_MAX: int = int(os.getenv("RAG_RERANK_TOP_N_MAX", "5"))
+RAG_RERANK_ENABLED: bool = os.getenv("RAG_RERANK_ENABLED", "true").strip().lower() == "true"
+RAG_RERANK_MODEL: str = os.getenv("RAG_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+RAG_MAX_CONTEXT_CHARS: int = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "1800"))
+RAG_RERANK_TIMEOUT_SEC: float = float(os.getenv("RAG_RERANK_TIMEOUT_SEC", "5"))
+
 # ----- LangGraph 오케스트레이터 (feature flag, 기본 off) -----
 # true이면 multi-chat이 LangGraph 그래프(흐름 제어)로 실행되고,
 # false(기본)이면 기존 multi_agent_service 경로를 그대로 쓴다. (안전 rollback)

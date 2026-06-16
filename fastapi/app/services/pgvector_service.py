@@ -17,6 +17,29 @@ from app.core.config import VECTOR_DATABASE_URL, RAG_TOP_K
 _TABLE = "rag.document_chunk"
 
 
+_COLUMN_CACHE: set[str] | None = None
+
+
+def _existing_columns(conn: psycopg.Connection) -> set[str]:
+    """rag.document_chunk 의 실제 컬럼 집합(캐시). page_start/metadata 등 선택 컬럼
+    유무를 안전하게 판단해 환경별 스키마 차이로 ingest/검색이 깨지지 않게 한다."""
+    global _COLUMN_CACHE
+    if _COLUMN_CACHE is not None:
+        return _COLUMN_CACHE
+    schema, _, table = _TABLE.partition(".")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = %s",
+                (schema, table),
+            )
+            _COLUMN_CACHE = {r[0] for r in cur.fetchall()}
+    except Exception:
+        _COLUMN_CACHE = set()
+    return _COLUMN_CACHE
+
+
 def _get_connection() -> psycopg.Connection:
     """
     pgvector DB에 새 커넥션을 생성하고 vector 타입을 등록한다.
@@ -61,18 +84,28 @@ def replace_document_chunks(
     if not chunks_with_embeddings:
         return 0
 
-    delete_sql = f"DELETE FROM {_TABLE} WHERE material_id = %s"
+    import json as _json
 
-    insert_sql = f"""
-        INSERT INTO {_TABLE}
-            (material_id, document_title, chunk_index, content, embedding)
-        VALUES (%s, %s, %s, %s, %s)
-    """
+    delete_sql = f"DELETE FROM {_TABLE} WHERE material_id = %s"
 
     saved = 0
     # autocommit=False (psycopg 기본값) → 명시적 commit/rollback
     with _get_connection() as conn:
         conn.autocommit = False
+        # metadata 컬럼이 있으면 chunk metadata(jsonb)도 함께 저장(additive).
+        has_meta = "metadata" in _existing_columns(conn)
+        if has_meta:
+            insert_sql = (
+                f"INSERT INTO {_TABLE} "
+                "(material_id, document_title, chunk_index, content, embedding, metadata) "
+                "VALUES (%s, %s, %s, %s, %s, %s::jsonb)"
+            )
+        else:
+            insert_sql = (
+                f"INSERT INTO {_TABLE} "
+                "(material_id, document_title, chunk_index, content, embedding) "
+                "VALUES (%s, %s, %s, %s, %s)"
+            )
         try:
             with conn.cursor() as cur:
                 # 기존 청크 전체 삭제
@@ -80,16 +113,18 @@ def replace_document_chunks(
 
                 # 새 청크 일괄 삽입
                 for item in chunks_with_embeddings:
-                    cur.execute(
-                        insert_sql,
-                        (
-                            material_id,
-                            document_title,
-                            item["chunk_index"],
-                            item["content"],
-                            item["embedding"],
-                        ),
+                    base = (
+                        material_id,
+                        document_title,
+                        item["chunk_index"],
+                        item["content"],
+                        item["embedding"],
                     )
+                    if has_meta:
+                        meta = item.get("metadata") or {}
+                        cur.execute(insert_sql, base + (_json.dumps(meta, ensure_ascii=False),))
+                    else:
+                        cur.execute(insert_sql, base)
                     saved += 1
 
             conn.commit()
@@ -98,6 +133,41 @@ def replace_document_chunks(
             raise
 
     return saved
+
+
+def search_candidate_chunks(
+    query_embedding: list[float],
+    material_id: int | None = None,
+    top_k: int = RAG_TOP_K,
+) -> list[dict]:
+    """
+    cross-encoder rerank 후보 검색용. page_start/page_end/metadata 등 reranker/citation 에
+    필요한 컬럼까지 함께 반환한다. 선택 컬럼은 스키마에 있을 때만 SELECT 한다.
+    (기존 search_similar_chunks 는 변경하지 않는다 — 후방 호환.)
+    """
+    with _get_connection() as conn:
+        cols_present = _existing_columns(conn)
+        select_cols = ["id", "material_id", "document_title", "chunk_index", "content"]
+        for opt in ("page_start", "page_end", "metadata"):
+            if opt in cols_present:
+                select_cols.append(opt)
+        select_clause = ", ".join(select_cols)
+        sql = f"""
+            SELECT {select_clause},
+                   1 - (embedding <=> %s::vector) AS similarity
+            FROM {_TABLE}
+            WHERE (%s IS NULL OR material_id = %s)
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+        """
+        results = []
+        with conn.cursor() as cur:
+            cur.execute(sql, (query_embedding, material_id, material_id, query_embedding, top_k))
+            rows = cur.fetchall()
+            cur_cols = [desc[0] for desc in cur.description]
+        for row in rows:
+            results.append(dict(zip(cur_cols, row)))
+    return results
 
 
 def delete_document_chunks(material_id: int) -> int:

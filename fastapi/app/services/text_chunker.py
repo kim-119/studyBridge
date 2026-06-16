@@ -60,3 +60,48 @@ def split_text_into_chunks(
 
     # 최종 빈 항목 제거 및 공백 정리
     return [c.strip() for c in chunks if c.strip()]
+
+
+def split_text_with_metadata(
+    text: str,
+    chunk_size: int,
+    overlap: int,
+) -> list[dict]:
+    """
+    overlap 슬라이딩 윈도우로 청크를 만들고 각 청크의 char offset 메타데이터를 함께 반환한다.
+    (RAG 정확도 개선 파이프라인 전용 — 기존 split_text_into_chunks 동작은 그대로 둔다.)
+
+    윈도우 예(chunk_size=400, overlap=100):
+        chunk_0: 0~400, chunk_1: 300~700, chunk_2: 600~1000 ...
+
+    Returns:
+        [{"chunkIndex": int, "text": str, "charStart": int, "charEnd": int,
+          "tokenEstimate": int}, ...]  (빈 청크 제거)
+    """
+    if not text or not text.strip():
+        return []
+
+    cleaned = re.sub(r"[ \t]+", " ", re.sub(r"\n{3,}", "\n\n", text.strip()))
+    n = len(cleaned)
+    size = max(50, int(chunk_size))
+    step = max(1, size - max(0, int(overlap)))
+
+    out: list[dict] = []
+    start = 0
+    idx = 0
+    while start < n:
+        end = min(start + size, n)
+        seg = cleaned[start:end].strip()
+        if seg:
+            out.append({
+                "chunkIndex": idx,
+                "text": seg,
+                "charStart": start,
+                "charEnd": end,
+                "tokenEstimate": max(1, len(seg) // 2),
+            })
+            idx += 1
+        if end >= n:
+            break
+        start += step
+    return out

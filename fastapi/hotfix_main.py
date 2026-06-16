@@ -149,3 +149,40 @@ try:
 except Exception as e:
     import logging
     logging.getLogger(__name__).warning("major_analysis 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 자료 상세 소크라테스 복습 세션 endpoint (문서 고정 coverage 복습)
+# POST /api/ai/socratic-review/sessions, .../{id}/answers, .../{id}/finish, GET .../{id}
+# Spring 에서 materialId 소유권 검증 후 호출. 기존 채팅방 소크라테스 모드와 독립, additive.
+try:
+    from app.api.socratic_review_routes import router as socratic_review_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/socratic-review/sessions" not in paths:
+        app.include_router(socratic_review_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("socratic_review 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 학습 왕복 루프(Learning Loop) 통합 endpoint
+# POST /api/ai/learning-loop — taskType 디스패치(채팅/요약/퀴즈/로드맵/오답해설/유사문제/
+# 복습추천/에이전트피드백). RAG 본문 근거 + 학습 이력 결합 → 구조화 JSON.
+# 기존 라우터/SSE 와 독립, additive. 어떤 필드가 비어도 실패하지 않음(fallback+warnings).
+try:
+    from app.api.learning_loop_routes import router as learning_loop_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/learning-loop" not in paths:
+        app.include_router(learning_loop_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("learning_loop 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge Grounded RAG endpoint (vector 후보 → cross-encoder rerank → top-3 근거 답변)
+# POST /api/ai/rag/grounded-query — 기존 /api/rag/query·/ai/chat·multi-chat 과 독립, additive.
+# reranker 로딩 실패/timeout 은 vectorScore fallback + warnings 로 처리(서버 죽지 않음).
+try:
+    from app.api.rag_grounded_routes import router as rag_grounded_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/rag/grounded-query" not in paths:
+        app.include_router(rag_grounded_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("rag_grounded 라우터 로드 실패 (계속 기동): %s", e)
