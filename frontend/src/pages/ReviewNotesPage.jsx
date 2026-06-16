@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ListChecks, RotateCcw, Shuffle, Sparkles, FileText, Download, StickyNote, Lightbulb } from 'lucide-react';
-import { reviewNoteService } from '../services/api';
+import { ListChecks, RotateCcw, Shuffle, Sparkles, FileText, Download, StickyNote, Lightbulb, CalendarPlus } from 'lucide-react';
+import { reviewNoteService, learningLoopService } from '../services/api';
 import {
   RetryPanel, VariantPanel, AiExplanationPanel,
   noteId, formatDate, DIFFICULTY_LABEL, btn, btnPrimary,
@@ -222,6 +222,36 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved }) {
     finally { setMemoSaving(false); }
   };
 
+  // 학습 왕복 루프: 복습 추천일 계산 → 플래너(주간일정)에 등록
+  const [schedLoading, setSchedLoading] = useState(false);
+  const [schedDone, setSchedDone] = useState('');
+  const handleRegisterReview = async () => {
+    if (schedLoading) return;
+    setSchedLoading(true);
+    setSchedDone('');
+    try {
+      const wrongCount = (note.wrongCount ?? 0) + (note.unansweredCount ?? 0);
+      const rec = await learningLoopService.recommendReview({
+        wrongNoteId: noteId(note),
+        materialId: note.sourceMaterialId,
+        difficulty: note.difficulty,
+        wrongCount,
+      });
+      const res = await learningLoopService.registerReviewSchedule({
+        wrongNoteId: noteId(note),
+        materialId: note.sourceMaterialId,
+        title: `[복습] ${note.sourceName || note.title || '오답'} 오답 복습`,
+        scheduledDate: rec?.recommendedReviewDate,
+        reason: rec?.reviewReason,
+      });
+      setSchedDone(`${res?.scheduledDate || rec?.recommendedReviewDate} 주간 일정에 복습이 등록되었습니다.`);
+    } catch {
+      setSchedDone('복습 일정 등록에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+    } finally {
+      setSchedLoading(false);
+    }
+  };
+
   return (
     <div style={{ border: '1px solid #E5E7EB', borderRadius: '10px', padding: '16px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
@@ -251,7 +281,17 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved }) {
         <button style={{ ...btnPrimary, opacity: rnLoading ? 0.6 : 1 }} disabled={rnLoading} onClick={handleReviewNeeded}>
           <Lightbulb size={15} /> {rnLoading ? '분석 중…' : '복습 필요'}
         </button>
+        <button style={{ ...btnPrimary, opacity: schedLoading ? 0.6 : 1 }} disabled={schedLoading} onClick={handleRegisterReview}>
+          <CalendarPlus size={15} /> {schedLoading ? '등록 중…' : '복습 일정 등록'}
+        </button>
       </div>
+
+      {/* 복습 일정 등록 결과 안내 */}
+      {schedDone && (
+        <div style={{ marginTop: '10px', fontSize: '13px', color: '#15803D', fontWeight: 600 }}>
+          {schedDone}
+        </div>
+      )}
 
       {/* 복습 필요 분석 결과 (로딩/에러/결과 분리) */}
       {rnOpen && (

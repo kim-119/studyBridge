@@ -41,6 +41,7 @@ public class AiIntegrationService {
         private final RoadmapTaskRepository roadmapTaskRepository;
         private final WebClient fastApiWebClient;
         private final IntentRouterService intentRouterService;
+        private final LearningLoopService learningLoopService;
 
         // 키워드 정의 호출 타임아웃 (env 제어, 하드코딩 금지)
         @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.keyword-define-timeout-seconds:60}")
@@ -628,6 +629,17 @@ public class AiIntegrationService {
                 summary.setCoreContents(coreContents);
                 summary = summaryRepository.save(summary);
 
+                // 학습 왕복 루프: 요약 생성 기록(다음 AI 질문의 컨텍스트 후보)
+                learningLoopService.recordSafe(LearningLoopEvent.builder()
+                                .userId(material.getUserId())
+                                .eventType(LearningEventType.MATERIAL_SUMMARY_GENERATED)
+                                .sourceType(LearningSourceType.MATERIAL)
+                                .sourceId(material.getMaterialId())
+                                .materialId(material.getMaterialId())
+                                .aiOutputSummary(overview)
+                                .userAction("SUMMARY_GENERATED")
+                                .build());
+
                 return SummaryDTO.builder()
                                 .summaryId(summary.getSummaryId())
                                 .materialId(material.getMaterialId())
@@ -843,6 +855,20 @@ public class AiIntegrationService {
                                 .quizData(generatedQuizJson)
                                 .build();
                 quiz = quizRepository.save(quiz);
+
+                // 학습 왕복 루프: 퀴즈 생성 기록(출처 자료/난이도/범위)
+                learningLoopService.recordSafe(LearningLoopEvent.builder()
+                                .userId(material.getUserId())
+                                .eventType(LearningEventType.MATERIAL_QUIZ_GENERATED)
+                                .sourceType(LearningSourceType.QUIZ)
+                                .sourceId(quiz.getQuizId())
+                                .materialId(materialId)
+                                .quizId(quiz.getQuizId())
+                                .difficulty(quiz.getDifficulty())
+                                .aiOutputSummary("퀴즈 " + appliedCount + "문항 생성 (범위 " +
+                                                (quiz.getPageRange() == null ? "전체" : quiz.getPageRange()) + ")")
+                                .userAction("QUIZ_GENERATED")
+                                .build());
 
                 return QuizDTO.Response.builder()
                                 .quizId(quiz.getQuizId())

@@ -1409,6 +1409,55 @@ export const reviewNoteService = {
   },
 };
 
+// 학습 왕복 루프(Learning Loop) — React는 Spring(/api/learning-loop/*)만 호출한다(FastAPI 직접 호출 금지).
+//  - 학습/AI 행동 이벤트를 기록·조회하고, 복습 추천일 계산 → 플래너(주간일정) 등록까지 연결한다.
+export const learningLoopService = {
+  // 이벤트 이력 조회. params: { materialId, documentId, sourceType, sourceId, limit }
+  getEvents: async (params = {}) => {
+    try {
+      const res = await api.get('/api/learning-loop/events', { params });
+      return { ok: true, items: Array.isArray(res.data) ? res.data : [] };
+    } catch (err) {
+      return { ok: false, items: [] };
+    }
+  },
+  // 이벤트 직접 기록(실패해도 화면을 깨뜨리지 않음)
+  recordEvent: async (body) => {
+    try {
+      const res = await api.post('/api/learning-loop/events', body);
+      return res.data;
+    } catch (err) {
+      return { saved: false };
+    }
+  },
+  // 다음 AI 호출용 컨텍스트 패키지. { learningLoopContext, hasContext, usedSources }
+  getContext: async (params = {}) => {
+    try {
+      const res = await api.get('/api/learning-loop/context', { params });
+      return res.data;
+    } catch (err) {
+      return { learningLoopContext: {}, hasContext: false, usedSources: [] };
+    }
+  },
+  // 복습 추천일 계산. body { materialId, wrongNoteId, difficulty, wrongCount }
+  // → { recommendReviewInDays, recommendedReviewDate, reviewReason }
+  recommendReview: async (body) => {
+    const res = await api.post('/api/learning-loop/review-recommendation', body);
+    return res.data;
+  },
+  // 복습 일정을 플래너(주간일정)에 등록. body { materialId, wrongNoteId, title, scheduledDate, reason }
+  // → { plannerId, title, scheduledDate }
+  registerReviewSchedule: async (body) => {
+    const res = await api.post('/api/learning-loop/review-schedule', body);
+    return res.data;
+  },
+  // 학습 이벤트를 학습일지 기록으로 연결. body { eventId, materialId, title, content }
+  studyLog: async (body) => {
+    const res = await api.post('/api/learning-loop/study-log', body);
+    return res.data;
+  },
+};
+
 // 소크라테스 복습 세션 — React는 Spring 프록시(/api/materials/{id}/socratic-review/*)만 호출한다.
 //  - ai07/18001 직접 호출 금지(백엔드가 화이트리스트 sanitize + 소유권 검증).
 //  - 모든 응답에 aiAvailable 플래그가 붙는다(false면 "AI 서버 재시작 필요" 안내).

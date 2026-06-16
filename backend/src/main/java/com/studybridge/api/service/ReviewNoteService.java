@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.studybridge.api.dto.ReviewNoteDTO;
 import com.studybridge.api.entity.ExtractionStatus;
+import com.studybridge.api.entity.LearningEventType;
+import com.studybridge.api.entity.LearningLoopEvent;
+import com.studybridge.api.entity.LearningSourceType;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialQuiz;
 import com.studybridge.api.entity.MaterialType;
@@ -53,6 +56,7 @@ public class ReviewNoteService {
     private final MaterialRepository materialRepository;
     private final S3Service s3Service;
     private final WebClient fastApiWebClient;
+    private final LearningLoopService learningLoopService;
 
     @Value("${ai.server.fastapi.review-timeout-seconds:120}")
     private long reviewTimeoutSeconds;
@@ -193,6 +197,36 @@ public class ReviewNoteService {
         log.info("[REVIEW_NOTE] OK userId={} reviewNoteId={} archiveMaterialId={} wrong={} unanswered={} aiEnriched={} elapsedMs={}",
                 userId, note.getReviewNoteId(), archive.getMaterialId(), wrongOnly, unansweredOnly, aiEnriched, System.currentTimeMillis() - t0);
 
+        // 학습 왕복 루프: 퀴즈 제출 + 오답노트 생성 이벤트 기록(best-effort, 본 기능에 영향 없음)
+        int reviewTotal = wrongOnly + unansweredOnly;
+        int answered = questions.size() - unansweredOnly;
+        int correct = answered - wrongOnly;
+        int scorePct = questions.isEmpty() ? 0 : Math.round((correct * 100f) / questions.size());
+        learningLoopService.recordSafe(LearningLoopEvent.builder()
+                .userId(userId)
+                .eventType(LearningEventType.QUIZ_SUBMITTED)
+                .sourceType(LearningSourceType.QUIZ)
+                .sourceId(quizId)
+                .materialId(source.getMaterialId())
+                .quizId(quizId)
+                .score(scorePct)
+                .difficulty(mapDifficulty(quiz.getDifficulty()))
+                .aiOutputSummary("퀴즈 채점 " + questions.size() + "문항 중 정답 " + correct + " · 복습필요 " + reviewTotal)
+                .userAction("QUIZ_SUBMITTED")
+                .build());
+        learningLoopService.recordSafe(LearningLoopEvent.builder()
+                .userId(userId)
+                .eventType(LearningEventType.WRONG_NOTE_CREATED)
+                .sourceType(LearningSourceType.WRONG_NOTE)
+                .sourceId(note.getReviewNoteId())
+                .materialId(source.getMaterialId())
+                .wrongNoteId(note.getReviewNoteId())
+                .quizId(quizId)
+                .difficulty(mapDifficulty(quiz.getDifficulty()))
+                .aiOutputSummary(noteTitle + " (오답 " + wrongOnly + " · 미응답 " + unansweredOnly + ")")
+                .userAction("WRONG_NOTE_CREATED")
+                .build());
+
         return toDTO(note, true);
     }
 
@@ -322,6 +356,18 @@ public class ReviewNoteService {
                     ? ensureLeadSentence(trimToLength(aiText.trim(), 600), items)
                     : buildReviewNeededFallback(sourceTitle, items);
         }
+
+        learningLoopService.recordSafe(LearningLoopEvent.builder()
+                .userId(userId)
+                .eventType(LearningEventType.AI_EXPLANATION_GENERATED)
+                .sourceType(LearningSourceType.WRONG_NOTE)
+                .sourceId(id)
+                .materialId(note.getSourceMaterialId())
+                .wrongNoteId(id)
+                .difficulty(note.getDifficulty())
+                .aiOutputSummary(text)
+                .userAction("REVIEW_NEEDED")
+                .build());
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("reviewNoteId", id);
@@ -542,6 +588,7 @@ public class ReviewNoteService {
             out.put("success", true);
             out.put("usedFallback", false);
             out.put("questions", aiResp.get("questions"));
+            recordSimilarQuestion(userId, id, note.getSourceMaterialId(), difficulty, false);
             return out;
         }
         // 3) 폴백: 원본 오답 문제를 그대로 재출제 (AI 변형 불가 시에도 화면이 동작하도록)
@@ -558,7 +605,23 @@ public class ReviewNoteService {
         out.put("success", true);
         out.put("usedFallback", true);
         out.put("questions", questions);
+        recordSimilarQuestion(userId, id, note.getSourceMaterialId(), difficulty, true);
         return out;
+    }
+
+    // 학습 왕복 루프: 유사문제 생성 이벤트(원본 오답노트와 연결)
+    private void recordSimilarQuestion(Long userId, Long reviewNoteId, Long materialId, String difficulty, boolean fallback) {
+        learningLoopService.recordSafe(LearningLoopEvent.builder()
+                .userId(userId)
+                .eventType(LearningEventType.SIMILAR_QUESTION_GENERATED)
+                .sourceType(LearningSourceType.WRONG_NOTE)
+                .sourceId(reviewNoteId)
+                .materialId(materialId)
+                .wrongNoteId(reviewNoteId)
+                .difficulty(difficulty)
+                .aiOutputSummary("유사문제 생성" + (fallback ? "(원본 재출제 폴백)" : ""))
+                .userAction("SIMILAR_QUESTION")
+                .build());
     }
 
     private List<Map<String, Object>> parseRetryQuestions(String retryJson) {
