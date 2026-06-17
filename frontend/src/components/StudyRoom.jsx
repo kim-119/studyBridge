@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Users, User, X, MicOff, Video, VideoOff, Maximize, Minimize, Gift, UserPlus,
   Settings, MessageSquare, Calendar, ClipboardList, Mic,
@@ -40,9 +40,46 @@ const toSecureWsToken = (token) => {
   return token;
 };
 
-function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = true, photoUrl }) {
+// getUserMedia / OpenVidu 장치 오류를 원인별로 구분해 사용자 메시지로 변환한다.
+const friendlyDeviceMessage = (err) => {
+  const name = err?.name || '';
+  const raw = String(err?.name || '') + ' ' + String(err?.message || '');
+  switch (name) {
+    case 'NotAllowedError':
+    case 'PermissionDeniedError':
+      return '브라우저 주소창의 카메라/마이크 권한을 허용해주세요.';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return '다른 화상 앱 또는 브라우저 탭에서 카메라/마이크를 사용 중인지 확인해주세요.';
+    case 'OverconstrainedError':
+    case 'ConstraintNotSatisfiedError':
+      return '선택한 장치를 사용할 수 없어 기본 장치로 다시 시도합니다.';
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return '사용 가능한 카메라/마이크를 찾을 수 없습니다.';
+    default:
+      if (/DEVICE_ALREADY_IN_USE/i.test(raw)) {
+        return '카메라/마이크가 다른 앱에서 사용 중입니다. 해당 앱을 종료한 뒤 다시 시도해주세요.';
+      }
+      return err?.message || '카메라/마이크를 초기화할 수 없습니다.';
+  }
+};
+
+function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = true, photoUrl, speakerId, onSpeakingChange }) {
   const videoRef = React.useRef(null);
   const [isSpeaking, setIsSpeaking] = React.useState(false);
+
+  // 발화 상태 변화를 부모로 끌어올려 참여자 목록 등 다른 UI에서도 동일하게 표시한다.
+  useEffect(() => {
+    if (onSpeakingChange) onSpeakingChange(speakerId, isSpeaking);
+  }, [isSpeaking, speakerId, onSpeakingChange]);
+
+  // 언마운트(타일 제거/퇴장) 시 발화 잔상 ring 제거
+  useEffect(() => {
+    return () => {
+      if (onSpeakingChange) onSpeakingChange(speakerId, false);
+    };
+  }, [speakerId, onSpeakingChange]);
 
   useEffect(() => {
     if (videoRef.current && stream && isCamOn) {
@@ -273,6 +310,22 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const [publisher, setPublisher] = useState(null);
   const [subscribers, setSubscribers] = useState([]);
   const [ovError, setOvError] = useState('');
+  // 장치 fallback 안내(치명적 오류 아님: camera-only / audio-only / viewer-only 입장 등)
+  const [ovNotice, setOvNotice] = useState('');
+  // 현재 발화 중인 사용자 id 집합 (참여자 목록 ring 표시용)
+  const [speakingUsers, setSpeakingUsers] = useState(() => new Set());
+
+  const handleSpeakingChange = useCallback((speakerId, speaking) => {
+    if (speakerId === null || speakerId === undefined) return;
+    const key = String(speakerId);
+    setSpeakingUsers(prev => {
+      const has = prev.has(key);
+      if (speaking === has) return prev; // 변화 없으면 동일 참조 반환 → 불필요한 리렌더 방지
+      const next = new Set(prev);
+      if (speaking) next.add(key); else next.delete(key);
+      return next;
+    });
+  }, []);
 
   const myMember = members.find(m => Number(m.userId) === Number(userId));
   const canUseGroupQuizMaterials = Boolean(myMember || members.some(m => Number(m.userId) === Number(userId)));
@@ -514,32 +567,58 @@ sessionInstance.on('streamCreated', (event) => {
         await new Promise(resolve => setTimeout(resolve, 500));
         if (!isMounted) return;
 
-        let publisherInstance;
+        // ── 장치 유효성 사전 검증 (stale deviceId / 장치 부재 방어) ──
+        // 선택된 카메라 deviceId가 현재 실제 장치 목록에 없으면 stale로 간주해 기본 카메라로 떨어뜨린다.
+        let videoDeviceId = selectedCamera || undefined;
+        let hasAnyVideo = true;
+        let hasAnyAudio = true;
         try {
-          publisherInstance = await OVInstance.initPublisherAsync(undefined, {
-            audioSource: undefined,
-            videoSource: selectedCamera ? selectedCamera : undefined,
-            publishAudio: isMicOn,
-            publishVideo: isVideoOn,
-            resolution: '640x480',
-            frameRate: 30,
-            insertMode: 'APPEND',
-            mirror: true
-          });
-        } catch (pubErr) {
-          console.warn("첫 번째 Publisher 초기화 실패, 마이크 없이 재시도합니다.", pubErr);
-          // 마이크 문제일 수 있으므로 audioSource를 false로 설정하여 재시도
-          publisherInstance = await OVInstance.initPublisherAsync(undefined, {
-            audioSource: false,
-            videoSource: selectedCamera ? selectedCamera : undefined,
-            publishAudio: false,
-            publishVideo: isVideoOn,
-            resolution: '640x480',
-            frameRate: 30,
-            insertMode: 'APPEND',
-            mirror: true
-          });
-          setIsMicOn(false); // 마이크 강제 종료
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoInputs = devices.filter(d => d.kind === 'videoinput');
+          const audioInputs = devices.filter(d => d.kind === 'audioinput');
+          hasAnyVideo = videoInputs.length > 0;
+          hasAnyAudio = audioInputs.length > 0;
+          if (videoDeviceId && !videoInputs.some(d => d.deviceId === videoDeviceId)) {
+            console.warn('[StudyRoom] 선택 카메라가 stale → 기본 카메라로 대체. id=', String(videoDeviceId).slice(0, 4) + '****');
+            videoDeviceId = undefined;
+          }
+          console.log('[StudyRoom] 장치 점검 video=%d audio=%d', videoInputs.length, audioInputs.length);
+        } catch (enumErr) {
+          console.warn('[StudyRoom] enumerateDevices 실패, 기본값으로 진행', enumErr?.name || enumErr);
+        }
+
+        const buildOpts = (vSource, aSource) => ({
+          audioSource: aSource,
+          videoSource: vSource,
+          publishAudio: aSource !== false && isMicOn,
+          publishVideo: vSource !== false && isVideoOn,
+          resolution: '640x480',
+          frameRate: 30,
+          insertMode: 'APPEND',
+          mirror: true
+        });
+
+        // fallback 순서: 카메라+마이크 → 카메라만 → 기본카메라만 → 마이크만 → 시청전용
+        const attempts = [];
+        if (hasAnyVideo && hasAnyAudio) attempts.push({ v: videoDeviceId, a: undefined, tag: 'camera+mic' });
+        if (hasAnyVideo) attempts.push({ v: videoDeviceId, a: false, tag: 'camera-only' });
+        if (hasAnyVideo && videoDeviceId) attempts.push({ v: undefined, a: false, tag: 'default-camera-only' });
+        if (hasAnyAudio) attempts.push({ v: false, a: undefined, tag: 'audio-only' });
+        attempts.push({ v: false, a: false, tag: 'viewer-only' });
+
+        let publisherInstance = null;
+        let chosen = null;
+        let lastErr = null;
+        for (const att of attempts) {
+          try {
+            publisherInstance = await OVInstance.initPublisherAsync(undefined, buildOpts(att.v, att.a));
+            chosen = att;
+            console.log('[StudyRoom] publisher 성공 단계=%s', att.tag);
+            break;
+          } catch (e) {
+            lastErr = e;
+            console.warn('[StudyRoom] publisher 단계 실패 tag=%s name=%s', att.tag, e?.name || e);
+          }
         }
 
         if (!isMounted) {
@@ -547,9 +626,39 @@ sessionInstance.on('streamCreated', (event) => {
           return;
         }
 
-        await sessionInstance.publish(publisherInstance);
-        setPublisher(publisherInstance);
-        setOvError('');
+        if (!publisherInstance) {
+          // 모든 단계 실패: 세션 연결은 유지되므로 시청자 상태로 남긴다.
+          setIsMicOn(false);
+          setIsVideoOn(false);
+          setOvError(friendlyDeviceMessage(lastErr));
+          setOvNotice('');
+          return;
+        }
+
+        // 실제 발행된 트랙 상태를 토글 UI와 동기화
+        const noVideo = chosen.v === false;
+        const noAudio = chosen.a === false;
+        if (noAudio) setIsMicOn(false);
+        if (noVideo) setIsVideoOn(false);
+        if (noVideo && noAudio) {
+          setOvNotice('사용 가능한 카메라/마이크가 없어 시청 모드로 입장했습니다.');
+        } else if (noVideo) {
+          setOvNotice('카메라 장치를 찾을 수 없어 오디오만 사용합니다.');
+        } else if (noAudio) {
+          setOvNotice('마이크 장치를 찾을 수 없어 음소거 상태로 입장했습니다.');
+        } else {
+          setOvNotice('');
+        }
+
+        if (noVideo && noAudio) {
+          // 시청 전용: 발행할 트랙이 없으므로 publisher를 publish하지 않고 정리한다.
+          publisherInstance.dispose();
+          setOvError('');
+        } else {
+          await sessionInstance.publish(publisherInstance);
+          setPublisher(publisherInstance);
+          setOvError('');
+        }
 
       } catch (err) {
         console.error('Failed to join OpenVidu video session:', err);
@@ -1380,6 +1489,13 @@ try {
             </div>
           )}
 
+          {ovNotice && (
+            <div style={{ marginBottom: '12px', padding: '10px 14px', borderRadius: '10px', backgroundColor: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)', color: '#FCD34D', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <AlertTriangle size={16} color="#FCD34D" />
+              <span>{ovNotice}</span>
+            </div>
+          )}
+
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', height: '100%', alignContent: 'start' }}>
 
             {/* Local Video Feed */}
@@ -1392,6 +1508,8 @@ try {
                 isCamOn={isVideoOn}
                 isMicOn={isMicOn}
                 photoUrl={user?.photoUrl || user?.photo_url || null}
+                speakerId={userId}
+                onSpeakingChange={handleSpeakingChange}
               />
               {ovError && (
                 <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', color: '#FCA5A5', padding: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', zIndex: 10, borderRadius: '16px' }}>
@@ -1425,6 +1543,8 @@ try {
                   isCamOn={sub.stream.videoActive}
                   isMicOn={sub.stream.audioActive}
                   photoUrl={subPhotoUrl}
+                  speakerId={subUserId}
+                  onSpeakingChange={handleSpeakingChange}
                 />
               );
             })}
@@ -1482,6 +1602,12 @@ try {
                     }
                   }
 
+                  // 발화 중이고 마이크가 켜진 경우에만 초록색 ring 표시 (mute 상태에서는 표시 안 함)
+                  const isMemberSpeaking = isUserMicOn && speakingUsers.has(String(member.userId));
+                  const avatarRing = isMemberSpeaking
+                    ? { boxShadow: '0 0 0 2px #22C55E, 0 0 8px rgba(34,197,94,0.6)' }
+                    : {};
+
                   return (
                     <div key={member.userId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px', borderRadius: '12px', backgroundColor: 'rgba(255,255,255,0.02)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -1489,10 +1615,10 @@ try {
                           <img
                             src={member.photoUrl}
                             alt={member.displayName}
-                            style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover' }}
+                            style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover', transition: 'box-shadow 0.15s ease', ...avatarRing }}
                           />
                         ) : (
-                          <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: member.role === 'LEADER' ? '#3B82F6' : '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: '700', color: 'white' }}>
+                          <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: member.role === 'LEADER' ? '#3B82F6' : '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: '700', color: 'white', transition: 'box-shadow 0.15s ease', ...avatarRing }}>
                             {member.displayName ? member.displayName.charAt(0) : 'U'}
                           </div>
                         )}

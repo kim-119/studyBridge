@@ -5,6 +5,26 @@ import { useAuth } from '../hooks/useAuth';
 import { groupService } from '../services/api';
 import StudyRoom from '../components/StudyRoom';
 
+// getUserMedia 장치 오류를 원인별로 구분해 사용자 메시지로 변환한다.
+const friendlyDeviceMessage = (err) => {
+  switch (err?.name) {
+    case 'NotAllowedError':
+    case 'PermissionDeniedError':
+      return '브라우저 주소창의 카메라/마이크 권한을 허용해주세요.';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return '다른 화상 앱 또는 브라우저 탭에서 카메라를 사용 중인지 확인해주세요.';
+    case 'OverconstrainedError':
+    case 'ConstraintNotSatisfiedError':
+      return '선택한 카메라를 사용할 수 없어 기본 카메라로 다시 시도합니다.';
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return '사용 가능한 카메라를 찾을 수 없습니다. 오디오/시청 모드로 입장할 수 있습니다.';
+    default:
+      return err?.message || '카메라를 불러오지 못했습니다.';
+  }
+};
+
 const DUMMY_STUDIES = [
   {
     id: 1,
@@ -151,7 +171,10 @@ export default function GroupStudy() {
   const [camError, setCamError] = useState('');
   
   const [cameras, setCameras] = useState([]);
+  const [mics, setMics] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState('');
+  // 열리지 않는(stale/고장) 카메라 deviceId를 기억해 무한 재시도/재선택 루프를 방지한다.
+  const badCamerasRef = React.useRef(new Set());
 
   // 권한을 얻은 후 장치 목록을 가져오는 함수
   const fetchDevices = async () => {
@@ -159,10 +182,19 @@ export default function GroupStudy() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoInputs = devices.filter(device => device.kind === 'videoinput');
+      const audioInputs = devices.filter(device => device.kind === 'audioinput');
       setCameras(videoInputs);
-      // 만약 선택된 카메라가 없고, 사용 가능한 카메라가 있다면 첫 번째 카메라를 기본값으로 설정
-      if (!selectedCamera && videoInputs.length > 0) {
-        setSelectedCamera(videoInputs[0].deviceId);
+      setMics(audioInputs);
+
+      // 선택된 카메라가 목록에 더 이상 없으면 stale → 초기화
+      if (selectedCamera && !videoInputs.some(v => v.deviceId === selectedCamera)) {
+        setSelectedCamera('');
+        return;
+      }
+      // 선택 카메라가 없거나 고장난 카메라면, 정상으로 알려진 카메라를 자동 선택
+      if ((!selectedCamera || badCamerasRef.current.has(selectedCamera)) && videoInputs.length > 0) {
+        const good = videoInputs.find(v => v.deviceId && !badCamerasRef.current.has(v.deviceId));
+        if (good) setSelectedCamera(good.deviceId);
       }
     } catch (err) {
       console.error("장치 목록을 가져오는데 실패했습니다.", err);
@@ -199,10 +231,17 @@ export default function GroupStudy() {
           fetchDevices();
         })
         .catch(err => {
-          if (isMounted) {
-            console.error("카메라 에러:", err);
-            setCamError(`${err.name}: ${err.message}`);
+          if (!isMounted) return;
+          console.error("카메라 에러:", err?.name, err?.message);
+          // 선택한 카메라가 stale/제약 불일치면 해당 장치를 불량으로 표시하고 기본 카메라로 자동 재시도
+          if ((err.name === 'OverconstrainedError' || err.name === 'NotFoundError' || err.name === 'NotReadableError') && selectedCamera) {
+            badCamerasRef.current.add(selectedCamera);
+            setSelectedCamera(''); // effect 재실행 → video:true(기본 장치)로 재시도
+            return;
           }
+          setCamError(friendlyDeviceMessage(err));
+          // 권한은 있으나 비디오만 실패한 경우라도 마이크 목록은 보여줄 수 있게 시도
+          fetchDevices();
         });
     }
     return () => {
@@ -212,6 +251,17 @@ export default function GroupStudy() {
       }
     };
   }, [preJoinStudy, isVideoOn, selectedCamera]);
+
+  // 장치 핫플러그(연결/해제) 감지 시 목록을 갱신한다.
+  useEffect(() => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.addEventListener) return;
+    const onDeviceChange = () => fetchDevices();
+    navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const showAlert = (title, message, onConfirm = null) => {
     setCustomAlert({ isOpen: true, title, message, type: 'alert', onConfirm: () => { setCustomAlert(prev => ({ ...prev, isOpen: false })); if (onConfirm) onConfirm(); } });
@@ -1146,13 +1196,25 @@ export default function GroupStudy() {
                         {camError && (
                           <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', backgroundColor: 'rgba(0,0,0,0.7)', color: '#FCA5A5', padding: '16px', borderRadius: '8px', textAlign: 'center', maxWidth: '80%', zIndex: 10 }}>
                             <AlertTriangle size={32} color="#EF4444" style={{ marginBottom: '8px' }} />
-                            <div style={{ fontSize: '14px', fontWeight: 'bold' }}>카메라를 불러오지 못했습니다.</div>
+                            <div style={{ fontSize: '14px', fontWeight: 'bold' }}>카메라 사용에 문제가 있습니다.</div>
                             <div style={{ fontSize: '12px', marginTop: '4px', wordBreak: 'break-all' }}>{camError}</div>
-                            <button 
-                              onClick={() => { setCamError(''); setIsVideoOn(false); setTimeout(() => setIsVideoOn(true), 100); }} 
-                              style={{ marginTop: '12px', padding: '6px 12px', borderRadius: '4px', border: '1px solid #FCA5A5', background: 'transparent', color: '#FCA5A5', cursor: 'pointer', fontSize: '12px' }}>
-                              다시 시도
-                            </button>
+                            <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                              <button
+                                onClick={() => { setCamError(''); setIsVideoOn(false); setTimeout(() => setIsVideoOn(true), 100); }}
+                                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #FCA5A5', background: 'transparent', color: '#FCA5A5', cursor: 'pointer', fontSize: '12px' }}>
+                                다시 시도
+                              </button>
+                              <button
+                                onClick={() => { badCamerasRef.current.clear(); setSelectedCamera(''); setCamError(''); setIsVideoOn(false); setTimeout(() => setIsVideoOn(true), 100); }}
+                                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #93C5FD', background: 'transparent', color: '#93C5FD', cursor: 'pointer', fontSize: '12px' }}>
+                                기본 카메라로 전환
+                              </button>
+                              <button
+                                onClick={() => { setCamError(''); setIsVideoOn(false); }}
+                                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #D1D5DB', background: 'transparent', color: '#D1D5DB', cursor: 'pointer', fontSize: '12px' }}>
+                                카메라 없이 입장
+                              </button>
+                            </div>
                           </div>
                         )}
                       </>
@@ -1194,11 +1256,23 @@ export default function GroupStudy() {
                           </div>
                           <div style={{ position: 'relative', marginBottom: '8px' }}>
                             <select style={{ width: '100%', appearance: 'none', border: 'none', backgroundColor: 'transparent', fontSize: '15px', color: '#111827', cursor: 'pointer', outline: 'none' }}>
-                              <option>기본 마이크</option>
+                              {mics.length === 0 ? (
+                                <option value="">기본 마이크</option>
+                              ) : (
+                                mics.map((mic, idx) => (
+                                  <option key={mic.deviceId || idx} value={mic.deviceId}>
+                                    {mic.label || `마이크 ${idx + 1}`}
+                                  </option>
+                                ))
+                              )}
                             </select>
                             <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>▼</div>
                           </div>
-                          <div style={{ fontSize: '12px', color: '#EF4444' }}>연결된 장치를 찾을 수 없습니다</div>
+                          {mics.length === 0 ? (
+                            <div style={{ fontSize: '12px', color: '#EF4444' }}>연결된 마이크가 없어 음소거로 입장합니다</div>
+                          ) : (
+                            <div style={{ fontSize: '12px', color: '#9CA3AF' }}>{mics.length}개의 마이크가 연결되어 있습니다</div>
+                          )}
                         </div>
                         {/* Speaker */}
                         <div style={{ flex: 1, padding: '0 16px' }}>
