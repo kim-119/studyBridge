@@ -1697,11 +1697,24 @@ export default function StudyMate() {
     if (e) e.preventDefault();
     const agentId = getAgentId(selectedAgent);
     const inputMsg = directMessage || message.trim();
-    if (!inputMsg || !selectedAgent || typingRooms[agentId]) return;
-    // ref 기반 동기 가드: state(typingRooms)가 갱신되기 전에 들어오는 두 번째 호출
-    // (Enter키 + 버튼클릭 동시 입력 / 빠른 더블클릭 / StrictMode 재호출)을 즉시 차단한다.
-    if (sendingRoomsRef.current.has(agentId)) {
-      if (import.meta.env.DEV) console.debug('[StudyMate] 중복 전송 차단', { agentId });
+    // 빈 입력/방 미선택은 조용히 무시(보존할 입력값 자체가 없음).
+    if (!inputMsg || !selectedAgent) return;
+    // ── BUG-03 메시지 유실 방지 ──
+    // 스트리밍 중(typingRooms) 또는 진행 중 전송 lock(sendingRoomsRef)일 때는 새 전송을 막되,
+    // 사용자 입력(draft)은 절대 비우지 않는다. 차단 사실을 안내 토스트로 알린다.
+    //  - typingRooms: 스트리밍 상태(state). all_complete/error 시 finally에서 해제.
+    //  - sendingRoomsRef: state 갱신 전에 들어오는 두 번째 호출(Enter+버튼 동시/더블클릭/StrictMode)을
+    //    즉시 막는 동기 가드.
+    if (typingRooms[agentId] || sendingRoomsRef.current.has(agentId)) {
+      if (import.meta.env.DEV) console.debug('[StudyMate] 전송 차단(스트리밍/전송중) — draft 보존', { agentId });
+      // 일반 입력은 message/roomDrafts에 그대로 남아 보존되지만, 빠른 액션(directMessage)으로
+      // 들어온 텍스트는 입력창에 없을 수 있으므로 입력창/draft에 복원해 유실을 막는다.
+      if (directMessage) {
+        setMessage(directMessage);
+        if (agentId) setRoomDrafts((prev) => ({ ...prev, [agentId]: directMessage }));
+      }
+      setToastMsg('현재 답변 생성 중입니다. 완료 후 전송해주세요.');
+      setTimeout(() => setToastMsg(''), 2500);
       return;
     }
     sendingRoomsRef.current.add(agentId);
@@ -3000,6 +3013,14 @@ export default function StudyMate() {
 
                       const activeId = getAgentId(selectedAgent);
                       if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: val }));
+                    }}
+                    onKeyDown={(e) => {
+                      // 한글 등 IME 조합 중 Enter는 글자 확정용이다. 이때 폼이 submit되면
+                      // 조합 중 텍스트가 조기/중복 전송되어 입력이 유실되는 것처럼 보인다(BUG-03).
+                      // 조합 중 Enter는 전송을 막고 글자 확정만 하도록 한다.
+                      if (e.key === 'Enter' && (e.nativeEvent?.isComposing || e.keyCode === 229)) {
+                        e.preventDefault();
+                      }
                     }}
                     placeholder={viewTab === 'mindmap' ? '마인드맵으로 탐색할 질문을 입력하세요... (@를 입력해 에이전트 호출)' : '메시지를 입력해보세요... (@호출)'}
                     disabled={typingRooms[getAgentId(selectedAgent)]}
