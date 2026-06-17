@@ -318,6 +318,35 @@ def _call_llm(
     return "현재 AI 서비스에 일시적으로 접근할 수 없습니다. 잠시 후 다시 시도해 주세요."
 
 
+def _call_llm_no_think(
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    temperature: float = 0.4,
+    knowledge_level: Optional[str] = None,
+) -> str:
+    """qwen3 thinking을 비활성(think=False)한 채 Ollama를 직접 호출한다.
+
+    thinking 블록이 num_predict를 소진해 빈 응답이 되거나 JSON 출력을 오염시키는 것을 막는다.
+    (논제 파생·상황극 JSON 생성처럼 think 비활성이 유리한 용도에 사용. Ollama 불가 시 _call_llm로 fallback.)
+    """
+    try:
+        from app.services.ollama_client import ask_ollama, is_ollama_available
+        if is_ollama_available():
+            return ask_ollama(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                knowledge_level=knowledge_level,
+                think=False,
+            )
+    except Exception as e:
+        logger.warning("think=False Ollama 호출 실패 → _call_llm fallback: %s", e)
+    return _call_llm(system_prompt, user_prompt, knowledge_level=knowledge_level,
+                     gen_config={"max_tokens": max_tokens, "temperature": temperature})
+
+
 def _get_rag_context(question: str, material_id: Optional[int]) -> str:
     """RAG 검색. 실패해도 서버 죽지 않음."""
     if not material_id:
@@ -2108,20 +2137,58 @@ def _debate_topic_keyword(message: str) -> str:
     return m.strip(" ,.!?'\"") or (message or "").strip()
 
 
+_DEBATE_MOTION_SYSTEM = (
+    "너는 학습 토론의 논제(motion)를 설계하는 전문가다. "
+    "사용자의 질문을 입력받아, 그 질문이 다루는 주제 그 자체에 대해 찬성과 반대로 입장이 갈릴 수 있는 "
+    "토론 논제 한 문장을 만든다. 한국어로 논제 문장 하나만 출력한다."
+)
+
+
+def _llm_debate_motion(user_message: str, cfg: DebateConfig) -> str:
+    """LLM으로 사용자 질문에서 토론 논제를 동적으로 파생한다(고정 템플릿 사용 안 함)."""
+    msg = (user_message or "").strip()
+    if not msg:
+        return ""
+    mt = (cfg.motionType or "").strip()
+    style_hint = ""
+    if mt and mt != "learning_strategy":
+        style_hint = f"\n- 가능하면 '{mt}' 관점을 살려 논제를 잡아라."
+    user = (
+        f"[사용자 질문]\n{msg}\n\n"
+        "위 질문이 다루는 핵심 주제를 그대로 유지한 채, 찬성/반대로 입장이 갈릴 수 있는 "
+        "토론 논제를 정확히 한 문장으로 만들어라.\n"
+        "[규칙]\n"
+        "- 논제는 반드시 사용자가 실제로 물은 주제(개념·코드·답변 등)에 대한 것이어야 한다.\n"
+        "- 사용자가 묻지 않은 일반 학습전략(예: '실무 예제 중심 학습이 더 효과적인가') 같은 무관한 주제로 바꾸지 마라.\n"
+        "- 코드/구현에 대한 질문이면 그 코드의 동작·오류 가능성·개선 방향을 두고 논제를 만든다.\n"
+        "- 사용자 답변에 대한 비판 요청이면 그 답변의 타당성·허점·반례를 두고 논제를 만든다.\n"
+        "- 개념 질문이면 그 개념의 장점이 한계·오개념 위험을 상회하는지를 두고 논제를 만든다.\n"
+        f"- 부연 설명 없이 논제 문장 하나만 출력한다.{style_hint}"
+    )
+    # qwen3 thinking이 짧은 num_predict를 소진해 빈 응답이 되는 것을 막기 위해 think=False로 호출한다.
+    text = _call_llm_no_think(_DEBATE_MOTION_SYSTEM, user, max_tokens=400, temperature=0.3)
+    if not text or _is_llm_fallback(text) or "빈 응답" in text or "[Ollama" in text:
+        return ""
+    line = next((ln.strip() for ln in text.strip().splitlines() if ln.strip()), "")
+    return line.strip(" \"'`·-*")
+
+
 def build_debate_motion(user_message: str, cfg: DebateConfig) -> str:
-    """사용자 질문을 토론 가능한 논제로 변환하거나, 수동 입력 논제를 사용한다."""
+    """사용자 질문을 그 주제 그대로 토론 논제로 변환한다.
+
+    논제는 반드시 사용자 원 질문(user_message)에서 파생되어야 한다.
+    고정된 'learning_strategy(실무 예제 중심 학습이 더 효과적인가?)' 같은 하드코딩 템플릿으로
+    수렴시키지 않는다. 수동 입력 논제가 있으면 그것을, 없으면 LLM이 질문에서 논제를 파생한다.
+    LLM 실패 시에도 무관한 고정 주제 대신 사용자 원 질문을 논제로 사용한다.
+    """
     if (cfg.topicMode or "auto") == "manual" and (cfg.manualTopic or "").strip():
         return cfg.manualTopic.strip()
-    kw = _debate_topic_keyword(user_message)
-    mt = cfg.motionType or "learning_strategy"
-    templates = {
-        "learning_strategy": f"{kw}를 처음 배울 때, 개념 이론보다 실무 예제 중심으로 먼저 학습하는 것이 더 효과적인가?",
-        "concept_definition": f"{kw}를 학습할 때 엄밀한 개념 정의를 실습보다 먼저 익혀야 하는가?",
-        "tech_choice": f"{kw}에서 특정 기술 선택은 학습 효율과 실무 적용성 측면에서 타당한가?",
-        "implementation_design": f"{kw}를 실제 프로젝트에 적용할 때 구조적 설계를 우선해야 하는가?",
-        "pros_cons": f"{kw}에 대해 찬성 입장이 반대 입장보다 더 설득력 있는가?",
-    }
-    return templates.get(mt, f"{kw}에 대해 찬성과 반대 입장 중 어느 쪽이 더 설득력 있는가?")
+    motion = _llm_debate_motion(user_message, cfg)
+    if motion:
+        return motion
+    # LLM 실패 fallback: 무관한 고정 주제 금지 → 사용자 원 질문 자체를 논제로 사용한다.
+    base = (user_message or "").strip()
+    return base or _debate_topic_keyword(user_message)
 
 
 def _create_virtual_debate_agent(label: str, idx: int, knowledge_level: str = "학사") -> AgentProfile:
@@ -2164,6 +2231,8 @@ def _debate_setup_block(request: MultiChatRequest, motion: str, cfg: DebateConfi
         "6. 반박 단계에서는 상대측 핵심 주장을 직접 겨냥해 논박한다.\n"
         "7. 중립측은 양측 주장을 객관적으로 정리하고, 판정 기준에 따라 판단한다.\n"
         "8. 마지막에는 사용자가 무엇을 공부해야 하는지도 정리한다.\n"
+        "9. 토론은 반드시 위 '원 질문'과 '토론 논제'의 주제 안에서만 진행한다. "
+        "사용자가 묻지 않은 일반적인 학습 전략(예: '실무 예제 중심 학습이 더 효과적인가') 같은 무관한 주제로 바꾸지 않는다.\n"
     )
 
 
@@ -2986,6 +3055,31 @@ def _simulation_agent_directive(agent: AgentProfile, fixed_role: str) -> str:
     )
 
 
+def _extract_user_role_scenario(message: str) -> Dict[str, str]:
+    """사용자가 메시지에서 지정한 역할/시나리오를 파싱한다.
+
+    예) '너는 면접관이고 나는 지원자야' → aiRole=면접관, userRole=지원자
+        '너는 코드 리뷰어야'            → aiRole=코드 리뷰어
+    하드코딩된 시나리오 사전이 아니라, 사용자 문장에서 직접 역할 표현을 추출한다.
+    """
+    m = (message or "").strip()
+    result = {"raw": m, "aiRole": "", "userRole": ""}
+    if not m:
+        return result
+    josa = r"(?:이고|이며|이라고|라고|인데|이야|야|이다|입니다|이에요|예요|고)"
+    ai_match = re.search(rf"(?:너는|당신은|너가|네가|당신이)\s*([^,.\n]{{1,40}}?)\s*{josa}", m)
+    if ai_match:
+        result["aiRole"] = ai_match.group(1).strip()
+    user_match = re.search(rf"(?:나는|내가|저는|제가)\s*([^,.\n]{{1,40}}?)\s*{josa}", m)
+    if user_match:
+        result["userRole"] = user_match.group(1).strip()
+    if not result["aiRole"]:
+        role_match = re.search(r"([^,.\n]{1,30}?)\s*역할(?:을|로|로서|을 맡)", m)
+        if role_match:
+            result["aiRole"] = role_match.group(1).strip()
+    return result
+
+
 def _extract_selected_choice(message: str) -> Optional[str]:
     text = (message or "").strip().upper()
     for cid in ("A", "B", "C", "D"):
@@ -3033,9 +3127,29 @@ def _simulation_prompt(request: MultiChatRequest, cfg: SimulationConfig, role_ma
     selected_block = ""
     if selected_choice:
         selected_block = f"\n[이전 선택 이어가기]\n* 사용자가 선택한 선택지: {selected_choice}\n* 직전 simulationStages를 참고해 SELECTED_CHOICE, CONSEQUENCE, CONCEPT_EXPLANATION, RISK_OR_LIMITATION, NEXT_BRANCH 단계로 이어가라.\n"
+    parsed_role = _extract_user_role_scenario(request.message)
+    ai_role = parsed_role.get("aiRole") or ""
+    user_role = parsed_role.get("userRole") or ""
+    if ai_role or user_role:
+        role_block = (
+            "\n[사용자 지정 역할/시나리오 — 최우선 보존]\n"
+            f"* 사용자가 AI에게 부여한 역할: {ai_role or '(명시 없음)'}\n"
+            f"* 사용자 본인의 역할: {user_role or '(명시 없음)'}\n"
+            "* 우선순위: 사용자 지정 역할 > 에이전트 성격 > 기본 역할.\n"
+            "* 세 에이전트는 모두 사용자가 지정한 역할(또는 그 상황의 등장인물)로서 말하고 행동한다.\n"
+            f"* 사용자를 '{user_role or '학습자'}'로 대하고, 그 관계와 상황을 처음부터 끝까지 유지한다.\n"
+            "* 사용자가 면접관/교수/리뷰어/튜터 등 대인 역할을 지정했다면, 일반 A/B/C 의사결정 템플릿으로 빠지지 말고 "
+            "그 역할에 맞는 질문·평가·피드백 중심의 역할극을 진행한다. 선택지는 그 역할 맥락에 맞을 때만 사용한다.\n"
+        )
+    else:
+        role_block = (
+            "\n[역할 자동 배정]\n"
+            "* 사용자가 역할을 명시하지 않았으니, 되묻지 말고 원 질문 주제에 직접 연결되는 학습 상황극 역할을 자동 배정한다.\n"
+        )
     return f"""
 [상황극 설정]
 * 원 질문: {request.message}
+{role_block}
 * 상황극 유형: {cfg.scenarioType}
 * 분야: {cfg.domain}
 * 상호작용 방식: {cfg.interactionStyle}
@@ -3074,7 +3188,19 @@ def _simulation_prompt(request: MultiChatRequest, cfg: SimulationConfig, role_ma
 [직전 simulationStages]
 {previous_stages[:8]}
 
-JSON만 반환하라. 최상위 구조는 mode, learningMode, answer, simulationConfig, simulationStages, processSteps를 포함한다.
+[출력 형식 — 반드시 준수]
+* 최상위 JSON 객체에 "simulationStages" 배열을 포함한다(이 키 이름을 정확히 사용).
+* 배열의 각 원소는 다음 필드명을 정확히 사용한다(다른 키 이름 금지):
+  - "stageType": 단계 종류. 다음 중 하나: {", ".join(cfg.outputStages)}
+  - "stageTitle": 단계 제목(짧은 한국어)
+  - "role": 이 단계를 말하는 에이전트의 역할명(사용자가 지정한 역할이 있으면 그 역할)
+  - "agentIndex": 1|2|3
+  - "agentName": 에이전트 이름
+  - "content": 해당 단계의 실제 대사/내용(역할에 맞는 말투)
+  - "userRole": (USER_ROLE 단계에서) 사용자가 맡는 역할
+  - "choices": (CHOICES 단계에서만) [{{"choiceId","label","text","expectedConsequence","conceptLink","misconceptionRisk"}}]
+* JSON 외의 설명, 주석, 코드펜스(```)는 출력하지 않는다.
+* 예시 한 원소: {{"stageType": "SCENARIO_SETUP", "stageTitle": "상황 설정", "role": "면접관", "agentIndex": 1, "agentName": "에이전트1", "content": "..."}}
 """.strip()
 
 
@@ -3105,38 +3231,89 @@ def _build_simulation_response(request: MultiChatRequest, cfg: SimulationConfig,
     )
 
 
-def _run_simulation_mode(request: MultiChatRequest, active_agents: List[AgentProfile], rag_context: str) -> MultiChatResponse:
-    cfg = normalize_simulation_config(request)
-    role_map = assign_simulation_roles(active_agents)
+# LLM이 변형 키로 낸 simulationStages 원소를 스키마 키로 매핑(콘텐츠가 아니라 키 이름 정규화).
+_SIMULATION_STAGE_KEY_ALIASES = {
+    "stagetype": "stageType", "stage": "stageType", "type": "stageType", "stage_type": "stageType",
+    "stagetitle": "stageTitle", "title": "stageTitle", "stage_title": "stageTitle",
+    "agentindex": "agentIndex", "agent_index": "agentIndex",
+    "agentname": "agentName", "agent_name": "agentName",
+    "userrole": "userRole", "user_role": "userRole",
+    "misconceptiontrap": "misconceptionTrap", "conceptmapping": "conceptMapping",
+    "reflectionquestion": "reflectionQuestion", "nextscenarioprompt": "nextScenarioPrompt",
+}
+
+
+def _coerce_simulation_stages(parsed: Any) -> List[SimulationStage]:
+    """LLM이 변형된 키/구조로 낸 simulationStages를 스키마에 맞게 정규화한다.
+
+    - 상위 stages 배열을 simulationStages/stages 중에서 찾는다.
+    - 원소의 stage/type/title 등 변형 키를 표준 키로 매핑한다(키 이름만, 내용은 LLM 생성 그대로).
+    - 필수 필드(stageTitle)가 비면 stageType를 그대로 제목으로 쓴다(하드코딩 문구 없음).
+    """
+    if isinstance(parsed, dict):
+        raw_list = parsed.get("simulationStages") or parsed.get("stages") or parsed.get("simulation_stages")
+    elif isinstance(parsed, list):
+        raw_list = parsed
+    else:
+        raw_list = None
+    if not isinstance(raw_list, list):
+        return []
+    out: List[SimulationStage] = []
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        norm: Dict[str, Any] = {}
+        for k, v in item.items():
+            norm[_SIMULATION_STAGE_KEY_ALIASES.get(str(k).lower(), k)] = v
+        stage_type = str(norm.get("stageType") or "").strip()
+        if not stage_type:
+            continue
+        if not norm.get("stageTitle"):
+            norm["stageTitle"] = stage_type
+        try:
+            out.append(SimulationStage.model_validate(norm))
+        except Exception:
+            continue
+    return out
+
+
+def _generate_simulation_stages(request: MultiChatRequest, cfg: SimulationConfig, role_map: Dict[str, AgentProfile], rag_context: str) -> List[SimulationStage]:
+    """LLM으로 사용자 질문/역할에 맞는 상황극 단계를 생성한다(블로킹/스트림 공통).
+
+    스트림 경로가 LLM을 호출하지 않고 항상 하드코딩 A/B/C 템플릿을 내보내던 BUG-02 수정.
+    LLM이 실패할 때만 마지막 안전장치로 fallback을 쓴다.
+    """
     previous_stages = _find_previous_simulation_stages(request.previousAnswers)
     selected_choice = _extract_selected_choice(request.message)
     system = "너는 StudyBridge 상황극 학습 엔진이다. 설명/토론/소크라테스/퀴즈가 아니라 역할극 기반 시뮬레이션만 만든다. 반드시 한국어 JSON만 반환한다."
     user = _simulation_prompt(request, cfg, role_map, previous_stages, selected_choice)
     if rag_context:
         user += f"\n\n[RAG 자료]\n{rag_context}"
-    text = _call_llm(system, user, knowledge_level="학사 수준", gen_config={"max_tokens": max(_MAX_TOKENS_PER_ANSWER, 3000), "temperature": 0.55})
-    parsed = extract_json(text)
-    stages: List[SimulationStage] = []
-    if isinstance(parsed, dict) and isinstance(parsed.get("simulationStages"), list):
-        for item in parsed.get("simulationStages") or []:
-            try:
-                stages.append(SimulationStage.model_validate(item))
-            except Exception:
-                continue
+    # think=False: qwen3 thinking 블록이 simulationStages JSON을 오염시키는 것을 막는다.
+    text = _call_llm_no_think(system, user, max_tokens=max(_MAX_TOKENS_PER_ANSWER, 3000), temperature=0.55, knowledge_level="학사 수준")
+    stages = _coerce_simulation_stages(extract_json(text))
     if not stages:
+        logger.warning("[StudyMate] simulation LLM 생성/파싱 실패 → fallback 단계 사용")
         stages = _fallback_simulation_stages(request, role_map, cfg)
+    return stages
+
+
+def _run_simulation_mode(request: MultiChatRequest, active_agents: List[AgentProfile], rag_context: str) -> MultiChatResponse:
+    cfg = normalize_simulation_config(request)
+    role_map = assign_simulation_roles(active_agents)
+    stages = _generate_simulation_stages(request, cfg, role_map, rag_context)
     return _build_simulation_response(request, cfg, role_map, stages)
 
 
 def run_simulation_mode_stream(request: MultiChatRequest, active_agents: List[AgentProfile], rag_context: str):
-    """상황극 SSE: 전체 simulationStages 생성을 기다리지 않고 단계별로 즉시 전송한다."""
+    """상황극 SSE: LLM으로 사용자 질문/지정 역할에 맞는 단계를 생성해 순차 전송한다."""
     cfg = normalize_simulation_config(request)
     role_map = assign_simulation_roles(active_agents)
     cfg_dump = cfg.model_dump()
     request_id = _stream_request_id()
-    stages = _fallback_simulation_stages(request, role_map, cfg)
     seen = set()
     yield {"event": "turn_start", "data": {"type": "turn_start", "requestId": request_id, "message": "상황극 생성을 시작합니다."}}
+    stages = _generate_simulation_stages(request, cfg, role_map, rag_context)
     for stage in stages:
         data = stage.model_dump()
         data["type"] = "simulation_stage"

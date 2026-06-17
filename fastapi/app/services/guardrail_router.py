@@ -163,11 +163,21 @@ def classify_route(
             matched=abuse_hits,
         )
 
-    # 2) 사용자가 명시적으로 토론/소크라테스 등 모드를 선택한 경우는 그 파이프라인을 존중
+    # 2) 사용자가 명시적으로 토론/상황극/소크라테스 모드를 선택한 경우는 그 파이프라인을 존중한다.
+    #    (욕설은 위에서 이미 hard stop. 이 모드들에서는 '나는 학생이야' 같은 역할 설정 문구가
+    #     자기소개로 오분류되어 direct_reply로 빠지는 것을 막는다.)
     explicit_debate = lm in {"debate", "토론"} or md in {"debate", "토론"}
     if explicit_debate and raw:
         return RouteResult(DEBATE_REQUEST, "debate", None,
                            "명시적 토론 모드", ["mode=debate"])
+    explicit_simulation = lm in {"simulation", "상황극", "시뮬레이션"} or md in {"simulation", "상황극", "시뮬레이션"}
+    if explicit_simulation and raw:
+        return RouteResult(LEARNING_QUESTION, "basic", None,
+                           "명시적 상황극 모드", ["mode=simulation"])
+    explicit_socratic = lm in {"socratic", "소크라테스"} or md in {"socratic", "소크라테스"}
+    if explicit_socratic and raw:
+        return RouteResult(LEARNING_QUESTION, "basic", None,
+                           "명시적 소크라테스 모드", ["mode=socratic"])
 
     # 3) 인사 / 자기소개 / 잡담 (짧은 입력 위주)
     if _SELF_INTRO_RE.search(raw) and not _LEARNING_RE.search(raw):
