@@ -233,9 +233,17 @@ public class GroupStudyStreamController {
         fastApiPayload.put("previousAnswers", previousAnswers);
         fastApiPayload.put("targetAgentId", request.getTargetAgentId());
         fastApiPayload.put("agents", agentsList);
-        log.info("[GROUP CHAT ROUTE] requestedMode='{}' learningMode='{}' resolved mode={} fastapiLearningMode={} isDebate={} isCollab={} agents.size={}",
+        log.info("[GROUP CHAT ROUTE] requestedMode='{}' learningMode='{}' resolved mode={} fastapiLearningMode={} isDebate={} isCollab={} customAgents={} agents.size={}",
                 requestedMode, request.getLearningMode(), fastApiPayload.get("mode"),
-                fastApiPayload.get("learningMode"), isDebateMode, isCollabMode, agentsList.size());
+                fastApiPayload.get("learningMode"), isDebateMode, isCollabMode, hasCustomGroupAgents, agentsList.size());
+        // 사용자가 그룹스터디에서 설정한 봇의 성격/지식수준이 FastAPI 페이로드까지 도달하는지 검증용 로그.
+        // 질문 본문/비밀값은 출력하지 않고 설정값만 남긴다(브라우저 요청 body 와 1:1 비교용). ChatService [AGENT i] 패턴과 동일.
+        for (int i = 0; i < agentsList.size(); i++) {
+            Map<String, Object> a = agentsList.get(i);
+            log.info("[GROUP AGENT {}] name={} personality={} knowledgeLevel={} customInstructionPresent={}",
+                    i + 1, a.get("name"), a.get("personality"), a.get("knowledgeLevel"),
+                    a.get("customInstruction") != null && !String.valueOf(a.get("customInstruction")).isBlank());
+        }
 
         // 스트림 누적 상태 저장 객체
         Map<String, StringBuilder> agentReplies = new ConcurrentHashMap<>();
