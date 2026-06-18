@@ -83,6 +83,34 @@ const DEFAULT_AGENT = {
   agentPreset: '정확 설명형'
 };
 
+// ── 학습메이트 유형(기본 모드) 프리셋 ───────────────────────────────────────────
+// MATE_TYPES 버튼을 누르면 이름/답변 톤/학습자 수준/추가 요청을 한 번에 채운다.
+// tone 값은 TONE_OPTIONS의 personality enum 값과 일치시켜 select 표시값이 즉시 바뀌게 한다.
+const LEARNING_MATE_TYPE_PRESETS = {
+  '정확 설명형': { role: '정확한 개념 설명자', tone: '효율적', learnerLevel: 'BACHELOR', additionalRequest: '개념 정의, 핵심 원리, 예시, 주의점을 구조적으로 설명해줘.' },
+  '쉬운 튜터형': { role: '쉬운 설명 튜터',     tone: '친근함', learnerLevel: 'INTRO',    additionalRequest: '어려운 용어는 쉬운 비유로 풀고, 단계별로 설명해줘.' },
+  '비판 코치형': { role: '비판적 학습 코치',   tone: '솔직함', learnerLevel: 'MASTER',   additionalRequest: '내가 놓친 부분, 논리적 허점, 오개념 가능성을 짚어줘.' },
+  '냉철 분석형': { role: '논리적 분석 멘토',   tone: '냉소적', learnerLevel: 'MASTER',   additionalRequest: '감정보다 근거와 구조 중심으로 판단하고, 핵심 쟁점을 분리해서 설명해줘.' },
+};
+
+// 기본 모드 진입 시 자동 구성되는 에이전트 3명(유형 프리셋 시드). 에이전트 수는 모든 모드에서 항상 3명 고정.
+const DEFAULT_BASIC_TYPES = ['정확 설명형', '쉬운 튜터형', '비판 코치형'];
+const buildAgentFromMateType = (key) => {
+  const p = LEARNING_MATE_TYPE_PRESETS[key] || {};
+  return {
+    ...DEFAULT_AGENT,
+    name: key,
+    role: p.role || DEFAULT_AGENT.role,
+    personality: p.tone || DEFAULT_AGENT.personality,
+    knowledgeLevel: p.learnerLevel || DEFAULT_AGENT.knowledgeLevel,
+    customInstruction: p.additionalRequest || '',
+    goal: p.role || DEFAULT_AGENT.goal,
+    agentPreset: key,
+  };
+};
+// 에이전트 3명 고정 — 추천 방 설정/유형 프리셋이 항상 길이 3 배열을 만든다.
+const makeDefaultAgents = () => DEFAULT_BASIC_TYPES.map(buildAgentFromMateType);
+
 // 정규 성격 키 → 한글 라벨 (백엔드 personalityType: creative/sardonic/logical/...)
 const PERSONALITY_TYPE_LABELS = {
   creative: '독특함', sardonic: '냉소적', logical: '논리형',
@@ -251,6 +279,141 @@ const QUESTION_INTENSITY_LABELS = { gentle: '부드럽게', normal: '보통', st
 const HINT_STYLE_LABELS = { step_by_step: '단계별 힌트', example_hint: '예시 힌트', partial_answer_when_stuck: '막히면 일부 공개' };
 const SCENARIO_TYPE_LABELS = { realistic: '현실 상황', roleplay: '면접 상황', lab_scenario: '프로젝트 상황' };
 const DIFFICULTY_LABELS = { easy: '쉬움', normal: '보통', hard: '어려움' };
+
+// ── 추천 방 설정 프리셋 (소크라테스 / 토론 / 상황극) ────────────────────────────
+// 카드 클릭 시 세부 설정(질문 강도·힌트·토론 깊이·상황 유형 등) + 답변 톤 + 학습자 수준 +
+// 추가 요청 + 에이전트 3명을 한 번에 자동 반영한다. tone은 TONE_OPTIONS의 personality enum 값.
+const SOCRATIC_ROOM_PRESETS = [
+  {
+    id: 'socratic-basic', label: '추천 방 설정 1', title: '기본 개념 유도형', mode: 'socratic',
+    roomName: '000-소크라테스', purpose: '핵심 개념을 질문으로 스스로 이해',
+    tone: '친근함', learnerLevel: 'BACHELOR', questionIntensity: 'normal', hintPolicy: 'step_by_step',
+    additionalRequest: '정답을 바로 말하지 말고 질문으로 사고를 유도하고, 막히면 단계별 힌트를 제공해줘.',
+    agents: [
+      { name: '개념 유도자', role: '질문으로 핵심 개념을 끌어낸다.' },
+      { name: '오개념 점검자', role: '잘못 이해한 부분을 찾아낸다.' },
+      { name: '정리 코치', role: '마지막에 핵심을 정리한다.' },
+    ],
+  },
+  {
+    id: 'socratic-exam', label: '추천 방 설정 2', title: '시험 대비 압박형', mode: 'socratic',
+    roomName: '000-소크라테스', purpose: '시험처럼 집요하게 개념 점검',
+    tone: '솔직함', learnerLevel: 'BACHELOR', questionIntensity: 'strict', hintPolicy: 'partial_answer_when_stuck',
+    additionalRequest: '시험 상황처럼 핵심 개념을 집요하게 질문하고, 애매한 답변은 다시 파고들어줘.',
+    agents: [
+      { name: '출제자', role: '핵심 개념을 시험처럼 질문한다.' },
+      { name: '반례 질문자', role: '반례로 약점을 파고든다.' },
+      { name: '채점 코치', role: '답변을 채점하고 보완점을 알려준다.' },
+    ],
+  },
+  {
+    id: 'socratic-intro', label: '추천 방 설정 3', title: '입문자 친화형', mode: 'socratic',
+    roomName: '000-소크라테스', purpose: '쉬운 질문과 비유로 입문자 유도',
+    tone: '친근함', learnerLevel: 'INTRO', questionIntensity: 'gentle', hintPolicy: 'example_hint',
+    additionalRequest: '초보자 기준으로 쉬운 질문부터 시작하고, 비유와 예시를 통해 스스로 답하게 도와줘.',
+    agents: [
+      { name: '쉬운 질문자', role: '쉬운 질문부터 차근차근 던진다.' },
+      { name: '비유 설명자', role: '비유와 예시로 이해를 돕는다.' },
+      { name: '복습 정리자', role: '배운 내용을 쉽게 복습해준다.' },
+    ],
+  },
+];
+
+const DEBATE_ROOM_PRESETS = [
+  {
+    id: 'debate-balanced', label: '추천 방 설정 1', title: '찬반 균형 토론형', mode: 'debate',
+    roomName: '000-토론', purpose: '찬성·반대·중재로 균형 토론',
+    tone: '효율적', learnerLevel: 'BACHELOR', debateDepth: 'normal',
+    additionalRequest: '하나의 주제에 대해 찬성, 반대, 중재 관점으로 나누어 근거 중심 토론을 진행해줘.',
+    agents: [
+      { name: '찬성 측', role: '주제에 찬성하는 근거를 제시한다.' },
+      { name: '반대 측', role: '주제에 반대하는 근거를 제시한다.' },
+      { name: '중재자', role: '양측을 비교하고 균형 있게 정리한다.' },
+    ],
+  },
+  {
+    id: 'debate-critical', label: '추천 방 설정 2', title: '비판 검증형', mode: 'debate',
+    roomName: '000-토론', purpose: '전제·근거·논리 비약 검증',
+    tone: '솔직함', learnerLevel: 'MASTER', debateDepth: 'deep',
+    additionalRequest: '주장에 포함된 전제, 근거 부족, 논리적 비약을 찾아 검증해줘.',
+    agents: [
+      { name: '주장 제시자', role: '핵심 주장을 논리적으로 제시한다.' },
+      { name: '비판 검증자', role: '전제와 근거의 허점을 검증한다.' },
+      { name: '결론 정리자', role: '검증 결과를 종합해 결론을 낸다.' },
+    ],
+  },
+  {
+    id: 'debate-presentation', label: '추천 방 설정 3', title: '발표 대비 토론형', mode: 'debate',
+    roomName: '000-토론', purpose: '발표 질의응답·방어 논리 준비',
+    tone: '효율적', learnerLevel: 'BACHELOR', debateDepth: 'normal',
+    additionalRequest: '발표 질의응답 상황을 가정하고 예상 질문, 반박, 방어 논리를 만들어줘.',
+    agents: [
+      { name: '발표자 관점', role: '발표 내용을 설명하고 방어한다.' },
+      { name: '질문자 관점', role: '날카로운 예상 질문을 던진다.' },
+      { name: '평가자 관점', role: '답변을 평가하고 보완점을 알려준다.' },
+    ],
+  },
+];
+
+const ROLEPLAY_ROOM_PRESETS = [
+  {
+    id: 'roleplay-interview', label: '추천 방 설정 1', title: '면접 상황극', mode: 'simulation',
+    roomName: '000-상황극', purpose: '실제 면접처럼 질문과 피드백',
+    tone: '효율적', learnerLevel: 'BACHELOR', scenarioType: 'roleplay', difficulty: 'normal',
+    additionalRequest: '실제 면접처럼 질문하고, 답변의 부족한 부분을 피드백해줘.',
+    agents: [
+      { name: '면접관', role: '실제 면접처럼 질문한다.' },
+      { name: '실무 평가자', role: '실무 관점에서 답변을 평가한다.' },
+      { name: '피드백 코치', role: '답변의 보완점을 코칭한다.' },
+    ],
+  },
+  {
+    id: 'roleplay-professor', label: '추천 방 설정 2', title: '교수 질의응답 상황극', mode: 'simulation',
+    roomName: '000-상황극', purpose: '교수의 날카로운 검증 질문 대비',
+    tone: '냉소적', learnerLevel: 'MASTER', scenarioType: 'realistic', difficulty: 'hard',
+    additionalRequest: '교수님이 발표 내용을 검증하는 상황처럼 날카로운 질문과 보완 피드백을 제공해줘.',
+    agents: [
+      { name: '교수 역할', role: '발표 내용을 날카롭게 검증한다.' },
+      { name: '연구 검증자', role: '근거와 논리를 학술적으로 검증한다.' },
+      { name: '답변 코치', role: '답변을 보완하도록 코칭한다.' },
+    ],
+  },
+  {
+    id: 'roleplay-team', label: '추천 방 설정 3', title: '팀 프로젝트 회의 상황극', mode: 'simulation',
+    roomName: '000-상황극', purpose: '기획·개발·QA 관점 회의 점검',
+    tone: '효율적', learnerLevel: 'BACHELOR', scenarioType: 'lab_scenario', difficulty: 'normal',
+    additionalRequest: '팀 회의 상황처럼 기획, 개발, QA 관점에서 문제를 점검하고 역할별 의견을 제시해줘.',
+    agents: [
+      { name: '기획자', role: '기획 관점에서 문제를 점검한다.' },
+      { name: '개발자', role: '개발 관점에서 구현 가능성을 따진다.' },
+      { name: 'QA 담당자', role: 'QA 관점에서 품질과 리스크를 점검한다.' },
+    ],
+  },
+];
+
+const ROOM_PRESETS_BY_MODE = {
+  socratic: SOCRATIC_ROOM_PRESETS,
+  debate: DEBATE_ROOM_PRESETS,
+  simulation: ROLEPLAY_ROOM_PRESETS,
+};
+
+// 답변 톤(personality enum) → 표시 라벨
+const toneLabel = (v) => (TONE_OPTIONS.find((o) => o.value === v) || {}).label || v || '';
+
+// 추천 방 설정 카드에 표시할 "적용 설정 요약" 칩 문구 배열
+const roomPresetSummary = (p) => {
+  const out = [`톤 ${toneLabel(p.tone)}`, `수준 ${knowledgeLevelLabel(p.learnerLevel)}`];
+  if (p.mode === 'socratic') {
+    out.push(`질문 ${QUESTION_INTENSITY_LABELS[p.questionIntensity] || p.questionIntensity}`);
+    out.push(`힌트 ${HINT_STYLE_LABELS[p.hintPolicy] || p.hintPolicy}`);
+  } else if (p.mode === 'debate') {
+    out.push(`깊이 ${DEBATE_DEPTH_LABELS[p.debateDepth] || p.debateDepth}`);
+  } else if (p.mode === 'simulation') {
+    out.push(`상황 ${SCENARIO_TYPE_LABELS[p.scenarioType] || p.scenarioType}`);
+    out.push(`난이도 ${DIFFICULTY_LABELS[p.difficulty] || p.difficulty}`);
+  }
+  return out;
+};
 
 // 방 객체(room/selectedAgent)에서 학습 방식 카드에 표시할 정보를 만든다.
 // learningMode가 없으면 fallback(기본 설명 모드 + 안내)을 반환한다.
@@ -1536,8 +1699,10 @@ export default function StudyMate() {
   // 같은 질문을 연속으로 보내면(=다시 생성) attempt를 올려 백엔드가 이전 답변을 재사용하지 않게 한다.
   const regenTrackRef = useRef({});
 
-  // 멀티 에이전트 동적 추가를 위해 상태를 배열로 정의
-  const [createdAgents, setCreatedAgents] = useState([{ ...DEFAULT_AGENT }]);
+  // 에이전트는 모든 모드에서 3명 고정. 동적 추가/삭제 없이 항상 길이 3 배열을 유지한다.
+  const [createdAgents, setCreatedAgents] = useState(makeDefaultAgents());
+  // 현재 선택된 추천 방 설정 카드 id(시각적 강조용)
+  const [selectedPresetId, setSelectedPresetId] = useState(null);
   const [roomName, setRoomName] = useState('');
   // 학습 진행 모드: basic(기본 채팅) / socratic(소크라테스) / debate(토론) / simulation(상황극)
   const [learningMode, setLearningMode] = useState('basic');
@@ -1578,13 +1743,40 @@ export default function StudyMate() {
 
   const handleOpenModal = () => {
     if (!userId) return;
-    setCreatedAgents([{ ...DEFAULT_AGENT }]);
+    setCreatedAgents(makeDefaultAgents());
+    setSelectedPresetId(null);
     setRoomName('');
     setLearningMode('basic');
     setDebateConfig(DEFAULT_DEBATE_CONFIG);
     setSocraticConfig(DEFAULT_SOCRATIC_CONFIG);
     setSimulationConfig(DEFAULT_SIMULATION_CONFIG);
     setShowModal(true);
+  };
+
+  // 추천 방 설정 카드 클릭 → 세부 설정 + 답변 톤/학습자 수준/추가 요청 + 에이전트 3명을 한 번에 반영.
+  // 이미 사용자가 수정한 값이 있어도 프리셋 값으로 덮어쓴다(요구사항: 프리셋 우선 통일).
+  const applyRoomPreset = (preset) => {
+    setSelectedPresetId(preset.id);
+    setLearningMode(preset.mode);
+    setRoomName(preset.roomName);
+    if (preset.mode === 'socratic') {
+      setSocraticConfig((c) => ({ ...c, questionIntensity: preset.questionIntensity, hintPolicy: preset.hintPolicy }));
+    } else if (preset.mode === 'debate') {
+      setDebateConfig((c) => ({ ...c, debateDepth: preset.debateDepth }));
+    } else if (preset.mode === 'simulation') {
+      setSimulationConfig((c) => ({ ...c, scenarioType: preset.scenarioType, difficulty: preset.difficulty }));
+    }
+    // 에이전트 3명 고정 — 프리셋 agents(길이 3)로 항상 새로 구성한다.
+    setCreatedAgents((preset.agents || []).map((a) => ({
+      ...DEFAULT_AGENT,
+      name: a.name,
+      role: a.role,
+      personality: preset.tone,
+      knowledgeLevel: preset.learnerLevel,
+      customInstruction: preset.additionalRequest,
+      goal: a.role,
+      agentPreset: '',
+    })));
   };
 
   const handleCreateAgent = async (e) => {
@@ -1623,7 +1815,8 @@ export default function StudyMate() {
       console.debug('[StudyMate] create agent room payload', payload);
       await agentService.createAgent(userId, payload);
       setShowModal(false);
-      setCreatedAgents([{ ...DEFAULT_AGENT }]);
+      setCreatedAgents(makeDefaultAgents());
+      setSelectedPresetId(null);
       setRoomName('');
       setLearningMode('basic');
       setDebateConfig(DEFAULT_DEBATE_CONFIG);
@@ -3135,7 +3328,7 @@ export default function StudyMate() {
 
       {showModal && (
         <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ width: '95%', maxWidth: '600px', maxHeight: '85vh', overflow: 'hidden' }}>
+          <div className="glass-panel modal-content" style={{ width: '95%', maxWidth: '600px', maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
             <div className="modal-header">
               <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Sparkles size={20} color="var(--color-primary)" /> 새 AI 그룹 스터디 생성
@@ -3143,7 +3336,7 @@ export default function StudyMate() {
               <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)' }} onClick={() => setShowModal(false)} aria-label="닫기"><X size={20} /></button>
             </div>
 
-            <form onSubmit={handleCreateAgent} style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+            <form onSubmit={handleCreateAgent} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
               <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px', display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '16px' }}>
 
                 {/* 스터디방 이름 설정 */}
@@ -3196,7 +3389,7 @@ export default function StudyMate() {
                             name="learningMode"
                             value={opt.value}
                             checked={active}
-                            onChange={() => setLearningMode(opt.value)}
+                            onChange={() => { setLearningMode(opt.value); setSelectedPresetId(null); }}
                             style={{ marginTop: '3px' }}
                           />
                           <div style={{ flex: 1 }}>
@@ -3216,6 +3409,62 @@ export default function StudyMate() {
                     })}
                   </div>
                 </div>
+
+                {/* ── 추천 방 설정 그리드 (소크라테스/토론/상황극 모드에서만) ── */}
+                {ROOM_PRESETS_BY_MODE[learningMode] && (
+                  <div>
+                    <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: 'var(--color-text-main)', marginBottom: '2px' }}>
+                      추천 방 설정
+                    </label>
+                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '8px' }}>
+                      카드를 누르면 세부 설정과 에이전트 3명이 한 번에 자동으로 채워집니다.
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '10px' }}>
+                      {ROOM_PRESETS_BY_MODE[learningMode].map((p) => {
+                        const selected = selectedPresetId === p.id;
+                        return (
+                          <button
+                            type="button"
+                            key={p.id}
+                            aria-pressed={selected}
+                            onClick={() => applyRoomPreset(p)}
+                            style={{
+                              textAlign: 'left',
+                              padding: '12px',
+                              borderRadius: '12px',
+                              border: `${selected ? '2px' : '1px'} solid ${selected ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                              background: selected ? 'var(--color-primary-soft, rgba(99,102,241,0.08))' : '#fff',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '6px',
+                              minWidth: 0,
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--color-primary)' }}>{p.label}</span>
+                              {selected && (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', fontSize: '11px', fontWeight: 700, color: 'var(--color-primary)' }}>
+                                  <CheckCircle2 size={12} /> 선택됨
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: '13px', fontWeight: 800, color: selected ? 'var(--color-primary)' : 'var(--color-text-main)' }}>{p.title}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', lineHeight: 1.4 }}>{p.purpose}</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '2px' }}>
+                              {roomPresetSummary(p).map((s, i) => (
+                                <span key={i} style={{ fontSize: '10px', fontWeight: 600, color: 'var(--color-text-muted)', background: 'rgba(0,0,0,0.04)', borderRadius: '999px', padding: '2px 7px', whiteSpace: 'nowrap' }}>{s}</span>
+                              ))}
+                            </div>
+                            <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--color-primary)', marginTop: '2px', lineHeight: 1.4 }}>
+                              👥 에이전트 3명 · {p.agents.map((a) => a.name).join(' · ')}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {/* ── 기본 설명 모드 안내 (기본 모드에서만) ── */}
                 {learningMode === 'basic' && (
@@ -3359,27 +3608,7 @@ export default function StudyMate() {
                       <h4 style={{ margin: 0, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: '700' }}>
                         <Bot size={16} /> AI 학습메이트 #{index + 1}
                       </h4>
-                      {createdAgents.length > 1 && (
-                        <button
-                          type="button"
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            color: '#EF4444',
-                            cursor: 'pointer',
-                            fontSize: '12px',
-                            fontWeight: '600',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px'
-                          }}
-                          onClick={() => {
-                            setCreatedAgents(createdAgents.filter((_, i) => i !== index));
-                          }}
-                        >
-                          <X size={14} /> 제거
-                        </button>
-                      )}
+                      {/* 에이전트는 3명 고정 — 추가/제거 버튼 없음 */}
                     </div>
 
                     {/* 학습메이트 유형 — 역할 개념. 선택된 하나만 active 강조 */}
@@ -3393,9 +3622,20 @@ export default function StudyMate() {
                               type="button"
                               key={t.key}
                               onClick={() => {
+                                // 유형 버튼 = 프리셋. 이름/답변 톤/학습자 수준/추가 요청을 한 번에 채운다.
+                                // 사용자가 직접 수정한 값이 있어도 프리셋 값으로 덮어쓴다(요구사항: 프리셋 우선 통일).
+                                const preset = LEARNING_MATE_TYPE_PRESETS[t.key] || {};
                                 const list = [...createdAgents];
-                                // 유형 선택은 payload의 role만 내부 매핑한다(톤/수준/이름은 보존).
-                                list[index] = { ...list[index], role: t.role, agentPreset: t.key };
+                                list[index] = {
+                                  ...list[index],
+                                  agentPreset: t.key,
+                                  name: t.key,
+                                  role: preset.role || t.role,
+                                  personality: preset.tone || list[index].personality,
+                                  knowledgeLevel: preset.learnerLevel || list[index].knowledgeLevel,
+                                  customInstruction: preset.additionalRequest || '',
+                                  goal: preset.role || t.role,
+                                };
                                 setCreatedAgents(list);
                               }}
                               style={{
@@ -3524,28 +3764,10 @@ export default function StudyMate() {
                   </div>
                 ))}
 
-                {/* 에이전트 동적 추가 버튼 */}
-                {createdAgents.length < 3 && (
-                  <button
-                    type="button"
-                    className="btn-outline"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '6px',
-                      width: '100%',
-                      padding: '10px',
-                      borderRadius: '8px',
-                      fontSize: '13px',
-                      fontWeight: '600',
-                      borderStyle: 'dashed'
-                    }}
-                    onClick={() => setCreatedAgents([...createdAgents, { ...DEFAULT_AGENT }])}
-                  >
-                    <Plus size={16} /> AI 학습메이트 추가 ({createdAgents.length}/3)
-                  </button>
-                )}
+                {/* 에이전트는 3명 고정 — 추가/제거 없이 항상 3명으로 방을 만든다 */}
+                <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', textAlign: 'center', padding: '4px 0' }}>
+                  에이전트는 3명으로 고정됩니다.
+                </div>
               </div>
 
               <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid var(--color-border)' }}>
