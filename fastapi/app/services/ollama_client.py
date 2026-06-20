@@ -12,6 +12,7 @@ Ollama HTTP 클라이언트 — 주력 엔진: Qwen2.5 14B 양자화 모델.
 - 3명 에이전트 × n라운드 = 모델 호출 n배. 답변 길이를 제한해 속도를 맞춘다.
 """
 import logging
+import os
 from typing import Optional
 
 import requests
@@ -66,6 +67,15 @@ def ask_ollama(
     _temperature = temperature if temperature is not None else OLLAMA_TEMPERATURE
     _top_p = top_p if top_p is not None else OLLAMA_TOP_P
 
+    # temperature 방어: None/비정상값만 보정한다(엄격한 [0.1,1.0] clamp는 멀티챗 스타일 레이어가
+    # 담당. 여기서 floor를 강제하면 JSON 결정성(0.0) 호출부가 깨지므로 음수/NaN만 막는다).
+    try:
+        _temperature = float(_temperature)
+        if _temperature < 0.0 or _temperature != _temperature:  # 음수/NaN 방어
+            _temperature = OLLAMA_TEMPERATURE
+    except (TypeError, ValueError):
+        _temperature = OLLAMA_TEMPERATURE
+
     # 지식수준에 따라 최대 토큰 분기
     if max_tokens is not None:
         _num_predict = max_tokens
@@ -73,6 +83,15 @@ def ask_ollama(
         _num_predict = OLLAMA_NUM_PREDICT_ADVANCED
     else:
         _num_predict = OLLAMA_NUM_PREDICT
+
+    # num_predict 안전 상한: 로컬 14B 환경에서 과도한 토큰으로 인한 지연/타임아웃을 막는다.
+    try:
+        _np_ceiling = int(os.getenv("OLLAMA_NUM_PREDICT_MAX", "4096"))
+        if _num_predict and int(_num_predict) > _np_ceiling:
+            logger.info("num_predict %s → 상한 %s 로 제한", _num_predict, _np_ceiling)
+            _num_predict = _np_ceiling
+    except (TypeError, ValueError):
+        pass
 
     _timeout = timeout if timeout is not None else OLLAMA_TIMEOUT
 

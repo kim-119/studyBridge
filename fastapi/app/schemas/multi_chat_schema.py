@@ -43,6 +43,7 @@ class AgentProfile(BaseModel):
     tone: Optional[str] = Field(None, description="어조")
     knowledgeLevel: Optional[str] = Field(None, validation_alias=AliasChoices("knowledgeLevel", "knowledge_level", "level"), description="지식 수준 (입문/학사/석사/박사/전문가)")
     knowledgeLevelLabel: Optional[str] = Field(None, validation_alias=AliasChoices("knowledgeLevelLabel", "knowledge_level_label"), description="지식 수준 표시명")
+    answerDepth: Optional[str] = Field(None, validation_alias=AliasChoices("answerDepth", "answer_depth", "depth"), description="답변 깊이 (basic/normal/deep/max). 미설정 시 지식수준에서 추정")
     customInstruction: Optional[str] = Field(None, validation_alias=AliasChoices("customInstruction", "custom_instruction"), description="직접 입력 지시사항")
     # group_study_ai 모드용 봇 식별 필드 (선택)
     botType: Optional[str] = Field(
@@ -199,6 +200,7 @@ class MultiChatRequest(BaseModel):
         None, description="사용자의 시도 답변 (socratic 모드에서 오개념 분석에 사용)"
     )
     knowledgeLevel: Optional[str] = Field(None, description="전역 지식 수준 (에이전트별 미설정 시 사용)")
+    answerDepth: Optional[str] = Field(None, validation_alias=AliasChoices("answerDepth", "answer_depth", "depth"), description="전역 답변 깊이 (basic/normal/deep/max). 에이전트별 미설정 시 사용")
     # 프론트 학습모드(basic/socratic/debate). mode가 generic이면 이 값으로 모드를 보강한다.
     learningMode: Optional[str] = Field(None, validation_alias=AliasChoices("learningMode", "learning_mode"), description="학습 진행 모드 (basic/socratic/debate/simulation)")
     # 토론 모드 논제/구조 설정 (debate 모드에서만 사용)
@@ -260,6 +262,7 @@ class DebugMetadata(BaseModel):
 class AgentAnswerMetadata(BaseModel):
     knowledgeLevel: Optional[str] = None
     personality: Optional[str] = None
+    answerDepth: Optional[str] = None
     usedRag: bool = False
     latencyMs: Optional[int] = None
     detectedMisconception: Optional[bool] = None

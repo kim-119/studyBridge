@@ -33,6 +33,8 @@ from app.schemas.multi_chat_schema import (
 )
 from app.services.prompt_builder import build_agent_system_prompt, build_tikitaka_role_prompt
 from app.services.personality_prompt_builder import to_profile_key, build_persona_directive
+from app.services import personality_style as PS
+from app.services import stage_support as SS
 from app.services import guardrail_router as _guard
 from app.services.personality_validator import validate_personality_alignment, repair_personality_if_needed
 from app.core import agent_settings as A
@@ -654,27 +656,81 @@ def _call_llm_with_params(
     return text, "ollama"
 
 
-def _stage1_initial(agent: AgentProfile, message: str, context: str) -> str:
+def _resolve_answer_depth(request: MultiChatRequest, agent: AgentProfile) -> str:
+    """답변 깊이 캐노니컬 키: agent.answerDepth > request.answerDepth > 지식수준 추정."""
+    raw = getattr(agent, "answerDepth", None) or getattr(request, "answerDepth", None)
+    level = agent.knowledgeLevel or request.knowledgeLevel
+    return PS.normalize_depth(raw, level)
+
+
+def _safe_custom(agent: AgentProfile) -> Optional[str]:
+    """직접입력 성격 지시를 인젝션 제거 + 길이 제한 후 반환(없으면 None → 프로필 기본 지시)."""
+    cleaned = PS.sanitize_custom_personality(getattr(agent, "customInstruction", None))
+    return cleaned or None
+
+
+def _level_depth_reinforcement(request: MultiChatRequest, agent: AgentProfile, *, include_depth: bool = True) -> str:
+    """지식수준 + 답변깊이 강화 지시(프롬프트 끝 주입). 성격은 build_persona_directive가 담당."""
+    level = agent.knowledgeLevel or request.knowledgeLevel
+    parts = [PS.build_level_directive(level)]
+    if include_depth:
+        parts.append(PS.build_depth_directive(_resolve_answer_depth(request, agent), level))
+    return "\n\n".join(p for p in parts if p)
+
+
+def _apply_style_params(params: Dict[str, Any], agent: AgentProfile,
+                        request: MultiChatRequest, stage: int) -> Dict[str, Any]:
+    """agent_settings 파라미터 위에 요청 override + 안전 clamp + 깊이 기반 num_predict 적용.
+
+    - temperature: 요청 override 우선, 항상 [0.1,1.0] clamp (성격 차등은 agent_settings 유지).
+    - top_p: 요청 override.
+    - max_tokens(num_predict): 명시 maxTokens 최우선, 아니면 2차(사용자 답변)만 깊이 기반 상향.
+    """
+    out = dict(params)
+    if request.temperature is not None:
+        out["temperature"] = PS.clamp_temperature(request.temperature)
+    elif out.get("temperature") is not None:
+        out["temperature"] = PS.clamp_temperature(out["temperature"])
+    if request.topP is not None:
+        out["top_p"] = request.topP
+    if request.maxTokens:
+        out["max_tokens"] = int(request.maxTokens)
+    elif stage == 2:
+        level = agent.knowledgeLevel or request.knowledgeLevel
+        depth = _resolve_answer_depth(request, agent)
+        np = PS.resolve_num_predict(depth, level, base=out.get("max_tokens"))
+        if np:
+            out["max_tokens"] = np
+    return out
+
+
+def _stage1_initial(agent: AgentProfile, message: str, context: str,
+                    request: Optional[MultiChatRequest] = None) -> str:
     """1차 빠른 초안 — 반드시 Ollama (provider는 agent_settings에서 stage=1로 강제)."""
     system = build_agent_system_prompt(agent, context)
     # 성격 지시를 user 프롬프트 '마지막'에 다시 못박는다(system만으로는 모델이 성격을 버림).
     directive = build_persona_directive(
-        agent.personality or agent.tone or agent.style, agent.customInstruction
+        agent.personality or agent.tone or agent.style, _safe_custom(agent)
     )
-    user = (
-        f"[사용자 질문] {message}\n\n"
-        "[이번 단계: 1차 빠른 초안]\n"
-        "핵심 정의 → 대표 예시 → 한 줄 결론 순서로 빠르게 답하라. "
-        "완벽하게 길게 쓰려 하지 말고, 질문에 바로 도움이 되는 핵심만 담아라.\n\n"
-        f"{directive}"
-    )
+    user_parts = [
+        f"[사용자 질문] {message}",
+        SS.first_answer_directive(),  # 1차 단계 지시 + 할루시네이션 가드
+        directive,                    # 성격 강화(YAML SSOT)
+    ]
+    if request is not None:
+        ld = _level_depth_reinforcement(request, agent)  # 지식수준 + 답변깊이 강화(신규 축)
+        if ld:
+            user_parts.append(ld)
     params = A.resolve_agent_generation_params(to_profile_key(agent.personality or agent.tone or agent.style), 1)
-    text, _ = _call_llm_with_params("ollama", system, user, params, knowledge_level=agent.knowledgeLevel)
+    if request is not None:
+        params = _apply_style_params(params, agent, request, 1)
+    text, _ = _call_llm_with_params("ollama", system, "\n\n".join(user_parts), params, knowledge_level=agent.knowledgeLevel)
     return text
 
 
 def _stage2_validate(agent: AgentProfile, message: str, own_initial: str, others_text: str,
-                     repair_instruction: Optional[str] = None, evidence: str = "") -> Tuple[str, str]:
+                     repair_instruction: Optional[str] = None, evidence: str = "",
+                     request: Optional[MultiChatRequest] = None) -> Tuple[str, str]:
     """2차 검증/정제 답안 — provider는 agent_settings stage=2. 반환: (텍스트, provider)."""
     system = build_agent_system_prompt(agent)
     user_parts = [
@@ -688,43 +744,48 @@ def _stage2_validate(agent: AgentProfile, message: str, own_initial: str, others
             "[웹 근거 자료 — 사실 검증용]\n" + evidence +
             "\n위 근거와 충돌하는 내용은 근거에 맞게 바로잡아라. 근거에 없는 내용을 지어내지 마라."
         )
-    user_parts.append(
-        "[이번 단계: 2차 검증 답안]\n"
-        "1차 초안의 오류·누락·개념 혼동을 점검하고 바로잡아, 더 정확하고 정제된 답을 작성하라. "
-        "특히 SQL/프로그래밍/수학/과학 개념은 정확성을 최우선으로 한다. "
-        "예: DML(SELECT/INSERT/UPDATE/DELETE)과 DDL(CREATE/ALTER/DROP)을 섞지 마라. "
-        "1차 초안을 그대로 반복하지 말고 보완하라."
-    )
+    # 2차 검증·심화 지시 + 할루시네이션 가드(self-check 포함).
+    user_parts.append(SS.validation_directive())
     # 정확성 지시 뒤에 성격 지시를 마지막에 못박는다(정확성에 눌려 성격이 사라지는 것 방지).
     user_parts.append(build_persona_directive(
-        agent.personality or agent.tone or agent.style, agent.customInstruction, repair_instruction
+        agent.personality or agent.tone or agent.style, _safe_custom(agent), repair_instruction
     ))
+    if request is not None:
+        ld = _level_depth_reinforcement(request, agent)  # 지식수준 + 답변깊이(사용자 최종 답변 단계)
+        if ld:
+            user_parts.append(ld)
     params = A.resolve_agent_generation_params(to_profile_key(agent.personality or agent.tone or agent.style), 2)
+    if request is not None:
+        params = _apply_style_params(params, agent, request, 2)
     return _call_llm_with_params(params["provider"], system, "\n\n".join(user_parts),
                                  params, knowledge_level=agent.knowledgeLevel)
 
 
 def _stage3_feedback(from_agent: AgentProfile, targets: List[Tuple[AgentProfile, str]],
-                     message: str) -> Tuple[str, str]:
+                     message: str, request: Optional[MultiChatRequest] = None) -> Tuple[str, str]:
     """3차 상호 피드백 (from → 나머지 에이전트 전원). 반환: (피드백, provider)."""
     system = build_agent_system_prompt(from_agent)
     target_block = "\n\n".join(
         f"[{tgt.name}의 답변]\n{ans}" for tgt, ans in targets
     )
     target_names = ", ".join(tgt.name for tgt, _ in targets)
-    user = (
-        f"[사용자 질문] {message}\n\n"
-        f"{target_block}\n\n"
-        "[이번 단계: 3차 상호 피드백]\n"
-        f"위 다른 에이전트({target_names})의 답변을 너의 성격과 관점에서 평가하라. "
-        "각 답변의 좋은 점 / 부족한 점 / 개선 방향을 구체적으로 짚어라. "
-        "단순 칭찬은 금지하고, 실제로 도움이 되는 피드백을 작성하라.\n\n"
-        + build_persona_directive(
-            from_agent.personality or from_agent.tone or from_agent.style, from_agent.customInstruction
-        )
-    )
+    user_parts = [
+        f"[사용자 질문] {message}",
+        target_block,
+        SS.peer_feedback_directive(target_names),  # 명시적 비판/보완(동어반복 금지)
+        build_persona_directive(
+            from_agent.personality or from_agent.tone or from_agent.style, _safe_custom(from_agent)
+        ),
+    ]
+    if request is not None:
+        ld = _level_depth_reinforcement(request, from_agent, include_depth=False)  # 피드백은 지식수준 톤만
+        if ld:
+            user_parts.append(ld)
     params = A.resolve_agent_generation_params(_personality_type(from_agent), 3)
-    return _call_llm_with_params(params["provider"], system, user, params, knowledge_level=from_agent.knowledgeLevel)
+    if request is not None:
+        params = _apply_style_params(params, from_agent, request, 3)
+    return _call_llm_with_params(params["provider"], system, "\n\n".join(user_parts),
+                                 params, knowledge_level=from_agent.knowledgeLevel)
 
 
 def _run_pool(fn, items, parallel):
@@ -760,7 +821,7 @@ def _compute_stage1(request: MultiChatRequest, agents: List[AgentProfile], conte
     def _run1(a: AgentProfile):
         t_agent = time.time()
         try:
-            text = _stage1_initial(a, request.message, context)
+            text = _stage1_initial(a, request.message, context, request)
         except Exception as e:
             logger.error("stage1 에이전트 '%s' 실패: %s", a.name, e)
             text = A.stage1_timeout_fallback_text()
@@ -807,7 +868,7 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
         )
         t_agent = time.time()
         try:
-            text, prov = _stage2_validate(a, request.message, own, others, evidence=evidence)
+            text, prov = _stage2_validate(a, request.message, own, others, evidence=evidence, request=request)
             return a, text, prov, int((time.time() - t_agent) * 1000)
         except Exception as e:
             logger.warning("stage2 에이전트 '%s' 실패 (1차로 대체): %s", a.name, e)
@@ -926,7 +987,7 @@ def _compute_validation(request: MultiChatRequest, agents: List[AgentProfile],
             own = initial_map.get(a.name, "")
 
             def _regen(instruction: str, _a=a, _own=own, _others=others) -> str:
-                text, _ = _stage2_validate(_a, request.message, _own, _others, repair_instruction=instruction)
+                text, _ = _stage2_validate(_a, request.message, _own, _others, repair_instruction=instruction, request=request)
                 return text
 
             try:
@@ -999,7 +1060,7 @@ def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
             try:
                 if not targets:
                     raise ValueError("single-agent peer feedback uses deterministic synthesis")
-                fb, prov = _stage3_feedback(frm, targets, request.message)
+                fb, prov = _stage3_feedback(frm, targets, request.message, request)
                 if _is_llm_fallback(fb):
                     raise ValueError("stage3 fallback marker in feedback")
             except Exception as e:
@@ -1376,15 +1437,30 @@ def _build_default_response(request, agents, initial_map, answer_map,
     delay_ms = _get_display_delay_ms()
     answers: List[AgentAnswer] = []
     for idx, a in enumerate(agents):
+        final_answer = _guard.sanitize_user_visible_text(
+            answer_map.get(a.name) or initial_map.get(a.name, ""), allow_markdown=True)
+        depth_key = _resolve_answer_depth(request, a)
+        # 후처리 안전/품질 점검(비차단): 문제는 로그로만 남기고 사용자에겐 내부 진단을 노출하지 않는다.
+        try:
+            safety = SS.validate_answer_safety(final_answer, request.message, stage="FINAL")
+            if safety["severity"] != "ok":
+                logger.info("[StudyMate] answer safety agent=%s severity=%s issues=%s",
+                            a.name, safety["severity"], safety["issues"])
+        except Exception:
+            pass
         answers.append(AgentAnswer(
             agentName=a.name,
-            answer=_guard.sanitize_user_visible_text(
-                answer_map.get(a.name) or initial_map.get(a.name, ""), allow_markdown=True),
+            answer=final_answer,
             agentId=a.agentId,
             role=a.role or "default",
             displayOrder=idx + 1,
             displayDelayMs=idx * delay_ms,
             status="SUCCESS",
+            metadata=AgentAnswerMetadata(
+                knowledgeLevel=a.knowledgeLevel,
+                personality=a.personality,
+                answerDepth=depth_key,
+            ),
         ))
     if not answers:
         answers.append(AgentAnswer(
@@ -1440,7 +1516,7 @@ def _run_default_mode(
 
 def _basic_agent_stream_answer(request: MultiChatRequest, agent: AgentProfile, idx: int, total: int, context: str):
     t0 = time.time()
-    text = _stage1_initial(agent, request.message, context)
+    text = _stage1_initial(agent, request.message, context, request)
     return AgentAnswer(
         agentName=agent.name,
         answer=text,
@@ -1453,6 +1529,7 @@ def _basic_agent_stream_answer(request: MultiChatRequest, agent: AgentProfile, i
         metadata=AgentAnswerMetadata(
             knowledgeLevel=agent.knowledgeLevel,
             personality=agent.personality,
+            answerDepth=_resolve_answer_depth(request, agent),
             usedRag=bool(context),
             latencyMs=int((time.time() - t0) * 1000),
         ),
