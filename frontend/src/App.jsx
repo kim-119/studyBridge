@@ -22,7 +22,8 @@ import Planner from './pages/Planner';
 import ReviewNotesPage from './pages/ReviewNotesPage';
 function PrivateRoute({ children }) {
   const { isLoggedIn } = useAuth();
-  return isLoggedIn ? children : <Navigate to="/login" replace />;
+  const location = useLocation();
+  return isLoggedIn ? children : <Navigate to="/login" state={{ from: location.pathname + location.search }} replace />;
 }
 
 function AdminRoute({ children }) {
@@ -105,14 +106,14 @@ function App() {
           />
 
           <Route path="/admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
-          <Route path="/studymate" element={<StudyMate />} />
+          <Route path="/studymate" element={<PrivateRoute><StudyMate /></PrivateRoute>} />
           <Route path="/learning-mate" element={<PrivateRoute><LearningMate /></PrivateRoute>} />
-          <Route path="/groupstudy" element={<GroupStudy />} />
-          <Route path="/archive" element={<Archive />} />
-          <Route path="/archive/:type/:id" element={<ArchiveDetail />} />
+          <Route path="/groupstudy" element={<PrivateRoute><GroupStudy /></PrivateRoute>} />
+          <Route path="/archive" element={<PrivateRoute><Archive /></PrivateRoute>} />
+          <Route path="/archive/:type/:id" element={<PrivateRoute><ArchiveDetail /></PrivateRoute>} />
           <Route path="/review-notes" element={<PrivateRoute><ReviewNotesPage /></PrivateRoute>} />
-          <Route path="/knowledge" element={<Knowledge />} />
-          <Route path="/knowledge/:id" element={<KnowledgeDetail />} />
+          <Route path="/knowledge" element={<PrivateRoute><Knowledge /></PrivateRoute>} />
+          <Route path="/knowledge/:id" element={<PrivateRoute><KnowledgeDetail /></PrivateRoute>} />
 
           {/* 학습 플래너 관련 신규 탭 */}
           <Route path="/study-report" element={<PrivateRoute><StudyReport /></PrivateRoute>} />

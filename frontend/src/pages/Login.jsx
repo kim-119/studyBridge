@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { authService } from '../services/api';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { login } = useAuth();
 
   const [formData, setFormData] = useState({
@@ -102,8 +103,9 @@ export default function Login() {
 
       login(normalizedUser);
 
-      // 로그인 직후 메인 랜딩(/)으로 이동. (구 /dashboard 라우트 제거됨)
-      navigate('/');
+      // 가려던 보호 경로(location.state.from)가 있으면 그곳으로, 없으면 메인 랜딩(/)으로 이동.
+      const redirectTo = location.state?.from || '/';
+      navigate(redirectTo, { replace: true });
     } catch (err) {
       // 개발자 콘솔에는 상세히, 사용자에게는 간단히.
       console.error('로그인 실패 상세', {

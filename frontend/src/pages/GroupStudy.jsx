@@ -169,7 +169,13 @@ export default function GroupStudy() {
 
   const videoRef = React.useRef(null);
   const [camError, setCamError] = useState('');
-  
+  // 카메라/마이크 감지 단계. 'checking'을 먼저 보여주고, 권한·retry가 끝난 뒤에만 실패로 확정한다.
+  //  cameraStatus: 'idle' | 'checking' | 'available' | 'unavailable' | 'error' | 'off'
+  //  micStatus:    'idle' | 'checking' | 'available' | 'unavailable' | 'error' | 'off'
+  const [cameraStatus, setCameraStatus] = useState('idle');
+  const [micStatus, setMicStatus] = useState('idle');
+  const [micLevel, setMicLevel] = useState(0);
+
   const [cameras, setCameras] = useState([]);
   const [mics, setMics] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState('');
@@ -204,53 +210,155 @@ export default function GroupStudy() {
   useEffect(() => {
     let stream = null;
     let isMounted = true;
+    let retryTimer = null;
 
-    if (preJoinStudy && isVideoOn) {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setCamError('브라우저가 카메라 API를 지원하지 않습니다 (HTTPS 또는 localhost 필요).');
-        return;
-      }
+    if (!preJoinStudy) {
+      return undefined;
+    }
+    if (!isVideoOn) {
+      setCameraStatus('off');
+      setCamError('');
+      return undefined;
+    }
 
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraStatus('error');
+      setCamError('브라우저가 카메라 API를 지원하지 않습니다 (HTTPS 또는 localhost 필요).');
+      return undefined;
+    }
+
+    // 입장 직후 곧바로 "카메라 없음"으로 표시하지 않고, 먼저 확인 중 상태를 보여준다.
+    setCameraStatus('checking');
+    setCamError('');
+
+    // 장치가 늦게 잡히거나(약 10초 지연) 직전 화면이 카메라를 늦게 릴리즈하는 경우를 위해
+    // 일시적 오류(NotReadable/NotFound 등)는 곧바로 실패로 확정하지 않고 backoff로 최대 3회 재시도한다.
+    const attempt = async (tryNo) => {
       const constraints = {
         video: selectedCamera ? { deviceId: { exact: selectedCamera } } : true,
         audio: false
       };
+      try {
+        const s = await navigator.mediaDevices.getUserMedia(constraints);
+        if (!isMounted) {
+          s.getTracks().forEach(t => t.stop());
+          return;
+        }
+        stream = s;
+        if (videoRef.current) {
+          videoRef.current.srcObject = s;
+        }
+        setCamError('');
+        setCameraStatus('available');
+        // 스트림 획득(권한 허용) 성공 후 장치 목록 갱신 (label을 읽어오기 위함)
+        fetchDevices();
+      } catch (err) {
+        if (!isMounted) return;
+        console.error("카메라 에러:", err?.name, err?.message, 'try', tryNo);
 
-      navigator.mediaDevices.getUserMedia(constraints)
-        .then(s => {
-          if (!isMounted) {
-            s.getTracks().forEach(t => t.stop());
-            return;
-          }
-          stream = s;
-          if (videoRef.current) {
-            videoRef.current.srcObject = s;
-          }
-          setCamError('');
-          // 스트림 획득(권한 허용) 성공 후 장치 목록 갱신 (label을 읽어오기 위함)
-          fetchDevices();
-        })
-        .catch(err => {
-          if (!isMounted) return;
-          console.error("카메라 에러:", err?.name, err?.message);
-          // 선택한 카메라가 stale/제약 불일치면 해당 장치를 불량으로 표시하고 기본 카메라로 자동 재시도
-          if ((err.name === 'OverconstrainedError' || err.name === 'NotFoundError' || err.name === 'NotReadableError') && selectedCamera) {
-            badCamerasRef.current.add(selectedCamera);
-            setSelectedCamera(''); // effect 재실행 → video:true(기본 장치)로 재시도
-            return;
-          }
+        // 선택한 카메라가 stale/제약 불일치면 해당 장치를 불량으로 표시하고 기본 카메라로 자동 재시도
+        if ((err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') && selectedCamera) {
+          badCamerasRef.current.add(selectedCamera);
+          setSelectedCamera(''); // effect 재실행 → video:true(기본 장치)로 재시도
+          return;
+        }
+
+        // 권한 거부는 재시도해도 의미 없음 → 즉시 error 확정
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          setCameraStatus('error');
           setCamError(friendlyDeviceMessage(err));
-          // 권한은 있으나 비디오만 실패한 경우라도 마이크 목록은 보여줄 수 있게 시도
           fetchDevices();
-        });
-    }
+          return;
+        }
+
+        // 일시적으로 장치가 안 잡히는 경우 → backoff 재시도
+        const retriable = ['NotReadableError', 'TrackStartError', 'NotFoundError', 'DevicesNotFoundError', 'AbortError'].includes(err.name);
+        if (retriable && tryNo < 3) {
+          setCameraStatus('checking');
+          retryTimer = setTimeout(() => { if (isMounted) attempt(tryNo + 1); }, 700 * tryNo);
+          return;
+        }
+
+        // 재시도까지 끝난 최종 실패
+        setCameraStatus((err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') ? 'unavailable' : 'error');
+        setCamError(friendlyDeviceMessage(err));
+        // 권한은 있으나 비디오만 실패한 경우라도 마이크 목록은 보여줄 수 있게 시도
+        fetchDevices();
+      }
+    };
+
+    attempt(1);
+
     return () => {
       isMounted = false;
+      if (retryTimer) clearTimeout(retryTimer);
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
     };
   }, [preJoinStudy, isVideoOn, selectedCamera]);
+
+  // 입장 전 마이크 입력 미터 — 마이크가 실제로 입력을 받는지(말하면 레벨이 오르는지) 보여준다.
+  useEffect(() => {
+    if (!preJoinStudy || !isMicOn) {
+      setMicStatus(isMicOn ? 'checking' : 'off');
+      setMicLevel(0);
+      return undefined;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setMicStatus('error');
+      return undefined;
+    }
+
+    let micStream = null;
+    let audioContext = null;
+    let rafId = null;
+    let cancelled = false;
+    setMicStatus('checking');
+
+    (async () => {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        if (cancelled) {
+          micStream.getTracks().forEach(t => t.stop());
+          return;
+        }
+        fetchDevices();
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(micStream);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        setMicStatus('available');
+
+        const tick = () => {
+          if (cancelled) return;
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+          const average = sum / dataArray.length;
+          setMicLevel(Math.min(100, Math.round((average / 60) * 100)));
+          rafId = requestAnimationFrame(tick);
+        };
+        tick();
+      } catch (err) {
+        if (cancelled) return;
+        console.error('마이크 에러:', err?.name, err?.message);
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') setMicStatus('error');
+        else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') setMicStatus('unavailable');
+        else setMicStatus('error');
+        setMicLevel(0);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (rafId) cancelAnimationFrame(rafId);
+      if (audioContext && audioContext.state !== 'closed') audioContext.close();
+      if (micStream) micStream.getTracks().forEach(t => t.stop());
+    };
+  }, [preJoinStudy, isMicOn]);
 
   // 장치 핫플러그(연결/해제) 감지 시 목록을 갱신한다.
   useEffect(() => {
@@ -1193,6 +1301,13 @@ export default function GroupStudy() {
                           muted
                           style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }}
                         />
+                        {/* 권한/장치 확인이 끝나기 전에는 "확인 중"을 보여주고, 실패 메시지는 retry가 끝난 뒤에만 노출 */}
+                        {cameraStatus === 'checking' && !camError && (
+                          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', backgroundColor: 'rgba(0,0,0,0.6)', color: '#E5E7EB', padding: '14px 18px', borderRadius: '8px', textAlign: 'center', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                            <Camera size={28} color="#60A5FA" />
+                            <div style={{ fontSize: '13px', fontWeight: '600' }}>카메라를 확인하는 중입니다…</div>
+                          </div>
+                        )}
                         {camError && (
                           <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', backgroundColor: 'rgba(0,0,0,0.7)', color: '#FCA5A5', padding: '16px', borderRadius: '8px', textAlign: 'center', maxWidth: '80%', zIndex: 10 }}>
                             <AlertTriangle size={32} color="#EF4444" style={{ marginBottom: '8px' }} />
@@ -1286,6 +1401,51 @@ export default function GroupStudy() {
                             <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>▼</div>
                           </div>
                           <div style={{ fontSize: '12px', color: '#9CA3AF' }}>정상적으로 작동중입니다</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 카메라/마이크 ON·OFF 토글 + 실시간 입력 상태(레벨 미터) — 입장 전에 실제로 동작하는지 확인 */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '12px 16px', backgroundColor: '#0F172A', borderTop: '1px solid #1F2937', flexWrap: 'wrap' }}>
+                    {/* 카메라 토글 */}
+                    <button
+                      onClick={() => { setCamError(''); setIsVideoOn(v => !v); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', borderRadius: '999px', border: '1px solid', borderColor: isVideoOn ? 'rgba(96,165,250,0.5)' : 'rgba(148,163,184,0.4)', backgroundColor: isVideoOn ? 'rgba(59,130,246,0.15)' : 'rgba(148,163,184,0.1)', color: isVideoOn ? '#93C5FD' : '#94A3B8', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+                    >
+                      {isVideoOn ? <Video size={16} /> : <VideoOff size={16} />}
+                      <span>
+                        {!isVideoOn ? '카메라 꺼짐'
+                          : cameraStatus === 'checking' ? '카메라 확인 중…'
+                          : cameraStatus === 'available' ? '카메라 켜짐'
+                          : cameraStatus === 'unavailable' ? '카메라 없음'
+                          : cameraStatus === 'error' ? '카메라 권한/오류'
+                          : '카메라'}
+                      </span>
+                    </button>
+
+                    {/* 마이크 토글 */}
+                    <button
+                      onClick={() => setIsMicOn(v => !v)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', borderRadius: '999px', border: '1px solid', borderColor: isMicOn ? 'rgba(34,197,94,0.5)' : 'rgba(148,163,184,0.4)', backgroundColor: isMicOn ? 'rgba(34,197,94,0.12)' : 'rgba(148,163,184,0.1)', color: isMicOn ? '#86EFAC' : '#94A3B8', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+                    >
+                      {isMicOn ? <Mic size={16} /> : <MicOff size={16} />}
+                      <span>
+                        {!isMicOn ? '마이크 꺼짐'
+                          : micStatus === 'checking' ? '마이크 확인 중…'
+                          : micStatus === 'unavailable' ? '마이크 없음'
+                          : micStatus === 'error' ? '마이크 권한/오류'
+                          : micLevel > 12 ? '말하는 중'
+                          : micLevel > 0 ? '입력 감지 중'
+                          : '입력 대기 중'}
+                      </span>
+                    </button>
+
+                    {/* 마이크 입력 레벨 미터: 말하면 막대가 차오른다(실제 입력 여부 가시화) */}
+                    {isMicOn && (micStatus === 'available' || micStatus === 'checking') && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '120px' }}>
+                        <div style={{ flex: 1, height: '6px', borderRadius: '4px', backgroundColor: 'rgba(255,255,255,0.12)', overflow: 'hidden', minWidth: '90px' }}>
+                          <div style={{ width: `${micLevel}%`, height: '100%', backgroundColor: micLevel > 12 ? '#22C55E' : '#60A5FA', transition: 'width 0.1s linear' }} />
                         </div>
                       </div>
                     )}
@@ -1540,6 +1700,8 @@ export default function GroupStudy() {
               study={activeStudyRoom}
               onClose={() => setActiveStudyRoom(null)}
               selectedCamera={selectedCamera}
+              initialMicOn={isMicOn}
+              initialVideoOn={isVideoOn}
             />
           )}
         </>

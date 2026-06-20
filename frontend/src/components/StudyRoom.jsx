@@ -68,6 +68,9 @@ const friendlyDeviceMessage = (err) => {
 function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = true, photoUrl, speakerId, onSpeakingChange }) {
   const videoRef = React.useRef(null);
   const [isSpeaking, setIsSpeaking] = React.useState(false);
+  const [micLevel, setMicLevel] = React.useState(0);
+  // 실제 비디오 element가 재생을 시작했는지. attach 직후 잠깐은 false → "카메라 연결 중…" 표시.
+  const [videoPlaying, setVideoPlaying] = React.useState(false);
 
   // 발화 상태 변화를 부모로 끌어올려 참여자 목록 등 다른 UI에서도 동일하게 표시한다.
   useEffect(() => {
@@ -81,21 +84,39 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
     };
   }, [speakerId, onSpeakingChange]);
 
+  // 스트림이 바뀌면 재생 준비 상태 초기화(새 트랙 attach 대기).
   useEffect(() => {
-    if (videoRef.current && stream && isCamOn) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [stream, isCamOn]);
+    setVideoPlaying(false);
+  }, [stream]);
 
+  // 실제 살아있는 video track 유무를 직접 확인한다. isCamOn(켜짐 의도)만 보고 판단하지 않는다.
+  //  - 트랙이 진짜 없을 때만 avatar로 떨어진다.
+  //  - 트랙이 있는데 아직 재생 전이면 avatar 대신 "카메라 연결 중…"을 보여준다.
+  const videoTracks = stream && stream.getVideoTracks ? stream.getVideoTracks() : [];
+  const hasLiveVideoTrack = videoTracks.some((t) => t.readyState === 'live');
+  const showVideo = !!(isCamOn && stream && hasLiveVideoTrack);
+  const showConnecting = showVideo && !videoPlaying;
+
+  // 렌더 후 ref가 생겼을 때 raw MediaStream을 video element에 연결한다(타일 remount/스트림 교체 대응).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (v && stream && showVideo && v.srcObject !== stream) {
+      v.srcObject = stream;
+    }
+  }, [stream, showVideo]);
+
+  // 로컬/원격 오디오 입력 레벨 측정 → 말하는 중 표시 + 입력 레벨 바(실제 입력 감지 여부 가시화).
   useEffect(() => {
     if (!stream || !isMicOn) {
       setIsSpeaking(false);
+      setMicLevel(0);
       return;
     }
 
     const audioTracks = stream.getAudioTracks();
     if (audioTracks.length === 0) {
       setIsSpeaking(false);
+      setMicLevel(0);
       return;
     }
 
@@ -117,6 +138,7 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
       intervalId = setInterval(() => {
         if (audioTracks[0] && !audioTracks[0].enabled) {
           setIsSpeaking(false);
+          setMicLevel(0);
           return;
         }
 
@@ -128,7 +150,9 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
         const average = sum / bufferLength;
         // Average frequency volume threshold: 10
         setIsSpeaking(average > 10);
-      }, 150);
+        // 평균 진폭(대략 0~60)을 0~100% 레벨 바로 정규화.
+        setMicLevel(Math.min(100, Math.round((average / 60) * 100)));
+      }, 120);
     } catch (e) {
       console.warn("Failed to initialize audio speaking detector", e);
     }
@@ -144,12 +168,36 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
   }, [stream, isMicOn]);
 
   const speakBorderColor = isSpeaking ? '#22C55E' : 'rgba(255,255,255,0.05)';
-  const speakBoxShadow = isSpeaking 
-    ? '0 0 20px rgba(34, 197, 94, 0.6), inset 0 0 15px rgba(34, 197, 94, 0.2)' 
+  const speakBoxShadow = isSpeaking
+    ? '0 0 20px rgba(34, 197, 94, 0.6), inset 0 0 15px rgba(34, 197, 94, 0.2)'
     : (isLocal ? '0 4px 15px rgba(0,0,0,0.2)' : '0 10px 30px rgba(0,0,0,0.3)');
   const speakBorderWidth = isSpeaking ? '3px' : '1px';
 
-  if (!isCamOn || !stream) {
+  // 로컬 타일: 마이크가 실제로 입력을 받는지 보이는 레벨 미터 + 말하는 중/입력 대기 중 표시.
+  const micMeter = (isLocal && isMicOn) ? (
+    <div style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 6, display: 'flex', flexDirection: 'column', gap: '4px', padding: '6px 9px', borderRadius: '10px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: `1px solid ${isSpeaking ? 'rgba(34,197,94,0.6)' : 'rgba(255,255,255,0.12)'}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+        <Mic size={12} color={isSpeaking ? '#22C55E' : '#9CA3AF'} />
+        <span style={{ fontSize: '10px', fontWeight: 700, color: isSpeaking ? '#22C55E' : '#9CA3AF' }}>
+          {isSpeaking ? '말하는 중' : (micLevel > 0 ? '입력 감지 중' : '입력 대기 중')}
+        </span>
+      </div>
+      <div style={{ width: '72px', height: '5px', borderRadius: '3px', backgroundColor: 'rgba(255,255,255,0.15)', overflow: 'hidden' }}>
+        <div style={{ width: `${micLevel}%`, height: '100%', backgroundColor: isSpeaking ? '#22C55E' : '#60A5FA', transition: 'width 0.1s linear' }} />
+      </div>
+    </div>
+  ) : null;
+
+  const nameTag = (
+    <div style={{ position: 'absolute', bottom: '12px', left: '12px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+      {!isMicOn && <MicOff size={13} color="#F87171" />}
+      <span style={{ color: 'white', fontSize: '13px', fontWeight: '600' }}>
+        {displayName} {isLocal ? '(나)' : ''}
+      </span>
+    </div>
+  );
+
+  if (!showVideo) {
     return (
       <div style={{ position: 'relative', backgroundColor: '#1E293B', borderRadius: '16px', overflow: 'hidden', aspectRatio: '16/9', border: `${speakBorderWidth} solid ${speakBorderColor}`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: speakBoxShadow, transition: 'all 0.2s ease' }}>
         {photoUrl ? (
@@ -163,12 +211,8 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
             <User size={32} color="#9CA3AF" />
           </div>
         )}
-        <div style={{ position: 'absolute', bottom: '12px', left: '12px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-          {!isMicOn && <MicOff size={13} color="#F87171" />}
-          <span style={{ color: 'white', fontSize: '13px', fontWeight: '600' }}>
-            {displayName} {isLocal ? '(나)' : ''}
-          </span>
-        </div>
+        {micMeter}
+        {nameTag}
       </div>
     );
   }
@@ -180,24 +224,28 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
         autoPlay
         playsInline
         muted={isMuted}
+        onPlaying={() => setVideoPlaying(true)}
+        onLoadedData={() => setVideoPlaying(true)}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
       />
+      {showConnecting && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', backgroundColor: 'rgba(30,41,59,0.85)', color: '#CBD5E1', zIndex: 4 }}>
+          <Video size={28} color="#60A5FA" />
+          <span style={{ fontSize: '13px', fontWeight: 600 }}>카메라 연결 중…</span>
+        </div>
+      )}
       {!isMicOn && (
         <div style={{ position: 'absolute', top: '12px', right: '12px', width: '28px', height: '28px', borderRadius: '50%', backgroundColor: 'rgba(15, 23, 42, 0.7)', backdropFilter: 'blur(8px)', border: '1px solid rgba(248,113,113,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <MicOff size={15} color="#F87171" />
         </div>
       )}
-      <div style={{ position: 'absolute', bottom: '12px', left: '12px', padding: '4px 10px', borderRadius: '20px', backgroundColor: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-        {!isMicOn && <MicOff size={13} color="#F87171" />}
-        <span style={{ color: 'white', fontSize: '13px', fontWeight: '600' }}>
-          {displayName} {isLocal ? '(나)' : ''}
-        </span>
-      </div>
+      {micMeter}
+      {nameTag}
     </div>
   );
 }
 
-export default function StudyRoom({ study, onClose, selectedCamera }) {
+export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn, initialVideoOn }) {
   const { userId, user } = useAuth();
   
   const formatSecondsToStudyTime = (secs) => {
@@ -223,8 +271,9 @@ export default function StudyRoom({ study, onClose, selectedCamera }) {
   const [members, setMembers] = useState([]);
   const [applications, setApplications] = useState([]);
   const [activeTab, setActiveTab] = useState('chat');
-  const [isMicOn, setIsMicOn] = useState(false);
-  const [isVideoOn, setIsVideoOn] = useState(true);
+  // 입장 전 미리보기에서 사용자가 선택한 카메라/마이크 ON/OFF 상태를 그대로 이어받는다(상태 불일치 방지).
+  const [isMicOn, setIsMicOn] = useState(typeof initialMicOn === 'boolean' ? initialMicOn : false);
+  const [isVideoOn, setIsVideoOn] = useState(typeof initialVideoOn === 'boolean' ? initialVideoOn : true);
   const [showSettings, setShowSettings] = useState(false);
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [showRoomManageModal, setShowRoomManageModal] = useState(false);
@@ -563,8 +612,10 @@ sessionInstance.on('streamCreated', (event) => {
         setSession(sessionInstance);
         sessionRef.current = sessionInstance;
 
-        // 이전 프리뷰 화면에서 사용하던 카메라 하드웨어가 완전히 릴리즈될 시간을 확보 (500ms)
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // 이전 프리뷰 화면에서 사용하던 카메라 하드웨어가 완전히 릴리즈될 시간을 확보 (800ms).
+        // 너무 짧으면 카메라가 아직 점유돼 NotReadableError가 나고, 아래 fallback이 곧바로
+        // 오디오 전용으로 떨어뜨려 "카메라 ON인데 아바타로 보이는" 문제가 생긴다.
+        await new Promise(resolve => setTimeout(resolve, 800));
         if (!isMounted) return;
 
         // ── 장치 유효성 사전 검증 (stale deviceId / 장치 부재 방어) ──
@@ -609,15 +660,30 @@ sessionInstance.on('streamCreated', (event) => {
         let publisherInstance = null;
         let chosen = null;
         let lastErr = null;
+        // 카메라가 포함된 단계는 일시적 점유(NotReadableError/TrackStartError 등)일 수 있으므로
+        // 곧바로 다음 단계(오디오 전용)로 떨어뜨리지 않고 짧은 backoff로 재시도한다.
+        const tryInit = async (opts, retries) => {
+          for (let i = 0; i <= retries; i += 1) {
+            try {
+              return await OVInstance.initPublisherAsync(undefined, opts);
+            } catch (e) {
+              lastErr = e;
+              const transient = ['NotReadableError', 'TrackStartError', 'OverconstrainedError', 'AbortError'].includes(e?.name);
+              console.warn('[StudyRoom] publisher 시도 실패 name=%s transient=%s retryLeft=%d', e?.name || e, transient, transient ? retries - i : 0);
+              if (!transient || i === retries || !isMounted) return null;
+              await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+            }
+          }
+          return null;
+        };
         for (const att of attempts) {
-          try {
-            publisherInstance = await OVInstance.initPublisherAsync(undefined, buildOpts(att.v, att.a));
+          const isCameraAttempt = att.v !== false; // 카메라를 켜는 단계만 재시도(오디오/시청 전용은 1회)
+          publisherInstance = await tryInit(buildOpts(att.v, att.a), isCameraAttempt ? 2 : 0);
+          if (!isMounted) break;
+          if (publisherInstance) {
             chosen = att;
             console.log('[StudyRoom] publisher 성공 단계=%s', att.tag);
             break;
-          } catch (e) {
-            lastErr = e;
-            console.warn('[StudyRoom] publisher 단계 실패 tag=%s name=%s', att.tag, e?.name || e);
           }
         }
 

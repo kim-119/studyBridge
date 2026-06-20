@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Bot, User, Network, Bookmark, RefreshCw,
   Brain, CheckCircle2, Zap, MessageSquare,
-  ChevronDown, ChevronUp, ZoomIn, ZoomOut
+  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, ZoomIn, ZoomOut
 } from 'lucide-react';
 import './studymate-premium.css';
 
@@ -276,7 +276,16 @@ export default function AgentDiscussionThread({
   
   // 아코디언 상태 관리 (Set of expanded node IDs)
   const [expandedNodes, setExpandedNodes] = useState(new Set());
-  
+  // 논제/토론 액션 패널을 넓게 펼친 노드 집합(노드별 토글). 기본은 컴팩트(가로 스크롤).
+  const [wideActionNodes, setWideActionNodes] = useState(new Set());
+  const toggleWideActions = (nodeId) => {
+    setWideActionNodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId); else next.add(nodeId);
+      return next;
+    });
+  };
+
   // 확대/축소 상태 관리
   const [zoom, setZoom] = useState(1);
 
@@ -565,10 +574,10 @@ export default function AgentDiscussionThread({
                         transition={{ duration: 0.2 }}
                         style={{ overflow: 'hidden' }}
                      >
-                         <div style={{ display: 'flex', gap: '8px', marginTop: '12px', paddingTop: '12px', borderTop: isUser ? '1px dashed rgba(16,185,129,0.3)' : '1px solid #f1f5f9' }}>
+                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '12px', paddingTop: '12px', borderTop: isUser ? '1px dashed rgba(16,185,129,0.3)' : '1px solid #f1f5f9' }}>
                             {!isUser && (
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); onBookmark?.(node); }} 
+                              <button
+                                onClick={(e) => { e.stopPropagation(); onBookmark?.(node); }}
                                 style={{ 
                                   display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', 
                                   border: isBookmarked ? '1px solid #16a34a' : '1px solid #e2e8f0', 
@@ -599,39 +608,6 @@ export default function AgentDiscussionThread({
                               </button>
                             )}
 
-                            {/* 상황극 노드: stageType에 맞는 전용 액션 버튼 */}
-                            {isSimulation && getSimulationActions(node).map((act) => (
-                              <button
-                                key={act.actionType}
-                                onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, act.actionType); }}
-                                style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 11px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: `1px solid ${color.accent}40`, background: color.badgeBg, color: color.accent, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)', whiteSpace: 'nowrap' }}
-                              >
-                                {act.label}
-                              </button>
-                            ))}
-
-                            {/* 토론 노드: stageType/side에 맞는 전용 액션 버튼 */}
-                            {isDebate && getDebateActions(node).map((act) => (
-                              <button
-                                key={act.actionType}
-                                onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, act.actionType); }}
-                                style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 11px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: `1px solid ${color.accent}40`, background: color.badgeBg, color: color.accent, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)', whiteSpace: 'nowrap' }}
-                              >
-                                {act.label}
-                              </button>
-                            ))}
-
-                            {/* 소크라테스 노드: stageType에 맞는 전용 액션 버튼 */}
-                            {isSocratic && getSocraticActions(node).map((act) => (
-                              <button
-                                key={act.actionType}
-                                onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, act.actionType); }}
-                                style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 11px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: `1px solid ${color.accent}40`, background: color.badgeBg, color: color.accent, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)', whiteSpace: 'nowrap' }}
-                              >
-                                {act.label}
-                              </button>
-                            ))}
-
                             {!isUser && !isDebate && !isSocratic && !isSimulation && (
                               <>
                                 <button
@@ -658,6 +634,48 @@ export default function AgentDiscussionThread({
                               {formatTime(node.createdAt)}
                             </span>
                          </div>
+
+                         {/* 논제/토론 액션 패널: 토론 모드 카드와 시각적으로 분리(중립 슬레이트 토큰)하고
+                             좁은 화면에서 버튼이 잘리지 않게 펼치기(<>)로 wrap 전환한다. (문제3) */}
+                         {(isDebate || isSocratic || isSimulation) && (() => {
+                            const acts = isDebate ? getDebateActions(node)
+                              : isSocratic ? getSocraticActions(node)
+                                : getSimulationActions(node);
+                            if (!acts || acts.length === 0) return null;
+                            const wide = wideActionNodes.has(node.id);
+                            const panelId = `action-panel-${node.id}`;
+                            return (
+                              <div style={{ width: '100%', marginTop: '8px', background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: '10px', padding: '8px 10px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                                  <span style={{ fontSize: '11px', fontWeight: '800', color: '#475569', letterSpacing: '-0.2px' }}>논제 액션</span>
+                                  <button
+                                    type="button"
+                                    aria-expanded={wide}
+                                    aria-controls={panelId}
+                                    onClick={(e) => { e.stopPropagation(); toggleWideActions(node.id); }}
+                                    title={wide ? '액션 접기' : '액션 펼치기'}
+                                    style={{ display: 'flex', alignItems: 'center', gap: '3px', padding: '2px 8px', borderRadius: '7px', fontSize: '11px', fontWeight: '700', border: '1px solid #cbd5e1', background: '#ffffff', color: '#475569', cursor: 'pointer' }}
+                                  >
+                                    {wide ? <><ChevronLeft size={12} /> 접기</> : <>펼치기 <ChevronRight size={12} /></>}
+                                  </button>
+                                </div>
+                                <div
+                                  id={panelId}
+                                  style={{ display: 'flex', gap: '8px', flexWrap: wide ? 'wrap' : 'nowrap', overflowX: wide ? 'visible' : 'auto', paddingBottom: wide ? 0 : '4px' }}
+                                >
+                                  {acts.map((act) => (
+                                    <button
+                                      key={act.actionType}
+                                      onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, act.actionType); }}
+                                      style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 11px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: `1px solid ${color.accent}40`, background: color.badgeBg, color: color.accent, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                                    >
+                                      {act.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                         })()}
                      </motion.div>
                  )}
               </AnimatePresence>

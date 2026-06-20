@@ -371,7 +371,13 @@ export default function Archive() {
       setJournalFeedbackStruct(norm.struct);
       setJournalFeedback(norm.lines);
     } catch (e) {
-      console.error('피드백 재생성 실패:', e);
+      // 진단을 위해 status / 요청 URL / 응답 본문을 함께 남긴다(기존 피드백 화면은 유지).
+      console.error('피드백 재생성 실패:', {
+        status: e.response?.status,
+        url: e.config?.url,
+        data: e.response?.data,
+        message: e.message,
+      });
       alert(e.response?.data?.message || '피드백 재생성 중 오류가 발생했습니다.');
     } finally {
       setRegeneratingFeedback(false);

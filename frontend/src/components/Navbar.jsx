@@ -38,6 +38,14 @@ export function Navbar({ authed, username, active }) {
     window.location.href = '/';
   };
 
+  // 비로그인 사용자가 보호 탭을 누르면 이동을 막고 로그인 화면으로 보낸다(원래 경로 보존).
+  const handleNavClick = (e, to) => {
+    if (!isAuthed) {
+      e.preventDefault();
+      navigate('/login', { state: { from: to } });
+    }
+  };
+
   return (
     <header className="fixed inset-x-0 top-0 z-30 border-b border-gray-100" style={{ backgroundColor: '#F5F6F7' }}>
       <div className="mx-auto flex h-20 max-w-7xl items-center justify-between px-6">
@@ -52,6 +60,7 @@ export function Navbar({ authed, username, active }) {
                 <Link
                   key={to}
                   to={to}
+                  onClick={(e) => handleNavClick(e, to)}
                   className={
                     'pb-1 transition ' +
                     (isActive
