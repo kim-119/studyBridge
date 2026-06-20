@@ -39,9 +39,14 @@ public class LearningMateService {
     // 프론트 mode → 기존 FastAPI learningMode (explain은 basic으로 매핑)
     private static final Map<String, String> MODE_TO_LEARNING_MODE = Map.of(
             "explain", "basic", "socratic", "socratic", "debate", "debate", "roleplay", "simulation");
+    // 말투(성격)는 공통 7종(default/professional/friendly/honest/unique/efficient/cynical)으로 통일한다.
     private static final Map<String, String> TONE_LABEL = Map.of(
-            "friendly", "친근한 말투", "calm", "차분한 말투", "strict", "엄격한 말투",
-            "cold", "냉철한 말투", "humorous", "유머러스한 말투");
+            "default", "기본 말투", "professional", "전문적 말투", "friendly", "친근한 말투",
+            "honest", "솔직한 말투", "unique", "독특한 말투", "efficient", "효율적인 말투", "cynical", "냉소적 말투");
+    // 성격 기본 temperature(0.0~1.2). 사용자가 별도 조절값(persona.temperature)을 보내면 그 값을 우선한다.
+    private static final Map<String, Double> TONE_TEMPERATURE = Map.of(
+            "default", 0.5, "professional", 0.35, "friendly", 0.65,
+            "honest", 0.45, "unique", 0.8, "efficient", 0.25, "cynical", 0.55);
     private static final Map<String, String> LEVEL_LABEL = Map.of(
             "beginner", "입문자 맞춤", "undergraduate", "학부 수준", "advanced", "심화 수준", "expert", "전문가 수준");
     // 빠른 조정 → 재생성 지시(스펙 문구)
@@ -58,9 +63,43 @@ public class LearningMateService {
             "debate", "주장 → 근거 → 장점 → 한계 → 반론 → 조건부 결론 순으로 비교 분석한다.",
             "roleplay", "현실 상황 → 역할 → 선택지/판단 요청 → 피드백 → 개념 연결 순으로 체험식으로 진행한다.");
     private static final Map<String, String> TONE_GUIDE = Map.of(
-            "friendly", "친근하고 부담 없는 말투", "calm", "차분하고 정돈된 말투",
-            "strict", "엄격하지만 무례하지 않은 말투", "cold", "감정 표현을 줄인 분석적 말투",
-            "humorous", "가벼운 유머를 섞되 정확성을 해치지 않는 말투");
+            "default", "기본 스타일과 말투로 자연스럽게",
+            "professional", "정제되어 있고 정확한, 전문적인 말투",
+            "friendly", "따뜻하고 수다스러운, 친근한 말투",
+            "honest", "직설적이면서도 격려하는 솔직한 말투",
+            "unique", "유쾌하고 상상력이 풍부한 독특한 말투",
+            "efficient", "간결하고 꾸밈없는 효율적인 말투",
+            "cynical", "비꼬면서도 비판적인 냉소적 말투");
+    // 레거시 말투 라벨/키 → 공통 7종 key (저장된 구버전 값 호환)
+    private static final Map<String, String> LEGACY_TONE_MAP = Map.ofEntries(
+            Map.entry("기본", "default"), Map.entry("기본값", "default"), Map.entry("차분하게", "default"), Map.entry("calm", "default"),
+            Map.entry("전문적으로", "professional"), Map.entry("전문적", "professional"),
+            Map.entry("친근하게", "friendly"), Map.entry("친근함", "friendly"),
+            Map.entry("솔직하게", "honest"), Map.entry("솔직함", "honest"), Map.entry("정직하게", "honest"),
+            Map.entry("유머러스하게", "unique"), Map.entry("독특함", "unique"), Map.entry("humorous", "unique"), Map.entry("creative", "unique"),
+            Map.entry("효율적", "efficient"), Map.entry("간결하게", "efficient"), Map.entry("concise", "efficient"),
+            Map.entry("냉철하게", "cynical"), Map.entry("냉소적", "cynical"), Map.entry("비판적으로", "cynical"),
+            Map.entry("엄격하게", "cynical"), Map.entry("strict", "cynical"), Map.entry("cold", "cynical"), Map.entry("sardonic", "cynical"));
+
+    // 임의 입력(정규 key/한글 라벨/레거시 라벨) → 공통 7종 key. 미상이면 default.
+    private static String normalizeToneKey(String raw) {
+        if (raw == null || raw.isBlank()) return "default";
+        String v = raw.trim();
+        if (TONE_TEMPERATURE.containsKey(v)) return v;
+        String low = v.toLowerCase();
+        if (TONE_TEMPERATURE.containsKey(low)) return low;
+        String mapped = LEGACY_TONE_MAP.get(v);
+        if (mapped == null) mapped = LEGACY_TONE_MAP.get(low);
+        return mapped != null ? mapped : "default";
+    }
+
+    // 우선순위: 사용자 조절값(override) → 성격 기본값 → 0.5. 0.0~1.2 clamp.
+    private static double resolveTemperature(String toneKey, Double override) {
+        double t = (override != null && Double.isFinite(override))
+                ? override
+                : TONE_TEMPERATURE.getOrDefault(toneKey, 0.5);
+        return Math.min(1.2, Math.max(0.0, t));
+    }
     private static final Map<String, String> LEVEL_GUIDE = Map.of(
             "beginner", "전문 용어를 최소화하고 쉬운 예시를 사용한다.",
             "undergraduate", "학부 수준의 용어와 기본 개념 관계를 설명한다.",
@@ -77,7 +116,9 @@ public class LearningMateService {
         // 2) 기본값 보정 (불변 컬렉션의 containsKey/contains(null)은 NPE이므로 null 가드 필수)
         String mode = (req.getMode() != null && MODE_LABEL.containsKey(req.getMode())) ? req.getMode() : "explain";
         LearningMateDTO.Persona p = req.getPersona() != null ? req.getPersona() : new LearningMateDTO.Persona();
-        String tone = (p.getTone() != null && TONE_LABEL.containsKey(p.getTone())) ? p.getTone() : "friendly";
+        // 정규 key 우선(personalityStyle) → tone. 레거시 라벨도 normalizeToneKey로 흡수한다.
+        String tone = normalizeToneKey(firstNonBlank(p.getPersonalityStyle(), p.getTone()));
+        double temperature = resolveTemperature(tone, p.getTemperature());
         String learnerLevel = (p.getLearnerLevel() != null && LEVEL_LABEL.containsKey(p.getLearnerLevel())) ? p.getLearnerLevel() : "beginner";
         String name = (p.getName() != null && !p.getName().isBlank()) ? p.getName().trim() : "돌리";
 
@@ -101,6 +142,9 @@ public class LearningMateService {
         Map<String, Object> agent = new LinkedHashMap<>();
         agent.put("agentName", name);
         agent.put("tone", tone);
+        agent.put("personality", tone);
+        agent.put("personalityStyle", tone);
+        agent.put("temperature", temperature);
         agent.put("knowledgeLevel", learnerLevel);
         agent.put("knowledge_level", learnerLevel);
         if (p.getCustomInstruction() != null) agent.put("customInstruction", p.getCustomInstruction());
@@ -112,6 +156,8 @@ public class LearningMateService {
         body.put("learningMode", learningMode);
         body.put("rounds", 1);
         body.put("tone", tone);
+        body.put("personalityStyle", tone);
+        body.put("temperature", temperature);
         body.put("knowledgeLevel", learnerLevel);
         body.put("knowledge_level", learnerLevel);
         if (p.getCustomInstruction() != null) body.put("customInstruction", p.getCustomInstruction());

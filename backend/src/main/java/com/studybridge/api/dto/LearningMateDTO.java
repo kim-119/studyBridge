@@ -39,7 +39,9 @@ public class LearningMateDTO {
     @NoArgsConstructor
     public static class Persona {
         private String name;                 // 학습메이트 이름(기본: 돌리)
-        private String tone;                 // friendly | calm | strict | cold | humorous
+        private String tone;                 // 공통 7종 key: default|professional|friendly|honest|unique|efficient|cynical (레거시 라벨도 허용)
+        private String personalityStyle;     // 정규 성격 key(tone보다 우선)
+        private Double temperature;          // 사용자 조절 temperature(0.0~1.2, 없으면 성격 기본값)
         private String learnerLevel;         // beginner | undergraduate | advanced | expert (UI 라벨: 학습자 수준)
         private String customInstruction;    // 추가 요청
     }

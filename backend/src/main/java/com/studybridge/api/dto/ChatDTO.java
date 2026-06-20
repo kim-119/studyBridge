@@ -53,6 +53,10 @@ public class ChatDTO {
         // RAG 자료 ID (있으면 FastAPI가 PDF/RAG 검색을 수행)
         private Long materialId;
         private String personality;
+        // 정규 성격 key(default/professional/friendly/honest/unique/efficient/cynical) — 라벨보다 우선 사용.
+        private String personalityStyle;
+        // 성격 기본 또는 사용자 조절 temperature(0.0~1.2). 없으면 성격에서 유도.
+        private Double temperature;
         private String personalityStrength;
         private String personality_strength;
         private String style;
@@ -62,6 +66,11 @@ public class ChatDTO {
         private String customInstruction;
         private String custom_instruction;
         private String persona;
+        // 기본 질문 모드 단계 정책: 1차→2차 심화→3차 상호 피드백→환각 검증을 받을지 제어(FastAPI 패스스루).
+        private String stagePolicy;
+        private Boolean enableDeepening;
+        private Boolean enablePeerFeedback;
+        private Boolean enableHallucinationValidation;
         // 특정 에이전트 지칭 (@에이전트이름 또는 N번만 답해줘)
         private String targetAgentId;
         // 그룹스터디 AI 봇(요약/퀴즈/검색) 필드
@@ -89,6 +98,9 @@ public class ChatDTO {
         private String name;
         private String role;
         private String personality;
+        // 정규 성격 key + temperature(에이전트별). 라벨보다 우선 사용.
+        private String personalityStyle;
+        private Double temperature;
         private String personalityStrength;
         private String personality_strength;
         private String style;

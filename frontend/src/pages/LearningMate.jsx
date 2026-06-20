@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Sparkles, MessageCircleQuestion, Check, Settings2, Loader2, Lightbulb, HelpCircle, Scale, Drama } from 'lucide-react';
 import { learningMateService } from '../services/api';
+import { PERSONALITY_STYLE_OPTIONS, normalizePersonalityKey, personalityLabel, personalityTemperature } from '../utils/personality';
 
 // 질문 중심 AI 학습메이트 — 같은 질문을 4가지 학습 방식으로 다시 보기 + 빠른 조정.
 // 기존 멀티에이전트 룸 채팅(StudyMate.jsx)과 분리된 신규 화면. 답변 생성은 /api/learning-mate/chat 경유(기존 AI 흐름).
@@ -11,11 +12,8 @@ const MODES = [
   { value: 'debate', label: '토론', icon: Scale, desc: '장점, 단점, 반론을 비교하며 사고를 넓힙니다.', result: '주장 · 근거 · 반박 · 결론' },
   { value: 'roleplay', label: '상황극', icon: Drama, desc: '현실 상황 속 역할을 맡아 개념을 체험합니다.', result: '시나리오 · 선택지 · 피드백' },
 ];
-const TONES = [
-  { value: 'friendly', label: '친근하게' }, { value: 'calm', label: '차분하게' },
-  { value: 'strict', label: '엄격하게' }, { value: 'cold', label: '냉철하게' },
-  { value: 'humorous', label: '유머러스하게' },
-];
+// 말투(성격)는 공통 7종(기본값/전문적/친근함/솔직함/독특함/효율적/냉소적)으로 통일한다.
+const TONES = PERSONALITY_STYLE_OPTIONS.map((o) => ({ value: o.key, label: o.label }));
 // 사용자 라벨은 "학습자 수준"(지식수준 ❌) — AI가 아니라 사용자 이해 수준에 맞춰 답변 깊이를 조정한다는 의미.
 const LEVELS = [
   { value: 'beginner', label: '입문' }, { value: 'undergraduate', label: '학부' },
@@ -30,8 +28,20 @@ const PLACEHOLDERS = [
   '예: OOP가 뭐야?', '예: REST API랑 GraphQL 차이가 뭐야?',
   '예: 트랜잭션 격리 수준이 왜 필요해?', '예: Java의 상속과 인터페이스 차이가 뭐야?',
 ];
-const toneLabel = (v) => (TONES.find((t) => t.value === v) || {}).label || '친근하게';
+const toneLabel = (v) => personalityLabel(v);
 const levelLabel = (v) => (LEVELS.find((l) => l.value === v) || {}).label || '입문';
+
+// 빈 응답/내부 오류 문구(인증 실패·키 누락·Traceback 등)를 답변으로 노출하지 않는다.
+const UNUSABLE_ANSWER_PATTERNS = [
+  /빈\s*응답/, /응답이\s*비어/, /empty\s*response/i,
+  /Authorization\s*헤더/i, /인증에?\s*실패/, /OPENAI_API_KEY/i, /TAVILY_API_KEY/i,
+  /Traceback/i, /Exception/i, /Internal\s*Server\s*Error/i, /Connection\s*refused/i,
+];
+const isUnusableAnswer = (raw) => {
+  const t = String(raw ?? '').trim();
+  if (!t) return true;
+  return UNUSABLE_ANSWER_PATTERNS.some((re) => re.test(t));
+};
 
 export default function LearningMate() {
   const [question, setQuestion] = useState('');
@@ -60,6 +70,7 @@ export default function LearningMate() {
     setLoadingKind(opts.quickAction ? 'quick' : (opts.useLastQuestion ? 'remode' : 'generate'));
     setError(null);
     try {
+      const styleKey = normalizePersonalityKey(mate.tone);
       const payload = {
         question: q,
         mode,
@@ -67,7 +78,10 @@ export default function LearningMate() {
         quickAction: opts.quickAction || null,
         persona: {
           name: mate.name,
-          tone: mate.tone,
+          // canonical key를 우선 전달(레거시 호환을 위해 personalityStyle/temperature도 함께).
+          tone: styleKey,
+          personalityStyle: styleKey,
+          temperature: personalityTemperature(styleKey),
           learnerLevel: mate.learnerLevel,
           customInstruction: mate.customInstruction || '',
         },
@@ -75,6 +89,10 @@ export default function LearningMate() {
       const res = await learningMateService.chat(payload);
       if (res && res.success === false) {
         setError(res.message || '답변 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+      } else if (!res || isUnusableAnswer(res.answer)) {
+        // 내부 오류 문구/빈 응답은 답변으로 렌더링하지 않고 짧은 안내만 노출(개발 로그엔 메타만).
+        console.warn('[LearningMate][unusable-answer]', { mode, stage: 'chat', preview: String(res?.answer ?? '').slice(0, 80) });
+        setError('응답 생성에 실패했습니다. 다시 시도해 주세요.');
       } else {
         setResult(res);
         setLastQuestion(res.question || q);

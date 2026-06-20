@@ -6,8 +6,9 @@ import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread
 import '../components/studymate/studymate-premium.css';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getAgentColor, agentColorKey } from '../utils/agentColor';
+import { PERSONALITY_STYLE_OPTIONS, normalizePersonalityKey, personalityLabel as canonicalPersonalityLabel, personalityTemperature } from '../utils/personality';
 
-const PERSONALITY_OPTIONS = ['전문적', '친근함', '솔직함', '독특함', '효율적', '냉소적'];
+// 성격/말투는 공통 7종(기본값/전문적/친근함/솔직함/독특함/효율적/냉소적)으로 통일한다(두 번째 UI 기준).
 
 // 학습자 수준: 표시 라벨(한국어)과 전송 value(enum) 분리. ai07/Spring은 enum으로 라우팅한다.
 const KNOWLEDGE_LEVELS = [
@@ -36,6 +37,7 @@ const knowledgeLevelDesc = (v) => (KNOWLEDGE_LEVELS.find((l) => l.value === norm
 
 // 말투(성격) → 내부 role 기본값. UI에서 '역할' 입력은 숨기되 payload의 role은 말투에서 자동 유도한다.
 const ROLE_BY_PERSONALITY = {
+  '기본값': '학습 메이트',
   '전문적': '전문 교수',
   '친근함': '친근한 친구',
   '솔직함': '솔직한 멘토',
@@ -54,16 +56,9 @@ const MATE_TYPES = [
   { key: '냉철 분석형', role: '논리적 분석 멘토', icon: '❄️', color: '#374151', desc: '감정보다 근거와 구조 중심으로 분석합니다.' },
 ];
 
-// 답변 톤 = "어떤 말투로 말할지". label은 사용자 표시용, value는 기존 personality enum으로 매핑(payload 유지).
-// 6개 personality(전문적/친근함/솔직함/독특함/효율적/냉소적)를 모두 노출해 에이전트별 톤 차별화를 지원한다.
-const TONE_OPTIONS = [
-  { value: '친근함', label: '친근하게' },
-  { value: '효율적', label: '차분하게' },
-  { value: '솔직함', label: '엄격하게' },
-  { value: '냉소적', label: '냉철하게' },
-  { value: '독특함', label: '유머러스하게' },
-  { value: '전문적', label: '전문적으로' },
-];
+// 답변 톤(성격) = 공통 7종으로 통일. value(내부 personality enum)와 표시 label을 동일한 정규 라벨로 맞춘다.
+// 7개 personality(기본값/전문적/친근함/솔직함/독특함/효율적/냉소적)를 모두 노출해 에이전트별 톤 차별화를 지원한다.
+const TONE_OPTIONS = PERSONALITY_STYLE_OPTIONS.map((o) => ({ value: o.label, label: o.label, key: o.key, description: o.description }));
 
 // 추가 요청 입력 보조용 추천 칩(클릭 시 입력창 뒤에 자연스럽게 덧붙임).
 const REQUEST_GUIDE_CHIPS = [
@@ -490,8 +485,8 @@ const ROOM_PRESETS_BY_MODE = {
   simulation: ROLEPLAY_ROOM_PRESETS,
 };
 
-// 답변 톤(personality enum) → 표시 라벨
-const toneLabel = (v) => (TONE_OPTIONS.find((o) => o.value === v) || {}).label || v || '';
+// 답변 톤(personality enum/레거시 라벨) → 표시 라벨. 레거시 저장값도 정규 7종 라벨로 통일 표시한다.
+const toneLabel = (v) => (v == null || v === '' ? '' : canonicalPersonalityLabel(v));
 
 // 추천 방 설정 카드에 표시할 "적용 설정 요약" 칩 문구 배열.
 // 톤/수준은 에이전트마다 다르므로 카드에는 모드 공통 세부 설정만 칩으로 노출한다.
@@ -950,11 +945,13 @@ const DebateRenderer = ({ stages }) => {
 
 // processSteps(전체 map) → 결과 말풍선 배열. 토론 응답이면 토론 4섹션, 아니면 1/2/3 단계.
 // ── 내부 단계(검증/피드백) 노출 정책 ──────────────────────────────────────────
-// 기본 채팅(basic)은 "선택된 에이전트의 최종 답변"만 노출한다(2차 검증/3차 피드백 숨김).
-// 검증(validation)/협업(collaboration) 모드는 평가/피드백이 모드의 목적이므로 노출한다.
+// 기본 채팅(basic)도 1차 답변에 그치지 않고 2차 심화(검증)/3차 상호 피드백을 노출한다.
+// 검증(validation)/협업(collaboration) 모드는 평가/피드백이 모드의 목적이므로 동일하게 노출한다.
+// (개별 단계 생성 여부는 FastAPI/ai07가 stagePolicy/enable* 플래그로 결정 — 도착하지 않으면 1차만 표시.)
 const isInternalVisibleMode = (mode) => {
   const m = String(mode || '').toLowerCase();
-  return m === 'validation' || m === '검증' || m === 'collaboration' || m === 'collaborative' || m === '협업';
+  return m === '' || m === 'basic' || m === '기본'
+    || m === 'validation' || m === '검증' || m === 'collaboration' || m === 'collaborative' || m === '협업';
 };
 
 // 방어적 필터: FastAPI/Spring이 실수로 내부 evaluator 문구를 visible로 흘려도 기본 채팅에선 숨긴다.
@@ -1641,6 +1638,10 @@ const getDisplayRoomTitle = (room) =>
 const EMPTY_AGENT_TEXT_PATTERNS = [
   /빈\s*응답을\s*반환/, /모델이\s*빈\s*응답/, /응답이\s*비어/,
   /empty\s*response/i, /returned\s+an?\s+empty/i, /no\s+(valid\s+)?response\s+(was\s+)?generated/i,
+  // 내부 인증/키/스택트레이스 등 시스템 오류 문구가 답변 본문으로 새어 나오지 않게 차단한다.
+  /Authorization\s*헤더/i, /AI\s*서버\s*인증/i, /인증에?\s*실패/, /OPENAI_API_KEY/i, /TAVILY_API_KEY/i,
+  /Traceback\s*\(most recent\s*call/i, /Internal\s*Server\s*Error/i,
+  /Connection\s*refused/i, /\bECONNREFUSED\b/i,
 ];
 const FAILED_AGENT_TEXT = '응답 생성에 실패했습니다. 다시 시도해 주세요.';
 const isUnusableAgentText = (raw) => {
@@ -1668,20 +1669,29 @@ const extractValidation = (o) => {
       : (o.hallucination_check && typeof o.hallucination_check === 'object') ? o.hallucination_check
         : o;
   const score = v.factualityScore ?? v.factuality_score ?? v.factuality;
-  const risk = v.riskLevel ?? v.risk_level ?? v.risk;
+  const risk = v.riskLevel ?? v.risk_level ?? v.risk ?? v.hallucinationRisk ?? v.hallucination_risk;
   const unsupported = v.unsupportedClaims ?? v.unsupported_claims;
+  const contra = v.contradictions ?? v.contradiction;
+  const missing = v.missingEvidenceNotes ?? v.missing_evidence_notes;
   const notesRaw = v.evidenceNotes ?? v.evidence_notes ?? v.notes;
+  const hintRaw = v.safeRevisionHint ?? v.safe_revision_hint;
   const numScore = (typeof score === 'number') ? score
     : (score != null && score !== '' && !Number.isNaN(Number(score))) ? Number(score) : null;
-  const claims = Array.isArray(unsupported) ? unsupported.filter(Boolean).map(String) : [];
-  const notes = Array.isArray(notesRaw) ? notesRaw.filter(Boolean).map(String)
-    : (typeof notesRaw === 'string' && notesRaw.trim()) ? [notesRaw.trim()] : [];
-  if (numScore == null && risk == null && claims.length === 0 && notes.length === 0) return null;
+  const toList = (x) => Array.isArray(x) ? x.filter(Boolean).map(String)
+    : (typeof x === 'string' && x.trim()) ? [x.trim()] : [];
+  const claims = toList(unsupported);
+  const contradictions = toList(contra);
+  // 검토 메모 = evidenceNotes + missingEvidenceNotes를 사람이 읽기 쉬운 한 목록으로 합친다.
+  const notes = [...toList(notesRaw), ...toList(missing)];
+  const hint = (typeof hintRaw === 'string' && hintRaw.trim()) ? hintRaw.trim() : null;
+  if (numScore == null && risk == null && claims.length === 0 && contradictions.length === 0 && notes.length === 0 && !hint) return null;
   return {
     factualityScore: numScore,
     riskLevel: risk != null ? String(risk).toLowerCase() : null,
     unsupportedClaims: claims,
+    contradictions,
     evidenceNotes: notes,
+    safeRevisionHint: hint,
   };
 };
 
@@ -1733,6 +1743,16 @@ const ValidationResult = ({ data }) => {
             </ul>
           </div>
         )}
+        {Array.isArray(data.contradictions) && data.contradictions.length > 0 && (
+          <div>
+            <div style={{ fontSize: '10.5px', fontWeight: 700, color: '#9ca3af', marginBottom: '2px' }}>모순/충돌</div>
+            <ul style={{ margin: 0, paddingLeft: '16px' }}>
+              {data.contradictions.slice(0, 5).map((c, i) => (
+                <li key={i} style={{ fontSize: '11.5px', color: '#475569', lineHeight: 1.5 }}>{c}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         {data.evidenceNotes.length > 0 && (
           <div>
             <div style={{ fontSize: '10.5px', fontWeight: 700, color: '#9ca3af', marginBottom: '2px' }}>검토 메모</div>
@@ -1741,6 +1761,11 @@ const ValidationResult = ({ data }) => {
                 <li key={i} style={{ fontSize: '11.5px', color: '#475569', lineHeight: 1.5 }}>{c}</li>
               ))}
             </ul>
+          </div>
+        )}
+        {data.safeRevisionHint && (
+          <div style={{ fontSize: '11.5px', color: '#475569', lineHeight: 1.5 }}>
+            <span style={{ fontWeight: 700, color: '#9ca3af' }}>보완 제안 </span>{data.safeRevisionHint}
           </div>
         )}
       </div>
@@ -1835,7 +1860,10 @@ const getAgentStyleTheme = (personality) => {
 };
 
 const buildCanonicalAgentPayload = (agent) => {
-  const personality = PERSONALITY_OPTIONS.includes(agent.personality) ? agent.personality : '전문적';
+  // 저장된 레거시 라벨(친근하게/냉철하게 등)도 정규 7종 라벨로 통일한다.
+  const personalityKey = normalizePersonalityKey(agent.personality);
+  const personality = canonicalPersonalityLabel(personalityKey);
+  const temperature = personalityTemperature(personalityKey);
   const knowledgeLevel = normalizeKnowledgeLevel(agent.knowledgeLevel); // enum value (INTRO/BACHELOR/...)
   const customInstruction = String(agent.customInstruction || '').trim();
   const goal = String(agent.goal || '사용자의 학습을 돕는다').trim();
@@ -1849,6 +1877,9 @@ const buildCanonicalAgentPayload = (agent) => {
     role: String(agent.role || '').trim() || deriveRole(personality),
     agentPreset,
     personality,
+    // canonical key + temperature를 함께 전달(FastAPI/Spring이 key를 우선 사용).
+    personalityStyle: personalityKey,
+    temperature,
     personalityStrength: agent.personalityStrength || 'extreme',
     style: personality,
     tone: personality,
@@ -2229,6 +2260,16 @@ export default function StudyMate() {
     if (activeLearningMode === 'simulation') turnExtras.simulationConfig = selectedAgent?.simulationConfig || simulationConfig || DEFAULT_SIMULATION_CONFIG;
     const roomMaterialId = selectedAgent?.materialId ?? selectedAgent?.material_id;
     if (roomMaterialId) turnExtras.materialId = roomMaterialId;
+
+    // ── 기본 질문 모드 단계 정책 ──────────────────────────────────────────────
+    // 기본 모드에서도 1차 답변에 그치지 않고 2차 심화/3차 상호 피드백/환각 검증까지 받도록
+    // stage 정책 플래그를 함께 전달한다(개별 단계 생성 여부는 FastAPI/ai07가 결정).
+    if (activeLearningMode === 'basic') {
+      turnExtras.stagePolicy = 'full';
+      turnExtras.enableDeepening = true;
+      turnExtras.enablePeerFeedback = true;
+      turnExtras.enableHallucinationValidation = true;
+    }
 
     // 다시 생성 처리: 직전과 같은 질문이면 attempt를 증가시키고 forceRegenerate로 cache 우회/변형을 유도한다.
     const regenTrack = regenTrackRef.current[agentId];
@@ -4060,7 +4101,8 @@ export default function StudyMate() {
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>답변 톤</label>
                         <select
                           className="input-field"
-                          value={agent.personality}
+                          // 레거시 저장값(친근하게 등)도 정규 7종 라벨로 매핑해 옵션이 항상 일치하게 한다.
+                          value={canonicalPersonalityLabel(agent.personality)}
                           onChange={(e) => {
                             const list = [...createdAgents];
                             // 답변 톤(personality)만 변경. 역할/유형은 학습메이트 유형에서 별도 관리한다.

@@ -24,6 +24,7 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -140,6 +141,9 @@ public class ChatService {
                                         // agentPreset은 persona [프리셋: X] 태그에서 복원해 FastAPI 프롬프트로 전달
                                         agentMap.put("agentPreset", extractPersonaTag(persona, "프리셋"));
                                         agentMap.put("personality", agentPersonality);
+                                        // canonical key + temperature를 함께 전달(FastAPI가 key를 우선 사용).
+                                        agentMap.put("personalityStyle", personalityStyleKey(agentPersonality));
+                                        agentMap.put("temperature", personalityTemperature(agentPersonality, request.getTemperature()));
                                         agentMap.put("personalityStrength", requestPersonalityStrength);
                                         agentMap.put("personality_strength", requestPersonalityStrength);
                                         agentMap.put("style", agentPersonality);
@@ -207,6 +211,15 @@ public class ChatService {
                 requestBody.put("rounds", request.getRounds() != null ? Math.min(Math.max(request.getRounds(), 1), 3) : 3);
                 // 학습 진행 모드 (basic/socratic/debate/simulation) — request 없으면 방 값으로 폴백된 결과
                 requestBody.put("learningMode", effectiveLearningMode);
+                // 기본 질문 모드 단계 정책 — 1차에 그치지 않고 2차 심화/3차 상호 피드백/환각 검증까지 진행하도록
+                // 플래그를 전달한다(개별 단계 생성 여부는 FastAPI/ai07가 결정, 미인식 시 무시되는 가산적 패스스루).
+                if ("basic".equals(effectiveLearningMode)) {
+                        requestBody.put("stagePolicy", firstNonBlank(request.getStagePolicy(), "full"));
+                        requestBody.put("enableDeepening", request.getEnableDeepening() != null ? request.getEnableDeepening() : Boolean.TRUE);
+                        requestBody.put("enablePeerFeedback", request.getEnablePeerFeedback() != null ? request.getEnablePeerFeedback() : Boolean.TRUE);
+                        requestBody.put("enableHallucinationValidation",
+                                        request.getEnableHallucinationValidation() != null ? request.getEnableHallucinationValidation() : Boolean.TRUE);
+                }
                 // 토론 논제/구조 설정 — 프론트 → FastAPI로 유실 없이 패스스루 (없으면 null)
                 requestBody.put("debateConfig", request.getDebateConfig());
                 // 소크라테스 문답 설정 — 프론트 → FastAPI로 유실 없이 패스스루 (없으면 null)
@@ -215,6 +228,10 @@ public class ChatService {
                 requestBody.put("simulationConfig", request.getSimulationConfig());
                 requestBody.put("showFinalSynthesis", request.getShowFinalSynthesis() != null ? request.getShowFinalSynthesis() : false);
                 requestBody.put("personality", requestPersonality);
+                // 정규 성격 key + temperature(요청 personalityStyle 우선, 없으면 personality에서 유도).
+                String requestPersonalityKey = firstNonBlank(request.getPersonalityStyle(), personalityStyleKey(requestPersonality));
+                requestBody.put("personalityStyle", requestPersonalityKey);
+                requestBody.put("temperature", personalityTemperature(requestPersonality, request.getTemperature()));
                 requestBody.put("personalityStrength", requestPersonalityStrength);
                 requestBody.put("personality_strength", requestPersonalityStrength);
                 requestBody.put("style", firstNonBlank(request.getStyle(), requestPersonality));
@@ -1083,6 +1100,9 @@ public class ChatService {
                 agentMap.put("role", firstNonBlank(agent.getRole(), "AI 학습 도우미"));
                 agentMap.put("agentPreset", extractPersonaTag(persona, "프리셋"));
                 agentMap.put("personality", agentPersonality);
+                // 에이전트별 canonical key + temperature(요청 agent의 명시값 우선, 없으면 성격에서 유도).
+                agentMap.put("personalityStyle", firstNonBlank(agent.getPersonalityStyle(), personalityStyleKey(agentPersonality)));
+                agentMap.put("temperature", personalityTemperature(agentPersonality, agent.getTemperature()));
                 agentMap.put("personalityStrength", agentPersonalityStrength);
                 agentMap.put("personality_strength", agentPersonalityStrength);
                 agentMap.put("style", agentPersonality);
@@ -1150,6 +1170,54 @@ public class ChatService {
                         }
                 }
                 return null;
+        }
+
+        // ── 성격(personality) 정규화 — 프론트 공통 7종과 동일 매핑 ──────────────────────
+        // 임의 입력(정규 key/한글 라벨/레거시 라벨)을 canonical key로 통일하고 temperature를 유도한다.
+        private static final Map<String, String> PERSONALITY_KEY_MAP = new HashMap<>();
+        private static final Map<String, Double> PERSONALITY_TEMP = new HashMap<>();
+        static {
+                String[][] legacy = {
+                        {"기본", "default"}, {"기본값", "default"}, {"차분하게", "default"}, {"calm", "default"},
+                        {"전문적으로", "professional"}, {"전문적", "professional"}, {"professional", "professional"},
+                        {"친근하게", "friendly"}, {"친근함", "friendly"}, {"friendly", "friendly"},
+                        {"솔직하게", "honest"}, {"솔직함", "honest"}, {"정직하게", "honest"}, {"honest", "honest"},
+                        {"유머러스하게", "unique"}, {"독특함", "unique"}, {"humorous", "unique"}, {"creative", "unique"},
+                        {"효율적", "efficient"}, {"간결하게", "efficient"}, {"concise", "efficient"}, {"efficient", "efficient"},
+                        {"냉철하게", "cynical"}, {"냉소적", "cynical"}, {"비판적으로", "cynical"}, {"엄격하게", "cynical"},
+                        {"strict", "cynical"}, {"cold", "cynical"}, {"sardonic", "cynical"}, {"critical", "cynical"}, {"cynical", "cynical"},
+                };
+                for (String[] e : legacy) PERSONALITY_KEY_MAP.put(e[0], e[1]);
+                PERSONALITY_TEMP.put("default", 0.5);
+                PERSONALITY_TEMP.put("professional", 0.35);
+                PERSONALITY_TEMP.put("friendly", 0.65);
+                PERSONALITY_TEMP.put("honest", 0.45);
+                PERSONALITY_TEMP.put("unique", 0.8);
+                PERSONALITY_TEMP.put("efficient", 0.25);
+                PERSONALITY_TEMP.put("cynical", 0.55);
+        }
+
+        private static String personalityStyleKey(String raw) {
+                if (raw == null || raw.isBlank()) return "default";
+                String v = raw.trim();
+                if (PERSONALITY_TEMP.containsKey(v)) return v;
+                String low = v.toLowerCase();
+                if (PERSONALITY_TEMP.containsKey(low)) return low;
+                String mapped = PERSONALITY_KEY_MAP.get(v);
+                if (mapped == null) mapped = PERSONALITY_KEY_MAP.get(low);
+                return mapped != null ? mapped : "default";
+        }
+
+        // 우선순위: 사용자가 명시 조절한 override → 성격 기본값 → 0.5. 0.0~1.2로 clamp.
+        private static double personalityTemperature(String rawOrKey, Double override) {
+                double t;
+                if (override != null && Double.isFinite(override)) {
+                        t = override;
+                } else {
+                        Double base = PERSONALITY_TEMP.get(personalityStyleKey(rawOrKey));
+                        t = base != null ? base : 0.5;
+                }
+                return Math.min(1.2, Math.max(0.0, t));
         }
 
         /**
