@@ -2691,6 +2691,17 @@ try:
 except Exception as _study_err:
     logger.error("study 로드맵 라우터 로드 실패 (POST /api/ai/roadmap/generate 누락 위험): %s", _study_err)
 
+# 16-c. C Native Engine (GET /api/native-engine/health, POST /schedule|/textprep) — 독립 등록.
+#       라우터 모듈은 import 시 .so 를 로딩하지 않고(엔드포인트 호출 시 lazy ctypes),
+#       .so 부재/ABI 오류는 python-fallback 으로 흡수하므로 startup 을 막지 않는다.
+#       그래도 만일의 import 오류가 전체 기동을 막지 않도록 별도 try/except 로 등록한다.
+try:
+    from app.api.native_engine_routes import router as _native_engine_router
+    app.include_router(_native_engine_router)  # /api/native-engine/health|schedule|textprep
+    logger.info("native engine 라우터 로드 완료 (/api/native-engine/*)")
+except Exception as _native_err:
+    logger.warning("native engine 라우터 로드 실패 (운영 API 는 정상 동작): %s", _native_err)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 직접 실행 (개발용)
