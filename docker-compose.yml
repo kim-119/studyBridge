@@ -38,9 +38,9 @@ services:
       AWS_REGION: ${AWS_REGION}
       AWS_S3_BUCKET: ${AWS_S3_BUCKET}
 
-      FASTAPI_BASE_URL: http://host.docker.internal:18001
+      FASTAPI_BASE_URL: http://host.docker.internal:18000
       AI_SERVER_API_KEY: ${AI_SERVER_API_KEY:-}
-      FASTAPI_EXTRACTION_URL: http://host.docker.internal:18001/api/extract
+      FASTAPI_EXTRACTION_URL: http://host.docker.internal:18000/api/extract
       FASTAPI_TIMEOUT: ${FASTAPI_TIMEOUT:-180000}
       # 자료보관함 키워드 정의 / 플래너 AI 확장 / 플래너 12주 로드맵 호출 타임아웃(초). 하드코딩 금지.
       AI_KEYWORD_DEFINE_TIMEOUT_SECONDS: ${AI_KEYWORD_DEFINE_TIMEOUT_SECONDS:-60}
@@ -63,19 +63,7 @@ services:
       - db
       - redis
       - openvidu
-      - fastapi-tunnel-proxy
 
-    restart: unless-stopped
-
-  fastapi-tunnel-proxy:
-    image: alpine/socat:latest
-    container_name: capstone-fastapi-tunnel-proxy
-    network_mode: host
-    command:
-      - TCP-LISTEN:18001,fork,reuseaddr,bind=0.0.0.0
-      - TCP:127.0.0.1:18000
-    environment:
-      TZ: Asia/Seoul
     restart: unless-stopped
 
   openvidu:
@@ -120,3 +108,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+
