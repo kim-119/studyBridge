@@ -1619,25 +1619,54 @@
 .professor-hotspot-center { left: 39%; top: 27%; width: 24%; height: 63%; }
 .professor-hotspot-right  { left: 65%; top: 27%; width: 25%; height: 63%; }
 
-/* ── 교수별 말풍선(actionMode에 따라 문구 변경) ───────────────────────────── */
+/* ── 교수별 말풍선(actionMode에 따라 문구 변경) ─────────────────────────────
+   둥근 타원형 speech bubble + 아래 방향 구름꼬리(pseudo-element).
+   box-sizing/max-width로 banner(overflow:hidden) 밖으로 튀지 않게 제한. */
 .professor-bubble {
   position: absolute;
   z-index: 7;
-  max-width: 26%;
-  padding: 8px 12px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid #dbeafe;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.14);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.4;
-  color: #334155;
+  box-sizing: border-box;
+  max-width: min(260px, 42%);
+  padding: 12px 18px;
+  border-radius: 999px;            /* 타원형 느낌 */
+  background: rgba(255, 255, 255, 0.97);
+  border: 2px solid #dbeafe;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+  font-size: 12.5px;
+  font-weight: 800;
+  line-height: 1.45;
+  color: #1e293b;
+  text-align: center;
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
-.professor-bubble-left   { left: 4%;  top: 20%; }
-.professor-bubble-center { left: 38%; top: 16%; }
-.professor-bubble-right  { right: 4%; top: 20%; }
+/* 현재보다 조금 더 아래로. 좌/우는 banner 안쪽으로 여유 있게, 가운데는 중앙 고정 */
+.professor-bubble-left   { left: 4%;   top: 30%; }
+.professor-bubble-center { left: 50%;  top: 26%; transform: translateX(-50%) !important; }
+.professor-bubble-right  { right: 4%;  top: 30%; }
 .professor-bubble.is-active { animation: professorBubblePop 0.22s ease-out; }
+
+/* 말풍선 꼬리: 아래 방향 구름꼬리(큰 원 + 작은 원). banner 밖으로 안 튀게 짧게. */
+.professor-bubble::before,
+.professor-bubble::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.97);
+  border: 2px solid #dbeafe;
+  z-index: -1;
+}
+.professor-bubble::before { width: 16px; height: 16px; bottom: -8px; }
+.professor-bubble::after  { width: 9px;  height: 9px;  bottom: -16px; }
+/* 좌/우 말풍선은 해당 교수 쪽으로 꼬리를 살짝 치우치게 */
+.professor-bubble-left::before  { left: 34px; }
+.professor-bubble-left::after   { left: 24px; }
+.professor-bubble-right::before { right: 34px; }
+.professor-bubble-right::after  { right: 24px; }
+/* 가운데 말풍선은 꼬리도 중앙 */
+.professor-bubble-center::before { left: 50%; transform: translateX(-50%); }
+.professor-bubble-center::after  { left: calc(50% - 16px); }
 
 @keyframes professorBubblePop {
   0%   { opacity: 0; transform: translateY(6px) scale(0.96); }
@@ -1848,12 +1877,17 @@
     padding-bottom: 8px;
   }
   .professor-classroom-banner-image { max-height: 220px; }
-  .professor-bubble {
+  .professor-bubble,
+  .professor-bubble-center {
     position: static;
-    max-width: none;
+    max-width: calc(100% - 16px) !important;
     flex: 1 1 100%;
     margin: 6px 8px 0;
+    transform: none !important;
   }
+  /* 정적 카드형 흐름에서는 구름꼬리 숨김(아래로 떠 보이는 것 방지) */
+  .professor-bubble::before,
+  .professor-bubble::after { display: none; }
   .professor-floating-menu,
   .professor-floating-menu.left,
   .professor-floating-menu.center,

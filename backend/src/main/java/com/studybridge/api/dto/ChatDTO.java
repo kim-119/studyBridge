@@ -85,6 +85,18 @@ public class ChatDTO {
         private String messageId;          // 프론트가 부여한 이번 턴 고유 id
         private Integer regenerateAttempt; // 다시 생성 횟수 (없으면 1)
         private Boolean forceRegenerate;   // true면 cache 우회 + 변형 지시
+
+        // ── 멀티턴 대화 상태 echo (토론 논제/상황극 선택 진행 유지) ──
+        //  ai07가 응답에 실어 준 진행 상태를 프론트가 캡처해 다음 요청에 다시 싣는다.
+        //  Spring은 buildFastApiRequestBody에서 값이 있을 때만 그대로 ai07로 패스스루한다.
+        private String selectedTopic;                 // 토론: 선택된 논제
+        private Map<String, Object> debateState;      // 토론: 진행 상태(불투명 객체)
+        private String debateSessionId;               // 토론: 세션 id
+        private Map<String, Object> simulationState;  // 상황극: 진행 상태(불투명 객체)
+        private String scenarioId;                    // 상황극: 시나리오 id
+        private String selectedChoice;                // 상황극: 이번 턴에 고른 선택지
+        private List<Object> previousChoices;         // 상황극: 이전까지 고른 선택 이력
+        private Integer turnIndex;                     // 토론/상황극 공통: 턴 인덱스
     }
 
     @Getter

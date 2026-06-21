@@ -1,5 +1,5 @@
 import React from 'react';
-import { GraduationCap, Bookmark, Bot } from 'lucide-react';
+import { Bookmark, Bot } from 'lucide-react';
 
 /**
  * 우측 사이드 패널 — 저장된 메모 중심.
@@ -51,15 +51,6 @@ const ProfessorLearningPanel = ({ memos = [], onScrollToMemo }) => {
             ))}
           </div>
         )}
-      </div>
-
-      {/* 작은 도움말 카드 — 교수님들과 대화 탭 안내 */}
-      <div className="prof-learn-tip">
-        <span className="prof-learn-tip-icon"><GraduationCap size={16} /></span>
-        <div className="prof-learn-tip-body">
-          <strong>교수님들과 대화</strong>
-          <span>상단 <em>교수님들과 대화</em> 탭에서 반박 · 비교 · 예시를 트리로 펼쳐 볼 수 있어요.</span>
-        </div>
       </div>
     </div>
   );

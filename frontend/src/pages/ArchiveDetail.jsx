@@ -72,11 +72,15 @@ function DetailedPager({ pages }) {
 
   const navBtn = (disabled, onClick, label, Icon) => (
     <button
-      type="button" onClick={onClick} disabled={disabled} aria-label={label} title={label}
+      type="button"
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!disabled) onClick(); }}
+      disabled={disabled} aria-label={label} title={label}
       style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px',
         borderRadius: '8px', border: '1px solid var(--color-border)', background: disabled ? '#F3F4F6' : '#fff',
         color: disabled ? '#D1D5DB' : 'var(--color-text-main)', cursor: disabled ? 'default' : 'pointer', flexShrink: 0,
+        // overlay/stacking 컨텍스트로 클릭이 막히지 않도록 명시적으로 올림
+        position: 'relative', zIndex: 2, pointerEvents: disabled ? 'none' : 'auto',
       }}
     >
       <Icon size={18} />
@@ -86,7 +90,7 @@ function DetailedPager({ pages }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
       {/* 네비게이션 바: 위치 표시 + ‹ › */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', position: 'relative', zIndex: 2 }}>
         <span style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--color-text-muted)' }}>{safe + 1} / {total} 페이지</span>
         <div style={{ display: 'flex', gap: '6px' }}>
           {navBtn(atFirst, () => setIdx(safe - 1), '이전 페이지', ChevronLeft)}
@@ -254,7 +258,7 @@ function StudyNoteView({ note, onKeyword }) {
         <Section title="❓ AI 학습 질문" color="#F59E0B"><ul style={ulStyle}>{questions.map((q, i) => <li key={i} style={liStyle}>{q}</li>)}</ul></Section>
       )}
       {wikis.length > 0 && (
-        <Section title="📚 Wikipedia 보강 정보" color="#8B5CF6">
+        <Section title="📚 보강 정보" color="#8B5CF6">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {wikis.map((w, i) => (
               <div key={i}>
@@ -306,7 +310,7 @@ function AnalyzingProgress() {
 }
 
 // AI 질문 기록 영속화 — materialId별 localStorage 저장/복구
-const CHAT_INTRO = '이 AI는 자료보관함에 업로드된 PDF 기반 채팅만 가능합니다.\n현재 선택한 자료의 내용 안에서만 질문에 답변합니다.\n자료에 없는 내용은 임의로 생성하지 않습니다.\n일반적인 학습 질문이나 자료와 무관한 질문은 학습메이트 기능을 이용해주세요.';
+const CHAT_INTRO = '업로드한 자료를 바탕으로 궁금한 점을 질문해보세요.';
 const chatStorageKey = (mid) => `studybridge:material-chat:${mid}`;
 
 export default function ArchiveDetail() {
@@ -330,6 +334,7 @@ export default function ArchiveDetail() {
   const [roadmapLevel, setRoadmapLevel] = useState('intermediate'); // beginner | intermediate | advanced
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [isAddingStudyLog, setIsAddingStudyLog] = useState(false);
+  const [isSavingMemoJournal, setIsSavingMemoJournal] = useState(false); // 메모 → 학습일지 저장
   const [showAllDetailed, setShowAllDetailed] = useState(false);
   // 메모 탭(PDF 상세): 입력=memoText, 검증 통과(ACCEPT)분만 S3 저장. 검증결과=journalNotice
   const [memoText, setMemoText] = useState('');
@@ -1255,6 +1260,40 @@ export default function ArchiveDetail() {
       }
     } finally {
       setIsSavingMemo(false);
+    }
+  };
+
+  // 메모 → 학습일지 저장: 현재 textarea 내용을 학습일지(STUDY_LOG)로 저장한다.
+  //  · '메모 저장'(handleSaveMemo)은 자료 메모 목록(검증 통과분)에 저장 — 역할 분리.
+  //  · 학습일지 본문에는 자료 제목/원문 보기 reference를 포함(자료 ID는 reference 경로로 연결).
+  const handleSaveMemoAsJournal = async () => {
+    const content = (memoText || '').trim();
+    if (!content) {
+      setJournalNotice({ type: 'error', reason: '저장할 메모 내용을 입력해주세요.', suggestion: '' });
+      return;
+    }
+    try {
+      setIsSavingMemoJournal(true);
+      const refLine = material?.materialId ? `원문 보기: /archive/${material.materialId}` : '';
+      const learningContent = [
+        `자료 제목: ${material?.title || material?.originalFileName || '자료'}`,
+        refLine,
+        '',
+        content,
+      ].filter((l) => l !== null && l !== undefined).join('\n');
+      await materialService.createStudyLog({
+        title: `${material?.title || '자료'} 학습일지`,
+        keywords: '',
+        studyDate: new Date().toISOString().split('T')[0],
+        learningContent,
+        nextPlan: '',
+      });
+      alert('학습일지에 저장되었습니다.');
+    } catch (e) {
+      console.error('학습일지 저장 실패:', e);
+      alert('학습일지 저장에 실패했습니다. 다시 시도해주세요.');
+    } finally {
+      setIsSavingMemoJournal(false);
     }
   };
 
@@ -3125,7 +3164,15 @@ export default function ArchiveDetail() {
                     )}
                   </div>
               )}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '12px', flexWrap: 'wrap' }}>
+                <button
+                    className="btn-outline"
+                    style={{ width: 'auto', padding: '10px 24px', borderRadius: '30px', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                    onClick={handleSaveMemoAsJournal}
+                    disabled={isSavingMemoJournal}
+                >
+                  <Edit3 size={15} /> {isSavingMemoJournal ? '저장 중...' : '학습일지 저장'}
+                </button>
                 <button
                     className="btn-primary"
                     style={{ width: 'auto', padding: '10px 28px', borderRadius: '30px', fontWeight: 'bold' }}
@@ -3183,14 +3230,14 @@ export default function ArchiveDetail() {
         const textBlocked = currentTextStatus?.hasText === false || currentTextStatus?.status === 'EMPTY';
         const textStatusMessage = getTextStatusMessage(currentTextStatus);
         return (
-            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '450px' }}>
+            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '450px' }}>
               <h3 style={{ margin: '0 0 16px', fontSize: '20px' }}>AI 질문</h3>
               {textStatusMessage && (
                 <div className="glass-panel" style={{ padding: '14px 16px', borderLeft: '4px solid #F59E0B', backgroundColor: '#FFFBEB', color: '#92400E', marginBottom: '12px' }}>
                   {textStatusMessage}
                 </div>
               )}
-              <div style={{ flex: 1, backgroundColor: '#F9FAFB', borderRadius: '12px', padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid var(--color-border)', maxHeight: '350px' }}>
+              <div style={{ flex: 1, backgroundColor: '#F9FAFB', borderRadius: '12px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid var(--color-border)' }}>
                 {chatMessages.map((msg, idx) => (
                     <div
                         key={idx}
@@ -3208,8 +3255,7 @@ export default function ArchiveDetail() {
                           lineHeight: '1.6',
                           whiteSpace: 'pre-wrap',
                           overflowWrap: 'anywhere',
-                          maxHeight: msg.sender === 'ai' ? '220px' : 'none',
-                          overflowY: msg.sender === 'ai' ? 'auto' : 'visible'
+                          wordBreak: 'break-word'
                         }}
                     >
                       {/* P. AI 답변은 마크다운 기호 제거 후 표시(코드 텍스트는 보존). 사용자 메시지는 원본 유지. */}
@@ -3219,14 +3265,20 @@ export default function ArchiveDetail() {
                 <div ref={chatEndRef} />
               </div>
               <div style={{ marginTop: '16px' }}>
-                <form onSubmit={handleSendChat} style={{ display: 'flex', gap: '12px', width: '100%' }}>
-                  <input
-                      type="text"
+                <form onSubmit={handleSendChat} style={{ display: 'flex', gap: '12px', width: '100%', alignItems: 'flex-end' }}>
+                  <textarea
                       className="input-field"
-                      style={{ flex: 1, minWidth: 0, margin: 0, borderRadius: '30px', backgroundColor: '#F3F4F6', border: 'none', padding: '16px 24px', fontSize: '15px', height: '50px' }}
-                      placeholder={textBlocked ? '문서 텍스트 추출 후 질문할 수 있습니다.' : '자료 내용에 대해 궁금한 점을 입력하세요.'}
+                      rows={3}
+                      style={{ flex: 1, minWidth: 0, margin: 0, borderRadius: '20px', backgroundColor: '#F3F4F6', border: 'none', padding: '14px 20px', fontSize: '15px', lineHeight: 1.6, minHeight: '72px', maxHeight: '200px', resize: 'vertical', fontFamily: 'inherit' }}
+                      placeholder={textBlocked ? '문서 텍스트 추출 후 질문할 수 있습니다.' : '자료 내용에 대해 궁금한 점을 입력하세요. (Enter 전송 · Shift+Enter 줄바꿈)'}
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent?.isComposing) {
+                          e.preventDefault();
+                          handleSendChat(e);
+                        }
+                      }}
                       disabled={textBlocked || isAskingQuestion}
                   />
                   <button type="submit" disabled={textBlocked || isAskingQuestion || !chatInput.trim()} className="btn-primary" style={{ width: '50px', height: '50px', borderRadius: '50%', padding: 0, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center', opacity: (textBlocked || isAskingQuestion || !chatInput.trim()) ? 0.55 : 1 }}>

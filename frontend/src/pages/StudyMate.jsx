@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { agentService } from '../services/api';
-import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, MessageCircle, UsersRound, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck, RefreshCw } from 'lucide-react';
+import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, MessageCircle, UsersRound, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck } from 'lucide-react';
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
 import ProfessorLearningPanel from '../components/studymate/ProfessorLearningPanel';
 import '../components/studymate/studymate-premium.css';
@@ -57,6 +57,25 @@ const MATE_TYPES = [
   { key: '냉철 분석형', role: '논리적 분석 멘토', icon: '❄️', color: '#374151', desc: '감정보다 근거와 구조 중심으로 분석합니다.' },
 ];
 
+// 학습메이트 유형별 자연스러운 이름 후보 풀 — 유형명을 그대로 이름으로 쓰지 않도록 자동 작명에 사용.
+// suggestMateName(key, usedNames): 같은 방의 다른 에이전트 이름과 겹치지 않는 첫 후보를 고른다(모두 사용 중이면 번호 부여).
+const MATE_NAME_POOL = {
+  '정확 설명형': ['개념 정리 교수', '원리 해설가', '정확한 설명자'],
+  '쉬운 튜터형': ['쉬운 풀이 튜터', '친절한 개념 선생', '차근차근 도우미'],
+  '비판 코치형': ['논점 검증 코치', '반례 탐색가', '날카로운 피드백러'],
+  '냉철 분석형': ['냉철 분석관', '핵심 진단가', '구조 분석가'],
+};
+const suggestMateName = (key, usedNames = []) => {
+  const pool = MATE_NAME_POOL[key] || [key];
+  const used = new Set((usedNames || []).map((n) => String(n || '').trim()).filter(Boolean));
+  const free = pool.find((n) => !used.has(n));
+  if (free) return free;
+  // 후보가 모두 쓰이면 첫 후보에 번호를 붙여 중복 회피
+  let i = 2;
+  while (used.has(`${pool[0]} ${i}`)) i += 1;
+  return `${pool[0]} ${i}`;
+};
+
 // 답변 톤(성격) = 공통 7종으로 통일. value(내부 personality enum)와 표시 label을 동일한 정규 라벨로 맞춘다.
 // 7개 personality(기본값/전문적/친근함/솔직함/독특함/효율적/냉소적)를 모두 노출해 에이전트별 톤 차별화를 지원한다.
 const TONE_OPTIONS = PERSONALITY_STYLE_OPTIONS.map((o) => ({ value: o.label, label: o.label, key: o.key, description: o.description }));
@@ -96,7 +115,8 @@ const buildAgentFromMateType = (key) => {
   const p = LEARNING_MATE_TYPE_PRESETS[key] || {};
   return {
     ...DEFAULT_AGENT,
-    name: key,
+    name: (MATE_NAME_POOL[key] && MATE_NAME_POOL[key][0]) || key,
+    nameEdited: false,
     role: p.role || DEFAULT_AGENT.role,
     personality: p.tone || DEFAULT_AGENT.personality,
     knowledgeLevel: p.learnerLevel || DEFAULT_AGENT.knowledgeLevel,
@@ -895,7 +915,8 @@ const SimulationRenderer = ({ stages, onChoice }) => {
             {body && <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', color: 'var(--color-text-muted)', fontSize: '13px', lineHeight: 1.55 }}>{body}</div>}
             {Array.isArray(s.choices) && s.choices.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginTop: '8px' }}>
-                {s.choices.map((choice) => (
+                {/* 선택지 과다 출력 방어: 최대 20개까지만 노출(요구사항: 5개 내외, 20개 초과 금지) */}
+                {s.choices.slice(0, 20).map((choice) => (
                   <button
                     type="button"
                     key={choice.choiceId || choice.label}
@@ -954,13 +975,17 @@ const DebateRenderer = ({ stages }) => {
 
 // processSteps(전체 map) → 결과 말풍선 배열. 토론 응답이면 토론 4섹션, 아니면 1/2/3 단계.
 // ── 내부 단계(검증/피드백) 노출 정책 ──────────────────────────────────────────
-// 기본 채팅(basic)도 1차 답변에 그치지 않고 2차 심화(검증)/3차 상호 피드백을 노출한다.
-// 검증(validation)/협업(collaboration) 모드는 평가/피드백이 모드의 목적이므로 동일하게 노출한다.
+// 기본 채팅(basic)은 1차(=노출용 최종) 답변만 top-level로 보여주고, 2차 검증/3차 상호 피드백은
+//  내부 단계로 숨긴다(에이전트 수 × 단계 수만큼 카드가 폭발하는 것을 막는다).
+// 검증(validation)/협업(collaboration) 모드는 평가/피드백이 모드의 목적이므로 내부 단계를 노출한다.
 // (개별 단계 생성 여부는 FastAPI/ai07가 stagePolicy/enable* 플래그로 결정 — 도착하지 않으면 1차만 표시.)
 const isInternalVisibleMode = (mode) => {
   const m = String(mode || '').toLowerCase();
-  return m === '' || m === 'basic' || m === '기본'
-    || m === 'validation' || m === '검증' || m === 'collaboration' || m === 'collaborative' || m === '협업';
+  // 기본/빈 모드는 내부 단계(2차 검증·3차 상호 피드백)를 top-level 카드로 노출하지 않는다.
+  //  (3에이전트 × 3단계 = 9카드 폭발 방지. 백엔드도 2·3차를 visible=false로 내려보낸다.)
+  //  사용자가 명시적으로 평가/협업을 고른 모드에서만 내부 단계를 노출한다.
+  return m === 'validation' || m === '검증'
+    || m === 'collaboration' || m === 'collaborative' || m === '협업';
 };
 
 // 방어적 필터: FastAPI/Spring이 실수로 내부 evaluator 문구를 visible로 흘려도 기본 채팅에선 숨긴다.
@@ -2108,7 +2133,6 @@ export default function StudyMate() {
   const [showModal, setShowModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   // 메시지 헤더 클릭 시 "이 답변: ○○ 모드"를 펼쳐 보일 대상 메시지 id (토글)
-  const [openModeMsgId, setOpenModeMsgId] = useState(null);
 
   const selectedAgentIdRef = useRef(null);
   useEffect(() => {
@@ -2133,6 +2157,11 @@ export default function StudyMate() {
   useEffect(() => { typingRoomsRef.current = typingRooms; }, [typingRooms]);
   // 방별 마지막 턴 시작/완료 시각(ms). 탭 복귀 시 '최근 진행 턴'만 보정 대상으로 삼는다.
   const lastTurnAtRef = useRef({});
+
+  // 토론/상황극 멀티턴 상태(논제/시나리오/선택)를 방별로 보관해 다음 요청에 echo한다.
+  //  ai07가 응답에 실어 주는 debateState/selectedTopic/simulationState/scenarioId/turnIndex를 캡처해
+  //  두었다가 같은 방의 다음 메시지 payload에 그대로 다시 싣는다(매 턴 TOPIC_SELECTION/선택지 반복 방지).
+  const convStateRef = useRef({});
 
   // 에이전트는 최소 1명, 최대 3명. createdAgents 배열 길이가 곧 현재 에이전트 수다(+/- 및 캐러셀 ›로 조절).
   const [createdAgents, setCreatedAgents] = useState(makeDefaultAgents());
@@ -2527,6 +2556,54 @@ export default function StudyMate() {
     const roomMaterialId = selectedAgent?.materialId ?? selectedAgent?.material_id;
     if (roomMaterialId) turnExtras.materialId = roomMaterialId;
 
+    // ── 멀티턴 대화 상태 echo (토론 논제/상황극 선택 진행 유지) ──────────────────
+    //  직전 응답에서 캡처한 상태(convStateRef)를 같은 방의 다음 요청 payload에 다시 싣는다.
+    //  이게 빠지면 ai07가 매 턴 TOPIC_SELECTION/선택지 제시로 되돌아가 같은 논제·선택지를 반복한다.
+    const savedConv = convStateRef.current[agentId] || {};
+    if (activeLearningMode === 'debate') {
+      if (savedConv.debateState != null) turnExtras.debateState = savedConv.debateState;
+      if (savedConv.selectedTopic) turnExtras.selectedTopic = savedConv.selectedTopic;
+      if (savedConv.debateSessionId) turnExtras.debateSessionId = savedConv.debateSessionId;
+      if (typeof savedConv.turnIndex === 'number') turnExtras.turnIndex = savedConv.turnIndex;
+    }
+    if (activeLearningMode === 'simulation') {
+      if (savedConv.simulationState != null) turnExtras.simulationState = savedConv.simulationState;
+      if (savedConv.scenarioId) turnExtras.scenarioId = savedConv.scenarioId;
+      if (typeof savedConv.turnIndex === 'number') turnExtras.turnIndex = savedConv.turnIndex;
+      if (savedConv.selectedChoice) turnExtras.selectedChoice = savedConv.selectedChoice;
+      if (Array.isArray(savedConv.previousChoices) && savedConv.previousChoices.length) {
+        turnExtras.previousChoices = savedConv.previousChoices;
+      }
+    }
+    // 상황극: 이번 턴에 소비한 선택은 다음 턴 previousChoices로 옮기고 selectedChoice는 비운다(턴 인덱스 +1).
+    //  (turnExtras에는 이미 값으로 복사됐으므로 ref만 갱신해도 이번 요청에는 영향 없다.)
+    if (activeLearningMode === 'simulation' && savedConv.selectedChoice) {
+      const pc = Array.isArray(savedConv.previousChoices) ? savedConv.previousChoices.slice() : [];
+      pc.push(savedConv.selectedChoice);
+      convStateRef.current[agentId] = {
+        ...savedConv,
+        previousChoices: pc,
+        selectedChoice: null,
+        turnIndex: (typeof savedConv.turnIndex === 'number' ? savedConv.turnIndex : 0) + 1,
+      };
+    }
+    // 응답(SSE 이벤트/all_complete/blocking)에서 멀티턴 상태 토큰을 캡처해 방별로 누적 저장한다.
+    //  ai07가 보내는 키는 camelCase/snake_case 혼재 가능성이 있어 둘 다 받는다(가산적·방어적).
+    const captureConvState = (d) => {
+      if (!d || typeof d !== 'object') return;
+      const prevState = convStateRef.current[agentId] || {};
+      const next = { ...prevState };
+      const setIf = (k, v) => { if (v !== undefined && v !== null && v !== '') next[k] = v; };
+      setIf('debateState', d.debateState ?? d.debate_state);
+      setIf('selectedTopic', d.selectedTopic ?? d.selected_topic);
+      setIf('debateSessionId', d.debateSessionId ?? d.debate_session_id ?? d.sessionId);
+      setIf('simulationState', d.simulationState ?? d.simulation_state);
+      setIf('scenarioId', d.scenarioId ?? d.scenario_id);
+      const ti = d.turnIndex ?? d.turn_index;
+      if (typeof ti === 'number') next.turnIndex = ti;
+      convStateRef.current[agentId] = next;
+    };
+
     // ── 기본 질문 모드 단계 정책 ──────────────────────────────────────────────
     // 기본 모드에서도 1차 답변에 그치지 않고 2차 심화/3차 상호 피드백/환각 검증까지 받도록
     // stage 정책 플래그를 함께 전달한다(개별 단계 생성 여부는 FastAPI/ai07가 결정).
@@ -2797,6 +2874,7 @@ export default function StudyMate() {
             },
             // 토론 모드: 단계(debate_section) 도착 즉시 stageType+side로 upsert 후 갱신.
             onDebateSection: (d) => {
+              captureConvState(d);
               if (!d || !d.stageType) return;
               const key = `${d.stageType}::${d.side}`;
               debateStageMap.set(key, {
@@ -2844,6 +2922,7 @@ export default function StudyMate() {
             },
             // 상황극: 단계(simulation_stage) 도착 즉시 requestId+stageType+agentIndex+contentHash로 upsert 후 갱신.
             onSimulationStage: (d) => {
+              captureConvState(d);
               if (!d || !d.stageType) return;
               const key = `${requestId}::${d.stageType}::${d.agentIndex ?? 0}::${contentHash(d.content)}`;
               simulationStageMap.set(key, {
@@ -2931,6 +3010,7 @@ export default function StudyMate() {
             onAllComplete: (d) => {
               if (watchdogTimer) clearTimeout(watchdogTimer);
               streamCompleted = true;
+              captureConvState(d);
               lastTurnAtRef.current[agentId] = Date.now();
               if (import.meta.env.DEV) console.debug('[StudyMate][perf] all_complete', { totalMs: Date.now() - perfT0, ttfbMs: perfFirstEvent ? perfFirstEvent - perfT0 : null });
               if (routedTerminal) return; // 라우팅으로 종료 — 기존 답변 렌더 스킵(중복 방지)
@@ -3013,6 +3093,7 @@ export default function StudyMate() {
         ...turnExtras,
       });
       console.debug('[StudyMate] chat response', res);
+      captureConvState(res);
 
       if (res.success === false || res.errorMessage) {
         // timeout 등 서버측 실패: alert로 흐름을 막지 않고 UI 내부 메시지로 부드럽게 안내한다.
@@ -3672,8 +3753,6 @@ export default function StudyMate() {
                         : debatePayload ? 'debate'
                         : socraticPayload ? 'socratic'
                         : (msg.mode || msg.learningMode || 'basic');
-                      const msgKey = msg.id ?? `${msg.parentId}-${msg.badgeKey}-${idx}`;
-                      const showThisMode = !isUser && openModeMsgId === msgKey;
 
                       // 방어적 필터: 기본 채팅(평가/피드백 모드가 아닐 때)에서 내부 evaluator 문구가
                       //  섞여 들어오면 사용자에게 노출하지 않는다. (라우팅/경고 버블은 예외)
@@ -3684,16 +3763,14 @@ export default function StudyMate() {
                       }
                       // 라우팅/인사/욕설 등 direct reply는 마크다운 제거 평문, 그 외 AI 답변은 RichText 렌더.
                       const isPlainReply = !!msg.routeAction || !!msg.isNotice;
-                      // 항상 보이는 메타 배지: 모드 · 말투(성격) · 학습자 수준
-                      const showMetaBadges = !isUser && !msg.routeAction && !msg.isNotice;
 
                       return (
                         <div key={msg.id ?? `${msg.parentId}-${msg.badgeKey}-${idx}`} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
+                          {/* 메시지 헤더: 에이전트 이름(+아이콘)만 노출. 모드/단계/모델/역할/성격/수준/글자수 배지는
+                              발표 화면 단순화를 위해 렌더링하지 않는다(내부 데이터는 유지). */}
                           <div
                             className="chat-bubble-sender"
-                            onClick={!isUser ? () => setOpenModeMsgId((prev) => (prev === msgKey ? null : msgKey)) : undefined}
-                            title={!isUser ? '클릭하면 이 답변에 사용된 모드를 표시합니다' : undefined}
-                            style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isUser ? undefined : agentColor.text, cursor: isUser ? undefined : 'pointer' }}
+                            style={{ display: 'flex', alignItems: 'center', gap: '6px', color: isUser ? undefined : agentColor.text }}
                           >
                             {!isUser && (
                               <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', backgroundColor: agentColor.bg, color: agentColor.text, fontSize: '11px' }}>
@@ -3701,35 +3778,6 @@ export default function StudyMate() {
                               </span>
                             )}
                             <span style={{ fontWeight: '700' }}>{senderName}</span>
-                            {showMetaBadges && (
-                              <span style={{ fontSize: '10px', padding: '1px 7px', borderRadius: '999px', backgroundColor: `${agentColor.border}1A`, color: agentColor.text, fontWeight: 700, whiteSpace: 'nowrap' }}>
-                                {modeLabelOf(msgMode)} 모드
-                              </span>
-                            )}
-                            {!isUser && msg.badge && (
-                              <span style={{ fontSize: '10px', padding: '1px 7px', borderRadius: '999px', backgroundColor: `${msg.badge.color}22`, color: msg.badge.color, fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-                                {msg.badge.text}
-                                {msg.badge.hint ? ` · ${msg.badge.hint}` : ''}
-                              </span>
-                            )}
-                            {!isUser && msg.stageTo && (
-                              <span style={{ fontSize: '10px', color: '#9ca3af' }}>→ {msg.stageTo}</span>
-                            )}
-                            {!isUser && agentRole && <span style={{ fontSize: '10px', color: '#9ca3af' }}>({agentRole})</span>}
-                            {showMetaBadges && agentPersonality && (
-                              <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '4px', backgroundColor: agentTheme.tagBg, color: agentTheme.accent, fontWeight: 'bold' }}>
-                                {agentPersonality}
-                              </span>
-                            )}
-                            {showMetaBadges && agentKnowledge && (
-                              <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '4px', backgroundColor: 'rgba(96,201,90,0.10)', color: 'var(--color-primary)', fontWeight: 'bold' }}>
-                                {knowledgeLevelLabel(agentKnowledge)}
-                                {(!isStructured && typeof msg.content === 'string' && msg.content.length > 0)
-                                  ? ` · ${msg.content.length.toLocaleString()}자` : ''}
-                                {(msg.aiMeta && Array.isArray(msg.aiMeta.toolsUsed) && msg.aiMeta.toolsUsed.length > 0)
-                                  ? ` · ${msg.aiMeta.toolsUsed.join('+')}` : ''}
-                              </span>
-                            )}
                           </div>
                           {hasSimulationPayload ? (
                             <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', borderLeft: `4px solid ${agentColor.border}`, maxWidth: '100%' }}>
@@ -3737,13 +3785,20 @@ export default function StudyMate() {
                                 stages={simulationStages}
                                 onChoice={(choice) => {
                                   const label = choice.label || choice.choiceId || 'A';
+                                  const choiceId = choice.choiceId || choice.label || label;
                                   const promptText = `${label} 선택`;
                                   pendingDetailParentId.current = `${msg.id}::simulation::CHOICE::${label}`;
+                                  const activeId = getAgentId(selectedAgent);
+                                  // 고른 선택지를 방 상태에 기록 → 다음 전송 payload에 selectedChoice로 echo되어
+                                  //  ai07가 같은 선택지 목록을 반복하지 않고 선택 결과/반응 단계로 진행한다.
+                                  if (activeId) {
+                                    const prevState = convStateRef.current[activeId] || {};
+                                    convStateRef.current[activeId] = { ...prevState, selectedChoice: choiceId };
+                                    setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+                                  }
                                   setMessage(promptText);
                                   setLearningMode('simulation');
                                   setShowMentionPopup(false);
-                                  const activeId = getAgentId(selectedAgent);
-                                  if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
                                   const inputEl = document.querySelector('.chat-input-premium input');
                                   if (inputEl) inputEl.focus();
                                 }}
@@ -3790,8 +3845,9 @@ export default function StudyMate() {
                               성격 검증 {msg.pv.score.toFixed(2)} {msg.pv.passed ? '통과' : '보완 필요'}
                             </div>
                           )}
-                          {/* 답변 하단 액션 버튼: 메모하기 / 더 자세히 / 반박 / 비교 / 예시.
-                              교수님들이 이어서 반응하는 흐름으로 연결된다(내부적으로 후속질문 핸들러 재사용). */}
+                          {/* 답변 하단 액션: 메모하기만 유지(저장된 메모 패널과 연동).
+                              더 자세히/반박/비교/예시 등 후속 비교 액션은 발표 화면 단순화를 위해 제거.
+                              (handleNodeAction은 '교수님들과 대화' 탭에서 계속 사용되므로 유지) */}
                           {!isUser && !hasSimulationPayload && !debatePayload && !socraticPayload && (
                             <div className="chat-answer-actions">
                               <button
@@ -3801,18 +3857,6 @@ export default function StudyMate() {
                               >
                                 <Bookmark size={12} fill={bookmarkedIds.has(msg.id) ? '#16a34a' : 'none'} />
                                 {bookmarkedIds.has(msg.id) ? '메모됨' : '메모하기'}
-                              </button>
-                              <button type="button" className="answer-act" onClick={() => handleNodeAction(msg, 'detail')}>
-                                <RefreshCw size={12} /> 더 자세히
-                              </button>
-                              <button type="button" className="answer-act is-rebut" onClick={() => handleNodeAction(msg, 'criticize')}>
-                                ⚔️ 반박
-                              </button>
-                              <button type="button" className="answer-act is-compare" onClick={() => handleNodeAction(msg, 'compare')}>
-                                ⚖️ 비교
-                              </button>
-                              <button type="button" className="answer-act is-example" onClick={() => handleNodeAction(msg, 'support')}>
-                                💡 예시
                               </button>
                             </div>
                           )}
@@ -4056,23 +4100,8 @@ export default function StudyMate() {
                     placeholder={'교수님들과 학습할 질문을 입력하세요... (@를 입력해 에이전트 호출)'}
                     disabled={typingRooms[getAgentId(selectedAgent)]}
                   />
-                  {/* 모드 선택: 항상 펼쳐두지 않고 입력창 우측 컴팩트 드롭다운으로 축소 */}
-                  <select
-                    value={learningMode}
-                    onChange={(e) => setLearningMode(e.target.value)}
-                    title="대화 모드 선택"
-                    aria-label="대화 모드"
-                    style={{
-                      flexShrink: 0, height: '34px', maxWidth: '120px', padding: '0 8px',
-                      borderRadius: '10px', border: '1px solid var(--color-border)',
-                      backgroundColor: 'var(--color-bg, #fff)', color: 'var(--color-text-muted)',
-                      fontSize: '12px', cursor: 'pointer',
-                    }}
-                  >
-                    {LEARNING_MODE_CHIPS.map((m) => (
-                      <option key={m.value} value={m.value}>{m.icon} {m.label}</option>
-                    ))}
-                  </select>
+                  {/* 입력창 모드 선택 드롭다운 제거: 방 설정에서 정한 learningMode를 그대로 따른다.
+                      (전송 payload의 mode/learningMode는 sendMessage에서 기존 방 모드로 계속 전송됨) */}
                   <button type="submit" disabled={typingRooms[getAgentId(selectedAgent)] || !message.trim()}>
                     <Send size={17} />
                   </button>
@@ -4491,17 +4520,22 @@ export default function StudyMate() {
                               type="button"
                               key={t.key}
                               onClick={() => {
-                                // 유형 버튼 = 프리셋. 이름/답변 톤/학습자 수준/추가 요청을 한 번에 채운다.
-                                // 사용자가 직접 수정한 값이 있어도 프리셋 값으로 덮어쓴다(요구사항: 프리셋 우선 통일).
+                                // 유형 버튼 = 프리셋. 역할/답변 톤/학습자 수준/추가 요청을 한 번에 채운다.
+                                // 이름은 유형명을 그대로 복사하지 않고 자연스러운 후보로 자동 작명한다.
+                                //  · 사용자가 이름을 직접 수정(nameEdited)한 경우에는 덮어쓰지 않는다.
+                                //  · 같은 방의 다른 에이전트 이름과 겹치지 않게 한다.
                                 const preset = LEARNING_MATE_TYPE_PRESETS[t.key] || {};
                                 const list = [...createdAgents];
+                                const cur = list[idx] || {};
+                                const otherNames = list.filter((_, i) => i !== idx).map((a) => a && a.name);
+                                const keepName = cur.nameEdited && String(cur.name || '').trim();
                                 list[idx] = {
-                                  ...list[idx],
+                                  ...cur,
                                   agentPreset: t.key,
-                                  name: t.key,
+                                  name: keepName ? cur.name : suggestMateName(t.key, otherNames),
                                   role: preset.role || t.role,
-                                  personality: preset.tone || list[idx].personality,
-                                  knowledgeLevel: preset.learnerLevel || list[idx].knowledgeLevel,
+                                  personality: preset.tone || cur.personality,
+                                  knowledgeLevel: preset.learnerLevel || cur.knowledgeLevel,
                                   customInstruction: preset.additionalRequest || '',
                                   goal: preset.role || t.role,
                                 };
@@ -4538,7 +4572,8 @@ export default function StudyMate() {
                         value={agent.name}
                         onChange={(e) => {
                           const list = [...createdAgents];
-                          list[idx].name = e.target.value;
+                          // 사용자가 직접 이름을 수정하면 nameEdited 표시 → 유형 재선택 시 자동 작명이 덮어쓰지 않음
+                          list[idx] = { ...list[idx], name: e.target.value, nameEdited: true };
                           setCreatedAgents(list);
                         }}
                         placeholder="예: 김영한"

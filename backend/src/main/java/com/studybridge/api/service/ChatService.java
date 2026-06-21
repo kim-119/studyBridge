@@ -252,6 +252,33 @@ public class ChatService {
                 if (request.getTargetAgentId() != null && !request.getTargetAgentId().isBlank()) {
                         requestBody.put("targetAgentId", request.getTargetAgentId());
                 }
+                // ── 멀티턴 대화 상태 echo 패스스루(토론 논제/상황극 선택 진행 유지) ──
+                //  값이 있을 때만 실어 보낸다. 없으면(기본/첫 턴) 추가하지 않아 기존 동작과 동일하다.
+                //  이 echo가 빠지면 ai07가 매 턴 TOPIC_SELECTION/선택지 제시로 되돌아가 같은 논제·선택지를 반복한다.
+                if (request.getSelectedTopic() != null && !request.getSelectedTopic().isBlank()) {
+                        requestBody.put("selectedTopic", request.getSelectedTopic());
+                }
+                if (request.getDebateState() != null) {
+                        requestBody.put("debateState", request.getDebateState());
+                }
+                if (request.getDebateSessionId() != null && !request.getDebateSessionId().isBlank()) {
+                        requestBody.put("debateSessionId", request.getDebateSessionId());
+                }
+                if (request.getSimulationState() != null) {
+                        requestBody.put("simulationState", request.getSimulationState());
+                }
+                if (request.getScenarioId() != null && !request.getScenarioId().isBlank()) {
+                        requestBody.put("scenarioId", request.getScenarioId());
+                }
+                if (request.getSelectedChoice() != null && !request.getSelectedChoice().isBlank()) {
+                        requestBody.put("selectedChoice", request.getSelectedChoice());
+                }
+                if (request.getPreviousChoices() != null && !request.getPreviousChoices().isEmpty()) {
+                        requestBody.put("previousChoices", request.getPreviousChoices());
+                }
+                if (request.getTurnIndex() != null) {
+                        requestBody.put("turnIndex", request.getTurnIndex());
+                }
                 // 답변 길이 사실상 무제한: FastAPI가 인식하면 사용, 아니면 무시(가산적 패스스루).
                 requestBody.put("answerLength", "unlimited");
                 requestBody.put("maxResponseChars", AI_MAX_RESPONSE_CHARS);
