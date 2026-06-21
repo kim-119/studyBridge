@@ -11,6 +11,63 @@ import { OpenVidu } from 'openvidu-browser';
 import { useAuth } from '../hooks/useAuth';
 import { groupService, timerService, inquiryService } from '../services/api';
 
+// 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
+// - 기존 렌더는 섹션 중심(한 카드에 모든 에이전트가 섞임)이라 에이전트별 사고가 구분되지 않았다.
+// - 그룹 키는 agentIndex(가장 안정적) → agentId → agentName 순으로 안정적으로 잡아,
+//   스트림 재도착/재렌더링이나 응답 순서 변동에도 카드가 뒤섞이지 않게 한다.
+// - 같은 에이전트의 1차/보완 답변은 같은 카드에 귀속(중복 카드 생성 방지), 피드백은 작성자(fromAgent)에게 귀속한다.
+// - 종합 요약(debateSummary)은 여기서 다루지 않고 별도 카드로 분리해 렌더한다.
+const buildDebateAgentCards = (sections) => {
+  const sec = sections || {};
+  const order = [];
+  const byKey = new Map();
+
+  const resolveKey = (idx, id, name) => {
+    if (idx !== undefined && idx !== null && idx !== '') return `idx:${idx}`;
+    if (id !== undefined && id !== null && id !== '') return `id:${id}`;
+    if (name) return `name:${name}`;
+    return null;
+  };
+
+  const ensure = (key, seedName, seedIndex) => {
+    if (!byKey.has(key)) {
+      byKey.set(key, { agentKey: key, name: '', index: seedIndex, stage: null, initial: '', revised: '', feedbacks: [] });
+      order.push(key);
+    }
+    const card = byKey.get(key);
+    if (!card.name && seedName) card.name = seedName;
+    if (card.index == null && seedIndex != null) card.index = seedIndex;
+    return card;
+  };
+
+  (sec.initialAnswers || []).forEach((it, i) => {
+    const key = resolveKey(it.agentIndex, it.agentId, it.agentName) || `fallback:initial:${i}`;
+    const card = ensure(key, it.displayName || it.agentName, it.agentIndex);
+    if (it.answer) card.initial = it.answer;
+    if (it.stage != null) card.stage = it.stage;
+  });
+
+  (sec.revisedAnswers || []).forEach((it, i) => {
+    const key = resolveKey(it.agentIndex, it.agentId, it.agentName) || `fallback:revised:${i}`;
+    const card = ensure(key, it.displayName || it.agentName, it.agentIndex);
+    if (it.answer) card.revised = it.answer;
+  });
+
+  // 피드백은 "준 사람(fromAgent)" 카드에 귀속시켜 에이전트별로 분리 유지한다.
+  (sec.peerFeedbacks || []).forEach((it, i) => {
+    const key = resolveKey(it.fromAgentIndex, undefined, it.fromAgentName) || `fallback:fb:${i}`;
+    const card = ensure(key, it.fromAgentName, it.fromAgentIndex);
+    if (it.feedback) {
+      card.feedbacks.push({
+        to: it.toAgentName || (it.toAgentIndex != null ? `에이전트 ${it.toAgentIndex}` : ''),
+        text: it.feedback,
+      });
+    }
+  });
+
+  return order.map((k) => byKey.get(k));
+};
+
 const forceOpenViduWssTransport = (openviduInstance) => {
   if (!openviduInstance || openviduInstance.__studybridgeWssPatched) return;
 
@@ -2093,39 +2150,59 @@ try {
                       // 토론 모드 메시지: 1차 의견 → 서로 피드백 → 보완 답변 → 토론 정리 순서로 표시
                       if (msg.isDebate) {
                         const sec = msg.sections || {};
-                        const debateOrder = [
-                          { key: 'initialAnswers', title: '1차 의견', accent: '#3B82F6' },
-                          { key: 'peerFeedbacks', title: '서로 피드백', accent: '#F59E0B' },
-                          { key: 'revisedAnswers', title: '보완 답변', accent: '#10B981' },
-                        ];
+                        const agentCards = buildDebateAgentCards(sec);
+                        const palette = ['#3B82F6', '#10B981', '#8B5CF6', '#F59E0B', '#EC4899'];
                         return (
                           <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignSelf: 'flex-start', maxWidth: '95%', width: '100%' }}>
                             <span style={{ fontSize: '11px', color: '#A5B4FC', display: 'flex', alignItems: 'center', gap: '4px' }}>
                               <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#6366F1' }} />
                               🤖 AI 토론
                             </span>
-                            {debateOrder.map(({ key, title, accent }) => {
-                              const items = sec[key];
-                              if (!items || items.length === 0) return null;
+                            {/* 에이전트별 독립 카드: 각 카드에는 해당 에이전트의 답변/피드백만 들어간다. */}
+                            {agentCards.map((card, ci) => {
+                              const accent = palette[ci % palette.length];
+                              const displayName = card.name || (card.index != null ? `에이전트 ${card.index}` : '에이전트');
+                              const hasFeedback = card.feedbacks.length > 0;
                               return (
-                                <div key={key} style={{ backgroundColor: '#1E293B', border: `1px solid ${accent}55`, borderLeft: `3px solid ${accent}`, borderRadius: '10px', padding: '10px 14px' }}>
-                                  <div style={{ fontWeight: 700, fontSize: '12px', color: accent, marginBottom: '8px' }}>{title}</div>
-                                  {items.map((it, i) => (
-                                    <div key={i} style={{ marginBottom: i === items.length - 1 ? 0 : '10px' }}>
-                                      <div style={{ fontWeight: 600, color: '#93C5FD', fontSize: '12px', marginBottom: '2px' }}>
-                                        {it.displayName || it.title || it.agentName || ''}
-                                      </div>
-                                      <div style={{ fontSize: '13px', color: '#E5E7EB', lineHeight: '1.5', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                                        {it.answer || it.feedback || ''}
-                                      </div>
+                                <div key={card.agentKey} style={{ backgroundColor: '#1E293B', border: `1px solid ${accent}55`, borderLeft: `3px solid ${accent}`, borderRadius: '10px', padding: '10px 14px' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: accent }} />
+                                    <span style={{ fontWeight: 700, fontSize: '13px', color: accent }}>{displayName}</span>
+                                    {card.stage != null && (
+                                      <span style={{ fontSize: '10px', color: '#94A3B8', backgroundColor: 'rgba(148,163,184,0.15)', borderRadius: '6px', padding: '1px 6px' }}>
+                                        단계 {card.stage}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {card.initial && (
+                                    <div style={{ marginBottom: (hasFeedback || card.revised) ? '10px' : 0 }}>
+                                      <div style={{ fontWeight: 600, fontSize: '11px', color: '#93C5FD', marginBottom: '2px' }}>1차 의견</div>
+                                      <div style={{ fontSize: '13px', color: '#E5E7EB', lineHeight: '1.5', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{card.initial}</div>
                                     </div>
-                                  ))}
+                                  )}
+                                  {hasFeedback && (
+                                    <div style={{ marginBottom: card.revised ? '10px' : 0 }}>
+                                      <div style={{ fontWeight: 600, fontSize: '11px', color: '#FBBF24', marginBottom: '2px' }}>다른 에이전트에게 준 피드백</div>
+                                      {card.feedbacks.map((fb, fi) => (
+                                        <div key={fi} style={{ fontSize: '13px', color: '#E5E7EB', lineHeight: '1.5', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: fi === card.feedbacks.length - 1 ? 0 : '6px' }}>
+                                          {fb.to ? <span style={{ color: '#FBBF24' }}>→ {fb.to}: </span> : null}{fb.text}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {card.revised && (
+                                    <div>
+                                      <div style={{ fontWeight: 600, fontSize: '11px', color: '#6EE7B7', marginBottom: '2px' }}>보완 답변</div>
+                                      <div style={{ fontSize: '13px', color: '#E5E7EB', lineHeight: '1.5', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{card.revised}</div>
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })}
+                            {/* 종합 요약: 개별 에이전트 카드와 분리된 별도 카드 */}
                             {sec.debateSummary && (
                               <div style={{ backgroundColor: '#1E293B', border: '1px solid #FCD34D55', borderLeft: '3px solid #FCD34D', borderRadius: '10px', padding: '10px 14px' }}>
-                                <div style={{ fontWeight: 700, fontSize: '12px', color: '#FCD34D', marginBottom: '8px' }}>토론 정리</div>
+                                <div style={{ fontWeight: 700, fontSize: '12px', color: '#FCD34D', marginBottom: '8px' }}>종합 요약</div>
                                 <div style={{ fontSize: '13px', color: '#FDE68A', lineHeight: '1.5', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                                   {sec.debateSummary}
                                 </div>

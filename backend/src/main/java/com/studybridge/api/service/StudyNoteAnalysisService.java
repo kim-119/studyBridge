@@ -208,6 +208,13 @@ public class StudyNoteAnalysisService {
         body.put("inputType", "PDF");
         // 페이지 구분(form-feed)이 있으면 페이지별 {page,text}로 분리해 전달(ai07 페이지별 분리/정렬 정확도↑)
         body.put("pageTexts", buildPageTexts(material.getExtractedText()));
+        // 전체 페이지 수(총 페이지 수)를 함께 전달한다. pageTexts 는 텍스트가 있는 페이지만 포함될 수 있어
+        // 마지막/후반 페이지가 이미지·빈 텍스트면 ai07 가 최대 page marker 만으로 총 페이지 수를 과소 추정할 수 있다.
+        // → 추출기가 페이지 경계마다 삽입한 form-feed(\f)를 기준으로 총 페이지 수를 보존해 보낸다(텍스트 유무 무관).
+        Integer pageCount = resolvePageCount(material.getExtractedText());
+        if (pageCount != null && pageCount > 0) {
+            body.put("pageCount", pageCount);
+        }
         // OCR 파이프라인 미구현 → ocrTexts 등은 빈 배열(이미지 전용 페이지는 ai07에서 INSUFFICIENT 로 정상 처리).
         body.put("captions", List.of());
         body.put("ocrTexts", List.of());
@@ -220,6 +227,23 @@ public class StudyNoteAnalysisService {
                 .bodyValue(body).retrieve().bodyToMono(Map.class)
                 .block(Duration.ofSeconds(timeoutSeconds));
         return resp == null ? null : MAPPER.valueToTree(resp);
+    }
+
+    // 추출 텍스트의 form-feed(\f) 페이지 경계로 총 페이지 수를 도출한다.
+    //  - 빈/이미지 전용 페이지의 경계도 그대로 보존되므로, "텍스트가 있는 페이지 수(pageTexts.size)" 와 달리
+    //    마지막 페이지가 비어 있어도 총 페이지 수를 과소 추정하지 않는다.
+    //  - 경계(\f)가 전혀 없으면(단일 blob/Vision OCR 결과 등) 총 페이지 수를 신뢰할 수 없으므로 null 을 반환해
+    //    body 에 pageCount 를 넣지 않는다(가짜 값 생성 금지).
+    //  - 전체 extractedText 기준(payload 상한 truncation 전)으로 센다.
+    private Integer resolvePageCount(String text) {
+        if (text == null || text.isBlank()) return null;
+        int formFeeds = 0;
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '\f') formFeeds++;
+        }
+        if (formFeeds == 0) return null; // 페이지 경계 정보 없음 → 총 페이지 수 미상
+        int count = formFeeds + 1;       // 경계 N개 → 페이지 N+1개
+        return count > 0 ? count : null;
     }
 
     // 추출 텍스트를 페이지별 {page,text} 배열로. form-feed(\f) 구분이 있으면 페이지로 분리, 없으면 단일 페이지.
