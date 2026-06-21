@@ -945,12 +945,12 @@ export default function AgentDiscussionThread({
                 <Network size={44} color="#059669" />
               </div>
               <div style={{ fontWeight: 800, fontSize: 22, color: '#0f172a', marginBottom: 12, letterSpacing: '-0.5px' }}>
-                대화 스레드를 시작하세요
+                교수님들과 학습할 질문을 입력하세요
               </div>
               <div style={{ fontSize: 15, color: '#475569', lineHeight: 1.8, maxWidth: 400, textAlign: 'center' }}>
-                질문을 입력하면 AI가 실시간으로 답변합니다.<br />
-                모든 대화 흐름은 <strong>위에서 아래로 분기되는 조직도</strong> 형태로 구성되며,<br />
-                궁금한 노드를 클릭해 상세 내용을 확인하고 <span style={{ color: '#059669', fontWeight: 'bold' }}>추가 질문</span>을 이어갈 수 있습니다.
+                질문을 입력하면 교수님들이 실시간으로 답변합니다.<br />
+                모든 대화는 <strong>위(전체 의견) → 아래(교수 의견)</strong>로 갈라지는 트리로 정리되며,<br />
+                궁금한 <span style={{ color: '#059669', fontWeight: 'bold' }}>대화 카드</span>를 눌러 더 자세히 묻거나 이어갈 수 있습니다.
               </div>
             </motion.div>
           )}

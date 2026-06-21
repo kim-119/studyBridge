@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { agentService } from '../services/api';
-import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck, RefreshCw } from 'lucide-react';
+import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, MessageCircle, UsersRound, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck, RefreshCw } from 'lucide-react';
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
 import ProfessorLearningPanel from '../components/studymate/ProfessorLearningPanel';
 import '../components/studymate/studymate-premium.css';
@@ -1946,7 +1946,13 @@ export default function StudyMate() {
   const [chatHistory, setChatHistory] = useState([]);
   // 마인드맵 뷰가 받는 메시지(토론은 구조화 노드로 확장). chatHistory가 바뀔 때만 재계산한다.
   const mindmapMessages = React.useMemo(() => buildMindmapMessages(chatHistory), [chatHistory]);
-  const [viewTab, setViewTab] = useState('chat'); // 'chat' | 'mindmap'
+  // 중앙 상단 탭: 'chat'(채팅) | 'professor'(교수님들과 대화). 기존 마인드맵 트리 로직을
+  // 그대로 재사용하되, 사용자 화면에는 "마인드맵"을 노출하지 않는다.
+  const PROFESSOR_TAB_VALUE = 'professor';
+  const [viewTab, setViewTab] = useState('chat'); // 'chat' | 'professor'
+  const isProfessorTab = viewTab === PROFESSOR_TAB_VALUE;
+  // 교수님들과 대화 트리 최상단 라벨(액션에 따라 전체 의견/전체 반박/전체 비교/전체 예시로 갱신)
+  const [professorTreeTitle, setProfessorTreeTitle] = useState('전체 의견');
   const [message, setMessage] = useState('');
   
   // 멘션(@) 관련 상태
@@ -3145,6 +3151,20 @@ export default function StudyMate() {
       }
     }
 
+    // AI 답변에 대한 후속 액션(더 자세히/반박/비교/예시)은 자동으로 "교수님들과 대화" 탭으로
+    // 전환하고, 트리 최상단 라벨을 액션에 맞게 갱신한다. 전송 시 mindmapMessages가 갱신되며
+    // 결과가 이 트리에 이어진다. (사용자의 추가 질문 노드 'question'은 탭을 전환하지 않는다.)
+    if (!isUserNode) {
+      const titleByAction = {
+        criticize: '전체 반박',
+        compare: '전체 비교',
+        support: '전체 예시',
+        detail: '전체 의견',
+      };
+      setProfessorTreeTitle(titleByAction[actionType] || '전체 의견');
+      setViewTab(PROFESSOR_TAB_VALUE);
+    }
+
     setMessage(promptText);
     setShowMentionPopup(true);
     setMentionFilter(''); // 전체 목록 보여주기
@@ -3155,7 +3175,7 @@ export default function StudyMate() {
     const inputEl = document.querySelector('.chat-input-premium input');
     if (inputEl) inputEl.focus();
 
-    setToastMsg('💡 교수님들이 이어서 답할 수 있도록 하단 입력창을 확인해주세요.');
+    setToastMsg('💡 교수님들과 대화 탭에서 이어집니다. 하단 입력창에서 전송해 주세요.');
     setTimeout(() => setToastMsg(''), 2500);
   };
 
@@ -3378,9 +3398,25 @@ export default function StudyMate() {
                   </>
                 )}
 
-                {/* 탭 전환 바 제거: 단일 채팅 뷰만 사용한다.
-                    (구) 마인드맵(크게 보기) 탭은 제거되었고, 우측 "교수님들과 학습하기" 패널로 대체됨.
-                    viewTab/마인드맵 뷰 로직은 deprecated 상태로만 보존(다른 곳 재사용 대비). */}
+                {/* 상단 가로 탭바: 채팅 ↔ 교수님들과 대화 (기존 '마인드맵 크게 보기' 위치/폭 재사용) */}
+                <div className="study-view-tabs">
+                  <button
+                    type="button"
+                    className={`view-tab-btn ${viewTab === 'chat' ? 'active chat' : ''}`}
+                    onClick={() => setViewTab('chat')}
+                  >
+                    <MessageCircle size={16} />
+                    <span>채팅</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`view-tab-btn ${isProfessorTab ? 'active professor' : ''}`}
+                    onClick={() => setViewTab(PROFESSOR_TAB_VALUE)}
+                  >
+                    <UsersRound size={16} />
+                    <span>교수님들과 대화</span>
+                  </button>
+                </div>
               </div>
 
               {/* ── 채팅 뷰 ── */}
@@ -3590,25 +3626,48 @@ export default function StudyMate() {
                 </div>
               )}
 
-              {/* ── 마인드맵 뷰 ── */}
-              {viewTab === 'mindmap' && (
-                <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                  <AgentDiscussionThread
-                    messages={mindmapMessages}
-                    typingAgents={
-                      typingRooms[getAgentId(selectedAgent)]
-                        ? (selectedAgent.agents || [{ id: 'ai', name: selectedAgent.name || 'AI' }]).map((ag, i) => ({
-                            id: ag.id || i,
-                            name: ag.name,
-                            color: ['#2563eb','#EA580C','#7C3AED'][i % 3],
-                          }))
-                        : []
-                    }
-                    agents={selectedAgent.agents || []}
-                    bookmarkedIds={bookmarkedIds}
-                    onBookmark={handleBookmark}
-                    onRequestDetail={handleNodeAction}
-                  />
+              {/* ── 교수님들과 대화 뷰 (기존 트리 구조 재사용) ── */}
+              {isProfessorTab && (
+                <div className="professor-discussion-view">
+                  {/* 교실 배너 + 구름 말풍선 */}
+                  <section className="professor-classroom-banner">
+                    <img
+                      src="/studymate-professor-classroom.png"
+                      alt="교수님들과 함께 학습하는 픽셀 교실"
+                      className="professor-classroom-banner-image"
+                      draggable={false}
+                    />
+                    <div className="professor-cloud-bubble">
+                      <strong>학습메이트</strong>
+                      <span>반박 · 비교 · 예시를 누르면 교수님들이 트리 형태로 설명해드려요!</span>
+                    </div>
+                  </section>
+
+                  {/* 트리: 최상단 전체 의견 + 교수/에이전트별 의견 카드 */}
+                  <section className="professor-tree-section">
+                    <div className="professor-tree-header">
+                      <h3>{professorTreeTitle}</h3>
+                      <p>아래에는 교수/에이전트별 관점이 정리됩니다.</p>
+                    </div>
+                    <div className="professor-tree-body">
+                      <AgentDiscussionThread
+                        messages={mindmapMessages}
+                        typingAgents={
+                          typingRooms[getAgentId(selectedAgent)]
+                            ? (selectedAgent.agents || [{ id: 'ai', name: selectedAgent.name || 'AI' }]).map((ag, i) => ({
+                                id: ag.id || i,
+                                name: ag.name,
+                                color: ['#2563eb','#EA580C','#7C3AED'][i % 3],
+                              }))
+                            : []
+                        }
+                        agents={selectedAgent.agents || []}
+                        bookmarkedIds={bookmarkedIds}
+                        onBookmark={handleBookmark}
+                        onRequestDetail={handleNodeAction}
+                      />
+                    </div>
+                  </section>
                 </div>
               )}
 
@@ -3748,7 +3807,7 @@ export default function StudyMate() {
           {isRightOpen ? <ChevronRight size={16} color="#9ca3af" /> : <ChevronLeft size={16} color="#9ca3af" />}
         </button>
 
-        {/* ════ 3. 우측: 교수님들과 학습하기 패널 (기존 마인드맵/메모 영역 대체) ════ */}
+        {/* ════ 3. 우측: 저장된 메모 + 도움말 패널 (교실 배너는 교수님들과 대화 탭으로 이동) ════ */}
         {isRightOpen && (
           <div className="pane-right animate-fade-in" style={{ width: '320px', flexShrink: 0 }}>
             {!selectedAgent ? (

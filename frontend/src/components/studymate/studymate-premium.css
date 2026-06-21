@@ -541,6 +541,38 @@
   color: #16a34a;
 }
 
+/* 상단 가로 탭바 — 채팅 / 교수님들과 대화 (긴 pill/bar 형태) */
+.study-view-tabs {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 5px;
+  border-radius: 14px;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+}
+.study-view-tabs .view-tab-btn {
+  flex: 1;
+  gap: 7px;
+  padding: 10px 14px;
+  border-radius: 11px;
+  font-size: 13px;
+}
+/* 채팅 탭은 왼쪽, 교수님들과 대화 탭은 오른쪽 넓은 영역 */
+.study-view-tabs .view-tab-btn:last-child {
+  flex: 1.4;
+}
+.view-tab-btn.active.chat {
+  color: #166534;
+  background: #ffffff;
+}
+.view-tab-btn.active.professor {
+  color: #166534;
+  background: linear-gradient(180deg, #ffffff 0%, #f0fdf4 100%);
+  box-shadow: 0 2px 8px rgba(22, 101, 52, 0.12);
+}
+
 /* =========================================
    마인드맵 트리 (Mind Map Discussion)
 ========================================= */
@@ -1480,8 +1512,201 @@
 .chat-answer-actions .answer-act.is-compare { border-color: #ddd6fe; background: #f5f3ff; color: #7c3aed; }
 .chat-answer-actions .answer-act.is-example { border-color: #fef08a; background: #fefce8; color: #ca8a04; }
 
+/* 우측 패널 하단 도움말 카드 — 교수님들과 대화 탭 안내 */
+.prof-learn-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-shrink: 0;
+  margin-top: auto;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid #bbf7d0;
+  background: linear-gradient(180deg, #f0fdf4 0%, #ecfdf5 100%);
+}
+.prof-learn-tip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #059669;
+  border: 1px solid #bbf7d0;
+}
+.prof-learn-tip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.prof-learn-tip-body strong { font-size: 13px; font-weight: 800; color: #166534; }
+.prof-learn-tip-body span { font-size: 12px; line-height: 1.55; color: #15803d; }
+.prof-learn-tip-body em { font-style: normal; font-weight: 800; }
+
+/* =========================================
+   교수님들과 대화 탭 (중앙 메인) — 교실 배너 + 트리
+========================================= */
+.professor-discussion-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 18px 0;
+  overflow: hidden;
+}
+
+/* 교실 배너 + 구름 말풍선 */
+.professor-classroom-banner {
+  position: relative;
+  flex-shrink: 0;
+  width: 100%;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
+}
+.professor-classroom-banner-image {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  image-rendering: pixelated; /* 픽셀 교실 느낌 보존 */
+  user-select: none;
+}
+.professor-cloud-bubble {
+  position: absolute;
+  top: 14px;
+  left: 18px;
+  max-width: 70%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 16px;
+  border-radius: 18px;
+  background: #fffdf7;            /* 크림색 */
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
+}
+.professor-cloud-bubble::before,
+.professor-cloud-bubble::after {
+  content: '';
+  position: absolute;
+  background: inherit;
+  border: inherit;
+  border-radius: 50%;
+}
+.professor-cloud-bubble::before { width: 16px; height: 16px; left: 20px; bottom: -8px; border-top: none; border-left: none; }
+.professor-cloud-bubble::after  { width: 9px;  height: 9px;  left: 12px; bottom: -16px; border-top: none; border-left: none; }
+.professor-cloud-bubble strong { font-size: 12px; font-weight: 800; color: #166534; }
+.professor-cloud-bubble span   { font-size: 12.5px; line-height: 1.45; color: #334155; }
+
+/* 트리 섹션: 헤더(전체 의견) + 스크롤되는 트리 본문 */
+.professor-tree-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px;
+  border: 1px solid #e5e7eb;
+  border-radius: 18px;
+  background: #ffffff;
+}
+.professor-tree-header {
+  flex-shrink: 0;
+  text-align: center;
+  margin-bottom: 12px;
+}
+.professor-tree-header h3 {
+  margin: 0 0 4px;
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: -0.3px;
+  color: #166534;
+}
+.professor-tree-header p {
+  margin: 0;
+  font-size: 12.5px;
+  color: #64748b;
+}
+.professor-tree-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* 수동 트리 레이아웃 토큰(전체 의견 루트 → 교수 의견 분기). AgentDiscussionThread가
+   자체 인라인 트리를 그리므로 보조용으로 둔다(향후 정적 트리 렌더 시 재사용). */
+.professor-tree-root {
+  max-width: 720px;
+  margin: 0 auto 24px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
+}
+.professor-agent-branches {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+.professor-agent-branches::before {
+  content: "";
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  width: 2px;
+  height: 14px;
+  background: #d1d5db;
+}
+.professor-agent-node {
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+.professor-agent-name {
+  font-weight: 800;
+  color: #166534;
+  margin-bottom: 8px;
+}
+.professor-agent-content {
+  font-size: 14px;
+  line-height: 1.65;
+  color: #334155;
+}
+
+/* 답변 하단 액션 칩(별칭 토큰) — 기존 .chat-answer-actions/.answer-act와 동일 계열 */
+.chat-action-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chat-action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+.chat-action-chip:hover { filter: brightness(0.98); transform: translateY(-1px); }
+
 /* 작은 화면: 우측 패널이 아래로 내려가도록 (반응형) */
 @media (max-width: 900px) {
   .prof-learn-stage { padding-top: 50px; }
   .prof-cloud--main { font-size: 11.5px; padding: 10px 14px; }
+  .professor-classroom-banner-image { max-height: 160px; }
+  .professor-cloud-bubble { max-width: 86%; }
 }
