@@ -1,0 +1,3 @@
+fastapi sync marker
+updated_at=2026-06-21T19:16:39+09:00
+note=major analysis fastapi changes already committed; marker commit for GitHub visibility
