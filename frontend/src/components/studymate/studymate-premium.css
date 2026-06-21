@@ -1626,25 +1626,25 @@
   position: absolute;
   z-index: 7;
   box-sizing: border-box;
-  max-width: min(260px, 42%);
-  padding: 12px 18px;
+  max-width: min(270px, calc(100% - 40px)); /* banner 밖으로 안 튀게 */
+  padding: 10px 15px;              /* 얼굴 가림 줄이려 조금 축소 */
   border-radius: 999px;            /* 타원형 느낌 */
   background: rgba(255, 255, 255, 0.97);
   border: 2px solid #dbeafe;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 800;
-  line-height: 1.45;
+  line-height: 1.38;
   color: #1e293b;
   text-align: center;
   white-space: normal;
   word-break: keep-all;
   overflow-wrap: break-word;
 }
-/* 현재보다 조금 더 아래로. 좌/우는 banner 안쪽으로 여유 있게, 가운데는 중앙 고정 */
-.professor-bubble-left   { left: 4%;   top: 30%; }
-.professor-bubble-center { left: 50%;  top: 26%; transform: translateX(-50%) !important; }
-.professor-bubble-right  { right: 4%;  top: 30%; }
+/* 얼굴을 가리지 않게 머리 위쪽으로. 좌/우는 banner 안쪽(5%), 가운데는 중앙 고정 */
+.professor-bubble-left   { left: 5%;   right: auto; top: 17%; transform: none; }
+.professor-bubble-center { left: 50%;  right: auto; top: 12%; transform: translateX(-50%) !important; }
+.professor-bubble-right  { right: 5%;  left: auto;  top: 17%; transform: none; }
 .professor-bubble.is-active { animation: professorBubblePop 0.22s ease-out; }
 
 /* 말풍선 꼬리: 아래 방향 구름꼬리(큰 원 + 작은 원). banner 밖으로 안 튀게 짧게. */
@@ -1657,16 +1657,16 @@
   border: 2px solid #dbeafe;
   z-index: -1;
 }
-.professor-bubble::before { width: 16px; height: 16px; bottom: -8px; }
-.professor-bubble::after  { width: 9px;  height: 9px;  bottom: -16px; }
-/* 좌/우 말풍선은 해당 교수 쪽으로 꼬리를 살짝 치우치게 */
-.professor-bubble-left::before  { left: 34px; }
-.professor-bubble-left::after   { left: 24px; }
-.professor-bubble-right::before { right: 34px; }
-.professor-bubble-right::after  { right: 24px; }
-/* 가운데 말풍선은 꼬리도 중앙 */
-.professor-bubble-center::before { left: 50%; transform: translateX(-50%); }
-.professor-bubble-center::after  { left: calc(50% - 16px); }
+.professor-bubble::before { width: 14px; height: 14px; bottom: -6px; }
+.professor-bubble::after  { width: 8px;  height: 8px;  bottom: -14px; }
+/* 좌/우 말풍선은 해당 교수(아래쪽) 머리 방향으로 꼬리를 치우치게 */
+.professor-bubble-left::before  { left: 54px;  right: auto; }
+.professor-bubble-left::after   { left: 38px;  right: auto; }
+.professor-bubble-right::before { right: 54px; left: auto; }
+.professor-bubble-right::after  { right: 38px; left: auto; }
+/* 가운데 말풍선은 꼬리도 가운데 교수 머리 방향(중앙) */
+.professor-bubble-center::before { left: 50%; right: auto; transform: translateX(-50%); }
+.professor-bubble-center::after  { left: calc(50% - 16px); right: auto; transform: none; }
 
 @keyframes professorBubblePop {
   0%   { opacity: 0; transform: translateY(6px) scale(0.96); }
@@ -1683,7 +1683,9 @@
 .professor-floating-menu {
   position: absolute;
   z-index: 20;
+  box-sizing: border-box;
   min-width: 220px;
+  max-width: min(300px, calc(100% - 40px));
   padding: 10px;
   border-radius: 16px;
   border: 1px solid #dbeafe;
@@ -1692,9 +1694,10 @@
   backdrop-filter: blur(8px);
   animation: professorBubblePop 0.18s ease-out;
 }
-.professor-floating-menu.left   { left: 8%;  top: 12%; }
-.professor-floating-menu.center { left: 38%; top: 10%; }
-.professor-floating-menu.right  { right: 7%; top: 12%; }
+/* 메뉴는 교수 얼굴 중앙을 덮지 않게 상단 빈 공간(칠판 쪽)에 띄운다 */
+.professor-floating-menu.left   { left: 8%;  right: auto; top: 8%; transform: none; }
+.professor-floating-menu.center { left: 50%; right: auto; top: 6%; transform: translateX(-50%); }
+.professor-floating-menu.right  { right: 8%; left: auto;  top: 8%; transform: none; }
 .professor-floating-menu-title {
   font-size: 13px;
   font-weight: 800;
@@ -1898,4 +1901,11 @@
     bottom: 10px;
     transform: translateX(-50%);
   }
+}
+
+/* Final safety clamp: professor classroom overlays must stay inside the stage */
+.professor-classroom-banner [class*="bubble"],
+.professor-classroom-banner .professor-floating-menu {
+  max-width: min(300px, calc(100% - 40px)) !important;
+  box-sizing: border-box !important;
 }

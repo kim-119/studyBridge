@@ -370,6 +370,10 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const aiSendingRef = React.useRef(false);
   const activeAiRequestRef = React.useRef(null);
   const aiAbortRef = React.useRef(null);
+  // 토론/상황극 멀티턴 상태(논제/세션/선택지/턴). 응답 이벤트에서 캡처해 다음 요청 payload에 echo한다.
+  //  → ai07가 같은 논제 후보/선택지를 반복하지 않고 다음 단계(찬성·반대·반박·요약 / 반응·결과)로 진행한다.
+  //  (FastAPI가 해당 필드를 보낼 때만 채워지며, 없으면 빈 객체로 무해하게 동작한다.)
+  const aiConvStateRef = React.useRef({});
 
   // 새 메시지 도착 시 채팅 목록을 하단으로 자동 스크롤하기 위한 sentinel ref
   const chatEndRef = React.useRef(null);
@@ -1251,6 +1255,9 @@ try {
               knowledgeLevel: (b.knowledgeLevel || '').trim(),
               customInstruction: (b.requirement || '').trim(),
             })),
+          // 직전 응답에서 캡처한 토론/상황극 멀티턴 상태를 다시 실어 보낸다(있을 때만).
+          //  → 논제/선택지를 매번 처음부터 다시 고르게 만드는 반복을 방지한다.
+          ...aiConvStateRef.current,
         }),
         signal: abortController.signal
       });
@@ -1280,6 +1287,20 @@ try {
             if (!dataStr) continue;
             try {
               const parsed = JSON.parse(dataStr);
+
+              // 토론/상황극 멀티턴 상태(있을 때만) 캡처 → 다음 요청에 echo (논제/선택지 반복 방지).
+              // snake_case/camelCase 모두 수용. 값이 있는 키만 갱신해 이전 상태를 덮어쓰지 않는다.
+              {
+                const cur = aiConvStateRef.current;
+                const setIf = (k, v) => { if (v !== undefined && v !== null && v !== '') cur[k] = v; };
+                setIf('debateState', parsed.debateState ?? parsed.debate_state);
+                setIf('selectedTopic', parsed.selectedTopic ?? parsed.selected_topic);
+                setIf('debateSessionId', parsed.debateSessionId ?? parsed.debate_session_id ?? parsed.sessionId);
+                setIf('simulationState', parsed.simulationState ?? parsed.simulation_state);
+                setIf('scenarioId', parsed.scenarioId ?? parsed.scenario_id);
+                const ti = parsed.turnIndex ?? parsed.turn_index;
+                if (typeof ti === 'number') cur.turnIndex = ti;
+              }
 
               // Intent Router 라우팅 이벤트: 안내(route_message)/경고(route_notice)를 AI 말풍선으로 표시.
               // terminal이면 백엔드가 이 이벤트 하나만 보내고 종료, WARN이면 notice 뒤로 기존 답변 스트림이 이어진다.
@@ -1335,14 +1356,17 @@ try {
               if (parsed.agentName && parsed.content) {
                 setAiMessages(prev => {
                   if (!isActive()) return prev;
-                  const lastMsg = prev[prev.length - 1];
-                  // 이번 요청에서 만든 같은 에이전트의 마지막 말풍선이면 텍스트를 이어붙인다.
-                  if (lastMsg && !lastMsg.isUser && lastMsg.requestId === requestId
-                      && lastMsg.senderName === parsed.agentName) {
+                  // 이번 요청(requestId)·같은 에이전트(senderName)의 기존 말풍선을 "위치와 무관하게" 찾아 이어붙인다.
+                  // 백엔드가 에이전트를 교차로(agent1→agent2→agent3→agent1 …) 또는 단계별로 보내도
+                  // 한 에이전트당 말풍선 1개만 유지된다 → 한 질문에 카드가 9개처럼 늘어나는 중복을 방지한다.
+                  const existingIdx = prev.findIndex(
+                    m => !m.isUser && m.requestId === requestId && m.senderName === parsed.agentName
+                  );
+                  if (existingIdx !== -1) {
                     const updated = [...prev];
-                    updated[updated.length - 1] = {
-                      ...lastMsg,
-                      content: lastMsg.content + parsed.content
+                    updated[existingIdx] = {
+                      ...updated[existingIdx],
+                      content: updated[existingIdx].content + parsed.content
                     };
                     return updated;
                   }
@@ -2089,7 +2113,7 @@ try {
                           <button
                             key={m.value}
                             type="button"
-                            onClick={() => setAiMode(m.value)}
+                            onClick={() => { aiConvStateRef.current = {}; setAiMode(m.value); }}
                             disabled={isAiStreaming}
                             title={m.label}
                             style={{
@@ -2168,11 +2192,7 @@ try {
                                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
                                     <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: accent }} />
                                     <span style={{ fontWeight: 700, fontSize: '13px', color: accent }}>{displayName}</span>
-                                    {card.stage != null && (
-                                      <span style={{ fontSize: '10px', color: '#94A3B8', backgroundColor: 'rgba(148,163,184,0.15)', borderRadius: '6px', padding: '1px 6px' }}>
-                                        단계 {card.stage}
-                                      </span>
-                                    )}
+                                    {/* '단계 N' 숫자 배지는 발표 화면 단순화를 위해 제거(1차 의견/피드백/보완 답변 섹션 라벨로 충분). */}
                                   </div>
                                   {card.initial && (
                                     <div style={{ marginBottom: (hasFeedback || card.revised) ? '10px' : 0 }}>
