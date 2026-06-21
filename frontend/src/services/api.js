@@ -337,6 +337,9 @@ export const agentService = {
         data = null;
       }
 
+      // 진단/성능 측정용 단일 훅 — 첫 이벤트 도착 시각 등을 한 지점에서 잴 수 있게 한다(heartbeat 제외).
+      handlers.onAnyEvent?.(event, data);
+
       if (event === 'turn_start') handlers.onTurnStart?.(data);
       else if (event === 'heartbeat') handlers.onHeartbeat?.(data);
       else if (event === 'progress') handlers.onProgress?.(data);

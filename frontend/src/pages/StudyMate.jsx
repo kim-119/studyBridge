@@ -1985,6 +1985,16 @@ export default function StudyMate() {
   // 같은 질문을 연속으로 보내면(=다시 생성) attempt를 올려 백엔드가 이전 답변을 재사용하지 않게 한다.
   const regenTrackRef = useRef({});
 
+  // ── 탭 전환/스트림 종료 시 client-side reconciliation용 상태 미러 ─────────────────
+  //  이벤트 리스너(visibilitychange)나 비동기 종료 콜백은 클로저로 stale state를 잡으므로
+  //  최신 값을 ref로 미러링해 둔다(새로고침 의존 없이 서버 영속본과 화면을 맞추기 위함).
+  const roomHistoriesRef = useRef({});
+  useEffect(() => { roomHistoriesRef.current = roomHistories; }, [roomHistories]);
+  const typingRoomsRef = useRef({});
+  useEffect(() => { typingRoomsRef.current = typingRooms; }, [typingRooms]);
+  // 방별 마지막 턴 시작/완료 시각(ms). 탭 복귀 시 '최근 진행 턴'만 보정 대상으로 삼는다.
+  const lastTurnAtRef = useRef({});
+
   // 에이전트는 최소 1명, 최대 3명. createdAgents 배열 길이가 곧 현재 에이전트 수다(+/- 및 캐러셀 ›로 조절).
   const [createdAgents, setCreatedAgents] = useState(makeDefaultAgents());
   // 현재 선택된 추천 방 설정 카드 id(시각적 강조용 + 에이전트 재추가 시 원래 프리셋 agent 복원에 사용)
@@ -2255,6 +2265,48 @@ export default function StudyMate() {
     }
   };
 
+  // ── 명시적 client-side reconciliation ──────────────────────────────────────────
+  //  탭 복귀/스트림 종료 시 서버 영속본을 조회해 화면과 맞춘다. 새로고침에 의존하지 않는다.
+  //  reconcileHistory는 '더 긴 쪽'을 채택하므로, 라이브로 먼저 그려진 partial(1차/2차/3차)을
+  //  서버 미영속분으로 덮어써 유실시키지 않는다(서버가 더 완전하면 서버가, 라이브가 더 길면 라이브가 남는다).
+  const reconcileRoomFromServer = async (agentId, reason = '') => {
+    if (!agentId || !userId) return;
+    try {
+      const rawHistory = await agentService.getChatHistory(userId, agentId);
+      const history = hydrateHistoryProcessSteps(rawHistory);
+      const cached = roomHistoriesRef.current[agentId] || readPersistedHistory(userId, agentId) || [];
+      const reconciled = reconcileHistory(history, cached);
+      setRoomHistories((prev) => ({ ...prev, [agentId]: reconciled }));
+      writePersistedHistory(userId, agentId, reconciled);
+      if (selectedAgentIdRef.current === agentId) setChatHistory(reconciled);
+      if (import.meta.env.DEV) {
+        console.debug('[StudyMate] reconcileRoomFromServer', { agentId, reason, server: history.length, cached: cached.length, applied: reconciled.length });
+      }
+    } catch (err) {
+      console.warn('[StudyMate] reconcileRoomFromServer 실패', { agentId, reason, err });
+    }
+  };
+
+  // 탭 복귀(visibilitychange→visible) 보정.
+  //  - hidden 진입 시에는 스트림(reader.read 루프)을 절대 끊지 않는다. 보정은 복귀 시에만 수행한다.
+  //  - 백그라운드 탭이 렌더/연결을 제한해 1차/2차/3차가 멈춘 것처럼 보이면, 진행 중이던(또는 방금 끝난)
+  //    방의 서버 저장본을 조회해 누락 stage를 채워 넣는다.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return;
+      const agentId = selectedAgentIdRef.current;
+      if (!agentId) return;
+      const streaming = !!typingRoomsRef.current[agentId];
+      const recent = (Date.now() - (lastTurnAtRef.current[agentId] || 0)) < 120000;
+      if (streaming || recent) {
+        reconcileRoomFromServer(agentId, streaming ? 'visible-streaming' : 'visible-recent');
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
   const sendMessage = async (e, directMessage = null) => {
     if (e) e.preventDefault();
     const agentId = getAgentId(selectedAgent);
@@ -2284,6 +2336,11 @@ export default function StudyMate() {
     // 이번 전송만의 고유 requestId. 방을 바꾼 뒤 늦게 도착하는 이전 요청 이벤트는 무시한다.
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     activeRequestRef.current[agentId] = requestId;
+    // 탭 복귀 보정의 '최근 진행 턴' 판정 기준. 시작 시각을 기록(완료 시 갱신).
+    lastTurnAtRef.current[agentId] = Date.now();
+    // 성능 측정: client request start. 첫 이벤트/all_complete까지의 지연을 콘솔에서 분리 확인한다.
+    const perfT0 = Date.now();
+    let perfFirstEvent = 0;
     const isActiveRequest = () => activeRequestRef.current[agentId] === requestId;
 
     const userMsg = {
@@ -2544,6 +2601,13 @@ export default function StudyMate() {
             rounds: 1,
             ...turnExtras,
           }, {
+            // 성능 측정: 첫 SSE 이벤트(heartbeat 제외) 도착 지연을 한 지점에서 기록한다.
+            onAnyEvent: (event) => {
+              if (!perfFirstEvent && event !== 'heartbeat') {
+                perfFirstEvent = Date.now();
+                if (import.meta.env.DEV) console.debug('[StudyMate][perf] first SSE event', { event, ttfbMs: perfFirstEvent - perfT0 });
+              }
+            },
             onTurnStart: () => { armWatchdog(); },
             onHeartbeat: (d) => {
               if (!d || d.agentIndex == null) return;
@@ -2728,6 +2792,8 @@ export default function StudyMate() {
             onAllComplete: (d) => {
               if (watchdogTimer) clearTimeout(watchdogTimer);
               streamCompleted = true;
+              lastTurnAtRef.current[agentId] = Date.now();
+              if (import.meta.env.DEV) console.debug('[StudyMate][perf] all_complete', { totalMs: Date.now() - perfT0, ttfbMs: perfFirstEvent ? perfFirstEvent - perfT0 : null });
               if (routedTerminal) return; // 라우팅으로 종료 — 기존 답변 렌더 스킵(중복 방지)
               renderAllComplete(d);
             },
@@ -2955,6 +3021,13 @@ export default function StudyMate() {
       // 8. 해당 방의 타이핑/로딩 상태만 해제 + 전송 가드 해제(재진입 허용)
       setTypingRooms((prev) => ({ ...prev, [agentId]: false }));
       sendingRoomsRef.current.delete(agentId);
+      lastTurnAtRef.current[agentId] = Date.now();
+      // 9. 스트림 종료 후 명시적 보정 — 백엔드 비동기 영속화(persistStreamedAnswers) 커밋을 잠깐 기다린 뒤
+      //    서버 저장본과 화면을 맞춘다. reconcileHistory가 '더 긴 쪽'을 채택하므로 라이브 답변을 깎지 않는다.
+      //    (라우팅 종료/중복 전송 차단 등으로 활성 요청이 아니면 자연히 no-op)
+      if (activeRequestRef.current[agentId] === requestId) {
+        setTimeout(() => { reconcileRoomFromServer(agentId, 'post-stream'); }, 1500);
+      }
     }
   };
 

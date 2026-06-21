@@ -9,7 +9,9 @@ export const PERSONALITY_STYLE_OPTIONS = [
   { key: 'honest', label: '솔직함', description: '직설적이면서도 격려함', temperature: 0.45 },
   { key: 'unique', label: '독특함', description: '유쾌하고 상상력이 풍부함', temperature: 0.8 },
   { key: 'efficient', label: '효율적', description: '간결하고 꾸밈없음', temperature: 0.25 },
-  { key: 'cynical', label: '냉소적', description: '비꼬면서 비판적임', temperature: 0.55 },
+  // 냉소적(=비판/냉철): 위로·돌려 말하기 없이 직설적으로, 근거·논리 약점을 짚는 톤.
+  //  상호피드백(3차) 단계에서 다른 답변의 논리적 결함·반례를 강하게 지적한다(인신공격/비하 금지).
+  { key: 'cynical', label: '냉소적', description: '직설적이고 근거 중심으로 비판함', temperature: 0.55 },
 ];
 
 // 구버전/타화면 라벨 → canonical key. 저장된 레거시 값이 와도 UI가 깨지지 않게 흡수한다.

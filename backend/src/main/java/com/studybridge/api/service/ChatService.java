@@ -256,6 +256,23 @@ public class ChatService {
                 requestBody.put("answerLength", "unlimited");
                 requestBody.put("maxResponseChars", AI_MAX_RESPONSE_CHARS);
                 requestBody.put("max_tokens", AI_MAX_TOKENS);
+
+                // ── [payload 검증] personality/mode/level/temperature가 FastAPI까지 실제로 실리는지 로그로 확인 ──
+                //  (운영 과다 로깅 방지를 위해 요약만 남긴다. 에이전트별 정규화 결과를 한 줄로 정리.)
+                if (log.isInfoEnabled()) {
+                        StringBuilder agentSummary = new StringBuilder();
+                        for (Map<String, Object> a : agentsList) {
+                                if (agentSummary.length() > 0) agentSummary.append(" | ");
+                                agentSummary.append(a.get("name")).append(":")
+                                        .append(a.get("personalityStyle")).append("/")
+                                        .append(a.get("knowledgeLevel")).append("/t=")
+                                        .append(a.get("temperature"));
+                        }
+                        log.info("[CHAT PAYLOAD] roomId={} mode={} learningMode={} reqPersonality={} reqLevel={} reqTemp={} strength={} agents=[{}]",
+                                roomId, requestBody.get("mode"), requestBody.get("learningMode"),
+                                requestBody.get("personalityStyle"), normalizedRequestLevel,
+                                requestBody.get("temperature"), requestPersonalityStrength, agentSummary);
+                }
                 return requestBody;
         }
 
@@ -921,6 +938,10 @@ public class ChatService {
                         ChatDTO.MultiChatRequest request, AgentChatRoom room, SseEmitter emitter) {
                 // 원격 FastAPI가 첫 이벤트를 늦게 보내거나 이벤트 간 간격이 길어도 연결 유지.
                 final java.util.concurrent.ScheduledFuture<?> heartbeat = startHeartbeat(emitter);
+                // 성능 측정: Spring stream open → upstream 첫 이벤트 → all_complete 지연을 분리해 로깅한다.
+                //  (느린 원인이 ai07 모델 생성인지 중계 단인지 구분하기 위함. 운영 과다 로깅 방지를 위해 요약만.)
+                final long relayOpenAt = System.currentTimeMillis();
+                final java.util.concurrent.atomic.AtomicBoolean firstSeen = new java.util.concurrent.atomic.AtomicBoolean(false);
                 Disposable subscription = fastApiWebClient.post()
                                 .uri("/api/ai/multi-chat/stream")
                                 .bodyValue(requestBody)
@@ -931,9 +952,13 @@ public class ChatService {
                                                         try {
                                                                 String event = ev.event() != null ? ev.event() : "message";
                                                                 String data = ev.data();
+                                                                if (firstSeen.compareAndSet(false, true)) {
+                                                                        log.info("[CHAT PERF] roomId={} upstream first event='{}' after {}ms", roomId, event, System.currentTimeMillis() - relayOpenAt);
+                                                                }
                                                                 emitter.send(SseEmitter.event().name(event)
                                                                                 .data(data != null ? data : "{}"));
                                                                 if ("all_complete".equals(event) && data != null) {
+                                                                        log.info("[CHAT PERF] roomId={} all_complete after {}ms", roomId, System.currentTimeMillis() - relayOpenAt);
                                                                         // 비동기 스레드에서 별도 트랜잭션으로 영속화 (room 재조회로 lazy 회피)
                                                                         persistStreamedAnswers(roomId, data);
                                                                 }
