@@ -287,6 +287,14 @@ const RECOMMENDED_PRESETS = {
 const SOCRATIC_MODE_VALUES = new Set(['socratic', '소크라테스', '소크라테스 모드']);
 const isSocraticModeValue = (value) => SOCRATIC_MODE_VALUES.has(String(value || '').trim().toLowerCase());
 
+// 정책: 소크라테스 단계 카드(현재 이해도 진단/핵심 개념 질문/오개념 점검/단계별 힌트/적용 질문/
+// 반례 질문/자기 설명 유도/정리 카드)는 "사용자가 메시지로 명시적으로 요청"했을 때만 생성·렌더한다.
+// 모드 라디오에서 '소크라테스'를 골랐다는 사실만으로는 카드를 자동 출력하지 않는다.
+// 일반/개념 질문("SSH가 뭐야?", "핵심만 설명해줘" 등)은 항상 평문 채팅 답변만 출력한다.
+const EXPLICIT_SOCRATIC_REQUEST_RE =
+  /소크라테스|소크라틱|socratic|단계별\s*(질문|학습|설명|유도)|질문\s*(하면서|으로)\s*(알려|유도|설명|진행|학습)|질문하면서|질문으로\s*유도|카드\s*(로|기반|식)|문답\s*(으로|식|형|법)/i;
+const isExplicitSocraticRequest = (text) => EXPLICIT_SOCRATIC_REQUEST_RE.test(String(text || ''));
+
 // 소크라테스 문답 설정 기본값
 const DEFAULT_SOCRATIC_CONFIG = {
   goal: 'concept_understanding',
@@ -1625,6 +1633,39 @@ const hydrateHistoryProcessSteps = (history) => explodeHistoryToStageBubbles(his
 
 const getAgentId = (agent) => agent?.id ?? agent?.agentId;
 
+// ── 방(room)별 채팅 히스토리 영속화 ─────────────────────────────────────────────
+// key는 반드시 userId + roomId(=agent.id, 안정 DB id) 조합으로 분리한다.
+//  - 전역 단일 messages 덮어쓰기 금지 / agent index 기반 저장 금지 / agentId 없는 key 금지.
+// 새로고침 후에도 같은 방의 대화가 유지되도록 localStorage에 방 단위로 보관한다(서버가 정본).
+const CHAT_PERSIST_PREFIX = 'sb_chat_v1';
+const CHAT_PERSIST_CAP = 80; // 방당 보관 최대 메시지 수(quota 방어, 서버가 전체 정본 보유)
+const chatStorageKey = (userId, roomId) => `${CHAT_PERSIST_PREFIX}:${userId ?? 'anon'}:${roomId}`;
+const readPersistedHistory = (userId, roomId) => {
+  if (!roomId) return null;
+  try {
+    const raw = localStorage.getItem(chatStorageKey(userId, roomId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch { return null; }
+};
+const writePersistedHistory = (userId, roomId, list) => {
+  if (!roomId) return;
+  try {
+    const arr = Array.isArray(list) ? list : [];
+    const tail = arr.length > CHAT_PERSIST_CAP ? arr.slice(arr.length - CHAT_PERSIST_CAP) : arr;
+    localStorage.setItem(chatStorageKey(userId, roomId), JSON.stringify(tail));
+  } catch { /* quota/직렬화 실패는 무시 — 서버 조회가 폴백 */ }
+};
+// 방 전환/새로고침 시 서버 이력과 로컬 캐시를 합친다.
+//  - 서버가 로컬보다 같거나 많으면 서버를 정본으로 사용(중복 방지).
+//  - 서버가 더 적으면(스트리밍분 미영속 등) 로컬 캐시를 유지해 "대화 사라짐"을 막는다.
+const reconcileHistory = (server, local) => {
+  const s = Array.isArray(server) ? server : [];
+  const l = Array.isArray(local) ? local : [];
+  return s.length >= l.length ? s : l;
+};
+
 // 그룹/카드/세션 제목은 유저가 생성 시 입력한 roomName을 그대로 사용한다.
 // 내부 roomId/agentId/DB id는 건드리지 않고 표시명만 roomName으로 렌더. roomName이 없을 때만 기본 브랜드명.
 const STUDYBRIDGE_ROOM_TITLE = '스터디 브릿지';
@@ -2044,6 +2085,15 @@ export default function StudyMate() {
     scrollToBottom();
   }, [chatHistory, typingRooms]);
 
+  // 방별 채팅 히스토리를 localStorage에 write-through 영속화(새로고침 후 같은 방 대화 유지).
+  // key는 userId+roomId 조합으로 분리되어 방 간 충돌이 없다.
+  useEffect(() => {
+    if (!userId) return;
+    for (const [rid, list] of Object.entries(roomHistories)) {
+      if (Array.isArray(list) && list.length) writePersistedHistory(userId, rid, list);
+    }
+  }, [roomHistories, userId]);
+
   const loadAgents = async () => {
     try {
       const data = await agentService.getAgents(userId);
@@ -2167,9 +2217,17 @@ export default function StudyMate() {
     // [검증용] 서버 응답에 learningMode가 실제로 내려오는지 확인 (토론/소크라테스 방 복원 디버깅)
     console.debug('[StudyMate] selectAgent learningMode=', agent?.learningMode, 'room=', agent);
 
-    // 1. 이전 방의 질문이 보이지 않도록 즉각적으로 해당 방의 캐시된 기록을 UI에 노출 (없으면 빈 리스트)
-    const cachedHistory = roomHistories[agentId] || [];
+    // 1. 이전 방의 질문이 보이지 않도록 즉각적으로 해당 방의 캐시된 기록을 UI에 노출.
+    //    메모리 캐시가 비어 있으면 localStorage 영속본으로 시드 → 새로고침 직후에도 즉시 복원.
+    const memCached = roomHistories[agentId];
+    const cachedHistory = (Array.isArray(memCached) && memCached.length)
+      ? memCached
+      : (readPersistedHistory(userId, agentId) || []);
     setChatHistory(cachedHistory);
+    if ((!Array.isArray(memCached) || !memCached.length) && cachedHistory.length) {
+      // 영속본을 메모리 캐시에도 올려 두어 방 재전환 시 재조회 없이 보존되게 한다.
+      setRoomHistories(prev => ({ ...prev, [agentId]: cachedHistory }));
+    }
 
     // 2. 해당 방의 드래프트가 존재하면 입력 폼에 로드
     setMessage(roomDrafts[agentId] || '');
@@ -2179,12 +2237,15 @@ export default function StudyMate() {
       const rawHistory = await agentService.getChatHistory(userId, agentId);
       // DB에 저장된 processSteps(전체 map)를 그대로 사용해 아코디언을 복원 (슬라이스 없이 전원 표시)
       const history = hydrateHistoryProcessSteps(rawHistory);
-      // 캐시 갱신
-      setRoomHistories(prev => ({ ...prev, [agentId]: history || [] }));
+      // 서버 이력과 로컬 캐시를 합친다. 서버가 더 적으면(미영속 스트리밍분) 캐시를 유지해 유실 방지.
+      const reconciled = reconcileHistory(history, cachedHistory);
+      // 캐시 갱신 + 영속화
+      setRoomHistories(prev => ({ ...prev, [agentId]: reconciled }));
+      writePersistedHistory(userId, agentId, reconciled);
 
       // 비동기 복귀 시점에도 여전히 이 방이 활성화되어 있을 때만 UI에 반영하여 다른 방 간섭 방지
       if (selectedAgentIdRef.current === agentId) {
-        setChatHistory(history || []);
+        setChatHistory(reconciled);
       }
     } catch (err) {
       console.error('채팅 이력 조회 실패:', err);
@@ -2246,7 +2307,16 @@ export default function StudyMate() {
     // 4. 해당 방의 타이핑/로딩 상태 활성화 (전체 방 블로킹 X)
     setTypingRooms((prev) => ({ ...prev, [agentId]: true }));
 
-    const activeLearningMode = learningMode || selectedAgent?.learningMode || 'basic';
+    // ── 소크라테스 카드 게이팅(정책: 명시 요청 시에만) ─────────────────────────────
+    // 라디오로 '소크라테스'를 골랐다는 사실만으로는 카드를 만들지 않는다. 사용자가 이번 메시지에서
+    // 명시적으로 단계별 문답/카드 학습을 요청했을 때만 소크라테스로 처리하고, 그 외에는 일반(basic)
+    // 답변으로 내려 카드 폭발("SSH가 뭐야?"류)을 막는다. 토론/상황극 모드는 영향 없음.
+    const baseLearningMode = learningMode || selectedAgent?.learningMode || 'basic';
+    const explicitSocratic = isExplicitSocraticRequest(inputMsg);
+    const activeLearningMode = explicitSocratic
+      ? 'socratic'
+      : (isSocraticModeValue(baseLearningMode) ? 'basic' : baseLearningMode);
+    if (import.meta.env.DEV) console.debug('[StudyMate] socratic gate', { baseLearningMode, explicitSocratic, activeLearningMode });
     // 소크라테스 모드: 사용자가 방금 입력한 내용을 시도 답변(userAttempt)으로도 보내 오개념을 좁혀간다.
     // RAG 자료가 방에 연결돼 있으면 materialId도 함께 보낸다.
     const turnExtras = {};
