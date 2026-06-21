@@ -1,13 +1,13 @@
 
 
 <!-- STUDYBRIDGE_MAIN_REPO_GUARD_START -->
-# StudyBridge ai07 Claude Operating Rules
+# StudyBridge EC2 Claude Operating Rules
 
 ## Mandatory working directory
 
 All Claude commands, Claude agents, and Claude subagents must work only inside this directory:
 
-/home/ai07/capstoneLLM
+/home/ubuntu/studyBridge
 
 The active branch must be:
 
@@ -17,20 +17,21 @@ LLM-clean
 
 Never create, edit, or use these paths for implementation work:
 
-- /home/ai07/capstoneLLM/.claude/worktrees
-- /home/ai07/capstoneLLM-*
+- /home/ubuntu/studyBridge/.claude/worktrees
+- /home/ubuntu/sb-restore
+- /home/ubuntu/sb-roadmap-video
 - frontend/dist
 - backend/build
+- backend/.gradle
 - node_modules
 - .env
-- .venv
 - __pycache__
 
 ## Source of truth
 
 All code changes must be visible from:
 
-cd /home/ai07/capstoneLLM
+cd /home/ubuntu/studyBridge
 git status -sb
 git diff --name-status
 
@@ -50,24 +51,27 @@ After editing, print:
 
 git status -sb
 git diff --name-status
-python3 -m compileall -q fastapi/app fastapi/tests fastapi/*.py
 
-For FastAPI changes, restart and verify:
+For frontend changes, verify:
 
-sudo systemctl restart studybridge-ai.service
-curl -sS -i --max-time 8 http://127.0.0.1:8000/health
+cd frontend
+npm run build
+
+For Spring/backend changes, verify with the relevant Gradle or Docker Compose check before commit.
 
 ## Commit policy
 
 Commit only real source or approved ops artifacts:
 
+- frontend/src
+- frontend/public
+- backend/src
 - fastapi/app
 - fastapi/tests
-- fastapi/*.py
-- ops/n8n
+- docker-compose.yml
 - CLAUDE.md
 - .claude/agents/studybridge-main-repo-guard.md
 
-Never commit secrets, virtualenvs, build outputs, node_modules, or Claude worktrees.
+Never commit secrets, build outputs, node_modules, backend build artifacts, or Claude worktrees.
 <!-- STUDYBRIDGE_MAIN_REPO_GUARD_END -->
 
