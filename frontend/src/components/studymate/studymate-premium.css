@@ -1634,9 +1634,9 @@
   line-height: 1.4;
   color: #334155;
 }
-.professor-bubble-left   { left: 4%;  top: 8%; }
-.professor-bubble-center { left: 38%; top: 4%; }
-.professor-bubble-right  { right: 4%; top: 8%; }
+.professor-bubble-left   { left: 4%;  top: 20%; }
+.professor-bubble-center { left: 38%; top: 16%; }
+.professor-bubble-right  { right: 4%; top: 20%; }
 .professor-bubble.is-active { animation: professorBubblePop 0.22s ease-out; }
 
 @keyframes professorBubblePop {
