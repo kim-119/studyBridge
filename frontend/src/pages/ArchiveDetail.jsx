@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, XCircle, Circle, Settings, ChevronRight, X, Trash2, Sparkles, ListChecks, ArrowRight, FileText, BarChart3, Brain, CalendarPlus, Award, RotateCcw } from 'lucide-react';
+import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, XCircle, Circle, Settings, ChevronRight, ChevronLeft, X, Trash2, Sparkles, ListChecks, ArrowRight, FileText, BarChart3, Brain, CalendarPlus, Award, RotateCcw, Copy } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService, planAnalysisService, socraticReviewService } from '../services/api';
 import SummarySectionCard from '../components/SummarySectionCard';
@@ -15,6 +15,154 @@ const DETECTED_SOURCE_LABEL = {
   TEXT: '텍스트 추출', OCR: 'OCR 인식', CAPTION: '캡션 기반', TABLE: '표 기반',
   IMAGE_DESCRIPTION: '이미지 설명 기반', MIXED: '혼합 분석', INSUFFICIENT: '텍스트 부족',
 };
+
+// 세부 핵심 내용 — 페이지 단위 카드 1개씩 표시 + ‹ › 네비게이션.
+//  · page 번호는 서버가 준 pageNumber/page 를 그대로 쓴다(PDF 페이지와 카드 index 어긋남 방지).
+//  · 첫 페이지에서 ‹ 비활성, 마지막 페이지에서 › 비활성(순환하지 않음 — 명확한 끝 처리).
+//  · ai07 신규 page 필드(pageNumber/oneLineSummary/keywords/bulletPoints/takeaway/sourceQuality/
+//    extractedText/textPreview/extractedTextTruncated/warnings)와 기존 필드(page/pageOverview/
+//    keyConcepts/summaryBullets/studyFocus/detectedTextSource)를 모두 수용한다(additive, 신규 우선).
+//    Spring 은 pageSummaries 를 Map 그대로 전달하므로 신규 필드가 드롭되지 않는다 — 프론트만 보강하면 됨.
+//  · ‘원문/추출 텍스트’: ai07 extractedText(원문) 또는 textPreview(부분)가 있으면 그 페이지 원문을 우선
+//    표시하고, 없으면 추출·정리된 내용을 조립해 보여준다(동작 없는 dead 버튼 금지).
+function DetailedPager({ pages }) {
+  const list = (a) => (Array.isArray(a) ? a.filter((x) => x != null && String(x).trim() !== '') : []);
+  const firstList = (...cands) => { for (const c of cands) { const v = list(c); if (v.length) return v; } return []; };
+  const firstStr = (...cands) => { for (const c of cands) { if (c != null && String(c).trim() !== '') return String(c); } return ''; };
+  const total = pages.length;
+  const [idx, setIdx] = useState(0);
+  const [showText, setShowText] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const safe = Math.min(Math.max(idx, 0), total - 1);
+  // 페이지 수가 줄어들면 인덱스 보정
+  useEffect(() => { if (idx > total - 1) setIdx(Math.max(total - 1, 0)); }, [total, idx]);
+  // 페이지 이동 시 추출 텍스트 패널/복사 상태 초기화
+  useEffect(() => { setShowText(false); setCopied(false); }, [safe]);
+
+  const p = pages[safe] || {};
+  // 신규(ai07) 이름 우선 → 기존 이름 fallback. 둘 다 없으면 빈 값(화면 안 깨짐).
+  const src = String(firstStr(p.sourceQuality, p.detectedTextSource)).toUpperCase();
+  const insufficient = src === 'INSUFFICIENT' || src === 'NONE';
+  const concepts = firstList(p.keywords, p.keyConcepts);
+  const bullets = firstList(p.bulletPoints, p.summaryBullets);
+  const overview = firstStr(p.oneLineSummary, p.pageOverview);
+  const takeaway = firstStr(p.takeaway, p.studyFocus);
+  const warnings = list(p.warnings);
+  const title = firstStr(p.title);
+  const pageNo = p.pageNumber ?? p.page ?? (safe + 1);
+  const atFirst = safe <= 0;
+  const atLast = safe >= total - 1;
+
+  // 원문 텍스트: ai07 extractedText(원문) 우선 → textPreview(부분) → 없으면 조립 fallback
+  const rawText = firstStr(p.extractedText, p.textPreview);
+  const isRaw = !!rawText;
+  const truncated = isRaw && (p.extractedTextTruncated === true || (!p.extractedText && !!p.textPreview));
+  const assembled = [
+    title ? `[p.${pageNo}] ${title}` : `[p.${pageNo}]`,
+    overview ? `\n${overview}` : '',
+    ...(bullets.length ? ['', ...bullets.map((b) => `• ${b}`)] : []),
+    takeaway ? `\n🎯 ${takeaway}` : '',
+  ].filter(Boolean).join('\n').trim();
+  const panelText = isRaw ? rawText : assembled;
+
+  const copyText = async () => {
+    try { await navigator.clipboard.writeText(panelText); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    catch (e) { console.error('추출 텍스트 복사 실패:', e); setCopied(false); }
+  };
+
+  const navBtn = (disabled, onClick, label, Icon) => (
+    <button
+      type="button" onClick={onClick} disabled={disabled} aria-label={label} title={label}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px',
+        borderRadius: '8px', border: '1px solid var(--color-border)', background: disabled ? '#F3F4F6' : '#fff',
+        color: disabled ? '#D1D5DB' : 'var(--color-text-main)', cursor: disabled ? 'default' : 'pointer', flexShrink: 0,
+      }}
+    >
+      <Icon size={18} />
+    </button>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {/* 네비게이션 바: 위치 표시 + ‹ › */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+        <span style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--color-text-muted)' }}>{safe + 1} / {total} 페이지</span>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          {navBtn(atFirst, () => setIdx(safe - 1), '이전 페이지', ChevronLeft)}
+          {navBtn(atLast, () => setIdx(safe + 1), '다음 페이지', ChevronRight)}
+        </div>
+      </div>
+
+      {/* 페이지 카드 */}
+      <div style={{ border: `1px solid ${insufficient ? '#FDE68A' : 'var(--color-border)'}`, borderRadius: '10px', padding: '14px 16px', background: insufficient ? '#FFFBEB' : '#fff' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+          <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)' }}>p.{pageNo}{title ? ` ${title}` : ''}</span>
+          {src && (
+            <span title="이 페이지의 텍스트 출처/품질" style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '6px', background: insufficient ? '#FEF3C7' : '#EFF6FF', color: insufficient ? '#92400E' : '#1D4ED8' }}>
+              {DETECTED_SOURCE_LABEL[src] || src}
+            </span>
+          )}
+        </div>
+        {insufficient ? (
+          <p style={{ margin: 0, fontSize: '13.5px', lineHeight: 1.6, color: '#92400E' }}>
+            이 페이지는 PDF 텍스트 추출과 OCR 결과가 부족하여 핵심 내용을 명확히 식별하기 어렵습니다.
+          </p>
+        ) : (
+          <>
+            {overview && <p style={{ margin: '0 0 8px', fontSize: '13.5px', lineHeight: 1.6, color: 'var(--color-text-muted)' }}>{overview}</p>}
+            {concepts.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                {concepts.map((c, k) => <span key={k} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}>{c}</span>)}
+              </div>
+            )}
+            {bullets.length > 0 && (
+              <ul style={{ margin: '0 0 8px', paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {bullets.map((b, k) => <li key={k} style={{ fontSize: '13.5px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{b}</li>)}
+              </ul>
+            )}
+            {takeaway && (
+              <div style={{ fontSize: '13px', color: '#15803D', background: '#F0FDF4', borderRadius: '6px', padding: '6px 10px', marginBottom: '4px' }}>🎯 {takeaway}</div>
+            )}
+            {warnings.length > 0 && (
+              <div style={{ marginTop: '4px', fontSize: '12px', color: '#92400E', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '6px', padding: '6px 10px' }}>
+                {warnings.map((w, k) => <div key={k}>⚠️ {w}</div>)}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* 원문/추출 텍스트 보기(복사 가능) — ai07 extractedText 있으면 원문, 없으면 정리 내용 */}
+        {!insufficient && panelText && (
+          <div style={{ marginTop: '10px', borderTop: '1px dashed var(--color-border)', paddingTop: '10px' }}>
+            <button
+              type="button" onClick={() => setShowText((v) => !v)}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12.5px', fontWeight: 700, color: 'var(--color-primary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              <FileText size={14} /> {showText ? '접기' : (isRaw ? '이 페이지 원문 텍스트 보기' : '이 페이지 추출 내용 보기')}
+            </button>
+            {showText && (
+              <div style={{ marginTop: '8px' }}>
+                {truncated && (
+                  <div style={{ marginBottom: '6px', fontSize: '11.5px', color: '#92400E' }}>※ 원문 일부만 표시됩니다(미리보기).</div>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '6px' }}>
+                  <button
+                    type="button" onClick={copyText}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', padding: '4px 10px', borderRadius: '6px', border: '1px solid var(--color-border)', background: '#fff', cursor: 'pointer', color: copied ? '#15803D' : 'var(--color-text-main)' }}
+                  >
+                    {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? '복사됨' : '복사'}
+                  </button>
+                </div>
+                <pre style={{ margin: 0, maxHeight: '220px', overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '12.5px', lineHeight: 1.6, color: 'var(--color-text-main)', background: '#F9FAFB', border: '1px solid var(--color-border)', borderRadius: '8px', padding: '10px 12px', fontFamily: 'inherit' }}>{panelText}</pre>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // AI 핵심 요약 노트(전공 분야·핵심 객체 중심) 결과 렌더 — 11개 섹션. studyNote.status==='SUCCESS' 일 때만 사용.
 function StudyNoteView({ note, onKeyword }) {
@@ -38,53 +186,10 @@ function StudyNoteView({ note, onKeyword }) {
   const ulStyle = { margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' };
   const liStyle = { fontSize: '14px', lineHeight: '1.6', color: 'var(--color-text-muted)' };
 
-  // 세부 핵심 내용: pageSummaries 우선 → detailedCoreContents fallback → 없음 안내
+  // 세부 핵심 내용: pageSummaries(페이지 단위 카드 1개씩 ‹ › 네비) 우선 → detailedCoreContents fallback → 없음 안내
   const renderDetailed = () => {
     if (pages.length > 0) {
-      return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          {pages.map((p, i) => {
-            const src = String(p.detectedTextSource || '').toUpperCase();
-            const insufficient = src === 'INSUFFICIENT';
-            const concepts = list(p.keyConcepts);
-            const bullets = list(p.summaryBullets);
-            return (
-              <div key={i} style={{ border: `1px solid ${insufficient ? '#FDE68A' : 'var(--color-border)'}`, borderRadius: '10px', padding: '14px 16px', background: insufficient ? '#FFFBEB' : '#fff' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
-                  <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)' }}>p.{p.page ?? (i + 1)}{p.title ? ` ${p.title}` : ''}</span>
-                  {src && (
-                    <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '6px', background: insufficient ? '#FEF3C7' : '#EFF6FF', color: insufficient ? '#92400E' : '#1D4ED8' }}>
-                      {DETECTED_SOURCE_LABEL[src] || src}
-                    </span>
-                  )}
-                </div>
-                {insufficient ? (
-                  <p style={{ margin: 0, fontSize: '13.5px', lineHeight: 1.6, color: '#92400E' }}>
-                    이 페이지는 PDF 텍스트 추출과 OCR 결과가 부족하여 핵심 내용을 명확히 식별하기 어렵습니다.
-                  </p>
-                ) : (
-                  <>
-                    {p.pageOverview && <p style={{ margin: '0 0 8px', fontSize: '13.5px', lineHeight: 1.6, color: 'var(--color-text-muted)' }}>{p.pageOverview}</p>}
-                    {concepts.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
-                        {concepts.map((c, k) => <span key={k} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}>{c}</span>)}
-                      </div>
-                    )}
-                    {bullets.length > 0 && (
-                      <ul style={{ margin: '0 0 8px', paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {bullets.map((b, k) => <li key={k} style={{ fontSize: '13.5px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{b}</li>)}
-                      </ul>
-                    )}
-                    {p.studyFocus && (
-                      <div style={{ fontSize: '13px', color: '#15803D', background: '#F0FDF4', borderRadius: '6px', padding: '6px 10px' }}>🎯 {p.studyFocus}</div>
-                    )}
-                  </>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      );
+      return <DetailedPager pages={pages} />;
     }
     if (detailed.length > 0) {
       return (
@@ -98,7 +203,13 @@ function StudyNoteView({ note, onKeyword }) {
         </div>
       );
     }
-    return <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px' }}>세부 핵심 내용을 생성할 수 없습니다.</p>;
+    return (
+      <div style={{ borderRadius: '10px', border: '1px dashed var(--color-border)', background: '#F9FAFB', padding: '16px 18px' }}>
+        <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px', lineHeight: 1.6 }}>
+          아직 페이지별 세부 핵심 내용이 없습니다. 문서 분석이 끝나면 페이지별 핵심 내용이 여기에 표시됩니다.
+        </p>
+      </div>
+    );
   };
 
   return (
@@ -1406,7 +1517,8 @@ export default function ArchiveDetail() {
 
   // ---------------- 자료보관함 PLANNER 전용 ----------------
   // 자료보관함의 PLANNER 자료는 이미 저장된 자료다. "먼저 저장" 유도 없이 저장된 자료 기반으로 바로 분석을 보여준다.
-  const isPlanner = material?.materialType === 'PLANNER';
+  // 대소문자/표기 흔들림('PLANNER'|'Planner'|'planner') 및 플래너 식별자(plannerId) 모두 허용 — 분할뷰 고정.
+  const isPlanner = String(material?.materialType || '').toUpperCase() === 'PLANNER' || material?.plannerId != null;
 
   // AI 계획 분석 — PDF/플래너 텍스트를 chunk→문장→행동 단위로 분해(서버 결정적 분석, DB 영속).
   const handlePlannerAnalyze = async () => {

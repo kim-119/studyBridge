@@ -98,12 +98,18 @@ function materialDate(m) {
 }
 
 // 상단 유형 필터 탭 (폴더는 모든 탭에서 표시, 자료만 유형별 필터)
+// '전체' 탭 제거 — 학습자료 / 플래너 / 학습일지 3개만 유지. 기본 진입 = 학습자료.
 const ARCHIVE_TABS = [
-  { key: 'ALL', label: '전체' },
-  { key: 'LEARNING_PDF', label: '학습PDF' },
-  { key: 'STUDY_LOG', label: '학습일지' },
+  { key: 'LEARNING_PDF', label: '학습자료' },
   { key: 'PLANNER', label: '플래너' },
+  { key: 'STUDY_LOG', label: '학습일지' },
 ];
+const ARCHIVE_TAB_KEYS = ARCHIVE_TABS.map((t) => t.key);
+const DEFAULT_ARCHIVE_TAB = 'LEARNING_PDF';
+// 레거시 값('ALL'/'all' 등)이나 알 수 없는 값은 학습자료로 폴백.
+function normalizeArchiveTab(value) {
+  return ARCHIVE_TAB_KEYS.includes(value) ? value : DEFAULT_ARCHIVE_TAB;
+}
 
 // 자료(material)의 유형을 탭 키로 매핑. materialType 우선, 없으면 제목/파일명 보조 판별.
 function materialTabKind(m) {
@@ -166,7 +172,7 @@ export default function Archive() {
   const [loadError, setLoadError] = useState('');
 
   // UI 상태
-  const [activeArchiveTab, setActiveArchiveTab] = useState('ALL'); // ALL | LEARNING_PDF | STUDY_LOG | PLANNER
+  const [activeArchiveTab, setActiveArchiveTab] = useState(DEFAULT_ARCHIVE_TAB); // LEARNING_PDF | PLANNER | STUDY_LOG
   const [sortMode, setSortMode] = useState('recent'); // 'recent' | 'name'
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState(new Set());
@@ -285,9 +291,16 @@ export default function Archive() {
   };
 
   // ── 자료 클릭: 타입별 분기 (폴더는 절대 자료 상세/AI 로 가지 않음) ─────
+  //  라우팅을 이 한 함수로 단일화한다(타입별 분기 분산 금지).
+  //   - STUDY_LOG → 학습일지 모달
+  //   - PLANNER / PDF → /archive/pdf/:materialId 분할뷰 상세
+  //  플래너/PDF 모두 같은 상세 라우트로 들어가고, 좌측 PDF 뷰어 + 우측 패널(요약·체크리스트 등)은
+  //  ArchiveDetail 이 서버 응답의 materialType(PLANNER 여부)로 결정한다. 따라서 state.item 은 첫 페인트
+  //  최적화일 뿐이며, 새 PC·시크릿·캐시 없는 환경에서도 서버 기준으로 동일하게 열린다.
   const openMaterial = (m) => {
     if (!checkAuth()) return;
-    if (m.materialType === 'STUDY_LOG') {
+    const kind = String(m.materialType || '').toUpperCase();
+    if (kind === 'STUDY_LOG') {
       const journal = {
         id: m.materialId,
         title: m.title || '제목 없음',
@@ -305,10 +318,10 @@ export default function Archive() {
       setEditNextPlan(journal.nextPlan);
       setIsJournalEditMode(false);
       fetchJournalAiData(journal.id);
-    } else {
-      // PDF / PLANNER → 기존 자료 상세 페이지 (materialId 그대로 사용)
-      navigate(`/archive/pdf/${m.materialId}`, { state: { item: m } });
+      return;
     }
+    // PLANNER 와 PDF → 분할뷰 상세(서버 materialType 으로 우측 패널 결정). materialId 를 canonical id 로 사용.
+    navigate(`/archive/pdf/${m.materialId}`, { state: { item: m } });
   };
 
   // ── 학습일지 AI 데이터 (모달) ────────────────────────────────────────
@@ -749,10 +762,9 @@ export default function Archive() {
       ? getMaterialDisplayTitle(a).localeCompare(getMaterialDisplayTitle(b), 'ko')
       : String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')));
 
-  // 상단 탭 필터: '전체'면 전부, 그 외엔 해당 유형만. 폴더는 탭과 무관하게 항상 표시.
-  const visibleMaterials = activeArchiveTab === 'ALL'
-    ? sortedMaterials
-    : sortedMaterials.filter((m) => materialTabKind(m) === activeArchiveTab);
+  // 상단 탭 필터: 선택 탭 유형만 표시(레거시/오류 값은 학습자료로 폴백). 폴더는 탭과 무관하게 항상 표시.
+  const effectiveTab = normalizeArchiveTab(activeArchiveTab);
+  const visibleMaterials = sortedMaterials.filter((m) => materialTabKind(m) === effectiveTab);
 
   const isEmpty = !isLoading && !loadError && sortedFolders.length === 0 && visibleMaterials.length === 0;
 
@@ -782,7 +794,7 @@ export default function Archive() {
         {ARCHIVE_TABS.map((t) => (
           <button
             key={t.key}
-            className={`archive-tab ${activeArchiveTab === t.key ? 'active' : ''}`}
+            className={`archive-tab ${effectiveTab === t.key ? 'active' : ''}`}
             onClick={() => { setActiveArchiveTab(t.key); setOpenMenuKey(null); }}
           >
             {t.label}
@@ -1044,7 +1056,7 @@ export default function Archive() {
                     <input type="radio" name="materialType" checked={addMaterialType === 'journal'} onChange={() => setAddMaterialType('journal')} style={{ transform: 'scale(1.2)' }} /> 학습일지
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px', cursor: 'pointer' }}>
-                    <input type="radio" name="materialType" checked={addMaterialType === 'pdf'} onChange={() => setAddMaterialType('pdf')} style={{ transform: 'scale(1.2)' }} /> 학습PDF
+                    <input type="radio" name="materialType" checked={addMaterialType === 'pdf'} onChange={() => setAddMaterialType('pdf')} style={{ transform: 'scale(1.2)' }} /> 학습자료
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px', cursor: 'pointer' }}>
                     <input type="radio" name="materialType" checked={addMaterialType === 'planner'} onChange={() => setAddMaterialType('planner')} style={{ transform: 'scale(1.2)' }} /> 플래너
