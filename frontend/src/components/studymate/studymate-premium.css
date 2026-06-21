@@ -1237,3 +1237,251 @@
 .mindmap-node--simulation {
   border: 1.5px solid rgba(29, 78, 216, 0.35);
 }
+
+/* ════════════════════════════════════════════════════════════════
+   교수님들과 학습하기 패널 (ProfessorLearningPanel)
+   - 우측 영역. 기존 "마인드맵 (크게 보기)"를 대체.
+   ════════════════════════════════════════════════════════════════ */
+.prof-learn-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 18px 16px;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.prof-learn-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+.prof-learn-header-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #ecfdf5, #d1fae5);
+  color: #059669;
+}
+.prof-learn-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+  color: #334155;
+}
+
+/* 픽셀 교실 + 말풍선 무대 */
+.prof-learn-stage {
+  position: relative;
+  width: 100%;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef5ff 100%);
+  border: 1px solid #e5e7eb;
+  padding: 56px 12px 16px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.prof-learn-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  image-rendering: pixelated; /* 픽셀 교실 느낌 보존 */
+}
+
+/* ── 구름형 말풍선 ──
+   ::before, ::after 로 작은 원을 붙여 부드러운 구름 느낌을 낸다. */
+.prof-cloud {
+  position: relative;
+  display: inline-block;
+  background: #fffdf7;            /* 아주 연한 크림색 */
+  border: 1px solid #e5e7eb;
+  color: #475569;
+  font-weight: 700;
+  line-height: 1.4;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+}
+.prof-cloud::before,
+.prof-cloud::after {
+  content: '';
+  position: absolute;
+  background: inherit;
+  border: inherit;
+  border-radius: 50%;
+}
+
+/* 메인 안내 말풍선 (상단 중앙) */
+.prof-cloud--main {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  max-width: 84%;
+  padding: 12px 18px;
+  border-radius: 22px;
+  font-size: 12.5px;
+  text-align: center;
+  color: #334155;
+}
+.prof-cloud--main::before {
+  width: 18px; height: 18px;
+  left: 22px; bottom: -8px;
+  border-top: none; border-left: none;
+}
+.prof-cloud--main::after {
+  width: 11px; height: 11px;
+  left: 14px; bottom: -16px;
+  border-top: none; border-left: none;
+}
+
+/* 교수별 미니 말풍선 (반박/비교/예시) — 이미지 위에 떠 있는 칩 */
+.prof-cloud--mini {
+  position: absolute;
+  z-index: 3;
+  padding: 5px 13px;
+  border-radius: 16px;
+  font-size: 12px;
+}
+.prof-cloud--mini::before {
+  width: 9px; height: 9px;
+  left: 12px; bottom: -5px;
+}
+.prof-cloud--mini::after {
+  width: 5px; height: 5px;
+  left: 7px; bottom: -11px;
+}
+.prof-cloud--rebut {
+  bottom: 64px; left: 14px;
+  background: #fff1f2; border-color: #fecdd3; color: #e11d48;
+}
+.prof-cloud--compare {
+  bottom: 92px; right: 16px; left: auto;
+  background: #f5f3ff; border-color: #ddd6fe; color: #7c3aed;
+}
+.prof-cloud--compare::before { left: auto; right: 14px; }
+.prof-cloud--compare::after { left: auto; right: 9px; }
+.prof-cloud--example {
+  bottom: 30px; right: 28px; left: auto;
+  background: #fefce8; border-color: #fef08a; color: #ca8a04;
+}
+.prof-cloud--example::before { left: auto; right: 12px; }
+.prof-cloud--example::after { left: auto; right: 7px; }
+
+/* 저장된 메모 영역 */
+.prof-learn-memos {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+.prof-learn-memos-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #334155;
+}
+.prof-learn-memos-count {
+  margin-left: auto;
+  background: #ecfdf5;
+  color: #10b981;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.prof-learn-memos-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  padding: 24px 8px;
+  font-size: 12.5px;
+  color: #9ca3af;
+  line-height: 1.6;
+}
+.prof-learn-memos-empty strong { color: #64748b; }
+.prof-learn-memos-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.prof-learn-memo-card {
+  text-align: left;
+  width: 100%;
+  padding: 12px 14px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+}
+.prof-learn-memo-card:hover {
+  border-color: #34d399;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.1);
+}
+.prof-learn-memo-card-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #10b981;
+  margin-bottom: 7px;
+}
+.prof-learn-memo-card-body {
+  font-size: 13px;
+  color: #334155;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 채팅 답변 하단 액션 버튼 (메모하기/더 자세히/반박/비교/예시) */
+.chat-answer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chat-answer-actions .answer-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  white-space: nowrap;
+}
+.chat-answer-actions .answer-act:hover { filter: brightness(0.98); transform: translateY(-1px); }
+.chat-answer-actions .answer-act.is-memo.on { border-color: #16a34a; background: #f0fdf4; color: #16a34a; }
+.chat-answer-actions .answer-act.is-rebut { border-color: #fecdd3; background: #fff1f2; color: #e11d48; }
+.chat-answer-actions .answer-act.is-compare { border-color: #ddd6fe; background: #f5f3ff; color: #7c3aed; }
+.chat-answer-actions .answer-act.is-example { border-color: #fef08a; background: #fefce8; color: #ca8a04; }
+
+/* 작은 화면: 우측 패널이 아래로 내려가도록 (반응형) */
+@media (max-width: 900px) {
+  .prof-learn-stage { padding-top: 50px; }
+  .prof-cloud--main { font-size: 11.5px; padding: 10px 14px; }
+}

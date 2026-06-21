@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { agentService } from '../services/api';
-import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck } from 'lucide-react';
+import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck, RefreshCw } from 'lucide-react';
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
+import ProfessorLearningPanel from '../components/studymate/ProfessorLearningPanel';
 import '../components/studymate/studymate-premium.css';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getAgentColor, agentColorKey } from '../utils/agentColor';
@@ -3067,6 +3068,97 @@ export default function StudyMate() {
     });
   };
 
+  // 답변 후속 액션 핸들러 (더 자세히/반박/비교/예시).
+  // 채팅 답변 카드와 (deprecated) 마인드맵 노드가 동일 로직을 재사용한다.
+  // disc: 채팅 메시지 또는 노드 객체. UI 문구상으로는 "교수님들이 함께 반응"하는 흐름이다.
+  const handleNodeAction = (disc, actionType = 'detail') => {
+    pendingDetailParentId.current = disc.id;
+
+    // ── 상황극 노드: stageType에 맞는 전용 액션 프롬프트를 준비한다 ──
+    if (disc.nodeType === 'simulation') {
+      const promptText = buildSimulationActionPrompt(disc, actionType);
+      setMessage(promptText);
+      setLearningMode('simulation');
+      setShowMentionPopup(false);
+      const activeId = getAgentId(selectedAgent);
+      if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+      const inputEl = document.querySelector('.chat-input-premium input');
+      if (inputEl) inputEl.focus();
+      setToastMsg('상황극 액션이 입력창에 준비되었습니다. 전송하면 이 노드에 이어서 진행됩니다.');
+      setTimeout(() => setToastMsg(''), 2800);
+      return;
+    }
+
+    // ── 소크라테스 노드: stageType에 맞는 전용 액션 프롬프트를 준비한다 ──
+    if (disc.nodeType === 'socratic') {
+      const promptText = buildSocraticActionPrompt(disc, actionType);
+      setMessage(promptText);
+      setLearningMode('socratic'); // 소크라테스 모드 유지
+      setShowMentionPopup(false);
+      const activeId = getAgentId(selectedAgent);
+      if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+      const inputEl = document.querySelector('.chat-input-premium input');
+      if (inputEl) inputEl.focus();
+      setToastMsg('🧭 소크라테스 액션이 입력창에 준비되었습니다. 전송하면 이 노드에 이어서 진행됩니다.');
+      setTimeout(() => setToastMsg(''), 2800);
+      return;
+    }
+
+    // ── 토론 노드: stageType/side에 맞는 전용 액션 프롬프트를 준비한다 ──
+    const isDebateNode = disc.nodeType === 'debate' || !!disc.stageType;
+    if (isDebateNode) {
+      const promptText = buildDebateActionPrompt(disc, actionType);
+      setMessage(promptText);
+      // 토론 모드 유지(이어지는 응답도 토론 구조로 생성되게)
+      setLearningMode('debate');
+      setShowMentionPopup(false);
+      const activeId = getAgentId(selectedAgent);
+      if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+      const inputEl = document.querySelector('.chat-input-premium input');
+      if (inputEl) inputEl.focus();
+      setToastMsg('🗣️ 토론 액션이 입력창에 준비되었습니다. 전송하면 이 노드에 이어서 진행됩니다.');
+      setTimeout(() => setToastMsg(''), 2800);
+      return;
+    }
+
+    // 사용자의 질문 노드에서 파생될 경우와 AI 노드에서 파생될 경우 문구 분리
+    const isUserNode = disc.sender === 'USER';
+    const senderName = disc.senderName || disc.sender_name || 'AI';
+
+    // 내용을 25자 정도로 요약해서 프롬프트에 직접 포함하여 문맥 상실 방지
+    const contentExcerpt = disc.content
+        ? (disc.content.length > 25 ? disc.content.substring(0, 25).replace(/\n/g, ' ') + '...' : disc.content.replace(/\n/g, ' '))
+        : '';
+
+    let promptText = '';
+    if (isUserNode) {
+      promptText = `@모두 여기에 덧붙여서 하나 더 궁금한 게 있는데, `;
+    } else {
+      if (actionType === 'criticize') {
+        promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 대해 각자의 관점에서 단점이나 문제점을 비판하고 반박해 줄래?`;
+      } else if (actionType === 'compare') {
+        promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용과 다른 개념을 대조하거나 각자의 의견과 어떻게 다른지 비교 분석해 줄래?`;
+      } else if (actionType === 'support') {
+        promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 전적으로 동의하며, 실무적인 추가 예시를 들어 보충 설명해 줄래?`;
+      } else {
+        promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 대해 각자의 특기나 관점에서 좀 더 자세히 설명해 줄래?`;
+      }
+    }
+
+    setMessage(promptText);
+    setShowMentionPopup(true);
+    setMentionFilter(''); // 전체 목록 보여주기
+
+    const activeId = getAgentId(selectedAgent);
+    if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+
+    const inputEl = document.querySelector('.chat-input-premium input');
+    if (inputEl) inputEl.focus();
+
+    setToastMsg('💡 교수님들이 이어서 답할 수 있도록 하단 입력창을 확인해주세요.');
+    setTimeout(() => setToastMsg(''), 2500);
+  };
+
   const handleScrollToNode = (id) => {
     const element = document.getElementById(`node-${id}`);
     if (element) {
@@ -3286,31 +3378,9 @@ export default function StudyMate() {
                   </>
                 )}
 
-                {/* 탭 전환 바 */}
-                <div className="view-tab-bar">
-                  <button
-                    id="tab-chat"
-                    className={`view-tab-btn ${viewTab === 'chat' ? 'active' : ''}`}
-                    onClick={() => {
-                      setViewTab('chat');
-                      setIsLeftOpen(true);
-                      setIsRightOpen(true);
-                    }}
-                  >
-                    <MessageSquare size={13} /> 채팅
-                  </button>
-                  <button
-                    id="tab-mindmap"
-                    className={`view-tab-btn ${viewTab === 'mindmap' ? 'active mindmap' : ''}`}
-                    onClick={() => {
-                      setViewTab('mindmap');
-                      setIsLeftOpen(false); // 마인드맵 진입 시 좌측 패널 자동 숨김
-                      setIsRightOpen(false); // 마인드맵 진입 시 우측 패널 자동 숨김
-                    }}
-                  >
-                    <Network size={13} /> 마인드맵 (크게 보기)
-                  </button>
-                </div>
+                {/* 탭 전환 바 제거: 단일 채팅 뷰만 사용한다.
+                    (구) 마인드맵(크게 보기) 탭은 제거되었고, 우측 "교수님들과 학습하기" 패널로 대체됨.
+                    viewTab/마인드맵 뷰 로직은 deprecated 상태로만 보존(다른 곳 재사용 대비). */}
               </div>
 
               {/* ── 채팅 뷰 ── */}
@@ -3476,6 +3546,32 @@ export default function StudyMate() {
                               성격 검증 {msg.pv.score.toFixed(2)} {msg.pv.passed ? '통과' : '보완 필요'}
                             </div>
                           )}
+                          {/* 답변 하단 액션 버튼: 메모하기 / 더 자세히 / 반박 / 비교 / 예시.
+                              교수님들이 이어서 반응하는 흐름으로 연결된다(내부적으로 후속질문 핸들러 재사용). */}
+                          {!isUser && !hasSimulationPayload && !debatePayload && !socraticPayload && (
+                            <div className="chat-answer-actions">
+                              <button
+                                type="button"
+                                className={`answer-act is-memo ${bookmarkedIds.has(msg.id) ? 'on' : ''}`}
+                                onClick={() => handleBookmark(msg)}
+                              >
+                                <Bookmark size={12} fill={bookmarkedIds.has(msg.id) ? '#16a34a' : 'none'} />
+                                {bookmarkedIds.has(msg.id) ? '메모됨' : '메모하기'}
+                              </button>
+                              <button type="button" className="answer-act" onClick={() => handleNodeAction(msg, 'detail')}>
+                                <RefreshCw size={12} /> 더 자세히
+                              </button>
+                              <button type="button" className="answer-act is-rebut" onClick={() => handleNodeAction(msg, 'criticize')}>
+                                ⚔️ 반박
+                              </button>
+                              <button type="button" className="answer-act is-compare" onClick={() => handleNodeAction(msg, 'compare')}>
+                                ⚖️ 비교
+                              </button>
+                              <button type="button" className="answer-act is-example" onClick={() => handleNodeAction(msg, 'support')}>
+                                💡 예시
+                              </button>
+                            </div>
+                          )}
                           {/* 단계 펼침/접힘 UI는 노출하지 않는다. processSteps는 결과 말풍선(1차/2차/3차)으로만 표시한다. */}
                           <div className="chat-bubble-time">{formatTime(msg.createdAt)}</div>
                         </div>
@@ -3511,93 +3607,7 @@ export default function StudyMate() {
                     agents={selectedAgent.agents || []}
                     bookmarkedIds={bookmarkedIds}
                     onBookmark={handleBookmark}
-                    onRequestDetail={(disc, actionType = 'detail') => {
-                      pendingDetailParentId.current = disc.id;
-
-                      // ── 상황극 노드: stageType에 맞는 전용 액션 프롬프트를 준비한다 ──
-                      if (disc.nodeType === 'simulation') {
-                        const promptText = buildSimulationActionPrompt(disc, actionType);
-                        setMessage(promptText);
-                        setLearningMode('simulation');
-                        setShowMentionPopup(false);
-                        const activeId = getAgentId(selectedAgent);
-                        if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
-                        const inputEl = document.querySelector('.chat-input-premium input');
-                        if (inputEl) inputEl.focus();
-                        setToastMsg('상황극 액션이 입력창에 준비되었습니다. 전송하면 이 노드에 이어서 진행됩니다.');
-                        setTimeout(() => setToastMsg(''), 2800);
-                        return;
-                      }
-
-                      // ── 소크라테스 노드: stageType에 맞는 전용 액션 프롬프트를 준비한다 ──
-                      if (disc.nodeType === 'socratic') {
-                        const promptText = buildSocraticActionPrompt(disc, actionType);
-                        setMessage(promptText);
-                        setLearningMode('socratic'); // 소크라테스 모드 유지
-                        setShowMentionPopup(false);
-                        const activeId = getAgentId(selectedAgent);
-                        if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
-                        const inputEl = document.querySelector('.chat-input-premium input');
-                        if (inputEl) inputEl.focus();
-                        setToastMsg('🧭 소크라테스 액션이 입력창에 준비되었습니다. 전송하면 이 노드에 이어서 진행됩니다.');
-                        setTimeout(() => setToastMsg(''), 2800);
-                        return;
-                      }
-
-                      // ── 토론 노드: stageType/side에 맞는 전용 액션 프롬프트를 준비한다 ──
-                      const isDebateNode = disc.nodeType === 'debate' || !!disc.stageType;
-                      if (isDebateNode) {
-                        const promptText = buildDebateActionPrompt(disc, actionType);
-                        setMessage(promptText);
-                        // 토론 모드 유지(이어지는 응답도 토론 구조로 생성되게)
-                        setLearningMode('debate');
-                        setShowMentionPopup(false);
-                        const activeId = getAgentId(selectedAgent);
-                        if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
-                        const inputEl = document.querySelector('.chat-input-premium input');
-                        if (inputEl) inputEl.focus();
-                        setToastMsg('🗣️ 토론 액션이 입력창에 준비되었습니다. 전송하면 이 노드에 이어서 진행됩니다.');
-                        setTimeout(() => setToastMsg(''), 2800);
-                        return;
-                      }
-
-                      // 사용자의 질문 노드에서 파생될 경우와 AI 노드에서 파생될 경우 문구 분리
-                      const isUserNode = disc.sender === 'USER';
-                      const senderName = disc.senderName || disc.sender_name || 'AI';
-                      
-                      // 내용을 25자 정도로 요약해서 프롬프트에 직접 포함하여 문맥 상실 방지
-                      const contentExcerpt = disc.content 
-                          ? (disc.content.length > 25 ? disc.content.substring(0, 25).replace(/\n/g, ' ') + '...' : disc.content.replace(/\n/g, ' '))
-                          : '';
-
-                      let promptText = '';
-                      if (isUserNode) {
-                        promptText = `@모두 여기에 덧붙여서 하나 더 궁금한 게 있는데, `;
-                      } else {
-                        if (actionType === 'criticize') {
-                          promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 대해 각자의 관점에서 단점이나 문제점을 비판하고 반박해 줄래?`;
-                        } else if (actionType === 'compare') {
-                          promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용과 다른 개념을 대조하거나 각자의 의견과 어떻게 다른지 비교 분석해 줄래?`;
-                        } else if (actionType === 'support') {
-                          promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 전적으로 동의하며, 실무적인 추가 예시를 들어 보충 설명해 줄래?`;
-                        } else {
-                          promptText = `@모두 방금 ${senderName}가 말한 "${contentExcerpt}" 이 내용에 대해 각자의 특기나 관점에서 좀 더 자세히 설명해 줄래?`;
-                        }
-                      }
-                        
-                      setMessage(promptText);
-                      setShowMentionPopup(true);
-                      setMentionFilter(''); // 전체 목록 보여주기
-                      
-                      const activeId = getAgentId(selectedAgent);
-                      if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
-
-                      const inputEl = document.querySelector('.chat-input-premium input');
-                      if (inputEl) inputEl.focus();
-
-                      setToastMsg('💡 하단 입력창에 이어서 질문을 작성해주세요.');
-                      setTimeout(() => setToastMsg(''), 2500);
-                    }}
+                    onRequestDetail={handleNodeAction}
                   />
                 </div>
               )}
@@ -3697,7 +3707,7 @@ export default function StudyMate() {
                         e.preventDefault();
                       }
                     }}
-                    placeholder={viewTab === 'mindmap' ? '마인드맵으로 탐색할 질문을 입력하세요... (@를 입력해 에이전트 호출)' : '메시지를 입력해보세요... (@호출)'}
+                    placeholder={'교수님들과 학습할 질문을 입력하세요... (@를 입력해 에이전트 호출)'}
                     disabled={typingRooms[getAgentId(selectedAgent)]}
                   />
                   {/* 모드 선택: 항상 펼쳐두지 않고 입력창 우측 컴팩트 드롭다운으로 축소 */}
@@ -3738,71 +3748,21 @@ export default function StudyMate() {
           {isRightOpen ? <ChevronRight size={16} color="#9ca3af" /> : <ChevronLeft size={16} color="#9ca3af" />}
         </button>
 
-        {/* ════ 3. 우측: 저장된 메모 (북마크) 패널 ════ */}
+        {/* ════ 3. 우측: 교수님들과 학습하기 패널 (기존 마인드맵/메모 영역 대체) ════ */}
         {isRightOpen && (
           <div className="pane-right animate-fade-in" style={{ width: '320px', flexShrink: 0 }}>
             {!selectedAgent ? (
               <div className="dt-right-empty" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#9ca3af', textAlign: 'center', padding: '20px' }}>
                 <Bookmark size={36} color="#e5e7eb" style={{ marginBottom: '12px' }} />
-                <div style={{ fontSize: '14px', fontWeight: '600', color: '#6b7280' }}>세션을 선택하면<br/>저장된 메모가 표시됩니다</div>
+                <div style={{ fontSize: '14px', fontWeight: '600', color: '#6b7280' }}>세션을 선택하면<br/>교수님들과 학습할 수 있어요</div>
               </div>
             ) : (
-              <div className="dt-insight-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '20px' }}>
-              
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', paddingBottom: '16px', borderBottom: '1px solid rgba(0,0,0,0.05)' }}>
-                <Bookmark size={20} color="#10b981" />
-                <h3 style={{ 
-                  margin: 0, fontSize: '15px', fontWeight: '800', color: '#334155'
-                }}>저장된 메모 목록</h3>
-                <span style={{ marginLeft: 'auto', background: '#ecfdf5', color: '#10b981', padding: '2px 8px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}>
-                  {bookmarkedIds.size}개
-                </span>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', paddingRight: '4px', flex: 1 }}>
-                {bookmarkedIds.size === 0 ? (
-                  <div style={{ fontSize: '13px', color: '#9ca3af', width: '100%', textAlign: 'center', padding: '40px 0', lineHeight: '1.6' }}>
-                    <Bookmark size={24} color="#f1f5f9" style={{ margin: '0 auto 12px' }} fill="#e2e8f0" />
-                    유용한 답변에 <br/><strong style={{color: '#64748b'}}>📌 메모하기</strong>를 누르면<br/>이곳에 저장됩니다.
-                  </div>
-                ) : (
-                  Array.from(bookmarkedIds).map((id) => {
-                    const msg = chatHistory.find(m => m.id === id);
-                    if (!msg) return null;
-                    return (
-                      <div 
-                        key={id} 
-                        onClick={() => handleScrollToNode(id)}
-                        style={{ 
-                          padding: '16px', 
-                          background: '#ffffff', 
-                          borderRadius: '12px', 
-                          border: '1px solid #e2e8f0', 
-                          cursor: 'pointer',
-                          transition: 'all 0.2s ease',
-                          boxShadow: '0 2px 4px rgba(0,0,0,0.02)'
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.borderColor = '#34d399';
-                          e.currentTarget.style.boxShadow = '0 4px 12px rgba(16,185,129,0.1)';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.borderColor = '#e2e8f0';
-                          e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.02)';
-                        }}
-                      >
-                        <div style={{ fontSize: '12px', color: '#10b981', fontWeight: '700', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                           <Bot size={14} /> {msg.senderName || msg.sender_name || 'AI'}
-                        </div>
-                        <div style={{ fontSize: '13px', color: '#334155', lineHeight: '1.5', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                          "{msg.content}"
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
+              <ProfessorLearningPanel
+                memos={Array.from(bookmarkedIds)
+                  .map((id) => chatHistory.find((m) => m.id === id))
+                  .filter(Boolean)}
+                onScrollToMemo={handleScrollToNode}
+              />
             )}
           </div>
         )}
