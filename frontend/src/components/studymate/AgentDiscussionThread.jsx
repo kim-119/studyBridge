@@ -271,6 +271,7 @@ export default function AgentDiscussionThread({
   bookmarkedIds = new Set(),
   onBookmark,
   onRequestDetail,
+  focusAgentName = null,
 }) {
   const containerRef = useRef(null);
   
@@ -455,8 +456,15 @@ export default function AgentDiscussionThread({
     const isExpanded = expandedNodes.has(node.id) || node.isTyping;
     const isRoot = depth === 0;
 
+    // 교수님들과 대화 대상 강조/흐림: 에이전트(일반) 답변 노드에만 적용한다.
+    const nodeSenderName = node.senderName || node.sender_name;
+    const isAgentAnswerNode = !isUser && !isDebate && !isSocratic && !isSimulation && !!nodeSenderName;
+    const focusClass = (focusAgentName && isAgentAnswerNode)
+      ? (nodeSenderName === focusAgentName ? 'professor-thread-node is-focused' : 'professor-thread-node is-dimmed')
+      : '';
+
     return (
-        <div id={`node-${node.id}`} key={node.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        <div id={`node-${node.id}`} key={node.id} className={focusClass} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             
             {/* 1) 현재 노드 카드 */}
             <motion.div

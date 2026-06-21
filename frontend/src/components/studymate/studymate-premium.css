@@ -1558,22 +1558,31 @@
   overflow: hidden;
 }
 
-/* 교실 배너 + 구름 말풍선 */
+/* 교실 배너 + 교수 hotspot + 말풍선.
+   통짜 PNG 전체가 잘리지 않고 보이도록 object-fit: contain 사용. 여백은 크림/회색. */
 .professor-classroom-banner {
   position: relative;
   flex-shrink: 0;
   width: 100%;
+  min-height: 300px;
+  max-height: 420px;
   border-radius: 18px;
   overflow: hidden;
   border: 1px solid #e5e7eb;
   box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
+  background: linear-gradient(180deg, #fffaf0 0%, #f8fafc 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .professor-classroom-banner-image {
   display: block;
   width: 100%;
-  max-height: 220px;
-  object-fit: cover;
-  image-rendering: pixelated; /* 픽셀 교실 느낌 보존 */
+  height: 100%;
+  max-height: 420px;
+  object-fit: contain;            /* 전체 표시 우선(잘림 금지) */
+  object-position: center center;
+  image-rendering: pixelated;     /* 픽셀 교실 느낌 보존 */
   user-select: none;
 }
 .professor-cloud-bubble {
@@ -1590,6 +1599,127 @@
   border: 1px solid #e5e7eb;
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
 }
+
+/* ── 교수 hotspot(투명 overlay 버튼 3개) ───────────────────────────────────── */
+.professor-hotspot {
+  position: absolute;
+  z-index: 6;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 18px;
+  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.professor-hotspot:hover {
+  background: rgba(34, 197, 94, 0.12);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25);
+  transform: translateY(-1px);
+}
+.professor-hotspot-left   { left: 13%; top: 32%; width: 24%; height: 58%; }
+.professor-hotspot-center { left: 39%; top: 27%; width: 24%; height: 63%; }
+.professor-hotspot-right  { left: 65%; top: 27%; width: 25%; height: 63%; }
+
+/* ── 교수별 말풍선(actionMode에 따라 문구 변경) ───────────────────────────── */
+.professor-bubble {
+  position: absolute;
+  z-index: 7;
+  max-width: 26%;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #dbeafe;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.14);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #334155;
+}
+.professor-bubble-left   { left: 4%;  top: 8%; }
+.professor-bubble-center { left: 38%; top: 4%; }
+.professor-bubble-right  { right: 4%; top: 8%; }
+.professor-bubble.is-active { animation: professorBubblePop 0.22s ease-out; }
+
+@keyframes professorBubblePop {
+  0%   { opacity: 0; transform: translateY(6px) scale(0.96); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes professorTalk {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-3px); }
+}
+.professor-character.is-speaking,
+.professor-hotspot.is-speaking { animation: professorTalk 0.7s ease-in-out 1; }
+
+/* ── 교수 hotspot 2단계 floating menu ──────────────────────────────────────── */
+.professor-floating-menu {
+  position: absolute;
+  z-index: 20;
+  min-width: 220px;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid #dbeafe;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(8px);
+  animation: professorBubblePop 0.18s ease-out;
+}
+.professor-floating-menu.left   { left: 8%;  top: 12%; }
+.professor-floating-menu.center { left: 38%; top: 10%; }
+.professor-floating-menu.right  { right: 7%; top: 12%; }
+.professor-floating-menu-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #166534;
+  margin-bottom: 8px;
+}
+.professor-floating-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.professor-floating-menu-btn {
+  min-height: 34px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.professor-floating-menu-btn:hover {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #166534;
+}
+.professor-floating-menu-btn.rebuttal { background: #fff1f2; border-color: #fecdd3; color: #e11d48; }
+.professor-floating-menu-btn.compare  { background: #f5f3ff; border-color: #ddd6fe; color: #7c3aed; }
+.professor-floating-menu-btn.example  { background: #fffbeb; border-color: #fde68a; color: #d97706; }
+.professor-floating-menu-close {
+  margin-top: 8px;
+  width: 100%;
+  min-height: 30px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.professor-floating-menu-close:hover { background: #f1f5f9; color: #334155; }
+
+/* ── 트리 카드 대상 강조/흐림(AgentDiscussionThread 노드 래퍼) ────────────── */
+.professor-thread-node {
+  border-radius: 18px;
+  transition: opacity 0.2s ease, box-shadow 0.2s ease;
+}
+.professor-thread-node.is-focused {
+  box-shadow: 0 0 0 2px #22c55e, 0 10px 26px rgba(34, 197, 94, 0.16);
+}
+.professor-thread-node.is-dimmed { opacity: 0.55; }
 .professor-cloud-bubble::before,
 .professor-cloud-bubble::after {
   content: '';
@@ -1707,6 +1837,31 @@
 @media (max-width: 900px) {
   .prof-learn-stage { padding-top: 50px; }
   .prof-cloud--main { font-size: 11.5px; padding: 10px 14px; }
-  .professor-classroom-banner-image { max-height: 160px; }
   .professor-cloud-bubble { max-width: 86%; }
+
+  /* 작은 화면: 배너는 전체 표시(contain) 유지하되 높이를 낮추고,
+     말풍선 3개는 이미지 아래 카드형으로 흐르게 한다. floating menu는 중앙 정렬. */
+  .professor-classroom-banner {
+    flex-wrap: wrap;
+    min-height: 0;
+    max-height: none;
+    padding-bottom: 8px;
+  }
+  .professor-classroom-banner-image { max-height: 220px; }
+  .professor-bubble {
+    position: static;
+    max-width: none;
+    flex: 1 1 100%;
+    margin: 6px 8px 0;
+  }
+  .professor-floating-menu,
+  .professor-floating-menu.left,
+  .professor-floating-menu.center,
+  .professor-floating-menu.right {
+    left: 50%;
+    right: auto;
+    top: auto;
+    bottom: 10px;
+    transform: translateX(-50%);
+  }
 }

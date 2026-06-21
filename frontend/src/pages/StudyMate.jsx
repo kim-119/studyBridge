@@ -1935,6 +1935,129 @@ const buildCanonicalAgentPayload = (agent) => {
   };
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 교수님들과 대화 — 안전한 상호작용(hotspot → 액션 → 대상) 설정.
+//   · 기존 채팅/SSE/후속질문 payload schema는 건드리지 않는다(promptText에만 반영).
+//   · 단순 React state + CSS animation으로 "교수들이 서로 반응하는" 느낌만 준다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// actionMode → 교수 3인 말풍선 문구.
+const PROFESSOR_BUBBLES = {
+  default: ['궁금한 내용을 질문하면 함께 도와드려요!', '핵심 개념을 정리해볼게요.', '필요하면 반박·비교·예시로 확장할 수 있어요.'],
+  detail: ['먼저 원리를 더 깊게 풀어보겠습니다.', '중요 개념을 단계별로 정리할게요.', '놓치기 쉬운 예외 조건도 보겠습니다.'],
+  rebuttal: ['그 설명에는 논리적 빈틈이 있습니다.', '반례와 한계를 기준으로 다시 보겠습니다.', '왜 부족한지 쉽게 짚어볼게요.'],
+  compare: ['비슷한 개념과 차이를 비교하겠습니다.', '장단점을 기준으로 나눠보겠습니다.', '실제 사용 상황까지 연결해볼게요.'],
+  example: ['쉬운 예시부터 들어보겠습니다.', '실무에서 어떻게 쓰이는지 보겠습니다.', '필요하면 코드나 구조 예시로 확장할게요.'],
+  why: ['왜 그렇게 되는지 질문으로 파고들겠습니다.', '전제부터 차근차근 확인해볼게요.', '스스로 답을 찾을 수 있게 유도하겠습니다.'],
+  assumption: ['답변 안에 숨은 전제를 확인하겠습니다.', '논리가 기대고 있는 조건을 분리해볼게요.', '이 전제가 깨지면 결론도 달라질 수 있습니다.'],
+  counterQuestion: ['반대로 질문을 던져보겠습니다.', '이 관점에서 다시 생각해보면 어떨까요?', '스스로 검증할 수 있는 질문을 만들겠습니다.'],
+  defense: ['반박에 대한 방어 논리를 세워보겠습니다.', '기존 설명이 유효한 조건을 정리하겠습니다.', '어디까지는 맞고 어디부터 약한지 나누겠습니다.'],
+  judge: ['양쪽 관점을 기준으로 판정하겠습니다.', '근거의 강도를 비교해볼게요.', '최종적으로 어떤 설명이 더 타당한지 정리합니다.'],
+  roleplay: ['상황극 방식으로 장면을 열어보겠습니다.', '등장인물의 입장에서 반응해볼게요.', '맥락에 맞는 대사와 행동으로 설명하겠습니다.'],
+  choice: ['선택지를 나눠서 보여드리겠습니다.', '각 선택의 결과를 비교해볼게요.', '다음 행동을 고르기 쉽게 정리하겠습니다.'],
+  reaction: ['상황에 대한 반응을 보여드리겠습니다.', '교수별 관점으로 다르게 반응해볼게요.', '왜 그런 반응이 나오는지도 설명하겠습니다.'],
+};
+
+// actionMode → 트리 루트 제목.
+const PROFESSOR_ROOT_TITLE_BY_ACTION = {
+  default: '전체 의견', detail: '전체 상세 설명', rebuttal: '전체 반박', compare: '전체 비교',
+  example: '전체 예시', why: '전체 소크라테스 질문', assumption: '전체 전제 검토',
+  counterQuestion: '전체 역질문', defense: '전체 방어 논리', judge: '전체 판정',
+  roleplay: '전체 상황극', choice: '전체 선택지', reaction: '전체 반응',
+};
+
+// 학습 모드별 1단계 액션 메뉴.
+const PROFESSOR_ACTIONS_BY_MODE = {
+  basic: [
+    { key: 'detail', label: '더 자세히', icon: '↻', tone: 'detail' },
+    { key: 'rebuttal', label: '반박', icon: '⚔️', tone: 'rebuttal' },
+    { key: 'compare', label: '비교', icon: '⚖️', tone: 'compare' },
+    { key: 'example', label: '예시', icon: '💡', tone: 'example' },
+  ],
+  socratic: [
+    { key: 'why', label: '왜?', icon: '❓', tone: 'socratic' },
+    { key: 'assumption', label: '전제 검토', icon: '🔎', tone: 'socratic' },
+    { key: 'counterQuestion', label: '역질문', icon: '💬', tone: 'socratic' },
+    { key: 'example', label: '예시', icon: '💡', tone: 'example' },
+  ],
+  debate: [
+    { key: 'rebuttal', label: '반박', icon: '⚔️', tone: 'rebuttal' },
+    { key: 'defense', label: '방어', icon: '🛡️', tone: 'defense' },
+    { key: 'compare', label: '비교', icon: '⚖️', tone: 'compare' },
+    { key: 'judge', label: '판정', icon: '🏛️', tone: 'judge' },
+  ],
+  simulation: [
+    { key: 'roleplay', label: '상황극', icon: '🎭', tone: 'simulation' },
+    { key: 'choice', label: '선택지', icon: '🧭', tone: 'simulation' },
+    { key: 'reaction', label: '반응', icon: '💬', tone: 'simulation' },
+    { key: 'example', label: '예시', icon: '💡', tone: 'example' },
+  ],
+};
+
+// learningMode 값(영문/한글 혼재) → 4종 정규화.
+const normalizeLearningMode = (mode) => {
+  const value = String(mode || '').toLowerCase();
+  if (value.includes('socratic') || value.includes('소크라테스')) return 'socratic';
+  if (value.includes('debate') || value.includes('토론')) return 'debate';
+  if (value.includes('simulation') || value.includes('상황극')) return 'simulation';
+  return 'basic';
+};
+
+// 2단계 대상 선택 — 실제 에이전트 이름이 있으면 사용, 없으면 fallback.
+const getProfessorTargets = (agents = []) => [
+  { key: 'all', label: '모두' },
+  { key: 'agent1', label: agents?.[0]?.name || '에이전트1' },
+  { key: 'agent2', label: agents?.[1]?.name || '에이전트2' },
+  { key: 'agent3', label: agents?.[2]?.name || '에이전트3' },
+];
+
+// hotspot key(agent1/2/3) → 대상 인덱스 매핑(targetKey와 동일 키 체계 재사용).
+const PROFESSOR_HOTSPOT_POS = { agent1: 'left', agent2: 'center', agent3: 'right' };
+
+// professor actionKey → 기존 후속질문 actionType(handleNodeAction 재사용용).
+const PROFESSOR_ACTION_TO_NODE_ACTION = {
+  detail: 'detail', rebuttal: 'criticize', compare: 'compare', example: 'support',
+  why: 'detail', assumption: 'criticize', counterQuestion: 'detail',
+  defense: 'support', judge: 'compare', roleplay: 'detail', choice: 'detail', reaction: 'detail',
+};
+
+// 후속질문 actionType → professor actionMode(채팅 하단 버튼 통합용).
+const NODE_ACTION_TO_PROFESSOR_ACTION = {
+  detail: 'detail', criticize: 'rebuttal', compare: 'compare', support: 'example',
+};
+
+// actionKey + targetKey → 후속질문 promptText. API schema는 바꾸지 않고 문구에만 반영한다.
+const buildProfessorActionPrompt = ({ actionKey, targetKey, baseText }) => {
+  const actionLabelMap = {
+    detail: '더 자세히 설명해 주세요.',
+    rebuttal: '현재 답변의 약점과 반론을 제시해 주세요.',
+    compare: '유사 개념 또는 대안과 비교해 주세요.',
+    example: '구체적인 예시를 들어 주세요.',
+    why: '왜 그런지 소크라테스식 질문으로 파고들어 주세요.',
+    assumption: '답변의 전제와 숨은 가정을 검토해 주세요.',
+    counterQuestion: '학습자가 스스로 생각할 수 있는 역질문을 제시해 주세요.',
+    defense: '반박에 대한 방어 논리를 제시해 주세요.',
+    judge: '양쪽 관점을 판정하고 근거를 제시해 주세요.',
+    roleplay: '상황극 방식으로 설명해 주세요.',
+    choice: '선택지 기반으로 다음 행동을 제안해 주세요.',
+    reaction: '상황에 따른 인물/교수의 반응을 제시해 주세요.',
+  };
+  const targetLabelMap = {
+    all: '모든 에이전트가 각자 관점으로 답변해 주세요.',
+    agent1: '1번 에이전트 관점 중심으로 답변해 주세요.',
+    agent2: '2번 에이전트 관점 중심으로 답변해 주세요.',
+    agent3: '3번 에이전트 관점 중심으로 답변해 주세요.',
+  };
+  const excerpt = baseText
+    ? (baseText.length > 60 ? baseText.substring(0, 60).replace(/\n/g, ' ') + '...' : baseText.replace(/\n/g, ' '))
+    : '';
+  return `@모두 ${actionLabelMap[actionKey] || actionLabelMap.detail}
+${targetLabelMap[targetKey] || targetLabelMap.all}${excerpt ? `
+
+기준 내용:
+${excerpt}` : ''}`;
+};
+
 export default function StudyMate() {
   const { userId, user } = useAuth();
 
@@ -1953,6 +2076,15 @@ export default function StudyMate() {
   const isProfessorTab = viewTab === PROFESSOR_TAB_VALUE;
   // 교수님들과 대화 트리 최상단 라벨(액션에 따라 전체 의견/전체 반박/전체 비교/전체 예시로 갱신)
   const [professorTreeTitle, setProfessorTreeTitle] = useState('전체 의견');
+  // 현재 교수 액션 모드(말풍선 문구·강조색·루트 제목을 함께 좌우). 13종 + default.
+  const [professorActionMode, setProfessorActionMode] = useState('default');
+  // 마지막으로 선택한 액션/대상(트리 강조·필터 기준).
+  const [professorSelectedAction, setProfessorSelectedAction] = useState('default');
+  const [professorSelectedTarget, setProfessorSelectedTarget] = useState('all');
+  // 교수 hotspot 클릭 시 뜨는 2단계 floating menu 상태.
+  const [professorMenuState, setProfessorMenuState] = useState({
+    open: false, step: 'action', professorKey: null, actionKey: null, anchor: null,
+  });
   const [message, setMessage] = useState('');
   
   // 멘션(@) 관련 상태
@@ -3155,13 +3287,13 @@ export default function StudyMate() {
     // 전환하고, 트리 최상단 라벨을 액션에 맞게 갱신한다. 전송 시 mindmapMessages가 갱신되며
     // 결과가 이 트리에 이어진다. (사용자의 추가 질문 노드 'question'은 탭을 전환하지 않는다.)
     if (!isUserNode) {
-      const titleByAction = {
-        criticize: '전체 반박',
-        compare: '전체 비교',
-        support: '전체 예시',
-        detail: '전체 의견',
-      };
-      setProfessorTreeTitle(titleByAction[actionType] || '전체 의견');
+      // 채팅 하단 빠른 액션도 동일한 professor action 시스템과 연결한다.
+      // (말풍선 문구·트리 루트 제목·강조색이 함께 바뀐다. 대상은 기본값 all.)
+      const profAction = NODE_ACTION_TO_PROFESSOR_ACTION[actionType] || 'detail';
+      setProfessorActionMode(profAction);
+      setProfessorSelectedAction(profAction);
+      setProfessorSelectedTarget('all');
+      setProfessorTreeTitle(PROFESSOR_ROOT_TITLE_BY_ACTION[profAction] || '전체 의견');
       setViewTab(PROFESSOR_TAB_VALUE);
     }
 
@@ -3178,6 +3310,82 @@ export default function StudyMate() {
     setToastMsg('💡 교수님들과 대화 탭에서 이어집니다. 하단 입력창에서 전송해 주세요.');
     setTimeout(() => setToastMsg(''), 2500);
   };
+
+  // ── 교수 hotspot 2단계 메뉴 (액션 선택 → 대상 선택) ─────────────────────────
+  // 현재 학습 모드(normalizeLearningMode) 기준 액션 목록을 보여준다.
+  const professorActions = PROFESSOR_ACTIONS_BY_MODE[normalizeLearningMode(learningMode)]
+    || PROFESSOR_ACTIONS_BY_MODE.basic;
+  const professorTargets = getProfessorTargets(selectedAgent?.agents || []);
+
+  // 1단계: 교수 캐릭터 클릭 → 액션 메뉴 열기.
+  const openProfessorActionMenu = (professorKey) => {
+    setProfessorMenuState({
+      open: true, step: 'action', professorKey, actionKey: null, anchor: professorKey,
+    });
+  };
+
+  // 1단계 선택: 액션 클릭 → 대상 선택 단계로. (말풍선 문구는 즉시 미리보기)
+  const selectProfessorAction = (actionKey) => {
+    setProfessorMenuState((prev) => ({ ...prev, step: 'target', actionKey }));
+    setProfessorActionMode(actionKey);
+  };
+
+  const closeProfessorMenu = () => {
+    setProfessorMenuState({ open: false, step: 'action', professorKey: null, actionKey: null, anchor: null });
+  };
+
+  // 2단계 선택: 대상 클릭 → 교수님들과 대화 탭으로 전환 + 트리 갱신 + 후속질문 준비.
+  //   기존 후속질문 로직(handleNodeAction)을 재사용해 promptText만 만들고 전송은 사용자에게 맡긴다.
+  //   API payload schema/메시지 배열 구조는 변경하지 않는다.
+  const handleProfessorActionTarget = ({ professorKey, actionKey, targetKey }) => {
+    const action = actionKey || 'detail';
+    setProfessorSelectedAction(action);
+    setProfessorSelectedTarget(targetKey);
+    setProfessorActionMode(action);
+    setProfessorTreeTitle(PROFESSOR_ROOT_TITLE_BY_ACTION[action] || '전체 의견');
+    setViewTab(PROFESSOR_TAB_VALUE);
+
+    // 기준 내용: 가장 최근 AI 답변(없으면 빈 문자열).
+    const lastAi = [...chatHistory].reverse().find((m) => m.sender !== 'USER' && m.content);
+    const promptText = buildProfessorActionPrompt({
+      actionKey: action,
+      targetKey,
+      baseText: lastAi?.content || '',
+    });
+
+    // 다음 응답이 트리에 이어지도록 부모 노드를 추적(기존 후속질문 흐름과 동일).
+    if (lastAi?.id) pendingDetailParentId.current = lastAi.id;
+
+    setMessage(promptText);
+    setShowMentionPopup(false);
+    const activeId = getAgentId(selectedAgent);
+    if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
+    const inputEl = document.querySelector('.chat-input-premium input');
+    if (inputEl) inputEl.focus();
+
+    setToastMsg('💡 교수님들과 대화 탭에서 이어집니다. 하단 입력창에서 전송해 주세요.');
+    setTimeout(() => setToastMsg(''), 2500);
+  };
+
+  // floating menu 닫기: ESC / 바깥 클릭 / 탭 변경 / unmount cleanup.
+  useEffect(() => {
+    if (!professorMenuState.open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') closeProfessorMenu(); };
+    const onDown = (e) => {
+      // 메뉴 내부 또는 hotspot 클릭은 무시(자체 핸들러가 처리).
+      if (e.target.closest?.('.professor-floating-menu') || e.target.closest?.('.professor-hotspot')) return;
+      closeProfessorMenu();
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [professorMenuState.open]);
+
+  // 탭이 바뀌면 열린 메뉴를 닫는다.
+  useEffect(() => { if (!isProfessorTab) closeProfessorMenu(); }, [isProfessorTab]);
 
   const handleScrollToNode = (id) => {
     const element = document.getElementById(`node-${id}`);
@@ -3629,7 +3837,7 @@ export default function StudyMate() {
               {/* ── 교수님들과 대화 뷰 (기존 트리 구조 재사용) ── */}
               {isProfessorTab && (
                 <div className="professor-discussion-view">
-                  {/* 교실 배너 + 구름 말풍선 */}
+                  {/* 교실 배너(전체 표시) + 교수 hotspot + 교수별 말풍선 + 2단계 floating menu */}
                   <section className="professor-classroom-banner">
                     <img
                       src="/studymate-professor-classroom.png"
@@ -3637,10 +3845,84 @@ export default function StudyMate() {
                       className="professor-classroom-banner-image"
                       draggable={false}
                     />
-                    <div className="professor-cloud-bubble">
-                      <strong>학습메이트</strong>
-                      <span>반박 · 비교 · 예시를 누르면 교수님들이 트리 형태로 설명해드려요!</span>
-                    </div>
+
+                    {/* 교수별 말풍선(actionMode 변경 시 pop 애니메이션). key로 재마운트해 애니메이션 재생 */}
+                    {(PROFESSOR_BUBBLES[professorActionMode] || PROFESSOR_BUBBLES.default).map((text, i) => (
+                      <div
+                        key={`${professorActionMode}-${i}`}
+                        className={`professor-bubble is-active professor-bubble-${['left', 'center', 'right'][i]}`}
+                      >
+                        {text}
+                      </div>
+                    ))}
+
+                    {/* 클릭 가능한 투명 hotspot 3개(통짜 PNG 위 overlay) */}
+                    <button
+                      type="button"
+                      className={`professor-hotspot professor-hotspot-left ${professorMenuState.anchor === 'agent1' ? 'is-speaking' : ''}`}
+                      aria-label="왼쪽 교수 선택"
+                      onClick={() => openProfessorActionMenu('agent1')}
+                    />
+                    <button
+                      type="button"
+                      className={`professor-hotspot professor-hotspot-center ${professorMenuState.anchor === 'agent2' ? 'is-speaking' : ''}`}
+                      aria-label="가운데 교수 선택"
+                      onClick={() => openProfessorActionMenu('agent2')}
+                    />
+                    <button
+                      type="button"
+                      className={`professor-hotspot professor-hotspot-right ${professorMenuState.anchor === 'agent3' ? 'is-speaking' : ''}`}
+                      aria-label="오른쪽 교수 선택"
+                      onClick={() => openProfessorActionMenu('agent3')}
+                    />
+
+                    {/* 2단계 floating menu: 1) 모드별 액션 → 2) 대상 선택 */}
+                    {professorMenuState.open && (
+                      <div className={`professor-floating-menu ${PROFESSOR_HOTSPOT_POS[professorMenuState.anchor] || 'center'}`}>
+                        <div className="professor-floating-menu-title">
+                          {professorMenuState.step === 'action' ? '교수님께 요청할 액션' : '누구에게 들을까요?'}
+                        </div>
+
+                        {professorMenuState.step === 'action' ? (
+                          <div className="professor-floating-menu-grid">
+                            {professorActions.map((act) => (
+                              <button
+                                key={act.key}
+                                type="button"
+                                className={`professor-floating-menu-btn ${act.tone}`}
+                                onClick={() => selectProfessorAction(act.key)}
+                              >
+                                <span aria-hidden="true">{act.icon}</span> {act.label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="professor-floating-menu-grid">
+                            {professorTargets.map((tgt) => (
+                              <button
+                                key={tgt.key}
+                                type="button"
+                                className="professor-floating-menu-btn"
+                                onClick={() => {
+                                  handleProfessorActionTarget({
+                                    professorKey: professorMenuState.professorKey,
+                                    actionKey: professorMenuState.actionKey,
+                                    targetKey: tgt.key,
+                                  });
+                                  closeProfessorMenu();
+                                }}
+                              >
+                                {tgt.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        <button type="button" className="professor-floating-menu-close" onClick={closeProfessorMenu}>
+                          닫기
+                        </button>
+                      </div>
+                    )}
                   </section>
 
                   {/* 트리: 최상단 전체 의견 + 교수/에이전트별 의견 카드 */}
@@ -3665,6 +3947,11 @@ export default function StudyMate() {
                         bookmarkedIds={bookmarkedIds}
                         onBookmark={handleBookmark}
                         onRequestDetail={handleNodeAction}
+                        focusAgentName={
+                          professorSelectedTarget === 'all'
+                            ? null
+                            : (selectedAgent.agents || [])[{ agent1: 0, agent2: 1, agent3: 2 }[professorSelectedTarget]]?.name || null
+                        }
                       />
                     </div>
                   </section>
