@@ -6,7 +6,9 @@ LLM 없이 휴리스틱으로 답변이 해당 성격(YAML 프로필)을 실제�
 - validate_personality_alignment(): 에이전트/stage 컨텍스트로 종합 결과 반환
 - repair_personality_if_needed(): 점수 미달 시 (regenerate 콜백이 있으면) 짧게 보정
 
-3차 stage에서 personalityValidationSummary로 노출된다.
+성격 검증 점수는 내부 telemetry + prompt repair 신호다. 일반 사용자 응답/스트림엔
+노출하지 않고(personalityValidationSummary는 debug 플래그일 때만 채워짐), 점수 미달 시
+내부적으로 style instruction을 강화해 1회 재생성(repair)한다.
 운영 임계값/재시도는 agent_settings(env)에서 읽는다.
 """
 import re

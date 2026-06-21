@@ -98,6 +98,15 @@ def enable_personality_validation() -> bool:
     return _b("AGENT_ENABLE_PERSONALITY_VALIDATION", True)
 
 
+def enable_ai_debug_metadata() -> bool:
+    """성격 검증 점수 등 내부 진단 메타데이터를 응답에 노출할지(기본 false).
+
+    일반 사용자 화면에는 노출하지 않는다. env ENABLE_AI_DEBUG_METADATA=true이거나
+    요청에 debugMetadata=true(관리자)가 있을 때만 노출한다(요청 플래그는 호출 측에서 OR).
+    """
+    return _b("ENABLE_AI_DEBUG_METADATA", False)
+
+
 def personality_validation_min_score() -> float:
     return _f("AGENT_PERSONALITY_VALIDATION_MIN_SCORE", 0.72)
 

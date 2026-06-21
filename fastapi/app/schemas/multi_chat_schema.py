@@ -130,10 +130,31 @@ class SimulationConfig(BaseModel):
 class SimulationChoice(BaseModel):
     choiceId: str
     label: str
-    text: str
+    # text는 기존(스테이지형) 프론트 호환 필드. 분기형에서는 label과 동일하게 채운다.
+    text: Optional[str] = None
     expectedConsequence: Optional[str] = None
     conceptLink: Optional[str] = None
     misconceptionRisk: Optional[str] = None
+    # 분기형 상황극(미연시/비주얼 노벨) 확장 필드 (additive)
+    action: Optional[str] = Field(None, description="선택 시 사용자가 취하는 구체 행동")
+    expectedSkill: Optional[str] = Field(None, description="이 선택이 훈련하는 학습 기능")
+    riskLevel: Optional[str] = Field(None, description="low | medium | high")
+
+
+class SimulationNpc(BaseModel):
+    """분기형 상황극의 상대 인물(교수/면접관/동료 등)."""
+    name: Optional[str] = None
+    role: Optional[str] = None
+    emotion: Optional[str] = None
+
+
+class SimulationLearningFeedback(BaseModel):
+    """ENDING 단계의 학습 피드백."""
+    strengths: List[str] = Field(default_factory=list)
+    weaknesses: List[str] = Field(default_factory=list)
+    nextStudy: List[str] = Field(default_factory=list)
+    summary: Optional[str] = None
+    finalScore: Optional[int] = None
 
 
 class SimulationStage(BaseModel):
@@ -209,6 +230,37 @@ class MultiChatRequest(BaseModel):
     socraticConfig: Optional[SocraticConfig] = Field(None, description="소크라테스 문답 설정")
     # 상황극 모드 설정 (simulation 모드에서만 사용)
     simulationConfig: Optional[SimulationConfig] = Field(None, description="상황극 학습 설정")
+    # ── 분기형 상황극(미연시/비주얼 노벨) 상태 머신 입력 (simulation 모드, additive) ──
+    # 프론트가 이전 턴 응답을 그대로 되돌려 보내 상태를 이어간다.
+    simulationState: Optional[Dict[str, Any]] = Field(
+        None,
+        validation_alias=AliasChoices("simulationState", "simulation_state"),
+        description="이전 턴 상태(scenarioId/turnIndex/topic/userRole/worldState/previousChoices 등)",
+    )
+    selectedChoice: Optional[Dict[str, Any]] = Field(
+        None,
+        validation_alias=AliasChoices("selectedChoice", "selected_choice"),
+        description="사용자가 이번 턴에 고른 선택지(choiceId/label/action)",
+    )
+    scenarioId: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("scenarioId", "scenario_id"),
+        description="진행 중인 상황극 식별자",
+    )
+    turnIndex: Optional[int] = Field(
+        None,
+        validation_alias=AliasChoices("turnIndex", "turn_index"),
+        description="현재 턴 인덱스(첫 턴=0)",
+    )
+    phase: Optional[str] = Field(
+        None,
+        description="상황극 단계 강제 지정(SCENE_SETUP|CHOICE_RESULT|ENDING). 미지정 시 상태로 추론.",
+    )
+    endingReached: Optional[bool] = Field(
+        None,
+        validation_alias=AliasChoices("endingReached", "ending_reached"),
+        description="true면 강제 종료(ENDING)",
+    )
     enableFeedback: bool = Field(False, description="에이전트 간 피드백 활성화")
     enableFeedbackValidation: bool = Field(True, description="피드백 검증/재작성 활성화")
     # v0.8 추가 필드
@@ -217,6 +269,11 @@ class MultiChatRequest(BaseModel):
     enableDepthRewrite: Optional[bool] = Field(None, description="박사 수준 depth 재작성 활성화")
     enableExternalSources: Optional[bool] = Field(None, description="외부 소스(Tavily/Wikipedia) 사용")
     debugMetadata: bool = Field(False, description="debug metadata 반환 여부 (관리자용)")
+    # 토론 모드 논제 선택 상태 (debate 모드 turn 분기). additive — 기존 필드/계약 불변.
+    # selectedTopic/topicSelected 가 없으면 TOPIC_SELECTION(논제 후보 제시), 있으면 DEBATE_ROUND(본 토론).
+    selectedTopic: Optional[Any] = Field(None, validation_alias=AliasChoices("selectedTopic", "selected_topic"), description="사용자가 선택한 토론 논제 {topicId,title} 또는 문자열")
+    topicSelected: Optional[bool] = Field(None, validation_alias=AliasChoices("topicSelected", "topic_selected"), description="논제 선택 완료 여부")
+    debateState: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("debateState", "debate_state"), description="토론 세션 상태(서버 무상태 → 클라이언트가 보존해 전달)")
 
 
 class GenerationConfigMetadata(BaseModel):
@@ -457,6 +514,30 @@ class MultiChatMessage(BaseModel):
     roomId: Optional[Any] = None
 
 
+# ── 토론 모드 turn 계약 (TOPIC_SELECTION / DEBATE_ROUND) ─────────────────────────
+class DebateTopicCandidate(BaseModel):
+    """TOPIC_SELECTION에서 제시하는 찬반 논제 후보. 정확히 5개(topicId A~E)."""
+    topicId: Optional[str] = Field(None, description="A | B | C | D | E")
+    title: str = Field(..., description="찬반이 갈릴 수 있는 논제 문장")
+    axis: Optional[str] = Field(None, description="쟁점 축")
+    proPosition: Optional[str] = Field(None, description="찬성 입장 한 줄")
+    conPosition: Optional[str] = Field(None, description="반대 입장 한 줄")
+
+
+class DebateSide(BaseModel):
+    """DEBATE_ROUND의 찬성측/반대측 주장 구조."""
+    speaker: Optional[str] = Field(None, description="찬성측 | 반대측")
+    claim: str = Field("", description="핵심 주장 1개")
+    evidence: List[str] = Field(default_factory=list, description="근거 1~3개")
+    example: Optional[str] = Field(None, description="구체 예시 1개")
+
+
+class DebateRebuttal(BaseModel):
+    """DEBATE_ROUND의 상호 반박."""
+    proRebuttal: Optional[str] = Field(None, description="찬성측 반박")
+    conRebuttal: Optional[str] = Field(None, description="반대측 반박")
+
+
 class MultiChatResponse(BaseModel):
     success: bool = Field(True, description="요청 성공 여부")
     groupId: Optional[Any] = Field(None, description="그룹 ID")
@@ -485,9 +566,50 @@ class MultiChatResponse(BaseModel):
     # 구조화 상황극: 채팅/마인드맵/SSE/history 공통 단계 목록 + 사용된 설정 (top-level 노출)
     simulationStages: List[SimulationStage] = Field(default_factory=list, description="구조화 상황극 단계 목록")
     simulationConfig: Optional[SimulationConfig] = Field(None, description="상황극에 사용된 설정")
+    # ── 분기형 상황극(미연시/비주얼 노벨) 상태 머신 응답 (additive top-level) ──
+    phase: Optional[str] = Field(None, description="SCENE_SETUP | CHOICE_RESULT | ENDING")
+    scenarioId: Optional[str] = Field(None, description="진행 중인 상황극 식별자")
+    turnIndex: Optional[int] = Field(None, description="현재 턴 인덱스(첫 턴=0)")
+    topic: Optional[str] = Field(None, description="학습 주제")
+    learningObjective: Optional[str] = Field(None, description="이번 상황극의 학습 목표")
+    userRole: Optional[str] = Field(None, description="사용자가 맡은 역할")
+    worldState: Optional[str] = Field(None, description="세계/상황 설정")
+    sceneTitle: Optional[str] = Field(None, description="현재 장면 제목")
+    sceneDescription: Optional[str] = Field(None, description="현재 장면 설명")
+    narratorText: Optional[str] = Field(None, description="내레이션")
+    npc: Optional[SimulationNpc] = Field(None, description="상대 인물")
+    npcDialogue: Optional[str] = Field(None, description="NPC 대사")
+    npcInnerMonologue: Optional[str] = Field(None, description="NPC 속마음/독백")
+    consequence: Optional[str] = Field(None, description="선택의 결과/상황 변화")
+    choices: List[SimulationChoice] = Field(default_factory=list, description="다음 선택지(ENDING이 아니면 정확히 5개)")
+    selectedChoice: Optional[Dict[str, Any]] = Field(None, description="이번 턴에 반영된 사용자 선택")
+    endingReached: bool = Field(False, description="종료 여부")
+    learningFeedback: Optional[SimulationLearningFeedback] = Field(None, description="ENDING 학습 피드백")
+    content: Optional[str] = Field(None, description="기존 프론트 호환용 요약 텍스트")
     # 1차/2차/3차 생성 과정 (default 모드에서 생성, Spring이 그대로 패스스루)
     processSteps: Optional[ProcessSteps] = Field(None, description="1차 초안/2차 검증/3차 상호 피드백")
     # 단계별 구조 (provider/elapsedMs 포함, 프론트 stages 우선 렌더링용)
     stages: Optional[List[StageInfo]] = Field(None, description="stage1/2/3 구조 (provider, elapsedMs)")
     # v0.8 debug metadata (debugMetadata=true 요청 시에만 반환)
     debugMetadata: Optional[DebugMetadata] = Field(None, description="debug metadata (관리자용)")
+    # ── 토론 모드 turn/phase 계약 (TOPIC_SELECTION / DEBATE_ROUND) — additive ──────
+    # 기존 answers/messages/debateStages 계약을 유지한 채 구조화 필드를 추가로 제공한다.
+    phase: Optional[str] = Field(None, description="TOPIC_SELECTION | DEBATE_ROUND")
+    debateSessionId: Optional[str] = Field(None, description="토론 세션 ID")
+    turnIndex: Optional[int] = Field(None, description="턴 인덱스 (0=논제선택, 1+=본 토론)")
+    rawQuestion: Optional[str] = Field(None, description="원 질문")
+    primaryConcept: Optional[str] = Field(None, description="추출된 핵심 개념")
+    normalizedConcept: Optional[str] = Field(None, description="정규화된 개념명")
+    intent: Optional[str] = Field(None, description="질문 의도")
+    conceptChunks: List[str] = Field(default_factory=list, description="개념 청크")
+    debateAxes: List[str] = Field(default_factory=list, description="토론 축")
+    debateTopicCandidates: List[DebateTopicCandidate] = Field(default_factory=list, description="논제 후보 5개 (TOPIC_SELECTION)")
+    topicSelected: Optional[bool] = Field(None, description="논제 선택 완료 여부")
+    selectedTopic: Optional[Dict[str, Any]] = Field(None, description="선택된 논제 {topicId,title}")
+    pro: Optional[DebateSide] = Field(None, description="찬성측 (DEBATE_ROUND)")
+    con: Optional[DebateSide] = Field(None, description="반대측 (DEBATE_ROUND)")
+    rebuttal: Optional[DebateRebuttal] = Field(None, description="상호 반박 (DEBATE_ROUND)")
+    keyIssues: List[str] = Field(default_factory=list, description="핵심 쟁점 (DEBATE_ROUND)")
+    learningTakeaway: Optional[str] = Field(None, description="학습 정리 (DEBATE_ROUND)")
+    nextTopics: List[str] = Field(default_factory=list, description="이어서 토론할 논제")
+    content: Optional[str] = Field(None, description="프론트 호환용 요약 텍스트")

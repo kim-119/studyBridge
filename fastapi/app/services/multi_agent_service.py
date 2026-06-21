@@ -30,6 +30,7 @@ from app.schemas.multi_chat_schema import (
     DebateInitialAnswer, DebatePeerFeedback, DebateRevisedAnswer,
     DebateConfig, DebateStage, SocraticConfig, SocraticStep,
     SimulationConfig, SimulationStage, SimulationChoice,
+    DebateTopicCandidate, DebateSide, DebateRebuttal,
 )
 from app.services.prompt_builder import build_agent_system_prompt, build_tikitaka_role_prompt
 from app.services.personality_prompt_builder import to_profile_key, build_persona_directive
@@ -124,7 +125,7 @@ _MAX_ROUNDS = MAX_ROUNDS
 # (config.AGENT_ANSWER_MAX_CHARS 같은 '문자 수' 개념은 최종 출력에 적용하지 않는다 — 잘림 원인.)
 import os as _os
 _MAX_TOKENS_PER_ANSWER = int(_os.getenv("AI_ANSWER_MAX_TOKENS", "2048"))
-_SIMULATION_MODE_ALIASES = {"simulation", "상황극", "상황극 모드", "시뮬레이션", "시뮬레이션 모드"}
+_SIMULATION_MODE_ALIASES = {"simulation", "situation", "roleplay", "sim", "상황극", "상황극 모드", "시뮬레이션", "시뮬레이션 모드"}
 _SIMULATION_DEFAULT_STAGES = [
     "SCENARIO_SETUP", "USER_ROLE", "SITUATION_CONTEXT", "CHOICES",
     "CONSEQUENCE_PREVIEW", "CONCEPT_MAPPING", "MISCONCEPTION_TRAP",
@@ -803,6 +804,19 @@ def _personality_type(agent: AgentProfile) -> str:
     return to_profile_key(agent.personality or agent.tone or agent.style)
 
 
+def _debug_metadata_enabled(request: Optional[MultiChatRequest] = None) -> bool:
+    """성격 검증 점수 등 내부 진단 메타데이터를 응답/스트림에 노출할지 여부.
+
+    일반 사용자 화면에는 절대 노출하지 않는다. 다음 중 하나일 때만 True.
+      - request.debugMetadata == True (관리자 명시 요청)
+      - env ENABLE_AI_DEBUG_METADATA=true (운영 디버그)
+    성격 검증 로직/보정(repair)은 이 플래그와 무관하게 내부에서 항상 동작한다.
+    """
+    if request is not None and getattr(request, "debugMetadata", False):
+        return True
+    return A.enable_ai_debug_metadata()
+
+
 def _agent_index_map(agents: List[AgentProfile]) -> Dict[str, int]:
     """에이전트 이름 → 1-based 표시 순서. 프론트가 에이전트 1→2→3을 확정 정렬하는 키."""
     return {a.name: i + 1 for i, a in enumerate(agents)}
@@ -912,12 +926,14 @@ def _compute_stage2(request: MultiChatRequest, agents: List[AgentProfile], initi
     return steps, validated_map, answer_map, actual, elapsed, sources
 
 
-def _validate_mode_personas(agents: List[AgentProfile], answers) -> List[PersonalityValidationItem]:
+def _validate_mode_personas(agents: List[AgentProfile], answers,
+                            debug: bool = False) -> List[PersonalityValidationItem]:
     """
     debate/socratic 등 비-staged 모드의 답변에도 성격 정합성 검증을 부착한다.
     answer.agentName으로 에이전트를 찾아 성격 검증을 수행한다(매칭 안 되면 건너뜀).
+    성격 검증 점수는 내부 telemetry이므로 debug일 때만 요약을 반환한다(일반 사용자 미노출).
     """
-    if not A.enable_personality_validation():
+    if not A.enable_personality_validation() or not debug:
         return []
     by_name = {a.name: a for a in agents}
     texts = [getattr(ans, "answer", "") or "" for ans in answers]
@@ -1016,7 +1032,10 @@ def _compute_validation(request: MultiChatRequest, agents: List[AgentProfile],
 
         validation_map[a.name] = v
 
-    return validation_map, _summarize_validation(agents, validation_map)
+    # 성격 검증 점수/보완 문구는 내부 telemetry + repair 용도다. 일반 사용자 응답엔
+    # 노출하지 않고, debug(관리자/운영 플래그)일 때만 요약을 채운다.
+    pv_summary = _summarize_validation(agents, validation_map) if _debug_metadata_enabled(request) else []
+    return validation_map, pv_summary
 
 
 def _fallback_peer_feedback(agent: AgentProfile, targets: List[Tuple[AgentProfile, str]],
@@ -1068,7 +1087,9 @@ def _compute_stage3(request: MultiChatRequest, agents: List[AgentProfile],
                 fb = _fallback_peer_feedback(frm, targets, request.message, initial_map, validated_map)
                 prov = "fallback"
             pv = validation_map.get(frm.name)
-            pv_obj = ({"passed": pv.get("passed"), "score": pv.get("score")} if pv else None)
+            # 성격 검증 결과는 debug(관리자/운영 플래그)일 때만 피드백 카드에 부착한다.
+            pv_obj = ({"passed": pv.get("passed"), "score": pv.get("score")}
+                      if (pv and _debug_metadata_enabled(request)) else None)
             ai = idx_map.get(frm.name)
             step = PeerFeedbackStep(
                 fromAgent=frm.name, toAgent=target_names, feedback=fb,
@@ -1424,7 +1445,7 @@ def _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
         StageInfo(stage=2, title="2차 답변 - 검증 답안", provider=s2[0], status=s2[2],
                   elapsedMs=s2[1], answers=[s.model_dump() for s in validated_steps],
                   sources=sources or []),
-        StageInfo(stage=3, title="3차 답변 - 에이전트 피드백 및 성격 검증", provider=s3[0], status=s3[2],
+        StageInfo(stage=3, title="3차 답변 - 에이전트 피드백", provider=s3[0], status=s3[2],
                   elapsedMs=s3[1], feedbacks=[s.model_dump() for s in peer_steps],
                   personalityValidationSummary=pv_summary),
     ]
@@ -2107,6 +2128,7 @@ def _assemble_debate_response(
     pv_summary = _validate_mode_personas(
         agents,
         [AgentAnswer(agentName=a.name, answer=revised_map.get(a.name, "")) for a in agents],
+        debug=_debug_metadata_enabled(request),
     )
 
     process_steps = ProcessSteps(
@@ -2546,15 +2568,120 @@ def _prepare_structured_debate(request, active_agents, rag_context):
     return cfg, role_map, motion, context
 
 
+def _run_structured_debate_immediate(
+    request: MultiChatRequest,
+    active_agents: List[AgentProfile],
+    rag_context: str,
+) -> MultiChatResponse:
+    """(레거시) 논제 자동선정 후 즉시 반대/찬성/중립 구조화 토론.
+    논제선택 게이트 도입 전 동작. 코드 보존용(삭제 금지) — 게이트가 DEBATE_ROUND로
+    위임할 때를 위해 남겨 둔다."""
+    cfg, role_map, motion, context = _prepare_structured_debate(request, active_agents, rag_context)
+    stages = list(_structured_debate_stages(request, role_map, motion, cfg, context))
+    return _assemble_structured_debate(request, role_map, motion, cfg, stages, rag_context)
+
+
+# ── 논제선택 게이트: 첫 턴=TOPIC_SELECTION / 후속 턴=DEBATE_ROUND ────────────────
+# 토론 모드는 generic explanation이 아니다. selectedTopic이 없으면 바로 찬반 토론을
+# 시작하지 않고 논제 후보 5개를 제시한다(debate_topic_engine 위임).
+
+def _side_answer_text(side: DebateSide) -> str:
+    parts = [side.claim or ""]
+    if side.evidence:
+        parts.append("근거: " + " / ".join(side.evidence))
+    if side.example:
+        parts.append("예시: " + side.example)
+    return "\n".join(p for p in parts if p)
+
+
+def _debate_session_id(request: MultiChatRequest) -> str:
+    from app.services import debate_topic_engine as DTE
+    state = getattr(request, "debateState", None) or {}
+    return state.get("debateSessionId") or DTE.make_debate_session_id()
+
+
+def _debate_topic_selection_response(request, payload, active_agents, session_id) -> MultiChatResponse:
+    """TOPIC_SELECTION 응답: 논제 후보 5개 + 하위호환 answers/content."""
+    cands = [DebateTopicCandidate(**c) for c in payload["debateTopicCandidates"]]
+    lines = ["토론할 논제를 선택해 주세요. 아래 5개 후보 중 하나를 고르면 찬반 토론을 시작합니다.", ""]
+    for c in payload["debateTopicCandidates"]:
+        lines.append(f"{c.get('topicId')}. {c.get('title')}  (쟁점: {c.get('axis', '')})")
+    guide_text = "\n".join(lines)
+    name = active_agents[0].name if active_agents else "토론 진행자"
+    aid = active_agents[0].agentId if active_agents else None
+    answers = [AgentAnswer(
+        agentName=name, answer=guide_text, content=guide_text, agentId=aid,
+        role="moderator", speechType="topic_selection", displayOrder=1, displayDelayMs=0,
+        status="SUCCESS", mode="debate",
+    )]
+    return MultiChatResponse(
+        mode="debate", learningMode="debate", answers=answers, status="COMPLETED",
+        question=payload["rawQuestion"], validation=ValidationSummary(passed=True, issues=[]),
+        phase="TOPIC_SELECTION", debateSessionId=session_id, turnIndex=0,
+        rawQuestion=payload["rawQuestion"], primaryConcept=payload["primaryConcept"],
+        normalizedConcept=payload.get("normalizedConcept"), intent=payload.get("intent"),
+        conceptChunks=payload["conceptChunks"], debateAxes=payload["debateAxes"],
+        debateTopicCandidates=cands, topicSelected=False, content=payload["content"],
+    )
+
+
+def _debate_round_response(request, payload, active_agents, session_id) -> MultiChatResponse:
+    """DEBATE_ROUND 응답: 구조화 찬반 + 마인드맵 하위호환 debateStages 합성."""
+    from app.services import debate_topic_engine as DTE
+    pro = DebateSide(**payload["pro"])
+    con = DebateSide(**payload["con"])
+    reb = DebateRebuttal(**payload["rebuttal"])
+    stages = [DebateStage(**s) for s in DTE.synthesize_debate_stages(payload)]
+
+    cfg = normalize_debate_config(request)
+    cfg.topicMode = "manual"
+    cfg.manualTopic = (payload.get("selectedTopic") or {}).get("title")
+
+    delay = _get_display_delay_ms()
+    con_name = active_agents[0].name if len(active_agents) > 0 else "반대측"
+    pro_name = active_agents[1].name if len(active_agents) > 1 else "찬성측"
+    neu_name = active_agents[2].name if len(active_agents) > 2 else "중립"
+    neutral_text = (("핵심 쟁점: " + ", ".join(payload["keyIssues"]) + "\n\n") if payload.get("keyIssues") else "") + payload["learningTakeaway"]
+    answers = [
+        AgentAnswer(agentName=con_name, answer=_side_answer_text(con), content=_side_answer_text(con),
+                    role="con", speechType="counter_argument", displayOrder=1, displayDelayMs=0,
+                    status="SUCCESS", mode="debate"),
+        AgentAnswer(agentName=pro_name, answer=_side_answer_text(pro), content=_side_answer_text(pro),
+                    role="pro", speechType="support_argument", displayOrder=2, displayDelayMs=delay,
+                    status="SUCCESS", mode="debate"),
+        AgentAnswer(agentName=neu_name, answer=neutral_text, content=neutral_text,
+                    role="neutral", speechType="moderation_summary", displayOrder=3,
+                    displayDelayMs=delay * 2, status="SUCCESS", mode="debate"),
+    ]
+    summary = payload["learningTakeaway"]
+    process_steps = ProcessSteps(mode="debate", debateStages=stages, debateConfig=cfg, debateSummary=summary)
+    return MultiChatResponse(
+        mode="debate", learningMode="debate", answers=answers, status="COMPLETED",
+        question=payload["rawQuestion"], validation=ValidationSummary(passed=True, issues=[]),
+        debateStages=stages, debateConfig=cfg, debateSummary=summary, processSteps=process_steps,
+        phase="DEBATE_ROUND", debateSessionId=session_id, turnIndex=payload.get("turnIndex", 1),
+        rawQuestion=payload["rawQuestion"], selectedTopic=payload["selectedTopic"],
+        topicSelected=True, pro=pro, con=con, rebuttal=reb,
+        keyIssues=payload["keyIssues"], learningTakeaway=payload["learningTakeaway"],
+        nextTopics=payload.get("nextTopics", []), content=payload["content"],
+    )
+
+
 def _run_debate_mode(
     request: MultiChatRequest,
     active_agents: List[AgentProfile],
     rag_context: str,
 ) -> MultiChatResponse:
-    """구조화 토론 모드(블로킹). 논제(자동/수동) → 반대/찬성/중립 고정 역할 → debateStages."""
-    cfg, role_map, motion, context = _prepare_structured_debate(request, active_agents, rag_context)
-    stages = list(_structured_debate_stages(request, role_map, motion, cfg, context))
-    return _assemble_structured_debate(request, role_map, motion, cfg, stages, rag_context)
+    """토론 모드(블로킹). 논제선택 게이트:
+       selectedTopic 없음 → TOPIC_SELECTION(논제 후보 5개)
+       selectedTopic 있음 → DEBATE_ROUND(찬성/반대/반박/쟁점/학습정리)."""
+    from app.services import debate_topic_engine as DTE
+    session_id = _debate_session_id(request)
+    if DTE.resolve_debate_phase(request) == "TOPIC_SELECTION":
+        payload = DTE.build_topic_selection(request)
+        return _debate_topic_selection_response(request, payload, active_agents, session_id)
+    payload = DTE.build_debate_round(request)
+    return _debate_round_response(request, payload, active_agents, session_id)
 
 
 def run_debate_mode_stream(
@@ -2562,21 +2689,46 @@ def run_debate_mode_stream(
     active_agents: List[AgentProfile],
     rag_context: str,
 ):
-    """
-    구조화 토론 SSE 제너레이터. 각 단계 완료 즉시 debate_section 이벤트로 stageType/stageTitle/
-    side/role/agentIndex/agentName/content/debateConfig를 보내고, 마지막에 all_complete를 보낸다.
-    """
-    cfg, role_map, motion, context = _prepare_structured_debate(request, active_agents, rag_context)
-    cfg_dump = cfg.model_dump()
-    stages = []
-    for stage in _structured_debate_stages(request, role_map, motion, cfg, context):
-        stages.append(stage)
+    """토론 모드 SSE. 논제선택 게이트:
+       - 첫 턴(selectedTopic 없음): debate_topic_candidates 이벤트(논제 후보 5개) → all_complete.
+         찬성/반대 토론은 절대 시작하지 않는다.
+       - 후속 턴(selectedTopic 있음): debate_round 이벤트(찬반/반박/쟁점/학습정리) → all_complete.
+         debate_section/debateStages도 합성해 마인드맵 하위호환을 유지한다."""
+    from app.services import debate_topic_engine as DTE
+    session_id = _debate_session_id(request)
+
+    if DTE.resolve_debate_phase(request) == "TOPIC_SELECTION":
+        payload = DTE.build_topic_selection(request)
+        yield {"event": "debate_topic_candidates", "data": {
+            "event": "debate_topic_candidates", "mode": "debate", "phase": "TOPIC_SELECTION",
+            "debateSessionId": session_id, "turnIndex": 0, "visible": True,
+            "rawQuestion": payload["rawQuestion"], "primaryConcept": payload["primaryConcept"],
+            "normalizedConcept": payload.get("normalizedConcept"),
+            "conceptChunks": payload["conceptChunks"], "debateAxes": payload["debateAxes"],
+            "debateTopicCandidates": payload["debateTopicCandidates"], "topicSelected": False,
+        }}
+        resp = _debate_topic_selection_response(request, payload, active_agents, session_id)
+        yield {"event": "all_complete", "data": resp.model_dump()}
+        return
+
+    payload = DTE.build_debate_round(request)
+    cfg_dump = None
+    resp = _debate_round_response(request, payload, active_agents, session_id)
+    # 마인드맵 하위호환: 합성된 debateStages를 debate_section 이벤트로도 흘려보낸다.
+    for stage in resp.debateStages:
         data = stage.model_dump()
+        if cfg_dump is None:
+            cfg_dump = resp.debateConfig.model_dump() if resp.debateConfig else {}
         data["debateConfig"] = cfg_dump
         yield {"event": "debate_section", "data": data}
-
-    final = _assemble_structured_debate(request, role_map, motion, cfg, stages, rag_context)
-    yield {"event": "all_complete", "data": final.model_dump()}
+    yield {"event": "debate_round", "data": {
+        "event": "debate_round", "mode": "debate", "phase": "DEBATE_ROUND",
+        "debateSessionId": session_id, "turnIndex": payload.get("turnIndex", 1), "visible": True,
+        "selectedTopic": payload["selectedTopic"], "pro": payload["pro"], "con": payload["con"],
+        "rebuttal": payload["rebuttal"], "keyIssues": payload["keyIssues"],
+        "learningTakeaway": payload["learningTakeaway"],
+    }}
+    yield {"event": "all_complete", "data": resp.model_dump()}
 
 
 # ── agentPreset 디렉티브 (learningMode와 별개의 역할/성격 프리셋) ──────────────────
@@ -3376,37 +3528,23 @@ def _generate_simulation_stages(request: MultiChatRequest, cfg: SimulationConfig
 
 
 def _run_simulation_mode(request: MultiChatRequest, active_agents: List[AgentProfile], rag_context: str) -> MultiChatResponse:
-    cfg = normalize_simulation_config(request)
-    role_map = assign_simulation_roles(active_agents)
-    stages = _generate_simulation_stages(request, cfg, role_map, rag_context)
-    return _build_simulation_response(request, cfg, role_map, stages)
+    """미연시/비주얼 노벨형 branching scenario engine으로 delegate한다.
+
+    이전엔 매 턴 초기 상황(세계설정/사용자역할/결과해석자/상황설명)을 재생성하는
+    스테이지형 정적 카드였다. 이제 simulation_engine이 상태 머신
+    (SCENE_SETUP→CHOICE_RESULT→ENDING)으로 선택을 반영해 분기한다.
+
+    아래 헬퍼들(normalize_simulation_config / assign_simulation_roles /
+    _generate_simulation_stages / _build_simulation_response 등)은 하위호환/참고용으로 보존한다.
+    """
+    from app.services.simulation_engine import run_simulation
+    return run_simulation(request, active_agents, rag_context)
 
 
 def run_simulation_mode_stream(request: MultiChatRequest, active_agents: List[AgentProfile], rag_context: str):
-    """상황극 SSE: LLM으로 사용자 질문/지정 역할에 맞는 단계를 생성해 순차 전송한다."""
-    cfg = normalize_simulation_config(request)
-    role_map = assign_simulation_roles(active_agents)
-    cfg_dump = cfg.model_dump()
-    request_id = _stream_request_id()
-    seen = set()
-    yield {"event": "turn_start", "data": {"type": "turn_start", "requestId": request_id, "message": "상황극 생성을 시작합니다."}}
-    stages = _generate_simulation_stages(request, cfg, role_map, rag_context)
-    for stage in stages:
-        data = stage.model_dump()
-        data["type"] = "simulation_stage"
-        data["requestId"] = request_id
-        data["simulationConfig"] = cfg_dump
-        key = (data.get("stageType"), data.get("agentIndex"), hash(data.get("content") or ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        yield {"event": "simulation_stage", "data": data}
-    final = _build_simulation_response(request, cfg, role_map, stages)
-    final_data = final.model_dump()
-    final_data["type"] = "all_complete"
-    final_data["requestId"] = request_id
-    final_data["message"] = "모든 상황극 단계가 완료되었습니다."
-    yield {"event": "all_complete", "data": final_data}
+    """상황극 SSE: 상태 머신(SCENE_SETUP→CHOICE_RESULT→ENDING)으로 phase별 이벤트를 전송한다."""
+    from app.services.simulation_engine import run_simulation_stream
+    yield from run_simulation_stream(request, active_agents, rag_context)
 
 
 # ── group_study_ai 모드 (그룹스터디 AI 봇 3종) ────────────────────────────────

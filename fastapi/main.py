@@ -1769,6 +1769,11 @@ class MultiChatRequest(BaseModel):
     topP: Optional[float] = Field(None, validation_alias=AliasChoices("topP", "top_p"))
     maxTokens: Optional[int] = Field(None, validation_alias=AliasChoices("maxTokens", "max_tokens"))
     model: Optional[str] = None
+    knowledgeLevel: Optional[str] = Field(None, validation_alias=AliasChoices("knowledgeLevel", "knowledge_level"))
+    # 토론 모드 논제선택 상태 (debate 모드 turn 분기). additive — 기존 필드/계약 불변.
+    selectedTopic: Optional[Any] = Field(None, validation_alias=AliasChoices("selectedTopic", "selected_topic"))
+    topicSelected: Optional[bool] = Field(None, validation_alias=AliasChoices("topicSelected", "topic_selected"))
+    debateState: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("debateState", "debate_state"))
 
 class AgentAnswer(BaseModel):
     agentName: str
@@ -2479,6 +2484,76 @@ async def build_rag_context_for_multi_chat(request: MultiChatRequest) -> str:
     return context[:max_chars]
 
 
+def build_debate_mode_payload(request: "MultiChatRequest", active_agents: list) -> Dict[str, Any]:
+    """비스트림 /api/ai/multi-chat 토론 게이트.
+
+    selectedTopic 없음 → TOPIC_SELECTION(논제 후보 5개), 있음 → DEBATE_ROUND(찬반/반박/쟁점/학습정리).
+    debate_topic_engine에 위임하고, 엔진 payload + 하위호환 answers/messages를 합친
+    JSON 직렬화 가능한 dict를 반환한다(JSONResponse로 그대로 내보낸다). 기존 필드는 건드리지 않는다.
+    """
+    from app.services import debate_topic_engine as DTE
+    state = getattr(request, "debateState", None) or {}
+    session_id = state.get("debateSessionId") or DTE.make_debate_session_id()
+    phase = DTE.resolve_debate_phase(request)
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def _msg(name, content, seq, role, speech):
+        return {
+            "senderType": "AGENT", "agentId": None, "agentName": name,
+            "role": role, "mode": "debate", "round": 1, "sequence": seq,
+            "content": content, "speechType": speech, "createdAt": now,
+            "groupId": request.groupId, "roomId": request.roomId,
+        }
+
+    def _side_text(s: Dict[str, Any]) -> str:
+        parts = [s.get("claim", "")]
+        if s.get("evidence"):
+            parts.append("근거: " + " / ".join(s["evidence"]))
+        if s.get("example"):
+            parts.append("예시: " + s["example"])
+        return "\n".join(p for p in parts if p)
+
+    if phase == "TOPIC_SELECTION":
+        payload = DTE.build_topic_selection(request)
+        lines = ["토론할 논제를 선택해 주세요. 아래 5개 후보 중 하나를 고르면 찬반 토론을 시작합니다.", ""]
+        for c in payload["debateTopicCandidates"]:
+            lines.append(f"{c.get('topicId')}. {c.get('title')}  (쟁점: {c.get('axis', '')})")
+        guide = "\n".join(lines)
+        name = getattr(active_agents[0], "name", None) if active_agents else "토론 진행자"
+        answers = [{"agentName": name or "토론 진행자", "answer": guide, "content": guide,
+                    "role": "moderator", "speechType": "topic_selection", "displayOrder": 1,
+                    "displayDelayMs": 0, "status": "SUCCESS", "mode": "debate"}]
+        messages = [_msg(name or "토론 진행자", guide, 1, "moderator", "topic_selection")]
+    else:
+        payload = DTE.build_debate_round(request)
+        payload["debateStages"] = DTE.synthesize_debate_stages(payload)
+        con_t, pro_t = _side_text(payload["con"]), _side_text(payload["pro"])
+        neu_t = (("핵심 쟁점: " + ", ".join(payload["keyIssues"]) + "\n\n") if payload.get("keyIssues") else "") + payload["learningTakeaway"]
+        names = [getattr(a, "name", None) for a in active_agents]
+        con_n = names[0] if len(names) > 0 and names[0] else "반대측"
+        pro_n = names[1] if len(names) > 1 and names[1] else "찬성측"
+        neu_n = names[2] if len(names) > 2 and names[2] else "중립"
+        answers = [
+            {"agentName": con_n, "answer": con_t, "content": con_t, "role": "con", "speechType": "counter_argument", "displayOrder": 1, "displayDelayMs": 0, "status": "SUCCESS", "mode": "debate"},
+            {"agentName": pro_n, "answer": pro_t, "content": pro_t, "role": "pro", "speechType": "support_argument", "displayOrder": 2, "displayDelayMs": 0, "status": "SUCCESS", "mode": "debate"},
+            {"agentName": neu_n, "answer": neu_t, "content": neu_t, "role": "neutral", "speechType": "moderation_summary", "displayOrder": 3, "displayDelayMs": 0, "status": "SUCCESS", "mode": "debate"},
+        ]
+        messages = [
+            _msg(con_n, con_t, 1, "con", "counter_argument"),
+            _msg(pro_n, pro_t, 2, "pro", "support_argument"),
+            _msg(neu_n, neu_t, 3, "neutral", "moderation_summary"),
+        ]
+
+    result = dict(payload)
+    result.update({
+        "success": True, "mode": "debate", "learningMode": "debate",
+        "groupId": request.groupId, "roomId": request.roomId, "agentRoomId": request.agentRoomId,
+        "status": "COMPLETED", "question": payload.get("rawQuestion"),
+        "answers": answers, "messages": messages, "debateSessionId": session_id,
+    })
+    return result
+
+
 @app.post(
     "/api/ai/multi-chat",
     response_model=MultiChatResponse,
@@ -2512,6 +2587,15 @@ async def multi_chat_endpoint(request: MultiChatRequest):
     requested_mode = (request.mode or request.learningMode or "default").strip()
     learning_mode = normalize_learning_mode(request.learningMode or request.mode)
     persona_mode = requested_mode.lower()
+
+    # 토론 모드 논제선택 게이트: 개념 질문을 바로 찬반 설명하지 않고,
+    # selectedTopic이 없으면 논제 후보 5개(TOPIC_SELECTION)를, 있으면 본 토론(DEBATE_ROUND)을 반환한다.
+    if learning_mode == "debate":
+        try:
+            debate_result = await asyncio.to_thread(build_debate_mode_payload, request, active_agents)
+            return JSONResponse(content=debate_result)
+        except Exception as _debate_err:
+            logger.error("[debate] 비스트림 게이트 실패 → 기존 멀티에이전트 경로로 fallback: %s", _debate_err)
     effective_timeout = resolve_multi_chat_timeout(request.mode, learning_mode)
     generation_payload = {
         "temperature": request.temperature,

@@ -170,7 +170,8 @@ def classify_route(
     if explicit_debate and raw:
         return RouteResult(DEBATE_REQUEST, "debate", None,
                            "명시적 토론 모드", ["mode=debate"])
-    explicit_simulation = lm in {"simulation", "상황극", "시뮬레이션"} or md in {"simulation", "상황극", "시뮬레이션"}
+    _sim_aliases = {"simulation", "situation", "roleplay", "sim", "상황극", "시뮬레이션"}
+    explicit_simulation = lm in _sim_aliases or md in _sim_aliases
     if explicit_simulation and raw:
         return RouteResult(LEARNING_QUESTION, "basic", None,
                            "명시적 상황극 모드", ["mode=simulation"])
@@ -266,6 +267,31 @@ _MD_CODEFENCE_RE = re.compile(r"```[a-zA-Z]*")
 _MD_INLINE_CODE_RE = re.compile(r"`([^`]*)`")
 
 
+# 성격/스타일 검증 점수 디버그 문구 (LLM 본문에 새어나올 경우를 위한 방어).
+# '보완 필요' 같은 일반 학습 피드백은 보존하고, 성격/스타일/검증/score와 함께
+# 등장하는 진단 문구만 제거한다.
+_PERSONALITY_DEBUG_RES = (
+    re.compile(r"성격\s*검증\s*[:：]?\s*\d+(?:\.\d+)?\s*(?:보완\s*필요)?", re.IGNORECASE),
+    re.compile(r"(?:스타일|style)\s*검증\s*[:：]?\s*\d+(?:\.\d+)?\s*(?:보완\s*필요)?", re.IGNORECASE),
+    re.compile(r"personality\s*(?:validation|score)\s*[:：]?\s*\d+(?:\.\d+)?\s*(?:needs\s*improvement)?", re.IGNORECASE),
+    re.compile(r"style\s*(?:validation|score)\s*[:：]?\s*\d+(?:\.\d+)?\s*(?:needs\s*improvement)?", re.IGNORECASE),
+    re.compile(r"(?:validation|quality)\s*score\s*[:：]?\s*\d+(?:\.\d+)?\s*(?:needs\s*improvement)?", re.IGNORECASE),
+)
+
+
+def strip_personality_debug_text(text: str) -> str:
+    """성격/스타일 검증 점수 디버그 문구를 본문에서 제거한다(일반 피드백은 보존)."""
+    if not text:
+        return text or ""
+    cleaned = text
+    for rx in _PERSONALITY_DEBUG_RES:
+        cleaned = rx.sub("", cleaned)
+    # 제거로 생긴 빈 괄호/잉여 공백 정리
+    cleaned = re.sub(r"\(\s*\)|\[\s*\]", "", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned
+
+
 def strip_internal_markers(text: str) -> str:
     """학습 답변에서 내부 evaluator 헤더/라벨 라인을 제거한다(코드블록/본문은 보존)."""
     if not text:
@@ -275,7 +301,7 @@ def strip_internal_markers(text: str) -> str:
         if _INTERNAL_LINE_RE.match(line):
             continue
         out.append(line)
-    return "\n".join(out).strip()
+    return strip_personality_debug_text("\n".join(out)).strip()
 
 
 def has_internal_leak(text: str) -> bool:
