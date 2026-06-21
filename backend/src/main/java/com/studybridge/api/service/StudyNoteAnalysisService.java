@@ -206,6 +206,12 @@ public class StudyNoteAnalysisService {
         body.put("materialTitle", material.getTitle() == null ? "" : material.getTitle());
         body.put("subject", material.getKeywords() == null ? "" : material.getKeywords());
         body.put("inputType", "PDF");
+        // PDF 원본 S3 key 를 함께 전달한다(additive). ai07 가 s3Key 로 원본 PDF 를 S3 에서 직접 로드하여
+        // 페이지별 텍스트 추출 + 이미지 렌더링 + OCR + 페이지별 요약(이미지 전용/이미지 포함 PDF)을 수행할 수 있게 한다.
+        // 값이 없으면(빈 문자열) ai07 는 기존 pageTexts 기반 텍스트 분석으로 폴백한다.
+        String s3Key = resolveMaterialS3Key(material);
+        body.put("s3Key", s3Key);
+        log.info("Major analysis request includes s3Key: {}", s3Key != null && !s3Key.isBlank());
         // 페이지 구분(form-feed)이 있으면 페이지별 {page,text}로 분리해 전달(ai07 페이지별 분리/정렬 정확도↑)
         body.put("pageTexts", buildPageTexts(material.getExtractedText()));
         // 전체 페이지 수(총 페이지 수)를 함께 전달한다. pageTexts 는 텍스트가 있는 페이지만 포함될 수 있어
@@ -227,6 +233,30 @@ public class StudyNoteAnalysisService {
                 .bodyValue(body).retrieve().bodyToMono(Map.class)
                 .block(Duration.ofSeconds(timeoutSeconds));
         return resp == null ? null : MAPPER.valueToTree(resp);
+    }
+
+    // 자료의 PDF 원본 S3 key 를 도출한다(하드코딩 금지, 실제 저장 필드 기준).
+    //  - 업로드 시 Material.s3FileUrl 에는 "전체 URL" 이 아니라 S3 object key 가 저장된다
+    //    (MaterialService: .s3FileUrl(s3Key); presigned URL 생성도 이 값을 key 로 사용).
+    //  - 혹시 전체 URL(https://...amazonaws.com/<key>) 형태가 들어와도 안전하게 path key 만 추출한다.
+    //  - 값이 없으면 빈 문자열을 반환한다(ai07 가 pageTexts 기반으로 폴백, 전체 실패 방지).
+    private String resolveMaterialS3Key(Material material) {
+        if (material == null) return "";
+        String raw = material.getS3FileUrl();
+        if (raw == null || raw.isBlank()) {
+            raw = material.getStoredFileName();
+        }
+        if (raw == null || raw.isBlank()) return "";
+        String value = raw.trim();
+        int schemeIdx = value.indexOf("://");
+        if (schemeIdx >= 0) {
+            // 전체 URL → host 이후의 path 만 key 로 사용
+            int pathStart = value.indexOf('/', schemeIdx + 3);
+            value = pathStart >= 0 ? value.substring(pathStart + 1) : "";
+            int queryIdx = value.indexOf('?');
+            if (queryIdx >= 0) value = value.substring(0, queryIdx); // presigned 쿼리 제거
+        }
+        return value;
     }
 
     // 추출 텍스트의 form-feed(\f) 페이지 경계로 총 페이지 수를 도출한다.
