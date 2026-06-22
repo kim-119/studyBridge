@@ -447,11 +447,12 @@ def _build_single_agent_user_prompt(
     parts.append("위 대화 흐름을 이어서, 이 메시지에 자연스럽게 응답하라.")
     if peer_answers:
         peer_lines = [f"- {p.get('agentName','메이트')}: {str(p.get('answer',''))[:300]}" for p in peer_answers]
+        peer_names = ", ".join(f"'{p.get('agentName','메이트')}'" for p in peer_answers)
         parts.append(
-            "[먼저 답한 메이트들의 의견]\n" + "\n".join(peer_lines) +
-            "\n→ 반드시 첫 문장에서 위 메이트를 '이름'으로 직접 지목해 동의/반박/보완하라. "
-            "(예: \"냉철 분석관이 ~라고 했는데, 그건 ~한 점에서 동의/반박해.\") "
-            "그 뒤 네 성격대로 답을 이어가라. 앞 의견을 무시하고 똑같은 설명을 반복하지 마라."
+            "[바로 앞에서 답한 메이트들 — 지목할 땐 아래 이름만 사용]\n" + "\n".join(peer_lines) +
+            f"\n→ 첫 문장에서 위 목록({peer_names}) 중 한 명을 '정확한 이름'으로 지목해 동의/반박/보완하라. "
+            "목록에 없는 이름을 지어내지 마라(아직 답하지 않은 에이전트를 언급 금지). "
+            "앞 답변 문장을 절대 베끼지 말고, 겹치는 내용은 건너뛰고 너만의 관점·지적만 더하라."
         )
     parts.append(build_persona_directive(_agent_personality_label(agent), _agent_custom_instruction(agent)))
     return "\n\n".join(parts)
