@@ -3962,7 +3962,7 @@ export default function StudyMate() {
                   </>
                 )}
 
-                {/* 상단 가로 탭바: 채팅 ↔ 교수님들과 대화 (기존 '마인드맵 크게 보기' 위치/폭 재사용) */}
+                {/* 상단 가로 탭바: 채팅 ↔ 교수님들과 대화 ↔ 마인드맵 */}
                 <div className="study-view-tabs">
                   <button
                     type="button"
@@ -3979,6 +3979,14 @@ export default function StudyMate() {
                   >
                     <UsersRound size={16} />
                     <span>교수님들과 대화</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`view-tab-btn ${viewTab === 'mindmap' ? 'active mindmap' : ''}`}
+                    onClick={() => setViewTab('mindmap')}
+                  >
+                    <Network size={16} />
+                    <span>마인드맵</span>
                   </button>
                 </div>
               </div>
@@ -4171,7 +4179,7 @@ export default function StudyMate() {
                 </div>
               )}
 
-              {/* ── 교수님들과 대화 뷰 (기존 트리 구조 재사용) ── */}
+              {/* ── 교수님들과 대화 뷰 ── */}
               {isProfessorTab && (
                 <div className="professor-discussion-view">
                   {/* 픽셀 교수 stage: classroom 배경 + 교수 sprite 3명(actor) + 액션 메뉴 + 1분 요약.
@@ -4190,22 +4198,13 @@ export default function StudyMate() {
                     onAskAll={handleProfAskAll}
                     onCompare={handleProfCompare}
                   />
+                </div>
+              )}
 
-                  {/* 마인드맵(트리) 토글: 기본 숨김, 버튼으로 별도 섹션을 펼친다. */}
-                  <div className="professor-mindmap-toggle-row">
-                    <button
-                      type="button"
-                      className={`professor-mindmap-toggle ${showMindmap ? 'is-open' : ''}`}
-                      onClick={() => setShowMindmap((v) => !v)}
-                      aria-expanded={showMindmap}
-                    >
-                      🧠 마인드맵 {showMindmap ? '닫기' : '보기'}
-                    </button>
-                  </div>
-
-                  {/* 트리: 최상단 전체 의견 + 교수/에이전트별 의견 카드 */}
-                  {showMindmap && (
-                  <section className="professor-tree-section">
+              {/* ── 마인드맵 뷰 ── */}
+              {viewTab === 'mindmap' && (
+                <div className="professor-discussion-view" style={{ flex: 1, overflowY: 'auto' }}>
+                  <section className="professor-tree-section" style={{ borderTop: 'none', margin: 0, borderRadius: '0' }}>
                     <div className="professor-tree-header">
                       <h3>{professorTreeTitle}</h3>
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', margin: '4px 0 8px', padding: '5px 12px', borderRadius: '999px', background: 'rgba(37,99,235,0.12)', border: '1px solid rgba(37,99,235,0.35)', color: '#1D4ED8', fontSize: '12.5px', fontWeight: 700, width: 'fit-content' }}>
@@ -4242,7 +4241,6 @@ export default function StudyMate() {
                       />
                     </div>
                   </section>
-                  )}
                 </div>
               )}
 
