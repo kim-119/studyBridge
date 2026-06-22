@@ -152,6 +152,22 @@ def test_feedback_round_flag(monkeypatch):
     assert len(off) == 0 and len(on) == 2  # 플래그 off=라운드2 없음, on=에이전트당 1개
 
 
+def test_socratic_has_hints_and_self_explanation():
+    agents = _agents()
+    soc = orch._build_single_agent_system_prompt(agents[0], "socratic", agents, position=0, total=3)
+    assert "단계별 힌트" in soc and "네 말로 설명" in soc
+
+
+def test_debate_defines_topic_and_splits_sides():
+    agents = [AgentProfile(id=i, agentId=f"a{i}", name=f"A{i}", personality="논리형") for i in range(3)]
+    d0 = orch._build_single_agent_system_prompt(agents[0], "debate", agents, position=0, total=3)
+    d1 = orch._build_single_agent_system_prompt(agents[1], "debate", agents, position=1, total=3)
+    d2 = orch._build_single_agent_system_prompt(agents[2], "debate", agents, position=2, total=3)
+    assert "논제" in d0 and "찬성" in d0     # 첫 에이전트가 논제 정의 + 찬성
+    assert "반대" in d1                       # 둘째 반대
+    assert "중립" in d2                       # 셋째 중립/정리
+
+
 def test_social_input_gets_light_prompt():
     # 인사/잡담이면 공격적 비판 대신 가볍게 받는 프롬프트가 나와야 한다.
     agents = _agents()

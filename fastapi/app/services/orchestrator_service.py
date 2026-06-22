@@ -390,13 +390,34 @@ def _agent_custom_instruction(agent: AgentProfile) -> Optional[str]:
     )
 
 
-def _mode_role_directive(mode: str) -> str:
-    """단일 에이전트용 모드 역할 지시(1~2줄). build_system_prompt의 JSON 다중 지시와 달리 본문 직답용."""
+def _mode_role_directive(mode: str, position: int = 0, total: int = 1) -> str:
+    """단일 에이전트용 모드 역할 지시. 토론은 위치별로 논제정의/찬성/반대/중립을 분담한다."""
     m = (mode or "basic").strip().lower()
     if m in ("debate", "토론", "토론 모드"):
-        return "[모드: 토론] 이 주제에 대해 하나의 분명한 입장을 정하고, 탄탄한 근거와 예시로 설득력 있게 주장하라. 반대 관점의 허점도 구체적으로 짚어라."
+        base = (
+            "[모드: 토론] 먼저 사용자의 말/대화에서 쟁점이 될 '논제'를 한 문장으로 정의해 제시하라"
+            "(예: \"논제: X는 Y해야 하는가?\"). 그 뒤 근거·예시로 입장을 주장하라. 감정이 아니라 논리로."
+        )
+        if total >= 3:
+            role = {
+                0: "너는 '논제 정의 + 찬성'이다. 첫 문장에서 논제를 한 줄로 정의하고, 찬성 근거를 펼쳐라.",
+                1: "너는 '반대'다. 앞서 정의된 논제에 대해 반대 근거로 반박하라(논제를 새로 만들지 마라).",
+            }.get(position, "너는 '중립 정리·판정'이다. 양측 논점을 정리하고 균형 잡힌 결론을 내려라.")
+        elif total == 2:
+            role = {
+                0: "너는 '논제 정의 + 찬성'이다. 논제를 한 줄로 정의하고 찬성 근거를 펼쳐라.",
+            }.get(position, "너는 '반대'다. 정의된 논제에 반대 근거로 반박하라.")
+        else:
+            role = "혼자 진행하니, 논제를 한 줄로 정의한 뒤 찬반 양쪽 논점을 균형 있게 제시하라."
+        return base + "\n- " + role
     if m in ("socratic", "소크라테스", "소크라테스 모드"):
-        return "[모드: 소크라테스] 정답을 직접 주지 말고, 사용자가 스스로 깨닫도록 날카로운 꼬리질문과 반례 위주로 답하라. 답변 대부분을 질문으로 구성하되 길잡이 힌트는 약간만 준다."
+        return (
+            "[모드: 소크라테스] 정답을 바로 알려주지 마라. 아래 흐름으로 사용자의 이해를 유도하라:\n"
+            "① 핵심을 건드리는 질문을 던진다(질문 강도는 '보통' — 너무 쉽지도 어렵지도 않게).\n"
+            "② 막힐 법한 지점엔 '단계별 힌트'를 조금씩 준다(한 번에 정답 공개 금지, 한 단계씩).\n"
+            "③ 사용자가 스스로 설명하도록 유도한다('이걸 네 말로 설명해볼래?').\n"
+            "답변의 대부분을 질문·힌트로 구성하고, 개념을 통째로 풀어 설명하지 마라."
+        )
     if m in ("simulation", "상황극", "상황극 모드", "situation", "roleplay"):
         return "[모드: 상황극] 주제와 관련된 가상 시나리오 속 인물이 되어 생생한 대사와 상황 묘사로 답하라. 마지막에 사용자에게 선택지나 행동을 묻는 질문을 던져라."
     return (
@@ -471,7 +492,7 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
         return f"""[역할] 너는 '{name}'(이)다.
 {persona_block}
 {custom_block}
-{_mode_role_directive(mode)}
+{_mode_role_directive(mode, position, total)}
 
 [상대 수준] 상대는 '{level}' 수준이다. 난이도와 용어를 거기에 맞춰라.{peers}
 
