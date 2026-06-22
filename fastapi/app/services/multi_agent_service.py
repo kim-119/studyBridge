@@ -426,9 +426,12 @@ def _get_agents(request: MultiChatRequest) -> List[AgentProfile]:
 
 
 def _filter_agents(agents: List[AgentProfile], target_id: Optional[int]) -> List[AgentProfile]:
-    if target_id is None:
+    if target_id is None or str(target_id).strip() == "":
         return agents
-    filtered = [a for a in agents if (a.agentId == target_id or a.id == target_id)]
+    # Spring은 targetAgentId를 String으로 보내고 agent.agentId는 int일 수 있다(5 == "5" → False).
+    # 타입 불일치로 매칭 실패→전체 폴백되는 걸 막기 위해 문자열로 정규화해 비교한다.
+    tid = str(target_id).strip()
+    filtered = [a for a in agents if (str(a.agentId).strip() == tid or str(a.id).strip() == tid)]
     if not filtered:
         logger.warning("targetAgentId=%s에 해당하는 에이전트 없음. 전체 사용.", target_id)
         return agents

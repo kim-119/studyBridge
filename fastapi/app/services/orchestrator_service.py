@@ -498,6 +498,15 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
     is_basic = m in ("", "basic", "default")
     # 위치별 역할 분담(설명/심화/검증)은 basic 모드 전용. 소크라테스/토론/상황극엔 적용하지 않는다.
     role_block = _position_role(position, total) if is_basic else ""
+    # 지식수준 → 길이/깊이 지시(입문=짧고 쉽게, 박사/전문가=길고 깊게). level_policy 중앙 정책 재사용.
+    try:
+        from app.services import level_policy
+        _lvl = level_policy.normalize(agent.knowledgeLevel or getattr(agent, "knowledgeLevelLabel", None))
+        level_directive = level_policy.directive(_lvl)
+    except Exception:
+        level_directive = ""
+    # 성격을 확연히 차별화(미적지근 금지).
+    persona_emphasis = "[성격 강조] 네 성격(말투·관점)을 과장될 정도로 강하게 드러내라. 다른 메이트와 확연히 달라야 한다. 미적지근하면 실패다."
 
     # 인사/잡담이면: 성격 톤은 살짝 유지하되 공격하지 말고 짧고 가볍게 받는다(없는 내용 비판 금지).
     if social:
@@ -532,7 +541,8 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
     return f"""[역할] 너는 '{name}'(이)다. 사용자와 대화하는 상대이자, 필요할 때 도와주는 메이트다.
 {persona_block}
 {role_section}{custom_block}
-[상대 수준] 상대는 '{level}' 수준이다. 이 수준에 걸맞은 깊이로 답하되, 네 역할 범위 안에서만 답하라(첫 설명자=설명, 검증자=검증). 뻔한 말은 하지 마라.
+[상대 수준] 상대는 '{level}' 수준이다. {level_directive} 네 역할 범위 안에서만 답하라(첫 설명자=설명, 검증자=검증). 뻔한 말은 하지 마라.
+{persona_emphasis}
 
 {_mode_role_directive(mode)}{peers}
 
@@ -611,28 +621,49 @@ def _generate_single_agent_answer(
     all_agents: List[AgentProfile], peer_answers: Optional[List[Dict[str, Any]]] = None,
     social: bool = False, position: int = 0, total: int = 1,
 ) -> str:
-    """에이전트 한 명에게 Ollama를 1회 호출해 답변 본문을 반환한다(빈응답 가드 포함)."""
+    """에이전트 1명 생성. 지식수준이 높을수록 길이·깊이↑(level_policy), 박사/전문가는 GPT로 품질↑(가능 시)."""
     from app.services.ollama_client import ask_ollama
     from app.services.personality_prompt_builder import get_generation_params
+    from app.services import level_policy
 
     system_prompt = _build_single_agent_system_prompt(agent, mode, all_agents, social=social, position=position, total=total)
     user_prompt = _build_single_agent_user_prompt(agent, request, wiki_context, context, peer_answers)
 
     gen = get_generation_params(_agent_personality_label(agent))
     temperature = request.temperature if request.temperature is not None else gen.get("temperature", 0.55)
-    max_tokens = request.maxTokens or int(os.getenv("AI_ORCHESTRATOR_MAX_TOKENS", "4096"))
 
+    # 지식수준 → 길이/깊이 스케일링. 인사/잡담(social)은 짧게 유지.
+    lvl = level_policy.normalize(agent.knowledgeLevel or getattr(agent, "knowledgeLevelLabel", None))
+    if social:
+        max_tokens = request.maxTokens or 256
+    else:
+        max_tokens = request.maxTokens or level_policy.max_tokens(lvl)
+
+    # Ollama ↔ GPT 믹스: 박사/전문가는 GPT로 더 깊고 질 높게(가능할 때만), 그 외/소크라테스/잡담은 Ollama(빠름).
+    use_gpt = (not social) and mode not in ("socratic", "소크라테스", "소크라테스 모드") and lvl in ("DOCTOR", "EXPERT")
     t0 = time.time()
-    raw = ask_ollama(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        think=False,
-    )
+    provider = "ollama"
+    raw = ""
+    if use_gpt:
+        try:
+            from app.services.openai_client import chat_sync, is_enabled
+            if is_enabled():
+                provider = "gpt"
+                raw = chat_sync(system=system_prompt, user=user_prompt, temperature=temperature, max_tokens=max_tokens)
+                if raw.startswith("[GPT 비활성화]") or raw.startswith("[GPT 오류]"):
+                    raw = ""  # 폴백
+        except Exception as e:
+            logger.warning("[Orchestrator] GPT 호출 실패→Ollama 폴백: %s", e)
+            raw = ""
+    if not raw:
+        provider = "ollama"
+        raw = ask_ollama(system_prompt=system_prompt, user_prompt=user_prompt,
+                         max_tokens=max_tokens, temperature=temperature, think=False)
+
     elapsed_ms = int((time.time() - t0) * 1000)
     answer = (raw or "").strip()
-    logger.info("[Orchestrator] agent=%s mode=%s elapsed=%dms len=%d", agent.name, mode, elapsed_ms, len(answer))
+    logger.info("[Orchestrator] agent=%s mode=%s level=%s provider=%s maxtok=%d elapsed=%dms len=%d",
+                agent.name, mode, lvl, provider, max_tokens, elapsed_ms, len(answer))
     if not answer:
         answer = "(응답을 생성하지 못했어요. 잠시 후 다시 시도해 주세요.)"
     return answer
@@ -684,6 +715,51 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
     feedback_on = _cross_feedback_enabled(request, agents)
     social = _is_social_input(request)
     logger.info("[Orchestrator] (sync) mode=%s agents=%d cross_feedback=%s social=%s", effective_mode, len(agents), feedback_on, social)
+
+    # ── basic 모드 후속 발화 게이트 (비스트림 패리티) ──────────────────────────
+    # 스트림(build_orchestrator_stream)과 동일 정책: 직전 대화가 있을 때 후속 발화는
+    # 풀답변을 반복하지 않고 3명 짧은 맥락 답변만 낸다. 어떤 오류든 기존 경로로 폴백.
+    if effective_mode == "basic":
+        try:
+            from app.services.dialogue_act_classifier import (
+                build_previous_context,
+                classify_dialogue_act,
+                NEW_STUDY_QUERY,
+            )
+            prev_ctx = build_previous_context(request.previousAnswers, mode=effective_mode)
+            if prev_ctx.has_context:
+                decision = classify_dialogue_act(
+                    request.message,
+                    previous_context=prev_ctx,
+                    mode=request.mode,
+                    learning_mode=getattr(request, "learningMode", None),
+                )
+                if decision.act != NEW_STUDY_QUERY:
+                    from app.services.basic_contextual_turn import run_basic_contextual_turn
+                    logger.info(
+                        "[Orchestrator] (sync) basic followup act=%s depth=%s conf=%.2f → contextual turn",
+                        decision.act, decision.answer_depth, decision.confidence,
+                    )
+                    ctx_answers = run_basic_contextual_turn(request, agents, decision, prev_ctx)
+                    gap_ms = int(_min_gap_seconds() * 1000)
+                    return MultiChatResponse(
+                        mode=effective_mode,
+                        learningMode=effective_mode,
+                        answers=[
+                            AgentAnswer(
+                                agentId=a.get("agentId"),
+                                agentName=a.get("agentName", "AI"),
+                                answer=a.get("answer", ""),
+                                role="assistant",
+                                displayOrder=i + 1,
+                                displayDelayMs=i * gap_ms,
+                                status="SUCCESS",
+                            )
+                            for i, a in enumerate(ctx_answers)
+                        ],
+                    )
+        except Exception as e:  # pragma: no cover - 방어: 기존 경로로 폴백
+            logger.warning("[Orchestrator] (sync) dialogue-act 게이트 건너뜀: %s", e)
 
     answers: List[AgentAnswer] = []
     prior: List[Dict[str, Any]] = []

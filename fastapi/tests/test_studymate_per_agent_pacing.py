@@ -244,3 +244,13 @@ def test_peer_answers_injected_without_forced_naming():
     assert "캡슐화" in up                      # 앞 내용은 주입됨(중복 방지용)
     assert "이름" in up and "내용 중심" in up    # 이름 호명 자제 + 내용 중심 지시
     assert "전문봇" not in up                   # 닉네임을 프롬프트에 박아 호명을 유도하지 않음
+
+
+def test_filter_agents_matches_string_target_id():
+    # Spring이 targetAgentId를 String으로 보내도 int agentId와 매칭돼 1명만 남아야 한다(@멘션 1명 호출).
+    from app.services.multi_agent_service import _filter_agents
+    from app.schemas.multi_chat_schema import AgentProfile as AP
+    ags = [AP(id=1, agentId=1, name="A"), AP(id=2, agentId=2, name="B")]
+    only = _filter_agents(ags, "2")   # 문자열 "2" → int 2 매칭
+    assert len(only) == 1 and only[0].name == "B"
+    assert len(_filter_agents(ags, None)) == 2  # 멘션 없으면 전체
