@@ -489,14 +489,13 @@ def _build_single_agent_user_prompt(
     parts.append(f"[사용자의 최근 메시지] {request.message}")
     parts.append("위 대화 흐름을 이어서, 이 메시지에 자연스럽게 응답하라.")
     if peer_answers:
-        peer_lines = [f"- {p.get('agentName','메이트')}: {str(p.get('answer',''))[:300]}" for p in peer_answers]
-        peer_names = ", ".join(f"'{p.get('agentName','메이트')}'" for p in peer_answers)
+        peer_lines = [f"- {str(p.get('answer',''))[:300]}" for p in peer_answers]
         parts.append(
-            "[앞에서 답한 메이트들 — 지목 시 아래 이름만 사용]\n" + "\n".join(peer_lines) +
-            f"\n→ 위 답변({peer_names})을 한 번만 짧게 짚고 네 역할대로 이어가라(심화자=새 관점 추가, 검증자=오류·한계 지적). "
-            "성격 톤은 살리되 조롱·비아냥·한숨은 금지, 지적은 근거로 한다. "
-            "★ 앞 답변 문장을 베끼거나 다시 풀어쓰지 마라 — 이미 나온 내용은 건너뛰고 '네가 새로 더할 것'만 말하라. "
-            "목록에 없는 이름은 지어내지 마라."
+            "[앞에서 이미 나온 내용 — 중복 방지용 참고]\n" + "\n".join(peer_lines) +
+            "\n→ 위 내용은 이미 나왔으니 되풀이하지 말고, 네 역할대로 '새로 더할 것'만 말하라(심화자=새 관점·예시, 검증자=빠진 점·오류). "
+            "★ 앞 메이트의 '닉네임/이름'을 굳이 부르지 마라. '앞서 ~라는 설명이 있었지만 그 부분은…', '~는 ~을 놓쳤다'처럼 **내용(논점) 중심**으로 자연스럽게 이어가라. "
+            "매번 똑같은 방식으로 시작하지 마라(이름 호명·'방향은 맞는데' 같은 상투구 금지). 문장 시작을 매번 다르게. "
+            "앞 답변 문장을 베끼거나 다시 풀어쓰지 말고, 조롱·비아냥 없이 근거로 지적하라."
         )
     parts.append(build_persona_directive(_agent_personality_label(agent), _agent_custom_instruction(agent)))
     return "\n\n".join(parts)
@@ -625,6 +624,41 @@ def build_orchestrator_stream(
     min_gap = _min_gap_seconds()
     feedback_on = _cross_feedback_enabled(request, agents)
     social = _is_social_input(request)
+
+    # ── basic 모드 후속 발화 게이트 ────────────────────────────────────────────
+    # 직전 대화가 있을 때 "아니왜?/왜?/그게 맞아?/예시로/더 쉽게/ㅇㅇ" 같은 후속 발화는
+    # 새 질문이 아니므로, 3명이 직전 답변을 통째로 반복하지 않고 짧은 맥락 답변만 낸다.
+    # (위치별 역할분담 풀답변 경로와 상보적 — 후속 발화는 애초에 풀답변을 타지 않는다.)
+    # 분류는 결정론 우선(+선택적 LLM). 어떤 오류든 기존 풀답변 경로로 폴백(additive).
+    if effective_mode == "basic":
+        try:
+            from app.services.dialogue_act_classifier import (
+                build_previous_context,
+                classify_dialogue_act,
+                NEW_STUDY_QUERY,
+            )
+            prev_ctx = build_previous_context(request.previousAnswers, mode=effective_mode)
+            if prev_ctx.has_context:
+                decision = classify_dialogue_act(
+                    request.message,
+                    previous_context=prev_ctx,
+                    mode=request.mode,
+                    learning_mode=getattr(request, "learningMode", None),
+                )
+                if decision.act != NEW_STUDY_QUERY:
+                    from app.services.basic_contextual_turn import (
+                        run_basic_contextual_turn_stream,
+                    )
+                    logger.info(
+                        "[Orchestrator] basic followup act=%s depth=%s conf=%.2f → contextual turn",
+                        decision.act, decision.answer_depth, decision.confidence,
+                    )
+                    yield from run_basic_contextual_turn_stream(
+                        request, agents, decision, prev_ctx, min_gap=min_gap,
+                    )
+                    return
+        except Exception as e:  # pragma: no cover - 방어: 무조건 기존 경로로 폴백
+            logger.warning("[Orchestrator] dialogue-act 게이트 건너뜀: %s", e)
 
     yield {
         "event": "turn_start",

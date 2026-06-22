@@ -181,8 +181,11 @@ def test_cross_feedback_auto_uses_router(monkeypatch):
     assert orch._cross_feedback_enabled(_req("안녕"), _agents()) is False  # 인사 → 끔
 
 
-def test_peer_answers_injected_in_user_prompt():
+def test_peer_answers_injected_without_forced_naming():
+    # 앞 답변 내용은 주입하되, 닉네임 호명을 강제하지 않고 내용(논점) 중심으로 이어가게 한다.
     a = _agents()[1]
     peers = [{"agentName": "전문봇", "answer": "객체지향은 캡슐화·상속·다형성이 핵심이다."}]
     up = orch._build_single_agent_user_prompt(a, _req("객체지향이 뭐야?"), "", "", peers)
-    assert "앞에서 답한 메이트들" in up and "전문봇" in up and "캡슐화" in up
+    assert "캡슐화" in up                      # 앞 내용은 주입됨(중복 방지용)
+    assert "닉네임/이름" in up and "내용(논점) 중심" in up   # 이름 호명 자제 + 내용 중심 지시
+    assert "전문봇" not in up                   # 닉네임을 프롬프트에 박아 호명을 유도하지 않음
