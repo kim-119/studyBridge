@@ -2113,6 +2113,10 @@ export default function StudyMate() {
   // 픽셀 교수 stage: 선택된 교수(액션 메뉴) + 교수별 시각 상태(SSE 이벤트가 갱신, visual consumer).
   const [selectedProfessorRole, setSelectedProfessorRole] = useState(null); // 'theory'|'book'|'ai'|null
   const [professorVisualStates, setProfessorVisualStates] = useState({ theory: 'idle', book: 'idle', ai: 'idle' });
+  // 교수별 답변 말풍선: { [role]: { text, agentName } }. agent_answer 도착 시 채워지고 새 턴마다 비운다.
+  const [professorBubbles, setProfessorBubbles] = useState({});
+  // 마인드맵(트리) 섹션 토글: 기본 숨김, 버튼으로 펼친다.
+  const [showMindmap, setShowMindmap] = useState(false);
   // 모드별 교수 상호작용 타임라인(현재 턴 기준, visual only). 백엔드 실제 이벤트 내용만 채운다.
   const [professorInteractions, setProfessorInteractions] = useState([]);
   const [professorInteractionMode, setProfessorInteractionMode] = useState('basic');
@@ -2586,8 +2590,8 @@ export default function StudyMate() {
     setTypingRooms((prev) => ({ ...prev, [agentId]: true }));
     // 시각: 질문 전송 직후 → 교수 3명 전체 thinking(목표 9 / 완료기준 1). 이후 이벤트마다 해당 교수만 전환.
     visAll('thinking');
-    // 새 턴: 교수 상호작용 타임라인 초기화(이전 턴 잔상 제거).
-    if (visualActive()) setProfessorInteractions([]);
+    // 새 턴: 교수 상호작용 타임라인 + 답변 말풍선 초기화(이전 턴 잔상 제거).
+    if (visualActive()) { setProfessorInteractions([]); setProfessorBubbles({}); }
 
     // ── 소크라테스 카드 게이팅(정책: 명시 요청 시에만) ─────────────────────────────
     // 라디오로 '소크라테스'를 골랐다는 사실만으로는 카드를 만들지 않는다. 사용자가 이번 메시지에서
@@ -3070,6 +3074,14 @@ export default function StudyMate() {
               upsertAgentMessage(d, { isPending: false, content: d.content || d.answer || '' });
               // (목표 5/완료기준 2) agent_answer → 해당 교수만 answering.
               visFor(d.agentIndex, 'answering');
+              // 해당 교수 머리 위 말풍선에 답변을 띄운다(sprite와 동일 매핑).
+              const bubbleRole = roleForAgentIndex(d.agentIndex);
+              if (bubbleRole) {
+                setProfessorBubbles((prev) => ({
+                  ...prev,
+                  [bubbleRole]: { text: d.content || d.answer || '', agentName: d.agentName },
+                }));
+              }
             },
             onAgentError: (d) => {
               if (!d) return;
@@ -4161,6 +4173,7 @@ export default function StudyMate() {
                   <PixelProfessorStage
                     visualStates={professorVisualStates}
                     agents={selectedAgent?.agents || []}
+                    bubbles={professorBubbles}
                     onAutoReset={handleProfessorAutoReset}
                     selectedRole={selectedProfessorRole}
                     onSelectRole={setSelectedProfessorRole}
@@ -4172,7 +4185,20 @@ export default function StudyMate() {
                     onCompare={handleProfCompare}
                   />
 
+                  {/* 마인드맵(트리) 토글: 기본 숨김, 버튼으로 별도 섹션을 펼친다. */}
+                  <div className="professor-mindmap-toggle-row">
+                    <button
+                      type="button"
+                      className={`professor-mindmap-toggle ${showMindmap ? 'is-open' : ''}`}
+                      onClick={() => setShowMindmap((v) => !v)}
+                      aria-expanded={showMindmap}
+                    >
+                      🧠 마인드맵 {showMindmap ? '닫기' : '보기'}
+                    </button>
+                  </div>
+
                   {/* 트리: 최상단 전체 의견 + 교수/에이전트별 의견 카드 */}
+                  {showMindmap && (
                   <section className="professor-tree-section">
                     <div className="professor-tree-header">
                       <h3>{professorTreeTitle}</h3>
@@ -4210,6 +4236,7 @@ export default function StudyMate() {
                       />
                     </div>
                   </section>
+                  )}
                 </div>
               )}
 

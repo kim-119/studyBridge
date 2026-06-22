@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { PROFESSORS, getStateAnim, ACTIVE_VISUAL_STATES, ROLE_TO_AGENT_INDEX, getProfessorSpriteSheetForAgent } from './professorSprites';
 import PixelProfessorSprite from './PixelProfessorSprite';
 import ProfessorActionMenu from './ProfessorActionMenu';
+import ProfessorSpeechBubble from './ProfessorSpeechBubble';
 import MinuteRecapBubble from './MinuteRecapBubble';
 import './pixelProfessor.css';
 
@@ -12,6 +13,7 @@ import './pixelProfessor.css';
 export default function PixelProfessorStage({
   visualStates = {},
   agents = [],
+  bubbles = {},
   onAutoReset,
   selectedRole,
   onSelectRole,
@@ -96,6 +98,23 @@ export default function PixelProfessorStage({
             onSelect={(role) => onSelectRole?.(role === selectedRole ? null : role)}
           />
         ))}
+      </div>
+
+      {/* 답변 말풍선 레이어: 교수 sprite와 동일 좌표로 머리 위에 띄운다(presentation only). */}
+      <div className="pixel-professor-bubble-layer">
+        {professorActors.map((p) => {
+          const b = bubbles[p.role];
+          if (!b || !b.text) return null;
+          return (
+            <div
+              key={`bubble-${p.role}`}
+              className="prof-bubble-anchor"
+              style={{ left: `${p.pos.left}%`, bottom: `${p.pos.bottom + 200}px` }}
+            >
+              <ProfessorSpeechBubble name={b.agentName || p.name} text={b.text} side={p.side} />
+            </div>
+          );
+        })}
       </div>
 
       {selected && (

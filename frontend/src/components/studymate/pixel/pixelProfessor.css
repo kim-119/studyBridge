@@ -9,8 +9,8 @@
   position: relative;
   flex-shrink: 0;
   overflow: hidden;
-  min-height: 360px;
-  height: clamp(360px, 46vh, 520px);
+  min-height: 460px;
+  height: clamp(460px, 62vh, 700px);
   border: 4px solid #2b2118;
   border-radius: 12px;
   background-color: #d9c28f;
@@ -74,9 +74,9 @@
   outline-offset: 2px;
   border-radius: 8px;
 }
-.professor-position-layer.side-left { --prof-scale: 1.15; }
-.professor-position-layer.side-center { --prof-scale: 1.18; z-index: 1; }
-.professor-position-layer.side-right { --prof-scale: 1.15; }
+.professor-position-layer.side-left { --prof-scale: 1.35; }
+.professor-position-layer.side-center { --prof-scale: 1.4; z-index: 1; }
+.professor-position-layer.side-right { --prof-scale: 1.35; }
 
 .professor-position-layer:hover { transform: translateX(-50%) scale(calc(var(--prof-scale, 1) * 1.04)); }
 .professor-position-layer.is-selected { z-index: 5; }
@@ -293,7 +293,7 @@
 /* ── 반응형: 좁은 화면 sprite 축소 + 메뉴 하단 시트화. ───────────────────── */
 @media (max-width: 760px) {
   .professor-position-layer { --prof-scale: 0.9 !important; }
-  .pixel-professor-stage { height: clamp(320px, 52vh, 460px); }
+  .pixel-professor-stage { height: clamp(380px, 56vh, 560px); }
 }
 @media (max-width: 560px) {
   .professor-position-layer { --prof-scale: 0.64 !important; }
@@ -361,3 +361,79 @@
 .prof-interaction-content { margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; color: #2b2118; white-space: pre-wrap; }
 .prof-interaction-refs { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
 .prof-interaction-ref { font-size: 10px; color: #6b5836; background: rgba(0,0,0,0.04); border-radius: 4px; padding: 1px 6px; text-decoration: none; }
+
+/* ── 교수 답변 말풍선 레이어(sprite와 동일 좌표, 머리 위) ─────────────────────── */
+.pixel-professor-bubble-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+.prof-bubble-anchor {
+  position: absolute;
+  transform: translateX(-50%);
+  width: min(260px, 40vw);
+  pointer-events: none;
+}
+.prof-speech-bubble {
+  position: relative;
+  pointer-events: auto;
+  background: #fff8e6;
+  border: 3px solid #2b2118;
+  border-radius: 12px;
+  box-shadow: 3px 3px 0 rgba(43, 33, 24, 0.35);
+  padding: 8px 11px 9px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #2b2118;
+  animation: profBubblePop 180ms ease-out;
+}
+@keyframes profBubblePop {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.prof-speech-name { font-size: 11px; font-weight: 900; margin-bottom: 3px; }
+.prof-speech-text { white-space: pre-wrap; word-break: break-word; }
+.prof-speech-text.is-full { max-height: 200px; overflow-y: auto; }
+.prof-speech-more {
+  margin-top: 5px;
+  border: none;
+  background: transparent;
+  color: #1d4ed8;
+  font-size: 11.5px;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 0;
+}
+.prof-speech-more:hover { text-decoration: underline; }
+/* 말풍선 꼬리(아래쪽을 가리킴). */
+.prof-speech-tail {
+  position: absolute;
+  left: 50%;
+  bottom: -10px;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-top: 10px solid #2b2118;
+}
+
+/* ── 마인드맵 토글 버튼 ──────────────────────────────────────────────────────── */
+.professor-mindmap-toggle-row { display: flex; justify-content: center; margin: 12px 0 6px; }
+.professor-mindmap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  border: 2px solid #2563eb;
+  border-radius: 999px;
+  background: #fff;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+.professor-mindmap-toggle:hover { background: rgba(37, 99, 235, 0.08); }
+.professor-mindmap-toggle.is-open { background: #2563eb; color: #fff; }

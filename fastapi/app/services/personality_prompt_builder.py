@@ -218,6 +218,10 @@ def get_generation_params(personality: Optional[str]) -> dict:
 def _compose_prompt_from_profile(profile: dict) -> str:
     """YAML 프로필(dict)을 시스템 프롬프트 블록으로 조립한다."""
     lines = []
+    # coreDirective(사용자 지정 행동 지시문)는 다른 어떤 규칙보다 우선이며 맨 앞에 그대로 둔다.
+    core = profile.get("coreDirective")
+    if core and str(core).strip():
+        lines.append(f"[성격 핵심 지시 — 최우선, 반드시 이 톤으로]\n{str(core).strip()}")
     name = profile.get("displayName", "")
     tone = profile.get("toneProfile", "")
     lines.append(f"말투와 성격: {name} — {tone}".strip(" —"))
@@ -311,6 +315,10 @@ def build_persona_directive(
     profile = get_profile(personality)
     name = profile.get("displayName", "") or "지정된 성격"
     lines = [f"[성격 지시 — 반드시 답변 문장에 드러나라] 너의 성격: {name}"]
+    # coreDirective(사용자 지정 행동 지시문)를 user 턴 끝에서도 다시 못박는다.
+    core = profile.get("coreDirective")
+    if core and str(core).strip():
+        lines.append(f"- ★ 핵심: {str(core).strip()}")
     # 반말 레지스터(냉소적/비판형 등): 존댓말 금지를 강하게 못박는다.
     if str(profile.get("speechRegister", "")).strip() == "반말":
         lines.append(

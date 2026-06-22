@@ -362,64 +362,138 @@ def _resolve_effective_mode(request: MultiChatRequest) -> str:
 # 6) 핵심 실행 함수 (동기 / 스트리밍)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> MultiChatResponse:
-    """
-    모드별 시스템 프롬프트로 Qwen 14B를 1회 호출하고,
-    JSON 응답을 파싱하여 MultiChatResponse를 반환한다.
-    """
-    from app.services.ollama_client import ask_ollama
+# ── per-agent 헬퍼: 에이전트 한 명에게 집중한 프롬프트로 1회 호출 ────────────────
 
-    effective_mode = _resolve_effective_mode(request)
-    system_prompt = build_system_prompt(effective_mode, agents)
+def _min_gap_seconds() -> float:
+    """답변 사이 최소 간격(초). env STUDYMATE_MIN_ANSWER_GAP_SECONDS로 조절(기본 4)."""
+    try:
+        return max(0.0, float(os.getenv("STUDYMATE_MIN_ANSWER_GAP_SECONDS", "4")))
+    except (TypeError, ValueError):
+        return 4.0
 
-    parts = []
-    
-    # 1. 이전 대화 내역 추가
-    context = _build_conversation_context(request.previousAnswers)
+
+def _agent_personality_label(agent: AgentProfile) -> str:
+    return (
+        agent.personality
+        or getattr(agent, "personalityLabel", None)
+        or getattr(agent, "tone", None)
+        or getattr(agent, "style", None)
+        or "친절형"
+    )
+
+
+def _agent_custom_instruction(agent: AgentProfile) -> Optional[str]:
+    return (
+        getattr(agent, "customInstruction", None)
+        or getattr(agent, "custom_instruction", None)
+        or getattr(agent, "persona", None)
+    )
+
+
+def _mode_role_directive(mode: str) -> str:
+    """단일 에이전트용 모드 역할 지시(1~2줄). build_system_prompt의 JSON 다중 지시와 달리 본문 직답용."""
+    m = (mode or "basic").strip().lower()
+    if m in ("debate", "토론", "토론 모드"):
+        return "[모드: 토론] 이 주제에 대해 하나의 분명한 입장을 정하고, 탄탄한 근거와 예시로 설득력 있게 주장하라. 반대 관점의 허점도 구체적으로 짚어라."
+    if m in ("socratic", "소크라테스", "소크라테스 모드"):
+        return "[모드: 소크라테스] 정답을 직접 주지 말고, 사용자가 스스로 깨닫도록 날카로운 꼬리질문과 반례 위주로 답하라. 답변 대부분을 질문으로 구성하되 길잡이 힌트는 약간만 준다."
+    if m in ("simulation", "상황극", "상황극 모드", "situation", "roleplay"):
+        return "[모드: 상황극] 주제와 관련된 가상 시나리오 속 인물이 되어 생생한 대사와 상황 묘사로 답하라. 마지막에 사용자에게 선택지나 행동을 묻는 질문을 던져라."
+    return "[모드: 기본 설명] 질문에 대해 정확하고 풍부하게, 구체적 예시와 동작 원리를 들어 깊이 있게 직접 설명하라."
+
+
+def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents: List[AgentProfile]) -> str:
+    """에이전트 한 명에게 집중한 system 프롬프트(성격 행동지시문 + 지식수준 + 모드)."""
+    from app.services.personality_prompt_builder import build_personality_prompt
+
+    persona_block = build_personality_prompt(_agent_personality_label(agent), _agent_custom_instruction(agent))
+    name = agent.name or "AI"
+    level = agent.knowledgeLevel or getattr(agent, "knowledgeLevelLabel", None) or "학사 수준"
+    others = [a.name for a in all_agents if a is not agent and a.name]
+    peers = f"\n[함께 있는 다른 메이트] {', '.join(others)} — 이들과 똑같은 말투/구조로 쓰지 말고 너만의 성격을 드러내라." if others else ""
+
+    return f"""[역할] 너는 멀티 에이전트 스터디룸의 '{name}'(이)다.
+{persona_block}
+
+[학습자 수준] 상대는 '{level}' 수준이다. 그에 맞춰 설명 난이도와 용어를 조절하라.
+
+{_mode_role_directive(mode)}{peers}
+
+[절대 규칙]
+- 위 성격(톤)이 답변 문장 전체에 분명히 드러나야 한다. GPT처럼 무색무취하게 쓰지 마라.
+- 질문에 직접 답하라. "교과서를 참고하세요" 같은 회피성 답변 금지.
+- 모든 답변은 한국어로 작성한다.
+- JSON·머리말·꼬리말 없이, 너의 답변 본문만 작성하라."""
+
+
+def _build_single_agent_user_prompt(
+    agent: AgentProfile, request: MultiChatRequest, wiki_context: str, context: str,
+) -> str:
+    from app.services.personality_prompt_builder import build_persona_directive
+
+    parts: List[str] = []
     if context:
         parts.append(context)
-        
-    # 2. 위키백과 보충 자료 추가
-    wiki_context = _fetch_wikipedia_context(request.message)
     if wiki_context:
         parts.append(wiki_context)
-        
-    # 3. 사용자 메시지 추가
-    parts.append(f"[사용자 메시지] {request.message}")
-    
-    user_prompt = "\n\n".join(parts)
+    parts.append(f"[사용자 질문] {request.message}")
+    parts.append(build_persona_directive(_agent_personality_label(agent), _agent_custom_instruction(agent)))
+    return "\n\n".join(parts)
 
-    temperature = request.temperature if request.temperature is not None else 0.55
+
+def _generate_single_agent_answer(
+    agent: AgentProfile, request: MultiChatRequest, mode: str, wiki_context: str, context: str,
+    all_agents: List[AgentProfile],
+) -> str:
+    """에이전트 한 명에게 Ollama를 1회 호출해 답변 본문을 반환한다(빈응답 가드 포함)."""
+    from app.services.ollama_client import ask_ollama
+    from app.services.personality_prompt_builder import get_generation_params
+
+    system_prompt = _build_single_agent_system_prompt(agent, mode, all_agents)
+    user_prompt = _build_single_agent_user_prompt(agent, request, wiki_context, context)
+
+    gen = get_generation_params(_agent_personality_label(agent))
+    temperature = request.temperature if request.temperature is not None else gen.get("temperature", 0.55)
     max_tokens = request.maxTokens or int(os.getenv("AI_ORCHESTRATOR_MAX_TOKENS", "4096"))
 
-    logger.info(
-        "[Orchestrator] mode=%s agents=%d temp=%.2f max_tokens=%d",
-        effective_mode, len(agents), temperature, max_tokens,
-    )
     t0 = time.time()
-
-    raw_response = ask_ollama(
+    raw = ask_ollama(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         max_tokens=max_tokens,
         temperature=temperature,
         think=False,
     )
-
     elapsed_ms = int((time.time() - t0) * 1000)
-    logger.info("[Orchestrator] 응답 수신 elapsed=%dms len=%d", elapsed_ms, len(raw_response))
+    answer = (raw or "").strip()
+    logger.info("[Orchestrator] agent=%s mode=%s elapsed=%dms len=%d", agent.name, mode, elapsed_ms, len(answer))
+    if not answer:
+        answer = "(응답을 생성하지 못했어요. 잠시 후 다시 시도해 주세요.)"
+    return answer
 
-    parsed_items = parse_orchestrator_response(raw_response, agents)
+
+def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> MultiChatResponse:
+    """
+    에이전트마다 Qwen 14B를 순차 1회씩 호출(per-agent)해 성격이 도드라지는 답변을 만든다.
+    비스트림이므로 인위적 sleep은 없고, displayDelayMs로 프론트 시차 렌더 힌트만 제공한다.
+    """
+    effective_mode = _resolve_effective_mode(request)
+    context = _build_conversation_context(request.previousAnswers)
+    wiki_context = _fetch_wikipedia_context(request.message)
+    gap_ms = int(_min_gap_seconds() * 1000)
+
+    logger.info("[Orchestrator] (sync) mode=%s agents=%d", effective_mode, len(agents))
 
     answers: List[AgentAnswer] = []
-    for idx, item in enumerate(parsed_items):
+    for idx, agent in enumerate(agents):
+        ans_text = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents)
         answers.append(AgentAnswer(
-            agentId=item.get("agentId", ""),
-            agentName=item.get("agentName", "AI"),
-            answer=item.get("answer", ""),
+            agentId=agent.agentId or f"agent-{agent.id}",
+            agentName=agent.name or "AI",
+            answer=ans_text,
             role="assistant",
             displayOrder=idx + 1,
-            displayDelayMs=idx * 500,
+            displayDelayMs=idx * gap_ms,
             status="SUCCESS",
         ))
 
@@ -438,6 +512,18 @@ def build_orchestrator_stream(
     SSE 스트림 제너레이터.
     turn_start → agent_start → agent_answer (×N) → all_complete
     """
+    # 성격/지식수준 라벨은 에이전트 key 에서 재계산해 전 이벤트에 싣는다(라벨 계약 SSOT).
+    # lazy import 로 multi_agent_service ↔ orchestrator_service 순환을 피한다.
+    try:
+        from app.services.multi_agent_service import _agent_identity_payload
+    except Exception:  # pragma: no cover - 방어
+        _agent_identity_payload = lambda a: {}
+
+    effective_mode = _resolve_effective_mode(request)
+    context = _build_conversation_context(request.previousAnswers)
+    wiki_context = _fetch_wikipedia_context(request.message)
+    min_gap = _min_gap_seconds()
+
     yield {
         "event": "turn_start",
         "data": {
@@ -448,68 +534,75 @@ def build_orchestrator_stream(
         },
     }
 
-    try:
-        response = run_orchestrator(request, agents)
-    except Exception as e:
-        logger.error("[Orchestrator] 실행 실패: %s", e)
-        yield {
-            "event": "error",
-            "data": {
-                "type": "error",
-                "phase": "ERROR",
-                "visible": True,
-                "message": "AI 응답 생성 중 오류가 발생했습니다.",
-                "detail": str(e),
-            },
-        }
-        return
+    n = len(agents)
+    all_answers: List[Dict[str, Any]] = []
 
-    for idx, ans in enumerate(response.answers or []):
+    # per-agent 순차 호출 + 최소 간격 보장: 답변이 하나씩 시차를 두고 등장한다.
+    for idx, agent in enumerate(agents):
+        t0 = time.time()
+        agent_id = agent.agentId or f"agent-{agent.id}"
+        agent_name = agent.name or "AI"
+        identity = _agent_identity_payload(agent)  # personality/personalityLabel/knowledgeLevel/knowledgeLevelLabel
+
         yield {
             "event": "agent_start",
             "data": {
                 "type": "agent_start",
                 "agentIndex": idx + 1,
-                "agentName": ans.agentName,
-                "agentId": ans.agentId,
+                "agentName": agent_name,
+                "agentId": agent_id,
                 "phase": "FIRST_DRAFT",
                 "visible": True,
+                **identity,
             },
         }
+
+        try:
+            answer = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents)
+        except Exception as e:
+            logger.error("[Orchestrator] 에이전트 생성 실패 %s: %s", agent_name, e)
+            answer = "(이 에이전트의 응답 생성 중 오류가 발생했어요.)"
+
         yield {
             "event": "agent_answer",
             "data": {
                 "type": "agent_answer",
                 "agentIndex": idx + 1,
-                "agentName": ans.agentName,
-                "agentId": ans.agentId,
-                "answer": ans.answer,
-                "displayOrder": ans.displayOrder,
+                "agentName": agent_name,
+                "agentId": agent_id,
+                "answer": answer,
+                "displayOrder": idx + 1,
                 "stage": 1,
                 "phase": "FIRST_DRAFT",
                 "visible": True,
                 "status": "SUCCESS",
+                **identity,
             },
         }
-
-    all_answers = []
-    for ans in (response.answers or []):
         all_answers.append({
-            "agentId": ans.agentId,
-            "agentName": ans.agentName,
-            "answer": ans.answer,
-            "displayOrder": ans.displayOrder,
+            "agentId": agent_id,
+            "agentName": agent_name,
+            "answer": answer,
+            "displayOrder": idx + 1,
             "stage": 1,
             "status": "SUCCESS",
+            **identity,
         })
+
+        # 마지막 에이전트 뒤에는 대기하지 않는다. 생성이 빨랐으면 최소 간격까지 채운다.
+        if idx < n - 1:
+            remaining = min_gap - (time.time() - t0)
+            if remaining > 0:
+                time.sleep(remaining)
 
     yield {
         "event": "all_complete",
         "data": {
             "type": "all_complete",
-            "mode": response.mode,
-            "learningMode": response.learningMode,
+            "mode": effective_mode,
+            "learningMode": effective_mode,
             "answers": all_answers,
+            "messages": all_answers,
             "status": "COMPLETED",
             "phase": "ALL_COMPLETE",
             "visible": True,
