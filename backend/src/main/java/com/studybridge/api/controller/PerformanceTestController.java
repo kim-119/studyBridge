@@ -19,9 +19,10 @@ public class PerformanceTestController {
     private final ChatMessageRepository chatMessageRepository;
     private final com.studybridge.api.repository.UserRepository userRepository;
     private final com.studybridge.api.repository.AgentChatRoomRepository agentChatRoomRepository;
+    private final org.springframework.data.redis.core.RedisTemplate<String, Object> redisTemplate;
 
-    @GetMapping("/seed")
-    public ResponseEntity<String> seedData() {
+    @GetMapping(value = "/seed", produces = "application/json;charset=UTF-8")
+    public ResponseEntity<java.util.Map<String, Object>> seedData() {
         // 임의의 유저 1명 찾기
         var user = userRepository.findAll().stream().findFirst()
                 .orElseThrow(() -> new RuntimeException("DB에 유저가 한 명도 없습니다!"));
@@ -54,21 +55,21 @@ public class PerformanceTestController {
                     .agentName(i % 2 == 0 ? "사용자" : "AI 도우미")
                     .answer("이것은 성능 테스트를 위한 " + i + "번째 더미 메시지입니다. 내용이 길어지고 데이터가 많을수록 디스크 I/O를 타는 DB와 인메모리 Redis의 속도 차이가 극명하게 벌어집니다.")
                     .build();
-            // 강제로 트리밍 없이 List에 넣기 위해 직접 redisTemplate 사용
-            redisChatService.saveMessage(roomId, redisMsg); // 이건 100개로 짤릴 수 있으므로 
+            // PPT 발표(공정한 1만 개 비교)를 위해 강제로 트리밍 없이 List에 넣기 위해 직접 redisTemplate 사용
+            redisTemplate.opsForList().rightPush("studybridge:group:" + roomId + ":chats", redisMsg);
         }
 
-        return ResponseEntity.ok(
-                "✅ 더미 데이터 10,000개 생성 완료!\n" +
-                "이제 아래 두 주소로 성능을 테스트해보세요 (방 번호: " + roomId + ")\n\n" +
-                "Redis 테스트: http://localhost:8080/api/test/performance/redis/" + roomId + "\n" +
-                "DB 테스트: http://localhost:8080/api/test/performance/db/" + roomId
-        );
+        java.util.Map<String, Object> response = new java.util.LinkedHashMap<>();
+        response.put("message", "✅ 더미 데이터 10,000개 생성 완료!");
+        response.put("roomId", roomId);
+        response.put("redis_test_url", "https://studybridge.co.kr/api/test/performance/redis/" + roomId);
+        response.put("db_test_url", "https://studybridge.co.kr/api/test/performance/db/" + roomId);
+        return ResponseEntity.ok(response);
     }
 
-    @GetMapping("/redis/{groupId}")
+    @GetMapping(value = "/redis/{groupId}", produces = "application/json;charset=UTF-8")
     @LogExecutionTime
-    public ResponseEntity<String> Fetch_From_Redis_Cache(@PathVariable Long groupId) {
+    public ResponseEntity<java.util.Map<String, Object>> Fetch_From_Redis_Cache(@PathVariable Long groupId) {
         long start = System.currentTimeMillis();
         var history = redisChatService.getRecentHistory(groupId);
         long end = System.currentTimeMillis();
@@ -79,16 +80,16 @@ public class PerformanceTestController {
         System.out.println("🚀 [조회 소요 시간] " + (end - start) + " ms");
         System.out.println("⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐\n");
         
-        return ResponseEntity.ok(
-                "✅ [인메모리 REDIS 캐시 조회 완료]\n" +
-                "데이터 개수: " + history.size() + "개\n" +
-                "조회 소요 시간: " + (end - start) + " ms"
-        );
+        java.util.Map<String, Object> response = new java.util.LinkedHashMap<>();
+        response.put("status", "✅ [인메모리 REDIS 캐시 조회 완료]");
+        response.put("data_count", history.size());
+        response.put("latency_ms", (end - start));
+        return ResponseEntity.ok(response);
     }
 
-    @GetMapping("/db/{roomId}")
+    @GetMapping(value = "/db/{roomId}", produces = "application/json;charset=UTF-8")
     @LogExecutionTime
-    public ResponseEntity<String> Fetch_From_PostgreSQL_DB(@PathVariable Long roomId) {
+    public ResponseEntity<java.util.Map<String, Object>> Fetch_From_PostgreSQL_DB(@PathVariable Long roomId) {
         long start = System.currentTimeMillis();
         var history = chatMessageRepository.findByAgentChatRoomIdOrderByCreatedAtAsc(roomId);
         long end = System.currentTimeMillis();
@@ -99,10 +100,10 @@ public class PerformanceTestController {
         System.out.println("🐢 [조회 소요 시간] " + (end - start) + " ms");
         System.out.println("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴\n");
         
-        return ResponseEntity.ok(
-                "🐢 [PostgreSQL DB 조회 완료]\n" +
-                "데이터 개수: " + history.size() + "개\n" +
-                "조회 소요 시간: " + (end - start) + " ms"
-        );
+        java.util.Map<String, Object> response = new java.util.LinkedHashMap<>();
+        response.put("status", "🐢 [PostgreSQL DB 조회 완료]");
+        response.put("data_count", history.size());
+        response.put("latency_ms", (end - start));
+        return ResponseEntity.ok(response);
     }
 }
