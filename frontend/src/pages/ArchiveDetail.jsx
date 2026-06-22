@@ -35,46 +35,83 @@ function decodeEntities(value) {
   return s;
 }
 
-// 세부 핵심 내용 페이지 병합 — pageAnalyses(신규 ai07) 우선, detailedCoreContents·pageSummaries fallback.
-// totalPages 우선순위: note.totalPages → pageAnalyses.length → detailedCoreContents.length → pageSummaries.length.
+// PDF 페이지 병합기 — minify(terser) 가 최상위 함수명을 망글링하므로, 운영 JS 에서도
+// `resolveTotalPages`/`mergePageCards` 식별자가 보이도록 '객체 메서드'(속성 키는 망글링 제외)로 정의한다.
 // ⚠️ 이 파일은 lucide-react 의 Map 아이콘을 import 하여 전역 Map 이 가려짐 → new Map() 금지(plain array 사용).
+const pdfPager = {
+  // PDF 총 페이지 수 결정 — 명시 필드(여러 별칭) 우선, 없으면 카드들의 최대 pageNumber/배열 길이.
+  // 우선순위: totalPages → pageCount → pdfPageCount → totalPageCount → pageTotal → max(pageNumber) → max(len).
+  // 단일 카드만 와도 명시 totalPages 가 있으면 1/N 이 유지되어 '1 / 1' 고정을 방지한다.
+  resolveTotalPages(note) {
+    const num = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+    const explicit = num(note?.totalPages) || num(note?.pageCount) || num(note?.pdfPageCount)
+      || num(note?.totalPageCount) || num(note?.pageTotal) || num(note?.numPages);
+    const arrs = [note?.pageAnalyses, note?.detailedCoreContents, note?.pageSummaries]
+      .map((a) => (Array.isArray(a) ? a : []));
+    const maxPageNo = arrs.reduce((mx, list) => list.reduce((m, c) => {
+      const pn = num(c?.pageNumber ?? c?.page ?? c?.pageNo ?? c?.page_no);
+      return pn > m ? pn : m;
+    }, mx), 0);
+    const maxLen = Math.max(0, ...arrs.map((a) => a.length));
+    return Math.max(explicit, maxPageNo, maxLen);
+  },
+
+  // pageSummaries + detailedCoreContents(+pageAnalyses) 를 pageNumber/page/pageNo 기준으로 병합.
+  // 같은 페이지 번호의 카드는 하나로 합치고(번호 없으면 등장 순서로 채움), totalPages 길이만큼 1..N 슬롯을 보장한다.
+  mergePageCards(note, total) {
+    const arr = (a) => (Array.isArray(a) ? a : []);
+    const pageNoOf = (c, fallback) => {
+      const n = Number(c?.pageNumber ?? c?.page ?? c?.pageNo ?? c?.page_no);
+      return Number.isFinite(n) && n > 0 ? n : fallback;
+    };
+    const byPage = []; // index = pageNumber-1
+    const put = (card, src, fallbackNo) => {
+      const pn = pageNoOf(card, fallbackNo);
+      const k = pn - 1;
+      if (k < 0) return;
+      if (!byPage[k]) byPage[k] = { pageNumber: pn };
+      byPage[k][src] = card;
+    };
+    arr(note?.pageAnalyses).forEach((c, i) => put(c, 'a', i + 1));
+    arr(note?.detailedCoreContents).forEach((c, i) => put(c, 'd', i + 1));
+    arr(note?.pageSummaries).forEach((c, i) => put(c, 's', i + 1));
+    const span = Math.max(total || 0, byPage.length);
+    if (!span || span < 1) return [];
+    const pages = [];
+    for (let i = 0; i < span; i += 1) {
+      const slot = byPage[i] || {};
+      const a = slot.a || {};
+      const d = slot.d || {};
+      const s = slot.s || {};
+      pages.push({
+        // 병합된 페이지 번호(없으면 index+1) — 좌우 이동 시 1 / N 정상 표기
+        pageNumber: slot.pageNumber ?? (i + 1),
+        title: a.title ?? d.title ?? s.title ?? '',
+        oneLineSummary: a.oneLineSummary ?? a.summary ?? '',
+        pageOverview: s.pageOverview ?? '',
+        bulletPoints: a.bulletPoints ?? a.keyPoints ?? [],
+        summaryBullets: s.summaryBullets ?? [],
+        keywords: a.keywords ?? [],
+        keyConcepts: s.keyConcepts ?? [],
+        takeaway: a.takeaway ?? '',
+        studyFocus: s.studyFocus ?? '',
+        sourceQuality: a.sourceQuality ?? a.extractionStatus ?? s.sourceQuality ?? '',
+        detectedTextSource: s.detectedTextSource ?? '',
+        extractionStatus: a.extractionStatus ?? '',
+        extractedText: a.extractedText ?? s.extractedText ?? '',
+        textPreview: a.textPreview ?? s.textPreview ?? '',
+        warnings: a.warnings ?? s.warnings ?? [],
+        detailContent: d.content ?? '',
+      });
+    }
+    return pages;
+  },
+};
+
+// 세부 핵심 내용 페이지 병합 — totalPages 를 먼저 해석한 뒤 pageNumber 기준으로 카드들을 병합한다.
 function buildDetailedPages(note) {
-  const arr = (a) => (Array.isArray(a) ? a : []);
-  const pa = arr(note?.pageAnalyses);
-  const dc = arr(note?.detailedCoreContents);
-  const ps = arr(note?.pageSummaries);
-  const explicit = Number(note?.totalPages);
-  const total = Number.isFinite(explicit) && explicit > 0
-    ? explicit
-    : Math.max(pa.length, dc.length, ps.length);
-  if (!total || total < 1) return [];
-  const pages = [];
-  for (let i = 0; i < total; i += 1) {
-    const a = pa[i] || {};
-    const d = dc[i] || {};
-    const s = ps[i] || {};
-    pages.push({
-      // fallback 시에도 pageNumber 는 index+1 로 표시
-      pageNumber: a.pageNumber ?? a.page ?? s.pageNumber ?? s.page ?? (i + 1),
-      title: a.title ?? d.title ?? s.title ?? '',
-      oneLineSummary: a.oneLineSummary ?? a.summary ?? '',
-      pageOverview: s.pageOverview ?? '',
-      bulletPoints: a.bulletPoints ?? a.keyPoints ?? [],
-      summaryBullets: s.summaryBullets ?? [],
-      keywords: a.keywords ?? [],
-      keyConcepts: s.keyConcepts ?? [],
-      takeaway: a.takeaway ?? '',
-      studyFocus: s.studyFocus ?? '',
-      sourceQuality: a.sourceQuality ?? a.extractionStatus ?? s.sourceQuality ?? '',
-      detectedTextSource: s.detectedTextSource ?? '',
-      extractionStatus: a.extractionStatus ?? '',
-      extractedText: a.extractedText ?? s.extractedText ?? '',
-      textPreview: a.textPreview ?? s.textPreview ?? '',
-      warnings: a.warnings ?? s.warnings ?? [],
-      detailContent: d.content ?? '',
-    });
-  }
-  return pages;
+  const total = pdfPager.resolveTotalPages(note);
+  return pdfPager.mergePageCards(note, total);
 }
 
 // 보강 설명 정규화 + 프론트 최종 방어 필터(핵심 필터는 ai07 책임 — 프론트는 마지막 방어선).

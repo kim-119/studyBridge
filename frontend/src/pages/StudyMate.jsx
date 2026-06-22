@@ -3936,10 +3936,10 @@ export default function StudyMate() {
                               ))}
                             </div>
                           )}
-                          {/* 피드백 말풍선엔 성격 검증 점수 배지 */}
+                          {/* 피드백 말풍선엔 응답 품질 점수 배지 */}
                           {!hasSimulationPayload && !debatePayload && !isUser && msg.pv && typeof msg.pv.score === 'number' && (
                             <div style={{ marginTop: '4px', fontSize: '10px', color: msg.pv.passed ? '#16a34a' : '#dc2626' }}>
-                              성격 검증 {msg.pv.score.toFixed(2)} {msg.pv.passed ? '통과' : '보완 필요'}
+                              응답 품질 {msg.pv.score.toFixed(2)} {msg.pv.passed ? '통과' : '보완 필요'}
                             </div>
                           )}
                           {/* 답변 하단 액션: 메모하기만 유지(저장된 메모 패널과 연동).
