@@ -22,6 +22,7 @@ on:
           - all
           - frontend
           - backend
+          - fastapi
   push:
     branches: [ LLM-clean ]
 
@@ -40,6 +41,7 @@ jobs:
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
       backend: ${{ steps.filter.outputs.backend }}
+      fastapi: ${{ steps.filter.outputs.fastapi }}
     steps:
       - name: 소스코드 체크아웃(전체 히스토리)
         uses: actions/checkout@v4
@@ -54,12 +56,14 @@ jobs:
           # 수동 실행은 입력값으로 배포 대상을 강제한다.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             T="${{ github.event.inputs.target }}"
-            fe=false; be=false
+            fe=false; be=false; fs=false
             if [ "$T" = "all" ] || [ "$T" = "frontend" ]; then fe=true; fi
             if [ "$T" = "all" ] || [ "$T" = "backend" ]; then be=true; fi
+            if [ "$T" = "all" ] || [ "$T" = "fastapi" ]; then fs=true; fi
             echo "frontend=$fe" >> "$GITHUB_OUTPUT"
             echo "backend=$be"  >> "$GITHUB_OUTPUT"
-            echo "MANUAL target=$T frontend=$fe backend=$be"
+            echo "fastapi=$fs"  >> "$GITHUB_OUTPUT"
+            echo "MANUAL target=$T frontend=$fe backend=$be fastapi=$fs"
             exit 0
           fi
 
@@ -78,15 +82,18 @@ jobs:
           echo "$CHANGED"
           echo "-------------------------"
 
-          fe=false; be=false
+          fe=false; be=false; fs=false
           if echo "$CHANGED" | grep -qE '^frontend/'; then fe=true; fi
           if echo "$CHANGED" | grep -qE '^backend/'; then be=true; fi
           # docker-compose.yml 변경은 spring 재기동으로 처리(운영 compose 서비스 정의). react는 운영 미사용.
           if echo "$CHANGED" | grep -qE '^docker-compose\.yml$'; then be=true; fi
+          # fastapi(AI 서버) 변경 또는 systemd 유닛 변경 → fastapi 재배포.
+          if echo "$CHANGED" | grep -qE '^fastapi/|^ops/studybridge-fastapi\.service$'; then fs=true; fi
 
           echo "frontend=$fe" >> "$GITHUB_OUTPUT"
           echo "backend=$be"  >> "$GITHUB_OUTPUT"
-          echo "RESULT frontend=$fe backend=$be"
+          echo "fastapi=$fs"  >> "$GITHUB_OUTPUT"
+          echo "RESULT frontend=$fe backend=$be fastapi=$fs"
 
   frontend-deploy:
     name: Deploy frontend (static dist)
@@ -246,3 +253,45 @@ jobs:
 
             docker image prune -f
             docker compose ps
+
+  fastapi-deploy:
+    name: Deploy fastapi (AI server)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.fastapi == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: EC2 fastapi 동기화 + systemd 재기동
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: DEPLOY_SHA
+          script: |
+            set -e
+            APP_DIR="/home/ubuntu/studyBridge"
+            cd "$APP_DIR"
+
+            # CI가 검증한 정확한 SHA로 동기화(.env 등 untracked는 reset이 건드리지 않음).
+            git fetch origin LLM-clean
+            git switch LLM-clean 2>/dev/null || git checkout LLM-clean
+            git reset --hard "${DEPLOY_SHA}"
+
+            cd "$APP_DIR/fastapi"
+            if [ -f requirements.txt ]; then .venv/bin/pip install -q -r requirements.txt || true; fi
+
+            # systemd 유닛 설치/갱신(idempotent) — nohup 수동 기동을 대체한다.
+            sudo cp "$APP_DIR/ops/studybridge-fastapi.service" /etc/systemd/system/studybridge-fastapi.service
+            sudo systemctl daemon-reload
+            sudo systemctl enable studybridge-fastapi
+
+            # 그래도 8000을 물고 있는 수동 nohup 잔여가 있으면 정리 후 systemd로 재기동.
+            sudo systemctl stop studybridge-fastapi 2>/dev/null || true
+            pkill -f "uvicorn.*--port 8000" 2>/dev/null || true
+            sleep 1
+            sudo systemctl start studybridge-fastapi
+
+            sleep 5
+            curl -fsS http://127.0.0.1:8000/health \
+              || (echo "HEALTH FAIL"; sudo journalctl -u studybridge-fastapi -n 50 --no-pager; exit 1)
+            echo "fastapi deploy OK ${DEPLOY_SHA:0:8}"
