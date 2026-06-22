@@ -830,7 +830,7 @@ export default function AgentDiscussionThread({
                                                whiteSpace: 'nowrap'
                                            }}>
                                            <Zap size={12} color="#64748b" />
-                                           반박
+                                           {interactionLabelFor(child.content)}
                                        </div>
                                    )}
                                 </div>
