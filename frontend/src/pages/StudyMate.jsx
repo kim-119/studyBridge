@@ -2618,6 +2618,13 @@ export default function StudyMate() {
       // 소크라테스 문답 설정 전송. 방 저장값(selectedAgent.socraticConfig)이 있으면 우선, 없으면 현재 설정.
       turnExtras.socraticConfig = selectedAgent?.socraticConfig || socraticConfig;
     }
+    // @멘션으로 한 명만 지목하면 그 에이전트만 답하게 targetAgentId를 전송한다('@모두'/멘션없음 → 전체).
+    if (!/@모두/.test(inputMsg)) {
+      const mentioned = (selectedAgent?.agents || []).find(
+        (ag) => ag?.name && inputMsg.includes(`@${ag.name}`)
+      );
+      if (mentioned) turnExtras.targetAgentId = mentioned.agentId ?? mentioned.id;
+    }
     // 토론 모드: 논제/구조 설정을 함께 전송한다(프론트 → Spring → FastAPI).
     if (activeLearningMode === 'debate') turnExtras.debateConfig = selectedAgent?.debateConfig || debateConfig;
     if (activeLearningMode === 'simulation') turnExtras.simulationConfig = selectedAgent?.simulationConfig || simulationConfig || DEFAULT_SIMULATION_CONFIG;

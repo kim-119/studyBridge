@@ -154,10 +154,14 @@ def test_feedback_round_flag(monkeypatch):
     assert len(off) == 0 and len(on) == 2  # 플래그 off=라운드2 없음, on=에이전트당 1개
 
 
-def test_socratic_has_hints_and_self_explanation():
-    agents = _agents()
-    soc = orch._build_single_agent_system_prompt(agents[0], "socratic", agents, position=0, total=3)
-    assert "단계별 힌트" in soc and "네 말로 설명" in soc
+def test_socratic_self_explanation_only_on_last_agent():
+    # '네 말로 설명해볼래?' 자기설명 마무리는 마지막 에이전트만. 앞 에이전트는 중복 금지.
+    a3 = [AgentProfile(id=i, agentId=f"a{i}", name=f"A{i}", personality="친근함") for i in range(3)]
+    last = orch._build_single_agent_system_prompt(a3[2], "socratic", a3, position=2, total=3)
+    first = orch._build_single_agent_system_prompt(a3[0], "socratic", a3, position=0, total=3)
+    assert "네 말로 설명" in last          # 마지막 에이전트는 자기설명 유도
+    assert "네 말로 설명" not in first      # 앞 에이전트는 그 문구 금지(중복 방지)
+    assert "힌트" in first                  # 그래도 힌트/질문은 함
 
 
 def test_debate_defines_topic_and_splits_sides():
