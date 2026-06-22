@@ -120,6 +120,16 @@ def test_first_agent_does_not_critique():
     assert "비판·반박하지 말고" in sp
 
 
+def test_socratic_mode_is_question_driven_not_explanation():
+    # 소크라테스 모드는 basic용 '첫 설명자=직접 설명' 프레이밍이 끼면 안 되고, 역질문 위주여야 한다.
+    agents = _agents()
+    soc = orch._build_single_agent_system_prompt(agents[0], "socratic", agents, position=0, total=3)
+    assert "역질문" in soc                 # 질문 주도
+    assert "첫 설명자" not in soc           # basic 역할분담 미적용
+    bas = orch._build_single_agent_system_prompt(agents[0], "basic", agents, position=0, total=3)
+    assert "첫 설명자" in bas               # basic엔 적용
+
+
 def test_social_input_gets_light_prompt():
     # 인사/잡담이면 공격적 비판 대신 가볍게 받는 프롬프트가 나와야 한다.
     agents = _agents()

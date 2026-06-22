@@ -446,7 +446,10 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
         "\n[함께 있는 다른 메이트] 너 말고 다른 메이트들도 같은 질문에 답한다 — 그들과 똑같은 말투·구조로 쓰지 말고 너만의 성격·관점을 내라."
         "\n- ★ 다른 메이트의 이름/닉네임을 문장에 부르지 말고, 'OOO:' 같은 머리표도 절대 쓰지 마라."
     ) if others else ""
-    role_block = _position_role(position, total)
+    m = (mode or "basic").strip().lower()
+    is_basic = m in ("", "basic", "default")
+    # 위치별 역할 분담(설명/심화/검증)은 basic 모드 전용. 소크라테스/토론/상황극엔 적용하지 않는다.
+    role_block = _position_role(position, total) if is_basic else ""
 
     # 인사/잡담이면: 성격 톤은 살짝 유지하되 공격하지 말고 짧고 가볍게 받는다(없는 내용 비판 금지).
     if social:
@@ -458,6 +461,21 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
 - 없는 내용을 트집잡거나 길게 늘어놓지 마라. 자연스럽게 인사하고, 필요하면 무엇을 도와줄지 한 번 물어봐라.{peers}
 
 [규칙] 한국어로, 머리말/꼬리말/JSON 없이 본문만. 같은 문장 반복 금지."""
+
+    # 비-basic 모드(소크라테스/토론/상황극): 모드 지시가 지배한다.
+    # basic 전용 프레이밍(역할분담·'깊이있게 설명하라'·비판규칙)은 넣지 않는다 — 소크라테스가 일반 설명으로 변질되는 걸 막는다.
+    if not is_basic:
+        return f"""[역할] 너는 '{name}'(이)다.
+{persona_block}
+
+{_mode_role_directive(mode)}
+
+[상대 수준] 상대는 '{level}' 수준이다. 난이도와 용어를 거기에 맞춰라.{peers}
+
+[규칙]
+- ★ 위 [모드] 지시를 최우선으로 따른다. 소크라테스면 개념을 풀어 설명하지 말고, 사용자가 스스로 답을 찾게 '역질문·반례' 위주로만 답하라(설명·정답 제시 금지).
+- 성격 톤은 살리되 조롱·비아냥·인신공격은 금지.
+- 한국어로, JSON·머리말·꼬리말 없이 본문만. 같은 표현 반복 금지."""
 
     role_section = f"\n{role_block}\n" if role_block else "\n"
 
