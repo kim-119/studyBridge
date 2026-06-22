@@ -109,6 +109,20 @@ def test_basic_mode_is_free_conversation():
     assert "자유 대화" in d and "가르치려 들지 마라" in d
 
 
+@pytest.mark.parametrize("front_key,keyword", [
+    ("cynical", "비꼬는"),     # 냉소적
+    ("honest", "팩트 폭력"),   # 솔직함
+    ("efficient", "개조식"),   # 효율적
+    ("unique", "4차원"),       # 독특함
+    ("professional", "전제-근거-결론"),
+    ("friendly", "유치원 선생님"),
+])
+def test_frontend_english_keys_map_to_core_directive(front_key, keyword):
+    # 프론트(personality.js)가 보내는 영문 키가 백엔드 coreDirective로 정확히 매핑돼야 한다.
+    from app.services.personality_prompt_builder import build_personality_prompt
+    assert keyword in build_personality_prompt(front_key)
+
+
 def test_core_directive_overrides_custom_instruction():
     # 프리셋 customInstruction이 공손하게 시켜도 6종 coreDirective가 무조건 이긴다.
     from app.services.personality_prompt_builder import build_personality_prompt, build_persona_directive
