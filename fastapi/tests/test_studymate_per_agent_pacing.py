@@ -163,4 +163,4 @@ def test_peer_answers_injected_in_user_prompt():
     a = _agents()[1]
     peers = [{"agentName": "전문봇", "answer": "객체지향은 캡슐화·상속·다형성이 핵심이다."}]
     up = orch._build_single_agent_user_prompt(a, _req("객체지향이 뭐야?"), "", "", peers)
-    assert "먼저 답한 메이트들" in up and "전문봇" in up and "캡슐화" in up
+    assert "앞에서 답한 메이트들" in up and "전문봇" in up and "캡슐화" in up
