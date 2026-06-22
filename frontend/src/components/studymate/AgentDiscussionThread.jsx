@@ -721,28 +721,63 @@ export default function AgentDiscussionThread({
                                 )}
 
                                 {/* 자식으로 내려가는 수직 연결선 */}
-                                <div style={{ width: '2px', height: '40px', background: '#cbd5e1', zIndex: 0, display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
+                                <div style={{ 
+                                    width: (child.sender !== 'USER' && node.sender !== 'USER' && child.nodeType !== 'debate' && child.nodeType !== 'simulation' && child.nodeType !== 'socratic') || (child.nodeType === 'debate' && (child.stageType === 'REBUTTAL' || child.stageType === 'CROSS_REBUTTAL')) ? '3px' : '2px', 
+                                    height: '40px', 
+                                    background: (child.sender !== 'USER' && node.sender !== 'USER' && child.nodeType !== 'debate' && child.nodeType !== 'simulation' && child.nodeType !== 'socratic') ? 'linear-gradient(to bottom, #93c5fd, #3b82f6)' : (child.nodeType === 'debate' && (child.stageType === 'REBUTTAL' || child.stageType === 'CROSS_REBUTTAL')) ? 'linear-gradient(to bottom, #fca5a5, #ef4444)' : '#cbd5e1', 
+                                    zIndex: 0, 
+                                    display: 'flex', 
+                                    justifyContent: 'center', 
+                                    alignItems: 'center', 
+                                    position: 'relative',
+                                    boxShadow: (child.sender !== 'USER' && node.sender !== 'USER' && child.nodeType !== 'debate' && child.nodeType !== 'simulation' && child.nodeType !== 'socratic') ? '0 0 8px rgba(59, 130, 246, 0.4)' : (child.nodeType === 'debate' && (child.stageType === 'REBUTTAL' || child.stageType === 'CROSS_REBUTTAL')) ? '0 0 8px rgba(239, 68, 68, 0.4)' : 'none'
+                                }}>
                                    {/* 토론 노드: stageType 기반 라벨(입론/반박/재반박/최종 변론/판정/논제). "피드백" 금지 */}
                                    {child.nodeType === 'debate' ? (
                                        DEBATE_EDGE_LABEL[child.stageType] && (
-                                         <div style={{
-                                             position: 'absolute',
-                                             background: '#ffffff',
-                                             border: `1px solid ${debateColor(child.side).accent}40`,
-                                             padding: '2px 8px',
-                                             borderRadius: '12px',
-                                             fontSize: '10px',
-                                             fontWeight: '800',
-                                             color: debateColor(child.side).accent,
-                                             display: 'flex',
-                                             alignItems: 'center',
-                                             gap: '4px',
-                                             boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
-                                             zIndex: 2,
-                                             whiteSpace: 'nowrap'
-                                         }}>
-                                             {DEBATE_EDGE_LABEL[child.stageType]}
-                                         </div>
+                                         (child.stageType === 'REBUTTAL' || child.stageType === 'CROSS_REBUTTAL') ? (
+                                            <motion.div
+                                                initial={{ scale: 0.8, opacity: 0 }}
+                                                animate={{ scale: 1, opacity: 1, boxShadow: ['0 0 0px rgba(239,68,68,0)', '0 0 12px rgba(239,68,68,0.6)', '0 0 0px rgba(239,68,68,0)'] }}
+                                                transition={{ duration: 1.2, repeat: Infinity, repeatType: 'reverse' }}
+                                                style={{
+                                                    position: 'absolute',
+                                                    background: 'linear-gradient(135deg, #fef2f2, #fee2e2)',
+                                                    border: '1px solid #ef4444',
+                                                    padding: '4px 10px',
+                                                    borderRadius: '12px',
+                                                    fontSize: '11px',
+                                                    fontWeight: '900',
+                                                    color: '#b91c1c',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '4px',
+                                                    zIndex: 2,
+                                                    whiteSpace: 'nowrap'
+                                                }}>
+                                                <Zap size={12} color="#dc2626" fill="#ef4444" />
+                                                {DEBATE_EDGE_LABEL[child.stageType]}
+                                            </motion.div>
+                                         ) : (
+                                            <div style={{
+                                                position: 'absolute',
+                                                background: '#ffffff',
+                                                border: `1px solid ${debateColor(child.side).accent}40`,
+                                                padding: '2px 8px',
+                                                borderRadius: '12px',
+                                                fontSize: '10px',
+                                                fontWeight: '800',
+                                                color: debateColor(child.side).accent,
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '4px',
+                                                boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
+                                                zIndex: 2,
+                                                whiteSpace: 'nowrap'
+                                            }}>
+                                                {DEBATE_EDGE_LABEL[child.stageType]}
+                                            </div>
+                                         )
                                        )
                                    ) : child.nodeType === 'simulation' ? (
                                        SIMULATION_EDGE_LABEL[child.stageType] && (
@@ -777,25 +812,28 @@ export default function AgentDiscussionThread({
                                          </div>
                                        )
                                    ) : (child.sender !== 'USER' && node.sender !== 'USER') && (
-                                       <div style={{
-                                           position: 'absolute',
-                                           background: '#ffffff',
-                                           border: '1px solid #e2e8f0',
-                                           padding: '2px 8px',
-                                           borderRadius: '12px',
-                                           fontSize: '10px',
-                                           fontWeight: '800',
-                                           color: '#475569',
-                                           display: 'flex',
-                                           alignItems: 'center',
-                                           gap: '4px',
-                                           boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
-                                           zIndex: 2,
-                                           whiteSpace: 'nowrap'
-                                       }}>
-                                           <Zap size={10} color="#3b82f6" fill="#3b82f6" />
+                                       <motion.div
+                                           initial={{ scale: 0.8, opacity: 0 }}
+                                           animate={{ scale: 1, opacity: 1, boxShadow: ['0 0 0px rgba(59,130,246,0)', '0 0 12px rgba(59,130,246,0.6)', '0 0 0px rgba(59,130,246,0)'] }}
+                                           transition={{ duration: 1.5, repeat: Infinity, repeatType: 'reverse' }}
+                                           style={{
+                                               position: 'absolute',
+                                               background: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
+                                               border: '1px solid #3b82f6',
+                                               padding: '4px 10px',
+                                               borderRadius: '12px',
+                                               fontSize: '11px',
+                                               fontWeight: '900',
+                                               color: '#1d4ed8',
+                                               display: 'flex',
+                                               alignItems: 'center',
+                                               gap: '4px',
+                                               zIndex: 2,
+                                               whiteSpace: 'nowrap'
+                                           }}>
+                                           <Zap size={12} color="#2563eb" fill="#3b82f6" />
                                            피드백
-                                       </div>
+                                       </motion.div>
                                    )}
                                 </div>
 
