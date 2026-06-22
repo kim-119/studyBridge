@@ -97,6 +97,9 @@ const pdfPager = {
         studyFocus: s.studyFocus ?? '',
         sourceQuality: a.sourceQuality ?? a.extractionStatus ?? s.sourceQuality ?? '',
         detectedTextSource: s.detectedTextSource ?? '',
+        contentType: a.contentType ?? s.contentType ?? '',
+        conceptExplanations: a.conceptExplanations ?? s.conceptExplanations ?? [],
+        examples: a.examples ?? s.examples ?? [],
         extractionStatus: a.extractionStatus ?? '',
         extractedText: a.extractedText ?? s.extractedText ?? '',
         textPreview: a.textPreview ?? s.textPreview ?? '',
@@ -193,6 +196,12 @@ function DetailedPager({ pages }) {
   const bullets = firstList(p.bulletPoints, p.summaryBullets);
   const overview = firstStr(p.oneLineSummary, p.pageOverview, p.detailContent);
   const takeaway = firstStr(p.takeaway, p.studyFocus);
+  const contentType = firstStr(p.contentType);
+  // 개념 설명: [{term, explanation}] 배열만 추림(문자열만 온 경우도 수용).
+  const conceptExplanations = list(p.conceptExplanations)
+    .map((c) => (typeof c === 'string' ? { term: c, explanation: '' } : c))
+    .filter((c) => c && (c.term || c.explanation));
+  const examples = list(p.examples).filter(Boolean);
   const warnings = list(p.warnings);
   const title = firstStr(p.title);
   const pageNo = p.pageNumber ?? p.page ?? (safe + 1);
@@ -248,9 +257,9 @@ function DetailedPager({ pages }) {
       <div style={{ border: `1px solid ${insufficient ? '#FDE68A' : 'var(--color-border)'}`, borderRadius: '10px', padding: '14px 16px', background: insufficient ? '#FFFBEB' : '#fff' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
           <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)' }}>p.{pageNo}{title ? ` ${title}` : ''}</span>
-          {src && (
-            <span title="이 페이지의 텍스트 출처/품질" style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '6px', background: insufficient ? '#FEF3C7' : '#EFF6FF', color: insufficient ? '#92400E' : '#1D4ED8' }}>
-              {DETECTED_SOURCE_LABEL[src] || src}
+          {(contentType || src) && (
+            <span title="이 페이지의 콘텐츠 유형/출처" style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '6px', background: insufficient ? '#FEF3C7' : '#EFF6FF', color: insufficient ? '#92400E' : '#1D4ED8' }}>
+              {contentType || DETECTED_SOURCE_LABEL[src] || src}
             </span>
           )}
         </div>
@@ -264,6 +273,24 @@ function DetailedPager({ pages }) {
             {concepts.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
                 {concepts.map((c, k) => <span key={k} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}>{c}</span>)}
+              </div>
+            )}
+            {conceptExplanations.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
+                <span style={{ fontSize: '12px', fontWeight: 800, color: '#4338CA' }}>📘 개념 설명</span>
+                {conceptExplanations.map((c, k) => (
+                  <div key={k} style={{ fontSize: '13.5px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>
+                    <strong>{c.term}</strong>{c.explanation ? ` — ${c.explanation}` : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+            {examples.length > 0 && (
+              <div style={{ background: '#FFFBEB', borderRadius: '6px', padding: '8px 12px', marginBottom: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{ fontSize: '12px', fontWeight: 800, color: '#B45309' }}>💡 예시</span>
+                <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  {examples.map((ex, k) => <li key={k} style={{ fontSize: '13.5px', lineHeight: 1.6, color: '#92400E' }}>{ex}</li>)}
+                </ul>
               </div>
             )}
             {bullets.length > 0 && (
@@ -374,19 +401,47 @@ function StudyNoteView({ note, material, onKeyword }) {
                 <span style={{ fontWeight: '700', fontSize: '15px', color: 'var(--color-text-main)' }}>
                   {p.title || '페이지 핵심 요약'}
                 </span>
-                {p.detectedTextSource && (
-                  <span style={{ fontSize: '11px', backgroundColor: '#F3F4F6', color: '#6B7280', padding: '2px 6px', borderRadius: '4px', marginLeft: 'auto' }}>
-                    {DETECTED_SOURCE_LABEL[p.detectedTextSource] || p.detectedTextSource}
+                {/* 콘텐츠 유형(텍스트/이미지/표/혼합) 배지 — source 코드보다 사람이 읽기 쉬운 표기 우선 */}
+                {(p.contentType || p.detectedTextSource) && (
+                  <span style={{ fontSize: '11px', backgroundColor: '#EEF2FF', color: '#4338CA', padding: '2px 8px', borderRadius: '6px', fontWeight: '700', marginLeft: 'auto' }}>
+                    {p.contentType || DETECTED_SOURCE_LABEL[p.detectedTextSource] || p.detectedTextSource}
                   </span>
                 )}
               </div>
-              
+
               {p.pageOverview && (
                 <div style={{ fontSize: '14px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>
                   {p.pageOverview}
                 </div>
               )}
-              
+
+              {/* 개념 설명: 이름만이 아니라 풀어쓴 설명 */}
+              {Array.isArray(p.conceptExplanations) && p.conceptExplanations.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: '800', color: '#4338CA' }}>📘 개념 설명</span>
+                  {p.conceptExplanations
+                    .map((c) => (typeof c === 'string' ? { term: c, explanation: '' } : c))
+                    .filter((c) => c && (c.term || c.explanation))
+                    .map((c, idx) => (
+                      <div key={idx} style={{ fontSize: '14px', lineHeight: '1.6', color: 'var(--color-text-main)' }}>
+                        <strong>{c.term}</strong>{c.explanation ? ` — ${c.explanation}` : ''}
+                      </div>
+                    ))}
+                </div>
+              )}
+
+              {/* 추가 예시 */}
+              {Array.isArray(p.examples) && p.examples.length > 0 && (
+                <div style={{ backgroundColor: '#FFFBEB', borderRadius: '8px', padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: '800', color: '#B45309' }}>💡 예시</span>
+                  <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {p.examples.filter(Boolean).map((ex, idx) => (
+                      <li key={idx} style={{ fontSize: '14px', lineHeight: '1.6', color: '#92400E' }}>{ex}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {((p.summaryBullets && p.summaryBullets.length > 0) || (p.bulletPoints && p.bulletPoints.length > 0)) && (
                 <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   {(p.summaryBullets?.length ? p.summaryBullets : p.bulletPoints).map((b, idx) => (
