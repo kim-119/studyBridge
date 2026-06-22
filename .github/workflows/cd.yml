@@ -289,8 +289,9 @@ jobs:
             sudo systemctl enable studybridge-fastapi
 
             # 그래도 8000을 물고 있는 수동 nohup 잔여가 있으면 정리 후 systemd로 재기동.
+            # (pkill -f 는 배포 스크립트 자신을 매칭해 죽이므로 금지. 포트 기준 fuser 사용.)
             sudo systemctl stop studybridge-fastapi 2>/dev/null || true
-            pkill -f "uvicorn.*--port 8000" 2>/dev/null || true
+            sudo fuser -k 8000/tcp 2>/dev/null || true
             sleep 1
             sudo systemctl start studybridge-fastapi
 

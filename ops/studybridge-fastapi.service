@@ -18,3 +18,5 @@ TimeoutStartSec=120
 
 [Install]
 WantedBy=multi-user.target
+
+# (cd: pkill 자기매칭 회피 위해 fuser -k 포트 기반으로 정리)
