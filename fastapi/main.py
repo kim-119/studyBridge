@@ -970,14 +970,11 @@ def _build_grounded_quiz_system_prompt(count: int, difficulty: str, question_typ
         "2. PDF 발췌문에 없는 일반상식, 외부지식, 공부법으로 문제를 만들지 않는다.\n"
         "3. 각 문제의 정답과 해설은 PDF 발췌문에서 확인 가능해야 한다.\n"
         "4. 각 문제에는 sourceSnippet 필드를 포함한다.\n"
-        "5. sourceSnippet에는 문제의 근거가 되는 PDF 문장 또는 구절을 짧게 넣는다.\n"
-        "6. sourceSnippet을 만들 수 없는 문제는 만들지 않는다.\n"
-        "7. PDF 내용이 부족하면 억지로 만들지 말고 빈 배열을 반환한다.\n"
-        "8. 반드시 JSON만 반환한다.\n"
-        f"9. 가능하면 {count}개를 만들되 근거가 있는 문항만 만든다.\n"
-        f"10. 난이도 기준: {_QUIZ_DIFFICULTY_INSTRUCTIONS[diff_key]}\n"
-        f"11. 문제 유형 기준: {_QUIZ_TYPE_INSTRUCTIONS[qtype_key]}\n"
-        f"12. 언어 기준: {lang_instr}\n"
+        "5. sourceSnippet에는 문제의 근거가 되는 PDF 내용을 요약해서 넣어도 된다.\n"
+        f"6. 최대한 {count}개에 가깝게 문제를 생성한다.\n"
+        f"7. 난이도 기준: {_QUIZ_DIFFICULTY_INSTRUCTIONS[diff_key]}\n"
+        f"8. 문제 유형 기준: {_QUIZ_TYPE_INSTRUCTIONS[qtype_key]}\n"
+        f"9. 언어 기준: {lang_instr}\n"
         "응답은 JSON 배열 또는 {\"questions\": [...]} 형식만 허용한다."
     )
 
@@ -1001,8 +998,7 @@ def _build_grounded_quiz_user_prompt(
         f"PDF 발췌문:\n{pdf_context}\n\n"
         "위 PDF 발췌문만 근거로 문제를 만들어라.\n"
         "PDF 밖의 지식 사용 금지.\n"
-        "각 문제는 반드시 sourceSnippet을 포함해야 한다.\n"
-        "sourceSnippet이 없으면 해당 문제는 생성하지 마라."
+        "각 문제는 대략적인 근거(sourceSnippet)를 포함하여 적극적으로 문항을 생성하라."
     )
 
 

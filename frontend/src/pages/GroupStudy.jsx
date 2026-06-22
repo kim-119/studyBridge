@@ -1021,8 +1021,8 @@ export default function GroupStudy() {
                       <div style={{ fontSize: '15px', fontWeight: '700', color: '#111827' }}>{selectedPost.current} / {selectedPost.max} 명</div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '13px', color: '#6B7280', marginBottom: '6px' }}>스터디 기간 <span style={{ backgroundColor: '#FEF3C7', color: '#D97706', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: '700', marginLeft: '4px' }}>D-7</span></div>
-                      <div style={{ fontSize: '15px', fontWeight: '700', color: '#111827' }}>2026.10.05 - 2026.12.09</div>
+                      <div style={{ fontSize: '13px', color: '#6B7280', marginBottom: '6px' }}>스터디 기간 <span style={{ backgroundColor: '#FEF3C7', color: '#D97706', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: '700', marginLeft: '4px' }}>D-{selectedPost.startDate ? Math.max(0, Math.ceil((new Date(selectedPost.startDate).getTime() - new Date().getTime()) / (1000 * 3600 * 24))) : '0'}</span></div>
+                      <div style={{ fontSize: '15px', fontWeight: '700', color: '#111827' }}>{selectedPost.startDate ? selectedPost.startDate.split('T')[0] : ''} - {selectedPost.endDate ? selectedPost.endDate.split('T')[0] : ''}</div>
                     </div>
                   </div>
 

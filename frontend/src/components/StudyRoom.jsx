@@ -2433,11 +2433,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>기간</div>
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <div style={{ backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px' }}>2021.11.22</div>
+                        <div style={{ backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px' }}>{study?.startDate ? study.startDate.split('T')[0] : '시작일 미정'}</div>
                         <span style={{ color: '#9CA3AF' }}>~</span>
-                        <div style={{ backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px' }}>2027.04.06</div>
+                        <div style={{ backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px' }}>{study?.endDate ? study.endDate.split('T')[0] : '종료일 미정'}</div>
                       </div>
-                      <div style={{ backgroundColor: 'rgba(245, 158, 11, 0.1)', color: '#F59E0B', padding: '4px 12px', borderRadius: '4px', fontSize: '13px', fontWeight: '700', width: 'fit-content' }}>총 1961 일</div>
+                      <div style={{ backgroundColor: 'rgba(245, 158, 11, 0.1)', color: '#F59E0B', padding: '4px 12px', borderRadius: '4px', fontSize: '13px', fontWeight: '700', width: 'fit-content' }}>총 {study?.startDate && study?.endDate ? Math.max(0, Math.ceil((new Date(study.endDate).getTime() - new Date(study.startDate).getTime()) / (1000 * 3600 * 24))) : 0} 일</div>
                     </div>
                   </div>
 
@@ -2475,7 +2475,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                     <div style={{ flex: 1, paddingRight: '4px' }}>
                       <textarea
                         className="custom-scrollbar"
-                        defaultValue="자격증 자율 스터디입니다.&#10;누구나 함께 공부하며 스터디 친구를 사귈 수 있습니다.&#10;&#10;해당 스터디룸은 StudyBridge에서 개설한 스터디룸으로,&#10;입장한 지 3일 이상 경과된 상황에서 카메라 송출이 되고 있지 않는다면 발견되는 즉시 무통보 강제 퇴장 조치..."
+                        value={study?.description || "공지사항이 없습니다."}
+                        readOnly
                         style={{ width: '100%', boxSizing: 'border-box', height: '120px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }}
                       />
                     </div>
@@ -2609,6 +2610,42 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                           {isUploadingQuizPdf ? <RefreshCw size={14} className="animate-spin" style={{ animation: 'spin 1.5s linear infinite' }} /> : <Upload size={14} />}
                           {isUploadingQuizPdf ? 'PDF 업로드 및 AI 퀴즈 생성 중...' : 'PDF 업로드 + AI 퀴즈 생성'}
                         </button>
+                        
+                        {/* 기존 공유 PDF 자료 목록 */}
+                        <div style={{ marginTop: '12px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '16px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                            <div style={{ color: '#F3F4F6', fontSize: '13px', fontWeight: '800' }}>기존 등록된 PDF 자료 (클릭하여 퀴즈 생성)</div>
+                            <button onClick={loadGroupMaterials} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', padding: 0 }} title="새로고침">
+                              <RefreshCw size={13} /> 새로고침
+                            </button>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+                            {groupMaterials.length === 0 ? (
+                              <div style={{ color: '#64748B', fontSize: '12px', padding: '10px 0' }}>등록된 PDF 자료가 없습니다. 위에 파일을 업로드해주세요.</div>
+                            ) : (
+                              groupMaterials.map(mat => (
+                                <div key={mat.id} style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                                  <div style={{ minWidth: 0 }}>
+                                    <div style={{ color: '#E5E7EB', fontSize: '12px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mat.title}</div>
+                                    <div style={{ color: '#94A3B8', fontSize: '11px', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mat.originalFileName} · {formatFileSize(mat.fileSize)}</div>
+                                    <div style={{ color: '#64748B', fontSize: '11px', marginTop: '3px' }}>{mat.uploaderName || '알 수 없음'} · {formatDate(mat.createdAt)}</div>
+                                  </div>
+                                  <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                                    <button
+                                      onClick={() => handleGenerateQuizFromMaterial(mat.id)}
+                                      disabled={isGeneratingQuiz === mat.id}
+                                      style={{ flexShrink: 0, height: '30px', padding: '0 10px', borderRadius: '8px', border: '1px solid rgba(16,185,129,0.35)', backgroundColor: 'rgba(16,185,129,0.14)', color: '#6EE7B7', display: 'flex', alignItems: 'center', gap: '4px', cursor: isGeneratingQuiz === mat.id ? 'not-allowed' : 'pointer', fontSize: '11px', fontWeight: 700, whiteSpace: 'nowrap' }}
+                                      title="이 PDF로 퀴즈 생성"
+                                    >
+                                      {isGeneratingQuiz === mat.id ? <RefreshCw size={13} className="animate-spin" style={{ animation: 'spin 1.5s linear infinite' }} /> : <FileText size={13} />}
+                                      퀴즈
+                                    </button>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
                       </div>
 
                       {/* STEP 2. 생성된 퀴즈를 방 전체에 실시간 출제 */}
