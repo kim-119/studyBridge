@@ -5,9 +5,6 @@ import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, MessageCircle, Use
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
 import ProfessorLearningPanel from '../components/studymate/ProfessorLearningPanel';
 import '../components/studymate/studymate-premium.css';
-import PixelProfessorStage from '../components/studymate/pixel/PixelProfessorStage';
-import { useMinuteRecap } from '../components/studymate/pixel/useMinuteRecap';
-import { roleForAgentIndex, ROLE_TO_AGENT_INDEX } from '../components/studymate/pixel/professorSprites';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getAgentColor, agentColorKey } from '../utils/agentColor';
 import { PERSONALITY_STYLE_OPTIONS, normalizePersonalityKey, personalityLabel as canonicalPersonalityLabel, personalityTemperature } from '../utils/personality';
@@ -1983,7 +1980,22 @@ const buildCanonicalAgentPayload = (agent) => {
 //   · 단순 React state + CSS animation으로 "교수들이 서로 반응하는" 느낌만 준다.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// (제거됨) PROFESSOR_BUBBLES — 교수 sprite actor 중심 UI로 전환하며 고정 안내 말풍선 삭제.
+// actionMode → 교수 3인 말풍선 문구.
+const PROFESSOR_BUBBLES = {
+  default: ['궁금한 내용을 질문하면 함께 도와드려요!', '핵심 개념을 정리해볼게요.', '필요하면 반박·비교·예시로 확장할 수 있어요.'],
+  detail: ['먼저 원리를 더 깊게 풀어보겠습니다.', '중요 개념을 단계별로 정리할게요.', '놓치기 쉬운 예외 조건도 보겠습니다.'],
+  rebuttal: ['그 설명에는 논리적 빈틈이 있습니다.', '반례와 한계를 기준으로 다시 보겠습니다.', '왜 부족한지 쉽게 짚어볼게요.'],
+  compare: ['비슷한 개념과 차이를 비교하겠습니다.', '장단점을 기준으로 나눠보겠습니다.', '실제 사용 상황까지 연결해볼게요.'],
+  example: ['쉬운 예시부터 들어보겠습니다.', '실무에서 어떻게 쓰이는지 보겠습니다.', '필요하면 코드나 구조 예시로 확장할게요.'],
+  why: ['왜 그렇게 되는지 질문으로 파고들겠습니다.', '전제부터 차근차근 확인해볼게요.', '스스로 답을 찾을 수 있게 유도하겠습니다.'],
+  assumption: ['답변 안에 숨은 전제를 확인하겠습니다.', '논리가 기대고 있는 조건을 분리해볼게요.', '이 전제가 깨지면 결론도 달라질 수 있습니다.'],
+  counterQuestion: ['반대로 질문을 던져보겠습니다.', '이 관점에서 다시 생각해보면 어떨까요?', '스스로 검증할 수 있는 질문을 만들겠습니다.'],
+  defense: ['반박에 대한 방어 논리를 세워보겠습니다.', '기존 설명이 유효한 조건을 정리하겠습니다.', '어디까지는 맞고 어디부터 약한지 나누겠습니다.'],
+  judge: ['양쪽 관점을 기준으로 판정하겠습니다.', '근거의 강도를 비교해볼게요.', '최종적으로 어떤 설명이 더 타당한지 정리합니다.'],
+  roleplay: ['상황극 방식으로 장면을 열어보겠습니다.', '등장인물의 입장에서 반응해볼게요.', '맥락에 맞는 대사와 행동으로 설명하겠습니다.'],
+  choice: ['선택지를 나눠서 보여드리겠습니다.', '각 선택의 결과를 비교해볼게요.', '다음 행동을 고르기 쉽게 정리하겠습니다.'],
+  reaction: ['상황에 대한 반응을 보여드리겠습니다.', '교수별 관점으로 다르게 반응해볼게요.', '왜 그런 반응이 나오는지도 설명하겠습니다.'],
+};
 
 // actionMode → 트리 루트 제목.
 const PROFESSOR_ROOT_TITLE_BY_ACTION = {
@@ -2108,11 +2120,10 @@ export default function StudyMate() {
   // 마지막으로 선택한 액션/대상(트리 강조·필터 기준).
   const [professorSelectedAction, setProfessorSelectedAction] = useState('default');
   const [professorSelectedTarget, setProfessorSelectedTarget] = useState('all');
-  // 픽셀 교수 stage: 선택된 교수(액션 메뉴) + 교수별 시각 상태(SSE 이벤트가 갱신, visual consumer).
-  const [selectedProfessorRole, setSelectedProfessorRole] = useState(null); // 'theory'|'book'|'ai'|null
-  const [professorVisualStates, setProfessorVisualStates] = useState({ theory: 'idle', book: 'idle', ai: 'idle' });
-  // 스트림 정상 완료 시각(1분 요약 트리거). 히스토리 로드만으로는 요약이 뜨지 않게 한다.
-  const [professorTurnDoneAt, setProfessorTurnDoneAt] = useState(0);
+  // 교수 hotspot 클릭 시 뜨는 2단계 floating menu 상태.
+  const [professorMenuState, setProfessorMenuState] = useState({
+    open: false, step: 'action', professorKey: null, actionKey: null, anchor: null,
+  });
   const [message, setMessage] = useState('');
   
   // 멘션(@) 관련 상태
@@ -2131,41 +2142,6 @@ export default function StudyMate() {
   // 개별 채팅방별 캐시 및 상태 관리
   const [roomHistories, setRoomHistories] = useState({}); // { [roomId]: messages[] }
   const [typingRooms, setTypingRooms] = useState({});     // { [roomId]: boolean }
-
-  // ── 픽셀 교수 시각 상태 setter(답변 append와 무관한 visual only). ───────────────
-  //    같은 SSE 이벤트가 중복 수신돼도 상태만 덮어쓴다(배열 push 없음).
-  const setProfVisual = React.useCallback((role, state) => {
-    if (!role) return;
-    setProfessorVisualStates((prev) => (prev[role] === state ? prev : { ...prev, [role]: state }));
-  }, []);
-  const setAllProfVisual = React.useCallback((state) => {
-    setProfessorVisualStates((prev) => (
-      (prev.theory === state && prev.book === state && prev.ai === state)
-        ? prev
-        : { theory: state, book: state, ai: state }
-    ));
-  }, []);
-  // completed/error는 stage에서 800ms 후 idle 복귀를 요청한다.
-  const handleProfessorAutoReset = React.useCallback((role) => setProfVisual(role, 'idle'), [setProfVisual]);
-
-  // ── 1분 학습 흐름 요약: 최근 "완료된" 질문/답변 기준. 스트리밍 중/교수탭 아님이면 생성 안 함. ──
-  const recapInput = React.useMemo(() => {
-    let q = '';
-    let a = '';
-    for (let i = chatHistory.length - 1; i >= 0; i -= 1) {
-      const m = chatHistory[i];
-      if (!m || !m.content) continue;
-      if (!a && m.sender !== 'USER' && !m.isPending && !m.isError) a = m.content;
-      if (!q && m.sender === 'USER') q = m.content;
-      if (q && a) break;
-    }
-    return { question: q, answer: a };
-  }, [chatHistory]);
-  const { recap: professorRecap, dismissRecap: dismissProfessorRecap } = useMinuteRecap({
-    question: recapInput.question,
-    answer: recapInput.answer,
-    trigger: professorTurnDoneAt,
-  });
   const [roomDrafts, setRoomDrafts] = useState({});       // { [roomId]: string }
 
   const [showModal, setShowModal] = useState(false);
@@ -2550,13 +2526,6 @@ export default function StudyMate() {
     let perfFirstEvent = 0;
     const isActiveRequest = () => activeRequestRef.current[agentId] === requestId;
 
-    // ── 픽셀 교수 시각 상태 매핑(visual consumer). 현재 선택된 방의 스트림일 때만 애니메이션. ──
-    //    답변 append/카드 로직은 건드리지 않고, 이벤트 수신 시 "시각 상태"만 갱신한다.
-    const visualActive = () => selectedAgentIdRef.current === agentId;
-    const visFor = (idx, state) => { if (visualActive()) setProfVisual(roleForAgentIndex(idx), state); };
-    const visAll = (state) => { if (visualActive()) setAllProfVisual(state); };
-    let sawError = false;
-
     const userMsg = {
       id: `${requestId}`,
       content: inputMsg,
@@ -2577,8 +2546,6 @@ export default function StudyMate() {
     setRoomDrafts((prev) => ({ ...prev, [agentId]: '' }));
     // 4. 해당 방의 타이핑/로딩 상태 활성화 (전체 방 블로킹 X)
     setTypingRooms((prev) => ({ ...prev, [agentId]: true }));
-    // 시각: 질문 전송 → 전체 교수 walking_to_question.
-    visAll('walking_to_question');
 
     // ── 소크라테스 카드 게이팅(정책: 명시 요청 시에만) ─────────────────────────────
     // 라디오로 '소크라테스'를 골랐다는 사실만으로는 카드를 만들지 않는다. 사용자가 이번 메시지에서
@@ -2892,18 +2859,15 @@ export default function StudyMate() {
             onAgentStart: (d) => {
               if (!d) return;
               upsertAgentMessage(d, { isPending: true, content: d.message || `에이전트 ${d.agentIndex || ''} 답변 생성 중...` });
-              visFor(d.agentIndex, 'thinking'); // 시각만(append 로직 불변)
             },
             onAgentAnswer: (d) => {
               armWatchdog();
               if (!d) return;
               upsertAgentMessage(d, { isPending: false, content: d.content || d.answer || '' });
-              visFor(d.agentIndex, 'answering');
             },
             onAgentError: (d) => {
               if (!d) return;
               upsertAgentMessage(d, { isPending: false, isError: true, content: d.message || '이 에이전트의 응답 생성에 실패했습니다.' });
-              sawError = true; visFor(d.agentIndex, 'error');
             },
             // default legacy 모드: 1차/2차/3차 단계 완료 시 즉시 반영. 저장 전에 에이전트 순서로 정렬한다.
             onStageComplete: (d) => {
@@ -2924,10 +2888,6 @@ export default function StudyMate() {
                 if (Array.isArray(d.answers) && d.answers.length) fullPS.initialAnswers = sortByAgentOrder(d.answers);
                 else if (Array.isArray(d.feedbacks) && d.feedbacks.length) fullPS.peerFeedback = sortByAgentOrder(d.feedbacks);
               }
-              // 시각: 1차=각자 답변, 2차=이론 교수 검증, 3차=전체 피어 피드백.
-              if (d.stage === 1) (d.answers || []).forEach((a, i) => visFor(a?.agentIndex ?? i, 'answering'));
-              else if (d.stage === 2) visFor(0, 'validating');
-              else if (d.stage === 3) visAll('peer_feedback');
               streamRendered = true;
               setTurnAiMessages(buildStreamAiMsgs(fullPS));
             },
@@ -2948,7 +2908,6 @@ export default function StudyMate() {
                 content: d.content ?? '',
               });
               if (d.debateConfig) debateConfigAcc = d.debateConfig;
-              visFor(d.agentIndex, String(d.stageType || '').includes('REBUTTAL') ? 'peer_feedback' : 'answering');
               streamRendered = true;
               setTurnAiMessages([buildDebateTurnMessage(
                 { debateStages: debateStagesArr(), debateConfig: debateConfigAcc },
@@ -2976,7 +2935,6 @@ export default function StudyMate() {
                 content: d.content ?? d.question ?? d.hint ?? d.feedback ?? '',
               });
               if (d.socraticConfig) socraticConfigAcc = d.socraticConfig;
-              visFor(d.agentIndex, 'answering');
               streamRendered = true;
               setTurnAiMessages([buildSocraticTurnMessage(
                 { socraticSteps: socraticStepsArr(), socraticConfig: socraticConfigAcc },
@@ -3006,7 +2964,6 @@ export default function StudyMate() {
                 nextScenarioPrompt: d.nextScenarioPrompt,
               });
               if (d.simulationConfig) simulationConfigAcc = d.simulationConfig;
-              visFor(d.agentIndex, 'answering');
               streamRendered = true;
               setTurnAiMessages([buildSimulationTurnMessage(
                 { simulationStages: simulationStagesArr(), simulationConfig: simulationConfigAcc || DEFAULT_SIMULATION_CONFIG },
@@ -3076,7 +3033,6 @@ export default function StudyMate() {
             onAllComplete: (d) => {
               if (watchdogTimer) clearTimeout(watchdogTimer);
               streamCompleted = true;
-              visAll('completed'); // 시각: 전체 교수 완료 표시(stage가 800ms 후 idle 복귀)
               captureConvState(d);
               lastTurnAtRef.current[agentId] = Date.now();
               if (import.meta.env.DEV) console.debug('[StudyMate][perf] all_complete', { totalMs: Date.now() - perfT0, ttfbMs: perfFirstEvent ? perfFirstEvent - perfT0 : null });
@@ -3090,8 +3046,6 @@ export default function StudyMate() {
             //  → 사용자에게 내부 stacktrace는 노출하지 않고 code/reason은 콘솔에만 남긴다.
             onError: (d) => {
               if (streamCompleted) return; // all_complete 이후 늦게 온 error는 무시
-              sawError = true;
-              if (d && d.agentIndex != null) visFor(d.agentIndex, 'error'); else visAll('error');
               if (import.meta.env.DEV) {
                 console.warn('[StudyMate] SSE error event', {
                   code: d?.code ?? d?.errorCode, reason: d?.reason ?? d?.message,
@@ -3300,7 +3254,6 @@ export default function StudyMate() {
         });
       }
     } catch (err) {
-      sawError = true;
       console.error('메시지 전송 실패:', err);
       // alert로 흐름을 막지 않고, 네트워크/서버 오류를 채팅 내부 메시지로 표시한다.
       const isNetwork = err?.code === 'ERR_NETWORK' || /Network|timeout|aborted/i.test(err?.message || '');
@@ -3332,10 +3285,6 @@ export default function StudyMate() {
     } finally {
       // 8. 해당 방의 타이핑/로딩 상태만 해제 + 전송 가드 해제(재진입 허용)
       setTypingRooms((prev) => ({ ...prev, [agentId]: false }));
-      // 시각: 스트림 종료 안전망(all_complete/error 누락 시에도 idle 복귀 보장).
-      visAll(sawError ? 'error' : 'completed');
-      // 1분 요약 트리거: 현재 방의 정상 완료 시에만(에러 제외) 갱신.
-      if (visualActive() && !sawError) setProfessorTurnDoneAt(Date.now());
       sendingRoomsRef.current.delete(agentId);
       lastTurnAtRef.current[agentId] = Date.now();
       // 9. 스트림 종료 후 명시적 보정 — 백엔드 비동기 영속화(persistStreamedAnswers) 커밋을 잠깐 기다린 뒤
@@ -3488,45 +3437,27 @@ export default function StudyMate() {
     setTimeout(() => setToastMsg(''), 2500);
   };
 
-  // ── 픽셀 교수 액션 메뉴 콜백(기존 submit flow와 충돌 없이 입력창 프리필/포커스만). ──────
-  const focusChatInput = () => {
-    const el = document.querySelector('.chat-input-premium input');
-    if (el) el.focus();
+  // ── 교수 hotspot 2단계 메뉴 (액션 선택 → 대상 선택) ─────────────────────────
+  // 현재 학습 모드(normalizeLearningMode) 기준 액션 목록을 보여준다.
+  const professorActions = PROFESSOR_ACTIONS_BY_MODE[normalizeLearningMode(learningMode)]
+    || PROFESSOR_ACTIONS_BY_MODE.basic;
+  const professorTargets = getProfessorTargets(selectedAgent?.agents || []);
+
+  // 1단계: 교수 캐릭터 클릭 → 액션 메뉴 열기.
+  const openProfessorActionMenu = (professorKey) => {
+    setProfessorMenuState({
+      open: true, step: 'action', professorKey, actionKey: null, anchor: professorKey,
+    });
   };
-  const prefillProfessorDraft = (text) => {
-    setMessage(text);
-    setShowMentionPopup(false);
-    const activeId = getAgentId(selectedAgent);
-    if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: text }));
-    focusChatInput();
+
+  // 1단계 선택: 액션 클릭 → 대상 선택 단계로. (말풍선 문구는 즉시 미리보기)
+  const selectProfessorAction = (actionKey) => {
+    setProfessorMenuState((prev) => ({ ...prev, step: 'target', actionKey }));
+    setProfessorActionMode(actionKey);
   };
-  // 질문 정제 — 안전 동작(자동 전송 없음): 입력창 포커스 + 안내.
-  const handleProfRefine = () => {
-    setSelectedProfessorRole(null);
-    focusChatInput();
-    setToastMsg('💡 입력창에서 질문을 더 구체적으로 다듬어 전송해 주세요.');
-    setTimeout(() => setToastMsg(''), 2500);
-  };
-  // 이 교수에게 질문 — @멘션 프리필(자동 전송 없음).
-  const handleProfAskOne = (role) => {
-    const idx = ROLE_TO_AGENT_INDEX[role] ?? 0;
-    const name = selectedAgent?.agents?.[idx]?.name;
-    prefillProfessorDraft(name ? `@${name} ` : '@모두 ');
-    setSelectedProfessorRole(null);
-    setToastMsg('💡 입력창에서 질문을 입력해 전송해 주세요.');
-    setTimeout(() => setToastMsg(''), 2500);
-  };
-  // 모두에게 질문 — @모두 프리필(자동 전송 없음).
-  const handleProfAskAll = () => {
-    prefillProfessorDraft('@모두 ');
-    setSelectedProfessorRole(null);
-    setToastMsg('💡 모든 교수에게 보낼 질문을 입력해 전송해 주세요.');
-    setTimeout(() => setToastMsg(''), 2500);
-  };
-  // 답변 비교 — 기존 안전 동작(compare 후속질문) 재사용.
-  const handleProfCompare = () => {
-    setSelectedProfessorRole(null);
-    handleProfessorActionTarget({ professorKey: 'all', actionKey: 'compare', targetKey: 'all' });
+
+  const closeProfessorMenu = () => {
+    setProfessorMenuState({ open: false, step: 'action', professorKey: null, actionKey: null, anchor: null });
   };
 
   // 2단계 선택: 대상 클릭 → 교수님들과 대화 탭으로 전환 + 트리 갱신 + 후속질문 준비.
@@ -3562,8 +3493,25 @@ export default function StudyMate() {
     setTimeout(() => setToastMsg(''), 2500);
   };
 
-  // 탭이 바뀌면 열린 교수 액션 메뉴 선택을 해제한다(ESC/배경 클릭은 PixelProfessorStage가 처리).
-  useEffect(() => { if (!isProfessorTab) setSelectedProfessorRole(null); }, [isProfessorTab]);
+  // floating menu 닫기: ESC / 바깥 클릭 / 탭 변경 / unmount cleanup.
+  useEffect(() => {
+    if (!professorMenuState.open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') closeProfessorMenu(); };
+    const onDown = (e) => {
+      // 메뉴 내부 또는 hotspot 클릭은 무시(자체 핸들러가 처리).
+      if (e.target.closest?.('.professor-floating-menu') || e.target.closest?.('.professor-hotspot')) return;
+      closeProfessorMenu();
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [professorMenuState.open]);
+
+  // 탭이 바뀌면 열린 메뉴를 닫는다.
+  useEffect(() => { if (!isProfessorTab) closeProfessorMenu(); }, [isProfessorTab]);
 
   const handleScrollToNode = (id) => {
     const element = document.getElementById(`node-${id}`);
@@ -3978,20 +3926,96 @@ export default function StudyMate() {
               {/* ── 교수님들과 대화 뷰 (기존 트리 구조 재사용) ── */}
               {isProfessorTab && (
                 <div className="professor-discussion-view">
-                  {/* 픽셀 교수 stage: classroom 배경 + 교수 sprite 3명(actor) + 액션 메뉴 + 1분 요약.
-                      답변 데이터/SSE schema와 무관한 visual consumer(append 로직은 sendMessage에만 존재). */}
-                  <PixelProfessorStage
-                    visualStates={professorVisualStates}
-                    onAutoReset={handleProfessorAutoReset}
-                    selectedRole={selectedProfessorRole}
-                    onSelectRole={setSelectedProfessorRole}
-                    recap={professorRecap}
-                    onRecapDismiss={dismissProfessorRecap}
-                    onRefine={handleProfRefine}
-                    onAskProfessor={handleProfAskOne}
-                    onAskAll={handleProfAskAll}
-                    onCompare={handleProfCompare}
-                  />
+                  {/* 교실 배너(전체 표시) + 교수 hotspot + 교수별 말풍선 + 2단계 floating menu */}
+                  <section className="professor-classroom-banner">
+                    <img
+                      src="/studymate-professor-classroom.png"
+                      alt="교수님들과 함께 학습하는 픽셀 교실"
+                      className="professor-classroom-banner-image"
+                      draggable={false}
+                    />
+
+                    {/* 교수별 추천/유도 말풍선(actionMode 변경 시 pop 애니메이션).
+                        목표 E.2: 질문을 전송(스트리밍 중)했거나 이미 대화가 시작됐으면 추천/유도 말풍선을 숨긴다.
+                        새 방(대화 없음)에서만 안내 말풍선을 노출한다. */}
+                    {!typingRooms[getAgentId(selectedAgent)] && mindmapMessages.length === 0 &&
+                      (PROFESSOR_BUBBLES[professorActionMode] || PROFESSOR_BUBBLES.default).map((text, i) => (
+                      <div
+                        key={`${professorActionMode}-${i}`}
+                        className={`professor-bubble is-active professor-bubble-${['left', 'center', 'right'][i]}`}
+                      >
+                        {text}
+                      </div>
+                    ))}
+
+                    {/* 클릭 가능한 투명 hotspot 3개(통짜 PNG 위 overlay) */}
+                    <button
+                      type="button"
+                      className={`professor-hotspot professor-hotspot-left ${professorMenuState.anchor === 'agent1' ? 'is-speaking' : ''}`}
+                      aria-label="왼쪽 교수 선택"
+                      onClick={() => openProfessorActionMenu('agent1')}
+                    />
+                    <button
+                      type="button"
+                      className={`professor-hotspot professor-hotspot-center ${professorMenuState.anchor === 'agent2' ? 'is-speaking' : ''}`}
+                      aria-label="가운데 교수 선택"
+                      onClick={() => openProfessorActionMenu('agent2')}
+                    />
+                    <button
+                      type="button"
+                      className={`professor-hotspot professor-hotspot-right ${professorMenuState.anchor === 'agent3' ? 'is-speaking' : ''}`}
+                      aria-label="오른쪽 교수 선택"
+                      onClick={() => openProfessorActionMenu('agent3')}
+                    />
+
+                    {/* 2단계 floating menu: 1) 모드별 액션 → 2) 대상 선택 */}
+                    {professorMenuState.open && (
+                      <div className={`professor-floating-menu ${PROFESSOR_HOTSPOT_POS[professorMenuState.anchor] || 'center'}`}>
+                        <div className="professor-floating-menu-title">
+                          {professorMenuState.step === 'action' ? '교수님께 요청할 액션' : '누구에게 들을까요?'}
+                        </div>
+
+                        {professorMenuState.step === 'action' ? (
+                          <div className="professor-floating-menu-grid">
+                            {professorActions.map((act) => (
+                              <button
+                                key={act.key}
+                                type="button"
+                                className={`professor-floating-menu-btn ${act.tone}`}
+                                onClick={() => selectProfessorAction(act.key)}
+                              >
+                                <span aria-hidden="true">{act.icon}</span> {act.label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="professor-floating-menu-grid">
+                            {professorTargets.map((tgt) => (
+                              <button
+                                key={tgt.key}
+                                type="button"
+                                className="professor-floating-menu-btn"
+                                onClick={() => {
+                                  handleProfessorActionTarget({
+                                    professorKey: professorMenuState.professorKey,
+                                    actionKey: professorMenuState.actionKey,
+                                    targetKey: tgt.key,
+                                  });
+                                  closeProfessorMenu();
+                                }}
+                              >
+                                {tgt.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        <button type="button" className="professor-floating-menu-close" onClick={closeProfessorMenu}>
+                          닫기
+                        </button>
+                      </div>
+                    )}
+                  </section>
 
                   {/* 트리: 최상단 전체 의견 + 교수/에이전트별 의견 카드 */}
                   <section className="professor-tree-section">

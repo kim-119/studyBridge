@@ -1558,6 +1558,191 @@
   overflow: hidden;
 }
 
+/* 교실 배너 + 교수 hotspot + 말풍선.
+   통짜 PNG 전체가 잘리지 않고 보이도록 object-fit: contain 사용. 여백은 크림/회색. */
+.professor-classroom-banner {
+  position: relative;
+  flex-shrink: 0;
+  width: 100%;
+  min-height: 300px;
+  max-height: 420px;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
+  background: linear-gradient(180deg, #fffaf0 0%, #f8fafc 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.professor-classroom-banner-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: 420px;
+  object-fit: contain;            /* 전체 표시 우선(잘림 금지) */
+  object-position: center center;
+  image-rendering: pixelated;     /* 픽셀 교실 느낌 보존 */
+  user-select: none;
+}
+.professor-cloud-bubble {
+  position: absolute;
+  top: 14px;
+  left: 18px;
+  max-width: 70%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 16px;
+  border-radius: 18px;
+  background: #fffdf7;            /* 크림색 */
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
+}
+
+/* ── 교수 hotspot(투명 overlay 버튼 3개) ───────────────────────────────────── */
+.professor-hotspot {
+  position: absolute;
+  z-index: 6;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 18px;
+  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.professor-hotspot:hover {
+  background: rgba(34, 197, 94, 0.12);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25);
+  transform: translateY(-1px);
+}
+.professor-hotspot-left   { left: 13%; top: 32%; width: 24%; height: 58%; }
+.professor-hotspot-center { left: 39%; top: 27%; width: 24%; height: 63%; }
+.professor-hotspot-right  { left: 65%; top: 27%; width: 25%; height: 63%; }
+
+/* ── 교수별 말풍선(actionMode에 따라 문구 변경) ─────────────────────────────
+   둥근 타원형 speech bubble + 아래 방향 구름꼬리(pseudo-element).
+   box-sizing/max-width로 banner(overflow:hidden) 밖으로 튀지 않게 제한. */
+.professor-bubble {
+  position: absolute;
+  z-index: 7;
+  box-sizing: border-box;
+  /* stage 폭에 비례하되 상·하한을 둔다(좁은 화면에서 자동 축소). 좌우 clamp 계산에도 사용. */
+  --prof-bubble-w: clamp(150px, 30%, 250px);
+  width: var(--prof-bubble-w);
+  max-width: min(270px, calc(100% - 40px)); /* banner 밖으로 안 튀게 */
+  padding: 10px 15px;              /* 얼굴 가림 줄이려 조금 축소 */
+  border-radius: 999px;            /* 타원형 느낌 */
+  background: rgba(255, 255, 255, 0.97);
+  border: 2px solid #dbeafe;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.38;
+  color: #1e293b;
+  text-align: center;
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+/* 목표 G: 각 말풍선을 해당 교수(hotspot) 중앙 위로 정렬하고 translateX(-50%)로 중앙 배치한다.
+   anchor(left≈25% / center≈51% / right≈77%)는 hotspot 중앙과 일치 → 아래쪽 꼬리가 교수 머리를 향한다.
+   width는 stage 폭에 맞춰 clamp(좁은 화면에서 자동 축소)하고, 좌우 가장자리는 max/min으로 banner 안쪽에 clamp한다. */
+.professor-bubble-left   { left: max(calc(0px + var(--prof-bubble-w) / 2 + 8px), 25%); right: auto; top: 16%; transform: translateX(-50%); }
+.professor-bubble-center { left: 51%; right: auto; top: 9%;  transform: translateX(-50%); }
+.professor-bubble-right  { left: min(calc(100% - var(--prof-bubble-w) / 2 - 8px), 77%); right: auto; top: 16%; transform: translateX(-50%); }
+/* is-active는 transform(translateX) 유지를 위해 opacity만 페이드(중앙정렬이 애니메이션에 덮이지 않게) */
+.professor-bubble.is-active { animation: professorBubbleFade 0.22s ease-out; }
+@keyframes professorBubbleFade { from { opacity: 0; } to { opacity: 1; } }
+
+/* 말풍선 꼬리: 아래 방향 구름꼬리(큰 원 + 작은 원). banner 밖으로 안 튀게 짧게. */
+.professor-bubble::before,
+.professor-bubble::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.97);
+  border: 2px solid #dbeafe;
+  z-index: -1;
+}
+/* 목표 G: 말풍선을 교수 중앙 위로 정렬했으므로 꼬리도 중앙(아래)으로 두면 교수 머리를 향한다.
+   좌/우/가운데 모두 동일하게 중앙 하단 꼬리를 사용한다(고정 px 치우침 제거). */
+.professor-bubble::before { width: 14px; height: 14px; bottom: -6px;  left: 50%; transform: translateX(-50%); }
+.professor-bubble::after  { width: 8px;  height: 8px;  bottom: -14px; left: 50%; transform: translateX(-50%); }
+
+@keyframes professorBubblePop {
+  0%   { opacity: 0; transform: translateY(6px) scale(0.96); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes professorTalk {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-3px); }
+}
+.professor-character.is-speaking,
+.professor-hotspot.is-speaking { animation: professorTalk 0.7s ease-in-out 1; }
+
+/* ── 교수 hotspot 2단계 floating menu ──────────────────────────────────────── */
+.professor-floating-menu {
+  position: absolute;
+  z-index: 20;
+  box-sizing: border-box;
+  min-width: 220px;
+  max-width: min(300px, calc(100% - 40px));
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid #dbeafe;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(8px);
+  animation: professorBubblePop 0.18s ease-out;
+}
+/* 메뉴는 교수 얼굴 중앙을 덮지 않게 상단 빈 공간(칠판 쪽)에 띄운다 */
+.professor-floating-menu.left   { left: 8%;  right: auto; top: 8%; transform: none; }
+.professor-floating-menu.center { left: 50%; right: auto; top: 6%; transform: translateX(-50%); }
+.professor-floating-menu.right  { right: 8%; left: auto;  top: 8%; transform: none; }
+.professor-floating-menu-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #166534;
+  margin-bottom: 8px;
+}
+.professor-floating-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.professor-floating-menu-btn {
+  min-height: 34px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.professor-floating-menu-btn:hover {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #166534;
+}
+.professor-floating-menu-btn.rebuttal { background: #fff1f2; border-color: #fecdd3; color: #e11d48; }
+.professor-floating-menu-btn.compare  { background: #f5f3ff; border-color: #ddd6fe; color: #7c3aed; }
+.professor-floating-menu-btn.example  { background: #fffbeb; border-color: #fde68a; color: #d97706; }
+.professor-floating-menu-close {
+  margin-top: 8px;
+  width: 100%;
+  min-height: 30px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.professor-floating-menu-close:hover { background: #f1f5f9; color: #334155; }
 
 /* ── 트리 카드 대상 강조/흐림(AgentDiscussionThread 노드 래퍼) ────────────── */
 .professor-thread-node {
@@ -1568,6 +1753,18 @@
   box-shadow: 0 0 0 2px #22c55e, 0 10px 26px rgba(34, 197, 94, 0.16);
 }
 .professor-thread-node.is-dimmed { opacity: 0.55; }
+.professor-cloud-bubble::before,
+.professor-cloud-bubble::after {
+  content: '';
+  position: absolute;
+  background: inherit;
+  border: inherit;
+  border-radius: 50%;
+}
+.professor-cloud-bubble::before { width: 16px; height: 16px; left: 20px; bottom: -8px; border-top: none; border-left: none; }
+.professor-cloud-bubble::after  { width: 9px;  height: 9px;  left: 12px; bottom: -16px; border-top: none; border-left: none; }
+.professor-cloud-bubble strong { font-size: 12px; font-weight: 800; color: #166534; }
+.professor-cloud-bubble span   { font-size: 12.5px; line-height: 1.45; color: #334155; }
 
 /* 트리 섹션: 헤더(전체 의견) + 스크롤되는 트리 본문 */
 .professor-tree-section {
@@ -1673,6 +1870,86 @@
 @media (max-width: 900px) {
   .prof-learn-stage { padding-top: 50px; }
   .prof-cloud--main { font-size: 11.5px; padding: 10px 14px; }
+  .professor-cloud-bubble { max-width: 86%; }
+
+  /* 작은 화면: 배너는 전체 표시(contain) 유지하되 높이를 낮추고,
+     말풍선 3개는 이미지 아래 카드형으로 흐르게 한다. floating menu는 중앙 정렬. */
+  .professor-classroom-banner {
+    flex-wrap: wrap;
+    min-height: 0;
+    max-height: none;
+    padding-bottom: 8px;
+  }
+  .professor-classroom-banner-image { max-height: 220px; }
+  .professor-bubble,
+  .professor-bubble-center {
+    position: static;
+    max-width: calc(100% - 16px) !important;
+    flex: 1 1 100%;
+    margin: 6px 8px 0;
+    transform: none !important;
+  }
+  /* 정적 카드형 흐름에서는 구름꼬리 숨김(아래로 떠 보이는 것 방지) */
+  .professor-bubble::before,
+  .professor-bubble::after { display: none; }
+  .professor-floating-menu,
+  .professor-floating-menu.left,
+  .professor-floating-menu.center,
+  .professor-floating-menu.right {
+    left: 50%;
+    right: auto;
+    top: auto;
+    bottom: 10px;
+    transform: translateX(-50%);
+  }
 }
 
+/* Final safety clamp: professor classroom overlays must stay inside the stage */
+.professor-classroom-banner [class*="bubble"],
+.professor-classroom-banner .professor-floating-menu {
+  max-width: min(300px, calc(100% - 40px)) !important;
+  box-sizing: border-box !important;
+}
 
+/* =========================================================
+   StudyMate Professor Classroom Pixel Background
+   Source: /assets/pixel/backgrounds/classroom_pixel_background.png
+   Purpose: 교수님들과 대화 stage/classroom 영역 전용 배경
+   ========================================================= */
+
+.professor-learning-stage,
+.professor-classroom,
+.classroom-stage,
+.pixel-classroom-stage,
+.studymate-classroom-stage,
+.study-mate-classroom-stage,
+.study-mate-professor-stage,
+.professor-stage,
+[class*="professor"][class*="stage"],
+[class*="Professor"][class*="Stage"],
+[class*="classroom"][class*="stage"],
+[class*="Classroom"][class*="Stage"] {
+  position: relative;
+  overflow: hidden;
+  background-image: url("/assets/pixel/backgrounds/classroom_pixel_background.png?v=20260622-0234") !important;
+  background-repeat: no-repeat !important;
+  background-position: center bottom !important;
+  background-size: cover !important;
+}
+
+/* 배경이 교수 캐릭터/말풍선/메뉴 클릭을 막지 않도록 자식 요소를 위 레이어로 유지 */
+.professor-learning-stage > *,
+.professor-classroom > *,
+.classroom-stage > *,
+.pixel-classroom-stage > *,
+.studymate-classroom-stage > *,
+.study-mate-classroom-stage > *,
+.study-mate-professor-stage > *,
+.professor-stage > *,
+[class*="professor"][class*="stage"] > *,
+[class*="Professor"][class*="Stage"] > *,
+[class*="classroom"][class*="stage"] > *,
+[class*="Classroom"][class*="Stage"] > * {
+  position: relative;
+  z-index: 1;
+}

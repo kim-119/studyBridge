@@ -1,0 +1,325 @@
+/* =============================================================================
+   StudyMate 픽셀 교수 stage — classroom 배경 위 sprite actor 중심 UI.
+   · 고정 안내 말풍선 없음. 교수 sprite 3명이 주인공.
+   · sprite는 img 전체가 아니라 div background-position 으로 frame 한 칸만 crop.
+   · 레이어 분리: position(좌표/스케일) > motion(흔들림) > frame(crop).
+   ========================================================================== */
+
+.pixel-professor-stage {
+  position: relative;
+  flex-shrink: 0;
+  overflow: hidden;
+  min-height: 360px;
+  height: clamp(360px, 46vh, 520px);
+  border: 4px solid #2b2118;
+  border-radius: 12px;
+  background-color: #d9c28f;
+  background-image: url("/assets/pixel/backgrounds/classroom_pixel_background.png");
+  background-size: cover;
+  background-position: center bottom;
+  background-repeat: no-repeat;
+  box-shadow: 8px 8px 0 rgba(43, 33, 24, 0.25);
+  image-rendering: pixelated;
+}
+
+/* stage 상단 작은 안내 텍스트(고정 말풍선 대체). 클릭 통과. */
+.pixel-stage-guide {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  margin: 0;
+  max-width: calc(100% - 24px);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(43, 33, 24, 0.72);
+  color: #fff4cf;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* 교수 actor 레이어(좌표 계산용). 자식 actor만 클릭 가능. */
+.pixel-professor-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ── position-layer: 좌표 이동 + 스케일(버튼 리셋). ─────────────────────────── */
+.professor-position-layer {
+  position: absolute;
+  width: 160px;
+  height: 160px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  transform: translateX(-50%) scale(var(--prof-scale, 1));
+  transform-origin: bottom center;
+  transition: transform 220ms ease;
+  will-change: transform;
+  -webkit-tap-highlight-color: transparent;
+}
+.professor-position-layer:focus-visible {
+  outline: 3px solid #facc15;
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+.professor-position-layer.side-left { --prof-scale: 1.15; }
+.professor-position-layer.side-center { --prof-scale: 1.18; z-index: 1; }
+.professor-position-layer.side-right { --prof-scale: 1.15; }
+
+.professor-position-layer:hover { transform: translateX(-50%) scale(calc(var(--prof-scale, 1) * 1.04)); }
+.professor-position-layer.is-selected { z-index: 5; }
+
+/* 바닥 그림자(접지감). */
+.professor-position-layer::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  width: 92px;
+  height: 18px;
+  transform: translateX(-50%);
+  background: rgba(43, 33, 24, 0.28);
+  border-radius: 50%;
+  filter: blur(2px);
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* ── motion-layer: 걷기/말하기/생각 흔들림(transform 분리). ─────────────────── */
+.professor-motion-layer {
+  display: block;
+  width: 160px;
+  height: 160px;
+}
+
+/* ── frame: sprite sheet 한 칸 crop. ──────────────────────────────────────── */
+.pixel-professor-frame {
+  display: block;
+  width: 160px;
+  height: 160px;
+  background-repeat: no-repeat;
+  background-size: 1280px 640px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.professor-position-layer:hover .pixel-professor-frame,
+.professor-position-layer.is-selected .pixel-professor-frame {
+  filter: drop-shadow(0 0 5px rgba(250, 204, 21, 0.95));
+}
+
+/* ── hover/선택 라벨(말풍선 아님). 교수 머리 위에 표시. ───────────────────── */
+.pixel-professor-label {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% - 18px);
+  transform: translate(-50%, 6px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 10px;
+  min-width: 86px;
+  background: #fff4cf;
+  border: 3px solid #2b2118;
+  box-shadow: 3px 3px 0 #2b2118;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  white-space: nowrap;
+  z-index: 4;
+}
+.pixel-professor-label strong { font-size: 12px; font-weight: 900; color: #2b2118; line-height: 1.2; }
+.pixel-professor-label em { font-style: normal; font-size: 10.5px; font-weight: 700; color: #6b5836; line-height: 1.2; }
+.professor-position-layer:hover .pixel-professor-label,
+.professor-position-layer.is-selected .pixel-professor-label {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* ── 상태별 motion keyframes(steps로 픽셀 느낌). ──────────────────────────── */
+.professor-motion-layer.state-walking_to_question,
+.professor-motion-layer.state-returning {
+  animation: pixelWalkBody 360ms steps(2, end) infinite;
+}
+.professor-motion-layer.state-answering,
+.professor-motion-layer.state-peer_feedback {
+  animation: pixelTalkBody 420ms steps(2, end) infinite;
+}
+.professor-motion-layer.state-thinking,
+.professor-motion-layer.state-validating {
+  animation: pixelThinkBody 900ms steps(2, end) infinite;
+}
+
+@keyframes pixelWalkBody {
+  0% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+  100% { transform: translateY(0); }
+}
+@keyframes pixelTalkBody {
+  0% { transform: translateX(0); }
+  50% { transform: translateX(2px); }
+  100% { transform: translateX(0); }
+}
+@keyframes pixelThinkBody {
+  0% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+  100% { transform: translateY(0); }
+}
+
+/* ── 교수 클릭 액션 메뉴(교수 얼굴 위를 가리지 않게 stage 상단에 배치). ────── */
+.pixel-menu-portal { position: absolute; inset: 0; z-index: 20; pointer-events: none; }
+.professor-action-menu {
+  position: absolute;
+  top: 12px;
+  z-index: 20;
+  box-sizing: border-box;
+  width: min(240px, calc(100% - 24px));
+  padding: 10px;
+  background: #fffdf5;
+  border: 4px solid #2b2118;
+  box-shadow: 5px 5px 0 #2b2118;
+  pointer-events: auto;
+  animation: pixelMenuPop 0.16s steps(3, end);
+}
+@keyframes pixelMenuPop {
+  0% { opacity: 0; transform: translateY(-6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.action-menu-left { left: 22%; }
+.action-menu-center { left: 50%; transform: translateX(-50%); }
+.action-menu-center.professor-action-menu { animation-name: pixelMenuPopCenter; }
+@keyframes pixelMenuPopCenter {
+  0% { opacity: 0; transform: translate(-50%, -6px); }
+  100% { opacity: 1; transform: translate(-50%, 0); }
+}
+.action-menu-right { right: 22%; }
+
+.professor-action-menu-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 2px dashed #d6c08a;
+}
+.professor-action-menu-head strong { font-size: 13px; font-weight: 900; color: #2b2118; }
+.professor-action-menu-head span { font-size: 10.5px; font-weight: 700; color: #8a744a; }
+.professor-action-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.professor-action-menu-btn {
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 3px solid #2b2118;
+  background: #ffffff;
+  color: #2b2118;
+  font-size: 11.5px;
+  font-weight: 800;
+  line-height: 1.2;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 #2b2118;
+  transition: transform 0.1s ease, background 0.12s ease;
+}
+.professor-action-menu-btn:hover { background: #fde9a9; transform: translate(-1px, -1px); box-shadow: 3px 3px 0 #2b2118; }
+.professor-action-menu-btn:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 #2b2118; }
+.professor-action-menu-btn.act-askAll { background: #e6f4ea; }
+.professor-action-menu-btn.act-compare { background: #f1ecfb; }
+.professor-action-menu-close {
+  margin-top: 8px;
+  width: 100%;
+  min-height: 30px;
+  border: 3px solid #2b2118;
+  background: #f3ead0;
+  color: #6b5836;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.professor-action-menu-close:hover { background: #e7d7ab; }
+
+/* ── 1분 학습 흐름 요약 bubble(보조 UI). ─────────────────────────────────── */
+.minute-recap-bubble {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  max-width: min(360px, calc(100% - 32px));
+  background: #fff4cf;
+  border: 4px solid #2b2118;
+  box-shadow: 4px 4px 0 #2b2118;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  z-index: 6;
+  pointer-events: auto;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 320ms ease, transform 320ms ease;
+}
+.minute-recap-bubble.is-leaving { opacity: 0; transform: translateY(8px); }
+.minute-recap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.minute-recap-role { font-size: 11.5px; font-weight: 900; color: #6b5836; }
+.minute-recap-close {
+  border: 0;
+  background: transparent;
+  color: #6b5836;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.minute-recap-q { font-size: 12px; font-weight: 800; color: #2b2118; margin-bottom: 3px; word-break: break-word; }
+.minute-recap-a { font-size: 12.5px; color: #3f3320; word-break: break-word; }
+
+/* ── 반응형: 좁은 화면 sprite 축소 + 메뉴 하단 시트화. ───────────────────── */
+@media (max-width: 760px) {
+  .professor-position-layer { --prof-scale: 0.9 !important; }
+  .pixel-professor-stage { height: clamp(320px, 52vh, 460px); }
+}
+@media (max-width: 560px) {
+  .professor-position-layer { --prof-scale: 0.64 !important; }
+  .pixel-stage-guide { font-size: 11px; white-space: normal; text-align: center; }
+  .professor-action-menu,
+  .action-menu-left,
+  .action-menu-center,
+  .action-menu-right {
+    left: 10px !important;
+    right: 10px !important;
+    top: auto !important;
+    bottom: 10px !important;
+    width: auto !important;
+    transform: none !important;
+    animation-name: pixelMenuPop !important;
+  }
+  .minute-recap-bubble { right: 10px; bottom: 10px; max-width: calc(100% - 20px); font-size: 12px; }
+}
+
+/* ── 모션 최소화 사용자: 흔들림/전환 정지(프레임 순환은 JS에서 정지). ────── */
+@media (prefers-reduced-motion: reduce) {
+  .professor-position-layer,
+  .professor-motion-layer,
+  .minute-recap-bubble,
+  .professor-action-menu {
+    animation: none !important;
+    transition: none !important;
+  }
+}
