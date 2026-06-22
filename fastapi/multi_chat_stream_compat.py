@@ -225,6 +225,9 @@ async def multi_chat_stream_compat(request: Request):
             from app.services.multi_agent_service import build_stream_generator
 
             selected_agents, agent_by_id, agent_by_name = _stream_agent_maps(payload)
+            # @멘션으로 특정 1명을 지목(targetAgentId)했으면, 누락 에이전트 필러 합성을 하지 않는다
+            # (그 1명만 답하는 게 의도이므로 나머지를 채우면 안 됨).
+            target_id = str(payload.get("targetAgentId") or payload.get("target_agent_id") or "").strip()
             # selectedAgents 보존 + agent_answer 커버리지 추적(누락 보강 / all_complete 1회 보장).
             emitted_ids: set = set()
             emitted_names: set = set()
@@ -272,8 +275,9 @@ async def multi_chat_stream_compat(request: Request):
                         if all_complete_sent:
                             continue
                         # selectedAgents N명 중 agent_answer 누락분을 실제 SSE로 보강 emit한다.
+                        # 단, @멘션으로 1명을 지목한 경우(target_id)엔 누락 보강을 하지 않는다(그 1명만 답해야 함).
                         synth_answers = []
-                        for i, a in enumerate(selected_agents):
+                        for i, a in enumerate(selected_agents if not target_id else []):
                             if str(a.get("agentId") or "") in emitted_ids or str(a.get("agentName") or "") in emitted_names:
                                 continue
                             syn = _synth_agent_answer(a, i, mode)
