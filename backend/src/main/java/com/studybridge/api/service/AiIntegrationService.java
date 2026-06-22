@@ -606,7 +606,8 @@ public class AiIntegrationService {
                 Map<String, Object> requestBody = Map.of(
                                 "material_id", material.getMaterialId(),
                                 "document_title", material.getTitle(),
-                                "text", textToAnalyze);
+                                "text", textToAnalyze,
+                                "s3_file_url", material.getS3FileUrl() != null ? material.getS3FileUrl() : "");
                 Map response;
                 try {
                         response = fastApiWebClient.post().uri("/api/ai/summary")
@@ -801,6 +802,7 @@ public class AiIntegrationService {
                 requestBody.put("material_id", material.getMaterialId());
                 requestBody.put("material_title", material.getTitle());
                 requestBody.put("source_mode", "PDF_BASED");
+                requestBody.put("s3_file_url", material.getS3FileUrl() != null ? material.getS3FileUrl() : "");
                 requestBody.put("difficulty", quizDifficulty);           // 영문 (easy|normal|hard)
                 requestBody.put("difficulty_requested", quizDifficulty);
                 requestBody.put("difficulty_label", request.getDifficulty()); // 원본 한글

@@ -538,6 +538,7 @@ def summarize_document(
     text: str,
     personality: str = "간결_요약형",
     agent_name: str = "요약봇",
+    s3_file_url: Optional[str] = None,
 ) -> dict:
     """
     PDF 전체 텍스트를 요약한다.
@@ -568,20 +569,46 @@ def summarize_document(
     used_fallback = False
     warnings: List[str] = []
     raw = ""
-    try:
-        from app.services.llm_engine_router import call_primary_llm
-        raw = call_primary_llm(system_prompt=system, user_prompt=user, max_tokens=2200, temperature=0.35)
-        if not raw or raw.strip().startswith("["):
-            raise RuntimeError(f"primary LLM 응답 실패: {raw[:60] if raw else 'empty'}")
-    except Exception as e:
-        logger.warning("요약 Ollama/Qwen 실패: %s", e)
-        if AI_ENABLE_GPT_FALLBACK:
-            raw = _call_gpt(system, user, max_tokens=2200)
-            provider = "openai_gpt"
-            used_fallback = True
-        else:
-            raw = ""
-            warnings.append("Ollama/Qwen 요약 생성에 실패했습니다.")
+
+    images = []
+    if s3_file_url:
+        try:
+            from app.services.s3_pdf_loader import load_pdf_images_from_s3
+            images = load_pdf_images_from_s3(s3_file_url)
+        except Exception as e:
+            logger.warning("이미지 추출 실패, 텍스트 전용 모드로 진행: %s", e)
+
+    if images:
+        # 이미지가 추출되었을 경우 멀티모달(Vision) 파이프라인 가동 (gpt-4o)
+        user_content = [{"type": "text", "text": user}]
+        for img_b64 in images:
+            user_content.append({"type": "image_url", "image_url": {"url": img_b64}})
+        
+        try:
+            from app.services.openai_client import chat_sync
+            # 이미지와 텍스트를 함께 GPT-4o에 전송
+            raw = chat_sync(system=system, user=user_content, model="gpt-4o", max_tokens=2200, temperature=0.35)
+            provider = "openai_gpt_vision"
+        except Exception as e:
+            logger.warning("Vision 모델 요약 실패, 텍스트 전용 모드로 Fallback: %s", e)
+            images = []  # 실패 시 아래의 텍스트 전용 파이프라인으로 넘김
+
+    if not images:
+        # 기존 텍스트 전용 파이프라인 (Ollama 우선, GPT Fallback)
+        try:
+            from app.services.llm_engine_router import call_primary_llm
+            raw = call_primary_llm(system_prompt=system, user_prompt=user, max_tokens=2200, temperature=0.35)
+            if not raw or raw.strip().startswith("["):
+                raise RuntimeError(f"primary LLM 응답 실패: {raw[:60] if raw else 'empty'}")
+        except Exception as e:
+            logger.warning("요약 Ollama/Qwen 실패: %s", e)
+            if AI_ENABLE_GPT_FALLBACK:
+                raw = _call_gpt(system, user, max_tokens=2200)
+                provider = "openai_gpt"
+                used_fallback = True
+            else:
+                raw = ""
+                warnings.append("Ollama/Qwen 요약 생성에 실패했습니다.")
 
     if raw and raw.strip().startswith("["):  # GPT도 비활성/실패
         warnings.append("요약 생성에 실패했습니다.")

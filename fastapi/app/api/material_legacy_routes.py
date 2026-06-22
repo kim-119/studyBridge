@@ -47,6 +47,7 @@ class SummaryReq(BaseModel):
     text: Optional[str] = None
     document_title: Optional[str] = None
     material_id: Optional[int] = None
+    s3_file_url: Optional[str] = None
 
 
 class QuizReq(BaseModel):
@@ -64,6 +65,7 @@ class QuizReq(BaseModel):
     keywords: Optional[List[str]] = Field(default=None, validation_alias=AliasChoices("keywords", "keyword_list"))
     source_mode: Optional[str] = Field(None, validation_alias=AliasChoices("source_mode", "sourceMode"))
     generate_admin_quiz: Optional[bool] = Field(None, validation_alias=AliasChoices("generate_admin_quiz", "admin_quiz", "generateAdminQuiz"))
+    s3_file_url: Optional[str] = None
 
 
 class QuestionReq(BaseModel):
@@ -214,6 +216,7 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
             summarize_document,
             document_title=req.document_title or "자료",
             text=context,
+            s3_file_url=req.s3_file_url,
         ), timeout=_t(SUMMARY_TIMEOUT))
     except asyncio.TimeoutError:
         return _fail("AI_TIMEOUT", "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",

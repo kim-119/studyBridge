@@ -139,5 +139,32 @@ def is_aws_configured() -> bool:
     return bool(AWS_S3_BUCKET)
 
 
+def load_pdf_images_from_s3(s3_key: str, bucket: Optional[str] = None, max_pages: int = 15) -> list:
+    """
+    S3 PDF를 로드하고 PyMuPDF를 이용해 각 페이지를 base64 인코딩된 JPEG 이미지로 변환하여 반환한다.
+    비전 모델(GPT-4o)에 전달하기 위한 용도.
+    """
+    import base64
+    pdf_bytes = load_pdf_bytes_from_s3(s3_key, bucket)
+    images = []
+    try:
+        import fitz  # PyMuPDF
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            # 최대 페이지 제한 (API 비용 방지)
+            for i in range(min(len(doc), max_pages)):
+                page = doc[i]
+                # 고해상도(2배율)로 렌더링
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                img_data = pix.tobytes("jpeg")
+                b64 = base64.b64encode(img_data).decode("utf-8")
+                images.append(f"data:image/jpeg;base64,{b64}")
+        logger.info("S3 PDF 이미지 변환 완료: s3_key=%s, pages=%d", s3_key, len(images))
+    except ImportError:
+        logger.warning("PyMuPDF(fitz) 라이브러리가 설치되지 않아 이미지 변환이 불가능합니다.")
+    except Exception as e:
+        logger.error("PDF 이미지 변환 중 오류 발생: %s", e)
+    return images
+
+
 # 하위 호환 alias
 load_pdf_from_s3 = load_pdf_bytes_from_s3

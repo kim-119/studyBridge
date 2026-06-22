@@ -4,7 +4,7 @@ GPT 답변 생성, 검증, 임베딩 생성을 담당한다.
 OPENAI_API_KEY 미설정 시 disabled 상태로 동작 (서버 죽지 않음).
 """
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 from app.core.config import OPENAI_API_KEY, OPENAI_MODEL, OPENAI_EMBEDDING_MODEL, OPENAI_EMBEDDING_DIM
 
@@ -41,7 +41,7 @@ def get_async_client():
 
 def chat_sync(
     system: str,
-    user: str,
+    user: Union[str, list],
     model: Optional[str] = None,
     temperature: float = 0.2,
     max_tokens: int = 1200,
@@ -83,7 +83,7 @@ def chat_sync(
 
 async def chat_async(
     system: str,
-    user: str,
+    user: Union[str, list],
     model: Optional[str] = None,
     temperature: float = 0.2,
     max_tokens: int = 1200,
