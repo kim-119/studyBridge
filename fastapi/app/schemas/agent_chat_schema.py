@@ -2,12 +2,27 @@
 AI 에이전트 채팅 API 요청/응답 스키마.
 """
 from typing import Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class AgentChatRequest(BaseModel):
     """POST /api/ai/chat 요청 DTO"""
-    question: str = Field(..., min_length=1, description="사용자 질문")
+    model_config = ConfigDict(populate_by_name=True)
+
+    # 프론트/EC2가 question 대신 message/content 로 보낼 수 있어 alias 로 모두 수용한다.
+    question: str = Field(
+        "",
+        validation_alias=AliasChoices("question", "message", "content"),
+        description="사용자 질문 (message/content alias 허용)",
+    )
+    # 자료 맥락: context/materialContext/sourceText 로 들어오면 질문 앞에 근거로 주입한다.
+    context: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices(
+            "context", "materialContext", "material_context", "sourceText", "source_text"
+        ),
+        description="자료 맥락 (있으면 질문 앞 근거로 주입)",
+    )
     agent_id: Optional[int] = Field(None, description="에이전트 DB ID")
     agent_name: str = Field("자바도우미", description="에이전트 표시 이름")
     material_id: Optional[int] = Field(None, description="PDF 자료 ID (RAG 검색용)")

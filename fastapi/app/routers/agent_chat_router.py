@@ -15,6 +15,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path
+from fastapi.responses import JSONResponse
 
 from app.core.security import verify_internal_token
 from app.schemas.agent_chat_schema import (
@@ -109,21 +110,46 @@ async def agent_chat(
     request: AgentChatRequest,
     background_tasks: BackgroundTasks,
 ) -> AgentChatResponse:
-    if not request.question.strip():
-        raise HTTPException(status_code=400, detail="question은 비워둘 수 없습니다.")
+    question = (request.question or "").strip()
+    context = (request.context or "").strip()
 
-    # 동기 파이프라인 실행 (to_thread로 블로킹 방지)
-    result = await asyncio.to_thread(
-        run_agent_chat,
-        question=request.question.strip(),
-        knowledge_level=request.knowledge_level,
-        personality=request.personality,
-        agent_name=request.agent_name,
-        custom_instruction=request.custom_instruction,
-        material_id=request.material_id,
-        enable_tiki_taka=request.enable_tiki_taka,
-        enable_round2=request.enable_round2,
-    )
+    _EMPTY_FALLBACK = {
+        "success": False,
+        "answer": "현재 자료 기반 답변을 생성하지 못했습니다. 자료가 비어 있거나 AI 서버 응답이 지연되고 있습니다.",
+        "message": "현재 자료 기반 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        "sourceRefs": [],
+    }
+
+    # question/message 둘 다 비어도 422로 막지 않고 명확한 JSON을 반환한다.
+    if not question:
+        return JSONResponse(status_code=200, content={
+            **_EMPTY_FALLBACK,
+            "message": "질문(question 또는 message)이 비어 있습니다.",
+        })
+
+    # 자료 맥락(context/materialContext/sourceText)이 있으면 질문 앞에 근거로 주입한다.
+    effective_question = f"[참고 자료]\n{context}\n\n[질문]\n{question}" if context else question
+
+    # 동기 파이프라인 실행 (to_thread로 블로킹 방지). 예외는 raw 노출 대신 success=false JSON.
+    try:
+        result = await asyncio.to_thread(
+            run_agent_chat,
+            question=effective_question,
+            knowledge_level=request.knowledge_level,
+            personality=request.personality,
+            agent_name=request.agent_name,
+            custom_instruction=request.custom_instruction,
+            material_id=request.material_id,
+            enable_tiki_taka=request.enable_tiki_taka,
+            enable_round2=request.enable_round2,
+        )
+    except Exception as e:  # noqa: BLE001 — traceback/raw exception 사용자 비노출
+        logger.error("agent_chat 실행 실패: %s", e)
+        return JSONResponse(status_code=200, content=_EMPTY_FALLBACK)
+
+    # 빈 응답 방어: answer가 비면 success=false JSON (빈 답변 노출 금지).
+    if not (result.get("answer") or "").strip():
+        return JSONResponse(status_code=200, content=_EMPTY_FALLBACK)
 
     # GPT 검증 job 등록 (선택)
     job_id: str | None = None

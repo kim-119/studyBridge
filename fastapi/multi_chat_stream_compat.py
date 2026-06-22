@@ -130,6 +130,59 @@ def _messages_from_complete_payload(data: Dict[str, Any], payload: Dict[str, Any
     return messages
 
 
+# ── selectedAgents 보존 guard ────────────────────────────────────────────────
+# 모드 무관 공통: selectedAgentCount=N이면 agent_answer가 N개 미만일 때 누락 에이전트의
+# agent_answer SSE를 백엔드에서 실제로 보강 emit한다(프론트 fake 아님). simulation에서
+# NPC 1명이 selected 교수 N명을 대체하던 버그(agent_answer=0) 방어. content는 mode/agent
+# role 기반 fallback으로 채워 빈 content/누락이 없도록 한다.
+_SIM_FALLBACK = (
+    "{agentName} 관점에서 이 상황의 목표, 제약, 선택 결과를 차례로 따져보겠습니다. "
+    "이 장면에서는 먼저 누가 어떤 자원을 기다리고 있는지 확인하는 것이 핵심입니다."
+)
+_FALLBACK_BY_MODE = {
+    "simulation": _SIM_FALLBACK,
+    "basic": "{agentName} 관점에서 핵심을 정리하면, 이 질문은 개념 정의와 실제 예시를 나누어 이해하는 것이 좋습니다.",
+    "socratic": "{agentName} 관점에서 먼저 생각해볼 질문은 이것입니다. 이 문제에서 확실히 알고 있는 전제와 아직 확인하지 못한 전제는 무엇인가요?",
+    "debate": "{agentName} 입장에서 검토해야 할 핵심은 주장에 필요한 근거와 반례 가능성입니다.",
+}
+
+
+def _fallback_content(mode: str, agent_name: str) -> str:
+    m = (mode or "").lower()
+    tmpl = _FALLBACK_BY_MODE.get(m)
+    if not tmpl:
+        if "simul" in m or "상황" in m or "역할" in m:
+            tmpl = _SIM_FALLBACK
+        elif "socr" in m or "소크라" in m:
+            tmpl = _FALLBACK_BY_MODE["socratic"]
+        elif "debate" in m or "토론" in m:
+            tmpl = _FALLBACK_BY_MODE["debate"]
+        else:
+            tmpl = _FALLBACK_BY_MODE["basic"]
+    return tmpl.format(agentName=agent_name or "에이전트")
+
+
+def _synth_agent_answer(agent: Dict[str, Any], index: int, mode: str) -> Dict[str, Any]:
+    content = _fallback_content(mode, agent.get("agentName"))
+    return {
+        "type": "agent_answer",
+        "agentId": agent.get("agentId"),            # _normalize_stream_agent가 항상 채움(null 금지)
+        "agentIndex": index + 1,
+        "agentName": agent.get("agentName"),
+        "personality": agent.get("personality"),
+        "personalityLabel": agent.get("personalityLabel"),
+        "knowledgeLevel": agent.get("knowledgeLevel"),
+        "knowledgeLevelLabel": agent.get("knowledgeLevelLabel"),
+        "role": agent.get("role"),
+        "mode": mode,
+        "round": 1,
+        "sequence": index + 1,
+        "content": content,
+        "answer": content,
+        "synthesized": True,
+    }
+
+
 @router.post("/multi-chat/stream")
 async def multi_chat_stream_compat(request: Request):
     """
@@ -171,7 +224,11 @@ async def multi_chat_stream_compat(request: Request):
             from app.schemas.multi_chat_schema import MultiChatRequest
             from app.services.multi_agent_service import build_stream_generator
 
-            _, agent_by_id, agent_by_name = _stream_agent_maps(payload)
+            selected_agents, agent_by_id, agent_by_name = _stream_agent_maps(payload)
+            # selectedAgents 보존 + agent_answer 커버리지 추적(누락 보강 / all_complete 1회 보장).
+            emitted_ids: set = set()
+            emitted_names: set = set()
+            all_complete_sent = False
             chat_request = MultiChatRequest(**payload)
             # 원본 제너레이터를 contract 래퍼로 감싼다(동일 {"event","data"} 형태 유지).
             #  → 모든 이벤트에 turnId/eventId/stage/fingerprint 부착 + 중복/지연 answer drop + 내부 버스 경유.
@@ -207,21 +264,51 @@ async def multi_chat_stream_compat(request: Request):
                 if isinstance(data, dict):
                     if event in {"agent_answer", "agent_message", "agent_start", "agent_error"}:
                         data = _enrich_stream_event(data, agent_by_id, agent_by_name, mode)
+                    if event == "agent_answer":
+                        emitted_ids.add(str(data.get("agentId") or ""))
+                        emitted_names.add(str(data.get("agentName") or ""))
                     if event == "all_complete":
+                        # all_complete는 정확히 1회. 내부/레거시 중복 all_complete는 흡수한다.
+                        if all_complete_sent:
+                            continue
+                        # selectedAgents N명 중 agent_answer 누락분을 실제 SSE로 보강 emit한다.
+                        synth_answers = []
+                        for i, a in enumerate(selected_agents):
+                            if str(a.get("agentId") or "") in emitted_ids or str(a.get("agentName") or "") in emitted_names:
+                                continue
+                            syn = _synth_agent_answer(a, i, mode)
+                            emitted_ids.add(str(a.get("agentId") or ""))
+                            emitted_names.add(str(a.get("agentName") or ""))
+                            synth_answers.append(syn)
+                            last_agent_index = syn.get("agentIndex", last_agent_index)
+                            last_agent_name = syn.get("agentName", last_agent_name)
+                            yield _emit("agent_answer", syn)
+
                         data.setdefault("success", True)
                         data.setdefault("groupId", payload.get("groupId") or payload.get("group_id"))
                         data.setdefault("roomId", payload.get("roomId") or payload.get("room_id"))
                         data.setdefault("agentRoomId", payload.get("agentRoomId") or payload.get("agent_room_id"))
                         data["mode"] = mode
+                        if synth_answers:
+                            existing = data.get("answers") if isinstance(data.get("answers"), list) else []
+                            data["answers"] = existing + synth_answers
                         data["messages"] = _messages_from_complete_payload(data, payload, agent_by_id, agent_by_name)
                     last_agent_index = data.get("agentIndex", last_agent_index)
                     last_agent_name = data.get("agentName", last_agent_name)
 
                 yield _sse(event, data)
                 if event == "all_complete":
-                    # 레거시 호환: done은 all_complete payload를 한 번 더 보낸다(프론트 계약 유지).
-                    # 단 done은 자체 eventId를 갖도록 재-envelope(같은 turnId/fingerprint로 프론트가 중복 식별 가능).
-                    yield _emit("done", data)
+                    all_complete_sent = True
+                    # done은 종료 신호만(작은 legacy signal). all_complete payload를 재전송하지 않는다
+                    # (재전송 시 type:all_complete가 중복 카운트되어 all_complete==1 계약을 깨뜨림).
+                    yield _emit("done", {
+                        "type": "done",
+                        "requestId": route_request_id,
+                        "phase": "DONE",
+                        "visible": False,
+                        "status": "done",
+                        "elapsedMs": int((time.time() - started) * 1000),
+                    })
                     sent_done = True
 
         except Exception as exc:

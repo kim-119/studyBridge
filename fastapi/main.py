@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from openai import OpenAI
@@ -2319,13 +2319,40 @@ async def predict_study_time_endpoint(request: StudyTimePredictRequest):
     response_model=QuizGenerateResponse,
     tags=["Quiz Generation"],
 )
-async def generate_quiz_endpoint(request: QuizGenerateRequest):
+async def generate_quiz_endpoint(request: QuizGenerateRequest, http_request: Request):
     """
     S3 PDF 기반 또는 텍스트 본문 기반 퀴즈 생성.
+    source=="wrong_note"(오답노트 유사문제) / "group_study"(그룹스터디 퀴즈) 이거나
+    PDF/text seed 없이 원본 문제·정답·해설·자료 본문만 들어오면 Ollama 기반 유사문제
+    생성 경로로 처리한다(하드코딩 fallback 없음, 실패는 success=false JSON).
     text 필드가 채워져 있으면 S3를 거치지 않고 본문으로 직접 생성하며,
     이때는 단순 계약({success, materialId, quiz, error})으로 응답한다.
     text가 없으면 기존 S3 PDF 경로(strictGrounding)로 동작한다.
     """
+    # ── 오답노트 유사문제 / 그룹스터디 퀴즈 경로 (Ollama 기반) ──────────────────
+    # 프론트가 보내는 모든 필드를 보존하기 위해 raw body 를 직접 읽는다
+    # (inline QuizGenerateRequest 는 extra="ignore" 라 source/originalQuestion 등을 버린다).
+    try:
+        body = await http_request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:  # noqa: BLE001  — 본문 파싱 실패는 무시하고 기존 경로로
+        body = {}
+
+    source = str(body.get("source") or "").strip().lower()
+    is_wrong_note = source in ("wrong_note", "wrongnote", "review_note", "reviewnote", "mistake")
+    is_group_quiz = source in ("group_study", "groupstudy", "group")
+    no_pdf_seed = request.materialId is None and not (request.text or "").strip()
+    has_wrongnote_inputs = bool(
+        body.get("originalQuestion") or body.get("original_question")
+        or body.get("questionText") or body.get("sourceText")
+        or body.get("source_text") or body.get("explanation")
+    )
+    if is_wrong_note or (no_pdf_seed and has_wrongnote_inputs) or (is_group_quiz and no_pdf_seed):
+        from app.services.wrong_note_quiz_service import generate_wrong_note_quiz
+        result = await asyncio.to_thread(generate_wrong_note_quiz, body)
+        return JSONResponse(content=result, status_code=200)
+
     # 텍스트 본문 직접 전달 경로 (Spring이 추출 본문을 넘긴 경우)
     if request.text and request.text.strip():
         import uuid as _uuid
