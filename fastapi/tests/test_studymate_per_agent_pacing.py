@@ -102,3 +102,51 @@ def test_single_agent_prompt_contains_personality_and_question(monkeypatch):
     # 냉소봇 → 냉소적 coreDirective + 다른 메이트 안내
     assert "비꼬는" in sys
     assert "전문봇" in sys  # peers 안내에 다른 에이전트 이름
+
+
+def test_basic_mode_is_free_conversation():
+    d = orch._mode_role_directive("basic")
+    assert "자유 대화" in d and "가르치려 들지 마라" in d
+
+
+def test_core_directive_overrides_custom_instruction():
+    # 프리셋 customInstruction이 공손하게 시켜도 6종 coreDirective가 무조건 이긴다.
+    from app.services.personality_prompt_builder import build_personality_prompt, build_persona_directive
+    polite = "아주 공손하고 친절한 존댓말로만 설명하세요"
+    sp = build_personality_prompt("냉소적", custom_instruction=polite)
+    pd = build_persona_directive("냉소적", custom_instruction=polite)
+    assert "비꼬는" in sp and "공손" not in sp
+    assert "비꼬는" in pd and "반말로 답한다" in pd and "공손" not in pd
+
+
+def _req(msg):
+    return MultiChatRequest(message=msg, mode="basic", learningMode="basic", agents=_agents())
+
+
+def test_cross_feedback_single_agent_off():
+    one = [_agents()[0]]
+    assert orch._cross_feedback_enabled(MultiChatRequest(message="객체지향이 뭐고 왜 쓰는지 설명해줘", agents=one), one) is False
+
+
+def test_cross_feedback_env_off(monkeypatch):
+    monkeypatch.setenv("STUDYMATE_CROSS_FEEDBACK", "off")
+    assert orch._cross_feedback_enabled(_req("객체지향이 뭐고 왜 쓰는지 설명해줘"), _agents()) is False
+
+
+def test_cross_feedback_env_on_ignores_casual(monkeypatch):
+    monkeypatch.setenv("STUDYMATE_CROSS_FEEDBACK", "on")
+    assert orch._cross_feedback_enabled(_req("안녕"), _agents()) is True  # on이면 잡담이어도 켬
+
+
+def test_cross_feedback_auto_uses_router(monkeypatch):
+    # 키워드 하드코딩이 아니라 guardrail 라우터로 잡담/질문을 가린다.
+    monkeypatch.setenv("STUDYMATE_CROSS_FEEDBACK", "auto")
+    assert orch._cross_feedback_enabled(_req("gRPC랑 REST 차이가 뭐야?"), _agents()) is True
+    assert orch._cross_feedback_enabled(_req("안녕"), _agents()) is False  # 인사 → 끔
+
+
+def test_peer_answers_injected_in_user_prompt():
+    a = _agents()[1]
+    peers = [{"agentName": "전문봇", "answer": "객체지향은 캡슐화·상속·다형성이 핵심이다."}]
+    up = orch._build_single_agent_user_prompt(a, _req("객체지향이 뭐야?"), "", "", peers)
+    assert "먼저 답한 메이트들" in up and "전문봇" in up and "캡슐화" in up

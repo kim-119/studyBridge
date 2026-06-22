@@ -282,14 +282,20 @@ def build_personality_prompt(
 ) -> str:
     """
     성격 타입 문자열을 시스템 프롬프트에 삽입할 지시사항으로 반환한다.
-    custom_instruction이 있으면 최우선으로 사용한다.
-    우선순위: custom_instruction > YAML 프로필 > 내장 fallback(_PERSONALITY_PROMPTS).
+    우선순위: coreDirective(6종 사용자 지정 행동지시문, 무조건 최우선)
+            > custom_instruction > YAML 프로필 > 내장 fallback.
+    (coreDirective가 있으면 프리셋의 customInstruction이 있어도 성격을 덮지 못한다.)
     """
+    p_type = normalize_personality(personality)
+    profile = _load_profiles().get(_PROFILE_KEY.get(p_type, "friendly"), {})
+
+    # coreDirective는 무엇보다 우선한다(customInstruction보다도 위).
+    if profile.get("coreDirective"):
+        return _compose_prompt_from_profile(profile)
+
     if custom_instruction and custom_instruction.strip():
         return f"말투와 성격 (사용자 지정):\n{custom_instruction.strip()}"
 
-    p_type = normalize_personality(personality)
-    profile = _load_profiles().get(_PROFILE_KEY.get(p_type, "friendly"), {})
     if profile:
         return _compose_prompt_from_profile(profile)
     return _PERSONALITY_PROMPTS.get(p_type, _PERSONALITY_PROMPTS[PersonalityType.FRIENDLY])
@@ -305,6 +311,23 @@ def build_persona_directive(
     (system 프롬프트만으로는 모델이 정확성 지시에 눌려 성격을 버리므로, user 턴 끝에 다시 못박는다.)
     하드코딩 없이 전부 프로필(answerShape/mustUse/metaphorRules/forbidden)에서 가져온다.
     """
+    profile = get_profile(personality)
+    name = profile.get("displayName", "") or "지정된 성격"
+    core = profile.get("coreDirective")
+
+    # coreDirective(6종)는 customInstruction보다도 우선 — 무조건 이 성격으로 못박는다.
+    if core and str(core).strip():
+        out = [
+            f"[성격 지시 — 반드시 답변 문장에 드러나라] 너의 성격: {name}",
+            f"- ★ {str(core).strip()}",
+        ]
+        if str(profile.get("speechRegister", "")).strip() == "반말":
+            out.append("- ★ 반드시 반말로 답한다. '~입니다/~합니다/~하세요/~예요' 같은 존댓말은 절대 금지. 인신공격·욕설은 금지.")
+        out.append("- 다른 에이전트와 똑같은 말투·구조로 쓰지 마라. GPT식 무색무취 답변은 실패다.")
+        if repair_instruction:
+            out.append(f"- 보정 지시: {repair_instruction}")
+        return "\n".join(out)
+
     if custom_instruction and custom_instruction.strip():
         base = (
             "[성격 지시 — 반드시 답변에 반영] 사용자 지정 말투/지시를 최우선으로 따르되 "
@@ -312,13 +335,7 @@ def build_persona_directive(
         )
         return base + (f"\n- 보정 지시: {repair_instruction}" if repair_instruction else "")
 
-    profile = get_profile(personality)
-    name = profile.get("displayName", "") or "지정된 성격"
     lines = [f"[성격 지시 — 반드시 답변 문장에 드러나라] 너의 성격: {name}"]
-    # coreDirective(사용자 지정 행동 지시문)를 user 턴 끝에서도 다시 못박는다.
-    core = profile.get("coreDirective")
-    if core and str(core).strip():
-        lines.append(f"- ★ 핵심: {str(core).strip()}")
     # 반말 레지스터(냉소적/비판형 등): 존댓말 금지를 강하게 못박는다.
     if str(profile.get("speechRegister", "")).strip() == "반말":
         lines.append(

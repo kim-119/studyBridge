@@ -399,7 +399,12 @@ def _mode_role_directive(mode: str) -> str:
         return "[모드: 소크라테스] 정답을 직접 주지 말고, 사용자가 스스로 깨닫도록 날카로운 꼬리질문과 반례 위주로 답하라. 답변 대부분을 질문으로 구성하되 길잡이 힌트는 약간만 준다."
     if m in ("simulation", "상황극", "상황극 모드", "situation", "roleplay"):
         return "[모드: 상황극] 주제와 관련된 가상 시나리오 속 인물이 되어 생생한 대사와 상황 묘사로 답하라. 마지막에 사용자에게 선택지나 행동을 묻는 질문을 던져라."
-    return "[모드: 기본 설명] 질문에 대해 정확하고 풍부하게, 구체적 예시와 동작 원리를 들어 깊이 있게 직접 설명하라."
+    return (
+        "[모드: 자유 대화] 친구처럼 자연스럽게 대화하라. 매번 가르치려 들지 마라.\n"
+        "- 인사·잡담·감상·일상 이야기면 그 결에 맞춰 가볍고 편하게 받아준다(굳이 공부로 끌고 가지 않는다).\n"
+        "- 개념 질문이나 설명이 필요한 내용이면 그때 적절한 깊이로 도와준다.\n"
+        "- 답변 길이는 메시지에 맞춘다. 가벼운 말엔 짧게, 깊은 질문엔 충분히."
+    )
 
 
 def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents: List[AgentProfile]) -> str:
@@ -412,22 +417,24 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
     others = [a.name for a in all_agents if a is not agent and a.name]
     peers = f"\n[함께 있는 다른 메이트] {', '.join(others)} — 이들과 똑같은 말투/구조로 쓰지 말고 너만의 성격을 드러내라." if others else ""
 
-    return f"""[역할] 너는 멀티 에이전트 스터디룸의 '{name}'(이)다.
+    return f"""[역할] 너는 '{name}'(이)다. 사용자와 대화하는 상대이자, 필요할 때 도와주는 메이트다.
 {persona_block}
 
-[학습자 수준] 상대는 '{level}' 수준이다. 그에 맞춰 설명 난이도와 용어를 조절하라.
+[상대 수준] 상대는 '{level}' 수준이다. 말의 난이도와 용어를 거기에 맞춰라.
 
 {_mode_role_directive(mode)}{peers}
 
-[절대 규칙]
-- 위 성격(톤)이 답변 문장 전체에 분명히 드러나야 한다. GPT처럼 무색무취하게 쓰지 마라.
-- 질문에 직접 답하라. "교과서를 참고하세요" 같은 회피성 답변 금지.
+[대화 규칙]
+- 이전 대화 맥락이 주어지면 그 흐름을 자연스럽게 이어가라(앞 이야기를 기억하는 것처럼).
+- 위 성격(톤)이 답변 문장에 분명히 드러나야 한다. GPT처럼 무색무취하게 쓰지 마라.
+- 사용자 메시지에 자연스럽게 응답하라. 가벼운 말이면 가볍게, 도움이 필요하면 그때 도와준다.
 - 모든 답변은 한국어로 작성한다.
 - JSON·머리말·꼬리말 없이, 너의 답변 본문만 작성하라."""
 
 
 def _build_single_agent_user_prompt(
     agent: AgentProfile, request: MultiChatRequest, wiki_context: str, context: str,
+    peer_answers: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     from app.services.personality_prompt_builder import build_persona_directive
 
@@ -436,21 +443,53 @@ def _build_single_agent_user_prompt(
         parts.append(context)
     if wiki_context:
         parts.append(wiki_context)
-    parts.append(f"[사용자 질문] {request.message}")
+    parts.append(f"[사용자의 최근 메시지] {request.message}")
+    parts.append("위 대화 흐름을 이어서, 이 메시지에 자연스럽게 응답하라.")
+    if peer_answers:
+        peer_lines = [f"- {p.get('agentName','메이트')}: {str(p.get('answer',''))[:300]}" for p in peer_answers]
+        parts.append(
+            "[먼저 답한 메이트들의 의견]\n" + "\n".join(peer_lines) +
+            "\n→ 위 의견에서 동의할 점·보완할 점·놓친 부분을 너의 성격대로 짧게 짚은 뒤, 네 답을 이어가라."
+        )
     parts.append(build_persona_directive(_agent_personality_label(agent), _agent_custom_instruction(agent)))
     return "\n\n".join(parts)
 
 
+def _cross_feedback_enabled(request: MultiChatRequest, agents: List[AgentProfile]) -> bool:
+    """동료 피드백(앞 메이트 의견 참조)을 '어쩔 때만' 켠다.
+    env STUDYMATE_CROSS_FEEDBACK: auto(기본)/on/off.
+      - off: 항상 끔 / on: 2명↑이면 항상
+      - auto: 2명↑ & 잡담/인사가 아닐 때만. 잡담 판단은 별도 키워드 하드코딩 없이
+              기존 guardrail 라우터(분류 SSOT)를 그대로 재사용한다.
+    """
+    if len(agents) < 2:
+        return False
+    mode = (os.getenv("STUDYMATE_CROSS_FEEDBACK", "auto") or "auto").strip().lower()
+    if mode == "off":
+        return False
+    if mode == "on":
+        return True
+    # auto: 인사/잡담/자기소개/불명확이면 끄고, 그 외(실제 대화/질문)면 켠다.
+    try:
+        from app.services import guardrail_router as _g
+        route = _g.classify_route(
+            request.message, mode=request.mode, learning_mode=getattr(request, "learningMode", None)
+        ).route
+        return route not in (_g.GREETING, _g.SMALL_TALK, _g.SELF_INTRO, _g.UNCLEAR)
+    except Exception:
+        return True
+
+
 def _generate_single_agent_answer(
     agent: AgentProfile, request: MultiChatRequest, mode: str, wiki_context: str, context: str,
-    all_agents: List[AgentProfile],
+    all_agents: List[AgentProfile], peer_answers: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """에이전트 한 명에게 Ollama를 1회 호출해 답변 본문을 반환한다(빈응답 가드 포함)."""
     from app.services.ollama_client import ask_ollama
     from app.services.personality_prompt_builder import get_generation_params
 
     system_prompt = _build_single_agent_system_prompt(agent, mode, all_agents)
-    user_prompt = _build_single_agent_user_prompt(agent, request, wiki_context, context)
+    user_prompt = _build_single_agent_user_prompt(agent, request, wiki_context, context, peer_answers)
 
     gen = get_generation_params(_agent_personality_label(agent))
     temperature = request.temperature if request.temperature is not None else gen.get("temperature", 0.55)
@@ -482,11 +521,14 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
     wiki_context = _fetch_wikipedia_context(request.message)
     gap_ms = int(_min_gap_seconds() * 1000)
 
-    logger.info("[Orchestrator] (sync) mode=%s agents=%d", effective_mode, len(agents))
+    feedback_on = _cross_feedback_enabled(request, agents)
+    logger.info("[Orchestrator] (sync) mode=%s agents=%d cross_feedback=%s", effective_mode, len(agents), feedback_on)
 
     answers: List[AgentAnswer] = []
+    prior: List[Dict[str, Any]] = []
     for idx, agent in enumerate(agents):
-        ans_text = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents)
+        peer = prior if (feedback_on and prior) else None
+        ans_text = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents, peer)
         answers.append(AgentAnswer(
             agentId=agent.agentId or f"agent-{agent.id}",
             agentName=agent.name or "AI",
@@ -496,6 +538,7 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
             displayDelayMs=idx * gap_ms,
             status="SUCCESS",
         ))
+        prior.append({"agentName": agent.name or "AI", "answer": ans_text})
 
     return MultiChatResponse(
         mode=effective_mode,
@@ -523,6 +566,7 @@ def build_orchestrator_stream(
     context = _build_conversation_context(request.previousAnswers)
     wiki_context = _fetch_wikipedia_context(request.message)
     min_gap = _min_gap_seconds()
+    feedback_on = _cross_feedback_enabled(request, agents)
 
     yield {
         "event": "turn_start",
@@ -558,7 +602,8 @@ def build_orchestrator_stream(
         }
 
         try:
-            answer = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents)
+            peer = all_answers if (feedback_on and all_answers) else None
+            answer = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents, peer)
         except Exception as e:
             logger.error("[Orchestrator] 에이전트 생성 실패 %s: %s", agent_name, e)
             answer = "(이 에이전트의 응답 생성 중 오류가 발생했어요.)"

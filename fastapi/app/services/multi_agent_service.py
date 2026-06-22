@@ -2094,7 +2094,9 @@ def _build_stream_generator_impl(request: MultiChatRequest):
     )
     logger.info("[Guardrail] stream route=%s visibleMode=%s reason=%s matched=%s",
                 route_result.route, route_result.visibleMode, route_result.reason, route_result.matched)
-    if route_result.is_hard_stop:
+    # 욕설/공격성만 하드스톱(차단)한다. 인사·잡담·자기소개·불명확 입력은 캔드 응답으로 막지 않고
+    # 에이전트가 평소처럼 자연스럽게 대화로 받아준다(학습 강요 X).
+    if route_result.route == _guard.ABUSE:
         return run_direct_reply_stream(request, route_result)
 
     agents = _get_agents(request)
