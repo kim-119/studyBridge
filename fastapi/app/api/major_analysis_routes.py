@@ -559,7 +559,7 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
                     image.save(buffer, format="JPEG")
                     b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
                     resp = client.chat.completions.create(
-                        model="gpt-4o-mini",
+                        model="gpt-4o",
                         messages=[
                             {
                                 "role": "user",
@@ -615,7 +615,7 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
     wiki = _fetch_wiki(candidates, max_wiki)
 
     prompt = _build_prompt(req, domain, wiki, candidates, pages)
-    raw = qwen_draft(_SYSTEM, prompt, max_tokens=2200)
+    raw = openai_refine(_SYSTEM, prompt, max_tokens=2200)
     parsed = parse_json(raw)
     if not parsed:
         raw = openai_refine(_SYSTEM, prompt, max_tokens=2200)

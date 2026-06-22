@@ -360,10 +360,50 @@ function StudyNoteView({ note, material, onKeyword }) {
   const ulStyle = { margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' };
   const liStyle = { fontSize: '14px', lineHeight: '1.6', color: 'var(--color-text-muted)' };
 
-  // 세부 핵심 내용: 병합된 detailedPages 를 페이지 단위 카드 1개씩 ‹ › 네비로 표시(totalPages 기준).
+  // 세부 핵심 내용: 병합된 detailedPages 를 수직 리스트 뷰(섹션별)로 모두 보여줌
   const renderDetailed = () => {
     if (detailedPages.length > 0) {
-      return <DetailedPager pages={detailedPages} />;
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {detailedPages.map((p, i) => (
+            <div key={i} className="glass-panel" style={{ padding: '20px', borderLeft: '4px solid #3B82F6', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <span style={{ backgroundColor: '#DBEAFE', color: '#1E40AF', padding: '4px 10px', borderRadius: '8px', fontSize: '13px', fontWeight: '800' }}>
+                  {p.pageNumber ? `p.${p.pageNumber}` : `p.${i + 1}`}
+                </span>
+                <span style={{ fontWeight: '700', fontSize: '15px', color: 'var(--color-text-main)' }}>
+                  {p.title || '페이지 핵심 요약'}
+                </span>
+                {p.detectedTextSource && (
+                  <span style={{ fontSize: '11px', backgroundColor: '#F3F4F6', color: '#6B7280', padding: '2px 6px', borderRadius: '4px', marginLeft: 'auto' }}>
+                    {DETECTED_SOURCE_LABEL[p.detectedTextSource] || p.detectedTextSource}
+                  </span>
+                )}
+              </div>
+              
+              {p.pageOverview && (
+                <div style={{ fontSize: '14px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>
+                  {p.pageOverview}
+                </div>
+              )}
+              
+              {((p.summaryBullets && p.summaryBullets.length > 0) || (p.bulletPoints && p.bulletPoints.length > 0)) && (
+                <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {(p.summaryBullets?.length ? p.summaryBullets : p.bulletPoints).map((b, idx) => (
+                    <li key={idx} style={{ color: 'var(--color-text-main)', fontSize: '14px', lineHeight: '1.6' }}>{b}</li>
+                  ))}
+                </ul>
+              )}
+              
+              {p.studyFocus && (
+                <div style={{ backgroundColor: '#F0FDF4', color: '#166534', padding: '10px 14px', borderRadius: '8px', fontSize: '13px', fontWeight: '600', display: 'flex', alignItems: 'flex-start', gap: '8px', marginTop: '4px' }}>
+                  <span style={{ fontSize: '14px' }}>🎯</span> <span style={{ flex: 1, lineHeight: '1.5' }}>{p.studyFocus}</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      );
     }
     return (
       <div style={{ borderRadius: '10px', border: '1px dashed var(--color-border)', background: '#F9FAFB', padding: '16px 18px' }}>
