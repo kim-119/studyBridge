@@ -104,6 +104,21 @@ def test_single_agent_prompt_contains_personality_and_question(monkeypatch):
     assert "전문봇" in sys  # peers 안내에 다른 에이전트 이름
 
 
+def test_position_roles_differ():
+    # 위치별 역할 분담: 1번=설명, 중간=심화, 마지막=검증 (같은 비판 반복 방지)
+    assert "첫 설명자" in orch._position_role(0, 3)
+    assert "심화" in orch._position_role(1, 3)
+    assert "검증" in orch._position_role(2, 3)
+    assert orch._position_role(0, 1) == ""  # 단독이면 역할 분담 없음
+
+
+def test_first_agent_does_not_critique():
+    # 첫 설명자는 (깔 앞 답변이 없으므로) 비판/반박하지 않고 설명만 한다.
+    agents = _agents()
+    sp = orch._build_single_agent_system_prompt(agents[0], "basic", agents, position=0, total=3)
+    assert "비판·반박하지 말고" in sp
+
+
 def test_social_input_gets_light_prompt():
     # 인사/잡담이면 공격적 비판 대신 가볍게 받는 프롬프트가 나와야 한다.
     agents = _agents()

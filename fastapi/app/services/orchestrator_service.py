@@ -408,8 +408,30 @@ def _mode_role_directive(mode: str) -> str:
     )
 
 
-def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents: List[AgentProfile], social: bool = False) -> str:
-    """에이전트 한 명에게 집중한 system 프롬프트(성격 행동지시문 + 지식수준 + 모드).
+def _position_role(position: int, total: int) -> str:
+    """턴 내 위치별 역할(분담). 같은 비판을 N번 반복/복붙하는 걸 막고 흐름을 유동적으로 만든다."""
+    if total <= 1:
+        return ""
+    if position == 0:
+        return (
+            "[이번 턴 너의 역할: 첫 설명자]\n"
+            "- 네가 가장 먼저 답한다. 질문에 대해 네 성격 톤으로 '개념을 직접 설명/답변'하라.\n"
+            "- 아직 평가할 앞 답변이 없다. 비판·반박하지 말고, '방향은 맞는데' 같은 평가성 표현도 쓰지 마라."
+        )
+    if position == total - 1:
+        return (
+            "[이번 턴 너의 역할: 검증·정리자]\n"
+            "- 앞 메이트들의 답을 근거로 검증하고, 빠진 점·오류·한계를 짚어 보완하라.\n"
+            "- 이미 나온 설명을 통째로 반복하지 말고, 새로 더할 지적/정리만 간결히 하라."
+        )
+    return (
+        "[이번 턴 너의 역할: 심화·확장자]\n"
+        "- 앞 답에 없는 새로운 관점·예시·심화 내용을 더하라. 같은 설명을 반복하지 마라."
+    )
+
+
+def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents: List[AgentProfile], social: bool = False, position: int = 0, total: int = 1) -> str:
+    """에이전트 한 명에게 집중한 system 프롬프트(성격 행동지시문 + 지식수준 + 모드 + 위치 역할).
 
     social=True(인사/잡담/짧은 사회적 입력)이면 공격적 비판 대신 가볍게 인사로 받는다.
     """
@@ -420,6 +442,7 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
     level = agent.knowledgeLevel or getattr(agent, "knowledgeLevelLabel", None) or "학사 수준"
     others = [a.name for a in all_agents if a is not agent and a.name]
     peers = f"\n[함께 있는 다른 메이트] {', '.join(others)} — 이들과 똑같은 말투/구조로 쓰지 말고 너만의 성격을 드러내라." if others else ""
+    role_block = _position_role(position, total)
 
     # 인사/잡담이면: 성격 톤은 살짝 유지하되 공격하지 말고 짧고 가볍게 받는다(없는 내용 비판 금지).
     if social:
@@ -432,10 +455,12 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
 
 [규칙] 한국어로, 머리말/꼬리말/JSON 없이 본문만. 같은 문장 반복 금지."""
 
+    role_section = f"\n{role_block}\n" if role_block else "\n"
+
     return f"""[역할] 너는 '{name}'(이)다. 사용자와 대화하는 상대이자, 필요할 때 도와주는 메이트다.
 {persona_block}
-
-[상대 수준] 상대는 '{level}' 수준이다. 이 수준에 완벽히 걸맞은 전문 용어, 개념의 깊이, 실무적 관점을 총동원하여 얕은 지식이 아닌 매우 깊이 있고 통찰력 있는 고품질의 답변을 제공하라. 수준이 높을수록 절대 뻔한 소리를 하지 마라.
+{role_section}
+[상대 수준] 상대는 '{level}' 수준이다. 이 수준에 걸맞은 깊이로 답하되, 네 역할 범위 안에서만 답하라(첫 설명자=설명, 검증자=검증). 뻔한 말은 하지 마라.
 
 {_mode_role_directive(mode)}{peers}
 
@@ -467,11 +492,11 @@ def _build_single_agent_user_prompt(
         peer_lines = [f"- {p.get('agentName','메이트')}: {str(p.get('answer',''))[:300]}" for p in peer_answers]
         peer_names = ", ".join(f"'{p.get('agentName','메이트')}'" for p in peer_answers)
         parts.append(
-            "[바로 앞에서 답한 메이트들 — 지목할 땐 아래 이름만 사용]\n" + "\n".join(peer_lines) +
-            f"\n→ 첫 문장에서 위 목록({peer_names}) 중 한 명을 '정확한 이름'으로 지목해 동의/반박/보완하라. "
-            "이때도 반드시 네 성격을 아주 강하게 드러내라(예: 냉소적이면 앞 에이전트를 한심하다는 듯이 비꼬며 지적, 솔직하면 팩트폭력으로 지적). "
-            "목록에 없는 이름을 지어내지 마라(아직 답하지 않은 에이전트를 언급 금지). "
-            "앞 답변 문장을 절대 베끼지 말고, 겹치는 내용은 건너뛰고 너만의 관점·지적만 더하라."
+            "[앞에서 답한 메이트들 — 지목 시 아래 이름만 사용]\n" + "\n".join(peer_lines) +
+            f"\n→ 위 답변({peer_names})을 한 번만 짧게 짚고 네 역할대로 이어가라(심화자=새 관점 추가, 검증자=오류·한계 지적). "
+            "성격 톤은 살리되 조롱·비아냥·한숨은 금지, 지적은 근거로 한다. "
+            "★ 앞 답변 문장을 베끼거나 다시 풀어쓰지 마라 — 이미 나온 내용은 건너뛰고 '네가 새로 더할 것'만 말하라. "
+            "목록에 없는 이름은 지어내지 마라."
         )
     parts.append(build_persona_directive(_agent_personality_label(agent), _agent_custom_instruction(agent)))
     return "\n\n".join(parts)
@@ -513,13 +538,13 @@ def _cross_feedback_enabled(request: MultiChatRequest, agents: List[AgentProfile
 def _generate_single_agent_answer(
     agent: AgentProfile, request: MultiChatRequest, mode: str, wiki_context: str, context: str,
     all_agents: List[AgentProfile], peer_answers: Optional[List[Dict[str, Any]]] = None,
-    social: bool = False,
+    social: bool = False, position: int = 0, total: int = 1,
 ) -> str:
     """에이전트 한 명에게 Ollama를 1회 호출해 답변 본문을 반환한다(빈응답 가드 포함)."""
     from app.services.ollama_client import ask_ollama
     from app.services.personality_prompt_builder import get_generation_params
 
-    system_prompt = _build_single_agent_system_prompt(agent, mode, all_agents, social=social)
+    system_prompt = _build_single_agent_system_prompt(agent, mode, all_agents, social=social, position=position, total=total)
     user_prompt = _build_single_agent_user_prompt(agent, request, wiki_context, context, peer_answers)
 
     gen = get_generation_params(_agent_personality_label(agent))
@@ -560,7 +585,7 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
     prior: List[Dict[str, Any]] = []
     for idx, agent in enumerate(agents):
         peer = prior if (feedback_on and prior) else None
-        ans_text = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents, peer, social=social)
+        ans_text = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents, peer, social=social, position=idx, total=len(agents))
         answers.append(AgentAnswer(
             agentId=agent.agentId or f"agent-{agent.id}",
             agentName=agent.name or "AI",
@@ -636,7 +661,7 @@ def build_orchestrator_stream(
 
         try:
             peer = all_answers if (feedback_on and all_answers) else None
-            answer = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents, peer, social=social)
+            answer = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents, peer, social=social, position=idx, total=n)
         except Exception as e:
             logger.error("[Orchestrator] 에이전트 생성 실패 %s: %s", agent_name, e)
             answer = "(이 에이전트의 응답 생성 중 오류가 발생했어요.)"
