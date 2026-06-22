@@ -16,9 +16,14 @@ public class RedisChatService {
 
     private final RedisTemplate<String, Object> redisTemplate;
     private static final String KEY_PREFIX = "studybridge:group:%d:chats";
+    private static final String PERSONAL_KEY_PREFIX = "studybridge:personal:%d:chats";
 
     private String getRedisKey(Long groupId) {
         return String.format(KEY_PREFIX, groupId);
+    }
+
+    private String getPersonalRedisKey(Long roomId) {
+        return String.format(PERSONAL_KEY_PREFIX, roomId);
     }
 
     /**
@@ -57,6 +62,54 @@ public class RedisChatService {
         } catch (Exception e) {
             log.error("Failed to retrieve chat history from Redis for groupId={}", groupId, e);
             return Collections.emptyList();
+        }
+    }
+
+    /**
+     * 개인 스터디 대화 내역에 새 메시지를 캐싱합니다. (최근 100개 제한)
+     */
+    public void savePersonalMessage(Long roomId, RedisChatMessage message) {
+        String key = getPersonalRedisKey(roomId);
+        try {
+            redisTemplate.opsForList().rightPush(key, message);
+            Long size = redisTemplate.opsForList().size(key);
+            if (size != null && size > 100) {
+                redisTemplate.opsForList().leftPop(key);
+            }
+            log.debug("Message cached to Redis for personal roomId={}, size={}", roomId, size);
+        } catch (Exception e) {
+            log.error("Failed to cache message in Redis for personal roomId={}", roomId, e);
+        }
+    }
+
+    /**
+     * 개인 스터디 최근 100개의 대화 이력을 조회합니다.
+     */
+    @SuppressWarnings("unchecked")
+    public List<RedisChatMessage> getRecentPersonalHistory(Long roomId) {
+        String key = getPersonalRedisKey(roomId);
+        try {
+            List<Object> range = redisTemplate.opsForList().range(key, 0, -1);
+            if (range == null || range.isEmpty()) {
+                return Collections.emptyList();
+            }
+            return (List<RedisChatMessage>) (List<?>) range;
+        } catch (Exception e) {
+            log.error("Failed to retrieve chat history from Redis for personal roomId={}", roomId, e);
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * 특정 개인 스터디룸의 Redis 대화 캐시를 초기화합니다.
+     */
+    public void clearPersonalHistory(Long roomId) {
+        String key = getPersonalRedisKey(roomId);
+        try {
+            redisTemplate.delete(key);
+            log.info("Redis chat cache cleared for personal roomId={}", roomId);
+        } catch (Exception e) {
+            log.error("Failed to clear Redis chat cache for personal roomId={}", roomId, e);
         }
     }
 

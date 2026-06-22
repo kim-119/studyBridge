@@ -45,6 +45,7 @@ public class ChatService {
         private final ObjectMapper objectMapper;
         private final IntentRouterService intentRouterService;
         private final AiIntegrationService aiIntegrationService;
+        private final RedisChatService redisChatService;
 
         // 답변 길이 사실상 무제한 정책: 본문을 자르지 않으며, FastAPI에 큰 상한을 힌트로 전달한다.
         //  서버 안정성 위한 넉넉한 상수(잘림 방지용 상한). 실제 트림은 어디서도 하지 않는다.
@@ -78,23 +79,50 @@ public class ChatService {
 
         // FastAPI(/api/ai/multi-chat[/stream]) 요청 바디 구성 — 블로킹/스트리밍 공용.
         private Map<String, Object> buildFastApiRequestBody(AgentChatRoom room, Long roomId, ChatDTO.MultiChatRequest request) {
-                // 에이전트 간 상호 피드백을 위해 최근 10개의 AI 답변 가져오기
-                List<ChatMessage> lastAiMessages = chatMessageRepository
-                                .findTop10ByAgentChatRoomIdAndSenderOrderByCreatedAtDesc(roomId, "AI");
-                java.util.Collections.reverse(lastAiMessages);
-
-                List<Map<String, Object>> previousAnswers = lastAiMessages.stream()
-                                .map(msg -> {
-                                        Map<String, Object> prev = new LinkedHashMap<>();
-                                        prev.put("agentName", msg.getAgent() != null ? msg.getAgent().getName() : "AI");
-                                        prev.put("answer", msg.getContent());
-                                        Map<String, Object> ps = parseProcessSteps(msg.getProcessStepsJson());
-                                        if (ps != null) {
-                                                prev.put("processSteps", ps);
-                                        }
-                                        return prev;
-                                })
-                                .collect(Collectors.toList());
+                // Redis에서 최근 대화 가져오기
+                List<com.studybridge.api.dto.RedisChatMessage> recentHistory = redisChatService.getRecentPersonalHistory(roomId);
+                
+                List<Map<String, Object>> previousAnswers;
+                if (recentHistory == null || recentHistory.isEmpty()) {
+                        // Redis가 비어있다면 DB에서 가져와서 Redis에 적재(Cache Hydration)
+                        List<ChatMessage> lastAiMessages = chatMessageRepository
+                                        .findTop10ByAgentChatRoomIdAndSenderOrderByCreatedAtDesc(roomId, "AI");
+                        java.util.Collections.reverse(lastAiMessages);
+                        
+                        previousAnswers = lastAiMessages.stream()
+                                        .map(msg -> {
+                                                Map<String, Object> prev = new LinkedHashMap<>();
+                                                prev.put("agentName", msg.getAgent() != null ? msg.getAgent().getName() : "AI");
+                                                prev.put("answer", msg.getContent());
+                                                Map<String, Object> ps = parseProcessSteps(msg.getProcessStepsJson());
+                                                if (ps != null) {
+                                                        prev.put("processSteps", ps);
+                                                }
+                                                // Redis에도 저장 (다음 조회 시 빠른 처리를 위함)
+                                                redisChatService.savePersonalMessage(roomId, com.studybridge.api.dto.RedisChatMessage.builder()
+                                                        .agentName(msg.getAgent() != null ? msg.getAgent().getName() : "AI")
+                                                        .answer(msg.getContent())
+                                                        .role("ASSISTANT")
+                                                        .agentId(msg.getAgent() != null ? msg.getAgent().getId() : null)
+                                                        .build());
+                                                return prev;
+                                        })
+                                        .collect(Collectors.toList());
+                } else {
+                        // Redis에서 바로 변환
+                        previousAnswers = recentHistory.stream()
+                                        .map(h -> {
+                                                Map<String, Object> map = new LinkedHashMap<>();
+                                                map.put("agentName", h.getAgentName());
+                                                map.put("answer", h.getAnswer());
+                                                map.put("role", h.getRole());
+                                                if (h.getAgentId() != null) {
+                                                        map.put("agentId", h.getAgentId());
+                                                }
+                                                return map;
+                                        })
+                                        .collect(Collectors.toList());
+                }
 
                 String requestKnowledgeLevel = firstNonBlank(request.getKnowledgeLevel(), request.getKnowledge_level());
                 String requestPersonality = firstNonBlank(request.getPersonality(), request.getStyle(), request.getTone());
@@ -314,7 +342,7 @@ public class ChatService {
 
                 // 사용자의 메시지 저장
                 transactionTemplate.execute(status -> {
-                        saveRoomMessage(room, null, request.getMessage(), "USER");
+                        saveRoomMessage(room, null, request.getMessage(), "USER", null);
                         return null;
                 });
 
@@ -532,7 +560,7 @@ public class ChatService {
 
                 // 사용자 메시지 저장
                 transactionTemplate.execute(status -> {
-                        saveRoomMessage(room, null, request.getMessage(), "USER");
+                        saveRoomMessage(room, null, request.getMessage(), "USER", null);
                         return null;
                 });
 
@@ -1125,6 +1153,14 @@ public class ChatService {
                                 .processStepsJson(processStepsJson)
                                 .build();
                 chatMessageRepository.save(message);
+
+                // Redis에도 캐싱
+                redisChatService.savePersonalMessage(room.getId(), com.studybridge.api.dto.RedisChatMessage.builder()
+                                .agentName("USER".equals(sender) ? "USER" : (agent != null ? agent.getName() : "AI"))
+                                .answer(content)
+                                .role("USER".equals(sender) ? "USER" : "ASSISTANT")
+                                .agentId(agent != null ? agent.getId() : null)
+                                .build());
         }
 
         private Map<String, Object> mapRequestAgent(

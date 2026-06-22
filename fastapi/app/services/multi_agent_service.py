@@ -2085,26 +2085,10 @@ def build_stream_generator(request: MultiChatRequest):
 def _build_stream_generator_impl(request: MultiChatRequest):
     """
     SSE용 이벤트 제너레이터를 만든다.
-    default 계열 모드만 단계별 스트리밍하고, 그 외 모드는 블로킹 실행 후 all_complete 1회만 emit한다.
+    default/basic → 오케스트레이터(단일 프롬프트)로 처리.
+    simulation/debate/socratic → 기존 전용 모드 스트림 유지.
     """
-    # ── feature flag: LangGraph 오케스트레이터 ──────────────────────────────
-    # USE_LANGGRAPH_ORCHESTRATOR=true이면 그래프로 실행 후 all_complete 1회만 emit한다.
-    # (스트리밍 단계 분해는 기존 경로에만 적용. 그래프는 흐름 제어/구조화가 목적.)
-    try:
-        from app.core import config as _cfg
-        if getattr(_cfg, "USE_LANGGRAPH_ORCHESTRATOR", False):
-            from app.services.langgraph_agent_orchestrator import run_langgraph_multi_agent
-
-            def _graph_single():
-                result = run_langgraph_multi_agent(request)
-                yield {"event": "all_complete", "data": result.model_dump()}
-            return _graph_single()
-    except Exception as e:
-        logger.warning("LangGraph 스트림 분기 실패 → 기존 경로 사용: %s", e)
-
     # ── Router hard stop ───────────────────────────────────────────────────
-    # 인사/자기소개/잡담/욕설/불명확 입력은 generation/validation/peer feedback을
-    # 호출하지 않고 짧은 직접 응답만 반환한다. (욕설은 어떤 모드에서도 hard stop)
     route_result = _guard.classify_route(
         request.message, mode=request.mode, learning_mode=getattr(request, "learningMode", None)
     )
@@ -2115,47 +2099,13 @@ def _build_stream_generator_impl(request: MultiChatRequest):
 
     agents = _get_agents(request)
     active_agents = _normalize_studymate_agents(_filter_agents(agents, request.targetAgentId))
-    context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
-    rag_context = _get_rag_context(request.message, request.materialId)
 
-    # FEEDBACK_REQUEST일 때만 내부 검증/피어피드백 단계를 사용자에게 노출한다.
-    show_internal = (route_result.route == _guard.FEEDBACK_REQUEST) or _guard.internal_phases_visible_default()
+    logger.info("[StudyMate] stream route raw=%s lm=%s agents=%d",
+                (request.mode or "default"), (getattr(request, "learningMode", None) or ""), len(active_agents))
 
-    # 스트리밍 표시는 '명시적으로 고른 모드'를 따른다.
-    #  - 기본 채팅(basic) → 1차/2차/3차 staged (에이전트 2명 이상이어도 자동 토론 승격 안 함)
-    #  - 명시적 토론(debate/토론) → 토론 섹션, 명시적 소크라테스 → 소크라테스
-    # (자동 토론 승격은 블로킹 run_multi_chat에만 남겨 두어 두 표시 경로를 분리한다.)
-    raw = (request.mode or "default").strip().lower()
-    lm = (getattr(request, "learningMode", None) or "").strip().lower()
-    explicit_simulation = (lm in _SIMULATION_MODE_ALIASES) or (not lm and raw in _SIMULATION_MODE_ALIASES)
-    explicit_socratic = (lm in _SOCRATIC_MODE_ALIASES) or (not lm and raw in _SOCRATIC_MODE_ALIASES)
-    explicit_debate = (lm in _DEBATE_MODE_ALIASES) or (not lm and raw in _DEBATE_MODE_ALIASES)
-    logger.info("[StudyMate] stream route raw=%s lm=%s explicit_simulation=%s explicit_debate=%s explicit_socratic=%s agents=%d",
-                raw, lm, explicit_simulation, explicit_debate, explicit_socratic, len(active_agents))
-
-    # 모드별 전용 SSE 제너레이터. all_complete 1회만 기다리지 않고 단계/섹션 단위로 즉시 내보낸다.
-    if explicit_simulation:
-        return run_simulation_mode_stream(request, active_agents, rag_context)
-    if explicit_socratic:
-        return run_socratic_mode_stream(request, active_agents, rag_context)
-    if explicit_debate:
-        return run_debate_mode_stream(request, active_agents, rag_context)
-    # default/basic 스트림은 mode_stage_contract로 감싸 모든 이벤트에 계약 필드
-    # (turn_id/stage/agent_id/stage_label 등)를 부착하고, agent_answer를
-    # (turn_id, stage, agent_id) 기준으로 dedupe + 내부 라벨 strip + all_complete 1회를 보장한다.
-    from app.services.mode_stage_contract import apply_mode_contract
-
-    if raw == "group_study_ai":
-        # 그룹스터디 봇도 FastAPI 내부에서 전체 완료를 기다리지 않고 agent별 순차 SSE로 내보낸다.
-        return apply_mode_contract(
-            run_default_mode_stream(request, active_agents, context, rag_context,
-                                    show_internal=show_internal, route=route_result.route),
-            mode="basic")
-
-    return apply_mode_contract(
-        run_default_mode_stream(request, active_agents, context, rag_context,
-                                show_internal=show_internal, route=route_result.route),
-        mode="basic")
+    # 모든 모드(기본/토론/소크라테스/상황극)를 오케스트레이터로 통합 처리
+    from app.services.orchestrator_service import build_orchestrator_stream
+    return build_orchestrator_stream(request, active_agents)
 
 
 def _run_tikitaka_mode(
@@ -4243,11 +4193,11 @@ def _run_multi_chat_impl(request: MultiChatRequest) -> MultiChatResponse:
     mode에 따라 적절한 실행 함수로 분기한다.
 
     mode:
-      "default"   → 기존 병렬 multi-agent (박사/전문가면 멀티패스 우선)
-      "tikitaka"  → 3라운드 티키타카
-      "debate"    → 찬성/반대/사회자 순차 체인
-      "socratic"  → 소크라테스식 꼬리질문
-      그 외        → default와 동일
+      "default/basic" → 오케스트레이터(단일 프롬프트)로 처리
+      "debate"         → 찬성/반대/사회자 순차 체인
+      "socratic"       → 소크라테스식 꼬리질문
+      "simulation"     → 상황극 모드
+      그 외            → 오케스트레이터
     """
     # ── Router hard stop (동기 fallback 경로) ──────────────────────────────
     route_result = _guard.classify_route(
@@ -4264,10 +4214,7 @@ def _run_multi_chat_impl(request: MultiChatRequest) -> MultiChatResponse:
     agents = _get_agents(request)
     active_agents = _normalize_studymate_agents(_filter_agents(agents, request.targetAgentId))
     context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
-
-    # RAG 검색 (materialId 있으면 수행)
     rag_context = _get_rag_context(request.message, request.materialId)
-
     mode = _resolve_mode(request, len(active_agents))
 
     # group_study_ai: 그룹스터디 AI 봇 모드 (요약/퀴즈/검색 봇 라우팅)
@@ -4276,18 +4223,7 @@ def _run_multi_chat_impl(request: MultiChatRequest) -> MultiChatResponse:
                     request.runMode, len(active_agents))
         return _attach_response_metadata(_run_group_study_ai_mode(request, active_agents, context, rag_context), active_agents, request, "group_chat")
 
-    knowledge_level = _get_knowledge_level(request, active_agents[0] if active_agents else None)
-    logger.info("multi-chat 실행: mode=%s (raw=%s/lm=%s) level=%s agents=%d",
-                mode, request.mode, getattr(request, "learningMode", None), knowledge_level, len(active_agents))
-
-    if mode == "simulation":
-        return _attach_response_metadata(_run_simulation_mode(request, active_agents, rag_context), active_agents, request, "simulation")
-    if mode == "debate":
-        return _attach_response_metadata(_run_debate_mode(request, active_agents, rag_context), active_agents, request, "debate")
-    if mode == "socratic":
-        return _attach_response_metadata(_run_socratic_mode(request, active_agents, rag_context), active_agents, request, "socratic")
-
-    # default: 모든 지식수준(입문~전문가)을 동일한 1/2/3차 staged 파이프라인으로 처리한다.
-    # (이전엔 박사/전문가가 _run_multi_pass_pipeline로 분기되어 stages/processSteps가 생성되지 않았음.
-    #  OpenAlex/depth 보강은 staged 모드에서 현재 미적용 — 후속 통합 과제.)
-    return _attach_response_metadata(_run_default_mode(request, active_agents, context, rag_context), active_agents, request, "default")
+    # 모든 모드(기본/토론/소크라테스/상황극) → 오케스트레이터 통합 처리
+    logger.info("multi-chat 실행: mode=%s → orchestrator agents=%d", mode, len(active_agents))
+    from app.services.orchestrator_service import run_orchestrator
+    return _attach_response_metadata(run_orchestrator(request, active_agents), active_agents, request, mode)
