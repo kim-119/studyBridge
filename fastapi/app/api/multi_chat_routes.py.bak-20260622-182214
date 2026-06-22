@@ -1,0 +1,166 @@
+"""
+POST /api/ai/multi-chat — 멀티 에이전트 토론 (동기 JSON, 기존 호환).
+POST /api/ai/multi-chat/stream — agent별 순차 SSE 스트리밍 (선출력).
+camelCase 필드명 유지.
+"""
+import asyncio
+import json
+import logging
+import os
+import time
+import uuid
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+
+from app.schemas.multi_chat_schema import MultiChatRequest, MultiChatResponse
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/ai", tags=["Multi Agent Chat"])
+
+_STREAM_SENTINEL = object()
+
+
+def _sse(event: str, data) -> str:
+    """SSE 프레임 포맷: event: <name>\\ndata: <json>\\n\\n"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post(
+    "/multi-chat/stream",
+    summary="멀티 에이전트 토론 (모드별 SSE 스트리밍)",
+    description=(
+        "모드별로 단계/섹션 이벤트를 즉시 전송하고, 마지막에 all_complete로 전체 응답을 한 번 더 보낸다. "
+        "default/basic: turn_start → agent_start → heartbeat → agent_answer/error. "
+        "debate: debate_section(initialAnswers/peerFeedbacks/revisedAnswers/debateSummary). "
+        "socratic: socratic_step. "
+        "공통 마지막: all_complete. (오류 시 error)"
+    ),
+)
+async def multi_chat_stream(request: MultiChatRequest):
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="message는 비워둘 수 없습니다.")
+
+    from app.services.multi_agent_service import build_stream_generator
+    gen = build_stream_generator(request)
+
+    async def event_source():
+        heartbeat_s = max(5.0, float(os.getenv("AI_STREAM_HEARTBEAT_SECONDS", "10")))
+        route_request_id = f"route_{uuid.uuid4().hex[:12]}"
+        last_agent_index = None
+        last_agent_name = None
+        last_complete = None
+        started = time.time()
+        errored = False
+        try:
+            while True:
+                # next(gen)이 stage/agent 생성 때문에 오래 걸려도 heartbeat를 보내 idle timeout을 막는다.
+                task = asyncio.create_task(asyncio.to_thread(next, gen, _STREAM_SENTINEL))
+                while True:
+                    done, _ = await asyncio.wait({task}, timeout=heartbeat_s)
+                    if done:
+                        item = task.result()
+                        break
+                    yield _sse("heartbeat", {
+                        "type": "heartbeat",
+                        "requestId": route_request_id,
+                        "agentIndex": last_agent_index,
+                        "agentName": last_agent_name,
+                        "elapsedMs": int((time.time() - started) * 1000),
+                        "message": "답변 생성 중입니다.",
+                    })
+                if item is _STREAM_SENTINEL:
+                    break
+                data = item.get("data") or {}
+                if isinstance(data, dict):
+                    last_agent_index = data.get("agentIndex", last_agent_index)
+                    last_agent_name = data.get("agentName", last_agent_name)
+                    if item.get("event") == "all_complete":
+                        last_complete = data
+                yield _sse(item["event"], data)
+        except Exception as e:
+            errored = True
+            logger.error("multi-chat 스트리밍 오류: %s", e)
+            yield _sse("error", {
+                "type": "error", "requestId": route_request_id,
+                "phase": "ERROR", "visible": True, "status": "error",
+                "message": "스트리밍 중 오류가 발생했습니다.", "detail": str(e),
+            })
+        finally:
+            # placeholder loading이 무한 지속되지 않도록 항상 종료 이벤트를 보낸다.
+            # 최종 answers/messages 를 함께 실어 종료 시점에도 일관된 신원(라벨 포함)을 확정한다.
+            # 라벨은 build_stream_generator 단계에서 이미 canonical 로 재계산되어 있다.
+            done_payload = {
+                "type": "done", "requestId": route_request_id,
+                "phase": "DONE", "visible": False,
+                "status": "error" if errored else "done",
+                "elapsedMs": int((time.time() - started) * 1000),
+            }
+            if isinstance(last_complete, dict):
+                done_payload["answers"] = last_complete.get("answers") or []
+                done_payload["messages"] = last_complete.get("messages") or []
+            yield _sse("done", done_payload)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post(
+    "/multi-chat",
+    response_model=MultiChatResponse,
+    summary="멀티 에이전트 토론",
+    description=(
+        "여러 에이전트가 사용자 메시지에 대해 토론한다. "
+        "이 endpoint는 fallback용 동기 JSON을 반환한다. 실제 SSE는 /api/ai/multi-chat/stream에서 FastAPI가 생성하고 Spring Boot가 중계한다. "
+        "agents 배열이 비어있으면 기본 에이전트를 사용한다."
+    ),
+)
+async def multi_chat(request: MultiChatRequest) -> MultiChatResponse:
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="message는 비워둘 수 없습니다.")
+
+    try:
+        from app.services.multi_agent_service import run_multi_chat
+        from app.core.config import MULTI_CHAT_TIMEOUT_SECONDS, USE_LANGGRAPH_ORCHESTRATOR
+        from app.schemas.multi_chat_schema import AgentAnswer
+
+        # feature flag: LangGraph 오케스트레이터로 전환 가능 (기본 off → 기존 경로)
+        if USE_LANGGRAPH_ORCHESTRATOR:
+            from app.services.langgraph_agent_orchestrator import run_langgraph_multi_agent
+            runner = run_langgraph_multi_agent
+        else:
+            runner = run_multi_chat
+
+        result = await asyncio.wait_for(
+            asyncio.to_thread(runner, request),
+            timeout=MULTI_CHAT_TIMEOUT_SECONDS,
+        )
+        return result
+    except asyncio.TimeoutError:
+        logger.warning("멀티 에이전트 채팅 타임아웃 (%ss)", MULTI_CHAT_TIMEOUT_SECONDS)
+        from app.schemas.multi_chat_schema import AgentAnswer
+        return MultiChatResponse(
+            mode=request.mode,
+            answers=[
+                AgentAnswer(
+                    agentName="시스템",
+                    answer="AI 응답 시간이 초과되었습니다. 에이전트 수를 줄이거나 잠시 후 다시 시도해 주세요.",
+                )
+            ],
+        )
+    except Exception as e:
+        logger.error("멀티 에이전트 채팅 중 오류: %s", e)
+        from app.schemas.multi_chat_schema import AgentAnswer
+        return MultiChatResponse(
+            mode=request.mode,
+            answers=[
+                AgentAnswer(
+                    agentName="시스템",
+                    answer="현재 AI 서비스에 일시적으로 접근할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+                )
+            ],
+        )
