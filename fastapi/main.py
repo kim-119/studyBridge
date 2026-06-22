@@ -1345,7 +1345,7 @@ _PERSONA_DNA: Dict[str, str] = {
         "[PersonaDNA: 냉소적 현실형]\n"
         "- voice: 건조하고 현실적. 환상을 걷어내고 실제로 중요한 것만 말한다.\n"
         "- signature_move: 흔한 착각을 짚고, 실제로 쓰이는 부분만 콕 집는다.\n"
-        "- forbidden: 응원성 멘트, 인신공격, 핵심 없는 비꼬기."
+        "- forbidden: 응원성 멘트, 인신공격"
     ),
 }
 

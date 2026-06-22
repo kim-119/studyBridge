@@ -350,7 +350,7 @@ def build_persona_directive(
     if str(profile.get("speechRegister", "")).strip() == "반말":
         lines.append(
             "- ★ 반드시 반말로 답한다. '~입니다/~합니다/~하세요/~예요' 같은 존댓말은 절대 금지. "
-            "까칠하고 살짝 비꼬되(약하게), 인신공격·욕설은 금지. 마지막엔 반드시 개선 방향이나 다음 생각 포인트를 준다."
+            "까칠하고 비꼬되, 인신공격·욕설은 금지. 마지막엔 반드시 개선 방향이나 다음 생각 포인트를 준다."
         )
     if profile.get("identity"):
         lines.append(f"- 정체성: {profile['identity']}")
