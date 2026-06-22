@@ -274,6 +274,9 @@ class MultiChatRequest(BaseModel):
     selectedTopic: Optional[Any] = Field(None, validation_alias=AliasChoices("selectedTopic", "selected_topic"), description="사용자가 선택한 토론 논제 {topicId,title} 또는 문자열")
     topicSelected: Optional[bool] = Field(None, validation_alias=AliasChoices("topicSelected", "topic_selected"), description="논제 선택 완료 여부")
     debateState: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("debateState", "debate_state"), description="토론 세션 상태(서버 무상태 → 클라이언트가 보존해 전달)")
+    # 직전 선택지 컨텍스트(서버 무상태 → 클라이언트가 echo). "A"만 입력해도 직전 후보를 복원해
+    # 확정할 수 있게 한다(없으면 새 후보를 만들지 않고 안내). additive — 기존 계약 불변.
+    pendingChoiceContext: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("pendingChoiceContext", "pending_choice_context"), description="직전 선택지 컨텍스트(turnId/mode/options 등)")
 
 
 class GenerationConfigMetadata(BaseModel):
@@ -612,4 +615,6 @@ class MultiChatResponse(BaseModel):
     keyIssues: List[str] = Field(default_factory=list, description="핵심 쟁점 (DEBATE_ROUND)")
     learningTakeaway: Optional[str] = Field(None, description="학습 정리 (DEBATE_ROUND)")
     nextTopics: List[str] = Field(default_factory=list, description="이어서 토론할 논제")
+    # 선택지를 제시한 턴에서 다음 턴 복원을 위해 echo하는 컨텍스트(REQUEST_OPTIONS 응답).
+    pendingChoiceContext: Optional[Dict[str, Any]] = Field(None, description="직전 선택지 컨텍스트(다음 턴에 그대로 echo)")
     content: Optional[str] = Field(None, description="프론트 호환용 요약 텍스트")

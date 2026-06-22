@@ -550,3 +550,189 @@ def synthesize_debate_stages(round_result: Dict[str, Any]) -> List[Dict[str, Any
         _stage("REBUTTAL", "찬성측 반박", "PRO", "찬성측", 2, reb.get("proRebuttal", "")),
         _stage("JUDGEMENT", "중립 판정 / 학습 정리", "NEUTRAL", "중립", 3, issues_text + takeaway),
     ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEBATE_DIRECT: 직접 질문(DIRECT_QUESTION/MULTI_QUESTION) → 3인 토론
+#   주장자(핵심 개념·장점) / 반박자(한계·복잡성·대안 대비 단점) / 중재자(언제 무엇을 쓰나)
+#   - 논제 후보(A~E)를 절대 만들지 않는다(설명형 직접 질문이므로).
+#   - LLM 실패/JSON 깨짐 → deterministic fallback으로 동일 schema 반드시 반환.
+# ─────────────────────────────────────────────────────────────────────────────
+DEBATE_DIRECT_TEMPERATURE = 0.3
+DEBATE_DIRECT_MAX_TOKENS = 1600
+DEBATE_DIRECT_TOP_P = 0.85
+
+_DIRECT_SYSTEM = (
+    "너는 직접 질문에 3인 토론(주장자/반박자/중재자) 형식으로 답하는 학습용 토론 엔진이다. "
+    "사용자가 'gRPC가 뭐야'처럼 직접 질문하면 논제 후보를 만들지 말고, 곧바로 세 역할의 답을 생성하라. "
+    "주장자=핵심 개념과 장점, 반박자=한계·복잡성·대안(예: REST/HTTP) 대비 단점, "
+    "중재자=언제 쓰고 언제 대안을 쓰는지 판단 기준. "
+    "세 역할이 같은 말을 반복하지 마라. 반드시 JSON으로만 응답하라. 한국어."
+)
+
+
+def _direct_user_prompt(raw_question: str) -> str:
+    return (
+        f"[사용자 질문]\n{raw_question}\n\n"
+        "[작업] 위 질문에 3인 토론으로 답한다. 다음 JSON만 출력한다.\n"
+        "{\n"
+        '  "primaryConcept": "<핵심 개념 1개>",\n'
+        '  "claim": {"summary": "<핵심 개념과 장점 2~4문장>", "points": ["<핵심 포인트 2~4개>"]},\n'
+        '  "rebuttal": {"summary": "<한계·복잡성·대안 대비 단점 2~4문장>", "points": ["<2~4개>"]},\n'
+        '  "mediation": {"summary": "<언제 쓰고 언제 대안을 쓰는지 판단 기준 2~4문장>", "points": ["<2~4개>"]},\n'
+        '  "keyIssues": ["<핵심 쟁점 3개>"],\n'
+        '  "learningTakeaway": "<학습 정리 2~3문장>",\n'
+        '  "nextTopics": ["<더 깊이 볼 주제 2~3개>"]\n'
+        "}\n"
+        "[규칙] 논제 후보(A~E)·선택지를 만들지 마라. 세 역할은 서로 다른 관점을 담아라."
+    )
+
+
+def fallback_direct_debate(raw_question: str, knowledge_level: Optional[str] = None) -> Dict[str, Any]:
+    """LLM 없이도 동일 schema의 3인 토론(주장/반박/중재) 페이로드를 만든다."""
+    concept = extract_primary_concept(raw_question)
+    norm = normalize_concept(concept)
+    claim = {
+        "speaker": "주장자",
+        "title": f"{concept}의 핵심 개념과 장점",
+        "summary": (
+            f"{concept}부터 정의하면, 핵심 동작 원리가 분명할 때 가장 큰 강점을 발휘한다. "
+            f"표준화된 방식으로 문제를 일관되게 풀 수 있어 학습과 실무 양쪽에서 재사용성과 생산성이 높아진다."
+        ),
+        "points": [
+            f"{concept}의 핵심 정의와 동작 원리",
+            f"{concept}을(를) 쓰면 좋은 대표 장점(일관성·재사용성)",
+            f"{concept}이(가) 특히 잘 맞는 상황",
+        ],
+    }
+    rebuttal = {
+        "speaker": "반박자",
+        "title": f"{concept}의 한계와 단점",
+        "summary": (
+            f"하지만 {concept}에도 분명한 한계가 있다. 도입·운영 복잡도가 늘고, 단순한 요구에는 더 가벼운 대안이 효율적일 수 있다. "
+            f"개념을 잘못 적용하면 오히려 유지보수 비용과 오류 위험이 커진다."
+        ),
+        "points": [
+            f"{concept}의 복잡성과 러닝 커브",
+            f"{concept}이(가) 과한 상황(단순한 요구)",
+            "더 가벼운 대안 대비 단점",
+        ],
+    }
+    mediation = {
+        "speaker": "중재자",
+        "title": f"{concept}, 언제 쓰고 언제 대안을 쓰나",
+        "summary": (
+            f"정리하면 {concept}은(는) 만능도 무용도 아니다. 표준화·성능·일관성이 강하게 필요하면 {concept}이(가) 유리하고, "
+            f"가볍고 단순한 연동이면 대안이 낫다. 판단 기준은 '복잡도 대비 얻는 이득'이다."
+        ),
+        "points": [
+            "적합한 조건(언제 쓰면 좋은가)",
+            "대안이 더 나은 조건(언제 피하나)",
+            "선택 기준: 복잡도 대비 이득",
+        ],
+    }
+    return {
+        "mode": "debate",
+        "phase": "DEBATE_DIRECT",
+        "turnIndex": 1,
+        "rawQuestion": raw_question,
+        "primaryConcept": concept,
+        "normalizedConcept": norm,
+        "claim": claim,
+        "rebuttal": rebuttal,
+        "mediation": mediation,
+        "keyIssues": ["핵심 정의·원리", "장점 대 한계", "대안과의 선택 기준"],
+        "learningTakeaway": (
+            f"{concept}은(는) 장점과 한계가 모두 있는 개념이다. 핵심 정의·원리를 먼저 잡고, "
+            "장점이 빛나는 상황과 대안이 나은 상황을 함께 익히면 균형 있게 이해할 수 있다."
+        ),
+        "nextTopics": [
+            f"{concept}의 대표 오개념은 무엇인가?",
+            f"{concept}과(와) 자주 비교되는 대안은?",
+            f"{concept}을(를) 실무에 적용할 때 핵심 조건은?",
+        ],
+        "content": f"{concept}에 대한 주장/반박/중재 3인 토론 결과입니다.",
+    }
+
+
+def coerce_direct_debate(data: Dict[str, Any], raw_question: str) -> Dict[str, Any]:
+    """LLM DEBATE_DIRECT 출력을 schema 계약(주장/반박/중재 모두 비어있지 않음)으로 보정한다."""
+    fb = fallback_direct_debate(raw_question)
+    concept = (str(data.get("primaryConcept") or "").strip() or fb["primaryConcept"])
+
+    def _part(key: str) -> Dict[str, Any]:
+        src = data.get(key) if isinstance(data.get(key), dict) else {}
+        summary = str(src.get("summary") or "").strip()
+        points = [str(x).strip() for x in (src.get("points") or []) if str(x).strip()][:5]
+        if not summary:
+            return fb[key]
+        out = dict(fb[key])
+        out["summary"] = summary
+        if points:
+            out["points"] = points
+        return out
+
+    payload = dict(fb)
+    payload["primaryConcept"] = concept
+    payload["normalizedConcept"] = normalize_concept(concept)
+    payload["rawQuestion"] = raw_question
+    payload["claim"] = _part("claim")
+    payload["rebuttal"] = _part("rebuttal")
+    payload["mediation"] = _part("mediation")
+
+    key_issues = [str(x).strip() for x in (data.get("keyIssues") or []) if str(x).strip()][:5]
+    if key_issues:
+        payload["keyIssues"] = key_issues
+    takeaway = str(data.get("learningTakeaway") or "").strip()
+    if takeaway:
+        payload["learningTakeaway"] = takeaway
+    next_topics = [str(x).strip() for x in (data.get("nextTopics") or []) if str(x).strip()][:3]
+    if next_topics:
+        payload["nextTopics"] = next_topics
+    payload["content"] = payload.get("learningTakeaway") or fb["content"]
+    return payload
+
+
+def build_direct_debate(req: Any) -> Dict[str, Any]:
+    """직접 질문 → 3인 토론. LLM 실패/JSON 깨짐 → deterministic fallback."""
+    raw_question = (_get(req, "message") or "").strip()
+    state = _get(req, "debateState") or {}
+    if _get(state, "rawQuestion"):
+        raw_question = str(_get(state, "rawQuestion")).strip() or raw_question
+    kl = _get(req, "knowledgeLevel")
+    data = _llm_json(_DIRECT_SYSTEM, _direct_user_prompt(raw_question),
+                     temperature=DEBATE_DIRECT_TEMPERATURE, max_tokens=DEBATE_DIRECT_MAX_TOKENS,
+                     top_p=DEBATE_DIRECT_TOP_P, knowledge_level=kl)
+    if not data or not (data.get("claim") or data.get("rebuttal") or data.get("mediation")):
+        logger.info("[debate] DEBATE_DIRECT fallback 사용 (q=%s)", raw_question[:40])
+        return fallback_direct_debate(raw_question, kl)
+    try:
+        return coerce_direct_debate(data, raw_question)
+    except Exception as e:
+        logger.warning("[debate] coerce_direct_debate 실패 → fallback: %s", e)
+        return fallback_direct_debate(raw_question, kl)
+
+
+def _direct_part_text(part: Dict[str, Any]) -> str:
+    lines = [str((part or {}).get("summary") or "").strip()]
+    for p in (part or {}).get("points") or []:
+        p = str(p).strip()
+        if p:
+            lines.append(f"- {p}")
+    return "\n".join(x for x in lines if x).strip()
+
+
+def synthesize_direct_debate_stages(direct_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """DEBATE_DIRECT 결과를 기존 debate stage 카드(주장/반박/중재) 3개로 펼친다.
+    side/stageType는 기존 마인드맵/섹션 렌더러가 인식하는 값으로 매핑한다."""
+    def _stage(stage_type, title, side, role, idx, content):
+        return {"stageType": stage_type, "stageTitle": title, "side": side,
+                "role": role, "agentIndex": idx, "agentName": role, "content": content or ""}
+    return [
+        _stage("OPENING_STATEMENT", "주장 — 핵심 개념과 장점", "PRO", "주장자", 1,
+               _direct_part_text(direct_result.get("claim"))),
+        _stage("REBUTTAL", "반박 — 한계와 단점", "CON", "반박자", 2,
+               _direct_part_text(direct_result.get("rebuttal"))),
+        _stage("JUDGEMENT", "중재 — 언제 무엇을 쓰나", "NEUTRAL", "중재자", 3,
+               _direct_part_text(direct_result.get("mediation"))),
+    ]

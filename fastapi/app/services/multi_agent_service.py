@@ -1565,6 +1565,34 @@ def run_default_mode_stream(
     show_internal: bool = False,
     route: str = "LEARNING_QUESTION",
 ):
+    """기본 채팅 SSE: 한 턴의 모든 이벤트에 동일한 turn_id를 부착한다.
+
+    내부 구현(_run_default_mode_stream_impl)은 각 이벤트에 requestId를 싣지만, 프론트
+    dedupe 계약은 snake_case turn_id를 본다. all_complete 같은 일부 이벤트는 requestId가
+    없으므로, 첫 이벤트에서 turn_id를 1회 캡처해 누락된 모든 이벤트에 균일하게 채운다.
+    (계약: 같은 턴의 이벤트는 turn_id가 모두 동일, dedupe는 turn_id+stage+agent_id.)
+    """
+    turn_id = None
+    for ev in _run_default_mode_stream_impl(
+        request, active_agents, context, rag_context, show_internal=show_internal, route=route
+    ):
+        data = ev.get("data")
+        if isinstance(data, dict):
+            if turn_id is None:
+                turn_id = data.get("turn_id") or data.get("requestId")
+            if not data.get("turn_id"):
+                data["turn_id"] = turn_id
+        yield ev
+
+
+def _run_default_mode_stream_impl(
+    request: MultiChatRequest,
+    active_agents: List[AgentProfile],
+    context: str,
+    rag_context: str,
+    show_internal: bool = False,
+    route: str = "LEARNING_QUESTION",
+):
     """
     기본 채팅 SSE 제너레이터.
     하나의 요청에서 FIRST_ANSWER -> (VALIDATION) -> (PEER_FEEDBACK)을 실행한다.
@@ -1585,9 +1613,16 @@ def run_default_mode_stream(
     started_at = time.time()
     stage1_started_at = time.time()
 
+    # 멀티질문 감지: 한 메시지에 여러 질문이 있으면 강제 선택지로 빠지지 않고
+    # 그대로 직접/멀티질문 답변 경로를 탄다(계약: forced-choice 금지).
+    from app.services.answer_intent_gate import split_atomic_questions
+    _atomic_questions = split_atomic_questions(request.message or "")
+
     yield {"event": "turn_start", "data": {
         "type": "turn_start",
         "requestId": request_id,
+        "multiQuestion": len(_atomic_questions) >= 2,
+        "atomicQuestions": _atomic_questions,
         "message": "AI 응답 생성을 시작합니다.",
     }}
 
@@ -1684,9 +1719,15 @@ def run_default_mode_stream(
             elapsedMs=elapsed_ms,
         ))
         visible_answer = _guard.sanitize_user_visible_text(answer_obj.answer, allow_markdown=True)
+        # dedupe 안정키: (turn_id, stage, agent_id). 셋 다 비면 3개 카드가 (None,None,None)로
+        # 충돌해 중복 처리되므로 항상 서로 다른 agent_id를 부여한다.
+        _agent_id = answer_obj.agentId or agent.agentId or f"agent{idx}"
         yield {"event": "agent_answer", "data": {
             "type": "agent_answer",
             "requestId": request_id,
+            "turn_id": request_id,
+            "stage": "FIRST_ANSWER",
+            "agent_id": _agent_id,
             "agentIndex": idx,
             "agentId": agent.agentId,
             "agentName": agent.name,
@@ -1942,13 +1983,22 @@ def build_stream_generator(request: MultiChatRequest):
         return run_socratic_mode_stream(request, active_agents, rag_context)
     if explicit_debate:
         return run_debate_mode_stream(request, active_agents, rag_context)
+    # default/basic 스트림은 mode_stage_contract로 감싸 모든 이벤트에 계약 필드
+    # (turn_id/stage/agent_id/stage_label 등)를 부착하고, agent_answer를
+    # (turn_id, stage, agent_id) 기준으로 dedupe + 내부 라벨 strip + all_complete 1회를 보장한다.
+    from app.services.mode_stage_contract import apply_mode_contract
+
     if raw == "group_study_ai":
         # 그룹스터디 봇도 FastAPI 내부에서 전체 완료를 기다리지 않고 agent별 순차 SSE로 내보낸다.
-        return run_default_mode_stream(request, active_agents, context, rag_context,
-                                       show_internal=show_internal, route=route_result.route)
+        return apply_mode_contract(
+            run_default_mode_stream(request, active_agents, context, rag_context,
+                                    show_internal=show_internal, route=route_result.route),
+            mode="basic")
 
-    return run_default_mode_stream(request, active_agents, context, rag_context,
-                                   show_internal=show_internal, route=route_result.route)
+    return apply_mode_contract(
+        run_default_mode_stream(request, active_agents, context, rag_context,
+                                show_internal=show_internal, route=route_result.route),
+        mode="basic")
 
 
 def _run_tikitaka_mode(
@@ -2614,6 +2664,13 @@ def _debate_topic_selection_response(request, payload, active_agents, session_id
         role="moderator", speechType="topic_selection", displayOrder=1, displayDelayMs=0,
         status="SUCCESS", mode="debate",
     )]
+    # 다음 턴에 "A"만 입력해도 직전 후보를 복원해 확정할 수 있도록 컨텍스트를 echo한다.
+    from app.services.answer_intent_gate import make_pending_choice_context
+    pending = make_pending_choice_context(
+        turn_id=session_id, mode="debate",
+        original_user_message=payload["rawQuestion"],
+        candidates=payload["debateTopicCandidates"],
+    )
     return MultiChatResponse(
         mode="debate", learningMode="debate", answers=answers, status="COMPLETED",
         question=payload["rawQuestion"], validation=ValidationSummary(passed=True, issues=[]),
@@ -2622,6 +2679,7 @@ def _debate_topic_selection_response(request, payload, active_agents, session_id
         normalizedConcept=payload.get("normalizedConcept"), intent=payload.get("intent"),
         conceptChunks=payload["conceptChunks"], debateAxes=payload["debateAxes"],
         debateTopicCandidates=cands, topicSelected=False, content=payload["content"],
+        pendingChoiceContext=pending,
     )
 
 
@@ -2667,19 +2725,144 @@ def _debate_round_response(request, payload, active_agents, session_id) -> Multi
     )
 
 
+# ── 의도 게이트: mode=="debate"만으로 논제선택을 타지 않는다 ──────────────────────
+# 토론 모드 라우팅은 "이미 선택된 논제가 있는가"만이 아니라 "사용자 의도"로 결정한다.
+#   - 직접 질문("gRPC가 뭐야") → 논제선택 없이 즉시 3인 토론(주장/반박/중재).
+#   - 명시적 주제추천("토론 주제 추천해줘")만 → 논제 후보 5개(A~E).
+#   - "A" 등 옵션 토큰 → 직전 후보(pendingChoiceContext)가 있을 때만 확정, 없으면 안내만.
+def _resolve_debate_action(request: MultiChatRequest):
+    """토론 모드 라우팅 결정. (action, intent, extra) 반환.
+       action ∈ {ROUND, CANDIDATES, CONFIRM, GUIDE, DIRECT}."""
+    from app.services import debate_topic_engine as DTE
+    from app.services import answer_intent_gate as AIG
+
+    # 1) 프론트가 selectedTopic/topicSelected를 echo했으면 기존 본 토론(DEBATE_ROUND) 유지.
+    if DTE.resolve_debate_phase(request) == "DEBATE_ROUND":
+        return ("ROUND", None, None)
+
+    pending = AIG.extract_pending_choice_context(request)
+    intent = AIG.classify_intent((getattr(request, "message", "") or ""),
+                                 mode="debate", has_pending_choice=bool(pending))
+
+    # 2) 명시적 주제/선택지 추천 요청일 때만 논제 후보 생성.
+    if intent.intent == AIG.REQUEST_OPTIONS:
+        return ("CANDIDATES", intent, pending)
+
+    # 3) 옵션 토큰("A"): 직전 후보가 있으면 확정, 없으면 새 후보 금지(안내만).
+    if intent.intent == AIG.OPTION_SELECTION:
+        resolved = AIG.resolve_option(intent.option_token, pending)
+        if resolved:
+            selected_topic = {
+                "topicId": resolved.get("optionId"),
+                "title": resolved.get("optionText"),
+                "axis": resolved.get("axis"),
+                "proPosition": resolved.get("proPosition"),
+                "conPosition": resolved.get("conPosition"),
+            }
+            return ("CONFIRM", intent, {
+                "topic": selected_topic,
+                "rawQuestion": (pending or {}).get("originalUserMessage"),
+            })
+        return ("GUIDE", intent, None)
+
+    # 4) DIRECT_QUESTION / MULTI_QUESTION / EXPANSION / 기타 → 3인 토론(논제선택 금지).
+    return ("DIRECT", intent, None)
+
+
+def _apply_confirmed_topic(request: MultiChatRequest, extra: dict, session_id: str) -> None:
+    """옵션 확정(CONFIRM): 복원된 선택 논제를 request에 주입해 본 토론(build_debate_round)이 쓰게 한다."""
+    request.selectedTopic = extra["topic"]
+    request.topicSelected = True
+    state = dict(getattr(request, "debateState", None) or {})
+    if extra.get("rawQuestion"):
+        state.setdefault("rawQuestion", extra["rawQuestion"])
+    state.setdefault("debateSessionId", session_id)
+    request.debateState = state
+
+
+def _debate_direct_response(request, payload, active_agents, session_id) -> MultiChatResponse:
+    """DEBATE_DIRECT 응답: 주장자/반박자/중재자 3인 토론 + debateStages 합성."""
+    from app.services import debate_topic_engine as DTE
+    stages = [DebateStage(**s) for s in DTE.synthesize_direct_debate_stages(payload)]
+
+    delay = _get_display_delay_ms()
+
+    def _name(i, default):
+        return active_agents[i].name if len(active_agents) > i else default
+
+    def _aid(i):
+        return active_agents[i].agentId if len(active_agents) > i else None
+
+    claim_text = DTE._direct_part_text(payload.get("claim"))
+    reb_text = DTE._direct_part_text(payload.get("rebuttal"))
+    med_text = DTE._direct_part_text(payload.get("mediation"))
+    answers = [
+        AgentAnswer(agentName=_name(0, "주장자"), answer=claim_text, content=claim_text, agentId=_aid(0),
+                    role="claim", speechType="claim", displayOrder=1, displayDelayMs=0,
+                    status="SUCCESS", mode="debate"),
+        AgentAnswer(agentName=_name(1, "반박자"), answer=reb_text, content=reb_text, agentId=_aid(1),
+                    role="rebuttal", speechType="rebuttal", displayOrder=2, displayDelayMs=delay,
+                    status="SUCCESS", mode="debate"),
+        AgentAnswer(agentName=_name(2, "중재자"), answer=med_text, content=med_text, agentId=_aid(2),
+                    role="mediation", speechType="mediation", displayOrder=3, displayDelayMs=delay * 2,
+                    status="SUCCESS", mode="debate"),
+    ]
+    summary = payload.get("learningTakeaway") or payload.get("content")
+    cfg = normalize_debate_config(request)
+    process_steps = ProcessSteps(mode="debate", debateStages=stages, debateConfig=cfg, debateSummary=summary)
+    return MultiChatResponse(
+        mode="debate", learningMode="debate", answers=answers, status="COMPLETED",
+        question=payload["rawQuestion"], validation=ValidationSummary(passed=True, issues=[]),
+        debateStages=stages, debateConfig=cfg, debateSummary=summary, processSteps=process_steps,
+        phase="DEBATE_DIRECT", debateSessionId=session_id, turnIndex=payload.get("turnIndex", 1),
+        rawQuestion=payload["rawQuestion"], primaryConcept=payload.get("primaryConcept"),
+        normalizedConcept=payload.get("normalizedConcept"),
+        keyIssues=payload.get("keyIssues", []), learningTakeaway=payload.get("learningTakeaway"),
+        nextTopics=payload.get("nextTopics", []), topicSelected=False, content=payload.get("content"),
+    )
+
+
+def _debate_guidance_response(request, active_agents, session_id) -> MultiChatResponse:
+    """옵션 토큰만 왔는데 직전 선택지 컨텍스트가 없을 때: 새 후보 금지, 안내만 반환."""
+    guide = ("선택할 이전 토론 주제가 없습니다. 토론하고 싶은 질문을 다시 입력해 주세요. "
+             "예: 'gRPC가 뭐야'처럼 직접 물어보면 바로 토론을 시작합니다.")
+    name = active_agents[0].name if active_agents else "토론 진행자"
+    aid = active_agents[0].agentId if active_agents else None
+    answers = [AgentAnswer(
+        agentName=name, answer=guide, content=guide, agentId=aid,
+        role="moderator", speechType="guidance", displayOrder=1, displayDelayMs=0,
+        status="SUCCESS", mode="debate",
+    )]
+    msg = getattr(request, "message", "") or ""
+    return MultiChatResponse(
+        mode="debate", learningMode="debate", answers=answers, status="COMPLETED",
+        question=msg, validation=ValidationSummary(passed=True, issues=[]),
+        debateSessionId=session_id, turnIndex=0, rawQuestion=msg,
+        topicSelected=False, content=guide,
+    )
+
+
 def _run_debate_mode(
     request: MultiChatRequest,
     active_agents: List[AgentProfile],
     rag_context: str,
 ) -> MultiChatResponse:
-    """토론 모드(블로킹). 논제선택 게이트:
-       selectedTopic 없음 → TOPIC_SELECTION(논제 후보 5개)
-       selectedTopic 있음 → DEBATE_ROUND(찬성/반대/반박/쟁점/학습정리)."""
+    """토론 모드(블로킹). 의도 게이트(_resolve_debate_action)로 분기:
+       DIRECT=3인 토론 / CANDIDATES=논제 후보 / CONFIRM·ROUND=본 토론 / GUIDE=안내."""
     from app.services import debate_topic_engine as DTE
     session_id = _debate_session_id(request)
-    if DTE.resolve_debate_phase(request) == "TOPIC_SELECTION":
+    action, _intent, extra = _resolve_debate_action(request)
+
+    if action == "DIRECT":
+        payload = DTE.build_direct_debate(request)
+        return _debate_direct_response(request, payload, active_agents, session_id)
+    if action == "GUIDE":
+        return _debate_guidance_response(request, active_agents, session_id)
+    if action == "CANDIDATES":
         payload = DTE.build_topic_selection(request)
         return _debate_topic_selection_response(request, payload, active_agents, session_id)
+    if action == "CONFIRM":
+        _apply_confirmed_topic(request, extra, session_id)
     payload = DTE.build_debate_round(request)
     return _debate_round_response(request, payload, active_agents, session_id)
 
@@ -2689,27 +2872,69 @@ def run_debate_mode_stream(
     active_agents: List[AgentProfile],
     rag_context: str,
 ):
-    """토론 모드 SSE. 논제선택 게이트:
-       - 첫 턴(selectedTopic 없음): debate_topic_candidates 이벤트(논제 후보 5개) → all_complete.
-         찬성/반대 토론은 절대 시작하지 않는다.
-       - 후속 턴(selectedTopic 있음): debate_round 이벤트(찬반/반박/쟁점/학습정리) → all_complete.
-         debate_section/debateStages도 합성해 마인드맵 하위호환을 유지한다."""
+    """토론 모드 SSE. 의도 게이트(_resolve_debate_action)로 분기:
+       - DIRECT(직접/복수 질문): debate_section 3개(주장/반박/중재) + debate_direct → all_complete.
+         논제 후보(A~E)는 절대 만들지 않는다.
+       - CANDIDATES(명시적 주제추천): debate_topic_candidates(후보 5개) → all_complete.
+       - CONFIRM/ROUND(논제 확정·선택됨): debate_section + debate_round → all_complete.
+       - GUIDE(pending 없는 옵션 토큰): 안내 answer만 → all_complete."""
     from app.services import debate_topic_engine as DTE
     session_id = _debate_session_id(request)
+    action, _intent, extra = _resolve_debate_action(request)
 
-    if DTE.resolve_debate_phase(request) == "TOPIC_SELECTION":
+    # 1) 직접 질문 → 3인 토론(주장/반박/중재). 논제선택을 타지 않는다.
+    if action == "DIRECT":
+        payload = DTE.build_direct_debate(request)
+        resp = _debate_direct_response(request, payload, active_agents, session_id)
+        cfg_dump = resp.debateConfig.model_dump() if resp.debateConfig else {}
+        # 주장/반박/중재를 각각 별도 stage 이벤트로 내보낸다(mode_stage_contract가 라벨/색/역할 부착).
+        role_specs = [
+            ("debate_claim", "주장자", payload.get("claim")),
+            ("debate_rebuttal", "반박자", payload.get("rebuttal")),
+            ("debate_mediation", "중재자", payload.get("mediation")),
+        ]
+        for order, (ev_name, role_label, part) in enumerate(role_specs, start=1):
+            ans = resp.answers[order - 1]
+            aid = ans.agentId or ev_name  # 에이전트 ID 미지정 시에도 3개가 서로 다르도록
+            yield {"event": ev_name, "data": {
+                "event": ev_name, "stage": ev_name, "mode": "debate", "phase": "DEBATE_DIRECT",
+                "debateSessionId": session_id, "turnIndex": payload.get("turnIndex", 1), "visible": True,
+                "agentId": aid, "agent_id": aid,
+                "agentName": ans.agentName, "role": role_label, "agent_role": role_label,
+                "stageTitle": (part or {}).get("title", role_label),
+                "content": ans.content, "displayOrder": order,
+                "debateConfig": cfg_dump,
+            }}
+        yield {"event": "all_complete", "data": resp.model_dump()}
+        return
+
+    # 2) pending 없는 옵션 토큰 → 새 후보 금지, 안내만.
+    if action == "GUIDE":
+        resp = _debate_guidance_response(request, active_agents, session_id)
+        yield {"event": "all_complete", "data": resp.model_dump()}
+        return
+
+    # 3) 명시적 주제추천 → 논제 후보 5개.
+    if action == "CANDIDATES":
         payload = DTE.build_topic_selection(request)
-        yield {"event": "debate_topic_candidates", "data": {
+        resp = _debate_topic_selection_response(request, payload, active_agents, session_id)
+        ev = {
             "event": "debate_topic_candidates", "mode": "debate", "phase": "TOPIC_SELECTION",
             "debateSessionId": session_id, "turnIndex": 0, "visible": True,
             "rawQuestion": payload["rawQuestion"], "primaryConcept": payload["primaryConcept"],
             "normalizedConcept": payload.get("normalizedConcept"),
             "conceptChunks": payload["conceptChunks"], "debateAxes": payload["debateAxes"],
             "debateTopicCandidates": payload["debateTopicCandidates"], "topicSelected": False,
-        }}
-        resp = _debate_topic_selection_response(request, payload, active_agents, session_id)
+        }
+        if resp.pendingChoiceContext:
+            ev["pendingChoiceContext"] = resp.pendingChoiceContext
+        yield {"event": "debate_topic_candidates", "data": ev}
         yield {"event": "all_complete", "data": resp.model_dump()}
         return
+
+    # 4) CONFIRM/ROUND → 본 토론(찬반/반박/쟁점/학습정리).
+    if action == "CONFIRM":
+        _apply_confirmed_topic(request, extra, session_id)
 
     payload = DTE.build_debate_round(request)
     cfg_dump = None

@@ -36,11 +36,13 @@ def test_response_serializes_new_debate_fields():
     assert d["content"]
 
 
-# ── stream gate: 첫 턴은 논제 후보 이벤트, 본 토론 없음 ──────────────────────────
+# ── stream gate: 명시적 주제추천 요청일 때만 논제 후보 이벤트, 본 토론 없음 ───────────
+#  계약 변경: 직접 질문("ssh가 뭐야?")은 더 이상 논제선택을 타지 않고 3인 토론(DIRECT)으로 간다.
+#  논제 후보(A~E)는 사용자가 명시적으로 "주제 추천"을 요청했을 때만 생성한다.
 def test_stream_first_turn_emits_topic_candidates(monkeypatch):
     monkeypatch.setattr(DTE, "build_topic_selection",
                         lambda req: DTE.fallback_topic_selection("ssh가 뭐야?"))
-    req = MultiChatRequest(message="ssh가 뭐야?", mode="debate", learningMode="debate")
+    req = MultiChatRequest(message="토론 주제 추천해줘", mode="debate", learningMode="debate")
     events = list(M.run_debate_mode_stream(req, [], ""))
     names = [e["event"] for e in events]
     assert "debate_topic_candidates" in names

@@ -311,6 +311,22 @@ def has_internal_leak(text: str) -> bool:
     return any(m.lower() in low for m in _INTERNAL_MARKERS)
 
 
+# 내부 단계/디버그 라벨이 한 문장 안에 인라인으로 섞여 나오는 것까지 막는다(계약: 사용자 비노출).
+# strip_internal_markers는 '라인 단위'라 본문 중간에 박힌 토큰은 못 잡으므로 보조한다.
+_FORBIDDEN_INLINE_LABELS = ("1차 초안", "초안", "FIRST_ANSWER", "DRAFT", "validation_score", "성격 검증")
+
+
+def strip_forbidden_inline_labels(text: str) -> str:
+    """본문에 인라인으로 섞인 내부 단계/디버그 라벨 토큰을 제거한다(긴 토큰부터)."""
+    if not text:
+        return text or ""
+    cleaned = text
+    for token in sorted(_FORBIDDEN_INLINE_LABELS, key=len, reverse=True):
+        cleaned = cleaned.replace(token, "")
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned
+
+
 def sanitize_user_visible_text(text: str, allow_markdown: bool = True) -> str:
     """
     사용자에게 보이는 텍스트를 정리한다.
@@ -321,6 +337,7 @@ def sanitize_user_visible_text(text: str, allow_markdown: bool = True) -> str:
     if not text:
         return text or ""
     cleaned = strip_internal_markers(text)
+    cleaned = strip_forbidden_inline_labels(cleaned)
     if not allow_markdown:
         cleaned = _MD_CODEFENCE_RE.sub("", cleaned)
         cleaned = _MD_HEADING_RE.sub("", cleaned)
