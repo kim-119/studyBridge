@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
@@ -8,6 +9,8 @@ from typing import Any, Dict, List
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
+
+logger = logging.getLogger("studybridge.multi_chat_stream_compat")
 
 router = APIRouter(prefix="/api/ai", tags=["ai-stream-compat"])
 
@@ -149,14 +152,33 @@ async def multi_chat_stream_compat(request: Request):
         sent_done = False
         errored = False
 
+        # ai07 내부 이벤트 버스 + envelope/dedup. 외부 SSE 계약(이벤트명/페이로드)은 불변, 키만 추가.
+        from app.services import agent_event_contract as C
+        from app.services.agent_event_bus import stream_with_contract, normalize_error_event, get_bus
+
+        turn_id = C.new_turn_id()
+        mode = str(payload.get("mode") or payload.get("learningMode") or "default").lower()
+        bus = get_bus()
+
+        def _emit(event: str, data: Dict[str, Any]) -> str:
+            """compat 자체 생성 이벤트(heartbeat/done/error)에 동일 turnId envelope를 부착한다."""
+            enriched = C.enrich_event(event, data or {}, turn_id=turn_id, mode=mode)
+            if event in ("error", "agent_error"):
+                enriched = normalize_error_event(enriched)
+            return _sse(event, enriched)
+
         try:
             from app.schemas.multi_chat_schema import MultiChatRequest
             from app.services.multi_agent_service import build_stream_generator
 
-            mode = str(payload.get("mode") or payload.get("learningMode") or "default").lower()
             _, agent_by_id, agent_by_name = _stream_agent_maps(payload)
             chat_request = MultiChatRequest(**payload)
-            gen = build_stream_generator(chat_request)
+            # 원본 제너레이터를 contract 래퍼로 감싼다(동일 {"event","data"} 형태 유지).
+            #  → 모든 이벤트에 turnId/eventId/stage/fingerprint 부착 + 중복/지연 answer drop + 내부 버스 경유.
+            gen = stream_with_contract(
+                build_stream_generator(chat_request),
+                mode=mode, turn_id=turn_id, bus=bus,
+            )
 
             while True:
                 task = asyncio.create_task(asyncio.to_thread(next, gen, _STREAM_SENTINEL))
@@ -167,7 +189,7 @@ async def multi_chat_stream_compat(request: Request):
                         item = task.result()
                         break
 
-                    yield _sse("heartbeat", {
+                    yield _emit("heartbeat", {
                         "type": "heartbeat",
                         "requestId": route_request_id,
                         "agentIndex": last_agent_index,
@@ -180,7 +202,7 @@ async def multi_chat_stream_compat(request: Request):
                     break
 
                 event = item.get("event") or "message"
-                data = item.get("data") or {}
+                data = item.get("data") or {}  # 이미 contract 래퍼가 envelope를 부착함
 
                 if isinstance(data, dict):
                     if event in {"agent_answer", "agent_message", "agent_start", "agent_error"}:
@@ -197,26 +219,30 @@ async def multi_chat_stream_compat(request: Request):
 
                 yield _sse(event, data)
                 if event == "all_complete":
-                    # 기존 호환: done은 all_complete payload를 그대로 한 번 더 보낸다(프론트 계약 유지).
-                    yield _sse("done", data)
+                    # 레거시 호환: done은 all_complete payload를 한 번 더 보낸다(프론트 계약 유지).
+                    # 단 done은 자체 eventId를 갖도록 재-envelope(같은 turnId/fingerprint로 프론트가 중복 식별 가능).
+                    yield _emit("done", data)
                     sent_done = True
 
         except Exception as exc:
             errored = True
-            yield _sse("error", {
+            # 실패 원인은 서버 로그로 남기고, 사용자에겐 stacktrace 대신 code/reason만 노출.
+            logger.exception("multi-chat stream 오류(turn=%s): %s", turn_id, type(exc).__name__)
+            yield _emit("error", {
                 "type": "error",
                 "requestId": route_request_id,
                 "phase": "ERROR",
                 "visible": True,
                 "status": "error",
-                "message": "AI 스트리밍 중 오류가 발생했습니다.",
-                "detail": str(exc),
+                "code": "STREAM_ERROR",
+                "reason": type(exc).__name__,  # 예외 타입만(원문 메시지/스택트레이스 비노출)
+                "message": "AI 스트리밍 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
             })
         finally:
             # 정상 종료(all_complete→done)가 아닌 경로(예외/타임아웃/중단)에서도
             # placeholder loading이 무한 지속되지 않도록 종료 이벤트를 반드시 보낸다.
             if not sent_done:
-                yield _sse("done", {
+                yield _emit("done", {
                     "type": "done",
                     "requestId": route_request_id,
                     "phase": "DONE",

@@ -2868,9 +2868,32 @@ def _socratic_stage_instruction(stage_key: str, cfg: SocraticConfig) -> str:
     return "[이번 단계] 짧은 소크라테스 질문 1개를 던져라."
 
 
+# 결정적(determi) 소크라테스 fallback 질문. LLM 실패 시에도 사용자에겐 '실패 문구'가 아니라
+# 단계에 맞는 일반 소크라테스 질문을 준다. (특정 사용자 질문에 맞춘 하드코딩이 아니라 단계별 보편 질문)
+_SOCRATIC_FALLBACK_QUESTIONS = {
+    "diagnosis": "이 개념을 당신의 말로 설명한다면 어떻게 표현하시겠어요?",
+    "core_concept": "이 개념이 왜 필요한지, 핵심 원리는 무엇이라고 생각하세요?",
+    "misconception_check": "이 부분에서 흔히 하는 오해가 있다면 무엇일까요? 왜 그것이 문제일까요?",
+    "hint": "정답을 바로 말하기 전에, 어떤 단서부터 떠올려볼 수 있을까요?",
+    "application": "이 개념을 실제 상황(코드/사례)에 적용한다면 어디서부터 시작하시겠어요?",
+    "counterexample": "반례가 있다면 어떤 상황일까요?",
+    "self_explanation": "지금까지 이해한 내용을 스스로 요약해서 설명해보시겠어요?",
+    "summary": "핵심 개념과 약했던 지점을 스스로 정리하면 무엇이 남나요? 다음으로 무엇을 학습하면 좋을까요?",
+}
+_SOCRATIC_FALLBACK_DEFAULT = "이 주장에 필요한 전제는 무엇인가요? 근거와 결론을 분리하면 무엇이 남나요?"
+
+# 소크라테스 단계는 '짧은 질문 1개'다. num_predict를 작게 잡아 지연을 줄인다.
+_SOCRATIC_STAGE_MAX_TOKENS = _env_int("SOCRATIC_STAGE_MAX_TOKENS", 320)
+
+
+def _socratic_think_enabled() -> bool:
+    """기본 False. qwen3 thinking은 짧은 질문에서 num_predict를 소진해 빈응답/지연을 유발하므로
+    소크라테스 단계는 think=False로 호출한다. SOCRATIC_THINK=true로만 되돌릴 수 있다."""
+    return os.getenv("SOCRATIC_THINK", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _socratic_stage_fallback(stage_key: str) -> str:
-    title = _SOCRATIC_STAGE_MAP.get(stage_key, (None, "질문"))[1]
-    return f"({title}) 단계를 생성하지 못했습니다. 잠시 후 다시 시도해 주세요."
+    return _SOCRATIC_FALLBACK_QUESTIONS.get(stage_key, _SOCRATIC_FALLBACK_DEFAULT)
 
 
 def _run_socratic_stage(request, agent, stage_key, cfg, context):
@@ -2882,13 +2905,29 @@ def _run_socratic_stage(request, agent, stage_key, cfg, context):
     )
     user = setup + "\n" + instr
     params = A.resolve_agent_generation_params(_personality_type(agent), 1)
-    provider = params.get("provider", "ollama")
+    provider = (params.get("provider") or "ollama").strip().lower()
+    # 짧은 질문 → max_tokens 상한 축소(지연 감소).
+    max_tokens = min(int(params.get("max_tokens") or 512), _SOCRATIC_STAGE_MAX_TOKENS)
+    temperature = params.get("temperature", 0.5)
     try:
-        text, _ = _call_llm_with_params(provider, system, user, params, knowledge_level=agent.knowledgeLevel)
+        if provider == "openai" or _socratic_think_enabled():
+            # openai는 thinking 개념이 없고, escape-hatch로 think을 켠 경우만 기존 경로 사용.
+            text, _ = _call_llm_with_params(
+                provider, system, user, {**params, "max_tokens": max_tokens},
+                knowledge_level=agent.knowledgeLevel,
+            )
+        else:
+            # 핵심 수정: ollama는 think=False로 호출(qwen3 thinking이 빈응답/지연 유발하는 근본원인).
+            text = _call_llm_no_think(
+                system, user, max_tokens=max_tokens, temperature=temperature,
+                knowledge_level=agent.knowledgeLevel,
+            )
     except Exception as e:
         logger.warning("socratic stage %s 실패: %s", stage_key, e)
         text = ""
     if not (text or "").strip() or _is_llm_fallback(text):
+        # 실패 원인은 로그로 남기되, 사용자에겐 결정적 소크라테스 질문을 제공(실패 문구 노출 금지).
+        logger.warning("socratic stage %s 빈/실패 응답 → 결정적 질문 fallback 적용", stage_key)
         text = _socratic_stage_fallback(stage_key)
     return text.strip()
 

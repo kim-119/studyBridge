@@ -14,6 +14,12 @@ pydantic-settings
 requests
 httpx
 
+# ── 내부 에이전트 이벤트 버스 (ai07 프로세스 내부 전용, inproc/ipc) ──
+# 멀티에이전트 SSE 이벤트 패싱 정리/순서보장/중복 fingerprint 처리용.
+# manylinux 휠이 libzmq를 번들하므로 보통 시스템 패키지 불필요. (실패 시 자동 queue passthrough)
+# 시스템 빌드가 필요한 환경에서는: sudo apt-get install -y libzmq3-dev
+pyzmq>=25
+
 # ── LLM 클라이언트 ────────────────────────────────────────────────
 openai
 
