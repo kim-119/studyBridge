@@ -455,19 +455,12 @@ def _build_single_agent_user_prompt(
     return "\n\n".join(parts)
 
 
-def _looks_substantive(message: str) -> bool:
-    """피드백 라운드를 켤 만큼 '실질적인 질문/주제'인지 가벼운 휴리스틱으로 판단."""
-    m = (message or "").strip()
-    if len(m) >= 15:
-        return True
-    cues = ("왜", "어떻게", "차이", "비교", "설명", "원리", "무엇", "정의", "?")
-    return any(c in m for c in cues)
-
-
 def _cross_feedback_enabled(request: MultiChatRequest, agents: List[AgentProfile]) -> bool:
     """동료 피드백(앞 메이트 의견 참조)을 '어쩔 때만' 켠다.
     env STUDYMATE_CROSS_FEEDBACK: auto(기본)/on/off.
-      - off: 항상 끔 / on: 2명↑이면 항상 / auto: 2명↑ & 실질 질문일 때만(잡담은 끔)
+      - off: 항상 끔 / on: 2명↑이면 항상
+      - auto: 2명↑ & 잡담/인사가 아닐 때만. 잡담 판단은 별도 키워드 하드코딩 없이
+              기존 guardrail 라우터(분류 SSOT)를 그대로 재사용한다.
     """
     if len(agents) < 2:
         return False
@@ -476,7 +469,15 @@ def _cross_feedback_enabled(request: MultiChatRequest, agents: List[AgentProfile
         return False
     if mode == "on":
         return True
-    return _looks_substantive(request.message)
+    # auto: 인사/잡담/자기소개/불명확이면 끄고, 그 외(실제 대화/질문)면 켠다.
+    try:
+        from app.services import guardrail_router as _g
+        route = _g.classify_route(
+            request.message, mode=request.mode, learning_mode=getattr(request, "learningMode", None)
+        ).route
+        return route not in (_g.GREETING, _g.SMALL_TALK, _g.SELF_INTRO, _g.UNCLEAR)
+    except Exception:
+        return True
 
 
 def _generate_single_agent_answer(

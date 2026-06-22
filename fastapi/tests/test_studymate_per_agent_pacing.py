@@ -123,15 +123,16 @@ def test_cross_feedback_env_off(monkeypatch):
     assert orch._cross_feedback_enabled(_req("객체지향이 뭐고 왜 쓰는지 설명해줘"), _agents()) is False
 
 
-def test_cross_feedback_env_on_short_message(monkeypatch):
+def test_cross_feedback_env_on_ignores_casual(monkeypatch):
     monkeypatch.setenv("STUDYMATE_CROSS_FEEDBACK", "on")
-    assert orch._cross_feedback_enabled(_req("ㅎㅇ"), _agents()) is True
+    assert orch._cross_feedback_enabled(_req("안녕"), _agents()) is True  # on이면 잡담이어도 켬
 
 
-def test_cross_feedback_auto_substantive_vs_casual(monkeypatch):
+def test_cross_feedback_auto_uses_router(monkeypatch):
+    # 키워드 하드코딩이 아니라 guardrail 라우터로 잡담/질문을 가린다.
     monkeypatch.setenv("STUDYMATE_CROSS_FEEDBACK", "auto")
     assert orch._cross_feedback_enabled(_req("gRPC랑 REST 차이가 뭐야?"), _agents()) is True
-    assert orch._cross_feedback_enabled(_req("ㅎㅇ"), _agents()) is False
+    assert orch._cross_feedback_enabled(_req("안녕"), _agents()) is False  # 인사 → 끔
 
 
 def test_peer_answers_injected_in_user_prompt():
