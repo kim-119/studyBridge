@@ -1237,6 +1237,8 @@ try {
         },
         body: JSON.stringify({
           message: userMsg,
+          // group_study contract §6: 그룹스터디는 단일 AI 튜터 경로. 백엔드가 분기할 수 있도록 source 마커 전달.
+          source: 'group_study',
           // 라이브 모드 토글 값 전달. basic은 그룹 멀티에이전트 기본 흐름, 그 외는 mode=learningMode로 명시.
           mode: aiMode === 'basic' ? 'multi_agent_discussion' : aiMode,
           learningMode: aiMode,
@@ -2078,96 +2080,17 @@ try {
                   <div className="custom-scrollbar" style={{ flex: 1, minHeight: 0, padding: '20px', overflowY: 'auto', overscrollBehavior: 'contain', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                     {/* Notice Box */}
                     <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '12px', padding: '16px', position: 'relative' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#60A5FA', fontSize: '13px', fontWeight: '700' }}>
-                          <AlertTriangle size={16} /> AI 토론 안내
+                          <AlertTriangle size={16} /> AI 튜터
                         </div>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); setShowAiBotConfig((v) => !v); }}
-                          style={{ position: 'relative', zIndex: 2, pointerEvents: 'auto', display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.35)', color: '#93C5FD', fontSize: '11px', fontWeight: 600, borderRadius: '14px', padding: '4px 10px', cursor: 'pointer' }}
-                        >
-                          <Settings size={12} /> AI 봇 설정 {aiBots.length > 0 ? `(${aiBots.length})` : ''}
-                        </button>
                       </div>
                       <div style={{ color: '#93C5FD', fontSize: '12px', lineHeight: '1.6', wordBreak: 'keep-all' }}>
-                        {aiBots.length > 0
-                          ? '설정한 AI 봇이 각자의 성격·지식수준·요구사항대로 답변합니다.'
-                          : '에이전트들에게 질문하면 요약봇, 퀴즈봇, 검색봇 등 다중 에이전트들이 실시간으로 토론하며 솔루션을 탐색합니다.'}
+                        <strong style={{ color: '#BFDBFE' }}>그룹스터디에서는 단일 AI 튜터가 답변합니다.</strong> 궁금한 점을 입력하면 자료를 바탕으로 도움을 드립니다.
                       </div>
                     </div>
 
-                    {/* 라이브 모드 토글 — 채팅 중 언제든 모드 변경 (AI봇 설정과 함께 전송) */}
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
-                      <span style={{ fontSize: '11px', color: '#94A3B8', marginRight: '2px' }}>모드</span>
-                      {[
-                        { value: 'basic', label: '기본', icon: '💬' },
-                        { value: 'validation', label: '검증', icon: '✅' },
-                        { value: 'collaboration', label: '협업', icon: '🤝' },
-                        { value: 'debate', label: '토론', icon: '🗣️' },
-                        { value: 'socratic', label: '소크라테스', icon: '🧭' },
-                        { value: 'simulation', label: '상황극', icon: '🎭' },
-                      ].map((m) => {
-                        const active = aiMode === m.value;
-                        return (
-                          <button
-                            key={m.value}
-                            type="button"
-                            onClick={() => { aiConvStateRef.current = {}; setAiMode(m.value); }}
-                            disabled={isAiStreaming}
-                            title={m.label}
-                            style={{
-                              display: 'flex', alignItems: 'center', gap: '4px',
-                              padding: '4px 9px', borderRadius: '14px',
-                              cursor: isAiStreaming ? 'not-allowed' : 'pointer',
-                              fontSize: '11px', fontWeight: active ? 700 : 500,
-                              border: `1px solid ${active ? '#3B82F6' : 'rgba(255,255,255,0.12)'}`,
-                              backgroundColor: active ? '#3B82F6' : 'transparent',
-                              color: active ? '#fff' : '#94A3B8',
-                            }}
-                          >
-                            <span>{m.icon}</span>{m.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* AI 봇 설정 패널 (세션 단위) */}
-                    {showAiBotConfig && (
-                      <div style={{ backgroundColor: '#0F172A', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ color: '#E5E7EB', fontSize: '12px', fontWeight: 700 }}>AI 봇 설정 (최대 3개)</span>
-                          <button
-                            onClick={() => setAiBots((prev) => prev.length >= 3 ? prev : [...prev, { name: '', personality: '', knowledgeLevel: '학사 수준', requirement: '' }])}
-                            disabled={aiBots.length >= 3}
-                            style={{ background: 'rgba(34,197,94,0.15)', border: '1px solid rgba(34,197,94,0.35)', color: '#86EFAC', fontSize: '11px', fontWeight: 600, borderRadius: '12px', padding: '4px 10px', cursor: aiBots.length >= 3 ? 'not-allowed' : 'pointer' }}
-                          >
-                            + 봇 추가
-                          </button>
-                        </div>
-                        {aiBots.length === 0 && (
-                          <div style={{ color: '#9CA3AF', fontSize: '11px', lineHeight: 1.6 }}>
-                            봇을 추가하지 않으면 기본 요약/퀴즈/검색봇이 사용됩니다.
-                          </div>
-                        )}
-                        {aiBots.map((bot, idx) => {
-                          const updateBot = (field, value) => setAiBots((prev) => prev.map((b, i) => i === idx ? { ...b, [field]: value } : b));
-                          const inputStyle = { width: '100%', boxSizing: 'border-box', background: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: '#F3F4F6', fontSize: '12px', padding: '7px 10px', outline: 'none' };
-                          return (
-                            <div key={idx} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', backgroundColor: 'rgba(255,255,255,0.02)' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ color: '#93C5FD', fontSize: '11px', fontWeight: 700 }}>봇 {idx + 1}</span>
-                                <button onClick={() => setAiBots((prev) => prev.filter((_, i) => i !== idx))} style={{ background: 'none', border: 'none', color: '#F87171', cursor: 'pointer', fontSize: '11px' }}>삭제</button>
-                              </div>
-                              <input style={inputStyle} placeholder="봇 이름 (예: 친절한 튜터)" value={bot.name} onChange={(e) => updateBot('name', e.target.value)} />
-                              <input style={inputStyle} placeholder="성격 (예: 친근하고 비유적)" value={bot.personality} onChange={(e) => updateBot('personality', e.target.value)} />
-                              <input style={inputStyle} placeholder="지식수준 (예: 학사 수준)" value={bot.knowledgeLevel} onChange={(e) => updateBot('knowledgeLevel', e.target.value)} />
-                              <textarea style={{ ...inputStyle, resize: 'vertical', minHeight: '44px' }} placeholder="요구사항 (예: 예시를 많이 들어 설명)" value={bot.requirement} onChange={(e) => updateBot('requirement', e.target.value)} />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                    {/* group_study contract §6: 그룹스터디는 단일 AI 튜터 — 모드 토글/봇 설정(성격·지식수준·교수3명) UI 제거됨 */}
 
                     {/* AI Chat Messages */}
                     {aiMessages.map((msg) => {

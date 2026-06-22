@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ListChecks, RotateCcw, Shuffle, Sparkles, FileText, Download, StickyNote, Lightbulb, CalendarPlus } from 'lucide-react';
+import { ListChecks, RotateCcw, Shuffle, Sparkles, FileText, Download, StickyNote, Lightbulb, CalendarPlus, Trash2 } from 'lucide-react';
 import { reviewNoteService, learningLoopService } from '../services/api';
 import {
   RetryPanel, VariantPanel, AiExplanationPanel,
@@ -68,6 +68,12 @@ export default function ReviewNotesPage() {
     setSearchParams({ note: String(noteId(note)), tab: nextTab });
   };
 
+  // 삭제: 목록에서 즉시 제거(새로고침 없이). 선택돼 있던 노트면 선택 해제.
+  const handleDeleted = (deletedId) => {
+    setItems((prev) => prev.filter((n) => String(noteId(n)) !== String(deletedId)));
+    setSelected((cur) => (cur && String(noteId(cur)) === String(deletedId) ? null : cur));
+  };
+
   return (
     <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '24px' }}>
       {/* 헤더 */}
@@ -122,6 +128,7 @@ export default function ReviewNotesPage() {
             onRetry={load}
             onOpen={openTab}
             onMemoSaved={load}
+            onDeleted={handleDeleted}
           />
         )}
         {tab === 'retry' && <RetryPanel note={selected} items={items} onPick={(n) => openTab(n, 'retry')} />}
@@ -133,7 +140,7 @@ export default function ReviewNotesPage() {
 }
 
 /* ---------------- 오답노트 목록 (loading/error/empty/list 분리) ---------------- */
-function ReviewNoteList({ loading, error, items, onRetry, onOpen, onMemoSaved }) {
+function ReviewNoteList({ loading, error, items, onRetry, onOpen, onMemoSaved, onDeleted }) {
   if (loading) {
     return <p style={{ color: '#6B7280', fontSize: '14px', margin: 0 }}>오답노트를 불러오는 중입니다.</p>;
   }
@@ -159,16 +166,33 @@ function ReviewNoteList({ loading, error, items, onRetry, onOpen, onMemoSaved })
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
       <h2 style={{ margin: 0, fontSize: '17px', fontWeight: 800, color: '#111827' }}>오답노트 목록</h2>
       {items.map((note) => (
-        <ReviewNoteCard key={noteId(note)} note={note} onOpen={onOpen} onMemoSaved={onMemoSaved} />
+        <ReviewNoteCard key={noteId(note)} note={note} onOpen={onOpen} onMemoSaved={onMemoSaved} onDeleted={onDeleted} />
       ))}
     </div>
   );
 }
 
-function ReviewNoteCard({ note, onOpen, onMemoSaved }) {
+function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
   const [showMemo, setShowMemo] = useState(false);
   const [memo, setMemo] = useState(note.memo ?? '');
   const [memoSaving, setMemoSaving] = useState(false);
+
+  // 삭제: confirm 후 API 호출. 성공 시 부모가 목록에서 즉시 제거. 실패 시 원인 alert.
+  const [deleting, setDeleting] = useState(false);
+  const handleDelete = async () => {
+    if (deleting) return;
+    if (!window.confirm('이 오답노트를 삭제할까요? 되돌릴 수 없습니다.')) return;
+    setDeleting(true);
+    try {
+      await reviewNoteService.deleteReviewNote(noteId(note));
+      onDeleted?.(noteId(note));
+    } catch (e) {
+      const msg = e?.response?.data?.message || e?.response?.data?.error
+        || '오답노트 삭제에 실패했습니다. 잠시 후 다시 시도해 주세요.';
+      alert(msg);
+      setDeleting(false);
+    }
+  };
 
   // 복습 필요 분석(AI) — 결과 캐싱(재클릭 토글), 로딩/에러 분리, 중복 호출 방지
   const [rnOpen, setRnOpen] = useState(false);
@@ -312,6 +336,13 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved }) {
         <button style={btn} onClick={viewPdf}><FileText size={15} /> PDF 보기</button>
         <button style={btn} onClick={savePdf}><Download size={15} /> 컴퓨터에 저장</button>
         <button style={btn} onClick={() => setShowMemo((v) => !v)}><StickyNote size={15} /> 메모</button>
+        <button
+          style={{ ...btn, marginLeft: 'auto', borderColor: '#FCA5A5', color: '#B91C1C', opacity: deleting ? 0.6 : 1 }}
+          disabled={deleting}
+          onClick={handleDelete}
+        >
+          <Trash2 size={15} /> {deleting ? '삭제 중…' : '삭제'}
+        </button>
       </div>
 
       {showMemo && (

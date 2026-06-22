@@ -4176,6 +4176,9 @@ export default function StudyMate() {
                   <section className="professor-tree-section">
                     <div className="professor-tree-header">
                       <h3>{professorTreeTitle}</h3>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', margin: '4px 0 8px', padding: '5px 12px', borderRadius: '999px', background: 'rgba(37,99,235,0.12)', border: '1px solid rgba(37,99,235,0.35)', color: '#1D4ED8', fontSize: '12.5px', fontWeight: 700, width: 'fit-content' }}>
+                        🎓 교수 3명 상호검증 모드 · 현재 {modeLabelOf(learningMode)} 모드
+                      </div>
                       <p>아래에는 교수/에이전트별 관점이 정리됩니다.</p>
                     </div>
                     <div className="professor-tree-body">

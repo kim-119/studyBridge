@@ -3411,14 +3411,14 @@ export default function ArchiveDetail() {
         const textBlocked = currentTextStatus?.hasText === false || currentTextStatus?.status === 'EMPTY';
         const textStatusMessage = getTextStatusMessage(currentTextStatus);
         return (
-            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '450px' }}>
+            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', minHeight: '680px' }}>
               <h3 style={{ margin: '0 0 16px', fontSize: '20px' }}>AI 질문</h3>
               {textStatusMessage && (
                 <div className="glass-panel" style={{ padding: '14px 16px', borderLeft: '4px solid #F59E0B', backgroundColor: '#FFFBEB', color: '#92400E', marginBottom: '12px' }}>
                   {textStatusMessage}
                 </div>
               )}
-              <div style={{ flex: 1, backgroundColor: '#F9FAFB', borderRadius: '12px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid var(--color-border)' }}>
+              <div style={{ flex: 1, minHeight: '400px', overflowY: 'auto', backgroundColor: '#F9FAFB', borderRadius: '12px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid var(--color-border)' }}>
                 {chatMessages.map((msg, idx) => (
                     <div
                         key={idx}
@@ -3450,7 +3450,7 @@ export default function ArchiveDetail() {
                   <textarea
                       className="input-field"
                       rows={3}
-                      style={{ flex: 1, minWidth: 0, margin: 0, borderRadius: '20px', backgroundColor: '#F3F4F6', border: 'none', padding: '14px 20px', fontSize: '15px', lineHeight: 1.6, minHeight: '72px', maxHeight: '200px', resize: 'vertical', fontFamily: 'inherit' }}
+                      style={{ flex: 1, minWidth: 0, margin: 0, borderRadius: '20px', backgroundColor: '#F3F4F6', border: 'none', padding: '14px 20px', fontSize: '15px', lineHeight: 1.6, minHeight: '96px', maxHeight: '240px', resize: 'vertical', fontFamily: 'inherit' }}
                       placeholder={textBlocked ? '문서 텍스트 추출 후 질문할 수 있습니다.' : '자료 내용에 대해 궁금한 점을 입력하세요. (Enter 전송 · Shift+Enter 줄바꿈)'}
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}

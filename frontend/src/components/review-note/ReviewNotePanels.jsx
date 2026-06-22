@@ -164,9 +164,22 @@ export function VariantPanel({ note, items, onPick }) {
         difficulty,
         count: 1,
       });
-      setQuestions(Array.isArray(data?.questions) ? data.questions : []);
-    } catch {
-      setErr('유사문제를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.');
+      const qs = Array.isArray(data?.questions) ? data.questions : [];
+      if (data && data.success === false) {
+        // 서버가 명시적으로 실패를 알려준 경우 — 원인 메시지를 그대로 노출
+        setErr(data.message || data.error || '유사문제 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      } else if (qs.length === 0) {
+        // 성공이지만 변형할 원본 오답이 없는 경우 — 빈 성공으로 처리하지 않고 원인 안내
+        setErr('이 오답노트에는 변형할 원본 오답 문제가 없습니다. 먼저 퀴즈를 풀고 틀린 문제로 오답노트를 만들어 주세요.');
+      } else {
+        setQuestions(qs);
+      }
+    } catch (e) {
+      const data = e?.response?.data;
+      const serverMsg = data?.message || data?.error || (typeof data === 'string' ? data : '');
+      setErr(serverMsg
+        ? `유사문제를 생성하지 못했습니다: ${serverMsg}`
+        : '유사문제를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.');
     } finally { setLoading(false); }
   };
 
