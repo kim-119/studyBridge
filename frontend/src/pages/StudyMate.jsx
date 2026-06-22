@@ -316,6 +316,20 @@ const EXPLICIT_SOCRATIC_REQUEST_RE =
   /소크라테스|소크라틱|socratic|단계별\s*(질문|학습|설명|유도)|질문\s*(하면서|으로)\s*(알려|유도|설명|진행|학습)|질문하면서|질문으로\s*유도|카드\s*(로|기반|식)|문답\s*(으로|식|형|법)/i;
 const isExplicitSocraticRequest = (text) => EXPLICIT_SOCRATIC_REQUEST_RE.test(String(text || ''));
 
+// 전송 직전 최소 정제(목표 F). 사용자가 붙여넣은 내용(SSH 명령/로그/코드블록/마크다운 ###)은
+// 절대 삭제·치환하지 않는다. 공백류만 정리한다:
+//  - 줄 끝의 공백/탭 제거
+//  - 빈 줄 3개 이상은 2개로 축소(맥락 보존)
+//  - 앞뒤 공백/줄바꿈 제거(trim)
+// 길이를 임의로 자르거나 의미를 바꾸지 않는다.
+const sanitizeQuestion = (raw) => {
+  if (raw == null) return '';
+  return String(raw)
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\s+|\s+$/g, '');
+};
+
 // 소크라테스 문답 설정 기본값
 const DEFAULT_SOCRATIC_CONFIG = {
   goal: 'concept_understanding',
@@ -2478,7 +2492,8 @@ export default function StudyMate() {
   const sendMessage = async (e, directMessage = null) => {
     if (e) e.preventDefault();
     const agentId = getAgentId(selectedAgent);
-    const inputMsg = directMessage || message.trim();
+    // 목표 F: 최소 정제만 수행(공백 정리). 사용자 내용(코드/명령/마크다운)은 보존한다.
+    const inputMsg = sanitizeQuestion(directMessage || message);
     // 빈 입력/방 미선택은 조용히 무시(보존할 입력값 자체가 없음).
     if (!inputMsg || !selectedAgent) return;
     // ── BUG-03 메시지 유실 방지 ──
@@ -2680,6 +2695,8 @@ export default function StudyMate() {
         const agentAnswerMap = new Map();
         const agentMsgsArr = () => sortByAgentOrder(Array.from(agentAnswerMap.values()));
         const upsertAgentMessage = (d, patch = {}) => {
+          // 목표 B.5: all_complete 이후 같은 turn의 추가 이벤트는 렌더링하지 않는다.
+          if (streamCompleted) return;
           const idx = d?.agentIndex ?? patch.agentIndex ?? 0;
           const aid = d?.agentId ?? patch.agentId ?? idx;
           const hash = contentHash(d?.content ?? d?.answer ?? patch.content ?? '');
@@ -2826,6 +2843,7 @@ export default function StudyMate() {
             },
             onTurnStart: () => { armWatchdog(); },
             onHeartbeat: (d) => {
+              if (streamCompleted) return; // 목표 B.5
               if (!d || d.agentIndex == null) return;
               const stablePrefix = `${d.requestId || requestId}::basic::FIRST_DRAFT::${d.agentIndex}::`;
               const found = Array.from(agentAnswerMap.keys()).find((k) => k.startsWith(stablePrefix));
@@ -2854,6 +2872,7 @@ export default function StudyMate() {
             // default legacy 모드: 1차/2차/3차 단계 완료 시 즉시 반영. 저장 전에 에이전트 순서로 정렬한다.
             onStageComplete: (d) => {
               armWatchdog();
+              if (streamCompleted) return; // all_complete 이후 무시(목표 B.5)
               if (!d) return;
               // 백엔드가 visible=false로 표시한 내부 단계(2차 검증/3차 피드백)는 누적은 하되,
               //  buildStreamAiMsgs(showInternal)에서 기본 채팅이면 렌더하지 않는다.
@@ -2874,6 +2893,7 @@ export default function StudyMate() {
             },
             // 토론 모드: 단계(debate_section) 도착 즉시 stageType+side로 upsert 후 갱신.
             onDebateSection: (d) => {
+              if (streamCompleted) return; // 목표 B.5
               captureConvState(d);
               if (!d || !d.stageType) return;
               const key = `${d.stageType}::${d.side}`;
@@ -2896,6 +2916,7 @@ export default function StudyMate() {
             },
             // 소크라테스: 단계(socratic_step) 도착 즉시 stageType+agentIndex로 upsert 후 갱신.
             onSocraticStep: (d) => {
+              if (streamCompleted) return; // 목표 B.5
               if (!d || !d.stageType) return;
               const key = `${d.stageType}::${d.agentIndex ?? 0}`;
               socraticStepMap.set(key, {
@@ -2922,6 +2943,7 @@ export default function StudyMate() {
             },
             // 상황극: 단계(simulation_stage) 도착 즉시 requestId+stageType+agentIndex+contentHash로 upsert 후 갱신.
             onSimulationStage: (d) => {
+              if (streamCompleted) return; // 목표 B.5
               captureConvState(d);
               if (!d || !d.stageType) return;
               const key = `${requestId}::${d.stageType}::${d.agentIndex ?? 0}::${contentHash(d.content)}`;
@@ -2950,6 +2972,7 @@ export default function StudyMate() {
             },
             // (하위 호환) 단일 socratic_answer 이벤트 — SUMMARY 단일 단계로 표시
             onSocraticAnswer: (d) => {
+              if (streamCompleted) return; // 목표 B.5
               if (!d) return;
               const answer = d.answer ?? (Array.isArray(d.answers) && d.answers[0] && d.answers[0].answer) ?? '';
               streamRendered = true;
@@ -3016,7 +3039,29 @@ export default function StudyMate() {
               if (routedTerminal) return; // 라우팅으로 종료 — 기존 답변 렌더 스킵(중복 방지)
               renderAllComplete(d);
             },
-            onError: () => { throw new Error('stream error event'); },
+            // 목표 D: FastAPI의 error 이벤트가 와도 전체 대화를 무조건 실패로 덮지 않는다.
+            //  1) agentId/agentIndex가 있으면 해당 교수만 error 상태로 표시(전체 실패 아님).
+            //  2) 이미 일부 단계/답변이 렌더됐으면(streamRendered) 전체를 실패로 바꾸지 않는다(개발자 로그만).
+            //  3) 아무것도 렌더되지 않았고 대상도 특정되지 않은 진짜 치명적 오류일 때만 폴백으로 던진다.
+            //  → 사용자에게 내부 stacktrace는 노출하지 않고 code/reason은 콘솔에만 남긴다.
+            onError: (d) => {
+              if (streamCompleted) return; // all_complete 이후 늦게 온 error는 무시
+              if (import.meta.env.DEV) {
+                console.warn('[StudyMate] SSE error event', {
+                  code: d?.code ?? d?.errorCode, reason: d?.reason ?? d?.message,
+                  agentId: d?.agentId, agentIndex: d?.agentIndex,
+                });
+              }
+              if (d && (d.agentId != null || d.agentIndex != null)) {
+                upsertAgentMessage(d, {
+                  isPending: false, isError: true,
+                  content: d.message || '이 교수의 응답 생성에 실패했습니다.',
+                });
+                return;
+              }
+              if (streamRendered) return; // 일부 답변은 이미 표시됨 → 유지
+              throw new Error('stream error event');
+            },
           }, { signal: streamAbort.signal });
           if (watchdogTimer) clearTimeout(watchdogTimer);
           if (!streamCompleted && !streamRendered) {
@@ -3890,8 +3935,11 @@ export default function StudyMate() {
                       draggable={false}
                     />
 
-                    {/* 교수별 말풍선(actionMode 변경 시 pop 애니메이션). key로 재마운트해 애니메이션 재생 */}
-                    {(PROFESSOR_BUBBLES[professorActionMode] || PROFESSOR_BUBBLES.default).map((text, i) => (
+                    {/* 교수별 추천/유도 말풍선(actionMode 변경 시 pop 애니메이션).
+                        목표 E.2: 질문을 전송(스트리밍 중)했거나 이미 대화가 시작됐으면 추천/유도 말풍선을 숨긴다.
+                        새 방(대화 없음)에서만 안내 말풍선을 노출한다. */}
+                    {!typingRooms[getAgentId(selectedAgent)] && mindmapMessages.length === 0 &&
+                      (PROFESSOR_BUBBLES[professorActionMode] || PROFESSOR_BUBBLES.default).map((text, i) => (
                       <div
                         key={`${professorActionMode}-${i}`}
                         className={`professor-bubble is-active professor-bubble-${['left', 'center', 'right'][i]}`}

@@ -1626,6 +1626,9 @@
   position: absolute;
   z-index: 7;
   box-sizing: border-box;
+  /* stage 폭에 비례하되 상·하한을 둔다(좁은 화면에서 자동 축소). 좌우 clamp 계산에도 사용. */
+  --prof-bubble-w: clamp(150px, 30%, 250px);
+  width: var(--prof-bubble-w);
   max-width: min(270px, calc(100% - 40px)); /* banner 밖으로 안 튀게 */
   padding: 10px 15px;              /* 얼굴 가림 줄이려 조금 축소 */
   border-radius: 999px;            /* 타원형 느낌 */
@@ -1641,11 +1644,15 @@
   word-break: keep-all;
   overflow-wrap: break-word;
 }
-/* 얼굴을 가리지 않게 머리 위쪽으로. 좌/우는 banner 안쪽(5%), 가운데는 중앙 고정 */
-.professor-bubble-left   { left: 5%;   right: auto; top: 17%; transform: none; }
-.professor-bubble-center { left: 50%;  right: auto; top: 12%; transform: translateX(-50%) !important; }
-.professor-bubble-right  { right: 5%;  left: auto;  top: 17%; transform: none; }
-.professor-bubble.is-active { animation: professorBubblePop 0.22s ease-out; }
+/* 목표 G: 각 말풍선을 해당 교수(hotspot) 중앙 위로 정렬하고 translateX(-50%)로 중앙 배치한다.
+   anchor(left≈25% / center≈51% / right≈77%)는 hotspot 중앙과 일치 → 아래쪽 꼬리가 교수 머리를 향한다.
+   width는 stage 폭에 맞춰 clamp(좁은 화면에서 자동 축소)하고, 좌우 가장자리는 max/min으로 banner 안쪽에 clamp한다. */
+.professor-bubble-left   { left: max(calc(0px + var(--prof-bubble-w) / 2 + 8px), 25%); right: auto; top: 16%; transform: translateX(-50%); }
+.professor-bubble-center { left: 51%; right: auto; top: 9%;  transform: translateX(-50%); }
+.professor-bubble-right  { left: min(calc(100% - var(--prof-bubble-w) / 2 - 8px), 77%); right: auto; top: 16%; transform: translateX(-50%); }
+/* is-active는 transform(translateX) 유지를 위해 opacity만 페이드(중앙정렬이 애니메이션에 덮이지 않게) */
+.professor-bubble.is-active { animation: professorBubbleFade 0.22s ease-out; }
+@keyframes professorBubbleFade { from { opacity: 0; } to { opacity: 1; } }
 
 /* 말풍선 꼬리: 아래 방향 구름꼬리(큰 원 + 작은 원). banner 밖으로 안 튀게 짧게. */
 .professor-bubble::before,
@@ -1657,16 +1664,10 @@
   border: 2px solid #dbeafe;
   z-index: -1;
 }
-.professor-bubble::before { width: 14px; height: 14px; bottom: -6px; }
-.professor-bubble::after  { width: 8px;  height: 8px;  bottom: -14px; }
-/* 좌/우 말풍선은 해당 교수(아래쪽) 머리 방향으로 꼬리를 치우치게 */
-.professor-bubble-left::before  { left: 54px;  right: auto; }
-.professor-bubble-left::after   { left: 38px;  right: auto; }
-.professor-bubble-right::before { right: 54px; left: auto; }
-.professor-bubble-right::after  { right: 38px; left: auto; }
-/* 가운데 말풍선은 꼬리도 가운데 교수 머리 방향(중앙) */
-.professor-bubble-center::before { left: 50%; right: auto; transform: translateX(-50%); }
-.professor-bubble-center::after  { left: calc(50% - 16px); right: auto; transform: none; }
+/* 목표 G: 말풍선을 교수 중앙 위로 정렬했으므로 꼬리도 중앙(아래)으로 두면 교수 머리를 향한다.
+   좌/우/가운데 모두 동일하게 중앙 하단 꼬리를 사용한다(고정 px 치우침 제거). */
+.professor-bubble::before { width: 14px; height: 14px; bottom: -6px;  left: 50%; transform: translateX(-50%); }
+.professor-bubble::after  { width: 8px;  height: 8px;  bottom: -14px; left: 50%; transform: translateX(-50%); }
 
 @keyframes professorBubblePop {
   0%   { opacity: 0; transform: translateY(6px) scale(0.96); }
