@@ -153,8 +153,8 @@ def load_pdf_images_from_s3(s3_key: str, bucket: Optional[str] = None, max_pages
             # 최대 페이지 제한 (API 비용 방지)
             for i in range(min(len(doc), max_pages)):
                 page = doc[i]
-                # 고해상도(2배율)로 렌더링
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                # 해상도를 1배율로 낮추어 API 페이로드(20MB) 초과 방지
+                pix = page.get_pixmap(matrix=fitz.Matrix(1, 1))
                 img_data = pix.tobytes("jpeg")
                 b64 = base64.b64encode(img_data).decode("utf-8")
                 images.append(f"data:image/jpeg;base64,{b64}")
