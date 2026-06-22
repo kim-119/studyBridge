@@ -185,6 +185,150 @@ def _resolve_knowledge(agent: AgentProfile) -> str:
     )
 
 
+# ── StudyMate 성격/지식수준 canonical 라벨 SSOT ──────────────────────────────
+# 라벨은 절대 클라이언트가 보낸 personalityLabel/knowledgeLevelLabel 이나 env 기본값
+# ("친절형"/"학사")을 신뢰하지 않는다. 항상 원본 key(personality/knowledgeLevel)에서
+# 다시 계산한다. (key 가 SSOT, 라벨은 파생값.)
+_STUDYMATE_PERSONALITY_LABELS = {
+    "friendly": "친절형",
+    "critical": "냉철형",
+    "logical": "논리형",
+    "creative": "창의형",
+    "concise": "간결형",
+    "custom": "직접입력",
+    "sardonic": "냉철형",
+    "professional": "논리형",
+}
+_STUDYMATE_KNOWLEDGE_LABELS = {
+    "beginner": "입문",
+    "intro": "입문",
+    "undergraduate": "학사",
+    "bachelor": "학사",
+    "graduate": "석사",
+    "master": "석사",
+    "doctor": "박사",
+    "doctoral": "박사",
+    "phd": "박사",
+    "expert": "전문가",
+}
+_STUDYMATE_PERSONALITY_DEFAULT_LABEL = "친절형"
+_STUDYMATE_KNOWLEDGE_DEFAULT_LABEL = "학사"
+
+
+def _studymate_personality_label(value: Any) -> str:
+    """personality key(또는 라벨/레거시 한글 표현)를 canonical 한글 라벨로 변환한다."""
+    raw = str(value or "").strip()
+    if not raw:
+        return _STUDYMATE_PERSONALITY_DEFAULT_LABEL
+    lower = raw.lower()
+    if lower in _STUDYMATE_PERSONALITY_LABELS:
+        return _STUDYMATE_PERSONALITY_LABELS[lower]
+    if raw in _STUDYMATE_PERSONALITY_LABELS.values():
+        return raw
+    # 레거시 한글/별칭("비판형","전문적" 등)은 기존 label→key 맵으로 한 번 더 정규화.
+    key = _resolve_label(raw, PERSONALITY_LABEL_MAP, "")
+    if key in _STUDYMATE_PERSONALITY_LABELS:
+        return _STUDYMATE_PERSONALITY_LABELS[key]
+    return _STUDYMATE_PERSONALITY_DEFAULT_LABEL
+
+
+def _studymate_knowledge_label(value: Any) -> str:
+    """knowledgeLevel key(또는 라벨/레거시 표현)를 canonical 한글 라벨로 변환한다."""
+    raw = str(value or "").strip()
+    if not raw:
+        return _STUDYMATE_KNOWLEDGE_DEFAULT_LABEL
+    lower = raw.lower()
+    if lower in _STUDYMATE_KNOWLEDGE_LABELS:
+        return _STUDYMATE_KNOWLEDGE_LABELS[lower]
+    if raw in _STUDYMATE_KNOWLEDGE_LABELS.values():
+        return raw
+    key = _resolve_label(raw, KNOWLEDGE_LABEL_MAP, "")
+    if key in _STUDYMATE_KNOWLEDGE_LABELS:
+        return _STUDYMATE_KNOWLEDGE_LABELS[key]
+    return _STUDYMATE_KNOWLEDGE_DEFAULT_LABEL
+
+
+def _normalize_studymate_agent_labels(agent: AgentProfile) -> AgentProfile:
+    """agent 의 표시 라벨을 원본 key 기준으로 강제 재계산한다(들어온 라벨은 불신)."""
+    if agent is None:
+        return agent
+    try:
+        agent.personalityLabel = _studymate_personality_label(
+            getattr(agent, "personality", None) or getattr(agent, "personalityLabel", None)
+        )
+        agent.knowledgeLevelLabel = _studymate_knowledge_label(
+            getattr(agent, "knowledgeLevel", None) or getattr(agent, "knowledgeLevelLabel", None)
+        )
+    except Exception as e:  # 라벨 정규화 실패가 답변 생성을 막지 않도록 방어
+        logger.warning("[studymate-label] agent 라벨 정규화 실패: %s", e)
+    return agent
+
+
+def _normalize_studymate_agents(agents: Optional[List[AgentProfile]]) -> Optional[List[AgentProfile]]:
+    for a in (agents or []):
+        _normalize_studymate_agent_labels(a)
+    return agents
+
+
+def _agent_identity_payload(agent: AgentProfile, answer: Optional["AgentAnswer"] = None) -> Dict[str, Any]:
+    """emit 용 (personality/personalityLabel/knowledgeLevel/knowledgeLevelLabel) 묶음.
+    key 는 answer→agent 순으로 SSOT 채택하고, 라벨은 그 key 에서 다시 계산한다."""
+    a_personality = None
+    a_knowledge = None
+    if answer is not None:
+        a_personality = getattr(answer, "personality", None) or getattr(answer, "personalityType", None)
+        a_knowledge = getattr(answer, "knowledgeLevel", None)
+    personality_key = a_personality or getattr(agent, "personality", None) or _resolve_personality(agent)
+    knowledge_key = a_knowledge or getattr(agent, "knowledgeLevel", None) or _resolve_knowledge(agent)
+    return {
+        "personality": personality_key,
+        "personalityLabel": _studymate_personality_label(personality_key),
+        "knowledgeLevel": knowledge_key,
+        "knowledgeLevelLabel": _studymate_knowledge_label(knowledge_key),
+    }
+
+
+def _canonicalize_identity_labels(obj: Any) -> Any:
+    """emit 직전 방어막: dict 트리를 재귀 순회하며 personality/knowledgeLevel key 가
+    있는 모든 노드의 personalityLabel/knowledgeLevelLabel 을 canonical 로 재계산한다.
+    (agent_start/agent_answer/all_complete/answers/messages/processSteps/stages 전부 커버.)
+    들어온 라벨은 신뢰하지 않으며, 라벨 필드만 건드리고 다른 계약 필드는 보존한다."""
+    if isinstance(obj, dict):
+        p_key = obj.get("personality") or obj.get("personalityType")
+        if "personalityLabel" in obj or p_key is not None:
+            obj["personalityLabel"] = _studymate_personality_label(p_key or obj.get("personalityLabel"))
+        k_key = obj.get("knowledgeLevel")
+        if "knowledgeLevelLabel" in obj or k_key is not None:
+            obj["knowledgeLevelLabel"] = _studymate_knowledge_label(k_key or obj.get("knowledgeLevelLabel"))
+        for v in list(obj.values()):
+            _canonicalize_identity_labels(v)
+    elif isinstance(obj, list):
+        for x in obj:
+            _canonicalize_identity_labels(x)
+    return obj
+
+
+def _canonicalize_response_labels(resp: "MultiChatResponse") -> "MultiChatResponse":
+    """비스트리밍 MultiChatResponse 의 answers/messages 라벨을 key 기준으로 재계산한다."""
+    try:
+        for item in (getattr(resp, "answers", None) or []):
+            if isinstance(item, dict):
+                _canonicalize_identity_labels(item)
+            else:
+                if hasattr(item, "personalityLabel"):
+                    item.personalityLabel = _studymate_personality_label(
+                        getattr(item, "personality", None) or getattr(item, "personalityLabel", None))
+                if hasattr(item, "knowledgeLevelLabel"):
+                    item.knowledgeLevelLabel = _studymate_knowledge_label(
+                        getattr(item, "knowledgeLevel", None) or getattr(item, "knowledgeLevelLabel", None))
+        for msg in (getattr(resp, "messages", None) or []):
+            if isinstance(msg, dict):
+                _canonicalize_identity_labels(msg)
+    except Exception as e:
+        logger.warning("[studymate-label] response 라벨 정규화 실패: %s", e)
+    return resp
+
+
 def _get_personality_prompt(agent: AgentProfile) -> str:
     key = _resolve_personality(agent).upper()
     return os.getenv(f"AI_AGENT_PERSONALITY_{key}") or os.getenv("AI_AGENT_PERSONALITY_FRIENDLY", "")
@@ -204,8 +348,8 @@ def _agent_persona_block(agent: AgentProfile, mode: str) -> str:
         "[StudyBridge 에이전트 메타데이터]\n"
         f"에이전트 이름: {agent.name}\n"
         f"현재 모드: {mode}\n"
-        f"성격: {getattr(agent, 'personalityLabel', None) or personality}\n"
-        f"지식수준: {getattr(agent, 'knowledgeLevelLabel', None) or knowledge}\n"
+        f"성격: {_studymate_personality_label(personality)}\n"
+        f"지식수준: {_studymate_knowledge_label(knowledge)}\n"
         f"역할: {role}\n\n"
         f"성격 지침:\n{_get_personality_prompt(agent)}\n\n"
         f"지식수준 지침:\n{_get_knowledge_prompt(agent)}\n\n"
@@ -221,10 +365,8 @@ def _message_from_agent_answer(agent: AgentProfile, answer: AgentAnswer, mode: s
         "senderType": "AGENT",
         "agentId": getattr(answer, "agentId", None) or agent.agentId,
         "agentName": getattr(answer, "agentName", None) or agent.name,
-        "personality": getattr(answer, "personality", None) or personality,
-        "personalityLabel": getattr(answer, "personalityLabel", None) or getattr(agent, "personalityLabel", None) or os.getenv("AI_DEFAULT_PERSONALITY_LABEL", "친절형"),
-        "knowledgeLevel": getattr(answer, "knowledgeLevel", None) or knowledge,
-        "knowledgeLevelLabel": getattr(answer, "knowledgeLevelLabel", None) or getattr(agent, "knowledgeLevelLabel", None) or os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL_LABEL", "학사"),
+        # 라벨은 들어온 값/ env 기본값을 신뢰하지 않고 항상 key 에서 재계산한다.
+        **_agent_identity_payload(agent, answer),
         "role": getattr(answer, "role", None) or agent.role or os.getenv("AI_DEFAULT_AGENT_ROLE", "학습 지원"),
         "mode": mode,
         "round": getattr(answer, "round", None) or 1,
@@ -247,9 +389,9 @@ def _attach_response_metadata(response: MultiChatResponse, agents: List[AgentPro
         answer.senderType = "AGENT"
         answer.content = msg["content"]
         answer.personality = msg["personality"]
-        answer.personalityLabel = msg["personalityLabel"]
+        answer.personalityLabel = _studymate_personality_label(getattr(answer, "personality", None) or getattr(answer, "personalityType", None) or getattr(agent, "personality", None) or getattr(agent, "personalityType", None))
         answer.knowledgeLevel = msg["knowledgeLevel"]
-        answer.knowledgeLevelLabel = msg["knowledgeLevelLabel"]
+        answer.knowledgeLevelLabel = _studymate_knowledge_label(getattr(answer, "knowledgeLevel", None) or getattr(agent, "knowledgeLevel", None))
         answer.mode = mode
         answer.round = msg["round"]
         answer.sequence = msg["sequence"]
@@ -269,7 +411,7 @@ def _get_agents(request: MultiChatRequest) -> List[AgentProfile]:
     if not request.agents:
         default_count = max(1, min(_env_int("AI_DEFAULT_AGENT_COUNT", 3), 10))
         logger.info("에이전트 목록이 비어있습니다. env 기본 에이전트 사용 count=%d", default_count)
-        return [AgentProfile(
+        return _normalize_studymate_agents([AgentProfile(
             id=idx,
             agentId=f"agent-{idx + 1}",
             name=f"에이전트 {idx + 1}",
@@ -279,8 +421,8 @@ def _get_agents(request: MultiChatRequest) -> List[AgentProfile]:
             personalityStrength="moderate",
             knowledgeLevel=os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL", "undergraduate"),
             knowledgeLevelLabel=os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL_LABEL", "학사"),
-        ) for idx in range(default_count)]
-    return request.agents
+        ) for idx in range(default_count)])
+    return _normalize_studymate_agents(request.agents)
 
 
 def _filter_agents(agents: List[AgentProfile], target_id: Optional[int]) -> List[AgentProfile]:
@@ -1640,6 +1782,7 @@ def _run_default_mode_stream_impl(
             "route": route,
             "mode": "basic",
             "status": "start",
+            **_agent_identity_payload(agent),
             "message": f"에이전트 {idx} 답변 생성 중...",
         }}
 
@@ -1737,8 +1880,7 @@ def _run_default_mode_stream_impl(
             "visible": True,
             "route": route,
             "mode": "basic",
-            "personality": _personality_type(agent),
-            "knowledgeLevel": agent.knowledgeLevel,
+            **_agent_identity_payload(agent, answer_obj),
             "content": visible_answer,
             "answer": visible_answer,
             "status": "SUCCESS",
@@ -1869,7 +2011,7 @@ def _run_default_mode_stream_impl(
 
 def _direct_reply_response(request: MultiChatRequest, route: str, reply: str) -> MultiChatResponse:
     """hard stop route용 최소 응답. 단일 AgentAnswer만 담고 내부 단계/검증은 비운다."""
-    agents = _filter_agents(_get_agents(request), request.targetAgentId) or [_DEFAULT_AGENT]
+    agents = _normalize_studymate_agents(_filter_agents(_get_agents(request), request.targetAgentId) or [_DEFAULT_AGENT])
     agent = agents[0]
     answer = AgentAnswer(
         agentName=agent.name,
@@ -1926,6 +2068,21 @@ def run_direct_reply_stream(request: MultiChatRequest, route_result):
 
 
 def build_stream_generator(request: MultiChatRequest):
+    """SSE 이벤트 제너레이터. 라우팅은 기존과 동일하게 호출 시점에 수행하고,
+    반환 제너레이터에 '성격/지식수준 라벨 canonical 재계산' 방어막을 씌운다(전 모드 공통).
+    이 방어막은 apply_mode_contract 등 모든 래퍼 이후 마지막에 동작한다."""
+    inner = _build_stream_generator_impl(request)
+
+    def _wrapped():
+        for ev in inner:
+            if isinstance(ev, dict) and isinstance(ev.get("data"), dict):
+                _canonicalize_identity_labels(ev["data"])
+            yield ev
+
+    return _wrapped()
+
+
+def _build_stream_generator_impl(request: MultiChatRequest):
     """
     SSE용 이벤트 제너레이터를 만든다.
     default 계열 모드만 단계별 스트리밍하고, 그 외 모드는 블로킹 실행 후 all_complete 1회만 emit한다.
@@ -1957,7 +2114,7 @@ def build_stream_generator(request: MultiChatRequest):
         return run_direct_reply_stream(request, route_result)
 
     agents = _get_agents(request)
-    active_agents = _filter_agents(agents, request.targetAgentId)
+    active_agents = _normalize_studymate_agents(_filter_agents(agents, request.targetAgentId))
     context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
     rag_context = _get_rag_context(request.message, request.materialId)
 
@@ -4077,6 +4234,11 @@ def _resolve_mode(request: MultiChatRequest, agent_count: Optional[int] = None) 
 
 
 def run_multi_chat(request: MultiChatRequest) -> MultiChatResponse:
+    """mode 분기 실행(_run_multi_chat_impl) 후 answers/messages 라벨을 canonical 로 재계산한다."""
+    return _canonicalize_response_labels(_run_multi_chat_impl(request))
+
+
+def _run_multi_chat_impl(request: MultiChatRequest) -> MultiChatResponse:
     """
     mode에 따라 적절한 실행 함수로 분기한다.
 
@@ -4100,7 +4262,7 @@ def run_multi_chat(request: MultiChatRequest) -> MultiChatResponse:
         return _direct_reply_response(request, route_result.route, reply)
 
     agents = _get_agents(request)
-    active_agents = _filter_agents(agents, request.targetAgentId)
+    active_agents = _normalize_studymate_agents(_filter_agents(agents, request.targetAgentId))
     context = build_context_from_previous_answers(request.previousAnswers, max_items=20)
 
     # RAG 검색 (materialId 있으면 수행)
