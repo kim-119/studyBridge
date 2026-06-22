@@ -2432,6 +2432,12 @@ export default function StudyMate() {
   const selectAgent = async (agent) => {
     const agentId = getAgentId(agent);
     setSelectedAgent(agent);
+    // 방을 바꾸면 이전 방의 교수뷰 잔상(타임라인/말풍선/교수선택/모션)을 즉시 비운다.
+    // (mindmapMessages는 chatHistory에서 파생되므로 아래 setChatHistory로 자동 교체된다.)
+    setProfessorInteractions([]);
+    setProfessorBubbles({});
+    setSelectedProfessorRole(null);
+    setProfessorVisualStates({ theory: 'idle', book: 'idle', ai: 'idle' });
     // 방에 저장된 학습 진행 모드를 라디오 상태에 복원한다. 서버가 항상 basic/socratic/debate를
     // 내려주므로 그 값을 우선하고, (구버전 응답 등으로) 없으면 basic으로 둔다.
     if (agent?.learningMode) {

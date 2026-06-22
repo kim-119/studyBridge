@@ -5,6 +5,7 @@ import {
   Brain, CheckCircle2, Zap, MessageSquare,
   ChevronDown, ChevronUp, ChevronLeft, ChevronRight, ZoomIn, ZoomOut
 } from 'lucide-react';
+import RichText from './RichText';
 import './studymate-premium.css';
 
 // ── 토론 노드 전용 상수 ─────────────────────────────────────────────────────────
@@ -567,7 +568,7 @@ export default function AgentDiscussionThread({
                         <span style={{ animation: 'pulseDot 1.4s infinite ease-in-out both', width: '6px', height: '6px', background: color.accent, borderRadius: '50%' }} />
                       </div>
                    ) : (
-                      node.content
+                      <RichText text={node.content} />
                    )}
                  </div>
               </motion.div>
