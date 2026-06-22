@@ -312,6 +312,9 @@
     animation-name: pixelMenuPop !important;
   }
   .minute-recap-bubble { right: 10px; bottom: 10px; max-width: calc(100% - 20px); font-size: 12px; }
+  /* 좋은 화면: 교수 말풍선 폭 축소(얼굴/무대 밖으로 덜 튀어나오게). */
+  .prof-bubble-anchor { width: min(180px, 52vw); }
+  .prof-speech-bubble { font-size: 11.5px; padding: 6px 9px 7px; }
 }
 
 /* ── 모션 최소화 사용자: 흔들림/전환 정지(프레임 순환은 JS에서 정지). ────── */
@@ -407,7 +410,16 @@
   flex-shrink: 0;
 }
 .prof-speech-close:hover { color: #2b2118; }
+.prof-speech-target { font-size: 10px; font-weight: 700; color: #8a7f63; }
 .prof-speech-text { white-space: pre-wrap; word-break: break-word; }
+
+/* ── 말풍선 kind별 강조(시각 연출). 좌측 강조선/배경만 ─ 위치/스케일은 건드리지 않는다. ───── */
+.prof-speech-bubble.kind-thinking { background: #f4f1e6; border-color: #b9ad8c; }
+.prof-speech-bubble.kind-answer   { background: #fff8e6; border-color: #2b2118; }
+.prof-speech-bubble.kind-evidence { background: #eef5ff; border-color: #2f5fb0; }
+.prof-speech-bubble.kind-feedback { background: #f1ecfb; border-color: #6b4fb0; }
+.prof-speech-bubble.kind-rebuttal { background: #fdeeee; border-color: #b34141; }
+.prof-speech-bubble.kind-done     { background: #eaf7ed; border-color: #2f8a4d; }
 .prof-speech-text.is-full { max-height: 200px; overflow-y: auto; }
 .prof-speech-more {
   margin-top: 5px;

@@ -5,7 +5,10 @@ import React, { useState, useEffect } from 'react';
 //   · 답변 데이터 배열에 push하지 않는 presentation 전용(전체 답변은 아래 채팅 스레드에도 존재).
 const PREVIEW_LEN = 120;
 
-export default function ProfessorSpeechBubble({ name, text, side = 'center', color }) {
+// kind → 대상 관계 라벨(피드백/반박일 때 "→ 대상" 꼬리표). 시각 연출용.
+const TARGET_LABEL = { theory: '이론 교수', book: '문헌 교수', ai: 'AI 교수', user: '사용자' };
+
+export default function ProfessorSpeechBubble({ name, text, side = 'center', color, kind = 'answer', targetRole }) {
   const [expanded, setExpanded] = useState(false);
   const [hidden, setHidden] = useState(false);
 
@@ -18,17 +21,21 @@ export default function ProfessorSpeechBubble({ name, text, side = 'center', col
   const isLong = body.length > PREVIEW_LEN;
   const preview = isLong ? `${body.slice(0, PREVIEW_LEN).trimEnd()}…` : body;
   const accent = color || '#2b2118';
+  // 피드백/반박 말풍선에만 "→ 대상" 관계를 보인다(누가 누구에게 하는 말인지).
+  const relLabel = (kind === 'feedback' || kind === 'rebuttal') && targetRole ? TARGET_LABEL[targetRole] : '';
 
   return (
     <div
-      className={`prof-speech-bubble side-${side} ${expanded ? 'is-expanded' : ''}`}
+      className={`prof-speech-bubble side-${side} kind-${kind || 'answer'} ${expanded ? 'is-expanded' : ''}`}
       role="status"
       aria-live="polite"
       style={{ borderColor: accent }}
       onClick={(e) => e.stopPropagation()}
     >
       <div className="prof-speech-head">
-        <span className="prof-speech-name" style={{ color: accent }}>{name || '교수'}</span>
+        <span className="prof-speech-name" style={{ color: accent }}>
+          {name || '교수'}{relLabel && <span className="prof-speech-target"> → {relLabel}</span>}
+        </span>
         <button
           type="button"
           className="prof-speech-close"

@@ -14,6 +14,7 @@ export default function PixelProfessorStage({
   visualStates = {},
   agents = [],
   bubbles = {},
+  stageStatusMessage = '',
   onAutoReset,
   selectedRole,
   onSelectRole,
@@ -79,8 +80,9 @@ export default function PixelProfessorStage({
       onClick={() => onSelectRole?.(null)}
       aria-label="교수님들과 대화 픽셀 교실"
     >
-      <p className="pixel-stage-guide">
-        교수님을 클릭해 액션을 고르거나, 아래 입력창에서 질문을 보내보세요.
+      {/* stage 상단 안내문: 상태 기반(stageStatusMessage)이 있으면 우선, 없으면 기본 안내. */}
+      <p className="pixel-stage-guide" aria-live="polite">
+        {stageStatusMessage || '교수님을 클릭해 액션을 고르거나, 아래 입력창에서 질문을 보내보세요.'}
       </p>
 
       <div className="pixel-professor-layer">
@@ -111,7 +113,7 @@ export default function PixelProfessorStage({
               className="prof-bubble-anchor"
               style={{ left: `${p.pos.left}%`, bottom: `${p.pos.bottom + 200}px` }}
             >
-              <ProfessorSpeechBubble name={b.agentName || p.name} text={b.text} side={p.side} />
+              <ProfessorSpeechBubble name={b.agentName || p.name} text={b.text} side={p.side} kind={b.kind} targetRole={b.targetRole} />
             </div>
           );
         })}

@@ -7,9 +7,13 @@ import ProfessorLearningPanel from '../components/studymate/ProfessorLearningPan
 import '../components/studymate/studymate-premium.css';
 import PixelProfessorStage from '../components/studymate/pixel/PixelProfessorStage';
 import { useMinuteRecap } from '../components/studymate/pixel/useMinuteRecap';
-import { roleForAgentIndex, ROLE_TO_AGENT_INDEX } from '../components/studymate/pixel/professorSprites';
+import { roleForAgentIndex, ROLE_TO_AGENT_INDEX, ROLE_NAMES } from '../components/studymate/pixel/professorSprites';
 import ProfessorInteractionTimeline from '../components/studymate/pixel/ProfessorInteractionTimeline';
 import { normalizeMotionStates, phaseStatesFor, deriveInteractions } from '../components/studymate/pixel/modeInteractionProfiles';
+import {
+  isCasualShortInput, makeBubbleText, BUBBLE_TTL, COMPLETED_HOLD_MS,
+  PHASE_A, FALLBACK_PHASES, COMPLETED_PHASE, CASUAL_PHASE,
+} from '../components/studymate/pixel/basicInteractionChoreography';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getAgentColor, agentColorKey } from '../utils/agentColor';
 import { PERSONALITY_STYLE_OPTIONS, normalizePersonalityKey, personalityLabel as canonicalPersonalityLabel, personalityTemperature } from '../utils/personality';
@@ -2113,8 +2117,10 @@ export default function StudyMate() {
   // 픽셀 교수 stage: 선택된 교수(액션 메뉴) + 교수별 시각 상태(SSE 이벤트가 갱신, visual consumer).
   const [selectedProfessorRole, setSelectedProfessorRole] = useState(null); // 'theory'|'book'|'ai'|null
   const [professorVisualStates, setProfessorVisualStates] = useState({ theory: 'idle', book: 'idle', ai: 'idle' });
-  // 교수별 답변 말풍선: { [role]: { text, agentName } }. agent_answer 도착 시 채워지고 새 턴마다 비운다.
+  // 교수별 답변 말풍선: { [role]: { text, kind, targetRole, agentName } }. agent_answer/안무 단계에서 채워지고 새 턴마다 비운다.
   const [professorBubbles, setProfessorBubbles] = useState({});
+  // stage 상단 안내 문구(상태 기반). 비어 있으면 PixelProfessorStage가 기본 안내문으로 fallback.
+  const [stageStatusMessage, setStageStatusMessage] = useState('');
   // 마인드맵(트리) 섹션 토글: 기본 숨김, 버튼으로 펼친다.
   const [showMindmap, setShowMindmap] = useState(false);
   // 모드별 교수 상호작용 타임라인(현재 턴 기준, visual only). 백엔드 실제 이벤트 내용만 채운다.
@@ -2156,6 +2162,45 @@ export default function StudyMate() {
   }, []);
   // completed/error는 stage에서 800ms 후 idle 복귀를 요청한다.
   const handleProfessorAutoReset = React.useCallback((role) => setProfVisual(role, 'idle'), [setProfVisual]);
+
+  // ── 기본 모드 visual choreography 타이머(presentation only). ──────────────────
+  //    · filler: SSE 실답변/professor_motion 이 없을 때만 진행하는 Phase B~E 폴백 타이머.
+  //      백엔드 권위 이벤트가 오면 즉시 취소한다(양보).
+  //    · bubble: kind별 TTL(자동 제거)/완료 안내문 복귀 타이머.
+  //    새 질문 전송·방 변경·unmount·스트림 종료 시 반드시 정리한다(60초 자동 반복 없음).
+  const choreoFillerTimersRef = useRef([]);
+  const choreoBubbleTimersRef = useRef([]);
+  const clearChoreoFiller = React.useCallback(() => {
+    choreoFillerTimersRef.current.forEach(clearTimeout);
+    choreoFillerTimersRef.current = [];
+  }, []);
+  const clearChoreoBubbleTimers = React.useCallback(() => {
+    choreoBubbleTimersRef.current.forEach(clearTimeout);
+    choreoBubbleTimersRef.current = [];
+  }, []);
+  const clearAllChoreo = React.useCallback(() => {
+    clearChoreoFiller();
+    clearChoreoBubbleTimers();
+  }, [clearChoreoFiller, clearChoreoBubbleTimers]);
+
+  // 말풍선 1개 설정 + kind별 TTL 자동 제거 예약(동일 객체 참조일 때만 제거 → 새 턴 잔상 방지).
+  const setProfBubble = React.useCallback((role, bubble) => {
+    if (!role) return;
+    setProfessorBubbles((prev) => ({ ...prev, [role]: bubble }));
+    const ttl = bubble && BUBBLE_TTL[bubble.kind];
+    if (ttl > 0) {
+      const t = setTimeout(() => {
+        setProfessorBubbles((prev) => (prev[role] === bubble ? { ...prev, [role]: null } : prev));
+      }, ttl);
+      choreoBubbleTimersRef.current.push(t);
+    }
+  }, []);
+  const setProfBubbles = React.useCallback((map) => {
+    Object.entries(map || {}).forEach(([role, b]) => setProfBubble(role, b));
+  }, [setProfBubble]);
+
+  // unmount 시 모든 안무 타이머 정리(누수 방지).
+  useEffect(() => () => clearAllChoreo(), [clearAllChoreo]);
 
   // ── 1분 학습 흐름 요약: 최근 "완료된" 질문/답변 기준. 스트리밍 중/교수탭 아님이면 생성 안 함. ──
   const recapInput = React.useMemo(() => {
@@ -2438,6 +2483,9 @@ export default function StudyMate() {
     setProfessorBubbles({});
     setSelectedProfessorRole(null);
     setProfessorVisualStates({ theory: 'idle', book: 'idle', ai: 'idle' });
+    // 방 변경 시 진행 중이던 기본 모드 안무 타이머/안내문도 즉시 정리(이전 방 잔상 제거).
+    clearAllChoreo();
+    setStageStatusMessage('');
     // 방에 저장된 학습 진행 모드를 라디오 상태에 복원한다. 서버가 항상 basic/socratic/debate를
     // 내려주므로 그 값을 우선하고, (구버전 응답 등으로) 없으면 basic으로 둔다.
     if (agent?.learningMode) {
@@ -2573,6 +2621,8 @@ export default function StudyMate() {
     const visFor = (idx, state) => { if (!backendMotionDriven && visualActive()) setProfVisual(roleForAgentIndex(idx), state); };
     const visAll = (state) => { if (!backendMotionDriven && visualActive()) setAllProfVisual(state); };
     let sawError = false;
+    // 실제 agent_answer 를 1회라도 받으면 기본 모드 filler 폴백을 억제한다(real > filler).
+    let sawRealAnswer = false;
 
     const userMsg = {
       id: `${requestId}`,
@@ -2598,6 +2648,38 @@ export default function StudyMate() {
     visAll('thinking');
     // 새 턴: 교수 상호작용 타임라인 + 답변 말풍선 초기화(이전 턴 잔상 제거).
     if (visualActive()) { setProfessorInteractions([]); setProfessorBubbles({}); }
+
+    // ── 기본 모드 visual choreography(presentation only). ───────────────────────
+    //    질문 전송 직후 즉시 Phase A(전체 thinking) → 시간차로 Phase B~E 폴백을 진행한다.
+    //    백엔드 professor_motion / 실제 agent_answer 가 오면 filler 타이머는 즉시 양보(취소)한다.
+    //    여기서 만드는 텍스트는 "시각 연출"일 뿐 — 채팅 메시지 배열엔 절대 push하지 않는다(목표 8).
+    clearAllChoreo();
+    if (visualActive() && activeLearningMode === 'basic') {
+      const casual = isCasualShortInput(inputMsg);
+      const applyPhase = (p) => {
+        if (p.message != null) setStageStatusMessage(p.message);
+        if (p.states) setProfessorVisualStates(normalizeMotionStates(p.states));
+        if (p.bubbles) setProfBubbles(p.bubbles);
+      };
+      if (casual) {
+        // 짧은 인사/잡담: AI 교수만 가볍게. 반박/검증 폴백 단계는 만들지 않는다(목표 5).
+        applyPhase(CASUAL_PHASE);
+      } else {
+        applyPhase(PHASE_A);
+        FALLBACK_PHASES.forEach((p) => {
+          const t = setTimeout(() => {
+            // 백엔드 권위 안무/실답변이 주도하면 filler 단계는 그린다(양보).
+            if (backendMotionDriven || sawRealAnswer) return;
+            if (!isActiveRequest() || !visualActive()) return;
+            applyPhase(p);
+          }, p.at);
+          choreoFillerTimersRef.current.push(t);
+        });
+      }
+    } else if (visualActive()) {
+      // basic 외 모드는 안내문만 초기화(소크라테스/토론/상황극 UI는 건드리지 않는다).
+      setStageStatusMessage('');
+    }
 
     // ── 소크라테스 카드 게이팅(정책: 명시 요청 시에만) ─────────────────────────────
     // 라디오로 '소크라테스'를 골랐다는 사실만으로는 카드를 만들지 않는다. 사용자가 이번 메시지에서
@@ -3064,6 +3146,7 @@ export default function StudyMate() {
             onProfessorMotion: (d) => {
               if (!d) return;
               backendMotionDriven = true; // 이후 이벤트 기반 visual fallback 억제
+              clearChoreoFiller(); // 백엔드 권위 안무가 주도 → 기본 모드 filler 폴백 즉시 취소
               if (!visualActive()) return;
               const motionMode = d.mode || activeLearningMode;
               const states = (d.states && typeof d.states === 'object')
@@ -3085,16 +3168,24 @@ export default function StudyMate() {
               armWatchdog();
               if (!d) return;
               agentAnswerCount += 1;
+              // 실제 답변 도착 → 기본 모드 filler 폴백을 즉시 양보(취소)한다.
+              sawRealAnswer = true;
+              clearChoreoFiller();
               upsertAgentMessage(d, { isPending: false, content: d.content || d.answer || '' });
               // (목표 5/완료기준 2) agent_answer → 해당 교수만 answering.
               visFor(d.agentIndex, 'answering');
-              // 해당 교수 머리 위 말풍선에 답변을 띄운다(sprite와 동일 매핑).
+              // 해당 교수 머리 위 말풍선에 답변을 "짧게" 띄운다(전체 본문 X — 35~55자 truncate, 목표 3/8).
+              //  · 전체 답변은 아래 채팅 카드에만 존재. 말풍선은 시각 연출 전용(append 없음).
               const bubbleRole = roleForAgentIndex(d.agentIndex);
               if (bubbleRole) {
-                setProfessorBubbles((prev) => ({
-                  ...prev,
-                  [bubbleRole]: { text: d.content || d.answer || '', agentName: d.agentName },
-                }));
+                setProfBubble(bubbleRole, {
+                  text: makeBubbleText(d.content || d.answer || ''),
+                  kind: 'answer',
+                  agentName: d.agentName,
+                });
+                if (visualActive() && activeLearningMode === 'basic') {
+                  setStageStatusMessage(`${ROLE_NAMES[bubbleRole] || '교수님'}이 답변을 정리하고 있어요...`);
+                }
               }
             },
             onAgentError: (d) => {
@@ -3283,6 +3374,14 @@ export default function StudyMate() {
               streamCompleted = true;
               // 시각: 전체 교수 완료 표시(stage가 800ms 후 idle 복귀). backendMotionDriven 이어도 반드시 복귀하도록 ungated.
               if (visualActive()) setAllProfVisual('completed');
+              // 기본 모드 완료 안무: 안내문 + 완료 말풍선(kind:done → 1.2초 TTL), 이후 안내문 idle 복귀.
+              if (visualActive() && activeLearningMode === 'basic') {
+                clearChoreoFiller();
+                setStageStatusMessage(COMPLETED_PHASE.message);
+                if (!isCasualShortInput(inputMsg)) setProfBubbles(COMPLETED_PHASE.bubbles);
+                const t = setTimeout(() => { if (visualActive()) setStageStatusMessage(''); }, COMPLETED_HOLD_MS);
+                choreoBubbleTimersRef.current.push(t);
+              }
               captureConvState(d);
               lastTurnAtRef.current[agentId] = Date.now();
               if (import.meta.env.DEV) console.debug('[StudyMate][perf] all_complete', { totalMs: Date.now() - perfT0, ttfbMs: perfFirstEvent ? perfFirstEvent - perfT0 : null });
@@ -3520,6 +3619,13 @@ export default function StudyMate() {
       setTypingRooms((prev) => ({ ...prev, [agentId]: false }));
       // 시각: 스트림 종료 안전망(all_complete/error 누락 시에도 idle 복귀 보장). backendMotionDriven 이어도 복귀하도록 ungated.
       if (visualActive()) setAllProfVisual(sawError ? 'error' : 'completed');
+      // 안무 안전망: 진행 중 filler 타이머 정리 + 안내문 idle 복귀 예약(어떤 종료 경로에서도 안내문이 고착되지 않게).
+      if (visualActive()) {
+        clearChoreoFiller();
+        if (sawError) setProfessorBubbles({});
+        const tReset = setTimeout(() => { if (visualActive()) setStageStatusMessage(''); }, COMPLETED_HOLD_MS + 200);
+        choreoBubbleTimersRef.current.push(tReset);
+      }
       // 1분 요약 트리거: 현재 방의 정상 완료 시에만(에러 제외) 갱신.
       if (visualActive() && !sawError) setProfessorTurnDoneAt(Date.now());
       sendingRoomsRef.current.delete(agentId);
@@ -4196,6 +4302,7 @@ export default function StudyMate() {
                     visualStates={professorVisualStates}
                     agents={selectedAgent?.agents || []}
                     bubbles={professorBubbles}
+                    stageStatusMessage={stageStatusMessage}
                     onAutoReset={handleProfessorAutoReset}
                     selectedRole={selectedProfessorRole}
                     onSelectRole={setSelectedProfessorRole}
