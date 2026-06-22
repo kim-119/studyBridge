@@ -109,6 +109,16 @@ def test_basic_mode_is_free_conversation():
     assert "자유 대화" in d and "가르치려 들지 마라" in d
 
 
+def test_core_directive_overrides_custom_instruction():
+    # 프리셋 customInstruction이 공손하게 시켜도 6종 coreDirective가 무조건 이긴다.
+    from app.services.personality_prompt_builder import build_personality_prompt, build_persona_directive
+    polite = "아주 공손하고 친절한 존댓말로만 설명하세요"
+    sp = build_personality_prompt("냉소적", custom_instruction=polite)
+    pd = build_persona_directive("냉소적", custom_instruction=polite)
+    assert "비꼬는" in sp and "공손" not in sp
+    assert "비꼬는" in pd and "반말로 답한다" in pd and "공손" not in pd
+
+
 def _req(msg):
     return MultiChatRequest(message=msg, mode="basic", learningMode="basic", agents=_agents())
 
