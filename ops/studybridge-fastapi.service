@@ -1,3 +1,4 @@
+# 배포: GitHub Actions cd.yml의 fastapi-deploy 잡이 이 파일을 /etc/systemd/system에 설치/갱신한다.
 [Unit]
 Description=StudyBridge FastAPI AI server (EC2)
 After=network-online.target

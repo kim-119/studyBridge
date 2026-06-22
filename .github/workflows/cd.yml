@@ -281,6 +281,9 @@ jobs:
             if [ -f requirements.txt ]; then .venv/bin/pip install -q -r requirements.txt || true; fi
 
             # systemd 유닛 설치/갱신(idempotent) — nohup 수동 기동을 대체한다.
+            # 과거 mask(/dev/null 심볼릭) 잔재가 있으면 먼저 해제해야 cp/enable이 정상 동작한다.
+            sudo systemctl unmask studybridge-fastapi 2>/dev/null || true
+            sudo rm -f /etc/systemd/system/studybridge-fastapi.service
             sudo cp "$APP_DIR/ops/studybridge-fastapi.service" /etc/systemd/system/studybridge-fastapi.service
             sudo systemctl daemon-reload
             sudo systemctl enable studybridge-fastapi
