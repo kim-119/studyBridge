@@ -2649,6 +2649,16 @@ export default function StudyMate() {
     // 새 턴: 교수 상호작용 타임라인 + 답변 말풍선 초기화(이전 턴 잔상 제거).
     if (visualActive()) { setProfessorInteractions([]); setProfessorBubbles({}); }
 
+    // 학습 모드 결정(소크라테스 카드 게이팅 포함). choreography/카드 게이팅 등 아래 로직이 모두
+    // activeLearningMode 를 참조하므로, 그 사용처보다 반드시 먼저 선언해야 한다(TDZ 방지).
+    const baseLearningMode = learningMode || selectedAgent?.learningMode || 'basic';
+    const explicitSocratic = isExplicitSocraticRequest(inputMsg);
+    // 사용자가 라디오로 고른 모드를 그대로 존중한다(소크라테스/토론/상황극). 과거엔 '명시 요청'이 아니면
+    // 소크라테스를 basic으로 강등했는데, 그러면 모드 선택이 무력화돼 일반 설명만 나온다 → 강등 제거.
+    // (basic에서 메시지가 명시적으로 소크라테스를 요청하면 socratic으로 승격하는 것만 유지.)
+    const activeLearningMode = (explicitSocratic && baseLearningMode === 'basic') ? 'socratic' : baseLearningMode;
+    if (import.meta.env.DEV) console.debug('[StudyMate] mode', { baseLearningMode, explicitSocratic, activeLearningMode });
+
     // ── 기본 모드 visual choreography(presentation only). ───────────────────────
     //    질문 전송 직후 즉시 Phase A(전체 thinking) → 시간차로 Phase B~E 폴백을 진행한다.
     //    백엔드 professor_motion / 실제 agent_answer 가 오면 filler 타이머는 즉시 양보(취소)한다.
@@ -2685,13 +2695,7 @@ export default function StudyMate() {
     // 라디오로 '소크라테스'를 골랐다는 사실만으로는 카드를 만들지 않는다. 사용자가 이번 메시지에서
     // 명시적으로 단계별 문답/카드 학습을 요청했을 때만 소크라테스로 처리하고, 그 외에는 일반(basic)
     // 답변으로 내려 카드 폭발("SSH가 뭐야?"류)을 막는다. 토론/상황극 모드는 영향 없음.
-    const baseLearningMode = learningMode || selectedAgent?.learningMode || 'basic';
-    const explicitSocratic = isExplicitSocraticRequest(inputMsg);
-    // 사용자가 라디오로 고른 모드를 그대로 존중한다(소크라테스/토론/상황극). 과거엔 '명시 요청'이 아니면
-    // 소크라테스를 basic으로 강등했는데, 그러면 모드 선택이 무력화돼 일반 설명만 나온다 → 강등 제거.
-    // (basic에서 메시지가 명시적으로 소크라테스를 요청하면 socratic으로 승격하는 것만 유지.)
-    const activeLearningMode = (explicitSocratic && baseLearningMode === 'basic') ? 'socratic' : baseLearningMode;
-    if (import.meta.env.DEV) console.debug('[StudyMate] mode', { baseLearningMode, explicitSocratic, activeLearningMode });
+    // (baseLearningMode/explicitSocratic/activeLearningMode 는 위 choreography 블록 직전에서 선언함.)
     // 소크라테스 모드: 사용자가 방금 입력한 내용을 시도 답변(userAttempt)으로도 보내 오개념을 좁혀간다.
     // RAG 자료가 방에 연결돼 있으면 materialId도 함께 보낸다.
     const turnExtras = {};
