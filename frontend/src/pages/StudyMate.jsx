@@ -2605,10 +2605,11 @@ export default function StudyMate() {
     // 답변으로 내려 카드 폭발("SSH가 뭐야?"류)을 막는다. 토론/상황극 모드는 영향 없음.
     const baseLearningMode = learningMode || selectedAgent?.learningMode || 'basic';
     const explicitSocratic = isExplicitSocraticRequest(inputMsg);
-    const activeLearningMode = explicitSocratic
-      ? 'socratic'
-      : (isSocraticModeValue(baseLearningMode) ? 'basic' : baseLearningMode);
-    if (import.meta.env.DEV) console.debug('[StudyMate] socratic gate', { baseLearningMode, explicitSocratic, activeLearningMode });
+    // 사용자가 라디오로 고른 모드를 그대로 존중한다(소크라테스/토론/상황극). 과거엔 '명시 요청'이 아니면
+    // 소크라테스를 basic으로 강등했는데, 그러면 모드 선택이 무력화돼 일반 설명만 나온다 → 강등 제거.
+    // (basic에서 메시지가 명시적으로 소크라테스를 요청하면 socratic으로 승격하는 것만 유지.)
+    const activeLearningMode = (explicitSocratic && baseLearningMode === 'basic') ? 'socratic' : baseLearningMode;
+    if (import.meta.env.DEV) console.debug('[StudyMate] mode', { baseLearningMode, explicitSocratic, activeLearningMode });
     // 소크라테스 모드: 사용자가 방금 입력한 내용을 시도 답변(userAttempt)으로도 보내 오개념을 좁혀간다.
     // RAG 자료가 방에 연결돼 있으면 materialId도 함께 보낸다.
     const turnExtras = {};
