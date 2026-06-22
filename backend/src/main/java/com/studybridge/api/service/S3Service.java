@@ -82,6 +82,65 @@ public class S3Service {
         }
     }
 
+    // 대표 이미지(미디어 자산) 허용 MIME — 문서(uploadFile)와 분리. FastAPI 분석 대상 아님.
+    private static final java.util.Set<String> COVER_IMAGE_CONTENT_TYPES = java.util.Set.of(
+            "image/jpeg",
+            "image/png",
+            "image/webp"
+    );
+
+    /**
+     * 스터디 대표 이미지 업로드 — 문서 검증(uploadFile)과 완전히 분리한다.
+     * 허용: image/jpeg, image/png, image/webp (확장자 fallback 포함), 최대 5MB.
+     * S3 prefix: study-images/user_{userId}/{uuid}.{ext}. 단순 media asset 으로 분석 파이프라인에 보내지 않는다.
+     */
+    public String uploadCoverImage(MultipartFile file, Long userId) throws IOException {
+        String contentType = file.getContentType();
+        String originalName = file.getOriginalFilename();
+        String lowerName = originalName != null ? originalName.toLowerCase() : "";
+        boolean validMime = contentType != null && COVER_IMAGE_CONTENT_TYPES.contains(contentType);
+        boolean validExt = lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")
+                || lowerName.endsWith(".png") || lowerName.endsWith(".webp");
+        if (!validMime && !validExt) {
+            throw new IllegalArgumentException("대표 이미지는 JPG, PNG, WEBP 파일만 업로드할 수 있습니다.");
+        }
+
+        long maxSize = 5L * 1024L * 1024L;
+        if (file.getSize() > maxSize) {
+            throw new IllegalArgumentException("대표 이미지는 5MB 이하만 업로드할 수 있습니다.");
+        }
+
+        // 확장자/콘텐츠 타입 정규화 — MIME 누락 시 확장자로, 둘 다 없으면 jpg 로 보정
+        String ext;
+        String resolvedContentType;
+        if ("image/png".equals(contentType) || lowerName.endsWith(".png")) {
+            ext = ".png";
+            resolvedContentType = "image/png";
+        } else if ("image/webp".equals(contentType) || lowerName.endsWith(".webp")) {
+            ext = ".webp";
+            resolvedContentType = "image/webp";
+        } else {
+            ext = ".jpg";
+            resolvedContentType = "image/jpeg";
+        }
+
+        String key = "study-images/user_" + userId + "/" + UUID.randomUUID() + ext;
+        try {
+            PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(key)
+                    .contentType(resolvedContentType)
+                    .build();
+
+            s3Client.putObject(putObjectRequest, RequestBody.fromBytes(file.getBytes()));
+            log.info("[S3 대표 이미지 업로드 완료] 대표 이미지가 정상 업로드되었습니다: {}", key);
+            return key;
+        } catch (Exception e) {
+            log.error("[S3 대표 이미지 업로드 에러] S3 업로드 중 예외가 발생했습니다: ", e);
+            throw new RuntimeException("AWS S3 파일 업로드에 실패했습니다.", e);
+        }
+    }
+
     public String uploadBlogFile(MultipartFile file, Long userId) throws IOException {
         String contentType = file.getContentType();
         if (contentType == null) {

@@ -5,6 +5,23 @@ import { useAuth } from '../hooks/useAuth';
 import { groupService } from '../services/api';
 import StudyRoom from '../components/StudyRoom';
 
+// 대표 이미지 전용 검증 — 학습 자료(문서 PDF/DOCX/TXT) validator 와 완전히 분리한다.
+// 허용: image/jpeg, image/png, image/webp (확장자 fallback 포함), 최대 5MB. 통과 시 null, 실패 시 에러 문구 반환.
+const COVER_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const COVER_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'];
+const validateCoverImageFile = (file) => {
+  const name = (file?.name || '').toLowerCase();
+  const validMime = COVER_IMAGE_MIME_TYPES.has(file?.type);
+  const validExt = COVER_IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext));
+  if (!validMime && !validExt) {
+    return '대표 이미지는 JPG, PNG, WEBP 파일만 업로드할 수 있습니다.';
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    return '대표 이미지는 5MB 이하만 업로드할 수 있습니다.';
+  }
+  return null;
+};
+
 // getUserMedia 장치 오류를 원인별로 구분해 사용자 메시지로 변환한다.
 const friendlyDeviceMessage = (err) => {
   switch (err?.name) {
@@ -1753,16 +1770,21 @@ export default function GroupStudy() {
                 <input
                   type="file"
                   id="create-study-image"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   onChange={(e) => {
                     const file = e.target.files[0];
-                    if (file) {
-                      setCreateForm(prev => ({
-                        ...prev,
-                        imageFile: file,
-                        thumbnail: URL.createObjectURL(file)
-                      }));
+                    if (!file) return;
+                    const imageError = validateCoverImageFile(file);
+                    if (imageError) {
+                      showAlert('알림', imageError);
+                      e.target.value = ''; // 동일 파일 재선택 가능하도록 input 초기화
+                      return;
                     }
+                    setCreateForm(prev => ({
+                      ...prev,
+                      imageFile: file,
+                      thumbnail: URL.createObjectURL(file)
+                    }));
                   }}
                   style={{ display: 'none' }}
                 />

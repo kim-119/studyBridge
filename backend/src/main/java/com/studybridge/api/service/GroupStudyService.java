@@ -48,7 +48,7 @@ public class GroupStudyService {
         String coverImageKey = null;
         if (image != null && !image.isEmpty()) {
             try {
-                coverImageKey = s3Service.uploadFile(image, leaderId);
+                coverImageKey = s3Service.uploadCoverImage(image, leaderId);
             } catch (IOException e) {
                 log.error("Failed to upload cover image to S3", e);
                 throw new RuntimeException("스터디 대표 이미지 업로드에 실패했습니다.", e);
@@ -421,7 +421,7 @@ public class GroupStudyService {
             }
             // 새 이미지 업로드
             try {
-                String newKey = s3Service.uploadFile(image, leaderId);
+                String newKey = s3Service.uploadCoverImage(image, leaderId);
                 groupStudy.setCoverImageKey(newKey);
             } catch (IOException e) {
                 log.error("Failed to upload new cover image to S3", e);

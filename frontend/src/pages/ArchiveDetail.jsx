@@ -25,6 +25,115 @@ const DETECTED_SOURCE_LABEL = {
 //    Spring 은 pageSummaries 를 Map 그대로 전달하므로 신규 필드가 드롭되지 않는다 — 프론트만 보강하면 됨.
 //  · ‘원문/추출 텍스트’: ai07 extractedText(원문) 또는 textPreview(부분)가 있으면 그 페이지 원문을 우선
 //    표시하고, 없으면 추출·정리된 내용을 조립해 보여준다(동작 없는 dead 버튼 금지).
+// HTML 엔티티 디코드 — 서버가 &quot; 등을 그대로 내려도 화면엔 정상 문자로 표시(DOM 비의존 안전 치환).
+const HTML_ENTITY_MAP = { '&quot;': '"', '&#34;': '"', '&apos;': "'", '&#39;': "'", '&amp;': '&', '&#38;': '&', '&lt;': '<', '&#60;': '<', '&gt;': '>', '&#62;': '>', '&nbsp;': ' ' };
+function decodeEntities(value) {
+  if (value == null) return '';
+  let s = String(value);
+  s = s.replace(/&(?:quot|#34|apos|#39|amp|#38|lt|#60|gt|#62|nbsp);/g, (m) => HTML_ENTITY_MAP[m] || m);
+  s = s.replace(/&#(\d+);/g, (_, n) => { const c = Number(n); return Number.isFinite(c) ? String.fromCharCode(c) : _; });
+  return s;
+}
+
+// 세부 핵심 내용 페이지 병합 — pageAnalyses(신규 ai07) 우선, detailedCoreContents·pageSummaries fallback.
+// totalPages 우선순위: note.totalPages → pageAnalyses.length → detailedCoreContents.length → pageSummaries.length.
+// ⚠️ 이 파일은 lucide-react 의 Map 아이콘을 import 하여 전역 Map 이 가려짐 → new Map() 금지(plain array 사용).
+function buildDetailedPages(note) {
+  const arr = (a) => (Array.isArray(a) ? a : []);
+  const pa = arr(note?.pageAnalyses);
+  const dc = arr(note?.detailedCoreContents);
+  const ps = arr(note?.pageSummaries);
+  const explicit = Number(note?.totalPages);
+  const total = Number.isFinite(explicit) && explicit > 0
+    ? explicit
+    : Math.max(pa.length, dc.length, ps.length);
+  if (!total || total < 1) return [];
+  const pages = [];
+  for (let i = 0; i < total; i += 1) {
+    const a = pa[i] || {};
+    const d = dc[i] || {};
+    const s = ps[i] || {};
+    pages.push({
+      // fallback 시에도 pageNumber 는 index+1 로 표시
+      pageNumber: a.pageNumber ?? a.page ?? s.pageNumber ?? s.page ?? (i + 1),
+      title: a.title ?? d.title ?? s.title ?? '',
+      oneLineSummary: a.oneLineSummary ?? a.summary ?? '',
+      pageOverview: s.pageOverview ?? '',
+      bulletPoints: a.bulletPoints ?? a.keyPoints ?? [],
+      summaryBullets: s.summaryBullets ?? [],
+      keywords: a.keywords ?? [],
+      keyConcepts: s.keyConcepts ?? [],
+      takeaway: a.takeaway ?? '',
+      studyFocus: s.studyFocus ?? '',
+      sourceQuality: a.sourceQuality ?? a.extractionStatus ?? s.sourceQuality ?? '',
+      detectedTextSource: s.detectedTextSource ?? '',
+      extractionStatus: a.extractionStatus ?? '',
+      extractedText: a.extractedText ?? s.extractedText ?? '',
+      textPreview: a.textPreview ?? s.textPreview ?? '',
+      warnings: a.warnings ?? s.warnings ?? [],
+      detailContent: d.content ?? '',
+    });
+  }
+  return pages;
+}
+
+// 보강 설명 정규화 + 프론트 최종 방어 필터(핵심 필터는 ai07 책임 — 프론트는 마지막 방어선).
+const ENRICH_PAGE_TERMS = ['페이지', '자료', '본문', 'pdf', '텍스트', '내용'];
+function normalizeEnrichment(note) {
+  const arr = (a) => (Array.isArray(a) ? a : []);
+  const raw = arr(note?.enrichment).length ? arr(note?.enrichment) : arr(note?.wikiSummaries);
+  return raw
+    .map((w) => ({
+      term: decodeEntities(w?.term ?? w?.concept ?? w?.title ?? ''),
+      explanation: decodeEntities(w?.explanation ?? w?.description ?? w?.summary ?? ''),
+      pages: w?.pages ?? w?.relatedPages ?? w?.page ?? null,
+      source: decodeEntities(w?.source ?? w?.reference ?? ''),
+      used: !!w?.used,
+    }))
+    .filter((w) => {
+      if (!w.explanation) return false;
+      const t = w.term.trim().toLowerCase();
+      if (ENRICH_PAGE_TERMS.includes(t)) return false;              // 문서 '페이지/자료/본문...' 의미 term 숨김
+      if (/larry page|래리 페이지/i.test(w.explanation)) return false; // 'page' → 인물(래리 페이지) 오역 방어
+      return true;
+    });
+}
+
+// 학습 일지 저장용 마크다운 본문 조립(자료 분석 결과 — 핵심/페이지별 세부/보강 설명/출처).
+function buildAnalysisJournalMarkdown(note, material) {
+  const arr = (a) => (Array.isArray(a) ? a : []);
+  const title = decodeEntities(material?.title || material?.originalFileName || '자료');
+  const out = [`# ${title}`, ''];
+  const core = arr(note?.coreContents).filter(Boolean);
+  if (core.length) {
+    out.push('## 핵심 내용');
+    core.forEach((c) => out.push(`- ${decodeEntities(typeof c === 'string' ? c : (c?.content || c?.title || ''))}`));
+    out.push('');
+  }
+  const pages = buildDetailedPages(note);
+  if (pages.length) {
+    out.push('## 페이지별 세부 핵심');
+    pages.forEach((p) => {
+      out.push(`### p.${p.pageNumber}${p.title ? ` ${decodeEntities(p.title)}` : ''}`);
+      const summary = decodeEntities(p.oneLineSummary || p.pageOverview || '');
+      if (summary) out.push(`- 요약: ${summary}`);
+      const bullets = (p.bulletPoints?.length ? p.bulletPoints : p.summaryBullets) || [];
+      arr(bullets).forEach((b) => { const t = decodeEntities(typeof b === 'string' ? b : (b?.text || b?.content || '')); if (t) out.push(`- ${t}`); });
+      if (p.detailContent) out.push(`- ${decodeEntities(p.detailContent)}`);
+      out.push('');
+    });
+  }
+  const enrich = normalizeEnrichment(note);
+  if (enrich.length) {
+    out.push('## 보강 설명');
+    enrich.forEach((e) => out.push(`- ${e.term ? `${e.term}: ` : ''}${e.explanation}`));
+    out.push('');
+  }
+  out.push('## 출처');
+  out.push(`- 자료보관함 materialId: ${material?.materialId ?? material?.id ?? ''}`);
+  return out.join('\n');
+}
+
 function DetailedPager({ pages }) {
   const list = (a) => (Array.isArray(a) ? a.filter((x) => x != null && String(x).trim() !== '') : []);
   const firstList = (...cands) => { for (const c of cands) { const v = list(c); if (v.length) return v; } return []; };
@@ -45,7 +154,7 @@ function DetailedPager({ pages }) {
   const insufficient = src === 'INSUFFICIENT' || src === 'NONE';
   const concepts = firstList(p.keywords, p.keyConcepts);
   const bullets = firstList(p.bulletPoints, p.summaryBullets);
-  const overview = firstStr(p.oneLineSummary, p.pageOverview);
+  const overview = firstStr(p.oneLineSummary, p.pageOverview, p.detailContent);
   const takeaway = firstStr(p.takeaway, p.studyFocus);
   const warnings = list(p.warnings);
   const title = firstStr(p.title);
@@ -169,16 +278,40 @@ function DetailedPager({ pages }) {
 }
 
 // AI 핵심 요약 노트(전공 분야·핵심 객체 중심) 결과 렌더 — 11개 섹션. studyNote.status==='SUCCESS' 일 때만 사용.
-function StudyNoteView({ note, onKeyword }) {
+function StudyNoteView({ note, material, onKeyword }) {
   const list = (a) => (Array.isArray(a) ? a.filter(Boolean) : []);
   const kws = list(note.keywords);
   const core = list(note.coreContents);
-  const detailed = list(note.detailedCoreContents);
-  const pages = list(note.pageSummaries);
+  // 세부 핵심 내용: pageAnalyses(신규) → detailedCoreContents → pageSummaries 를 totalPages 기준으로 병합.
+  const detailedPages = buildDetailedPages(note);
   const points = list(note.studyPoints);
   const questions = list(note.aiStudyQuestions);
-  const wikis = list(note.wikiSummaries);
+  // 보강 설명: enrichment(신규) 우선 + 엔티티 디코드 + 프론트 최종 방어 필터.
+  const enrich = normalizeEnrichment(note);
   const limits = list(note.limitations);
+
+  // 학습 일지에 추가 — 기존 createStudyLog(POST /api/materials/log, 소유자 인증) 재사용.
+  const [journalState, setJournalState] = useState('idle'); // idle | saving | done | error
+  const addToJournal = async () => {
+    if (journalState === 'saving' || journalState === 'done') return; // 중복 클릭 방지
+    try {
+      setJournalState('saving');
+      const content = buildAnalysisJournalMarkdown(note, material);
+      const keywords = list(note.keywords).join(', ');
+      await materialService.createStudyLog({
+        title: `[자료보관함] ${decodeEntities(material?.title || material?.originalFileName || '자료')} 핵심 정리`,
+        keywords,
+        studyDate: new Date().toISOString().slice(0, 10),
+        learningContent: content,
+        nextPlan: '',
+      });
+      setJournalState('done');
+    } catch (e) {
+      console.error('학습 일지 추가 실패:', e);
+      setJournalState('error');
+    }
+  };
+  const journalLabel = { idle: '학습 일지에 추가', saving: '추가 중…', done: '학습 일지에 추가됨', error: '다시 시도' }[journalState];
   const coreObj = note.coreObjectLabel || note.coreObject;
   const showOrig = note.coreObjectLabel && note.coreObject && note.coreObjectLabel !== note.coreObject;
   const Section = ({ title, color = 'var(--color-primary)', children }) => (
@@ -190,22 +323,10 @@ function StudyNoteView({ note, onKeyword }) {
   const ulStyle = { margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' };
   const liStyle = { fontSize: '14px', lineHeight: '1.6', color: 'var(--color-text-muted)' };
 
-  // 세부 핵심 내용: pageSummaries(페이지 단위 카드 1개씩 ‹ › 네비) 우선 → detailedCoreContents fallback → 없음 안내
+  // 세부 핵심 내용: 병합된 detailedPages 를 페이지 단위 카드 1개씩 ‹ › 네비로 표시(totalPages 기준).
   const renderDetailed = () => {
-    if (pages.length > 0) {
-      return <DetailedPager pages={pages} />;
-    }
-    if (detailed.length > 0) {
-      return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {detailed.map((d, i) => (
-            <div key={i}>
-              {d.title && <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)', marginBottom: '4px' }}>{d.title}</div>}
-              <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.7', color: 'var(--color-text-muted)', whiteSpace: 'pre-wrap' }}>{d.content}</p>
-            </div>
-          ))}
-        </div>
-      );
+    if (detailedPages.length > 0) {
+      return <DetailedPager pages={detailedPages} />;
     }
     return (
       <div style={{ borderRadius: '10px', border: '1px dashed var(--color-border)', background: '#F9FAFB', padding: '16px 18px' }}>
@@ -257,26 +378,49 @@ function StudyNoteView({ note, onKeyword }) {
       {questions.length > 0 && (
         <Section title="❓ AI 학습 질문" color="#F59E0B"><ul style={ulStyle}>{questions.map((q, i) => <li key={i} style={liStyle}>{q}</li>)}</ul></Section>
       )}
-      {wikis.length > 0 && (
-        <Section title="📚 보강 정보" color="#8B5CF6">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {wikis.map((w, i) => (
-              <div key={i}>
-                {w.title && (
-                  <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)', marginBottom: '2px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    {w.title}
+      {enrich.length > 0 && (
+        <Section title="📚 보강 설명" color="#8B5CF6">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {enrich.map((w, i) => {
+              const pageLabel = Array.isArray(w.pages) ? w.pages.filter((x) => x != null).join(', ') : (w.pages != null ? String(w.pages) : '');
+              return (
+                <div key={i}>
+                  <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)', marginBottom: '3px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                    {w.term || `보강 설명 ${i + 1}`}
                     {w.used && <span style={{ fontSize: '11px', fontWeight: 600, color: '#6D28D9', background: '#EDE9FE', borderRadius: '4px', padding: '1px 6px' }}>보강 반영</span>}
+                    {pageLabel && <span style={{ fontSize: '11px', fontWeight: 600, color: '#1D4ED8', background: '#EFF6FF', borderRadius: '4px', padding: '1px 6px' }}>관련 p.{pageLabel}</span>}
                   </div>
-                )}
-                <p style={{ margin: 0, fontSize: '13.5px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>{w.summary}</p>
-              </div>
-            ))}
+                  <p style={{ margin: 0, fontSize: '13.5px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>{w.explanation}</p>
+                  {w.source && <span style={{ display: 'inline-block', marginTop: '4px', fontSize: '11px', fontWeight: 600, color: '#6B7280', background: '#F3F4F6', border: '1px solid var(--color-border)', borderRadius: '4px', padding: '1px 6px' }}>근거: {w.source}</span>}
+                </div>
+              );
+            })}
           </div>
         </Section>
       )}
       {limits.length > 0 && (
         <Section title="⚠️ 한계" color="#9CA3AF"><ul style={ulStyle}>{limits.map((l, i) => <li key={i} style={liStyle}>{l}</li>)}</ul></Section>
       )}
+
+      {/* 화면 하단 — 분석 결과(세부 핵심/보강 설명) 아래에 항상 보이는 학습 일지 추가 버튼 */}
+      <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <button
+          type="button"
+          onClick={addToJournal}
+          disabled={journalState === 'saving' || journalState === 'done'}
+          className={journalState === 'done' ? 'btn-outline' : 'btn-primary'}
+          style={{ width: 'auto', alignSelf: 'flex-start', padding: '10px 20px', borderRadius: '20px', display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: (journalState === 'saving' || journalState === 'done') ? 'default' : 'pointer', opacity: journalState === 'saving' ? 0.7 : 1 }}
+        >
+          {journalState === 'done' ? <CheckCircle2 size={16} /> : <CalendarPlus size={16} />}
+          {journalLabel}
+        </button>
+        {journalState === 'done' && (
+          <span style={{ fontSize: '13px', color: '#15803D' }}>✓ 학습 일지에 추가되었습니다. 학습일지에서 확인할 수 있어요.</span>
+        )}
+        {journalState === 'error' && (
+          <span style={{ fontSize: '13px', color: '#B91C1C' }}>학습 일지 추가에 실패했습니다. 다시 시도해주세요.</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -2279,7 +2423,7 @@ export default function ArchiveDetail() {
                       PDF에서 명확한 전공 핵심 객체를 충분히 식별하지 못해 기본 학습 가이드로 생성되었습니다.
                     </div>
                   )}
-                  <StudyNoteView note={studyNote} onKeyword={setActiveKeyword} />
+                  <StudyNoteView note={studyNote} material={material} onKeyword={setActiveKeyword} />
                 </>
               )}
 
