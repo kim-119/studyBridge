@@ -982,7 +982,7 @@ export default function GroupStudy() {
 
                 {/* 상단 이미지 및 제목 영역 */}
                 <div style={{ position: 'relative', height: '160px', backgroundColor: '#1F2937', color: 'white', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '20px' }}>
-                  <img src="https://images.unsplash.com/photo-1516321497487-e288fb19713f?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80" alt="Background" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3 }} />
+                  <img src={selectedPost.thumbnailUrl || "https://images.unsplash.com/photo-1516321497487-e288fb19713f?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80"} alt="Background" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3 }} />
                   <button onClick={() => { setSelectedPost(null); setApplyMessage(''); }} style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', color: 'white', cursor: 'pointer', padding: '4px', zIndex: 2 }}>
                     <X size={20} />
                   </button>

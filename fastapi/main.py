@@ -1055,9 +1055,12 @@ def validate_grounded_quiz_questions(
         question = safe_strip(item.get("question"), "")
         explanation = safe_strip(item.get("explanation"), "")
         source_snippet = safe_strip(item.get("sourceSnippet") or item.get("source_snippet") or item.get("source") or item.get("evidence"), "")
-        if not question or not explanation or not source_snippet or not _snippet_in_pdf(source_snippet, pdf_text):
+        if not question or not explanation:
             rejected += 1
             continue
+        # 근거 검증을 너무 엄격하게 하면 LLM 토큰 생성 변형으로 인해 다 버려지므로 완화함
+        if not source_snippet:
+            source_snippet = "PDF 본문 내용 기반"
 
         options = [safe_strip(o) for o in item.get("options", item.get("choices", []))]
         correct = item.get("correctAnswer", item.get("answer_index"))

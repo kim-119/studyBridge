@@ -11,7 +11,10 @@ import com.studybridge.api.repository.GroupStudyMemberRepository;
 import com.studybridge.api.repository.UserRepository;
 import com.studybridge.api.security.domain.CustomUserDetails;
 import com.studybridge.api.service.IntentRouterService;
-import com.studybridge.api.service.RedisChatService;
+import com.studybridge.api.entity.GroupChatMessage;
+import com.studybridge.api.entity.GroupStudy;
+import com.studybridge.api.repository.GroupChatMessageRepository;
+import com.studybridge.api.repository.GroupStudyRepository;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -33,12 +36,40 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class GroupStudyStreamController {
 
-    private final RedisChatService redisChatService;
+    private final GroupChatMessageRepository groupChatMessageRepository;
+    private final GroupStudyRepository groupStudyRepository;
     private final GroupStudyMemberRepository groupStudyMemberRepository;
     private final UserRepository userRepository;
     private final WebClient fastApiWebClient;
     private final ObjectMapper objectMapper;
     private final IntentRouterService intentRouterService;
+
+    @GetMapping(value = "/{groupId}/chats/history", produces = MediaType.APPLICATION_JSON_VALUE)
+    public org.springframework.http.ResponseEntity<List<Map<String, Object>>> getChatHistory(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long groupId) {
+        
+        boolean isMember = groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(
+                groupId, userDetails.getId(), GroupStudyMemberStatus.JOINED);
+        if (!isMember) {
+            return org.springframework.http.ResponseEntity.status(403).build();
+        }
+
+        List<GroupChatMessage> historyList = groupChatMessageRepository.findTop100ByGroupStudyIdOrderByCreatedAtDesc(groupId);
+        java.util.Collections.reverse(historyList);
+        
+        List<Map<String, Object>> response = historyList.stream().map(h -> {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("id", h.getId());
+            map.put("senderName", h.getSenderName());
+            map.put("senderId", h.getSenderId());
+            map.put("content", h.getContent());
+            map.put("isAi", "ASSISTANT".equals(h.getRole()));
+            return map;
+        }).toList();
+        
+        return org.springframework.http.ResponseEntity.ok(response);
+    }
 
     @PostMapping(value = "/{groupId}/chats/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> streamGroupChat(
@@ -66,17 +97,16 @@ public class GroupStudyStreamController {
                 .orElseThrow(() -> new NoSuchElementException("사용자를 찾을 수 없습니다."));
         String displayName = user.getDisplayName() != null ? user.getDisplayName() : "사용자";
 
-        // 3. Redis에서 최근 100개 대화 내역 조회 (시간순)
-        List<RedisChatMessage> history = redisChatService.getRecentHistory(groupId);
-        List<Map<String, Object>> previousAnswers = history.stream()
+        // 3. DB에서 최근 100개 대화 내역 조회 (시간순 정렬)
+        List<GroupChatMessage> historyList = groupChatMessageRepository.findTop100ByGroupStudyIdOrderByCreatedAtDesc(groupId);
+        java.util.Collections.reverse(historyList);
+        List<Map<String, Object>> previousAnswers = historyList.stream()
                 .map(h -> {
                     Map<String, Object> map = new LinkedHashMap<>();
-                    map.put("agentName", h.getAgentName());
-                    map.put("answer", h.getAnswer());
+                    map.put("agentName", h.getSenderName());
+                    map.put("answer", h.getContent());
                     map.put("role", h.getRole());
-                    if (h.getAgentId() != null) {
-                        map.put("agentId", h.getAgentId());
-                    }
+                    map.put("agentId", h.getSenderId());
                     return map;
                 })
                 .toList();
@@ -264,8 +294,8 @@ public class GroupStudyStreamController {
                             .build();
                 })
                 .doOnComplete(() -> {
-                    log.info("SSE Stream completed for groupId={}. Persisting discussion to Redis.", groupId);
-                    persistGroupStreamMessages(groupId, displayName, effectiveMessage, agentsList, agentReplies);
+                    log.info("SSE Stream completed for groupId={}. Persisting discussion to DB.", groupId);
+                    persistGroupStreamMessages(groupId, displayName, effectiveMessage, agentsList, agentReplies, String.valueOf(userDetails.getId()));
                 })
                 .doOnError(err -> log.error("Error during FastAPI chat streaming for groupId={}", groupId, err))
                 .onErrorResume(err -> fastApiWebClient.post()
@@ -276,7 +306,7 @@ public class GroupStudyStreamController {
                         .map(data -> {
                             String body = data != null ? data : "{}";
                             accumulateFastApiStreamEvent("all_complete", body, agentReplies);
-                            persistGroupStreamMessages(groupId, displayName, effectiveMessage, agentsList, agentReplies);
+                            persistGroupStreamMessages(groupId, displayName, effectiveMessage, agentsList, agentReplies, String.valueOf(userDetails.getId()));
                             return ServerSentEvent.<String>builder()
                                     .event("all_complete")
                                     .data(body)
@@ -319,10 +349,15 @@ public class GroupStudyStreamController {
 
     private void persistGroupStreamMessages(Long groupId, String displayName, String effectiveMessage,
                                             List<Map<String, Object>> agentsList,
-                                            Map<String, StringBuilder> agentReplies) {
-        redisChatService.saveMessage(groupId, RedisChatMessage.builder()
-                .agentName(displayName)
-                .answer(effectiveMessage)
+                                            Map<String, StringBuilder> agentReplies, String userId) {
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId).orElse(null);
+        if (groupStudy == null) return;
+
+        groupChatMessageRepository.save(GroupChatMessage.builder()
+                .groupStudy(groupStudy)
+                .senderName(displayName)
+                .senderId(userId)
+                .content(effectiveMessage)
                 .role("USER")
                 .build());
 
@@ -339,11 +374,12 @@ public class GroupStudyStreamController {
                         break;
                     }
                 }
-                redisChatService.saveMessage(groupId, RedisChatMessage.builder()
-                        .agentName(agentName)
-                        .answer(fullReply)
+                groupChatMessageRepository.save(GroupChatMessage.builder()
+                        .groupStudy(groupStudy)
+                        .senderName(agentName)
+                        .senderId(matchedAgentId != null ? String.valueOf(matchedAgentId) : "AI_SYSTEM")
+                        .content(fullReply)
                         .role("ASSISTANT")
-                        .agentId(matchedAgentId)
                         .build());
             }
         });

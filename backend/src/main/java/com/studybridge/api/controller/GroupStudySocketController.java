@@ -10,6 +10,10 @@ import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Controller;
 
+import com.studybridge.api.entity.GroupChatMessage;
+import com.studybridge.api.entity.GroupStudy;
+import com.studybridge.api.repository.GroupChatMessageRepository;
+import com.studybridge.api.repository.GroupStudyRepository;
 import java.time.LocalDateTime;
 
 @Controller
@@ -19,6 +23,8 @@ public class GroupStudySocketController {
 
     private final SimpMessagingTemplate messagingTemplate;
     private final GroupStudyQuizSessionService quizSessionService;
+    private final GroupChatMessageRepository groupChatMessageRepository;
+    private final GroupStudyRepository groupStudyRepository;
 
     @MessageMapping("/group/{groupId}/chat")
     public void broadcastGroupChat(
@@ -28,6 +34,17 @@ public class GroupStudySocketController {
         log.info("Received chat on websocket. groupId={}, sender={}, text={}", groupId, payload.getSenderName(),
                 payload.getContent());
         payload.setTimestamp(LocalDateTime.now().toString());
+
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId).orElse(null);
+        if (groupStudy != null) {
+            groupChatMessageRepository.save(GroupChatMessage.builder()
+                .groupStudy(groupStudy)
+                .senderName(payload.getSenderName())
+                .senderId(payload.getSenderId() != null ? payload.getSenderId() : "UNKNOWN")
+                .content(payload.getContent())
+                .role("USER")
+                .build());
+        }
 
         messagingTemplate.convertAndSend("/topic/group/" + groupId + "/chat", payload);
     }

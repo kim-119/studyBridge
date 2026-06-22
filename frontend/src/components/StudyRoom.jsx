@@ -304,7 +304,7 @@ function VideoFeed({ stream, isLocal, displayName, isMuted, isCamOn, isMicOn = t
 
 export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn, initialVideoOn }) {
   const { userId, user } = useAuth();
-  
+
   const formatSecondsToStudyTime = (secs) => {
     if (!secs && secs !== 0) return '-';
     const hrs = Math.floor(secs / 3600);
@@ -348,7 +348,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [stompClient, setStompClient] = useState(null);
-  
+
   // 채팅 전용 드로어(왼쪽 사이드바 말풍선 아이콘으로 열고 닫음). 닫아도 메시지 상태는 상위 컴포넌트에 보존된다.
   const [showChatDrawer, setShowChatDrawer] = useState(false);
 
@@ -387,7 +387,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
       aiSendingRef.current = false;
     };
   }, []);
-  
+
   const [activeQuiz, setActiveQuiz] = useState(null);
   const [quizSessionId, setQuizSessionId] = useState(null);
   const quizSessionIdRef = React.useRef(null);
@@ -414,7 +414,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const [quizUploadFile, setQuizUploadFile] = useState(null);
   const [isUploadingQuizPdf, setIsUploadingQuizPdf] = useState(false);
   const [quizUploadError, setQuizUploadError] = useState('');
-  
+
   const [session, setSession] = useState(null);
   const sessionRef = React.useRef(null); // 강퇴 이벤트 수신 시 최신 세션에 즉시 접근하기 위한 ref
   const [publisher, setPublisher] = useState(null);
@@ -558,9 +558,9 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     setQuizScoreboard(shouldShowScoreboard && Array.isArray(payload.scoreboard) ? payload.scoreboard : null);
     setQuizReveal(payload.phase === 'REVEAL' || payload.phase === 'ENDED'
       ? {
-          correctAnswer: payload.correctAnswer,
-          pointsAwarded: payload.pointsAwarded,
-          message: payload.message || '',
+        correctAnswer: payload.correctAnswer,
+        pointsAwarded: payload.pointsAwarded,
+        message: payload.message || '',
       }
       : null);
     if (typeof payload.userSubmitted === 'boolean') {
@@ -603,7 +603,36 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     if (!study?.id) return;
     loadGroupMaterials();
     loadGroupQuizzes();
-  }, [study?.id]);
+
+    const fetchHistory = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/groups/${study.id}/chats/history`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          // 일반 대화 이력 복원
+          const normalHistory = data.filter(msg => !msg.isAi).map(msg => ({
+            senderName: msg.senderName,
+            senderId: msg.senderId,
+            content: msg.content
+          }));
+          // AI 탭 대화 이력 복원 (내 질문 + AI 답변)
+          const aiHistory = data.filter(msg => msg.isAi || (msg.senderId && String(msg.senderId) === String(userId))).map(msg => ({
+            senderName: msg.senderName,
+            content: msg.content,
+            isUser: msg.senderId && String(msg.senderId) === String(userId)
+          }));
+          setChatMessages(normalHistory);
+          setAiMessages(aiHistory);
+        }
+      } catch (err) {
+        console.error('채팅 이력 조회 실패:', err);
+      }
+    };
+    fetchHistory();
+  }, [study?.id, userId]);
 
   // 1. OpenVidu Video Call Lifecycle
   useEffect(() => {
@@ -620,10 +649,10 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
         // OpenVidu token은 서버가 발급한 문자열을 그대로 사용한다.
         token = toSecureWsToken(token);
-          OVInstance = new OpenVidu();
-          forceOpenViduWssTransport(OVInstance);
-          sessionInstance = OVInstance.initSession();
-sessionInstance.on('streamCreated', (event) => {
+        OVInstance = new OpenVidu();
+        forceOpenViduWssTransport(OVInstance);
+        sessionInstance = OVInstance.initSession();
+        sessionInstance.on('streamCreated', (event) => {
           const subscriber = sessionInstance.subscribe(event.stream, undefined);
           if (isMounted) {
             setSubscribers(prev => [...prev, subscriber]);
@@ -1177,7 +1206,7 @@ sessionInstance.on('streamCreated', (event) => {
 
   const handleSendChat = () => {
     if (!chatInput.trim() || !stompClient || !stompClient.connected) return;
-    
+
     stompClient.publish({
       destination: `/pub/group/${study.id}/chat`,
       body: JSON.stringify({
@@ -1228,7 +1257,7 @@ sessionInstance.on('streamCreated', (event) => {
 
     const token = localStorage.getItem('token');
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-try {
+    try {
       const response = await fetch(`/api/groups/${study.id}/chats/stream`, {
         method: 'POST',
         headers: {
@@ -1802,7 +1831,7 @@ try {
                 <div style={{ fontSize: '14px', fontWeight: '700', color: '#34D399', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
                   <Settings size={16} /> 방장 관리 콘솔
                 </div>
-                
+
                 {/* 스터디 상태 */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '12px', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: '8px', marginBottom: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
@@ -1919,7 +1948,7 @@ try {
                     outline: 'none'
                   }}
                 >
-                  AI 토론 (SSE)
+                  AI 질문
                 </button>
               </div>
 
@@ -2035,13 +2064,15 @@ try {
                           {msg.senderName}
                         </span>
                         <div style={{
-                          backgroundColor: Number(msg.senderId) === Number(userId) ? '#22C55E' : '#1E293B',
+                          backgroundColor: Number(msg.senderId) === Number(userId) ? '#16A34A' : '#1E293B',
                           color: 'white',
-                          padding: '8px 12px',
-                          borderRadius: Number(msg.senderId) === Number(userId) ? '12px 12px 0 12px' : '12px 12px 12px 0',
+                          padding: '10px 14px',
+                          borderRadius: Number(msg.senderId) === Number(userId) ? '16px 16px 0 16px' : '16px 16px 16px 0',
+                          border: Number(msg.senderId) === Number(userId) ? '1px solid #22C55E' : '1px solid transparent',
                           fontSize: '13px',
                           lineHeight: '1.4',
-                          wordBreak: 'break-all'
+                          wordBreak: 'break-all',
+                          boxShadow: Number(msg.senderId) === Number(userId) ? '0 4px 6px rgba(0,0,0,0.1)' : 'none'
                         }}>
                           {msg.content}
                         </div>
@@ -2166,7 +2197,7 @@ try {
                       } else if (msg.isUser) {
                         colors = { bg: '#16A34A', border: '#22C55E', text: '#FFFFFF' };
                       }
-                      
+
                       return (
                         <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignSelf: isMe ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
                           <span style={{ fontSize: '11px', color: '#9CA3AF', alignSelf: isMe ? 'flex-end' : 'flex-start', display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -2189,7 +2220,7 @@ try {
                         </div>
                       );
                     })}
-                    
+
                     {isAiStreaming && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#9CA3AF', fontSize: '12px', paddingLeft: '8px' }}>
                         <RefreshCw size={14} className="animate-spin" style={{ animation: 'spin 1.5s linear infinite' }} />
@@ -2797,7 +2828,7 @@ try {
                   {/* 문의 카테고리 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>문의 유형</div>
-                    <select 
+                    <select
                       value={inquiryType}
                       onChange={(e) => setInquiryType(e.target.value)}
                       style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', cursor: 'pointer' }}
@@ -2811,23 +2842,23 @@ try {
                   {/* 제목 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>제목</div>
-                    <input 
-                      type="text" 
-                      placeholder="문의 제목을 입력하세요." 
+                    <input
+                      type="text"
+                      placeholder="문의 제목을 입력하세요."
                       value={inquiryTitle}
                       onChange={(e) => setInquiryTitle(e.target.value)}
-                      style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }} 
+                      style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }}
                     />
                   </div>
 
                   {/* 내용 */}
                   <div>
                     <div style={{ color: '#E5E7EB', fontWeight: '600', fontSize: '14px', marginBottom: '12px' }}>문의 내용</div>
-                    <textarea 
-                      placeholder="문의하실 내용을 상세히 적어주세요.&#13;&#10;최대한 빠르고 정확하게 답변해 드리겠습니다." 
+                    <textarea
+                      placeholder="문의하실 내용을 상세히 적어주세요.&#13;&#10;최대한 빠르고 정확하게 답변해 드리겠습니다."
                       value={inquiryContent}
                       onChange={(e) => setInquiryContent(e.target.value)}
-                      style={{ width: '100%', boxSizing: 'border-box', height: '160px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }} 
+                      style={{ width: '100%', boxSizing: 'border-box', height: '160px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none', resize: 'none', lineHeight: '1.6' }}
                     />
                   </div>
                 </>

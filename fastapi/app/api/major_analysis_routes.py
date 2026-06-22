@@ -126,6 +126,8 @@ class MajorAnalysisRequest(BaseModel):
     materialTitle: Optional[str] = ""
     subject: Optional[str] = ""
     inputType: Optional[str] = "PDF"
+    s3Key: Optional[str] = ""
+    pageCount: Optional[int] = None
     pageTexts: List[_PageItem] = Field(default_factory=list)
     captions: List[_PageItem] = Field(default_factory=list)
     ocrTexts: List[_PageItem] = Field(default_factory=list)
@@ -540,13 +542,72 @@ def _fallback(req: MajorAnalysisRequest, domain: Optional[Dict[str, Any]],
 def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
     from app.services.ai_pipeline import openai_refine, parse_json, qwen_draft
 
-    text = _combined_text(req)
+    pages = []
+    # s3Key가 있으면 S3에서 직접 다운로드하여 멀티모달(GPT-4o Vision)로 분석
+    if req.s3Key:
+        try:
+            from app.services.s3_pdf_loader import load_pdf_bytes_from_s3
+            from app.services.pdf_page_extractor import extract_pdf_pages
+            import base64
+            from io import BytesIO
+
+            def gpt4o_vision_ocr(image) -> str:
+                from app.services.openai_client import get_sync_client
+                try:
+                    client = get_sync_client()
+                    buffer = BytesIO()
+                    image.save(buffer, format="JPEG")
+                    b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                    resp = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "이 이미지에 포함된 모든 텍스트, 수식, 표, 다이어그램의 내용을 빠짐없이 정확히 추출해줘. 마크다운 기호 없이 텍스트만 출력하고, 표나 그림은 그 내용을 요약해서 텍스트로 적어줘."},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                                ]
+                            }
+                        ],
+                        max_tokens=1500,
+                        temperature=0.0
+                    )
+                    return resp.choices[0].message.content or ""
+                except Exception as e:
+                    logger.warning("GPT Vision OCR failed: %s", e)
+                    return ""
+
+            pdf_bytes = load_pdf_bytes_from_s3(req.s3Key)
+            pdf_result = extract_pdf_pages(
+                pdf_bytes,
+                ocr_enabled=True,
+                ocr_fn=gpt4o_vision_ocr,
+                ocr_max_pages=40, # 전체 페이지 OCR 허용
+                min_text_chars=12
+            )
+            # pdf_result.pages를 기반으로 pages 배열 구성
+            for p in pdf_result.pages:
+                source = "MIXED" if p["hasImage"] else "TEXT"
+                merged = (p["text"] + "\n" + p["ocrText"]).strip()
+                if not merged:
+                    source = "INSUFFICIENT"
+                pages.append({"page": p["page"], "text": merged, "source": source})
+            logger.info("GPT-4o 멀티모달 분석 완료: 총 %d 페이지 추출", len(pages))
+        except Exception as e:
+            logger.warning("S3 멀티모달 분석 실패, 기존 텍스트로 폴백: %s", e)
+            pages = _collect_pages(req)
+    else:
+        pages = _collect_pages(req)
+
+    text = "\n".join([p["text"] for p in pages if p["source"] != "INSUFFICIENT"])[:_MAX_TOTAL_CHARS]
+    if not text:
+        text = _combined_text(req)
+        
     meaningful = re.sub(r"\s+", "", text)
     max_wiki = max(0, min(int(req.maxWikiResults or 0), 8))
 
     domain, _score = _classify_domain(text)
     candidates = _concept_candidates(text)
-    pages = _collect_pages(req)
 
     # 입력이 사실상 비었을 때만 안전 fallback(짧은 OCR 수식 등은 도메인/후보가 있으면 통과).
     if len(meaningful) < _MIN_MEANINGFUL and _score == 0 and not candidates:

@@ -14,6 +14,7 @@ public class GroupStudySocketDTO {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class ChatPayload {
+        private String senderId;
         private String senderName;
         private String content;
         private String timestamp;
