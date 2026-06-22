@@ -720,17 +720,17 @@ export default function AgentDiscussionThread({
                                    }} />
                                 )}
 
-                                {/* 자식으로 내려가는 수직 연결선 */}
-                                <div style={{ 
-                                    width: (child.sender !== 'USER' && node.sender !== 'USER' && child.nodeType !== 'debate' && child.nodeType !== 'simulation' && child.nodeType !== 'socratic') || (child.nodeType === 'debate' && (child.stageType === 'REBUTTAL' || child.stageType === 'CROSS_REBUTTAL')) ? '3px' : '2px', 
-                                    height: '40px', 
-                                    background: (child.sender !== 'USER' && node.sender !== 'USER' && child.nodeType !== 'debate' && child.nodeType !== 'simulation' && child.nodeType !== 'socratic') ? 'linear-gradient(to bottom, #93c5fd, #3b82f6)' : (child.nodeType === 'debate' && (child.stageType === 'REBUTTAL' || child.stageType === 'CROSS_REBUTTAL')) ? 'linear-gradient(to bottom, #fca5a5, #ef4444)' : '#cbd5e1', 
-                                    zIndex: 0, 
-                                    display: 'flex', 
-                                    justifyContent: 'center', 
-                                    alignItems: 'center', 
+                                {/* 자식으로 내려가는 수직 연결선 (기본 모드는 중립 회색 — 파란 줄/글로우 제거) */}
+                                <div style={{
+                                    width: (child.nodeType === 'debate' && (child.stageType === 'REBUTTAL' || child.stageType === 'CROSS_REBUTTAL')) ? '3px' : '2px',
+                                    height: '40px',
+                                    background: (child.nodeType === 'debate' && (child.stageType === 'REBUTTAL' || child.stageType === 'CROSS_REBUTTAL')) ? 'linear-gradient(to bottom, #fca5a5, #ef4444)' : '#cbd5e1',
+                                    zIndex: 0,
+                                    display: 'flex',
+                                    justifyContent: 'center',
+                                    alignItems: 'center',
                                     position: 'relative',
-                                    boxShadow: (child.sender !== 'USER' && node.sender !== 'USER' && child.nodeType !== 'debate' && child.nodeType !== 'simulation' && child.nodeType !== 'socratic') ? '0 0 8px rgba(59, 130, 246, 0.4)' : (child.nodeType === 'debate' && (child.stageType === 'REBUTTAL' || child.stageType === 'CROSS_REBUTTAL')) ? '0 0 8px rgba(239, 68, 68, 0.4)' : 'none'
+                                    boxShadow: (child.nodeType === 'debate' && (child.stageType === 'REBUTTAL' || child.stageType === 'CROSS_REBUTTAL')) ? '0 0 8px rgba(239, 68, 68, 0.4)' : 'none'
                                 }}>
                                    {/* 토론 노드: stageType 기반 라벨(입론/반박/재반박/최종 변론/판정/논제). "피드백" 금지 */}
                                    {child.nodeType === 'debate' ? (
@@ -812,28 +812,26 @@ export default function AgentDiscussionThread({
                                          </div>
                                        )
                                    ) : (child.sender !== 'USER' && node.sender !== 'USER') && (
-                                       <motion.div
-                                           initial={{ scale: 0.8, opacity: 0 }}
-                                           animate={{ scale: 1, opacity: 1, boxShadow: ['0 0 0px rgba(59,130,246,0)', '0 0 12px rgba(59,130,246,0.6)', '0 0 0px rgba(59,130,246,0)'] }}
-                                           transition={{ duration: 1.5, repeat: Infinity, repeatType: 'reverse' }}
+                                       <div
                                            style={{
                                                position: 'absolute',
-                                               background: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
-                                               border: '1px solid #3b82f6',
-                                               padding: '4px 10px',
+                                               background: '#ffffff',
+                                               border: '1px solid #cbd5e1',
+                                               padding: '2px 8px',
                                                borderRadius: '12px',
-                                               fontSize: '11px',
-                                               fontWeight: '900',
-                                               color: '#1d4ed8',
+                                               fontSize: '10px',
+                                               fontWeight: '800',
+                                               color: '#475569',
                                                display: 'flex',
                                                alignItems: 'center',
                                                gap: '4px',
+                                               boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
                                                zIndex: 2,
                                                whiteSpace: 'nowrap'
                                            }}>
-                                           <Zap size={12} color="#2563eb" fill="#3b82f6" />
-                                           피드백
-                                       </motion.div>
+                                           <Zap size={12} color="#64748b" />
+                                           반박
+                                       </div>
                                    )}
                                 </div>
 
