@@ -1,0 +1,22 @@
+# 배포: GitHub Actions cd.yml의 fastapi-deploy 잡이 이 파일을 /etc/systemd/system에 설치/갱신한다.
+[Unit]
+Description=StudyBridge FastAPI AI server (EC2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/studyBridge/fastapi
+EnvironmentFile=-/home/ubuntu/studyBridge/fastapi/.env
+Environment=PYTHONUNBUFFERED=1
+# 라이브 엔트리포인트는 항상 hotfix_main:app (= from main import app + /api/ai/multi-chat/stream compat 라우터).
+ExecStart=/home/ubuntu/studyBridge/fastapi/.venv/bin/python -m uvicorn hotfix_main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
+
+# (cd: pkill 자기매칭 회피 위해 fuser -k 포트 기반으로 정리)

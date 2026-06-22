@@ -447,9 +447,12 @@ def _build_single_agent_user_prompt(
     parts.append("위 대화 흐름을 이어서, 이 메시지에 자연스럽게 응답하라.")
     if peer_answers:
         peer_lines = [f"- {p.get('agentName','메이트')}: {str(p.get('answer',''))[:300]}" for p in peer_answers]
+        peer_names = ", ".join(f"'{p.get('agentName','메이트')}'" for p in peer_answers)
         parts.append(
-            "[먼저 답한 메이트들의 의견]\n" + "\n".join(peer_lines) +
-            "\n→ 위 의견에서 동의할 점·보완할 점·놓친 부분을 너의 성격대로 짧게 짚은 뒤, 네 답을 이어가라."
+            "[바로 앞에서 답한 메이트들 — 지목할 땐 아래 이름만 사용]\n" + "\n".join(peer_lines) +
+            f"\n→ 첫 문장에서 위 목록({peer_names}) 중 한 명을 '정확한 이름'으로 지목해 동의/반박/보완하라. "
+            "목록에 없는 이름을 지어내지 마라(아직 답하지 않은 에이전트를 언급 금지). "
+            "앞 답변 문장을 절대 베끼지 말고, 겹치는 내용은 건너뛰고 너만의 관점·지적만 더하라."
         )
     parts.append(build_persona_directive(_agent_personality_label(agent), _agent_custom_instruction(agent)))
     return "\n\n".join(parts)
@@ -469,13 +472,14 @@ def _cross_feedback_enabled(request: MultiChatRequest, agents: List[AgentProfile
         return False
     if mode == "on":
         return True
-    # auto: 인사/잡담/자기소개/불명확이면 끄고, 그 외(실제 대화/질문)면 켠다.
+    # auto: 인사/잡담/자기소개면 끄고, 그 외(질문·짧은 질문 포함)면 켠다.
+    # ※ UNCLEAR(예: "jjwt란?")는 짧을 뿐 실제 질문인 경우가 많아 피드백을 켠다.
     try:
         from app.services import guardrail_router as _g
         route = _g.classify_route(
             request.message, mode=request.mode, learning_mode=getattr(request, "learningMode", None)
         ).route
-        return route not in (_g.GREETING, _g.SMALL_TALK, _g.SELF_INTRO, _g.UNCLEAR)
+        return route not in (_g.GREETING, _g.SMALL_TALK, _g.SELF_INTRO)
     except Exception:
         return True
 

@@ -100,6 +100,15 @@ _ALIAS: dict[str, PersonalityType] = {
     "효율적": PersonalityType.CONCISE, "간결형": PersonalityType.CONCISE, "간결": PersonalityType.CONCISE,
     "냉소적": PersonalityType.SARDONIC, "냉정": PersonalityType.SARDONIC,
     "직접입력형": PersonalityType.CUSTOM, "직접입력": PersonalityType.CUSTOM,
+    # 프론트(src/utils/personality.js)가 보내는 영문 키 — 백엔드 어휘(sardonic/critical/concise)와 달라
+    # 매핑이 없으면 친절형으로 폴백되어 성격이 죽는다. 6종 전부 명시 매핑한다.
+    "professional": PersonalityType.PROFESSIONAL,
+    "friendly": PersonalityType.FRIENDLY, "default": PersonalityType.FRIENDLY,
+    "honest": PersonalityType.CRITICAL,
+    "unique": PersonalityType.CREATIVE,
+    "efficient": PersonalityType.CONCISE,
+    "cynical": PersonalityType.SARDONIC,
+    "custom": PersonalityType.CUSTOM,
 }
 
 # 성격별 LLM 샘플링 파라미터 (call_primary_llm은 temperature/max_tokens만 지원 → temperature 위주로 차등).
