@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { agentService } from '../services/api';
-import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, MessageCircle, UsersRound, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck } from 'lucide-react';
+import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, MessageCircle, UsersRound, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck, RefreshCw } from 'lucide-react';
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
 import ProfessorLearningPanel from '../components/studymate/ProfessorLearningPanel';
 import '../components/studymate/studymate-premium.css';
@@ -2764,6 +2764,33 @@ export default function StudyMate() {
         let streamRendered = false;
         let streamCompleted = false;
 
+        // ── SSE 스트림 상태머신 ───────────────────────────────────────────────
+        //  IDLE → CONNECTING → STREAMING → (FINALIZED | FAILED)
+        //  · finalReceived: all_complete 또는 done 을 1회라도 받았는가(= 정상 종료 신호).
+        //    이후의 connection close/error 는 정상 종료로 간주하고 오류를 띄우지 않는다.
+        //  · anyAnswerReceived: 답변성 이벤트를 1건이라도 받았는가(부분 답변 보존/복구 안내 분기).
+        //  · 부분 답변은 절대 버리지 않는다(별도 parentId 안내 버블만 추가).
+        let streamState = 'CONNECTING';
+        let finalReceived = false;
+        let anyAnswerReceived = false;
+        let lastEventAt = Date.now();
+        let lastEventType = null;
+        // 답변성(콘텐츠) 이벤트 — 1건이라도 오면 anyAnswerReceived=true.
+        const CONTENT_EVENT_SET = new Set([
+          'agent_answer', 'stage_complete', 'agent_stage_complete',
+          'debate_section', 'socratic_step', 'socratic_answer', 'simulation_stage',
+          'route_message', 'route_pipeline',
+        ]);
+        // 이벤트 dedupe: 백엔드 fingerprint 우선, 없으면 turn_id+stage+agentIndex+event_type.
+        const seenEventKeys = new Set();
+        const eventDedupeKey = (event, d) => {
+          if (d && d.fingerprint) return `fp:${d.fingerprint}`;
+          const tid = (d && (d.turn_id || d.turnId || d.requestId)) || requestId;
+          const stage = (d && (d.stage || d.stageType)) || '';
+          const ai = (d && (d.agentIndex ?? d.agent_index)) ?? '';
+          return `${tid}:${stage}:${ai}:${event}`;
+        };
+
         // all_complete 라우팅: socratic → 답변 카드 / debate → DebateRenderer / processSteps → 단계 / answers → 카드 / 없음 → 안내
         const renderAllComplete = (d) => {
           const respMode = String((d && (d.mode || d.learningMode)) || '').toLowerCase();
@@ -2842,19 +2869,99 @@ export default function StudyMate() {
           }
         };
 
-        // ── 무한 loading 방지 watchdog: 일정 시간 아무 이벤트도 없으면 abort 후 안내 ──
-        // 이벤트가 올 때마다 rearm한다. (서버 ':hb' 주석은 이벤트로 디스패치되지 않으므로 진짜 hang만 잡힘)
+        // ── 무한 loading 방지 watchdog ─────────────────────────────────────────
+        //  heartbeat/agent 이벤트(그리고 Spring ':hb' 주석)를 받을 때마다 rearm 한다.
+        //   · 45초간 아무 신호도 없으면 warning(진행 지연 표시, 실패 아님)
+        //   · 90초간 아무 신호도 없으면 FAILED 로 abort
+        //   · all_complete/done(finalReceived) 이후에는 watchdog 을 완전히 해제한다.
+        //  ※ Spring 기본모드 keepalive 는 12초 주기 ':hb' 주석이라 onComment 로 반드시 rearm 돼야
+        //    긴 2차/3차 LLM 호출(최대 60초) 중에도 90초 watchdog 이 오발동하지 않는다.
         const streamAbort = new AbortController();
         let watchdogTimedOut = false;
-        const WATCHDOG_MS = 330000; // 가장 긴 모드(토론/소크라테스 백엔드 타임아웃)보다 여유 있게
+        const WATCHDOG_WARN_MS = 45000;
+        const WATCHDOG_FAIL_MS = 90000;
+        let watchdogWarnTimer = null;
         let watchdogTimer = null;
+        const clearWatchdog = () => {
+          if (watchdogWarnTimer) { clearTimeout(watchdogWarnTimer); watchdogWarnTimer = null; }
+          if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
+        };
         const armWatchdog = () => {
-          if (watchdogTimer) clearTimeout(watchdogTimer);
+          clearWatchdog();
+          if (finalReceived) return; // 최종 신호 이후엔 watchdog 해제(close 는 정상 종료)
+          watchdogWarnTimer = setTimeout(() => {
+            if (finalReceived) return;
+            if (import.meta.env.DEV) console.debug('[StudyMate] SSE slow: 45s 무신호(경고, 실패 아님)');
+            // 진행 중 표시만 갱신(부분 답변/실패로 바꾸지 않는다)
+            if (agentAnswerMap.size) {
+              let touched = false;
+              for (const [k, v] of agentAnswerMap) {
+                if (v.isPending) { agentAnswerMap.set(k, { ...v, statusText: '응답이 평소보다 길어지고 있어요. 계속 기다리는 중…' }); touched = true; }
+              }
+              if (touched) setTurnAiMessages(agentMsgsArr());
+            }
+          }, WATCHDOG_WARN_MS);
           watchdogTimer = setTimeout(() => {
+            if (finalReceived) return;
             watchdogTimedOut = true;
             try { streamAbort.abort(); } catch { /* noop */ }
-          }, WATCHDOG_MS);
+          }, WATCHDOG_FAIL_MS);
         };
+
+        // 모든 이벤트/주석 수신 시 호출 — lastEventAt 갱신 + STREAMING 유지 + watchdog rearm.
+        const markLiveness = (eventType) => {
+          lastEventAt = Date.now();
+          if (eventType) lastEventType = eventType;
+          if (!finalReceived) { streamState = 'STREAMING'; armWatchdog(); }
+        };
+
+        // all_complete 또는 done 수신 → FINALIZED. 이후 close/error 는 정상 종료로 무시한다.
+        const finalize = () => {
+          finalReceived = true;
+          streamState = 'FINALIZED';
+          clearWatchdog();
+        };
+
+        // 부분/실패 안내 버블(별도 parentId 라 기존 부분 답변을 덮지 않음) + 재시도 버튼.
+        const INTERRUPTED_MSG = 'AI 응답 연결이 중단되었습니다. 다시 시도해 주세요.';
+        const PARTIAL_MSG = 'AI 응답 일부가 도착했지만 최종 완료 신호를 받지 못했습니다. 이어서 다시 시도할 수 있습니다.';
+        const showStreamNotice = (text) => {
+          sawError = true;
+          const notice = {
+            id: `${userMsg.id}::stream-notice`,
+            content: text,
+            sender: 'AI',
+            senderName: selectedAgent?.name || 'StudyMate',
+            isError: true,
+            isNotice: true,
+            canRetry: true,
+            retryMessage: inputMsg,
+            createdAt: new Date().toISOString(),
+            parentId: `${userMsg.id}::notice`, // 부분 답변(parentId=userMsg.id)을 덮지 않도록 별도 parent
+          };
+          const add = (list) => ((list || []).some((m) => m.id === notice.id) ? list : [...(list || []), notice]);
+          setRoomHistories((prev) => ({ ...prev, [agentId]: add(prev[agentId]) }));
+          if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => add(prev));
+        };
+
+        // 스트림 종료(정상 resolve 또는 throw) 후 단 한 곳에서 상태머신으로 결과를 판정한다.
+        //  · finalReceived 면: 정상 종료(렌더 있으면 조용히 성공, 없으면 연결중단 안내)
+        //  · finalReceived 아니지만 부분 답변 있으면: 부분 보존 + "이어서 다시 시도" 안내
+        //  · 둘 다 아니면: "연결이 중단되었습니다" 안내
+        const concludeStream = () => {
+          clearWatchdog();
+          pendingDetailParentId.current = null;
+          if (finalReceived) {
+            streamState = 'FINALIZED';
+            if (streamRendered || streamCompleted) return; // 정상 — 오류 표시 없음
+            // 최종 신호는 왔지만 아무것도 렌더되지 않은 드문 경우(done=error 등)
+            showStreamNotice(anyAnswerReceived ? PARTIAL_MSG : INTERRUPTED_MSG);
+            return;
+          }
+          streamState = 'FAILED';
+          showStreamNotice((anyAnswerReceived || streamRendered) ? PARTIAL_MSG : INTERRUPTED_MSG);
+        };
+
         armWatchdog();
 
         try {
@@ -2867,14 +2974,24 @@ export default function StudyMate() {
             rounds: 1,
             ...turnExtras,
           }, {
-            // 성능 측정: 첫 SSE 이벤트(heartbeat 제외) 도착 지연을 한 지점에서 기록한다.
-            onAnyEvent: (event) => {
+            // 모든 이벤트의 단일 진입점: liveness(watchdog rearm) + 첫 이벤트 지연 측정 + 부분답변/디듀프 표시.
+            onAnyEvent: (event, data) => {
+              markLiveness(event);
+              if (CONTENT_EVENT_SET.has(event)) anyAnswerReceived = true;
+              // 디듀프 추적(관찰용): 동일 fingerprint/키 재수신은 per-type Map upsert 가 흡수하지만, 통계로 남긴다.
+              if (CONTENT_EVENT_SET.has(event)) {
+                const k = eventDedupeKey(event, data);
+                if (seenEventKeys.has(k) && import.meta.env.DEV) console.debug('[StudyMate] 중복 이벤트(흡수됨)', k);
+                seenEventKeys.add(k);
+              }
               if (!perfFirstEvent && event !== 'heartbeat') {
                 perfFirstEvent = Date.now();
                 if (import.meta.env.DEV) console.debug('[StudyMate][perf] first SSE event', { event, ttfbMs: perfFirstEvent - perfT0 });
               }
             },
-            onTurnStart: () => { armWatchdog(); },
+            // Spring keepalive ':hb' 주석 등 — 데이터 없는 생존 신호. watchdog 만 rearm.
+            onComment: () => { markLiveness('comment'); },
+            onTurnStart: () => { markLiveness('turn_start'); },
             onHeartbeat: (d) => {
               if (streamCompleted) return; // 목표 B.5
               if (!d || d.agentIndex == null) return;
@@ -3074,7 +3191,9 @@ export default function StudyMate() {
               if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => addNotice(prev));
             },
             onAllComplete: (d) => {
-              if (watchdogTimer) clearTimeout(watchdogTimer);
+              // all_complete/done 중 먼저 온 하나만 최종 반영한다(중복 렌더 금지 — 목표 8).
+              if (streamCompleted) return;
+              finalize();
               streamCompleted = true;
               visAll('completed'); // 시각: 전체 교수 완료 표시(stage가 800ms 후 idle 복귀)
               captureConvState(d);
@@ -3082,6 +3201,17 @@ export default function StudyMate() {
               if (import.meta.env.DEV) console.debug('[StudyMate][perf] all_complete', { totalMs: Date.now() - perfT0, ttfbMs: perfFirstEvent ? perfFirstEvent - perfT0 : null });
               if (routedTerminal) return; // 라우팅으로 종료 — 기존 답변 렌더 스킵(중복 방지)
               renderAllComplete(d);
+            },
+            // done: 종결 신호. all_complete 가 이미 최종 반영했으면 중복 렌더하지 않고 finalize 만 한다.
+            //  all_complete 없이 done 만 온 경우: status=error 면(아무 답변도 없을 때) 실패로,
+            //  그 외엔 finalReceived 로만 표시(부분 답변은 보존, concludeStream 에서 안내 분기).
+            onDone: (d) => {
+              const status = String((d && d.status) || '').toLowerCase();
+              finalize(); // close 는 이제 정상 종료로 처리됨
+              if (streamCompleted) return; // all_complete 가 이미 최종 반영함 — 중복 금지
+              if (status === 'error' && !streamRendered && !anyAnswerReceived) {
+                sawError = true; visAll('error');
+              }
             },
             // 목표 D: FastAPI의 error 이벤트가 와도 전체 대화를 무조건 실패로 덮지 않는다.
             //  1) agentId/agentIndex가 있으면 해당 교수만 error 상태로 표시(전체 실패 아님).
@@ -3109,62 +3239,22 @@ export default function StudyMate() {
               throw new Error('stream error event');
             },
           }, { signal: streamAbort.signal });
-          if (watchdogTimer) clearTimeout(watchdogTimer);
-          if (!streamCompleted && !streamRendered) {
-            throw new Error('empty stream');
-          }
-          pendingDetailParentId.current = null;
-          return; // 성공 — 바깥 finally에서 typing 해제
+          // 스트림이 정상적으로 끝까지 읽힘(reader done). 상태머신으로 결과를 판정한다.
+          //  · finalReceived 면 close 는 정상 종료(오류 표시 없음).
+          //  · 최종 신호 없이 끝났으면 부분/전무에 따라 안내 + 재시도.
+          concludeStream();
+          return; // 바깥 finally에서 typing 해제
         } catch (streamErr) {
-          if (watchdogTimer) clearTimeout(watchdogTimer);
-          const streamErrMessage = String(streamErr?.message || streamErr || '');
-          // watchdog 타임아웃으로 끊은 경우: 무한 loading 대신 안내 메시지로 종료한다.
-          if (watchdogTimedOut && !streamRendered) {
-            setTurnAiMessages([{
-              id: `${userMsg.id}::timeout`,
-              content: '응답 생성이 지연되었습니다. 잠시 후 다시 시도해 주세요.',
-              sender: 'AI',
-              senderName: selectedAgent?.name || 'StudyMate',
-              isError: true,
-              createdAt: new Date().toISOString(),
-              parentId: userMsg.id,
-            }]);
-            pendingDetailParentId.current = null;
-            return;
+          // 네트워크 close/abort/parse 등 어떤 이유로 throw 됐든, 판정은 오직 상태머신으로 한다.
+          //  (과거처럼 에러 문자열 매칭으로 '끊김'을 추정하지 않는다 → false positive 제거)
+          if (import.meta.env.DEV) {
+            console.warn('[StudyMate] SSE 스트림 종료', {
+              name: streamErr?.name,
+              message: String(streamErr?.message || streamErr || ''),
+              streamState, finalReceived, anyAnswerReceived, streamRendered, watchdogTimedOut,
+            });
           }
-          if (
-            streamErr?.name === 'AbortError' ||
-            streamErrMessage.includes('network error') ||
-            streamErrMessage.includes('terminated') ||
-            streamErrMessage.includes('incomplete') ||
-            streamErrMessage.includes('outstanding read data') ||
-            streamErrMessage.includes('Load failed') ||
-            streamErrMessage.includes('Failed to fetch')
-          ) {
-            console.warn('[StudyMate] SSE 연결 종료 감지 - 서버 응답 수신 후 종료로 간주', streamErr);
-            return;
-          }
-
-          console.warn('[StudyMate] SSE 스트리밍 실패', streamErr);
-          if (streamRendered) {
-            // 일부 단계가 이미 렌더됨 → 블로킹 재실행 시 중복되므로 폴백하지 않는다.
-            pendingDetailParentId.current = null;
-            return;
-          }
-          // 순차 UX 보장: SSE 실패 시 일반 REST sendMessage로 폴백하지 않는다.
-          // REST 폴백은 최종 JSON을 한 번에 렌더링하여 Agent1→Agent2→Agent3 순차 표시 UX를 깨뜨린다.
-          const noticeMsg = {
-            id: `${userMsg.id}::stream-error`,
-            content: 'AI 스트리밍 연결이 끊겼습니다. 순차 답변을 위해 다시 시도해주세요.',
-            sender: 'AI',
-            senderName: selectedAgent?.name || 'StudyMate',
-            isError: true,
-            createdAt: new Date().toISOString(),
-            parentId: userMsg.id,
-          };
-
-          setTurnAiMessages([noticeMsg]);
-          pendingDetailParentId.current = null;
+          concludeStream();
           return;
         }
       }
@@ -3912,6 +4002,24 @@ export default function StudyMate() {
                           ) : (
                             <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none', borderLeft: isUser ? undefined : `4px solid ${agentColor.border}` }}>
                               {isUser || isPlainReply ? (isPlainReply ? stripMarkdown(msg.content) : msg.content) : <RichText text={msg.content} />}
+                            </div>
+                          )}
+                          {/* SSE 중단/부분 수신 복구 UX: 같은 질문을 즉시 다시 보낼 수 있는 재시도 버튼 */}
+                          {!isUser && msg.canRetry && msg.retryMessage && (
+                            <div style={{ marginTop: '6px' }}>
+                              <button
+                                type="button"
+                                onClick={() => sendMessage(null, msg.retryMessage)}
+                                disabled={!!typingRooms[getAgentId(selectedAgent)]}
+                                style={{
+                                  display: 'inline-flex', alignItems: 'center', gap: '6px',
+                                  fontSize: '12px', fontWeight: 700, padding: '5px 12px', borderRadius: '8px',
+                                  border: '1px solid #fca5a5', background: '#fff', color: '#dc2626',
+                                  cursor: typingRooms[getAgentId(selectedAgent)] ? 'default' : 'pointer',
+                                }}
+                              >
+                                <RefreshCw size={13} /> 다시 시도
+                              </button>
                             </div>
                           )}
                           {/* AI 환각 검증 결과(있을 때만): 답변 본문과 분리해 표시. high 위험은 경고 배지로 강조. (문제5) */}

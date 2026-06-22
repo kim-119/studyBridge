@@ -318,26 +318,39 @@ export const agentService = {
     const dispatch = (frame) => {
       let event = 'message';
       const dataLines = [];
+      let commentSeen = false;
 
       for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) {
+        // SSE 주석 라인(':' 로 시작, 예: Spring keepalive ':hb')은 이벤트가 아니다.
+        // 다만 '연결 생존(liveness)' 신호이므로 watchdog 갱신을 위해 따로 알린다.
+        if (line.startsWith(':')) {
+          commentSeen = true;
+        } else if (line.startsWith('event:')) {
           event = line.slice(6).trim();
         } else if (line.startsWith('data:')) {
           dataLines.push(line.slice(5).replace(/^ /, ''));
         }
       }
 
-      if (dataLines.length === 0) return;
+      // data 없는 프레임(주석/빈 keepalive)은 파싱하지 않지만, 주석이면 liveness만 통지한다.
+      if (dataLines.length === 0) {
+        if (commentSeen) handlers.onComment?.(frame);
+        return;
+      }
 
       let data = null;
 
+      // 프레임 단위로만 JSON.parse 한다(청크 경계로 깨지지 않음). 1프레임 파싱 실패가
+      // 스트림 전체를 죽이지 않도록 null 로 흘려보내고 다음 프레임을 계속 처리한다.
       try {
         data = JSON.parse(dataLines.join('\n'));
-      } catch {
-        data = null;
+      } catch (parseErr) {
+        if (import.meta.env.DEV) console.warn('[SSE] frame parse 실패(무시하고 계속):', dataLines.join('\n').slice(0, 200));
+        handlers.onParseError?.(event, dataLines.join('\n'), parseErr);
+        return;
       }
 
-      // 진단/성능 측정용 단일 훅 — 첫 이벤트 도착 시각 등을 한 지점에서 잴 수 있게 한다(heartbeat 제외).
+      // 진단/성능 측정용 단일 훅 — 첫 이벤트 도착 시각/liveness 갱신을 한 지점에서 잰다.
       handlers.onAnyEvent?.(event, data);
 
       if (event === 'turn_start') handlers.onTurnStart?.(data);
@@ -358,26 +371,38 @@ export const agentService = {
       else if (event === 'route_notice') handlers.onRouteNotice?.(data);
       else if (event === 'route_pipeline') handlers.onRoutePipeline?.(data);
       else if (event === 'all_complete') handlers.onAllComplete?.(data);
+      // done: FastAPI finally 가 보내는 종결 이벤트. 과거엔 디스패치되지 않아 무시됐다.
+      //  → all_complete 와 함께 '최종 수신(finalReceived)' 판정에 쓰도록 명시 전달한다.
+      else if (event === 'done') handlers.onDone?.(data);
       else if (event === 'error') handlers.onError?.(data);
+    };
+
+    // SSE 프레임은 '\n\n' 로 구분된다. CRLF(\r\n) 도 허용하도록 정규화 후 분리한다.
+    const drainFrames = () => {
+      buffer = buffer.replace(/\r\n/g, '\n');
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (frame.trim()) dispatch(frame);
+      }
     };
 
     while (true) {
       const { done, value } = await reader.read();
 
-      if (done) break;
+      if (done) {
+        // 멀티바이트 tail flush + 종결 '\n\n' 없이 끝난 마지막 프레임도 유실 없이 처리한다.
+        buffer += decoder.decode();
+        drainFrames();
+        const tail = buffer.replace(/\r\n/g, '\n').trim();
+        if (tail) dispatch(tail);
+        buffer = '';
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
-
-      let idx;
-
-      while ((idx = buffer.indexOf('\n\n')) !== -1) {
-        const frame = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-
-        if (frame.trim()) {
-          dispatch(frame);
-        }
-      }
+      drainFrames();
     }
   },
 
