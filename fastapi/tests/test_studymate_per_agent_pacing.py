@@ -102,3 +102,40 @@ def test_single_agent_prompt_contains_personality_and_question(monkeypatch):
     # 냉소봇 → 냉소적 coreDirective + 다른 메이트 안내
     assert "비꼬는" in sys
     assert "전문봇" in sys  # peers 안내에 다른 에이전트 이름
+
+
+def test_basic_mode_is_free_conversation():
+    d = orch._mode_role_directive("basic")
+    assert "자유 대화" in d and "가르치려 들지 마라" in d
+
+
+def _req(msg):
+    return MultiChatRequest(message=msg, mode="basic", learningMode="basic", agents=_agents())
+
+
+def test_cross_feedback_single_agent_off():
+    one = [_agents()[0]]
+    assert orch._cross_feedback_enabled(MultiChatRequest(message="객체지향이 뭐고 왜 쓰는지 설명해줘", agents=one), one) is False
+
+
+def test_cross_feedback_env_off(monkeypatch):
+    monkeypatch.setenv("STUDYMATE_CROSS_FEEDBACK", "off")
+    assert orch._cross_feedback_enabled(_req("객체지향이 뭐고 왜 쓰는지 설명해줘"), _agents()) is False
+
+
+def test_cross_feedback_env_on_short_message(monkeypatch):
+    monkeypatch.setenv("STUDYMATE_CROSS_FEEDBACK", "on")
+    assert orch._cross_feedback_enabled(_req("ㅎㅇ"), _agents()) is True
+
+
+def test_cross_feedback_auto_substantive_vs_casual(monkeypatch):
+    monkeypatch.setenv("STUDYMATE_CROSS_FEEDBACK", "auto")
+    assert orch._cross_feedback_enabled(_req("gRPC랑 REST 차이가 뭐야?"), _agents()) is True
+    assert orch._cross_feedback_enabled(_req("ㅎㅇ"), _agents()) is False
+
+
+def test_peer_answers_injected_in_user_prompt():
+    a = _agents()[1]
+    peers = [{"agentName": "전문봇", "answer": "객체지향은 캡슐화·상속·다형성이 핵심이다."}]
+    up = orch._build_single_agent_user_prompt(a, _req("객체지향이 뭐야?"), "", "", peers)
+    assert "먼저 답한 메이트들" in up and "전문봇" in up and "캡슐화" in up

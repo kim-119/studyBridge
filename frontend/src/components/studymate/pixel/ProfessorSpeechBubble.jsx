@@ -7,12 +7,13 @@ const PREVIEW_LEN = 120;
 
 export default function ProfessorSpeechBubble({ name, text, side = 'center', color }) {
   const [expanded, setExpanded] = useState(false);
+  const [hidden, setHidden] = useState(false);
 
-  // 새 답변(text 변경)이 오면 다시 접힌 상태로 시작한다.
-  useEffect(() => { setExpanded(false); }, [text]);
+  // 새 답변(text 변경)이 오면 다시 펼침/표시 상태를 초기화한다.
+  useEffect(() => { setExpanded(false); setHidden(false); }, [text]);
 
   const body = String(text || '').trim();
-  if (!body) return null;
+  if (!body || hidden) return null;
 
   const isLong = body.length > PREVIEW_LEN;
   const preview = isLong ? `${body.slice(0, PREVIEW_LEN).trimEnd()}…` : body;
@@ -26,7 +27,17 @@ export default function ProfessorSpeechBubble({ name, text, side = 'center', col
       style={{ borderColor: accent }}
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="prof-speech-name" style={{ color: accent }}>{name || '교수'}</div>
+      <div className="prof-speech-head">
+        <span className="prof-speech-name" style={{ color: accent }}>{name || '교수'}</span>
+        <button
+          type="button"
+          className="prof-speech-close"
+          aria-label="말풍선 닫기"
+          onClick={(e) => { e.stopPropagation(); setHidden(true); }}
+        >
+          ×
+        </button>
+      </div>
       <div className={`prof-speech-text ${expanded ? 'is-full' : ''}`}>
         {expanded ? body : preview}
       </div>

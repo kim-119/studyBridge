@@ -123,8 +123,9 @@
 .pixel-professor-label {
   position: absolute;
   left: 50%;
-  bottom: calc(100% - 18px);
-  transform: translate(-50%, 6px);
+  bottom: auto;
+  top: calc(100% - 16px);
+  transform: translate(-50%, -6px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -392,7 +393,20 @@
   from { opacity: 0; transform: translateY(8px) scale(0.96); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-.prof-speech-name { font-size: 11px; font-weight: 900; margin-bottom: 3px; }
+.prof-speech-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 3px; }
+.prof-speech-name { font-size: 11px; font-weight: 900; }
+.prof-speech-close {
+  border: none;
+  background: transparent;
+  color: #8a7f63;
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 900;
+  cursor: pointer;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.prof-speech-close:hover { color: #2b2118; }
 .prof-speech-text { white-space: pre-wrap; word-break: break-word; }
 .prof-speech-text.is-full { max-height: 200px; overflow-y: auto; }
 .prof-speech-more {
