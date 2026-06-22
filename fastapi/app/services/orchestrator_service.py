@@ -451,6 +451,19 @@ def _position_role(position: int, total: int) -> str:
     )
 
 
+def _short_persona_tone(agent: AgentProfile) -> str:
+    """소크라테스/토론용 '말투 톤'만 추출(개조식·answerShape 같은 형식 지시는 제외 — 모드 형식과 충돌하므로)."""
+    from app.services.personality_prompt_builder import get_profile
+    label = _agent_personality_label(agent)
+    profile = get_profile(label)
+    name = profile.get("displayName") or label
+    tone = profile.get("toneProfile") or ""
+    line = f"[성격 톤] '{name}' 말투를 살려라: {tone}".strip()
+    if str(profile.get("speechRegister", "")).strip() == "반말":
+        line += " (반드시 반말, 존댓말 금지. 단 조롱·인신공격은 금지.)"
+    return line
+
+
 def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents: List[AgentProfile], social: bool = False, position: int = 0, total: int = 1) -> str:
     """에이전트 한 명에게 집중한 system 프롬프트(성격 행동지시문 + 지식수준 + 모드 + 위치 역할).
 
@@ -489,17 +502,19 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
     # 비-basic 모드(소크라테스/토론/상황극): 모드 지시가 지배한다.
     # basic 전용 프레이밍(역할분담·'깊이있게 설명하라'·비판규칙)은 넣지 않는다 — 소크라테스가 일반 설명으로 변질되는 걸 막는다.
     if not is_basic:
+        # 소크라테스/토론/상황극: 모드 형식이 절대 우선. 성격은 '말투 톤'으로만, 지식수준은 '난이도'로만 반영.
+        # (풀 coreDirective·customInstruction은 '설명하라'를 강제해 모드와 충돌하므로 여기선 넣지 않는다.)
         return f"""[역할] 너는 '{name}'(이)다.
-{persona_block}
-{custom_block}
+{_short_persona_tone(agent)}
+[상대 수준] 상대는 '{level}' 수준 — 질문/논증의 난이도와 용어를 여기에 맞춰라.
+
 {_mode_role_directive(mode, position, total)}
 
-[상대 수준] 상대는 '{level}' 수준이다. 난이도와 용어를 거기에 맞춰라.{peers}
-
-[규칙]
-- ★ 위 [모드] 지시를 최우선으로 따른다. 소크라테스면 개념을 풀어 설명하지 말고, 사용자가 스스로 답을 찾게 '역질문·반례' 위주로만 답하라(설명·정답 제시 금지).
-- 성격 톤은 살리되 조롱·비아냥·인신공격은 금지.
-- 한국어로, JSON·머리말·꼬리말 없이 본문만. 같은 표현 반복 금지."""
+[절대 규칙 — 모드 형식이 최우선]
+- 위 [모드] 지시의 '형식'을 무엇보다 우선한다. 성격·지식수준은 말투와 난이도에만 반영하고, 모드 형식을 절대 바꾸지 마라.
+- (소크라테스) 개념을 설명·정의·요약하지 마라. '결론/핵심/정의' 나열 금지. 질문 → 단계별 힌트 → "네 말로 설명해볼래?"만.
+- (토론) 그냥 설명하지 마라. 논제를 정의하고 네 입장(찬성/반대/중립)을 근거·예시로 주장/반박하라.
+- 조롱·비아냥·인신공격 금지. 한국어로, JSON·머리말·꼬리말 없이 본문만. 같은 표현 반복 금지.{peers}"""
 
     role_section = f"\n{role_block}\n" if role_block else "\n"
 

@@ -121,13 +121,15 @@ def test_first_agent_does_not_critique():
 
 
 def test_socratic_mode_is_question_driven_not_explanation():
-    # 소크라테스 모드는 basic용 '첫 설명자=직접 설명' 프레이밍이 끼면 안 되고, 역질문 위주여야 한다.
-    agents = _agents()
-    soc = orch._build_single_agent_system_prompt(agents[0], "socratic", agents, position=0, total=3)
-    assert "역질문" in soc                 # 질문 주도
-    assert "첫 설명자" not in soc           # basic 역할분담 미적용
-    bas = orch._build_single_agent_system_prompt(agents[0], "basic", agents, position=0, total=3)
-    assert "첫 설명자" in bas               # basic엔 적용
+    # 소크라테스: 질문/힌트 위주 + '설명·정의·요약 금지'가 박혀야 하고, basic 프레이밍/설명지침이 없어야 한다.
+    a = AgentProfile(id=1, agentId="a1", name="X", personality="효율적",
+                     customInstruction="개념을 구조적으로 설명해줘.")
+    soc = orch._build_single_agent_system_prompt(a, "socratic", [a], position=0, total=3)
+    assert "단계별 힌트" in soc and "나열 금지" in soc   # 질문/힌트 주도 + 설명 금지
+    assert "첫 설명자" not in soc                        # basic 역할분담 미적용
+    assert "구조적으로 설명" not in soc                  # customInstruction의 '설명' 지침이 모드를 덮지 않음
+    bas = orch._build_single_agent_system_prompt(a, "basic", [a], position=0, total=3)
+    assert "첫 설명자" in bas                            # basic엔 적용
 
 
 def test_persona_custom_instruction_shapes_format():
