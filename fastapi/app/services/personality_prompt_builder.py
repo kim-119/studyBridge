@@ -227,6 +227,7 @@ def get_generation_params(personality: Optional[str]) -> dict:
 def _compose_prompt_from_profile(profile: dict) -> str:
     """YAML 프로필(dict)을 시스템 프롬프트 블록으로 조립한다."""
     lines = []
+    lines.append("★[경고] 앵무새처럼 매번 똑같은 첫 문장이나 패턴(예: '방향은 맞는데', '와, 이걸 아직도', '결론:')을 기계적으로 반복하지 마라! 맥락에 맞게 매번 새로운 표현과 어휘로 자연스럽게 성격을 드러내라.")
     # coreDirective(사용자 지정 행동 지시문)는 다른 어떤 규칙보다 우선이며 맨 앞에 그대로 둔다.
     core = profile.get("coreDirective")
     if core and str(core).strip():
