@@ -11,6 +11,7 @@ from typing import Optional
 
 from app.services.knowledge_level_controller import get_level_instruction
 from app.services.personality_prompt_builder import build_personality_prompt
+from app.services.message_intent_classifier import classify_message_intent
 from app.services.llm_engine_router import call_primary_llm
 from app.services.tiki_taka_manager import run_tiki_taka, TikiTakaTurn
 
@@ -29,7 +30,7 @@ _BASE_SYSTEM = """\
 - PDF 자료(PDF_RAG_CONTEXT)가 있으면 최우선 근거로 사용한다.
 - 자료에 없는 내용은 단정하지 말고, 추정임을 명시한다.
 - 답변 마지막에 '참고 자료 출처'를 간단히 포함한다.
-"""
+- ★ [절대 규칙] 사용자가 개념 질문이 아니라 불만 표현("이상해", "뭐라는거야"), 버그 리포트, 일상 대화를 할 때는 억지로 '개념 정의'나 '원리 분석'을 하지 마라. '답변 구성(정의/예시 등)'과 '지식수준'을 무시하고, 오직 너의 '성격/말투'만 유지한 채 사람처럼 자연스럽게 대화하고 공감/안내하라.
 
 # 일상 대화용 시스템 프롬프트 뼈대 (짧고 자연스럽게)
 _CASUAL_SYSTEM = """\
@@ -58,13 +59,17 @@ def _build_system_prompt(
     )
 
 
-def _build_user_prompt(question: str, rag_context: str) -> str:
+def _build_user_prompt(question: str, rag_context: str, personality: str, custom_instruction: Optional[str] = None) -> str:
+    from app.services.personality_prompt_builder import build_persona_directive
+    persona_reminder = build_persona_directive(personality, custom_instruction)
+    
+    parts = []
     if rag_context:
-        return (
-            f"## 수집된 자료\n{rag_context}\n\n"
-            f"## 사용자 질문\n{question}"
-        )
-    return f"## 사용자 질문\n{question}"
+        parts.append(f"## 수집된 자료\n{rag_context}")
+    parts.append(f"## 사용자 질문\n{question}")
+    parts.append(f"\n{persona_reminder}")
+    
+    return "\n\n".join(parts)
 
 
 def run_agent_chat(
@@ -94,12 +99,13 @@ def run_agent_chat(
     """
     logs: list[str] = []
 
-    # ── 메시지 의도 분류 (비활성화 - 사용자 요청으로 직접 적용) ───────────────
+    # ── 메시지 의도 분류 (Tiki-Taka 및 RAG 스킵 용도) ────────────────────────
+    intent_result = classify_message_intent(question, knowledge_level)
+    # 지식수준 족쇄는 풀고 사용자가 선택한 수준을 강제 적용 (성격 유지)
     effective_level = knowledge_level
-    is_casual = False
+    is_casual = intent_result.is_casual_message
     logs.append(
-        f"의도 분류: 비활성화 (모든 질문에 성격/지식수준 직접 적용) | "
-        f"effective_level={effective_level}"
+        f"의도 분류: {intent_result.intent} | is_casual={is_casual} (TikiTaka 스킵용)"
     )
 
     # ── RAG 컨텍스트 수집 (학습 질문이고 material_id 있을 때만) ──────
@@ -128,9 +134,9 @@ def run_agent_chat(
         effective_knowledge_level=effective_level,
         personality=personality,
         custom_instruction=custom_instruction,
-        is_casual=is_casual,
+        is_casual=False,  # 성격을 무조건 적용하기 위해 항상 False
     )
-    user_prompt = _build_user_prompt(question, rag_context)
+    user_prompt = _build_user_prompt(question, rag_context, personality, custom_instruction)
     logs.append("프롬프트를 조립했습니다.")
 
     # ── LLM 1차 답변 생성 (Ollama → OpenAI fallback) ────────────────

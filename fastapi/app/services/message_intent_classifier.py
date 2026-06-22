@@ -30,6 +30,12 @@ _CASUAL_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# ── 불만 / 버그 리포트 패턴 (최우선 매칭) ──────────────────────────────────
+_COMPLAINT_PATTERNS = re.compile(
+    r"(이상해|안돼|안 돼|오류|버그|에러|고장|뭐라는|짜증|어이없|화나|답답|불편|동작안|실행안)",
+    re.IGNORECASE,
+)
+
 # 학습/개념 관련 키워드 (단 하나라도 있으면 learning_question)
 _LEARNING_KEYWORDS = re.compile(
     r"(뭐야|뭐죠|무엇|무엇인가|설명|이란|란\s*무엇|개념|정의|원리|구조|차이|비교|"
@@ -79,6 +85,16 @@ def classify_message_intent(
             requested_knowledge_level=requested_knowledge_level,
             effective_knowledge_level=_CASUAL_EFFECTIVE_LEVEL,
             reason="단순 인사/감사/잡담이므로 지식수준 프롬프트를 과도하게 적용하지 않음",
+        )
+
+    # 1-2) 불만 / 버그 제보 / 감정 표현 매칭 (학습 키워드보다 우선 처리)
+    if _COMPLAINT_PATTERNS.search(stripped):
+        return MessageIntentResult(
+            intent="complaint",
+            is_casual_message=True,  # 티키타카/RAG 스킵
+            requested_knowledge_level=requested_knowledge_level,
+            effective_knowledge_level=_CASUAL_EFFECTIVE_LEVEL,
+            reason="불만/오류 제보이므로 티키타카 및 무거운 분석을 건너뜀",
         )
 
     # 2) 학습 키워드 포함 → 무조건 learning_question
