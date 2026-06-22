@@ -209,8 +209,11 @@ def _page_fallback_entry(page: Optional[int]) -> Dict[str, Any]:
         "page": page,
         "title": "내용 식별 제한",
         "detectedTextSource": "INSUFFICIENT",
+        "contentType": _content_type("INSUFFICIENT"),
         "pageOverview": "이 페이지는 OCR 또는 텍스트 추출 결과가 부족하여 핵심 내용을 명확히 식별하기 어렵습니다.",
         "keyConcepts": [],
+        "conceptExplanations": [],
+        "examples": [],
         "summaryBullets": [
             "페이지 이미지 또는 캡션 정보가 부족합니다.",
             "원본 PDF의 텍스트 추출 또는 OCR 품질을 확인해야 합니다.",
@@ -320,6 +323,9 @@ def _build_prompt(req: MajorAnalysisRequest, domain: Dict[str, Any],
         "- 문서 전체를 한 덩어리로만 요약하지 않는다. 각 페이지마다 독립적인 요약을 만든다.\n"
         "- 페이지 번호를 유지하고, 다른 페이지 내용을 섞지 않는다(p.2 내용을 p.9에 넣지 말 것).\n"
         "- 각 페이지에서 실제로 나온 개념만으로 title/pageOverview/keyConcepts/summaryBullets/studyFocus를 쓴다.\n"
+        "- ★ 각 페이지의 핵심 개념은 이름만 나열하지 말고 conceptExplanations에 '용어(term) + 학습자가 이해할 수 있는 쉬운 설명(explanation)'으로 풀어 쓴다.\n"
+        "- ★ 각 페이지마다 그 페이지 개념을 이해하는 데 도움이 되는 '추가 예시'를 examples에 1~3개 든다(PDF에 없어도 개념 설명용 예시는 만들어도 되지만, 사실을 왜곡하지 않는다).\n"
+        "- (입력의 source 라벨이 TEXT면 텍스트 페이지, OCR/IMAGE_DESCRIPTION/CAPTION이면 이미지 기반 페이지다. 이미지 기반이면 인식 한계를 감안해 신중히 쓴다.)\n"
         "- source=INSUFFICIENT 페이지는 읽은 척하지 말고 '내용 식별 제한'으로 솔직히 처리한다.\n"
         "- 일반적인 추상 요약으로 끝내지 않고 PDF에 실제로 나온 구체 용어를 사용한다.\n"
         "- Wikipedia는 보조 지식으로만 쓰고 PDF보다 우선하지 않는다. PDF에 없는 내용을 확정 사실처럼 꾸미지 않는다.\n"
@@ -339,7 +345,9 @@ def _build_prompt(req: MajorAnalysisRequest, domain: Dict[str, Any],
         '"aiStudyQuestions": ["학습 질문 3개"], '
         '"pageSummaries": [{"page": 2, "title": "페이지 제목", '
         '"pageOverview": "이 페이지가 무엇을 설명하는지 1~2문장", '
-        '"keyConcepts": ["이 페이지의 핵심 개념"], '
+        '"keyConcepts": ["이 페이지의 핵심 개념(이름)"], '
+        '"conceptExplanations": [{"term": "개념 이름", "explanation": "그 개념을 쉽게 풀어 설명"}], '
+        '"examples": ["개념 이해를 돕는 추가 예시 1~3개"], '
         '"summaryBullets": ["이 페이지 핵심 요약 2~5개"], '
         '"studyFocus": "이 페이지에서 학습자가 이해해야 할 것 1~2문장"}] }\n'
         "pageSummaries는 위 [페이지별 입력]의 각 페이지마다 하나씩, 같은 page 번호로 만든다.\n"
@@ -361,10 +369,15 @@ def _summarize_single_page(domain: Dict[str, Any], page: Dict[str, Any]) -> Opti
         f"({domain['label']})이다. 아래 [페이지 {pno} 내용]만 근거로, 다른 페이지를 상상하지 말고 "
         "이 페이지만 한국어로 요약하라. 내용에 없는 것을 지어내지 마라.\n\n"
         f"[페이지 {pno} 내용 (source={page['source']})]\n{page['text']}\n\n"
+        "핵심 개념은 이름만 적지 말고 conceptExplanations에 '용어+쉬운 설명'으로 풀어 쓰고, "
+        "개념 이해를 돕는 추가 예시를 examples에 1~3개 든다.\n"
         "아래 JSON 한 개로만 응답하라(마크다운 금지):\n"
         f'{{ "page": {pno if pno is not None else "null"}, "title": "페이지 제목", '
         '"pageOverview": "이 페이지가 무엇을 설명하는지 1~2문장", '
-        '"keyConcepts": ["핵심 개념"], "summaryBullets": ["핵심 요약 2~5개"], '
+        '"keyConcepts": ["핵심 개념(이름)"], '
+        '"conceptExplanations": [{"term": "개념 이름", "explanation": "쉬운 설명"}], '
+        '"examples": ["추가 예시 1~3개"], '
+        '"summaryBullets": ["핵심 요약 2~5개"], '
         '"studyFocus": "학습자가 이해해야 할 것 1~2문장" }'
     )
     raw = qwen_draft(_SYSTEM, prompt, max_tokens=800)
@@ -422,6 +435,39 @@ def _detail_list(v: Any, limit: int) -> List[Dict[str, str]]:
 
 _VALID_SOURCES = {"TEXT", "OCR", "CAPTION", "TABLE", "IMAGE_DESCRIPTION", "MIXED", "INSUFFICIENT"}
 
+# 결정론적 source → 사람이 읽는 콘텐츠 유형(텍스트/이미지 구분). 페이지 카드에 그대로 표기한다.
+_CONTENT_TYPE_BY_SOURCE = {
+    "TEXT": "텍스트",
+    "OCR": "이미지(OCR 인식)",
+    "IMAGE_DESCRIPTION": "이미지",
+    "CAPTION": "이미지(캡션)",
+    "TABLE": "표",
+    "MIXED": "텍스트+이미지",
+    "INSUFFICIENT": "내용 식별 제한",
+}
+
+
+def _content_type(source: Optional[str]) -> str:
+    return _CONTENT_TYPE_BY_SOURCE.get((source or "").upper(), "텍스트")
+
+
+def _concept_detail_list(v: Any, limit: int = 8) -> List[Dict[str, str]]:
+    """conceptExplanations: [{term, explanation}] 정규화(문자열만 오면 explanation 비움)."""
+    if not isinstance(v, (list, tuple)):
+        return []
+    out: List[Dict[str, str]] = []
+    for x in v:
+        if isinstance(x, dict):
+            term = _clean(x.get("term") or x.get("concept") or x.get("name") or x.get("title"))
+            expl = _clean(x.get("explanation") or x.get("desc") or x.get("description") or x.get("content"))
+            if term or expl:
+                out.append({"term": term or "개념", "explanation": expl})
+        elif isinstance(x, str) and x.strip():
+            out.append({"term": _clean(x), "explanation": ""})
+        if len(out) >= limit:
+            break
+    return out
+
 
 def _normalize_page_summaries(parsed: Any, pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """LLM의 pageSummaries를 결정론적 pages(page 번호·detectedTextSource 기준)와 대조해 정규화.
@@ -451,12 +497,20 @@ def _normalize_page_summaries(parsed: Any, pages: List[Dict[str, Any]]) -> List[
             entry["detectedTextSource"] = source
             out.append(entry)
             continue
+        concept_details = _concept_detail_list(llm.get("conceptExplanations"), 8)
+        key_concepts = _str_list(llm.get("keyConcepts"), 8)
+        # keyConcepts가 비고 conceptExplanations만 있으면 term으로 역채움(하위호환).
+        if not key_concepts and concept_details:
+            key_concepts = [c["term"] for c in concept_details if c.get("term")][:8]
         out.append({
             "page": page_no,
             "title": title or "핵심 내용",
             "detectedTextSource": source,
+            "contentType": _content_type(source),
             "pageOverview": overview or (bullets[0] if bullets else ""),
-            "keyConcepts": _str_list(llm.get("keyConcepts"), 8),
+            "keyConcepts": key_concepts,
+            "conceptExplanations": concept_details,
+            "examples": _str_list(llm.get("examples"), 3),
             "summaryBullets": bullets,
             "studyFocus": focus or "이 페이지의 핵심 개념을 중심으로 복습하세요.",
         })
