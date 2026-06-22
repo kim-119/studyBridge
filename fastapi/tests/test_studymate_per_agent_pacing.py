@@ -30,7 +30,7 @@ def _agents():
 @pytest.mark.parametrize("label,keyword", [
     ("전문적", "전제-근거-결론"),
     ("친근함", "유치원 선생님"),
-    ("솔직함", "팩트 폭력"),
+    ("솔직함", "직설적"),
     ("독특함", "4차원"),
     ("효율적", "개조식"),
     ("냉소적", "비꼬는"),
@@ -104,33 +104,40 @@ def test_single_agent_prompt_contains_personality_and_question(monkeypatch):
     assert "전문봇" in sys  # peers 안내에 다른 에이전트 이름
 
 
-def test_basic_mode_is_free_conversation():
-    d = orch._mode_role_directive("basic")
-    assert "자유 대화" in d and "가르치려 들지 마라" in d
+def test_social_input_gets_light_prompt():
+    # 인사/잡담이면 공격적 비판 대신 가볍게 받는 프롬프트가 나와야 한다.
+    agents = _agents()
+    sp = orch._build_single_agent_system_prompt(agents[1], "basic", agents, social=True)
+    assert "인사/잡담" in sp and "가볍게" in sp
 
 
-@pytest.mark.parametrize("front_key,keyword", [
-    ("cynical", "비꼬는"),     # 냉소적
-    ("honest", "팩트 폭력"),   # 솔직함
-    ("efficient", "개조식"),   # 효율적
-    ("unique", "4차원"),       # 독특함
-    ("professional", "전제-근거-결론"),
-    ("friendly", "유치원 선생님"),
+def test_question_prompt_forbids_mockery():
+    # 질문(비-social) 프롬프트엔 사실기반·조롱금지 규칙이 들어가야 한다.
+    agents = _agents()
+    sp = orch._build_single_agent_system_prompt(agents[1], "basic", agents, social=False)
+    assert "조롱" in sp and "근거" in sp
+
+
+@pytest.mark.parametrize("front_key,expected", [
+    ("cynical", "냉소적"),
+    ("honest", "비판적_분석형"),
+    ("efficient", "간결_요약형"),
+    ("unique", "창의적_확장형"),
+    ("professional", "전문적"),
+    ("friendly", "친절_설명형"),
 ])
-def test_frontend_english_keys_map_to_core_directive(front_key, keyword):
-    # 프론트(personality.js)가 보내는 영문 키가 백엔드 coreDirective로 정확히 매핑돼야 한다.
-    from app.services.personality_prompt_builder import build_personality_prompt
-    assert keyword in build_personality_prompt(front_key)
+def test_frontend_english_keys_map(front_key, expected):
+    # 프론트(personality.js) 영문 키가 백엔드 성격 타입으로 정확히 매핑돼야 한다(친절형 폴백 금지).
+    from app.services.personality_prompt_builder import normalize_personality
+    assert normalize_personality(front_key).value == expected
 
 
 def test_core_directive_overrides_custom_instruction():
-    # 프리셋 customInstruction이 공손하게 시켜도 6종 coreDirective가 무조건 이긴다.
-    from app.services.personality_prompt_builder import build_personality_prompt, build_persona_directive
-    polite = "아주 공손하고 친절한 존댓말로만 설명하세요"
-    sp = build_personality_prompt("냉소적", custom_instruction=polite)
-    pd = build_persona_directive("냉소적", custom_instruction=polite)
-    assert "비꼬는" in sp and "공손" not in sp
-    assert "비꼬는" in pd and "반말로 답한다" in pd and "공손" not in pd
+    # 프리셋 customInstruction(공손)이 와도 6종 성격이 이긴다(공손 지침이 그대로 노출되면 안 됨).
+    from app.services.personality_prompt_builder import build_personality_prompt, normalize_personality, PersonalityType
+    sp = build_personality_prompt("냉소적", custom_instruction="아주 공손하고 친절한 존댓말로만 설명하세요")
+    assert "공손" not in sp
+    assert normalize_personality("냉소적") == PersonalityType.SARDONIC
 
 
 def _req(msg):
