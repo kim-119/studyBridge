@@ -96,12 +96,13 @@ def test_blank_llm_guarded(monkeypatch):
     assert out.answers[0].answer.strip(), "빈 응답이 그대로 노출됨"
 
 
-def test_single_agent_prompt_contains_personality_and_question(monkeypatch):
-    agents = _agents()
+def test_single_agent_prompt_hides_peer_names(monkeypatch):
+    # 다른 메이트 안내는 있되, 이름은 노출하지 않는다(모델이 'X:' 머리표로 호명하는 것 방지).
+    agents = _agents()  # [전문봇, 냉소봇]
     sys = orch._build_single_agent_system_prompt(agents[1], "basic", agents)
-    # 냉소봇 → 냉소적 coreDirective + 다른 메이트 안내
-    assert "비꼬는" in sys
-    assert "전문봇" in sys  # peers 안내에 다른 에이전트 이름
+    assert "다른 메이트" in sys          # peers 안내 존재
+    assert "전문봇" not in sys           # 다른 에이전트 이름은 미노출
+    assert "머리표" in sys               # 'OOO:' 머리표 금지 지시 존재
 
 
 def test_position_roles_differ():
@@ -187,5 +188,5 @@ def test_peer_answers_injected_without_forced_naming():
     peers = [{"agentName": "전문봇", "answer": "객체지향은 캡슐화·상속·다형성이 핵심이다."}]
     up = orch._build_single_agent_user_prompt(a, _req("객체지향이 뭐야?"), "", "", peers)
     assert "캡슐화" in up                      # 앞 내용은 주입됨(중복 방지용)
-    assert "닉네임/이름" in up and "내용(논점) 중심" in up   # 이름 호명 자제 + 내용 중심 지시
+    assert "이름" in up and "내용 중심" in up    # 이름 호명 자제 + 내용 중심 지시
     assert "전문봇" not in up                   # 닉네임을 프롬프트에 박아 호명을 유도하지 않음

@@ -441,7 +441,11 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
     name = agent.name or "AI"
     level = agent.knowledgeLevel or getattr(agent, "knowledgeLevelLabel", None) or "학사 수준"
     others = [a.name for a in all_agents if a is not agent and a.name]
-    peers = f"\n[함께 있는 다른 메이트] {', '.join(others)} — 이들과 똑같은 말투/구조로 쓰지 말고 너만의 성격을 드러내라." if others else ""
+    # 다른 메이트의 '이름'은 일부러 노출하지 않는다(모델이 'X:'처럼 호명/머리표로 쓰는 걸 막기 위해).
+    peers = (
+        "\n[함께 있는 다른 메이트] 너 말고 다른 메이트들도 같은 질문에 답한다 — 그들과 똑같은 말투·구조로 쓰지 말고 너만의 성격·관점을 내라."
+        "\n- ★ 다른 메이트의 이름/닉네임을 문장에 부르지 말고, 'OOO:' 같은 머리표도 절대 쓰지 마라."
+    ) if others else ""
     role_block = _position_role(position, total)
 
     # 인사/잡담이면: 성격 톤은 살짝 유지하되 공격하지 말고 짧고 가볍게 받는다(없는 내용 비판 금지).
@@ -489,13 +493,13 @@ def _build_single_agent_user_prompt(
     parts.append(f"[사용자의 최근 메시지] {request.message}")
     parts.append("위 대화 흐름을 이어서, 이 메시지에 자연스럽게 응답하라.")
     if peer_answers:
-        peer_lines = [f"- {str(p.get('answer',''))[:300]}" for p in peer_answers]
+        peer_lines = [f"- {str(p.get('answer',''))[:150]}" for p in peer_answers]
         parts.append(
-            "[앞에서 이미 나온 내용 — 중복 방지용 참고]\n" + "\n".join(peer_lines) +
-            "\n→ 위 내용은 이미 나왔으니 되풀이하지 말고, 네 역할대로 '새로 더할 것'만 말하라(심화자=새 관점·예시, 검증자=빠진 점·오류). "
-            "★ 앞 메이트의 '닉네임/이름'을 굳이 부르지 마라. '앞서 ~라는 설명이 있었지만 그 부분은…', '~는 ~을 놓쳤다'처럼 **내용(논점) 중심**으로 자연스럽게 이어가라. "
-            "매번 똑같은 방식으로 시작하지 마라(이름 호명·'방향은 맞는데' 같은 상투구 금지). 문장 시작을 매번 다르게. "
-            "앞 답변 문장을 베끼거나 다시 풀어쓰지 말고, 조롱·비아냥 없이 근거로 지적하라."
+            "[앞에서 이미 나온 요지 — 중복 방지용, 되풀이 금지]\n" + "\n".join(peer_lines) +
+            "\n→ 위는 이미 나왔다. 점별로 반박하거나 같은 말을 되풀이하지 말고, 네 역할대로 '네가 새로 더할 한 가지'에만 집중하라"
+            "(심화자=앞에 없던 새 관점·예시 1개, 검증자=가장 중요한 빠진 점·주의점 1개). "
+            "★ 다른 메이트의 이름/'OOO:' 머리표를 쓰지 마라. 굳이 짚을 땐 '앞 설명은 ~를 놓쳤다'처럼 내용 중심으로, 단 한 번만. "
+            "같은 문장·표현을 반복하지 말고(특히 한 답변 안에서 같은 말 재탕 금지), 상투구('방향은 맞는데')도 쓰지 마라. 조롱 없이 근거로."
         )
     parts.append(build_persona_directive(_agent_personality_label(agent), _agent_custom_instruction(agent)))
     return "\n\n".join(parts)
