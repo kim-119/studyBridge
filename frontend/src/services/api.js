@@ -356,6 +356,10 @@ export const agentService = {
       if (event === 'turn_start') handlers.onTurnStart?.(data);
       else if (event === 'heartbeat') handlers.onHeartbeat?.(data);
       else if (event === 'progress') handlers.onProgress?.(data);
+      // 픽셀 교수 안무/상호작용 이벤트(visual layer). 답변 append 로직과 무관.
+      else if (event === 'professor_motion') handlers.onProfessorMotion?.(data);
+      else if (event === 'interaction_event') handlers.onInteractionEvent?.(data);
+      else if (event === 'synthesis_diff') handlers.onSynthesisDiff?.(data);
       else if (event === 'agent_start') handlers.onAgentStart?.(data);
       else if (event === 'agent_answer') handlers.onAgentAnswer?.(data);
       else if (event === 'agent_error') handlers.onAgentError?.(data);
@@ -1487,7 +1491,7 @@ export const learningLoopService = {
 };
 
 // 소크라테스 복습 세션 — React는 Spring 프록시(/api/materials/{id}/socratic-review/*)만 호출한다.
-//  - ai07/18001 직접 호출 금지(백엔드가 화이트리스트 sanitize + 소유권 검증).
+//  - ai07 FastAPI 직접 호출 금지(백엔드가 화이트리스트 sanitize + 소유권 검증).
 //  - 모든 응답에 aiAvailable 플래그가 붙는다(false면 "AI 서버 재시작 필요" 안내).
 export const socraticReviewService = {
   // 세션 시작. body { maxTurnsPerChunk?, maxChunks? }

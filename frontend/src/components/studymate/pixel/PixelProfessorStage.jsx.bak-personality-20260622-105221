@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { PROFESSORS, getStateAnim, ACTIVE_VISUAL_STATES, ROLE_TO_AGENT_INDEX, getProfessorSpriteSheetForAgent } from './professorSprites';
+import { PROFESSORS, getStateAnim, ACTIVE_VISUAL_STATES } from './professorSprites';
 import PixelProfessorSprite from './PixelProfessorSprite';
 import ProfessorActionMenu from './ProfessorActionMenu';
 import MinuteRecapBubble from './MinuteRecapBubble';
@@ -11,7 +11,6 @@ import './pixelProfessor.css';
 //   · completed/error 는 잠깐 표시 후 onAutoReset(role)으로 idle 복귀.
 export default function PixelProfessorStage({
   visualStates = {},
-  agents = [],
   onAutoReset,
   selectedRole,
   onSelectRole,
@@ -42,26 +41,7 @@ export default function PixelProfessorStage({
     return () => document.removeEventListener('keydown', onKey);
   }, [selectedRole, onSelectRole]);
 
-  const professorActors = PROFESSORS.map((p) => {
-    const agent = agents?.[ROLE_TO_AGENT_INDEX[p.role]];
-    const personality = String(
-      agent?.personality ||
-      agent?.tone ||
-      agent?.personalityStyle ||
-      agent?.style ||
-      ''
-    ).trim();
-
-    return {
-      ...p,
-      sheet: getProfessorSpriteSheetForAgent(agent, p.sheet),
-      // 액션 라우팅은 role 기준으로 고정한다.
-      // 성격 선택 결과는 sprite sheet와 tagline에만 반영한다.
-      tagline: personality ? `${personality} · ${p.tagline}` : p.tagline,
-    };
-  });
-
-  const selected = professorActors.find((p) => p.role === selectedRole) || null;
+  const selected = PROFESSORS.find((p) => p.role === selectedRole) || null;
 
   // 표시 상태: 진행 중(걷기/생각/답변/검증/피드백)이면 SSE 애니메이션 유지,
   //   그 외(idle/완료 등)일 때만 선택 포즈(SELECTED)로 덮어쓴다.
@@ -82,7 +62,7 @@ export default function PixelProfessorStage({
       </p>
 
       <div className="pixel-professor-layer">
-        {professorActors.map((p) => (
+        {PROFESSORS.map((p) => (
           <PixelProfessorSprite
             key={p.role}
             role={p.role}

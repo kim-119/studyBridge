@@ -969,6 +969,9 @@ public class ChatService {
                 //  (느린 원인이 ai07 모델 생성인지 중계 단인지 구분하기 위함. 운영 과다 로깅 방지를 위해 요약만.)
                 final long relayOpenAt = System.currentTimeMillis();
                 final java.util.concurrent.atomic.AtomicBoolean firstSeen = new java.util.concurrent.atomic.AtomicBoolean(false);
+                // all_complete 가 한 번이라도 클라이언트로 중계됐는지. 정상 종료 후의 upstream close/error 를
+                //  실패로 오인해 (a) 중복 all_complete 를 만들거나 (b) error 로 마무리하지 않도록 가드한다.
+                final java.util.concurrent.atomic.AtomicBoolean allCompleteSeen = new java.util.concurrent.atomic.AtomicBoolean(false);
                 Disposable subscription = fastApiWebClient.post()
                                 .uri("/api/ai/multi-chat/stream")
                                 .bodyValue(requestBody)
@@ -982,9 +985,11 @@ public class ChatService {
                                                                 if (firstSeen.compareAndSet(false, true)) {
                                                                         log.info("[CHAT PERF] roomId={} upstream first event='{}' after {}ms", roomId, event, System.currentTimeMillis() - relayOpenAt);
                                                                 }
+                                                                // FastAPI 이벤트는 필드 변형 없이 event/data 그대로 중계한다(공통 SSE 계약 보존).
                                                                 emitter.send(SseEmitter.event().name(event)
                                                                                 .data(data != null ? data : "{}"));
                                                                 if ("all_complete".equals(event) && data != null) {
+                                                                        allCompleteSeen.set(true);
                                                                         log.info("[CHAT PERF] roomId={} all_complete after {}ms", roomId, System.currentTimeMillis() - relayOpenAt);
                                                                         // 비동기 스레드에서 별도 트랜잭션으로 영속화 (room 재조회로 lazy 회피)
                                                                         persistStreamedAnswers(roomId, data);
@@ -994,6 +999,12 @@ public class ChatService {
                                                         }
                                                 },
                                                 err -> {
+                                                        // 정상 all_complete 이후의 close/error 는 정상 종료다. 중복 all_complete/error 금지.
+                                                        if (allCompleteSeen.get()) {
+                                                                log.info("FastAPI 스트림 종료(all_complete 이후) roomId={} — 정상 종료 처리", roomId);
+                                                                emitter.complete();
+                                                                return;
+                                                        }
                                                         log.error("FastAPI 스트리밍 오류 roomId={} err={}", roomId, err.getMessage());
                                                         try {
                                                                 Map<String, Object> fallback = fastApiWebClient.post()

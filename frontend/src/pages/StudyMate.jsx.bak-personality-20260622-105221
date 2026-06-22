@@ -8,8 +8,6 @@ import '../components/studymate/studymate-premium.css';
 import PixelProfessorStage from '../components/studymate/pixel/PixelProfessorStage';
 import { useMinuteRecap } from '../components/studymate/pixel/useMinuteRecap';
 import { roleForAgentIndex, ROLE_TO_AGENT_INDEX } from '../components/studymate/pixel/professorSprites';
-import ProfessorInteractionTimeline from '../components/studymate/pixel/ProfessorInteractionTimeline';
-import { normalizeMotionStates, phaseStatesFor, deriveInteractions } from '../components/studymate/pixel/modeInteractionProfiles';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getAgentColor, agentColorKey } from '../utils/agentColor';
 import { PERSONALITY_STYLE_OPTIONS, normalizePersonalityKey, personalityLabel as canonicalPersonalityLabel, personalityTemperature } from '../utils/personality';
@@ -2113,9 +2111,6 @@ export default function StudyMate() {
   // 픽셀 교수 stage: 선택된 교수(액션 메뉴) + 교수별 시각 상태(SSE 이벤트가 갱신, visual consumer).
   const [selectedProfessorRole, setSelectedProfessorRole] = useState(null); // 'theory'|'book'|'ai'|null
   const [professorVisualStates, setProfessorVisualStates] = useState({ theory: 'idle', book: 'idle', ai: 'idle' });
-  // 모드별 교수 상호작용 타임라인(현재 턴 기준, visual only). 백엔드 실제 이벤트 내용만 채운다.
-  const [professorInteractions, setProfessorInteractions] = useState([]);
-  const [professorInteractionMode, setProfessorInteractionMode] = useState('basic');
   // 스트림 정상 완료 시각(1분 요약 트리거). 히스토리 로드만으로는 요약이 뜨지 않게 한다.
   const [professorTurnDoneAt, setProfessorTurnDoneAt] = useState(0);
   const [message, setMessage] = useState('');
@@ -2558,10 +2553,8 @@ export default function StudyMate() {
     // ── 픽셀 교수 시각 상태 매핑(visual consumer). 현재 선택된 방의 스트림일 때만 애니메이션. ──
     //    답변 append/카드 로직은 건드리지 않고, 이벤트 수신 시 "시각 상태"만 갱신한다.
     const visualActive = () => selectedAgentIdRef.current === agentId;
-    // 백엔드가 professor_motion 을 보내면(=권위 있는 안무) 이벤트 기반 visual fallback 을 억제한다(목표 4).
-    let backendMotionDriven = false;
-    const visFor = (idx, state) => { if (!backendMotionDriven && visualActive()) setProfVisual(roleForAgentIndex(idx), state); };
-    const visAll = (state) => { if (!backendMotionDriven && visualActive()) setAllProfVisual(state); };
+    const visFor = (idx, state) => { if (visualActive()) setProfVisual(roleForAgentIndex(idx), state); };
+    const visAll = (state) => { if (visualActive()) setAllProfVisual(state); };
     let sawError = false;
 
     const userMsg = {
@@ -2584,10 +2577,8 @@ export default function StudyMate() {
     setRoomDrafts((prev) => ({ ...prev, [agentId]: '' }));
     // 4. 해당 방의 타이핑/로딩 상태 활성화 (전체 방 블로킹 X)
     setTypingRooms((prev) => ({ ...prev, [agentId]: true }));
-    // 시각: 질문 전송 직후 → 교수 3명 전체 thinking(목표 9 / 완료기준 1). 이후 이벤트마다 해당 교수만 전환.
-    visAll('thinking');
-    // 새 턴: 교수 상호작용 타임라인 초기화(이전 턴 잔상 제거).
-    if (visualActive()) setProfessorInteractions([]);
+    // 시각: 질문 전송 → 전체 교수 walking_to_question.
+    visAll('walking_to_question');
 
     // ── 소크라테스 카드 게이팅(정책: 명시 요청 시에만) ─────────────────────────────
     // 라디오로 '소크라테스'를 골랐다는 사실만으로는 카드를 만들지 않는다. 사용자가 이번 메시지에서
@@ -2772,8 +2763,6 @@ export default function StudyMate() {
         };
         let streamRendered = false;
         let streamCompleted = false;
-        // 이번 턴에 받은 실제 agent_answer 이벤트 수(계약 위반 탐지용 — 프론트는 없는 답변을 만들지 않는다).
-        let agentAnswerCount = 0;
 
         // ── SSE 스트림 상태머신 ───────────────────────────────────────────────
         //  IDLE → CONNECTING → STREAMING → (FINALIZED | FAILED)
@@ -2800,30 +2789,6 @@ export default function StudyMate() {
           const stage = (d && (d.stage || d.stageType)) || '';
           const ai = (d && (d.agentIndex ?? d.agent_index)) ?? '';
           return `${tid}:${stage}:${ai}:${event}`;
-        };
-
-        // ── 교수 상호작용 타임라인 누적(현재 턴). dedupe key(목표 11)로 중복 흡수. ──
-        //  백엔드 실제 이벤트 내용만 채운다(목표 12 — 프론트가 내용을 지어내지 않음).
-        if (visualActive()) setProfessorInteractionMode(activeLearningMode);
-        const interactionSeen = new Set();
-        let interactionAcc = [];
-        let interactionSeq = 0;
-        const pushInteractions = (records) => {
-          if (!Array.isArray(records) || !records.length) return;
-          let changed = false;
-          for (const r of records) {
-            if (!r || !r.content || !r.key) continue;
-            if (interactionSeen.has(r.key)) continue;
-            interactionSeen.add(r.key);
-            interactionAcc = [...interactionAcc, r];
-            changed = true;
-          }
-          if (changed && isActiveRequest() && visualActive()) setProfessorInteractions(interactionAcc);
-        };
-        // 단건 콘텐츠 이벤트 → 인터랙션 1행(도착 순서를 라벨 fallback hint 로 사용).
-        const addInteraction = (kind, d) => {
-          try { pushInteractions(deriveInteractions(activeLearningMode, kind, d, requestId, interactionSeq++)); }
-          catch (e) { if (import.meta.env.DEV) console.warn('[StudyMate] interaction derive 실패', e); }
         };
 
         // all_complete 라우팅: socratic → 답변 카드 / debate → DebateRenderer / processSteps → 단계 / answers → 카드 / 없음 → 안내
@@ -3041,34 +3006,15 @@ export default function StudyMate() {
             onProgress: (d) => {
               if (d) console.debug('[StudyMate] stream progress', d);
             },
-            // (목표 4) professor_motion — 백엔드가 주는 권위 있는 안무. states 를 최우선으로 직접 반영한다.
-            //  states 가 없고 phase 만 오면 모드 프로파일에서 phase→states 를 끌어온다.
-            onProfessorMotion: (d) => {
-              if (!d) return;
-              backendMotionDriven = true; // 이후 이벤트 기반 visual fallback 억제
-              if (!visualActive()) return;
-              const motionMode = d.mode || activeLearningMode;
-              const states = (d.states && typeof d.states === 'object')
-                ? d.states
-                : (d.phase ? phaseStatesFor(motionMode, d.phase) : null);
-              if (states) setProfessorVisualStates(normalizeMotionStates(states));
-            },
-            // (목표 3,7) interaction_event — 백엔드 명시 상호작용. 실제 내용 그대로 타임라인에 추가.
-            onInteractionEvent: (d) => { if (d) addInteraction('interaction_event', d); },
-            // synthesis_diff — 최종 답변에 어떤 의견이 반영됐는지(appliedToFinal) 표시.
-            onSynthesisDiff: (d) => { if (d) addInteraction('synthesis_diff', d); },
             onAgentStart: (d) => {
               if (!d) return;
               upsertAgentMessage(d, { isPending: true, content: d.message || `에이전트 ${d.agentIndex || ''} 답변 생성 중...` });
-              // (목표 5 fallback) agent_start → 해당 교수 walking_to_question.
-              visFor(d.agentIndex, 'walking_to_question');
+              visFor(d.agentIndex, 'thinking'); // 시각만(append 로직 불변)
             },
             onAgentAnswer: (d) => {
               armWatchdog();
               if (!d) return;
-              agentAnswerCount += 1;
               upsertAgentMessage(d, { isPending: false, content: d.content || d.answer || '' });
-              // (목표 5/완료기준 2) agent_answer → 해당 교수만 answering.
               visFor(d.agentIndex, 'answering');
             },
             onAgentError: (d) => {
@@ -3099,9 +3045,6 @@ export default function StudyMate() {
               if (d.stage === 1) (d.answers || []).forEach((a, i) => visFor(a?.agentIndex ?? i, 'answering'));
               else if (d.stage === 2) visFor(0, 'validating');
               else if (d.stage === 3) visAll('peer_feedback');
-              // 타임라인: 2차(논리 검증)·3차(상호 피드백)의 실제 내용을 모드 라벨로 추가(내용은 백엔드 값).
-              if (d.stage === 2) (d.answers || []).forEach((a) => addInteraction('validation', a));
-              else if (d.stage === 3) addInteraction('peer_feedback', { feedbacks: d.feedbacks || [] });
               streamRendered = true;
               setTurnAiMessages(buildStreamAiMsgs(fullPS));
             },
@@ -3122,7 +3065,6 @@ export default function StudyMate() {
                 content: d.content ?? '',
               });
               if (d.debateConfig) debateConfigAcc = d.debateConfig;
-              addInteraction('debate', d); // 타임라인: 주장/반박/재반박/판정 라벨로 추가
               visFor(d.agentIndex, String(d.stageType || '').includes('REBUTTAL') ? 'peer_feedback' : 'answering');
               streamRendered = true;
               setTurnAiMessages([buildDebateTurnMessage(
@@ -3151,7 +3093,6 @@ export default function StudyMate() {
                 content: d.content ?? d.question ?? d.hint ?? d.feedback ?? '',
               });
               if (d.socraticConfig) socraticConfigAcc = d.socraticConfig;
-              addInteraction('socratic', d); // 타임라인: 유도 질문/힌트/오개념 점검/재질문 라벨로 추가
               visFor(d.agentIndex, 'answering');
               streamRendered = true;
               setTurnAiMessages([buildSocraticTurnMessage(
@@ -3182,7 +3123,6 @@ export default function StudyMate() {
                 nextScenarioPrompt: d.nextScenarioPrompt,
               });
               if (d.simulationConfig) simulationConfigAcc = d.simulationConfig;
-              addInteraction('simulation', d); // 타임라인: 역할 대사/상황 반응/결과 피드백/디브리핑 라벨로 추가
               visFor(d.agentIndex, 'answering');
               streamRendered = true;
               setTurnAiMessages([buildSimulationTurnMessage(
@@ -3255,20 +3195,10 @@ export default function StudyMate() {
               if (streamCompleted) return;
               finalize();
               streamCompleted = true;
-              // 시각: 전체 교수 완료 표시(stage가 800ms 후 idle 복귀). backendMotionDriven 이어도 반드시 복귀하도록 ungated.
-              if (visualActive()) setAllProfVisual('completed');
+              visAll('completed'); // 시각: 전체 교수 완료 표시(stage가 800ms 후 idle 복귀)
               captureConvState(d);
               lastTurnAtRef.current[agentId] = Date.now();
               if (import.meta.env.DEV) console.debug('[StudyMate][perf] all_complete', { totalMs: Date.now() - perfT0, ttfbMs: perfFirstEvent ? perfFirstEvent - perfT0 : null });
-              // 계약 검증(텔레메트리만 — 절대 fake agent_answer 를 만들지 않는다).
-              //  emitted < selected 면 ai07 가 선택 교수 답변을 충분히 내지 않은 것(예: simulation NPC만).
-              const selCount = Number(d?.selectedAgentCount ?? (selectedAgent?.agents?.length || 0));
-              const emCount = Number(d?.emittedAgentCount ?? agentAnswerCount);
-              if (selCount > 0 && emCount < selCount) {
-                console.warn('[StudyMate][contract-violation] agent_answer 부족 — fake 카드 생성 안 함', {
-                  mode: activeLearningMode, requestId, selectedAgentCount: selCount, emittedAgentCount: emCount,
-                });
-              }
               if (routedTerminal) return; // 라우팅으로 종료 — 기존 답변 렌더 스킵(중복 방지)
               renderAllComplete(d);
             },
@@ -3492,8 +3422,8 @@ export default function StudyMate() {
     } finally {
       // 8. 해당 방의 타이핑/로딩 상태만 해제 + 전송 가드 해제(재진입 허용)
       setTypingRooms((prev) => ({ ...prev, [agentId]: false }));
-      // 시각: 스트림 종료 안전망(all_complete/error 누락 시에도 idle 복귀 보장). backendMotionDriven 이어도 복귀하도록 ungated.
-      if (visualActive()) setAllProfVisual(sawError ? 'error' : 'completed');
+      // 시각: 스트림 종료 안전망(all_complete/error 누락 시에도 idle 복귀 보장).
+      visAll(sawError ? 'error' : 'completed');
       // 1분 요약 트리거: 현재 방의 정상 완료 시에만(에러 제외) 갱신.
       if (visualActive() && !sawError) setProfessorTurnDoneAt(Date.now());
       sendingRoomsRef.current.delete(agentId);
@@ -4160,7 +4090,6 @@ export default function StudyMate() {
                       답변 데이터/SSE schema와 무관한 visual consumer(append 로직은 sendMessage에만 존재). */}
                   <PixelProfessorStage
                     visualStates={professorVisualStates}
-                    agents={selectedAgent?.agents || []}
                     onAutoReset={handleProfessorAutoReset}
                     selectedRole={selectedProfessorRole}
                     onSelectRole={setSelectedProfessorRole}
@@ -4179,11 +4108,6 @@ export default function StudyMate() {
                       <p>아래에는 교수/에이전트별 관점이 정리됩니다.</p>
                     </div>
                     <div className="professor-tree-body">
-                      {/* 모드별 교수 상호작용 타임라인(별도 컴포넌트, 기존 트리 불변). 백엔드 실제 이벤트만 표시. */}
-                      <ProfessorInteractionTimeline
-                        mode={professorInteractionMode}
-                        interactions={professorInteractions}
-                      />
                       <AgentDiscussionThread
                         messages={mindmapMessages}
                         typingAgents={

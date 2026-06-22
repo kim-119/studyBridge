@@ -22,7 +22,7 @@ public class WebClientConfig {
     @Value("${ai.server.fastapi.base-url:http://localhost:8000}")
     private String fastApiBaseUrl;
 
-    // Intent Router 베이스 URL. 기본값은 기존 FastAPI 베이스(EC2에선 tunnel-proxy host.docker.internal:18001).
+    // Intent Router 베이스 URL. 기본값은 기존 FastAPI 베이스(EC2에선 host.docker.internal:18000).
     @Value("${ai.intent-router.base-url:${ai.server.fastapi.base-url:http://localhost:8000}}")
     private String intentRouterBaseUrl;
 

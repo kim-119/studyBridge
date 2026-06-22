@@ -45,7 +45,7 @@ ai:
     # Spring → FastAPI 내부 인증키(설정 시 Authorization: Bearer 로 전달). 코드 하드코딩 금지.
     api-key: ${AI_SERVER_API_KEY:}
   # Intent Router: AI 채팅(자료보관함/그룹스터디/학습메이트) 앞단 분기. ai07 /api/ai/intent/route 호출.
-  # base-url 미지정 시 기존 FastAPI 베이스 사용(EC2=tunnel-proxy host.docker.internal:18001). 실패 시 PROCEED 폴백.
+  # base-url 미지정 시 기존 FastAPI 베이스 사용(EC2=host.docker.internal:18000). 실패 시 PROCEED 폴백.
   intent-router:
     enabled: ${AI_INTENT_ROUTER_ENABLED:false}
     base-url: ${AI_INTENT_ROUTER_BASE_URL:${FASTAPI_BASE_URL:http://localhost:8000}}
