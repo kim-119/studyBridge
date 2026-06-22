@@ -11,7 +11,6 @@ from typing import Optional
 
 from app.services.knowledge_level_controller import get_level_instruction
 from app.services.personality_prompt_builder import build_personality_prompt
-from app.services.message_intent_classifier import classify_message_intent
 from app.services.llm_engine_router import call_primary_llm
 from app.services.tiki_taka_manager import run_tiki_taka, TikiTakaTurn
 
@@ -95,13 +94,12 @@ def run_agent_chat(
     """
     logs: list[str] = []
 
-    # ── 메시지 의도 분류 ──────────────────────────────────────────────
-    intent_result = classify_message_intent(question, knowledge_level)
-    effective_level = intent_result.effective_knowledge_level
-    is_casual = intent_result.is_casual_message
+    # ── 메시지 의도 분류 (비활성화 - 사용자 요청으로 직접 적용) ───────────────
+    effective_level = knowledge_level
+    is_casual = False
     logs.append(
-        f"의도 분류: {intent_result.intent} | "
-        f"effective_level={effective_level} | {intent_result.reason}"
+        f"의도 분류: 비활성화 (모든 질문에 성격/지식수준 직접 적용) | "
+        f"effective_level={effective_level}"
     )
 
     # ── RAG 컨텍스트 수집 (학습 질문이고 material_id 있을 때만) ──────
@@ -176,5 +174,5 @@ def run_agent_chat(
         "personality":                personality,
         "requested_knowledge_level":  knowledge_level,
         "effective_knowledge_level":  effective_level,
-        "intent":                     intent_result.intent,
+        "intent":                     "direct_chat",
     }
