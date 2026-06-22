@@ -1671,8 +1671,8 @@ export default function GroupStudy() {
                       <div style={{ fontSize: '15px', fontWeight: '700', color: '#111827' }}>{preJoinStudy.maxMembers} 명</div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '13px', color: '#6B7280', marginBottom: '6px', display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>스터디 기간 <span style={{ backgroundColor: '#FEF3C7', color: '#D97706', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: '700', marginLeft: '4px' }}>D-308</span></div>
-                      <div style={{ fontSize: '15px', fontWeight: '700', color: '#111827' }}>2021.11.22 - 2027.04.06</div>
+                      <div style={{ fontSize: '13px', color: '#6B7280', marginBottom: '6px', display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>스터디 기간 <span style={{ backgroundColor: '#FEF3C7', color: '#D97706', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: '700', marginLeft: '4px' }}>D-{preJoinStudy.startDate ? Math.max(0, Math.ceil((new Date(preJoinStudy.startDate).getTime() - new Date().getTime()) / (1000 * 3600 * 24))) : '0'}</span></div>
+                      <div style={{ fontSize: '15px', fontWeight: '700', color: '#111827' }}>{preJoinStudy.startDate ? preJoinStudy.startDate.split('T')[0].replace(/-/g, '.') : '미정'} - {preJoinStudy.endDate ? preJoinStudy.endDate.split('T')[0].replace(/-/g, '.') : '미정'}</div>
                     </div>
                   </div>
 

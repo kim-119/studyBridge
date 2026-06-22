@@ -65,6 +65,7 @@ public class GroupStudyStreamController {
             map.put("senderId", h.getSenderId());
             map.put("content", h.getContent());
             map.put("isAi", "ASSISTANT".equals(h.getRole()));
+            map.put("isAiQuery", "USER_AI".equals(h.getRole()));
             return map;
         }).toList();
         
@@ -213,12 +214,15 @@ public class GroupStudyStreamController {
             // single: 선택한 봇 1개
             agentsList = List.of(botAgentMap(botType));
         } else {
-            // 정보 부족 시 안전 기본값: 3봇 전체 토론
-            agentsList = List.of(
-                    botAgentMap("search_bot"),
-                    botAgentMap("summary_bot"),
-                    botAgentMap("quiz_bot")
-            );
+            // 사용자의 요청에 따라 다중 에이전트를 없애고, 일반 AI 튜터 1명으로 단순화
+            Map<String, Object> aiTutor = new LinkedHashMap<>();
+            aiTutor.put("id", 1);
+            aiTutor.put("agentId", 1);
+            aiTutor.put("name", "AI 튜터");
+            aiTutor.put("role", "학습 도우미");
+            aiTutor.put("personality", "친절_설명형");
+            aiTutor.put("knowledgeLevel", "학사");
+            agentsList = List.of(aiTutor);
         }
 
         final String effectiveMessage = message;
@@ -254,10 +258,15 @@ public class GroupStudyStreamController {
             fastApiPayload.put("mode", "multi_agent_discussion");
             fastApiPayload.put("rounds", request.getRounds() != null ? request.getRounds() : 1);
             fastApiPayload.put("showFinalSynthesis", false);
-        } else {
+        } else if (botType != null && BOT_REGISTRY.containsKey(botType)) {
             fastApiPayload.put("mode", "group_study_ai");
-            fastApiPayload.put("runMode", "all_bots".equalsIgnoreCase(runMode) ? "all_bots" : "single");
+            fastApiPayload.put("runMode", "single");
             fastApiPayload.put("rounds", request.getRounds() != null ? request.getRounds() : 1);
+            fastApiPayload.put("showFinalSynthesis", false);
+        } else {
+            // 일반 AI 튜터 단일 응답
+            fastApiPayload.put("mode", "default");
+            fastApiPayload.put("rounds", 1);
             fastApiPayload.put("showFinalSynthesis", false);
         }
         fastApiPayload.put("previousAnswers", previousAnswers);
@@ -358,7 +367,7 @@ public class GroupStudyStreamController {
                 .senderName(displayName)
                 .senderId(userId)
                 .content(effectiveMessage)
-                .role("USER")
+                .role("USER_AI")
                 .build());
 
         agentReplies.forEach((agentName, replyBuilder) -> {

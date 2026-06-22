@@ -612,17 +612,17 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         });
         if (res.ok) {
           const data = await res.json();
-          // 일반 대화 이력 복원
-          const normalHistory = data.filter(msg => !msg.isAi).map(msg => ({
+          // 일반 대화 이력 복원 (AI 대화 및 AI 질문은 제외)
+          const normalHistory = data.filter(msg => !msg.isAi && !msg.isAiQuery).map(msg => ({
             senderName: msg.senderName,
             senderId: msg.senderId,
             content: msg.content
           }));
           // AI 탭 대화 이력 복원 (내 질문 + AI 답변)
-          const aiHistory = data.filter(msg => msg.isAi || (msg.senderId && String(msg.senderId) === String(userId))).map(msg => ({
+          const aiHistory = data.filter(msg => msg.isAi || msg.isAiQuery).map(msg => ({
             senderName: msg.senderName,
             content: msg.content,
-            isUser: msg.senderId && String(msg.senderId) === String(userId)
+            isUser: msg.isAiQuery || (msg.senderId && String(msg.senderId) === String(userId))
           }));
           setChatMessages(normalHistory);
           setAiMessages(aiHistory);
