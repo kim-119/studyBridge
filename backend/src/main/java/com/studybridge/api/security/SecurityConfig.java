@@ -41,7 +41,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         
-                .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll().requestMatchers("/api/users/register", "/api/users/login", "/api/users/refresh", "/error", "/temp-materials/**", "/ws-group/**", "/api/banners/main").permitAll()
+                .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll().requestMatchers("/api/users/register", "/api/users/login", "/api/users/refresh", "/error", "/temp-materials/**", "/ws-group/**", "/api/banners/main", "/api/test/**").permitAll()
 
                         .anyRequest().authenticated())
                 .formLogin(AbstractHttpConfigurer::disable)

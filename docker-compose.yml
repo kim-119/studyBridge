@@ -87,6 +87,8 @@ services:
   db:
     image: postgres:16
     container_name: capstone-db
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-capstone}
       POSTGRES_USER: ${POSTGRES_USER:-capstone}
@@ -99,6 +101,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: capstone-redis
+    ports:
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     environment:
