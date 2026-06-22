@@ -1440,7 +1440,7 @@ def _build_stage_infos(initial_steps, validated_steps, peer_steps, pv_summary,
                        s1, s2, s3, sources=None):
     """3개 StageInfo를 만든다. s1/s2/s3 = (provider, elapsedMs, status) 튜플."""
     return [
-        StageInfo(stage=1, title="1차 답변 - 빠른 초안", provider=s1[0], status=s1[2],
+        StageInfo(stage=1, title="답변", provider=s1[0], status=s1[2],
                   elapsedMs=s1[1], answers=[s.model_dump() for s in initial_steps]),
         StageInfo(stage=2, title="2차 답변 - 검증 답안", provider=s2[0], status=s2[2],
                   elapsedMs=s2[1], answers=[s.model_dump() for s in validated_steps],
