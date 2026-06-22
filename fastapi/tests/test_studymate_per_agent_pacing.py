@@ -130,6 +130,28 @@ def test_socratic_mode_is_question_driven_not_explanation():
     assert "첫 설명자" in bas               # basic엔 적용
 
 
+def test_persona_custom_instruction_shapes_format():
+    # 사용자 지침(페르소나 정의)이 답변 형식 지시로 프롬프트에 반영돼야 한다(성격 톤은 별개 유지).
+    a = AgentProfile(id=1, agentId="a1", name="X", personality="효율적",
+                     customInstruction="개념 정의, 핵심 원리, 예시, 주의점을 구조적으로 설명해줘.")
+    sp = orch._build_single_agent_system_prompt(a, "basic", [a], position=0, total=1)
+    assert "사용자 지침" in sp and "구조적으로 설명" in sp
+
+
+def test_feedback_round_flag(monkeypatch):
+    monkeypatch.setattr("app.services.ollama_client.ask_ollama", lambda **k: "피드백 답")
+    monkeypatch.setattr(orch, "_min_gap_seconds", lambda: 0.0)
+    req = MultiChatRequest(message="gRPC가 뭐고 왜 쓰나 설명해줘", mode="basic", learningMode="basic", agents=_agents())
+
+    monkeypatch.setenv("STUDYMATE_FEEDBACK_ROUND", "off")
+    off = [e for e in orch.build_orchestrator_stream(req, _agents())
+           if e["event"] == "agent_answer" and e["data"].get("phase") == "FEEDBACK"]
+    monkeypatch.setenv("STUDYMATE_FEEDBACK_ROUND", "on")
+    on = [e for e in orch.build_orchestrator_stream(req, _agents())
+          if e["event"] == "agent_answer" and e["data"].get("phase") == "FEEDBACK"]
+    assert len(off) == 0 and len(on) == 2  # 플래그 off=라운드2 없음, on=에이전트당 1개
+
+
 def test_social_input_gets_light_prompt():
     # 인사/잡담이면 공격적 비판 대신 가볍게 받는 프롬프트가 나와야 한다.
     agents = _agents()

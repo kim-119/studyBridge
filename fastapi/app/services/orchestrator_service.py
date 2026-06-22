@@ -440,6 +440,9 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
     persona_block = build_personality_prompt(_agent_personality_label(agent), _agent_custom_instruction(agent))
     name = agent.name or "AI"
     level = agent.knowledgeLevel or getattr(agent, "knowledgeLevelLabel", None) or "학사 수준"
+    # 사용자 지침(페르소나 정의/additionalRequest): 톤은 성격(coreDirective)이 잡고, 답변의 '내용·형식'은 이 지침을 따른다.
+    _ci = _agent_custom_instruction(agent)
+    custom_block = f"\n[사용자 지침 — 답변의 내용·구성·형식을 이 지침에 맞춰라(말투/톤은 위 성격 유지)]\n{_ci.strip()}\n" if (_ci and _ci.strip()) else ""
     others = [a.name for a in all_agents if a is not agent and a.name]
     # 다른 메이트의 '이름'은 일부러 노출하지 않는다(모델이 'X:'처럼 호명/머리표로 쓰는 걸 막기 위해).
     peers = (
@@ -467,7 +470,7 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
     if not is_basic:
         return f"""[역할] 너는 '{name}'(이)다.
 {persona_block}
-
+{custom_block}
 {_mode_role_directive(mode)}
 
 [상대 수준] 상대는 '{level}' 수준이다. 난이도와 용어를 거기에 맞춰라.{peers}
@@ -481,7 +484,7 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
 
     return f"""[역할] 너는 '{name}'(이)다. 사용자와 대화하는 상대이자, 필요할 때 도와주는 메이트다.
 {persona_block}
-{role_section}
+{role_section}{custom_block}
 [상대 수준] 상대는 '{level}' 수준이다. 이 수준에 걸맞은 깊이로 답하되, 네 역할 범위 안에서만 답하라(첫 설명자=설명, 검증자=검증). 뻔한 말은 하지 마라.
 
 {_mode_role_directive(mode)}{peers}
@@ -586,6 +589,39 @@ def _generate_single_agent_answer(
     if not answer:
         answer = "(응답을 생성하지 못했어요. 잠시 후 다시 시도해 주세요.)"
     return answer
+
+
+def _feedback_round_enabled() -> bool:
+    """2라운드 피드백(전원 답변 후 서로 보충/반박)을 켤지. env STUDYMATE_FEEDBACK_ROUND=on|1|true (기본 off)."""
+    return (os.getenv("STUDYMATE_FEEDBACK_ROUND", "") or "").strip().lower() in ("1", "true", "on", "yes")
+
+
+def _generate_round2_feedback(agent: AgentProfile, request: MultiChatRequest, mode: str, others_answers: List[Dict[str, Any]]) -> str:
+    """2라운드: 다른 메이트들의 1라운드 답을 보고 '가장 중요한 보충/반박 한 가지'만 짧게."""
+    from app.services.ollama_client import ask_ollama
+    from app.services.personality_prompt_builder import build_personality_prompt, build_persona_directive, get_generation_params
+
+    persona = build_personality_prompt(_agent_personality_label(agent), _agent_custom_instruction(agent))
+    sys = (
+        f"[역할] 너는 '{agent.name or 'AI'}'(이)다.\n{persona}\n\n"
+        "[2라운드: 동료 피드백] 다른 메이트들의 1라운드 답변을 봤다. 네 성격으로 '가장 중요한 보충 또는 반박 한 가지'만 2~3문장으로 말하라.\n"
+        "- 다른 메이트의 이름/'OOO:' 머리표를 쓰지 말고, 내용(논점) 중심으로 자연스럽게.\n"
+        "- 앞 답을 복붙·재서술하지 마라. 조롱·비아냥 없이 근거로. 길게 늘어놓지 마라.\n"
+        "- 한국어로, 머리말/꼬리말/JSON 없이 본문만."
+    )
+    other_lines = "\n".join(f"- {str(a.get('answer', ''))[:200]}" for a in others_answers)
+    usr = (
+        f"[사용자 질문] {request.message}\n\n[다른 메이트들의 1라운드 답변]\n{other_lines}\n\n"
+        "→ 위에 대해 네가 더할 보충 또는 반박 '한 가지'만 짧게.\n\n"
+        + build_persona_directive(_agent_personality_label(agent), _agent_custom_instruction(agent))
+    )
+    gen = get_generation_params(_agent_personality_label(agent))
+    raw = ask_ollama(
+        system_prompt=sys, user_prompt=usr,
+        max_tokens=min(request.maxTokens or 512, 512),
+        temperature=gen.get("temperature", 0.5), think=False,
+    )
+    return (raw or "").strip()
 
 
 def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> MultiChatResponse:
@@ -753,6 +789,42 @@ def build_orchestrator_stream(
             remaining = min_gap - (time.time() - t0)
             if remaining > 0:
                 time.sleep(remaining)
+
+    # ── 2라운드 피드백(플래그 STUDYMATE_FEEDBACK_ROUND). 1라운드 전원 답변 후 서로 보충/반박. ──
+    if _feedback_round_enabled() and not social and len(all_answers) >= 2:
+        round1 = list(all_answers)
+        for idx, agent in enumerate(agents):
+            if idx >= len(round1):
+                break
+            t0 = time.time()
+            agent_id = agent.agentId or f"agent-{agent.id}"
+            agent_name = agent.name or "AI"
+            identity = _agent_identity_payload(agent)
+            others = [a for j, a in enumerate(round1) if j != idx]
+            yield {
+                "event": "agent_start",
+                "data": {"type": "agent_start", "agentIndex": idx + 1, "agentName": agent_name,
+                         "agentId": agent_id, "phase": "FEEDBACK", "visible": True, **identity},
+            }
+            try:
+                fb = _generate_round2_feedback(agent, request, effective_mode, others)
+            except Exception as e:
+                logger.error("[Orchestrator] 2라운드 피드백 실패 %s: %s", agent_name, e)
+                fb = ""
+            if fb:
+                entry = {"agentId": agent_id, "agentName": agent_name, "answer": fb,
+                         "displayOrder": len(all_answers) + 1, "stage": 2, "status": "SUCCESS", **identity}
+                yield {
+                    "event": "agent_answer",
+                    "data": {"type": "agent_answer", "agentIndex": idx + 1, "agentName": agent_name,
+                             "agentId": agent_id, "answer": fb, "displayOrder": entry["displayOrder"],
+                             "stage": 2, "phase": "FEEDBACK", "visible": True, "status": "SUCCESS", **identity},
+                }
+                all_answers.append(entry)
+            if idx < len(agents) - 1:
+                remaining = min_gap - (time.time() - t0)
+                if remaining > 0:
+                    time.sleep(remaining)
 
     yield {
         "event": "all_complete",
