@@ -653,20 +653,32 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
     else:
         pages = _collect_pages(req)
 
-    text = "\n".join([p["text"] for p in pages if p["source"] != "INSUFFICIENT"])[:_MAX_TOTAL_CHARS]
-    if not text:
-        text = _combined_text(req)
-        
+    # 실제로 추출된 본문(INSUFFICIENT 아닌 페이지)만 근거로 삼는다.
+    real_text = "\n".join([p["text"] for p in pages if p["source"] != "INSUFFICIENT"])[:_MAX_TOTAL_CHARS]
+    text = real_text or _combined_text(req)
+
     meaningful = re.sub(r"\s+", "", text)
+    grounded = re.sub(r"\s+", "", real_text)  # 위키 보강 판단은 '진짜 본문'만으로
     max_wiki = max(0, min(int(req.maxWikiResults or 0), 8))
 
     domain, _score = _classify_domain(text)
     candidates = _concept_candidates(text)
 
+    logger.info("[MajorAnalysis] material=%s pages=%d real_chars=%d meaningful=%d domain=%s score=%.1f cand=%s",
+                req.materialId, len(pages), len(grounded), len(meaningful), domain["enum"], _score, candidates[:3])
+
     # 입력이 사실상 비었을 때만 안전 fallback(짧은 OCR 수식 등은 도메인/후보가 있으면 통과).
     if len(meaningful) < _MIN_MEANINGFUL and _score == 0 and not candidates:
         return _fallback(req, None, [], pages)
-    wiki = _fetch_wiki(candidates, max_wiki)
+
+    # ★ Wikipedia 보강은 '실제 추출 본문'이 충분할 때만 수행한다. 본문 근거가 없으면(예: S3 실패로
+    #   전 페이지 INSUFFICIENT) 일반 토큰이 검색어가 되어 무관한 위키(인물/예술 등)를 끌어오므로,
+    #   enrichment 자체를 생략한다. (특정 단어 차단 하드코딩이 아니라 '근거 유무'로 결정.)
+    if len(grounded) >= _MIN_MEANINGFUL:
+        wiki = _fetch_wiki(candidates, max_wiki)
+    else:
+        wiki = []
+        logger.info("[MajorAnalysis] 본문 근거 부족(real_chars=%d) → Wikipedia 보강 생략", len(grounded))
 
     prompt = _build_prompt(req, domain, wiki, candidates, pages)
     raw = openai_refine(_SYSTEM, prompt, max_tokens=2200)
