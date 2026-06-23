@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ROLE_NAMES } from './professorSprites';
+import { ROLE_NAMES, ROLE_TO_AGENT_INDEX } from './professorSprites';
 
 const SHOW_MS = 12000;       // 자동 fade-out 까지(10~15초)
 const RESUME_MS = 4000;      // hover 해제 후 남겨두는 시간
@@ -8,7 +8,7 @@ const FADE_MS = 320;         // fade-out 트랜지션
 // stage 안 보조 UI. 기존 고정 안내 말풍선과 다르며, 새 대화가 있을 때만 표시된다.
 //   · 10~15초 후 자동 fade-out, hover 시 유지.
 //   · 답변 데이터 배열과 무관(presentation layer).
-export default function MinuteRecapBubble({ recap, onDismiss }) {
+export default function MinuteRecapBubble({ recap, onDismiss, agents = [] }) {
   const [leaving, setLeaving] = useState(false);
   const timerRef = useRef(null);
 
@@ -31,7 +31,8 @@ export default function MinuteRecapBubble({ recap, onDismiss }) {
   }, [recap?.id]);
 
   if (!recap) return null;
-  const roleName = ROLE_NAMES[recap.role] || '교수';
+  // 표시명은 실제 agent.name 우선(없으면 role 기본명). stage 라벨/멘션과 동일 기준.
+  const roleName = agents?.[ROLE_TO_AGENT_INDEX[recap.role]]?.name || ROLE_NAMES[recap.role] || '교수';
 
   return (
     <div

@@ -2660,6 +2660,20 @@ export default function StudyMate() {
     // 실제 agent_answer 를 1회라도 받으면 기본 모드 filler 폴백을 억제한다(real > filler).
     let sawRealAnswer = false;
 
+    // ── single-target 조기 판정 ───────────────────────────────────────────────
+    //   초기 visAll('thinking')/기본 안무가 비대상 교수를 움직이거나 전체 문구를 띄우지 않도록,
+    //   @멘션 1명 여부(scope)를 여기서 먼저 확정한다(목표 3,5). 식별자(id/key/name)·turnExtras 의
+    //   상세 채움은 아래 기존 블록에서 그대로 수행한다(idempotent).
+    if (!/@모두/.test(inputMsg)) {
+      const _roomAgents = selectedAgent?.agents || [];
+      const _idx = _roomAgents.findIndex((ag) => ag?.name && inputMsg.includes(`@${ag.name}`));
+      if (_idx >= 0) {
+        askScope = 'single';
+        targetAgentIndex = _idx;
+        targetProfessorRole = roleForAgentIndex(_idx);
+      }
+    }
+
     const userMsg = {
       id: `${requestId}`,
       content: inputMsg,
@@ -2700,7 +2714,11 @@ export default function StudyMate() {
     //    백엔드 professor_motion / 실제 agent_answer 가 오면 filler 타이머는 즉시 양보(취소)한다.
     //    여기서 만드는 텍스트는 "시각 연출"일 뿐 — 채팅 메시지 배열엔 절대 push하지 않는다(목표 8).
     clearAllChoreo();
-    if (visualActive() && activeLearningMode === 'basic') {
+    if (visualActive() && askScope === 'single') {
+      // single target: 대상 교수만 thinking, 전체 안무/전체 말풍선/전체 문구 금지(목표 3,5,11).
+      //   상태문구는 실제 agent.name 으로 표시한다.
+      setStageStatusMessage(`${profDisplayName(targetProfessorRole)}님이 질문을 읽고 있어요.`);
+    } else if (visualActive() && activeLearningMode === 'basic') {
       const casual = isCasualShortInput(inputMsg);
       const applyPhase = (p) => {
         if (p.message != null) setStageStatusMessage(p.message);
@@ -3321,8 +3339,10 @@ export default function StudyMate() {
                   kind: 'answer',
                   agentName: d.agentName,
                 });
-                if (visualActive() && activeLearningMode === 'basic') {
-                  setStageStatusMessage(`${ROLE_NAMES[bubbleRole] || '교수님'}이 답변을 정리하고 있어요...`);
+                if (visualActive() && (activeLearningMode === 'basic' || askScope === 'single')) {
+                  // 표시명은 실제 agent.name 우선(이벤트 agentName → 방 agent.name → role 기본명).
+                  const _nm = d.agentName || profDisplayName(bubbleRole);
+                  setStageStatusMessage(`${_nm}님이 답변 중이에요.`);
                 }
               }
             },
@@ -3521,10 +3541,22 @@ export default function StudyMate() {
               if (streamCompleted) return;
               finalize();
               streamCompleted = true;
-              // 시각: 전체 교수 완료 표시(stage가 800ms 후 idle 복귀). backendMotionDriven 이어도 반드시 복귀하도록 ungated.
-              if (visualActive()) setAllProfVisual('completed');
-              // 기본 모드 완료 안무: 안내문 + 완료 말풍선(kind:done → 1.2초 TTL), 이후 안내문 idle 복귀.
-              if (visualActive() && activeLearningMode === 'basic') {
+              // 시각: 완료 표시(stage가 800ms 후 idle 복귀). single target은 대상 1명만 completed,
+              //   나머지는 idle 유지(목표 3,5). 그 외에는 전체 completed.
+              if (visualActive()) {
+                if (askScope === 'single' && targetProfessorRole) {
+                  setProfessorVisualStates({ theory: 'idle', book: 'idle', ai: 'idle', [targetProfessorRole]: 'completed' });
+                } else {
+                  setAllProfVisual('completed');
+                }
+              }
+              // 완료 안내문: single target은 실제 이름으로, basic 전체 모드는 기존 완료 안무.
+              if (visualActive() && askScope === 'single' && targetProfessorRole) {
+                clearChoreoFiller();
+                setStageStatusMessage(`${profDisplayName(targetProfessorRole)}님의 답변이 정리됐어요.`);
+                const t = setTimeout(() => { if (visualActive()) setStageStatusMessage(''); }, COMPLETED_HOLD_MS);
+                choreoBubbleTimersRef.current.push(t);
+              } else if (visualActive() && activeLearningMode === 'basic') {
                 clearChoreoFiller();
                 setStageStatusMessage(COMPLETED_PHASE.message);
                 if (!isCasualShortInput(inputMsg)) setProfBubbles(COMPLETED_PHASE.bubbles);
@@ -3967,6 +3999,9 @@ export default function StudyMate() {
     setToastMsg('💡 입력창에서 질문을 더 구체적으로 다듬어 전송해 주세요.');
     setTimeout(() => setToastMsg(''), 2500);
   };
+  // 교수 표시명: 실제 agent.name 우선(없으면 role 기본명). stage 라벨/멘션/상태문구 공통 기준.
+  const profDisplayName = (role) =>
+    selectedAgent?.agents?.[ROLE_TO_AGENT_INDEX[role] ?? -1]?.name || ROLE_NAMES[role] || '교수';
   // 이 교수에게 질문 — @멘션 프리필(자동 전송 없음). 기존 draft 보존 + 캐럿을 멘션 뒤로.
   const handleProfAskOne = (role) => {
     const idx = ROLE_TO_AGENT_INDEX[role] ?? 0;
@@ -3975,6 +4010,8 @@ export default function StudyMate() {
     const next = applyProfessorMention(message, mention);
     prefillProfessorDraft(next, mention.length);
     setSelectedProfessorRole(null);
+    // 상태문구도 실제 이름으로 갱신(목표 11): "○○님에게 보낼 질문을 입력해 주세요."
+    setStageStatusMessage(`${name || '교수'}님에게 보낼 질문을 입력해 주세요.`);
     setToastMsg(`💡 ${name || '교수'}에게 보낼 질문을 입력해 전송해 주세요.`);
     setTimeout(() => setToastMsg(''), 2500);
   };

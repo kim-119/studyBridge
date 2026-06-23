@@ -47,7 +47,8 @@ export default function PixelProfessorStage({
   }, [selectedRole, onSelectRole]);
 
   const professorActors = PROFESSORS.map((p) => {
-    const agent = agents?.[ROLE_TO_AGENT_INDEX[p.role]];
+    const agentIndex = ROLE_TO_AGENT_INDEX[p.role];
+    const agent = agents?.[agentIndex];
     const personality = String(
       agent?.personality ||
       agent?.tone ||
@@ -56,8 +57,17 @@ export default function PixelProfessorStage({
       ''
     ).trim();
 
+    // 화면 표시명/멘션명은 항상 실제 agent.name 을 우선한다. 없으면 role 기본명으로 fallback.
+    //   내부 role 라우팅(book|theory|ai)은 그대로 유지된다.
+    const displayName = agent?.name || p.name;
+
     return {
       ...p,
+      agent,
+      agentIndex,
+      displayName,
+      mentionName: displayName,
+      name: displayName,
       sheet: getProfessorSpriteSheetForAgent(agent, p.sheet),
       // 액션 라우팅은 role 기준으로 고정한다.
       // 성격 선택 결과는 sprite sheet와 tagline에만 반영한다.
@@ -81,6 +91,7 @@ export default function PixelProfessorStage({
   const { menuRef, pos: menuPos } = useAnchoredMenu({ stageRef, selectedRole, signature: menuSignature });
 
   return (
+    <>
     <section
       ref={stageRef}
       className="pixel-professor-stage"
@@ -109,22 +120,25 @@ export default function PixelProfessorStage({
         ))}
       </div>
 
-      {/* 답변 말풍선 레이어: 교수 sprite와 동일 좌표로 머리 위에 띄운다(presentation only). */}
-      <div className="pixel-professor-bubble-layer">
-        {professorActors.map((p) => {
-          const b = bubbles[p.role];
-          if (!b || !b.text) return null;
-          return (
-            <div
-              key={`bubble-${p.role}`}
-              className="prof-bubble-anchor"
-              style={{ left: `${p.pos.left}%`, bottom: `${p.pos.bottom + 200}px` }}
-            >
-              <ProfessorSpeechBubble name={b.agentName || p.name} text={b.text} side={p.side} kind={b.kind} targetRole={b.targetRole} />
-            </div>
-          );
-        })}
-      </div>
+      {/* 답변 말풍선 레이어: 교수 sprite와 동일 좌표로 머리 위에 띄운다(presentation only).
+          overlay 우선순위: 액션 메뉴가 열려 있으면(menu mode) 말풍선을 숨겨 화면을 정리한다. */}
+      {!selectedRole && (
+        <div className="pixel-professor-bubble-layer">
+          {professorActors.map((p) => {
+            const b = bubbles[p.role];
+            if (!b || !b.text) return null;
+            return (
+              <div
+                key={`bubble-${p.role}`}
+                className="prof-bubble-anchor"
+                style={{ left: `${p.pos.left}%`, bottom: `${p.pos.bottom + 200}px` }}
+              >
+                <ProfessorSpeechBubble name={b.agentName || p.displayName || p.name} text={b.text} side={p.side} kind={b.kind} targetRole={b.targetRole} />
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {selected && (
         // 메뉴 내부 클릭이 stage(배경) deselect로 전파되지 않게 차단.
@@ -145,7 +159,15 @@ export default function PixelProfessorStage({
         </div>
       )}
 
-      <MinuteRecapBubble recap={recap} onDismiss={onRecapDismiss} />
     </section>
+
+    {/* recap 요약: overlay 우선순위상 stage 내부 floating 금지 → 액션 메뉴가 닫혀 있을 때만,
+        stage 바깥 하단에 접힌 chip 형태로 배치한다(교수/책상/말풍선을 가리지 않음). */}
+    {!selectedRole && (
+      <div className="pixel-recap-dock">
+        <MinuteRecapBubble recap={recap} agents={agents} onDismiss={onRecapDismiss} />
+      </div>
+    )}
+    </>
   );
 }
