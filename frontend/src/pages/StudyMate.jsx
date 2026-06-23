@@ -2629,8 +2629,32 @@ export default function StudyMate() {
     const visualActive = () => selectedAgentIdRef.current === agentId;
     // 백엔드가 professor_motion 을 보내면(=권위 있는 안무) 이벤트 기반 visual fallback 을 억제한다(목표 4).
     let backendMotionDriven = false;
-    const visFor = (idx, state) => { if (!backendMotionDriven && visualActive()) setProfVisual(roleForAgentIndex(idx), state); };
-    const visAll = (state) => { if (!backendMotionDriven && visualActive()) setAllProfVisual(state); };
+    // single-target scope 변수(아래 @멘션 판정에서 채운다). visFor/visAll/enforce 클로저가 참조하므로
+    //   정의보다 먼저 선언한다(TDZ 방지). 기본 'all'이라 멘션 없으면 전체 동작 유지.
+    let askScope = 'all';
+    let targetAgentIndex = null;
+    let targetProfessorRole = null;
+    // single scope(이 교수에게 질문): 비대상 교수가 허용 가능한 보조 시각 상태(목표 5).
+    //   answering/peer_feedback/completed/walking 등 "답변처럼 보이는" 상태는 금지 → idle 로 강등.
+    const SINGLE_SECONDARY_STATES = new Set(['idle', 'thinking', 'listening', 'validating']);
+    const visFor = (idx, state) => {
+      if (backendMotionDriven || !visualActive()) return;
+      // single scope: 대상 1명만 적극 모션, 비대상은 보조 상태만(목표 4,5).
+      if (askScope === 'single' && Number.isInteger(targetAgentIndex) && Number(idx) !== targetAgentIndex) {
+        setProfVisual(roleForAgentIndex(idx), SINGLE_SECONDARY_STATES.has(state) ? state : 'idle');
+        return;
+      }
+      setProfVisual(roleForAgentIndex(idx), state);
+    };
+    const visAll = (state) => {
+      if (backendMotionDriven || !visualActive()) return;
+      // single scope: 전체 동작 금지 — 대상만 해당 상태, 나머지는 그대로 idle 유지(목표 4).
+      if (askScope === 'single') {
+        if (Number.isInteger(targetAgentIndex)) setProfVisual(roleForAgentIndex(targetAgentIndex), state);
+        return;
+      }
+      setAllProfVisual(state);
+    };
     let sawError = false;
     // 실제 agent_answer 를 1회라도 받으면 기본 모드 filler 폴백을 억제한다(real > filler).
     let sawRealAnswer = false;
@@ -2720,12 +2744,10 @@ export default function StudyMate() {
     //   백엔드는 이미 targetAgentId로 1명만 답변하도록 필터링한다(Spring→FastAPI _filter_agents).
     //   프론트는 동일 대상 정보를 잡아 두고, 혹시 백엔드가 실수로 비대상 답변을 흘려도
     //   채팅 카드/메시지로는 절대 append하지 않는다(목표: 1명만 답변, 시각 보조모션은 허용).
-    let askScope = 'all';
+    // askScope/targetAgentIndex/targetProfessorRole 은 위에서 호이스트됨(여기선 대입만).
     let targetAgentId = null;
-    let targetAgentIndex = null;
     let targetAgentKey = null;
     let targetAgentName = null;
-    let targetProfessorRole = null;
     if (!/@모두/.test(inputMsg)) {
       const roomAgents = selectedAgent?.agents || [];
       const mentionedIdx = roomAgents.findIndex((ag) => ag?.name && inputMsg.includes(`@${ag.name}`));
@@ -2767,6 +2789,16 @@ export default function StudyMate() {
       if (targetAgentKey && evRole && ROLE_TO_TARGET_KEY[evRole] === targetAgentKey) return true;
       if (evName || evId != null || evIdx != null || evRole) return false;
       return true;
+    };
+    // single scope: 백엔드 professor_motion이 3명 상태를 한꺼번에 내려도 비대상은 idle로 눌러
+    //   "1명만 움직임"을 보장한다(목표 4, presentation only). 대상이 안 잡히면 원본 유지.
+    const enforceSingleScopeStates = (states) => {
+      if (askScope !== 'single' || !states || typeof states !== 'object' || !targetProfessorRole) return states;
+      const out = {};
+      for (const [role, st] of Object.entries(states)) {
+        out[role] = role === targetProfessorRole ? st : 'idle';
+      }
+      return out;
     };
     // single scope에서 answers/feedbacks 배열을 대상 교수 것만 남긴다(default 1차/2차/3차 stage_complete 경로 방어).
     const scopeAnswers = (arr) => {
@@ -3243,7 +3275,7 @@ export default function StudyMate() {
               const states = (d.states && typeof d.states === 'object')
                 ? d.states
                 : (d.phase ? phaseStatesFor(motionMode, d.phase) : null);
-              if (states) setProfessorVisualStates(normalizeMotionStates(states));
+              if (states) setProfessorVisualStates(normalizeMotionStates(enforceSingleScopeStates(states)));
             },
             // (목표 3,7) interaction_event — 백엔드 명시 상호작용. 실제 내용 그대로 타임라인에 추가.
             onInteractionEvent: (d) => { if (d) addInteraction('interaction_event', d); },
@@ -3901,12 +3933,31 @@ export default function StudyMate() {
     const el = document.querySelector('.chat-input-premium input');
     if (el) el.focus();
   };
-  const prefillProfessorDraft = (text) => {
+  //   text: 입력창에 넣을 최종 draft. caretPos: 설정 시 캐럿 위치(기본 끝).
+  const prefillProfessorDraft = (text, caretPos = null) => {
     setMessage(text);
     setShowMentionPopup(false);
     const activeId = getAgentId(selectedAgent);
     if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: text }));
-    focusChatInput();
+    // setMessage 반영 후 포커스 + 캐럿을 멘션 뒤로 둔다(자동 전송 없음, 목표 2).
+    requestAnimationFrame(() => {
+      const el = document.querySelector('.chat-input-premium input');
+      if (!el) return;
+      el.focus();
+      const pos = caretPos == null ? text.length : Math.min(caretPos, text.length);
+      try { el.setSelectionRange(pos, pos); } catch (_) { /* noop */ }
+    });
+  };
+  // 기존 draft를 지우지 않고 맨 앞 교수 멘션만 새 멘션으로 교체(없으면 앞에 붙인다). 목표 2.
+  //   멘션 후보는 방의 실제 교수 이름 기준(전송 측 매칭이 ag.name 기반이라 동일 기준 유지).
+  const applyProfessorMention = (draft, mention) => {
+    const current = String(draft || '');
+    const names = (selectedAgent?.agents || []).map((a) => a?.name).filter(Boolean);
+    const esc = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const pattern = esc.length ? `^@(?:${esc.join('|')}|모두)\\s*` : '^@모두\\s*';
+    const re = new RegExp(pattern);
+    if (re.test(current)) return current.replace(re, mention);
+    return current ? `${mention}${current}` : mention;
   };
   // 질문 정제 — 안전 동작(자동 전송 없음): 입력창 포커스 + 안내.
   const handleProfRefine = () => {
@@ -3915,18 +3966,21 @@ export default function StudyMate() {
     setToastMsg('💡 입력창에서 질문을 더 구체적으로 다듬어 전송해 주세요.');
     setTimeout(() => setToastMsg(''), 2500);
   };
-  // 이 교수에게 질문 — @멘션 프리필(자동 전송 없음).
+  // 이 교수에게 질문 — @멘션 프리필(자동 전송 없음). 기존 draft 보존 + 캐럿을 멘션 뒤로.
   const handleProfAskOne = (role) => {
     const idx = ROLE_TO_AGENT_INDEX[role] ?? 0;
     const name = selectedAgent?.agents?.[idx]?.name;
-    prefillProfessorDraft(name ? `@${name} ` : '@모두 ');
+    const mention = name ? `@${name} ` : '@모두 ';
+    const next = applyProfessorMention(message, mention);
+    prefillProfessorDraft(next, mention.length);
     setSelectedProfessorRole(null);
-    setToastMsg('💡 입력창에서 질문을 입력해 전송해 주세요.');
+    setToastMsg(`💡 ${name || '교수'}에게 보낼 질문을 입력해 전송해 주세요.`);
     setTimeout(() => setToastMsg(''), 2500);
   };
-  // 모두에게 질문 — @모두 프리필(자동 전송 없음).
+  // 모두에게 질문 — @모두 프리필(자동 전송 없음). 기존 draft 보존 + 캐럿을 멘션 뒤로.
   const handleProfAskAll = () => {
-    prefillProfessorDraft('@모두 ');
+    const nextAll = applyProfessorMention(message, '@모두 ');
+    prefillProfessorDraft(nextAll, '@모두 '.length);
     setSelectedProfessorRole(null);
     setToastMsg('💡 모든 교수에게 보낼 질문을 입력해 전송해 주세요.');
     setTimeout(() => setToastMsg(''), 2500);

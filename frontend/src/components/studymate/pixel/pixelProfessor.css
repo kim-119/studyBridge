@@ -208,8 +208,9 @@
   padding-bottom: 6px;
   border-bottom: 2px dashed #d6c08a;
 }
-.professor-action-menu-head strong { font-size: clamp(12px, 1.4vw, 13.5px); font-weight: 900; color: #2b2118; }
-.professor-action-menu-head span { font-size: clamp(10px, 1.1vw, 11px); font-weight: 700; color: #8a744a; }
+.professor-action-menu-head strong { font-size: clamp(12px, 1.4vw, 13.5px); font-weight: 900; color: #2b2118; line-height: 1.25; overflow-wrap: break-word; word-break: keep-all; }
+/* 교수 설명(tagline)은 잘리지 않게 줄바꿈 허용(목표 §1 — 설명 잘림 방지). */
+.professor-action-menu-head span { font-size: clamp(10px, 1.1vw, 11px); font-weight: 700; color: #8a744a; line-height: 1.35; white-space: normal; overflow-wrap: break-word; word-break: keep-all; }
 .professor-action-menu-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
