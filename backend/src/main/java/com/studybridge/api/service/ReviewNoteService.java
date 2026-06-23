@@ -595,16 +595,28 @@ public class ReviewNoteService {
             recordSimilarQuestion(userId, id, note.getSourceMaterialId(), difficulty, false);
             return out;
         }
-        // 3) 폴백: 원본 오답 문제를 그대로 재출제 (AI 변형 불가 시에도 화면이 동작하도록)
+        // 3) 폴백: AI 변형 불가 시 이 오답노트의 오답 문제를 다시 출제.
+        //    프론트 "유사문제 리스트"가 비지 않도록 count 만큼 서로 다른 오답을
+        //    wrongQuestionId 부터 순환 선택해 반환한다(오답이 1개면 1개만).
         List<Map<String, Object>> questions = new ArrayList<>();
-        if (base != null) {
-            Map<String, Object> q = new LinkedHashMap<>();
-            q.put("wrongQuestionId", wrongQuestionId);
-            q.put("question", base.get("question"));
-            q.put("choices", base.get("choices"));
-            q.put("correctAnswer", base.get("correct_answer"));
-            q.put("explanation", base.get("explanation"));
-            questions.add(q);
+        if (!retry.isEmpty()) {
+            int n = Math.min(count, retry.size());
+            for (int i = 0; i < n; i++) {
+                int idx = ((wrongQuestionId - 1 + i) % retry.size() + retry.size()) % retry.size();
+                Map<String, Object> src = retry.get(idx);
+                Map<String, Object> q = new LinkedHashMap<>();
+                q.put("id", "fallback-" + id + "-" + (idx + 1));
+                q.put("wrongQuestionId", idx + 1);
+                q.put("sourceWrongNoteId", id);
+                q.put("question", src.get("question"));
+                q.put("choices", src.get("choices"));
+                q.put("correctAnswer", src.get("correct_answer"));
+                q.put("answer", src.get("correct_answer"));
+                q.put("explanation", src.get("explanation"));
+                q.put("difficulty", difficulty);
+                q.put("variationPoint", "AI 변형을 일시적으로 사용할 수 없어 원본 오답 문제를 다시 출제했습니다.");
+                questions.add(q);
+            }
         }
         out.put("success", true);
         out.put("usedFallback", true);
