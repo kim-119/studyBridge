@@ -351,6 +351,75 @@ def _build_knowledge_context(query: str) -> str:
         return _fetch_wikipedia_context(query)
 
 
+# ── 지식수준별 근거(grounding) 정책 ─────────────────────────────────────────
+# 생성은 항상 Ollama. 근거 소스만 레벨별로 달라진다(교수=에이전트별 적용).
+#   입문(INTRO)    : 없음
+#   학사(BACHELOR) : 위키
+#   석사(MASTER)   : 위키 + Tavily
+#   박사(DOCTOR)   : 위키 + GPT 브리핑
+#   전문가(EXPERT) : GPT 브리핑 + Tavily
+_LEVEL_GROUNDING_SOURCES = {
+    "INTRO": (),
+    "BACHELOR": ("wiki",),
+    "MASTER": ("wiki", "tavily"),
+    "DOCTOR": ("wiki", "gpt"),
+    "EXPERT": ("gpt", "tavily"),
+}
+
+
+def _build_gpt_brief(query: str) -> str:
+    """ChatGPT를 '근거 제공자'로만 사용(생성 아님): 주제 핵심 사실/심화 포인트를 간결히 정리.
+    OPENAI_API_KEY 미설정 시 빈문자열(→ 다른 근거/Ollama로 진행)."""
+    try:
+        from app.services.openai_client import chat_sync, is_enabled
+        if not is_enabled():
+            return ""
+        sys = (
+            "너는 학술 자료 조사 보조자다. 주어진 주제의 정확한 핵심 사실·심화 포인트·전문 용어를 "
+            "5~8개 불릿으로 간결히 정리하라. 추측/불확실한 내용은 제외하고 한국어로만 답하라. "
+            "이 내용은 다른 답변자의 '참고 근거'로 쓰인다(최종 답변이 아님)."
+        )
+        out = chat_sync(system=sys, user=f"주제: {query}", temperature=0.2,
+                        max_tokens=int(os.getenv("AI_GPT_BRIEF_MAX_TOKENS", "600")))
+        out = (out or "").strip()
+        if not out or out.startswith("[GPT"):
+            return ""
+        return f"[전문 지식 브리핑(ChatGPT)]\n{out}"
+    except Exception as e:
+        logger.warning("[Orchestrator] GPT 브리핑 실패: %s", e)
+        return ""
+
+
+def _fetch_grounding_source(src: str, query: str) -> str:
+    """단일 근거 소스 호출(위키/Tavily/GPT). 실패 시 빈문자열."""
+    try:
+        if src == "wiki":
+            from app.services.knowledge_enrichment import _fetch_wiki, _DEFAULT_TIMEOUT
+            return _fetch_wiki(query, _DEFAULT_TIMEOUT) or ""
+        if src == "tavily":
+            from app.services.knowledge_enrichment import _fetch_tavily, _tavily_enabled, _DEFAULT_TIMEOUT
+            if not _tavily_enabled():
+                return ""
+            return _fetch_tavily(query, _DEFAULT_TIMEOUT) or ""
+        if src == "gpt":
+            return _build_gpt_brief(query)
+    except Exception as e:
+        logger.warning("[Orchestrator] 근거 소스 %s 실패: %s", src, e)
+    return ""
+
+
+def _build_level_grounding(query: str, lvl: str, cache: Dict[str, str]) -> str:
+    """지식수준별 근거 조립. cache(같은 메시지 단위)로 각 소스를 1회만 호출(중복 방지)."""
+    sources = _LEVEL_GROUNDING_SOURCES.get(lvl, ("wiki",))
+    parts: List[str] = []
+    for src in sources:
+        if src not in cache:
+            cache[src] = _fetch_grounding_source(src, query)
+        if cache[src]:
+            parts.append(cache[src])
+    return "\n\n".join(parts)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 5) 실효 모드 결정
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -452,14 +521,17 @@ def _mode_role_directive(mode: str, position: int = 0, total: int = 1) -> str:
             closing = ("→ 너는 마지막 차례가 아니다. 마무리 자기설명 요청은 하지 말고, "
                        "앞 메이트와 '겹치지 않는 다른 각도'의 질문만 던져라.")
         return (
-            "[모드: 소크라테스 — 개념 힌트 후 꼬리질문(3단)]\n"
-            "너는 무작정 되묻기만 하는 튜터가 아니다. 아래 3단을 '반드시 순서대로' 지켜라.\n"
-            "① 진단: 사용자의 현재 생각/오개념을 1줄로 짚는다(예: '결과와 원인을 혼동 중').\n"
-            "② 개념 설명+힌트: 무작정 질문하기 전에, 해당 개념의 핵심 원리를 평서문 1~2줄로 '직접' 설명해 방향을 잡아준다(자료/RAG 근거 우선). 그 위에서 핵심 키워드 힌트를 준다.\n"
-            "③ 꼬리질문: 그 설명을 바탕으로 다음 사고를 유도하는 질문을 '딱 1개'만 던진다.\n"
-            "★ 금지: 정답 전체 노출, 긴 강의, 한 번에 2개 이상 질문, ②(개념 설명)를 생략하고 질문만 던지기.\n"
+            "[모드: 소크라테스 — 사용자 관점 진단 → 힌트·예시 → 유도 질문]\n"
+            "너는 무작정 되묻기만 하는 튜터가 아니다. 사용자의 질문/관점에서 '무엇을 알고 싶어 하고 무엇을 모르는지'를 읽어 "
+            "사고와 사고방식을 끌어올리는 게 목적이다. 아래를 '반드시 순서대로' 지켜라.\n"
+            "① 진단: 사용자의 현재 생각·관점·막힌 지점(또는 오개념)을 1줄로 짚는다(예: '결과와 원인을 혼동 중').\n"
+            "② 힌트+예시: 무작정 질문하기 전에, 핵심 원리를 평서문 1~2줄로 '직접' 짚어 방향을 잡아주고(자료/RAG 근거 우선), "
+            "이해를 돕는 '구체적인 예시 1개'를 함께 들어준다.\n"
+            "③ 유도 질문: 그 힌트·예시를 발판 삼아 다음 사고를 끌어내는 질문을 '딱 1개'만 던진다.\n"
+            "★ 균형: 답변을 전부 질문으로 채우지 마라 — '힌트·예시(설명)'와 '질문 1개'가 반드시 함께 있어야 한다. "
+            "정답 전체 노출 / 긴 강의 / 한 번에 2개 이상 질문 / 힌트·예시 없이 질문만 던지기는 모두 금지.\n"
             + closing + "\n"
-            "[형식 예시] '진단: 결과와 원인을 섞고 있어. 핵심은 ~가 ~를 결정한다는 거야(1~2줄). 그럼 ~ 상황에선 어느 쪽이 먼저일까?'"
+            "[형식 예시] '진단: 결과와 원인을 섞고 있어. 핵심은 A가 B를 결정한다는 거야(1~2줄). 예를 들어 ~처럼 말이지. 그럼 ~ 상황에선 어느 쪽이 먼저일까?'"
         )
     if m in ("simulation", "상황극", "상황극 모드", "situation", "roleplay"):
         return "[모드: 상황극] 주제와 관련된 가상 시나리오 속 인물이 되어 생생한 대사와 상황 묘사로 답하라. 마지막에 사용자에게 선택지나 행동을 묻는 질문을 던져라."
@@ -658,53 +730,39 @@ def _cross_feedback_enabled(request: MultiChatRequest, agents: List[AgentProfile
 
 
 def _generate_single_agent_answer(
-    agent: AgentProfile, request: MultiChatRequest, mode: str, wiki_context: str, context: str,
+    agent: AgentProfile, request: MultiChatRequest, mode: str, grounding_cache: Optional[Dict[str, str]], context: str,
     all_agents: List[AgentProfile], peer_answers: Optional[List[Dict[str, Any]]] = None,
     social: bool = False, position: int = 0, total: int = 1,
 ) -> str:
-    """에이전트 1명 생성. 지식수준이 높을수록 길이·깊이↑(level_policy), 박사/전문가는 GPT로 품질↑(가능 시)."""
+    """에이전트 1명 생성. **생성은 항상 Ollama**, 근거(grounding)만 지식수준별로 차등(입문=없음 …
+    박사=위키+GPT, 전문가=GPT+Tavily). 길이·깊이는 level_policy로 스케일링."""
     from app.services.ollama_client import ask_ollama
     from app.services.personality_prompt_builder import get_generation_params
     from app.services import level_policy
 
+    # 지식수준 정규화 → 근거 소스/길이 결정. 인사/잡담(social)은 근거 없이 짧게.
+    lvl = level_policy.normalize(agent.knowledgeLevel or getattr(agent, "knowledgeLevelLabel", None))
+    grounding = "" if social else _build_level_grounding(
+        request.message, lvl, grounding_cache if grounding_cache is not None else {})
+
     system_prompt = _build_single_agent_system_prompt(agent, mode, all_agents, social=social, position=position, total=total)
-    user_prompt = _build_single_agent_user_prompt(agent, request, wiki_context, context, peer_answers)
+    user_prompt = _build_single_agent_user_prompt(agent, request, grounding, context, peer_answers)
 
     gen = get_generation_params(_agent_personality_label(agent))
     temperature = request.temperature if request.temperature is not None else gen.get("temperature", 0.55)
 
-    # 지식수준 → 길이/깊이 스케일링. 인사/잡담(social)은 짧게 유지.
-    lvl = level_policy.normalize(agent.knowledgeLevel or getattr(agent, "knowledgeLevelLabel", None))
     if social:
         max_tokens = request.maxTokens or 256
     else:
         max_tokens = request.maxTokens or level_policy.max_tokens(lvl)
 
-    # Ollama ↔ GPT 믹스: 박사/전문가는 GPT로 더 깊고 질 높게(가능할 때만), 그 외/소크라테스/잡담은 Ollama(빠름).
-    use_gpt = (not social) and mode not in ("socratic", "소크라테스", "소크라테스 모드") and lvl in ("DOCTOR", "EXPERT")
     t0 = time.time()
-    provider = "ollama"
-    raw = ""
-    if use_gpt:
-        try:
-            from app.services.openai_client import chat_sync, is_enabled
-            if is_enabled():
-                provider = "gpt"
-                raw = chat_sync(system=system_prompt, user=user_prompt, temperature=temperature, max_tokens=max_tokens)
-                if raw.startswith("[GPT 비활성화]") or raw.startswith("[GPT 오류]"):
-                    raw = ""  # 폴백
-        except Exception as e:
-            logger.warning("[Orchestrator] GPT 호출 실패→Ollama 폴백: %s", e)
-            raw = ""
-    if not raw:
-        provider = "ollama"
-        raw = ask_ollama(system_prompt=system_prompt, user_prompt=user_prompt,
-                         max_tokens=max_tokens, temperature=temperature, think=False)
-
+    raw = ask_ollama(system_prompt=system_prompt, user_prompt=user_prompt,
+                     max_tokens=max_tokens, temperature=temperature, think=False)
     elapsed_ms = int((time.time() - t0) * 1000)
     answer = (raw or "").strip()
-    logger.info("[Orchestrator] agent=%s mode=%s level=%s provider=%s maxtok=%d elapsed=%dms len=%d",
-                agent.name, mode, lvl, provider, max_tokens, elapsed_ms, len(answer))
+    logger.info("[Orchestrator] agent=%s mode=%s level=%s provider=ollama grounding=%dchars maxtok=%d elapsed=%dms len=%d",
+                agent.name, mode, lvl, len(grounding), max_tokens, elapsed_ms, len(answer))
     if not answer:
         answer = "(응답을 생성하지 못했어요. 잠시 후 다시 시도해 주세요.)"
     return answer
@@ -756,7 +814,7 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
     """
     effective_mode = _resolve_effective_mode(request)
     context = _build_conversation_context(request.previousAnswers)
-    wiki_context = _build_knowledge_context(request.message)
+    grounding_cache: Dict[str, str] = {}  # 메시지 단위 근거 캐시(위키/Tavily/GPT 중복호출 방지)
     gap_ms = int(_min_gap_seconds() * 1000)
 
     feedback_on = _cross_feedback_enabled(request, agents)
@@ -812,7 +870,7 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
     prior: List[Dict[str, Any]] = []
     for idx, agent in enumerate(agents):
         peer = prior if (feedback_on and prior) else None
-        ans_text = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents, peer, social=social, position=idx, total=len(agents))
+        ans_text = _generate_single_agent_answer(agent, request, effective_mode, grounding_cache, context, agents, peer, social=social, position=idx, total=len(agents))
         answers.append(AgentAnswer(
             agentId=agent.agentId or f"agent-{agent.id}",
             agentName=agent.name or "AI",
@@ -885,7 +943,7 @@ def _run_discussion_plan(
     request: MultiChatRequest,
     agents: List[AgentProfile],
     effective_mode: str,
-    wiki_context: str,
+    grounding_cache: Dict[str, str],
     context: str,
     min_gap: float,
     feedback_on: bool,
@@ -962,7 +1020,7 @@ def _run_discussion_plan(
             if act.act_type == planner.DIRECT_ANSWER:
                 peer = all_answers if (feedback_on and all_answers) else None
                 answer = _generate_single_agent_answer(
-                    agent, request, effective_mode, wiki_context, context, agents, peer,
+                    agent, request, effective_mode, grounding_cache, context, agents, peer,
                     social=social, position=idx, total=len(agents))
             elif act.act_type == planner.REACTION:
                 target_idx, target_agent = agent_by_key[act.target]
@@ -1111,7 +1169,7 @@ def build_orchestrator_stream(
 
     effective_mode = _resolve_effective_mode(request)
     context = _build_conversation_context(request.previousAnswers)
-    wiki_context = _build_knowledge_context(request.message)
+    grounding_cache: Dict[str, str] = {}  # 메시지 단위 근거 캐시(위키/Tavily/GPT 중복호출 방지)
     min_gap = _min_gap_seconds()
     feedback_on = _cross_feedback_enabled(request, agents)
     social = _is_social_input(request)
@@ -1176,7 +1234,7 @@ def build_orchestrator_stream(
         from app.services import studymate_discussion_planner as _planner
         if effective_mode in ("basic", "default") and _planner.planner_enabled() and not social and len(agents) >= 1:
             yield from _run_discussion_plan(
-                request, agents, effective_mode, wiki_context, context,
+                request, agents, effective_mode, grounding_cache, context,
                 min_gap, feedback_on, social, _agent_identity_payload,
             )
             return
@@ -1208,7 +1266,7 @@ def build_orchestrator_stream(
 
         try:
             peer = all_answers if (feedback_on and all_answers) else None
-            answer = _generate_single_agent_answer(agent, request, effective_mode, wiki_context, context, agents, peer, social=social, position=idx, total=n)
+            answer = _generate_single_agent_answer(agent, request, effective_mode, grounding_cache, context, agents, peer, social=social, position=idx, total=n)
         except Exception as e:
             logger.error("[Orchestrator] 에이전트 생성 실패 %s: %s", agent_name, e)
             answer = "(이 에이전트의 응답 생성 중 오류가 발생했어요.)"
