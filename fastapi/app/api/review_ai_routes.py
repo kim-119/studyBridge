@@ -470,6 +470,8 @@ def _variant_sync(body: Dict[str, Any]) -> Dict[str, Any]:
     if not out_concepts:
         out_concepts = [key]
 
+    # Spring(/api/review-notes/{id}/variant-question)과 프론트(QuizRunner)는 questions 배열을
+    # 기대한다(camelCase correctAnswer). 단수 question 키도 하위호환으로 함께 둔다.
     return {
         "question": question,
         "choices": choices,
@@ -477,6 +479,14 @@ def _variant_sync(body: Dict[str, Any]) -> Dict[str, Any]:
         "explanation": explanation,
         "difficulty_applied": difficulty,
         "concepts": out_concepts,
+        "questions": [{
+            "question": question,
+            "choices": choices,
+            "correctAnswer": out_correct,
+            "explanation": explanation,
+            "concepts": out_concepts,
+            "difficulty": difficulty,
+        }],
         "error_code": None,
     }
 
@@ -497,4 +507,4 @@ async def variant_question(body: Dict[str, Any] = Body(default_factory=dict)) ->
         return result
     except Exception as e:  # noqa: BLE001
         logger.error("variant-question 실패: %s", e)
-        return {"question": "", "choices": [], "error_code": "VARIANT_QUESTION_FAILED"}
+        return {"question": "", "choices": [], "questions": [], "error_code": "VARIANT_QUESTION_FAILED"}

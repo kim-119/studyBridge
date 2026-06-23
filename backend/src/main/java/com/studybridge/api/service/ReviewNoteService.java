@@ -548,6 +548,10 @@ public class ReviewNoteService {
     //   body { wrongQuestionId, difficulty: easy|normal|hard, count }
     //   ai07 variant 엔드포인트가 살아있으면 AI 변형, 없으면(404 등) 원본 오답을 재출제로 폴백.
     // ---------------------------------------------------------------------
+    // ★ 클래스 기본 @Transactional(readOnly=true)를 read-write로 덮어쓴다. 폴백 경로가 항상
+    //   recordSimilarQuestion(학습이벤트 write)을 호출하는데, readOnly 트랜잭션에서 write가
+    //   일어나면 트랜잭션이 poison 되어 커밋 시 500이 났다(다른 write 메서드와 동일 패턴).
+    @Transactional
     public Map<String, Object> variantQuestion(Long userId, Long id, Map<String, Object> body) {
         ReviewNote note = loadOwned(userId, id);
 
