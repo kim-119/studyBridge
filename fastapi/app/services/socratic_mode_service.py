@@ -33,10 +33,10 @@ def _get_socratic_fallback() -> str:
         from app.core.policy_loader import get_validation_policy
         return get_validation_policy().get(
             "socratic_fallback",
-            "좋아요. 바로 답을 말하기보다 한 가지만 생각해봅시다. 이 개념에서 '결과'와 '발생 조건'은 어떻게 다를까요?",
+            "> [DIAGNOSTIC_LOG]\nLog: 현재 접근 방식에 혼선이 있음.\n\n> [CONCEPT_HINT]\nHint: 이 개념은 '결과'와 '발생 조건'을 구분하는 것이 핵심이다.\n\n> [PROMPT]\n두 가지의 차이점이 무엇일지 논리적으로 도출해 보겠나?",
         )
     except Exception:
-        return "좋아요. 바로 답을 말하기보다 한 가지만 생각해봅시다. 이 개념에서 '결과'와 '발생 조건'은 어떻게 다를까요?"
+        return "> [DIAGNOSTIC_LOG]\nLog: 현재 접근 방식에 혼선이 있음.\n\n> [CONCEPT_HINT]\nHint: 이 개념은 '결과'와 '발생 조건'을 구분하는 것이 핵심이다.\n\n> [PROMPT]\n두 가지의 차이점이 무엇일지 논리적으로 도출해 보겠나?"
 
 
 def _call_llm(system: str, user: str) -> str:
@@ -122,19 +122,18 @@ def run_socratic_mode(
     if user_attempt:
         user_parts.append(f"\n[사용자의 시도 답변]\n{user_attempt}")
         user_parts.append(
-            "\n위 시도 답변을 자료 기준으로 평가하라. "
-            "맞게 접근했으면 짧게 칭찬하고 한 단계 더 깊은 질문으로, "
-            "틀렸으면 정답을 주지 말고 틀린 지점을 좁혀주는 질문으로 이어가라."
+            "\n위 시도 답변을 자료 기준으로 디버깅하라. "
+            "맞게 접근했으면 맞춘 부분을 인정하고 한 단계 더 깊은 원리를 짚어준 뒤 질문하고, "
+            "틀렸으면 충돌 지점을 명시하고 올바른 방향의 키워드를 힌트로 준 뒤 재고를 요청하라."
         )
     else:
         user_parts.append(
-            "\n사용자가 아직 시도 답변을 내지 않았다. 정답을 설명하지 말고, "
-            "사용자가 첫걸음을 뗄 수 있도록 진단·힌트·꼬리질문을 제시하라. "
-            "사용자가 완전히 모를 것 같으면 정답 대신 쉬운 선택지(예: 'A와 B 중 어느 쪽?')를 질문으로 줘라."
+            "\n사용자가 아직 시도 답변을 내지 않았다. 정답을 덤프하지 말고, "
+            "사용자가 첫걸음을 뗄 수 있도록 핵심 개념 힌트를 준 뒤 이지선다 형태나 기초적인 꼬리질문을 제시하라."
         )
     user_parts.append(
-        "\n반드시 [진단] / [힌트] / [꼬리질문] 세 블록 형식으로만, 짧게 답하라. "
-        "꼬리질문은 딱 하나(물음표 하나)만. 정답·결론·완성답안·개념강의는 절대 금지."
+        "\n반드시 > [DIAGNOSTIC_LOG] / > [CONCEPT_HINT] / > [PROMPT] 세 블록 형식으로만, 짧고 명확하게 답하라. "
+        "PROMPT에는 딱 하나(물음표 하나)의 질문만 포함한다. 정답·결론·완성답안·개념강의 전체 제공은 절대 금지."
     )
     user_prompt = "\n".join(user_parts)
 
@@ -156,9 +155,9 @@ def run_socratic_mode(
         rewrite_user = (
             f"{user_prompt}\n\n"
             "이전 답변에 정답·강의가 포함되었거나 형식/질문 수가 어긋났습니다. "
-            "반드시 [진단] / [힌트] / [꼬리질문] 세 블록으로만, 정답을 말하지 말고 "
-            "사용자 사고를 유도하는 꼬리질문 하나(물음표 하나)만 남겨라. "
-            f"이 표현들을 사용하지 않는다: {', '.join(direct_markers)}"
+            "반드시 > [DIAGNOSTIC_LOG] / > [CONCEPT_HINT] / > [PROMPT] 세 블록으로만, 정답 전체를 말하지 말고 "
+            "사용자 사고를 유도하는 꼬리질문 하나(물음표 하나)만 PROMPT에 남겨라. "
+            f"이 표현들을 절대 사용하지 않는다: {', '.join(direct_markers)}"
         )
         rewritten = _call_llm(system_prompt, rewrite_user)
         try:
