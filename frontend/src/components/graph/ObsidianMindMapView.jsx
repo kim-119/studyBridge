@@ -12,7 +12,8 @@ import {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 마인드맵 생성 화면(StudyMate)의 기본 뷰. 기존 입력을 Obsidian Graph 로 변환한다.
-//  · 기본 진입 = Obsidian Graph. 오류/데이터 부족 시 LegacyMindMapView 로 fallback.
+//  · 기본 진입 = Obsidian Graph. 렌더 오류 시 "자동으로 예전 카드 UI로 되돌아가지 않는다".
+//    → 오류 패널 + [다시 시도] + [기존 보기](명시 클릭) 만 제공한다.
 //  · 저장은 자료보관함 graph(JSON)로만. PDF 저장 경로 없음.
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ObsidianMindMapView({
@@ -20,6 +21,7 @@ export default function ObsidianMindMapView({
   onSaveToArchive, saving = false, savedLabel,
 }) {
   const [showLegacy, setShowLegacy] = useState(false);
+  const [retryKey, setRetryKey] = useState(0); // 오류 패널 [다시 시도] → 경계 remount
 
   const graph = useMemo(
     () => convertMindMapToObsidianGraph({ question, agents, messages, interactions }),
@@ -77,10 +79,19 @@ export default function ObsidianMindMapView({
     </>
   );
 
+  // 자동 legacy 금지: 렌더 오류여도 예전 카드 UI로 되돌아가지 않고 오류 패널만 표시한다.
+  const errorFallback = (
+    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: '#0b1020', color: '#cbd5e1' }}>
+      <div style={{ fontSize: 15 }}>그래프를 표시하는 중 문제가 발생했습니다.</div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button type="button" className="obsg-btn is-active" onClick={() => setRetryKey((k) => k + 1)}>다시 시도</button>
+        <button type="button" className="obsg-btn" onClick={() => setShowLegacy(true)}>기존 보기</button>
+      </div>
+    </div>
+  );
+
   return (
-    <GraphErrorBoundary
-      fallback={<LegacyMindMapView question={question} agents={agents} messages={messages} interactions={interactions} />}
-    >
+    <GraphErrorBoundary key={retryKey} fallback={errorFallback}>
       <ObsidianGraphView graph={graph} title={title} extraActions={extraActions} />
     </GraphErrorBoundary>
   );

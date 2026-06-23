@@ -20,6 +20,7 @@ import StudyReport from './pages/StudyReport';
 import WeeklySchedule from './pages/WeeklySchedule';
 import Planner from './pages/Planner';
 import ReviewNotesPage from './pages/ReviewNotesPage';
+import ObsidianPage from './pages/ObsidianPage';
 function PrivateRoute({ children }) {
   const { isLoggedIn } = useAuth();
   const location = useLocation();
@@ -119,6 +120,7 @@ function App() {
           <Route path="/study-report" element={<PrivateRoute><StudyReport /></PrivateRoute>} />
           <Route path="/weekly-schedule" element={<PrivateRoute><WeeklySchedule /></PrivateRoute>} />
           <Route path="/planner" element={<PrivateRoute><Planner /></PrivateRoute>} />
+          <Route path="/obsidian" element={<PrivateRoute><ObsidianPage /></PrivateRoute>} />
           {/* 잘못된 주소는 메인으로 이동 */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -117,11 +117,12 @@ function materialDate(m) {
 
 // 상단 유형 필터 탭 (폴더는 모든 탭에서 표시, 자료만 유형별 필터)
 // '전체' 탭 제거 — 학습자료 / 플래너 / 학습일지 3개만 유지. 기본 진입 = 학습자료.
+// 옵시디언(마인드맵)은 자료보관함 내부 탭이 아니라 상단 네비 독립 페이지(/obsidian)에서 다룬다.
+//  · materialTabKind 는 MINDMAP 매핑을 유지해, 마인드맵 자료가 다른 탭(학습자료 등)에 섞여 카드로 노출되는 것을 막는다.
 const ARCHIVE_TABS = [
   { key: 'LEARNING_PDF', label: '학습자료' },
   { key: 'PLANNER', label: '플래너' },
   { key: 'STUDY_LOG', label: '학습일지' },
-  { key: 'MINDMAP', label: '마인드맵' },
 ];
 const ARCHIVE_TAB_KEYS = ARCHIVE_TABS.map((t) => t.key);
 const DEFAULT_ARCHIVE_TAB = 'LEARNING_PDF';
@@ -196,6 +197,14 @@ export default function Archive() {
 
   const folderIdParam = searchParams.get('folderId');
   const currentFolderId = folderIdParam != null && folderIdParam !== '' ? Number(folderIdParam) : null;
+
+  // 레거시 진입(`/archive?tab=mindmap`)은 자료보관함 내부 탭이 아니라 옵시디언 독립 페이지로 보낸다.
+  // (예전 북마크/링크가 마인드맵 탭을 되살리지 못하게 차단)
+  useEffect(() => {
+    if ((searchParams.get('tab') || '').toLowerCase() === 'mindmap') {
+      navigate('/obsidian', { replace: true });
+    }
+  }, [searchParams, navigate]);
 
   // 폴더 뷰 상태
   const [folders, setFolders] = useState([]);

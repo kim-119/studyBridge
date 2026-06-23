@@ -4,6 +4,7 @@ import React from 'react';
 export default function GraphToolbar({
   mode, onSetMode, onFit, onCenterQuestion, onToggleSearch, searchOpen,
   filters, onToggleFilter, depth, onSetDepth,
+  showEdgeLabels, onToggleEdgeLabels,
   onExportMarkdown, onExportCanvas, extraActions,
 }) {
   return (
@@ -13,6 +14,7 @@ export default function GraphToolbar({
       <button type="button" className="obsg-btn" onClick={onFit}>화면에 맞춤</button>
       <button type="button" className="obsg-btn" onClick={onCenterQuestion}>현재 질문 중심</button>
       <button type="button" className={`obsg-btn${searchOpen ? ' is-active' : ''}`} onClick={onToggleSearch}>검색</button>
+      <button type="button" className={`obsg-btn${showEdgeLabels ? ' is-active' : ''}`} onClick={onToggleEdgeLabels}>간선 이름</button>
 
       {mode === 'local' && (
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#cbd5e1' }}>

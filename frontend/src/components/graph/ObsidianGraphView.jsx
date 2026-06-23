@@ -26,6 +26,8 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
   const [centerNodeId, setCenterNodeId] = useState(graph.centerNodeId || (graph.nodes[0] && graph.nodes[0].id));
   const [selected, setSelected] = useState(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  // 간선 관계 이름 표시. Local 기본 on(관계 파악 우선), Global 기본 off(선택 주변만).
+  const [showEdgeLabels, setShowEdgeLabels] = useState(!bigGraph);
 
   const canvasRef = useRef(null);
 
@@ -94,6 +96,8 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
         onToggleFilter={toggleFilter}
         depth={depth}
         onSetDepth={setDepth}
+        showEdgeLabels={showEdgeLabels}
+        onToggleEdgeLabels={() => setShowEdgeLabels((v) => !v)}
         onExportMarkdown={exportMd}
         onExportCanvas={exportCanvas}
         extraActions={extraActions}
@@ -109,6 +113,7 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
           centerNodeId={centerNodeId}
           neighbors={linkIndex.neighbors}
           showNodeLabels
+          showEdgeLabels={showEdgeLabels}
           onNodeClick={(n) => setSelected(n)}
           onNodeDoubleClick={handleCenterNode}
           onBackgroundClick={() => setSelected(null)}
