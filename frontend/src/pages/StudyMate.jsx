@@ -205,6 +205,22 @@ function sortByAgentOrder(rows) {
   });
 }
 
+// 기본개념모드: 백엔드가 내려준 실제 발화 순번(displayOrder)대로 말풍선을 정렬한다.
+// 같은 교수가 DIRECT→REACTION→WRAP 로 여러 번 말하거나, 교수 번호 순서와 답변 순서가
+// 다를 때 agentIndex 로 재정렬하면 대화 순서가 뭉개지므로 displayOrder 를 1순위로 쓴다.
+// (동률/누락 시에는 도착(삽입) 순서를 유지하는 안정 정렬.)
+function sortByDisplayOrder(rows) {
+  return [...(rows || [])]
+    .map((r, i) => [r, i])
+    .sort((a, b) => {
+      const ao = Number(a[0]?.displayOrder ?? Number.POSITIVE_INFINITY);
+      const bo = Number(b[0]?.displayOrder ?? Number.POSITIVE_INFINITY);
+      if (ao !== bo) return ao - bo;
+      return a[1] - b[1];
+    })
+    .map((x) => x[0]);
+}
+
 
 // ── 단계별 말풍선 (상세과정을 안 눌러도 결과를 메인 대화에 순차 표시) ──────────────
 // 일반: ⚡1차 → ✅2차(웹검증) → 💬3차(피드백)
@@ -2957,7 +2973,8 @@ export default function StudyMate() {
           return String(h);
         };
         const agentAnswerMap = new Map();
-        const agentMsgsArr = () => sortByAgentOrder(Array.from(agentAnswerMap.values()));
+        // 기본개념모드 말풍선은 교수 번호가 아니라 실제 발화 순번(displayOrder)대로 뜬다.
+        const agentMsgsArr = () => sortByDisplayOrder(Array.from(agentAnswerMap.values()));
         const upsertAgentMessage = (d, patch = {}) => {
           // 목표 B.5: all_complete 이후 같은 turn의 추가 이벤트는 렌더링하지 않는다.
           if (streamCompleted) return;
@@ -2988,6 +3005,7 @@ export default function StudyMate() {
             senderName: d?.agentName || patch.agentName || selectedAgent?.name || 'AI',
             agentId: aid,
             agentIndex: idx,
+            displayOrder: Number(d?.displayOrder ?? patch.displayOrder ?? seq ?? 0) || undefined,
             role: d?.role || patch.role,
             stageType: d?.stageType || 'FIRST_DRAFT',
             actType: actType || undefined,
