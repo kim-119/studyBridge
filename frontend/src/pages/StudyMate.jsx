@@ -3320,7 +3320,9 @@ export default function StudyMate() {
             onSynthesisDiff: (d) => { if (d) addInteraction('synthesis_diff', d); },
             onAgentStart: (d) => {
               if (!d) return;
-              upsertAgentMessage(d, { isPending: true, content: d.message || `에이전트 ${d.agentIndex || ''} 답변 생성 중...` });
+              // 생성 중 말풍선은 헤더에 실제 교수 이름을 띄우고, 본문은 "답변 생성 중…"만
+              // 보여준다(이전 "에이전트 N …" 생성 인덱스 노출 제거).
+              upsertAgentMessage(d, { isPending: true, content: '답변 생성 중…' });
               // (목표 5 fallback) agent_start → 해당 교수 walking_to_question.
               visFor(d.agentIndex, 'walking_to_question');
             },
@@ -4437,7 +4439,9 @@ export default function StudyMate() {
                             </div>
                           ) : (
                             <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none', borderLeft: isUser ? undefined : `4px solid ${agentColor.border}` }}>
-                              {isUser || isPlainReply ? (isPlainReply ? stripMarkdown(msg.content) : msg.content) : <RichText text={msg.content} />}
+                              {(!isUser && msg.isPending)
+                                ? <span style={{ opacity: 0.7, fontStyle: 'italic' }}>{msg.statusText || '답변 생성 중…'}</span>
+                                : (isUser || isPlainReply ? (isPlainReply ? stripMarkdown(msg.content) : msg.content) : <RichText text={msg.content} />)}
                             </div>
                           )}
                           {/* SSE 중단/부분 수신 복구 UX: 같은 질문을 즉시 다시 보낼 수 있는 재시도 버튼 */}
