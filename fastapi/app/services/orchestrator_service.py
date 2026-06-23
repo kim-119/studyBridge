@@ -897,7 +897,7 @@ def _run_discussion_plan(
             "data": {
                 "type": "agent_start", "agentIndex": idx + 1, "agentName": agent_name,
                 "agentId": aid, "phase": phase, "actType": act.act_type,
-                "replyTo": reply_to, "visible": True, **identity,
+                "replyTo": reply_to, "displayOrder": display, "visible": True, **identity,
             },
         }
 

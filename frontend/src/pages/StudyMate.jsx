@@ -98,6 +98,14 @@ const REQUEST_GUIDE_CHIPS = [
   { label: '시험 대비', text: '시험 대비 포인트를 정리해줘' },
 ];
 
+// 확률적 다중답변 플래너의 재개입 칩(follow_up_suggestions) act → 실제 후속 질문 문장.
+// 도메인 용어를 박지 않고 대화행위(더 깊이/다른 관점/쉽게)만 보낸다.
+const FOLLOW_UP_ACT_MESSAGE = {
+  DEEPEN: '방금 내용을 더 깊이 자세히 설명해줘',
+  ALT_VIEW: '다른 관점이나 반대 의견도 들려줘',
+  SIMPLIFY: '더 쉬운 예시로 다시 설명해줘',
+};
+
 const DEFAULT_AGENT = {
   name: '',
   role: '정확한 개념 설명자',
@@ -2107,6 +2115,8 @@ export default function StudyMate() {
   const PROFESSOR_TAB_VALUE = 'professor';
   const [viewTab, setViewTab] = useState('chat'); // 'chat' | 'professor'
   const isProfessorTab = viewTab === PROFESSOR_TAB_VALUE;
+  // 확률적 다중답변 플래너의 재개입 칩(follow_up_suggestions). 클릭하면 후속 질문을 보낸다.
+  const [followUpChips, setFollowUpChips] = useState([]);
   // 교수님들과 대화 트리 최상단 라벨(액션에 따라 전체 의견/전체 반박/전체 비교/전체 예시로 갱신)
   const [professorTreeTitle, setProfessorTreeTitle] = useState('전체 의견');
   // 현재 교수 액션 모드(말풍선 문구·강조색·루트 제목을 함께 좌우). 13종 + default.
@@ -2578,6 +2588,7 @@ export default function StudyMate() {
 
   const sendMessage = async (e, directMessage = null) => {
     if (e) e.preventDefault();
+    setFollowUpChips([]); // 새 질문 전송 시 이전 턴의 재개입 칩 제거
     const agentId = getAgentId(selectedAgent);
     // 목표 F: 최소 정제만 수행(공백 정리). 사용자 내용(코드/명령/마크다운)은 보존한다.
     const inputMsg = sanitizeQuestion(directMessage || message);
@@ -2904,8 +2915,14 @@ export default function StudyMate() {
           const idx = d?.agentIndex ?? patch.agentIndex ?? 0;
           const aid = d?.agentId ?? patch.agentId ?? idx;
           const hash = contentHash(d?.content ?? d?.answer ?? patch.content ?? '');
-          const key = `${d?.requestId || requestId}::basic::${d?.stageType || 'FIRST_DRAFT'}::${idx}::${aid}::${hash}`;
-          const stableKey = `${d?.requestId || requestId}::basic::${d?.stageType || 'FIRST_DRAFT'}::${idx}::${aid}`;
+          // 확률적 다중답변 플래너: 같은 교수가 DIRECT 후 REACTION 등 여러 번 발화할 수 있다.
+          // stageType만으로 키를 만들면 카드가 서로 덮어써 유실되므로 actType+displayOrder(발화순번)를
+          // 키에 포함한다. 레거시 이벤트(actType 없음)는 기존대로 stageType을 쓴다.
+          const actType = d?.actType ?? patch.actType ?? '';
+          const seq = d?.displayOrder ?? patch.displayOrder ?? '';
+          const actSeg = actType ? `${actType}::${seq}` : (d?.stageType || 'FIRST_DRAFT');
+          const key = `${d?.requestId || requestId}::basic::${actSeg}::${idx}::${aid}::${hash}`;
+          const stableKey = `${d?.requestId || requestId}::basic::${actSeg}::${idx}::${aid}`;
           const prevKey = Array.from(agentAnswerMap.keys()).find((k) => k.startsWith(stableKey));
           if (prevKey && prevKey !== key) agentAnswerMap.delete(prevKey);
           // 진행 중(isPending) 플레이스홀더는 방어 대상에서 제외하고, 실제 답변만 빈/진단 응답을 차단한다.
@@ -2922,6 +2939,8 @@ export default function StudyMate() {
             agentIndex: idx,
             role: d?.role || patch.role,
             stageType: d?.stageType || 'FIRST_DRAFT',
+            actType: actType || undefined,
+            replyTo: d?.replyTo ?? patch.replyTo ?? undefined,
             createdAt: d?.createdAt || patch.createdAt || ts,
             parentId: userMsg.id,
             isPending: !!patch.isPending,
@@ -3244,8 +3263,16 @@ export default function StudyMate() {
               sawRealAnswer = true;
               clearChoreoFiller();
               const targeted = isAnswerForTarget(d);
+              // 확률적 다중답변 플래너: 발화 유형(반박/정리)을 시각적으로 구분한다.
+              let _shown = d.content || d.answer || '';
+              if (d.actType === 'REACTION') {
+                const _toName = (agentMsgsArr().find((m) => m.agentId === d.replyTo)?.senderName) || '';
+                _shown = `> 💬 *${_toName ? `${_toName}님 의견에 ` : ''}보충·반박*\n\n${_shown}`;
+              } else if (d.actType === 'WRAP') {
+                _shown = `> 🧩 *한 줄 정리*\n\n${_shown}`;
+              }
               // single scope면 upsert 내부에서 비대상 카드를 드롭한다(채팅 메시지 append 분리).
-              upsertAgentMessage(d, { isPending: false, content: d.content || d.answer || '' });
+              upsertAgentMessage({ ...d, content: _shown, answer: _shown }, { isPending: false, content: _shown });
               const bubbleRole = roleForAgentIndex(d.agentIndex);
               if (askScope === 'single' && !targeted) {
                 // 비대상 교수: 보조 모션 + 짧은 "확인 중" 말풍선만(장문 답변/카드 금지 — 목표).
@@ -3270,6 +3297,11 @@ export default function StudyMate() {
               if (!d) return;
               upsertAgentMessage(d, { isPending: false, isError: true, content: d.message || '이 에이전트의 응답 생성에 실패했습니다.' });
               sawError = true; visFor(d.agentIndex, 'error');
+            },
+            // 확률적 다중답변 플래너: 재개입 칩(더 깊이/다른 의견/쉬운 예시) 수신 → 입력창 위에 노출.
+            onFollowUpSuggestions: (d) => {
+              const list = Array.isArray(d?.suggestions) ? d.suggestions : [];
+              setFollowUpChips(list);
             },
             // default legacy 모드: 1차/2차/3차 단계 완료 시 즉시 반영. 저장 전에 에이전트 순서로 정렬한다.
             onStageComplete: (d) => {
@@ -4504,6 +4536,29 @@ export default function StudyMate() {
                   )}
                 </AnimatePresence>
 
+                {/* 확률적 다중답변 플래너: 재개입 칩 — 클릭하면 후속 질문을 바로 전송한다. */}
+                {followUpChips.length > 0 && !typingRooms[getAgentId(selectedAgent)] && (
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', margin: '0 0 8px 2px' }}>
+                    {followUpChips.map((chip) => (
+                      <button
+                        type="button"
+                        key={chip.id || chip.label}
+                        onClick={() => {
+                          const msg = FOLLOW_UP_ACT_MESSAGE[chip.act] || chip.label;
+                          setFollowUpChips([]);
+                          sendMessage(null, msg);
+                        }}
+                        style={{
+                          padding: '5px 12px', borderRadius: '999px',
+                          border: '1px solid var(--color-border)', background: 'var(--color-surface, transparent)',
+                          fontSize: '12px', fontWeight: '600', color: 'var(--color-text, #374151)', cursor: 'pointer',
+                        }}
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {/* 라이브 모드 토글은 입력창 우측의 컴팩트 드롭다운으로 축소됨(아래 form 내부). */}
                 <form onSubmit={sendMessage} className="chat-input-premium">
                   <input

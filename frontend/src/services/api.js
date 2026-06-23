@@ -374,6 +374,8 @@ export const agentService = {
       else if (event === 'route_message') handlers.onRouteMessage?.(data);
       else if (event === 'route_notice') handlers.onRouteNotice?.(data);
       else if (event === 'route_pipeline') handlers.onRoutePipeline?.(data);
+      // 확률적 다중답변 플래너: 끝에 오는 재개입 칩(더 깊이/다른 의견/쉬운 예시).
+      else if (event === 'follow_up_suggestions') handlers.onFollowUpSuggestions?.(data);
       else if (event === 'all_complete') handlers.onAllComplete?.(data);
       // done: FastAPI finally 가 보내는 종결 이벤트. 과거엔 디스패치되지 않아 무시됐다.
       //  → all_complete 와 함께 '최종 수신(finalReceived)' 판정에 쓰도록 명시 전달한다.
