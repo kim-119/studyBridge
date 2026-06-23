@@ -493,6 +493,13 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     return `${(size / 1024 / 1024).toFixed(1)}MB`;
   };
 
+  const formatDate = (value) => {
+    if (!value) return '-';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '-';
+    return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+  };
+
   const loadMembers = async () => {
     try {
       const data = await groupService.getMembers(study.id);
@@ -533,8 +540,40 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     }
   };
 
+  // 사용자가 X/종료로 닫은 퀴즈 세션을 기억해, 재접속(또는 종료 이벤트 재수신) 시 다시 띄우지 않는다.
+  const quizDismissStorageKey = study?.id ? `sb_quiz_dismissed_${study.id}` : null;
+
+  const isQuizSessionDismissed = (sessionId) => {
+    if (sessionId == null || !quizDismissStorageKey) return false;
+    try {
+      const raw = localStorage.getItem(quizDismissStorageKey);
+      if (!raw) return false;
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) && arr.map(Number).includes(Number(sessionId));
+    } catch (e) {
+      return false;
+    }
+  };
+
+  const markQuizSessionDismissed = (sessionId) => {
+    if (sessionId == null || !quizDismissStorageKey) return;
+    try {
+      const raw = localStorage.getItem(quizDismissStorageKey);
+      const arr = raw ? JSON.parse(raw) : [];
+      const set = new Set(Array.isArray(arr) ? arr.map(Number) : []);
+      set.add(Number(sessionId));
+      // 최근 20개 세션까지만 보관(무한 증가 방지).
+      const next = Array.from(set).slice(-20);
+      localStorage.setItem(quizDismissStorageKey, JSON.stringify(next));
+    } catch (e) {
+      /* localStorage 미지원/용량초과는 무시 */
+    }
+  };
+
   const applyQuizSessionPayload = (payload) => {
     if (!payload) return;
+    // 이미 닫은 세션이면 어떤 이벤트가 와도 모달을 다시 열지 않는다.
+    if (isQuizSessionDismissed(payload.sessionId)) return;
     const previousQuestionId = quizQuestionIdRef.current;
     const incomingQuestionId = payload.questionId ?? null;
     const isNewQuestion = previousQuestionId == null || incomingQuestionId == null
@@ -610,6 +649,13 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     setQuizStartTime(null);
     setQuizSubmissionAck(null);
     setQuizFinalResult(null);
+  };
+
+  // 사용자가 직접 퀴즈 모달을 닫을 때 사용: 현재 세션을 "닫음" 처리하고 상태를 초기화한다.
+  // 이후 같은 세션의 종료/복원 이벤트가 와도 모달이 다시 뜨지 않는다.
+  const dismissQuiz = () => {
+    markQuizSessionDismissed(quizSessionIdRef.current);
+    resetQuizRuntimeState();
   };
 
   useEffect(() => {
@@ -3155,14 +3201,13 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                 <span style={{ color: '#3B82F6', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '1px' }}>AI Live Quiz</span>
                 <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#F3F4F6' }}>{activeQuiz.quizTitle}</h2>
               </div>
-              {(quizPhase === 'ENDED' || quizFinalResult) && (
-                <div
-                  onClick={resetQuizRuntimeState}
-                  style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                >
-                  <X size={16} color="#9CA3AF" />
-                </div>
-              )}
+              <div
+                onClick={dismissQuiz}
+                title="닫기"
+                style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+              >
+                <X size={16} color="#9CA3AF" />
+              </div>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -3272,7 +3317,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
                 {quizPhase === 'ENDED' ? (
                   <button
-                    onClick={resetQuizRuntimeState}
+                    onClick={dismissQuiz}
                     style={{ padding: '12px', backgroundColor: '#EF4444', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '700', cursor: 'pointer', transition: '0.2s', width: '100%' }}
                   >
                     퀴즈 종료
