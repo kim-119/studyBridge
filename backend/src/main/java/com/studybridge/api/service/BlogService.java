@@ -35,6 +35,28 @@ public class BlogService {
     private final ReportRepository reportRepository;
     private final S3Service s3Service;
 
+    // 글 관리(수정/삭제) 권한 허용 이메일: 작성자 본인/ADMIN 외에 추가로 허용할 운영 계정.
+    private static final java.util.Set<String> BLOG_MANAGER_EMAILS = java.util.Set.of("dohy910@gmail.com");
+
+    // 게시글 수정/삭제 권한: 작성자 본인, ADMIN role, 또는 지정 관리 이메일.
+    private boolean canManagePost(Blog blog, Long userId) {
+        if (userId == null) {
+            return false;
+        }
+        if (blog.getAuthor().getId().equals(userId)) {
+            return true;
+        }
+        User requester = userRepository.findById(userId).orElse(null);
+        if (requester == null) {
+            return false;
+        }
+        if ("ADMIN".equalsIgnoreCase(requester.getRole())) {
+            return true;
+        }
+        String email = requester.getEmail();
+        return email != null && BLOG_MANAGER_EMAILS.contains(email.trim().toLowerCase());
+    }
+
     // 블로그 생성
     @Transactional
     public BlogDTO.Response createPost(Long userId, String title, String content, MultipartFile image, MultipartFile pdf) throws IOException {
@@ -73,7 +95,7 @@ public class BlogService {
         Blog blog = blogRepository.findById(blogId)
                 .orElseThrow(() -> new IllegalArgumentException("게시글을 찾을 수 없습니다."));
 
-        if (!blog.getAuthor().getId().equals(userId)) {
+        if (!canManagePost(blog, userId)) {
             throw new SecurityException("해당 게시글에 대한 수정 권한이 없습니다.");
         }
 
@@ -126,7 +148,7 @@ public class BlogService {
         Blog blog = blogRepository.findById(blogId)
                 .orElseThrow(() -> new IllegalArgumentException("게시글을 찾을 수 없습니다."));
 
-        if (!blog.getAuthor().getId().equals(userId)) {
+        if (!canManagePost(blog, userId)) {
             throw new SecurityException("해당 게시글에 대한 삭제 권한이 없습니다.");
         }
 

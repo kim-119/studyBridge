@@ -14,7 +14,7 @@ const REPORT_REASONS = [
 export default function KnowledgeDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user, userId } = useAuth();
+  const { user, userId, userEmail } = useAuth();
 
   const [post, setPost] = useState(null);
   const [newComment, setNewComment] = useState('');
@@ -251,6 +251,13 @@ export default function KnowledgeDetail() {
 
   const isLiked = post.likedByCurrentUser;
   const isMyPost = post && userId && (String(post.authorId) === String(userId));
+  // 운영 관리 권한: 지정 관리 이메일 또는 ADMIN role (백엔드 BlogService.canManagePost와 정책 일치)
+  const BLOG_MANAGER_EMAILS = ['dohy910@gmail.com'];
+  const isModerator = (
+    (userEmail && BLOG_MANAGER_EMAILS.includes(String(userEmail).trim().toLowerCase())) ||
+    user?.role === 'ADMIN' || user?.role === 'ROLE_ADMIN'
+  );
+  const canManagePost = isMyPost || isModerator;
 
   return (
     <div style={{ backgroundColor: '#F9FAFB', minHeight: '100vh', paddingBottom: '80px', fontFamily: '"Malgun Gothic", "맑은 고딕", sans-serif' }}>
@@ -269,8 +276,13 @@ export default function KnowledgeDetail() {
             목록으로
           </button>
           
-          {isMyPost && (
+          {canManagePost && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {isModerator && !isMyPost && (
+                <span style={{ display: 'flex', alignItems: 'center', background: 'rgba(96,201,90,0.25)', backdropFilter: 'blur(4px)', color: '#bbf7d0', border: '1px solid rgba(96,201,90,0.4)', padding: '6px 12px', borderRadius: '12px', fontSize: '12px', fontWeight: '700' }}>
+                  관리자 권한
+                </span>
+              )}
               <button
                 onClick={openEditModal}
                 style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.2)', backdropFilter: 'blur(4px)', color: 'white', border: '1px solid rgba(255,255,255,0.3)', padding: '10px 16px', borderRadius: '12px', cursor: 'pointer', fontWeight: '600', transition: '0.2s' }}
