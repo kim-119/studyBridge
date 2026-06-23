@@ -674,15 +674,36 @@ def _build_single_agent_user_prompt(
     from app.services.personality_prompt_builder import build_persona_directive
 
     parts: List[str] = []
+    # previousAnswers(이전 대화) 권한 낮추기(memory over-conditioning 방지): 현재 질문이 최우선.
+    # 명시적 후속(그거/아까/방금/처음/내가)일 때만 이전 대화를 적극 활용, 그 외엔 현재 질문에 직접 답한다.
+    _is_followup = False
+    try:
+        from app.services.memory_recall_service import classify_memory_intent, MemoryIntent
+        _intent, _ = classify_memory_intent(request.message)
+        _is_followup = _intent == MemoryIntent.CONTEXTUAL_FOLLOWUP
+    except Exception:
+        _is_followup = False
     if context:
-        parts.append(context)
+        parts.append(
+            "[참고용 이전 대화 — 현재 질문이 최우선]\n"
+            "아래는 같은 방의 이전 대화다. 사용자가 '아까/그거/방금/이전/처음/내가'처럼 이전 맥락을 "
+            "명시했을 때만 적극 참고하라. 독립적인 새 질문이면 억지로 연결하지 말고 현재 질문에 직접 답하라.\n"
+            + context
+        )
     if wiki_context:
         parts.append(wiki_context)
-    parts.append(f"[사용자의 최근 메시지] {request.message}")
-    parts.append(
-        "위 대화 흐름을 이어서, 이 메시지에 자연스럽게 응답하라. "
-        "핵심 개념을 충분히 설명하고 → 구체 예시 1개 → 한 줄 핵심 정리 흐름을 네 말투로 녹여라(기계적 라벨 금지)."
-    )
+    parts.append(f"[사용자의 현재 질문 — 이 질문에 직접 답하라] {request.message}")
+    if _is_followup:
+        parts.append(
+            "위 이전 대화 흐름을 이어서, 이 후속 메시지에 자연스럽게 응답하라. "
+            "핵심 개념을 충분히 설명하고 → 구체 예시 1개 → 한 줄 핵심 정리 흐름을 네 말투로 녹여라(기계적 라벨 금지)."
+        )
+    else:
+        parts.append(
+            "이것은 독립적인 새 질문일 수 있다. 이전 대화와 억지로 연결하지 말고 현재 질문에 '직접' 답하라. "
+            "'TCP가 뭐야' 같은 정의 질문이면 첫 문장에서 바로 정의부터 제시하라. "
+            "핵심 개념을 충분히 설명하고 → 구체 예시 1개 → 한 줄 핵심 정리 흐름을 네 말투로 녹여라(기계적 라벨 금지)."
+        )
     if peer_answers:
         peer_lines = [f"- {str(p.get('answer',''))[:150]}" for p in peer_answers]
         parts.append(
@@ -1152,6 +1173,46 @@ def _run_summary_only(
     }
 
 
+def _run_memory_recall(request, agents, effective_mode, identity_payload, intent, extra, turns):
+    """결정론적 기억 회상 SSE. LLM을 호출하지 않고 단일 agent_answer + all_complete만 낸다.
+    selectedAgents가 여러 명이어도 회상 답변은 '1개'만 낸다(중복 방지). socratic이어도 '진단:' 금지."""
+    from app.services import memory_recall_service as _mem
+    res = _mem.build_recall_answer(intent, extra, turns)
+    answer = res.text or "현재 전달된 이전 대화 범위에서는 해당 내용을 찾지 못했어."
+    logger.info("[MEMORY-TRACE] memoryBypassLLM=True memoryIntent=%s matchedCount=%d normalizedTurnCount=%d finalMode=%s",
+                intent.value, res.matched_count, len(turns), effective_mode)
+
+    first = agents[0] if agents else None
+    identity = identity_payload(first) if first else {}
+    agent_name = (getattr(first, "name", None) if first else None) or "기억 회상"
+    agent_id = ((first.agentId or f"agent-{first.id}") if first else None) or "memory-recall"
+
+    yield {
+        "event": "turn_start",
+        "data": {"type": "turn_start", "message": "이전 대화를 확인하고 있어요…",
+                 "phase": "FIRST_DRAFT", "visible": True},
+    }
+    yield {
+        "event": "agent_start",
+        "data": {"type": "agent_start", "agentIndex": 1, "agentName": agent_name,
+                 "agentId": agent_id, "phase": "FIRST_DRAFT", "visible": True, **identity},
+    }
+    entry = {
+        "type": "agent_answer", "agentIndex": 1, "agentName": agent_name, "agentId": agent_id,
+        "answer": answer, "content": answer, "displayOrder": 1, "displayDelayMs": 0,
+        "stage": 1, "phase": "FIRST_DRAFT", "visible": True, "status": "SUCCESS",
+        "memoryAnswer": True, "memoryIntent": intent.value,
+        "matchedCount": res.matched_count, "mode": effective_mode, **identity,
+    }
+    yield {"event": "agent_answer", "data": entry}
+    yield {
+        "event": "all_complete",
+        "data": {"type": "all_complete", "mode": effective_mode, "learningMode": effective_mode,
+                 "answers": [entry], "messages": [entry], "status": "COMPLETED",
+                 "phase": "ALL_COMPLETE", "visible": True, "memoryAnswer": True},
+    }
+
+
 def build_orchestrator_stream(
     request: MultiChatRequest,
     agents: List[AgentProfile],
@@ -1198,6 +1259,31 @@ def build_orchestrator_stream(
         )
     except Exception as _e:  # pragma: no cover - 계측은 본 흐름을 막지 않는다
         logger.warning("[MODE-TRACE] 계측 실패: %s", _e)
+
+    # ── [MEMORY-RECALL] previousAnswers 기반 결정론적 기억 회상(LLM 우회) ─────────
+    # 모든 모드(basic/socratic/debate/simulation) 공통, 최우선. "내가 처음 뭐라 질문함?" 류는
+    # LLM을 거치지 않고 previousAnswers 원문에서 직접 답한다. 못 찾으면 지어내지 않고 안내한다.
+    # 일반 질문("TCP가 뭐야")은 NORMAL로 분류돼 여기서 우회하지 않고 기존 경로로 내려간다.
+    try:
+        from app.services import memory_recall_service as _mem
+        _turns = _mem.normalize_previous_answers(request.previousAnswers)
+        _intent, _extra = _mem.classify_memory_intent(request.message)
+        _bypass = _mem.is_recall_intent(_intent)
+        logger.info(
+            "[MEMORY-TRACE] roomId=%s userId=%s rawMode=%s rawLearningMode=%s finalMode=%s "
+            "memoryIntent=%s previousAnswerCount=%d normalizedTurnCount=%d memoryBypassLLM=%s msg=%r",
+            getattr(request, "roomId", None) or getattr(request, "room_id", None),
+            getattr(request, "userId", None) or getattr(request, "user_id", None),
+            getattr(request, "mode", None), getattr(request, "learningMode", None),
+            effective_mode, _intent.value, len(request.previousAnswers or []),
+            len(_turns), _bypass, (request.message or "")[:80],
+        )
+        if _bypass:
+            yield from _run_memory_recall(
+                request, agents, effective_mode, _agent_identity_payload, _intent, _extra, _turns)
+            return
+    except Exception as _e:  # pragma: no cover - 회상 실패 시 기존 LLM 경로로 진행
+        logger.warning("[MEMORY-RECALL] 우회 실패, LLM 경로로 진행: %s", _e)
 
     # ── 온디맨드 정리(🧩) ──────────────────────────────────────────────────────
     # 사용자가 '정리/요약/3줄/핵심만'을 요청했고 직전 대화가 있으면, 새 토론을 다시 돌리지 않고
