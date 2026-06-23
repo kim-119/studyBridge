@@ -32,6 +32,7 @@ public class GroupStudyService {
     private final GroupStudyAttendanceRepository groupStudyAttendanceRepository;
     private final UserRepository userRepository;
     private final S3Service s3Service;
+    private final GroupRankingService rankingService;
 
     // 그룹스터디 생성. 방장이 자동 가입 처리됨
     @Transactional
@@ -298,7 +299,7 @@ public class GroupStudyService {
                             .photoUrl(photoUrl)
                             .major(member.getUser().getMajor())
                             .role(member.getRole())
-                            .points(member.getPoints())
+                            .points(rankingService.getPoints(groupId, member.getUser().getId()))
                             .joinedAt(member.getJoinedAt())
                             .recentAttendanceTime(recentAttendanceTime)
                             .recentStudyTimeSeconds(recentStudyTimeSeconds)
@@ -320,6 +321,8 @@ public class GroupStudyService {
         }
 
         groupStudyRepository.delete(groupStudy);
+        // Redis 랭킹 키 정리 — 내부에서 예외를 삼키므로 Redis 장애로 그룹 삭제가 실패하지 않는다.
+        rankingService.clearRanking(groupId);
         log.info("Group study deleted successfully. groupId={}, deletedBy={}", groupId, userId);
     }
 
@@ -329,6 +332,8 @@ public class GroupStudyService {
         GroupStudy groupStudy = groupStudyRepository.findById(groupId)
                 .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
         groupStudyRepository.delete(groupStudy);
+        // Redis 랭킹 키 정리 — 내부에서 예외를 삼키므로 Redis 장애로 그룹 삭제가 실패하지 않는다.
+        rankingService.clearRanking(groupId);
         log.info("Group study force-deleted successfully by admin. groupId={}", groupId);
     }
 
