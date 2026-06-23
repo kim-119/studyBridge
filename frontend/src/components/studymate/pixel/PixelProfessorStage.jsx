@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { PROFESSORS, getStateAnim, ACTIVE_VISUAL_STATES, ROLE_TO_AGENT_INDEX, getProfessorSpriteSheetForAgent } from './professorSprites';
 import PixelProfessorSprite from './PixelProfessorSprite';
 import useAnchoredMenu from './useAnchoredMenu';
@@ -6,6 +6,16 @@ import ProfessorActionMenu from './ProfessorActionMenu';
 import ProfessorSpeechBubble from './ProfessorSpeechBubble';
 import MinuteRecapBubble from './MinuteRecapBubble';
 import './pixelProfessor.css';
+
+// 말풍선 kind → 전체보기 패널 헤더에 표시할 답변 종류 라벨.
+const bubbleKindLabel = (kind) => ({
+  answer: '답변',
+  feedback: '피드백',
+  rebuttal: '반박',
+  evidence: '근거 보강',
+  thinking: '생각 중',
+  done: '요약',
+}[kind] || '답변');
 
 // 교수님들과 대화 stage. classroom 배경 위에 교수 sprite 3명을 actor로 렌더링한다.
 //   · 답변 배열에 절대 push하지 않는 visual consumer. visualStates(시각 상태)만 소비.
@@ -45,6 +55,17 @@ export default function PixelProfessorStage({
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [selectedRole, onSelectRole]);
+
+  // 말풍선 클릭 → 전체 답변 상세 패널(presentation only, 채팅 append 없음).
+  const [expandedBubble, setExpandedBubble] = useState(null);
+
+  // ESC → 전체 답변 패널 닫기(우선순위상 selectedRole ESC보다 위. 둘 중 열린 쪽만 동작).
+  useEffect(() => {
+    if (!expandedBubble) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setExpandedBubble(null); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [expandedBubble]);
 
   const professorActors = PROFESSORS.map((p) => {
     const agentIndex = ROLE_TO_AGENT_INDEX[p.role];
@@ -133,10 +154,54 @@ export default function PixelProfessorStage({
                 className="prof-bubble-anchor"
                 style={{ left: `${p.pos.left}%`, bottom: `${p.pos.bottom + 200}px` }}
               >
-                <ProfessorSpeechBubble name={b.agentName || p.displayName || p.name} text={b.text} side={p.side} kind={b.kind} targetRole={b.targetRole} />
+                <ProfessorSpeechBubble
+                  name={b.agentName || p.displayName || p.name}
+                  text={b.text}
+                  fullText={b.fullText}
+                  side={p.side}
+                  kind={b.kind}
+                  targetRole={b.targetRole}
+                  onExpand={(detail) => setExpandedBubble({ ...detail, name: b.agentName || p.displayName || p.name })}
+                />
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* 전체 답변 상세 패널: stage 내부 absolute overlay(레이아웃을 밀지 않음).
+          overlay 우선순위 최상위 → backdrop click / 닫기 버튼 / ESC 로 닫는다. */}
+      {expandedBubble && (
+        <div
+          className="pixel-bubble-detail-backdrop"
+          onClick={() => setExpandedBubble(null)}
+        >
+          <article
+            className="pixel-bubble-detail-panel"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${expandedBubble.name || '교수'} 전체 답변`}
+          >
+            <header className="pixel-bubble-detail-header">
+              <div className="pixel-bubble-detail-title">
+                <strong>{expandedBubble.name || '교수'}</strong>
+                <span className={`pixel-bubble-detail-kind kind-${expandedBubble.kind || 'answer'}`}>
+                  {bubbleKindLabel(expandedBubble.kind)}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="pixel-bubble-detail-close"
+                onClick={() => setExpandedBubble(null)}
+              >
+                닫기
+              </button>
+            </header>
+            <div className="pixel-bubble-detail-body">
+              {expandedBubble.fullText || expandedBubble.text}
+            </div>
+          </article>
         </div>
       )}
 
@@ -163,7 +228,7 @@ export default function PixelProfessorStage({
 
     {/* recap 요약: overlay 우선순위상 stage 내부 floating 금지 → 액션 메뉴가 닫혀 있을 때만,
         stage 바깥 하단에 접힌 chip 형태로 배치한다(교수/책상/말풍선을 가리지 않음). */}
-    {!selectedRole && (
+    {!selectedRole && !expandedBubble && (
       <div className="pixel-recap-dock">
         <MinuteRecapBubble recap={recap} agents={agents} onDismiss={onRecapDismiss} />
       </div>

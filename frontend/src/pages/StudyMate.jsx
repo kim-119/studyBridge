@@ -3363,6 +3363,8 @@ export default function StudyMate() {
               if (bubbleRole) {
                 setProfBubble(bubbleRole, {
                   text: makeBubbleText(d.content || d.answer || ''),
+                  // 전체보기 패널용 원문(truncate 금지). preview(text)는 말풍선용.
+                  fullText: String(d.content || d.answer || '').trim(),
                   kind: 'answer',
                   agentName: d.agentName,
                 });
