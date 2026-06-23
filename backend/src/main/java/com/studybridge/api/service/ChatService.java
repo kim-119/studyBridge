@@ -280,6 +280,30 @@ public class ChatService {
                 if (request.getTargetAgentId() != null && !request.getTargetAgentId().isBlank()) {
                         requestBody.put("targetAgentId", request.getTargetAgentId());
                 }
+                // "이 교수에게 질문"(single target) 정합 필드 — 값이 있을 때만 ai07로 패스스루.
+                //  ai07는 targetAgentId만으로도 1명 필터가 되지만, 이름 기반 멘션 등 agentId가 불안정한
+                //  경우를 위해 scope/role/index/name을 함께 실어 보낸다(미지원 필드는 ai07에서 무시됨).
+                if (request.getAskScope() != null && !request.getAskScope().isBlank()) {
+                        requestBody.put("askScope", request.getAskScope());
+                }
+                if (request.getTargetProfessorRole() != null && !request.getTargetProfessorRole().isBlank()) {
+                        requestBody.put("targetProfessorRole", request.getTargetProfessorRole());
+                }
+                if (request.getTargetAgentIndex() != null) {
+                        requestBody.put("targetAgentIndex", request.getTargetAgentIndex());
+                }
+                if (request.getTargetAgentKey() != null && !request.getTargetAgentKey().isBlank()) {
+                        requestBody.put("targetAgentKey", request.getTargetAgentKey());
+                }
+                if (request.getTargetAgentName() != null && !request.getTargetAgentName().isBlank()) {
+                        requestBody.put("targetAgentName", request.getTargetAgentName());
+                }
+                if (request.getProfessorSelectedTarget() != null && !request.getProfessorSelectedTarget().isBlank()) {
+                        requestBody.put("professorSelectedTarget", request.getProfessorSelectedTarget());
+                }
+                if (request.getSelectedProfessorRole() != null && !request.getSelectedProfessorRole().isBlank()) {
+                        requestBody.put("selectedProfessorRole", request.getSelectedProfessorRole());
+                }
                 // ── 멀티턴 대화 상태 echo 패스스루(토론 논제/상황극 선택 진행 유지) ──
                 //  값이 있을 때만 실어 보낸다. 없으면(기본/첫 턴) 추가하지 않아 기존 동작과 동일하다.
                 //  이 echo가 빠지면 ai07가 매 턴 TOPIC_SELECTION/선택지 제시로 되돌아가 같은 논제·선택지를 반복한다.

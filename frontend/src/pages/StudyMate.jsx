@@ -2713,6 +2713,7 @@ export default function StudyMate() {
     let targetAgentId = null;
     let targetAgentIndex = null;
     let targetAgentKey = null;
+    let targetAgentName = null;
     let targetProfessorRole = null;
     if (!/@모두/.test(inputMsg)) {
       const roomAgents = selectedAgent?.agents || [];
@@ -2722,6 +2723,7 @@ export default function StudyMate() {
         askScope = 'single';
         targetAgentId = mentioned.agentId ?? mentioned.id ?? null;
         targetAgentIndex = mentionedIdx;
+        targetAgentName = mentioned.name || null;
         targetProfessorRole = roleForAgentIndex(mentionedIdx);
         targetAgentKey = ROLE_TO_TARGET_KEY[targetProfessorRole] || null;
         // 백엔드 호환: targetAgentId(이미 honored) + 명시 single-target 필드(forward-compat; 미지원 필드는 무시됨).
@@ -2735,19 +2737,35 @@ export default function StudyMate() {
         turnExtras.selectedProfessorRole = targetProfessorRole;
       }
     }
-    // single scope일 때 "이 이벤트가 대상 교수의 것인가". agentId 우선, 없으면 index/role 폴백.
-    //   식별 정보가 전혀 없으면(단일 대상의 유일 답변일 수 있어) 보존(append), 양성으로 다른 식별자면 드롭.
+    // single scope일 때 "이 이벤트가 대상 교수의 것인가".
+    //   · 양성 일치 우선: 이름 > agentId > agentIndex(0-based) > role→key.
+    //     멘션이 이름 기반이라 agentName이 가장 신뢰도 높다(백엔드가 agentId를 안 줘도 식별됨).
+    //   · 위에서 못 맞춘 채로 식별자가 하나라도 있으면 비대상 → 드롭(single은 1명만 답변).
+    //   · 식별자가 전혀 없으면(단일 대상의 유일 답변일 수 있어) 보존.
+    //   ⚠ 과거 index+1 허용은 인접 교수 답변까지 통과시키던 버그라 제거함.
+    const normName = (s) => String(s ?? '').trim();
     const isAnswerForTarget = (d = {}, patch = {}) => {
       if (askScope !== 'single') return true;
       const evId = d.agentId ?? patch.agentId;
       const evIdx = d.agentIndex ?? patch.agentIndex;
       const evRole = d.agentRole || d.role || patch.role;
+      const evName = d.agentName || d.agent_name || patch.agentName;
+      if (targetAgentName && evName && normName(evName) === normName(targetAgentName)) return true;
       if (targetAgentId != null && evId != null && String(evId) === String(targetAgentId)) return true;
-      if (Number.isInteger(targetAgentIndex) && evIdx != null
-        && (Number(evIdx) === targetAgentIndex || Number(evIdx) === targetAgentIndex + 1)) return true;
+      if (Number.isInteger(targetAgentIndex) && evIdx != null && Number(evIdx) === targetAgentIndex) return true;
       if (targetAgentKey && evRole && ROLE_TO_TARGET_KEY[evRole] === targetAgentKey) return true;
-      if (evId == null && evIdx == null && !evRole) return true;
-      return false;
+      if (evName || evId != null || evIdx != null || evRole) return false;
+      return true;
+    };
+    // single scope에서 answers/feedbacks 배열을 대상 교수 것만 남긴다(default 1차/2차/3차 stage_complete 경로 방어).
+    const scopeAnswers = (arr) => {
+      if (askScope !== 'single' || !Array.isArray(arr)) return arr || [];
+      return arr.filter((a, i) => isAnswerForTarget({
+        agentIndex: a?.agentIndex ?? i,
+        agentId: a?.agentId,
+        agentName: a?.agentName || a?.agent_name,
+        role: a?.role || a?.agentRole,
+      }));
     };
     // 토론 모드: 논제/구조 설정을 함께 전송한다(프론트 → Spring → FastAPI).
     if (activeLearningMode === 'debate') turnExtras.debateConfig = selectedAgent?.debateConfig || debateConfig;
@@ -3016,14 +3034,21 @@ export default function StudyMate() {
             return;
           }
           // 5) processSteps / stages → 1차/2차/3차 단계 말풍선
-          const ps = (d && d.processSteps) || fullPS;
+          //    single scope면 백엔드 processSteps(전체 3명)도 대상 교수 것만 남긴다.
+          let ps = (d && d.processSteps) || fullPS;
+          if (askScope === 'single' && ps && ps !== fullPS) {
+            ps = {
+              ...ps,
+              initialAnswers: scopeAnswers(ps.initialAnswers),
+              validatedAnswers: scopeAnswers(ps.validatedAnswers),
+              peerFeedback: scopeAnswers(ps.peerFeedback),
+            };
+          }
           const bubbles = buildStageBubbles(ps, userMsg.id, ts, { showInternal: isInternalVisibleMode(respMode || activeLearningMode) });
           if (bubbles.length) { setTurnAiMessages(bubbles); return; }
           // 6) 일반 answers/replies 카드 — single scope면 비대상 교수 답변은 카드로 만들지 않는다.
           const answers = (d && (d.answers || d.replies)) || [];
-          const scopedAnswers = (askScope === 'single')
-            ? answers.filter((a, i) => isAnswerForTarget({ agentIndex: a.agentIndex ?? i, agentId: a.agentId, role: a.role || a.agentRole }))
-            : answers;
+          const scopedAnswers = scopeAnswers(answers);
           if (Array.isArray(scopedAnswers) && scopedAnswers.length) {
             setTurnAiMessages(sortByAgentOrder(scopedAnswers).map((a, i) => {
               const c = coerceAgentText(a.answer || a.content || '', { requestId: d?.requestId || requestId, roomId: agentId, agentId: a.agentId, stage: 'all_complete', idx: i });
@@ -3253,20 +3278,26 @@ export default function StudyMate() {
               if (!d) return;
               // 백엔드가 visible=false로 표시한 내부 단계(2차 검증/3차 피드백)는 누적은 하되,
               //  buildStreamAiMsgs(showInternal)에서 기본 채팅이면 렌더하지 않는다.
-              if (d.stage === 1) fullPS.initialAnswers = sortByAgentOrder(d.answers || []);
-              else if (d.stage === 2) fullPS.validatedAnswers = sortByAgentOrder(d.answers || []);
+              // single scope(이 교수에게 질문): 백엔드가 3명 답변을 내려도 대상 교수 답변만 카드로 만든다.
+              if (d.stage === 1) fullPS.initialAnswers = sortByAgentOrder(scopeAnswers(d.answers));
+              else if (d.stage === 2) fullPS.validatedAnswers = sortByAgentOrder(scopeAnswers(d.answers));
               else if (d.stage === 3) {
-                fullPS.peerFeedback = sortByAgentOrder(d.feedbacks || []);
+                fullPS.peerFeedback = sortByAgentOrder(scopeAnswers(d.feedbacks));
                 fullPS.personalityValidationSummary = d.personalityValidationSummary || [];
               } else {
                 // unknown stage fallback: 알 수 없는 stage 값이어도 UI가 죽지 않게 처리한다.
                 // 답변이 실려 있으면 유실하지 않도록 1차(노출) 영역에 누적한다.
                 console.warn('[StudyMate] unknown stage', { stage: d.stage, stageType: d.stageType, requestId: d.requestId || requestId, roomId: agentId });
-                if (Array.isArray(d.answers) && d.answers.length) fullPS.initialAnswers = sortByAgentOrder(d.answers);
-                else if (Array.isArray(d.feedbacks) && d.feedbacks.length) fullPS.peerFeedback = sortByAgentOrder(d.feedbacks);
+                if (Array.isArray(d.answers) && d.answers.length) fullPS.initialAnswers = sortByAgentOrder(scopeAnswers(d.answers));
+                else if (Array.isArray(d.feedbacks) && d.feedbacks.length) fullPS.peerFeedback = sortByAgentOrder(scopeAnswers(d.feedbacks));
               }
-              // 시각: 1차=각자 답변, 2차=이론 교수 검증, 3차=전체 피어 피드백.
-              if (d.stage === 1) (d.answers || []).forEach((a, i) => visFor(a?.agentIndex ?? i, 'answering'));
+              // 시각: 1차=각자 답변(single이면 대상만 answering, 나머지는 보조 모션 validating),
+              //   2차=이론 교수 검증, 3차=전체 피어 피드백.
+              if (d.stage === 1) (d.answers || []).forEach((a, i) => {
+                const idx = a?.agentIndex ?? i;
+                const targeted = isAnswerForTarget({ agentIndex: idx, agentId: a?.agentId, agentName: a?.agentName || a?.agent_name, role: a?.role || a?.agentRole });
+                visFor(idx, (askScope === 'single' && !targeted) ? 'validating' : 'answering');
+              });
               else if (d.stage === 2) visFor(0, 'validating');
               else if (d.stage === 3) visAll('peer_feedback');
               // 타임라인: 2차(논리 검증)·3차(상호 피드백)의 실제 내용을 모드 라벨로 추가(내용은 백엔드 값).

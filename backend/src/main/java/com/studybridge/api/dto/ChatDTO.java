@@ -73,6 +73,16 @@ public class ChatDTO {
         private Boolean enableHallucinationValidation;
         // 특정 에이전트 지칭 (@에이전트이름 또는 N번만 답해줘)
         private String targetAgentId;
+        // "이 교수에게 질문"(single target) 정합 필드 — ai07가 targetAgentId로 이미 1명 필터하지만,
+        //  agentId 식별이 불안정한 경우(이름 기반 멘션 등)를 위한 forward-compat 패스스루.
+        //  ai07는 미지원 필드를 무시하므로 추가만으로 기존 동작을 깨지 않는다(프론트는 이미 방어 필터링).
+        private String askScope;             // single | all
+        private String targetProfessorRole;  // theory | book | ai
+        private Integer targetAgentIndex;    // 0-based
+        private String targetAgentKey;       // agent1 | agent2 | agent3
+        private String targetAgentName;      // 멘션된 교수 이름
+        private String professorSelectedTarget; // = targetAgentKey (호환)
+        private String selectedProfessorRole;   // = targetProfessorRole (호환)
         // 그룹스터디 AI 봇(요약/퀴즈/검색) 필드
         private String rawMessage;      // 슬래시 명령어 포함 원본 메시지 (서버 2차 파싱용)
         private String botType;         // summary_bot | quiz_bot | search_bot
