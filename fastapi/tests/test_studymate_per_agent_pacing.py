@@ -42,6 +42,8 @@ def test_personality_core_directive_injected(label, keyword):
 
 
 def test_stream_event_order_and_counts(monkeypatch):
+    # 레거시 1인1답(per-agent) 계약 검증 — 확률적 다중답변 플래너는 끄고(롤백 경로) 테스트한다.
+    monkeypatch.setenv("STUDYMATE_DISCUSSION_PLANNER", "off")
     monkeypatch.setattr("app.services.ollama_client.ask_ollama", lambda **k: "테스트 답변")
     monkeypatch.setattr(orch, "_min_gap_seconds", lambda: 0.0)
 
@@ -141,6 +143,8 @@ def test_persona_custom_instruction_shapes_format():
 
 
 def test_feedback_round_flag(monkeypatch):
+    # 레거시 2라운드 피드백 플래그 검증 — 확률적 다중답변 플래너는 끄고 테스트한다.
+    monkeypatch.setenv("STUDYMATE_DISCUSSION_PLANNER", "off")
     monkeypatch.setattr("app.services.ollama_client.ask_ollama", lambda **k: "피드백 답")
     monkeypatch.setattr(orch, "_min_gap_seconds", lambda: 0.0)
     req = MultiChatRequest(message="gRPC가 뭐고 왜 쓰나 설명해줘", mode="basic", learningMode="basic", agents=_agents())

@@ -725,6 +725,243 @@ def _generate_round2_feedback(agent: AgentProfile, request: MultiChatRequest, mo
     return (raw or "").strip()
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 확률적 다중답변 피드백(기본개념모드 전용) — studymate_discussion_planner 배선
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(name, str(default))).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _discussion_planner_enabled(mode: str, agents: List[AgentProfile], social: bool) -> bool:
+    """기본개념모드 + 다중에이전트 + 비-잡담일 때만 확률적 다중답변 플래너를 쓴다.
+    env STUDYMATE_DISCUSSION_PLANNER=off 면 기존 1인1답으로 즉시 롤백."""
+    if social or not agents:
+        return False
+    if (mode or "").strip().lower() not in ("basic", "default", ""):
+        return False
+    val = (os.getenv("STUDYMATE_DISCUSSION_PLANNER", "on") or "on").strip().lower()
+    return val not in ("0", "false", "off", "no")
+
+
+def _discussion_seed() -> Optional[int]:
+    raw = (os.getenv("STUDYMATE_DISCUSSION_SEED", "") or "").strip()
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    return None
+
+
+def _discussion_band() -> tuple:
+    """답변(DIRECT+REACTION) 수의 [min,max]. WRAP은 이 밴드와 별개로 항상 1개 추가된다."""
+    lo = max(1, _env_int("STUDYMATE_DISCUSSION_MIN", 3))
+    hi = max(lo, _env_int("STUDYMATE_DISCUSSION_MAX", 7))
+    return lo, hi
+
+
+def _followup_suggestions() -> List[str]:
+    """대화 끝의 '사용자 재개입 고리'(요청 4번). 주제어 하드코딩 없이 일반 행동 택만."""
+    return ["더 자세히 파고들기", "다른 의견 더 듣기", "쉬운 예시로 다시 설명"]
+
+
+def _generate_reaction(agent: AgentProfile, request: MultiChatRequest, mode: str,
+                       target_entry: Optional[Dict[str, Any]]) -> str:
+    """한 에이전트가 '특정 대상' 답변에 반박/보완(REACTION). 결국 사용자에게 설명하는 톤을 못박는다."""
+    from app.services.ollama_client import ask_ollama
+    from app.services.personality_prompt_builder import (
+        build_personality_prompt, build_persona_directive, get_generation_params,
+    )
+
+    label = _agent_personality_label(agent)
+    custom = _agent_custom_instruction(agent)
+    persona = build_personality_prompt(label, custom)
+    target_text = str((target_entry or {}).get("answer", ""))[:300]
+    sys = (
+        f"[역할] 너는 '{agent.name or 'AI'}'(이)다.\n{persona}\n\n"
+        "[상호 피드백] 같은 방의 다른 학습메이트가 사용자 질문에 먼저 답했다. 그 답에서 가장 중요한 "
+        "보충 또는 반박 '한 가지'만 네 성격으로 2~3문장으로 말하라.\n"
+        "- ★ 다른 메이트에게 시비 거는 게 아니라, 결국 '사용자'에게 더 정확히 이해시키는 게 목적이다. 사용자에게 말하듯 설명하라.\n"
+        "- 다른 메이트의 이름/'OOO:' 머리표를 쓰지 말고 논점 중심으로. 앞 답을 복붙·재서술하지 마라.\n"
+        "- 조롱·비아냥·인신공격 금지. 한국어로, 머리말/꼬리말/JSON 없이 본문만."
+    )
+    usr = (
+        f"[사용자 질문] {request.message}\n\n[먼저 나온 답변]\n{target_text}\n\n"
+        "→ 위에 대해 네가 더할 보충 또는 반박 '한 가지'만 짧게, 사용자에게 설명하듯.\n\n"
+        + build_persona_directive(label, custom)
+    )
+    gen = get_generation_params(label)
+    raw = ask_ollama(
+        system_prompt=sys, user_prompt=usr,
+        max_tokens=min(request.maxTokens or 512, 512),
+        temperature=gen.get("temperature", 0.5), think=False,
+    )
+    return (raw or "").strip()
+
+
+def _generate_wrap(agent: AgentProfile, request: MultiChatRequest, mode: str,
+                   all_answers: List[Dict[str, Any]]) -> str:
+    """대화 마지막 '사용자용 정리'(WRAP, 요청 3번): 한 줄 결론 + 다음 질문 제안. 공을 사용자에게 넘긴다."""
+    from app.services.ollama_client import ask_ollama
+    from app.services.personality_prompt_builder import build_personality_prompt, get_generation_params
+
+    label = _agent_personality_label(agent)
+    persona = build_personality_prompt(label, _agent_custom_instruction(agent))
+    points = "\n".join(f"- {str(a.get('answer', ''))[:160]}" for a in all_answers[-4:])
+    sys = (
+        f"[역할] 너는 '{agent.name or 'AI'}'(이)다.\n{persona}\n\n"
+        "[마무리 정리] 방금 여러 학습메이트가 사용자 질문에 답하고 서로 보충했다. 이제 사용자를 위해 마무리한다.\n"
+        "- 핵심을 '한 줄'로 결론짓고, 사용자가 다음에 물어보면 좋을 질문 하나를 제안하라(총 2~3문장).\n"
+        "- ★ 사용자에게 직접 말하라. 공은 다시 사용자에게 넘긴다.\n"
+        "- 한국어로, 머리말/꼬리말/JSON 없이 본문만."
+    )
+    usr = (
+        f"[사용자 질문] {request.message}\n\n[지금까지 나온 핵심들]\n{points}\n\n"
+        "→ 한 줄 결론 + 사용자에게 던질 다음 질문 제안 하나."
+    )
+    gen = get_generation_params(label)
+    raw = ask_ollama(
+        system_prompt=sys, user_prompt=usr,
+        max_tokens=min(request.maxTokens or 384, 384),
+        temperature=gen.get("temperature", 0.5), think=False,
+    )
+    return (raw or "").strip()
+
+
+def _run_discussion_planner_stream(
+    request: MultiChatRequest,
+    agents: List[AgentProfile],
+    mode: str,
+    wiki_context: str,
+    context: str,
+    min_gap: float,
+    identity_fn,
+) -> Generator[Dict[str, Any], None, None]:
+    """
+    확률적 다중답변 피드백 스트림(기본개념모드).
+    plan_discussion이 만든 발화 계획대로:
+      turn_start → (DIRECT_ANSWER ×N + REACTION ×k, 총 답변 3~7) → WRAP → all_complete
+    """
+    from app.services.studymate_discussion_planner import (
+        ACT_DIRECT_ANSWER, ACT_REACTION, ACT_WRAP, plan_discussion,
+    )
+
+    lo, hi = _discussion_band()
+    # 플래너는 '위치 인덱스'(항상 유일)를 키로 쓴다. agentId가 비어있거나 중복돼도 안전하다.
+    # 실제 agentId/agentName/replyTo는 이벤트 payload에서 인덱스→에이전트 매핑으로 채운다.
+    order_keys: List[str] = [str(i) for i in range(len(agents))]
+    real_id_of: Dict[str, str] = {
+        str(i): (agent.agentId or f"agent-{agent.id if agent.id is not None else i}")
+        for i, agent in enumerate(agents)
+    }
+
+    plan = plan_discussion(order_keys, seed=_discussion_seed(), min_acts=lo, max_acts=hi)
+    direct_total = max(1, sum(1 for a in plan if a.act_type == ACT_DIRECT_ANSWER))
+
+    yield {
+        "event": "turn_start",
+        "data": {
+            "type": "turn_start",
+            "message": "에이전트들이 의견을 주고받으며 답을 준비하고 있습니다...",
+            "phase": "FIRST_DRAFT",
+            "visible": True,
+        },
+    }
+
+    _phase = {ACT_DIRECT_ANSWER: "FIRST_DRAFT", ACT_REACTION: "FEEDBACK", ACT_WRAP: "WRAP_UP"}
+    _stage = {ACT_DIRECT_ANSWER: 1, ACT_REACTION: 2, ACT_WRAP: 3}
+
+    all_answers: List[Dict[str, Any]] = []
+    answer_by_id: Dict[str, Dict[str, Any]] = {}
+    direct_pos = 0
+    last_i = len(plan) - 1
+
+    for i, act in enumerate(plan):
+        t0 = time.time()
+        speaker_idx = int(act.speaker_id)
+        agent = agents[speaker_idx]
+        agent_id = real_id_of[act.speaker_id]
+        agent_name = agent.name or "AI"
+        agent_index = speaker_idx + 1
+        identity = identity_fn(agent)
+        phase = _phase.get(act.act_type, "FIRST_DRAFT")
+        reply_to = real_id_of.get(act.target_id) if act.act_type == ACT_REACTION else None
+
+        yield {
+            "event": "agent_start",
+            "data": {
+                "type": "agent_start",
+                "agentIndex": agent_index,
+                "agentName": agent_name,
+                "agentId": agent_id,
+                "phase": phase,
+                "actType": act.act_type,
+                "replyTo": reply_to,
+                "visible": True,
+                **identity,
+            },
+        }
+
+        try:
+            if act.act_type == ACT_DIRECT_ANSWER:
+                answer = _generate_single_agent_answer(
+                    agent, request, mode, wiki_context, context, agents, None,
+                    social=False, position=direct_pos, total=direct_total,
+                )
+                direct_pos += 1
+            elif act.act_type == ACT_REACTION:
+                target_entry = answer_by_id.get(act.target_id)
+                answer = _generate_reaction(agent, request, mode, target_entry)
+            else:  # WRAP
+                answer = _generate_wrap(agent, request, mode, all_answers)
+        except Exception as e:
+            logger.error("[Orchestrator] planner act=%s 에이전트 %s 실패: %s", act.act_type, agent_name, e)
+            answer = "(이 발화 생성 중 오류가 발생했어요.)"
+
+        display_order = len(all_answers) + 1
+        data = {
+            "type": "agent_answer",
+            "agentIndex": agent_index,
+            "agentName": agent_name,
+            "agentId": agent_id,
+            "answer": answer,
+            "displayOrder": display_order,
+            "stage": _stage.get(act.act_type, 1),
+            "phase": phase,
+            "actType": act.act_type,
+            "replyTo": reply_to,
+            "visible": True,
+            "status": "SUCCESS",
+            **identity,
+        }
+        yield {"event": "agent_answer", "data": data}
+
+        entry = {k: v for k, v in data.items() if k != "type"}
+        all_answers.append(entry)
+        if act.act_type == ACT_DIRECT_ANSWER:
+            answer_by_id[act.speaker_id] = entry
+
+        if i < last_i:
+            remaining = min_gap - (time.time() - t0)
+            if remaining > 0:
+                time.sleep(remaining)
+
+    yield {
+        "event": "all_complete",
+        "data": {
+            "type": "all_complete",
+            "mode": mode,
+            "learningMode": mode,
+            "answers": all_answers,
+            "messages": all_answers,
+            "status": "COMPLETED",
+            "phase": "ALL_COMPLETE",
+            "followUpSuggestions": _followup_suggestions(),
+            "visible": True,
+        },
+    }
+
+
 def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> MultiChatResponse:
     """
     에이전트마다 Qwen 14B를 순차 1회씩 호출(per-agent)해 성격이 도드라지는 답변을 만든다.
@@ -863,6 +1100,16 @@ def build_orchestrator_stream(
                     return
         except Exception as e:  # pragma: no cover - 방어: 무조건 기존 경로로 폴백
             logger.warning("[Orchestrator] dialogue-act 게이트 건너뜀: %s", e)
+
+    # ── 확률적 다중답변 피드백(기본개념모드 전용) ──────────────────────────────
+    # 에이전트 3명이라도 답변이 정확히 3개가 아니라 확률적으로 3~7개 + 사용자용 정리(WRAP).
+    # env STUDYMATE_DISCUSSION_PLANNER=off 면 아래 기존 1인1답 경로로 폴백.
+    if _discussion_planner_enabled(effective_mode, agents, social):
+        logger.info("[Orchestrator] discussion planner ON mode=%s agents=%d", effective_mode, len(agents))
+        yield from _run_discussion_planner_stream(
+            request, agents, effective_mode, wiki_context, context, min_gap, _agent_identity_payload,
+        )
+        return
 
     yield {
         "event": "turn_start",
