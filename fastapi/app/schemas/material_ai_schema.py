@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 
 class MaterialAnalyzeRequest(BaseModel):
     analyze_type: str = Field(..., description="summary|quiz|roadmap|document_analysis|question_answer")
+    # 자료 타입. PLANNER/ROADMAP 등 구조화 자료는 PDF 분석 대상이 아니다(있으면 가드에 사용).
+    material_type: Optional[str] = None
     text: Optional[str] = None
     document_title: Optional[str] = None
     question: Optional[str] = None

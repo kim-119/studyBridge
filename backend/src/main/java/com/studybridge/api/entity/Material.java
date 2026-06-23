@@ -57,6 +57,20 @@ public class Material {
     @Column(name = "folder_id")
     private Long folderId;
 
+    /**
+     * 구조화 자료(PLANNER 등)의 원본 식별자. PLANNER 타입에서 원본 planners.planner_id 를 가리킨다.
+     * PDF/문서 자료는 null. (ddl-auto 로 nullable 컬럼 자동 추가)
+     */
+    @Column(name = "planner_id")
+    private Long plannerId;
+
+    /**
+     * 구조화 자료(PLANNER/ROADMAP 등)의 스냅샷 JSON. PDF 로 변환하지 않고 데이터 원형 그대로 보관한다.
+     * PDF/문서 자료는 null. (ddl-auto 로 nullable 컬럼 자동 추가)
+     */
+    @Column(name = "content_json", columnDefinition = "TEXT")
+    private String contentJson;
+
     @Column(columnDefinition = "TEXT")
     private String extractedText;
 

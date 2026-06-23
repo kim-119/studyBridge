@@ -80,6 +80,14 @@ async def analyze_material(
             detail=f"analyze_type은 {ALLOWED_TYPES} 중 하나여야 합니다.",
         )
 
+    # 플래너/로드맵은 PDF 가 아니라 구조화 데이터다 — PDF 분석 파이프라인 진입 차단.
+    if (request.material_type or "").strip().upper() in {"PLANNER", "ROADMAP", "PLAN"}:
+        raise HTTPException(
+            status_code=400,
+            detail="플래너/로드맵은 구조화된 데이터이며 PDF 자료가 아닙니다. "
+                   "별도의 구조화 분석 경로를 사용하세요.",
+        )
+
     from app.services.material_ai_manager import (
         summarize_document,
         generate_quiz,

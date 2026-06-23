@@ -43,6 +43,10 @@ public class MaterialDTO {
     private String keywords;
     private Long folderId;
 
+    // 구조화 자료(PLANNER/ROADMAP) — PDF 가 아니라 데이터 원형으로 보관/표시한다.
+    private Long plannerId;
+    private String contentJson;
+
     // 학습일지
     private java.time.LocalDate studyDate;
     private String learningContent;

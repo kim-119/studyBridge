@@ -324,7 +324,8 @@ public class MaterialService {
 
     private MaterialDTO convertToDTO(Material material) {
         String presignedUrl = null;
-        if (material.getS3FileUrl() != null && !material.getS3FileUrl().isBlank()) {
+        // 구조화 자료(PLANNER 등)는 PDF 파일이 없으므로 presigned URL 을 만들지 않는다.
+        if (!isStructured(material) && material.getS3FileUrl() != null && !material.getS3FileUrl().isBlank()) {
             try {
                 presignedUrl = s3Service.getPresignedUrl(material.getS3FileUrl(), material.getOriginalFileName());
             } catch (Exception e) {
@@ -332,40 +333,36 @@ public class MaterialService {
                 log.warn("S3 presignedUrl 생성 실패 materialId={}: {}", material.getMaterialId(), e.getMessage());
             }
         }
-        return MaterialDTO.builder()
-                .materialId(material.getMaterialId())
-                .title(material.getTitle())
-                .materialType(material.getMaterialType())
-                .keywords(material.getKeywords())
-                .folderId(material.getFolderId())
-                .studyDate(material.getStudyDate())
-                .learningContent(material.getLearningContent())
-                .nextPlan(material.getNextPlan())
-                .originalFileName(material.getOriginalFileName())
-                .fileSize(material.getFileSize())
-                .extractionStatus(material.getExtractionStatus())
-                .s3PresignedUrl(presignedUrl)
-                .uploadedAt(material.getUploadedAt())
-                .build();
+        return baseDTO(material).s3PresignedUrl(presignedUrl).build();
     }
 
     // S3 없이 기본 정보만 반환 (fallback)
     private MaterialDTO convertToDTOWithoutS3(Material material) {
+        return baseDTO(material).s3PresignedUrl(null).build();
+    }
+
+    /** PDF/구조화 공통 필드 매핑. 구조화 자료(PLANNER)는 plannerId/contentJson 을 함께 노출한다. */
+    private MaterialDTO.MaterialDTOBuilder baseDTO(Material material) {
         return MaterialDTO.builder()
                 .materialId(material.getMaterialId())
                 .title(material.getTitle())
                 .materialType(material.getMaterialType())
                 .keywords(material.getKeywords())
                 .folderId(material.getFolderId())
+                .plannerId(material.getPlannerId())
+                .contentJson(material.getContentJson())
                 .studyDate(material.getStudyDate())
                 .learningContent(material.getLearningContent())
                 .nextPlan(material.getNextPlan())
                 .originalFileName(material.getOriginalFileName())
                 .fileSize(material.getFileSize())
                 .extractionStatus(material.getExtractionStatus())
-                .s3PresignedUrl(null)
-                .uploadedAt(material.getUploadedAt())
-                .build();
+                .uploadedAt(material.getUploadedAt());
+    }
+
+    /** PLANNER 등 PDF 가 아닌 구조화 자료 여부. */
+    private boolean isStructured(Material material) {
+        return material.getMaterialType() == MaterialType.PLANNER;
     }
 
     private String generatePresignedUrl(String s3Key) {

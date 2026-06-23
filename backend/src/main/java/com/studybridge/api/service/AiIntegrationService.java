@@ -137,6 +137,17 @@ public class AiIntegrationService {
                 return material;
         }
 
+        /**
+         * PDF 텍스트 기반 AI 기능(요약/퀴즈/로드맵 등)은 PDF·문서 자료만 허용한다.
+         * 플래너(PLANNER)는 구조화된 로드맵 데이터이므로 PDF 추출/분석 파이프라인으로 들어가면 안 된다.
+         */
+        private void assertPdfAnalyzable(Material material, String feature) {
+                if (material != null && material.getMaterialType() == MaterialType.PLANNER) {
+                        throw new IllegalArgumentException(
+                                "플래너는 구조화된 로드맵 데이터입니다. PDF " + feature + " 기능은 사용할 수 없습니다.");
+                }
+        }
+
         private String getTextToAnalyze(Material material) {
                 if (material == null) {
                         throw new IllegalArgumentException("자료 정보가 없습니다.");
@@ -187,6 +198,7 @@ public class AiIntegrationService {
         @Transactional
         public SummaryDTO getSummary(Long userId, Long materialId) {
                 Material material = getMaterialSafely(userId, materialId);
+                assertPdfAnalyzable(material, "요약");
                 return summaryRepository.findByMaterial_MaterialId(materialId)
                                 .map(summary -> isSummaryUsable(summary) ? summaryDtoFromEntity(material, summary) : generateSummary(material))
                                 .orElseGet(() -> generateSummary(material));
@@ -746,6 +758,7 @@ public class AiIntegrationService {
         // 퀴즈 목록 조회
         public List<QuizDTO.Response> getQuizzes(Long userId, Long materialId) {
                 Material material = getMaterialSafely(userId, materialId);
+                assertPdfAnalyzable(material, "퀴즈/문제 생성");
                 return quizRepository.findByMaterial_MaterialIdOrderByCreatedAtDesc(materialId)
                                 .stream()
                                 .map(quiz -> QuizDTO.Response.builder()
@@ -1085,6 +1098,7 @@ public class AiIntegrationService {
         @Transactional
         public RoadmapDTO getRoadmap(Long userId, Long materialId) {
                 Material material = getMaterialSafely(userId, materialId);
+                assertPdfAnalyzable(material, "주차별 로드맵");
 
                 return roadmapRepository.findByMaterial_MaterialId(materialId)
                                 .map(roadmap -> roadmapDtoFromEntity(material, roadmap))

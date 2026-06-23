@@ -995,7 +995,7 @@ export default function ArchiveDetail() {
       const detail = await materialService.getMaterialDetail(id, type === 'reviewNote' ? 'review-note' : undefined);
       setMaterial(detail);
       if (detail.extractionStatus === 'SUCCESS') {
-        loadTabData(detail.materialId);
+        loadTabData(detail.materialId, detail);
       }
     } catch (e) {
       console.error('자료 상세 정보 로드 실패:', e);
@@ -1004,24 +1004,29 @@ export default function ArchiveDetail() {
     }
   };
 
-  const loadTabData = async (materialId) => {
-    // 1. 요약 정보 로드
-    setSummaryLoading(true);
-    try {
-      const summary = await materialService.getSummary(materialId);
-      setSummaryData(summary);
-    } catch (e) {
-      console.warn('AI 요약 정보가 아직 없습니다:', e);
-    } finally {
-      setSummaryLoading(false);
-    }
+  const loadTabData = async (materialId, detail) => {
+    // 플래너(구조화 자료)는 PDF 텍스트 기반 AI(요약/퀴즈/로드맵) 대상이 아니다 → 해당 호출 자체를 건너뛴다.
+    const isPlannerMat = String(detail?.materialType || '').toUpperCase() === 'PLANNER' || detail?.plannerId != null;
 
-    // 2. 퀴즈 정보 로드
-    try {
-      const quizList = await materialService.getQuizzes(materialId);
-      setQuizzes(Array.isArray(quizList) ? quizList : []);
-    } catch (e) {
-      console.warn('AI 퀴즈 정보 로드 실패:', e);
+    if (!isPlannerMat) {
+      // 1. 요약 정보 로드
+      setSummaryLoading(true);
+      try {
+        const summary = await materialService.getSummary(materialId);
+        setSummaryData(summary);
+      } catch (e) {
+        console.warn('AI 요약 정보가 아직 없습니다:', e);
+      } finally {
+        setSummaryLoading(false);
+      }
+
+      // 2. 퀴즈 정보 로드
+      try {
+        const quizList = await materialService.getQuizzes(materialId);
+        setQuizzes(Array.isArray(quizList) ? quizList : []);
+      } catch (e) {
+        console.warn('AI 퀴즈 정보 로드 실패:', e);
+      }
     }
 
     // 2-1. 이미 생성된 오답노트 로드 → quizId별 매핑(버튼 "오답노트 보기" 판별)
@@ -1034,13 +1039,15 @@ export default function ArchiveDetail() {
       console.warn('오답노트 목록 로드 실패:', e);
     }
 
-    // 3. 로드맵 정보 로드
-    try {
-      const roadmap = await materialService.getRoadmap(materialId);
-      setRoadmapData(roadmap);
-      setRoadmapSteps(normalizeRoadmapSteps(roadmap?.roadmapData || roadmap));
-    } catch (e) {
-      console.warn('AI 로드맵 정보 로드 실패:', e);
+    // 3. 로드맵 정보 로드 (플래너 자료는 제외)
+    if (!isPlannerMat) {
+      try {
+        const roadmap = await materialService.getRoadmap(materialId);
+        setRoadmapData(roadmap);
+        setRoadmapSteps(normalizeRoadmapSteps(roadmap?.roadmapData || roadmap));
+      } catch (e) {
+        console.warn('AI 로드맵 정보 로드 실패:', e);
+      }
     }
 
     // 4. 메모 정보 로드
@@ -1083,7 +1090,7 @@ export default function ArchiveDetail() {
           const freshDetail = await materialService.getMaterialDetail(id, type === 'reviewNote' ? 'review-note' : undefined);
           if (freshDetail.extractionStatus !== 'PENDING' && freshDetail.extractionStatus !== 'PROCESSING') {
             setMaterial(freshDetail);
-            loadTabData(freshDetail.materialId);
+            loadTabData(freshDetail.materialId, freshDetail);
           }
         } catch (e) {
           console.error("폴링 오류:", e);
@@ -3678,7 +3685,55 @@ export default function ArchiveDetail() {
 
         <div className="archive-split-view">
           <div className="archive-left-panel" style={{ width: type === 'pdf' ? `${leftWidth}%` : '50%', flex: 'none', overflowY: 'auto' }}>
-            {type === 'pdf' && (material?.originalFileName || '').toLowerCase().endsWith('.docx') ? (
+            {type === 'pdf' && isPlanner ? (
+                /* 플래너는 PDF 가 아니다 — PDF 뷰어 대신 구조화된 플래너 상세를 렌더한다. */
+                (() => {
+                  let snap = {};
+                  try { snap = material?.contentJson ? JSON.parse(material.contentJson) : {}; } catch { snap = {}; }
+                  const createdAt = (snap.createdAt || material?.uploadedAt || '').toString().split('T')[0];
+                  let slotCount = 0;
+                  try {
+                    const tt = snap.timeTableJson ? JSON.parse(snap.timeTableJson) : null;
+                    if (Array.isArray(tt)) slotCount = tt.filter((s) => s && (s.checked || s.content || s.text)).length;
+                    else if (tt && typeof tt === 'object') slotCount = Object.keys(tt).length;
+                  } catch { slotCount = 0; }
+                  const Row = ({ label, value }) => (value == null || value === '' ? null : (
+                    <div>
+                      <h4 style={{ margin: '0 0 6px', fontSize: '13px', color: 'var(--color-text-muted)', fontWeight: 600 }}>{label}</h4>
+                      <p style={{ margin: 0, fontSize: '15px', color: 'var(--color-text-main)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{value}</p>
+                    </div>
+                  ));
+                  return (
+                    <div className="glass-panel" style={{ padding: '32px', height: '100%', overflowY: 'auto' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: '#15803D', backgroundColor: '#DCFCE7', padding: '3px 10px', borderRadius: '12px' }}>플래너</span>
+                        <h2 style={{ margin: 0, color: 'var(--color-text-main)' }}>{material.title}</h2>
+                      </div>
+                      <p style={{ margin: '0 0 24px', color: 'var(--color-text-muted)', fontSize: '14px' }}>
+                        플래너는 PDF 파일이 아니라 로드맵/플래너 데이터입니다. 우측 패널에서 AI 계획 분석·다음 학습 추천을 확인하세요.
+                      </p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                        <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                          <Row label="생성일" value={createdAt || '-'} />
+                          <Row label="기준일" value={snap.plannerDate} />
+                          {snap.dDay != null && snap.dDay !== '' && <Row label="D-Day" value={`D-${snap.dDay}`} />}
+                          {slotCount > 0 && <Row label="시간표 항목" value={`${slotCount}개`} />}
+                        </div>
+                        <Row label="과목" value={snap.subject} />
+                        <Row label="학습 유형" value={snap.studyType} />
+                        <Row label="기간/학기" value={snap.term} />
+                        <Row label="목표 시간" value={snap.goalTime} />
+                        <Row label="학습 내용" value={snap.content} />
+                        <Row label="메모(TMI)" value={snap.tmi} />
+                        {snap.sourceType && <Row label="원본" value={snap.sourceType === 'ROADMAP_AUTO' ? '로드맵 자동 생성' : snap.sourceType} />}
+                        <button className="btn-primary" style={{ alignSelf: 'flex-start', padding: '12px 24px', borderRadius: '10px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer' }} onClick={() => navigate('/planner')}>
+                          플래너에서 열기
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()
+            ) : type === 'pdf' && (material?.originalFileName || '').toLowerCase().endsWith('.docx') ? (
                 /* DOCX는 PDF 뷰어(iframe)에 넣지 않고 별도 분석 결과 패널을 보여준다. */
                 <div className="glass-panel" style={{ padding: '32px', height: '100%', overflowY: 'auto' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>

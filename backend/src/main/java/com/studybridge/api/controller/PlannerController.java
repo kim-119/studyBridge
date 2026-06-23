@@ -60,20 +60,20 @@ public class PlannerController {
         return ResponseEntity.ok(plannerService.get(userDetails.getId(), plannerId));
     }
 
-    /** PDF 생성 → S3 저장 → 자료보관함(Material, PLANNER) 연결 */
+    /** "PDF 저장": 다운로드용 PDF 생성(presigned URL 반환) + 자료보관함은 구조화 PLANNER 로 보관 */
     @PostMapping("/{plannerId}/pdf")
     public ResponseEntity<PlannerDTO.Response> generatePdf(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long plannerId) {
-        return ResponseEntity.ok(plannerService.generateAndArchive(userDetails.getId(), plannerId));
+        return ResponseEntity.ok(plannerService.generatePdfDownload(userDetails.getId(), plannerId));
     }
 
-    /** 자료보관함에 저장 (PDF 생성/보관과 동일 동작) */
+    /** 자료보관함에 저장: 플래너를 PDF 가 아닌 구조화(PLANNER) 자료로 보관 */
     @PostMapping("/{plannerId}/archive")
     public ResponseEntity<PlannerDTO.Response> archive(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long plannerId) {
-        return ResponseEntity.ok(plannerService.generateAndArchive(userDetails.getId(), plannerId));
+        return ResponseEntity.ok(plannerService.archivePlanner(userDetails.getId(), plannerId));
     }
 
     @GetMapping("/{plannerId}/download-url")
