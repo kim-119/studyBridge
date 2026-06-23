@@ -26,7 +26,7 @@ class ReviewNotePdfLayoutTest {
 
     @SuppressWarnings("unchecked")
     private byte[] buildSamplePdf(int problemCount) throws Exception {
-        ReviewNoteService svc = new ReviewNoteService(null, null, null, null, null);
+        ReviewNoteService svc = new ReviewNoteService(null, null, null, null, null, null);
 
         Class<?> wiClass = Class.forName("com.studybridge.api.service.ReviewNoteService$WrongItem");
         Constructor<?> ctor = wiClass.getDeclaredConstructor(
