@@ -173,7 +173,7 @@ function buildGraph({ question, agents, messages, interactions }) {
 
 // ── 레이아웃: container 폭에 따라 cols 결정 → 논리 좌표(node center) 계산 ──────────
 const NODE_W = 280;
-const NODE_H = 132;
+const NODE_H = 150;
 const Q_W = 320;
 const Q_H = 92;
 const GAP_X = 44;
@@ -284,11 +284,28 @@ export default function ProfessorGraphView({ question, agents = [], messages = [
   // 새 그래프(노드/cols)면 사용자 줌·팬 초기화 → 항상 fit 상태로 시작.
   useEffect(() => { setUserZoom(1); setPan({ x: 0, y: 0 }); }, [W, H, cols, nodes.length]);
 
+  // 간선 기하: 선/라벨 위치를 한 번만 계산해 SVG(선)와 HTML(라벨 pill)이 공유한다.
+  //  · 라벨 위치는 canvas 경계 안쪽으로 clamp 해서 container 밖으로 삐져나오지 않게 보정한다.
+  const edgeGeom = useMemo(() => edges.map((edge) => {
+    const s = pos[edge.source];
+    const t = pos[edge.target];
+    if (!s || !t) return null;
+    const { s: p1, e: p2 } = trimToBox(s, t);
+    const style = RELATION_STYLE[edge.relation] || RELATION_STYLE.feedback;
+    const mx = clampNum((p1.x + p2.x) / 2, 48, W - 48);
+    const my = clampNum((p1.y + p2.y) / 2, 16, H - 16);
+    return {
+      edge, p1, p2, mx, my, style,
+      label: `${edge.label}${edge.derived ? '·예시' : ''}`,
+      hasDetail: !!edge.content,
+    };
+  }).filter(Boolean), [edges, pos, W, H]);
+
   const fitView = () => { setUserZoom(1); setPan({ x: 0, y: 0 }); };
 
   // 팬(드래그). 초기엔 fit이라 사용 안 해도 됨(목표: 초기 전체 보임).
   const onPointerDown = (e) => {
-    if (e.target.closest('.pgraph-node') || e.target.closest('.pgraph-edge-hit')) return;
+    if (e.target.closest('.pgraph-node') || e.target.closest('.pgraph-elabel')) return;
     drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
   };
   const onPointerMove = (e) => {
@@ -328,41 +345,35 @@ export default function ProfessorGraphView({ question, agents = [], messages = [
                 </marker>
               ))}
             </defs>
-            {edges.map((edge) => {
-              const s = pos[edge.source];
-              const t = pos[edge.target];
-              if (!s || !t) return null;
-              const { s: p1, e: p2 } = trimToBox(s, t);
-              const mx = (p1.x + p2.x) / 2;
-              const my = (p1.y + p2.y) / 2;
-              const style = RELATION_STYLE[edge.relation] || RELATION_STYLE.feedback;
-              const labelW = edge.label.length * 11 + 18;
-              const hasDetail = !!edge.content;
-              return (
-                <g key={edge.id} className="pgraph-edge">
-                  <line
-                    x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
-                    stroke={style.color} strokeWidth={2}
-                    strokeDasharray={edge.derived ? '6 5' : undefined}
-                    markerEnd={`url(#${markerId(edge.relation)})`}
-                    opacity={edge.derived ? 0.55 : 0.9}
-                  />
-                  {/* 라벨 pill: 선보다 위, 노드보다 아래. 흰 배경으로 가독성 확보 */}
-                  <g
-                    className={`pgraph-edge-label ${hasDetail ? 'is-clickable' : ''}`}
-                    transform={`translate(${mx}, ${my})`}
-                    onClick={hasDetail ? (e) => { e.stopPropagation(); setDetail({ kind: 'edge', edge, style }); } : undefined}
-                  >
-                    <rect className="pgraph-edge-hit" x={-labelW / 2} y={-12} width={labelW} height={24} rx={12}
-                      fill="#ffffff" stroke={style.color} strokeWidth={1.5} />
-                    <text x={0} y={4} textAnchor="middle" fontSize={12} fontWeight={800} fill={style.color}>
-                      {edge.label}{edge.derived ? '·예시' : ''}
-                    </text>
-                  </g>
-                </g>
-              );
-            })}
+            {edgeGeom.map(({ edge, p1, p2, style }) => (
+              <line
+                key={edge.id}
+                x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
+                stroke={style.color} strokeWidth={2}
+                strokeDasharray={edge.derived ? '6 5' : undefined}
+                markerEnd={`url(#${markerId(edge.relation)})`}
+                opacity={edge.derived ? 0.55 : 0.9}
+              />
+            ))}
           </svg>
+
+          {/* 간선 라벨: SVG가 아닌 HTML pill로 렌더 → 텍스트 길이에 맞춰 자동 폭(잘림 없음).
+              선보다 위, 노드보다 아래 레이어. 내용이 있으면 클릭 시 전문 popover. */}
+          <div className="pgraph-edge-labels" aria-hidden="false">
+            {edgeGeom.map(({ edge, mx, my, style, label, hasDetail }) => (
+              <button
+                key={edge.id}
+                type="button"
+                className={`pgraph-elabel ${hasDetail ? 'is-clickable' : ''} ${edge.derived ? 'is-derived' : ''}`}
+                style={{ left: mx, top: my, '--rc': style.color }}
+                onClick={hasDetail ? (e) => { e.stopPropagation(); setDetail({ kind: 'edge', edge, style }); } : undefined}
+                title={hasDetail ? '클릭하면 전문 보기' : undefined}
+                tabIndex={hasDetail ? 0 : -1}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
           {nodes.map((n) => {
             const p = pos[n.id];
@@ -391,6 +402,9 @@ export default function ProfessorGraphView({ question, agents = [], messages = [
                     <span className={`pgraph-status st-${n.status}`}>
                       {n.status === 'answer' ? '답변' : n.status === 'validation' ? '검증' : n.status === 'error' ? '오류' : n.status === 'pending' ? '생성 중' : '완료'}
                     </span>
+                    {!n.empty && String(n.content).length > 84 ? (
+                      <span className="pgraph-more">더보기</span>
+                    ) : null}
                   </div>
                 )}
               </div>

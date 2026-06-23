@@ -72,7 +72,9 @@ function buildSvg({ nodes, edges, pos, W, H, roleColor, relationStyle, title }) 
     const mx = (p1.x + p2.x) / 2;
     const my = (p1.y + p2.y) / 2;
     const label = `${edge.label}${edge.derived ? '·예시' : ''}`;
-    const lw = label.length * 11 + 18;
+    // CJK(전각)는 한 글자 ≈ 13px, 그 외 ≈ 7px 로 추정해 pill 폭이 글자를 가리지 않게 한다.
+    const labelTextW = Array.from(label).reduce((acc, ch) => acc + (/[ᄀ-￿]/.test(ch) ? 13 : 7), 0);
+    const lw = Math.max(40, labelTextW + 18);
     parts.push(`<line x1="${p1.x}" y1="${p1.y}" x2="${p2.x}" y2="${p2.y}" stroke="${st.color}" stroke-width="2" ${edge.derived ? 'stroke-dasharray="6 5" opacity="0.55"' : 'opacity="0.9"'} marker-end="url(#ar-${edge.relation})"/>`);
     parts.push(`<rect x="${mx - lw / 2}" y="${my - 12}" width="${lw}" height="24" rx="12" fill="#ffffff" stroke="${st.color}" stroke-width="1.5"/>`);
     parts.push(`<text x="${mx}" y="${my + 4}" text-anchor="middle" font-family="${FONT}" font-size="12" font-weight="800" fill="${st.color}">${escapeXml(label)}</text>`);
@@ -104,7 +106,7 @@ function buildSvg({ nodes, edges, pos, W, H, roleColor, relationStyle, title }) 
     }
     // body
     const bodyMax = Math.floor((p.w - 28) / 6.6);
-    const lines = wrapText(n.content, bodyMax, isQ ? 2 : 3);
+    const lines = wrapText(n.content, bodyMax, isQ ? 2 : 4);
     lines.forEach((ln, i) => {
       parts.push(`<text x="${x + 14}" y="${y + 48 + i * 18}" font-family="${FONT}" font-size="12.5" fill="${bodyColor}">${escapeXml(ln)}</text>`);
     });
