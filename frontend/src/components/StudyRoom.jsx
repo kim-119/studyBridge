@@ -435,7 +435,18 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const [publisher, setPublisher] = useState(null);
   // 원격 subscriber는 connectionId 기준 Object로 관리한다(재접속 시 덮어쓰기/중복/stale 방지).
   // key: connection.connectionId, value: OpenVidu Subscriber(streamManager)
+  // ※ subscribers는 우측 참여자 목록(mic/video 상태 표시)·발화 감지의 기존 호환용으로 유지한다.
   const [subscribers, setSubscribers] = useState({});
+  // ── 메인 화상 그리드 전용 상태(단일 소스) ──
+  //  · activeConnections: OpenVidu에 "실제 접속"한 connection만 보관. 절대 DB members/study.members로 채우지 않는다.
+  //    오직 connectionCreated / connect:success / streamCreated 보정에서만 추가, connectionDestroyed에서만 제거.
+  //  · mediaByConnectionId: connectionId → publisher/subscriber streamManager(미디어)만 보관.
+  const [activeConnections, setActiveConnections] = useState({});
+  const [mediaByConnectionId, setMediaByConnectionId] = useState({});
+  // joinSession 중복 실행 방지(openvidu WebSocket 중복 생성 차단).
+  const joinInFlightRef = React.useRef(false);
+  const joinedRoomKeyRef = React.useRef(null);
+  const publisherRef = React.useRef(null);
   const [ovError, setOvError] = useState('');
   // 장치 fallback 안내(치명적 오류 아님: camera-only / audio-only / viewer-only 입장 등)
   const [ovNotice, setOvNotice] = useState('');
@@ -467,6 +478,26 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     }
   };
 
+  // OpenVidu connection.data(JSON 또는 "clientData%/%serverData" 포맷)에서 메타데이터를 안전 추출한다.
+  const parseConnectionData = (connection) => {
+    const raw = connection?.data;
+    const tryParse = (s) => {
+      try { const d = JSON.parse(s); return d && typeof d === 'object' ? d : null; }
+      catch (e) { return null; }
+    };
+    let d = raw ? tryParse(raw) : null;
+    if (!d && typeof raw === 'string' && raw.includes('%/%')) {
+      for (const part of raw.split('%/%')) { d = tryParse(part); if (d) break; }
+    }
+    d = d || {};
+    return {
+      userId: d.userId ?? null,
+      name: d.clientData || d.name || d.nickname || null,
+      micOn: d.micOn,
+      cameraOn: d.cameraOn,
+    };
+  };
+
   // 강퇴/퇴장된 유저를 참가자 목록과 화상 타일(subscribers)에서 한 번에 제거한다.
   const removeParticipantEverywhere = (targetUserId) => {
     if (targetUserId == null) return;
@@ -483,6 +514,30 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         next[connectionId] = sub;
       }
       return changed ? next : prev;
+    });
+    // 메인 그리드 단일 소스에서도 해당 userId 타일/미디어를 정리한다(OpenVidu connectionDestroyed 보강).
+    // 항상 최신 state(prev)를 기준으로 판단해 stale closure를 피한다.
+    const dropConnId = (map) => {
+      let changed = false;
+      const next = {};
+      for (const [cid, p] of Object.entries(map)) {
+        if (p && !p.isMe && String(p.userId) === String(targetUserId)) { changed = true; continue; }
+        next[cid] = p;
+      }
+      return { changed, next };
+    };
+    setActiveConnections(prev => {
+      const { changed, next } = dropConnId(prev);
+      if (!changed) return prev;
+      // 동일 connectionId의 media도 함께 제거(타일과 미디어 동기화).
+      const goneIds = Object.keys(prev).filter(cid => !(cid in next));
+      setMediaByConnectionId(mPrev => {
+        let mChanged = false;
+        const mNext = { ...mPrev };
+        goneIds.forEach(cid => { if (cid in mNext) { delete mNext[cid]; mChanged = true; } });
+        return mChanged ? mNext : mPrev;
+      });
+      return next;
     });
   };
 
@@ -569,6 +624,12 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
       media: Object.keys(subscribers).length + (publisher ? 1 : 0),
     });
   }, [tileParticipants.length, subscribers, publisher]);
+
+  // 메인 그리드 단일 소스(activeConnections / mediaByConnectionId) 카운트 가시화.
+  useEffect(() => {
+    console.info('[StudyRoomOV] activeConnections:count', { count: Object.keys(activeConnections).length });
+    console.info('[StudyRoomOV] mediaByConnectionId:count', { count: Object.keys(mediaByConnectionId).length });
+  }, [activeConnections, mediaByConnectionId]);
 
   const formatShortDateTime = (value) => {
     if (!value) return '-';
@@ -796,6 +857,22 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     fetchHistory();
   }, [study?.id, userId]);
 
+  // OpenVidu 세션·미디어·가드 상태를 한 번에 정리한다(언마운트/강퇴/재입장 전 호출).
+  //   · cleanup 후 members로 activeConnections를 다시 채우지 않는다(메인 그리드는 실제 접속만 반영).
+  const cleanupOpenVidu = (sessionInstance) => {
+    try { (sessionInstance || sessionRef.current)?.disconnect(); } catch (e) { /* ignore */ }
+    try { publisherRef.current?.stream?.dispose?.(); } catch (e) { /* ignore */ }
+    sessionRef.current = null;
+    publisherRef.current = null;
+    joinedRoomKeyRef.current = null;
+    joinInFlightRef.current = false;
+    setSession(null);
+    setPublisher(null);
+    setSubscribers({}); // 우측 목록 호환용 유지
+    setActiveConnections({});
+    setMediaByConnectionId({});
+  };
+
   // 1. OpenVidu Video Call Lifecycle
   useEffect(() => {
     if (!study?.id || !userId) return;
@@ -804,12 +881,28 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     let sessionInstance = null;
     let isMounted = true;
 
+    // 방+사용자 단위 join 식별자. 같은 방에 이미 접속했으면 재실행을 무시한다.
+    const roomKey = `${study?.id || study?.groupId || study?.roomId}:${userId || 'anon'}`;
+
     async function joinSession() {
+      // ── 중복 실행 방지(openvidu WebSocket 8개+ 중복 생성 차단) ──
+      if (joinInFlightRef.current) {
+        console.warn('[StudyRoomOV] join:skip-in-flight', { roomKey });
+        return;
+      }
+      if (joinedRoomKeyRef.current === roomKey && sessionRef.current) {
+        console.warn('[StudyRoomOV] join:skip-already-joined', { roomKey });
+        return;
+      }
+      joinInFlightRef.current = true;
+      console.info('[StudyRoomOV] join:start', { roomKey });
       try {
         // 재입장 방어: 이전 effect cleanup이 비동기 state 갱신을 남겼을 수 있으므로
-        // 새 세션 시작 전 stale subscriber/publisher 타일을 확실히 비운다.
+        // 새 세션 시작 전 stale subscriber/publisher/connection 타일을 확실히 비운다.
         setSubscribers({});
         setPublisher(null);
+        setActiveConnections({});
+        setMediaByConnectionId({});
 
         let { token } = await groupService.getVideoToken(study.id);
         if (!isMounted) return;
@@ -825,55 +918,107 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         //   카메라/마이크가 둘 다 꺼져 streamCreated가 없는 참가자도 members 재조회로 타일에 보이게 한다.
         sessionInstance.on('connectionCreated', (event) => {
           if (!isMounted) return;
-          const connectionId = event.connection?.connectionId;
-          // 내 연결(session.connection)은 제외 — 불필요한 재조회 방지.
+          const connection = event.connection;
+          const connectionId = connection?.connectionId;
+          if (!connectionId) return;
+          // 내 연결(session.connection)은 connect:success에서 isMe로 보정하므로 여기선 제외.
           if (sessionInstance.connection && connectionId === sessionInstance.connection.connectionId) return;
-          console.info('[StudyRoomOV] connectionCreated', { connectionId });
+          const meta = parseConnectionData(connection);
+          // 메인 그리드 단일 소스(activeConnections)에 실제 접속자만 추가.
+          setActiveConnections(prev => ({
+            ...prev,
+            [connectionId]: {
+              ...(prev[connectionId] || {}),
+              connectionId,
+              userId: meta.userId ?? prev[connectionId]?.userId ?? null,
+              name: meta.name || prev[connectionId]?.name || '참여자',
+              isMe: false,
+              micOn: meta.micOn ?? prev[connectionId]?.micOn ?? false,
+              cameraOn: meta.cameraOn ?? prev[connectionId]?.cameraOn ?? false,
+              connectedAt: prev[connectionId]?.connectedAt || Date.now(),
+            },
+          }));
+          console.info('[StudyRoomOV] connectionCreated', { connectionId, userId: meta.userId ?? null });
+          // 우측 참여자 목록(presence)만 갱신 — OpenVidu 재입장과 무관(joinedRoomKeyRef 가드).
           loadMembersRef.current?.();
         });
 
-        // streamCreated: subscriber 생성 → connectionId 기준 media만 저장(타일은 presence가 담당).
+        // streamCreated: subscriber 생성 → media(streamManager) 저장 + 해당 connection을 activeConnections에 보정.
         sessionInstance.on('streamCreated', (event) => {
+          if (!isMounted) return;
           const connection = event.stream.connection;
           const connectionId = connection.connectionId;
           const streamId = event.stream.streamId;
-          let metaUserId = null;
-          try { metaUserId = JSON.parse(connection.data).userId ?? null; } catch (e) { /* ignore */ }
+          const meta = parseConnectionData(connection);
           const subscriber = sessionInstance.subscribe(event.stream, undefined);
-          console.info('[StudyRoomOV] streamCreated', { connectionId, streamId, userId: metaUserId });
-          if (isMounted) {
-            // connectionId를 key로 저장 → 동일 연결 재이벤트는 덮어쓰기, 중복 타일 방지.
-            setSubscribers(prev => ({ ...prev, [connectionId]: subscriber }));
-            console.info('[StudyRoomOV] media:stored', { connectionId });
-          }
+          console.info('[StudyRoomOV] streamCreated', { connectionId, streamId, userId: meta.userId ?? null });
+          // 메인 그리드 단일 소스 보정(members 갱신 전 publish해도 타일이 생긴다).
+          setActiveConnections(prev => ({
+            ...prev,
+            [connectionId]: {
+              ...(prev[connectionId] || {}),
+              connectionId,
+              userId: meta.userId ?? prev[connectionId]?.userId ?? null,
+              name: meta.name || prev[connectionId]?.name || '참여자',
+              isMe: false,
+              cameraOn: true,
+              connectedAt: prev[connectionId]?.connectedAt || Date.now(),
+            },
+          }));
+          // connectionId를 key로 저장 → 동일 연결 재이벤트는 덮어쓰기, 중복 타일 방지.
+          setMediaByConnectionId(prev => ({ ...prev, [connectionId]: subscriber }));
+          setSubscribers(prev => ({ ...prev, [connectionId]: subscriber })); // 우측 목록 호환용
+          console.info('[StudyRoomOV] media:stored', { connectionId });
         });
 
-        // streamDestroyed: 타일은 유지하고 media(streamManager)만 제거한다(participant presence는 그대로).
+        // streamDestroyed: activeConnections(타일)는 유지하고 media(streamManager)만 제거한다.
         sessionInstance.on('streamDestroyed', (event) => {
+          if (!isMounted) return;
           const connectionId = event.stream.connection.connectionId;
           const streamId = event.stream.streamId;
           console.info('[StudyRoomOV] streamDestroyed', { connectionId, streamId });
-          if (isMounted) {
-            setSubscribers(prev => {
-              if (!prev[connectionId]) return prev;
-              const next = { ...prev };
-              delete next[connectionId];
-              return next;
-            });
-            console.info('[StudyRoomOV] media:removed', { connectionId });
-          }
+          setMediaByConnectionId(prev => {
+            if (!prev[connectionId]) return prev;
+            const next = { ...prev };
+            delete next[connectionId];
+            return next;
+          });
+          setSubscribers(prev => {
+            if (!prev[connectionId]) return prev;
+            const next = { ...prev };
+            delete next[connectionId];
+            return next;
+          });
+          // presence(타일)는 유지하되 카메라 OFF 표시로 전환(avatar fallback).
+          setActiveConnections(prev => (
+            prev[connectionId]
+              ? { ...prev, [connectionId]: { ...prev[connectionId], cameraOn: false } }
+              : prev
+          ));
+          console.info('[StudyRoomOV] media:removed', { connectionId });
         });
 
-        // connectionDestroyed: 해당 연결의 media를 제거한다.
-        //   presence(타일) 제거는 서버 members 토픽(PARTICIPANT_LEFT 등)이 담당한다(단일 소스 유지).
+        // connectionDestroyed: 해당 연결을 activeConnections(타일)·media에서 모두 제거한다(실제 퇴장).
         sessionInstance.on('connectionDestroyed', (event) => {
           if (!isMounted) return;
-          const goneConnId = event.connection.connectionId;
-          console.info('[StudyRoomOV] connectionDestroyed', { connectionId: goneConnId });
-          setSubscribers(prev => {
-            if (!prev[goneConnId]) return prev;
+          const connectionId = event.connection.connectionId;
+          console.info('[StudyRoomOV] connectionDestroyed', { connectionId });
+          setMediaByConnectionId(prev => {
+            if (!prev[connectionId]) return prev;
             const next = { ...prev };
-            delete next[goneConnId];
+            delete next[connectionId];
+            return next;
+          });
+          setSubscribers(prev => {
+            if (!prev[connectionId]) return prev;
+            const next = { ...prev };
+            delete next[connectionId];
+            return next;
+          });
+          setActiveConnections(prev => {
+            if (!prev[connectionId]) return prev;
+            const next = { ...prev };
+            delete next[connectionId];
             return next;
           });
         });
@@ -881,9 +1026,10 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         // 원격 참가자가 카메라/마이크를 끄거나 켜면(videoActive/audioActive 변경) 즉시 리렌더하여
         // avatar fallback 전환과 마이크 상태 아이콘이 실시간으로 반영되게 한다.
         sessionInstance.on('streamPropertyChanged', (event) => {
-          if (isMounted) {
-            setSubscribers(prev => ({ ...prev })); // 새 객체 참조로 리렌더 트리거 (stream 객체의 최신 active 값 반영)
-          }
+          if (!isMounted) return;
+          // 새 객체 참조로 리렌더 트리거 (stream 객체의 최신 active 값 반영).
+          setMediaByConnectionId(prev => ({ ...prev }));
+          setSubscribers(prev => ({ ...prev }));
         });
 
         sessionInstance.on('exception', (exception) => {
@@ -894,10 +1040,30 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         console.info('[StudyRoomOV] listeners:registered-before-connect');
         await sessionInstance.connect(token, connectionData);
         if (!isMounted) return;
-        console.info('[StudyRoomOV] connect:success', { connectionId: sessionInstance.connection?.connectionId || null });
 
+        const myConnectionId = sessionInstance.connection?.connectionId;
         setSession(sessionInstance);
         sessionRef.current = sessionInstance;
+        // 실제 접속 성공 → 이 방을 "접속 완료"로 표시(재실행 가드).
+        joinedRoomKeyRef.current = roomKey;
+
+        // 내 connection을 메인 그리드 단일 소스에 isMe로 보정(미디어는 publisher:success에서 붙는다).
+        if (myConnectionId) {
+          setActiveConnections(prev => ({
+            ...prev,
+            [myConnectionId]: {
+              ...(prev[myConnectionId] || {}),
+              connectionId: myConnectionId,
+              userId: userId || prev[myConnectionId]?.userId || null,
+              name: myDisplayName || prev[myConnectionId]?.name || '나',
+              isMe: true,
+              micOn: isMicOn,
+              cameraOn: isVideoOn,
+              connectedAt: prev[myConnectionId]?.connectedAt || Date.now(),
+            },
+          }));
+        }
+        console.info('[StudyRoomOV] connect:success', { connectionId: myConnectionId || null });
 
         // 이전 프리뷰 화면에서 사용하던 카메라 하드웨어가 완전히 릴리즈될 시간을 확보 (800ms).
         // 너무 짧으면 카메라가 아직 점유돼 NotReadableError가 나고, 아래 fallback이 곧바로
@@ -1038,8 +1204,24 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         } else {
           await sessionInstance.publish(publisherInstance);
           setPublisher(publisherInstance);
+          publisherRef.current = publisherInstance;
           setOvError('');
-          console.info('[StudyRoomOV] publisher:success', { connectionId: sessionInstance.connection?.connectionId || null });
+          const myConnId = sessionInstance.connection?.connectionId;
+          if (myConnId) {
+            // 내 media를 메인 그리드 단일 소스에 붙이고, 실제 송출 상태로 보정.
+            setMediaByConnectionId(prev => ({ ...prev, [myConnId]: publisherInstance }));
+            setActiveConnections(prev => ({
+              ...prev,
+              [myConnId]: {
+                ...(prev[myConnId] || {}),
+                connectionId: myConnId,
+                isMe: true,
+                cameraOn: effectiveVideo,
+                micOn: effectiveAudio,
+              },
+            }));
+          }
+          console.info('[StudyRoomOV] publisher:success', { connectionId: myConnId || null });
         }
 
       } catch (err) {
@@ -1047,6 +1229,9 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         if (isMounted) {
           setOvError(err.message || '카메라/마이크를 초기화할 수 없습니다. 장치를 확인해주세요.');
         }
+      } finally {
+        // 성공/실패/조기 return 무엇이든 in-flight 플래그는 반드시 해제(다음 정상 join 허용).
+        joinInFlightRef.current = false;
       }
     }
 
@@ -1054,15 +1239,14 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
     return () => {
       isMounted = false;
-      if (sessionInstance) {
-        sessionInstance.disconnect();
-      }
-      sessionRef.current = null;
-      setSession(null);
-      setPublisher(null);
-      setSubscribers({});
+      cleanupOpenVidu(sessionInstance);
     };
-  }, [study?.id, userId, myDisplayName]);
+
+    // joinSession은 방 id / 사용자 id 변화에만 재실행한다.
+    // members/subscribers/publisher/activeConnections/mediaByConnectionId는 의도적으로 deps에서 제외한다
+    // (presence 갱신·미디어 추가가 OpenVidu 재입장으로 이어지면 안 됨 → WebSocket 1개 유지).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [study?.id, userId]);
 
   const updateStudyStatus = async (status) => {
     try {
@@ -1733,6 +1917,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   // 실제 참여자 목록(members) 길이 = 상단/사이드바에 표시할 입장 인원. mock/maxMembers/capacity 사용 안 함.
   const participantCount = members.length;
 
+  // 메인 화상 그리드 단일 소스: OpenVidu에 실제 접속한 connection만(빈 슬롯은 정원에서 차감).
+  const MAX_TILES = study?.maxMembers || 16;
+  const activeConnectionEntries = Object.entries(activeConnections);
+  const emptySlotCount = Math.max(0, MAX_TILES - activeConnectionEntries.length);
+
   // 일반 채팅에 새 메시지가 오면 목록만 하단으로 스크롤
   useEffect(() => {
     if (chatTab === 'normal') {
@@ -1927,33 +2116,29 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', height: '100%', alignContent: 'start' }}>
 
-            {/* 참가자 타일: presence(tileParticipants) 기준으로 렌더한다.
-                · 카메라/마이크가 둘 다 꺼져 stream이 없어도 이름/아바타/상태 placeholder로 타일이 유지된다.
-                · media(streamManager)는 isMe→publisher, 원격→userId(또는 connectionId)로 매칭해 attach한다. */}
-            {tileParticipants.map((p) => {
-              const isMe = p.isMe;
-              const streamManager = isMe
-                ? publisher
-                : ((p.userId != null ? mediaByUserId[String(p.userId)] : null)
-                  || (p.connectionId ? subscribers[p.connectionId] : null)
-                  || null);
+            {/* 참가자 타일: 메인 그리드는 오직 activeConnections(OpenVidu 실제 접속)만 렌더한다.
+                · DB members/study.members/participants는 절대 source로 쓰지 않는다(미입장 멤버 타일 방지).
+                · media(streamManager)는 mediaByConnectionId[connectionId]로만 매칭해 attach한다. */}
+            {activeConnectionEntries.map(([connectionId, participant]) => {
+              const isMe = participant.isMe;
+              const streamManager = mediaByConnectionId[connectionId] || null;
               const stream = streamManager?.stream?.mediaStream || null;
-              const camOn = isMe ? isVideoOn : (streamManager ? streamManager.stream.videoActive : false);
-              const micOn = isMe ? isMicOn : (streamManager ? streamManager.stream.audioActive : false);
-              const photoUrl = p.photoUrl || (isMe ? (user?.photoUrl || user?.photo_url || null) : null);
-              const tileKey = p.userId != null ? `u-${p.userId}` : `c-${p.connectionId}`;
+              // 원격은 실제 트랙 active 값, 로컬(나)은 토글 의도로 표시(avatar/video 전환 일관성 유지).
+              const camOn = isMe ? isVideoOn : (streamManager ? !!streamManager.stream.videoActive : false);
+              const micOn = isMe ? isMicOn : (streamManager ? !!streamManager.stream.audioActive : false);
+              const photoUrl = participant.photoUrl || (isMe ? (user?.photoUrl || user?.photo_url || null) : null);
               return (
-                <div key={tileKey} style={{ position: 'relative' }}>
+                <div key={connectionId} style={{ position: 'relative' }}>
                   <VideoFeed
                     stream={stream}
                     streamManager={streamManager}
                     isLocal={isMe}
-                    displayName={p.displayName || (isMe ? myDisplayName : '참여자')}
+                    displayName={participant.name || (isMe ? myDisplayName : '참여자')}
                     isMuted={isMe}
                     isCamOn={camOn}
                     isMicOn={micOn}
                     photoUrl={photoUrl}
-                    speakerId={p.userId}
+                    speakerId={participant.userId}
                     onSpeakingChange={handleSpeakingChange}
                   />
                   {isMe && ovError && (
@@ -1967,8 +2152,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               );
             })}
 
-            {/* Empty Slots — 실제 참가자 타일 이후 남은 정원만큼만 표시(참가자를 대체하지 않음). */}
-            {Array.from({ length: Math.max(0, (study.maxMembers || 16) - tileParticipants.length) }).map((_, i) => (
+            {/* Empty Slots — 실제 접속자 타일 이후 남은 정원만큼만 표시(사람 이름/아바타 없음). */}
+            {Array.from({ length: emptySlotCount }).map((_, i) => (
               <div key={`empty-${i}`} style={{ backgroundColor: 'rgba(30, 41, 59, 0.3)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '16/9', border: '1px dashed rgba(255,255,255,0.1)' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', opacity: 0.3 }}>
                   <Monitor size={36} color="#9CA3AF" />
