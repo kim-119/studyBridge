@@ -1038,10 +1038,12 @@ export const groupService = {
     return res.data;
   },
 
-  uploadQuizMaterial: async (groupId, title, file) => {
+  uploadQuizMaterial: async (groupId, title, file, options = {}) => {
     const formData = new FormData();
     formData.append('title', title);
     formData.append('file', file);
+    if (options.questionCount != null) formData.append('questionCount', String(options.questionCount));
+    if (options.timeLimitSeconds != null) formData.append('timeLimitSeconds', String(options.timeLimitSeconds));
 
     const token = localStorage.getItem('token');
     const res = await axios.post(
@@ -1078,9 +1080,12 @@ export const groupService = {
     return res.data;
   },
 
-  // 이미 업로드된 PDF 자료 기반 퀴즈 (재)생성
-  generateMaterialQuiz: async (groupId, materialId) => {
-    const res = await api.post(`/api/groups/${groupId}/materials/${materialId}/quiz`);
+  // 이미 업로드된 PDF 자료 기반 퀴즈 (재)생성. options로 문제 수/제한시간 전달.
+  generateMaterialQuiz: async (groupId, materialId, options = {}) => {
+    const body = {};
+    if (options.questionCount != null) body.questionCount = options.questionCount;
+    if (options.timeLimitSeconds != null) body.timeLimitSeconds = options.timeLimitSeconds;
+    const res = await api.post(`/api/groups/${groupId}/materials/${materialId}/quiz`, body);
     return res.data;
   },
 };

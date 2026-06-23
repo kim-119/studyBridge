@@ -38,6 +38,16 @@ public class GroupStudyQuizDTO {
         private Integer timeLimitSeconds;
     }
 
+    // 퀴즈 생성자가 지정하는 생성 옵션 (문제 수 / 문제당 제한시간)
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class QuizGenerateOptions {
+        private Integer questionCount;
+        private Integer timeLimitSeconds;
+    }
+
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
@@ -46,6 +56,7 @@ public class GroupStudyQuizDTO {
         private Long materialId;
         private String s3Key;
         private String fileName;
+        private Integer numQuestions; // FastAPI에 전달할 생성 문항 수 (null이면 기본값)
     }
 
     @Data

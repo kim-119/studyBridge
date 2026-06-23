@@ -43,7 +43,7 @@ public class GroupStudyQuizSession {
 
     @Column(nullable = false)
     @Builder.Default
-    private Integer questionDurationSeconds = 30;
+    private Integer questionDurationSeconds = 15;
 
     @Column(name = "question_order_json", columnDefinition = "TEXT", nullable = false)
     private String questionOrderJson;

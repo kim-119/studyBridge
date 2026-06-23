@@ -425,6 +425,10 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const [quizUploadFile, setQuizUploadFile] = useState(null);
   const [isUploadingQuizPdf, setIsUploadingQuizPdf] = useState(false);
   const [quizUploadError, setQuizUploadError] = useState('');
+  // 퀴즈 생성자가 직접 설정하는 생성 옵션: 문제 수(1~20) / 문제당 제한시간(초)
+  const [quizQuestionCount, setQuizQuestionCount] = useState(5);
+  const [quizPerQuestionSeconds, setQuizPerQuestionSeconds] = useState(15);
+  const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(null); // 생성 중인 materialId
 
   const [session, setSession] = useState(null);
   const sessionRef = React.useRef(null); // 강퇴 이벤트 수신 시 최신 세션에 즉시 접근하기 위한 ref
@@ -1352,6 +1356,28 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     }
   };
 
+  // 생성 옵션 값을 안전 범위로 보정 (문제 수 1~20, 시간 5~120초)
+  const sanitizedQuizCount = () => Math.max(1, Math.min(20, Number(quizQuestionCount) || 5));
+  const sanitizedQuizSeconds = () => Math.max(5, Math.min(120, Number(quizPerQuestionSeconds) || 15));
+
+  // 기존 등록된 PDF 자료 목록에서 "퀴즈" 버튼을 눌렀을 때: 설정한 문제수/시간으로 퀴즈를 생성한다.
+  const handleGenerateQuizFromMaterial = async (materialId) => {
+    if (isGeneratingQuiz) return;
+    setIsGeneratingQuiz(materialId);
+    try {
+      await groupService.generateMaterialQuiz(study.id, materialId, {
+        questionCount: sanitizedQuizCount(),
+        timeLimitSeconds: sanitizedQuizSeconds(),
+      });
+      await Promise.all([loadGroupMaterials(), loadGroupQuizzes()]);
+      showAlert('완료', `이 PDF로 ${sanitizedQuizCount()}문제(문제당 ${sanitizedQuizSeconds()}초) 퀴즈를 생성했습니다.`);
+    } catch (err) {
+      showAlert('오류', err.response?.data?.message || '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setIsGeneratingQuiz(null);
+    }
+  };
+
   const [regeneratingMaterialId, setRegeneratingMaterialId] = useState(null);
   const handleRegenerateQuiz = async (materialId) => {
     if (regeneratingMaterialId) return;
@@ -1398,9 +1424,12 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     setQuizUploadError('');
 
     try {
-      await groupService.uploadQuizMaterial(study.id, title, quizUploadFile);
+      await groupService.uploadQuizMaterial(study.id, title, quizUploadFile, {
+        questionCount: sanitizedQuizCount(),
+        timeLimitSeconds: sanitizedQuizSeconds(),
+      });
 
-      showAlert('완료', 'PDF가 등록되었고 AI 퀴즈 생성이 완료되었습니다.');
+      showAlert('완료', `PDF가 등록되었고 ${sanitizedQuizCount()}문제(문제당 ${sanitizedQuizSeconds()}초) 퀴즈가 생성되었습니다.`);
       setShowPdfUploadModal(false);
       setQuizUploadTitle('');
       setQuizUploadFile(null);
@@ -2788,6 +2817,42 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                         <p style={{ margin: 0, color: '#9CA3AF', fontSize: '12px', lineHeight: '1.5' }}>
                           PDF를 업로드하면 S3에 저장되고, 해당 자료를 기반으로 AI가 실시간 퀴즈를 자동 생성합니다. (PDF, 최대 30MB)
                         </p>
+
+                        {/* 생성 옵션: 문제 수 + 문제당 제한시간 (업로드/기존자료 생성 양쪽에 공통 적용) */}
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'flex-end', padding: '12px 14px', backgroundColor: 'rgba(15,23,42,0.5)', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.06)' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <label style={{ color: '#CBD5E1', fontSize: '12px', fontWeight: '700' }}>문제 수 (1~20)</label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={20}
+                              value={quizQuestionCount}
+                              onChange={(e) => setQuizQuestionCount(e.target.value === '' ? '' : Math.max(1, Math.min(20, Number(e.target.value))))}
+                              disabled={isUploadingQuizPdf}
+                              style={{ width: '88px', boxSizing: 'border-box', backgroundColor: '#0F172A', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '8px', padding: '8px 10px', color: '#F3F4F6', fontSize: '13px', outline: 'none' }}
+                            />
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <label style={{ color: '#CBD5E1', fontSize: '12px', fontWeight: '700' }}>문제당 시간</label>
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                              {[10, 15, 20, 30, 60].map((sec) => {
+                                const active = Number(quizPerQuestionSeconds) === sec;
+                                return (
+                                  <button
+                                    key={sec}
+                                    type="button"
+                                    onClick={() => setQuizPerQuestionSeconds(sec)}
+                                    disabled={isUploadingQuizPdf}
+                                    style={{ padding: '8px 10px', borderRadius: '8px', border: active ? '1px solid #3B82F6' : '1px solid rgba(255,255,255,0.12)', backgroundColor: active ? 'rgba(59,130,246,0.18)' : '#0F172A', color: active ? '#93C5FD' : '#CBD5E1', fontSize: '12px', fontWeight: active ? '800' : '600', cursor: isUploadingQuizPdf ? 'not-allowed' : 'pointer' }}
+                                  >
+                                    {sec}초
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+
                         <input
                           type="text"
                           value={quizUploadTitle}

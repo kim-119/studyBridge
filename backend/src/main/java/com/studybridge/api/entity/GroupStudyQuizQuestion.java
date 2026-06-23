@@ -32,5 +32,5 @@ public class GroupStudyQuizQuestion {
 
     @Builder.Default
     @Column(nullable = false)
-    private Integer timeLimitSeconds = 30; // 제한시간 (초 단위)
+    private Integer timeLimitSeconds = 15; // 제한시간 (초 단위)
 }

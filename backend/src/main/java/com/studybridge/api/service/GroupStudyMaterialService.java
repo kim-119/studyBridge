@@ -36,9 +36,23 @@ public class GroupStudyMaterialService {
     private final WebClient fastApiWebClient;
     private final ObjectMapper objectMapper;
 
+    // 생성 옵션 기본값/보정 상수 (문제 수 1~20, 문제당 시간 5~120초)
+    private static final int DEFAULT_QUESTION_COUNT = 5;
+    private static final int DEFAULT_QUESTION_SECONDS = 15;
+
+    private int clampQuestionCount(Integer count) {
+        if (count == null) return DEFAULT_QUESTION_COUNT;
+        return Math.max(1, Math.min(20, count));
+    }
+
+    private int clampQuestionSeconds(Integer seconds) {
+        if (seconds == null) return DEFAULT_QUESTION_SECONDS;
+        return Math.max(5, Math.min(120, seconds));
+    }
+
     @Transactional
     public GroupStudyMaterialDTO uploadMaterialAndGenerateQuiz(Long userId, Long groupId, String title,
-            MultipartFile file) throws IOException {
+            MultipartFile file, Integer questionCount, Integer perQuestionSeconds) throws IOException {
         log.info("Group study material upload and quiz generation start. userId={}, groupId={}, title={}", userId,
                 groupId, title);
 
@@ -72,7 +86,8 @@ public class GroupStudyMaterialService {
         log.info("Group study material saved in DB. materialId={}, s3Key={}", savedMaterial.getId(), s3Key);
 
         // 4. FastAPI AI 연동 자동 퀴즈 생성
-        generateAIQuiz(groupStudy, uploader, savedMaterial, s3Key, file.getOriginalFilename());
+        generateAIQuiz(groupStudy, uploader, savedMaterial, s3Key, file.getOriginalFilename(),
+                clampQuestionCount(questionCount), clampQuestionSeconds(perQuestionSeconds));
 
         return toDTO(savedMaterial);
     }
@@ -127,7 +142,8 @@ public class GroupStudyMaterialService {
 
     // 이미 업로드된 그룹스터디 자료를 기준으로 퀴즈를 재생성한다. (S3에 저장된 PDF의 s3Key/fileName 재사용)
     @Transactional
-    public GroupStudyQuizDTO.QuizResponse generateQuizForMaterial(Long userId, Long groupId, Long materialId) {
+    public GroupStudyQuizDTO.QuizResponse generateQuizForMaterial(Long userId, Long groupId, Long materialId,
+            Integer questionCount, Integer perQuestionSeconds) {
         User creator = userRepository.findById(userId)
                 .orElseThrow(() -> new NoSuchElementException("User not found with ID: " + userId));
 
@@ -146,7 +162,8 @@ public class GroupStudyMaterialService {
 
         // 3. 기존 자료 기반 퀴즈 생성 (업로드 경로와 동일 로직 재사용)
         GroupStudyQuiz quiz = generateAIQuiz(material.getGroupStudy(), creator, material,
-                material.getS3Key(), material.getOriginalFileName());
+                material.getS3Key(), material.getOriginalFileName(),
+                clampQuestionCount(questionCount), clampQuestionSeconds(perQuestionSeconds));
         if (quiz == null) {
             throw new IllegalStateException("퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.");
         }
@@ -165,13 +182,15 @@ public class GroupStudyMaterialService {
 
     // FastAPI AI 연동을 이용해 퀴즈 세트를 생성하는 메서드 (실패 시 Fallback 제공). 저장된 퀴즈를 반환.
     private GroupStudyQuiz generateAIQuiz(GroupStudy groupStudy, User creator, GroupStudyMaterial material, String s3Key,
-            String fileName) {
-        log.info("Requesting AI quiz generation from FastAPI. materialId={}", material.getId());
+            String fileName, int questionCount, int perQuestionSeconds) {
+        log.info("Requesting AI quiz generation from FastAPI. materialId={}, questionCount={}, perQuestionSeconds={}",
+                material.getId(), questionCount, perQuestionSeconds);
 
         GroupStudyQuizDTO.AIQuizRequest requestPayload = GroupStudyQuizDTO.AIQuizRequest.builder()
                 .materialId(material.getId())
                 .s3Key(s3Key)
                 .fileName(fileName)
+                .numQuestions(questionCount)
                 .build();
 
         GroupStudyQuizDTO.AIQuizResponse aiResponse = null;
@@ -219,7 +238,7 @@ public class GroupStudyMaterialService {
                         .question(aiQ.getQuestion())
                         .optionsJson(optionsJsonStr)
                         .correctAnswer(aiQ.getCorrectAnswer())
-                        .timeLimitSeconds(30)
+                        .timeLimitSeconds(perQuestionSeconds)
                         .build();
 
                 groupStudyQuizQuestionRepository.save(question);

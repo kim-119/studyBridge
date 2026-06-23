@@ -20,9 +20,9 @@ class QuizGenerateRequest(BaseModel):
     )
     knowledgeLevel: Optional[str] = Field("학사", description="사용자 지식수준")
     numQuestions: Optional[int] = Field(
-        None, validation_alias=AliasChoices("numQuestions", "num_questions"), ge=1, le=10, description="생성할 문항 수"
+        None, validation_alias=AliasChoices("numQuestions", "num_questions"), ge=1, le=20, description="생성할 문항 수"
     )
-    count: Optional[int] = Field(None, ge=1, le=10, description="생성할 문항 수")
+    count: Optional[int] = Field(None, ge=1, le=20, description="생성할 문항 수")
     questionType: Literal[
         "객관식", "주관식", "혼합",
         "multiple_choice", "short_answer", "mixed",

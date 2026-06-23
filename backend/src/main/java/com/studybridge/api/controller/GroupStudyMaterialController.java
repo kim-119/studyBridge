@@ -30,13 +30,15 @@ public class GroupStudyMaterialController {
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long groupId,
             @RequestParam("title") String title,
-            @RequestParam("file") MultipartFile file) throws IOException {
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "questionCount", required = false) Integer questionCount,
+            @RequestParam(value = "timeLimitSeconds", required = false) Integer timeLimitSeconds) throws IOException {
 
-        log.info("Received request to upload material & generate quiz. uploaderId={}, groupId={}, title={}",
-                userDetails.getId(), groupId, title);
+        log.info("Received request to upload material & generate quiz. uploaderId={}, groupId={}, title={}, questionCount={}, timeLimitSeconds={}",
+                userDetails.getId(), groupId, title, questionCount, timeLimitSeconds);
 
         GroupStudyMaterialDTO response = groupStudyMaterialService.uploadMaterialAndGenerateQuiz(
-                userDetails.getId(), groupId, title, file);
+                userDetails.getId(), groupId, title, file, questionCount, timeLimitSeconds);
 
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
@@ -69,12 +71,15 @@ public class GroupStudyMaterialController {
     public ResponseEntity<GroupStudyQuizDTO.QuizResponse> generateQuizForMaterial(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long groupId,
-            @PathVariable Long materialId) {
+            @PathVariable Long materialId,
+            @RequestBody(required = false) GroupStudyQuizDTO.QuizGenerateOptions options) {
 
-        log.info("Request to (re)generate quiz from material. userId={}, groupId={}, materialId={}",
-                userDetails.getId(), groupId, materialId);
+        Integer questionCount = options != null ? options.getQuestionCount() : null;
+        Integer timeLimitSeconds = options != null ? options.getTimeLimitSeconds() : null;
+        log.info("Request to (re)generate quiz from material. userId={}, groupId={}, materialId={}, questionCount={}, timeLimitSeconds={}",
+                userDetails.getId(), groupId, materialId, questionCount, timeLimitSeconds);
         GroupStudyQuizDTO.QuizResponse response = groupStudyMaterialService.generateQuizForMaterial(
-                userDetails.getId(), groupId, materialId);
+                userDetails.getId(), groupId, materialId, questionCount, timeLimitSeconds);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 

@@ -34,7 +34,26 @@ import java.util.stream.Collectors;
 @Slf4j
 public class GroupStudyQuizSessionService {
 
-    private static final int QUIZ_DURATION_SECONDS = 30;
+    private static final int QUIZ_DURATION_SECONDS = 15; // 기본/fallback 문제당 제한시간
+
+    // 세션에 저장된 문제당 제한시간을 반환 (없으면 기본값)
+    private int sessionDuration(GroupStudyQuizSession session) {
+        Integer d = session != null ? session.getQuestionDurationSeconds() : null;
+        return (d != null && d > 0) ? d : QUIZ_DURATION_SECONDS;
+    }
+
+    // 퀴즈 문제들의 timeLimitSeconds로부터 문제당 제한시간을 결정 (5~120초로 보정, 없으면 기본값)
+    private int resolveQuizDuration(List<GroupStudyQuizQuestion> questions) {
+        if (questions != null) {
+            for (GroupStudyQuizQuestion q : questions) {
+                Integer s = q.getTimeLimitSeconds();
+                if (s != null && s > 0) {
+                    return Math.max(5, Math.min(120, s));
+                }
+            }
+        }
+        return QUIZ_DURATION_SECONDS;
+    }
     private static final int REVEAL_DISPLAY_SECONDS = 3;
 
     private final GroupStudyMemberRepository groupStudyMemberRepository;
@@ -146,17 +165,20 @@ public class GroupStudyQuizSessionService {
 
             LocalDateTime now = LocalDateTime.now();
 
+            // 퀴즈 생성자가 지정한 문제당 제한시간을 사용한다. (문제에 저장된 값, 없으면 기본값)
+            int durationSeconds = resolveQuizDuration(questions);
+
             GroupStudyQuizSession session = GroupStudyQuizSession.builder()
                     .groupStudy(quiz.getGroupStudy())
                     .quiz(quiz)
                     .quizTitleSnapshot(quiz.getTitle())
                     .status(GroupStudyQuizSessionStatus.QUESTION)
                     .currentQuestionIndex(0)
-                    .questionDurationSeconds(QUIZ_DURATION_SECONDS)
+                    .questionDurationSeconds(durationSeconds)
                     .questionOrderJson(writeQuestionOrder(questions))
                     .currentQuestionId(questions.get(0).getId())
                     .questionStartedAt(now)
-                    .questionEndsAt(now.plusSeconds(QUIZ_DURATION_SECONDS))
+                    .questionEndsAt(now.plusSeconds(durationSeconds))
                     .build();
             session = groupStudyQuizSessionRepository.save(session);
 
@@ -431,8 +453,8 @@ public class GroupStudyQuizSessionService {
                 .options(parseOptions(question))
                 .currentIndex(session.getCurrentQuestionIndex())
                 .totalQuestions(resolveTotalQuestions(session))
-                .timeLimitSeconds(QUIZ_DURATION_SECONDS)
-                .remainingSeconds(QUIZ_DURATION_SECONDS)
+                .timeLimitSeconds(sessionDuration(session))
+                .remainingSeconds(sessionDuration(session))
                 .questionStartedAt(session.getQuestionStartedAt())
                 .questionEndsAt(session.getQuestionEndsAt())
                 .scoreboard(buildScoreboard(groupId))
@@ -520,8 +542,9 @@ public class GroupStudyQuizSessionService {
                     points = session.getQuiz().getRewardPoints() != null ? session.getQuiz().getRewardPoints() : 10;
                     int timeTaken = answer.getSubmittedAt() != null
                             ? Math.max(0, (int) Duration.between(session.getQuestionStartedAt(), answer.getSubmittedAt()).toSeconds())
-                            : QUIZ_DURATION_SECONDS;
-                    int bonus = Math.max(0, (QUIZ_DURATION_SECONDS - Math.min(timeTaken, QUIZ_DURATION_SECONDS))) / 2;
+                            : sessionDuration(session);
+                    int durationForBonus = sessionDuration(session);
+                    int bonus = Math.max(0, (durationForBonus - Math.min(timeTaken, durationForBonus))) / 2;
                     points += bonus;
                 }
 
@@ -557,7 +580,7 @@ public class GroupStudyQuizSessionService {
                     .options(parseOptions(question))
                     .currentIndex(session.getCurrentQuestionIndex())
                     .totalQuestions(resolveTotalQuestions(session))
-                    .timeLimitSeconds(QUIZ_DURATION_SECONDS)
+                    .timeLimitSeconds(sessionDuration(session))
                     .remainingSeconds(0)
                     .correctAnswer(question.getCorrectAnswer())
                     .pointsAwarded(totalPointsAwarded)
@@ -611,7 +634,7 @@ public class GroupStudyQuizSessionService {
             session.setCurrentQuestionIndex(nextIndex);
             session.setCurrentQuestionId(nextQuestion.getId());
             session.setQuestionStartedAt(now);
-            session.setQuestionEndsAt(now.plusSeconds(QUIZ_DURATION_SECONDS));
+            session.setQuestionEndsAt(now.plusSeconds(sessionDuration(session)));
             session.setRevealAt(null);
             session.setNextQuestionAt(null);
             groupStudyQuizSessionRepository.save(session);
@@ -641,7 +664,7 @@ public class GroupStudyQuizSessionService {
                 .options(parseOptions(question))
                 .currentIndex(session.getCurrentQuestionIndex())
                 .totalQuestions(resolveTotalQuestions(session))
-                .timeLimitSeconds(QUIZ_DURATION_SECONDS)
+                .timeLimitSeconds(sessionDuration(session))
                 .remainingSeconds(0)
                 .correctAnswer(question.getCorrectAnswer())
                 .questionStartedAt(session.getQuestionStartedAt())
