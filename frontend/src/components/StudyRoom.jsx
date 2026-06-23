@@ -418,7 +418,9 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const [session, setSession] = useState(null);
   const sessionRef = React.useRef(null); // 강퇴 이벤트 수신 시 최신 세션에 즉시 접근하기 위한 ref
   const [publisher, setPublisher] = useState(null);
-  const [subscribers, setSubscribers] = useState([]);
+  // 원격 subscriber는 connectionId 기준 Object로 관리한다(재접속 시 덮어쓰기/중복/stale 방지).
+  // key: connection.connectionId, value: OpenVidu Subscriber(streamManager)
+  const [subscribers, setSubscribers] = useState({});
   const [ovError, setOvError] = useState('');
   // 장치 fallback 안내(치명적 오류 아님: camera-only / audio-only / viewer-only 입장 등)
   const [ovNotice, setOvNotice] = useState('');
@@ -455,7 +457,18 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     if (targetUserId == null) return;
     console.log('[video:remove] userId=', targetUserId);
     setMembers(prev => prev.filter(m => String(m.userId) !== String(targetUserId)));
-    setSubscribers(prev => prev.filter(sub => String(parseSubscriberUserId(sub)) !== String(targetUserId)));
+    setSubscribers(prev => {
+      let changed = false;
+      const next = {};
+      for (const [connectionId, sub] of Object.entries(prev)) {
+        if (String(parseSubscriberUserId(sub)) === String(targetUserId)) {
+          changed = true;
+          continue;
+        }
+        next[connectionId] = sub;
+      }
+      return changed ? next : prev;
+    });
   };
 
   const formatShortDateTime = (value) => {
@@ -644,6 +657,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
     async function joinSession() {
       try {
+        // 재입장 방어: 이전 effect cleanup이 비동기 state 갱신을 남겼을 수 있으므로
+        // 새 세션 시작 전 stale subscriber/publisher 타일을 확실히 비운다.
+        setSubscribers({});
+        setPublisher(null);
+
         let { token } = await groupService.getVideoToken(study.id);
         if (!isMounted) return;
 
@@ -653,15 +671,25 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         forceOpenViduWssTransport(OVInstance);
         sessionInstance = OVInstance.initSession();
         sessionInstance.on('streamCreated', (event) => {
+          const connectionId = event.stream.connection.connectionId;
           const subscriber = sessionInstance.subscribe(event.stream, undefined);
+          console.info('[OpenVidu] streamCreated', { connectionId });
           if (isMounted) {
-            setSubscribers(prev => [...prev, subscriber]);
+            // connectionId를 key로 저장 → 동일 연결 재이벤트는 덮어쓰기, 중복 타일 방지.
+            setSubscribers(prev => ({ ...prev, [connectionId]: subscriber }));
           }
         });
 
         sessionInstance.on('streamDestroyed', (event) => {
+          const connectionId = event.stream.connection.connectionId;
+          console.info('[OpenVidu] streamDestroyed', { connectionId });
           if (isMounted) {
-            setSubscribers(prev => prev.filter(sub => sub !== event.stream.streamManager));
+            setSubscribers(prev => {
+              if (!prev[connectionId]) return prev;
+              const next = { ...prev };
+              delete next[connectionId];
+              return next;
+            });
           }
         });
 
@@ -673,29 +701,37 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
             goneUserId = JSON.parse(event.connection.data).userId;
           } catch (e) { /* ignore */ }
           const goneConnId = event.connection.connectionId;
-          setSubscribers(prev => prev.filter(sub => {
-            try {
-              return sub.stream.connection.connectionId !== goneConnId
-                && String(JSON.parse(sub.stream.connection.data).userId) !== String(goneUserId);
-            } catch (e) {
-              return true;
+          setSubscribers(prev => {
+            let changed = false;
+            const next = {};
+            for (const [connectionId, sub] of Object.entries(prev)) {
+              let keep = connectionId !== goneConnId;
+              if (keep && goneUserId != null) {
+                try {
+                  keep = String(JSON.parse(sub.stream.connection.data).userId) !== String(goneUserId);
+                } catch (e) { /* keep */ }
+              }
+              if (keep) next[connectionId] = sub;
+              else changed = true;
             }
-          }));
+            return changed ? next : prev;
+          });
         });
 
         // 원격 참가자가 카메라/마이크를 끄거나 켜면(videoActive/audioActive 변경) 즉시 리렌더하여
         // avatar fallback 전환과 마이크 상태 아이콘이 실시간으로 반영되게 한다.
         sessionInstance.on('streamPropertyChanged', (event) => {
           if (isMounted) {
-            setSubscribers(prev => [...prev]); // 새 배열 참조로 리렌더 트리거 (stream 객체의 최신 active 값 반영)
+            setSubscribers(prev => ({ ...prev })); // 새 객체 참조로 리렌더 트리거 (stream 객체의 최신 active 값 반영)
           }
         });
 
         sessionInstance.on('exception', (exception) => {
-          console.warn('OpenVidu Exception:', exception);
+          console.warn('[OpenVidu exception]', exception);
         });
 
         const connectionData = JSON.stringify({ userId: userId, clientData: myDisplayName });
+        console.info('[OpenVidu] connecting session', { studyId: study.id, userId });
         await sessionInstance.connect(token, connectionData);
         if (!isMounted) return;
 
@@ -728,6 +764,29 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           console.warn('[StudyRoom] enumerateDevices 실패, 기본값으로 진행', enumErr?.name || enumErr);
         }
 
+        // 사용자 의도(토글)와 실제 장치 존재 여부를 합쳐 송출 가능 여부를 계산한다.
+        const effectiveAudio = Boolean(hasAnyAudio && isMicOn !== false);
+        const effectiveVideo = Boolean(hasAnyVideo && isVideoOn !== false);
+        console.info('[OpenVidu] device availability', {
+          hasAudioInput: hasAnyAudio,
+          hasVideoInput: hasAnyVideo,
+          effectiveAudio,
+          effectiveVideo,
+        });
+
+        // 카메라/마이크가 둘 다 없으면 initPublisher를 호출하지 않는다.
+        // (audioSource/videoSource가 동시에 false/null이면 OpenVidu가 예외를 던지므로 publisher 자체를 만들지 않는다.)
+        // 세션 연결은 유지되어 다른 참가자 화면은 계속 볼 수 있다(보기 전용).
+        if (!hasAnyVideo && !hasAnyAudio) {
+          console.warn('[OpenVidu] view-only mode');
+          setIsMicOn(false);
+          setIsVideoOn(false);
+          setPublisher(null);
+          setOvError('');
+          setOvNotice('보기 전용으로 입장했습니다. 마이크/카메라 장치를 연결하거나 권한을 허용하면 송출할 수 있습니다.');
+          return;
+        }
+
         const buildOpts = (vSource, aSource) => ({
           audioSource: aSource,
           videoSource: vSource,
@@ -739,13 +798,14 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           mirror: true
         });
 
-        // fallback 순서: 카메라+마이크 → 카메라만 → 기본카메라만 → 마이크만 → 시청전용
+        // fallback 순서: 카메라+마이크 → 카메라만 → 기본카메라만 → 마이크만.
+        // audioSource와 videoSource가 동시에 false가 되는 조합(viewer-only)은 절대 만들지 않는다.
+        // (장치가 둘 다 없는 경우는 위 보기 전용 분기에서 이미 return 됨.)
         const attempts = [];
         if (hasAnyVideo && hasAnyAudio) attempts.push({ v: videoDeviceId, a: undefined, tag: 'camera+mic' });
         if (hasAnyVideo) attempts.push({ v: videoDeviceId, a: false, tag: 'camera-only' });
         if (hasAnyVideo && videoDeviceId) attempts.push({ v: undefined, a: false, tag: 'default-camera-only' });
         if (hasAnyAudio) attempts.push({ v: false, a: undefined, tag: 'audio-only' });
-        attempts.push({ v: false, a: false, tag: 'viewer-only' });
 
         let publisherInstance = null;
         let chosen = null;
@@ -783,11 +843,13 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         }
 
         if (!publisherInstance) {
-          // 모든 단계 실패: 세션 연결은 유지되므로 시청자 상태로 남긴다.
+          // 장치는 있으나 모든 송출 시도 실패: session.disconnect 하지 않고 보기 전용으로 유지한다.
+          console.error('[OpenVidu] publisher failed', lastErr);
           setIsMicOn(false);
           setIsVideoOn(false);
-          setOvError(friendlyDeviceMessage(lastErr));
-          setOvNotice('');
+          setPublisher(null);
+          setOvError('');
+          setOvNotice('송출 장치 연결에 실패했습니다. 보기 전용으로 입장합니다. (' + friendlyDeviceMessage(lastErr) + ')');
           return;
         }
 
@@ -834,7 +896,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
       sessionRef.current = null;
       setSession(null);
       setPublisher(null);
-      setSubscribers([]);
+      setSubscribers({});
     };
   }, [study?.id, userId, myDisplayName]);
 
@@ -1698,8 +1760,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               )}
             </div>
 
-            {/* Remote Peer Video Feeds */}
-            {subscribers.map(sub => {
+            {/* Remote Peer Video Feeds — connectionId 기준으로 렌더(중복/stale 타일 방지) */}
+            {Object.entries(subscribers).map(([connectionId, sub]) => {
               let displayName = '알 수 없음';
               let subUserId = null;
               try {
@@ -1713,7 +1775,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               const subPhotoUrl = memberObj?.photoUrl || null;
               return (
                 <VideoFeed
-                  key={sub.stream.streamId}
+                  key={connectionId}
                   stream={sub.stream.mediaStream}
                   isLocal={false}
                   displayName={displayName}
@@ -1728,7 +1790,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
             })}
 
             {/* Empty Slots */}
-            {Array.from({ length: Math.max(0, (study.maxMembers || 16) - 1 - subscribers.length) }).map((_, i) => (
+            {Array.from({ length: Math.max(0, (study.maxMembers || 16) - 1 - Object.keys(subscribers).length) }).map((_, i) => (
               <div key={i} style={{ backgroundColor: 'rgba(30, 41, 59, 0.3)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '16/9', border: '1px dashed rgba(255,255,255,0.1)' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', opacity: 0.3 }}>
                   <Monitor size={36} color="#9CA3AF" />
@@ -1766,7 +1828,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                     isUserMicOn = isMicOn;
                     isUserVideoOn = isVideoOn;
                   } else {
-                    const sub = subscribers.find(s => {
+                    const sub = Object.values(subscribers).find(s => {
                       try {
                         const connData = JSON.parse(s.stream.connection.data);
                         return Number(connData.userId) === Number(member.userId);
