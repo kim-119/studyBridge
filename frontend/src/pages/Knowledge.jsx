@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Plus, Heart, MessageSquare, Image as ImageIcon, FileText, X } from 'lucide-react';
+import { Search, Plus, Heart, MessageSquare, Image as ImageIcon, FileText, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { knowledgeService } from '../services/api';
 
@@ -10,6 +10,8 @@ export default function Knowledge() {
   const [posts, setPosts] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('전체');
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 15;
   
   const [showWriteModal, setShowWriteModal] = useState(false);
   const [newPost, setNewPost] = useState({ title: '', summary: '', tags: '' });
@@ -98,6 +100,21 @@ export default function Knowledge() {
     return tags.includes(activeFilter);
   });
 
+  // 필터/검색 결과가 바뀌면 1페이지로 리셋
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeFilter, posts]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredPosts.length / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+  const pagedPosts = filteredPosts.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  const goToPage = (page) => {
+    if (page < 1 || page > totalPages) return;
+    setCurrentPage(page);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   return (
     <div style={{ width: '100%', boxSizing: 'border-box', padding: '40px', fontFamily: '"Malgun Gothic", "맑은 고딕", sans-serif', backgroundColor: '#F9FAFB', minHeight: 'calc(100vh - 80px)' }}>
       
@@ -147,30 +164,30 @@ export default function Knowledge() {
       {/* Main Content: Post Grid (Full Width) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
         {/* Featured Post (First post) spanning full width */}
-        {filteredPosts.length > 0 && (
+        {pagedPosts.length > 0 && (
           <div style={{ gridColumn: '1 / -1', marginBottom: '16px' }}>
-             <Link to={`/knowledge/${filteredPosts[0].blogId}`} style={{ textDecoration: 'none', display: 'block' }}>
+             <Link to={`/knowledge/${pagedPosts[0].blogId}`} style={{ textDecoration: 'none', display: 'block' }}>
               <div style={{ position: 'relative', width: '100%', height: '400px', borderRadius: '24px', overflow: 'hidden', boxShadow: '0 12px 32px rgba(0,0,0,0.1)', cursor: 'pointer' }}>
-                <img src={getThumbnail(filteredPosts[0])} alt={filteredPosts[0].title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <img src={getThumbnail(pagedPosts[0])} alt={pagedPosts[0].title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '60px 40px 40px', background: 'linear-gradient(to top, rgba(0,0,0,0.9), transparent)', color: 'white' }}>
                   <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-                    {extractTags(filteredPosts[0].content).map(tag => <span key={tag} style={{ backgroundColor: '#60C95A', padding: '6px 12px', borderRadius: '8px', fontSize: '13px', fontWeight: 'bold' }}>{tag}</span>)}
+                    {extractTags(pagedPosts[0].content).map(tag => <span key={tag} style={{ backgroundColor: '#60C95A', padding: '6px 12px', borderRadius: '8px', fontSize: '13px', fontWeight: 'bold' }}>{tag}</span>)}
                   </div>
-                  <h2 style={{ fontSize: '32px', fontWeight: 'bold', margin: '0 0 16px' }}>{filteredPosts[0].title}</h2>
-                  <p style={{ fontSize: '16px', color: 'rgba(255,255,255,0.8)', margin: '0 0 20px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', maxWidth: '800px' }}>{stripTags(filteredPosts[0].content)}</p>
+                  <h2 style={{ fontSize: '32px', fontWeight: 'bold', margin: '0 0 16px' }}>{pagedPosts[0].title}</h2>
+                  <p style={{ fontSize: '16px', color: 'rgba(255,255,255,0.8)', margin: '0 0 20px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', maxWidth: '800px' }}>{stripTags(pagedPosts[0].content)}</p>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '15px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      {filteredPosts[0].authorPhotoUrl ? (
-                        <img src={filteredPosts[0].authorPhotoUrl} alt="author" style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover' }} />
+                      {pagedPosts[0].authorPhotoUrl ? (
+                        <img src={pagedPosts[0].authorPhotoUrl} alt="author" style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover' }} />
                       ) : (
                         <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: '#60C95A', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 'bold' }}>
-                          {filteredPosts[0].authorNickname ? filteredPosts[0].authorNickname.charAt(0) : 'U'}
+                          {pagedPosts[0].authorNickname ? pagedPosts[0].authorNickname.charAt(0) : 'U'}
                         </div>
                       )}
-                      <span style={{ fontWeight: 'bold' }}>{filteredPosts[0].authorNickname}</span>
+                      <span style={{ fontWeight: 'bold' }}>{pagedPosts[0].authorNickname}</span>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Heart size={16} /> {filteredPosts[0].likeCount}</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><MessageSquare size={16} /> {filteredPosts[0].comments?.length || 0}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Heart size={16} /> {pagedPosts[0].likeCount}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><MessageSquare size={16} /> {pagedPosts[0].comments?.length || 0}</div>
                   </div>
                 </div>
               </div>
@@ -179,7 +196,7 @@ export default function Knowledge() {
         )}
 
         {/* Rest of the posts Grid */}
-        {filteredPosts.slice(1).map(post => (
+        {pagedPosts.slice(1).map(post => (
           <Link to={`/knowledge/${post.blogId}`} key={post.blogId} style={{ textDecoration: 'none', color: 'inherit' }}>
             <div style={{ backgroundColor: 'white', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 4px 16px rgba(0,0,0,0.04)', transition: 'transform 0.2s, boxShadow 0.2s', display: 'flex', flexDirection: 'column', height: '100%', border: '1px solid #E5E7EB' }} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-6px)'; e.currentTarget.style.boxShadow = '0 12px 24px rgba(0,0,0,0.08)' }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.04)' }}>
               <div style={{ width: '100%', height: '200px', backgroundColor: '#F3F4F6' }}>
@@ -213,6 +230,39 @@ export default function Knowledge() {
           </Link>
         ))}
       </div>
+
+      {/* 페이지네이션 */}
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', marginTop: '48px' }}>
+          <button
+            onClick={() => goToPage(safePage - 1)}
+            disabled={safePage === 1}
+            style={{ width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '10px', border: '1px solid #E5E7EB', backgroundColor: '#FFFFFF', color: safePage === 1 ? '#D1D5DB' : '#374151', cursor: safePage === 1 ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+          >
+            <ChevronLeft size={18} />
+          </button>
+
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
+            <button
+              key={page}
+              onClick={() => goToPage(page)}
+              style={{ minWidth: '40px', height: '40px', padding: '0 8px', borderRadius: '10px', border: page === safePage ? '1px solid #60C95A' : '1px solid #E5E7EB', backgroundColor: page === safePage ? '#60C95A' : '#FFFFFF', color: page === safePage ? 'white' : '#374151', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', boxShadow: page === safePage ? '0 4px 12px rgba(96, 201, 90, 0.25)' : 'none', transition: 'all 0.2s' }}
+              onMouseEnter={(e) => { if (page !== safePage) e.currentTarget.style.borderColor = '#60C95A'; }}
+              onMouseLeave={(e) => { if (page !== safePage) e.currentTarget.style.borderColor = '#E5E7EB'; }}
+            >
+              {page}
+            </button>
+          ))}
+
+          <button
+            onClick={() => goToPage(safePage + 1)}
+            disabled={safePage === totalPages}
+            style={{ width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '10px', border: '1px solid #E5E7EB', backgroundColor: '#FFFFFF', color: safePage === totalPages ? '#D1D5DB' : '#374151', cursor: safePage === totalPages ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+          >
+            <ChevronRight size={18} />
+          </button>
+        </div>
+      )}
 
       {/* 글 작성 모달 (디자인 정책 적용) */}
       {showWriteModal && (

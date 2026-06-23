@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Heart, MessageSquare, Share2, FileText, Download, User, Flag, X } from 'lucide-react';
+import { ArrowLeft, Heart, MessageSquare, Share2, FileText, Download, User, Flag, X, Pencil, Image as ImageIcon, Check } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { knowledgeService } from '../services/api';
 
@@ -18,6 +18,20 @@ export default function KnowledgeDetail() {
 
   const [post, setPost] = useState(null);
   const [newComment, setNewComment] = useState('');
+
+  // 글 수정 관련 상태
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editPost, setEditPost] = useState({ title: '', summary: '', tags: '' });
+  const [editImageFile, setEditImageFile] = useState(null);
+  const [editPdfFile, setEditPdfFile] = useState(null);
+  const [editClearImage, setEditClearImage] = useState(false);
+  const [editClearPdf, setEditClearPdf] = useState(false);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const editImageRef = useRef(null);
+  const editPdfRef = useRef(null);
+
+  // 공유하기 상태
+  const [shareCopied, setShareCopied] = useState(false);
 
   // 신고 관련 상태
   const [showReportModal, setShowReportModal] = useState(false);
@@ -123,6 +137,79 @@ export default function KnowledgeDetail() {
     }
   };
 
+  const openEditModal = () => {
+    if (!post) return;
+    const tags = (post.content?.match(/#\S+/g) || []).map(t => t.replace(/^#/, '')).join(', ');
+    const summary = post.content?.replace(/#\S+/g, '').trim() || '';
+    setEditPost({ title: post.title || '', summary, tags });
+    setEditImageFile(null);
+    setEditPdfFile(null);
+    setEditClearImage(false);
+    setEditClearPdf(false);
+    setShowEditModal(true);
+  };
+
+  const handleEditSubmit = async () => {
+    if (!editPost.title.trim() || !editPost.summary.trim()) {
+      alert("제목과 내용을 입력해주세요.");
+      return;
+    }
+    if (editSubmitting) return;
+    setEditSubmitting(true);
+
+    const tagsArray = editPost.tags.split(',')
+      .map(tag => tag.trim())
+      .filter(t => t)
+      .map(t => t.startsWith('#') ? t : `#${t}`);
+
+    const finalContent = tagsArray.length
+      ? `${editPost.summary}\n\n${tagsArray.join(' ')}`
+      : editPost.summary;
+
+    try {
+      const updated = await knowledgeService.updatePost(
+        id,
+        editPost.title,
+        finalContent,
+        editImageFile,
+        editPdfFile,
+        editClearImage,
+        editClearPdf
+      );
+      setPost(updated);
+      setShowEditModal(false);
+    } catch (error) {
+      console.error("Failed to update post:", error);
+      alert(error.response?.data?.message || "글 수정에 실패했습니다.");
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
+  const handleShare = async () => {
+    const url = window.location.href;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = url;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2000);
+    } catch (error) {
+      console.error("Failed to copy share link:", error);
+      window.prompt("아래 링크를 복사하세요:", url);
+    }
+  };
+
 
   if (!post) {
     return <div style={{ padding: '40px', textAlign: 'center', fontFamily: '"Malgun Gothic", sans-serif' }}>로딩 중...</div>;
@@ -183,14 +270,25 @@ export default function KnowledgeDetail() {
           </button>
           
           {isMyPost && (
-            <button 
-              onClick={handleDeletePost}
-              style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(239,68,68,0.2)', backdropFilter: 'blur(4px)', color: '#F87171', border: '1px solid rgba(239,68,68,0.3)', padding: '10px 16px', borderRadius: '12px', cursor: 'pointer', fontWeight: '600', transition: '0.2s' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.4)'; e.currentTarget.style.color = 'white'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)'; e.currentTarget.style.color = '#F87171'; }}
-            >
-              삭제하기
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                onClick={openEditModal}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.2)', backdropFilter: 'blur(4px)', color: 'white', border: '1px solid rgba(255,255,255,0.3)', padding: '10px 16px', borderRadius: '12px', cursor: 'pointer', fontWeight: '600', transition: '0.2s' }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.3)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.2)'}
+              >
+                <Pencil size={16} />
+                수정하기
+              </button>
+              <button
+                onClick={handleDeletePost}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(239,68,68,0.2)', backdropFilter: 'blur(4px)', color: '#F87171', border: '1px solid rgba(239,68,68,0.3)', padding: '10px 16px', borderRadius: '12px', cursor: 'pointer', fontWeight: '600', transition: '0.2s' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.4)'; e.currentTarget.style.color = 'white'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)'; e.currentTarget.style.color = '#F87171'; }}
+              >
+                삭제하기
+              </button>
+            </div>
           )}
         </div>
         <div style={{ position: 'absolute', bottom: '40px', left: '0', right: '0', maxWidth: '800px', margin: '0 auto', padding: '0 20px', color: 'white', zIndex: 10 }}>
@@ -276,9 +374,12 @@ export default function KnowledgeDetail() {
               <Heart size={20} fill={isLiked ? "#EF4444" : "none"} />
               도움이 되었어요 {post.likeCount}
             </button>
-            <button style={{ padding: '12px 32px', display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: 'white', border: '2px solid #E5E7EB', color: '#4B5563', borderRadius: '40px', fontSize: '16px', fontWeight: '700', cursor: 'pointer', transition: 'all 0.2s' }}>
-              <Share2 size={20} />
-              공유하기
+            <button
+              onClick={handleShare}
+              style={{ padding: '12px 32px', display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: shareCopied ? '#ECFDF5' : 'white', border: shareCopied ? '2px solid #60C95A' : '2px solid #E5E7EB', color: shareCopied ? '#387235' : '#4B5563', borderRadius: '40px', fontSize: '16px', fontWeight: '700', cursor: 'pointer', transition: 'all 0.2s' }}
+            >
+              {shareCopied ? <Check size={20} /> : <Share2 size={20} />}
+              {shareCopied ? '링크 복사됨' : '공유하기'}
             </button>
             {!isMyPost && userId && (
               <button
@@ -373,6 +474,111 @@ export default function KnowledgeDetail() {
 
         </div>
       </div>
+
+      {/* 글 수정 모달 */}
+      {showEditModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000, padding: '20px' }} onClick={() => setShowEditModal(false)}>
+          <div style={{ backgroundColor: '#FFFFFF', borderRadius: '12px', width: '100%', maxWidth: '800px', maxHeight: '90vh', overflowY: 'auto', display: 'flex', flexDirection: 'column' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #E5E7EB', paddingBottom: '16px' }}>
+                <h2 style={{ fontSize: '20px', fontWeight: 'bold', color: '#111827', margin: 0 }}>지식 글 수정</h2>
+                <button onClick={() => setShowEditModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6B7280' }}><X size={24} /></button>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#111827', marginBottom: '8px' }}>제목</label>
+                  <input
+                    type="text"
+                    placeholder="글 제목을 입력하세요."
+                    value={editPost.title}
+                    onChange={(e) => setEditPost({ ...editPost, title: e.target.value })}
+                    style={{ width: '100%', height: '40px', boxSizing: 'border-box', padding: '0 16px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', outline: 'none' }}
+                    onFocus={(e) => e.target.style.border = '1px solid #60C95A'}
+                    onBlur={(e) => e.target.style.border = '1px solid #D1D5DB'}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#111827', marginBottom: '8px' }}>해시태그</label>
+                  <input
+                    type="text"
+                    placeholder="쉼표(,)로 구분하여 해시태그를 입력하세요. 예: 로드맵, 코딩테스트"
+                    value={editPost.tags}
+                    onChange={(e) => setEditPost({ ...editPost, tags: e.target.value })}
+                    style={{ width: '100%', height: '40px', boxSizing: 'border-box', padding: '0 16px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', outline: 'none' }}
+                    onFocus={(e) => e.target.style.border = '1px solid #60C95A'}
+                    onBlur={(e) => e.target.style.border = '1px solid #D1D5DB'}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#111827', marginBottom: '8px' }}>내용</label>
+                  <textarea
+                    placeholder="나만의 로드맵, 노하우, 공부 자료를 상세히 공유해주세요."
+                    value={editPost.summary}
+                    onChange={(e) => setEditPost({ ...editPost, summary: e.target.value })}
+                    style={{ width: '100%', boxSizing: 'border-box', padding: '16px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', outline: 'none', minHeight: '200px', resize: 'vertical', lineHeight: '1.6' }}
+                    onFocus={(e) => e.target.style.border = '1px solid #60C95A'}
+                    onBlur={(e) => e.target.style.border = '1px solid #D1D5DB'}
+                  />
+                </div>
+
+                {/* 첨부 파일 섹션 */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: 'bold', color: '#111827', marginBottom: '8px' }}>자료 첨부 (PDF, 이미지)</label>
+                  <div style={{ display: 'flex', gap: '16px' }}>
+                    <input type="file" ref={editPdfRef} accept="application/pdf" style={{ display: 'none' }} onChange={(e) => { setEditPdfFile(e.target.files[0]); setEditClearPdf(false); }} />
+                    <input type="file" ref={editImageRef} accept="image/*" style={{ display: 'none' }} onChange={(e) => { setEditImageFile(e.target.files[0]); setEditClearImage(false); }} />
+                    <button onClick={() => editPdfRef.current.click()} style={{ flex: 1, padding: '24px', backgroundColor: '#F3F4F6', border: '1px dashed #D1D5DB', borderRadius: '8px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', color: '#6B7280', transition: '0.2s' }} onMouseEnter={(e) => e.currentTarget.style.borderColor = '#60C95A'} onMouseLeave={(e) => e.currentTarget.style.borderColor = '#D1D5DB'}>
+                      <FileText size={28} color={editPdfFile || (post.pdfPresignedUrl && !editClearPdf) ? "#60C95A" : "#6B7280"} />
+                      <span style={{ fontSize: '12px', fontWeight: 'bold', color: editPdfFile || (post.pdfPresignedUrl && !editClearPdf) ? "#111827" : "#6B7280" }}>{editPdfFile ? editPdfFile.name : (post.pdfPresignedUrl && !editClearPdf ? '기존 PDF 첨부됨' : 'PDF 업로드')}</span>
+                    </button>
+                    <button onClick={() => editImageRef.current.click()} style={{ flex: 1, padding: '24px', backgroundColor: '#F3F4F6', border: '1px dashed #D1D5DB', borderRadius: '8px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', color: '#6B7280', transition: '0.2s' }} onMouseEnter={(e) => e.currentTarget.style.borderColor = '#60C95A'} onMouseLeave={(e) => e.currentTarget.style.borderColor = '#D1D5DB'}>
+                      <ImageIcon size={28} color={editImageFile || (post.imagePresignedUrl && !editClearImage) ? "#60C95A" : "#6B7280"} />
+                      <span style={{ fontSize: '12px', fontWeight: 'bold', color: editImageFile || (post.imagePresignedUrl && !editClearImage) ? "#111827" : "#6B7280" }}>{editImageFile ? editImageFile.name : (post.imagePresignedUrl && !editClearImage ? '기존 사진 첨부됨' : '사진 업로드')}</span>
+                    </button>
+                  </div>
+                  {/* 기존 첨부 제거 옵션 */}
+                  <div style={{ display: 'flex', gap: '20px', marginTop: '12px' }}>
+                    {post.pdfPresignedUrl && !editPdfFile && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#6B7280', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={editClearPdf} onChange={(e) => setEditClearPdf(e.target.checked)} />
+                        기존 PDF 삭제
+                      </label>
+                    )}
+                    {post.imagePresignedUrl && !editImageFile && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#6B7280', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={editClearImage} onChange={(e) => setEditClearImage(e.target.checked)} />
+                        기존 사진 삭제
+                      </label>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* 하단 버튼 */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #E5E7EB' }}>
+                <button
+                  onClick={() => setShowEditModal(false)}
+                  style={{ width: '80px', height: '40px', backgroundColor: '#FFFFFF', color: '#111827', border: '1px solid #E5E7EB', borderRadius: '8px', fontSize: '14px', cursor: 'pointer' }}
+                >
+                  취소
+                </button>
+                <button
+                  onClick={handleEditSubmit}
+                  disabled={editSubmitting}
+                  style={{ minWidth: '80px', height: '40px', padding: '0 16px', backgroundColor: editSubmitting ? '#9CA3AF' : '#60C95A', color: 'white', border: 'none', borderRadius: '8px', fontSize: '14px', cursor: editSubmitting ? 'not-allowed' : 'pointer' }}
+                  onMouseEnter={(e) => { if (!editSubmitting) e.currentTarget.style.backgroundColor = '#387235'; }}
+                  onMouseLeave={(e) => { if (!editSubmitting) e.currentTarget.style.backgroundColor = '#60C95A'; }}
+                >
+                  {editSubmitting ? '저장 중...' : '수정 완료'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 신고 모달 */}
       {showReportModal && (
