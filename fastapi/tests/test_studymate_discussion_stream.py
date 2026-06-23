@@ -88,6 +88,18 @@ def test_reactions_have_valid_reply_to(monkeypatch):
             assert not d.get("replyTo")
 
 
+def test_display_delay_is_sequential(monkeypatch):
+    # 순차 강제: displayOrder/displayDelayMs가 발화 순번대로 단조 증가해야 한다(도착순 뒤섞임 방지).
+    events = _run(monkeypatch)
+    aa = [e["data"] for e in events if e["event"] == "agent_answer"]
+    orders = [d.get("displayOrder") for d in aa]
+    delays = [d.get("displayDelayMs") for d in aa]
+    assert orders == sorted(orders) and orders == list(range(1, len(orders) + 1))
+    assert all(isinstance(x, int) for x in delays)
+    assert delays == sorted(delays)              # 단조 증가
+    assert delays[0] == 0                          # 첫 발화 0ms
+
+
 def test_all_complete_exactly_once(monkeypatch):
     events = _run(monkeypatch)
     kinds = [e["event"] for e in events]

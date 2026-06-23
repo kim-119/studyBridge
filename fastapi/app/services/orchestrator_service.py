@@ -442,15 +442,14 @@ def _mode_role_directive(mode: str, position: int = 0, total: int = 1) -> str:
             closing = ("→ 너는 마지막 차례가 아니다. 마무리 자기설명 요청은 하지 말고, "
                        "앞 메이트와 '겹치지 않는 다른 각도'의 질문만 던져라.")
         return (
-            "[모드: 소크라테스 — 질문으로만 답한다]\n"
-            "너는 개념을 '설명'하는 사람이 아니라, 사용자가 스스로 답을 찾게 '질문'만 던지는 안내자다.\n"
-            "★ 절대 규칙(어기면 실패): 평서문으로 개념을 정의·설명·요약하지 마라. "
-            "답변의 거의 모든 문장이 물음표('?')로 끝나는 질문이어야 한다. 정답을 직접 말하지 마라.\n"
-            "흐름: ① 사용자의 현재 생각을 묻는 질문 → ② 핵심으로 좁히는 꼬리질문 1~2개 "
-            "→ ③ 막히면 힌트도 '혹시 ~ 때문일까?'처럼 질문 형태로\n"
+            "[모드: 소크라테스 — 개념 힌트 후 꼬리질문(3단)]\n"
+            "너는 무작정 되묻기만 하는 튜터가 아니다. 아래 3단을 '반드시 순서대로' 지켜라.\n"
+            "① 진단: 사용자의 현재 생각/오개념을 1줄로 짚는다(예: '결과와 원인을 혼동 중').\n"
+            "② 개념 설명+힌트: 무작정 질문하기 전에, 해당 개념의 핵심 원리를 평서문 1~2줄로 '직접' 설명해 방향을 잡아준다(자료/RAG 근거 우선). 그 위에서 핵심 키워드 힌트를 준다.\n"
+            "③ 꼬리질문: 그 설명을 바탕으로 다음 사고를 유도하는 질문을 '딱 1개'만 던진다.\n"
+            "★ 금지: 정답 전체 노출, 긴 강의, 한 번에 2개 이상 질문, ②(개념 설명)를 생략하고 질문만 던지기.\n"
             + closing + "\n"
-            "[형식 예시] '지금 이게 왜 필요하다고 생각해? 만약 이게 없으면 어떤 문제가 생길까? "
-            "그 문제를 해결하려면 무엇이 가장 중요할까?'"
+            "[형식 예시] '진단: 결과와 원인을 섞고 있어. 핵심은 ~가 ~를 결정한다는 거야(1~2줄). 그럼 ~ 상황에선 어느 쪽이 먼저일까?'"
         )
     if m in ("simulation", "상황극", "상황극 모드", "situation", "roleplay"):
         return "[모드: 상황극] 주제와 관련된 가상 시나리오 속 인물이 되어 생생한 대사와 상황 묘사로 답하라. 마지막에 사용자에게 선택지나 행동을 묻는 질문을 던져라."
@@ -555,7 +554,7 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
 
 [절대 규칙 — 모드 형식이 최우선]
 - 위 [모드] 지시의 '형식'을 무엇보다 우선한다. 성격·지식수준은 말투와 난이도에만 반영하고, 모드 형식을 절대 바꾸지 마라.
-- (소크라테스) 개념을 설명·정의·요약하지 마라. '결론/핵심/정의' 나열 금지. 위 [모드] 흐름대로 질문·단계별 힌트 위주로만 답하라.
+- (소크라테스) 정답 전체나 긴 강의·'결론/핵심/정의' 나열 금지. 단, 핵심 원리는 1~2줄로 '직접 설명'한 뒤 그 위에서 단계별 힌트와 꼬리질문 1개를 던져라(설명 생략하고 질문만 던지기 금지).
 - (토론) 그냥 설명하지 마라. 논제를 정의하고 네 입장(찬성/반대/중립)을 근거·예시로 주장/반박하라.
 - 인신공격·욕설만 금지(개념을 향한 비꼼·시니컬은 성격대로 허용). 한국어로, JSON·머리말·꼬리말 없이 본문만. 같은 표현 반복 금지.{peers}"""
 
@@ -931,17 +930,20 @@ def _run_discussion_plan(
         if act.act_type == planner.DIRECT_ANSWER:
             answer_by_key[act.speaker] = answer
 
+        # 순차 강제: 발화 순번(display)마다 딜레이를 단조 증가시켜 프론트가 0→gap→2*gap…로
+        # 정렬/지연 렌더하도록 한다(비동기 도착 순서 뒤섞임 방지).
+        delay_ms = (display - 1) * int(min_gap * 1000)
         entry = {
             "agentId": aid, "agentName": agent_name, "answer": answer,
-            "displayOrder": display, "stage": stage, "status": "SUCCESS",
+            "displayOrder": display, "displayDelayMs": delay_ms, "stage": stage, "status": "SUCCESS",
             "actType": act.act_type, "replyTo": reply_to, **identity,
         }
         yield {
             "event": "agent_answer",
             "data": {
                 "type": "agent_answer", "agentIndex": idx + 1, "agentName": agent_name,
-                "agentId": aid, "answer": answer, "displayOrder": display, "stage": stage,
-                "phase": phase, "actType": act.act_type, "replyTo": reply_to,
+                "agentId": aid, "answer": answer, "displayOrder": display, "displayDelayMs": delay_ms,
+                "stage": stage, "phase": phase, "actType": act.act_type, "replyTo": reply_to,
                 "visible": True, "status": "SUCCESS", **identity,
             },
         }
@@ -1082,6 +1084,8 @@ def build_orchestrator_stream(
             logger.error("[Orchestrator] 에이전트 생성 실패 %s: %s", agent_name, e)
             answer = "(이 에이전트의 응답 생성 중 오류가 발생했어요.)"
 
+        # 순차 강제: idx 순번마다 0→gap→2*gap… 딜레이를 부여(도착 순서 뒤섞임 방지).
+        delay_ms = idx * int(min_gap * 1000)
         yield {
             "event": "agent_answer",
             "data": {
@@ -1091,6 +1095,7 @@ def build_orchestrator_stream(
                 "agentId": agent_id,
                 "answer": answer,
                 "displayOrder": idx + 1,
+                "displayDelayMs": delay_ms,
                 "stage": 1,
                 "phase": "FIRST_DRAFT",
                 "visible": True,
@@ -1103,6 +1108,7 @@ def build_orchestrator_stream(
             "agentName": agent_name,
             "answer": answer,
             "displayOrder": idx + 1,
+            "displayDelayMs": delay_ms,
             "stage": 1,
             "status": "SUCCESS",
             **identity,
