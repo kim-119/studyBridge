@@ -61,6 +61,7 @@ public class GroupStudyQuizSessionService {
     private final GroupStudyQuizQuestionRepository groupStudyQuizQuestionRepository;
     private final GroupStudyQuizSessionRepository groupStudyQuizSessionRepository;
     private final GroupStudyQuizSessionAnswerRepository groupStudyQuizSessionAnswerRepository;
+    private final GroupRankingService rankingService;
     private final SimpMessagingTemplate messagingTemplate;
     private final ThreadPoolTaskScheduler quizTaskScheduler;
     private final ObjectMapper objectMapper;
@@ -383,11 +384,12 @@ public class GroupStudyQuizSessionService {
     }
 
     private List<GroupStudySocketDTO.ScoreboardEntry> buildScoreboard(Long groupId) {
+        // JOINED 멤버 목록은 DB 에서(0점 멤버도 반드시 표시), points 는 Redis 랭킹(SoT)에서 가져온다.
         return groupStudyMemberRepository.findByGroupStudyIdAndStatus(groupId, GroupStudyMemberStatus.JOINED).stream()
                 .map(member -> new GroupStudySocketDTO.ScoreboardEntry(
                         member.getUser().getId(),
                         member.getUser().getDisplayName(),
-                        member.getPoints()))
+                        rankingService.getPoints(groupId, member.getUser().getId())))
                 .sorted(Comparator
                         .comparingInt((GroupStudySocketDTO.ScoreboardEntry entry) -> entry.getPoints() != null ? entry.getPoints() : 0)
                         .reversed()
@@ -550,12 +552,14 @@ public class GroupStudyQuizSessionService {
 
                 final int awardedPoints = points;
                 if (isCorrect) {
+                    // 점수 SoT 는 Redis ZSet. JOINED 멤버 검증은 유지하되, DB GroupStudyMember.points 에는
+                    // 더 이상 쓰지 않고(dormant) rankingService.addPoints(=ZINCRBY) 단일 경로로만 누적한다.
                     groupStudyMemberRepository.findByGroupStudyIdAndUserIdAndStatus(session.getGroupStudy().getId(),
                             answer.getUserId(), GroupStudyMemberStatus.JOINED)
-                            .ifPresent(member -> {
-                                member.setPoints((member.getPoints() != null ? member.getPoints() : 0) + awardedPoints);
-                                groupStudyMemberRepository.save(member);
-                            });
+                            .ifPresent(member -> rankingService.addPoints(
+                                    session.getGroupStudy().getId(),
+                                    answer.getUserId(),
+                                    awardedPoints));
                     totalPointsAwarded += awardedPoints;
                 }
 
