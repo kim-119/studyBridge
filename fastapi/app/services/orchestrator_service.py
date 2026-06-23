@@ -341,6 +341,16 @@ def _fetch_wikipedia_context(query: str) -> str:
     return ""
 
 
+def _build_knowledge_context(query: str) -> str:
+    """지식 보강(한국어 위키 + Tavily) 단일 진입점. 실패해도 위키 폴백→빈문자열."""
+    try:
+        from app.services.knowledge_enrichment import build_knowledge_context
+        return build_knowledge_context(query)
+    except Exception as e:
+        logger.warning("[Orchestrator] 지식 보강 실패, 위키 폴백: %s", e)
+        return _fetch_wikipedia_context(query)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 5) 실효 모드 결정
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -566,6 +576,11 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
 [상대 수준] 상대는 '{level}' 수준이다. {level_directive} 네 역할 범위 안에서만 답하라(첫 설명자=설명, 검증자=검증). 뻔한 말은 하지 마라.
 {persona_emphasis}
 
+[답변 골격 — 네 성격 톤·역할은 유지한 채 이 흐름을 갖춰라]
+- 핵심 개념을 먼저 명확히 짚고(정의·원리) → 그걸 보여주는 구체적인 예시를 1개 들고 → 마지막에 한 줄로 핵심을 정리하라.
+- 단, '개념:/예시:/정리:' 같은 기계적 라벨은 붙이지 말고 네 말투로 자연스럽게 녹여라. 예시는 짧고 구체적으로.
+- token 한도가 넉넉하니 너무 짧게 끊지 말고, 개념과 예시를 충분히 설명하라(단, 군더더기·반복은 금지).
+
 {_mode_role_directive(mode)}{peers}
 
 [비판 규칙 — 비꼼은 허용, 인신공격·욕설만 금지]
@@ -592,7 +607,10 @@ def _build_single_agent_user_prompt(
     if wiki_context:
         parts.append(wiki_context)
     parts.append(f"[사용자의 최근 메시지] {request.message}")
-    parts.append("위 대화 흐름을 이어서, 이 메시지에 자연스럽게 응답하라.")
+    parts.append(
+        "위 대화 흐름을 이어서, 이 메시지에 자연스럽게 응답하라. "
+        "핵심 개념을 충분히 설명하고 → 구체 예시 1개 → 한 줄 핵심 정리 흐름을 네 말투로 녹여라(기계적 라벨 금지)."
+    )
     if peer_answers:
         peer_lines = [f"- {str(p.get('answer',''))[:150]}" for p in peer_answers]
         parts.append(
@@ -705,21 +723,27 @@ def _generate_round2_feedback(agent: AgentProfile, request: MultiChatRequest, mo
     persona = build_personality_prompt(_agent_personality_label(agent), _agent_custom_instruction(agent))
     sys = (
         f"[역할] 너는 '{agent.name or 'AI'}'(이)다.\n{persona}\n\n"
-        "[2라운드: 동료 피드백] 다른 메이트들의 1라운드 답변을 봤다. 네 성격으로 '가장 중요한 보충 또는 반박 한 가지'만 2~3문장으로 말하라.\n"
-        "- 다른 메이트의 이름/'OOO:' 머리표를 쓰지 말고, 내용(논점) 중심으로 자연스럽게.\n"
-        "- 앞 답을 복붙·재서술하지 마라(요약 금지, 네가 새로 더할 한 가지만). 인신공격·욕설만 빼고 비꼼·시니컬은 네 성격대로 살려라. 길게 늘어놓지 마라.\n"
+        "[동료 답변에 대한 보충·반박] 다른 메이트가 사용자 질문에 먼저 답했다. 그 답에서 '가장 중요한 한 가지'를 "
+        "네 성격 톤으로 짚되, 다음 흐름이 자연스럽게 드러나게 말하라(번호·머리표 없이 자연스러운 문장으로):\n"
+        "① 어느 지점인지 — 내용(논점) 중심으로 지칭(상대 이름/'OOO:' 머리표 금지).\n"
+        "② 무엇이 부족하거나 틀렸는지 + 왜 그런지.\n"
+        "③ 올바르거나 보완된 설명 — 어떻게 하면 맞는지.\n"
+        "④ 그 근거 또는 구체적인 예시 1개.\n"
+        "- ★ 결국 '사용자'가 더 정확히 이해하게 만드는 게 목적이다. 사용자에게 설명하듯 말하라.\n"
+        "- 앞 답을 복붙·재서술하지 마라(단순 요약 금지). 인신공격·욕설만 빼고 비꼼·시니컬은 네 성격대로 살려라.\n"
         "- 한국어로, 머리말/꼬리말/JSON 없이 본문만."
     )
     other_lines = "\n".join(f"- {str(a.get('answer', ''))[:200]}" for a in others_answers)
     usr = (
-        f"[사용자 질문] {request.message}\n\n[다른 메이트들의 1라운드 답변]\n{other_lines}\n\n"
-        "→ 위에 대해 네가 더할 보충 또는 반박 '한 가지'만 짧게.\n\n"
+        f"[사용자 질문] {request.message}\n\n[먼저 나온 답변]\n{other_lines}\n\n"
+        "→ 위 답변에서 어느 지점이 부족/틀렸고(왜), 올바른 설명은 무엇이며, 근거/예시 1개까지 "
+        "네 성격대로 짚어라. 사용자에게 설명하듯.\n\n"
         + build_persona_directive(_agent_personality_label(agent), _agent_custom_instruction(agent))
     )
     gen = get_generation_params(_agent_personality_label(agent))
     raw = ask_ollama(
         system_prompt=sys, user_prompt=usr,
-        max_tokens=min(request.maxTokens or 512, 512),
+        max_tokens=min(request.maxTokens or 640, 640),
         temperature=gen.get("temperature", 0.5), think=False,
     )
     return (raw or "").strip()
@@ -732,7 +756,7 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
     """
     effective_mode = _resolve_effective_mode(request)
     context = _build_conversation_context(request.previousAnswers)
-    wiki_context = _fetch_wikipedia_context(request.message)
+    wiki_context = _build_knowledge_context(request.message)
     gap_ms = int(_min_gap_seconds() * 1000)
 
     feedback_on = _cross_feedback_enabled(request, agents)
@@ -757,7 +781,7 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
                     mode=request.mode,
                     learning_mode=getattr(request, "learningMode", None),
                 )
-                if decision.act != NEW_STUDY_QUERY:
+                if not decision.is_new_question:  # FOLLOWUP_DEEPEN/NEW_STUDY_QUERY는 풀답변 경로로
                     from app.services.basic_contextual_turn import run_basic_contextual_turn
                     logger.info(
                         "[Orchestrator] (sync) basic followup act=%s depth=%s conf=%.2f → contextual turn",
@@ -807,28 +831,44 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
     )
 
 
+# 정리/요약 요청 인텐트(대화행위 패턴만, 도메인 주제어 하드코딩 X).
+_SUMMARY_PATTERNS = ("정리", "요약", "3줄", "세 줄", "세줄", "핵심만", "한눈에", "summary", "summarize")
+
+
+def _summary_requested(request: MultiChatRequest) -> bool:
+    """사용자가 '정리/요약/3줄/핵심만' 등 정리를 명시적으로 요청했는지."""
+    msg = (request.message or "").strip().lower()
+    if not msg:
+        return False
+    return any(p in msg for p in _SUMMARY_PATTERNS)
+
+
 def _generate_discussion_wrap(request: MultiChatRequest, all_answers: List[Dict[str, Any]], mode: str, agent: AgentProfile) -> str:
-    """WRAP: 지금까지의 답변을 사용자를 향해 한두 문장으로 정리하고 후속 질문 1개 제안."""
+    """온디맨드 🧩 정리: 사용자가 요청했을 때만. 깔끔+상세 구조로 학습 정리를 제공한다.
+
+    구조: ① 핵심 개념 정리 ② 오개념·주의점 ③ 복습 포인트. 정의 단순 재진술이 아니라
+    학습자가 다시 보기 좋게 구조화한다.
+    """
     from app.services.ollama_client import ask_ollama
-    joined = "\n".join(f"- {str(a.get('answer', ''))[:160]}" for a in all_answers[:6])
+    joined = "\n".join(f"- {str(a.get('answer', ''))[:200]}" for a in all_answers[:8])
     sys = (
-        "너는 학습 토론을 마무리하는 진행자다. 항상 사용자를 향해 말한다. "
-        "메이트들끼리의 잡담이 아니라, 사용자가 다음에 무엇을 하면 좋을지를 안내한다.\n"
-        "[반복 금지] 앞에서 이미 말한 정의/요약을 다른 표현으로 다시 말하지 마라. "
-        "정의를 되풀이하지 말고, 다음 단계(심화·보안 주의점·실무 예시·확인 질문) 중 하나로 진행하라."
+        "너는 학습 내용을 깔끔하게 구조화해 정리하는 정리자다. 항상 사용자를 향해 말한다.\n"
+        "아래 세 묶음으로 정리하되, 각 묶음은 짧고 명확하게(개조식 허용):\n"
+        "1) 핵심 개념 정리 — 이번 대화의 요지를 군더더기 없이.\n"
+        "2) 오개념·주의점 — 헷갈리기 쉬운 지점이나 자주 하는 실수.\n"
+        "3) 복습 포인트 — 다음에 스스로 점검하면 좋을 질문/항목.\n"
+        "정의를 그대로 베끼지 말고 학습자가 다시 보기 좋게 재구성하라. 머리말/꼬리말/JSON 없이 한국어 본문만."
     )
     usr = (
-        f"[사용자 질문] {request.message}\n[지금까지 메이트들의 답변]\n{joined}\n\n"
-        "→ 위 답변의 정의를 다시 설명하지 말고, 사용자가 다음에 더 깊이 들어갈 후속 질문 1개를 "
-        "제안하라(필요하면 직전 답이 다루지 않은 새로운 포인트 한 줄만 덧붙여라). "
-        "반드시 후속 질문 1개로 끝맺어라. 머리말/꼬리말/JSON 없이 한국어 본문만."
+        f"[사용자 질문] {request.message}\n[지금까지 나온 설명들]\n{joined}\n\n"
+        "→ 위 세 묶음(핵심 개념 정리 / 오개념·주의점 / 복습 포인트)으로 구조화해 정리하라."
     )
     try:
         raw = ask_ollama(system_prompt=sys, user_prompt=usr,
-                         max_tokens=min(request.maxTokens or 320, 320),
+                         max_tokens=min(request.maxTokens or 700, 700),
                          temperature=0.4, think=False)
     except Exception as e:  # pragma: no cover - 방어
-        logger.warning("[Orchestrator] WRAP 생성 실패: %s", e)
+        logger.warning("[Orchestrator] WRAP(정리) 생성 실패: %s", e)
         raw = ""
     return (raw or "").strip()
 
@@ -1005,6 +1045,55 @@ def _run_discussion_plan(
     }
 
 
+def _run_summary_only(
+    request: MultiChatRequest,
+    agents: List[AgentProfile],
+    effective_mode: str,
+    identity_fn,
+) -> Generator[Dict[str, Any], None, None]:
+    """사용자 정리 요청 → 구조화된 🧩 정리 한 장만 emit(새 토론 미실행)."""
+    prior = [
+        {"agentName": pa.agentName, "answer": pa.answer}
+        for pa in (request.previousAnswers or [])
+        if (getattr(pa, "role", "") or "").upper() != "USER" and (pa.answer or "").strip()
+    ]
+    speaker = agents[0] if agents else None
+    agent_name = (getattr(speaker, "name", None) or "정리") if speaker else "정리"
+    aid = (getattr(speaker, "agentId", None) or "agent-summary") if speaker else "agent-summary"
+    identity = identity_fn(speaker) if speaker else {}
+
+    yield {
+        "event": "turn_start",
+        "data": {"type": "turn_start", "message": "지금까지 내용을 정리하고 있어요...",
+                 "phase": "WRAP", "visible": True},
+    }
+    yield {
+        "event": "agent_start",
+        "data": {"type": "agent_start", "agentIndex": 1, "agentName": agent_name, "agentId": aid,
+                 "phase": "WRAP", "actType": "WRAP", "replyTo": None, "displayOrder": 1,
+                 "visible": True, **identity},
+    }
+    text = _generate_discussion_wrap(request, prior, effective_mode, speaker) or \
+        "정리할 이전 내용을 찾지 못했어요. 먼저 질문을 해 주세요."
+    entry = {
+        "agentId": aid, "agentName": agent_name, "answer": text, "displayOrder": 1,
+        "displayDelayMs": 0, "stage": 3, "status": "SUCCESS", "actType": "WRAP", "replyTo": None,
+        **identity,
+    }
+    yield {
+        "event": "agent_answer",
+        "data": {"type": "agent_answer", "agentIndex": 1, "agentName": agent_name, "agentId": aid,
+                 "answer": text, "displayOrder": 1, "displayDelayMs": 0, "stage": 3, "phase": "WRAP",
+                 "actType": "WRAP", "replyTo": None, "visible": True, "status": "SUCCESS", **identity},
+    }
+    yield {
+        "event": "all_complete",
+        "data": {"type": "all_complete", "mode": effective_mode, "learningMode": effective_mode,
+                 "answers": [entry], "messages": [entry], "status": "COMPLETED",
+                 "phase": "ALL_COMPLETE", "visible": True},
+    }
+
+
 def build_orchestrator_stream(
     request: MultiChatRequest,
     agents: List[AgentProfile],
@@ -1022,10 +1111,18 @@ def build_orchestrator_stream(
 
     effective_mode = _resolve_effective_mode(request)
     context = _build_conversation_context(request.previousAnswers)
-    wiki_context = _fetch_wikipedia_context(request.message)
+    wiki_context = _build_knowledge_context(request.message)
     min_gap = _min_gap_seconds()
     feedback_on = _cross_feedback_enabled(request, agents)
     social = _is_social_input(request)
+
+    # ── 온디맨드 정리(🧩) ──────────────────────────────────────────────────────
+    # 사용자가 '정리/요약/3줄/핵심만'을 요청했고 직전 대화가 있으면, 새 토론을 다시 돌리지 않고
+    # 구조화된 정리(핵심 개념 / 오개념·주의점 / 복습 포인트) 한 장만 낸다. (WRAP은 이때만)
+    if effective_mode in ("basic", "default") and not social and _summary_requested(request) and request.previousAnswers:
+        logger.info("[Orchestrator] 정리 요청 감지 → 온디맨드 WRAP")
+        yield from _run_summary_only(request, agents, effective_mode, _agent_identity_payload)
+        return
 
     # ── basic 모드 후속 발화 게이트 ────────────────────────────────────────────
     # 직전 대화가 있을 때 "아니왜?/왜?/그게 맞아?/예시로/더 쉽게/ㅇㅇ" 같은 후속 발화는
@@ -1047,7 +1144,7 @@ def build_orchestrator_stream(
                     mode=request.mode,
                     learning_mode=getattr(request, "learningMode", None),
                 )
-                if decision.act != NEW_STUDY_QUERY:
+                if not decision.is_new_question:  # FOLLOWUP_DEEPEN/NEW_STUDY_QUERY는 풀답변 경로로
                     from app.services.basic_contextual_turn import (
                         run_basic_contextual_turn_stream,
                     )

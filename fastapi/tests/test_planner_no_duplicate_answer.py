@@ -63,13 +63,13 @@ def test_single_agent_wrap_restate_is_suppressed(monkeypatch):
     assert len(ac["answers"]) == 1
 
 
-def test_single_agent_distinct_wrap_is_kept(monkeypatch):
-    # WRAP 이 '새로운 정보(보안 심화)'면 억제되지 않고 그대로 나온다.
+def test_single_agent_default_turn_has_no_auto_wrap(monkeypatch):
+    # WRAP 온디맨드: 단일 에이전트 기본 턴은 DIRECT 하나만, 자동 WRAP는 붙지 않는다.
     events = _run(monkeypatch, _EXPAND)
     answers = [e["data"] for e in events if e["event"] == "agent_answer"]
-    act_types = [a["actType"] for a in answers]
-    assert "DIRECT_ANSWER" in act_types and "WRAP" in act_types, act_types
-    assert len(answers) == 2
+    assert len(answers) == 1
+    assert answers[0]["actType"] == "DIRECT_ANSWER"
+    assert all(a["actType"] != "WRAP" for a in answers)
 
 
 def test_displayorder_contiguous_after_suppression(monkeypatch):

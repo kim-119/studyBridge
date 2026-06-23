@@ -45,16 +45,24 @@ def test_first_act_is_direct_answer():
         assert acts[0].act_type == P.DIRECT_ANSWER, f"seed={seed} first={acts[0]}"
 
 
-def test_last_act_is_wrap_and_exactly_one():
+def test_default_has_no_wrap():
+    # WRAP 온디맨드: 기본(include_wrap 미지정)에는 WRAP 발화를 자동으로 붙이지 않는다.
     for seed in range(50):
         acts = P.plan_discussion(AGENTS_5, seed=seed)
+        assert all(a.act_type != P.WRAP for a in acts), f"seed={seed} 자동 WRAP 잔존"
+        assert acts[-1].act_type in (P.DIRECT_ANSWER, P.REACTION), f"seed={seed}"
+
+
+def test_include_wrap_appends_exactly_one():
+    for seed in range(50):
+        acts = P.plan_discussion(AGENTS_5, seed=seed, include_wrap=True)
         assert acts[-1].act_type == P.WRAP, f"seed={seed}"
         assert sum(1 for a in acts if a.act_type == P.WRAP) == 1, f"seed={seed}"
 
 
 def test_wrap_speaker_is_valid_agent():
     for seed in range(30):
-        acts = P.plan_discussion(AGENTS_3, seed=seed)
+        acts = P.plan_discussion(AGENTS_3, seed=seed, include_wrap=True)
         wrap = acts[-1]
         assert wrap.speaker in AGENTS_3
 
@@ -93,7 +101,7 @@ def test_reactions_never_target_self_and_valid():
 
 
 def test_direct_and_wrap_have_no_target():
-    acts = P.plan_discussion(AGENTS_3, seed=3)
+    acts = P.plan_discussion(AGENTS_3, seed=3, include_wrap=True)
     for a in acts:
         if a.act_type in (P.DIRECT_ANSWER, P.WRAP):
             assert a.target is None
@@ -122,7 +130,7 @@ def test_different_seeds_can_differ():
 # ── 엣지 케이스 ────────────────────────────────────────────────────────────────
 def test_two_agents_padded_to_min():
     for seed in range(60):
-        acts = P.plan_discussion(AGENTS_2, seed=seed)
+        acts = P.plan_discussion(AGENTS_2, seed=seed, include_wrap=True)
         n = len(_answers(acts))
         assert 3 <= n <= 7, f"seed={seed} answers={n}"
         assert acts[0].act_type == P.DIRECT_ANSWER
@@ -140,7 +148,7 @@ def test_eight_agents_capped_to_max():
 
 
 def test_single_agent_does_not_crash():
-    acts = P.plan_discussion(["solo"], seed=1)
+    acts = P.plan_discussion(["solo"], seed=1, include_wrap=True)
     assert acts[0].act_type == P.DIRECT_ANSWER
     assert acts[-1].act_type == P.WRAP
     # 단일 에이전트는 REACTION 대상이 없으므로 답변은 1개(DIRECT)만

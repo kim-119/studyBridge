@@ -79,11 +79,12 @@ def test_first_answer_is_direct(monkeypatch):
     assert first["actType"] == "DIRECT_ANSWER"
 
 
-def test_exactly_one_wrap(monkeypatch):
+def test_no_auto_wrap_on_default_turn(monkeypatch):
+    # WRAP 온디맨드: 기본 토론 턴에는 자동 WRAP가 붙지 않는다(정리는 사용자 요청 시에만).
     events = _run(monkeypatch)
     wraps = [e["data"] for e in events
              if e["event"] == "agent_answer" and e["data"].get("actType") == "WRAP"]
-    assert len(wraps) == 1
+    assert len(wraps) == 0
 
 
 def test_reactions_have_valid_reply_to(monkeypatch):

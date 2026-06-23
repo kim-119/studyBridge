@@ -66,11 +66,14 @@ def plan_discussion(
     seed: Optional[int] = None,
     min_answers: Optional[int] = None,
     max_answers: Optional[int] = None,
+    include_wrap: bool = False,
 ) -> List[Act]:
     """N명 에이전트 + 질문에 대한 발화 계획을 만든다.
 
-    반환: Act 리스트. 첫 Act는 DIRECT_ANSWER, 마지막 Act는 WRAP(정확히 1개).
+    반환: Act 리스트. 첫 Act는 DIRECT_ANSWER.
     답변(DIRECT_ANSWER+REACTION) 개수는 [min_answers, max_answers]로 클램프.
+    WRAP(한 줄 정리)은 온디맨드: include_wrap=True 일 때만 맨 끝에 정확히 1개 추가한다
+    (사용자가 정리/요약을 요청했을 때만). 기본 턴은 직접답변+반박만.
     """
     if not agent_ids:
         return []
@@ -112,9 +115,10 @@ def plan_discussion(
         acts.append(Act(pair[0], REACTION, pair[1]))
         prev_pair = pair
 
-    # 4) 마지막 WRAP — 답변 카운트와 무관하게 항상 1개. 화자는 무작위 에이전트.
-    wrap_speaker = rng.choice(base_agents)
-    acts.append(Act(wrap_speaker, WRAP, None))
+    # 4) 마지막 WRAP — 온디맨드(사용자 정리 요청 시에만). 화자는 무작위 에이전트.
+    if include_wrap:
+        wrap_speaker = rng.choice(base_agents)
+        acts.append(Act(wrap_speaker, WRAP, None))
 
     return acts
 

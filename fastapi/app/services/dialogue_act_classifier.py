@@ -57,6 +57,7 @@ FOLLOWUP_CLARIFY = "FOLLOWUP_CLARIFY"
 FOLLOWUP_EXAMPLE = "FOLLOWUP_EXAMPLE"
 FOLLOWUP_SIMPLIFY = "FOLLOWUP_SIMPLIFY"
 FOLLOWUP_CONTINUE = "FOLLOWUP_CONTINUE"
+FOLLOWUP_DEEPEN = "FOLLOWUP_DEEPEN"   # "더 자세히/더 깊이" — 짧은 맥락턴이 아니라 풀답변(심화)으로
 AGREEMENT = "AGREEMENT"
 DISAGREEMENT = "DISAGREEMENT"
 BACKCHANNEL = "BACKCHANNEL"
@@ -65,8 +66,9 @@ GREETING = "GREETING"
 THANKS = "THANKS"
 UNKNOWN = "UNKNOWN"
 
-# 풀답변(3명 full)을 허용하는 유일한 act. 그 외에는 basic 컨텍스트 턴으로 처리.
-_FULL_ACTS = {NEW_STUDY_QUERY}
+# 풀답변(3명 full)을 허용하는 act. 그 외에는 basic 컨텍스트 턴으로 처리.
+# FOLLOWUP_DEEPEN("더 자세히/더 깊이")은 1~2문장 맥락턴이 아니라 직전 답변을 맥락으로 둔 풀답변 경로로 보낸다.
+_FULL_ACTS = {NEW_STUDY_QUERY, FOLLOWUP_DEEPEN}
 _SHORT_ACTS = {
     FOLLOWUP_WHY, FOLLOWUP_CHALLENGE, FOLLOWUP_CLARIFY,
     FOLLOWUP_EXAMPLE, FOLLOWUP_SIMPLIFY, FOLLOWUP_CONTINUE, DISAGREEMENT,
@@ -214,8 +216,13 @@ _SIMPLIFY = (
 )
 _EXAMPLE = ("예시", "예를", "예로", "사례", "코드예", "예제", "실제예", "예좀", "비유로")
 _CONTINUE = (
-    "계속", "다음", "이어서", "이어줘", "마저", "더알려", "더말해", "더설명",
-    "더해줘", "더자세", "자세히", "덧붙", "추가설명",
+    "계속", "다음", "이어서", "이어줘", "마저", "더알려", "더말해",
+    "더해줘", "덧붙", "추가설명",
+)
+# "더 자세히/더 깊이" — 짧은 맥락턴이 아니라 직전 답변을 맥락으로 둔 '풀답변(심화)'으로 보내야 한다.
+_DEEPEN = (
+    "더자세", "자세히", "자세하게", "더설명", "더깊이", "깊이있게", "깊게설명",
+    "구체적", "더구체", "디테일", "심화", "자세하", "깊이파",
 )
 _CLARIFY = (
     "무슨말", "무슨소리", "뭔소리", "뭔말", "이해안", "이해가안", "다시설명",
@@ -294,8 +301,12 @@ def classify_deterministic(
 
     # 2) 맥락이 있을 때의 후속 발화 ───────────────────────────────────────────
     if has_ctx:
-        # 2a) 명시적 요청류(예시/더 쉽게/계속/다시설명) — 새 질문 마커보다 우선.
+        # 2a) 명시적 요청류(심화/예시/더 쉽게/계속/다시설명) — 새 질문 마커보다 우선.
         if clen <= _REQUEST_MAX:
+            # 심화 요청("더 자세히/더 깊이")은 1~2문장 맥락턴이 아니라 풀답변(심화)으로.
+            # SIMPLIFY("쉽게")보다 먼저 보되, '쉽게'가 함께 있으면 쉬운 설명이 우선이다.
+            if any(t in compact for t in _DEEPEN) and not any(t in compact for t in _SIMPLIFY):
+                return _decision(FOLLOWUP_DEEPEN, 0.85, ctx=ctx, reason="deepen request → full answer")
             if any(t in compact for t in _SIMPLIFY):
                 return _decision(FOLLOWUP_SIMPLIFY, 0.85, ctx=ctx, reason="simplify request")
             if any(t in compact for t in _EXAMPLE):
