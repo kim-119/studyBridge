@@ -244,6 +244,65 @@ def _document_grounded_fallback(context: str, quiz_count: int, difficulty: str, 
     return questions
 
 
+def _match_key(s: str) -> str:
+    """Loose key for matching an answer string against a choice (ignore spacing/punctuation/case)."""
+    return re.sub(r"[\s.,)\(\]\[:;!?'\"`]+", "", str(s)).strip().lower()
+
+
+def _letter_or_number_index(answer: str, n: int) -> Optional[int]:
+    """Map a leading letter (A-) or number (1-) answer token to a 0-based choice index."""
+    a = (answer or "").strip()
+    m = re.match(r"^([A-Ja-j])\s*[).:]?\s*$", a) or re.match(r"^([A-Ja-j])[).:]\s", a)
+    if m:
+        i = ord(m.group(1).lower()) - ord("a")
+        if 0 <= i < n:
+            return i
+    m = re.match(r"^([1-9][0-9]?)\s*[).:]?\s*$", a) or re.match(r"^([1-9][0-9]?)[).:]\s", a)
+    if m:
+        i = int(m.group(1)) - 1
+        if 0 <= i < n:
+            return i
+    return None
+
+
+def _resolve_mc_answer(answer: str, choices: List[str], raw_index: Any) -> Tuple[str, int]:
+    """Resolve the correct multiple-choice answer text + index from messy LLM output.
+
+    Priority (so a correct answer_index/explanation is never overwritten by the wrong
+    first choice on an inexact text match):
+      1. exact text match
+      2. valid LLM-provided answer_index
+      3. loose text match (ignoring spacing/punctuation/case, incl. substring)
+      4. letter/number answer token (e.g. "D" or "3")
+      5. fall back to first choice
+    """
+    if answer in choices:
+        return answer, choices.index(answer)
+
+    try:
+        i = int(raw_index)
+        if 0 <= i < len(choices):
+            return choices[i], i
+    except (TypeError, ValueError):
+        pass
+
+    akey = _match_key(answer)
+    if akey:
+        for i, c in enumerate(choices):
+            if _match_key(c) == akey:
+                return c, i
+        for i, c in enumerate(choices):
+            ckey = _match_key(c)
+            if ckey and (ckey in akey or akey in ckey):
+                return c, i
+
+    li = _letter_or_number_index(answer, len(choices))
+    if li is not None:
+        return choices[li], li
+
+    return choices[0], 0
+
+
 def _normalize_question(item: Dict[str, Any], idx: int, difficulty: str, fallback: Dict[str, Any], keywords: List[str]) -> Dict[str, Any]:
     qtype = str(item.get("type") or item.get("questionType") or fallback.get("type") or "multiple_choice").strip().lower()
     if qtype not in _ALLOWED_TYPES:
