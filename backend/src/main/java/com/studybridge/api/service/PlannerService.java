@@ -377,14 +377,30 @@ public class PlannerService {
                 .success(false).errorCode(code).message(message).build();
     }
 
-    /** hard delete + 연결 S3 객체 / 자료보관함 Material 정리 (단일/전체삭제 공통). */
+    /**
+     * hard delete + 연결 S3 객체 / 자료보관함 Material 정리 (단일/전체삭제 공통).
+     * 플래너 삭제 시 자료보관함에 보관된 그 플래너의 항목(PLANNER)도 함께 삭제한다.
+     * 단, PDF/학습일지 등 일반 학습자료는 절대 삭제하지 않는다(materialType=PLANNER 로 한정).
+     */
     private void cleanupAndDelete(Planner planner) {
-        // 연결된 자료보관함 PDF(Material)와 S3 객체도 함께 정리
+        // 연결된 S3 다운로드 PDF 정리
         if (planner.getS3Key() != null) {
             try { s3Service.deleteFile(planner.getS3Key()); } catch (Exception e) { log.warn("플래너 S3 삭제 실패: {}", e.getMessage()); }
         }
+        // 삭제 대상 자료보관함 항목을 합집합으로 모아 한 번씩만 삭제(이중삭제 방지).
+        java.util.LinkedHashSet<Long> materialIds = new java.util.LinkedHashSet<>();
+        // 1) 정방향 링크: planner.materialId 가 가리키는 항목(기존 동작 유지 — 타입 무관)
         if (planner.getMaterialId() != null) {
-            materialRepository.findById(planner.getMaterialId()).ifPresent(materialRepository::delete);
+            materialIds.add(planner.getMaterialId());
+        }
+        // 2) 역참조 링크(레거시/끊어진 링크 보강): material.plannerId == planner.id 인 PLANNER 자료만.
+        //    PDF/학습일지 등 일반 학습자료는 타입 조건으로 절대 포함되지 않는다.
+        for (Material m : materialRepository.findByPlannerIdAndMaterialType(planner.getId(), MaterialType.PLANNER)) {
+            materialIds.add(m.getMaterialId());
+        }
+        if (!materialIds.isEmpty()) {
+            materialRepository.findAllById(materialIds).forEach(materialRepository::delete);
+            log.info("플래너 삭제 cascade: plannerId={} 연결 자료보관함 항목 {}건 정리", planner.getId(), materialIds.size());
         }
         plannerRepository.delete(planner);
     }

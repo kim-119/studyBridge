@@ -84,6 +84,30 @@ public class Material {
     @UpdateTimestamp
     private LocalDateTime updatedAt;
 
+    /**
+     * 영속 시점 타입 불변식(회귀 방어).
+     *  · 플래너/구조화 자료(plannerId 또는 contentJson 보유)는 절대 PDF 타입으로 저장되지 않는다.
+     *    → 과거 "플래너가 자료보관함에 PDF로 저장되던" 오염(2026-06-23 복구)을 영속 경계에서 차단한다.
+     *  · PLANNER 타입은 파일이 없는 구조화 자료이므로 PDF 파일 메타가 남아 있으면 방어적으로 정리한다.
+     * 어느 서비스가 저장하든(MaterialService/PlannerService 등) 이 가드를 통과해야 한다.
+     */
+    @PrePersist
+    @PreUpdate
+    private void enforceTypeInvariant() {
+        boolean structured = plannerId != null || (contentJson != null && !contentJson.isBlank());
+        if (structured && materialType == MaterialType.PDF) {
+            throw new IllegalStateException(
+                    "플래너/구조화 자료는 PDF 타입으로 저장할 수 없습니다. (title=" + title + ")");
+        }
+        if (materialType == MaterialType.PLANNER) {
+            // 구조화 PLANNER 자료에는 PDF 파일 메타가 존재하면 안 된다 → 잔재 제거
+            originalFileName = null;
+            storedFileName = null;
+            s3FileUrl = null;
+            fileSize = null;
+        }
+    }
+
     @OneToOne(mappedBy = "material", cascade = CascadeType.ALL, orphanRemoval = true)
     private MaterialSummary summary;
 

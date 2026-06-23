@@ -42,6 +42,11 @@ public class MaterialService {
         if (type == MaterialType.REVIEW_NOTE) {
             throw new IllegalArgumentException("자료보관함에서는 오답노트 자료 유형을 생성할 수 없습니다. 오답노트는 별도 오답노트 메뉴에서 관리됩니다.");
         }
+        // 플래너는 파일 업로드(PDF/DOCX) 경로로 저장될 수 없다. 플래너 보관은 PlannerService.archivePlanner(구조화 PLANNER)로만 한다.
+        // (과거 플래너가 PDF로 자료보관함에 섞여 들어가던 오염을 업로드 경계에서도 차단)
+        if (type == MaterialType.PLANNER) {
+            throw new IllegalArgumentException("플래너 자료는 파일 업로드로 저장할 수 없습니다. 플래너 화면에서 '자료보관함에 저장'을 사용하세요.");
+        }
 
         // 업로드 형식 검증: PDF/DOCX만 허용. Content-Type만 믿지 않고 확장자도 함께 확인한다.
         validateUploadFormat(file);

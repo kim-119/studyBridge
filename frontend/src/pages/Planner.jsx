@@ -853,7 +853,8 @@ export default function Planner() {
               <h3 className="m-0 text-[17px] font-extrabold text-[#111827]">플래너 전체삭제</h3>
             </div>
             <p className="m-0 text-[14px] leading-relaxed text-[#374151]">
-              현재 화면에 표시된 자료 기반 플래너를 모두 삭제합니다. 이 작업은 되돌릴 수 없습니다.
+              전체 플래너를 삭제하면 자료보관함에 저장된 플래너/로드맵 항목도 함께 삭제됩니다.
+              PDF 학습자료는 삭제되지 않습니다. 이 작업은 되돌릴 수 없습니다.
             </p>
             <p className="mt-2 text-[13px] leading-relaxed text-[#6B7280]">
               수동으로 작성한 플래너와 주간일정은 삭제되지 않습니다.

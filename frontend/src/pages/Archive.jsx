@@ -77,9 +77,14 @@ function getPlannerDisplayTitle(material) {
   return week != null ? `${week}주차 - ${kw}` : kw;
 }
 
+// 자료가 사실상 플래너인지(타입 PLANNER 또는 plannerId 보유). 과거 PDF로 오염 저장된 항목 방어.
+function isPlannerMaterial(m) {
+  return String(m.materialType || '').toUpperCase() === 'PLANNER' || m.plannerId != null;
+}
+
 // 자료 카드 표시 제목 (타입별)
 function getMaterialDisplayTitle(m) {
-  if (m.materialType === 'PLANNER') return getPlannerDisplayTitle(m);
+  if (isPlannerMaterial(m)) return getPlannerDisplayTitle(m);
   const t = cleanText(m.title || m.originalFileName || '이름 없음');
   return t || '이름 없음';
 }
@@ -90,6 +95,17 @@ const TYPE_META = {
   PDF: { label: 'PDF', Icon: FileIcon, badge: 'doc-badge-pdf' },
   PLANNER: { label: '플래너', Icon: CalendarDays, badge: 'doc-badge-planner' },
 };
+
+// 카드 배지/아이콘 메타 결정. PLANNER/plannerId 면 플래너 카드, 그 외에만 PDF 카드.
+// title 이 플래너성인데 타입이 PDF 로 남아 있으면(잔존 오염) 경고만 남기고 PDF 로 표시한다.
+function resolveTypeMeta(m) {
+  if (isPlannerMaterial(m)) return TYPE_META.PLANNER;
+  const t = String(m.materialType || '').toUpperCase();
+  if (t === 'PDF' && /^\[로드맵/.test(String(m.title || ''))) {
+    console.warn('[archive] PDF 타입이지만 플래너로 보이는 항목', { materialId: m.materialId, title: m.title, plannerId: m.plannerId });
+  }
+  return TYPE_META[m.materialType] || TYPE_META.PDF;
+}
 
 function materialDate(m) {
   if (m.uploadedAt) return String(m.uploadedAt).split('T')[0];
@@ -123,6 +139,8 @@ function domainForTab(tabKey) {
 
 // 자료(material)의 유형을 탭 키로 매핑. materialType 우선, 없으면 제목/파일명 보조 판별.
 function materialTabKind(m) {
+  // plannerId 보유 = 사실상 플래너(과거 PDF 오염 저장 방어). 타입보다 우선.
+  if (m.plannerId != null) return 'PLANNER';
   const raw = String(m.materialType ?? m.type ?? m.sourceType ?? m.category ?? '').toUpperCase();
   if (raw.includes('PLANNER') || raw.includes('PLAN') || raw.includes('SCHEDULE')) return 'PLANNER';
   if (raw.includes('STUDY_LOG') || raw.includes('LEARNING_LOG') || raw.includes('JOURNAL') || raw.includes('DIARY')) return 'STUDY_LOG';
@@ -924,7 +942,7 @@ export default function Archive() {
         {/* 자료(파일) 카드 — 상단 탭 필터 적용 */}
         {!isLoading && !loadError && visibleMaterials.map((m) => {
           const key = `material-${m.materialId}`;
-          const meta = TYPE_META[m.materialType] || TYPE_META.PDF;
+          const meta = resolveTypeMeta(m);
           const Icon = meta.Icon;
           return (
             <div
