@@ -1,0 +1,176 @@
+/* ── 교수 답변 그래프 뷰 (compact fit-to-view, "전체 의견" 섹션 대체) ───────────── */
+.pgraph-root {
+  position: relative;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.pgraph-canvas-container {
+  position: relative;
+  width: 100%;
+  height: clamp(420px, 62vh, 720px);
+  overflow: hidden;                 /* 가로/세로 스크롤 금지 — 전체가 fit으로 보임 */
+  background:
+    radial-gradient(circle at 18px 18px, rgba(15, 23, 42, 0.05) 1.5px, transparent 1.6px) 0 0 / 26px 26px,
+    linear-gradient(180deg, #fbfcff 0%, #f4f6fb 100%);
+  border-radius: 16px;
+  touch-action: none;
+  cursor: grab;
+}
+.pgraph-canvas-container:active { cursor: grabbing; }
+
+.pgraph-statepill {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 5;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.1);
+  border: 1px solid rgba(37, 99, 235, 0.28);
+  color: #1d4ed8;
+  font-size: 11.5px;
+  font-weight: 800;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* 논리 캔버스: 중앙 기준으로 fit scale 적용(transform-origin center) */
+.pgraph-canvas {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.pgraph-edges {
+  position: absolute;
+  inset: 0;
+  z-index: 1;                       /* 간선은 노드 뒤 */
+  overflow: visible;
+}
+.pgraph-edge-label { cursor: default; }
+.pgraph-edge-label.is-clickable { cursor: pointer; }
+.pgraph-edge-label.is-clickable:hover rect { filter: brightness(0.98); }
+.pgraph-edge-label text { user-select: none; }
+
+/* 노드 카드 */
+.pgraph-node {
+  position: absolute;
+  z-index: 2;                       /* 노드는 간선/라벨 위 */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: #ffffff;
+  border: 1px solid #e6e9f2;
+  border-top: 3px solid var(--accent, #2563eb);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.07);
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.pgraph-node:hover { box-shadow: 0 8px 22px rgba(15, 23, 42, 0.13); transform: translateY(-1px); }
+.pgraph-node.is-question {
+  background: #0f172a;
+  border: 1px solid #0f172a;
+  border-top: 3px solid #38bdf8;
+  color: #f8fafc;
+}
+.pgraph-node.is-empty { opacity: 0.85; }
+
+.pgraph-node-head { display: flex; align-items: center; gap: 7px; }
+.pgraph-node-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.pgraph-node-name {
+  font-size: 13.5px; font-weight: 800; color: #111827;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.is-question .pgraph-node-name { color: #f8fafc; }
+.pgraph-node-badge {
+  margin-left: auto;
+  font-size: 10.5px; font-weight: 800; color: #475569;
+  background: #f1f5f9; border-radius: 999px; padding: 2px 8px;
+  white-space: nowrap; max-width: 46%; overflow: hidden; text-overflow: ellipsis;
+}
+
+.pgraph-node-body {
+  margin: 0;
+  font-size: 12.5px; line-height: 1.5; color: #374151;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+  overflow: hidden; word-break: break-word;
+}
+.pgraph-node-body.q { -webkit-line-clamp: 2; color: #e2e8f0; font-weight: 600; }
+
+.pgraph-node-foot { display: flex; align-items: center; gap: 6px; margin-top: auto; }
+.pgraph-status {
+  font-size: 10.5px; font-weight: 800; border-radius: 999px; padding: 2px 9px;
+}
+.pgraph-status.st-answer { background: #eff6ff; color: #2563eb; }
+.pgraph-status.st-validation { background: #ecfdf5; color: #16a34a; }
+.pgraph-status.st-pending { background: #fff7ed; color: #d97706; }
+.pgraph-status.st-error { background: #fef2f2; color: #dc2626; }
+.pgraph-status.st-complete { background: #f1f5f9; color: #475569; }
+
+/* zoom/fit 컨트롤 */
+.pgraph-controls {
+  position: absolute;
+  right: 12px; bottom: 12px; z-index: 6;
+  display: flex; align-items: center; gap: 6px;
+}
+.pgraph-controls button {
+  height: 32px; min-width: 32px; padding: 0 10px;
+  border: 1px solid #d8dee9; background: #fff; color: #1f2937;
+  border-radius: 9px; font-size: 14px; font-weight: 800; cursor: pointer;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+}
+.pgraph-controls button:hover { border-color: #2563eb; color: #2563eb; }
+.pgraph-controls .pgraph-fit { font-size: 12px; }
+
+/* PDF 저장 버튼(좌측 하단) */
+.pgraph-save {
+  position: absolute;
+  left: 12px; bottom: 12px; z-index: 6;
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 14px;
+  border: 1px solid #2563eb; background: #2563eb; color: #fff;
+  border-radius: 9px; font-size: 12px; font-weight: 800; cursor: pointer;
+  box-shadow: 0 3px 10px rgba(37, 99, 235, 0.3);
+}
+.pgraph-save:hover { background: #1d4ed8; }
+.pgraph-save:disabled { opacity: 0.6; cursor: progress; }
+
+/* 노드/간선 상세(전문) 오버레이 — 스케일 밖이라 또렷 */
+.pgraph-detail {
+  position: absolute; inset: 0; z-index: 20;
+  background: rgba(15, 23, 42, 0.34);
+  display: flex; align-items: center; justify-content: center;
+  padding: 18px;
+}
+.pgraph-detail-card {
+  width: 100%; max-width: 440px; max-height: 80%;
+  overflow-y: auto;
+  background: #fff; border-radius: 14px;
+  border-top: 4px solid var(--accent, #2563eb);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.28);
+  padding: 18px 20px;
+}
+.pgraph-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.pgraph-detail-head strong { font-size: 15px; font-weight: 900; color: #111827; }
+.pgraph-detail-head button { border: 0; background: transparent; font-size: 16px; color: #6b7280; cursor: pointer; }
+.pgraph-detail-badge {
+  display: inline-block; font-size: 11px; font-weight: 800; color: #475569;
+  background: #f1f5f9; border-radius: 999px; padding: 3px 10px; margin-bottom: 10px;
+}
+.pgraph-detail-body { margin: 0; font-size: 13.5px; line-height: 1.7; color: #374151; white-space: pre-wrap; word-break: break-word; }
+.pgraph-detail-note { margin-top: 12px; padding: 10px 12px; background: #ecfdf5; border-radius: 10px; }
+.pgraph-detail-note b { font-size: 11.5px; color: #16a34a; }
+.pgraph-detail-note p { margin: 4px 0 0; font-size: 12.5px; color: #374151; line-height: 1.6; }
+
+/* 모바일: 컨트롤/버튼 약간 축소 */
+@media (max-width: 520px) {
+  .pgraph-controls .pgraph-fit { display: none; }
+  .pgraph-statepill { font-size: 10.5px; padding: 4px 9px; }
+}

@@ -3,6 +3,7 @@ import { useAuth } from '../hooks/useAuth';
 import { agentService } from '../services/api';
 import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, MessageCircle, UsersRound, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck, RefreshCw } from 'lucide-react';
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
+import ProfessorGraphView from '../components/studymate/ProfessorGraphView';
 import ProfessorLearningPanel from '../components/studymate/ProfessorLearningPanel';
 import '../components/studymate/studymate-premium.css';
 import PixelProfessorStage from '../components/studymate/pixel/PixelProfessorStage';
@@ -4486,46 +4487,15 @@ export default function StudyMate() {
                 </div>
               )}
 
-              {/* ── 마인드맵 뷰 ── */}
+              {/* ── 마인드맵 뷰: "전체 의견" 요약 섹션 제거 → 교수 노드/간선 그래프(fit-to-view) ── */}
               {viewTab === 'mindmap' && (
-                <div className="professor-discussion-view" style={{ flex: 1, overflowY: 'auto' }}>
-                  <section className="professor-tree-section" style={{ borderTop: 'none', margin: 0, borderRadius: '0' }}>
-                    <div className="professor-tree-header">
-                      <h3>{professorTreeTitle}</h3>
-                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', margin: '4px 0 8px', padding: '5px 12px', borderRadius: '999px', background: 'rgba(37,99,235,0.12)', border: '1px solid rgba(37,99,235,0.35)', color: '#1D4ED8', fontSize: '12.5px', fontWeight: 700, width: 'fit-content' }}>
-                        🎓 교수 3명 상호검증 모드 · 현재 {modeLabelOf(learningMode)} 모드
-                      </div>
-                      <p>아래에는 교수/에이전트별 관점이 정리됩니다.</p>
-                    </div>
-                    <div className="professor-tree-body">
-                      {/* 모드별 교수 상호작용 타임라인(별도 컴포넌트, 기존 트리 불변). 백엔드 실제 이벤트만 표시. */}
-                      <ProfessorInteractionTimeline
-                        mode={professorInteractionMode}
-                        interactions={professorInteractions}
-                      />
-                      <AgentDiscussionThread
-                        messages={mindmapMessages}
-                        typingAgents={
-                          typingRooms[getAgentId(selectedAgent)]
-                            ? (selectedAgent.agents || [{ id: 'ai', name: selectedAgent.name || 'AI' }]).map((ag, i) => ({
-                                id: ag.id || i,
-                                name: ag.name,
-                                color: ['#2563eb','#EA580C','#7C3AED'][i % 3],
-                              }))
-                            : []
-                        }
-                        agents={selectedAgent.agents || []}
-                        bookmarkedIds={bookmarkedIds}
-                        onBookmark={handleBookmark}
-                        onRequestDetail={handleNodeAction}
-                        focusAgentName={
-                          professorSelectedTarget === 'all'
-                            ? null
-                            : (selectedAgent.agents || [])[{ agent1: 0, agent2: 1, agent3: 2 }[professorSelectedTarget]]?.name || null
-                        }
-                      />
-                    </div>
-                  </section>
+                <div className="professor-discussion-view" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: '12px 14px' }}>
+                  <ProfessorGraphView
+                    question={[...chatHistory].reverse().find((m) => m.sender === 'USER')?.content || ''}
+                    agents={selectedAgent?.agents || []}
+                    messages={mindmapMessages}
+                    interactions={professorInteractions}
+                  />
                 </div>
               )}
 
