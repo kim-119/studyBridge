@@ -1174,6 +1174,31 @@ def build_orchestrator_stream(
     feedback_on = _cross_feedback_enabled(request, agents)
     social = _is_social_input(request)
 
+    # ── [MODE-TRACE] 진단용 계측(수정 아님): 프론트→Spring→FastAPI로 도달한 최종 mode 값을 증명한다.
+    #    socratic 모드일 때만 "진단:" 프리픽스가 나오므로, 여기서 finalMode가 무엇인지 로그로 확정한다.
+    try:
+        _prev_n = len(request.previousAnswers or [])
+        _ag0 = agents[0] if agents else None
+        logger.info(
+            "[MODE-TRACE] roomId=%s userId=%s rawMode=%s learningMode=%s finalMode=%s "
+            "socraticApplied=%s diagnosisPrefix=%s previousAnswers=%d agents=%d "
+            "agent0.personality=%s agent0.level=%s msg=%r",
+            getattr(request, "roomId", None) or getattr(request, "room_id", None),
+            getattr(request, "userId", None) or getattr(request, "user_id", None),
+            getattr(request, "mode", None),
+            getattr(request, "learningMode", None),
+            effective_mode,
+            effective_mode in ("socratic", "소크라테스", "소크라테스 모드"),
+            effective_mode in ("socratic", "소크라테스", "소크라테스 모드"),
+            _prev_n,
+            len(agents),
+            getattr(_ag0, "personality", None) if _ag0 else None,
+            (getattr(_ag0, "knowledgeLevel", None) or getattr(_ag0, "knowledgeLevelLabel", None)) if _ag0 else None,
+            (request.message or "")[:80],
+        )
+    except Exception as _e:  # pragma: no cover - 계측은 본 흐름을 막지 않는다
+        logger.warning("[MODE-TRACE] 계측 실패: %s", _e)
+
     # ── 온디맨드 정리(🧩) ──────────────────────────────────────────────────────
     # 사용자가 '정리/요약/3줄/핵심만'을 요청했고 직전 대화가 있으면, 새 토론을 다시 돌리지 않고
     # 구조화된 정리(핵심 개념 / 오개념·주의점 / 복습 포인트) 한 장만 낸다. (WRAP은 이때만)
