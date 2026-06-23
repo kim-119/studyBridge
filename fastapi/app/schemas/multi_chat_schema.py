@@ -359,6 +359,9 @@ class AgentAnswer(BaseModel):
     displayOrder: Optional[int] = Field(None, description="표시 순서 (1부터 시작)")
     displayDelayMs: Optional[int] = Field(None, description="표시 딜레이 (ms, Spring 타이핑 연출용)")
     status: str = Field("SUCCESS", description="SUCCESS | FAILED | TIMEOUT | BLOCKED | REWRITTEN | SKIPPED")
+    # 확률적 다중답변 플래너(기본개념모드): 발화 유형과 반응 대상.
+    actType: Optional[str] = Field(None, description="DIRECT_ANSWER | REACTION | WRAP")
+    replyTo: Optional[str] = Field(None, description="REACTION일 때 대상 에이전트 id(아니면 null)")
     metadata: Optional[AgentAnswerMetadata] = Field(None, description="생성 메타데이터")
 
 

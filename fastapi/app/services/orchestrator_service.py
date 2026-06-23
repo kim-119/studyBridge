@@ -807,6 +807,169 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
     )
 
 
+def _generate_discussion_wrap(request: MultiChatRequest, all_answers: List[Dict[str, Any]], mode: str, agent: AgentProfile) -> str:
+    """WRAP: 지금까지의 답변을 사용자를 향해 한두 문장으로 정리하고 후속 질문 1개 제안."""
+    from app.services.ollama_client import ask_ollama
+    joined = "\n".join(f"- {str(a.get('answer', ''))[:160]}" for a in all_answers[:6])
+    sys = (
+        "너는 학습 토론을 마무리하는 진행자다. 항상 사용자를 향해 말한다. "
+        "메이트들끼리의 잡담이 아니라, 사용자가 다음에 무엇을 하면 좋을지를 안내한다."
+    )
+    usr = (
+        f"[사용자 질문] {request.message}\n[지금까지 메이트들의 답변]\n{joined}\n\n"
+        "→ 핵심을 1~2문장으로 짧게 정리하고, 이어서 더 깊이 들어갈 후속 질문 1개를 제안하라. "
+        "머리말/꼬리말/JSON 없이 한국어 본문만."
+    )
+    try:
+        raw = ask_ollama(system_prompt=sys, user_prompt=usr,
+                         max_tokens=min(request.maxTokens or 320, 320),
+                         temperature=0.4, think=False)
+    except Exception as e:  # pragma: no cover - 방어
+        logger.warning("[Orchestrator] WRAP 생성 실패: %s", e)
+        raw = ""
+    return (raw or "").strip()
+
+
+# 재개입 칩: 도메인 용어를 박지 않는 content-free 후속 택(대화행위 패턴만).
+_FOLLOW_UP_CHIPS = [
+    {"id": "deeper", "label": "🔍 더 깊이 파고들기", "act": "DEEPEN"},
+    {"id": "other_view", "label": "🗣️ 다른 의견도 듣기", "act": "ALT_VIEW"},
+    {"id": "simpler", "label": "📝 더 쉬운 예시로", "act": "SIMPLIFY"},
+]
+
+
+def _run_discussion_plan(
+    request: MultiChatRequest,
+    agents: List[AgentProfile],
+    effective_mode: str,
+    wiki_context: str,
+    context: str,
+    min_gap: float,
+    feedback_on: bool,
+    social: bool,
+    identity_fn,
+) -> Generator[Dict[str, Any], None, None]:
+    """확률적 다중답변 플래너 기반 SSE.
+
+    플래너(순수 결정론)가 만든 발화 계획대로 DIRECT_ANSWER → REACTION* → WRAP 를
+    순차 emit 한다. 답변(DIRECT+REACTION)은 [3,7], WRAP 1개, 끝에 follow_up_suggestions.
+    항상 사용자가 중심: 첫 발화=직접답변, 마지막=한 줄 정리.
+    """
+    from app.services import studymate_discussion_planner as planner
+
+    # 플래닝 키는 '인덱스 문자열'(항상 유일)을 쓴다. agentId/id 가 None 으로 겹치면
+    # dict 충돌로 에이전트가 뭉개지므로 키로 쓰지 않는다. 화면용 agentId는 별도 매핑.
+    agent_by_key: Dict[str, Any] = {}
+    display_id_by_key: Dict[str, str] = {}
+    order_keys: List[str] = []
+    for idx, agent in enumerate(agents):
+        key = str(idx)
+        order_keys.append(key)
+        agent_by_key[key] = (idx, agent)
+        _aid = agent.agentId or (f"agent-{agent.id}" if agent.id is not None else f"agent-{idx + 1}")
+        display_id_by_key[key] = _aid
+
+    seed_env = (os.getenv("STUDYMATE_DISCUSSION_SEED") or "").strip()
+    seed = int(seed_env) if seed_env.lstrip("-").isdigit() else None
+    acts = planner.plan_discussion(order_keys, seed=seed)
+
+    answer_by_key: Dict[str, str] = {}
+    all_answers: List[Dict[str, Any]] = []
+    display = 0
+
+    for i, act in enumerate(acts):
+        idx, agent = agent_by_key[act.speaker]
+        aid = display_id_by_key[act.speaker]
+        agent_name = agent.name or "AI"
+        identity = identity_fn(agent)
+        display += 1
+        t0 = time.time()
+
+        if act.act_type == planner.DIRECT_ANSWER:
+            phase, stage, reply_to = "FIRST_DRAFT", 1, None
+        elif act.act_type == planner.REACTION:
+            phase, stage, reply_to = "REACTION", 2, display_id_by_key.get(act.target)
+        else:  # WRAP
+            phase, stage, reply_to = "WRAP", 3, None
+
+        yield {
+            "event": "agent_start",
+            "data": {
+                "type": "agent_start", "agentIndex": idx + 1, "agentName": agent_name,
+                "agentId": aid, "phase": phase, "actType": act.act_type,
+                "replyTo": reply_to, "visible": True, **identity,
+            },
+        }
+
+        try:
+            if act.act_type == planner.DIRECT_ANSWER:
+                peer = all_answers if (feedback_on and all_answers) else None
+                answer = _generate_single_agent_answer(
+                    agent, request, effective_mode, wiki_context, context, agents, peer,
+                    social=social, position=idx, total=len(agents))
+            elif act.act_type == planner.REACTION:
+                target_idx, target_agent = agent_by_key[act.target]
+                target_entry = {"agentName": target_agent.name or "AI",
+                                "answer": answer_by_key.get(act.target, "")}
+                answer = _generate_round2_feedback(agent, request, effective_mode, [target_entry])
+            else:  # WRAP
+                answer = _generate_discussion_wrap(request, all_answers, effective_mode, agent)
+        except Exception as e:
+            logger.error("[Orchestrator] 플래너 act=%s 생성 실패 %s: %s", act.act_type, agent_name, e)
+            answer = ""
+
+        # 빈응답 가드(qwen3 think 소진 등): 계약상 발화 수를 유지하되 빈 카드는 막는다.
+        if not (answer or "").strip():
+            if act.act_type == planner.WRAP:
+                answer = "여기까지 핵심을 정리했어요. 더 궁금한 부분을 골라 이어서 질문해 주세요."
+            elif act.act_type == planner.REACTION:
+                answer = "앞의 설명에 한 가지만 더 보태자면, 핵심 개념을 한 번 더 짚어볼게요."
+            else:
+                answer = "(이 에이전트의 응답 생성 중 잠시 문제가 있었어요.)"
+
+        if act.act_type == planner.DIRECT_ANSWER:
+            answer_by_key[act.speaker] = answer
+
+        entry = {
+            "agentId": aid, "agentName": agent_name, "answer": answer,
+            "displayOrder": display, "stage": stage, "status": "SUCCESS",
+            "actType": act.act_type, "replyTo": reply_to, **identity,
+        }
+        yield {
+            "event": "agent_answer",
+            "data": {
+                "type": "agent_answer", "agentIndex": idx + 1, "agentName": agent_name,
+                "agentId": aid, "answer": answer, "displayOrder": display, "stage": stage,
+                "phase": phase, "actType": act.act_type, "replyTo": reply_to,
+                "visible": True, "status": "SUCCESS", **identity,
+            },
+        }
+        all_answers.append(entry)
+
+        if i < len(acts) - 1:
+            remaining = min_gap - (time.time() - t0)
+            if remaining > 0:
+                time.sleep(remaining)
+
+    # 재개입 칩: 사용자가 다음 행동을 고르게 한다(항상 사용자 중심).
+    yield {
+        "event": "follow_up_suggestions",
+        "data": {
+            "type": "follow_up_suggestions", "phase": "FOLLOW_UP", "visible": True,
+            "suggestions": list(_FOLLOW_UP_CHIPS),
+        },
+    }
+
+    yield {
+        "event": "all_complete",
+        "data": {
+            "type": "all_complete", "mode": effective_mode, "learningMode": effective_mode,
+            "answers": all_answers, "messages": all_answers,
+            "status": "COMPLETED", "phase": "ALL_COMPLETE", "visible": True,
+        },
+    }
+
+
 def build_orchestrator_stream(
     request: MultiChatRequest,
     agents: List[AgentProfile],
@@ -873,6 +1036,20 @@ def build_orchestrator_stream(
             "visible": True,
         },
     }
+
+    # ── 확률적 다중답변 플래너(기본개념모드 전용, default on) ───────────────────
+    # 켜지면 N개 고정 대신 [3,7]개의 답변(DIRECT+REACTION) + WRAP + follow_up_suggestions.
+    # off면 즉시 기존 1인1답으로 롤백. social/후속발화/비-basic 모드는 타지 않는다.
+    try:
+        from app.services import studymate_discussion_planner as _planner
+        if effective_mode in ("basic", "default") and _planner.planner_enabled() and not social and len(agents) >= 1:
+            yield from _run_discussion_plan(
+                request, agents, effective_mode, wiki_context, context,
+                min_gap, feedback_on, social, _agent_identity_payload,
+            )
+            return
+    except Exception as e:  # pragma: no cover - 방어: 어떤 오류든 기존 경로로 폴백
+        logger.warning("[Orchestrator] 플래너 건너뜀(폴백): %s", e)
 
     n = len(agents)
     all_answers: List[Dict[str, Any]] = []

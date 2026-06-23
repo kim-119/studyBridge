@@ -18,6 +18,10 @@ from app.services.personality_prompt_builder import build_personality_prompt
 def _no_network(monkeypatch):
     # 위키백과 호출(네트워크/타임아웃) 차단.
     monkeypatch.setattr(orch, "_fetch_wikipedia_context", lambda q: "")
+    # 이 파일은 레거시 per-agent 경로(고정 N개 답변 + 페이싱/min-gap/빈응답 가드)를
+    # 격리 검증한다. 확률적 다중답변 플래너는 별도 파일(test_studymate_discussion_stream)
+    # 에서 검증하므로 여기서는 끈다.
+    monkeypatch.setenv("STUDYMATE_DISCUSSION_PLANNER", "off")
 
 
 def _agents():
