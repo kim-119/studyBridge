@@ -252,11 +252,6 @@ function DetailedPager({ pages }) {
       <div style={{ border: `1px solid ${insufficient ? '#FDE68A' : 'var(--color-border)'}`, borderRadius: '10px', padding: '14px 16px', background: insufficient ? '#FFFBEB' : '#fff' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
           <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)' }}>p.{pageNo}{title ? ` ${title}` : ''}</span>
-          {(contentType || src) && (
-            <span title="이 페이지의 콘텐츠 유형/출처" style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '6px', background: insufficient ? '#FEF3C7' : '#EFF6FF', color: insufficient ? '#92400E' : '#1D4ED8' }}>
-              {contentType || DETECTED_SOURCE_LABEL[src] || src}
-            </span>
-          )}
         </div>
         {insufficient ? (
           <p style={{ margin: 0, fontSize: '13.5px', lineHeight: 1.6, color: '#92400E' }}>
@@ -396,12 +391,6 @@ function StudyNoteView({ note, material, onKeyword }) {
                 <span style={{ fontWeight: '700', fontSize: '15px', color: 'var(--color-text-main)' }}>
                   {p.title || '페이지 핵심 요약'}
                 </span>
-                {/* 콘텐츠 유형(텍스트/이미지/표/혼합) 배지 — source 코드보다 사람이 읽기 쉬운 표기 우선 */}
-                {(p.contentType || p.detectedTextSource) && (
-                  <span style={{ fontSize: '11px', backgroundColor: '#EEF2FF', color: '#4338CA', padding: '2px 8px', borderRadius: '6px', fontWeight: '700', marginLeft: 'auto' }}>
-                    {p.contentType || DETECTED_SOURCE_LABEL[p.detectedTextSource] || p.detectedTextSource}
-                  </span>
-                )}
               </div>
 
               {p.pageOverview && (
