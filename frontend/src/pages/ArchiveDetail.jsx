@@ -163,12 +163,7 @@ function buildAnalysisJournalMarkdown(note, material) {
       out.push('');
     });
   }
-  const enrich = normalizeEnrichment(note);
-  if (enrich.length) {
-    out.push('## 보강 설명');
-    enrich.forEach((e) => out.push(`- ${e.term ? `${e.term}: ` : ''}${e.explanation}`));
-    out.push('');
-  }
+  // '보강 설명'(Wikipedia 보강)은 본문과 상이해 학습 일지 저장에서도 제외(사용자 요청).
   out.push('## 출처');
   out.push(`- 자료보관함 materialId: ${material?.materialId ?? material?.id ?? ''}`);
   return out.join('\n');
@@ -510,26 +505,7 @@ function StudyNoteView({ note, material, onKeyword }) {
       {questions.length > 0 && (
         <Section title="❓ AI 학습 질문" color="#F59E0B"><ul style={ulStyle}>{questions.map((q, i) => <li key={i} style={liStyle}>{q}</li>)}</ul></Section>
       )}
-      {enrich.length > 0 && (
-        <Section title="📚 보강 설명" color="#8B5CF6">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {enrich.map((w, i) => {
-              const pageLabel = Array.isArray(w.pages) ? w.pages.filter((x) => x != null).join(', ') : (w.pages != null ? String(w.pages) : '');
-              return (
-                <div key={i}>
-                  <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--color-text-main)', marginBottom: '3px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                    {w.term || `보강 설명 ${i + 1}`}
-                    {w.used && <span style={{ fontSize: '11px', fontWeight: 600, color: '#6D28D9', background: '#EDE9FE', borderRadius: '4px', padding: '1px 6px' }}>보강 반영</span>}
-                    {pageLabel && <span style={{ fontSize: '11px', fontWeight: 600, color: '#1D4ED8', background: '#EFF6FF', borderRadius: '4px', padding: '1px 6px' }}>관련 p.{pageLabel}</span>}
-                  </div>
-                  <p style={{ margin: 0, fontSize: '13.5px', lineHeight: '1.6', color: 'var(--color-text-muted)' }}>{w.explanation}</p>
-                  {w.source && <span style={{ display: 'inline-block', marginTop: '4px', fontSize: '11px', fontWeight: 600, color: '#6B7280', background: '#F3F4F6', border: '1px solid var(--color-border)', borderRadius: '4px', padding: '1px 6px' }}>근거: {w.source}</span>}
-                </div>
-              );
-            })}
-          </div>
-        </Section>
-      )}
+      {/* '📚 보강 설명'(Wikipedia 보강) 섹션은 자료 본문과 내용이 상이해 제거함(사용자 요청). */}
       {limits.length > 0 && (
         <Section title="⚠️ 한계" color="#9CA3AF"><ul style={ulStyle}>{limits.map((l, i) => <li key={i} style={liStyle}>{l}</li>)}</ul></Section>
       )}

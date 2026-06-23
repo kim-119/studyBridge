@@ -442,7 +442,7 @@ _CONTENT_TYPE_BY_SOURCE = {
     "IMAGE_DESCRIPTION": "이미지",
     "CAPTION": "이미지(캡션)",
     "TABLE": "표",
-    "MIXED": "텍스트+이미지",
+    "MIXED": "",
     "INSUFFICIENT": "내용 식별 제한",
 }
 
@@ -671,14 +671,9 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
     if len(meaningful) < _MIN_MEANINGFUL and _score == 0 and not candidates:
         return _fallback(req, None, [], pages)
 
-    # ★ Wikipedia 보강은 '실제 추출 본문'이 충분할 때만 수행한다. 본문 근거가 없으면(예: S3 실패로
-    #   전 페이지 INSUFFICIENT) 일반 토큰이 검색어가 되어 무관한 위키(인물/예술 등)를 끌어오므로,
-    #   enrichment 자체를 생략한다. (특정 단어 차단 하드코딩이 아니라 '근거 유무'로 결정.)
-    if len(grounded) >= _MIN_MEANINGFUL:
-        wiki = _fetch_wiki(candidates, max_wiki)
-    else:
-        wiki = []
-        logger.info("[MajorAnalysis] 본문 근거 부족(real_chars=%d) → Wikipedia 보강 생략", len(grounded))
+    # Wikipedia '보강 설명'은 자료 본문과 내용이 상이한 경우가 많아 비활성화한다(사용자 요청).
+    # 검색 호출도 생략(불필요한 외부 호출/노이즈 제거). 필요 시 _fetch_wiki(candidates, max_wiki)로 복구.
+    wiki: List[Dict[str, Any]] = []
 
     prompt = _build_prompt(req, domain, wiki, candidates, pages)
     # 페이지별 요약 JSON은 다페이지×다필드라 커서 2200토큰에선 잘려(truncated) 파싱 실패→폴백했다.
