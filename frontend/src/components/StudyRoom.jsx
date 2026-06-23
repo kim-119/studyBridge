@@ -122,6 +122,22 @@ const friendlyDeviceMessage = (err) => {
   }
 };
 
+// H. OpenVidu initPublisher 전에 getUserMedia로 장치/권한/점유를 미리 검증한다.
+//    성공하면 즉시 track을 stop해 점유를 해제하고 null을 반환, 실패하면 에러 객체를 반환한다.
+//    이를 통해 권한 거부(NotAllowedError)·장치 없음(NotFoundError)·점유(NotReadableError)를
+//    OpenVidu publisher 시도 전에 구분하고, 불필요한 initPublisher 시도를 줄인다.
+const preflightGetUserMedia = async (constraints) => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    // preflight 성공 시 즉시 track을 stop → 곧바로 이어질 initPublisher의 getUserMedia가 점유 충돌나지 않게 한다.
+    stream.getTracks().forEach((track) => { try { track.stop(); } catch (e) { /* ignore */ } });
+    return null;
+  } catch (e) {
+    console.warn('[StudyRoom] preflight 실패 name=%s', e?.name || e);
+    return e;
+  }
+};
+
 function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCamOn, isMicOn = true, photoUrl, speakerId, onSpeakingChange }) {
   const videoRef = React.useRef(null);
   const [isSpeaking, setIsSpeaking] = React.useState(false);
@@ -857,11 +873,28 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     fetchHistory();
   }, [study?.id, userId]);
 
+  // F. publisher의 MediaStream track을 안전하게 정지·해제하고 ref/state를 비운다.
+  //    재입장 시작 전, NotReadableError 정리 시 반드시 호출해 카메라 하드웨어 점유를 해제한다.
+  //    (session.disconnect()와는 분리 — publisher만 정리하고 세션 연결은 건드리지 않는다.)
+  const stopPublisherTracksSafely = (pub) => {
+    const target = pub || publisherRef.current;
+    if (target) {
+      try {
+        const ms = target.stream?.mediaStream;
+        ms?.getTracks?.().forEach((track) => { try { track.stop(); } catch (e) { /* ignore */ } });
+      } catch (e) { /* ignore */ }
+      try { target.stream?.dispose?.(); } catch (e) { /* ignore */ }
+      try { target.dispose?.(); } catch (e) { /* ignore */ }
+    }
+    publisherRef.current = null;
+    setPublisher(null);
+  };
+
   // OpenVidu 세션·미디어·가드 상태를 한 번에 정리한다(언마운트/강퇴/재입장 전 호출).
   //   · cleanup 후 members로 activeConnections를 다시 채우지 않는다(메인 그리드는 실제 접속만 반영).
   const cleanupOpenVidu = (sessionInstance) => {
     try { (sessionInstance || sessionRef.current)?.disconnect(); } catch (e) { /* ignore */ }
-    try { publisherRef.current?.stream?.dispose?.(); } catch (e) { /* ignore */ }
+    stopPublisherTracksSafely(publisherRef.current);
     sessionRef.current = null;
     publisherRef.current = null;
     joinedRoomKeyRef.current = null;
@@ -903,6 +936,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         setPublisher(null);
         setActiveConnections({});
         setMediaByConnectionId({});
+        // F. 재입장 시작 전 직전 publisher track을 확실히 정지(이전 카메라 점유 해제 → NotReadableError 예방).
+        stopPublisherTracksSafely(publisherRef.current);
 
         let { token } = await groupService.getVideoToken(study.id);
         if (!isMounted) return;
@@ -1114,37 +1149,58 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           return;
         }
 
-        const buildOpts = (vSource, aSource) => ({
+        // 송출 옵션 빌더: 해상도/프레임을 단계별로 받아 fallback 사다리를 구성한다(스펙 C/D).
+        const buildOpts = (vSource, aSource, resolution, frameRate) => ({
           audioSource: aSource,
           videoSource: vSource,
           publishAudio: aSource !== false && isMicOn,
           publishVideo: vSource !== false && isVideoOn,
-          resolution: '640x480',
-          frameRate: 30,
+          resolution,
+          frameRate,
           insertMode: 'APPEND',
           mirror: true
         });
 
-        // fallback 순서: 카메라+마이크 → 카메라만 → 기본카메라만 → 마이크만.
-        // audioSource와 videoSource가 동시에 false가 되는 조합(viewer-only)은 절대 만들지 않는다.
-        // (장치가 둘 다 없는 경우는 위 보기 전용 분기에서 이미 return 됨.)
+        // ── B. fallback 사다리 ──
+        //   1) 선택 카메라 deviceId + 1280x720@30
+        //   2) 기본 카메라(undefined) + 1280x720@30
+        //   3) 기본 카메라 + 1280x720@15
+        //   4) 기본 카메라 + 640x480@30
+        //   5) audio-only
+        //   6) view-only (아래 publisherInstance 없음 분기에서 처리)
+        // audioSource/videoSource가 동시에 false인 조합은 만들지 않는다(둘 다 없을 땐 위에서 이미 return).
+        // 카메라 단계는 마이크가 있으면 함께 송출(audio=undefined), 없으면 video-only(audio=false).
+        const camAudio = hasAnyAudio ? undefined : false;
+        const videoLadder = [
+          { v: videoDeviceId, resolution: '1280x720', frameRate: 30, tag: 'selected-720p30', usesSelected: !!videoDeviceId },
+          { v: undefined,     resolution: '1280x720', frameRate: 30, tag: 'default-720p30' },
+          { v: undefined,     resolution: '1280x720', frameRate: 15, tag: 'default-720p15' },
+          { v: undefined,     resolution: '640x480',  frameRate: 30, tag: 'default-480p30' },
+        ];
         const attempts = [];
-        if (hasAnyVideo && hasAnyAudio) attempts.push({ v: videoDeviceId, a: undefined, tag: 'camera+mic' });
-        if (hasAnyVideo) attempts.push({ v: videoDeviceId, a: false, tag: 'camera-only' });
-        if (hasAnyVideo && videoDeviceId) attempts.push({ v: undefined, a: false, tag: 'default-camera-only' });
-        if (hasAnyAudio) attempts.push({ v: false, a: undefined, tag: 'audio-only' });
+        if (hasAnyVideo) {
+          for (const step of videoLadder) attempts.push({ ...step, a: camAudio });
+        }
+        if (hasAnyAudio) attempts.push({ v: false, a: undefined, resolution: '640x480', frameRate: 30, tag: 'audio-only' });
 
         let publisherInstance = null;
         let chosen = null;
         let lastErr = null;
+        // E/B. NotReadableError가 난 선택 카메라는 stale로 간주해 이후 단계에서 제외한다(같은 deviceId 무한 반복 금지).
+        let selectedCameraStale = false;
+
         // 카메라가 포함된 단계는 일시적 점유(NotReadableError/TrackStartError 등)일 수 있으므로
-        // 곧바로 다음 단계(오디오 전용)로 떨어뜨리지 않고 짧은 backoff로 재시도한다.
+        // 곧바로 다음 단계로 떨어뜨리지 않고 짧은 backoff로 재시도한다.
         const tryInit = async (opts, retries) => {
           for (let i = 0; i <= retries; i += 1) {
             try {
               return await OVInstance.initPublisherAsync(undefined, opts);
             } catch (e) {
               lastErr = e;
+              if (e?.name === 'NotReadableError' || e?.name === 'TrackStartError') {
+                // E. 카메라는 있으나 시작 실패 → 살아있을 수 있는 직전 publisher track을 확실히 정리.
+                stopPublisherTracksSafely(publisherRef.current);
+              }
               const transient = ['NotReadableError', 'TrackStartError', 'OverconstrainedError', 'AbortError'].includes(e?.name);
               console.warn('[StudyRoom] publisher 시도 실패 name=%s transient=%s retryLeft=%d', e?.name || e, transient, transient ? retries - i : 0);
               if (!transient || i === retries || !isMounted) return null;
@@ -1153,9 +1209,42 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           }
           return null;
         };
+
+        const seen = new Set();
         for (const att of attempts) {
-          const isCameraAttempt = att.v !== false; // 카메라를 켜는 단계만 재시도(오디오/시청 전용은 1회)
-          publisherInstance = await tryInit(buildOpts(att.v, att.a), isCameraAttempt ? 2 : 0);
+          if (att.usesSelected && selectedCameraStale) continue; // stale 선택 카메라 제외
+          const sig = `${att.v}|${att.a}|${att.resolution}|${att.frameRate}`;
+          if (seen.has(sig)) continue; // 동일 (장치·해상도·프레임) 조합 중복 시도 방지(같은 selectedCamera 무한 반복 금지)
+          seen.add(sig);
+
+          const isCameraAttempt = att.v !== false; // 카메라를 켜는 단계만 재시도(오디오 전용은 1회)
+          console.log('[StudyRoom] fallback 시도 tag=%s', att.tag); // B. fallback마다 시도 tag 로그
+
+          // ── H. getUserMedia preflight: OpenVidu initPublisher 전에 제약을 미리 검증하고 track을 즉시 stop ──
+          if (isCameraAttempt) {
+            // 해상도는 ideal로 두어 preflight에서 OverconstrainedError로 떨어지지 않게 하고,
+            // 선택 카메라일 때만 deviceId exact를 강제해 stale 여부를 정확히 판별한다.
+            const videoConstraint = att.usesSelected
+              ? { deviceId: { exact: att.v }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: att.frameRate } }
+              : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: att.frameRate } };
+            const pfErr = await preflightGetUserMedia({ video: videoConstraint, audio: att.a !== false });
+            if (!isMounted) break;
+            if (pfErr) {
+              lastErr = pfErr;
+              if (pfErr.name === 'NotReadableError' || pfErr.name === 'TrackStartError') {
+                // E. 카메라는 있지만 점유 중 → 선택 카메라는 stale 처리하고 기존 track 정리 후 기본 카메라 단계로.
+                if (att.usesSelected) selectedCameraStale = true;
+                stopPublisherTracksSafely(publisherRef.current);
+              }
+              // preflight 실패 시 같은 단계로 OpenVidu publisher를 시도하지 않고 다음 fallback으로 줄인다.
+              continue;
+            }
+          }
+
+          publisherInstance = await tryInit(
+            buildOpts(att.v, att.a, att.resolution, att.frameRate),
+            isCameraAttempt ? 2 : 0
+          );
           if (!isMounted) break;
           if (publisherInstance) {
             chosen = att;
