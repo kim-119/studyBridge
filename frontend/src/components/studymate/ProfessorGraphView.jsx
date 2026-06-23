@@ -62,6 +62,7 @@ function buildGraph({ question, agents, messages, interactions }) {
   });
 
   const byRole = new Map();
+  const agentIdToRole = new Map();  // replyTo(agentId) → role 매핑(REACTION 간선용)
   const resolveRole = (m, fallbackIdx) => {
     if (m.agentRole && ROLE_ORDER.includes(m.agentRole)) return m.agentRole;
     if (Number.isInteger(m.agentIndex)) return roleForAgentIndex(m.agentIndex);
@@ -70,11 +71,17 @@ function buildGraph({ question, agents, messages, interactions }) {
   };
   answerMsgs.forEach((m, i) => {
     const role = resolveRole(m, i);
+    if (m.agentId != null) agentIdToRole.set(String(m.agentId), role);
     const text = String(m.content ?? m.answer ?? '').trim();
+    // 노드 본문은 '직접답변(DIRECT_ANSWER)'을 우선한다. REACTION/WRAP은 간선/별도로 다룬다.
+    const isDirect = !m.actType || m.actType === 'DIRECT_ANSWER';
     const prev = byRole.get(role);
-    // 같은 역할이 여러 발화면 마지막(최신) 비어있지 않은 것 우선.
-    if (!prev || (text && (!prev._text || true))) {
-      byRole.set(role, { msg: m, role, _text: text });
+    if (!prev) {
+      byRole.set(role, { msg: m, role, _text: text, _direct: isDirect });
+    } else if (isDirect && !prev._direct) {
+      byRole.set(role, { msg: m, role, _text: text, _direct: true });          // DIRECT가 비-DIRECT를 대체
+    } else if (isDirect === prev._direct && text) {
+      byRole.set(role, { msg: m, role, _text: text, _direct: isDirect });        // 같은 등급이면 최신 비어있지 않은 것
     }
   });
 
@@ -113,6 +120,7 @@ function buildGraph({ question, agents, messages, interactions }) {
 
   // 3) 간선. question→agent "답변"은 항상.
   const edges = [];
+  let realCross = 0;
   agentNodes.forEach((n) => {
     edges.push({
       id: `e-q-${n.role}`, source: 'q', target: n.id,
@@ -120,8 +128,28 @@ function buildGraph({ question, agents, messages, interactions }) {
     });
   });
 
+  // 3b) 확률적 다중답변: REACTION 발화(actType/replyTo)를 화자→대상 교수 간 '보충·반박' 간선으로.
+  const seenActEdge = new Set();
+  answerMsgs.forEach((m, i) => {
+    if (m.actType !== 'REACTION' || m.replyTo == null) return;
+    const fromRole = resolveRole(m, i);
+    const toRole = agentIdToRole.get(String(m.replyTo));
+    if (!fromRole || !toRole || fromRole === toRole) return;
+    if (!roleToNodeId.has(fromRole) || !roleToNodeId.has(toRole)) return;
+    const sId = roleToNodeId.get(fromRole);
+    const tId = roleToNodeId.get(toRole);
+    const dedupe = `${sId}->${tId}`;
+    if (seenActEdge.has(dedupe)) return;
+    seenActEdge.add(dedupe);
+    edges.push({
+      id: `e-act-${i}`, source: sId, target: tId,
+      relation: 'rebuttal', label: '보충·반박', derived: false,
+      content: String(m.content ?? m.answer ?? '').slice(0, 240),
+    });
+    realCross += 1;
+  });
+
   // 4) 상호작용 → 교수 간 edge / 검증 badge.
-  let realCross = 0;
   const seenEdge = new Set();
   (Array.isArray(interactions) ? interactions : []).forEach((it, i) => {
     const fromRole = it?.fromRole;
@@ -169,6 +197,28 @@ function buildGraph({ question, agents, messages, interactions }) {
   }
 
   return { nodes: [questionNode, ...agentNodes], edges };
+}
+
+// ── 턴 그룹핑: parentId(USER 질문) 기준으로 [{ id, question, answers }] 묶음 ──────────
+// 마인드맵이 전 히스토리를 role별 최신 1개로 뭉개지 않고, '선택한 질문 턴'만 보이게 한다.
+function buildTurns(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const turns = [];
+  const turnByRoot = new Map();
+  for (const m of list) {
+    if (m?.sender === 'USER') {
+      const t = { id: m.id, question: String(m.content ?? '').trim(), answers: [] };
+      turnByRoot.set(m.id, t);
+      turns.push(t);
+    }
+  }
+  for (const m of list) {
+    if (!m || m.sender === 'USER') continue;
+    const root = m.parentId != null ? turnByRoot.get(m.parentId) : null;
+    if (root) root.answers.push(m);
+    else if (turns.length) turns[turns.length - 1].answers.push(m); // 부모 못 찾으면 최근 턴에
+  }
+  return turns.filter((t) => t.answers.length > 0); // 답변 있는 턴만 선택 대상
 }
 
 // ── 레이아웃: container 폭에 따라 cols 결정 → 논리 좌표(node center) 계산 ──────────
@@ -227,10 +277,29 @@ function trimToBox(from, to) {
 }
 
 export default function ProfessorGraphView({ question, agents = [], messages = [], interactions = [], onOpenDetail }) {
+  // 턴(질문) 단위로 묶고, 기본은 '최신 턴'. 사용자는 이전 턴을 골라 되돌아볼 수 있다.
+  const turns = useMemo(() => buildTurns(messages), [messages]);
+  const [pickedTurnId, setPickedTurnId] = useState(null); // null = 최신 추종
+  const effTurnIdx = useMemo(() => {
+    if (!turns.length) return -1;
+    const i = turns.findIndex((t) => t.id === pickedTurnId);
+    return i >= 0 ? i : turns.length - 1; // 못 찾으면(또는 null) 최신
+  }, [turns, pickedTurnId]);
+  const selectedTurn = effTurnIdx >= 0 ? turns[effTurnIdx] : null;
+  const turnQuestion = selectedTurn ? (selectedTurn.question || question) : question;
+  const turnMessages = selectedTurn ? selectedTurn.answers : messages;
+
   const { nodes, edges } = useMemo(
-    () => buildGraph({ question, agents, messages, interactions }),
-    [question, agents, messages, interactions]
+    () => buildGraph({ question: turnQuestion, agents, messages: turnMessages, interactions }),
+    [turnQuestion, agents, turnMessages, interactions]
   );
+  const goPrevTurn = () => { if (effTurnIdx > 0) setPickedTurnId(turns[effTurnIdx - 1].id); };
+  const goNextTurn = () => {
+    if (effTurnIdx >= 0 && effTurnIdx < turns.length - 1) {
+      const ni = effTurnIdx + 1;
+      setPickedTurnId(ni === turns.length - 1 ? null : turns[ni].id); // 최신이면 다시 추종 모드
+    }
+  };
 
   const containerRef = useRef(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -246,7 +315,7 @@ export default function ProfessorGraphView({ question, agents = [], messages = [
     setSaving(true);
     try {
       await exportGraphPdf(
-        { nodes, edges, pos, W, H, roleColor: ROLE_COLOR, relationStyle: RELATION_STYLE, title: question ? `질문: ${String(question).slice(0, 60)}` : '교수 답변 마인드맵' },
+        { nodes, edges, pos, W, H, roleColor: ROLE_COLOR, relationStyle: RELATION_STYLE, title: turnQuestion ? `질문: ${String(turnQuestion).slice(0, 60)}` : '교수 답변 마인드맵' },
         'studymate-mindmap.pdf'
       );
     } catch (err) {
@@ -328,6 +397,17 @@ export default function ProfessorGraphView({ question, agents = [], messages = [
       >
         {/* 우측 상단: 모드 상태를 작은 pill로만 축소 노출(전체 의견 섹션 대체) */}
         <div className="pgraph-statepill" aria-hidden="true">교수 {Math.max(0, nodes.length - 1)}명 · 상호검증</div>
+
+        {/* 좌측 상단: 질문 턴 선택기(기본=최신, 이전 턴 되돌아보기). 턴이 2개 이상일 때만. */}
+        {turns.length > 1 && (
+          <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 5, display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.92)', border: '1px solid #E5E7EB', borderRadius: 999, padding: '3px 8px', fontSize: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
+            <button type="button" onClick={goPrevTurn} disabled={effTurnIdx <= 0} aria-label="이전 질문 턴" style={{ border: 'none', background: 'transparent', cursor: effTurnIdx <= 0 ? 'default' : 'pointer', opacity: effTurnIdx <= 0 ? 0.35 : 1, fontSize: 13 }}>◀</button>
+            <span style={{ fontWeight: 700, color: '#374151', whiteSpace: 'nowrap' }} title={turnQuestion || ''}>
+              질문 {effTurnIdx + 1}/{turns.length}{pickedTurnId == null ? ' · 최신' : ''}
+            </span>
+            <button type="button" onClick={goNextTurn} disabled={effTurnIdx >= turns.length - 1} aria-label="다음 질문 턴" style={{ border: 'none', background: 'transparent', cursor: effTurnIdx >= turns.length - 1 ? 'default' : 'pointer', opacity: effTurnIdx >= turns.length - 1 ? 0.35 : 1, fontSize: 13 }}>▶</button>
+          </div>
+        )}
 
         <div
           className="pgraph-canvas"

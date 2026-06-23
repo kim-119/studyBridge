@@ -1068,6 +1068,10 @@ const renderInlineNodes = (line, keyBase) => {
   return nodes;
 };
 
+// 과거(마크다운 주입) 답변에 남은 '> 💬 *...*' / '> 🧩 *...*' 배지 라인을 본문에서 걷어낸다.
+// (신규 답변은 배지를 메타로 렌더하므로 본문에 마커가 들어가지 않는다.)
+const stripLegacyActBadge = (text) => String(text ?? '').replace(/^>\s*[💬🧩][^\n]*\n+/, '');
+
 const RichText = ({ text }) => {
   const src = String(text ?? '');
   if (!src) return null;
@@ -3010,6 +3014,7 @@ export default function StudyMate() {
             stageType: d?.stageType || 'FIRST_DRAFT',
             actType: actType || undefined,
             replyTo: d?.replyTo ?? patch.replyTo ?? undefined,
+            replyToName: d?.replyToName ?? patch.replyToName ?? undefined,
             createdAt: d?.createdAt || patch.createdAt || ts,
             parentId: userMsg.id,
             isPending: !!patch.isPending,
@@ -3334,16 +3339,18 @@ export default function StudyMate() {
               sawRealAnswer = true;
               clearChoreoFiller();
               const targeted = isAnswerForTarget(d);
-              // 확률적 다중답변 플래너: 발화 유형(반박/정리)을 시각적으로 구분한다.
-              let _shown = d.content || d.answer || '';
-              if (d.actType === 'REACTION') {
-                const _toName = (agentMsgsArr().find((m) => m.agentId === d.replyTo)?.senderName) || '';
-                _shown = `> 💬 *${_toName ? `${_toName}님 의견에 ` : ''}보충·반박*\n\n${_shown}`;
-              } else if (d.actType === 'WRAP') {
-                _shown = `> 🧩 *한 줄 정리*\n\n${_shown}`;
-              }
+              // 확률적 다중답변 플래너: 발화 유형(반박/정리)은 본문에 마크다운(> 💬 *...*)을 주입하지
+              // 않는다(날것의 */> 노출 방지). 대신 actType/replyTo(+대상 이름)를 메타로 넘겨
+              // 말풍선에서 배지로 렌더한다.
+              const _shown = d.content || d.answer || '';
+              const _replyToName = d.actType === 'REACTION'
+                ? ((agentMsgsArr().find((m) => m.agentId === d.replyTo)?.senderName) || '')
+                : '';
               // single scope면 upsert 내부에서 비대상 카드를 드롭한다(채팅 메시지 append 분리).
-              upsertAgentMessage({ ...d, content: _shown, answer: _shown }, { isPending: false, content: _shown });
+              upsertAgentMessage(
+                { ...d, content: _shown, answer: _shown, replyToName: _replyToName },
+                { isPending: false, content: _shown },
+              );
               const bubbleRole = roleForAgentIndex(d.agentIndex);
               if (askScope === 'single' && !targeted) {
                 // 비대상 교수: 보조 모션 + 짧은 "확인 중" 말풍선만(장문 답변/카드 금지 — 목표).
@@ -4403,6 +4410,17 @@ export default function StudyMate() {
                               </span>
                             )}
                             <span style={{ fontWeight: '700' }}>{senderName}</span>
+                            {/* 확률적 다중답변 플래너: 발화 유형 배지(본문 마크다운 대신 메타로 렌더). */}
+                            {!isUser && msg.actType === 'REACTION' && (
+                              <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 7px', borderRadius: '10px', backgroundColor: '#EEF0FF', color: '#4F46E5', whiteSpace: 'nowrap' }}>
+                                💬 보충·반박{msg.replyToName ? ` → ${msg.replyToName}` : ''}
+                              </span>
+                            )}
+                            {!isUser && msg.actType === 'WRAP' && (
+                              <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 7px', borderRadius: '10px', backgroundColor: '#F3E8FF', color: '#7C3AED', whiteSpace: 'nowrap' }}>
+                                🧩 정리
+                              </span>
+                            )}
                           </div>
                           {hasSimulationPayload ? (
                             <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', borderLeft: `4px solid ${agentColor.border}`, maxWidth: '100%' }}>
@@ -4441,7 +4459,7 @@ export default function StudyMate() {
                             <div className={`chat-bubble ${isUser ? 'user' : 'ai'}`} style={{ whiteSpace: 'pre-wrap', backgroundColor: isUser ? undefined : agentTheme.bg, border: 'none', borderLeft: isUser ? undefined : `4px solid ${agentColor.border}` }}>
                               {(!isUser && msg.isPending)
                                 ? <span style={{ opacity: 0.7, fontStyle: 'italic' }}>{msg.statusText || '답변 생성 중…'}</span>
-                                : (isUser || isPlainReply ? (isPlainReply ? stripMarkdown(msg.content) : msg.content) : <RichText text={msg.content} />)}
+                                : (isUser || isPlainReply ? (isPlainReply ? stripMarkdown(msg.content) : msg.content) : <RichText text={stripLegacyActBadge(msg.content)} />)}
                             </div>
                           )}
                           {/* SSE 중단/부분 수신 복구 UX: 같은 질문을 즉시 다시 보낼 수 있는 재시도 버튼 */}
