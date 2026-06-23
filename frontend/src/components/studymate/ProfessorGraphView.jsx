@@ -276,7 +276,7 @@ function trimToBox(from, to) {
   return { s: inset(from, 1), e: inset(to, -1) };
 }
 
-export default function ProfessorGraphView({ question, agents = [], messages = [], interactions = [], onOpenDetail }) {
+export default function ProfessorGraphView({ question, agents = [], messages = [], interactions = [], onOpenDetail, hidePdfSave = false }) {
   // 턴(질문) 단위로 묶고, 기본은 '최신 턴'. 사용자는 이전 턴을 골라 되돌아볼 수 있다.
   const turns = useMemo(() => buildTurns(messages), [messages]);
   const [pickedTurnId, setPickedTurnId] = useState(null); // null = 최신 추종
@@ -492,10 +492,12 @@ export default function ProfessorGraphView({ question, agents = [], messages = [
           })}
         </div>
 
-        {/* 좌측 하단 PDF 저장 */}
-        <button type="button" className="pgraph-save" onClick={handleSavePdf} disabled={saving}>
-          {saving ? '저장 중…' : '⬇ PDF 저장'}
-        </button>
+        {/* 좌측 하단 PDF 저장 (Obsidian 경로에서는 hidePdfSave 로 숨긴다 — mindmap PDF 저장 금지) */}
+        {!hidePdfSave && (
+          <button type="button" className="pgraph-save" onClick={handleSavePdf} disabled={saving}>
+            {saving ? '저장 중…' : '⬇ PDF 저장'}
+          </button>
+        )}
 
         {/* 우측 하단 zoom/fit 컨트롤 */}
         <div className="pgraph-controls" role="group" aria-label="그래프 확대/축소">

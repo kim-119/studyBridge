@@ -133,6 +133,48 @@ public class MaterialService {
         return convertToDTO(savedMaterial);
     }
 
+    /**
+     * 마인드맵(Obsidian Graph) 저장. PDF 로 변환하지 않고 그래프 JSON 을 content_json 에 보관한다.
+     *  · 엔티티 불변식(구조화 자료 + PDF 금지)과 별개로, materialType=MINDMAP 자체가 PDF 가 아님을 보장한다.
+     */
+    @Transactional
+    public MaterialDTO saveMindMap(Long userId, MaterialDTO.MindMapRequest request) {
+        java.util.Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("viewType", "obsidian_graph");
+        payload.put("contentType", "application/vnd.studybridge.mindmap+json");
+        payload.put("sourceType", request.getSourceType());
+        payload.put("sourceId", request.getSourceId());
+        payload.put("nodeCount", request.getNodeCount() != null ? request.getNodeCount() : 0);
+        payload.put("edgeCount", request.getEdgeCount() != null ? request.getEdgeCount() : 0);
+        payload.put("rawGraphJson", request.getRawGraphJson());
+        payload.put("obsidianMarkdown", request.getObsidianMarkdown());
+        payload.put("canvasJson", request.getCanvasJson());
+
+        String contentJson;
+        try {
+            contentJson = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload);
+        } catch (Exception e) {
+            throw new IllegalStateException("마인드맵 직렬화에 실패했습니다.", e);
+        }
+
+        String title = (request.getTitle() == null || request.getTitle().isBlank())
+                ? "마인드맵" : request.getTitle();
+
+        Material material = Material.builder()
+                .userId(userId)
+                .title(title)
+                .materialType(MaterialType.MINDMAP)
+                .keywords(request.getKeywords())
+                .folderId(resolveOwnedFolderId(userId, request.getFolderId()))
+                .contentJson(contentJson)
+                .fileSize(0L)
+                .extractionStatus(ExtractionStatus.SUCCESS)
+                .build();
+
+        Material saved = materialRepository.save(material);
+        return convertToDTO(saved);
+    }
+
     @Transactional
     public MaterialDTO updateMaterial(Long userId, Long materialId, MaterialDTO.UpdateRequest request) {
         Material material = materialRepository.findById(materialId)
@@ -365,9 +407,10 @@ public class MaterialService {
                 .uploadedAt(material.getUploadedAt());
     }
 
-    /** PLANNER 등 PDF 가 아닌 구조화 자료 여부. */
+    /** PLANNER/MINDMAP 등 PDF 가 아닌 구조화 자료 여부(S3 presigned URL 생성 대상에서 제외). */
     private boolean isStructured(Material material) {
-        return material.getMaterialType() == MaterialType.PLANNER;
+        MaterialType t = material.getMaterialType();
+        return t == MaterialType.PLANNER || t == MaterialType.MINDMAP;
     }
 
     private String generatePresignedUrl(String s3Key) {

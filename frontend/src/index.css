@@ -1198,6 +1198,7 @@ a {
 .doc-badge-pdf { background: #FEE2E2; color: #B91C1C; }
 .doc-badge-journal { background: #DCFCE7; color: #15803D; }
 .doc-badge-planner { background: #DBEAFE; color: #1D4ED8; }
+.doc-badge-mindmap { background: #EDE9FE; color: #6D28D9; }
 .doc-date { font-size: 12px; color: var(--color-text-muted); }
 .doc-more {
   position: absolute; top: 8px; right: 8px; background: rgba(255,255,255,0.92);

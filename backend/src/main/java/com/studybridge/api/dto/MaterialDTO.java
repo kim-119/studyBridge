@@ -22,6 +22,22 @@ public class MaterialDTO {
         private Long folderId;
     }
 
+    /** 마인드맵(Obsidian Graph) 저장 요청. PDF 가 아니라 그래프 JSON 으로 보관한다. */
+    @Getter
+    @NoArgsConstructor
+    public static class MindMapRequest {
+        private String title;
+        private String keywords;
+        private Long folderId;
+        private String sourceType;
+        private String sourceId;
+        private Integer nodeCount;
+        private Integer edgeCount;
+        private String rawGraphJson;
+        private String obsidianMarkdown;
+        private String canvasJson;
+    }
+
     @Getter
     @NoArgsConstructor
     public static class MoveRequest {

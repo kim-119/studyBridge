@@ -11,6 +11,7 @@ public final class DocumentDomain {
     public static final String LEARNING_MATERIAL = "LEARNING_MATERIAL";
     public static final String PLANNER = "PLANNER";
     public static final String STUDY_JOURNAL = "STUDY_JOURNAL";
+    public static final String MINDMAP = "MINDMAP";
 
     private DocumentDomain() {}
 
@@ -29,6 +30,11 @@ public final class DocumentDomain {
             case "JOURNAL":
             case "DIARY":
                 return STUDY_JOURNAL;
+            case MINDMAP:
+            case "MIND_MAP":
+            case "OBSIDIAN_GRAPH":
+            case "GRAPH":
+                return MINDMAP;
             case LEARNING_MATERIAL:
             case "LEARNING_PDF":
             case "PDF":
@@ -49,6 +55,8 @@ public final class DocumentDomain {
                 return PLANNER;
             case STUDY_LOG:
                 return STUDY_JOURNAL;
+            case MINDMAP:
+                return MINDMAP;
             case REVIEW_NOTE:
                 return null; // 오답노트는 자료보관함 어떤 도메인에도 노출하지 않음
             case PDF:

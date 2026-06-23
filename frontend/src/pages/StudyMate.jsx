@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { agentService } from '../services/api';
+import { agentService, materialService } from '../services/api';
 import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, MessageCircle, UsersRound, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck, RefreshCw } from 'lucide-react';
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
-import ProfessorGraphView from '../components/studymate/ProfessorGraphView';
+import ObsidianMindMapView from '../components/graph/ObsidianMindMapView';
 import ProfessorLearningPanel from '../components/studymate/ProfessorLearningPanel';
 import '../components/studymate/studymate-premium.css';
 import PixelProfessorStage from '../components/studymate/pixel/PixelProfessorStage';
@@ -2138,6 +2138,21 @@ export default function StudyMate() {
   const isProfessorTab = viewTab === PROFESSOR_TAB_VALUE;
   // 확률적 다중답변 플래너의 재개입 칩(follow_up_suggestions). 클릭하면 후속 질문을 보낸다.
   const [followUpChips, setFollowUpChips] = useState([]);
+  // 마인드맵 → 자료보관함 저장 상태('idle'|'saving'|'done'|'error').
+  const [mindmapSaveState, setMindmapSaveState] = useState('idle');
+  const saveMindMapToArchive = async (payload) => {
+    if (mindmapSaveState === 'saving') return;
+    setMindmapSaveState('saving');
+    try {
+      await materialService.saveMindMap(payload);
+      setMindmapSaveState('done');
+      setTimeout(() => setMindmapSaveState('idle'), 2500);
+    } catch (err) {
+      console.error('[StudyMate] 마인드맵 저장 실패', err);
+      setMindmapSaveState('error');
+      setTimeout(() => setMindmapSaveState('idle'), 2500);
+    }
+  };
   // 교수님들과 대화 트리 최상단 라벨(액션에 따라 전체 의견/전체 반박/전체 비교/전체 예시로 갱신)
   const [professorTreeTitle, setProfessorTreeTitle] = useState('전체 의견');
   // 현재 교수 액션 모드(말풍선 문구·강조색·루트 제목을 함께 좌우). 13종 + default.
@@ -4566,14 +4581,17 @@ export default function StudyMate() {
                 </div>
               )}
 
-              {/* ── 마인드맵 뷰: "전체 의견" 요약 섹션 제거 → 교수 노드/간선 그래프(fit-to-view) ── */}
+              {/* ── 마인드맵 뷰: Obsidian Graph(다크 캔버스). 저장은 자료보관함 그래프(JSON), PDF 저장 없음. ── */}
               {viewTab === 'mindmap' && (
                 <div className="professor-discussion-view" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: '12px 14px' }}>
-                  <ProfessorGraphView
+                  <ObsidianMindMapView
                     question={[...chatHistory].reverse().find((m) => m.sender === 'USER')?.content || ''}
                     agents={selectedAgent?.agents || []}
                     messages={mindmapMessages}
                     interactions={professorInteractions}
+                    onSaveToArchive={saveMindMapToArchive}
+                    saving={mindmapSaveState === 'saving'}
+                    savedLabel={mindmapSaveState === 'done' ? '저장됨 ✓' : mindmapSaveState === 'error' ? '저장 실패' : undefined}
                   />
                 </div>
               )}

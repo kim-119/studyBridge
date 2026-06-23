@@ -43,6 +43,14 @@ public class MaterialController {
         return ResponseEntity.ok(savedMaterial);
     }
 
+    // 마인드맵(Obsidian Graph) 저장. PDF 변환/업로드 경로를 타지 않고 그래프 JSON 으로 보관한다.
+    @PostMapping("/mindmap")
+    public ResponseEntity<MaterialDTO> saveMindMap(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestBody MaterialDTO.MindMapRequest request) {
+        return ResponseEntity.ok(materialService.saveMindMap(userDetails.getId(), request));
+    }
+
     // 자료 업로드 (folderId 지정 시 해당 폴더 안에 저장, 미지정/null 이면 루트)
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<MaterialDTO> uploadMaterial(

@@ -747,6 +747,24 @@ export const materialService = {
     return res.data;
   },
 
+  // 마인드맵을 자료보관함에 Obsidian Graph(JSON)로 저장. PDF 변환/업로드 경로를 타지 않는다.
+  saveMindMap: async (payload) => {
+    const body = {
+      title: payload.title,
+      keywords: Array.isArray(payload.tags) ? payload.tags.join(',') : (payload.keywords || ''),
+      folderId: payload.folderId != null ? payload.folderId : null,
+      sourceType: payload.sourceType || 'multi_agent_chat',
+      sourceId: payload.sourceId != null ? String(payload.sourceId) : null,
+      nodeCount: payload.nodeCount || 0,
+      edgeCount: payload.edgeCount || 0,
+      rawGraphJson: typeof payload.rawGraphJson === 'string' ? payload.rawGraphJson : JSON.stringify(payload.rawGraphJson || {}),
+      obsidianMarkdown: payload.obsidianMarkdown || '',
+      canvasJson: typeof payload.canvasJson === 'string' ? payload.canvasJson : JSON.stringify(payload.canvasJson || {}),
+    };
+    const res = await api.post('/api/materials/mindmap', body);
+    return res.data;
+  },
+
   uploadMaterial: async (title, materialType, keywords, file, folderId) => {
     const formData = new FormData();
     formData.append('title', title);

@@ -6,6 +6,7 @@ import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService, plan
 import SummarySectionCard from '../components/SummarySectionCard';
 import KeywordDefineModal from '../components/KeywordDefineModal';
 import ReviewNoteArchiveDetail from '../components/review-note/ReviewNoteArchiveDetail';
+import ObsidianArchiveGraphViewer from '../components/graph/ObsidianArchiveGraphViewer';
 import ReviewNoteLearningEntry from '../components/review-note/ReviewNoteLearningEntry';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
 import { cleanLearningOrNull, filterLearningList } from '../utils/learningContent';
@@ -3587,6 +3588,17 @@ export default function ArchiveDetail() {
   // ── 오답노트(REVIEW_NOTE) 상세 ────────────────────────────────────────────────
   //  자료보관함의 REVIEW_NOTE material 카드 진입점. 실제 복습 기능(다시 풀기/유사문제/AI 해설/메모)은
   //  여기서만 실행한다. 상단바/레이아웃은 학습PDF 상세와 동일 스타일(ReviewNoteArchiveDetail).
+  // 마인드맵: 반드시 Obsidian Graph 뷰어로 연다. PDFViewer/MarkdownViewer 로 절대 진입하지 않는다.
+  if (type === 'mindmap') {
+    return (
+      <ObsidianArchiveGraphViewer
+        material={material}
+        onBack={() => navigate('/archive')}
+        onDelete={handleDeleteMaterial}
+      />
+    );
+  }
+
   if (type === 'reviewNote') {
     return (
       <ReviewNoteArchiveDetail

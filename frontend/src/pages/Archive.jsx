@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   FileText, File as FileIcon, Plus, X, AlignLeft, MessageSquare, CalendarDays,
-  Folder as FolderIcon, FolderPlus, MoreVertical, ChevronRight, ArrowLeft, Upload, Check,
+  Folder as FolderIcon, FolderPlus, MoreVertical, ChevronRight, ArrowLeft, Upload, Check, Network,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { materialService, folderService } from '../services/api';
@@ -94,12 +94,14 @@ const TYPE_META = {
   STUDY_LOG: { label: '학습일지', Icon: FileText, badge: 'doc-badge-journal' },
   PDF: { label: 'PDF', Icon: FileIcon, badge: 'doc-badge-pdf' },
   PLANNER: { label: '플래너', Icon: CalendarDays, badge: 'doc-badge-planner' },
+  MINDMAP: { label: 'Obsidian Graph', Icon: Network, badge: 'doc-badge-mindmap' },
 };
 
 // 카드 배지/아이콘 메타 결정. PLANNER/plannerId 면 플래너 카드, 그 외에만 PDF 카드.
 // title 이 플래너성인데 타입이 PDF 로 남아 있으면(잔존 오염) 경고만 남기고 PDF 로 표시한다.
 function resolveTypeMeta(m) {
   if (isPlannerMaterial(m)) return TYPE_META.PLANNER;
+  if (String(m.materialType || '').toUpperCase() === 'MINDMAP') return TYPE_META.MINDMAP;
   const t = String(m.materialType || '').toUpperCase();
   if (t === 'PDF' && /^\[로드맵/.test(String(m.title || ''))) {
     console.warn('[archive] PDF 타입이지만 플래너로 보이는 항목', { materialId: m.materialId, title: m.title, plannerId: m.plannerId });
@@ -119,6 +121,7 @@ const ARCHIVE_TABS = [
   { key: 'LEARNING_PDF', label: '학습자료' },
   { key: 'PLANNER', label: '플래너' },
   { key: 'STUDY_LOG', label: '학습일지' },
+  { key: 'MINDMAP', label: '마인드맵' },
 ];
 const ARCHIVE_TAB_KEYS = ARCHIVE_TABS.map((t) => t.key);
 const DEFAULT_ARCHIVE_TAB = 'LEARNING_PDF';
@@ -132,6 +135,7 @@ const TAB_TO_DOMAIN = {
   LEARNING_PDF: 'LEARNING_MATERIAL',
   PLANNER: 'PLANNER',
   STUDY_LOG: 'STUDY_JOURNAL',
+  MINDMAP: 'MINDMAP',
 };
 function domainForTab(tabKey) {
   return TAB_TO_DOMAIN[normalizeArchiveTab(tabKey)] || 'LEARNING_MATERIAL';
@@ -142,6 +146,7 @@ function materialTabKind(m) {
   // plannerId 보유 = 사실상 플래너(과거 PDF 오염 저장 방어). 타입보다 우선.
   if (m.plannerId != null) return 'PLANNER';
   const raw = String(m.materialType ?? m.type ?? m.sourceType ?? m.category ?? '').toUpperCase();
+  if (raw.includes('MINDMAP')) return 'MINDMAP';
   if (raw.includes('PLANNER') || raw.includes('PLAN') || raw.includes('SCHEDULE')) return 'PLANNER';
   if (raw.includes('STUDY_LOG') || raw.includes('LEARNING_LOG') || raw.includes('JOURNAL') || raw.includes('DIARY')) return 'STUDY_LOG';
   if (raw.includes('PDF') || raw.includes('MATERIAL') || raw.includes('DOCUMENT')) return 'LEARNING_PDF';
@@ -358,6 +363,11 @@ export default function Archive() {
       setEditNextPlan(journal.nextPlan);
       setIsJournalEditMode(false);
       fetchJournalAiData(journal.id);
+      return;
+    }
+    // 마인드맵 → 전용 Obsidian Graph 뷰어(PDFViewer 로 가지 않는다).
+    if (kind === 'MINDMAP') {
+      navigate(`/archive/mindmap/${m.materialId}`, { state: { item: m } });
       return;
     }
     // PLANNER 와 PDF → 분할뷰 상세(서버 materialType 으로 우측 패널 결정). materialId 를 canonical id 로 사용.
