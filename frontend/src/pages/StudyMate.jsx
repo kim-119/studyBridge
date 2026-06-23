@@ -4333,7 +4333,7 @@ export default function StudyMate() {
                       const isPlainReply = !!msg.routeAction || !!msg.isNotice;
 
                       return (
-                        <div key={msg.id ?? `${msg.parentId}-${msg.badgeKey}-${idx}`} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
+                        <div key={msg.id ?? `${msg.parentId ?? 'root'}:${msg.sender}:${msg.badgeKey ?? msg.senderName ?? ''}`} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
                           {/* 메시지 헤더: 에이전트 이름(+아이콘)만 노출. 모드/단계/모델/역할/성격/수준/글자수 배지는
                               발표 화면 단순화를 위해 렌더링하지 않는다(내부 데이터는 유지). */}
                           <div

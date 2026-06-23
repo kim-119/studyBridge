@@ -1,6 +1,7 @@
 package com.studybridge.api.service;
 
 import com.studybridge.api.dto.MaterialDTO;
+import com.studybridge.api.entity.DocumentDomain;
 import com.studybridge.api.entity.ExtractionStatus;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialType;
@@ -219,21 +220,48 @@ public class MaterialService {
         return folderId;
     }
 
-    /** 자료보관함 폴더 뷰 한 화면 조회(현재 위치의 하위 폴더 + 자료 + breadcrumb). parentId=null 이면 루트. */
+    /** 하위 호환용(도메인 미지정) — 학습자료 도메인으로 처리. */
     public ArchiveListDTO getArchiveItems(Long userId, Long parentId) {
+        return getArchiveItems(userId, parentId, DocumentDomain.LEARNING_MATERIAL);
+    }
+
+    /**
+     * 자료보관함 폴더 뷰 한 화면 조회(현재 위치의 하위 폴더 + 자료 + breadcrumb). parentId=null 이면 루트.
+     * 반드시 domain(학습자료/플래너/학습일지) 으로 폴더·자료를 분리 조회한다(탭 간 혼입 방지).
+     * 다른 도메인 폴더로 진입하려 하면 빈 결과를 반환한다(empty 처리).
+     */
+    public ArchiveListDTO getArchiveItems(Long userId, Long parentId, String domainRaw) {
+        final String domain = DocumentDomain.normalize(domainRaw);
         resolveOwnedFolderId(userId, parentId); // 위치 소유/존재 검증
 
+        // 폴더 진입 시: 그 폴더가 현재 도메인 소속인지 검증. 다르면 빈 결과(타 탭 folderId 재사용 차단).
+        if (parentId != null) {
+            Folder cur = folderRepository.findById(parentId).orElse(null);
+            String curDomain = cur == null ? null : DocumentDomain.normalize(cur.getDomain());
+            if (cur == null || !domain.equals(curDomain)) {
+                log.warn("getArchiveItems: 도메인 불일치 진입 차단. userId={}, parentId={}, want={}, have={}",
+                        userId, parentId, domain, curDomain);
+                return ArchiveListDTO.builder()
+                        .currentFolderId(parentId)
+                        .breadcrumb(new java.util.ArrayList<>())
+                        .folders(new java.util.ArrayList<>())
+                        .materials(new java.util.ArrayList<>())
+                        .build();
+            }
+        }
+
         List<FolderDTO> folders = (parentId == null
-                ? folderRepository.findByUserIdAndParentIdIsNullOrderByCreatedAtDesc(userId)
-                : folderRepository.findByUserIdAndParentIdOrderByCreatedAtDesc(userId, parentId))
+                ? folderRepository.findRootByUserIdAndDomain(userId, domain)
+                : folderRepository.findChildrenByUserIdAndDomain(userId, parentId, domain))
                 .stream().map(FolderDTO::from).collect(Collectors.toList());
 
         List<Material> rawMaterials = (parentId == null
                 ? materialRepository.findByUserIdAndFolderIdIsNullOrderByUploadedAtDesc(userId)
                 : materialRepository.findByUserIdAndFolderIdOrderByUploadedAtDesc(userId, parentId));
 
+        // 자료도 도메인으로 필터(REVIEW_NOTE 는 forMaterialType 이 null → 자동 제외).
         List<MaterialDTO> materials = rawMaterials.stream()
-                .filter(m -> m.getMaterialType() != MaterialType.REVIEW_NOTE)
+                .filter(m -> domain.equals(DocumentDomain.forMaterialType(m.getMaterialType())))
                 .map(m -> {
                     try { return convertToDTO(m); }
                     catch (Exception e) {
@@ -243,13 +271,14 @@ public class MaterialService {
                 })
                 .collect(Collectors.toList());
 
-        // breadcrumb: 현재 폴더 → 루트로 거슬러 올라간 뒤 뒤집어 루트→현재 순
+        // breadcrumb: 현재 폴더 → 루트로 거슬러 올라간 뒤 뒤집어 루트→현재 순(같은 도메인 폴더만)
         List<FolderDTO> breadcrumb = new java.util.ArrayList<>();
         Long cursor = parentId;
         int guard = 0;
         while (cursor != null && guard++ < 1000) {
             Folder f = folderRepository.findById(cursor).orElse(null);
             if (f == null || !f.getUserId().equals(userId)) break;
+            if (!domain.equals(DocumentDomain.normalize(f.getDomain()))) break;
             breadcrumb.add(FolderDTO.from(f));
             cursor = f.getParentId();
         }

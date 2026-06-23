@@ -128,8 +128,9 @@ public class MaterialController {
     @GetMapping("/items")
     public ResponseEntity<com.studybridge.api.dto.ArchiveListDTO> getArchiveItems(
             @AuthenticationPrincipal CustomUserDetails userDetails,
-            @RequestParam(value = "parentId", required = false) Long parentId) {
-        return ResponseEntity.ok(materialService.getArchiveItems(userDetails.getId(), parentId));
+            @RequestParam(value = "parentId", required = false) Long parentId,
+            @RequestParam(value = "domain", required = false) String domain) {
+        return ResponseEntity.ok(materialService.getArchiveItems(userDetails.getId(), parentId, domain));
     }
 
     // 자료를 다른 폴더로 이동 (folderId=null 이면 루트로)

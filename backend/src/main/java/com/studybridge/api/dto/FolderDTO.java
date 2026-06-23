@@ -14,6 +14,7 @@ public class FolderDTO {
     private Long folderId;
     private String name;
     private Long parentId;
+    private String domain; // 문서 도메인(LEARNING_MATERIAL/PLANNER/STUDY_JOURNAL). 프론트 탭 분리/방어용.
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -22,6 +23,7 @@ public class FolderDTO {
                 .folderId(f.getFolderId())
                 .name(f.getName())
                 .parentId(f.getParentId())
+                .domain(com.studybridge.api.entity.DocumentDomain.normalize(f.getDomain()))
                 .createdAt(f.getCreatedAt())
                 .updatedAt(f.getUpdatedAt())
                 .build();
@@ -32,6 +34,7 @@ public class FolderDTO {
     public static class CreateRequest {
         private String name;
         private Long parentId;
+        private String domain; // 생성 탭의 도메인. 누락 시 서버에서 LEARNING_MATERIAL 폴백(+경고 로그).
     }
 
     @Getter

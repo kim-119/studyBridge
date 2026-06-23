@@ -111,6 +111,16 @@ function normalizeArchiveTab(value) {
   return ARCHIVE_TAB_KEYS.includes(value) ? value : DEFAULT_ARCHIVE_TAB;
 }
 
+// 탭 키 → 백엔드 문서 도메인(canonical). 폴더/자료/조회/생성에 모두 같은 기준 사용.
+const TAB_TO_DOMAIN = {
+  LEARNING_PDF: 'LEARNING_MATERIAL',
+  PLANNER: 'PLANNER',
+  STUDY_LOG: 'STUDY_JOURNAL',
+};
+function domainForTab(tabKey) {
+  return TAB_TO_DOMAIN[normalizeArchiveTab(tabKey)] || 'LEARNING_MATERIAL';
+}
+
 // 자료(material)의 유형을 탭 키로 매핑. materialType 우선, 없으면 제목/파일명 보조 판별.
 function materialTabKind(m) {
   const raw = String(m.materialType ?? m.type ?? m.sourceType ?? m.category ?? '').toUpperCase();
@@ -219,14 +229,25 @@ export default function Archive() {
     return true;
   };
 
+  // 현재 탭의 canonical 문서 도메인(학습자료/플래너/학습일지). 모든 조회/생성에 동일 기준 사용.
+  const activeDocumentDomain = domainForTab(activeArchiveTab);
+
   // ── 폴더 뷰 데이터 로드 ─────────────────────────────────────────────
   const fetchItems = async () => {
     if (!userId) return;
     try {
       setIsLoading(true);
       setLoadError('');
-      const data = await materialService.getArchiveItems(currentFolderId);
-      setFolders(Array.isArray(data?.folders) ? data.folders : []);
+      const data = await materialService.getArchiveItems(currentFolderId, activeDocumentDomain);
+      // 방어: 서버가 도메인 필터링하지만, 혹시 섞여오면 현재 도메인 외 항목은 렌더 제외(+개발 경고).
+      const okFolders = (Array.isArray(data?.folders) ? data.folders : []).filter((f) => {
+        if (f?.domain && f.domain !== activeDocumentDomain) {
+          if (import.meta.env.DEV) console.warn('[Archive] 도메인 불일치 폴더 제외', f.domain, activeDocumentDomain, f);
+          return false;
+        }
+        return true;
+      });
+      setFolders(okFolders);
       setMaterials(Array.isArray(data?.materials) ? data.materials : []);
       setBreadcrumb(Array.isArray(data?.breadcrumb) ? data.breadcrumb : []);
     } catch (error) {
@@ -248,8 +269,9 @@ export default function Archive() {
       setMaterials([]);
       setBreadcrumb([]);
     }
+    // activeArchiveTab 포함 → 탭 전환 시(루트에 머물러도) 해당 도메인으로 재조회.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, currentFolderId]);
+  }, [userId, currentFolderId, activeArchiveTab]);
 
   // 다른 화면 갔다가 돌아오면 서버 기준 재조회
   useEffect(() => {
@@ -604,7 +626,8 @@ export default function Archive() {
     if (!name) { alert('폴더 이름을 입력해주세요.'); return; }
     try {
       setIsSubmitting(true);
-      await folderService.createFolder(name, currentFolderId);
+      // 현재 탭 도메인을 명시 전달 → 학습자료/플래너/학습일지 폴더가 각자 탭에만 보이도록.
+      await folderService.createFolder(name, currentFolderId, activeDocumentDomain);
       setCreateFolderOpen(false);
       setCreateFolderName('');
       await fetchItems();
@@ -670,7 +693,9 @@ export default function Archive() {
     setOpenMenuKey(null);
     try {
       const all = await folderService.listFolders();
-      const allFolders = Array.isArray(all) ? all : [];
+      // 같은 도메인(현재 탭) 폴더로만 이동 가능 — 탭 간 자료 혼입 방지. 레거시(null)=학습자료.
+      const allFolders = (Array.isArray(all) ? all : [])
+        .filter((f) => (f?.domain || 'LEARNING_MATERIAL') === activeDocumentDomain);
       let candidates = allFolders;
       if (kind === 'folder') {
         const excluded = descendantIds(allFolders, item.folderId); // 자기+하위 제외(순환 방지)
@@ -795,7 +820,14 @@ export default function Archive() {
           <button
             key={t.key}
             className={`archive-tab ${effectiveTab === t.key ? 'active' : ''}`}
-            onClick={() => { setActiveArchiveTab(t.key); setOpenMenuKey(null); }}
+            onClick={() => {
+              if (t.key === effectiveTab) return;
+              setActiveArchiveTab(t.key);
+              setOpenMenuKey(null);
+              // 다른 탭의 folderId/breadcrumb 재사용 금지 → 탭 전환 시 항상 루트로.
+              if (currentFolderId != null) setSearchParams({});
+              setBreadcrumb([]);
+            }}
           >
             {t.label}
           </button>

@@ -5,7 +5,6 @@ import {
   CalendarDays, Layers, ChevronDown, ChevronUp, CalendarPlus, ExternalLink,
 } from 'lucide-react';
 import { plannerService, todoService } from '../services/api';
-import PlannerAiPanel from '../components/PlannerAiPanel';
 import { cleanLearningOrNull } from '../utils/learningContent';
 
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
@@ -697,8 +696,8 @@ export default function Planner() {
               </div>
             </section>
 
-            {/* 공부 플래너 전용 AI (학습 실행 관리: 피드백 및 다음 학습 추천) */}
-            <PlannerAiPanel plannerId={plannerId} />
+            {/* '플래너 탭 하단 AI 피드백 및 다음 학습 추천' 카드 제거(요구사항 B).
+                컴포넌트(PlannerAiPanel)는 다른 화면 호환을 위해 삭제하지 않고 이 탭에서만 렌더하지 않는다. */}
           </div>
 
           {/* ===== 우측 컬럼: 요약 카드 + A4 미리보기 ===== */}

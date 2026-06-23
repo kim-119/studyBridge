@@ -28,7 +28,7 @@ public class FolderController {
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @RequestBody FolderDTO.CreateRequest request) {
         return ResponseEntity.ok(
-                folderService.createFolder(userDetails.getId(), request.getName(), request.getParentId()));
+                folderService.createFolder(userDetails.getId(), request.getName(), request.getParentId(), request.getDomain()));
     }
 
     // 폴더명 변경

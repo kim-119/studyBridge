@@ -34,6 +34,15 @@ public class Folder {
     @Column(name = "parent_id")
     private Long parentId;
 
+    /**
+     * 문서 도메인(자료보관함 탭 분리 기준). LEARNING_MATERIAL / PLANNER / STUDY_JOURNAL.
+     * 폴더는 반드시 한 도메인에만 속한다(학습자료 폴더가 플래너 탭에 노출되는 버그 방지).
+     * enum 대신 String 으로 보관 — RDS check 제약 자동 생성/수동 ALTER 부담을 피한다.
+     * 레거시(null) 폴더는 조회 시 LEARNING_MATERIAL 로 폴백 처리(파괴적 마이그레이션 없이 호환).
+     */
+    @Column(name = "domain", length = 40)
+    private String domain;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

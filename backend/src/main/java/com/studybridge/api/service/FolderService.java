@@ -1,6 +1,7 @@
 package com.studybridge.api.service;
 
 import com.studybridge.api.dto.FolderDTO;
+import com.studybridge.api.entity.DocumentDomain;
 import com.studybridge.api.entity.Folder;
 import com.studybridge.api.entity.MaterialType;
 import com.studybridge.api.repository.FolderRepository;
@@ -36,19 +37,46 @@ public class FolderService {
                 .collect(java.util.stream.Collectors.toList());
     }
 
+    /** 본인 소유 + 도메인 일치 폴더를 반환. 도메인이 다르면(타 탭 폴더) 접근 거부. 레거시 null 도메인은 학습자료로 폴백. */
+    public Folder getOwnedFolderInDomain(Long userId, Long folderId, String domain) {
+        Folder folder = getOwnedFolder(userId, folderId);
+        String want = DocumentDomain.normalize(domain);
+        String have = DocumentDomain.normalize(folder.getDomain());
+        if (!have.equals(want)) {
+            throw new IllegalArgumentException("해당 위치의 폴더가 아닙니다.");
+        }
+        return folder;
+    }
+
+    /** 특정 도메인(탭)의 폴더 목록 — 이동 대상 select 등에서 같은 탭 폴더만 노출. */
+    public java.util.List<FolderDTO> listFoldersByDomain(Long userId, String domain) {
+        String want = DocumentDomain.normalize(domain);
+        return folderRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
+                .filter(f -> DocumentDomain.normalize(f.getDomain()).equals(want))
+                .map(FolderDTO::from)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
     @Transactional
-    public FolderDTO createFolder(Long userId, String name, Long parentId) {
+    public FolderDTO createFolder(Long userId, String name, Long parentId, String domain) {
         String trimmed = name == null ? "" : name.trim();
         if (trimmed.isEmpty()) {
             throw new IllegalArgumentException("폴더 이름을 입력해주세요.");
         }
+        // 호출부가 명확히 도메인을 넘기게 하되, 누락 시 조용히 뭉개지 않고 경고 로그 + 학습자료 폴백.
+        if (domain == null || domain.trim().isEmpty()) {
+            log.warn("createFolder: domain 누락 — LEARNING_MATERIAL 로 폴백. userId={}, name={}", userId, trimmed);
+        }
+        String resolvedDomain = DocumentDomain.normalize(domain);
         if (parentId != null) {
-            getOwnedFolder(userId, parentId); // 부모 존재/소유 검증
+            // 부모 존재/소유 + 부모와 같은 도메인이어야 함(다른 탭 폴더 밑에 생성 차단)
+            getOwnedFolderInDomain(userId, parentId, resolvedDomain);
         }
         Folder folder = Folder.builder()
                 .userId(userId)
                 .name(trimmed)
                 .parentId(parentId)
+                .domain(resolvedDomain)
                 .build();
         return FolderDTO.from(folderRepository.save(folder));
     }

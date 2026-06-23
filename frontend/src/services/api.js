@@ -719,9 +719,13 @@ export const materialService = {
   },
 
   // 자료보관함 폴더 뷰: 현재 위치(parentId)의 하위 폴더 + 자료 + breadcrumb. parentId=null 이면 루트(홈).
-  getArchiveItems: async (parentId) => {
+  // domain(학습자료/플래너/학습일지)으로 폴더·자료를 분리 조회한다(탭 간 혼입 방지).
+  getArchiveItems: async (parentId, domain) => {
+    const params = {};
+    if (parentId != null) params.parentId = parentId;
+    if (domain) params.domain = domain;
     const res = await api.get('/api/materials/items', {
-      params: parentId != null ? { parentId } : undefined,
+      params: Object.keys(params).length ? params : undefined,
     });
     return res.data; // { currentFolderId, breadcrumb, folders, materials }
   },
@@ -919,8 +923,8 @@ export const folderService = {
     const res = await api.get('/api/folders');
     return res.data;
   },
-  createFolder: async (name, parentId) => {
-    const res = await api.post('/api/folders', { name, parentId: parentId ?? null });
+  createFolder: async (name, parentId, domain) => {
+    const res = await api.post('/api/folders', { name, parentId: parentId ?? null, domain: domain ?? null });
     return res.data;
   },
   renameFolder: async (folderId, name) => {
