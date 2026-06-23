@@ -380,10 +380,10 @@ def _summarize_single_page(domain: Dict[str, Any], page: Dict[str, Any]) -> Opti
         '"summaryBullets": ["핵심 요약 2~5개"], '
         '"studyFocus": "학습자가 이해해야 할 것 1~2문장" }'
     )
-    raw = qwen_draft(_SYSTEM, prompt, max_tokens=800)
+    raw = qwen_draft(_SYSTEM, prompt, max_tokens=1400)
     parsed = parse_json(raw)
     if not isinstance(parsed, dict):
-        raw = openai_refine(_SYSTEM, prompt, max_tokens=800)
+        raw = openai_refine(_SYSTEM, prompt, max_tokens=1400, json_mode=True)
         parsed = parse_json(raw)
     if isinstance(parsed, dict):
         parsed["page"] = pno
@@ -681,10 +681,12 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
         logger.info("[MajorAnalysis] 본문 근거 부족(real_chars=%d) → Wikipedia 보강 생략", len(grounded))
 
     prompt = _build_prompt(req, domain, wiki, candidates, pages)
-    raw = openai_refine(_SYSTEM, prompt, max_tokens=2200)
+    # 페이지별 요약 JSON은 다페이지×다필드라 커서 2200토큰에선 잘려(truncated) 파싱 실패→폴백했다.
+    # 토큰을 충분히 주고 JSON 모드로 호출해 유효 JSON을 강제한다(+파서에 truncation 복구 보강).
+    raw = openai_refine(_SYSTEM, prompt, max_tokens=8192, json_mode=True)
     parsed = parse_json(raw)
     if not parsed:
-        raw = openai_refine(_SYSTEM, prompt, max_tokens=2200)
+        raw = openai_refine(_SYSTEM, prompt, max_tokens=8192, json_mode=True)
         parsed = parse_json(raw)
     if not isinstance(parsed, dict):
         # LLM 실패 → 도메인/페이지는 유지한 fallback(업로드 실패 방지)

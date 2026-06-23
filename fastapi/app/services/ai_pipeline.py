@@ -50,8 +50,12 @@ def qwen_draft(system: str, user: str, max_tokens: Optional[int] = None) -> Opti
     return None
 
 
-def openai_refine(system: str, user: str, max_tokens: Optional[int] = None) -> Optional[str]:
-    """2단계 — OpenAI 보강/구조화/repair. 비활성/실패 시 None."""
+def openai_refine(system: str, user: str, max_tokens: Optional[int] = None,
+                  json_mode: bool = False) -> Optional[str]:
+    """2단계 — OpenAI 보강/구조화/repair. 비활성/실패 시 None.
+
+    json_mode=True 면 OpenAI JSON 모드로 호출해 유효한 JSON 객체를 강제한다
+    (마크다운/산문 래핑으로 파싱 실패하던 케이스 방지)."""
     if not ENABLE_OPENAI_REFINER:
         return None
     try:
@@ -59,7 +63,10 @@ def openai_refine(system: str, user: str, max_tokens: Optional[int] = None) -> O
         if not is_enabled():
             logger.info("[ai_pipeline] OpenAI 비활성 → 보강 생략")
             return None
-        out = chat_sync(system=system, user=user, max_tokens=max_tokens or AI_MAX_TOKENS, temperature=0.2)
+        kwargs = {"max_tokens": max_tokens or AI_MAX_TOKENS, "temperature": 0.2}
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        out = chat_sync(system=system, user=user, **kwargs)
         if out and not out.strip().startswith("["):
             return out
     except Exception as e:  # noqa: BLE001

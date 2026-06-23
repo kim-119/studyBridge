@@ -49,8 +49,14 @@ def chat_sync(
     presence_penalty: Optional[float] = None,
     frequency_penalty: Optional[float] = None,
     timeout: Optional[float] = None,
+    response_format: Optional[dict] = None,
 ) -> str:
-    """GPT 동기 호출. API Key 미설정 시 안내 문자열 반환."""
+    """GPT 동기 호출. API Key 미설정 시 안내 문자열 반환.
+
+    response_format={"type":"json_object"} 를 주면 OpenAI JSON 모드로 호출해
+    항상 유효한 JSON 객체를 반환받는다(마크다운/산문 래핑 방지). 단, 프롬프트에
+    'json' 단어가 있어야 하고 max_tokens 초과 시엔 여전히 잘릴 수 있다.
+    """
     if not is_enabled():
         return "[GPT 비활성화] OPENAI_API_KEY를 설정하면 GPT 기능이 활성화됩니다."
     try:
@@ -65,6 +71,8 @@ def chat_sync(
             extra["frequency_penalty"] = frequency_penalty
         if timeout is not None:
             extra["timeout"] = timeout
+        if response_format is not None:
+            extra["response_format"] = response_format
         resp = client.chat.completions.create(
             model=model or OPENAI_MODEL,
             messages=[
