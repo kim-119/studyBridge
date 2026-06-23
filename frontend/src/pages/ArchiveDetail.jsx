@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, XCircle, Circle, Settings, ChevronRight, ChevronLeft, X, Trash2, Sparkles, ListChecks, ArrowRight, FileText, BarChart3, Brain, CalendarPlus, Award, RotateCcw, Copy } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
@@ -338,7 +338,18 @@ function StudyNoteView({ note, material, onKeyword }) {
   const kws = list(note.keywords);
   const core = list(note.coreContents);
   // 세부 핵심 내용: pageAnalyses(신규) → detailedCoreContents → pageSummaries 를 totalPages 기준으로 병합.
-  const detailedPages = buildDetailedPages(note);
+  //  · note(=studyNote) prop 에서 동기 useMemo 로 즉시 계산한다. 별도 state 복사/지연(setTimeout) 없음 —
+  //    SUCCESS 응답이 도착하면 다른 분석 결과를 기다리지 않고 바로 페이지 카드가 렌더된다.
+  const detailedPages = useMemo(() => buildDetailedPages(note), [note]);
+
+  // ── 세부 핵심 내용 carousel: 한 번에 한 페이지 카드만 보여주고 ‹ › 로 좌우 이동 ──
+  const [corePageIndex, setCorePageIndex] = useState(0);
+  useEffect(() => {
+    // 페이지 수가 줄어들면 index 범위를 보정(데이터 갱신 시 빈 화면 방지).
+    setCorePageIndex((prev) => (detailedPages.length === 0 ? 0 : Math.min(prev, detailedPages.length - 1)));
+  }, [detailedPages.length]);
+  const goPrevCorePage = () => setCorePageIndex((p) => Math.max(p - 1, 0));
+  const goNextCorePage = () => setCorePageIndex((p) => Math.min(p + 1, detailedPages.length - 1));
   const points = list(note.studyPoints);
   const questions = list(note.aiStudyQuestions);
   // 보강 설명: enrichment(신규) 우선 + 엔티티 디코드 + 프론트 최종 방어 필터.
@@ -381,10 +392,31 @@ function StudyNoteView({ note, material, onKeyword }) {
   // 세부 핵심 내용: 병합된 detailedPages 를 수직 리스트 뷰(섹션별)로 모두 보여줌
   const renderDetailed = () => {
     if (detailedPages.length > 0) {
+      const atStart = corePageIndex === 0;
+      const atEnd = corePageIndex >= detailedPages.length - 1;
+      const navStyle = (disabled) => ({
+        width: '42px', height: '42px', borderRadius: '999px', border: '1px solid #CBD5E1',
+        background: '#fff', color: '#0F172A', fontSize: '28px', fontWeight: 800, lineHeight: 1,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: '0 0 auto',
+        cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.35 : 1,
+        boxShadow: disabled ? 'none' : '0 6px 18px rgba(15,23,42,0.08)',
+      });
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {detailedPages.map((p, i) => (
-            <div key={i} className="glass-panel" style={{ padding: '20px', borderLeft: '4px solid #3B82F6', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {/* 페이지 카운터 (n / N) */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <span style={{ padding: '6px 12px', borderRadius: '999px', background: '#EFF6FF', color: '#1D4ED8', fontSize: '13px', fontWeight: 800, border: '1px solid #BFDBFE' }}>
+              {corePageIndex + 1} / {detailedPages.length}
+            </span>
+          </div>
+          {/* ‹  viewport  › : 한 번에 한 페이지 카드만 보이고 좌우로 슬라이드 */}
+          <div style={{ display: 'grid', gridTemplateColumns: '44px minmax(0, 1fr) 44px', alignItems: 'center', gap: '10px', width: '100%' }}>
+            <button type="button" onClick={goPrevCorePage} disabled={atStart} aria-label="이전 페이지 핵심 내용" style={navStyle(atStart)}>‹</button>
+            <div style={{ width: '100%', overflow: 'hidden', borderRadius: '14px' }}>
+              <div style={{ display: 'flex', width: '100%', transition: 'transform 280ms ease', willChange: 'transform', transform: `translateX(-${corePageIndex * 100}%)`, alignItems: 'flex-start' }}>
+                {detailedPages.map((p, i) => (
+                  <div key={i} style={{ flex: '0 0 100%', minWidth: '100%', boxSizing: 'border-box', padding: '4px' }}>
+                    <div className="glass-panel" style={{ padding: '20px', borderLeft: '4px solid #3B82F6', display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                 <span style={{ backgroundColor: '#DBEAFE', color: '#1E40AF', padding: '4px 10px', borderRadius: '8px', fontSize: '13px', fontWeight: '800' }}>
                   {p.pageNumber ? `p.${p.pageNumber}` : `p.${i + 1}`}
@@ -440,8 +472,13 @@ function StudyNoteView({ note, material, onKeyword }) {
                   <span style={{ fontSize: '14px' }}>🎯</span> <span style={{ flex: 1, lineHeight: '1.5' }}>{p.studyFocus}</span>
                 </div>
               )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-          ))}
+            <button type="button" onClick={goNextCorePage} disabled={atEnd} aria-label="다음 페이지 핵심 내용" style={navStyle(atEnd)}>›</button>
+          </div>
         </div>
       );
     }
