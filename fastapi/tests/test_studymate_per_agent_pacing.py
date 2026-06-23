@@ -185,11 +185,12 @@ def test_social_input_gets_light_prompt():
     assert "인사/잡담" in sp and "가볍게" in sp
 
 
-def test_question_prompt_forbids_mockery():
-    # 질문(비-social) 프롬프트엔 사실기반·조롱금지 규칙이 들어가야 한다.
+def test_question_prompt_allows_sarcasm_forbids_personal_attack():
+    # 정책: 인신공격·욕설만 금지하고, 개념을 향한 비꼼·시니컬은 성격대로 허용한다.
     agents = _agents()
     sp = orch._build_single_agent_system_prompt(agents[1], "basic", agents, social=False)
-    assert "조롱" in sp and "근거" in sp
+    assert "인신공격" in sp and "근거" in sp
+    assert "비꼬" in sp or "비꼼" in sp  # 비꼼 허용 문구가 있어야 한다
 
 
 @pytest.mark.parametrize("front_key,expected", [
