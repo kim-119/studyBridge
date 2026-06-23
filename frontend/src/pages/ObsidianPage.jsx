@@ -1,26 +1,35 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Network, Trash2, Search, Plus, RefreshCw, AlertTriangle } from 'lucide-react';
-import { materialService } from '../services/api';
+import { Network, Search, RefreshCw, AlertTriangle, ArrowRight, Users } from 'lucide-react';
+import { agentService } from '../services/api';
+import { useAuth } from '../hooks/useAuth';
 import ObsidianGraphView from '../components/graph/ObsidianGraphView';
 import GraphErrorBoundary from '../components/graph/GraphErrorBoundary';
-import { isObsidianMaterial, roomFromMaterial, parseArchiveGraph } from '../utils/graph/archiveGraph';
+import { convertChatLogsToObsidianGraph } from '../utils/graph/chatLogsToObsidianGraph';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 옵시디언 독립 페이지(/obsidian). 학습메이트처럼 좌측 방 목록 + 우측 그래프.
-//  · 자료보관함 activeTab 상태와 완전 분리. 선택 방의 그래프만 렌더(방 섞임 금지).
-//  · requestSeq 가드로 늦게 도착한 이전 방 응답이 현재 그래프를 덮어쓰지 못하게 한다.
-//  · 자동 legacy fallback 없음 — 그래프 오류 시 오류 패널 + 다시 시도만 표시.
-//  · PDF 저장/변환/Viewer 진입 경로 전무.
+//  · 좌측 source of truth = 학습메이트 AI 방 목록(agentService.getAgents). 옵시디언 전용 방 생성 없음.
+//  · 방 선택 시 그 방의 채팅 로그(getChatHistory)를 Obsidian Graph 로 변환해 우측에 표시.
+//  · requestSeq + AbortController 로 늦게 도착한 이전 방 응답이 현재 그래프를 덮어쓰지 못하게 한다.
+//  · 자동 legacy fallback 없음 — 오류 시 오류 패널 + 다시 시도만. PDF 저장/변환/Viewer 경로 전무.
 // ─────────────────────────────────────────────────────────────────────────────
 const SORTS = [
-  { key: 'recent', label: '최근 수정순' },
+  { key: 'recent', label: '최근 대화순' },
   { key: 'name', label: '이름순' },
-  { key: 'nodes', label: '노드 많은 순' },
+  { key: 'messages', label: '메시지 많은 순' },
 ];
+
+function roomTitle(r) {
+  return r?.roomName || r?.name || '학습메이트 방';
+}
+function roomAgentNames(r) {
+  return (Array.isArray(r?.agents) ? r.agents : []).map((a) => a?.name).filter(Boolean);
+}
 
 export default function ObsidianPage() {
   const navigate = useNavigate();
+  const { userId } = useAuth();
 
   const [rooms, setRooms] = useState([]);
   const [roomsLoading, setRoomsLoading] = useState(true);
@@ -29,92 +38,78 @@ export default function ObsidianPage() {
 
   const [graph, setGraph] = useState(null);
   const [graphTitle, setGraphTitle] = useState('');
-  const [graphLoading, setGraphLoading] = useState(false);
-  const [graphError, setGraphError] = useState('');
+  const [graphState, setGraphState] = useState('idle'); // idle | loading | ready | empty | error
 
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('recent');
 
   const reqSeqRef = useRef(0);
 
+  const selectedRoom = useMemo(
+    () => rooms.find((r) => String(r.id) === String(selectedRoomId)) || null,
+    [rooms, selectedRoomId],
+  );
+
   const loadRooms = useCallback(async () => {
     setRoomsLoading(true);
     setRoomsError('');
     try {
-      const data = await materialService.getArchiveItems(null, 'MINDMAP');
-      const list = (Array.isArray(data?.materials) ? data.materials : [])
-        .filter(isObsidianMaterial)
-        .map(roomFromMaterial);
-      setRooms(list);
+      const data = await agentService.getAgents(userId);
+      setRooms(Array.isArray(data) ? data : []);
     } catch (e) {
-      console.error('[Obsidian] 방 목록 로드 실패', e);
-      setRoomsError('옵시디언 방 목록을 불러오지 못했습니다.');
+      console.error('[Obsidian] 학습메이트 방 목록 로드 실패', e);
+      setRoomsError('학습메이트 방 목록을 불러오지 못했습니다.');
     } finally {
       setRoomsLoading(false);
     }
-  }, []);
+  }, [userId]);
 
   useEffect(() => { loadRooms(); }, [loadRooms]);
 
-  // 선택 방의 그래프 로드(stale 응답 차단: 최신 seq 만 반영).
+  // 선택 방의 채팅 로그 → 그래프(stale 응답 차단: 최신 seq 만 반영).
   useEffect(() => {
     if (selectedRoomId == null) {
-      setGraph(null); setGraphError(''); setGraphLoading(false);
+      setGraph(null); setGraphState('idle');
       return undefined;
     }
+    const room = rooms.find((r) => String(r.id) === String(selectedRoomId));
     const seq = reqSeqRef.current + 1;
     reqSeqRef.current = seq;
+    const ac = new AbortController();
     let alive = true;
-    setGraphLoading(true);
-    setGraphError('');
+    setGraphState('loading');
     setGraph(null);
     (async () => {
       try {
-        const detail = await materialService.getMaterialDetail(selectedRoomId);
-        if (!alive || seq !== reqSeqRef.current) return; // 늦게 도착한 이전 방 응답 폐기
-        const g = parseArchiveGraph(detail);
+        const logs = await agentService.getChatHistory(userId, selectedRoomId);
+        if (!alive || seq !== reqSeqRef.current || ac.signal.aborted) return; // 늦게 도착한 이전 방 응답 폐기
+        const g = convertChatLogsToObsidianGraph(room, logs);
         if (!alive || seq !== reqSeqRef.current) return;
-        if (!g) { setGraphError('옵시디언 그래프 데이터를 불러올 수 없습니다.'); setGraph(null); }
-        else { setGraph(g); setGraphTitle(detail.title || '옵시디언 방'); }
+        if (!g) { setGraph(null); setGraphState('empty'); }
+        else { setGraph(g); setGraphTitle(roomTitle(room)); setGraphState('ready'); }
       } catch (e) {
         if (!alive || seq !== reqSeqRef.current) return;
-        console.error('[Obsidian] 그래프 로드 실패', e);
-        setGraphError('옵시디언 그래프 데이터를 불러올 수 없습니다.');
-      } finally {
-        if (alive && seq === reqSeqRef.current) setGraphLoading(false);
+        console.error('[Obsidian] 채팅 로그 로드 실패', e);
+        setGraphState('error');
       }
     })();
-    return () => { alive = false; };
-  }, [selectedRoomId]);
-
-  const handleDelete = async (room, e) => {
-    e.stopPropagation();
-    if (!window.confirm('이 옵시디언 방과 연결된 그래프 데이터를 삭제할까요?')) return;
-    try {
-      await materialService.deleteMaterial(room.id);
-      setRooms((rs) => rs.filter((r) => r.id !== room.id));
-      if (selectedRoomId === room.id) setSelectedRoomId(null);
-    } catch (err) {
-      console.error('[Obsidian] 방 삭제 실패', err);
-      window.alert('방 삭제에 실패했습니다.');
-    }
-  };
+    return () => { alive = false; ac.abort(); };
+  }, [selectedRoomId, rooms, userId]);
 
   const visibleRooms = useMemo(() => {
     const q = query.trim().toLowerCase();
     let list = rooms.filter((r) => {
       if (!q) return true;
-      return [r.title, r.sourceType, ...(r.tags || [])].join(' ').toLowerCase().includes(q);
+      return [roomTitle(r), r.learningMode, ...roomAgentNames(r)].join(' ').toLowerCase().includes(q);
     });
     list = [...list].sort((a, b) => {
-      if (sort === 'name') return String(a.title).localeCompare(String(b.title));
-      if (sort === 'nodes') return (b.nodeCount || 0) - (a.nodeCount || 0);
-      return String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')); // recent
+      if (sort === 'name') return roomTitle(a).localeCompare(roomTitle(b));
+      if (sort === 'messages') return (b.messageCount || 0) - (a.messageCount || 0);
+      return String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')); // recent
     });
     return list;
   }, [rooms, query, sort]);
 
-  // 같은 방을 다시 로드(effect 재실행). null→원래 id 토글로 깔끔히 재트리거.
   const retryGraph = () => {
     const cur = selectedRoomId;
     setSelectedRoomId(null);
@@ -123,15 +118,15 @@ export default function ObsidianPage() {
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 80px)', background: '#0b1020' }}>
-      {/* ── 좌측: 방 목록 ── */}
+      {/* ── 좌측: 학습메이트 방 목록 ── */}
       <aside style={{ width: 320, flex: 'none', display: 'flex', flexDirection: 'column', background: '#fff', borderRight: '1px solid #e5e7eb' }}>
         <div style={{ padding: '16px 16px 10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Network size={20} color="#7c3aed" />
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#111827' }}>옵시디언</h2>
-            <span style={{ marginLeft: 'auto', fontSize: 12, color: '#6b7280' }}>그래프 세션 {rooms.length}개</span>
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: '#6b7280' }}>학습메이트 방 {rooms.length}개</span>
           </div>
-          <p style={{ margin: '6px 0 0', fontSize: 12, color: '#9ca3af' }}>학습메이트에서 저장한 지식 그래프를 방 단위로 탐색합니다.</p>
+          <p style={{ margin: '6px 0 0', fontSize: 12, color: '#9ca3af' }}>학습메이트 채팅 로그를 지식 그래프로 탐색합니다.</p>
         </div>
 
         <div style={{ padding: '0 16px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -140,8 +135,8 @@ export default function ObsidianPage() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="방 검색 (제목·태그)"
-              aria-label="옵시디언 방 검색"
+              placeholder="방 검색 (제목·교수·태그)"
+              aria-label="학습메이트 방 검색"
               style={{ width: '100%', padding: '8px 8px 8px 30px', fontSize: 13, border: '1px solid #e5e7eb', borderRadius: 8, boxSizing: 'border-box', outline: 'none' }}
             />
           </div>
@@ -158,7 +153,7 @@ export default function ObsidianPage() {
             onClick={() => navigate('/studymate')}
             style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '9px 12px', fontSize: 13, fontWeight: 700, color: '#fff', background: '#7c3aed', border: 'none', borderRadius: 8, cursor: 'pointer' }}
           >
-            <Plus size={15} /> 새 옵시디언 방 (학습메이트에서 생성)
+            학습메이트에서 방 만들기 <ArrowRight size={15} />
           </button>
         </div>
 
@@ -171,12 +166,13 @@ export default function ObsidianPage() {
             </div>
           ) : rooms.length === 0 ? (
             <div style={{ padding: '24px 12px', textAlign: 'center', color: '#9ca3af', fontSize: 13, lineHeight: 1.6 }}>
-              아직 옵시디언 방이 없습니다.<br />학습메이트에서 마인드맵을 만들고 “자료보관함에 저장”하면 방이 생성됩니다.
+              아직 학습메이트 방이 없습니다.<br />학습메이트에서 AI 방을 만들고 대화를 시작하세요.
             </div>
           ) : visibleRooms.length === 0 ? (
             <div style={{ padding: '24px 12px', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>검색 결과가 없습니다.</div>
           ) : visibleRooms.map((room) => {
-            const active = room.id === selectedRoomId;
+            const active = String(room.id) === String(selectedRoomId);
+            const names = roomAgentNames(room);
             return (
               <button
                 type="button"
@@ -190,18 +186,18 @@ export default function ObsidianPage() {
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Network size={14} color="#7c3aed" style={{ flex: 'none' }} />
-                  <span style={{ fontWeight: 700, fontSize: 13.5, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={room.title}>{room.title}</span>
-                  <span role="button" tabIndex={0} aria-label="방 삭제" onClick={(e) => handleDelete(room, e)} onKeyDown={(e) => { if (e.key === 'Enter') handleDelete(room, e); }} style={{ flex: 'none', color: '#9ca3af', cursor: 'pointer', display: 'inline-flex' }}>
-                    <Trash2 size={14} />
-                  </span>
+                  <span style={{ fontWeight: 700, fontSize: 13.5, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={roomTitle(room)}>{roomTitle(room)}</span>
+                  {room.learningMode && (
+                    <span style={{ flex: 'none', fontSize: 10, color: '#6d28d9', background: '#ede9fe', padding: '1px 6px', borderRadius: 999 }}>{room.learningMode}</span>
+                  )}
                 </div>
-                <div style={{ marginTop: 5, fontSize: 11, color: '#6b7280' }}>
-                  노드 {room.nodeCount}개 · 연결 {room.edgeCount}개{room.updatedAt ? ` · ${String(room.updatedAt).split('T')[0]}` : ''}
+                <div style={{ marginTop: 5, fontSize: 11, color: '#6b7280', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Users size={11} /> 교수 {names.length}명{room.createdAt ? ` · ${String(room.createdAt).split('T')[0]}` : ''}
                 </div>
-                {room.tags.length > 0 && (
+                {names.length > 0 && (
                   <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    {room.tags.slice(0, 3).map((t) => (
-                      <span key={t} style={{ fontSize: 10, color: '#6d28d9', background: '#ede9fe', padding: '1px 6px', borderRadius: 999 }}>#{t}</span>
+                    {names.slice(0, 3).map((t, i) => (
+                      <span key={`${room.id}-ag-${i}`} style={{ fontSize: 10, color: '#3730a3', background: '#e0e7ff', padding: '1px 6px', borderRadius: 999 }}>{t}</span>
                     ))}
                   </div>
                 )}
@@ -216,14 +212,20 @@ export default function ObsidianPage() {
         {selectedRoomId == null ? (
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: '#64748b' }}>
             <Network size={48} color="#312e81" />
-            <div style={{ fontSize: 15 }}>왼쪽에서 옵시디언 방을 선택하면 지식 그래프를 볼 수 있어요.</div>
+            <div style={{ fontSize: 15 }}>왼쪽에서 학습메이트 방을 선택하면 채팅 로그 기반 지식 그래프를 볼 수 있어요.</div>
           </div>
-        ) : graphLoading ? (
-          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 14 }}>그래프를 불러오는 중…</div>
-        ) : graphError ? (
+        ) : graphState === 'loading' ? (
+          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 14 }}>채팅 로그를 그래프로 변환하는 중…</div>
+        ) : graphState === 'empty' ? (
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: '#cbd5e1', textAlign: 'center', padding: 24 }}>
+            <Network size={40} color="#374151" />
+            <div style={{ fontSize: 15 }}>이 방에는 아직 그래프로 만들 채팅 로그가 없습니다.<br />학습메이트에서 대화를 먼저 진행해 주세요.</div>
+            <button type="button" className="obsg-btn" onClick={() => navigate('/studymate')}>학습메이트로 이동</button>
+          </div>
+        ) : graphState === 'error' ? (
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: '#cbd5e1' }}>
             <AlertTriangle size={40} color="#f87171" />
-            <div style={{ fontSize: 15 }}>{graphError}</div>
+            <div style={{ fontSize: 15 }}>이 방의 채팅 로그를 불러오지 못했습니다.</div>
             <button type="button" className="obsg-btn" onClick={retryGraph}>다시 시도</button>
           </div>
         ) : graph ? (
