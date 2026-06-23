@@ -1,6 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { PROFESSORS, getStateAnim, ACTIVE_VISUAL_STATES, ROLE_TO_AGENT_INDEX, getProfessorSpriteSheetForAgent } from './professorSprites';
 import PixelProfessorSprite from './PixelProfessorSprite';
+import useAnchoredMenu from './useAnchoredMenu';
 import ProfessorActionMenu from './ProfessorActionMenu';
 import ProfessorSpeechBubble from './ProfessorSpeechBubble';
 import MinuteRecapBubble from './MinuteRecapBubble';
@@ -74,8 +75,14 @@ export default function PixelProfessorStage({
     return s;
   };
 
+  // 액션 메뉴를 선택 교수 actor rect 기준으로 anchor + 충돌 보정(인치/해상도 분기 없음).
+  const stageRef = useRef(null);
+  const menuSignature = selected ? `${selected.role}|${selected.name}|${selected.tagline}` : '';
+  const { menuRef, pos: menuPos } = useAnchoredMenu({ stageRef, selectedRole, signature: menuSignature });
+
   return (
     <section
+      ref={stageRef}
       className="pixel-professor-stage"
       onClick={() => onSelectRole?.(null)}
       aria-label="교수님들과 대화 픽셀 교실"
@@ -126,7 +133,9 @@ export default function PixelProfessorStage({
             role={selected.role}
             name={selected.name}
             tagline={selected.tagline}
-            side={selected.side}
+            innerRef={menuRef}
+            placement={menuPos.placement}
+            style={{ left: `${menuPos.left}px`, top: `${menuPos.top}px`, visibility: menuPos.ready ? 'visible' : 'hidden' }}
             onRefine={onRefine}
             onAskProfessor={onAskProfessor}
             onAskAll={onAskAll}

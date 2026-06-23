@@ -179,15 +179,16 @@
   100% { transform: translateY(0); }
 }
 
-/* ── 교수 클릭 액션 메뉴(교수 얼굴 위를 가리지 않게 stage 상단에 배치). ────── */
+/* ── 교수 클릭 액션 메뉴 ─ 위치는 useAnchoredMenu(JS)가 actor rect 기준 inline left/top 으로 준다.
+   크기는 clamp 로만 잡아 32"~14" 어디서나 같은 비율감. 특정 해상도 하드코딩 없음. ────── */
 .pixel-menu-portal { position: absolute; inset: 0; z-index: 20; pointer-events: none; }
 .professor-action-menu {
   position: absolute;
-  top: 12px;
   z-index: 20;
   box-sizing: border-box;
-  width: min(240px, calc(100% - 24px));
-  padding: 10px;
+  width: clamp(168px, 22vw, 248px);
+  max-width: calc(100% - 16px);
+  padding: clamp(8px, 1.1vw, 12px);
   background: #fffdf5;
   border: 4px solid #2b2118;
   box-shadow: 5px 5px 0 #2b2118;
@@ -198,14 +199,6 @@
   0% { opacity: 0; transform: translateY(-6px); }
   100% { opacity: 1; transform: translateY(0); }
 }
-.action-menu-left { left: 22%; }
-.action-menu-center { left: 50%; transform: translateX(-50%); }
-.action-menu-center.professor-action-menu { animation-name: pixelMenuPopCenter; }
-@keyframes pixelMenuPopCenter {
-  0% { opacity: 0; transform: translate(-50%, -6px); }
-  100% { opacity: 1; transform: translate(-50%, 0); }
-}
-.action-menu-right { right: 22%; }
 
 .professor-action-menu-head {
   display: flex;
@@ -215,20 +208,20 @@
   padding-bottom: 6px;
   border-bottom: 2px dashed #d6c08a;
 }
-.professor-action-menu-head strong { font-size: 13px; font-weight: 900; color: #2b2118; }
-.professor-action-menu-head span { font-size: 10.5px; font-weight: 700; color: #8a744a; }
+.professor-action-menu-head strong { font-size: clamp(12px, 1.4vw, 13.5px); font-weight: 900; color: #2b2118; }
+.professor-action-menu-head span { font-size: clamp(10px, 1.1vw, 11px); font-weight: 700; color: #8a744a; }
 .professor-action-menu-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
 }
 .professor-action-menu-btn {
-  min-height: 36px;
-  padding: 6px 8px;
+  min-height: clamp(34px, 4.6vw, 40px);
+  padding: clamp(5px, 0.8vw, 8px) clamp(6px, 1vw, 9px);
   border: 3px solid #2b2118;
   background: #ffffff;
   color: #2b2118;
-  font-size: 11.5px;
+  font-size: clamp(11px, 1.2vw, 12.5px);
   font-weight: 800;
   line-height: 1.2;
   cursor: pointer;
@@ -299,18 +292,8 @@
 @media (max-width: 560px) {
   .professor-position-layer { --prof-scale: 0.64 !important; }
   .pixel-stage-guide { font-size: 11px; white-space: normal; text-align: center; }
-  .professor-action-menu,
-  .action-menu-left,
-  .action-menu-center,
-  .action-menu-right {
-    left: 10px !important;
-    right: 10px !important;
-    top: auto !important;
-    bottom: 10px !important;
-    width: auto !important;
-    transform: none !important;
-    animation-name: pixelMenuPop !important;
-  }
+  /* 좁은 화면: 메뉴 폭만 더 줄인다(위치는 JS 충돌 보정이 stage 안으로 유지). */
+  .professor-action-menu { width: clamp(150px, 56vw, 230px); }
   .minute-recap-bubble { right: 10px; bottom: 10px; max-width: calc(100% - 20px); font-size: 12px; }
   /* 좋은 화면: 교수 말풍선 폭 축소(얼굴/무대 밖으로 덜 튀어나오게). */
   .prof-bubble-anchor { width: min(180px, 52vw); }

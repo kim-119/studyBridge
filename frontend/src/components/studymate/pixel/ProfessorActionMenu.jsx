@@ -10,7 +10,7 @@ const MENU_ITEMS = [
   { key: 'compare', label: '답변 비교', icon: '⚖️' },
 ];
 
-export default function ProfessorActionMenu({ role, name, tagline, side, onRefine, onAskProfessor, onAskAll, onCompare, onClose }) {
+export default function ProfessorActionMenu({ role, name, tagline, innerRef, style, placement = 'top', onRefine, onAskProfessor, onAskAll, onCompare, onClose }) {
   const handlers = {
     refine: onRefine,
     askOne: onAskProfessor,
@@ -18,7 +18,7 @@ export default function ProfessorActionMenu({ role, name, tagline, side, onRefin
     compare: onCompare,
   };
   return (
-    <div className={`professor-action-menu action-menu-${side}`} role="menu" aria-label={`${name} 액션 메뉴`}>
+    <div ref={innerRef} className={`professor-action-menu placement-${placement}`} style={style} role="menu" aria-label={`${name} 액션 메뉴`}>
       <div className="professor-action-menu-head">
         <strong>{name}</strong>
         {tagline ? <span>{tagline}</span> : null}

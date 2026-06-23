@@ -7,7 +7,7 @@ import ProfessorLearningPanel from '../components/studymate/ProfessorLearningPan
 import '../components/studymate/studymate-premium.css';
 import PixelProfessorStage from '../components/studymate/pixel/PixelProfessorStage';
 import { useMinuteRecap } from '../components/studymate/pixel/useMinuteRecap';
-import { roleForAgentIndex, ROLE_TO_AGENT_INDEX, ROLE_NAMES } from '../components/studymate/pixel/professorSprites';
+import { roleForAgentIndex, ROLE_TO_AGENT_INDEX, ROLE_NAMES, ROLE_TO_TARGET_KEY } from '../components/studymate/pixel/professorSprites';
 import ProfessorInteractionTimeline from '../components/studymate/pixel/ProfessorInteractionTimeline';
 import { normalizeMotionStates, phaseStatesFor, deriveInteractions } from '../components/studymate/pixel/modeInteractionProfiles';
 import {
@@ -2704,13 +2704,51 @@ export default function StudyMate() {
       // 소크라테스 문답 설정 전송. 방 저장값(selectedAgent.socraticConfig)이 있으면 우선, 없으면 현재 설정.
       turnExtras.socraticConfig = selectedAgent?.socraticConfig || socraticConfig;
     }
-    // @멘션으로 한 명만 지목하면 그 에이전트만 답하게 targetAgentId를 전송한다('@모두'/멘션없음 → 전체).
+    // ── 단일 대상(이 교수에게 질문 / @멘션 1명) 판정 ─────────────────────────────
+    //   '@모두' 또는 멘션 없음 → 전체(all). 한 명만 지목되면 single scope로 "그 교수만" 답한다.
+    //   백엔드는 이미 targetAgentId로 1명만 답변하도록 필터링한다(Spring→FastAPI _filter_agents).
+    //   프론트는 동일 대상 정보를 잡아 두고, 혹시 백엔드가 실수로 비대상 답변을 흘려도
+    //   채팅 카드/메시지로는 절대 append하지 않는다(목표: 1명만 답변, 시각 보조모션은 허용).
+    let askScope = 'all';
+    let targetAgentId = null;
+    let targetAgentIndex = null;
+    let targetAgentKey = null;
+    let targetProfessorRole = null;
     if (!/@모두/.test(inputMsg)) {
-      const mentioned = (selectedAgent?.agents || []).find(
-        (ag) => ag?.name && inputMsg.includes(`@${ag.name}`)
-      );
-      if (mentioned) turnExtras.targetAgentId = mentioned.agentId ?? mentioned.id;
+      const roomAgents = selectedAgent?.agents || [];
+      const mentionedIdx = roomAgents.findIndex((ag) => ag?.name && inputMsg.includes(`@${ag.name}`));
+      if (mentionedIdx >= 0) {
+        const mentioned = roomAgents[mentionedIdx];
+        askScope = 'single';
+        targetAgentId = mentioned.agentId ?? mentioned.id ?? null;
+        targetAgentIndex = mentionedIdx;
+        targetProfessorRole = roleForAgentIndex(mentionedIdx);
+        targetAgentKey = ROLE_TO_TARGET_KEY[targetProfessorRole] || null;
+        // 백엔드 호환: targetAgentId(이미 honored) + 명시 single-target 필드(forward-compat; 미지원 필드는 무시됨).
+        turnExtras.targetAgentId = targetAgentId;
+        turnExtras.askScope = 'single';
+        turnExtras.targetProfessorRole = targetProfessorRole;
+        turnExtras.targetAgentIndex = targetAgentIndex;
+        turnExtras.targetAgentKey = targetAgentKey;
+        turnExtras.targetAgentName = mentioned.name;
+        turnExtras.professorSelectedTarget = targetAgentKey;
+        turnExtras.selectedProfessorRole = targetProfessorRole;
+      }
     }
+    // single scope일 때 "이 이벤트가 대상 교수의 것인가". agentId 우선, 없으면 index/role 폴백.
+    //   식별 정보가 전혀 없으면(단일 대상의 유일 답변일 수 있어) 보존(append), 양성으로 다른 식별자면 드롭.
+    const isAnswerForTarget = (d = {}, patch = {}) => {
+      if (askScope !== 'single') return true;
+      const evId = d.agentId ?? patch.agentId;
+      const evIdx = d.agentIndex ?? patch.agentIndex;
+      const evRole = d.agentRole || d.role || patch.role;
+      if (targetAgentId != null && evId != null && String(evId) === String(targetAgentId)) return true;
+      if (Number.isInteger(targetAgentIndex) && evIdx != null
+        && (Number(evIdx) === targetAgentIndex || Number(evIdx) === targetAgentIndex + 1)) return true;
+      if (targetAgentKey && evRole && ROLE_TO_TARGET_KEY[evRole] === targetAgentKey) return true;
+      if (evId == null && evIdx == null && !evRole) return true;
+      return false;
+    };
     // 토론 모드: 논제/구조 설정을 함께 전송한다(프론트 → Spring → FastAPI).
     if (activeLearningMode === 'debate') turnExtras.debateConfig = selectedAgent?.debateConfig || debateConfig;
     if (activeLearningMode === 'simulation') turnExtras.simulationConfig = selectedAgent?.simulationConfig || simulationConfig || DEFAULT_SIMULATION_CONFIG;
@@ -2843,6 +2881,8 @@ export default function StudyMate() {
         const upsertAgentMessage = (d, patch = {}) => {
           // 목표 B.5: all_complete 이후 같은 turn의 추가 이벤트는 렌더링하지 않는다.
           if (streamCompleted) return;
+          // 단일 대상(single scope): 비대상 교수 답변/플레이스홀더는 채팅 카드로 만들지 않는다(1명만 답변).
+          if (!isAnswerForTarget(d, patch)) return;
           const idx = d?.agentIndex ?? patch.agentIndex ?? 0;
           const aid = d?.agentId ?? patch.agentId ?? idx;
           const hash = contentHash(d?.content ?? d?.answer ?? patch.content ?? '');
@@ -2979,10 +3019,13 @@ export default function StudyMate() {
           const ps = (d && d.processSteps) || fullPS;
           const bubbles = buildStageBubbles(ps, userMsg.id, ts, { showInternal: isInternalVisibleMode(respMode || activeLearningMode) });
           if (bubbles.length) { setTurnAiMessages(bubbles); return; }
-          // 6) 일반 answers/replies 카드
+          // 6) 일반 answers/replies 카드 — single scope면 비대상 교수 답변은 카드로 만들지 않는다.
           const answers = (d && (d.answers || d.replies)) || [];
-          if (Array.isArray(answers) && answers.length) {
-            setTurnAiMessages(sortByAgentOrder(answers).map((a, i) => {
+          const scopedAnswers = (askScope === 'single')
+            ? answers.filter((a, i) => isAnswerForTarget({ agentIndex: a.agentIndex ?? i, agentId: a.agentId, role: a.role || a.agentRole }))
+            : answers;
+          if (Array.isArray(scopedAnswers) && scopedAnswers.length) {
+            setTurnAiMessages(sortByAgentOrder(scopedAnswers).map((a, i) => {
               const c = coerceAgentText(a.answer || a.content || '', { requestId: d?.requestId || requestId, roomId: agentId, agentId: a.agentId, stage: 'all_complete', idx: i });
               return {
                 id: `${userMsg.id}::ans::${i}`,
@@ -3175,12 +3218,18 @@ export default function StudyMate() {
               // 실제 답변 도착 → 기본 모드 filler 폴백을 즉시 양보(취소)한다.
               sawRealAnswer = true;
               clearChoreoFiller();
+              const targeted = isAnswerForTarget(d);
+              // single scope면 upsert 내부에서 비대상 카드를 드롭한다(채팅 메시지 append 분리).
               upsertAgentMessage(d, { isPending: false, content: d.content || d.answer || '' });
-              // (목표 5/완료기준 2) agent_answer → 해당 교수만 answering.
-              visFor(d.agentIndex, 'answering');
-              // 해당 교수 머리 위 말풍선에 답변을 "짧게" 띄운다(전체 본문 X — 35~55자 truncate, 목표 3/8).
-              //  · 전체 답변은 아래 채팅 카드에만 존재. 말풍선은 시각 연출 전용(append 없음).
               const bubbleRole = roleForAgentIndex(d.agentIndex);
+              if (askScope === 'single' && !targeted) {
+                // 비대상 교수: 보조 모션 + 짧은 "확인 중" 말풍선만(장문 답변/카드 금지 — 목표).
+                visFor(d.agentIndex, 'validating');
+                if (bubbleRole) setProfBubble(bubbleRole, { text: '확인 중...', kind: 'thinking', agentName: d.agentName });
+                return;
+              }
+              // 대상 교수(또는 전체 모드): answering + 짧은 답변 말풍선(전체 본문은 채팅 카드에만).
+              visFor(d.agentIndex, 'answering');
               if (bubbleRole) {
                 setProfBubble(bubbleRole, {
                   text: makeBubbleText(d.content || d.answer || ''),

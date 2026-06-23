@@ -57,6 +57,7 @@ export default function PixelProfessorSprite({ role, name, tagline, sheet, side,
   return (
     <button
       type="button"
+      data-role={role}
       className={`professor-position-layer side-${side} ${selected ? 'is-selected' : ''}`}
       style={{ left: `${pos.left}%`, bottom: `${pos.bottom}px` }}
       onClick={(e) => { e.stopPropagation(); onSelect(role); }}
