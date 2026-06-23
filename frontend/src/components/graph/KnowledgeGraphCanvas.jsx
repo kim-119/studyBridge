@@ -10,12 +10,13 @@ import { styleForEdge, colorForNode, shapeForNode, NODE_TYPES } from '../../util
 //  · 외부 제어: ref.fitView() / ref.centerOnNode(id) / ref.zoomBy(f).
 // ─────────────────────────────────────────────────────────────────────────────
 
-function nodeRadius(node) {
+function nodeRadius(node, scale = 1) {
   const base = node.type === NODE_TYPES.QUESTION ? 16
     : node.type === NODE_TYPES.AGENT ? 12
       : node.type === NODE_TYPES.SOURCE ? 11
         : node.type === NODE_TYPES.CONCEPT ? 7 : 9;
-  return base + Math.min(10, (node.degree || 0) * 1.3) + Math.min(4, (node.importance || 0) * 0.5);
+  const r = base + Math.min(10, (node.degree || 0) * 1.3) + Math.min(4, (node.importance || 0) * 0.5);
+  return r * scale;
 }
 
 // shape 별 SVG element. circle/square(rect)/diamond/triangle(polygon).
@@ -31,8 +32,9 @@ function NodeShape({ shape, r, color, dim }) {
 const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref) {
   const {
     graph, positions, bounds, selectedNodeId, centerNodeId, neighbors,
-    showNodeLabels = true, showEdgeLabels = false,
-    onNodeClick, onNodeDoubleClick, onBackgroundClick,
+    showNodeLabels = true, showEdgeLabels = false, showArrows = true,
+    nodeScale = 1, linkThickness = 1, labelThreshold: labelThresholdProp,
+    onZoomChange, onNodeClick, onNodeDoubleClick, onBackgroundClick,
   } = props;
 
   const wrapRef = useRef(null);
@@ -113,8 +115,13 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
     return s;
   }, [focusId, neighbors]);
 
-  const labelThreshold = graph.nodes.length > 120 ? 1.1 : graph.nodes.length > 60 ? 0.7 : 0;
+  const labelThreshold = labelThresholdProp != null
+    ? labelThresholdProp
+    : (graph.nodes.length > 120 ? 1.1 : graph.nodes.length > 60 ? 0.7 : 0);
   const edgeColors = useMemo(() => Array.from(new Set(graph.edges.map((e) => styleForEdge(e.type).color))), [graph.edges]);
+
+  // 줌 레벨을 부모(상태바)로 보고.
+  useEffect(() => { onZoomChange?.(Math.round(view.k * 100)); }, [view.k, onZoomChange]);
 
   return (
     <div
@@ -149,19 +156,23 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
               const st = styleForEdge(e.type);
               const active = !focusSet || (focusSet.has(e.from) && focusSet.has(e.to));
               const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+              const labelOn = (showEdgeLabels || (focusSet && active)) && e.label;
+              const pw = Math.max(28, String(e.label).length * 8 + 14);
               return (
                 <g key={e.id}>
                   <line
                     className="obsg-edge"
                     x1={a.x} y1={a.y} x2={b.x} y2={b.y}
                     stroke={st.color}
-                    strokeWidth={active ? 1.6 : 1}
-                    strokeOpacity={focusSet ? (active ? 0.85 : 0.12) : 0.4}
+                    strokeWidth={(active ? 1.6 : 1) * linkThickness}
+                    strokeOpacity={focusSet ? (active ? 0.85 : 0.12) : 0.28}
                     strokeDasharray={st.dashed ? '5 4' : undefined}
-                    markerEnd={st.directed ? `url(#obsg-arrow-${st.color.replace(/[^a-z0-9]/gi, '')})` : undefined}
+                    markerEnd={showArrows && st.directed ? `url(#obsg-arrow-${st.color.replace(/[^a-z0-9]/gi, '')})` : undefined}
                   />
-                  {(showEdgeLabels || (focusSet && active)) && e.label ? (
-                    <text className="obsg-edge-label" x={mid.x} y={mid.y} textAnchor="middle">{e.label}</text>
+                  {labelOn ? (
+                    <foreignObject x={mid.x - pw / 2} y={mid.y - 10} width={pw} height={20} style={{ overflow: 'visible', pointerEvents: 'none' }}>
+                      <div className="obsg-edge-pill"><span>{e.label}</span></div>
+                    </foreignObject>
                   ) : null}
                 </g>
               );
@@ -170,7 +181,7 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
             {graph.nodes.map((n) => {
               const p = positions.get(n.id);
               if (!p) return null;
-              const r = nodeRadius(n);
+              const r = nodeRadius(n, nodeScale);
               const dim = !!(focusSet && !focusSet.has(n.id));
               const isSel = n.id === selectedNodeId;
               const isCenter = n.id === centerNodeId;

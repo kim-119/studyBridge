@@ -1,43 +1,55 @@
 import React from 'react';
+import {
+  Maximize2, Crosshair, Search, Tag as TagIcon, Settings2, FileDown, LayoutGrid, Circle, Globe,
+} from 'lucide-react';
 
-// 공통 그래프 툴바. PDF 관련 버튼은 의도적으로 전혀 두지 않는다.
+// ─────────────────────────────────────────────────────────────────────────────
+// 그래프 위에 떠 있는 컴팩트 floating 툴바(Obsidian 느낌: 낮은 대비, 아이콘 중심).
+//  · PDF 관련 버튼은 전혀 두지 않는다. 필터/표시/힘은 설정 패널(기어)로 분리.
+// ─────────────────────────────────────────────────────────────────────────────
+function TBtn({ active, onClick, title, children }) {
+  return (
+    <button type="button" className={`obsg-tb-btn${active ? ' is-active' : ''}`} onClick={onClick} title={title} aria-label={title} aria-pressed={!!active}>
+      {children}
+    </button>
+  );
+}
+
 export default function GraphToolbar({
   mode, onSetMode, onFit, onCenterQuestion, onToggleSearch, searchOpen,
-  filters, onToggleFilter, depth, onSetDepth,
+  depth, onSetDepth,
   showEdgeLabels, onToggleEdgeLabels,
+  settingsOpen, onToggleSettings,
   onExportMarkdown, onExportCanvas, extraActions,
 }) {
   return (
     <div className="obsg-toolbar" role="toolbar" aria-label="그래프 도구">
-      <button type="button" className={`obsg-btn${mode === 'local' ? ' is-active' : ''}`} onClick={() => onSetMode('local')}>Local Graph</button>
-      <button type="button" className={`obsg-btn${mode === 'global' ? ' is-active' : ''}`} onClick={() => onSetMode('global')}>Global Graph</button>
-      <button type="button" className="obsg-btn" onClick={onFit}>화면에 맞춤</button>
-      <button type="button" className="obsg-btn" onClick={onCenterQuestion}>현재 질문 중심</button>
-      <button type="button" className={`obsg-btn${searchOpen ? ' is-active' : ''}`} onClick={onToggleSearch}>검색</button>
-      <button type="button" className={`obsg-btn${showEdgeLabels ? ' is-active' : ''}`} onClick={onToggleEdgeLabels}>간선 이름</button>
+      <div className="obsg-tb-group">
+        <TBtn active={mode === 'local'} onClick={() => onSetMode('local')} title="Local Graph (L)"><Circle size={15} /></TBtn>
+        <TBtn active={mode === 'global'} onClick={() => onSetMode('global')} title="Global Graph (G)"><Globe size={15} /></TBtn>
+      </div>
 
       {mode === 'local' && (
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#cbd5e1' }}>
-          깊이 {depth}
-          <input
-            type="range" min={0} max={4} value={depth}
-            onChange={(e) => onSetDepth(Number(e.target.value))}
-            aria-label="Local Graph 깊이"
-            style={{ width: 80 }}
-          />
+        <label className="obsg-tb-depth" title="Local Graph 깊이">
+          <span>깊이 {depth}</span>
+          <input type="range" min={0} max={4} value={depth} onChange={(e) => onSetDepth(Number(e.target.value))} aria-label="Local Graph 깊이" />
         </label>
       )}
 
-      <button type="button" className={`obsg-btn${filters.showAnswers ? ' is-active' : ''}`} onClick={() => onToggleFilter('showAnswers')}>답변</button>
-      <button type="button" className={`obsg-btn${filters.showValidation ? ' is-active' : ''}`} onClick={() => onToggleFilter('showValidation')}>검증</button>
-      <button type="button" className={`obsg-btn${filters.showRebuttal ? ' is-active' : ''}`} onClick={() => onToggleFilter('showRebuttal')}>반박</button>
-      <button type="button" className={`obsg-btn${filters.showConcepts ? ' is-active' : ''}`} onClick={() => onToggleFilter('showConcepts')}>개념</button>
+      <div className="obsg-tb-group">
+        <TBtn active={searchOpen} onClick={onToggleSearch} title="검색 (Ctrl/Cmd+F)"><Search size={15} /></TBtn>
+        <TBtn active={showEdgeLabels} onClick={onToggleEdgeLabels} title="간선 이름 (E)"><TagIcon size={15} /></TBtn>
+        <TBtn onClick={onFit} title="화면에 맞춤 (0)"><Maximize2 size={15} /></TBtn>
+        <TBtn onClick={onCenterQuestion} title="현재 질문 중심"><Crosshair size={15} /></TBtn>
+      </div>
 
-      <span className="obsg-spacer" />
+      <div className="obsg-tb-group">
+        <TBtn onClick={onExportMarkdown} title="Markdown 내보내기"><FileDown size={15} /></TBtn>
+        <TBtn onClick={onExportCanvas} title="Canvas 내보내기"><LayoutGrid size={15} /></TBtn>
+        <TBtn active={settingsOpen} onClick={onToggleSettings} title="그래프 설정 (Filters/Groups/Display/Forces)"><Settings2 size={15} /></TBtn>
+      </div>
 
-      <button type="button" className="obsg-btn" onClick={onExportMarkdown}>Markdown 내보내기</button>
-      <button type="button" className="obsg-btn" onClick={onExportCanvas}>Canvas 내보내기</button>
-      {extraActions}
+      {extraActions ? <div className="obsg-tb-group obsg-tb-extra">{extraActions}</div> : null}
     </div>
   );
 }
