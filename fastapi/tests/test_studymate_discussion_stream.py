@@ -23,9 +23,20 @@ from app.services import orchestrator_service as orch
 
 @pytest.fixture(autouse=True)
 def _stub_network(monkeypatch):
+    import itertools
     monkeypatch.setattr(orch, "_fetch_wikipedia_context", lambda q: "")
     monkeypatch.setattr(orch, "_min_gap_seconds", lambda: 0.0)
-    monkeypatch.setattr("app.services.ollama_client.ask_ollama", lambda **k: "테스트 답변 본문")
+    # 호출마다 '서로 다른' 본문을 반환한다. 상수 본문을 쓰면 WRAP/REACTION 이 DIRECT 와
+    # 글자까지 동일해져 의미중복 억제(turn_semantic_dedup)에 걸리므로, 실제 LLM 처럼
+    # 매 발화가 고유 내용이 되도록 한다(플래너 구조 계약 검증이 목적).
+    _counter = itertools.count(1)
+
+    def _fake_ask(**k):
+        n = next(_counter)
+        # 카운터를 모든 토큰 안에 박아 호출마다 문자 n-gram 이 거의 겹치지 않게 한다.
+        return " ".join(f"{w}{n}" for w in ("항목", "핵심", "근거", "예시", "세부", "결론", "관점", "논점"))
+
+    monkeypatch.setattr("app.services.ollama_client.ask_ollama", _fake_ask)
 
 
 def _agents():

@@ -813,12 +813,15 @@ def _generate_discussion_wrap(request: MultiChatRequest, all_answers: List[Dict[
     joined = "\n".join(f"- {str(a.get('answer', ''))[:160]}" for a in all_answers[:6])
     sys = (
         "너는 학습 토론을 마무리하는 진행자다. 항상 사용자를 향해 말한다. "
-        "메이트들끼리의 잡담이 아니라, 사용자가 다음에 무엇을 하면 좋을지를 안내한다."
+        "메이트들끼리의 잡담이 아니라, 사용자가 다음에 무엇을 하면 좋을지를 안내한다.\n"
+        "[반복 금지] 앞에서 이미 말한 정의/요약을 다른 표현으로 다시 말하지 마라. "
+        "정의를 되풀이하지 말고, 다음 단계(심화·보안 주의점·실무 예시·확인 질문) 중 하나로 진행하라."
     )
     usr = (
         f"[사용자 질문] {request.message}\n[지금까지 메이트들의 답변]\n{joined}\n\n"
-        "→ 핵심을 1~2문장으로 짧게 정리하고, 이어서 더 깊이 들어갈 후속 질문 1개를 제안하라. "
-        "머리말/꼬리말/JSON 없이 한국어 본문만."
+        "→ 위 답변의 정의를 다시 설명하지 말고, 사용자가 다음에 더 깊이 들어갈 후속 질문 1개를 "
+        "제안하라(필요하면 직전 답이 다루지 않은 새로운 포인트 한 줄만 덧붙여라). "
+        "반드시 후속 질문 1개로 끝맺어라. 머리말/꼬리말/JSON 없이 한국어 본문만."
     )
     try:
         raw = ask_ollama(system_prompt=sys, user_prompt=usr,
@@ -856,6 +859,7 @@ def _run_discussion_plan(
     항상 사용자가 중심: 첫 발화=직접답변, 마지막=한 줄 정리.
     """
     from app.services import studymate_discussion_planner as planner
+    from app.services import turn_semantic_dedup as semdedup
 
     # 플래닝 키는 '인덱스 문자열'(항상 유일)을 쓴다. agentId/id 가 None 으로 겹치면
     # dict 충돌로 에이전트가 뭉개지므로 키로 쓰지 않는다. 화면용 agentId는 별도 매핑.
@@ -874,6 +878,8 @@ def _run_discussion_plan(
     acts = planner.plan_discussion(order_keys, seed=seed)
 
     answer_by_key: Dict[str, str] = {}
+    # 같은 turn 안에서 '같은 화자'가 이미 emit 한 답변 텍스트(의미 중복 판정 prior).
+    emitted_by_speaker: Dict[str, List[str]] = {}
     all_answers: List[Dict[str, Any]] = []
     display = 0
 
@@ -882,8 +888,9 @@ def _run_discussion_plan(
         aid = display_id_by_key[act.speaker]
         agent_name = agent.name or "AI"
         identity = identity_fn(agent)
-        display += 1
         t0 = time.time()
+        # REACTION/WRAP 은 '직접답변(DIRECT)을 표현만 바꿔 되풀이'하기 쉬운 2차 발화다.
+        is_secondary = act.act_type in (planner.REACTION, planner.WRAP)
 
         if act.act_type == planner.DIRECT_ANSWER:
             phase, stage, reply_to = "FIRST_DRAFT", 1, None
@@ -892,14 +899,24 @@ def _run_discussion_plan(
         else:  # WRAP
             phase, stage, reply_to = "WRAP", 3, None
 
-        yield {
-            "event": "agent_start",
-            "data": {
-                "type": "agent_start", "agentIndex": idx + 1, "agentName": agent_name,
-                "agentId": aid, "phase": phase, "actType": act.act_type,
-                "replyTo": reply_to, "displayOrder": display, "visible": True, **identity,
-            },
-        }
+        def _emit_agent_start(order: int):
+            return {
+                "event": "agent_start",
+                "data": {
+                    "type": "agent_start", "agentIndex": idx + 1, "agentName": agent_name,
+                    "agentId": aid, "phase": phase, "actType": act.act_type,
+                    "replyTo": reply_to, "displayOrder": order, "visible": True, **identity,
+                },
+            }
+
+        # DIRECT 는 절대 억제되지 않으므로 생성 전에 즉시 agent_start(빠른 '작성 중' 피드백).
+        # 2차 발화는 '생성 → 의미중복 판정 → (신규일 때만) agent_start' 순서로, 억제 시
+        # dangling '답변 작성 중' 말풍선이 남지 않게 한다.
+        cur_display = None
+        if not is_secondary:
+            display += 1
+            cur_display = display
+            yield _emit_agent_start(cur_display)
 
         try:
             if act.act_type == planner.DIRECT_ANSWER:
@@ -927,22 +944,37 @@ def _run_discussion_plan(
             else:
                 answer = "(이 에이전트의 응답 생성 중 잠시 문제가 있었어요.)"
 
-        if act.act_type == planner.DIRECT_ANSWER:
+        # ── 의미 중복 억제(2차 발화 한정, 같은 화자 prior 와만 비교) ──────────────
+        # 정의를 표현만 바꿔 되풀이하면(novelty 부족) 카드를 추가하지 않는다. 에이전트 1명일 때
+        # WRAP 가 직전 정의를 재진술하던 핵심 버그가 여기서 결정적으로 막힌다. 다른 에이전트가
+        # 비슷하게 말하는 토론은 화자 스코프라 영향 없다.
+        if is_secondary and semdedup.is_near_duplicate(answer, emitted_by_speaker.get(act.speaker, [])):
+            logger.info("[Orchestrator] near-dup %s 억제(speaker=%s, turn 내 같은 화자 재진술)",
+                        act.act_type, aid)
+            continue
+
+        if not is_secondary:
             answer_by_key[act.speaker] = answer
+        else:
+            display += 1
+            cur_display = display
+            yield _emit_agent_start(cur_display)
+
+        emitted_by_speaker.setdefault(act.speaker, []).append(answer)
 
         # 순차 강제: 발화 순번(display)마다 딜레이를 단조 증가시켜 프론트가 0→gap→2*gap…로
         # 정렬/지연 렌더하도록 한다(비동기 도착 순서 뒤섞임 방지).
-        delay_ms = (display - 1) * int(min_gap * 1000)
+        delay_ms = (cur_display - 1) * int(min_gap * 1000)
         entry = {
             "agentId": aid, "agentName": agent_name, "answer": answer,
-            "displayOrder": display, "displayDelayMs": delay_ms, "stage": stage, "status": "SUCCESS",
+            "displayOrder": cur_display, "displayDelayMs": delay_ms, "stage": stage, "status": "SUCCESS",
             "actType": act.act_type, "replyTo": reply_to, **identity,
         }
         yield {
             "event": "agent_answer",
             "data": {
                 "type": "agent_answer", "agentIndex": idx + 1, "agentName": agent_name,
-                "agentId": aid, "answer": answer, "displayOrder": display, "displayDelayMs": delay_ms,
+                "agentId": aid, "answer": answer, "displayOrder": cur_display, "displayDelayMs": delay_ms,
                 "stage": stage, "phase": phase, "actType": act.act_type, "replyTo": reply_to,
                 "visible": True, "status": "SUCCESS", **identity,
             },
