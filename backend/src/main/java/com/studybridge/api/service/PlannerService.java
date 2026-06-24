@@ -389,9 +389,12 @@ public class PlannerService {
         }
         // 삭제 대상 자료보관함 항목을 합집합으로 모아 한 번씩만 삭제(이중삭제 방지).
         java.util.LinkedHashSet<Long> materialIds = new java.util.LinkedHashSet<>();
-        // 1) 정방향 링크: planner.materialId 가 가리키는 항목(기존 동작 유지 — 타입 무관)
+        // 1) 정방향 링크: planner.materialId 가 가리키는 항목. 단 PLANNER 타입일 때만 삭제 대상에 넣는다.
+        //    (레거시 오염으로 materialId 가 출처 PDF 를 가리킬 수 있어, 타입 무관 삭제 시 원본 PDF/학습자료가 사라진다.)
         if (planner.getMaterialId() != null) {
-            materialIds.add(planner.getMaterialId());
+            materialRepository.findById(planner.getMaterialId())
+                    .filter(m -> m.getMaterialType() == MaterialType.PLANNER)
+                    .ifPresent(m -> materialIds.add(m.getMaterialId()));
         }
         // 2) 역참조 링크(레거시/끊어진 링크 보강): material.plannerId == planner.id 인 PLANNER 자료만.
         //    PDF/학습일지 등 일반 학습자료는 타입 조건으로 절대 포함되지 않는다.
