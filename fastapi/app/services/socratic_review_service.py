@@ -45,6 +45,7 @@ from app.core.config import (
     OLLAMA_BASE_URL,
     OLLAMA_MODEL,
 )
+from app.services.socratic_chunk_provisioner import ensure_material_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -142,14 +143,18 @@ def load_document_chunks(material_id: int) -> list[dict]:
     return rows
 
 
-def build_plan(chunks: list[dict], max_chunks: int) -> list[dict]:
-    """순회 청크에서 너무 짧거나 중복인 청크를 skip 하고 max_chunks 로 제한한다."""
+def build_plan(chunks: list[dict], max_chunks: int, min_chars: int = _MIN_CHUNK_CHARS) -> list[dict]:
+    """순회 청크에서 너무 짧거나 중복인 청크를 skip 하고 max_chunks 로 제한한다.
+
+    min_chars: 출제 최소 글자수. 기본 _MIN_CHUNK_CHARS(40). 짧은 자료에서 plan 이 비면
+    호출부가 min_chars=1 로 재시도해 "짧은 텍스트도 최소 1청크 허용" 정책을 만족한다.
+    """
     seen_hashes: set[str] = set()
     seen_content: set[str] = set()
     plan: list[dict] = []
     for c in chunks:
         content = (c.get("content") or "").strip()
-        if len(content) < _MIN_CHUNK_CHARS:
+        if len(content) < min_chars:
             continue
         h = c.get("content_hash")
         norm = content[:200]
@@ -578,15 +583,34 @@ def start_session(material_id: Optional[int], document_id: Optional[str], title:
     mid = resolve_material_id(material_id, document_id)
 
     raw_chunks = load_document_chunks(mid)
+    source_kind = "rag_chunks"
     if not raw_chunks:
-        raise SessionError(
-            "이 자료에서 복습 세션을 만들 수 있는 문서 청크를 찾지 못했습니다."
-        )
+        # 청크가 없다고 바로 실패하지 않는다 — 자료 원문(extracted_text/요약/S3 PDF)이 있으면
+        # 1회 on-demand ingest 해서 실제 청크를 생성한다(이미 청크가 있으면 여기 도달 안 함=중복 금지).
+        logger.info("[socratic:chunks] mat=%s 기존 청크 없음 → on-demand provision 시도", mid)
+        prep = ensure_material_chunks(mid, title)
+        if not prep.get("ok"):
+            logger.warning("[socratic:error] mat=%s provision 실패 reason=%s", mid, prep.get("reason"))
+            raise SessionError(
+                prep.get("message") or "복습 세션을 시작할 수 없습니다.",
+                status=prep.get("reason") or "PDF_TEXT_EMPTY",
+            )
+        source_kind = prep.get("source_kind") or "pdf_extract"
+        logger.info("[socratic:rag] mat=%s provision ok kind=%s chunks=%s text_len=%s",
+                    mid, source_kind, prep.get("chunk_count"), prep.get("text_length"))
+        raw_chunks = load_document_chunks(mid)
+        if not raw_chunks:
+            # provision 이 ok 라고 했는데 재조회가 비면 success 로 새지 않는다.
+            raise SessionError("청크 생성 후에도 조회되지 않았습니다.", status="INTERNAL_ERROR")
 
     cap = _DEFAULT_MAX_CHUNKS if not max_chunks else min(int(max_chunks), _HARD_MAX_CHUNKS)
     plan = build_plan(raw_chunks, cap)
     if not plan:
-        raise SessionError("출제 가능한 유효 청크가 없습니다(모두 너무 짧거나 중복).")
+        # 짧은 자료: 40자 미만이라 전부 skip 된 경우 최소 1청크 허용으로 재시도
+        plan = build_plan(raw_chunks, cap, min_chars=1)
+    if not plan:
+        raise SessionError("출제 가능한 유효 청크가 없습니다(텍스트가 비어 있습니다).",
+                           status="PDF_TEXT_EMPTY")
 
     sid = _new_session_id()
     session = {
@@ -625,6 +649,10 @@ def start_session(material_id: Optional[int], document_id: Optional[str], title:
         "materialId": mid,
         "documentId": session["document_id"],
         "status": session["status"],
+        "canStart": True,
+        "chunkCount": len(plan),
+        "textLength": sum(len((c.get("content") or "")) for c in plan),
+        "sourceKind": source_kind,
         "totalChunks": len(plan),
         "selectedChunks": len(plan),
         "totalChunksInDocument": len(raw_chunks),
@@ -632,6 +660,7 @@ def start_session(material_id: Optional[int], document_id: Optional[str], title:
         "currentChunkId": plan[0]["id"],
         "question": question,
         "progress": _progress(session),
+        "message": "소크라테스 복습을 시작할 수 있습니다.",
     }
 
 

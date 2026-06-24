@@ -57,8 +57,16 @@ def start_session(req: StartSessionRequest) -> Any:
             difficulty=req.difficulty,
         )
     except svc.SessionError as e:
-        # 문서/청크 부재 등은 전체 코퍼스로 넘어가지 않고 명확히 실패 반환
-        return JSONResponse(status_code=200, content={"status": e.status, "message": e.message})
+        # 문서/청크 부재 등은 전체 코퍼스로 넘어가지 않고 명확한 사유와 함께 실패 반환.
+        # status 는 provisioner reason 코드(PDF_TEXT_EMPTY/S3_NOT_FOUND/OCR_REQUIRED/...)를 그대로 전달.
+        return JSONResponse(status_code=200, content={
+            "status": e.status,
+            "reason": e.status,
+            "canStart": False,
+            "chunkCount": 0,
+            "textLength": 0,
+            "message": e.message,
+        })
     except Exception as e:
         logger.error("socratic-review start 실패: %s", type(e).__name__)
         return JSONResponse(
