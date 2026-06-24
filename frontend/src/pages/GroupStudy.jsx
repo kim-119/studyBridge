@@ -165,6 +165,9 @@ export default function GroupStudy() {
   // 프리조인(입장 준비) 상태
   const [preJoinStudy, setPreJoinStudy] = useState(null);
   const [activeStudyRoom, setActiveStudyRoom] = useState(null);
+  // 입장 시 프리뷰에서 켜둔 카메라 트랙을 clone해 StudyRoom publisher로 그대로 넘긴다.
+  //  · 프리뷰 stop → 같은 deviceId 재획득 과정에서 일부 장치가 "정지 프레임"을 돌려주는 freeze를 근절한다.
+  const [handoffVideoTrack, setHandoffVideoTrack] = useState(null);
   const [resolution, setResolution] = useState('');
   const [isVideoOn, setIsVideoOn] = useState(true);
   const [isMicOn, setIsMicOn] = useState(true);
@@ -185,6 +188,8 @@ export default function GroupStudy() {
   });
 
   const videoRef = React.useRef(null);
+  // 현재 살아있는 프리뷰 스트림(입장 시 트랙 clone 출처). 프리뷰 effect가 갱신/정리한다.
+  const previewStreamRef = React.useRef(null);
   const [camError, setCamError] = useState('');
   // 카메라/마이크 감지 단계. 'checking'을 먼저 보여주고, 권한·retry가 끝난 뒤에만 실패로 확정한다.
   //  cameraStatus: 'idle' | 'checking' | 'available' | 'unavailable' | 'error' | 'off'
@@ -262,6 +267,7 @@ export default function GroupStudy() {
           return;
         }
         stream = s;
+        previewStreamRef.current = s; // 입장 시 이 스트림의 video track을 clone해 publisher로 넘긴다
         if (videoRef.current) {
           videoRef.current.srcObject = s;
         }
@@ -312,6 +318,8 @@ export default function GroupStudy() {
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
+      // 원본 프리뷰 스트림 참조 해제(입장 시 넘긴 clone은 독립 생명주기라 영향 없음).
+      if (previewStreamRef.current === stream) previewStreamRef.current = null;
     };
   }, [preJoinStudy, isVideoOn, selectedCamera]);
 
@@ -1507,6 +1515,16 @@ export default function GroupStudy() {
                     
                     if (isMember) {
                       showAlert('입장', `[${preJoinStudy.title}] 스터디룸으로 입장합니다!`, () => {
+                        // 프리뷰 카메라 트랙을 clone해 StudyRoom으로 넘긴다(stop→재획득 freeze 제거).
+                        //  · clone은 원본과 독립 생명주기 → 곧 이어질 프리뷰 cleanup의 stop에 영향받지 않는다.
+                        let handoff = null;
+                        try {
+                          const vTrack = previewStreamRef.current?.getVideoTracks?.()[0];
+                          if (vTrack && vTrack.readyState === 'live') {
+                            handoff = vTrack.clone();
+                          }
+                        } catch (e) { handoff = null; }
+                        setHandoffVideoTrack(handoff);
                         setActiveStudyRoom(preJoinStudy);
                         setPreJoinStudy(null);
                       });
@@ -1715,10 +1733,18 @@ export default function GroupStudy() {
           {activeStudyRoom && (
             <StudyRoom
               study={activeStudyRoom}
-              onClose={() => setActiveStudyRoom(null)}
+              onClose={() => {
+                setActiveStudyRoom(null);
+                // publisher가 안 썼을 수 있는 handoff clone을 정리(카메라 점유 해제).
+                if (handoffVideoTrack) {
+                  try { handoffVideoTrack.stop(); } catch (e) { /* ignore */ }
+                  setHandoffVideoTrack(null);
+                }
+              }}
               selectedCamera={selectedCamera}
               initialMicOn={isMicOn}
               initialVideoOn={isVideoOn}
+              handoffVideoTrack={handoffVideoTrack}
             />
           )}
         </>

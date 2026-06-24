@@ -351,7 +351,7 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
   );
 }
 
-export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn, initialVideoOn }) {
+export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn, initialVideoOn, handoffVideoTrack }) {
   const { userId, user } = useAuth();
 
   const formatSecondsToStudyTime = (secs) => {
@@ -1233,11 +1233,13 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         }
         console.info('[StudyRoomOV] connect:success', { connectionId: myConnectionId || null });
 
-        // 이전 프리뷰 화면에서 사용하던 카메라 하드웨어가 완전히 릴리즈될 시간을 확보 (800ms).
-        // 너무 짧으면 카메라가 아직 점유돼 NotReadableError가 나고, 아래 fallback이 곧바로
-        // 오디오 전용으로 떨어뜨려 "카메라 ON인데 아바타로 보이는" 문제가 생긴다.
-        await new Promise(resolve => setTimeout(resolve, 800));
-        if (!isMounted) return;
+        // 프리뷰 트랙을 그대로 넘겨받았으면(handoff) 카메라를 재획득하지 않으므로 릴리즈 대기가 불필요하다.
+        // handoff가 없을 때만, 이전 프리뷰가 카메라를 완전히 릴리즈할 시간을 확보(800ms)해 NotReadableError를 예방한다.
+        const hasHandoff = !!(handoffVideoTrack && handoffVideoTrack.readyState === 'live');
+        if (!hasHandoff) {
+          await new Promise(resolve => setTimeout(resolve, 800));
+          if (!isMounted) return;
+        }
 
         // ── 장치 유효성 사전 검증 (stale deviceId / 장치 부재 방어) ──
         // 선택된 카메라 deviceId가 현재 실제 장치 목록에 없으면 stale로 간주해 기본 카메라로 떨어뜨린다.
@@ -1343,8 +1345,32 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           return null;
         };
 
+        // ── 0순위: 프리뷰에서 clone해 넘겨받은 live 카메라 트랙을 publisher videoSource로 그대로 사용 ──
+        //   프리뷰 stop → 같은 deviceId 재획득 시 일부 장치가 "정지 프레임"을 반환하는 freeze를 근절한다.
+        //   (오디오는 fresh로 획득. 실패 시 아래 카메라 재획득 ladder로 폴백)
+        if (hasHandoff && hasAnyVideo && isVideoOn !== false) {
+          console.log('[StudyRoom] fallback 시도 tag=preview-handoff');
+          const handoffPub = await tryInit({
+            audioSource: (hasAnyAudio && isMicOn) ? undefined : false,
+            videoSource: handoffVideoTrack,
+            publishAudio: Boolean(hasAnyAudio && isMicOn),
+            publishVideo: isVideoOn !== false,
+            insertMode: 'APPEND',
+            mirror: true,
+          }, 1);
+          if (!isMounted) { if (handoffPub) handoffPub.dispose(); return; }
+          if (handoffPub) {
+            publisherInstance = handoffPub;
+            chosen = { v: handoffVideoTrack, a: (hasAnyAudio && isMicOn) ? undefined : false, tag: 'preview-handoff' };
+            console.log('[StudyRoom] publisher 성공 단계=preview-handoff');
+          } else {
+            console.warn('[StudyRoom] preview-handoff 실패 → 카메라 재획득 ladder로 폴백');
+          }
+        }
+
         const seen = new Set();
         for (const att of attempts) {
+          if (publisherInstance) break; // 0순위 handoff 성공 시 ladder 생략
           if (att.usesSelected && selectedCameraStale) continue; // stale 선택 카메라 제외
           const sig = `${att.v}|${att.a}|${att.resolution}|${att.frameRate}`;
           if (seen.has(sig)) continue; // 동일 (장치·해상도·프레임) 조합 중복 시도 방지(같은 selectedCamera 무한 반복 금지)
@@ -1389,6 +1415,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         if (!isMounted) {
           if (publisherInstance) publisherInstance.dispose();
           return;
+        }
+
+        // handoff 트랙을 publisher가 쓰지 않았으면(ladder 폴백/실패) 고아 트랙을 정지해 카메라 점유를 푼다.
+        if (handoffVideoTrack && chosen?.tag !== 'preview-handoff' && handoffVideoTrack.readyState === 'live') {
+          try { handoffVideoTrack.stop(); } catch (e) { /* ignore */ }
         }
 
         if (!publisherInstance) {
