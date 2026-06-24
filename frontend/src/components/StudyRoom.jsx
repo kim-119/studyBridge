@@ -91,6 +91,23 @@ const forceOpenViduWssTransport = (openviduInstance) => {
 };
 
 
+// 원격 WebRTC 미디어를 위한 coturn TURN relay(브라우저측 iceServers).
+//  · NAT/방화벽 뒤 참가자도 relay 경유로 영상/음성이 흐르게 한다(KMS측은 compose KMS_TURN_URL로 주입).
+//  · username/credential은 TURN static long-term 자격으로 브라우저에 내려가는 준공개 값이다.
+//    (서버 비밀이 아니라 relay 사용 권한일 뿐; .env TURN_PASSWORD와 반드시 동기화)
+//  · 공인 IP(=www.studybridge.co.kr) 기준. 회전 시 .env·docker-compose·이 상수를 함께 갱신한다.
+const STUDYBRIDGE_TURN_ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  {
+    urls: [
+      'turn:43.202.211.123:3478?transport=udp',
+      'turn:43.202.211.123:3478?transport=tcp',
+    ],
+    username: 'studybridge',
+    credential: '00ce0e28506590253bceac8215653f6de6633355e9a0f4c2',
+  },
+];
+
 // OpenVidu token은 URL 전체가 인증 토큰이므로 원본 그대로 사용한다.
 // HTTPS 운영환경에서는 token 문자열이 아니라 실제 WebSocket transport만 wss:// 로 보정한다.
 const toSecureWsToken = (token) => {
@@ -1045,6 +1062,13 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         token = toSecureWsToken(token);
         OVInstance = new OpenVidu();
         forceOpenViduWssTransport(OVInstance);
+        // 브라우저가 coturn TURN relay를 ICE 후보로 쓰도록 강제 주입(원격 미디어 NAT traversal).
+        try {
+          OVInstance.setAdvancedConfiguration({ iceServers: STUDYBRIDGE_TURN_ICE_SERVERS });
+          console.info('[StudyRoomOV] iceServers:set', { turn: '43.202.211.123:3478' });
+        } catch (e) {
+          console.warn('[StudyRoomOV] iceServers:set-failed', e?.message || e);
+        }
         OVRef.current = OVInstance; // view-only 복구(재발행) 시 동일 인스턴스 재사용
         sessionInstance = OVInstance.initSession();
         console.info('[StudyRoomOV] session:init');

@@ -83,8 +83,39 @@ services:
       OPENVIDU_PUBLICURL: ${OPENVIDU_PUBLICURL:-https://www.studybridge.co.kr:4443}
       CERTIFICATE_TYPE: selfsigned
       OPENVIDU_WEBHOOK: "false"
+      # KMS(Kurento)가 coturn을 TURN relay로 사용하도록 주입(/kms.sh가 turnURL=$KMS_TURN_URL 기록).
+      #  · 컨테이너→coturn 제어포트는 호스트 사설IP로 접근(coturn은 host network로 0.0.0.0:3478 바인딩).
+      #  · 브라우저용 relay 후보의 공인IP는 coturn --external-ip가 광고한다.
+      KMS_TURN_URL: ${TURN_USERNAME:-studybridge}:${TURN_PASSWORD:-changeme}@${TURN_PRIVATE_IP:-10.0.1.215}:3478
       TZ: Asia/Seoul
     restart: on-failure
+
+  # WebRTC 미디어 relay 전용 TURN 서버. openvidu-dev에는 coturn이 없어 원격 미디어가 불가하므로 별도 추가.
+  #  · host network로 3478(tcp/udp) + relay UDP 49160-49200을 직접 바인딩(대량 UDP publish / docker-proxy 회피).
+  #  · external-ip=공인/사설 매핑으로 AWS 1:1 NAT 환경에서 올바른 relay 후보를 광고한다.
+  #  · lt-cred-mech + realm + user 인증으로 오픈 릴레이가 되지 않게 한다.
+  #  · AWS 보안그룹 인바운드 필수: TCP 3478, UDP 3478, UDP 49160-49200.
+  coturn:
+    image: coturn/coturn:4.6
+    container_name: capstone-coturn
+    network_mode: "host"
+    restart: unless-stopped
+    command:
+      - -n
+      - --log-file=stdout
+      - --lt-cred-mech
+      - --fingerprint
+      - --realm=studybridge.co.kr
+      - --server-name=studybridge.co.kr
+      - --user=${TURN_USERNAME:-studybridge}:${TURN_PASSWORD:-changeme}
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --external-ip=${TURN_PUBLIC_IP:-43.202.211.123}/${TURN_PRIVATE_IP:-10.0.1.215}
+      - --no-tls
+      - --no-dtls
+      - --no-multicast-peers
+      - --no-cli
 
   db:
     image: postgres:16
