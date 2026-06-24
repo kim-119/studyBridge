@@ -94,7 +94,7 @@ const TYPE_META = {
   STUDY_LOG: { label: '학습일지', Icon: FileText, badge: 'doc-badge-journal' },
   PDF: { label: 'PDF', Icon: FileIcon, badge: 'doc-badge-pdf' },
   PLANNER: { label: '플래너', Icon: CalendarDays, badge: 'doc-badge-planner' },
-  MINDMAP: { label: 'Obsidian Graph', Icon: Network, badge: 'doc-badge-mindmap' },
+  MINDMAP: { label: '마인드맵', Icon: Network, badge: 'doc-badge-mindmap' },
 };
 
 // 카드 배지/아이콘 메타 결정. PLANNER/plannerId 면 플래너 카드, 그 외에만 PDF 카드.

@@ -35,7 +35,7 @@ export default function ObsidianArchiveGraphViewer({ material, onBack, onDelete 
         <button type="button" className="obsg-btn" onClick={onBack}><ArrowLeft size={16} /> 목록</button>
         <Network size={16} color="#a78bfa" />
         <span style={{ fontWeight: 700, fontSize: 15, color: '#f9fafb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={title}>{title}</span>
-        <span style={{ fontSize: 11, color: '#a78bfa', background: '#312e81', padding: '2px 8px', borderRadius: 999 }}>Obsidian Graph</span>
+        <span style={{ fontSize: 11, color: '#a78bfa', background: '#312e81', padding: '2px 8px', borderRadius: 999 }}>마인드맵</span>
         {onDelete && (
           <button type="button" className="obsg-btn" style={{ color: '#fca5a5' }} onClick={onDelete}><Trash2 size={15} /> 삭제</button>
         )}

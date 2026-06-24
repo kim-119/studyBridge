@@ -58,7 +58,7 @@ export default function GraphNodeDetailPanel({ node, linkIndex, onSelectNode, on
         )}
 
         <div className="obsg-detail-section">
-          <h5>Obsidian 링크명</h5>
+          <h5>마인드맵 링크명</h5>
           <code style={{ fontSize: 12, color: '#a5b4fc' }}>{makeWikilink(node.obsidianName)}</code>
         </div>
       </div>

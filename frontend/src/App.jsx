@@ -120,6 +120,8 @@ function App() {
           <Route path="/study-report" element={<PrivateRoute><StudyReport /></PrivateRoute>} />
           <Route path="/weekly-schedule" element={<PrivateRoute><WeeklySchedule /></PrivateRoute>} />
           <Route path="/planner" element={<PrivateRoute><Planner /></PrivateRoute>} />
+          {/* 마인드맵: 신규 canonical 경로 /mindmap + 기존 /obsidian 호환 alias(동일 컴포넌트). */}
+          <Route path="/mindmap" element={<PrivateRoute><ObsidianPage /></PrivateRoute>} />
           <Route path="/obsidian" element={<PrivateRoute><ObsidianPage /></PrivateRoute>} />
           {/* 잘못된 주소는 메인으로 이동 */}
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -123,7 +123,7 @@ export default function ObsidianPage() {
         <div style={{ padding: '16px 16px 10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Network size={20} color="#7c3aed" />
-            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#111827' }}>옵시디언</h2>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#111827' }}>마인드맵</h2>
             <span style={{ marginLeft: 'auto', fontSize: 12, color: '#6b7280' }}>학습메이트 방 {rooms.length}개</span>
           </div>
           <p style={{ margin: '6px 0 0', fontSize: 12, color: '#9ca3af' }}>학습메이트 채팅 로그를 지식 그래프로 탐색합니다.</p>

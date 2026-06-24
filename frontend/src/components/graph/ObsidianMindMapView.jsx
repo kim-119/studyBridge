@@ -59,7 +59,7 @@ export default function ObsidianMindMapView({
     return (
       <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '6px 8px', background: '#111827' }}>
-          <button type="button" className="obsg-btn" onClick={() => setShowLegacy(false)}>← Obsidian Graph 보기</button>
+          <button type="button" className="obsg-btn" onClick={() => setShowLegacy(false)}>← 마인드맵 보기</button>
         </div>
         <div style={{ flex: 1, minHeight: 0 }}>
           <LegacyMindMapView question={question} agents={agents} messages={messages} interactions={interactions} />

@@ -18,7 +18,7 @@ const NAV_ITEMS = [
   { to: '/study-report', label: '학습리포트' },
   { to: '/weekly-schedule', label: '주간일정' },
   { to: '/planner', label: '플래너' },
-  { to: '/obsidian', label: '옵시디언' },
+  { to: '/mindmap', label: '마인드맵' },
 ];
 
 export function Navbar({ authed, username, active }) {

@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // 자료보관함 mindmap material → Obsidian 방(room) 메타 + 그래프 파서(단일 출처).
 //  · 저장 payload(content_json) 또는 migration 으로 들어온 rawGraphJson 을 모두 안전 파싱.
-//  · UI 에는 "마인드맵" 대신 "옵시디언"으로 표기하되, 내부 호환을 위해 mindmap 타입을 읽을 수 있다.
+//  · UI 노출 명칭은 "마인드맵"으로 통일. 내부 타입/키(obsidian, mindmap, obsidian_graph)는 호환 위해 그대로 읽는다.
 // ─────────────────────────────────────────────────────────────────────────────
 import { sanitizeGraph } from './graphValidation';
 
@@ -27,7 +27,7 @@ export function roomFromMaterial(m) {
     .map((t) => t.trim()).filter(Boolean);
   return {
     id: m.materialId,
-    title: m.title || '옵시디언 방',
+    title: m.title || '마인드맵 방',
     sourceType: payload.sourceType || 'multi_agent_chat',
     sourceId: payload.sourceId || null,
     nodeCount: Number(payload.nodeCount) || 0,
