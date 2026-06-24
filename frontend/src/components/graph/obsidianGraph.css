@@ -60,6 +60,7 @@
 }
 .obsg-edge-pill > span {
   font-size: 10px; line-height: 1; white-space: nowrap;
+  max-width: 84px; overflow: hidden; text-overflow: ellipsis;
   padding: 2px 6px; border-radius: 999px;
   color: #d7d9e5;
   background: rgba(18, 20, 32, 0.82);

@@ -138,6 +138,8 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
           nodeScale={display.nodeScale}
           linkThickness={display.linkThickness}
           labelThreshold={textFade}
+          mode={mode}
+          edgeLabelsAlwaysOn={display.showEdgeLabels === true}
           onZoomChange={setZoomPct}
           onNodeClick={(n) => setSelected(n)}
           onNodeDoubleClick={handleCenterNode}

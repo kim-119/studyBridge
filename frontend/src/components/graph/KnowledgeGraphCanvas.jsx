@@ -2,6 +2,9 @@ import React, {
   forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 } from 'react';
 import { styleForEdge, colorForNode, shapeForNode, NODE_TYPES } from '../../utils/graph/graphTypes';
+import {
+  computeLabelLayout, edgeLabelVisibleAtZoom, LABEL_PRIORITY,
+} from '../../utils/graph/graphLabelLayout';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 다크 캔버스 SVG 렌더러. pan/zoom + 노드/간선 + 선택/hover 강조.
@@ -34,6 +37,7 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
     graph, positions, bounds, selectedNodeId, centerNodeId, neighbors,
     showNodeLabels = true, showEdgeLabels = false, showArrows = true,
     nodeScale = 1, linkThickness = 1, labelThreshold: labelThresholdProp,
+    mode = 'local', edgeLabelsAlwaysOn = false,
     onZoomChange, onNodeClick, onNodeDoubleClick, onBackgroundClick,
   } = props;
 
@@ -120,6 +124,89 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
     : (graph.nodes.length > 120 ? 1.1 : graph.nodes.length > 60 ? 0.7 : 0);
   const edgeColors = useMemo(() => Array.from(new Set(graph.edges.map((e) => styleForEdge(e.type).color))), [graph.edges]);
 
+  // ── 라벨 충돌 회피 레이아웃(노드 라벨/간선 라벨/점/halo 가 안 겹치게) ──────────
+  //  · 논리 좌표로 모든 박스를 계산 → priority 순 배치 → 충돌 시 법선 offset → 숨김.
+  //  · zoom/mode/선택/hover 변화에만 재계산(useMemo). spec 1~20단계.
+  const labelLayout = useMemo(() => {
+    const k = view.k;
+    const focus = hoverId || selectedNodeId;
+    const fset = (() => {
+      if (!focus) return null;
+      const s = new Set([focus]);
+      const nb = neighbors?.get(focus);
+      if (nb) nb.forEach((id) => s.add(id));
+      return s;
+    })();
+
+    const nodeInputs = [];
+    graph.nodes.forEach((n) => {
+      const p = positions.get(n.id);
+      if (!p) return;
+      const r = nodeRadius(n, nodeScale);
+      const isSel = n.id === selectedNodeId;
+      const isCenter = n.id === centerNodeId;
+      const isHover = n.id === hoverId;
+      const inFocus = fset ? fset.has(n.id) : false;
+      const showLabel = showNodeLabels
+        && (k >= labelThreshold || isSel || isCenter || isHover || inFocus);
+      let priority = LABEL_PRIORITY.NODE;
+      if (isSel) priority = LABEL_PRIORITY.SELECTED_NODE;
+      else if (isHover) priority = LABEL_PRIORITY.HOVERED_NODE;
+      else if (n.type === NODE_TYPES.QUESTION || n.type === NODE_TYPES.AGENT) {
+        priority = LABEL_PRIORITY.KEY_NODE;
+      }
+      nodeInputs.push({
+        id: n.id,
+        x: p.x,
+        y: p.y,
+        r,
+        haloR: isSel ? r + 8 : isCenter ? r + 6 : 0,
+        text: showLabel ? (n.shortLabel || n.label) : '',
+        showLabel,
+        priority,
+      });
+    });
+
+    const edgeInputs = [];
+    graph.edges.forEach((e) => {
+      const a = positions.get(e.from);
+      const b = positions.get(e.to);
+      if (!a || !b || !e.label) return;
+      const isSelEdge = !!selectedNodeId && (e.from === selectedNodeId || e.to === selectedNodeId);
+      const isHovEdge = !!hoverId && (e.from === hoverId || e.to === hoverId);
+      const inFocus = fset ? (fset.has(e.from) && fset.has(e.to)) : false;
+      const visible = edgeLabelVisibleAtZoom(
+        { selected: isSelEdge, hovered: isHovEdge, focus: inFocus, oneHop: isSelEdge },
+        k,
+        { mode, edgeLabelsOn: showEdgeLabels, alwaysOn: edgeLabelsAlwaysOn },
+      );
+      const candidate = visible && (showEdgeLabels || inFocus || isSelEdge || isHovEdge);
+      let priority = mode === 'global' ? LABEL_PRIORITY.GLOBAL_EDGE : LABEL_PRIORITY.LOCAL_EDGE;
+      if (isSelEdge) priority = LABEL_PRIORITY.SELECTED_EDGE;
+      else if (isHovEdge) priority = LABEL_PRIORITY.HOVERED_EDGE;
+      edgeInputs.push({
+        id: e.id,
+        sx: a.x,
+        sy: a.y,
+        tx: b.x,
+        ty: b.y,
+        text: String(e.label),
+        candidate,
+        boosted: isSelEdge || isHovEdge,
+        priority,
+      });
+    });
+
+    return computeLabelLayout({
+      nodes: nodeInputs,
+      edges: edgeInputs,
+      options: { circlePad: 4, rectPad: 4, nodeNodePad: 2 },
+    });
+  }, [
+    graph, positions, view.k, selectedNodeId, centerNodeId, hoverId, neighbors,
+    showNodeLabels, showEdgeLabels, labelThreshold, nodeScale, mode, edgeLabelsAlwaysOn,
+  ]);
+
   // 줌 레벨을 부모(상태바)로 보고.
   useEffect(() => { onZoomChange?.(Math.round(view.k * 100)); }, [view.k, onZoomChange]);
 
@@ -155,9 +242,9 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
               if (!a || !b) return null;
               const st = styleForEdge(e.type);
               const active = !focusSet || (focusSet.has(e.from) && focusSet.has(e.to));
-              const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-              const labelOn = (showEdgeLabels || (focusSet && active)) && e.label;
-              const pw = Math.max(28, String(e.label).length * 8 + 14);
+              // 충돌 회피로 계산된 라벨 위치(center). hidden 이면 렌더 안 함.
+              const placed = labelLayout.edgeLabels.get(e.id);
+              const labelOn = placed && !placed.hidden;
               return (
                 <g key={e.id}>
                   <line
@@ -170,7 +257,13 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
                     markerEnd={showArrows && st.directed ? `url(#obsg-arrow-${st.color.replace(/[^a-z0-9]/gi, '')})` : undefined}
                   />
                   {labelOn ? (
-                    <foreignObject x={mid.x - pw / 2} y={mid.y - 10} width={pw} height={20} style={{ overflow: 'visible', pointerEvents: 'none' }}>
+                    <foreignObject
+                      x={placed.x - placed.w / 2}
+                      y={placed.y - placed.h / 2}
+                      width={placed.w}
+                      height={placed.h}
+                      style={{ overflow: 'visible', pointerEvents: 'none' }}
+                    >
                       <div className="obsg-edge-pill"><span>{e.label}</span></div>
                     </foreignObject>
                   ) : null}
@@ -185,7 +278,10 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
               const dim = !!(focusSet && !focusSet.has(n.id));
               const isSel = n.id === selectedNodeId;
               const isCenter = n.id === centerNodeId;
-              const showLabel = showNodeLabels && (view.k >= labelThreshold || isSel || isCenter || n.id === hoverId || (focusSet && focusSet.has(n.id)));
+              const nodeLbl = labelLayout.nodeLabels.get(n.id);
+              const showLabel = showNodeLabels
+                && (view.k >= labelThreshold || isSel || isCenter || n.id === hoverId || (focusSet && focusSet.has(n.id)))
+                && !(nodeLbl && nodeLbl.hidden);
               return (
                 <g
                   key={n.id}
