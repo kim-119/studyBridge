@@ -463,6 +463,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const joinInFlightRef = React.useRef(false);
   const joinedRoomKeyRef = React.useRef(null);
   const publisherRef = React.useRef(null);
+  // OpenVidu 인스턴스 ref — view-only/송출 실패 상태에서 사용자 제스처로 Publisher를 재생성할 때 재사용한다.
+  const OVRef = React.useRef(null);
   const [ovError, setOvError] = useState('');
   // 장치 fallback 안내(치명적 오류 아님: camera-only / audio-only / viewer-only 입장 등)
   const [ovNotice, setOvNotice] = useState('');
@@ -897,6 +899,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     stopPublisherTracksSafely(publisherRef.current);
     sessionRef.current = null;
     publisherRef.current = null;
+    OVRef.current = null;
     joinedRoomKeyRef.current = null;
     joinInFlightRef.current = false;
     setSession(null);
@@ -904,6 +907,97 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     setSubscribers({}); // 우측 목록 호환용 유지
     setActiveConnections({});
     setMediaByConnectionId({});
+  };
+
+  // 보기 전용(권한 거부/장치 없음/송출 실패)에서 사용자 제스처(카메라·마이크 버튼/배너 "송출 시작")로
+  // Publisher를 재생성·발행한다. 클릭이라는 사용자 제스처가 있어야 브라우저 권한 프롬프트가 다시 뜨므로
+  // view-only 복구의 단일 진입점으로 사용한다. (이미 publish 중이면 무시)
+  const republishLocalMedia = async () => {
+    const sess = sessionRef.current;
+    const OV = OVRef.current;
+    if (!sess || !OV) {
+      console.warn('[OV_MEDIA_ERROR] republish: session/OV not ready');
+      setOvNotice('세션이 아직 준비되지 않았습니다. 잠시 후 다시 시도해주세요.');
+      return;
+    }
+    if (publisherRef.current) {
+      console.info('[StudyRoomOV] republish:skip-already-publishing');
+      return;
+    }
+    // 직전에 점유 중일 수 있는 트랙을 정리해 getUserMedia 충돌(NotReadableError)을 예방한다.
+    stopPublisherTracksSafely(publisherRef.current);
+
+    // 카메라+마이크 → 실패 시 오디오 전용 순으로 시도(사용자 제스처라 권한 프롬프트가 다시 뜬다).
+    const ladder = [
+      { publishVideo: true,  tag: 'av' },
+      { publishVideo: false, tag: 'audio-only' },
+    ];
+    let pub = null;
+    let lastErr = null;
+    for (const step of ladder) {
+      try {
+        console.log('[OV_MEDIA_INIT_START]', step.tag);
+        pub = await OV.initPublisherAsync(undefined, {
+          audioSource: undefined,
+          videoSource: step.publishVideo ? undefined : false,
+          publishAudio: true,
+          publishVideo: step.publishVideo,
+          resolution: '1280x720',
+          frameRate: 30,
+          insertMode: 'APPEND',
+          mirror: true,
+        });
+        break;
+      } catch (e) {
+        lastErr = e;
+        console.warn('[OV_MEDIA_ERROR] republish 시도 실패 tag=%s name=%s', step.tag, e?.name || e);
+        if (pub) { try { pub.dispose(); } catch (_) { /* ignore */ } pub = null; }
+      }
+    }
+
+    if (!pub) {
+      console.error('[OV_MEDIA_ERROR] republish 전체 실패', { name: lastErr?.name, message: lastErr?.message });
+      setOvNotice('카메라/마이크 권한을 허용한 뒤 다시 시도해주세요. (' + friendlyDeviceMessage(lastErr) + ')');
+      return;
+    }
+
+    try {
+      console.log('[OV_PUBLISHER_CREATED]', { streamId: pub.stream?.streamId, videoActive: pub.stream?.videoActive, audioActive: pub.stream?.audioActive });
+      await sess.publish(pub);
+      console.log('[OV_PUBLISHED]', { streamId: pub.stream?.streamId, videoActive: pub.stream?.videoActive, audioActive: pub.stream?.audioActive });
+    } catch (e) {
+      console.error('[OV_MEDIA_ERROR] republish publish 실패', e?.name || e);
+      try { pub.dispose(); } catch (_) { /* ignore */ }
+      setOvNotice('송출 시작에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      return;
+    }
+
+    publisherRef.current = pub;
+    setPublisher(pub);
+    setOvError('');
+    setOvNotice('');
+    // UI 아이콘을 실제 송출 상태와 동기화(불일치 금지).
+    setIsVideoOn(!!pub.stream?.videoActive);
+    setIsMicOn(!!pub.stream?.audioActive);
+
+    const myConnId = sess.connection?.connectionId;
+    if (myConnId) {
+      setMediaByConnectionId(prev => ({ ...prev, [myConnId]: pub }));
+      setActiveConnections(prev => ({
+        ...prev,
+        [myConnId]: {
+          ...(prev[myConnId] || {}),
+          connectionId: myConnId,
+          userId: userId || prev[myConnId]?.userId || null,
+          name: myDisplayName || prev[myConnId]?.name || '나',
+          isMe: true,
+          cameraOn: !!pub.stream?.videoActive,
+          micOn: !!pub.stream?.audioActive,
+          connectedAt: prev[myConnId]?.connectedAt || Date.now(),
+        },
+      }));
+    }
+    console.info('[StudyRoomOV] republish:success', { connectionId: myConnId || null });
   };
 
   // 1. OpenVidu Video Call Lifecycle
@@ -946,6 +1040,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         token = toSecureWsToken(token);
         OVInstance = new OpenVidu();
         forceOpenViduWssTransport(OVInstance);
+        OVRef.current = OVInstance; // view-only 복구(재발행) 시 동일 인스턴스 재사용
         sessionInstance = OVInstance.initSession();
         console.info('[StudyRoomOV] session:init');
 
@@ -2115,10 +2210,10 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           {/* Right Controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', backgroundColor: 'rgba(255,255,255,0.05)', padding: '6px 12px', borderRadius: '20px' }}>
-              <div onClick={() => setIsMicOn(!isMicOn)} style={{ display: 'flex', alignItems: 'center' }}>
+              <div onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsMicOn(!isMicOn); } }} style={{ display: 'flex', alignItems: 'center' }} title={!publisher ? '마이크 권한 허용 후 송출 시작' : (isMicOn ? '마이크 끄기' : '마이크 켜기')}>
                 {isMicOn ? <Mic size={18} color="#D1D5DB" cursor="pointer" /> : <MicOff size={18} color="#F87171" cursor="pointer" />}
               </div>
-              <div onClick={() => setIsVideoOn(!isVideoOn)} style={{ display: 'flex', alignItems: 'center' }}>
+              <div onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsVideoOn(!isVideoOn); } }} style={{ display: 'flex', alignItems: 'center' }} title={!publisher ? '카메라 권한 허용 후 송출 시작' : (isVideoOn ? '카메라 끄기' : '카메라 켜기')}>
                 {isVideoOn ? <Video size={18} color="#D1D5DB" cursor="pointer" /> : <VideoOff size={18} color="#F87171" cursor="pointer" />}
               </div>
               <Settings size={18} color="#D1D5DB" cursor="pointer" onClick={() => setShowSettings(true)} />
@@ -2199,7 +2294,15 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           {ovNotice && (
             <div style={{ marginBottom: '12px', padding: '10px 14px', borderRadius: '10px', backgroundColor: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)', color: '#FCD34D', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}>
               <AlertTriangle size={16} color="#FCD34D" />
-              <span>{ovNotice}</span>
+              <span style={{ flex: 1 }}>{ovNotice}</span>
+              {!publisher && session && (
+                <button
+                  onClick={() => republishLocalMedia()}
+                  style={{ flexShrink: 0, padding: '6px 14px', borderRadius: '8px', border: '1px solid rgba(96,165,250,0.5)', backgroundColor: 'rgba(59,130,246,0.2)', color: '#93C5FD', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  송출 시작
+                </button>
+              )}
             </div>
           )}
 
