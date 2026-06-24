@@ -204,10 +204,13 @@ async def multi_chat_stream_compat(request: Request):
         last_agent_name = None
         sent_done = False
         errored = False
+        mem_meta = None            # Redis 대화기억 메타(scope/key). attach 시 채워진다.
+        final_assistant_text = ""  # all_complete에서 추출한 최종 답변(persist 입력).
 
         # ai07 내부 이벤트 버스 + envelope/dedup. 외부 SSE 계약(이벤트명/페이로드)은 불변, 키만 추가.
         from app.services import agent_event_contract as C
         from app.services.agent_event_bus import stream_with_contract, normalize_error_event, get_bus
+        from app.services import multi_chat_redis_memory as _mem
 
         turn_id = C.new_turn_id()
         mode = str(payload.get("mode") or payload.get("learningMode") or "default").lower()
@@ -233,6 +236,12 @@ async def multi_chat_stream_compat(request: Request):
             emitted_names: set = set()
             all_complete_sent = False
             chat_request = MultiChatRequest(**payload)
+            # ── Redis 대화기억(서버측 보관/조회): 같은 방/세션의 최근 대화를 message 앞에
+            #    [이전 대화 기억] 블록으로 주입한다(→Ollama 프롬프트). 실패해도 흐름 불변.
+            try:
+                chat_request, mem_meta = await _mem.attach_memory_to_request(chat_request)
+            except Exception as _attach_exc:
+                logger.warning("multi-chat memory attach 실패(turn=%s): %s", turn_id, type(_attach_exc).__name__)
             # 원본 제너레이터를 contract 래퍼로 감싼다(동일 {"event","data"} 형태 유지).
             #  → 모든 이벤트에 turnId/eventId/stage/fingerprint 부착 + 중복/지연 answer drop + 내부 버스 경유.
             gen = stream_with_contract(
@@ -297,6 +306,8 @@ async def multi_chat_stream_compat(request: Request):
                             existing = data.get("answers") if isinstance(data.get("answers"), list) else []
                             data["answers"] = existing + synth_answers
                         data["messages"] = _messages_from_complete_payload(data, payload, agent_by_id, agent_by_name)
+                        # 최종 답변 텍스트를 추출해 둔다(스트림 종료 후 Redis 저장 입력).
+                        final_assistant_text = _mem.extract_assistant_text_from_complete_event(data) or final_assistant_text
                     last_agent_index = data.get("agentIndex", last_agent_index)
                     last_agent_name = data.get("agentName", last_agent_name)
 
@@ -330,6 +341,13 @@ async def multi_chat_stream_compat(request: Request):
                 "message": "AI 스트리밍 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
             })
         finally:
+            # ── Redis 대화기억: 이번 턴(사용자 질문 + 최종 답변)을 저장한다.
+            #    user_message 는 meta.original_message(주입 전 원문)를 모듈이 사용한다.
+            if mem_meta is not None and getattr(mem_meta, "enabled", False) and final_assistant_text:
+                try:
+                    await _mem.persist_turn(mem_meta, None, final_assistant_text)
+                except Exception as _persist_exc:
+                    logger.warning("multi-chat memory persist 실패(turn=%s): %s", turn_id, type(_persist_exc).__name__)
             # 정상 종료(all_complete→done)가 아닌 경로(예외/타임아웃/중단)에서도
             # placeholder loading이 무한 지속되지 않도록 종료 이벤트를 반드시 보낸다.
             if not sent_done:
