@@ -2,9 +2,12 @@ package com.studybridge.api.service;
 
 import com.studybridge.api.dto.GroupStudyDTO;
 import com.studybridge.api.entity.*;
+import com.studybridge.api.repository.GroupChatMessageRepository;
 import com.studybridge.api.repository.GroupStudyAttendanceRepository;
 import com.studybridge.api.repository.GroupStudyJoinApplicationRepository;
 import com.studybridge.api.repository.GroupStudyMemberRepository;
+import com.studybridge.api.repository.GroupStudyQuizSessionAnswerRepository;
+import com.studybridge.api.repository.GroupStudyQuizSessionRepository;
 import com.studybridge.api.repository.GroupStudyRepository;
 import com.studybridge.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -30,6 +33,9 @@ public class GroupStudyService {
     private final GroupStudyMemberRepository groupStudyMemberRepository;
     private final GroupStudyJoinApplicationRepository groupStudyJoinApplicationRepository;
     private final GroupStudyAttendanceRepository groupStudyAttendanceRepository;
+    private final GroupChatMessageRepository groupChatMessageRepository;
+    private final GroupStudyQuizSessionRepository groupStudyQuizSessionRepository;
+    private final GroupStudyQuizSessionAnswerRepository groupStudyQuizSessionAnswerRepository;
     private final UserRepository userRepository;
     private final S3Service s3Service;
     private final GroupRankingService rankingService;
@@ -320,10 +326,22 @@ public class GroupStudyService {
             throw new SecurityException("그룹스터디 삭제 권한이 없습니다. (방장만 삭제 가능)");
         }
 
+        purgeUncascadedChildren(groupId);
         groupStudyRepository.delete(groupStudy);
         // Redis 랭킹 키 정리 — 내부에서 예외를 삼키므로 Redis 장애로 그룹 삭제가 실패하지 않는다.
         rankingService.clearRanking(groupId);
         log.info("Group study deleted successfully. groupId={}, deletedBy={}", groupId, userId);
+    }
+
+    // GroupStudy 엔티티 cascade 목록에 포함되지 않은 자식 레코드(채팅 메시지·퀴즈 세션·세션 답변)를
+    // 의존 순서대로 먼저 정리한다. 이게 없으면 채팅/퀴즈 이력이 있는 방은 FK 제약으로 삭제가 실패한다.
+    private void purgeUncascadedChildren(Long groupId) {
+        List<Long> sessionIds = groupStudyQuizSessionRepository.findIdsByGroupStudyId(groupId);
+        if (!sessionIds.isEmpty()) {
+            groupStudyQuizSessionAnswerRepository.deleteBySessionIdIn(sessionIds);
+            groupStudyQuizSessionRepository.deleteByGroupStudyId(groupId);
+        }
+        groupChatMessageRepository.deleteByGroupStudyId(groupId);
     }
 
     // 그룹스터디 관리자 강제 삭제 (소유권 검증 없음)
@@ -331,6 +349,7 @@ public class GroupStudyService {
     public void deleteGroupStudyForce(Long groupId) {
         GroupStudy groupStudy = groupStudyRepository.findById(groupId)
                 .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
+        purgeUncascadedChildren(groupId);
         groupStudyRepository.delete(groupStudy);
         // Redis 랭킹 키 정리 — 내부에서 예외를 삼키므로 Redis 장애로 그룹 삭제가 실패하지 않는다.
         rankingService.clearRanking(groupId);

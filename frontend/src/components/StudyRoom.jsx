@@ -167,7 +167,12 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
   //  - 트랙이 있는데 아직 재생 전이면 avatar 대신 "카메라 연결 중…"을 보여준다.
   const videoTracks = stream && stream.getVideoTracks ? stream.getVideoTracks() : [];
   const hasLiveVideoTrack = videoTracks.some((t) => t.readyState === 'live');
-  const showVideo = !!(isCamOn && stream && hasLiveVideoTrack);
+  // OpenVidu streamManager(publisher/subscriber)가 있으면 mediaStream이 아직 비동기로 채워지지
+  // 않았어도(remote subscribe 직후 mediaStream/track이 늦게 붙는다) video element를 렌더하고
+  // addVideoElement로 OpenVidu가 직접 재생을 구동하게 한다. mediaStream 존재만으로 showVideo를
+  // 게이트하면 "리렌더 트리거 없음 → 영구 avatar" 교착이 생겨 상대 캠이 끝까지 안 보인다.
+  const hasOpenViduManager = !!(streamManager && typeof streamManager.addVideoElement === 'function');
+  const showVideo = !!(isCamOn && (hasOpenViduManager || (stream && hasLiveVideoTrack)));
   const showConnecting = showVideo && !videoPlaying;
 
   // 렌더 후 ref가 생겼을 때 미디어를 video element에 연결한다(타일 remount/스트림 교체 대응).
@@ -1081,6 +1086,15 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           const streamId = event.stream.streamId;
           const meta = parseConnectionData(connection);
           const subscriber = sessionInstance.subscribe(event.stream, undefined);
+          // 원격 미디어가 실제 재생을 시작하면(streamPlaying) mediaStream/track이 채워진다.
+          // 저장된 subscriber 객체는 참조가 그대로라 React가 리렌더하지 않으므로, 여기서 새 참조로
+          // state를 bump해 VideoFeed가 채워진 mediaStream(오디오 미터·연결중 해제)을 반영하게 한다.
+          subscriber.on('streamPlaying', () => {
+            if (!isMounted) return;
+            console.info('[StudyRoomOV] streamPlaying', { connectionId });
+            setMediaByConnectionId(prev => (prev[connectionId] ? { ...prev } : prev));
+            setSubscribers(prev => (prev[connectionId] ? { ...prev } : prev));
+          });
           console.info('[StudyRoomOV] streamCreated', { connectionId, streamId, userId: meta.userId ?? null });
           // 메인 그리드 단일 소스 보정(members 갱신 전 publish해도 타일이 생긴다).
           setActiveConnections(prev => ({
