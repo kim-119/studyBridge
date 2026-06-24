@@ -1446,13 +1446,21 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [study?.id, userId]);
 
-  const updateStudyStatus = async (status) => {
-    try {
-      await groupService.updateStudyStatus(study.id, status);
-      showAlert('성공', `스터디 상태가 '${status}'(으)로 변경되었습니다.`);
-    } catch (error) {
-      showAlert('오류', error.response?.data?.message || '스터디 상태 변경에 실패했습니다.');
-    }
+  // 방장 강제 해체: 존재하지 않던 updateStudyStatus(상태변경) 대신 실제 삭제 API(deleteGroup)를
+  // 호출한다. 성공하면 onClose로 방을 빠져나와 목록으로 복귀한다.
+  const handleForceDisband = () => {
+    showConfirm(
+      '스터디 강제 해체',
+      '정말로 이 스터디 그룹을 해체하시겠습니까? 해체 시 채팅·퀴즈·자료 등 모든 데이터가 삭제되며 복구할 수 없습니다.',
+      async () => {
+        try {
+          await groupService.deleteGroup(study.id);
+          showAlert('성공', '스터디 그룹이 해체(삭제)되었습니다.', () => onClose?.());
+        } catch (error) {
+          showAlert('오류', error.response?.data?.message || '스터디 해체에 실패했습니다.');
+        }
+      },
+    );
   };
 
   // 2. Local Stream Track Publish Control Effects
@@ -2498,7 +2506,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                 {/* 관리 버튼 */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
 
-                  <button onClick={() => updateStudyStatus('해체됨')} style={{ width: '100%', padding: '10px', backgroundColor: 'transparent', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.5)', fontSize: '12px', fontWeight: '600', cursor: 'pointer', transition: '0.2s', ':hover': { backgroundColor: 'rgba(239,68,68,0.1)' } }}>
+                  <button onClick={handleForceDisband} style={{ width: '100%', padding: '10px', backgroundColor: 'transparent', color: '#EF4444', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.5)', fontSize: '12px', fontWeight: '600', cursor: 'pointer', transition: '0.2s', ':hover': { backgroundColor: 'rgba(239,68,68,0.1)' } }}>
                     스터디 강제 해체
                   </button>
                 </div>
