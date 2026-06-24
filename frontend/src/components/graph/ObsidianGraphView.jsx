@@ -10,6 +10,7 @@ import { buildLinkIndex } from '../../utils/graph/graphBacklinks';
 import { computeVisibleGraph, DEFAULT_FILTERS } from '../../utils/graph/graphFilters';
 import { computeLayout } from '../../utils/graph/graphLayout';
 import { downloadObsidianMarkdown, downloadJsonCanvas } from '../../utils/graph/graphExportActions';
+import { displayLabelForNode } from '../../utils/graph/graphTypes';
 import './obsidianGraph.css';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -39,6 +40,38 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
   // 표시(Display)/힘(Forces) 설정. showEdgeLabels/textFade 가 null 이면 mode 기반 기본값을 쓴다.
   const [display, setDisplay] = useState(DEFAULT_DISPLAY);
   const [forces, setForces] = useState(DEFAULT_FORCES);
+
+  // 우측 상세 패널 폭(resize + localStorage 영속, clamp 320~520). spec 28·29.
+  const [detailWidth, setDetailWidth] = useState(() => {
+    const v = Number(typeof localStorage !== 'undefined' && localStorage.getItem('obsg.detailWidth'));
+    return Number.isFinite(v) && v >= 320 && v <= 520 ? v : 380;
+  });
+  const resizeRef = useRef(null);
+  // 최신 detailWidth 를 pointerup 핸들러에서 읽기 위한 ref.
+  const detailWidthRef = useRef(detailWidth);
+  detailWidthRef.current = detailWidth;
+  const onResizeStart = useCallback((e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = detailWidth;
+    resizeRef.current = { startX, startW };
+    const onMove = (ev) => {
+      if (!resizeRef.current) return;
+      // 좌측 핸들을 왼쪽으로 끌면 패널이 넓어진다.
+      const next = Math.min(520, Math.max(320, resizeRef.current.startW + (resizeRef.current.startX - ev.clientX)));
+      setDetailWidth(next);
+    };
+    const onUp = () => {
+      if (resizeRef.current) {
+        try { localStorage.setItem('obsg.detailWidth', String(detailWidthRef.current)); } catch { /* noop */ }
+      }
+      resizeRef.current = null;
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }, [detailWidth]);
 
   const canvasRef = useRef(null);
 
@@ -75,6 +108,10 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
   const presentTypes = useMemo(
     () => Array.from(new Set(visibleGraph.nodes.map((n) => n.type))),
     [visibleGraph.nodes],
+  );
+  const presentEdgeTypes = useMemo(
+    () => Array.from(new Set(visibleGraph.edges.map((e) => e.type))),
+    [visibleGraph.edges],
   );
 
   // mode 기반 기본값 + 사용자 override.
@@ -123,7 +160,10 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
   return (
     // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
     <div className="obsg-root" onKeyDown={onKeyDown} tabIndex={-1}>
-      <div className={`obsg-stage${settingsOpen ? ' has-settings' : ''}`}>
+      <div
+        className={`obsg-stage${settingsOpen ? ' has-settings' : ''}`}
+        style={{ '--obsg-detail-width': `${detailWidth}px` }}
+      >
         <KnowledgeGraphCanvas
           ref={canvasRef}
           graph={visibleGraph}
@@ -140,6 +180,7 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
           labelThreshold={textFade}
           mode={mode}
           edgeLabelsAlwaysOn={display.showEdgeLabels === true}
+          rightInset={selected ? detailWidth + (settingsOpen ? 290 : 0) : (settingsOpen ? 290 : 0)}
           onZoomChange={setZoomPct}
           onNodeClick={(n) => setSelected(n)}
           onNodeDoubleClick={handleCenterNode}
@@ -173,7 +214,7 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
           />
         )}
 
-        <GraphLegend presentTypes={presentTypes} />
+        <GraphLegend presentTypes={presentTypes} presentEdgeTypes={presentEdgeTypes} />
 
         <div className="obsg-zoom">
           <button type="button" onClick={() => canvasRef.current?.zoomBy?.(1.2)} aria-label="확대">＋</button>
@@ -183,7 +224,7 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
         {/* status bar */}
         <div className="obsg-stats">
           {mode === 'local' ? 'Local' : 'Global'} · 노드 {visibleGraph.nodes.length}/{graph.nodes.length} · 간선 {visibleGraph.edges.length}
-          {selected ? ` · 선택: ${selected.shortLabel || selected.label}` : ''} · 줌 {zoomPct}%
+          {selected ? ` · 선택: ${displayLabelForNode(selected)}` : ''} · 줌 {zoomPct}%
         </div>
 
         {settingsOpen && (
@@ -201,13 +242,24 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
         )}
 
         {selected && (
-          <GraphNodeDetailPanel
-            node={selected}
-            linkIndex={linkIndex}
-            onSelectNode={handleSelectNode}
-            onCenterNode={handleCenterNode}
-            onClose={() => setSelected(null)}
-          />
+          <>
+            {/* 패널 좌측 경계 resize 핸들. */}
+            <div
+              className="obsg-detail-resize"
+              style={{ right: `${detailWidth + (settingsOpen ? 290 : 0)}px` }}
+              onPointerDown={onResizeStart}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="상세 패널 폭 조절"
+            />
+            <GraphNodeDetailPanel
+              node={selected}
+              linkIndex={linkIndex}
+              onSelectNode={handleSelectNode}
+              onCenterNode={handleCenterNode}
+              onClose={() => setSelected(null)}
+            />
+          </>
         )}
       </div>
     </div>

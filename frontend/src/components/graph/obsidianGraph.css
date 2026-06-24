@@ -60,7 +60,7 @@
 }
 .obsg-edge-pill > span {
   font-size: 10px; line-height: 1; white-space: nowrap;
-  max-width: 84px; overflow: hidden; text-overflow: ellipsis;
+  min-width: max-content; max-width: 110px; overflow: hidden; text-overflow: ellipsis;
   padding: 2px 6px; border-radius: 999px;
   color: #d7d9e5;
   background: rgba(18, 20, 32, 0.82);
@@ -125,19 +125,32 @@
 .obsg-btn:focus-visible { outline: 2px solid #818cf8; outline-offset: 1px; }
 .obsg-btn[disabled] { opacity: 0.4; cursor: default; }
 
-/* ── 우측 상세 패널 ── */
+/* ── 우측 상세 패널 ── (텍스트 잘림 방지 + 폭 resize) */
 .obsg-detail {
   position: absolute;
   top: 0; right: 0; bottom: 0;
-  width: 340px;
-  max-width: 86%;
+  width: var(--obsg-detail-width, 380px);
+  min-width: 320px;
+  max-width: 92%;
   background: rgba(17, 24, 39, 0.97);
   border-left: 1px solid #1f2937;
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
   display: flex;
   flex-direction: column;
+  min-height: 0;
   z-index: 8;
 }
+/* 좌측 경계 resize 핸들. */
+.obsg-detail-resize {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 8px;
+  margin-left: -4px;
+  cursor: col-resize;
+  z-index: 9;
+  background: transparent;
+}
+.obsg-detail-resize:hover, .obsg-detail-resize.is-active { background: rgba(129, 140, 248, 0.25); }
 .obsg-detail-head {
   display: flex;
   align-items: flex-start;
@@ -145,8 +158,17 @@
   gap: 8px;
   padding: 14px 14px 10px;
   border-bottom: 1px solid #1f2937;
+  flex: none;
 }
-.obsg-detail-title { font-size: 15px; font-weight: 700; line-height: 1.3; }
+.obsg-detail-title {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+.obsg-detail-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
 .obsg-badge {
   display: inline-block;
   padding: 2px 8px;
@@ -154,16 +176,60 @@
   font-weight: 700;
   border-radius: 999px;
   color: #0b1020;
-  margin-top: 4px;
 }
+.obsg-badge-review { background: #fbbf24; color: #1f2937; }
 .obsg-detail-body {
   padding: 12px 14px;
   overflow-y: auto;
+  min-height: 0;
+  flex: 1 1 auto;
   font-size: 13px;
   line-height: 1.6;
   color: #e5e7eb;
+}
+.obsg-detail-text {
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+.obsg-detail-text.is-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.obsg-detail-more {
+  margin-top: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: #a5b4fc;
+  font-size: 12px;
+  cursor: pointer;
+}
+.obsg-detail-more:hover { text-decoration: underline; }
+.obsg-detail-wikilink {
+  display: block;
+  font-size: 12px;
+  color: #a5b4fc;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.obsg-tag-list { display: flex; flex-wrap: wrap; gap: 6px; max-width: 100%; }
+/* sticky 액션바: 본문만 스크롤되고 버튼은 하단 고정(spec 30). */
+.obsg-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid #1f2937;
+  flex: none;
+}
+.obsg-detail-actions .obsg-btn {
+  flex: 1 1 140px;
+  min-width: 0;
+  justify-content: center;
+  white-space: nowrap;
 }
 .obsg-detail-section { margin-top: 14px; }
 .obsg-detail-section h5 {
@@ -174,10 +240,13 @@
   color: #94a3b8;
 }
 .obsg-link-item {
-  display: block;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   width: 100%;
+  min-width: 0;
   text-align: left;
-  padding: 5px 8px;
+  padding: 6px 8px;
   margin-bottom: 4px;
   font-size: 12px;
   color: #cbd5e1;
@@ -187,14 +256,25 @@
   cursor: pointer;
 }
 .obsg-link-item:hover { background: #1f2937; }
+.obsg-link-rel { flex: none; color: #a5b4fc; font-weight: 600; }
+.obsg-link-text {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
 .obsg-tag {
   display: inline-block;
+  max-width: 100%;
   padding: 1px 7px;
-  margin: 0 4px 4px 0;
   font-size: 11px;
   color: #c7d2fe;
   background: #312e81;
   border-radius: 999px;
+  overflow-wrap: anywhere;
 }
 .obsg-icon-btn {
   background: transparent;
@@ -236,7 +316,7 @@
 /* ── 범례 / 통계 ── */
 .obsg-legend {
   position: absolute;
-  bottom: 10px; left: 10px;
+  bottom: 14px; left: 10px;
   background: rgba(17, 24, 39, 0.9);
   border: 1px solid #1f2937;
   border-radius: 8px;
@@ -245,9 +325,13 @@
   color: #cbd5e1;
   z-index: 6;
   max-width: 60%;
+  max-height: calc(100% - 100px);
+  overflow-y: auto;
 }
+.obsg-legend-title { font-size: 10px; font-weight: 700; color: #8b8fa3; margin-bottom: 3px; }
 .obsg-legend-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .obsg-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.obsg-legend-line { width: 12px; height: 3px; border-radius: 2px; flex: none; }
 .obsg-stats {
   position: absolute;
   bottom: 10px; right: 10px;

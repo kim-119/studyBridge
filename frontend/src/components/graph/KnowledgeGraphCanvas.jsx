@@ -1,10 +1,24 @@
 import React, {
   forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 } from 'react';
-import { styleForEdge, colorForNode, shapeForNode, NODE_TYPES } from '../../utils/graph/graphTypes';
+import {
+  styleForEdge, colorForNode, shapeForNode, NODE_TYPES,
+  displayLabelForNode, displayLabelForEdge,
+} from '../../utils/graph/graphTypes';
 import {
   computeLabelLayout, edgeLabelVisibleAtZoom, LABEL_PRIORITY,
 } from '../../utils/graph/graphLabelLayout';
+
+// zoom/pan 안정화 상수(spec 39~41).
+const MIN_ZOOM = 0.15;
+const MAX_ZOOM = 4.0;
+const clampK = (k) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
+// 다음 viewport 가 모두 유한값이면 clamp 적용, 아니면 이전 값 유지(NaN/Infinity 차단).
+const safeView = (next, prev) => (
+  Number.isFinite(next.k) && Number.isFinite(next.x) && Number.isFinite(next.y)
+    ? { k: clampK(next.k), x: next.x, y: next.y }
+    : prev
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 다크 캔버스 SVG 렌더러. pan/zoom + 노드/간선 + 선택/hover 강조.
@@ -47,45 +61,70 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
   const [hoverId, setHoverId] = useState(null);
   const dragRef = useRef(null);
 
-  // 컨테이너 크기 추적.
+  // 컨테이너 크기 추적. 동일 크기면 setState 생략(ResizeObserver loop 방지, spec 51).
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return undefined;
-    const measure = () => setSize({ w: el.clientWidth || 800, h: el.clientHeight || 520 });
+    let raf = 0;
+    const measure = () => {
+      const w = el.clientWidth || 800;
+      const h = el.clientHeight || 520;
+      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
     measure();
     let ro;
-    if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(measure); ro.observe(el); }
-    return () => { if (ro) ro.disconnect(); };
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => {
+        // rAF 안에서 갱신해 "ResizeObserver loop completed with undelivered notifications" 회피.
+        if (raf) cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(measure);
+      });
+      ro.observe(el);
+    }
+    return () => { if (raf) cancelAnimationFrame(raf); if (ro) ro.disconnect(); };
   }, []);
+
+  // 오른쪽 상세 패널이 열리면 그만큼 우측 inset 을 빼고 가시영역 중앙에 맞춘다(spec 31·89).
+  const rightInset = props.rightInset || 0;
 
   const fitView = useCallback(() => {
     const padding = 60;
+    const usableW = Math.max(120, size.w - rightInset);
     const gw = Math.max(1, bounds.maxX - bounds.minX);
     const gh = Math.max(1, bounds.maxY - bounds.minY);
-    const k = Math.min((size.w - padding) / gw, (size.h - padding) / gh, 2.2);
+    const kRaw = Math.min((usableW - padding) / gw, (size.h - padding) / gh, 2.2);
+    const k = clampK(kRaw > 0 && Number.isFinite(kRaw) ? kRaw : 1);
     const cx = (bounds.minX + bounds.maxX) / 2;
     const cy = (bounds.minY + bounds.maxY) / 2;
-    setView({ k: k > 0 && Number.isFinite(k) ? k : 1, x: size.w / 2 - cx * k, y: size.h / 2 - cy * k });
-  }, [bounds, size.w, size.h]);
+    // 가시영역(좌측 usableW)의 중앙을 그래프 중심으로.
+    setView((v) => safeView({ k, x: usableW / 2 - cx * k, y: size.h / 2 - cy * k }, v));
+  }, [bounds, size.w, size.h, rightInset]);
 
   // 그래프/크기 바뀌면 자동 fit.
   useEffect(() => { fitView(); }, [fitView, graph]);
 
   const centerOnNode = useCallback((id) => {
     const p = positions.get(id);
-    if (!p) return;
-    setView((v) => ({ ...v, x: size.w / 2 - p.x * v.k, y: size.h / 2 - p.y * v.k }));
-  }, [positions, size.w, size.h]);
+    if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+    const usableW = Math.max(120, size.w - rightInset);
+    setView((v) => safeView({ ...v, x: usableW / 2 - p.x * v.k, y: size.h / 2 - p.y * v.k }, v));
+  }, [positions, size.w, size.h, rightInset]);
 
   const zoomBy = useCallback((factor) => {
     setView((v) => {
-      const k = Math.min(2.6, Math.max(0.15, v.k * factor));
+      const k = clampK(v.k * factor);
       const cx = size.w / 2; const cy = size.h / 2;
-      return { k, x: cx - ((cx - v.x) / v.k) * k, y: cy - ((cy - v.y) / v.k) * k };
+      return safeView({ k, x: cx - ((cx - v.x) / v.k) * k, y: cy - ((cy - v.y) / v.k) * k }, v);
     });
   }, [size.w, size.h]);
 
-  useImperativeHandle(ref, () => ({ fitView, centerOnNode, zoomBy }), [fitView, centerOnNode, zoomBy]);
+  // 이상 상태 복구(spec 55): zoom=1, pan=0 으로 리셋 후 fit.
+  const resetView = useCallback(() => {
+    setHoverId(null);
+    fitView();
+  }, [fitView]);
+
+  useImperativeHandle(ref, () => ({ fitView, centerOnNode, zoomBy, resetView }), [fitView, centerOnNode, zoomBy, resetView]);
 
   // pan.
   const onPointerDown = (e) => {
@@ -94,21 +133,35 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
   };
   const onPointerMove = (e) => {
     if (!dragRef.current) return;
-    setView((v) => ({ ...v, x: dragRef.current.vx + (e.clientX - dragRef.current.x), y: dragRef.current.vy + (e.clientY - dragRef.current.y) }));
+    const nx = dragRef.current.vx + (e.clientX - dragRef.current.x);
+    const ny = dragRef.current.vy + (e.clientY - dragRef.current.y);
+    setView((v) => safeView({ ...v, x: nx, y: ny }, v));
   };
   const endDrag = () => { dragRef.current = null; };
 
+  // wheel zoom: rAF 로 coalesce 해 이벤트 폭주 시 setState 과다/렉 방지(spec 42).
+  const wheelRaf = useRef(0);
+  const wheelPending = useRef(null);
   const onWheel = (e) => {
     e.preventDefault();
     const rect = wrapRef.current?.getBoundingClientRect();
     const px = rect ? e.clientX - rect.left : size.w / 2;
     const py = rect ? e.clientY - rect.top : size.h / 2;
-    setView((v) => {
-      const factor = e.deltaY < 0 ? 1.12 : 0.89;
-      const k = Math.min(2.6, Math.max(0.15, v.k * factor));
-      return { k, x: px - ((px - v.x) / v.k) * k, y: py - ((py - v.y) / v.k) * k };
+    wheelPending.current = { px, py, factor: e.deltaY < 0 ? 1.12 : 0.89 };
+    if (wheelRaf.current) return;
+    wheelRaf.current = requestAnimationFrame(() => {
+      wheelRaf.current = 0;
+      const w = wheelPending.current;
+      wheelPending.current = null;
+      if (!w) return;
+      setView((v) => {
+        const k = clampK(v.k * w.factor);
+        return safeView({ k, x: w.px - ((w.px - v.x) / v.k) * k, y: w.py - ((w.py - v.y) / v.k) * k }, v);
+      });
     });
   };
+  // unmount 시 대기 중 rAF 취소(spec 52).
+  useEffect(() => () => { if (wheelRaf.current) cancelAnimationFrame(wheelRaf.current); }, []);
 
   const focusId = hoverId || selectedNodeId;
   const focusSet = useMemo(() => {
@@ -141,7 +194,7 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
     const nodeInputs = [];
     graph.nodes.forEach((n) => {
       const p = positions.get(n.id);
-      if (!p) return;
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
       const r = nodeRadius(n, nodeScale);
       const isSel = n.id === selectedNodeId;
       const isCenter = n.id === centerNodeId;
@@ -161,7 +214,8 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
         y: p.y,
         r,
         haloR: isSel ? r + 8 : isCenter ? r + 6 : 0,
-        text: showLabel ? (n.shortLabel || n.label) : '',
+        // semanticRole 기반 라벨(본문 스니펫 금지). 선택 노드는 실제 title 전체 표시.
+        text: showLabel ? (isSel ? (n.title || displayLabelForNode(n)) : displayLabelForNode(n)) : '',
         showLabel,
         priority,
       });
@@ -171,7 +225,9 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
     graph.edges.forEach((e) => {
       const a = positions.get(e.from);
       const b = positions.get(e.to);
-      if (!a || !b || !e.label) return;
+      // edge endpoint 누락/비정상 좌표면 라벨 skip(노드/간선 본체 렌더는 별도, spec 49·50).
+      if (!a || !b) return;
+      if (![a.x, a.y, b.x, b.y].every(Number.isFinite)) return;
       const isSelEdge = !!selectedNodeId && (e.from === selectedNodeId || e.to === selectedNodeId);
       const isHovEdge = !!hoverId && (e.from === hoverId || e.to === hoverId);
       const inFocus = fset ? (fset.has(e.from) && fset.has(e.to)) : false;
@@ -190,7 +246,8 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
         sy: a.y,
         tx: b.x,
         ty: b.y,
-        text: String(e.label),
+        // relationRole 기반 [라벨] 형태(예: [답변]·[검증]·[반박]·[자료 출처]).
+        text: `[${displayLabelForEdge(e)}]`,
         candidate,
         boosted: isSelEdge || isHovEdge,
         priority,
@@ -239,7 +296,9 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
             {graph.edges.map((e) => {
               const a = positions.get(e.from);
               const b = positions.get(e.to);
+              // source/target 누락·비정상 좌표 간선은 렌더 skip(앱 crash 금지, spec 49).
               if (!a || !b) return null;
+              if (![a.x, a.y, b.x, b.y].every(Number.isFinite)) return null;
               const st = styleForEdge(e.type);
               const active = !focusSet || (focusSet.has(e.from) && focusSet.has(e.to));
               // 충돌 회피로 계산된 라벨 위치(center). hidden 이면 렌더 안 함.
@@ -264,7 +323,7 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
                       height={placed.h}
                       style={{ overflow: 'visible', pointerEvents: 'none' }}
                     >
-                      <div className="obsg-edge-pill"><span>{e.label}</span></div>
+                      <div className="obsg-edge-pill"><span>{`[${displayLabelForEdge(e)}]`}</span></div>
                     </foreignObject>
                   ) : null}
                 </g>
@@ -273,7 +332,7 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
             {/* 노드 */}
             {graph.nodes.map((n) => {
               const p = positions.get(n.id);
-              if (!p) return null;
+              if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
               const r = nodeRadius(n, nodeScale);
               const dim = !!(focusSet && !focusSet.has(n.id));
               const isSel = n.id === selectedNodeId;
@@ -302,8 +361,15 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
                   )}
                   <NodeShape shape={shapeForNode(n.type)} r={r} color={colorForNode(n.type)} dim={dim} />
                   {showLabel ? (
-                    <text className={`obsg-node-label${dim ? ' is-dim' : ''}`} x={0} y={r + 12} textAnchor="middle">
-                      {n.shortLabel || n.label}
+                    <text
+                      className={`obsg-node-label${dim ? ' is-dim' : ''}${isSel ? ' selected' : ''}`}
+                      x={0}
+                      y={r + 12}
+                      textAnchor="middle"
+                    >
+                      {/* hover/touch 시 전체 title 툴팁(spec 37). */}
+                      <title>{n.title || n.label}</title>
+                      {isSel ? (n.title || displayLabelForNode(n)) : displayLabelForNode(n)}
                     </text>
                   ) : null}
                 </g>

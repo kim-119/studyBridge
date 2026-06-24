@@ -4,7 +4,9 @@
 //  · SSE/응답 데이터 계약은 건드리지 않는다. 이 계층에서만 정규화한다.
 //  · 반환: { nodes, edges, centerNodeId, stats, warnings }
 // ─────────────────────────────────────────────────────────────────────────────
-import { NODE_TYPES, EDGE_TYPES, colorForNode } from './graphTypes';
+import {
+  NODE_TYPES, EDGE_TYPES, colorForNode, displayLabelForNode, relationLabelForEdgeType,
+} from './graphTypes';
 import { normalizeObsidianName, dedupeObsidianName, makeShortLabel, normalizeTags, buildAliases } from './obsidianName';
 
 const ROLE_ORDER = ['theory', 'book', 'ai'];
@@ -49,6 +51,7 @@ const relationFromLabel = (rawLabel = '') => {
   const s = String(rawLabel);
   if (/재?반박/.test(s)) return EDGE_TYPES.REBUTTED_BY;
   if (/검증/.test(s)) return EDGE_TYPES.VALIDATED_BY;
+  if (/예시|예를|가령|비유/.test(s)) return EDGE_TYPES.EXEMPLIFIED_BY;
   if (/보완|동의|합의|피드백/.test(s)) return EDGE_TYPES.RELATED_TO;
   return EDGE_TYPES.RELATED_TO;
 };
@@ -77,6 +80,9 @@ export function convertMindMapToObsidianGraph(input) {
     const node = {
       id: n.id,
       type: n.type,
+      semanticRole: n.semanticRole || n.type,
+      // displayLabel 은 아래에서 semanticRole 기반으로 채운다(본문 스니펫 금지).
+      displayLabel: '',
       label,
       shortLabel,
       title: n.title || label,
@@ -98,6 +104,7 @@ export function convertMindMapToObsidianGraph(input) {
       color: colorForNode(n.type),
       metadata: n.metadata || {},
     };
+    node.displayLabel = n.displayLabel || displayLabelForNode(node);
     nodes.push(node);
     return node;
   };
@@ -109,10 +116,14 @@ export function convertMindMapToObsidianGraph(input) {
     let n = 2;
     while (edgeSeen.has(id)) { id = `edge-${type}-${from}-${to}-${n}`; n += 1; }
     edgeSeen.add(id);
+    // 간선 라벨은 relationRole(=type) 기반 단일 출처. 본문 스니펫/짧은 동사("작성"·"포함") 금지.
+    const relationLabel = relationLabelForEdgeType(type);
     edges.push({
       id, from, to, type,
-      label: extra.label || '',
-      shortLabel: makeShortLabel(extra.label || '', 12),
+      relationRole: type,
+      displayLabel: relationLabel,
+      label: relationLabel,
+      shortLabel: relationLabel,
       direction: extra.direction || 'forward',
       weight: extra.weight != null ? extra.weight : 1,
       confidence: extra.confidence != null ? extra.confidence : 1,
@@ -125,7 +136,7 @@ export function convertMindMapToObsidianGraph(input) {
   const centerNodeId = `question-${sourceId}`;
   pushNode({
     id: centerNodeId, type: NODE_TYPES.QUESTION,
-    title: '질문', label: makeShortLabel(qText, 40), body: qText,
+    title: makeShortLabel(qText, 40), label: makeShortLabel(qText, 40), body: qText,
     importance: 5, tags: ['question'],
   });
 
@@ -253,27 +264,48 @@ export function convertMindMapToObsidianGraph(input) {
     pushEdge(fromAnswer, rid, EDGE_TYPES.RELATED_TO, { label: '보충', direction: 'none' });
   });
 
-  // 4) interactions → 검증/관련 노드·간선.
+  // 4) interactions → 검증/반박/예시/관련 노드·간선(metadata 우선 분류는 adapter 가 담당).
   let validationIdx = 0;
+  let interRebuttalIdx = 0;
+  let exampleIdx = 0;
   (Array.isArray(interactions) ? interactions : []).forEach((it) => {
     const fromRole = it?.fromRole;
     const targetRole = it?.targetRole;
-    const rel = relationFromLabel(it?.relationLabel || it?.phaseLabel);
+    const rel = it?.relationRole || relationFromLabel(it?.relationLabel || it?.phaseLabel);
     const body = String(it?.content || '').trim();
     const fromAnswer = roleToAnswerId.get(fromRole);
+    const needsReview = it?.needsReview === true;
     if (rel === EDGE_TYPES.VALIDATED_BY && fromAnswer && body) {
       validationIdx += 1;
       const vid = `validation-${validationIdx}`;
       pushNode({
         id: vid, type: NODE_TYPES.VALIDATION,
-        title: `검증 - ${ROLE_KO[fromRole] || fromRole}`, label: '검증',
-        body, markdownBody: body, importance: 1.8, tags: ['validation'],
+        title: `검증 - ${ROLE_KO[fromRole] || fromRole}`, body, markdownBody: body,
+        importance: 1.8, tags: ['validation'], metadata: { needsReview },
       });
-      pushEdge(fromAnswer, vid, EDGE_TYPES.VALIDATED_BY, { label: '검증' });
+      pushEdge(fromAnswer, vid, EDGE_TYPES.VALIDATED_BY);
+    } else if (rel === EDGE_TYPES.REBUTTED_BY && fromAnswer && body) {
+      // 반박: 대상(targetRole) 답변에 대한 반박 노드.
+      interRebuttalIdx += 1;
+      const rid = `rebuttal-i-${interRebuttalIdx}`;
+      const targetAnswer = roleToAnswerId.get(targetRole) || fromAnswer;
+      pushNode({
+        id: rid, type: NODE_TYPES.REBUTTAL,
+        title: `반박 - ${ROLE_KO[targetRole] || ROLE_KO[fromRole] || fromRole}`, body, markdownBody: body,
+        importance: 1.8, tags: ['rebuttal'], metadata: { needsReview },
+      });
+      pushEdge(targetAnswer, rid, EDGE_TYPES.REBUTTED_BY);
+    } else if (rel === EDGE_TYPES.EXEMPLIFIED_BY && fromAnswer && body) {
+      exampleIdx += 1;
+      const eid = `example-${exampleIdx}`;
+      pushNode({
+        id: eid, type: NODE_TYPES.EXAMPLE,
+        title: `예시 - ${ROLE_KO[fromRole] || fromRole}`, body, markdownBody: body,
+        importance: 1.5, tags: ['example'],
+      });
+      pushEdge(fromAnswer, eid, EDGE_TYPES.EXEMPLIFIED_BY);
     } else if (fromAnswer && roleToAnswerId.get(targetRole) && fromRole !== targetRole) {
-      pushEdge(fromAnswer, roleToAnswerId.get(targetRole), EDGE_TYPES.RELATED_TO, {
-        label: it?.relationLabel || '관련', direction: 'none',
-      });
+      pushEdge(fromAnswer, roleToAnswerId.get(targetRole), EDGE_TYPES.RELATED_TO, { direction: 'none' });
     }
   });
 

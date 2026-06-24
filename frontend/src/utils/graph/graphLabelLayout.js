@@ -56,7 +56,7 @@ export function estimateTextWidth(text, fontSize = NODE_FONT) {
 /** 간선 라벨 박스 크기(padding 포함). foreignObject width 와 동일하게 쓴다. */
 export function edgeLabelSize(text) {
   const w = estimateTextWidth(text, EDGE_FONT) + EDGE_PILL_PAD_X * 2;
-  return { w: Math.max(24, Math.min(w, 84)), h: EDGE_LABEL_H };
+  return { w: Math.max(28, Math.min(w, 110)), h: EDGE_LABEL_H };
 }
 
 /** 노드 라벨 박스(center 좌표 + 크기). 점(cx,cy,r) 아래에 위치. */

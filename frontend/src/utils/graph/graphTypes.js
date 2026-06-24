@@ -52,8 +52,9 @@ export const NODE_COLOR = Object.freeze({
   cluster: 'rgba(167,139,250,0.18)',
 });
 
-// 노드 타입별 한국어 라벨(범례/툴팁).
+// 노드 타입별 한국어 라벨(범례/툴팁). = semanticRole 표시 라벨의 단일 출처.
 export const NODE_LABEL_KO = Object.freeze({
+  room: '방',
   question: '질문',
   agent: '교수',
   answer: '답변',
@@ -67,6 +68,42 @@ export const NODE_LABEL_KO = Object.freeze({
   tag: '태그',
   cluster: '클러스터',
 });
+
+// 간선 타입(relationRole)별 사용자 표시 라벨(단일 출처). 그래프 pill 은 [라벨] 형태로 표시.
+//  · 본문 스니펫("작성"·"포함" 등) 대신 관계 역할을 명확히 보여준다.
+export const EDGE_RELATION_LABEL = Object.freeze({
+  has_question: '질문',
+  asked_to: '질문 대상',
+  answered_by: '답변',
+  produced: '답변 생성',
+  contains: '포함 개념',
+  validated_by: '검증',
+  rebutted_by: '반박',
+  exemplified_by: '예시',
+  related_to: '관련 개념',
+  sourced_from: '자료 출처',
+  expanded_to: '확장',
+  planned_by: '계획',
+  references: '참조',
+});
+
+export const relationLabelForEdgeType = (type) => EDGE_RELATION_LABEL[type] || EDGE_RELATION_LABEL.related_to;
+
+// 노드 표시 라벨: semanticRole 기반(본문 스니펫 금지).
+//  · concept 는 실제 개념명, agent 는 교수명을 보여주고, 그 외는 역할 한국어 라벨.
+export function displayLabelForNode(node) {
+  if (!node) return '';
+  const role = node.semanticRole || node.type;
+  if (role === 'concept') return node.shortLabel || node.title || node.label || '개념';
+  if (role === 'agent') return node.agentName || node.shortLabel || node.label || '교수';
+  return NODE_LABEL_KO[role] || node.shortLabel || node.label || '';
+}
+
+// 간선 표시 라벨: relationRole 기반.
+export function displayLabelForEdge(edge) {
+  if (!edge) return '';
+  return relationLabelForEdgeType(edge.relationRole || edge.type);
+}
 
 // 노드 타입별 shape('circle'|'square'|'diamond'|'triangle'). 색맹 대비 — 색 외 구분 수단.
 export const NODE_SHAPE = Object.freeze({
