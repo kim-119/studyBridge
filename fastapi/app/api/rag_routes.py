@@ -25,6 +25,28 @@ from app.schemas.rag_schema import (
 
 logger = logging.getLogger(__name__)
 
+
+async def _resolve_ingest_text(request) -> str:
+    """Return request.text, or — for image-only PDFs with an s3Key but no text —
+    load + VL-normalize the PDF from S3. qwen3:14b/embeddings only ever see text."""
+    text = (request.text or "").strip()
+    if text:
+        return text
+    s3_key = getattr(request, "s3Key", None) or getattr(request, "s3_key", None)
+    if not s3_key:
+        return text
+    try:
+        from app.services.s3_pdf_loader import load_text_from_s3_pdf
+        loaded = await asyncio.to_thread(
+            load_text_from_s3_pdf, s3_key, getattr(request, "document_title", "") or "")
+        if loaded and loaded.strip():
+            logger.info("RAG ingest VL normalizer fallback materialId=%s loaded_len=%s",
+                        getattr(request, "material_id", None), len(loaded))
+            return loaded.strip()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("RAG ingest S3/VL normalizer fallback failed: %s", type(e).__name__)
+    return text
+
 # 기존 라우터 (material_id를 URL 경로에 포함)
 router = APIRouter(
     prefix="/api/materials",
@@ -49,7 +71,8 @@ async def rag_ingest(
     request: IngestRequest,
     material_id: int = Path(..., gt=0),
 ) -> IngestResponse:
-    if not request.text.strip():
+    text = await _resolve_ingest_text(request)  # VL normalizer fallback for image PDFs
+    if not text.strip():
         raise HTTPException(status_code=400, detail="text는 비워둘 수 없습니다.")
 
     from app.services.rag_ingest_service import ingest_document
@@ -58,7 +81,7 @@ async def rag_ingest(
             ingest_document,
             material_id=material_id,
             document_title=request.document_title,
-            text=request.text,
+            text=text,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -119,7 +142,8 @@ async def rag_delete(
     description="material_id를 body에 포함. 청킹→임베딩→pgvector 저장.",
 )
 async def spring_rag_ingest(request: IngestRequest) -> IngestResponse:
-    if not request.text.strip():
+    text = await _resolve_ingest_text(request)  # VL normalizer fallback for image PDFs
+    if not text.strip():
         raise HTTPException(status_code=400, detail="text는 비워둘 수 없습니다.")
 
     from app.services.rag_ingest_service import ingest_document
@@ -128,7 +152,7 @@ async def spring_rag_ingest(request: IngestRequest) -> IngestResponse:
             ingest_document,
             material_id=request.material_id,
             document_title=request.document_title,
-            text=request.text,
+            text=text,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

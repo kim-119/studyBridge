@@ -887,6 +887,21 @@ def _extract_pdf_text(pdf_bytes: bytes) -> Tuple[str, str]:
             logger.info("quiz PDF OCR attempted engine=%s chars=%s reason=%s", ocr.engine, len(ocr.text or ""), ocr.reason)
         except Exception as e:
             logger.warning("quiz PDF OCR exception: %s", type(e).__name__)
+
+    # VL normalizer fallback (image-only / scanned PDF). Only reached when
+    # native + pypdf + OCR all stayed under threshold; text PDFs never get here,
+    # so VL is never called for them. merged_text is plain text for qwen3:14b.
+    if len(best.strip()) < 100:
+        try:
+            from app.services.pdf_text_normalizer import normalize_pdf
+            norm = normalize_pdf(pdf_bytes)
+            if len((norm.merged_text or "").strip()) > len(best.strip()):
+                logger.info("quiz PDF VL normalizer fallback mode=%s vl_pages=%s merged_len=%s",
+                            norm.document_mode, norm.vl_pages, len(norm.merged_text))
+                best, method = norm.merged_text, f"vl_normalizer:{norm.document_mode}"
+        except Exception as e:
+            logger.warning("quiz PDF VL normalizer exception: %s", type(e).__name__)
+
     return _normalize_pdf_text(best), method
 
 

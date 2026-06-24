@@ -294,6 +294,20 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
     ])).strip()
     ts = validate_extracted_text(combined_for_check or None)
 
+    # VL normalizer fallback: 이미지-only PDF로 텍스트가 비었지만 s3_file_url 이 있으면
+    # S3에서 직접 로드(native->OCR->qwen3-vl)해 같은 텍스트 기반 퀴즈 파이프라인을 탄다.
+    if ts["status"] == "empty" and getattr(req, "s3_file_url", None):
+        try:
+            from app.services.s3_pdf_loader import load_text_from_s3_pdf
+            _norm = normalize_s3_key(req.s3_file_url) if "normalize_s3_key" in globals() else req.s3_file_url
+            loaded = await asyncio.to_thread(load_text_from_s3_pdf, _norm, req.document_title or "")
+            if loaded and loaded.strip():
+                primary_text = loaded.strip()
+                combined_for_check = primary_text
+                ts = validate_extracted_text(combined_for_check or None)
+        except Exception as _e:
+            logger.warning("material quiz S3/VL normalizer fallback failed: %s", type(_e).__name__)
+
     # 완전히 비어 있으면 OCR 안내(이미지 PDF), 짧으면 PDF_TEXT_INSUFFICIENT.
     if ts["status"] == "empty":
         return {**_fail("PDF_OCR_REQUIRED",

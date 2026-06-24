@@ -14,7 +14,9 @@ class IngestRequest(BaseModel):
     """PDF 텍스트 ingest 요청 DTO (기존 + Spring 계약 공통)"""
     material_id:    int = Field(..., description="자료 ID (Spring Boot material_id와 일치)")
     document_title: str = Field(..., description="문서 제목")
-    text:           str = Field(..., description="PDF에서 추출한 전체 텍스트", min_length=1)
+    # text 가 비어 있어도(이미지-only PDF) s3Key 가 있으면 서버가 VL 정규화로 텍스트를 만든다.
+    text:           str = Field("", description="PDF에서 추출한 전체 텍스트(없으면 s3Key로 서버 추출)")
+    s3Key:          str | None = Field(None, description="이미지 PDF용: text 미제공 시 S3에서 직접 로드+VL 정규화")
 
 
 class IngestResponse(BaseModel):

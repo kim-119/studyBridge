@@ -34,12 +34,25 @@ _JOBS: Dict[str, Dict[str, Any]] = {}
 
 # ── 공통 헬퍼 ────────────────────────────────────────────────────────────────
 
-async def _prepare_context(material_id: Optional[int], text: Optional[str]) -> tuple[str, Dict[str, Any]]:
+async def _prepare_context(material_id: Optional[int], text: Optional[str],
+                           s3_key: Optional[str] = None) -> tuple[str, Dict[str, Any]]:
     """추출 텍스트 검증 + chunk 기반 bounded context 생성. (context, text_status)"""
     from app.services.material_ai_manager import validate_extracted_text, build_summary_context
     from app.services.chunk_cache import get_or_build_chunks
 
     ts = validate_extracted_text(text)
+    # VL normalizer fallback: 이미지-only/스캔 PDF로 Spring이 추출 텍스트를 못 보낸 경우
+    # S3에서 직접 로드(load_text_from_s3_pdf 안에 native->OCR->qwen3-vl 정규화가 들어있음).
+    # qwen3:14b 에는 텍스트만 전달된다. 텍스트가 충분하면 이 분기는 타지 않는다.
+    if not ts.get("ok") and s3_key and s3_key.strip():
+        try:
+            from app.services.s3_pdf_loader import load_text_from_s3_pdf
+            loaded = await asyncio.to_thread(load_text_from_s3_pdf, s3_key, "")
+            if loaded and loaded.strip():
+                text = loaded
+                ts = validate_extracted_text(text)
+        except Exception as e:
+            logger.warning("analyze S3/VL normalizer fallback failed: %s", type(e).__name__)
     text_status = {
         "hasText": ts["ok"] and ts["status"] != "empty",
         "textLength": ts["textLength"],
@@ -73,7 +86,7 @@ async def analyze(body: Dict[str, Any] = Body(default_factory=dict)) -> Dict[str
     title = body.get("document_title") or body.get("title") or "자료"
     material_id = body.get("material_id") or body.get("materialId")
 
-    context, ts = await _prepare_context(material_id, text)
+    context, ts = await _prepare_context(material_id, text, body.get("s3Key") or body.get("s3_key"))
     if not ts.get("ok"):
         return {"error_code": "PDF_TEXT_EMPTY",
                 "message": "PDF에서 추출된 텍스트가 없습니다. 텍스트 추출을 다시 시도해주세요.",
@@ -133,7 +146,7 @@ async def analyze_job(body: Dict[str, Any] = Body(default_factory=dict)) -> Dict
     title = body.get("document_title") or body.get("title") or "자료"
     material_id = body.get("material_id") or body.get("materialId")
 
-    context, ts = await _prepare_context(material_id, text)
+    context, ts = await _prepare_context(material_id, text, body.get("s3Key") or body.get("s3_key"))
     job_id = uuid.uuid4().hex
     if not ts.get("ok"):
         _JOBS[job_id] = {
@@ -183,7 +196,7 @@ async def analyze_stream(body: Dict[str, Any] = Body(default_factory=dict)) -> S
 
     async def event_gen():
         yield _sse("progress", {"stage": "extracting", "progress": 5})
-        context, ts = await _prepare_context(material_id, text)
+        context, ts = await _prepare_context(material_id, text, body.get("s3Key") or body.get("s3_key"))
         if not ts.get("ok"):
             yield _sse("error", {"error_code": "PDF_TEXT_EMPTY",
                                  "message": "PDF에서 추출된 텍스트가 없습니다.", "textStatus": ts})

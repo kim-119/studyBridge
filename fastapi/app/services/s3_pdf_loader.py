@@ -127,6 +127,23 @@ def load_text_from_s3_pdf(s3_key: str, file_name: str = "", bucket: Optional[str
         except Exception as e3:
             logger.warning("S3 PDF OCR fallback exception: %s", e3)
 
+    # VL normalizer fallback (the "eye" in front of qwen3:14b). Only reached for
+    # image-only / scanned PDFs where native + pypdf + OCR all came up short.
+    # normalize_pdf never fires VL for pages whose native text is sufficient, so
+    # text PDFs never reach here and stay fast. Returns a plain str (schema-safe).
+    if len(best.strip()) < 50:
+        try:
+            from app.services.pdf_text_normalizer import normalize_pdf
+            norm = normalize_pdf(pdf_bytes)
+            if len((norm.merged_text or "").strip()) > len(best.strip()):
+                logger.info(
+                    "S3 PDF VL normalizer fallback file=%s mode=%s vl_pages=%s ocr_pages=%s merged_len=%s",
+                    file_name, norm.document_mode, norm.vl_pages, norm.ocr_pages, len(norm.merged_text),
+                )
+                best = norm.merged_text
+        except Exception as e4:
+            logger.warning("S3 PDF VL normalizer fallback exception: %s", type(e4).__name__)
+
     if len(best.strip()) < 50:
         logger.warning("PDF 텍스트가 너무 짧습니다 (%d자): %s", len(best.strip()), file_name)
     return best
