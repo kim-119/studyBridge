@@ -12,7 +12,6 @@ import { useAuth } from '../hooks/useAuth';
 const NAV_ITEMS = [
   { to: '/studymate', label: '학습메이트' },
   { to: '/groupstudy', label: '그룹스터디' },
-  { to: '/archive', label: '자료보관함' },
   { to: '/review-notes', label: '오답노트' },
   { to: '/knowledge', label: '지식공유' },
   { to: '/study-report', label: '학습리포트' },
