@@ -1938,7 +1938,22 @@ export default function ArchiveDetail() {
     setSocraticSchedule(null);
   };
 
-  // 세션 시작
+  // 소크라테스 시작 실패 사유(reason)별 사용자 안내. ai07/Spring이 주는 reason을 친화 문구로 매핑하고,
+  //  알 수 없는 reason은 서버 message를 그대로 노출한다(내부 진단 필드는 콘솔에만 남긴다).
+  const SOCRATIC_REASON_MSG = {
+    OCR_REQUIRED: '이미지 기반 PDF로 보입니다. 텍스트 추출(OCR)이 필요해 아직 복습을 시작할 수 없습니다.',
+    NO_SOURCE_TEXT: '문서에서 추출 가능한 텍스트가 없습니다. 이미지 PDF라면 OCR 처리가 필요합니다.',
+    PDF_TEXT_EMPTY: '문서에서 분석 가능한 내용을 찾지 못했습니다. 이미지 PDF라면 OCR 처리가 필요합니다.',
+    INGEST_AUTH_FAILED: 'AI 서버 인증에 실패했습니다. 잠시 후 다시 시도하거나 관리자에게 문의해 주세요.',
+    INGEST_FAILED: '문서 청크 준비에 실패했습니다. 잠시 후 다시 시도해 주세요.',
+    AI_CONNECTION_FAILED: 'AI 서버 연결에 실패했습니다. 잠시 후 다시 시도해 주세요.',
+    SESSION_NOT_CREATED: '소크라테스 복습 세션을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  };
+  const socraticReasonMessage = (reason, serverMsg) =>
+    SOCRATIC_REASON_MSG[reason] || serverMsg || '이 자료로 소크라테스 복습을 시작할 수 없습니다.';
+
+  // 세션 시작 — ai07이 청크를 on-demand 적재(provisioner) 후 세션을 만든다.
+  //  로컬 stale 필드로 즉시 실패시키지 않고, 서버/ai07의 실제 canStart/reason으로 분기한다.
   const handleStartSocratic = async () => {
     const materialId = material?.materialId || id;
     if (!materialId || socraticBusy) return;
@@ -1950,8 +1965,18 @@ export default function ArchiveDetail() {
     setSocraticHistory([]);
     try {
       const res = await socraticReviewService.start(materialId, {});
+      console.info('[socratic] start', {
+        materialId, canStart: res?.canStart, sessionId: res?.sessionId,
+        reason: res?.reason, chunkCount: res?.chunkCount, textLength: res?.textLength, sourceKind: res?.sourceKind,
+      });
       if (res?.aiAvailable === false) {
         setSocraticUnavailable(true);
+        setSocraticSession(null);
+        return;
+      }
+      // 분석 불가/청크 미생성 등 → 사유별 안내(단순 "문서 청크 미준비" 반복 금지)
+      if (res?.canStart === false || !res?.sessionId) {
+        setSocraticError(socraticReasonMessage(res?.reason, res?.message));
         setSocraticSession(null);
         return;
       }
@@ -1959,7 +1984,12 @@ export default function ArchiveDetail() {
       const t = socraticTurnText(res);
       if (t) setSocraticHistory([{ role: 'ai', text: t }]);
     } catch (e) {
-      const msg = e?.response?.data?.message || '소크라테스 복습 세션을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.';
+      const status = e?.response?.status;
+      const msg = e?.response?.data?.message
+        || (status >= 500 || e?.code === 'ECONNABORTED'
+            ? 'AI 서버 연결에 실패했습니다. 잠시 후 다시 시도해 주세요.'
+            : '소크라테스 복습 세션을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+      console.warn('[socratic] start error', { materialId, status, message: msg });
       setSocraticError(msg);
     } finally {
       setSocraticBusy(false);

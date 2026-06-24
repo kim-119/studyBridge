@@ -36,11 +36,13 @@ public class SocraticReviewService {
     private static final String AI_UNAVAILABLE_MSG =
             "소크라테스 복습 기능이 아직 AI 서버 운영 프로세스에 활성화되지 않았습니다. AI 서버 재시작 후 다시 시도해 주세요.";
     // 화면 노출 허용 필드만 통과시킨다(내부 평가/근거/추론 차단).
+    //  - ai07이 on-demand 청크 적재(provisioner) 후 내려주는 준비 메타(canStart/reason/chunkCount/textLength/sourceKind)도 그대로 전달한다.
     private static final List<String> ALLOWED_FIELDS = List.of(
             "sessionId", "status", "question", "message", "visibleMessageType",
             "currentChunkIndex", "totalChunks", "progress",
             "overallMastery", "recommendReviewInDays", "recommendedReviewDate",
-            "weakConcepts", "summaryForPlanner");
+            "weakConcepts", "summaryForPlanner",
+            "canStart", "reason", "chunkCount", "textLength", "sourceKind");
 
     private final MaterialRepository materialRepository;
     private final SocraticReviewSessionRepository sessionRepository;
@@ -82,6 +84,17 @@ public class SocraticReviewService {
         return out;
     }
 
+    // 구조화 실패 응답(프론트가 reason별 안내로 분기). aiAvailable=true 라서 "AI 미배포" 안내와 구분된다.
+    private Map<String, Object> startFailure(Long materialId, String reason, String message) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("aiAvailable", true);
+        out.put("canStart", false);
+        out.put("materialId", materialId);
+        out.put("reason", reason);
+        out.put("message", message);
+        return out;
+    }
+
     // ai07 응답 → 화이트리스트 필드만, aiAvailable=true 부착
     @SuppressWarnings("unchecked")
     private Map<String, Object> sanitize(Map resp) {
@@ -118,13 +131,23 @@ public class SocraticReviewService {
             log.warn("ai07 socratic-review route not active (404) materialId={}", materialId);
             return aiUnavailable();
         } catch (Exception e) {
+            // ai07 장애/타임아웃 → 500 raw 가 아니라 안정적 JSON(canStart=false)로 반환.
             log.warn("[SOCRATIC] start fail materialId={} err={}", materialId, e.getMessage());
-            throw new IllegalStateException("이 자료로 소크라테스 복습 세션을 시작할 수 없습니다. 문서 청크가 아직 준비되지 않았거나 분석 가능한 자료가 아닙니다.");
+            return startFailure(materialId, "AI_CONNECTION_FAILED",
+                    "AI 서버 연결에 실패했습니다. 잠시 후 다시 시도해 주세요.");
         }
 
         String sessionId = resp == null ? null : asStr(resp.get("sessionId"));
         if (sessionId == null || sessionId.isBlank()) {
-            throw new IllegalStateException("이 자료로 소크라테스 복습 세션을 시작할 수 없습니다. 문서 청크가 아직 준비되지 않았거나 분석 가능한 자료가 아닙니다.");
+            // ai07이 청크를 만들지 못함(이미지 PDF/원문 없음 등). ai07의 reason/message를 그대로 노출한다.
+            Map<String, Object> out = sanitize(resp);   // canStart/reason/chunkCount/textLength/sourceKind 포함
+            out.put("canStart", false);
+            if (out.get("message") == null) {
+                out.put("message", "이 자료로 소크라테스 복습을 시작할 수 없습니다. 문서에서 분석 가능한 내용을 찾지 못했습니다.");
+            }
+            log.info("[SOCRATIC] start no-session materialId={} reason={} chunkCount={} textLength={} msg={}",
+                    materialId, out.get("reason"), out.get("chunkCount"), out.get("textLength"), out.get("message"));
+            return out;
         }
 
         // 세션 매핑 저장(소유권/완료 검증용)
@@ -133,7 +156,11 @@ public class SocraticReviewService {
                         .sessionId(sessionId).materialId(materialId).userId(userId)
                         .status("IN_PROGRESS").title(m.getTitle()).build()));
 
-        return sanitize(resp);
+        log.info("[SOCRATIC] start ok materialId={} sessionId={} chunkCount={} sourceKind={}",
+                materialId, sessionId, resp.get("chunkCount"), resp.get("sourceKind"));
+        Map<String, Object> out = sanitize(resp);   // canStart=true/chunkCount/sourceKind 포함
+        out.putIfAbsent("canStart", true);
+        return out;
     }
 
     // ── B. 답변 제출 ────────────────────────────────────────────────────
