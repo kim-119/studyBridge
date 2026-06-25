@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  Maximize2, Crosshair, Search, Tag as TagIcon, Settings2, FileDown, LayoutGrid, Circle, Globe,
+  Maximize2, Crosshair, Search, Tag as TagIcon, Settings2, FileDown, LayoutGrid, Circle, Globe, Monitor,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -20,6 +20,7 @@ export default function GraphToolbar({
   depth, onSetDepth,
   showEdgeLabels, onToggleEdgeLabels,
   settingsOpen, onToggleSettings,
+  presentation, onTogglePresentation,
   onExportMarkdown, onExportCanvas, extraActions,
 }) {
   return (
@@ -44,6 +45,7 @@ export default function GraphToolbar({
       </div>
 
       <div className="obsg-tb-group">
+        <TBtn active={presentation} onClick={onTogglePresentation} title="발표 모드 (라벨·간선 강조, 범례 접힘)"><Monitor size={15} /></TBtn>
         <TBtn onClick={onExportMarkdown} title="Markdown 내보내기"><FileDown size={15} /></TBtn>
         <TBtn onClick={onExportCanvas} title="Canvas 내보내기"><LayoutGrid size={15} /></TBtn>
         <TBtn active={settingsOpen} onClick={onToggleSettings} title="그래프 설정 (Filters/Groups/Display/Forces)"><Settings2 size={15} /></TBtn>

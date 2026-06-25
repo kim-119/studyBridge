@@ -25,15 +25,66 @@
   inset: 0;
   overflow: hidden;
   cursor: grab;
+  /* 2.5D 배경: 중앙 보라 glow + 미세 그리드 + 가장자리 vignette(공간 깊이감). */
   background:
-    radial-gradient(circle at 50% 38%, rgba(124, 58, 237, 0.08), transparent 62%),
+    radial-gradient(circle at 50% 40%, rgba(124, 58, 237, 0.12), transparent 60%),
+    radial-gradient(circle at 50% 50%, transparent 58%, rgba(2, 4, 12, 0.55) 100%),
+    linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px),
     #0b1020;
+  background-size: 100% 100%, 100% 100%, 34px 34px, 34px 34px, 100% 100%;
 }
 .obsg-canvas-wrap.is-panning { cursor: grabbing; }
+/* 발표 모드: 배경 대비를 끌어올려 시연 가독성 확보(spec 6·15). */
+.obsg-canvas-wrap.is-present {
+  background:
+    radial-gradient(circle at 50% 40%, rgba(124, 58, 237, 0.18), transparent 58%),
+    radial-gradient(circle at 50% 50%, transparent 54%, rgba(0, 0, 0, 0.7) 100%),
+    #070a16;
+}
 
 .obsg-svg { display: block; width: 100%; height: 100%; touch-action: none; }
 
-.obsg-edge { transition: stroke-opacity 0.12s ease; }
+.obsg-edge { transition: stroke-opacity 0.14s ease, stroke-width 0.14s ease; }
+.obsg-halo { pointer-events: none; }
+
+/* ── 생동감 애니메이션(transform/opacity 위주, spec 5·13) ── */
+@keyframes obsg-node-in {
+  from { opacity: 0; transform: scale(0.45); }
+  60%  { opacity: 1; transform: scale(1.08); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes obsg-edge-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes obsg-pulse {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  50%      { opacity: 0.4;  transform: scale(1.14); }
+}
+@keyframes obsg-flow { to { stroke-dashoffset: -22; } }
+
+/* 노드 등장(중심→바깥 stagger): 내부 vis 그룹의 transform 만 애니메이션해
+   외부 그룹의 translate(좌표)를 보존한다. */
+.obsg-node-vis {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.16s ease;
+}
+.obsg-node-enter { animation: obsg-node-in 0.66s cubic-bezier(0.22, 1, 0.36, 1) both; animation-delay: var(--obsg-d, 0ms); }
+.obsg-node-vis.is-dim { filter: saturate(0.35); }
+/* hover 시 살짝 떠오름(translateZ 느낌). */
+.obsg-node-hit:hover .obsg-node-vis { transform: scale(1.16); }
+.obsg-node-hit:focus-visible { outline: none; }
+.obsg-node-hit:focus-visible .obsg-node-vis { transform: scale(1.16); }
+.obsg-pulse { animation: obsg-pulse 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.obsg-sel-ring { animation: obsg-pulse 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+
+.obsg-edge-enter { animation: obsg-edge-in 0.5s ease both; animation-delay: var(--obsg-d, 0ms); }
+/* 선택/강조 경로: 빛이 흐르는 dashoffset 애니메이션. */
+.obsg-edge-flow { stroke-dasharray: 6 6; animation: obsg-flow 0.7s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .obsg-node-enter, .obsg-edge-enter, .obsg-pulse, .obsg-sel-ring, .obsg-edge-flow { animation: none; }
+}
+
 .obsg-node-hit { cursor: pointer; }
 .obsg-node-label {
   fill: #cbd5e1;
@@ -45,6 +96,10 @@
   stroke-linejoin: round;
 }
 .obsg-node-label.is-dim { fill: #64748b; }
+/* 발표 모드: 라벨 폰트 ~1.27x 확대 + 더 밝게(spec 3·15). */
+.obsg-canvas-wrap.is-present .obsg-node-label { font-size: 14px; fill: #e8edf6; }
+.obsg-canvas-wrap.is-present .obsg-node-label.selected { font-size: 15px; }
+.obsg-canvas-wrap.is-present .obsg-edge-pill > span { font-size: 12px; max-width: 130px; }
 .obsg-edge-label {
   fill: #94a3b8;
   font-size: 10px;
@@ -317,21 +372,45 @@
 .obsg-legend {
   position: absolute;
   bottom: 14px; left: 10px;
-  background: rgba(17, 24, 39, 0.9);
+  background: rgba(17, 24, 39, 0.92);
   border: 1px solid #1f2937;
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 11px;
+  border-radius: 10px;
+  padding: 6px 8px;
+  font-size: 12px;
   color: #cbd5e1;
   z-index: 6;
-  max-width: 60%;
+  max-width: 62%;
   max-height: calc(100% - 100px);
   overflow-y: auto;
+  backdrop-filter: blur(6px);
 }
-.obsg-legend-title { font-size: 10px; font-weight: 700; color: #8b8fa3; margin-bottom: 3px; }
-.obsg-legend-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
-.obsg-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-.obsg-legend-line { width: 12px; height: 3px; border-radius: 2px; flex: none; }
+.obsg-legend.is-present { font-size: 13px; background: rgba(10, 14, 26, 0.96); }
+/* 접기 토글 헤더(활성 필터 수 포함). */
+.obsg-legend-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; padding: 2px 2px; background: none; border: none; cursor: pointer;
+  font-size: 11px; font-weight: 700; color: #8b8fa3;
+}
+.obsg-legend-toggle:hover { color: #d7dceb; }
+.obsg-legend.is-collapsed { padding: 4px 8px; }
+.obsg-legend-body { margin-top: 4px; }
+.obsg-legend-title { font-size: 10px; font-weight: 700; color: #8b8fa3; margin-bottom: 4px; }
+/* 행: 노드는 클릭 가능한 button, 간선은 div. button reset 포함. */
+.obsg-legend-row {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  margin-bottom: 2px; padding: 3px 5px; border-radius: 6px;
+  background: none; border: 1px solid transparent; color: inherit;
+  font-size: inherit; line-height: 1.5; text-align: left;
+}
+.obsg-legend-row.is-toggleable { cursor: pointer; }
+.obsg-legend-row.is-toggleable:hover { background: rgba(120, 130, 170, 0.16); border-color: rgba(180, 190, 220, 0.18); }
+.obsg-legend-row.is-toggleable:focus-visible { outline: 2px solid #818cf8; outline-offset: 1px; }
+.obsg-legend-row.is-off { opacity: 0.4; }
+.obsg-legend-row.is-off .obsg-legend-label { text-decoration: line-through; }
+.obsg-legend-row.is-edge { cursor: default; }
+.obsg-legend-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.obsg-legend-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.obsg-legend-line { width: 14px; height: 3px; border-radius: 2px; flex: none; }
 .obsg-stats {
   position: absolute;
   bottom: 10px; right: 10px;

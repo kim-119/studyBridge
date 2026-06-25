@@ -3,7 +3,7 @@ import React, {
 } from 'react';
 import {
   styleForEdge, colorForNode, shapeForNode, NODE_TYPES,
-  displayLabelForNode, displayLabelForEdge,
+  displayLabelForNode, displayLabelForEdge, glowForNode, edgeFlows,
 } from '../../utils/graph/graphTypes';
 import {
   computeLabelLayout, edgeLabelVisibleAtZoom, LABEL_PRIORITY,
@@ -20,10 +20,15 @@ const safeView = (next, prev) => (
     : prev
 );
 
+// gradient/marker id 로 쓰기 위한 색상 → 안전 토큰.
+const colorKey = (c) => String(c).replace(/[^a-z0-9]/gi, '');
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 다크 캔버스 SVG 렌더러. pan/zoom + 노드/간선 + 선택/hover 강조.
 //  · positions: Map<id,{x,y}> (graphLayout 결과, 논리 좌표).
 //  · 부모는 visibleGraph(필터/LOD 적용된 노드·간선)와 positions 를 넘긴다.
+//  · 시각 고도화(spec): 궤도 depth glow(2.5D), 곡선 간선, 등장/펄스/흐름 애니메이션,
+//    타입 하이라이트(범례 hover), 발표 모드.
 //  · 외부 제어: ref.fitView() / ref.centerOnNode(id) / ref.zoomBy(f).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -37,9 +42,12 @@ function nodeRadius(node, scale = 1) {
 }
 
 // shape 별 SVG element. circle/square(rect)/diamond/triangle(polygon).
-function NodeShape({ shape, r, color, dim }) {
-  const opacity = dim ? 0.35 : 1;
-  const common = { fill: color, opacity, stroke: '#0b1020', strokeWidth: 1.5 };
+//  · fillOpacity 로 depth(궤도) 별 미세한 입체감을 준다.
+function NodeShape({ shape, r, color, dim, fillOpacity = 1 }) {
+  const opacity = dim ? 0.32 : fillOpacity;
+  const common = {
+    fill: color, opacity, stroke: 'rgba(8,11,24,0.9)', strokeWidth: 1.5,
+  };
   if (shape === 'square') return <rect x={-r} y={-r} width={r * 2} height={r * 2} rx={3} {...common} />;
   if (shape === 'diamond') return <polygon points={`0,${-r * 1.3} ${r * 1.3},0 0,${r * 1.3} ${-r * 1.3},0`} {...common} />;
   if (shape === 'triangle') return <polygon points={`0,${-r * 1.3} ${r * 1.15},${r} ${-r * 1.15},${r}`} {...common} />;
@@ -52,6 +60,7 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
     showNodeLabels = true, showEdgeLabels = false, showArrows = true,
     nodeScale = 1, linkThickness = 1, labelThreshold: labelThresholdProp,
     mode = 'local', edgeLabelsAlwaysOn = false,
+    highlightType = null, presentation = false,
     onZoomChange, onNodeClick, onNodeDoubleClick, onBackgroundClick,
   } = props;
 
@@ -163,6 +172,7 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
   // unmount 시 대기 중 rAF 취소(spec 52).
   useEffect(() => () => { if (wheelRaf.current) cancelAnimationFrame(wheelRaf.current); }, []);
 
+  // ── 강조 상태: hover/선택 focus(이웃 포함) 또는 범례 타입 하이라이트 ──────────
   const focusId = hoverId || selectedNodeId;
   const focusSet = useMemo(() => {
     if (!focusId) return null;
@@ -172,10 +182,51 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
     return s;
   }, [focusId, neighbors]);
 
+  // 범례 hover → 해당 타입만 강조(focus 가 없을 때만 적용).
+  const typeHi = !focusSet && highlightType ? highlightType : null;
+  const anyHi = !!focusSet || !!typeHi;
+  const nodeActive = useCallback((n) => {
+    if (focusSet) return focusSet.has(n.id);
+    if (typeHi) return n.type === typeHi;
+    return true;
+  }, [focusSet, typeHi]);
+  const edgeActive = useCallback((e) => {
+    if (focusSet) return focusSet.has(e.from) && focusSet.has(e.to);
+    if (typeHi) return e.type === typeHi;
+    return true;
+  }, [focusSet, typeHi]);
+
   const labelThreshold = labelThresholdProp != null
     ? labelThresholdProp
     : (graph.nodes.length > 120 ? 1.1 : graph.nodes.length > 60 ? 0.7 : 0);
+
+  // present 색상(arrow marker + halo gradient defs 단일 생성).
   const edgeColors = useMemo(() => Array.from(new Set(graph.edges.map((e) => styleForEdge(e.type).color))), [graph.edges]);
+  const haloColors = useMemo(() => {
+    const s = new Set(['#a5b4fc']); // 선택 노드 glow(인디고)는 항상 포함.
+    graph.nodes.forEach((n) => { if (glowForNode(n.type) > 0) s.add(colorForNode(n.type)); });
+    return Array.from(s);
+  }, [graph.nodes]);
+
+  // id → depth(궤도 레벨) 조회맵. 간선 등장 stagger 에 재사용(O(E*N) find 회피).
+  const depthById = useMemo(() => {
+    const m = new Map();
+    graph.nodes.forEach((n) => m.set(n.id, Math.min(4, n.depth || 0)));
+    return m;
+  }, [graph.nodes]);
+
+  // 같은 두 노드 사이 다중 간선 곡률 index(겹침 회피, spec 4·다중관계).
+  const pairIndex = useMemo(() => {
+    const seen = new Map();
+    const idx = new Map();
+    graph.edges.forEach((e) => {
+      const key = e.from < e.to ? `${e.from}|${e.to}` : `${e.to}|${e.from}`;
+      const c = seen.get(key) || 0;
+      idx.set(e.id, c);
+      seen.set(key, c + 1);
+    });
+    return idx;
+  }, [graph.edges]);
 
   // ── 라벨 충돌 회피 레이아웃(노드 라벨/간선 라벨/점/halo 가 안 겹치게) ──────────
   //  · 논리 좌표로 모든 박스를 계산 → priority 순 배치 → 충돌 시 법선 offset → 숨김.
@@ -267,10 +318,22 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
   // 줌 레벨을 부모(상태바)로 보고.
   useEffect(() => { onZoomChange?.(Math.round(view.k * 100)); }, [view.k, onZoomChange]);
 
+  // 두 점 사이 path(다중 간선/강조 시 약간의 곡선, 단일은 직선 → 라벨 중점 정확도 유지).
+  const edgePath = useCallback((a, b, pi) => {
+    if (!pi) return `M${a.x},${a.y} L${b.x},${b.y}`;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    const dx = b.x - a.x; const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len; const ny = dx / len;
+    const curv = (pi % 2 ? 1 : -1) * Math.ceil(pi / 2) * 18;
+    return `M${a.x},${a.y} Q${mx + nx * curv},${my + ny * curv} ${b.x},${b.y}`;
+  }, []);
+
   return (
     <div
       ref={wrapRef}
-      className={`obsg-canvas-wrap${dragRef.current ? ' is-panning' : ''}`}
+      className={`obsg-canvas-wrap${dragRef.current ? ' is-panning' : ''}${presentation ? ' is-present' : ''}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
@@ -286,9 +349,17 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
         <svg className="obsg-svg" width={size.w} height={size.h}>
           <defs>
             {edgeColors.map((c) => (
-              <marker key={c} id={`obsg-arrow-${c.replace(/[^a-z0-9]/gi, '')}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <marker key={c} id={`obsg-arrow-${colorKey(c)}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                 <path d="M0 0 L10 5 L0 10 z" fill={c} />
               </marker>
+            ))}
+            {/* 노드 glow halo 용 radial gradient(색상별 1개 재사용 — per-node filter 회피). */}
+            {haloColors.map((c) => (
+              <radialGradient key={c} id={`obsg-halo-${colorKey(c)}`}>
+                <stop offset="0%" stopColor={c} stopOpacity="0.55" />
+                <stop offset="55%" stopColor={c} stopOpacity="0.16" />
+                <stop offset="100%" stopColor={c} stopOpacity="0" />
+              </radialGradient>
             ))}
           </defs>
           <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
@@ -300,20 +371,26 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
               if (!a || !b) return null;
               if (![a.x, a.y, b.x, b.y].every(Number.isFinite)) return null;
               const st = styleForEdge(e.type);
-              const active = !focusSet || (focusSet.has(e.from) && focusSet.has(e.to));
+              const active = !anyHi || edgeActive(e);
+              const flow = anyHi && active && edgeFlows(e.type);
+              const pi = pairIndex.get(e.id) || 0;
+              const baseOpacity = presentation ? 0.5 : 0.32;
               // 충돌 회피로 계산된 라벨 위치(center). hidden 이면 렌더 안 함.
               const placed = labelLayout.edgeLabels.get(e.id);
               const labelOn = placed && !placed.hidden;
+              const cls = `obsg-edge obsg-edge-enter${flow ? ' obsg-edge-flow' : ''}`;
               return (
-                <g key={e.id}>
-                  <line
-                    className="obsg-edge"
-                    x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                <g key={e.id} style={{ '--obsg-d': `${(depthById.get(e.to) || 0) * 90}ms` }}>
+                  <path
+                    className={cls}
+                    d={edgePath(a, b, pi)}
+                    fill="none"
                     stroke={st.color}
-                    strokeWidth={(active ? 1.6 : 1) * linkThickness}
-                    strokeOpacity={focusSet ? (active ? 0.85 : 0.12) : 0.28}
-                    strokeDasharray={st.dashed ? '5 4' : undefined}
-                    markerEnd={showArrows && st.directed ? `url(#obsg-arrow-${st.color.replace(/[^a-z0-9]/gi, '')})` : undefined}
+                    strokeWidth={(active ? 1.8 : 1) * linkThickness}
+                    strokeOpacity={anyHi ? (active ? 0.92 : 0.08) : baseOpacity}
+                    strokeDasharray={!flow && st.dashed ? '5 4' : undefined}
+                    strokeLinecap="round"
+                    markerEnd={showArrows && st.directed ? `url(#obsg-arrow-${colorKey(st.color)})` : undefined}
                   />
                   {labelOn ? (
                     <foreignObject
@@ -334,13 +411,29 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
               const p = positions.get(n.id);
               if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
               const r = nodeRadius(n, nodeScale);
-              const dim = !!(focusSet && !focusSet.has(n.id));
+              const dim = anyHi && !nodeActive(n);
               const isSel = n.id === selectedNodeId;
               const isCenter = n.id === centerNodeId;
+              const isHover = n.id === hoverId;
+              const depth = Math.min(4, n.depth || 0);
+              const color = colorForNode(n.type);
               const nodeLbl = labelLayout.nodeLabels.get(n.id);
               const showLabel = showNodeLabels
-                && (view.k >= labelThreshold || isSel || isCenter || n.id === hoverId || (focusSet && focusSet.has(n.id)))
+                && (view.k >= labelThreshold || isSel || isCenter || isHover || (focusSet && focusSet.has(n.id)))
                 && !(nodeLbl && nodeLbl.hidden);
+
+              // glow 강도: 타입 기본 + 선택/중심/hover boost, depth 가 멀수록 약화.
+              let glow = glowForNode(n.type);
+              if (isSel) glow = Math.max(glow, 1);
+              else if (isCenter) glow = Math.max(glow, 0.85);
+              else if (isHover) glow = Math.max(glow, 0.7);
+              const depthF = 1 - Math.min(0.5, depth * 0.12);
+              const haloOpacity = glow > 0 ? Math.min(0.9, glow * 0.5 * depthF) * (dim ? 0.2 : 1) : 0;
+              const haloR = r * (1.9 + glow * 0.7);
+              const haloColor = isSel ? '#a5b4fc' : color;
+              // depth 가 멀수록 채움 약간 옅게(공간 깊이감), 강조 시 또렷하게.
+              const fillOpacity = isSel || isCenter ? 1 : Math.max(0.78, 1 - depth * 0.05);
+
               return (
                 <g
                   key={n.id}
@@ -356,22 +449,36 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
                   aria-label={`${n.title || n.label}`}
                   onKeyDown={(ev) => { if (ev.key === 'Enter') onNodeClick?.(n); }}
                 >
-                  {(isSel || isCenter) && (
-                    <circle r={r + 6} fill="none" stroke={isSel ? '#a5b4fc' : colorForNode(n.type)} strokeWidth={isSel ? 2.5 : 1.5} opacity={0.8} />
-                  )}
-                  <NodeShape shape={shapeForNode(n.type)} r={r} color={colorForNode(n.type)} dim={dim} />
-                  {showLabel ? (
-                    <text
-                      className={`obsg-node-label${dim ? ' is-dim' : ''}${isSel ? ' selected' : ''}`}
-                      x={0}
-                      y={r + 12}
-                      textAnchor="middle"
-                    >
-                      {/* hover/touch 시 전체 title 툴팁(spec 37). */}
-                      <title>{n.title || n.label}</title>
-                      {isSel ? (n.title || displayLabelForNode(n)) : displayLabelForNode(n)}
-                    </text>
-                  ) : null}
+                  {/* 내부 vis 그룹: 등장/hover scale 애니메이션(외부 그룹 translate 보존). */}
+                  <g
+                    className={`obsg-node-vis obsg-node-enter${dim ? ' is-dim' : ''}`}
+                    style={{ '--obsg-d': `${depth * 90}ms` }}
+                  >
+                    {haloOpacity > 0 ? (
+                      <circle
+                        className={`obsg-halo${isSel ? ' obsg-pulse' : ''}`}
+                        r={haloR}
+                        fill={`url(#obsg-halo-${colorKey(haloColor)})`}
+                        opacity={haloOpacity}
+                      />
+                    ) : null}
+                    {(isSel || isCenter) && (
+                      <circle className={isSel ? 'obsg-sel-ring' : undefined} r={r + 6} fill="none" stroke={isSel ? '#c7d2fe' : color} strokeWidth={isSel ? 2.5 : 1.5} opacity={0.85} />
+                    )}
+                    <NodeShape shape={shapeForNode(n.type)} r={r} color={color} dim={dim} fillOpacity={fillOpacity} />
+                    {showLabel ? (
+                      <text
+                        className={`obsg-node-label${dim ? ' is-dim' : ''}${isSel ? ' selected' : ''}`}
+                        x={0}
+                        y={r + 12}
+                        textAnchor="middle"
+                      >
+                        {/* hover/touch 시 전체 title 툴팁(spec 37). */}
+                        <title>{n.title || n.label}</title>
+                        {isSel ? (n.title || displayLabelForNode(n)) : displayLabelForNode(n)}
+                      </text>
+                    ) : null}
+                  </g>
                 </g>
               );
             })}

@@ -157,3 +157,30 @@ export const styleForEdge = (type) => EDGE_STYLE[type] || EDGE_STYLE.related_to;
 export const colorForNode = (type) => NODE_COLOR[type] || NODE_COLOR.concept;
 export const shapeForNode = (type) => NODE_SHAPE[type] || 'circle';
 export const labelForNodeType = (type) => NODE_LABEL_KO[type] || type;
+
+// ── 2.5D 입체감 토큰 ─────────────────────────────────────────────────────────
+// 노드 타입별 glow(halo) 강도(0~1). 색만으로 구분하지 않도록 shape 와 병행한다.
+//  · 수가 많아지기 쉬운 concept/tag/example 은 성능을 위해 halo 를 생략(0)한다.
+//  · 선택/중심/hover 노드는 렌더 시 별도로 강한 glow 를 덧입힌다(graphTypes 비의존).
+export const NODE_GLOW = Object.freeze({
+  question: 1.0,
+  agent: 0.7,
+  answer: 0.6,
+  source: 0.55,
+  roadmap: 0.55,
+  planner: 0.55,
+  validation: 0.5,
+  rebuttal: 0.5,
+  example: 0,
+  concept: 0,
+  tag: 0,
+  cluster: 0,
+});
+export const glowForNode = (type) => NODE_GLOW[type] ?? 0;
+
+// 선택/focus 시 "빛이 흐르는" flow 애니메이션을 줄 간선 타입(= AI 사고 흐름 강조).
+//  · 항상 흐르면 산만하므로, 강조(선택/hover/타입 하이라이트) 상태에서만 활성화한다.
+export const EDGE_FLOW_TYPES = Object.freeze(new Set([
+  'asked_to', 'answered_by', 'produced', 'validated_by', 'rebutted_by', 'expanded_to', 'sourced_from',
+]));
+export const edgeFlows = (type) => EDGE_FLOW_TYPES.has(type);

@@ -19,7 +19,9 @@ export const DEFAULT_FILTERS = Object.freeze({
   showOrphans: false, // 고립 노드 기본 숨김
 });
 
-const TYPE_FILTER_KEY = {
+// 노드 타입 → 필터 키 매핑(단일 출처). 범례 클릭 필터에서 재사용.
+//  · question/cluster 는 토글 불가(키 없음) — 항상 표시.
+export const TYPE_FILTER_KEY = {
   [NODE_TYPES.AGENT]: 'showAgents',
   [NODE_TYPES.ANSWER]: 'showAnswers',
   [NODE_TYPES.CONCEPT]: 'showConcepts',

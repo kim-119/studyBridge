@@ -36,6 +36,17 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [zoomPct, setZoomPct] = useState(100);
+  // 발표 모드(spec 15): 라벨/간선 강조 + 범례 접힘. 범례 hover 타입 강조(spec 7).
+  const [presentation, setPresentation] = useState(false);
+  const [legendCollapsed, setLegendCollapsed] = useState(false);
+  const [highlightType, setHighlightType] = useState(null);
+  const togglePresentation = useCallback(() => {
+    setPresentation((p) => {
+      const next = !p;
+      setLegendCollapsed(next); // 진입 시 범례 접고, 해제 시 펼친다(사용자 재토글 가능).
+      return next;
+    });
+  }, []);
 
   // 표시(Display)/힘(Forces) 설정. showEdgeLabels/textFade 가 null 이면 mode 기반 기본값을 쓴다.
   const [display, setDisplay] = useState(DEFAULT_DISPLAY);
@@ -155,7 +166,8 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
     if (e.key === 'l' || e.key === 'L') setMode('local');
     else if (e.key === 'g' || e.key === 'G') setMode('global');
     else if (e.key === 'e' || e.key === 'E') setDisplayKey('showEdgeLabels', !edgeLabelsOn);
-  }, [edgeLabelsOn, setDisplayKey]);
+    else if (e.key === 'p' || e.key === 'P') togglePresentation();
+  }, [edgeLabelsOn, setDisplayKey, togglePresentation]);
 
   return (
     // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
@@ -180,6 +192,8 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
           labelThreshold={textFade}
           mode={mode}
           edgeLabelsAlwaysOn={display.showEdgeLabels === true}
+          presentation={presentation}
+          highlightType={highlightType}
           rightInset={selected ? detailWidth + (settingsOpen ? 290 : 0) : (settingsOpen ? 290 : 0)}
           onZoomChange={setZoomPct}
           onNodeClick={(n) => setSelected(n)}
@@ -201,6 +215,8 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
           onToggleEdgeLabels={() => setDisplayKey('showEdgeLabels', !edgeLabelsOn)}
           settingsOpen={settingsOpen}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
+          presentation={presentation}
+          onTogglePresentation={togglePresentation}
           onExportMarkdown={exportMd}
           onExportCanvas={exportCanvas}
           extraActions={extraActions}
@@ -214,7 +230,16 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
           />
         )}
 
-        <GraphLegend presentTypes={presentTypes} presentEdgeTypes={presentEdgeTypes} />
+        <GraphLegend
+          presentTypes={presentTypes}
+          presentEdgeTypes={presentEdgeTypes}
+          filters={filters}
+          onToggleFilter={toggleFilter}
+          onHoverType={setHighlightType}
+          presentation={presentation}
+          collapsed={legendCollapsed}
+          onToggleCollapsed={() => setLegendCollapsed((v) => !v)}
+        />
 
         <div className="obsg-zoom">
           <button type="button" onClick={() => canvasRef.current?.zoomBy?.(1.2)} aria-label="확대">＋</button>

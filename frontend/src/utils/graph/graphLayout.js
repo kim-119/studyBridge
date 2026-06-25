@@ -164,7 +164,12 @@ export function computeLayout(graph, opts = {}) {
     const iter = nodes.length > 300 ? 80 : 140;
     positions = forceLayout(nodes, edges, centerId, iter);
   }
-  // position 을 노드에도 반영(렌더/메타 보존).
-  nodes.forEach((nd) => { nd.position = positions.get(nd.id) || { x: 0, y: 0 }; });
+  // 중심으로부터의 BFS 깊이(궤도 레벨). 렌더에서 glow/입체감/등장 stagger 에 사용.
+  const level = bfsLevels(nodes, edges, centerId);
+  // position·depth 를 노드에도 반영(렌더/메타 보존). depth 는 0~4 로 clamp.
+  nodes.forEach((nd) => {
+    nd.position = positions.get(nd.id) || { x: 0, y: 0 };
+    nd.depth = Math.min(4, level.get(nd.id) ?? 4);
+  });
   return { positions, bounds: boundsOf(positions), mode };
 }
