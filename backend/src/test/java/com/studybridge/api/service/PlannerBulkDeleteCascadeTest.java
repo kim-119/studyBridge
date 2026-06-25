@@ -5,6 +5,7 @@ import com.studybridge.api.dto.PlannerDTO;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialType;
 import com.studybridge.api.entity.Planner;
+import com.studybridge.api.entity.PlannerType;
 import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.PlannerRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,6 +48,7 @@ class PlannerBulkDeleteCascadeTest {
     private Planner roadmapPlanner(long id, Long materialId) {
         return Planner.builder()
                 .id(id).userId(USER_ID)
+                .plannerType(PlannerType.ROADMAP)
                 .sourceType("ROADMAP_AUTO")
                 .materialId(materialId)
                 .build();
@@ -60,12 +62,66 @@ class PlannerBulkDeleteCascadeTest {
                 .build();
     }
 
+    private Planner userPlanner(long id) {
+        return Planner.builder()
+                .id(id).userId(USER_ID)
+                .plannerType(PlannerType.USER)
+                .build();
+    }
+
     private PlannerDTO.BulkDeleteRequest bulkReq(List<Long> ids) {
         return PlannerDTO.BulkDeleteRequest.builder()
                 .scope("VISIBLE_ROADMAP_AUTO")
                 .sourceType("ROADMAP_AUTO")
                 .plannerIds(ids)
                 .build();
+    }
+
+    private PlannerDTO.BulkDeleteRequest bulkReq(String plannerType, List<Long> ids) {
+        return PlannerDTO.BulkDeleteRequest.builder()
+                .plannerType(plannerType)
+                .plannerIds(ids)
+                .build();
+    }
+
+    @Test
+    void deleteUserPlanners_shouldDeleteOnlyUserType() {
+        Planner planner = userPlanner(5L);
+        when(plannerRepository.findByUserIdAndIdIn(USER_ID, List.of(5L))).thenReturn(List.of(planner));
+        when(materialRepository.findByPlannerIdAndMaterialType(5L, MaterialType.PLANNER))
+                .thenReturn(Collections.emptyList());
+
+        PlannerDTO.BulkDeleteResponse res = service.bulkDelete(USER_ID, bulkReq("USER", List.of(5L)));
+
+        assertTrue(res.isSuccess());
+        assertEquals(1, res.getDeletedCount());
+        verify(plannerRepository).delete(planner);
+    }
+
+    @Test
+    void deleteUserPlanners_shouldRejectRoadmapMixedIn() {
+        // 사용자 탭(USER) 전체삭제에 로드맵 플래너가 섞이면 전체 거부 → 두 타입 동시 삭제 방지.
+        when(plannerRepository.findByUserIdAndIdIn(USER_ID, List.of(5L, 1L)))
+                .thenReturn(List.of(userPlanner(5L), roadmapPlanner(1L, 100L)));
+
+        PlannerDTO.BulkDeleteResponse res = service.bulkDelete(USER_ID, bulkReq("USER", new ArrayList<>(List.of(5L, 1L))));
+
+        assertFalse(res.isSuccess());
+        assertEquals("INVALID_DELETE_SCOPE", res.getErrorCode());
+        verify(plannerRepository, never()).delete(any(Planner.class));
+    }
+
+    @Test
+    void deleteRoadmapPlanners_shouldRejectUserMixedIn() {
+        // 로드맵 탭(ROADMAP) 전체삭제에 사용자 플래너가 섞이면 전체 거부.
+        when(plannerRepository.findByUserIdAndIdIn(USER_ID, List.of(1L, 5L)))
+                .thenReturn(List.of(roadmapPlanner(1L, 100L), userPlanner(5L)));
+
+        PlannerDTO.BulkDeleteResponse res = service.bulkDelete(USER_ID, bulkReq(new ArrayList<>(List.of(1L, 5L))));
+
+        assertFalse(res.isSuccess());
+        assertEquals("INVALID_DELETE_SCOPE", res.getErrorCode());
+        verify(plannerRepository, never()).delete(any(Planner.class));
     }
 
     @Test

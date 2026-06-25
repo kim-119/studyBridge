@@ -33,6 +33,17 @@ public class Planner {
     @Column(nullable = false, length = 200)
     private String title;
 
+    /**
+     * 플래너 원천(ROADMAP/USER). 직접 생성 경로(수동=USER, 로드맵=ROADMAP)는 명시적으로 채운다.
+     * 그 외 자동 생성 경로(REVIEW_AUTO/SOCRATIC_REVIEW 등 sourceType 보유)는 비워두면
+     * PlannerService.resolvePlannerType 가 ROADMAP(자동)으로 판정하고 기동 시 backfill 로 보정한다.
+     * 운영 DB(RDS)에 이미 데이터가 있으므로 컬럼은 nullable 로 두어 ddl-auto=update 자동 추가 시 장애를 막는다.
+     * (Builder 기본값을 두지 않는다 — 두면 sourceType 보유 자동 플래너가 USER 로 잘못 고정된다.)
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "planner_type", length = 20)
+    private PlannerType plannerType;
+
     // 표시용 날짜 구성요소 (7번 이미지 플래너 상단)
     private Integer year;
     private Integer month;

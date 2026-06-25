@@ -15,6 +15,7 @@ public class PlannerDTO {
     @Builder
     public static class Request {
         private String title;
+        private String plannerType;   // "USER"/"ROADMAP" (없으면 백엔드가 USER 기본값 부여)
         private Integer year;
         private Integer month;
         private Integer day;
@@ -43,6 +44,9 @@ public class PlannerDTO {
         private Long id;
         private Long userId;
         private String title;
+        private String plannerType;   // 항상 채워짐(resolver 보정): "ROADMAP" / "USER"
+        private Integer roadmapWeek;   // 로드맵 플래너일 때 제목에서 추출(N주차), 없으면 null
+        private Integer roadmapDay;    // 로드맵 플래너일 때 제목에서 추출(M일), 없으면 null
         private Integer year;
         private Integer month;
         private Integer day;
@@ -75,10 +79,11 @@ public class PlannerDTO {
     // 현재 화면에 표시 중인 자료 기반 플래너만 삭제한다. 수동 플래너/주간일정/다른 유저 데이터는 절대 건드리지 않는다.
     @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
     public static class BulkDeleteRequest {
-        private String scope;                    // "VISIBLE_ROADMAP_AUTO" 만 허용
-        private Long materialId;                 // 선택: 자료 필터 (있으면 일치 검증)
-        private Long sourceRoadmapId;            // 선택: 로드맵 필터 (있으면 일치 검증)
-        private String sourceType;               // "ROADMAP_AUTO" 만 허용
+        private String plannerType;              // "ROADMAP" / "USER" — 현재 탭 기준 전체삭제 대상 타입(주 식별자)
+        private String scope;                    // (레거시) "VISIBLE_ROADMAP_AUTO" → ROADMAP 로 해석
+        private Long materialId;                 // 선택: 자료 필터 (ROADMAP 일 때 있으면 일치 검증)
+        private Long sourceRoadmapId;            // 선택: 로드맵 필터 (ROADMAP 일 때 있으면 일치 검증)
+        private String sourceType;               // (레거시) "ROADMAP_AUTO" → ROADMAP 로 해석
         private java.util.List<Long> plannerIds; // 현재 화면에 렌더링 중인 삭제 대상 id
     }
 

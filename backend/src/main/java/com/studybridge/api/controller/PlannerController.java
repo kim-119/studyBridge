@@ -28,10 +28,20 @@ public class PlannerController {
         return ResponseEntity.ok(plannerService.create(userDetails.getId(), request));
     }
 
+    /**
+     * 내 플래너 목록. ?type=ROADMAP / ?type=USER 로 원천 필터링(미지정 시 전체).
+     * 알 수 없는 type 값은 전체 조회로 폴백한다(기존 프론트 호출 호환).
+     */
     @GetMapping
     public ResponseEntity<List<PlannerDTO.Response>> list(
-            @AuthenticationPrincipal CustomUserDetails userDetails) {
-        return ResponseEntity.ok(plannerService.getMyPlanners(userDetails.getId()));
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestParam(required = false) String type) {
+        com.studybridge.api.entity.PlannerType pt = null;
+        if (type != null && !type.isBlank()) {
+            try { pt = com.studybridge.api.entity.PlannerType.valueOf(type.trim().toUpperCase()); }
+            catch (IllegalArgumentException ignored) { /* 알 수 없는 값 → 전체 */ }
+        }
+        return ResponseEntity.ok(plannerService.getMyPlanners(userDetails.getId(), pt));
     }
 
     /**

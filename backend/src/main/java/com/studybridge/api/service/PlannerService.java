@@ -7,6 +7,7 @@ import com.studybridge.api.entity.ExtractionStatus;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialType;
 import com.studybridge.api.entity.Planner;
+import com.studybridge.api.entity.PlannerType;
 import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.PlannerRepository;
 import com.studybridge.api.util.ConceptFallbackProvider;
@@ -56,8 +57,11 @@ public class PlannerService {
 
     @Transactional
     public PlannerDTO.Response create(Long userId, PlannerDTO.Request req) {
+        // 사용자가 플래너 화면에서 직접 만드는 경로 → 항상 USER. 로드맵(ROADMAP) 저장은 /from-roadmap 전용이다.
+        // (요청 plannerType 은 무시하고 강제 USER — 수동 플래너가 ROADMAP 으로 위장되어 로드맵 전체삭제에 휩쓸리는 것을 차단)
         Planner planner = Planner.builder()
                 .userId(userId)
+                .plannerType(PlannerType.USER)
                 .title(req.getTitle() != null && !req.getTitle().isBlank() ? req.getTitle() : "공부 플래너")
                 .year(req.getYear()).month(req.getMonth()).day(req.getDay())
                 .dayOfWeek(req.getDayOfWeek())
@@ -149,6 +153,7 @@ public class PlannerService {
 
             Planner planner = Planner.builder()
                     .userId(userId)
+                    .plannerType(PlannerType.ROADMAP)   // 로드맵 저장 경로는 프론트 요청과 무관하게 ROADMAP 강제
                     .title(roadmapTitle)
                     .year(date.getYear()).month(date.getMonthValue()).day(date.getDayOfMonth())
                     .plannerDate(date)
@@ -247,6 +252,8 @@ public class PlannerService {
     @Transactional
     public PlannerDTO.Response update(Long userId, Long plannerId, PlannerDTO.Request req) {
         Planner planner = getOwned(userId, plannerId);
+        // 수정 시 원천(plannerType)은 절대 바뀌지 않는다. NULL(미보정) 데이터만 추론값으로 고정한다.
+        if (planner.getPlannerType() == null) planner.setPlannerType(resolvePlannerType(planner));
         planner.setTitle(req.getTitle() != null && !req.getTitle().isBlank() ? req.getTitle() : "공부 플래너");
         planner.setYear(req.getYear());
         planner.setMonth(req.getMonth());
@@ -268,7 +275,16 @@ public class PlannerService {
     }
 
     public List<PlannerDTO.Response> getMyPlanners(Long userId) {
+        return getMyPlanners(userId, null);
+    }
+
+    /**
+     * 내 플래너 목록 조회. type 이 지정되면 해당 원천만 반환한다.
+     * Repository 단순 필터가 아니라 resolver 기반으로 거른다 → backfill 미완료(plannerType NULL) 데이터도 누락되지 않는다.
+     */
+    public List<PlannerDTO.Response> getMyPlanners(Long userId, PlannerType type) {
         return plannerRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
+                .filter(p -> type == null || resolvePlannerType(p) == type)
                 .map(p -> toResponse(p, false))
                 .collect(Collectors.toList());
     }
@@ -290,15 +306,19 @@ public class PlannerService {
      */
     @Transactional
     public PlannerDTO.BulkDeleteResponse bulkDelete(Long userId, PlannerDTO.BulkDeleteRequest req) {
-        final String AUTO = "ROADMAP_AUTO";
-
-        // 1) scope 검증
-        if (req == null || !"VISIBLE_ROADMAP_AUTO".equals(req.getScope())) {
+        if (req == null) {
             return bulkFail("INVALID_DELETE_SCOPE", "삭제 범위가 올바르지 않습니다.");
         }
-        // 2) sourceType 검증 (지정 시 ROADMAP_AUTO 만 허용)
-        if (req.getSourceType() != null && !AUTO.equals(req.getSourceType())) {
-            return bulkFail("INVALID_DELETE_SCOPE", "삭제 범위가 올바르지 않습니다.");
+
+        // 1) 삭제 대상 타입 결정 — plannerType(주) 우선, 없으면 레거시 scope/sourceType("ROADMAP_AUTO")을 ROADMAP 으로 해석.
+        PlannerType targetType = parsePlannerType(req.getPlannerType());
+        if (targetType == null) {
+            boolean legacyRoadmap = "VISIBLE_ROADMAP_AUTO".equals(req.getScope())
+                    || "ROADMAP_AUTO".equals(req.getSourceType());
+            if (legacyRoadmap) targetType = PlannerType.ROADMAP;
+        }
+        if (targetType == null) {
+            return bulkFail("INVALID_DELETE_SCOPE", "삭제할 플래너 유형(plannerType)이 지정되지 않았습니다.");
         }
 
         java.util.List<Long> ids = req.getPlannerIds();
@@ -309,32 +329,37 @@ public class PlannerService {
         }
         java.util.List<Long> distinctIds = ids.stream().filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
 
-        // 3) 인증 사용자 소유 + 지정 id 만 조회 (다른 유저 데이터는 결과에 포함되지 않음)
+        // 2) 인증 사용자 소유 + 지정 id 만 조회 (다른 유저 데이터는 결과에 포함되지 않음)
         List<Planner> planners = plannerRepository.findByUserIdAndIdIn(userId, distinctIds);
 
-        // 4) 요청한 모든 id 가 본인 소유인지 (개수 불일치 = 남의 것이거나 존재하지 않음)
+        // 3) 요청한 모든 id 가 본인 소유인지 (개수 불일치 = 남의 것이거나 존재하지 않음)
         if (planners.size() != distinctIds.size()) {
             return bulkFail("INVALID_DELETE_SCOPE", "삭제 대상에 본인 소유가 아니거나 존재하지 않는 플래너가 포함되어 있습니다.");
         }
 
-        // 5) 모든 대상이 ROADMAP_AUTO 인지 + (지정 시) material/roadmap 조건 일치 검증
+        // 4) 모든 대상이 현재 탭 타입과 동일한지 검증 — 다른 타입이 섞이면 전체 거부(두 타입 동시 삭제 절대 금지)
         for (Planner p : planners) {
-            if (!AUTO.equals(p.getSourceType())) {
-                // 수동(MANUAL/null) 플래너가 섞이면 전체 거부 → 수동 플래너는 절대 삭제되지 않음
-                return bulkFail("INVALID_DELETE_SCOPE", "자료 기반 플래너만 삭제할 수 있습니다. 수동으로 작성한 플래너가 포함되어 있습니다.");
+            if (resolvePlannerType(p) != targetType) {
+                String label = targetType == PlannerType.ROADMAP ? "로드맵" : "사용자";
+                String other = targetType == PlannerType.ROADMAP ? "사용자" : "로드맵";
+                return bulkFail("INVALID_DELETE_SCOPE",
+                        label + " 플래너만 삭제할 수 있습니다. " + other + " 플래너가 포함되어 있습니다.");
             }
-            if (req.getMaterialId() != null
-                    && !req.getMaterialId().equals(p.getSourceMaterialId())
-                    && !req.getMaterialId().equals(p.getMaterialId())) {
-                return bulkFail("INVALID_DELETE_SCOPE", "삭제 대상이 자료(materialId) 조건과 일치하지 않습니다.");
-            }
-            if (req.getSourceRoadmapId() != null
-                    && !req.getSourceRoadmapId().equals(p.getSourceRoadmapId())) {
-                return bulkFail("INVALID_DELETE_SCOPE", "삭제 대상이 로드맵(sourceRoadmapId) 조건과 일치하지 않습니다.");
+            // ROADMAP 일 때만, 지정된 material/roadmap 필터와의 일치를 추가 검증(선택)
+            if (targetType == PlannerType.ROADMAP) {
+                if (req.getMaterialId() != null
+                        && !req.getMaterialId().equals(p.getSourceMaterialId())
+                        && !req.getMaterialId().equals(p.getMaterialId())) {
+                    return bulkFail("INVALID_DELETE_SCOPE", "삭제 대상이 자료(materialId) 조건과 일치하지 않습니다.");
+                }
+                if (req.getSourceRoadmapId() != null
+                        && !req.getSourceRoadmapId().equals(p.getSourceRoadmapId())) {
+                    return bulkFail("INVALID_DELETE_SCOPE", "삭제 대상이 로드맵(sourceRoadmapId) 조건과 일치하지 않습니다.");
+                }
             }
         }
 
-        // 6) 삭제 (단일 삭제와 동일 정책: hard delete + S3/Material 정리)
+        // 5) 삭제 (단일 삭제와 동일 정책: hard delete + S3/Material 정리)
         int deleted = 0;
         for (Planner p : planners) {
             cleanupAndDelete(p);
@@ -488,6 +513,7 @@ public class PlannerService {
         try {
             java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
             m.put("plannerId", p.getId());
+            m.put("plannerType", resolvePlannerType(p).name());   // ROADMAP_PLANNER / USER_PLANNER 구분 보존
             m.put("title", p.getTitle());
             m.put("subject", p.getSubject());
             m.put("term", p.getTerm());
@@ -513,6 +539,38 @@ public class PlannerService {
 
     // ---------- helpers ----------
 
+    /**
+     * 플래너 원천 추론(단일 진실 지점). plannerType 이 있으면 그대로, 없으면(레거시 NULL) 메타데이터로 ROADMAP/USER 판정.
+     * 응답/필터/삭제 어디서든 NULL 이 새어나가지 않게 한다.
+     */
+    PlannerType resolvePlannerType(Planner p) {
+        if (p.getPlannerType() != null) return p.getPlannerType();
+        // 자동 생성(로드맵/복습/소크라테스 등 sourceType 보유)·로드맵 연결은 ROADMAP, 순수 수동 작성만 USER.
+        if (p.getSourceType() != null || p.getSourceRoadmapId() != null) {
+            return PlannerType.ROADMAP;
+        }
+        return PlannerType.USER;
+    }
+
+    /** 요청 문자열("ROADMAP"/"USER", 대소문자 무관)을 enum 으로. 비거나 알 수 없으면 null. */
+    private PlannerType parsePlannerType(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try { return PlannerType.valueOf(raw.trim().toUpperCase()); }
+        catch (IllegalArgumentException e) { return null; }
+    }
+
+    private static final java.util.regex.Pattern ROADMAP_WD =
+            java.util.regex.Pattern.compile("\\[\\s*로드맵\\s*(\\d+)\\s*주차\\s*(\\d+)\\s*일\\s*\\]");
+
+    /** 로드맵 플래너 제목("[로드맵 N주차 M일] ...")에서 [week, day] 추출. 없으면 null 반환. */
+    private Integer[] parseRoadmapWeekDay(String title) {
+        if (title == null) return null;
+        java.util.regex.Matcher m = ROADMAP_WD.matcher(title);
+        if (!m.find()) return null;
+        try { return new Integer[]{ Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)) }; }
+        catch (NumberFormatException e) { return null; }
+    }
+
     private Planner getOwned(Long userId, Long plannerId) {
         Planner planner = plannerRepository.findById(plannerId)
                 .orElseThrow(() -> new NoSuchElementException("플래너를 찾을 수 없습니다. id=" + plannerId));
@@ -528,8 +586,12 @@ public class PlannerService {
             try { url = s3Service.getPresignedUrl(p.getS3Key(), p.getTitle() + ".pdf"); }
             catch (Exception e) { log.warn("플래너 presigned URL 발급 실패 id={}: {}", p.getId(), e.getMessage()); }
         }
+        Integer[] wd = parseRoadmapWeekDay(p.getTitle());
         return PlannerDTO.Response.builder()
                 .id(p.getId()).userId(p.getUserId()).title(p.getTitle())
+                .plannerType(resolvePlannerType(p).name())
+                .roadmapWeek(wd != null ? wd[0] : null)
+                .roadmapDay(wd != null ? wd[1] : null)
                 .year(p.getYear()).month(p.getMonth()).day(p.getDay())
                 .dayOfWeek(p.getDayOfWeek()).plannerDate(p.getPlannerDate())
                 .goalTime(p.getGoalTime()).netStudyTime(p.getNetStudyTime())

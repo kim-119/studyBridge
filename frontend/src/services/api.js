@@ -1337,8 +1337,10 @@ export const plannerService = {
     const res = await api.put(`/api/planners/${id}`, data);
     return res.data;
   },
-  getPlanners: async () => {
-    const res = await api.get('/api/planners');
+  // type 미지정 시 전체. 'ROADMAP'/'USER' 로 원천 필터 가능(백엔드 ?type 지원).
+  getPlanners: async (type) => {
+    const query = type ? `?type=${encodeURIComponent(type)}` : '';
+    const res = await api.get(`/api/planners${query}`);
     return res.data;
   },
   // 로드맵(84일) → 플래너 84개 생성. 플래너 도메인에만 저장(주간일정 무관).

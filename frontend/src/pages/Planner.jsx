@@ -32,6 +32,30 @@ const splitRoadmapTitle = (title) => {
   return { prefix: null, topic: title };
 };
 
+// 플래너 원천 판정(단일 진실 지점). 백엔드 plannerType 우선, 없으면(레거시) sourceType 으로 추론.
+const resolvePlannerType = (p) => {
+  if (!p) return 'USER';
+  if (p.plannerType === 'ROADMAP' || p.plannerType === 'USER') return p.plannerType;
+  if (p.sourceType || p.sourceRoadmapId) return 'ROADMAP';
+  return 'USER';
+};
+
+// 비정상 제목(빈값/숫자만/"ViewModel" 같은 1~2글자 토큰) 방어용 표시 제목.
+const getPlannerDisplayTitle = (p) => {
+  const raw = String(p?.title || '').trim();
+  const looksValid = raw && !/^\d+$/.test(raw) && raw.length >= 3;
+  if (looksValid) {
+    // 로드맵 제목이면 prefix 떼고 topic 만, 아니면 원문.
+    const { prefix, topic } = splitRoadmapTitle(raw);
+    return prefix ? topic : raw;
+  }
+  if (resolvePlannerType(p) === 'ROADMAP') {
+    if (p?.roadmapWeek && p?.roadmapDay) return `로드맵 ${p.roadmapWeek}주차 ${p.roadmapDay}일 학습`;
+    return '로드맵 학습 계획';
+  }
+  return '사용자 플래너';
+};
+
 const blankForm = () => {
   const today = new Date();
   return {
@@ -73,6 +97,8 @@ export default function Planner() {
   const [form, setForm] = useState(blankForm);
   const [timeTable, setTimeTable] = useState({}); // { hour: [bool x6] }
   const [plannerId, setPlannerId] = useState(null); // null = 새 플래너
+  const [editingType, setEditingType] = useState('USER'); // 현재 폼/미리보기 대상의 원천(USER=새 플래너 기본)
+  const [activePlannerType, setActivePlannerType] = useState('ROADMAP'); // 좌측 목록 탭 (ROADMAP/USER)
   const [saved, setSaved] = useState([]);
   const [busy, setBusy] = useState('');
   const [loadingList, setLoadingList] = useState(true);
@@ -114,6 +140,7 @@ export default function Planner() {
 
   const buildPayload = () => ({
     ...form,
+    plannerType: editingType, // 새 플래너=USER. (백엔드: 생성 시 USER 강제·수정 시 원천 보존하므로 안전)
     year: Number(form.year) || null,
     month: Number(form.month) || null,
     day: Number(form.day) || null,
@@ -128,7 +155,17 @@ export default function Planner() {
     setForm(blankForm());
     setTimeTable({});
     setPlannerId(null);
+    setEditingType('USER'); // 새 플래너는 항상 사용자 플래너
     setAddedToSchedule(false);
+  };
+
+  // 좌측 목록 탭 전환: 선택 초기화 + 다른 탭의 항목을 편집/미리보기 중이면 새 플래너로 초기화(이전 타입 잔상 방지)
+  const switchTab = (type) => {
+    if (type === activePlannerType) return;
+    setActivePlannerType(type);
+    setSelectedIds([]);
+    const stillVisible = plannerId != null && saved.some((p) => p.id === plannerId && resolvePlannerType(p) === type);
+    if (!stillVisible) handleNew();
   };
 
   // 저장본을 폼으로 불러오기 (reopen / edit)
@@ -155,6 +192,7 @@ export default function Planner() {
       });
       setTimeTable(parseTimeTable(d.timeTableJson));
       setPlannerId(d.id);
+      setEditingType(resolvePlannerType(d));
       setAddedToSchedule(false);
       // 저장본에 기상시간/체크표가 있으면 선택 항목을 펼쳐서 보여준다.
       setShowOptional(Boolean(d.wakeUpTime) || Boolean(d.timeTableJson && d.timeTableJson !== '{}'));
@@ -271,29 +309,33 @@ export default function Planner() {
     } finally { setBusy(''); }
   };
 
-  // 현재 화면에 표시 중인 '자료 기반(ROADMAP_AUTO)' 플래너만 전체삭제 대상으로 삼는다.
-  // 수동으로 작성한 플래너(sourceType 없음)는 대상에서 제외 → 절대 삭제되지 않는다.
+  // 원천별 분리: 로드맵 플래너 / 사용자 플래너. 백엔드 plannerType 우선, 레거시는 resolvePlannerType 폴백.
   const roadmapPlanners = useMemo(
-    () => (Array.isArray(saved) ? saved.filter((p) => p.sourceType === 'ROADMAP_AUTO') : []),
+    () => (Array.isArray(saved) ? saved.filter((p) => resolvePlannerType(p) === 'ROADMAP') : []),
     [saved]
   );
-  const hasManualMixed = useMemo(
-    () => (Array.isArray(saved) ? saved.some((p) => p.sourceType !== 'ROADMAP_AUTO') : false),
+  const userPlanners = useMemo(
+    () => (Array.isArray(saved) ? saved.filter((p) => resolvePlannerType(p) === 'USER') : []),
     [saved]
   );
-  // 전체삭제 버튼 비활성화 조건: 대상 0개 / 삭제 중 / 다른 작업 진행 중
-  const bulkDisabled = roadmapPlanners.length === 0 || isDeleting || !!busy;
+  // 현재 탭에 보이는 목록 + 전체삭제 대상(현재 탭만)
+  const visibleList = activePlannerType === 'ROADMAP' ? roadmapPlanners : userPlanners;
+  const isRoadmapTab = activePlannerType === 'ROADMAP';
+  const tabLabel = isRoadmapTab ? '로드맵' : '사용자';
+  // 전체삭제 버튼 비활성화 조건: 현재 탭 대상 0개 / 삭제 중 / 다른 작업 진행 중
+  const bulkDisabled = visibleList.length === 0 || isDeleting || !!busy;
 
-  // 자료 기반 플래너 전체삭제 (현재 화면에 보이는 ROADMAP_AUTO id 만 전송 → 백엔드 재검증)
+  // 현재 탭 기준 전체삭제 (현재 탭에 보이는 id 만 전송 → 백엔드가 타입 동질성 재검증)
   const handleBulkDelete = async () => {
     if (isDeleting) return; // 중복 클릭 방지
-    const targetIds = roadmapPlanners.map((p) => p.id);
+    const targetIds = visibleList.map((p) => p.id);
     if (targetIds.length === 0) { setShowBulkModal(false); return; }
     try {
       setIsDeleting(true);
       const res = await plannerService.bulkDeletePlanners({
-        scope: 'VISIBLE_ROADMAP_AUTO',
-        sourceType: 'ROADMAP_AUTO',
+        plannerType: activePlannerType, // 현재 탭 타입만 삭제 (두 타입 동시 삭제 불가)
+        // 레거시 호환 필드(백엔드가 plannerType 우선 사용)
+        scope: isRoadmapTab ? 'VISIBLE_ROADMAP_AUTO' : undefined,
         plannerIds: targetIds,
       });
       if (res && res.success === false) {
@@ -317,7 +359,7 @@ export default function Planner() {
     e?.stopPropagation();
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
-  const allVisibleIds = useMemo(() => (Array.isArray(saved) ? saved.map((p) => p.id) : []), [saved]);
+  const allVisibleIds = useMemo(() => visibleList.map((p) => p.id), [visibleList]);
   const allSelected = allVisibleIds.length > 0 && selectedIds.length === allVisibleIds.length;
   const toggleSelectAll = (e) => {
     e?.stopPropagation();
@@ -364,9 +406,9 @@ export default function Planner() {
     return '날짜 미입력';
   };
 
-  // ===== 요약 카드: 기존 저장 데이터(saved)에서 파생 (더미 없음) =====
+  // ===== 요약 카드: 현재 탭(원천) 기준으로만 파생 (권장안 B, 더미 없음) =====
   const summary = useMemo(() => {
-    const list = Array.isArray(saved) ? saved : [];
+    const list = visibleList;
     const todayStr = toDateStr(new Date());
     const withDate = list.filter((p) => p.plannerDate);
     const upcoming = withDate
@@ -379,7 +421,7 @@ export default function Planner() {
       upcoming: upcoming.slice(0, 3),
       subjectCount: subjects.length,
     };
-  }, [saved]);
+  }, [visibleList]);
 
   return (
     <div className="min-h-screen bg-[#F6F7F8]">
@@ -397,52 +439,75 @@ export default function Planner() {
           <div className="flex flex-col gap-6">
             {/* 저장본 목록 */}
             <section className="rounded-[20px] border border-[#E5E7EB] bg-white p-5 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="m-0 flex items-center gap-2 text-[15px] font-extrabold text-[#111827]">
-                  <NotebookPen size={17} strokeWidth={2.2} style={{ color: GREEN_DARK }} />
-                  저장된 플래너
-                  {saved.length > 0 && (
-                    <span className="rounded-full bg-[#F4FBF2] px-2 py-0.5 text-[12px] font-bold text-[#15803D]">{saved.length}</span>
-                  )}
-                </h2>
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* 체크박스 선택 삭제 — 선택된 항목이 없으면 disabled */}
-                  <button
-                    onClick={() => setShowSelectModal(true)}
-                    disabled={selectedIds.length === 0 || isSelectDeleting || !!busy}
-                    title={selectedIds.length === 0 ? '삭제할 플래너를 선택하세요' : '선택한 플래너 삭제'}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#FDBA74] bg-white px-3.5 text-[13px] font-bold text-[#C2410C] transition hover:bg-[#FFF7ED] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Trash2 size={15} strokeWidth={2.2} style={{ color: '#C2410C' }} />
-                    {isSelectDeleting ? '삭제 중…' : `선택삭제${selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}`}
-                  </button>
-                  {/* 자료 기반(ROADMAP_AUTO) 플래너 전체삭제 — 위험 액션(빨간색 outline) */}
-                  <button
-                    onClick={() => setShowBulkModal(true)}
-                    disabled={bulkDisabled}
-                    title={roadmapPlanners.length === 0 ? '삭제할 자료 기반 플래너가 없습니다' : '자료 기반 플래너 전체삭제'}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#FECACA] bg-white px-3.5 text-[13px] font-bold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Trash2 size={15} strokeWidth={2.2} style={{ color: '#DC2626' }} />
-                    {isDeleting ? '삭제 중…' : `전체삭제${roadmapPlanners.length > 0 ? ` (${roadmapPlanners.length})` : ''}`}
-                  </button>
-                  <button
-                    onClick={handleNew}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#69CB5B] px-3.5 text-[13px] font-bold text-white transition hover:bg-[#5cb84f]"
-                  >
-                    <Plus size={16} strokeWidth={2.6} style={{ color: '#fff' }} />
-                    새 플래너
-                  </button>
-                </div>
+              <div className="mb-3 flex items-center gap-2">
+                <NotebookPen size={17} strokeWidth={2.2} style={{ color: GREEN_DARK }} />
+                <h2 className="m-0 text-[15px] font-extrabold text-[#111827]">플래너 목록</h2>
+              </div>
+
+              {/* 원천별 탭: 로드맵 플래너 / 사용자 플래너 */}
+              <div className="mb-3 flex items-center gap-1.5 rounded-xl bg-[#F4F5F6] p-1">
+                {[
+                  { key: 'ROADMAP', label: '로드맵 플래너', count: roadmapPlanners.length },
+                  { key: 'USER', label: '사용자 플래너', count: userPlanners.length },
+                ].map((t) => {
+                  const on = activePlannerType === t.key;
+                  return (
+                    <button
+                      key={t.key}
+                      onClick={() => switchTab(t.key)}
+                      className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-bold transition ${
+                        on ? 'bg-white text-[#15803D] shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : 'text-[#6B7280] hover:text-[#374151]'
+                      }`}
+                    >
+                      {t.label}
+                      <span className={`rounded-full px-1.5 py-0.5 text-[11px] font-bold ${on ? 'bg-[#F4FBF2] text-[#15803D]' : 'bg-[#E5E7EB] text-[#6B7280]'}`}>{t.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
+                {/* 체크박스 선택 삭제 — 현재 탭에서 선택된 항목만 */}
+                <button
+                  onClick={() => setShowSelectModal(true)}
+                  disabled={selectedIds.length === 0 || isSelectDeleting || !!busy}
+                  title={selectedIds.length === 0 ? '삭제할 플래너를 선택하세요' : '선택한 플래너 삭제'}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#FDBA74] bg-white px-3.5 text-[13px] font-bold text-[#C2410C] transition hover:bg-[#FFF7ED] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Trash2 size={15} strokeWidth={2.2} style={{ color: '#C2410C' }} />
+                  {isSelectDeleting ? '삭제 중…' : `선택삭제${selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}`}
+                </button>
+                {/* 현재 탭 전체삭제 — 위험 액션(빨간색 outline). 현재 탭 타입만 삭제된다. */}
+                <button
+                  onClick={() => setShowBulkModal(true)}
+                  disabled={bulkDisabled}
+                  title={visibleList.length === 0 ? `삭제할 ${tabLabel} 플래너가 없습니다` : `${tabLabel} 플래너 전체삭제`}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#FECACA] bg-white px-3.5 text-[13px] font-bold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Trash2 size={15} strokeWidth={2.2} style={{ color: '#DC2626' }} />
+                  {isDeleting ? '삭제 중…' : `${tabLabel} 전체삭제${visibleList.length > 0 ? ` (${visibleList.length})` : ''}`}
+                </button>
+                {/* 새 플래너는 항상 사용자 플래너로 생성된다. 로드맵 탭에선 문구로 명확히 안내. */}
+                <button
+                  onClick={() => { setActivePlannerType('USER'); setSelectedIds([]); handleNew(); }}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#69CB5B] px-3.5 text-[13px] font-bold text-white transition hover:bg-[#5cb84f]"
+                >
+                  <Plus size={16} strokeWidth={2.6} style={{ color: '#fff' }} />
+                  {isRoadmapTab ? '사용자 플래너 작성' : '새 플래너'}
+                </button>
               </div>
 
               {loadingList ? (
                 <div className="py-6 text-center text-[13px] text-[#9CA3AF]">불러오는 중…</div>
-              ) : saved.length === 0 ? (
+              ) : visibleList.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 py-6 text-center">
                   <FileText size={26} strokeWidth={1.8} style={{ color: '#D1D5DB' }} />
-                  <p className="m-0 text-[13px] font-semibold text-[#6B7280]">저장된 플래너가 없습니다</p>
-                  <p className="m-0 text-[12px] text-[#9CA3AF]">아래에서 플래너를 작성하고 저장해 보세요.</p>
+                  <p className="m-0 text-[13px] font-semibold text-[#6B7280]">
+                    {isRoadmapTab ? '로드맵 플래너가 없습니다' : '사용자 플래너가 없습니다'}
+                  </p>
+                  <p className="m-0 text-[12px] text-[#9CA3AF]">
+                    {isRoadmapTab ? '자료보관함에서 로드맵을 생성하면 학습 계획이 여기에 쌓입니다.' : '아래에서 플래너를 작성하고 저장해 보세요.'}
+                  </p>
                 </div>
               ) : (
                 <div className="flex max-h-[280px] flex-col gap-2 overflow-y-auto pr-1">
@@ -456,7 +521,7 @@ export default function Planner() {
                       <span className="text-[12px] font-bold text-[#C2410C]">{selectedIds.length}개 선택됨</span>
                     )}
                   </div>
-                  {saved.map((p) => {
+                  {visibleList.map((p) => {
                     const active = p.id === plannerId;
                     const checked = selectedIds.includes(p.id);
                     return (
@@ -484,7 +549,8 @@ export default function Planner() {
                         </div>
                         <div className="min-w-0 flex-1" title={p.title || '공부 플래너'}>
                           {(() => {
-                            const { prefix, topic } = splitRoadmapTitle(p.title || '공부 플래너');
+                            const { prefix } = splitRoadmapTitle(p.title || '');
+                            const display = getPlannerDisplayTitle(p); // 비정상 제목(빈값/숫자/ViewModel) fallback 처리
                             return (
                               <>
                                 {prefix && (
@@ -493,7 +559,7 @@ export default function Planner() {
                                   </span>
                                 )}
                                 <div className="flex items-center gap-1.5">
-                                  <span className="truncate text-[14px] font-bold text-[#111827]">{topic || '공부 플래너'}</span>
+                                  <span className="truncate text-[14px] font-bold text-[#111827]">{display}</span>
                                   {p.studyType && <span className="shrink-0 rounded-full bg-[#F4FBF2] px-1.5 py-0.5 text-[10px] font-bold text-[#15803D]">{p.studyType}</span>}
                                 </div>
                               </>
@@ -706,10 +772,11 @@ export default function Planner() {
             <section className="rounded-[20px] border border-[#E5E7EB] bg-white p-5 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
               <div className="mb-3 flex items-center gap-2 text-[14px] font-extrabold text-[#111827]">
                 <Layers size={16} strokeWidth={2.2} style={{ color: GREEN_DARK }} /> 내 학습 요약
+                <span className="rounded-full bg-[#F4FBF2] px-2 py-0.5 text-[11px] font-bold text-[#15803D]">{tabLabel} 플래너</span>
               </div>
               <div className="grid grid-cols-3 gap-2.5">
-                <SummaryStat label="저장된 플래너" value={`${summary.total}개`} />
-                <SummaryStat label="다가오는 일정" value={`${summary.upcomingCount}개`} />
+                <SummaryStat label={`${tabLabel} 플래너`} value={`${summary.total}개`} />
+                <SummaryStat label={`다가오는 ${tabLabel} 일정`} value={`${summary.upcomingCount}개`} />
                 <SummaryStat label="과목 수" value={`${summary.subjectCount}개`} />
               </div>
 
@@ -718,12 +785,12 @@ export default function Planner() {
                   <CalendarDays size={14} strokeWidth={2.2} style={{ color: '#9CA3AF' }} /> 마감 임박 일정
                 </div>
                 {summary.upcoming.length === 0 ? (
-                  <p className="m-0 rounded-lg bg-[#F9FAFB] px-3 py-2.5 text-[12.5px] text-[#9CA3AF]">예정된 일정이 없습니다. 날짜를 입력해 플래너를 저장해 보세요.</p>
+                  <p className="m-0 rounded-lg bg-[#F9FAFB] px-3 py-2.5 text-[12.5px] text-[#9CA3AF]">예정된 {tabLabel} 일정이 없습니다.</p>
                 ) : (
                   <div className="flex flex-col gap-1.5">
                     {summary.upcoming.map((p) => (
                       <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg border border-[#E7F1E4] bg-[#F4FBF2] px-3 py-2">
-                        <span className="truncate text-[12.5px] font-semibold text-[#111827]">{p.subject || p.title || '플래너'}</span>
+                        <span className="truncate text-[12.5px] font-semibold text-[#111827]">{(p.subject || '').trim() || getPlannerDisplayTitle(p)}</span>
                         <span className="shrink-0 text-[12px] font-bold text-[#15803D]">{p.plannerDate}</span>
                       </div>
                     ))}
@@ -741,9 +808,17 @@ export default function Planner() {
                   style={{ aspectRatio: '210 / 297', boxShadow: '0 10px 30px rgba(0,0,0,0.10)' }}
                 >
                   <div className="text-[20px] font-black text-[#15803D]">{form.title || '공부 플래너'}</div>
-                  <div className="mb-3.5 mt-1 text-[12px] text-[#4B5563]">
+                  <div className="mb-1.5 mt-1 text-[12px] text-[#4B5563]">
                     {form.year || '____'}년 {form.month || '__'}월 {form.day || '__'}일 ({form.dayOfWeek})
                     {form.term ? `  ·  ${form.term}` : ''}
+                  </div>
+                  {/* 유형: 로드맵 플래너 / 사용자 플래너 (탭 전환 시 이전 항목 잔상 없이 현재 폼 기준) */}
+                  <div className="mb-3.5 inline-flex items-center gap-1.5 rounded-md bg-[#F4FBF2] px-2 py-0.5 text-[11px] font-bold text-[#15803D]">
+                    유형: {editingType === 'ROADMAP' ? '로드맵 플래너' : '사용자 플래너'}
+                    {editingType === 'ROADMAP' && (() => {
+                      const { prefix } = splitRoadmapTitle(form.title || '');
+                      return prefix ? <span className="font-semibold text-[#4B5563]">· {prefix.replace(/^\[|\]$/g, '')}</span> : null;
+                    })()}
                   </div>
 
                   <div className="mb-3.5 grid grid-cols-4 gap-1.5">
@@ -850,20 +925,17 @@ export default function Planner() {
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#FEF2F2]">
                 <Trash2 size={20} strokeWidth={2.2} style={{ color: '#DC2626' }} />
               </div>
-              <h3 className="m-0 text-[17px] font-extrabold text-[#111827]">플래너 전체삭제</h3>
+              <h3 className="m-0 text-[17px] font-extrabold text-[#111827]">{tabLabel} 플래너 전체삭제</h3>
             </div>
             <p className="m-0 text-[14px] leading-relaxed text-[#374151]">
-              전체 플래너를 삭제하면 자료보관함에 저장된 플래너/로드맵 항목도 함께 삭제됩니다.
+              현재 탭의 <b>{tabLabel} 플래너</b>만 삭제합니다. 자료보관함에 저장된 해당 플래너 항목도 함께 삭제됩니다.
               PDF 학습자료는 삭제되지 않습니다. 이 작업은 되돌릴 수 없습니다.
             </p>
             <p className="mt-2 text-[13px] leading-relaxed text-[#6B7280]">
-              수동으로 작성한 플래너와 주간일정은 삭제되지 않습니다.
+              {isRoadmapTab ? '사용자 플래너' : '로드맵 플래너'}와 주간일정은 삭제되지 않습니다.
             </p>
             <div className="mt-3 rounded-xl border border-[#FECACA] bg-[#FEF2F2] px-3.5 py-2.5 text-[13px] font-bold text-[#B91C1C]">
-              삭제 대상: {roadmapPlanners.length}개
-              {hasManualMixed && (
-                <span className="ml-1 font-semibold text-[#9CA3AF]">· 수동 플래너는 제외</span>
-              )}
+              삭제 대상: {tabLabel} 플래너 {visibleList.length}개
             </div>
             <div className="mt-5 flex justify-end gap-2.5">
               <button
@@ -875,11 +947,11 @@ export default function Planner() {
               </button>
               <button
                 onClick={handleBulkDelete}
-                disabled={isDeleting || roadmapPlanners.length === 0}
+                disabled={isDeleting || visibleList.length === 0}
                 className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#DC2626] px-5 text-[14px] font-extrabold text-white transition hover:bg-[#B91C1C] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Trash2 size={16} strokeWidth={2.2} style={{ color: '#fff' }} />
-                {isDeleting ? '삭제 중…' : '전체삭제'}
+                {isDeleting ? '삭제 중…' : `${tabLabel} 전체삭제`}
               </button>
             </div>
           </div>
