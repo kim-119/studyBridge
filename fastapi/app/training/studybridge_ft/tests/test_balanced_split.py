@@ -31,3 +31,22 @@ def test_split_deterministic():
     a = sp.split(s, seed=1)
     b = sp.split(s, seed=1)
     assert [x["messages"] for x in a["train"]] == [x["messages"] for x in b["train"]]
+
+
+def test_split_valid_nonempty():
+    # 잘게 쪼개진 strata(도메인×task×난이도)에서도 validation이 굶지 않아야 한다.
+    # (회귀: per-stratum 정수 반올림이 valid를 항상 0으로 만들어 학습 로더가 죽던 버그)
+    s = _samples(2400)
+    r = sp.split(s, seed=0)
+    assert len(r["valid"]) > 0
+    assert len(r["test"]) > 0
+
+
+def test_split_ratios_approximate():
+    s = _samples(2400)
+    n = len(s)
+    r = sp.split(s, ratios=(0.90, 0.05, 0.05), seed=0)
+    # 전역 비율이 대략 보존(층화 반올림 허용오차)
+    assert 0.85 * n <= len(r["train"]) <= 0.93 * n
+    assert 0.02 * n <= len(r["valid"]) <= 0.09 * n
+    assert 0.02 * n <= len(r["test"]) <= 0.09 * n

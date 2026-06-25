@@ -30,15 +30,24 @@ def split(samples: list[dict], ratios=(0.90, 0.05, 0.05), seed: int = 0) -> dict
         strata[_stratum(s)].append(s)
 
     train, valid, test = [], [], []
+    # 분수 잔여를 strata 간 이월(largest-remainder)해서 작은 stratum도 valid/test에
+    # 기여하게 한다. per-stratum 독립 반올림은 5%(valid)를 항상 0으로 굶긴다(회귀 버그).
+    carry = [0.0, 0.0, 0.0]
     for _, rows in sorted(strata.items(), key=lambda kv: str(kv[0])):
         rows = rows[:]
         rnd.shuffle(rows)
         n = len(rows)
-        n_tr = max(1, int(n * ratios[0])) if n >= 3 else n
-        n_va = 1 if n - n_tr >= 2 else 0
-        train += rows[:n_tr]
-        valid += rows[n_tr:n_tr + n_va]
-        test += rows[n_tr + n_va:]
+        want = [carry[i] + n * ratios[i] for i in range(3)]
+        counts = [int(w) for w in want]
+        leftover = n - sum(counts)
+        order = sorted(range(3), key=lambda i: want[i] - counts[i], reverse=True)
+        for k in range(leftover):
+            counts[order[k % 3]] += 1
+        carry = [want[i] - counts[i] for i in range(3)]
+        i0, i1 = counts[0], counts[0] + counts[1]
+        train += rows[:i0]
+        valid += rows[i0:i1]
+        test += rows[i1:]
     rnd.shuffle(train); rnd.shuffle(valid); rnd.shuffle(test)
     return {"train": train, "valid": valid, "test": test}
 
