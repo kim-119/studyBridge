@@ -2157,7 +2157,11 @@ axes:
   modes: [basic, socratic, debate, roleplay, archive_qa, quiz, roadmap, review]
   personalities: [친절형, 비판형, 논리형, 창의형, 간결형, 직접입력형]
   levels: [입문, 학사, 석사, 박사, 전문가]
-  subjects: [자료구조, 운영체제, 네트워크, 데이터베이스, 알고리즘, 머신러닝, 소프트웨어공학, 컴퓨터구조]
+  # 컴공 국한 금지 — 전 학문 분야 포괄(생성기가 subject를 이 목록에서 샘플링)
+  subjects: [컴퓨터공학, 전자공학, 기계공학, 화학공학, 건축학, 수학, 물리학, 화학, 생물학,
+             지구과학, 천문학, 통계학, 의학, 약학, 간호학, 경제학, 경영학, 회계학, 심리학,
+             사회학, 법학, 정치외교학, 행정학, 교육학, 철학, 역사학, 문학, 언어학, 지리학,
+             미술, 음악, 체육, 환경학, 농학]
   source_types: [none, material, rag]
 generator_version: "v1"
 seed: 20260625
