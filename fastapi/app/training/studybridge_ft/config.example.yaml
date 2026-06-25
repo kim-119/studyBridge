@@ -1,0 +1,50 @@
+# studybridge_ft 생성/학습 설정 예시. 실제 실행은 이 값을 복사/override.
+ollama:
+  base_url: http://localhost:11434
+  model: qwen3:14b
+  think: false
+  num_predict: 1024
+  temperature: 0.7
+  timeout_s: 180
+  max_concurrent_generation: 1
+  vram_guard_mib: 14000        # 운영+생성 합산 이 값 넘으면 대기
+seed_counts:
+  concept: 640
+  archive_qa: 400
+  quiz: 400
+  socratic: 240
+  debate: 240
+  professor: 240
+  format_safety: 240
+full_counts:
+  concept: 8000
+  archive_qa: 5000
+  quiz: 5000
+  socratic: 3000
+  debate: 3000
+  professor: 3000
+  format_safety: 3000
+shard_size: 200
+abort_thresholds:
+  total_reject_ratio: 0.20
+  quiz_invalid_ratio: 0.05
+  empty_assistant_ratio: 0.01
+  secret_pii_count: 0          # 초과(>0) 시 즉시 중단
+split: { train: 0.90, valid: 0.05, test: 0.05 }
+buckets: { short_max: 512, long_max: 1024, xlong_max: 2048, xlong_ratio_cap: 0.05 }
+train:
+  base_model: Qwen/Qwen3-14B
+  max_seq_length: 1024
+  num_train_epochs: 2
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-4
+  lora: { r: 16, alpha: 32, dropout: 0.05 }
+axes:
+  modes: [basic, socratic, debate, roleplay, archive_qa, quiz, roadmap, review]
+  personalities: [친절형, 비판형, 논리형, 창의형, 간결형, 직접입력형]
+  levels: [입문, 학사, 석사, 박사, 전문가]
+  subjects: [자료구조, 운영체제, 네트워크, 데이터베이스, 알고리즘, 머신러닝, 소프트웨어공학, 컴퓨터구조]
+  source_types: [none, material, rag]
+generator_version: "v1"
+seed: 20260625

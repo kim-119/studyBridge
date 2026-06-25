@@ -46,3 +46,17 @@ __pycache__/
 .env.*
 !.env.example
 
+
+# studybridge_ft 대용량 산출물 (repo 밖 ~/studybridge-ft 가 기본이나 이중 안전망)
+studybridge-ft/
+**/studybridge_ft/**/data/
+**/studybridge_ft/**/outputs/
+**/studybridge_ft/**/logs/
+**/studybridge_ft/**/checkpoints/
+**/studybridge_ft/**/cache/
+**/studybridge_ft/**/raw/
+**/studybridge_ft/**/cleaned/
+**/studybridge_ft/**/rejected/
+*.safetensors
+*.bin
+*.pt
