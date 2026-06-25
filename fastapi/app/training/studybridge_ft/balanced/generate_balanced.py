@@ -97,9 +97,8 @@ def generate(total: int, seed: int = 42, resume: bool = True,
         done = i + 1 - start
         if done > 0 and stats["accepted"] % 100 == 0:
             _print_distribution(samples, f"중간 {stats['accepted']}")
-            # abort 체크
-            tried = stats["rejected"] + stats["accepted"] - len(samples) + stats["rejected"]
-            total_tried = max(1, stats["rejected"] + (stats["accepted"]))
+            # abort 체크: reject / (reject+accepted)
+            total_tried = max(1, stats["rejected"] + stats["accepted"])
             if stats["rejected"] / total_tried > ABORT["reject_ratio"]:
                 stats["aborted"] = "reject_ratio"
                 break
