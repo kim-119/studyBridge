@@ -170,3 +170,68 @@
 - 운영 서빙 연동(어댑터 merge→GGUF→Ollama 교체)는 별도 후속 작업
 - 자동 재학습 상시화(단일 GPU SPOF라 비권장; 새벽 1회성 배치만)
 - 기존 운영/serving/Spring/React/배포 설정 변경
+
+---
+
+## 12. 운영 안전장치 (Operational Safety — 필수)
+
+### 12.1 Manifest 기반 재현성
+각 생성 실행마다 `~/studybridge-ft/manifests/manifest_<run_id>.json`을 남긴다. 필드:
+`run_id, git_commit, model_name, model_digest(또는 ollama model info), generation_config, category_counts, input_seed, started_at, finished_at, accepted, rejected, repaired, deduped`.
+
+### 12.2 Resume 가능 구조 (shard 단위)
+3만 야간 배치가 중간에 끊겨도 처음부터 다시 만들지 않도록 **카테고리별 shard 파일**을 사용한다.
+- `raw/concept_0001.jsonl`, `raw/quiz_0001.jsonl`, …
+- `cleaned/quiz_0001.clean.jsonl`, …
+- 이미 완료된 shard(=대응 `cleaned/*.clean.jsonl` 존재 + manifest에 완료 기록)는 **skip** 한다.
+
+### 12.3 Validator fail-fast + quarantine
+검증 실패 샘플은 조용히 버리지 않고 사유별 quarantine에 저장한다.
+- `rejected/schema_error.jsonl`, `rejected/empty_answer.jsonl`, `rejected/quiz_invalid_answer.jsonl`, `rejected/pii_secret.jsonl`, …
+
+**중단 임계값(초과 시 배치 abort)**:
+- 전체 reject > **20%**
+- quiz JSON invalid > **5%**
+- empty assistant > **1%**
+- secret/PII detected > **0건 → 즉시 중단**
+
+### 12.4 Dry-run 모드
+구현 직후 2,400개를 바로 만들지 않고 카테고리별 소량 dry-run을 먼저 한다.
+```
+python -m app.training.studybridge_ft.generate_seed --dry-run --per-category 5
+```
+dry-run 확인 항목: ChatML JSONL 구조 / validator 통과 / dedup 작동 / output path가 `~/studybridge-ft/`인지 / **repo 내부에 데이터가 생성되지 않는지**.
+
+### 12.5 운영 서버 경합 방지 (단일 GPU 공유)
+- `max_concurrent_generation=1`
+- 생성/학습 시작 전 **nvidia-smi VRAM 체크**, 운영 서버 VRAM 사용량이 임계값 이상이면 **대기 또는 중단**
+- 학습은 기본 **새벽 배치 전제**
+- **OOM 발생 시 checkpoint/manifest에 실패 기록**
+
+### 12.6 Git 안전장치
+- repo 내부 `data/output/log` **생성 금지**(경로 가드)
+- 실행 전 `.gitignore` 확인
+- 현재 commit hash를 manifest에 기록
+- 기존 운영 파일 수정 금지
+- **`studybridge_ft/` 외부의 tracked file 변경 감지 시 실행 중단**
+
+---
+
+## 13. 구현 범위 (고정 — 14단계)
+
+1. `studybridge_ft` 패키지 구조 생성
+2. `config.example.yaml` 작성
+3. utils 구현: `jsonl_io`, `sanitize`, `dedup`, `manifest`, `ollama_client`, `token_bucket`, `git_guard`
+4. validators 구현: `chatml`, `quiz`, `socratic`, `debate`, `professor`, `safety`
+5. 7개 generators 구현
+6. `generate_seed.py` 구현
+7. `validate_dataset.py` 구현
+8. `package_dataset.py` 구현
+9. `train_qlora.py` 구현
+10. `eval_studybridge.py` 구현
+11. dry-run 실행
+12. 시드 2,400개 생성
+13. QLoRA 1회 학습
+14. eval 리포트 생성
+
+기존 운영 API, Spring, React, 배포 설정은 수정하지 않는다.
