@@ -24,20 +24,26 @@ def _assistant(sample: dict) -> str:
 
 
 def _has_repetition(text: str) -> bool:
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if not lines:
-        return False
-    # 같은 줄이 4회 이상 반복 (스펙 64)
+    """진짜 퇴행적 반복만 탐지. 구조화 템플릿(roadmap 주차/마크다운 헤더)은 오탐 제외.
+
+    스펙 64. 마크다운 마커를 제거해 정규화한 뒤, '내용 있는' 줄/문장의 반복만 본다.
+    """
     from collections import Counter
-    c = Counter(lines)
-    if c and c.most_common(1)[0][1] >= 4:
+
+    def _norm(s: str) -> str:
+        return re.sub(r"[#*\->\s·`|]", "", s).strip()
+
+    # 1) 정규화 후 12자 이상의 '내용' 줄이 4회 이상 반복 = 퇴행
+    lines = [_norm(ln) for ln in text.splitlines()]
+    lines = [ln for ln in lines if len(ln) >= 12]
+    if lines and Counter(lines).most_common(1)[0][1] >= 4:
         return True
-    # 동일 25자 구절 과다 반복
-    chunk = re.sub(r"\s+", "", text)
-    for i in range(0, max(0, len(chunk) - 25), 25):
-        seg = chunk[i:i + 25]
-        if seg and chunk.count(seg) >= 4:
-            return True
+
+    # 2) 정규화한 동일 문장(12자+)이 4회 이상 도배 = 퇴행 (마크다운 헤더는 정규화로 제외)
+    sents = [_norm(s) for s in re.split(r"[。.!?\n]", text)]
+    sents = [s for s in sents if len(s) >= 12]
+    if sents and Counter(sents).most_common(1)[0][1] >= 4:
+        return True
     return False
 
 

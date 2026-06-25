@@ -19,9 +19,27 @@ def test_too_short_rejected():
 
 
 def test_repetition_rejected():
-    txt = "같은 문장이 반복됩니다.\n" * 5
+    # 12자 이상 동일 줄이 4회 이상 = 진짜 퇴행
+    txt = "이 문장은 완전히 동일하게 계속 반복되는 퇴행 사례입니다.\n" * 5
     ok, reason, _ = vb.validate_sample(_mk("수학", "concept", txt))
     assert not ok and reason == "repetition"
+
+
+def test_structured_roadmap_not_false_repetition():
+    # 구조화된 4주 로드맵(주차별 목표/활동/점검 반복)은 오탐 금지
+    txt = (
+        "**수학 - 미적분 4주 학습 로드맵**\n\n"
+        "### 1주차: 극한과 연속\n#### 학습 목표\n- 극한의 정의를 이해한다.\n"
+        "#### 활동\n- 교재 1장을 읽고 연습문제를 푼다.\n#### 점검 기준\n- 극한 계산 5문제 정답.\n\n"
+        "### 2주차: 미분의 기초\n#### 학습 목표\n- 도함수의 의미를 이해한다.\n"
+        "#### 활동\n- 미분 공식을 정리하고 적용한다.\n#### 점검 기준\n- 미분 계산 5문제 정답.\n\n"
+        "### 3주차: 적분의 기초\n#### 학습 목표\n- 정적분의 개념을 이해한다.\n"
+        "#### 활동\n- 넓이 계산 문제를 푼다.\n#### 점검 기준\n- 적분 계산 5문제 정답.\n\n"
+        "### 4주차: 종합 응용\n#### 학습 목표\n- 미적분을 실제 문제에 적용한다.\n"
+        "#### 활동\n- 응용 과제를 수행한다.\n#### 점검 기준\n- 종합 과제 통과.\n"
+    )
+    ok, reason, _ = vb.validate_sample(_mk("수학", "roadmap", txt))
+    assert ok, f"구조화 로드맵 오탐: {reason}"
 
 
 def test_off_domain_drift_rejected():
