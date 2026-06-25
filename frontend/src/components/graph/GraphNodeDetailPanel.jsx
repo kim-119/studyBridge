@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   colorForNode, labelForNodeType, displayLabelForNode, displayLabelForEdge,
 } from '../../utils/graph/graphTypes';
 import { makeWikilink } from '../../utils/graph/wikilink';
 import { copyTextToClipboard } from '../../utils/graph/graphExportActions';
+import GraphNodeMemo from './GraphNodeMemo';
 
 // 노드 1개의 표시 라벨(참조 리스트용): 본문 스니펫이 아니라 semanticRole 기반.
 const nodeRefLabel = (n) => displayLabelForNode(n) || n?.shortLabel || n?.label || '항목';
@@ -28,16 +29,26 @@ function ExpandableBody({ body }) {
 
 // 우측 상세 패널: 노드 전문 + backlink/outgoing + 태그 + 액션.
 //  · 어떤 필드가 깨져도 패널 전체가 죽지 않게 방어한다(spec 57).
-export default function GraphNodeDetailPanel({ node, linkIndex, onSelectNode, onCenterNode, onClose }) {
+export default function GraphNodeDetailPanel({
+  node, linkIndex, memoContext, onSelectNode, onCenterNode, onClose,
+}) {
+  // 선택 노드의 현재 메모 내용(Markdown 복사에 조건부 포함). 노드 바뀌면 GraphNodeMemo 가 새로 보고.
+  const memoRef = useRef('');
+  useEffect(() => { memoRef.current = ''; }, [node?.id]);
+
   if (!node) return null;
   const backlinks = linkIndex?.backlinks?.get(node.id) || [];
   const outgoing = linkIndex?.outgoing?.get(node.id) || [];
   const color = colorForNode(node.type);
   const needsReview = node.metadata && node.metadata.needsReview === true;
+  const materialId = memoContext?.materialId ?? null;
 
   const copyMarkdown = async () => {
     try {
-      const md = `### ${makeWikilink(node.obsidianName, node.title)}\n\n${node.body || ''}`;
+      let md = `### ${makeWikilink(node.obsidianName, node.title)}\n\n${node.body || ''}`;
+      // 선택 노드에 메모가 있으면 plain text 로만 덧붙인다(HTML 미삽입, 줄바꿈 보존).
+      const memo = String(memoRef.current || '').trim();
+      if (memo) md += `\n\n## 메모\n${memo}`;
       const ok = await copyTextToClipboard(md);
       if (!ok) window.alert('복사에 실패했습니다.');
     } catch {
@@ -118,6 +129,15 @@ export default function GraphNodeDetailPanel({ node, linkIndex, onSelectNode, on
           <h5>마인드맵 링크명</h5>
           <code className="obsg-detail-wikilink">{makeWikilink(node.obsidianName)}</code>
         </div>
+
+        {/* 노드별 메모: materialId(저장된 마인드맵)일 때만 활성. key 로 노드 전환 시 상태 격리. */}
+        <GraphNodeMemo
+          key={`${materialId ?? 'new'}:${node.id}`}
+          materialId={materialId}
+          nodeId={node.id}
+          nodeLabel={node.title || node.label || ''}
+          onContentChange={(c) => { memoRef.current = c; }}
+        />
       </div>
 
       <div className="obsg-detail-actions">

@@ -8,6 +8,13 @@ import {
 import {
   computeLabelLayout, edgeLabelVisibleAtZoom, LABEL_PRIORITY,
 } from '../../utils/graph/graphLabelLayout';
+import { getDisplayLabel, getTooltipLabel } from '../../utils/graph/graphLabel';
+
+// 노드 라벨 표시 텍스트: 선택 노드는 더 길게, 그 외는 타입별 grapheme 한도로 절단(한글/이모지 안전).
+function nodeLabelText(node, isSel) {
+  if (isSel) return getDisplayLabel(node.title || displayLabelForNode(node), { maxChars: 28 });
+  return getDisplayLabel(displayLabelForNode(node), { type: node.type });
+}
 
 // zoom/pan 안정화 상수(spec 39~41).
 const MIN_ZOOM = 0.15;
@@ -265,8 +272,8 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
         y: p.y,
         r,
         haloR: isSel ? r + 8 : isCenter ? r + 6 : 0,
-        // semanticRole 기반 라벨(본문 스니펫 금지). 선택 노드는 실제 title 전체 표시.
-        text: showLabel ? (isSel ? (n.title || displayLabelForNode(n)) : displayLabelForNode(n)) : '',
+        // semanticRole 기반 라벨(본문 스니펫 금지) + grapheme 절단. 렌더 텍스트와 동일해야 충돌 박스가 맞다.
+        text: showLabel ? nodeLabelText(n, isSel) : '',
         showLabel,
         priority,
       });
@@ -473,9 +480,9 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
                         y={r + 12}
                         textAnchor="middle"
                       >
-                        {/* hover/touch 시 전체 title 툴팁(spec 37). */}
-                        <title>{n.title || n.label}</title>
-                        {isSel ? (n.title || displayLabelForNode(n)) : displayLabelForNode(n)}
+                        {/* hover/touch 시 전체 title 툴팁(grapheme 정규화, spec 37). */}
+                        <title>{getTooltipLabel(n.title || n.label)}</title>
+                        {nodeLabelText(n, isSel)}
                       </text>
                     ) : null}
                   </g>

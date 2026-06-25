@@ -24,7 +24,9 @@ const DEFAULT_DISPLAY = Object.freeze({
 });
 const DEFAULT_FORCES = Object.freeze({ repel: 1, linkDistance: 1, center: 1 });
 
-export default function ObsidianGraphView({ graph: rawGraph, title = '마인드맵', extraActions = null }) {
+export default function ObsidianGraphView({
+  graph: rawGraph, title = '마인드맵', extraActions = null, memoContext = null,
+}) {
   const graph = useMemo(() => sanitizeGraph(rawGraph || { nodes: [], edges: [] }), [rawGraph]);
   const bigGraph = graph.nodes.length > 80;
 
@@ -280,6 +282,7 @@ export default function ObsidianGraphView({ graph: rawGraph, title = '마인드�
             <GraphNodeDetailPanel
               node={selected}
               linkIndex={linkIndex}
+              memoContext={memoContext}
               onSelectNode={handleSelectNode}
               onCenterNode={handleCenterNode}
               onClose={() => setSelected(null)}

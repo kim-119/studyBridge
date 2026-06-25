@@ -935,6 +935,30 @@ export const materialService = {
   },
 };
 
+// 마인드맵 노드별 메모. (저장된 MINDMAP material 의) materialId + nodeId 로 사용자별 단일 메모 관리.
+//  · 응답은 { success, memo:{...}|null } 로 통일. memo 가 null 이면 메모 없음.
+//  · nodeId 는 그래프 생성 id(특수문자 가능) → query/body 로 전달(encodeURIComponent).
+export const mindmapMemoService = {
+  getNodeMemo: async (materialId, nodeId) => {
+    const res = await api.get(`/api/materials/${materialId}/mindmap-memo`, {
+      params: { nodeId },
+    });
+    return res.data; // { success, memo }
+  },
+  saveNodeMemo: async (materialId, { nodeId, nodeLabel, content }) => {
+    const res = await api.put(`/api/materials/${materialId}/mindmap-memo`, {
+      nodeId, nodeLabel: nodeLabel || '', content: content || '',
+    });
+    return res.data; // { success, memo }
+  },
+  deleteNodeMemo: async (materialId, nodeId) => {
+    const res = await api.delete(`/api/materials/${materialId}/mindmap-memo`, {
+      params: { nodeId },
+    });
+    return res.data; // { success, memo:null }
+  },
+};
+
 // 자료보관함 폴더 CRUD. 폴더는 자료(material) id 체계와 분리된 별도 엔티티이며 AI 처리 대상이 아니다.
 export const folderService = {
   listFolders: async () => {

@@ -42,7 +42,11 @@ export default function ObsidianArchiveGraphViewer({ material, onBack, onDelete 
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         {graph && valid.ok ? (
-          <ObsidianGraphView graph={graph} title={title} />
+          <ObsidianGraphView
+            graph={graph}
+            title={title}
+            memoContext={material?.materialId != null ? { materialId: material.materialId } : null}
+          />
         ) : (
           <div className="obsg-empty" style={{ position: 'static', height: '100%' }}>
             <Network size={40} color="#374151" />

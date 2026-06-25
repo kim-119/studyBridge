@@ -87,15 +87,19 @@
 
 .obsg-node-hit { cursor: pointer; }
 .obsg-node-label {
-  fill: #cbd5e1;
-  font-size: 11px;
+  fill: #e2e8f5;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   pointer-events: none;
   paint-order: stroke;
   stroke: #0b1020;
-  stroke-width: 3px;
+  stroke-width: 3.5px;
   stroke-linejoin: round;
 }
-.obsg-node-label.is-dim { fill: #64748b; }
+/* 선택 라벨: 더 크고 굵게 + 밝게(spec 2-7). */
+.obsg-node-label.selected { fill: #f5f8ff; font-size: 14px; font-weight: 700; }
+.obsg-node-label.is-dim { fill: #6b7691; font-weight: 500; }
 /* 발표 모드: 라벨 폰트 ~1.27x 확대 + 더 밝게(spec 3·15). */
 .obsg-canvas-wrap.is-present .obsg-node-label { font-size: 14px; fill: #e8edf6; }
 .obsg-canvas-wrap.is-present .obsg-node-label.selected { font-size: 15px; }
@@ -216,9 +220,11 @@
   flex: none;
 }
 .obsg-detail-title {
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 18px;
+  font-weight: 800;
   line-height: 1.35;
+  letter-spacing: -0.015em;
+  color: #f4f7ff;
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: keep-all;
@@ -238,9 +244,9 @@
   overflow-y: auto;
   min-height: 0;
   flex: 1 1 auto;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.6;
-  color: #e5e7eb;
+  color: #e8edf6;
 }
 .obsg-detail-text {
   white-space: pre-wrap;
@@ -289,10 +295,11 @@
 .obsg-detail-section { margin-top: 14px; }
 .obsg-detail-section h5 {
   margin: 0 0 6px;
-  font-size: 11px;
+  font-size: 13px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #94a3b8;
+  color: #aab4c8;
 }
 .obsg-link-item {
   display: flex;
@@ -504,6 +511,71 @@
   background: #1f2937; border: 1px solid #374151; color: #cbd5e1; font-size: 11px;
 }
 .obsg-set-empty { font-size: 12px; color: #6b7280; padding: 2px; }
+
+/* ── 노드 메모 섹션(우측 상세 패널 내부) ── */
+.obsg-memo {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 255, 0.16);
+  border-radius: 14px;
+  padding: 12px 12px 10px;
+}
+.obsg-memo-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 8px;
+}
+.obsg-memo-head h5 {
+  margin: 0; font-size: 14px; font-weight: 800; letter-spacing: 0.02em;
+  text-transform: none; color: #f1f5fc;
+}
+.obsg-memo-count { font-size: 12px; font-weight: 600; color: #94a3b8; font-variant-numeric: tabular-nums; }
+.obsg-memo-count.is-over { color: #fca5a5; }
+.obsg-memo-hint {
+  font-size: 12.5px; line-height: 1.5; color: #94a3b8;
+  padding: 8px 2px;
+}
+.obsg-memo-textarea {
+  width: 100%; box-sizing: border-box;
+  min-height: 140px; max-height: 260px; resize: vertical;
+  background: rgba(2, 6, 23, 0.5);
+  color: #eaf2ff;
+  border: 1px solid rgba(148, 163, 255, 0.16);
+  border-radius: 12px;
+  padding: 11px 12px;
+  font-family: inherit;
+  font-size: 14px; line-height: 1.55; letter-spacing: -0.01em;
+  outline: none;
+}
+.obsg-memo-textarea::placeholder { color: rgba(226, 232, 240, 0.42); }
+.obsg-memo-textarea:focus {
+  border-color: rgba(129, 140, 248, 0.85);
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.16);
+}
+.obsg-memo-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 9px;
+}
+.obsg-memo-status { font-size: 12px; font-weight: 600; color: #9fb0c9; min-width: 0; }
+.obsg-memo-status.is-saving { color: #a5b4fc; }
+.obsg-memo-status.is-saved, .obsg-memo-status.is-autosaved { color: #6ee7b7; }
+.obsg-memo-status.is-error { color: #fca5a5; }
+.obsg-memo-status.is-dirty { color: #fcd34d; }
+.obsg-memo-buttons { display: flex; gap: 8px; flex: none; }
+.obsg-memo-save {
+  background: linear-gradient(135deg, #6d5dfc, #7c3aed);
+  color: #fff; border: 0; border-radius: 10px;
+  font-size: 13.5px; font-weight: 800; padding: 8px 13px; cursor: pointer;
+}
+.obsg-memo-save:hover { filter: brightness(1.08); }
+.obsg-memo-save:disabled { opacity: 0.45; cursor: default; filter: none; }
+.obsg-memo-delete {
+  background: rgba(239, 68, 68, 0.08);
+  color: rgba(252, 165, 165, 0.95);
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  border-radius: 10px;
+  font-size: 13.5px; font-weight: 700; padding: 8px 13px; cursor: pointer;
+}
+.obsg-memo-delete:hover { background: rgba(239, 68, 68, 0.16); }
+.obsg-memo-delete:disabled { opacity: 0.4; cursor: default; }
 
 /* 작은 화면: 상세 패널을 하단 시트로. */
 @media (max-width: 640px) {
