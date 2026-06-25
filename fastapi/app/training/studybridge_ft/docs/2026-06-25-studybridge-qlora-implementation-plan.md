@@ -22,6 +22,16 @@
 - 커밋: 각 Task 끝에 commit. 메시지 끝에 `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`. 의미 단위로 `git push origin LLM-clean`(durable).
 - 모든 pytest는 `fastapi/.venv/bin/python -m pytest`로 실행. 테스트는 Ollama/GPU를 **모킹**(네트워크/GPU 없이 통과).
 
+### StudyBridge 축 (모든 generator/validator/eval가 반영 — 상세 Addendum A)
+- **학습 모드(8)**: `basic`(기본 설명), `socratic`, `debate`(토론/티키타카), `roleplay`(상황극), `archive_qa`(자료 기반 QA), `quiz`, `roadmap`(로드맵/플래너), `review`(오답노트/복습).
+- **교수 성격(6)**: `친절형, 비판형, 논리형, 창의형, 간결형, 직접입력형`.
+- **지식 수준(5)**: `입문, 학사, 석사, 박사, 전문가`.
+- **샘플 metadata(필수, 모든 샘플)**: `category, mode, personality, level, subject, source_type, expected_format, token_bucket, generator_version`.
+- **자료 행동 규칙**: 근거 있으면 근거기반 / 부족하면 "자료 내 근거 부족" 명시 / RAG 없이 임의지식 보완 금지 / 퀴즈는 `source_hint` 필수 / 요약·키워드·세부핵심·페이지별 요약 형식 분리.
+- **멀티에이전트 규칙**: 지정 교수만 답변 / 타 교수명 사칭 금지 / 3인 동일답변 반복 금지 / 토론=주장→반박→재반박→검증→결론 / 소크라테스=정답 첫문장 노출 금지, 질문→힌트→사고유도→부분정리→최종정리.
+- **validator 강화**: mode↔구조 일치, personality↔말투 일치, level↔깊이 일치, quiz 필드 완전성, source_hint 존재, 빈 응답, 너무 짧은 답변, 캐릭터 혼선, **system prompt 누출**, PII/secret, content_hash 중복, rejected quarantine 저장.
+- **eval 축(10)**: 일반 설명 품질 / 한국어 자연성 / 난이도 적합성 / 소크라테스 흐름 / 토론·반박 구조 / 교수 캐릭터 분리 / 퀴즈 JSON 안정성 / 자료 근거 부족 시 추측 금지 / 빈 응답 방지 / 프론트·API 호환성.
+
 ---
 
 ## File Structure
@@ -2130,3 +2140,116 @@ Expected 확인:
 **Placeholder scan:** 모든 코드 step에 실제 코드 포함. "나머지는 동형" 부분(Task16 archive_qa/debate/format_safety)은 concept.py 전체 + 표의 정확한 validators/user_prompt를 제시했으므로 재현 가능(placeholder 아님).
 
 **Type consistency:** `ValidationResult(ok,reason)`, `GenResult(accepted,rejected,repaired,deduped,skipped,reject_reasons)`, `sample_hash(sample)`, `assign_buckets(samples,cfg)->{"512","1024","2048","dropped_xlong"}`, `OllamaClient.chat(system,user)`, `Manifest.record(...category=)` — 정의처(Task)와 사용처 일치 확인.
+
+---
+
+# Addendum A — StudyBridge 축 / metadata / 강화 contract
+
+> 사용자 추가 요구(학습모드 8·성격 6·수준 5·자료/멀티에이전트 규칙·강화 validator·eval 10축) 반영. 아래 신규 Task(26~28)와 기존 Task 수정(AMEND)이 권위(authoritative)다. 디스패치 순서는 §끝 참조.
+
+## A.0 디스패치 순서 (controller)
+`1 → 2 → 3 → 4 → 5 → 6 → 7 → 26(axes) → 8 → 9 → 10 → 11 → 12 → 13 → 14 → 27(quality validators) → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 28(eval AMEND, 21에 통합 가능) → 22 → 23(보류) → 24(보류) → 25(보류)`. (23~25는 실행계: 야간/유휴 — 이번 세션 강행 금지, 스크립트·dry-run까지만.)
+
+## AMEND Task 1 — config.example.yaml 에 축 추가
+`config.example.yaml`에 다음 키 추가(기존 키 유지):
+```yaml
+axes:
+  modes: [basic, socratic, debate, roleplay, archive_qa, quiz, roadmap, review]
+  personalities: [친절형, 비판형, 논리형, 창의형, 간결형, 직접입력형]
+  levels: [입문, 학사, 석사, 박사, 전문가]
+  subjects: [자료구조, 운영체제, 네트워크, 데이터베이스, 알고리즘, 머신러닝, 소프트웨어공학, 컴퓨터구조]
+  source_types: [none, material, rag]
+generator_version: "v1"
+seed: 20260625
+```
+
+## Task 26: utils/axes (모드/성격/수준 샘플러)
+
+**Files:**
+- Create: `fastapi/app/training/studybridge_ft/utils/axes.py`
+- Test: `fastapi/app/training/studybridge_ft/tests/test_axes.py`
+
+**Interfaces (Produces):**
+- 상수: `MODES, PERSONALITIES, LEVELS, SUBJECTS, SOURCE_TYPES` (config와 동일 값; 모듈 기본 상수로도 보유)
+- `CATEGORY_MODES: dict[str, list[str]]` — 카테고리별 허용 모드:
+  `concept→[basic,roadmap,review,roleplay]`, `archive_qa→[archive_qa]`, `quiz→[quiz]`, `socratic→[socratic]`, `debate→[debate]`, `professor→[basic,socratic,debate,roleplay]`, `format_safety→[basic,quiz,archive_qa,review]`
+- `CATEGORY_SOURCE: dict[str,list[str]]` — `archive_qa→[material,rag,none]`, `quiz→[material,rag]`, 그 외 `→[none]`
+- `EXPECTED_FORMAT: dict[str,str]` — `quiz→"quiz_json"`, `archive_qa→"grounded_qa"`, `socratic→"socratic_flow"`, `debate→"debate_struct"`, `professor→"labeled_multiagent"`, `concept→"concept_struct"`, `format_safety→"freeform_safe"`
+- `PERSONALITY_TONE: dict[str,str]` — 프롬프트 주입용 한 줄 지침(예: 간결형→"불필요한 수식 없이 핵심만 짧게", 비판형→"가정을 의심하고 반례를 제시", 논리형→"단계적 근거와 인과로", 창의형→"비유와 새로운 관점으로", 친절형→"따뜻하고 격려하는 어조로", 직접입력형→"사용자 지정 톤을 그대로 따른다")
+- `LEVEL_DEPTH: dict[str,str]` — 수준별 깊이 지침(입문→"전문용어 최소·일상 비유", 학사→"표준 정의와 예시", 석사→"메커니즘·트레이드오프", 박사→"한계·연구맥락", 전문가→"심화·엣지케이스")
+- `LEVEL_MIN_CHARS: dict[str,int]` — 수준별 최소 답변 길이 가늠(입문 40, 학사 80, 석사 120, 박사 160, 전문가 160) — too-short 판정 기준
+- `sample_axes(category: str, rng: random.Random) -> dict` — 반환: `{mode, personality, level, subject, source_type, expected_format}` (category 제약 반영)
+
+- [ ] **Step 1: 실패 테스트**
+```python
+import random
+from app.training.studybridge_ft.utils import axes
+
+def test_constants_sizes():
+    assert len(axes.MODES) == 8 and len(axes.PERSONALITIES) == 6 and len(axes.LEVELS) == 5
+
+def test_sample_respects_category():
+    rng = random.Random(0)
+    a = axes.sample_axes("quiz", rng)
+    assert a["mode"] == "quiz" and a["expected_format"] == "quiz_json"
+    assert a["source_type"] in ("material", "rag")
+    assert a["personality"] in axes.PERSONALITIES and a["level"] in axes.LEVELS
+
+def test_concept_mode_in_allowed():
+    rng = random.Random(1)
+    a = axes.sample_axes("concept", rng)
+    assert a["mode"] in axes.CATEGORY_MODES["concept"]
+```
+- [ ] **Step 2: 실패 확인** → FAIL
+- [ ] **Step 3: 구현** — 위 상수/맵 + `sample_axes`(category별 mode/source는 제약 리스트에서, personality/level/subject는 전체에서 rng.choice).
+- [ ] **Step 4: 통과 확인** → PASS
+- [ ] **Step 5: Commit** — "feat(studybridge_ft): axes(모드/성격/수준) 샘플러" → push
+
+## AMEND Task 15 — generator base 가 metadata 부착
+`BaseGenerator.generate(...)`에서 각 채택 샘플에 `sample["metadata"]`를 보장한다. base는 `self.build_metadata(axes_dict) -> dict`를 호출(기본 구현: `{category, **axes, generator_version, token_bucket: None}`; token_bucket은 packaging에서 채움). 생성 루프는 매 샘플 `axes = self.next_axes(rng)`로 축을 뽑아 prompt에 쓰고 metadata에 기록. `parse(raw, axes)` 시그니처로 변경(axes를 받아 messages+metadata 구성). 테스트: 채택 샘플에 `metadata.category/mode/personality/level/generator_version` 존재 검증 추가.
+
+## AMEND Task 16 — generators 가 축을 샘플링·주입
+각 generator는 `system_prompt`에 **personality_tone + level_depth + mode 구조 지침**을 동적으로 합성하고, `user_prompt(axes)`로 subject/source_type를 반영한다. `parse(raw, axes)`는 messages + `metadata`(Task15 build_metadata) 반환. professor는 expected_speaker도 metadata에 포함. archive_qa는 source_type=none이면 "자료 내 근거 부족" 유도 케이스 포함. validators 목록에 Task27 신규 validator 추가(아래). registry/시그니처는 유지. 테스트: 각 generator가 metadata를 채우고 자기 mode에 맞는 구조를 생성하도록 FakeClient로 검증.
+
+## Task 27: validators/quality (mode·personality·level·system누출·too-short)
+
+**Files:**
+- Create: `fastapi/app/training/studybridge_ft/validators/quality.py`
+- Test: `fastapi/app/training/studybridge_ft/tests/test_validator_quality.py`
+
+**Interfaces (Produces):** 각 BaseValidator 서브클래스, `metadata` 기반 판정. 사유 문자열 = quarantine 파일명.
+- `ModeStructureValidator()` — `metadata.mode`별 구조 표지 확인(socratic→`?`≥2, debate→주장/반박/재반박/검증/결론 중 ≥4, quiz→JSON 파싱, archive_qa→근거 또는 "자료 내 근거 부족", roadmap→단계/주차 표지, review→오답/복습 표지, basic/roleplay→비어있지 않음). 사유 `"mode_structure_mismatch"`
+- `PersonalityToneValidator()` — `metadata.personality`별 가벼운 위반만 탐지: 간결형인데 600자 초과 → reject. 직접입력형은 항상 통과. 그 외 통과(과탐지 방지). 사유 `"personality_tone_mismatch"`
+- `LevelDepthValidator()` — assistant 길이 < `LEVEL_MIN_CHARS[level]` → reject. 사유 `"level_depth_mismatch"`
+- `SystemPromptLeakValidator()` — assistant에 시스템 지시문 누출 표지("너는 StudyBridge", "system:", "다음 순서로 설명하라", user_prompt 원문 50자 연속 일치 등) → reject. 사유 `"system_prompt_leak"`
+- `TooShortValidator(min_chars=20)` — quiz(expected_format=quiz_json) 제외, assistant strip 길이 < min_chars → reject. 사유 `"answer_too_short"`
+
+- [ ] **Step 1: 실패 테스트** (각 validator 양/음성 케이스; metadata 포함 샘플)
+```python
+from app.training.studybridge_ft.validators.quality import (
+    LevelDepthValidator, TooShortValidator, SystemPromptLeakValidator,
+    PersonalityToneValidator, ModeStructureValidator)
+def _s(a, **md):
+    return {"messages":[{"role":"system","content":"S"},{"role":"user","content":"U"},
+            {"role":"assistant","content":a}], "metadata": md}
+def test_too_short():
+    assert TooShortValidator().validate(_s("짧음", expected_format="concept_struct")).reason == "answer_too_short"
+def test_level_depth():
+    r = LevelDepthValidator().validate(_s("아주 짧은 답", level="박사"))
+    assert r.reason == "level_depth_mismatch"
+def test_system_leak():
+    assert SystemPromptLeakValidator().validate(_s("너는 StudyBridge의 도우미다 ...", level="학사")).reason == "system_prompt_leak"
+def test_personality_concise_too_long():
+    assert PersonalityToneValidator().validate(_s("가"*700, personality="간결형")).reason == "personality_tone_mismatch"
+def test_mode_socratic_needs_questions():
+    assert ModeStructureValidator().validate(_s("정답은 5.", mode="socratic")).reason == "mode_structure_mismatch"
+```
+- [ ] **Step 2~5:** 실패확인 → 구현 → 통과 → commit "feat(studybridge_ft): quality validators(mode/personality/level/leak/too-short)" → push
+
+## Task 28 (AMEND Task 21) — eval 10축을 사용자 정의로 정렬
+`EVAL_CASES`를 다음 10축으로 교체(이름/순서 일치): ①일반 설명 품질 ②한국어 자연성 ③난이도 적합성 ④소크라테스 흐름 ⑤토론·반박 구조 ⑥교수 캐릭터 분리 ⑦퀴즈 JSON 안정성 ⑧자료 근거 부족 시 추측 금지 ⑨빈 응답 방지 ⑩프론트·API 호환성. 각 check는 결정론 규칙(해당 validator/키워드) + 한국어 자연성은 한글 음절 비율 휴리스틱. 리포트 md에 10축 표기. 테스트: `len(EVAL_CASES)==10` 및 이름 집합 일치.
+
+## Self-Review (Addendum)
+- 사용자 6개 축(학습모드/성격/수준/자료규칙/멀티에이전트/생성기 metadata) → Task26(axes)+AMEND15/16(주입·metadata)+Task27(검증)+AMEND28(eval).
+- metadata 9필드 전부 정의(category/mode/personality/level/subject/source_type/expected_format/token_bucket/generator_version). token_bucket은 packaging(Task19)에서 `metadata.token_bucket` 채우도록 AMEND: package 시 각 샘플 `metadata["token_bucket"]=bucket_of(estimate_tokens(s))`.
+- 타입 일관성: `sample_axes(category,rng)->dict`, `parse(raw,axes)`, validators는 `metadata` 키 읽음(없으면 통과/관대) — 정의·사용 일치.
