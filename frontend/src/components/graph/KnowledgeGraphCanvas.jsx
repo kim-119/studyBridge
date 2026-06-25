@@ -68,7 +68,7 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
     nodeScale = 1, linkThickness = 1, labelThreshold: labelThresholdProp,
     mode = 'local', edgeLabelsAlwaysOn = false,
     highlightType = null, presentation = false,
-    onZoomChange, onNodeClick, onNodeDoubleClick, onBackgroundClick,
+    onZoomChange, onNodeClick, onNodeDoubleClick, onBackgroundClick, onEdgeClick,
   } = props;
 
   const wrapRef = useRef(null);
@@ -382,15 +382,14 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
               const flow = anyHi && active && edgeFlows(e.type);
               const pi = pairIndex.get(e.id) || 0;
               const baseOpacity = presentation ? 0.5 : 0.32;
-              // 충돌 회피로 계산된 라벨 위치(center). hidden 이면 렌더 안 함.
-              const placed = labelLayout.edgeLabels.get(e.id);
-              const labelOn = placed && !placed.hidden;
+              const dPath = edgePath(a, b, pi);
               const cls = `obsg-edge obsg-edge-enter${flow ? ' obsg-edge-flow' : ''}`;
+              // 간선 라벨 pill 은 노드 위 별도 오버레이 레이어에서 렌더한다(아래) — 노드 뒤에 가려지지 않게.
               return (
                 <g key={e.id} style={{ '--obsg-d': `${(depthById.get(e.to) || 0) * 90}ms` }}>
                   <path
                     className={cls}
-                    d={edgePath(a, b, pi)}
+                    d={dPath}
                     fill="none"
                     stroke={st.color}
                     strokeWidth={(active ? 1.8 : 1) * linkThickness}
@@ -399,16 +398,19 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
                     strokeLinecap="round"
                     markerEnd={showArrows && st.directed ? `url(#obsg-arrow-${colorKey(st.color)})` : undefined}
                   />
-                  {labelOn ? (
-                    <foreignObject
-                      x={placed.x - placed.w / 2}
-                      y={placed.y - placed.h / 2}
-                      width={placed.w}
-                      height={placed.h}
-                      style={{ overflow: 'visible', pointerEvents: 'none' }}
-                    >
-                      <div className="obsg-edge-pill"><span>{`[${displayLabelForEdge(e)}]`}</span></div>
-                    </foreignObject>
+                  {/* 선 자체 클릭 영역(투명·두꺼운 히트 패스). 라벨이 가려지거나 없어도 선을 눌러 전체 설명을 연다. */}
+                  {onEdgeClick ? (
+                    <path
+                      className="obsg-edge-hit"
+                      d={dPath}
+                      fill="none"
+                      stroke="transparent"
+                      strokeWidth={Math.max(14, 10 * linkThickness)}
+                      strokeLinecap="round"
+                      onClick={(ev) => { ev.stopPropagation(); onEdgeClick(e); }}
+                      onPointerEnter={() => setHoverId(e.from)}
+                      onPointerLeave={() => setHoverId((h) => (h === e.from ? null : h))}
+                    />
                   ) : null}
                 </g>
               );
@@ -487,6 +489,44 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
                     ) : null}
                   </g>
                 </g>
+              );
+            })}
+            {/* ── 간선 라벨 오버레이: 노드보다 뒤에 렌더 → 노드 카드에 절대 가려지지 않음. 클릭/탭으로 전체 설명 ── */}
+            {graph.edges.map((e) => {
+              const placed = labelLayout.edgeLabels.get(e.id);
+              if (!placed || placed.hidden) return null;
+              if (![placed.x, placed.y, placed.w, placed.h].every(Number.isFinite)) return null;
+              const short = displayLabelForEdge(e);
+              const active = !anyHi || edgeActive(e);
+              // foreignObject 폭은 라벨이 잘리지 않도록 충분히 확보(텍스트는 CSS nowrap pill).
+              const fw = Math.max(placed.w, 132);
+              const fh = Math.max(placed.h, 30);
+              return (
+                <foreignObject
+                  key={`lbl-${e.id}`}
+                  x={placed.x - fw / 2}
+                  y={placed.y - fh / 2}
+                  width={fw}
+                  height={fh}
+                  style={{ overflow: 'visible', pointerEvents: 'none' }}
+                >
+                  <div className={`obsg-edge-pill${active ? '' : ' is-dim'}`} style={{ pointerEvents: 'none' }}>
+                    {onEdgeClick ? (
+                      <button
+                        type="button"
+                        className="obsg-edge-pill-btn"
+                        onClick={(ev) => { ev.stopPropagation(); onEdgeClick(e); }}
+                        onPointerDown={(ev) => ev.stopPropagation()}
+                        title={`관계 설명 보기: [${short}]`}
+                        aria-label={`관계 설명 보기: ${short}`}
+                      >
+                        {`[${short}]`}
+                      </button>
+                    ) : (
+                      <span>{`[${short}]`}</span>
+                    )}
+                  </div>
+                </foreignObject>
               );
             })}
           </g>

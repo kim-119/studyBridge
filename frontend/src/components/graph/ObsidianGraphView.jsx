@@ -10,7 +10,8 @@ import { buildLinkIndex } from '../../utils/graph/graphBacklinks';
 import { computeVisibleGraph, DEFAULT_FILTERS } from '../../utils/graph/graphFilters';
 import { computeLayout } from '../../utils/graph/graphLayout';
 import { downloadObsidianMarkdown, downloadJsonCanvas } from '../../utils/graph/graphExportActions';
-import { displayLabelForNode } from '../../utils/graph/graphTypes';
+import { displayLabelForNode, displayLabelForEdge, fullDescriptionForEdge } from '../../utils/graph/graphTypes';
+import EdgeDetailModal from './EdgeDetailModal';
 import './obsidianGraph.css';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ export default function ObsidianGraphView({
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [centerNodeId, setCenterNodeId] = useState(graph.centerNodeId || (graph.nodes[0] && graph.nodes[0].id));
   const [selected, setSelected] = useState(null);
+  const [selectedEdge, setSelectedEdge] = useState(null); // 간선 클릭 시 전체 관계 설명 모달
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [zoomPct, setZoomPct] = useState(100);
@@ -89,6 +91,26 @@ export default function ObsidianGraphView({
   const canvasRef = useRef(null);
 
   const linkIndex = useMemo(() => buildLinkIndex(graph), [graph]);
+
+  // id→node 조회맵(간선 전체 설명 생성용).
+  const nodeById = useMemo(() => {
+    const m = new Map();
+    graph.nodes.forEach((n) => m.set(n.id, n));
+    return m;
+  }, [graph.nodes]);
+
+  // 간선(선/라벨) 클릭 → 짧은 라벨 + 전체 관계 설명 모달. 노드 선택과 독립.
+  const handleEdgeClick = useCallback((edge) => {
+    if (!edge) return;
+    setSelectedEdge({
+      edgeId: edge.id,
+      shortLabel: displayLabelForEdge(edge),
+      fullLabel: fullDescriptionForEdge(edge, nodeById),
+      relationType: edge.relationRole || edge.type,
+      fromLabel: displayLabelForNode(nodeById.get(edge.from)) || '',
+      toLabel: displayLabelForNode(nodeById.get(edge.to)) || '',
+    });
+  }, [nodeById]);
 
   const visibleGraph = useMemo(
     () => computeVisibleGraph(graph, { mode, centerNodeId, depth, filters }),
@@ -162,7 +184,7 @@ export default function ObsidianGraphView({
   // 단축키: ESC 닫기, 0 fit, L/G mode, E 간선이름, F 검색.
   const onKeyDown = useCallback((e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    if (e.key === 'Escape') { setSelected(null); setSearchOpen(false); setSettingsOpen(false); return; }
+    if (e.key === 'Escape') { setSelectedEdge(null); setSelected(null); setSearchOpen(false); setSettingsOpen(false); return; }
     if ((e.key === 'f' || e.key === 'F') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); setSearchOpen((v) => !v); return; }
     if (e.key === '0') { canvasRef.current?.fitView?.(); return; }
     if (e.key === 'l' || e.key === 'L') setMode('local');
@@ -201,6 +223,7 @@ export default function ObsidianGraphView({
           onNodeClick={(n) => setSelected(n)}
           onNodeDoubleClick={handleCenterNode}
           onBackgroundClick={() => setSelected(null)}
+          onEdgeClick={handleEdgeClick}
         />
 
         {/* floating 툴바(캔버스 위 오버레이) */}
@@ -288,6 +311,10 @@ export default function ObsidianGraphView({
               onClose={() => setSelected(null)}
             />
           </>
+        )}
+
+        {selectedEdge && (
+          <EdgeDetailModal info={selectedEdge} onClose={() => setSelectedEdge(null)} />
         )}
       </div>
     </div>

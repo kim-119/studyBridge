@@ -105,6 +105,56 @@ export function displayLabelForEdge(edge) {
   return relationLabelForEdgeType(edge.relationRole || edge.type);
 }
 
+// 간선 클릭 시 보여줄 "전체 관계 설명"(단일 출처). 선 위에는 짧은 라벨만, 전체 설명은 여기서 생성한다.
+//  · relationRole 기반 관계 문장 + 양 끝 노드 이름 + (있으면) 대상 노드 본문 스니펫.
+//  · nodeById: Map<id, node> (없으면 노드 이름 생략하고 관계 문장만).
+const EDGE_RELATION_SENTENCE = Object.freeze({
+  has_question: (a) => `${a} 방에서 던져진 질문입니다.`,
+  asked_to: (a, b) => `${a}이(가) ${b}에게 던진 질문 관계입니다.`,
+  answered_by: (a, b) => `${b || '교수'}이(가) "${a}"에 대해 핵심 개념과 구조를 설명한 답변입니다.`,
+  produced: (a, b) => `${a}이(가) ${b}을(를) 생성한 관계입니다.`,
+  contains: (a, b) => `${a} 안에서 다루는 핵심 개념 "${b}" 입니다.`,
+  validated_by: (a, b) => `${b || '검증'}이(가) ${a}의 답변을 상호검증해 오류 가능성을 줄인 관계입니다.`,
+  rebutted_by: (a, b) => `${b || '반박'}이(가) ${a}의 답변에서 허점·과장·누락된 전제·반례 가능성을 검토한 반박 관계입니다.`,
+  exemplified_by: (a, b) => `${b || '예시'}이(가) ${a}을(를) 학습자 관점의 예시로 보강한 관계입니다.`,
+  related_to: (a, b) => `${a}과(와) ${b}이(가) 서로 보완·연결되는 관련 관계입니다.`,
+  sourced_from: (a, b) => `${a}이(가) ${b} 자료에서 근거를 가져온 출처 관계입니다.`,
+  expanded_to: (a, b) => `${a}을(를) ${b}(으)로 확장·심화한 관계입니다.`,
+  planned_by: (a, b) => `${b}이(가) ${a}에 대한 학습 계획을 세운 관계입니다.`,
+  references: (a, b) => `${a}이(가) ${b}을(를) 참조한 관계입니다.`,
+});
+
+function edgeNodeName(node) {
+  if (!node) return '';
+  return node.title || displayLabelForNode(node) || node.shortLabel || node.label || '';
+}
+
+export function fullDescriptionForEdge(edge, nodeById) {
+  if (!edge) return '이 선은 두 노드 사이의 학습 관계를 나타냅니다.';
+  // 명시적 전체 설명이 데이터에 있으면 그대로 사용.
+  if (edge.fullLabel) return edge.fullLabel;
+  if (edge.description) return edge.description;
+
+  const role = edge.relationRole || edge.type;
+  const fromNode = nodeById?.get?.(edge.from);
+  const toNode = nodeById?.get?.(edge.to);
+  const a = edgeNodeName(fromNode) || '이 항목';
+  const b = edgeNodeName(toNode) || '연결된 항목';
+
+  const sentenceFn = EDGE_RELATION_SENTENCE[role];
+  let sentence = sentenceFn
+    ? sentenceFn(a, b)
+    : `${a}과(와) ${b} 사이의 ${relationLabelForEdgeType(role)} 관계입니다.`;
+
+  // 대상 노드 본문(검증/반박/예시 등 실제 내용)이 있으면 덧붙인다.
+  const body = String(toNode?.body || toNode?.markdownBody || '').trim();
+  if (body && body !== b) {
+    const snippet = body.length > 320 ? `${body.slice(0, 320)}…` : body;
+    sentence += `\n\n${snippet}`;
+  }
+  return sentence;
+}
+
 // 노드 타입별 shape('circle'|'square'|'diamond'|'triangle'). 색맹 대비 — 색 외 구분 수단.
 export const NODE_SHAPE = Object.freeze({
   question: 'diamond',

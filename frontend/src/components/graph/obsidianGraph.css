@@ -103,7 +103,8 @@
 /* 발표 모드: 라벨 폰트 ~1.27x 확대 + 더 밝게(spec 3·15). */
 .obsg-canvas-wrap.is-present .obsg-node-label { font-size: 14px; fill: #e8edf6; }
 .obsg-canvas-wrap.is-present .obsg-node-label.selected { font-size: 15px; }
-.obsg-canvas-wrap.is-present .obsg-edge-pill > span { font-size: 12px; max-width: 130px; }
+.obsg-canvas-wrap.is-present .obsg-edge-pill > span,
+.obsg-canvas-wrap.is-present .obsg-edge-pill-btn { font-size: 12px; max-width: 150px; }
 .obsg-edge-label {
   fill: #94a3b8;
   font-size: 10px;
@@ -112,19 +113,87 @@
   stroke: #0b1020;
   stroke-width: 3px;
 }
-/* 간선 관계 라벨: 작고 얇은 pill badge(Obsidian 톤). */
+/* 간선 클릭 영역(투명 두꺼운 히트 패스): 선을 눌러 전체 설명을 연다. */
+.obsg-edge-hit { cursor: pointer; pointer-events: stroke; }
+
+/* 간선 관계 라벨: 작고 얇은 pill badge(Obsidian 톤). 노드 위 오버레이 레이어에 렌더 → 절대 안 가려짐. */
 .obsg-edge-pill {
   display: flex; align-items: center; justify-content: center;
   width: 100%; height: 100%;
+  pointer-events: none;        /* wrapper 는 통과, 실제 클릭은 내부 button 이 받는다 */
 }
-.obsg-edge-pill > span {
-  font-size: 10px; line-height: 1; white-space: nowrap;
-  min-width: max-content; max-width: 110px; overflow: hidden; text-overflow: ellipsis;
-  padding: 2px 6px; border-radius: 999px;
-  color: #d7d9e5;
-  background: rgba(18, 20, 32, 0.82);
-  border: 1px solid rgba(180, 190, 220, 0.18);
+.obsg-edge-pill.is-dim { opacity: 0.4; }
+/* 표시 배지(공통 룩) — span(비대화형 폴백) / button(클릭형) 동일 스타일. */
+.obsg-edge-pill > span,
+.obsg-edge-pill-btn {
+  display: inline-flex; align-items: center;
+  font-size: 10.5px; font-weight: 700; line-height: 1.15; white-space: nowrap;
+  min-width: max-content; max-width: 132px; overflow: hidden; text-overflow: ellipsis;
+  padding: 3px 9px; border-radius: 999px;
+  color: #e7eaf6;
+  background: rgba(18, 20, 32, 0.92);
+  border: 1px solid rgba(180, 190, 220, 0.34);
+  box-shadow: 0 2px 8px rgba(3, 6, 18, 0.45);
   backdrop-filter: blur(6px);
+}
+/* 클릭형 배지: 포인터 이벤트 활성 + hover/focus 강조. click/tap 모두 지원. */
+.obsg-edge-pill-btn {
+  pointer-events: all;
+  cursor: pointer;
+  font-family: inherit;
+  transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.obsg-edge-pill-btn:hover { transform: scale(1.06); background: rgba(40, 44, 66, 0.96); border-color: rgba(165, 180, 252, 0.7); }
+.obsg-edge-pill-btn:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 2px; }
+
+/* ── 간선 전체 설명 모달 ── */
+.obsg-edge-detail-backdrop {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background: rgba(8, 11, 24, 0.55);
+}
+.obsg-edge-detail-panel {
+  width: min(520px, calc(100vw - 40px));
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  padding: 20px;
+  border-radius: 18px;
+  background: #111827;
+  border: 1px solid #283143;
+  box-shadow: 0 24px 80px rgba(3, 6, 18, 0.6);
+  color: #e7eaf6;
+}
+.obsg-edge-detail-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 12px;
+}
+.obsg-edge-detail-title { font-size: 17px; font-weight: 800; color: #c7d2fe; }
+.obsg-edge-detail-close {
+  flex-shrink: 0; cursor: pointer;
+  padding: 6px 14px; border-radius: 10px;
+  border: 1px solid #374151; background: #1f2937; color: #e5e7eb;
+  font-size: 13px; font-weight: 700; font-family: inherit;
+}
+.obsg-edge-detail-close:hover { background: #374151; }
+.obsg-edge-detail-close:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 2px; }
+.obsg-edge-detail-route {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: 13px; font-weight: 700; color: #93c5fd;
+}
+.obsg-edge-detail-arrow { color: #64748b; }
+.obsg-edge-detail-body {
+  margin: 0;
+  font-size: 14px; line-height: 1.7; color: #cbd5e1;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.obsg-edge-detail-type {
+  display: inline-flex; margin-top: 14px;
+  padding: 5px 10px; border-radius: 999px;
+  background: rgba(99, 102, 241, 0.18); color: #c7d2fe;
+  font-size: 12px; font-weight: 700;
 }
 
 /* ── 툴바: 캔버스 위 floating 오버레이(낮은 대비, 아이콘 중심) ── */
