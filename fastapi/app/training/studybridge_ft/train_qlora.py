@@ -55,6 +55,10 @@ def train(cfg, train_file, valid_file, output_dir):
     ds = ds.map(fmt)
     args = SFTConfig(output_dir=str(output_dir), num_train_epochs=tc["num_train_epochs"],
         per_device_train_batch_size=tc["per_device_train_batch_size"],
+        # eval 기본 배치(8)는 logits.float() 업캐스트로 8x1024xvocab fp32(~5GiB) 단일할당 → 16GB OOM.
+        # 학습 배치(1)와 동일하게 1로 낮춰 spike를 ~0.6GiB로 억제(prediction_loss_only로 누적도 없음).
+        per_device_eval_batch_size=1,
+        eval_accumulation_steps=1,
         gradient_accumulation_steps=tc["gradient_accumulation_steps"],
         learning_rate=float(tc["learning_rate"]), bf16=torch.cuda.is_bf16_supported(),
         logging_steps=10, save_strategy="epoch", eval_strategy="epoch", report_to="none",
