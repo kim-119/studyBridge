@@ -1534,6 +1534,30 @@ a {
   .archive-action-btn { padding: 6px 12px; font-size: 13px; }
 }
 
+/* 모바일: 마인드맵(좌 320 사이드바 + 그래프) 좌우분할 → 세로 스택(방 목록 위 / 그래프 아래) */
+@media (max-width: 768px) {
+  .mindmap-layout {
+    flex-direction: column;
+    height: auto;
+    min-height: calc(100vh - 80px);
+  }
+  .mindmap-aside {
+    width: 100% !important;
+    height: 42vh;
+    border-right: none !important;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  .mindmap-graph { min-height: 56vh; }
+}
+
+/* 모바일: 관리자 상단 탭바가 가로로 넘치지 않도록 가로 스크롤 + 브랜드 여백 축소 */
+@media (max-width: 768px) {
+  .admin-topbar { padding: 0 12px; gap: 8px; }
+  .admin-brand { margin-right: 12px !important; }
+  .admin-nav { overflow-x: auto; flex-wrap: nowrap; }
+  .admin-nav button { flex-shrink: 0; white-space: nowrap; }
+}
+
 .panel-resizer-bar:hover div div {
   background-color: var(--color-primary) !important;
 }

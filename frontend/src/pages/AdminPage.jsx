@@ -146,8 +146,8 @@ export default function AdminPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100vh', backgroundColor: '#F3F4F6' }} className="animate-fade-in">
       {/* Topbar */}
-      <div style={{ width: '100%', height: '70px', backgroundColor: '#111827', color: 'white', display: 'flex', alignItems: 'center', padding: '0 32px', flexShrink: 0, boxShadow: '0 4px 10px rgba(0,0,0,0.1)', zIndex: 10, boxSizing: 'border-box' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginRight: '60px' }}>
+      <div className="admin-topbar" style={{ width: '100%', height: '70px', backgroundColor: '#111827', color: 'white', display: 'flex', alignItems: 'center', padding: '0 32px', flexShrink: 0, boxShadow: '0 4px 10px rgba(0,0,0,0.1)', zIndex: 10, boxSizing: 'border-box' }}>
+        <div className="admin-brand" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginRight: '60px' }}>
           <ShieldAlert size={28} color="#10B981" />
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <h2 style={{ margin: 0, color: 'white', fontSize: '20px', lineHeight: '1.2' }}>StudyBridge</h2>
@@ -155,7 +155,7 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <nav style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+        <nav className="admin-nav" style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
           <button 
             style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', border: 'none', backgroundColor: activeAdminTab === 'inquiries' ? '#1F2937' : 'transparent', color: activeAdminTab === 'inquiries' ? '#10B981' : '#9CA3AF', fontWeight: activeAdminTab === 'inquiries' ? 'bold' : 'normal', transition: 'all 0.2s', fontSize: '15px' }}
             onClick={() => setActiveAdminTab('inquiries')}

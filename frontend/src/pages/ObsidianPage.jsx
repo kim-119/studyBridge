@@ -117,9 +117,9 @@ export default function ObsidianPage() {
   };
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 80px)', background: '#0b1020' }}>
+    <div className="mindmap-layout" style={{ display: 'flex', height: 'calc(100vh - 80px)', background: '#0b1020' }}>
       {/* ── 좌측: 학습메이트 방 목록 ── */}
-      <aside style={{ width: 320, flex: 'none', display: 'flex', flexDirection: 'column', background: '#fff', borderRight: '1px solid #e5e7eb' }}>
+      <aside className="mindmap-aside" style={{ width: 320, flex: 'none', display: 'flex', flexDirection: 'column', background: '#fff', borderRight: '1px solid #e5e7eb' }}>
         <div style={{ padding: '16px 16px 10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Network size={20} color="#7c3aed" />
@@ -208,7 +208,7 @@ export default function ObsidianPage() {
       </aside>
 
       {/* ── 우측: 선택 방 그래프 ── */}
-      <main style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+      <main className="mindmap-graph" style={{ flex: 1, minWidth: 0, position: 'relative' }}>
         {selectedRoomId == null ? (
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: '#64748b' }}>
             <Network size={48} color="#312e81" />
