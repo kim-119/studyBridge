@@ -213,13 +213,13 @@ const styles = {
     justifyContent: 'center',
     alignItems: 'center',
     minHeight: 'calc(100vh - 120px)',
-    padding: '24px',
+    padding: 'clamp(16px, 4vw, 24px)',
     boxSizing: 'border-box'
   },
   card: {
     width: '100%',
     maxWidth: '560px',
-    padding: '40px',
+    padding: 'clamp(20px, 5vw, 40px)',
     boxSizing: 'border-box',
   },
   header: {
@@ -249,7 +249,7 @@ const styles = {
   },
   inputRow: {
     display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
     gap: '16px',
   },
   inputGroup: {

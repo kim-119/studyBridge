@@ -1675,4 +1675,22 @@
   .prof-cloud--main { font-size: 11.5px; padding: 10px 14px; }
 }
 
+/* 모바일: 좌/우 패널이 채팅을 밀어내지 않고 오버레이로 뜨도록(채팅은 항상 풀폭) */
+@media (max-width: 768px) {
+  .layout-3-panel { position: relative; }
+  .pane-left,
+  .pane-right {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 50;
+    flex: 0 0 auto;
+    width: min(85vw, 320px);
+    max-width: 85vw;
+  }
+  .pane-left { left: 0; }
+  .pane-right { right: 0; }
+  .pane-center { width: 100%; }
+}
+
 

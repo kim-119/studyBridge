@@ -2183,8 +2183,10 @@ export default function StudyMate() {
   const [toastMsg, setToastMsg] = useState('');
   
   // 패널 토글 상태
-  const [isLeftOpen, setIsLeftOpen] = useState(true);
-  const [isRightOpen, setIsRightOpen] = useState(true);
+  // 모바일(≤768px)에서는 채팅이 풀스크린으로 보이도록 좌/우 패널을 기본 닫힘으로 시작한다.
+  const isMobileInit = typeof window !== 'undefined' && window.innerWidth <= 768;
+  const [isLeftOpen, setIsLeftOpen] = useState(!isMobileInit);
+  const [isRightOpen, setIsRightOpen] = useState(!isMobileInit);
 
   // 더 자세히 요청 시, 다음 AI 응답을 어떤 노드의 자식로 연결할지 추적
   const pendingDetailParentId = React.useRef(null);

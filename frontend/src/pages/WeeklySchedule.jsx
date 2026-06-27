@@ -113,7 +113,7 @@ export default function WeeklySchedule() {
   const completedCount = filteredTodos.filter((t) => t.completed).length;
 
   return (
-    <div className="container-main dashboard-page" style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px' }}>
+    <div className="container-main dashboard-page" style={{ maxWidth: '1200px', margin: '0 auto', padding: 'clamp(12px, 4vw, 24px)' }}>
       <div style={{ marginBottom: '20px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: 900, color: '#15803D', margin: '0 0 6px 0' }}>주간 일정</h1>
         <p style={{ color: '#6B7280', margin: 0, fontSize: '14px' }}>월/주 보기로 일정을 확인하고, 날짜를 선택해 할 일을 관리하세요.</p>

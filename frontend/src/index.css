@@ -1666,6 +1666,23 @@ a {
   }
 }
 
+/* 좁은 화면에서 FullCalendar 헤더 툴바가 가로로 넘치지 않도록 세로 정렬 */
+@media (max-width: 600px) {
+  .fc .fc-toolbar.fc-header-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .fc .fc-toolbar-title {
+    font-size: 1.15rem;
+    text-align: center;
+  }
+  .dashboard-page .calendar-container,
+  .dashboard-page .todo-section {
+    padding: 14px;
+  }
+}
+
 @media print {
   .nav-container,
   .dashboard-tabs,

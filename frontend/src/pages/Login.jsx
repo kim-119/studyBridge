@@ -162,14 +162,14 @@ export default function Login() {
       justifyContent: 'center',
       alignItems: 'center',
       minHeight: 'calc(100vh - 120px)',
-      padding: '24px'
+      padding: 'clamp(16px, 4vw, 24px)'
     }}>
       <div
         className="glass-panel animate-fade-in"
         style={{
           width: '100%',
           maxWidth: '420px',
-          padding: '36px',
+          padding: 'clamp(20px, 5vw, 36px)',
           boxSizing: 'border-box'
         }}
       >
@@ -262,7 +262,8 @@ export default function Login() {
                 onChange={handleChange}
                 placeholder="이메일을 입력하세요"
                 style={{
-                  width: '80%',
+                  width: '100%',
+                  boxSizing: 'border-box',
                   padding: '13px 14px 13px 44px',
                   borderRadius: '10px',
                   border: '1px solid var(--color-border)',
@@ -303,7 +304,8 @@ export default function Login() {
                 onChange={handleChange}
                 placeholder="비밀번호를 입력하세요"
                 style={{
-                  width: '80%',
+                  width: '100%',
+                  boxSizing: 'border-box',
                   padding: '13px 14px 13px 44px',
                   borderRadius: '10px',
                   border: '1px solid var(--color-border)',
