@@ -262,8 +262,8 @@ export default function KnowledgeDetail() {
   return (
     <div style={{ backgroundColor: '#F9FAFB', minHeight: '100vh', paddingBottom: '80px', fontFamily: '"Malgun Gothic", "맑은 고딕", sans-serif' }}>
       
-      {/* 썸네일 헤더 영역 */}
-      <div style={{ width: '100%', height: '400px', position: 'relative', overflow: 'hidden' }}>
+      {/* 썸네일 헤더 영역 (모바일에선 과하게 크지 않도록 clamp) */}
+      <div style={{ width: '100%', height: 'clamp(220px, 45vw, 400px)', position: 'relative', overflow: 'hidden' }}>
         <img src={getThumbnail()} alt={post.title} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: 'brightness(0.6)' }} />
         <div style={{ position: 'absolute', top: '40px', left: '0', right: '0', maxWidth: '800px', margin: '0 auto', padding: '0 20px', zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <button 

@@ -1501,6 +1501,35 @@ a {
   border-right-color: var(--color-primary) !important;
 }
 
+/* 모바일: 자료 상세 좌우 분할이 둘 다 좁아 못 쓰던 문제 → 세로 스택(문서 위 / AI 도구 아래).
+   좌/우 패널은 인라인 width%·flex:none 이라 !important 로 덮고, PDF 뷰어(중첩 height:100%)가
+   보이도록 좌패널에 명시 높이를 준다. 가운데 드래그 리사이저는 모바일에서 숨긴다. */
+@media (max-width: 768px) {
+  .archive-detail-container { height: 100dvh; }
+  .archive-split-view {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .archive-left-panel,
+  .archive-right-panel {
+    width: 100% !important;
+    flex: none !important;
+  }
+  .archive-left-panel {
+    height: 58vh;
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+    padding: 16px;
+  }
+  .archive-right-panel {
+    height: auto;
+    border-left: none !important;
+    padding: 16px;
+  }
+  .panel-resizer-bar { display: none !important; }
+  .archive-action-bar { padding: 10px 14px; gap: 8px; }
+}
+
 .panel-resizer-bar:hover div div {
   background-color: var(--color-primary) !important;
 }
