@@ -21,6 +21,9 @@ export default function MyPage() {
   const [cropScale, setCropScale] = useState(1.0);
   const [cropMinScale, setCropMinScale] = useState(0.5); // 이미지 비율별 최소 스케일 동적 결정용
   const [cropPosition, setCropPosition] = useState({ x: 0, y: 0 });
+  // 크롭 박스 한 변 크기(px). 표시 컨테이너·마스크 중심·좌표 수식이 공유하는 단일 소스.
+  // 데스크톱은 300으로 캡되어 기존과 동일, 모바일에선 화면폭에 맞춰 축소된다.
+  const [cropBox, setCropBox] = useState(300);
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 
@@ -34,14 +37,19 @@ export default function MyPage() {
       img.onload = () => {
         const imgWidth = img.naturalWidth;
         const imgHeight = img.naturalHeight;
-        
-        let baseWidth = 300;
-        let baseHeight = 300;
+
+        // 크롭 박스 크기: 모바일에선 화면폭에 맞춰 축소(표시·마스크·좌표 수식이 공유하는 단일 소스).
+        // 데스크톱(넓은 화면)은 300으로 캡 → 기존 동작과 완전히 동일. 결과는 WYSIWYG로 일관.
+        const box = Math.max(200, Math.min(300, (typeof window !== 'undefined' ? window.innerWidth : 360) - 48));
+        setCropBox(box);
+
+        let baseWidth = box;
+        let baseHeight = box;
         const aspect = imgWidth / imgHeight;
         if (aspect > 1) {
-          baseHeight = 300 / aspect;
+          baseHeight = box / aspect;
         } else {
-          baseWidth = 300 * aspect;
+          baseWidth = box * aspect;
         }
         
         // 이미지의 더 짧은 쪽이 160px 원형 마스크를 완전히 꽉 채우도록 하는 배율 (Cover 배율)
@@ -108,14 +116,16 @@ export default function MyPage() {
       
       const imgWidth = img.naturalWidth;
       const imgHeight = img.naturalHeight;
-      
-      let baseWidth = 300;
-      let baseHeight = 300;
+
+      // 표시에 쓰인 것과 동일한 박스 크기(단일 소스) — 모바일/데스크톱 모두 결과 일관.
+      const box = cropBox;
+      let baseWidth = box;
+      let baseHeight = box;
       const aspect = imgWidth / imgHeight;
       if (aspect > 1) {
-        baseHeight = 300 / aspect;
+        baseHeight = box / aspect;
       } else {
-        baseWidth = 300 * aspect;
+        baseWidth = box * aspect;
       }
       
       const scaledWidth = baseWidth * cropScale;
@@ -643,10 +653,12 @@ export default function MyPage() {
         >
           <div 
             className="glass-panel modal-content animate-fade-in" 
-            style={{ 
-              width: '380px', 
-              padding: '30px', 
-              borderRadius: '24px', 
+            style={{
+              width: '100%',
+              maxWidth: '380px',
+              boxSizing: 'border-box',
+              padding: 'clamp(16px, 4vw, 30px)',
+              borderRadius: '24px',
               boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', 
               backgroundColor: '#FFFFFF',
               border: '1px solid #E5E7EB',
@@ -667,11 +679,11 @@ export default function MyPage() {
 
             {/* 이미지 크롭 컨테이너 */}
             <div 
-              style={{ 
-                position: 'relative', 
-                width: '300px', 
-                height: '300px', 
-                backgroundColor: '#F3F4F6', 
+              style={{
+                position: 'relative',
+                width: `${cropBox}px`,
+                height: `${cropBox}px`,
+                backgroundColor: '#F3F4F6',
                 borderRadius: '16px', 
                 overflow: 'hidden', 
                 cursor: isDragging ? 'grabbing' : 'grab',
@@ -706,12 +718,12 @@ export default function MyPage() {
 
               {/* 원형 마스크 오버레이 */}
               <div 
-                style={{ 
-                  position: 'absolute', 
-                  top: '70px', 
-                  left: '70px', 
-                  width: '160px', 
-                  height: '160px', 
+                style={{
+                  position: 'absolute',
+                  top: `${(cropBox - 160) / 2}px`,
+                  left: `${(cropBox - 160) / 2}px`,
+                  width: '160px',
+                  height: '160px',
                   borderRadius: '50%', 
                   boxShadow: '0 0 0 9999px rgba(15, 23, 42, 0.6)', 
                   border: '2px solid #10B981', 
