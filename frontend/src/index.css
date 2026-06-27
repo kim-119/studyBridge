@@ -1558,6 +1558,51 @@ a {
   .admin-nav button { flex-shrink: 0; white-space: nowrap; }
 }
 
+/* =========================================
+   그룹스터디 화상(프리조인/룸) 모바일 전용 레이아웃
+   ※ 데스크톱은 이 블록 밖이라 완전히 불변. OpenVidu 세션/퍼블리시/구독/attach 로직은
+     건드리지 않고, 레이아웃(배치)만 모바일에서 재배열한다.
+   ========================================= */
+@media (max-width: 768px) {
+  /* 프리조인: 방장 row 배치·설정 패널 row 를 세로로 전환(프리뷰는 이미 width:100%) */
+  .prejoin-body { flex-direction: column !important; padding: 16px 14px !important; gap: 16px !important; }
+  .prejoin-settings { flex-direction: column !important; gap: 14px; padding: 16px !important; }
+  .prejoin-settings > div { border-right: none !important; padding: 0 !important; }
+
+  /* 룸: 독(72) + 영상 + 우사이드바(340) 3열 가로배치 → 세로 스택(영상이 풀폭 확보) */
+  .room-header { padding: 0 12px !important; }
+  .room-body { flex-direction: column !important; overflow-y: auto !important; padding-bottom: 72px; }
+  .room-dock {
+    width: 100% !important; height: auto !important;
+    flex-direction: row !important; justify-content: center; gap: 18px;
+    padding: 8px 12px !important;
+    border-right: none !important; border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .room-dock > div { flex-direction: row !important; margin: 0 !important; gap: 18px !important; }
+  .room-stage { flex: none !important; padding: 12px !important; }
+  .room-right-sidebar { width: 100% !important; border-left: none !important; border-top: 1px solid rgba(255,255,255,0.05); }
+
+  /* 영상 그리드: speaker-large(가로 전체) + 나머지 3열 썸네일, 빈 슬롯은 숨김 */
+  .room-video-grid { grid-template-columns: repeat(3, 1fr) !important; gap: 8px !important; height: auto !important; }
+  .room-tile--main { grid-column: 1 / -1 !important; order: -1; }
+  .room-empty-slot { display: none !important; }
+
+  /* 하단 고정 컨트롤 바(마이크/카메라/채팅/나가기) */
+  .room-mobile-controlbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 96;
+    display: flex; justify-content: space-around; align-items: center;
+    padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
+    background: rgba(15,23,42,0.96); backdrop-filter: blur(16px);
+    border-top: 1px solid rgba(255,255,255,0.08);
+  }
+  .room-mobile-controlbar button {
+    background: rgba(255,255,255,0.06); border: none; color: #E5E7EB;
+    width: 48px; height: 48px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .room-mobile-controlbar .room-mobile-leave { background: rgba(239,68,68,0.18); }
+}
+
 .panel-resizer-bar:hover div div {
   background-color: var(--color-primary) !important;
 }

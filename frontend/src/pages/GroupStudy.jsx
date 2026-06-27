@@ -1274,10 +1274,10 @@ export default function GroupStudy() {
               </div>
 
               {/* Body */}
-              <div style={{ 
-                flex: 1, 
-                display: 'flex', 
-                flexDirection: Number(preJoinStudy.leaderId) === Number(userId) ? 'row' : 'column', 
+              <div className="prejoin-body" style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: Number(preJoinStudy.leaderId) === Number(userId) ? 'row' : 'column',
                 alignItems: Number(preJoinStudy.leaderId) === Number(userId) ? 'stretch' : 'center', 
                 justifyContent: 'center', 
                 padding: '40px 20px', 
@@ -1363,7 +1363,7 @@ export default function GroupStudy() {
 
                     {/* 장치 설정 패널 (토글) - 비디오 영역 위에 오버레이 */}
                     {showPreJoinSettings && (
-                      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#F9FAFB', borderTop: '1px solid #E5E7EB', display: 'flex', padding: '24px', zIndex: 20 }}>
+                      <div className="prejoin-settings" style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#F9FAFB', borderTop: '1px solid #E5E7EB', display: 'flex', padding: '24px', zIndex: 20 }}>
                         {/* Camera */}
                         <div style={{ flex: 1, padding: '0 16px', borderRight: '1px solid #E5E7EB' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#4B5563', marginBottom: '12px' }}>

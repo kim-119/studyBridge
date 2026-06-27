@@ -400,6 +400,14 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
   // 채팅 전용 드로어(왼쪽 사이드바 말풍선 아이콘으로 열고 닫음). 닫아도 메시지 상태는 상위 컴포넌트에 보존된다.
   const [showChatDrawer, setShowChatDrawer] = useState(false);
+  // [표시 전용] 모바일 레이아웃 분기 플래그. OpenVidu 세션/퍼블리시/구독 로직과 무관하며
+  // 화면 너비 변화에만 반응한다(리사이즈 외 어떤 미디어 동작도 트리거하지 않음).
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // AI Multi-Agent SSE Streaming Chat states
   const [chatTab, setChatTab] = useState('normal'); // 'normal' | 'ai'
@@ -2183,6 +2191,18 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const activeConnectionEntries = Object.entries(activeConnections);
   const emptySlotCount = Math.max(0, MAX_TILES - activeConnectionEntries.length);
 
+  // [표시 전용] 모바일 speaker-large 레이아웃에서 크게 보일 메인 타일의 connectionId.
+  //  · 발화 중 접속자 > 나(isMe) > 첫 타일 순으로 선정.
+  //  · CSS order/grid-span 으로만 사용한다. 타일 DOM key·VideoFeed attach 는 절대 바꾸지 않으므로
+  //    값이 바뀌어도 video element 재마운트/재attach 가 발생하지 않는다.
+  const mainConnectionId = (() => {
+    const speaking = activeConnectionEntries.find(([, p]) => p && speakingUsers.has(String(p.userId)));
+    if (speaking) return speaking[0];
+    const me = activeConnectionEntries.find(([, p]) => p && p.isMe);
+    if (me) return me[0];
+    return activeConnectionEntries[0]?.[0] ?? null;
+  })();
+
   // 일반 채팅에 새 메시지가 오면 목록만 하단으로 스크롤
   useEffect(() => {
     if (chatTab === 'normal') {
@@ -2263,7 +2283,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
       {/* Header - Glassmorphic Dark */}
       {!isCamFullScreen && (
-        <div style={{ height: '60px', backgroundColor: 'rgba(15, 23, 42, 0.7)', backdropFilter: 'blur(16px)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', borderBottom: '1px solid rgba(255,255,255,0.08)', zIndex: 10 }}>
+        <div className="room-header" style={{ height: '60px', backgroundColor: 'rgba(15, 23, 42, 0.7)', backdropFilter: 'blur(16px)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', borderBottom: '1px solid rgba(255,255,255,0.08)', zIndex: 10 }}>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
             {/* Text Logo Area */}
@@ -2313,12 +2333,30 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         </div>
       )}
 
+      {/* 모바일 전용 하단 컨트롤 바 — 기존 핸들러/상태만 재사용(OpenVidu 세션·publish·subscribe 불변). */}
+      {isMobile && !isCamFullScreen && (
+        <div className="room-mobile-controlbar">
+          <button onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsMicOn(!isMicOn); } }} aria-label={isMicOn ? '마이크 끄기' : '마이크 켜기'}>
+            {isMicOn ? <Mic size={22} color="#E5E7EB" /> : <MicOff size={22} color="#F87171" />}
+          </button>
+          <button onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsVideoOn(!isVideoOn); } }} aria-label={isVideoOn ? '카메라 끄기' : '카메라 켜기'}>
+            {isVideoOn ? <Video size={22} color="#E5E7EB" /> : <VideoOff size={22} color="#F87171" />}
+          </button>
+          <button onClick={() => setShowChatDrawer(v => !v)} aria-label="채팅">
+            <MessageCircle size={22} color={showChatDrawer ? '#60A5FA' : '#E5E7EB'} />
+          </button>
+          <button className="room-mobile-leave" onClick={onClose} aria-label="나가기">
+            <X size={22} color="#EF4444" />
+          </button>
+        </div>
+      )}
+
       {/* Main Body */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div className="room-body" style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
         {/* Left Sidebar - Floating Dock Style */}
         {!isCamFullScreen && (
-          <div style={{ width: '72px', backgroundColor: '#0F172A', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 0', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
+          <div className="room-dock" style={{ width: '72px', backgroundColor: '#0F172A', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 0', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', alignItems: 'center' }}>
               <div onClick={() => setShowStatsModal(true)} style={{ padding: '10px', borderRadius: '12px', color: '#9CA3AF', cursor: 'pointer', transition: '0.2s', ':hover': { color: 'white', backgroundColor: 'rgba(255,255,255,0.1)' } }}>
                 <Calendar size={22} />
@@ -2354,7 +2392,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         )}
 
         {/* Video Grid */}
-        <div className="custom-scrollbar" style={{ flex: 1, padding: '24px', overflowY: 'auto', backgroundColor: '#0B0F19', position: 'relative' }}>
+        <div className="custom-scrollbar room-stage" style={{ flex: 1, padding: '24px', overflowY: 'auto', backgroundColor: '#0B0F19', position: 'relative' }}>
 
           {isCamFullScreen && (
             <div
@@ -2383,7 +2421,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', height: '100%', alignContent: 'start' }}>
+          <div className="room-video-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', height: '100%', alignContent: 'start' }}>
 
             {/* 참가자 타일: 메인 그리드는 오직 activeConnections(OpenVidu 실제 접속)만 렌더한다.
                 · DB members/study.members/participants는 절대 source로 쓰지 않는다(미입장 멤버 타일 방지).
@@ -2397,7 +2435,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               const micOn = isMe ? isMicOn : (streamManager ? !!streamManager.stream.audioActive : false);
               const photoUrl = participant.photoUrl || (isMe ? (user?.photoUrl || user?.photo_url || null) : null);
               return (
-                <div key={connectionId} style={{ position: 'relative' }}>
+                <div key={connectionId} className={`room-tile ${connectionId === mainConnectionId ? 'room-tile--main' : 'room-tile--thumb'}`} style={{ position: 'relative' }}>
                   <VideoFeed
                     stream={stream}
                     streamManager={streamManager}
@@ -2423,7 +2461,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
             {/* Empty Slots — 실제 접속자 타일 이후 남은 정원만큼만 표시(사람 이름/아바타 없음). */}
             {Array.from({ length: emptySlotCount }).map((_, i) => (
-              <div key={`empty-${i}`} style={{ backgroundColor: 'rgba(30, 41, 59, 0.3)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '16/9', border: '1px dashed rgba(255,255,255,0.1)' }}>
+              <div key={`empty-${i}`} className="room-empty-slot" style={{ backgroundColor: 'rgba(30, 41, 59, 0.3)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '16/9', border: '1px dashed rgba(255,255,255,0.1)' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', opacity: 0.3 }}>
                   <Monitor size={36} color="#9CA3AF" />
                   <span style={{ color: '#9CA3AF', fontSize: '14px', fontWeight: '600', letterSpacing: '0.5px' }}>StudyBridge</span>
@@ -2436,7 +2474,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
         {/* Right Sidebar - Chat & Participants */}
         {!isCamFullScreen && (
-          <div style={{ width: '340px', backgroundColor: '#0F172A', display: 'flex', flexDirection: 'column', minHeight: 0, borderLeft: '1px solid rgba(255,255,255,0.05)' }}>
+          <div className="room-right-sidebar" style={{ width: '340px', backgroundColor: '#0F172A', display: 'flex', flexDirection: 'column', minHeight: 0, borderLeft: '1px solid rgba(255,255,255,0.05)' }}>
 
             {/* Participants Area */}
             <div style={{ padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
