@@ -116,26 +116,28 @@ export default function Knowledge() {
   };
 
   return (
-    <div style={{ width: '100%', boxSizing: 'border-box', padding: '40px', fontFamily: '"Malgun Gothic", "맑은 고딕", sans-serif', backgroundColor: '#F9FAFB', minHeight: 'calc(100vh - 80px)' }}>
+    <div style={{ width: '100%', boxSizing: 'border-box', padding: 'clamp(16px, 4vw, 40px)', fontFamily: '"Malgun Gothic", "맑은 고딕", sans-serif', backgroundColor: '#F9FAFB', minHeight: 'calc(100vh - 80px)' }}>
       
       {/* 중앙 집중형 검색 및 생성 헤더 */}
       <div style={{ maxWidth: '800px', margin: '0 auto 48px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
         
-        <div style={{ width: '100%', position: 'relative', display: 'flex', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: '24px', boxShadow: '0 8px 30px rgba(0,0,0,0.06)', padding: '8px 8px 8px 24px', border: '1px solid #E5E7EB', transition: 'all 0.3s' }}
+        <div className="kn-searchbar" style={{ width: '100%', position: 'relative', display: 'flex', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: '24px', boxShadow: '0 8px 30px rgba(0,0,0,0.06)', padding: '8px 8px 8px 24px', border: '1px solid #E5E7EB', transition: 'all 0.3s' }}
              onFocus={(e) => { e.currentTarget.style.boxShadow = '0 12px 40px rgba(96, 201, 90, 0.15)'; e.currentTarget.style.borderColor = '#60C95A' }}
              onBlur={(e) => { e.currentTarget.style.boxShadow = '0 8px 30px rgba(0,0,0,0.06)'; e.currentTarget.style.borderColor = '#E5E7EB' }}
         >
           <Search size={24} color="#9CA3AF" />
-          <input 
-            type="text" 
-            placeholder="궁금한 로드맵이나 자료를 RAG AI로 검색해보세요 (입력 후 Enter)" 
+          <input
+            type="text"
+            className="kn-search-input"
+            placeholder="궁금한 로드맵이나 자료를 RAG AI로 검색해보세요 (입력 후 Enter)"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={handleSearch}
-            style={{ flex: 1, height: '48px', border: 'none', backgroundColor: 'transparent', fontSize: '16px', color: '#111827', outline: 'none', marginLeft: '12px' }}
+            style={{ flex: 1, minWidth: 0, height: '48px', border: 'none', backgroundColor: 'transparent', fontSize: '16px', color: '#111827', outline: 'none', marginLeft: '12px' }}
           />
-          <button 
+          <button
             onClick={() => setShowWriteModal(true)}
+            className="kn-create-btn"
             style={{ height: '48px', padding: '0 24px', backgroundColor: '#60C95A', color: 'white', borderRadius: '16px', border: 'none', fontWeight: 'bold', fontSize: '15px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', transition: 'background-color 0.2s', boxShadow: '0 4px 12px rgba(96, 201, 90, 0.3)', whiteSpace: 'nowrap' }}
             onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#387235'}
             onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#60C95A'}
@@ -162,7 +164,7 @@ export default function Knowledge() {
       </div>
 
       {/* Main Content: Post Grid (Full Width) */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))', gap: '24px' }}>
         {/* Featured Post (First post) spanning full width */}
         {pagedPosts.length > 0 && (
           <div style={{ gridColumn: '1 / -1', marginBottom: '16px' }}>

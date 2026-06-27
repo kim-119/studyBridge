@@ -859,19 +859,20 @@ export default function GroupStudy() {
             </div>
 
             {/* 검색 바 */}
-            <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 20px', borderRadius: '12px' }}>
-              <Search size={20} color="#9CA3AF" />
+            <div className="glass-panel gs-searchbar" style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 20px', borderRadius: '12px' }}>
+              <Search size={20} color="#9CA3AF" style={{ flexShrink: 0 }} />
               <input
                 type="text"
+                className="gs-search-input"
                 placeholder="관심있는 스터디나 기술 스택(태그)을 검색해보세요"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                style={{ flex: 1, border: 'none', outline: 'none', backgroundColor: 'transparent', fontSize: '15px', color: 'var(--color-text-main)' }}
+                style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', backgroundColor: 'transparent', fontSize: '15px', color: 'var(--color-text-main)' }}
               />
-              <div style={{ width: '1px', height: '24px', backgroundColor: 'var(--color-border)', margin: '0 4px' }} />
+              <div className="gs-search-divider" style={{ width: '1px', height: '24px', backgroundColor: 'var(--color-border)', margin: '0 4px' }} />
               <button
-                className="btn-primary"
-                style={{ width: 'auto', height: '36px', padding: '0 16px', fontSize: '14px' }}
+                className="btn-primary gs-create-btn"
+                style={{ width: 'auto', height: '36px', padding: '0 16px', fontSize: '14px', flexShrink: 0, whiteSpace: 'nowrap' }}
                 onClick={() => {
                   if (!checkAuth()) return;
                   setIsCreateStudyMode(true);
@@ -881,7 +882,7 @@ export default function GroupStudy() {
               </button>
             </div>
             {/* 스터디 목록 그리드 */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px', marginTop: '24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))', gap: '24px', marginTop: '24px' }}>
               {filteredStudies.length === 0 ? (
                 <div style={{ gridColumn: '1 / -1', padding: '60px 0', textAlign: 'center', color: 'var(--color-text-muted)', backgroundColor: '#f9fafb', borderRadius: '16px' }}>
                   <Filter size={40} style={{ margin: '0 auto 16px', opacity: 0.3 }} />

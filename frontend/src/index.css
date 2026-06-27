@@ -59,6 +59,36 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 전역 모바일/태블릿 가로 overflow 방어막(최후의 보루). 단독 해결책이 아니라,
+   각 페이지의 실제 원인(고정폭/min-width/검색바 flex 등)도 함께 수정한다.
+   ※ 데스크톱(>=1024px)에는 적용하지 않는다 — body 의 overflow-x:hidden 이
+     position:sticky(예: Planner lg:sticky) 동작을 바꿀 수 있어 데스크톱 불변을 보장하기 위함.
+     네비는 position:fixed 라 영향 없음. */
+@media (max-width: 1023px) {
+  html, body, #root {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+}
+
+/* 모바일: 페이지 좌우 패딩 축소 + 검색바+CTA 세로(또는 줄바꿈) 배치.
+   데스크톱(>=641px)은 이 블록 밖이라 기존 가로 배치 그대로 유지. */
+@media (max-width: 640px) {
+  .container-main { padding: 16px; }
+
+  /* 그룹스터디 검색바: input 이 min-width 때문에 버튼을 밀어내던 문제 →
+     줄바꿈 허용 + input min-width:0 + 버튼 full-width 줄바꿈, 구분선 숨김 */
+  .gs-searchbar { flex-wrap: wrap; row-gap: 10px; }
+  .gs-search-input { min-width: 0; }
+  .gs-search-divider { display: none !important; }
+  .gs-create-btn { flex: 1 0 100% !important; width: 100% !important; justify-content: center; }
+
+  /* 지식공유(RAG) 검색바: 동일 패턴 */
+  .kn-searchbar { flex-wrap: wrap; row-gap: 10px; }
+  .kn-search-input { min-width: 0; }
+  .kn-create-btn { flex: 1 0 100% !important; width: 100% !important; justify-content: center; }
+}
+
 /* 제목 폰트 규격 */
 h1, h2, h3, h4, h5, h6 {
   font-size: 20px;
