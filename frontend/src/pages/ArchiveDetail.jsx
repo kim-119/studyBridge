@@ -3088,7 +3088,7 @@ export default function ArchiveDetail() {
               {/* 설정 모달 */}
               {isQuizSettingsOpen && (
                   <div className="modal-overlay" style={{ zIndex: 1000 }}>
-                    <div className="glass-panel modal-content animate-fade-in" style={{ width: '420px', padding: '32px', borderRadius: '24px' }}>
+                    <div className="glass-panel modal-content animate-fade-in" style={{ width: '420px', maxWidth: '92vw', boxSizing: 'border-box', padding: '32px', borderRadius: '24px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
                         <h3 style={{ margin: 0, fontSize: '20px', color: 'var(--color-text-main)' }}>퀴즈 설정</h3>
                         <button className="btn-close" onClick={() => setIsQuizSettingsOpen(false)}><X size={24} /></button>

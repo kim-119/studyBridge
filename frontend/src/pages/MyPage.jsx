@@ -490,7 +490,7 @@ export default function MyPage() {
               <div><strong>본인 인증이 완료되었습니다.</strong><br/>새로운 비밀번호를 설정해 주세요.</div>
             </div>
             
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '30px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '24px', marginBottom: '30px' }}>
               <div className="form-group">
                 <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'bold' }}><Lock size={16} /> 새 비밀번호</label>
                 <input
@@ -581,7 +581,7 @@ export default function MyPage() {
       {/* 새 문의 작성 모달 */}
       {showInquiryModal && (
         <div className="modal-overlay" style={{ zIndex: 1000, backdropFilter: 'blur(4px)' }}>
-          <div className="glass-panel modal-content animate-fade-in" style={{ width: '500px', padding: '32px', borderRadius: '24px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)' }}>
+          <div className="glass-panel modal-content animate-fade-in" style={{ width: '100%', maxWidth: '500px', boxSizing: 'border-box', padding: '32px', borderRadius: '24px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
               <h3 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold', color: '#111827' }}>1:1 문의하기</h3>
               <button className="btn-close" onClick={() => setShowInquiryModal(false)}><X size={24} /></button>
