@@ -1528,6 +1528,10 @@ a {
   }
   .panel-resizer-bar { display: none !important; }
   .archive-action-bar { padding: 10px 14px; gap: 8px; }
+  /* 세로 스택에선 '뷰어 너비' 조절이 의미 없으므로 숨기고, AI 도구 버튼은 줄바꿈·축소 */
+  .archive-viewer-width { display: none !important; }
+  .archive-tools { flex-wrap: wrap; justify-content: flex-end; }
+  .archive-action-btn { padding: 6px 12px; font-size: 13px; }
 }
 
 .panel-resizer-bar:hover div div {

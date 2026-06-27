@@ -3696,8 +3696,8 @@ export default function ArchiveDetail() {
                 </span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexShrink: 0 }}>
-                {/* 뷰어 너비 */}
-                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                {/* 뷰어 너비 (모바일은 세로 스택이라 무의미 → CSS로 숨김) */}
+                <div className="archive-viewer-width" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                   <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginRight: '4px' }}>뷰어 너비:</span>
                   {[30, 50, 70].map(pct => (
                       <button
@@ -3729,7 +3729,7 @@ export default function ArchiveDetail() {
                     <button className={`archive-action-btn ${plannerDetailView === 'socratic' ? 'active' : ''}`} onClick={() => setPlannerDetailView('socratic')}><Brain size={16} /> 소크라테스 복습</button>
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', gap: '8px' }}>
+                  <div className="archive-tools" style={{ display: 'flex', gap: '8px' }}>
                     <button className={`archive-action-btn ${activePdfTool === 'summary' ? 'active' : ''}`} onClick={() => setActivePdfTool('summary')}><AlignLeft size={16} /> 요약</button>
                     <button className={`archive-action-btn ${activePdfTool === 'quiz' ? 'active' : ''}`} onClick={() => setActivePdfTool('quiz')}><HelpCircle size={16} /> 퀴즈/문제 생성</button>
                     <button className={`archive-action-btn ${activePdfTool === 'roadmap' ? 'active' : ''}`} onClick={() => setActivePdfTool('roadmap')}><Map size={16} /> 주차별 로드맵</button>
