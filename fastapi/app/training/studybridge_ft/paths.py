@@ -17,10 +17,18 @@ def ensure_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 def assert_outside_repo(p: Path) -> None:
-    """p가 repo 트리 안이면 RuntimeError. 데이터가 git에 새는 것 방지."""
+    """p가 repo 트리 안이면 RuntimeError. 데이터가 git에 새는 것 방지.
+    예외: repo 내부라도 .gitignore 처리된 outputs/ 트리는 허용(safe55 체크포인트용).
+    """
     rp = Path(p).resolve()
     try:
         rp.relative_to(REPO_ROOT)
     except ValueError:
         return  # repo 밖 → OK
+    # repo 내부 outputs/ 는 .gitignore(/outputs/)로 추적 제외라 git 누출 위험 없음 → 허용.
+    try:
+        rp.relative_to(REPO_ROOT / "outputs")
+        return
+    except ValueError:
+        pass
     raise RuntimeError(f"데이터 경로가 repo 내부입니다(금지): {rp}")
