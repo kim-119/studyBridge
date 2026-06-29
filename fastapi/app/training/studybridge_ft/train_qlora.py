@@ -124,6 +124,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
     ap.add_argument("--output", default=None)
+    # 데이터 파일 직접 지정(미지정 시 ~/studybridge-ft/data/{train,valid}.jsonl). 원본 무수정.
+    ap.add_argument("--train_file", default=None)
+    ap.add_argument("--valid_file", default=None)
     # safe55 운용/복구용 override (미지정 시 train() 내부 기본값).
     ap.add_argument("--max_steps", type=int, default=None, help="dry-run/제한 학습용. -1 또는 미지정=full")
     ap.add_argument("--save_steps", type=int, default=None)
@@ -144,8 +147,11 @@ def main():
         "gradient_accumulation_steps": a.gradient_accumulation_steps,
         "warmup_ratio": a.warmup_ratio, "max_grad_norm": a.max_grad_norm,
     }.items() if v is not None}
-    train(cfg, paths.SUBDIRS["data"] / "train.jsonl", paths.SUBDIRS["data"] / "valid.jsonl",
-          out, overrides=overrides)
+    train_file = Path(a.train_file) if a.train_file else paths.SUBDIRS["data"] / "train.jsonl"
+    valid_file = Path(a.valid_file) if a.valid_file else paths.SUBDIRS["data"] / "valid.jsonl"
+    print(f"[INFO] train_file = {train_file}")
+    print(f"[INFO] valid_file = {valid_file}")
+    train(cfg, train_file, valid_file, out, overrides=overrides)
 
 
 if __name__ == "__main__":
