@@ -34,6 +34,18 @@ function materialOpenTarget(m) {
   return { kind: 'detail', path: `/archive/pdf/${m.materialId}` };
 }
 
+// ── MIRROR of ArchiveDetail.jsx: MaterialPdfViewer 입력 분기 ───────────────────
+function pdfViewerState(material) {
+  const isDocx = String(material?.originalFileName || '').toLowerCase().endsWith('.docx');
+  const isPlanner = String(material?.materialType || '').toUpperCase() === 'PLANNER' || material?.plannerId != null;
+  if (isDocx) return { kind: 'docx' };
+  return {
+    kind: 'pdf',
+    title: isPlanner ? '플래너 PDF' : 'Document Viewer',
+    fileUrl: material?.s3PresignedUrl || '',
+  };
+}
+
 // ── MIRROR of ArchiveDetail.jsx: isPlanner 판정 ───────────────────────────────
 const isPlannerMaterial = (material) =>
   String(material?.materialType || '').toUpperCase() === 'PLANNER' || material?.plannerId != null;
@@ -84,6 +96,9 @@ eq('완전 미상 → 학습자료 탭(누락 방지)', materialTabKind({}), 'LE
 eq('PLANNER → /archive/pdf/:id 분할뷰', materialOpenTarget({ materialType: 'PLANNER', materialId: 7 }), { kind: 'detail', path: '/archive/pdf/7' });
 eq('PDF → /archive/pdf/:id', materialOpenTarget({ materialType: 'PDF', materialId: 3 }), { kind: 'detail', path: '/archive/pdf/3' });
 eq('STUDY_LOG → 모달', materialOpenTarget({ materialType: 'STUDY_LOG', materialId: 9 }), { kind: 'journalModal' });
+eq('PLANNER + PDF URL → 좌측 PDF 뷰어', pdfViewerState({ materialType: 'PLANNER', plannerId: 7, s3PresignedUrl: 'https://s3/p.pdf' }), { kind: 'pdf', title: '플래너 PDF', fileUrl: 'https://s3/p.pdf' });
+eq('기존 PDF 자료 → 기존 PDF 뷰어 유지', pdfViewerState({ materialType: 'PDF', s3PresignedUrl: 'https://s3/a.pdf' }), { kind: 'pdf', title: 'Document Viewer', fileUrl: 'https://s3/a.pdf' });
+eq('DOCX 자료 → PDF 뷰어로 보내지 않음', pdfViewerState({ originalFileName: 'note.docx' }), { kind: 'docx' });
 
 // isPlanner 판정 — 표기 흔들림/식별자
 eq("isPlanner 'PLANNER'", isPlannerMaterial({ materialType: 'PLANNER' }), true);

@@ -6,6 +6,7 @@ import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService, plan
 import SummarySectionCard from '../components/SummarySectionCard';
 import KeywordDefineModal from '../components/KeywordDefineModal';
 import ReviewNoteArchiveDetail from '../components/review-note/ReviewNoteArchiveDetail';
+import MaterialPdfViewer from '../components/archive/MaterialPdfViewer';
 import ObsidianArchiveGraphViewer from '../components/graph/ObsidianArchiveGraphViewer';
 import ReviewNoteLearningEntry from '../components/review-note/ReviewNoteLearningEntry';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
@@ -2078,6 +2079,7 @@ export default function ArchiveDetail() {
     const allItems = Array.isArray(pa?.items) ? pa.items : [];
     const visibleItems = allItems.filter((it) => !it.hidden);
     const recommendations = Array.isArray(pa?.recommendations) ? pa.recommendations : [];
+    const plannerData = pa?.plannerAnalysisData || null;
 
     // 코드/패키지명이 깨지지 않게: 단어 내부(특히 CJK) 분절 금지 + 넘칠 때만 줄바꿈 + 전체 tooltip
     const codeSafe = { overflowWrap: 'anywhere', wordBreak: 'keep-all', whiteSpace: 'pre-wrap', lineHeight: 1.6 };
@@ -2320,6 +2322,40 @@ export default function ArchiveDetail() {
           </div>
           <ProgressBar percent={progress.percent} />
         </Card>
+        {plannerData && (
+          <Card icon={<BarChart3 size={17} color="#0F766E" />} title="일정 분석 / 균형 진단">
+            {Array.isArray(plannerData.scheduleAnalysis) && plannerData.scheduleAnalysis.length > 0 && (
+              <div style={{ marginBottom: '14px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: '6px' }}>일정 분석</div>
+                <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {plannerData.scheduleAnalysis.map((line, i) => <li key={i} style={{ fontSize: '13.5px', color: 'var(--color-text-main)', ...codeSafe }}>{line}</li>)}
+                </ul>
+              </div>
+            )}
+            {Array.isArray(plannerData.problemPoints) && plannerData.problemPoints.length > 0 && (
+              <div style={{ marginBottom: '14px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: '6px' }}>계획 문제점</div>
+                <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {plannerData.problemPoints.map((line, i) => <li key={i} style={{ fontSize: '13.5px', color: 'var(--color-text-main)', ...codeSafe }}>{line}</li>)}
+                </ul>
+              </div>
+            )}
+            {plannerData.balanceAssessment && (
+              <div style={{ marginBottom: '14px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: '6px' }}>학습량 / 일정 균형</div>
+                <p style={{ margin: 0, fontSize: '13.5px', color: 'var(--color-text-main)', ...codeSafe }}>{plannerData.balanceAssessment}</p>
+              </div>
+            )}
+            {Array.isArray(plannerData.improvementActions) && plannerData.improvementActions.length > 0 && (
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: '6px' }}>개선안</div>
+                <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {plannerData.improvementActions.map((line, i) => <li key={i} style={{ fontSize: '13.5px', color: 'var(--color-text-main)', ...codeSafe }}>{line}</li>)}
+                </ul>
+              </div>
+            )}
+          </Card>
+        )}
         <Card icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
           {visibleItems.length === 0 ? (
             <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>표시할 항목이 없습니다. (모두 완료/숨김 처리됨)</p>
@@ -3764,55 +3800,7 @@ export default function ArchiveDetail() {
 
         <div className="archive-split-view">
           <div className="archive-left-panel" style={{ width: type === 'pdf' ? `${leftWidth}%` : '50%', flex: 'none', overflowY: 'auto' }}>
-            {type === 'pdf' && isPlanner ? (
-                /* 플래너는 PDF 가 아니다 — PDF 뷰어 대신 구조화된 플래너 상세를 렌더한다. */
-                (() => {
-                  let snap = {};
-                  try { snap = material?.contentJson ? JSON.parse(material.contentJson) : {}; } catch { snap = {}; }
-                  const createdAt = (snap.createdAt || material?.uploadedAt || '').toString().split('T')[0];
-                  let slotCount = 0;
-                  try {
-                    const tt = snap.timeTableJson ? JSON.parse(snap.timeTableJson) : null;
-                    if (Array.isArray(tt)) slotCount = tt.filter((s) => s && (s.checked || s.content || s.text)).length;
-                    else if (tt && typeof tt === 'object') slotCount = Object.keys(tt).length;
-                  } catch { slotCount = 0; }
-                  const Row = ({ label, value }) => (value == null || value === '' ? null : (
-                    <div>
-                      <h4 style={{ margin: '0 0 6px', fontSize: '13px', color: 'var(--color-text-muted)', fontWeight: 600 }}>{label}</h4>
-                      <p style={{ margin: 0, fontSize: '15px', color: 'var(--color-text-main)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{value}</p>
-                    </div>
-                  ));
-                  return (
-                    <div className="glass-panel" style={{ padding: '32px', height: '100%', overflowY: 'auto' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-                        <span style={{ fontSize: '12px', fontWeight: 700, color: '#15803D', backgroundColor: '#DCFCE7', padding: '3px 10px', borderRadius: '12px' }}>플래너</span>
-                        <h2 style={{ margin: 0, color: 'var(--color-text-main)' }}>{material.title}</h2>
-                      </div>
-                      <p style={{ margin: '0 0 24px', color: 'var(--color-text-muted)', fontSize: '14px' }}>
-                        플래너는 PDF 파일이 아니라 로드맵/플래너 데이터입니다. 우측 패널에서 AI 계획 분석·다음 학습 추천을 확인하세요.
-                      </p>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                        <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
-                          <Row label="생성일" value={createdAt || '-'} />
-                          <Row label="기준일" value={snap.plannerDate} />
-                          {snap.dDay != null && snap.dDay !== '' && <Row label="D-Day" value={`D-${snap.dDay}`} />}
-                          {slotCount > 0 && <Row label="시간표 항목" value={`${slotCount}개`} />}
-                        </div>
-                        <Row label="과목" value={snap.subject} />
-                        <Row label="학습 유형" value={snap.studyType} />
-                        <Row label="기간/학기" value={snap.term} />
-                        <Row label="목표 시간" value={snap.goalTime} />
-                        <Row label="학습 내용" value={snap.content} />
-                        <Row label="메모(TMI)" value={snap.tmi} />
-                        {snap.sourceType && <Row label="원본" value={snap.sourceType === 'ROADMAP_AUTO' ? '로드맵 자동 생성' : snap.sourceType} />}
-                        <button className="btn-primary" style={{ alignSelf: 'flex-start', padding: '12px 24px', borderRadius: '10px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer' }} onClick={() => navigate('/planner')}>
-                          플래너에서 열기
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })()
-            ) : type === 'pdf' && (material?.originalFileName || '').toLowerCase().endsWith('.docx') ? (
+            {type === 'pdf' && (material?.originalFileName || '').toLowerCase().endsWith('.docx') ? (
                 /* DOCX는 PDF 뷰어(iframe)에 넣지 않고 별도 분석 결과 패널을 보여준다. */
                 <div className="glass-panel" style={{ padding: '32px', height: '100%', overflowY: 'auto' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
@@ -3850,24 +3838,14 @@ export default function ArchiveDetail() {
                   </div>
                 </div>
             ) : type === 'pdf' ? (
-                <div style={{ width: '100%', height: '100%', backgroundColor: 'white', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                  {material.s3PresignedUrl ? (
-                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
-
-                        <div style={{ flex: 1, position: 'relative' }}>
-                          <iframe src={material.s3PresignedUrl} style={{ width: '100%', height: '100%', border: 'none' }} title="Document Viewer" />
-                        </div>
-                      </div>
-                  ) : (
-                      <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', padding: '40px' }}>
-                        <div style={{ padding: '40px', backgroundColor: '#F3F4F6', borderRadius: '8px', marginBottom: '24px' }}>
-                          <span style={{ fontSize: '48px', color: '#9CA3AF' }}>PDF</span>
-                        </div>
-                        <h3 style={{ margin: '0 0 8px', color: 'var(--color-text-main)' }}>{material.title}</h3>
-                        <p style={{ color: 'var(--color-text-muted)', margin: 0, textAlign: 'center' }}>첨부된 PDF 파일이 없어 미리보기를 표시할 수 없습니다.</p>
-                      </div>
-                  )}
-                </div>
+                <MaterialPdfViewer
+                  fileUrl={material.s3PresignedUrl}
+                  title={isPlanner ? '플래너 PDF' : 'Document Viewer'}
+                  missingTitle={material.title}
+                  missingMessage={isPlanner
+                    ? '연결된 플래너 PDF가 없어 미리보기를 표시할 수 없습니다.'
+                    : '첨부된 PDF 파일이 없어 미리보기를 표시할 수 없습니다.'}
+                />
             ) : (
                 <div className="glass-panel" style={{ padding: '32px' }}>
                   <div>

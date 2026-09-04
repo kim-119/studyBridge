@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 /** AI 계획 분석 API 계약 DTO. */
 public class PlanAnalysisDTO {
@@ -53,6 +54,7 @@ public class PlanAnalysisDTO {
         private String errorCode;     // null 이면 정상
         private List<Item> items;     // deleted=false 전체(숨김 포함, hidden 플래그로 구분)
         private List<String> recommendations;
+        private PlannerAnalysisData plannerAnalysisData;
         private Progress progress;
         private Meta meta;
     }
@@ -68,8 +70,63 @@ public class PlanAnalysisDTO {
         private int chunkCount;
         private int sentenceCount;
         private int itemCount;
+        private int taskCount;
+        private int scheduleCount;
+        private int analysisContentLength;
         private long elapsedMs;
         private String requestId;
+        private String fastApiEndpoint;
+        private Integer fastApiResponseStatus;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PlannerAnalysisData {
+        private Long plannerId;
+        private String title;
+        private List<String> keywords;
+        private String learningGoal;
+        private List<String> schedule;
+        private List<String> checklist;
+        private Integer progress;
+        private String aiFeedback;
+        private List<String> scheduleAnalysis;
+        private List<String> problemPoints;
+        private String balanceAssessment;
+        private List<String> improvementActions;
+        private List<String> nextRecommendations;
+        private List<String> unfinishedItems;
+        private String message;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PlannerAnalysisRequest {
+        private Long plannerId;
+        private String title;
+        private String plannerTitle;
+        private String subject;
+        private String category;
+        private String content;
+        private String todo;
+        private String memo;
+        private String goal;
+        private String goalTime;
+        private String netStudyTime;
+        private String dDay;
+        private String deadline;
+        private String date;
+        private String studyType;
+        private String priority;
+        private List<String> checklist;
+        private List<String> completedTasks;
+        private List<String> incompleteTasks;
+        private Integer progress;
+        private Map<String, Object> plannerMeta;
     }
 
     @Data

@@ -413,6 +413,10 @@ def _analyze_sync(body: Dict[str, Any]) -> Dict[str, Any]:
         '  "learningGoal": "이 플래너의 실행 가능한 학습 목표 1~2문장",\n'
         '  "schedule": ["오늘/이번 학습 일정 단계 3~5개"],\n'
         '  "checklist": ["오늘 점검할 체크리스트 항목 4~6개"],\n'
+        '  "scheduleAnalysis": ["일정 분석 포인트 2~4개"],\n'
+        '  "problemPoints": ["계획 문제점/리스크 2~4개"],\n'
+        '  "balanceAssessment": "학습량과 일정 균형 평가 1~2문장",\n'
+        '  "improvementActions": ["개선안 3~5개"],\n'
         '  "aiFeedback": "진행 상황과 시간 관리에 대한 코치 피드백 2~3문장",\n'
         '  "nextRecommendations": ["다음 학습 추천 행동 3개"],\n'
         '  "unfinishedItems": ["아직 끝내지 못한 항목 (없으면 빈 배열)"]\n'
@@ -439,6 +443,22 @@ def _analyze_sync(body: Dict[str, Any]) -> Dict[str, Any]:
     learning_goal = str(parsed.get("learningGoal") or "").strip() or (
         goal or f"{title}의 핵심 내용을 이해하고 오늘 분량을 끝까지 학습한다."
     )
+    schedule_analysis = _listify(parsed.get("scheduleAnalysis")) or [
+        f"현재 체크리스트 기준으로 남은 핵심 항목은 {max(len(unfinished), len(checklist))}개입니다.",
+        "우선순위가 높은 개념 학습과 복습 단계를 분리하면 실행력이 올라갑니다.",
+    ]
+    problem_points = _listify(parsed.get("problemPoints")) or [
+        "해야 할 일과 복습 항목이 한 덩어리로 적혀 있으면 실제 착수 순서가 흐려질 수 있습니다.",
+        "시간 블록이 부족하거나 비어 있으면 목표 대비 학습량이 과소 또는 과대 편성될 수 있습니다.",
+    ]
+    balance_assessment = str(parsed.get("balanceAssessment") or "").strip() or (
+        "핵심 개념 학습, 문제 풀이, 복습 시간이 균형 있게 배치됐는지 점검이 필요합니다."
+    )
+    improvement_actions = _listify(parsed.get("improvementActions")) or [
+        "가장 중요한 과제 1개를 먼저 끝내고 나머지 항목을 분리해서 적기",
+        "시간표가 있다면 개념 학습과 문제 풀이 시간을 구분해 배치하기",
+        "학습 종료 전 10~15분 복습 시간을 별도로 확보하기",
+    ]
     ai_feedback = str(parsed.get("aiFeedback") or "").strip() or (
         f"현재 진행률은 {progress}%입니다. 남은 항목을 우선순위 순으로 처리하면 목표 달성에 가까워집니다."
     )
@@ -456,6 +476,10 @@ def _analyze_sync(body: Dict[str, Any]) -> Dict[str, Any]:
         "schedule": schedule,
         "checklist": checklist,
         "progress": progress,
+        "scheduleAnalysis": schedule_analysis,
+        "problemPoints": problem_points,
+        "balanceAssessment": balance_assessment,
+        "improvementActions": improvement_actions,
         "aiFeedback": ai_feedback,
         "nextRecommendations": next_reco,
         "unfinishedItems": unfinished,
@@ -496,6 +520,10 @@ async def planner_analyze(body: Dict[str, Any] = Body(default_factory=dict)) -> 
             "schedule": ["핵심 주제 학습", "예제 확인", "자기 점검"],
             "checklist": ["핵심 개념 복습", "문제 풀이", "오답 정리"],
             "progress": 0,
+            "scheduleAnalysis": ["현재 저장된 플래너 기준으로 실행 순서를 재정렬해야 합니다."],
+            "problemPoints": ["세부 시간 배분과 우선순위가 더 분명하면 학습 효율이 올라갑니다."],
+            "balanceAssessment": "학습량과 복습 시간의 균형을 다시 맞추는 것이 좋습니다.",
+            "improvementActions": ["핵심 항목부터 처리", "복습 시간 분리", "남은 과제 재정렬"],
             "aiFeedback": "일시적으로 AI 분석이 어려워 기본 분석을 제공합니다. 남은 항목부터 차례로 진행하세요.",
             "nextRecommendations": ["우선순위 높은 항목 처리", "헷갈린 개념 메모", "학습 후 요약"],
             "unfinishedItems": [],

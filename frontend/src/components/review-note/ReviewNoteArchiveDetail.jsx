@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Trash2, RotateCcw, Shuffle, Sparkles, Edit3 } from 'lucide-react';
 import { reviewNoteService, materialService } from '../../services/api';
 import { RetryPanel, VariantPanel, AiExplanationPanel } from './ReviewNotePanels';
+import MaterialPdfViewer from '../archive/MaterialPdfViewer';
 
 /**
  * 자료보관함 REVIEW_NOTE(오답노트) 상세 — 실제 복습 기능 실행 화면.
@@ -159,7 +160,7 @@ export default function ReviewNoteArchiveDetail({ material, leftWidth, setLeftWi
       <div className="archive-split-view">
         <div className="archive-left-panel" style={{ width: `${leftWidth}%`, flex: 'none', overflowY: 'auto' }}>
           {fileUrl && !isDocx ? (
-            <iframe src={fileUrl} title="오답노트 PDF" style={{ width: '100%', height: '100%', border: 'none' }} />
+            <MaterialPdfViewer fileUrl={fileUrl} title="오답노트 PDF" />
           ) : (
             <div className="glass-panel" style={{ padding: '32px', height: '100%' }}>
               <h3 style={{ marginTop: 0 }}>오답노트 자료</h3>

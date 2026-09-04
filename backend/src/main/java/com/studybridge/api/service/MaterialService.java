@@ -8,10 +8,12 @@ import com.studybridge.api.entity.MaterialType;
 import com.studybridge.api.dto.ArchiveListDTO;
 import com.studybridge.api.dto.FolderDTO;
 import com.studybridge.api.entity.Folder;
+import com.studybridge.api.entity.Planner;
 import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.MaterialFeedbackRepository;
 import com.studybridge.api.repository.MaterialSummaryRepository;
 import com.studybridge.api.repository.FolderRepository;
+import com.studybridge.api.repository.PlannerRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -32,6 +34,7 @@ public class MaterialService {
     private final MaterialFeedbackRepository materialFeedbackRepository;
     private final MaterialSummaryRepository materialSummaryRepository;
     private final FolderRepository folderRepository;
+    private final PlannerRepository plannerRepository;
     private final StudyNoteAnalysisService studyNoteAnalysisService;
 
     @Transactional
@@ -371,8 +374,20 @@ public class MaterialService {
 
     private MaterialDTO convertToDTO(Material material) {
         String presignedUrl = null;
-        // 구조화 자료(PLANNER 등)는 PDF 파일이 없으므로 presigned URL 을 만들지 않는다.
-        if (!isStructured(material) && material.getS3FileUrl() != null && !material.getS3FileUrl().isBlank()) {
+        String plannerPdfS3Key = null;
+        if (material.getMaterialType() == MaterialType.PLANNER) {
+            Planner planner = resolvePlannerForMaterial(material);
+            if (planner != null && planner.getS3Key() != null && !planner.getS3Key().isBlank()) {
+                plannerPdfS3Key = planner.getS3Key();
+                try {
+                    presignedUrl = s3Service.getPresignedUrl(planner.getS3Key(), planner.getTitle() + ".pdf");
+                } catch (Exception e) {
+                    log.warn("플래너 PDF presignedUrl 생성 실패 materialId={} plannerId={}: {}",
+                            material.getMaterialId(), planner.getId(), e.getMessage());
+                }
+            }
+        }
+        if (presignedUrl == null && !isStructured(material) && material.getS3FileUrl() != null && !material.getS3FileUrl().isBlank()) {
             try {
                 presignedUrl = s3Service.getPresignedUrl(material.getS3FileUrl(), material.getOriginalFileName());
             } catch (Exception e) {
@@ -380,7 +395,7 @@ public class MaterialService {
                 log.warn("S3 presignedUrl 생성 실패 materialId={}: {}", material.getMaterialId(), e.getMessage());
             }
         }
-        return baseDTO(material).s3PresignedUrl(presignedUrl).build();
+        return baseDTO(material).s3PresignedUrl(presignedUrl).plannerPdfS3Key(plannerPdfS3Key).build();
     }
 
     // S3 없이 기본 정보만 반환 (fallback)
@@ -411,6 +426,18 @@ public class MaterialService {
     private boolean isStructured(Material material) {
         MaterialType t = material.getMaterialType();
         return t == MaterialType.PLANNER || t == MaterialType.MINDMAP;
+    }
+
+    private Planner resolvePlannerForMaterial(Material material) {
+        if (material.getPlannerId() != null) {
+            Planner planner = plannerRepository.findById(material.getPlannerId()).orElse(null);
+            if (planner != null) return planner;
+        }
+        if (material.getUserId() != null && material.getMaterialId() != null) {
+            List<Planner> planners = plannerRepository.findByUserIdAndMaterialId(material.getUserId(), material.getMaterialId());
+            if (!planners.isEmpty()) return planners.get(0);
+        }
+        return null;
     }
 
     private String generatePresignedUrl(String s3Key) {
