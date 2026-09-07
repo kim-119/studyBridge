@@ -83,7 +83,20 @@ public class PlanAnalysisDTO {
     @Builder
     @NoArgsConstructor
     @AllArgsConstructor
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     public static class PlannerAnalysisData {
+        private PlannerSemanticDTO.Summary summary;
+        private PlannerSemanticDTO.PlanGoalAlignment goalAlignment;
+        private List<PlannerSemanticDTO.Prerequisite> prerequisites;
+        private List<PlannerSemanticDTO.Task> tasks;
+        private List<String> flow;
+        private List<PlannerSemanticDTO.ChecklistLink> checklistItems;
+        private Integer totalRecommendedMinutes;
+        private List<String> warnings;
+        private String requestId;
+        private String sourceFingerprint;
+        private Boolean stale;
+        private String plannerDate;
         private Long plannerId;
         private String title;
         private List<String> keywords;

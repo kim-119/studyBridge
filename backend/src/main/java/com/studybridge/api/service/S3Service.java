@@ -230,6 +230,20 @@ public class S3Service {
         }
     }
 
+    public byte[] downloadBytes(String key) {
+        return s3Client.getObjectAsBytes(software.amazon.awssdk.services.s3.model.GetObjectRequest.builder()
+                .bucket(bucket).key(key).build()).asByteArray();
+    }
+
+    public String getDownloadPresignedUrl(String key, String fileName) {
+        String disposition = org.springframework.http.ContentDisposition.attachment()
+                .filename(fileName, java.nio.charset.StandardCharsets.UTF_8).build().toString();
+        return s3Presigner.presignGetObject(GetObjectPresignRequest.builder()
+                .signatureDuration(Duration.ofMinutes(15))
+                .getObjectRequest(b -> b.bucket(bucket).key(key).responseContentType("application/pdf")
+                        .responseContentDisposition(disposition)).build()).url().toString();
+    }
+
     /** 객체 존재 여부 확인 (배너 동기화 idempotent 처리용) */
     public boolean doesObjectExist(String key) {
         if (key == null || key.isEmpty()) {

@@ -1388,6 +1388,27 @@ export const plannerService = {
     const res = await api.get(`/api/planners/${id}/ai-result`);
     return res.data;
   },
+
+  // AI 계획 분석(구조화 시맨틱): 플래너 실데이터 → AI07 → 검증/정규화. plannerId 기준, 소유권은 서버 검증.
+  analyzePlan: async (plannerId) => {
+    const res = await api.post(`/api/planners/${plannerId}/plan-analysis`, {}, { timeout: AI_TIMEOUT_MS });
+    return res.data;
+  },
+  // 저장된 AI 계획 분석 조회 (없으면 empty=true, 플래너 변경 시 stale=true)
+  getPlanAnalysis: async (plannerId) => {
+    const res = await api.get(`/api/planners/${plannerId}/plan-analysis`);
+    return res.data;
+  },
+  // 시작시간 기준 결정적 시간표 미리보기 (AI 재호출 없음)
+  getSchedule: async (plannerId, startTime) => {
+    const res = await api.get(`/api/planners/${plannerId}/schedule`, { params: { startTime } });
+    return res.data;
+  },
+  // 시간표 PDF 생성 → S3 저장 → presigned 다운로드 URL 반환
+  generateSchedulePdf: async (plannerId, startTime) => {
+    const res = await api.post(`/api/planners/${plannerId}/schedule/pdf`, { startTime }, { timeout: AI_TIMEOUT_MS });
+    return res.data;
+  },
 };
 
 // AI 계획 분석(PDF/플래너 문장 단위 학습 진행) 서비스. 모두 Spring(/api) 경유.

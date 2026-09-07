@@ -9,6 +9,7 @@ import ReviewNoteArchiveDetail from '../components/review-note/ReviewNoteArchive
 import MaterialPdfViewer from '../components/archive/MaterialPdfViewer';
 import ObsidianArchiveGraphViewer from '../components/graph/ObsidianArchiveGraphViewer';
 import ReviewNoteLearningEntry from '../components/review-note/ReviewNoteLearningEntry';
+import PlannerPlanAnalysisPanel from '../components/planner/PlannerPlanAnalysisPanel';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
 import { cleanLearningOrNull, filterLearningList } from '../utils/learningContent';
 
@@ -1968,6 +1969,38 @@ export default function ArchiveDetail() {
     }
 
     // ── AI 계획 분석 (기본 'analysis') ──
+    // 플래너(plannerId 보유)는 새 구조화 패널이 기본 분석 UI. 레거시 문장 체크리스트는 있으면 아래에 유지.
+    if (isPlanner && material?.plannerId != null) {
+      return wrap(
+        <>
+          <PlannerPlanAnalysisPanel plannerId={material.plannerId} />
+          {pa && (
+            <Card icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
+              {visibleItems.length === 0 ? (
+                <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>표시할 항목이 없습니다. (모두 완료/숨김 처리됨)</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '56vh', overflowY: 'auto' }}>
+                  {visibleItems.map((it) => (
+                    <div key={it.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', border: '1px solid var(--color-border)', background: it.completed ? '#F0FDF4' : '#fff', borderRadius: '10px', padding: '10px 12px' }}>
+                      <button onClick={() => handleToggleItem(it)} disabled={planItemBusy === it.id} title={it.completed ? '완료 해제' : '완료'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: '1px', flexShrink: 0 }}>
+                        {it.completed ? <CheckCircle2 size={18} color="#16A34A" /> : <Circle size={18} color="#9CA3AF" />}
+                      </button>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: 'block', fontSize: '13.5px', color: 'var(--color-text-main)', textDecoration: it.completed ? 'line-through' : 'none', ...codeSafe }} title={it.text}>{it.text}</span>
+                        <span style={{ display: 'inline-block', marginTop: '4px', fontSize: '10px', fontWeight: 700, color: '#15803D', background: '#EEF8EB', borderRadius: '6px', padding: '1px 6px' }}>{sourceBadge(it)}</span>
+                      </div>
+                      <button onClick={() => handleEraseItem(it)} disabled={planItemBusy === it.id} title="완료 후 숨기기(지우기)" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', flexShrink: 0 }}>
+                        <Trash2 size={15} color="#EF4444" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
+        </>
+      );
+    }
     if (planLoading && !pa) {
       return wrap(
         <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석 중…">

@@ -529,3 +529,299 @@ async def planner_analyze(body: Dict[str, Any] = Body(default_factory=dict)) -> 
             "unfinishedItems": [],
             "message": "저장된 플래너 자료를 기반으로 분석했습니다.",
         }
+
+
+# ── 플래너 시맨틱 분석 (구조화된 리치 분석) ──────────────────────────────────────
+#   Spring Java DTO가 응답 키를 1:1 매핑한다. task 순서/id/type은 코드가 authoritative,
+#   LLM은 산문(정합성 이유·중요성·학습 순서·선행지식)만 보강한다. 절대 client에 raise 금지.
+_TASK_TYPE_RULES = (
+    ("PRACTICE", ("실습", "코드", "구현", "코딩", "실행", "작성", "practice", "code")),
+    ("ANALYSIS", ("분석", "결과", "해석", "탐구", "analysis")),
+    ("COMPARISON", ("비교", "대조", "차이", "compare")),
+    ("REVIEW", ("복습", "정리", "요약", "review", "recap")),
+    ("OUTPUT", ("산출물", "제출", "보고서", "발표", "정리본", "리포트", "output", "report")),
+)
+
+
+def _classify_task_type(title: str, description: str = "") -> str:
+    blob = f"{title or ''} {description or ''}".lower()
+    for ttype, kws in _TASK_TYPE_RULES:
+        for kw in kws:
+            if kw.lower() in blob:
+                return ttype
+    return "CONCEPT"
+
+
+def _norm_level(v: Any, default: str = "MEDIUM") -> str:
+    s = str(v or "").strip().upper()
+    return s if s in ("HIGH", "MEDIUM", "LOW") else default
+
+
+def _prereq_list(raw: Any) -> List[Dict[str, Any]]:
+    """선행지식 리스트 정규화. includedInPlanTime은 항상 False."""
+    out: List[Dict[str, Any]] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            reason = str(item.get("reason") or "").strip()
+        else:
+            name, reason = str(item or "").strip(), ""
+        if name:
+            out.append({"name": name, "reason": reason, "includedInPlanTime": False})
+    return out
+
+
+def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
+    from app.utils.json_parser import extract_json
+
+    def g(*keys: str, default: str = "") -> str:
+        for k in keys:
+            v = body.get(k)
+            if v not in (None, "", []):
+                return v if isinstance(v, str) else str(v)
+        return default
+
+    title = g("title", "plannerTitle")
+    subject = g("subject", "category")
+    learning_type = g("learningType", "studyType")
+    priority = g("priority")
+    learning_goal = g("learningGoal", "goal")
+    content = g("content", "todo", "description")
+    memo = g("memo")
+    source_type = (g("sourceType") or "MANUAL").strip().upper() or "MANUAL"
+
+    target_minutes: Optional[int] = None
+    try:
+        tm = body.get("targetMinutes")
+        if tm not in (None, ""):
+            target_minutes = int(float(tm))
+            if target_minutes <= 0:
+                target_minutes = None
+    except (TypeError, ValueError):
+        target_minutes = None
+
+    core_concepts = _listify(body.get("coreConcepts"))
+    review_questions = _listify(body.get("reviewQuestions"))
+    outputs = _listify(body.get("outputs"))
+
+    # detailTasks 우선, 없으면 checklist, 둘 다 없으면 빈 목록
+    raw_tasks = body.get("detailTasks")
+    warnings: List[str] = []
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raw_tasks = body.get("checklist")
+        if isinstance(raw_tasks, list) and raw_tasks:
+            warnings.append("세부 학습(detailTasks)이 없어 체크리스트를 기준으로 분석했습니다.")
+        else:
+            raw_tasks = []
+            warnings.append("세부 학습 항목이 없어 개별 task 분석을 생성하지 못했습니다.")
+
+    # 결정적 task 구조 (id/order/title/description/type)
+    det_tasks: List[Dict[str, Any]] = []
+    for i, t in enumerate(raw_tasks):
+        if isinstance(t, dict):
+            tid = str(t.get("id") or f"task-{i + 1}")
+            t_title = str(t.get("title") or t.get("name") or f"학습 항목 {i + 1}").strip()
+            t_desc = str(t.get("description") or "").strip()
+        else:
+            tid = f"task-{i + 1}"
+            t_title = str(t or f"학습 항목 {i + 1}").strip()
+            t_desc = ""
+        det_tasks.append({
+            "id": tid, "order": i, "title": t_title,
+            "description": t_desc, "type": _classify_task_type(t_title, t_desc),
+        })
+
+    # recommendedMinutes 결정적 분배 (Spring이 어차피 재정규화)
+    n = len(det_tasks)
+    if n > 0:
+        if target_minutes:
+            base = max(1, target_minutes // n)
+            rem = max(0, target_minutes - base * n)
+        else:
+            base, rem = 20, 0
+        for idx, dt in enumerate(det_tasks):
+            dt["recommendedMinutes"] = base + (1 if idx < rem else 0)
+
+    # 결정적 선행지식(전체): coreConcepts 기반, 정직하게 generic
+    det_prereqs: List[Dict[str, Any]] = [
+        {"name": c, "reason": f"{c}은(는) 본 학습 내용을 이해하는 데 기반이 되는 핵심 개념입니다.",
+         "includedInPlanTime": False}
+        for c in core_concepts
+    ]
+
+    # 결정적 목표 정합성
+    det_goal_level = "MEDIUM"
+    if learning_goal and det_tasks:
+        det_goal_level = "HIGH"
+    elif not learning_goal:
+        det_goal_level = "LOW"
+
+    # ── LLM 보강 ──
+    parsed: Dict[str, Any] = {}
+    if not body.get("_no_llm"):
+        try:
+            ctx_lines = [
+                f"제목: {title}", f"과목: {subject}", f"학습 유형: {learning_type}",
+                f"우선순위: {priority}", f"목표 학습 시간(분): {target_minutes}",
+                f"학습 목표: {learning_goal}", f"내용: {content}", f"메모: {memo}",
+                f"핵심 개념: {', '.join(core_concepts)}",
+                f"복습 질문: {', '.join(review_questions)}",
+                f"산출물: {', '.join(outputs)}", f"출처: {source_type}",
+            ]
+            rc = body.get("roadmapContext")
+            if isinstance(rc, dict) and rc:
+                prev = _listify(rc.get("previousLearning"))
+                nxt = _listify(rc.get("nextLearning"))
+                ctx_lines.append(
+                    f"로드맵: {rc.get('currentWeek')}주차 {rc.get('currentDay')}일 / "
+                    f"이전학습: {', '.join(prev)} / 다음학습: {', '.join(nxt)}"
+                )
+            task_lines = "\n".join(
+                f'{dt["order"]}. [{dt["id"]}] {dt["title"]}'
+                + (f' — {dt["description"]}' if dt["description"] else "")
+                for dt in det_tasks
+            ) or "(세부 학습 항목 없음)"
+            context = "\n".join(l for l in ctx_lines if l.split(": ", 1)[-1].strip() not in ("", "None"))
+
+            system = (
+                "너는 학습 설계 코치다. 이미 저장된 공부 플래너를 받아 구조화된 학습 분석을 만든다. "
+                "'먼저 저장하세요' 류 안내는 절대 하지 않는다. 입력에서 도출되지 않는 사실은 지어내지 마라. "
+                "선행지식은 핵심 개념/명백한 개념 의존성에서만 도출하고 모르면 일반적으로 정직하게 쓴다. "
+                "반드시 한국어로, 마크다운 없이 아래 JSON 스키마로만 응답한다. "
+                "task 배열은 반드시 입력 순서(order)와 동일한 개수·순서로 채우고 각 항목의 id를 그대로 echo 한다."
+            )
+            user = (
+                f"## 저장된 플래너\n{context}\n\n## 세부 학습 항목(순서·id 고정)\n{task_lines}\n\n"
+                + _NOISE_RULES + "\n\n"
+                "아래 JSON 형식으로만 응답하라(마크다운/설명 금지):\n"
+                "{\n"
+                '  "summary": "이 학습 계획 전체를 2~3문장으로 요약",\n'
+                '  "goalAlignment": {"level":"HIGH|MEDIUM|LOW","reason":"1~2문장","summary":"목표 정합성 총평 1~2문장","issues":["정합성이 애매한 항목"]},\n'
+                '  "prerequisites": [{"name":"개념","reason":"왜 먼저 알면 좋은지"}],\n'
+                '  "tasks": [{"id":"입력 id 그대로","reason":"이 task가 목표와 어떻게 연결되는지 1문장","goalLevel":"HIGH|MEDIUM|LOW",'
+                '"whyImportant":"1~2문장","prerequisites":[{"name":"","reason":""}],"learningSequence":["단계1","단계2"]}]\n'
+                "}"
+            )
+            raw = _llm(system, user, max_tokens=1600)
+            if raw and not raw.strip().startswith("[") and not raw.strip().startswith("[GPT"):
+                cand = extract_json(raw)
+                if isinstance(cand, dict):
+                    parsed = cand
+        except Exception as e:  # noqa: BLE001
+            logger.info("planner/analyze-semantic LLM 실패, fallback 사용: %s", e)
+
+    # LLM task 보강을 id 기준으로 매핑
+    llm_task_map: Dict[str, Dict[str, Any]] = {}
+    llm_tasks = parsed.get("tasks")
+    if isinstance(llm_tasks, list):
+        for lt in llm_tasks:
+            if isinstance(lt, dict) and lt.get("id"):
+                llm_task_map[str(lt["id"])] = lt
+
+    # ── 최종 task 병합 (구조는 코드, 산문은 LLM) ──
+    final_tasks: List[Dict[str, Any]] = []
+    for dt in det_tasks:
+        lt = llm_task_map.get(dt["id"], {})
+        why = str(lt.get("whyImportant") or "").strip() or (
+            f"{dt['title']}은(는) 이 학습 목표를 달성하기 위한 핵심 단계입니다."
+        )
+        ga_reason = str(lt.get("reason") or "").strip() or (
+            f"{dt['title']} 학습은 '{learning_goal or subject or title}'와 직접 연결됩니다."
+            if (learning_goal or subject or title) else f"{dt['title']}은(는) 전체 학습 목표를 뒷받침합니다."
+        )
+        ga_level = _norm_level(lt.get("goalLevel"), default=det_goal_level)
+        seq = _listify(lt.get("learningSequence"))
+        prereqs = _prereq_list(lt.get("prerequisites"))
+        final_tasks.append({
+            "id": dt["id"], "order": dt["order"], "title": dt["title"],
+            "description": dt["description"], "type": dt["type"],
+            "recommendedMinutes": dt.get("recommendedMinutes", 20),
+            "goalAlignment": {"level": ga_level, "reason": ga_reason},
+            "whyImportant": why,
+            "prerequisites": prereqs,
+            "learningSequence": seq,
+        })
+
+    # ── 전체 목표 정합성 병합 ──
+    ga_in = parsed.get("goalAlignment") if isinstance(parsed.get("goalAlignment"), dict) else {}
+    goal_alignment = {
+        "level": _norm_level(ga_in.get("level"), default=det_goal_level),
+        "reason": str(ga_in.get("reason") or "").strip() or (
+            "학습 목표와 세부 항목이 대체로 일치합니다." if learning_goal and det_tasks
+            else "학습 목표가 명확하지 않아 세부 항목과의 정합성 판단이 제한적입니다."
+        ),
+        "summary": str(ga_in.get("summary") or "").strip() or (
+            f"'{learning_goal}'을(를) 향해 세부 학습이 배치되어 있습니다." if learning_goal
+            else "학습 목표를 먼저 구체화하면 세부 항목과의 정합성이 뚜렷해집니다."
+        ),
+        "issues": _listify(ga_in.get("issues")),
+    }
+
+    # ── 전체 선행지식 병합 (LLM + 결정적) ──
+    prerequisites = _prereq_list(parsed.get("prerequisites")) or det_prereqs
+
+    # ── summary ──
+    summary = str(parsed.get("summary") or "").strip()
+    if not summary:
+        goal_txt = learning_goal or subject or title or "이 학습"
+        summary = (
+            f"'{title or subject or goal_txt}' 계획은 총 {len(final_tasks)}개의 세부 학습으로 구성되어 있습니다. "
+            f"{('목표는 ' + learning_goal + '이며, ') if learning_goal else ''}"
+            f"개념 이해부터 실습·분석·복습까지 단계적으로 학습을 진행하도록 설계되었습니다."
+        )
+
+    flow = [t["title"] for t in final_tasks]
+    total_recommended = sum(int(t.get("recommendedMinutes") or 0) for t in final_tasks)
+
+    result = {
+        "success": True,
+        "summary": summary,
+        "goalAlignment": goal_alignment,
+        "prerequisites": prerequisites,
+        "tasks": final_tasks,
+        "flow": flow,
+        "totalRecommendedMinutes": total_recommended,
+        "warnings": warnings,
+    }
+    # PDF/플래너 메타데이터 노이즈 정제
+    try:
+        from app.utils.pdf_noise_filter import detect_repeated_lines, sanitize_text_fields
+        repeated = detect_repeated_lines([content or "", title or "", memo or ""])
+        fb = subject or title or "학습 주제"
+        result = sanitize_text_fields(result, repeated=repeated, title=fb)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("planner/analyze-semantic noise 정제 생략: %s", e)
+    return result
+
+
+@router.post("/analyze-semantic", summary="저장된 플래너 자료 기반 구조화 시맨틱 분석")
+async def planner_analyze_semantic(body: Dict[str, Any] = Body(default_factory=dict)) -> Dict[str, Any]:
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_analyze_semantic_sync, body), timeout=ANALYZE_TIMEOUT)
+    except asyncio.TimeoutError:
+        try:
+            return _analyze_semantic_sync({**body, "_no_llm": True})
+        except Exception as e:  # noqa: BLE001
+            logger.error("planner/analyze-semantic deterministic fallback 실패: %s", e)
+    except Exception as e:  # noqa: BLE001
+        logger.error("planner/analyze-semantic 실패: %s", e)
+    # 어떤 경우에도 success:true 구조를 반환
+    return {
+        "success": True,
+        "summary": "일시적으로 상세 분석이 어려워 기본 구조 분석을 제공합니다.",
+        "goalAlignment": {
+            "level": "MEDIUM",
+            "reason": "학습 목표와 세부 항목의 정합성을 다시 점검하는 것이 좋습니다.",
+            "summary": "학습 목표를 구체화하면 세부 항목과의 연결이 뚜렷해집니다.",
+            "issues": [],
+        },
+        "prerequisites": [],
+        "tasks": [],
+        "flow": [],
+        "totalRecommendedMinutes": 0,
+        "warnings": ["AI 분석이 일시적으로 어려워 기본 구조만 제공했습니다."],
+    }

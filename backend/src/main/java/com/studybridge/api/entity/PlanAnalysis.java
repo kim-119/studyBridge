@@ -45,6 +45,9 @@ public class PlanAnalysis {
     @Column(columnDefinition = "TEXT")
     private String recommendation;
 
+    @Column(name = "planner_analysis_json", columnDefinition = "TEXT")
+    private String plannerAnalysisJson;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

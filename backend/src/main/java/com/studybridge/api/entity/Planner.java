@@ -44,6 +44,17 @@ public class Planner {
     @Column(name = "planner_type", length = 20)
     private PlannerType plannerType;
 
+    @Column(name = "roadmap_week")
+    private Integer roadmapWeek;
+    @Column(name = "roadmap_day")
+    private Integer roadmapDay;
+    @Column(name = "estimated_minutes")
+    private Integer estimatedMinutes;
+
+    // AI 계획 분석(구조화 시맨틱) 캐시. ddl-auto=update 로 nullable 컬럼 자동 추가.
+    @Column(name = "plan_analysis_json", columnDefinition = "TEXT")
+    private String planAnalysisJson;
+
     // 표시용 날짜 구성요소 (7번 이미지 플래너 상단)
     private Integer year;
     private Integer month;

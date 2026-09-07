@@ -73,6 +73,7 @@ public class MaterialDTO {
     private Long fileSize;
     private ExtractionStatus extractionStatus;
     private String s3PresignedUrl;
+    private String plannerPdfS3Key;
     private LocalDateTime uploadedAt;
     private String extractedText;
     private LocalDateTime updatedAt;

@@ -1,16 +1,22 @@
 package com.studybridge.api.controller;
 
 import com.studybridge.api.dto.PlannerDTO;
+import com.studybridge.api.dto.PlannerSemanticDTO;
 import com.studybridge.api.security.domain.CustomUserDetails;
+import com.studybridge.api.service.PlanAnalysisException;
+import com.studybridge.api.service.PlannerScheduleService;
+import com.studybridge.api.service.PlannerSemanticAnalyzer;
 import com.studybridge.api.service.PlannerService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 
 @Slf4j
 @RestController
@@ -20,6 +26,8 @@ public class PlannerController {
 
     private final PlannerService plannerService;
     private final com.studybridge.api.service.PlannerAiService plannerAiService;
+    private final PlannerSemanticAnalyzer plannerSemanticAnalyzer;
+    private final PlannerScheduleService plannerScheduleService;
 
     @PostMapping
     public ResponseEntity<PlannerDTO.Response> create(
@@ -155,5 +163,82 @@ public class PlannerController {
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long plannerId) {
         return ResponseEntity.ok(plannerAiService.getAiResult(userDetails.getId(), plannerId));
+    }
+
+    // ---------- AI 계획 분석(구조화 시맨틱) + 동적 하루 학습 시간표 ----------
+
+    /** AI 계획 분석 생성/재생성(플래너 실데이터 → AI07 → 검증/정규화). 실패해도 플래너 열람은 막지 않는다. */
+    @PostMapping("/{plannerId}/plan-analysis")
+    public ResponseEntity<PlannerSemanticDTO.AnalysisResponse> analyzePlan(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long plannerId) {
+        try {
+            return ResponseEntity.ok(plannerSemanticAnalyzer.analyze(userDetails.getId(), plannerId));
+        } catch (PlanAnalysisException e) {
+            log.warn("[planner:plan-analysis] plannerId={} errorCode={} msg={}", plannerId, e.getErrorCode(), e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(errorAnalysis(plannerId, e.getErrorCode(), e.getMessage()));
+        } catch (SecurityException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(errorAnalysis(plannerId, "FORBIDDEN", e.getMessage()));
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorAnalysis(plannerId, "NOT_FOUND", e.getMessage()));
+        } catch (Exception e) {
+            log.error("[planner:plan-analysis] plannerId={} UNEXPECTED", plannerId, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(errorAnalysis(plannerId, "PLAN_ANALYSIS_FAILED", "AI 계획 분석에 실패했습니다. 잠시 후 다시 시도해 주세요."));
+        }
+    }
+
+    /** 저장된 AI 계획 분석 조회(없으면 empty=true). */
+    @GetMapping("/{plannerId}/plan-analysis")
+    public ResponseEntity<PlannerSemanticDTO.AnalysisResponse> getPlanAnalysis(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long plannerId) {
+        try {
+            return ResponseEntity.ok(plannerSemanticAnalyzer.get(userDetails.getId(), plannerId));
+        } catch (SecurityException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(errorAnalysis(plannerId, "FORBIDDEN", e.getMessage()));
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorAnalysis(plannerId, "NOT_FOUND", e.getMessage()));
+        }
+    }
+
+    /** 시작시간 기준 결정적 시간표 미리보기(AI 재호출 없음). */
+    @GetMapping("/{plannerId}/schedule")
+    public ResponseEntity<?> schedule(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long plannerId,
+            @RequestParam(defaultValue = "09:00") String startTime) {
+        try {
+            return ResponseEntity.ok(plannerScheduleService.schedule(userDetails.getId(), plannerId, startTime));
+        } catch (SecurityException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("message", e.getMessage()));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    /** 시간표 PDF 생성 → S3 저장 → presigned 다운로드 URL 반환. */
+    @PostMapping("/{plannerId}/schedule/pdf")
+    public ResponseEntity<?> schedulePdf(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long plannerId,
+            @RequestBody(required = false) PlannerSemanticDTO.ScheduleRequest req) {
+        String startTime = req != null && req.getStartTime() != null ? req.getStartTime() : "09:00";
+        try {
+            return ResponseEntity.ok(plannerScheduleService.generatePdf(userDetails.getId(), plannerId, startTime));
+        } catch (SecurityException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("message", e.getMessage()));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        } catch (Exception e) {
+            log.error("[planner:schedule-pdf] plannerId={} UNEXPECTED", plannerId, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "시간표 PDF 생성에 실패했습니다. 잠시 후 다시 시도해 주세요."));
+        }
+    }
+
+    private PlannerSemanticDTO.AnalysisResponse errorAnalysis(Long plannerId, String code, String message) {
+        return PlannerSemanticDTO.AnalysisResponse.builder()
+                .plannerId(plannerId).empty(true).errorCode(code).summary(message).build();
     }
 }
