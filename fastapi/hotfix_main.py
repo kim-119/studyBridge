@@ -150,18 +150,6 @@ except Exception as e:
     import logging
     logging.getLogger(__name__).warning("major_analysis 라우터 로드 실패 (계속 기동): %s", e)
 
-# StudyBridge 자료 상세 소크라테스 복습 세션 endpoint (문서 고정 coverage 복습)
-# POST /api/ai/socratic-review/sessions, .../{id}/answers, .../{id}/finish, GET .../{id}
-# Spring 에서 materialId 소유권 검증 후 호출. 기존 채팅방 소크라테스 모드와 독립, additive.
-try:
-    from app.api.socratic_review_routes import router as socratic_review_router
-    paths = {getattr(route, "path", None) for route in app.routes}
-    if "/api/ai/socratic-review/sessions" not in paths:
-        app.include_router(socratic_review_router)
-except Exception as e:
-    import logging
-    logging.getLogger(__name__).warning("socratic_review 라우터 로드 실패 (계속 기동): %s", e)
-
 # StudyBridge 학습 왕복 루프(Learning Loop) 통합 endpoint
 # POST /api/ai/learning-loop — taskType 디스패치(채팅/요약/퀴즈/로드맵/오답해설/유사문제/
 # 복습추천/에이전트피드백). RAG 본문 근거 + 학습 이력 결합 → 구조화 JSON.

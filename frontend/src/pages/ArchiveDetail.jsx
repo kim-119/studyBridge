@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, XCircle, Circle, Settings, ChevronRight, ChevronLeft, X, Trash2, Sparkles, ListChecks, ArrowRight, FileText, BarChart3, Brain, CalendarPlus, Award, RotateCcw, Copy } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
-import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService, planAnalysisService, socraticReviewService } from '../services/api';
+import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService, planAnalysisService } from '../services/api';
 import SummarySectionCard from '../components/SummarySectionCard';
 import KeywordDefineModal from '../components/KeywordDefineModal';
 import ReviewNoteArchiveDetail from '../components/review-note/ReviewNoteArchiveDetail';
@@ -653,7 +653,7 @@ export default function ArchiveDetail() {
   const [plannerResult, setPlannerResult] = useState(null);
   const [plannerError, setPlannerError] = useState(null);
   // 자료보관함 PLANNER 상세 전용 — 학습계획/일정 보기 전환(기본 학습계획). 메모/퀴즈/AI질문 없음.
-  // 우측 학습 도구 탭: 'analysis'(AI 계획 분석) | 'next'(다음 학습 추천) | 'memo' | 'progress'
+  // 우측 학습 도구 탭: 'analysis'(AI 계획 분석) | 'next'(다음 학습 추천) | 'memo'
   // (레거시 보조 뷰: 'plan' | 'checklist' | 'roadmap')
   const [plannerDetailView, setPlannerDetailView] = useState('analysis');
   // AI 계획 분석(PDF/플래너 문장 단위) 상태 — DB 영속(plan_analysis)
@@ -661,16 +661,6 @@ export default function ArchiveDetail() {
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState(null); // { errorCode, message }
   const [planItemBusy, setPlanItemBusy] = useState(null); // 갱신 중인 itemId
-
-  // 소크라테스 복습 세션 — React→Spring(/api/materials/{id}/socratic-review/*)만 호출. ai07 직접 호출 금지.
-  const [socraticSession, setSocraticSession] = useState(null);  // 현재 턴 {sessionId, question, message, ...}
-  const [socraticHistory, setSocraticHistory] = useState([]);    // [{role:'ai'|'user', text}]
-  const [socraticAnswer, setSocraticAnswer] = useState('');
-  const [socraticBusy, setSocraticBusy] = useState(false);       // start/answer/finish/schedule 진행 중(중복클릭 차단)
-  const [socraticError, setSocraticError] = useState('');
-  const [socraticUnavailable, setSocraticUnavailable] = useState(false); // ai07 신규 route 미배포(aiAvailable=false)
-  const [socraticFinish, setSocraticFinish] = useState(null);    // 완료 요약 {overallMastery, weakConcepts, recommendedReviewDate, ...}
-  const [socraticSchedule, setSocraticSchedule] = useState(null); // 복습일 등록 결과 {registered, alreadyRegistered, reviewDate, message}
 
   const chatEndRef = useRef(null);
 
@@ -1909,170 +1899,7 @@ export default function ArchiveDetail() {
     }
   };
 
-  // ===== 소크라테스 복습 세션 =====
-  // 백엔드가 ai07 응답을 화이트리스트 sanitize 하므로 내부 평가(rubric/eval/grounding)는 도달하지 않는다.
-  // 응답에 aiAvailable:false 가 오면(=ai07 신규 route 미배포) 전체를 깨뜨리지 않고 안내만 표시한다.
-
-  // ai07 한 턴 응답에서 화면에 보여줄 AI 발화 텍스트 추출
-  const socraticTurnText = (res) =>
-    (res?.question || res?.message || '').toString().trim();
-
-  // 세션이 ai07 응답상 완료 상태인지(꼬리질문이 더 없는지) 판정
-  const isSocraticCompleted = (res) => {
-    const st = (res?.status || '').toString().toUpperCase();
-    if (st === 'COMPLETED' || st === 'DONE' || st === 'FINISHED') return true;
-    // 진행률이 끝까지 도달했고 더 줄 질문이 없으면 완료로 간주
-    if (!socraticTurnText(res)) {
-      const cur = res?.currentChunkIndex, tot = res?.totalChunks;
-      if (typeof cur === 'number' && typeof tot === 'number' && tot > 0 && cur >= tot) return true;
-    }
-    return false;
-  };
-
-  const resetSocraticState = () => {
-    setSocraticSession(null);
-    setSocraticHistory([]);
-    setSocraticAnswer('');
-    setSocraticError('');
-    setSocraticUnavailable(false);
-    setSocraticFinish(null);
-    setSocraticSchedule(null);
-  };
-
-  // 소크라테스 시작 실패 사유(reason)별 사용자 안내. ai07/Spring이 주는 reason을 친화 문구로 매핑하고,
-  //  알 수 없는 reason은 서버 message를 그대로 노출한다(내부 진단 필드는 콘솔에만 남긴다).
-  const SOCRATIC_REASON_MSG = {
-    OCR_REQUIRED: '이미지 기반 PDF로 보입니다. 텍스트 추출(OCR)이 필요해 아직 복습을 시작할 수 없습니다.',
-    NO_SOURCE_TEXT: '문서에서 추출 가능한 텍스트가 없습니다. 이미지 PDF라면 OCR 처리가 필요합니다.',
-    PDF_TEXT_EMPTY: '문서에서 분석 가능한 내용을 찾지 못했습니다. 이미지 PDF라면 OCR 처리가 필요합니다.',
-    INGEST_AUTH_FAILED: 'AI 서버 인증에 실패했습니다. 잠시 후 다시 시도하거나 관리자에게 문의해 주세요.',
-    INGEST_FAILED: '문서 청크 준비에 실패했습니다. 잠시 후 다시 시도해 주세요.',
-    AI_CONNECTION_FAILED: 'AI 서버 연결에 실패했습니다. 잠시 후 다시 시도해 주세요.',
-    SESSION_NOT_CREATED: '소크라테스 복습 세션을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.',
-  };
-  const socraticReasonMessage = (reason, serverMsg) =>
-    SOCRATIC_REASON_MSG[reason] || serverMsg || '이 자료로 소크라테스 복습을 시작할 수 없습니다.';
-
-  // 세션 시작 — ai07이 청크를 on-demand 적재(provisioner) 후 세션을 만든다.
-  //  로컬 stale 필드로 즉시 실패시키지 않고, 서버/ai07의 실제 canStart/reason으로 분기한다.
-  const handleStartSocratic = async () => {
-    const materialId = material?.materialId || id;
-    if (!materialId || socraticBusy) return;
-    setSocraticBusy(true);
-    setSocraticError('');
-    setSocraticUnavailable(false);
-    setSocraticFinish(null);
-    setSocraticSchedule(null);
-    setSocraticHistory([]);
-    try {
-      const res = await socraticReviewService.start(materialId, {});
-      console.info('[socratic] start', {
-        materialId, canStart: res?.canStart, sessionId: res?.sessionId,
-        reason: res?.reason, chunkCount: res?.chunkCount, textLength: res?.textLength, sourceKind: res?.sourceKind,
-      });
-      if (res?.aiAvailable === false) {
-        setSocraticUnavailable(true);
-        setSocraticSession(null);
-        return;
-      }
-      // 분석 불가/청크 미생성 등 → 사유별 안내(단순 "문서 청크 미준비" 반복 금지)
-      if (res?.canStart === false || !res?.sessionId) {
-        setSocraticError(socraticReasonMessage(res?.reason, res?.message));
-        setSocraticSession(null);
-        return;
-      }
-      setSocraticSession(res);
-      const t = socraticTurnText(res);
-      if (t) setSocraticHistory([{ role: 'ai', text: t }]);
-    } catch (e) {
-      const status = e?.response?.status;
-      const msg = e?.response?.data?.message
-        || (status >= 500 || e?.code === 'ECONNABORTED'
-            ? 'AI 서버 연결에 실패했습니다. 잠시 후 다시 시도해 주세요.'
-            : '소크라테스 복습 세션을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.');
-      console.warn('[socratic] start error', { materialId, status, message: msg });
-      setSocraticError(msg);
-    } finally {
-      setSocraticBusy(false);
-    }
-  };
-
-  // ai07 finish 호출(완료 요약 캐시) — 답변 후 자동 또는 사용자가 '복습 마치기' 클릭 시
-  const finishSocratic = async (materialId, sessionId) => {
-    const res = await socraticReviewService.finish(materialId, sessionId);
-    if (res?.aiAvailable === false) { setSocraticUnavailable(true); return null; }
-    setSocraticFinish(res);
-    setSocraticSession((prev) => prev ? { ...prev, status: 'COMPLETED' } : prev);
-    return res;
-  };
-
-  // 답변 제출
-  const handleSubmitSocraticAnswer = async () => {
-    const materialId = material?.materialId || id;
-    const sessionId = socraticSession?.sessionId;
-    const answer = socraticAnswer.trim();
-    if (!materialId || !sessionId || socraticBusy) return;
-    if (!answer) { setSocraticError('답변을 입력해 주세요.'); return; }
-    setSocraticBusy(true);
-    setSocraticError('');
-    // 사용자 답변을 먼저 화면에 반영하고 입력창 비움
-    setSocraticHistory((prev) => [...prev, { role: 'user', text: answer }]);
-    setSocraticAnswer('');
-    try {
-      const res = await socraticReviewService.answer(materialId, sessionId, answer);
-      if (res?.aiAvailable === false) { setSocraticUnavailable(true); return; }
-      setSocraticSession((prev) => ({ ...(prev || {}), ...res }));
-      const t = socraticTurnText(res);
-      if (t) setSocraticHistory((prev) => [...prev, { role: 'ai', text: t }]);
-      // 더 줄 꼬리질문이 없으면 완료 요약을 받아온다.
-      if (isSocraticCompleted(res)) {
-        await finishSocratic(materialId, sessionId);
-      }
-    } catch (e) {
-      const msg = e?.response?.data?.message || '답변을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.';
-      setSocraticError(msg);
-    } finally {
-      setSocraticBusy(false);
-    }
-  };
-
-  // 사용자가 직접 세션 마치기
-  const handleFinishSocratic = async () => {
-    const materialId = material?.materialId || id;
-    const sessionId = socraticSession?.sessionId;
-    if (!materialId || !sessionId || socraticBusy) return;
-    setSocraticBusy(true);
-    setSocraticError('');
-    try {
-      await finishSocratic(materialId, sessionId);
-    } catch (e) {
-      const msg = e?.response?.data?.message || '세션을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.';
-      setSocraticError(msg);
-    } finally {
-      setSocraticBusy(false);
-    }
-  };
-
-  // 다음 복습일 주간 일정(플래너 DB) 등록
-  const handleScheduleSocraticReview = async () => {
-    const materialId = material?.materialId || id;
-    const sessionId = socraticSession?.sessionId;
-    if (!materialId || !sessionId || socraticBusy) return;
-    setSocraticBusy(true);
-    setSocraticError('');
-    try {
-      const reviewDate = socraticFinish?.recommendedReviewDate || null;
-      const res = await socraticReviewService.scheduleReview(materialId, sessionId, reviewDate);
-      setSocraticSchedule(res);
-    } catch (e) {
-      const msg = e?.response?.data?.message || '복습 일정을 등록하지 못했습니다. 잠시 후 다시 시도해 주세요.';
-      setSocraticError(msg);
-    } finally {
-      setSocraticBusy(false);
-    }
-  };
-
-  // ===== 우측 학습 도구(신규 4탭) — plan_analysis(서버 DB) 기반 렌더 =====
+  // ===== 우측 학습 도구(3탭) — plan_analysis(서버 DB) 기반 렌더 =====
   const renderLearningToolPanel = () => {
     const pa = planAnalysis;
     const progress = pa?.progress || { totalCount: 0, completedCount: 0, hiddenCount: 0, visibleCount: 0, percent: 0 };
@@ -2137,147 +1964,6 @@ export default function ArchiveDetail() {
             {isSavingPlannerMemo ? '저장 중…' : '메모 저장'}
           </button>
         </Card>
-      );
-    }
-
-    // ── 소크라테스 복습 세션 (기존 '진행률' 탭 대체) ──
-    // ai07 응답은 백엔드에서 화이트리스트 sanitize 됨(내부 평가/근거 미노출). 여기서는 질문/답변 흐름만 렌더.
-    if (plannerDetailView === 'socratic') {
-      const errorBox = socraticError ? (
-        <div style={{ borderRadius: '12px', border: '1px solid #FECACA', background: '#FEF2F2', padding: '12px', marginTop: '12px', color: '#B91C1C', fontSize: '13.5px', lineHeight: 1.6 }}>{socraticError}</div>
-      ) : null;
-
-      // ai07 신규 route 미배포 안내
-      if (socraticUnavailable) {
-        return wrap(
-          <Card icon={<Brain size={17} color="var(--color-primary)" />} title="소크라테스 복습">
-            <div style={{ borderRadius: '12px', border: '1px solid #FDE2B3', background: '#FFF8E8', padding: '14px', color: '#8A6100', fontSize: '14px', lineHeight: 1.6 }}>
-              소크라테스 복습 기능이 아직 AI 서버에 활성화되지 않았습니다. AI 서버 재시작 후 다시 시도해 주세요.
-            </div>
-            <button className="btn-outline" style={{ marginTop: '12px', width: 'auto', padding: '10px 18px', borderRadius: '12px' }} onClick={handleStartSocratic} disabled={socraticBusy}>다시 시도</button>
-          </Card>
-        );
-      }
-
-      // 시작 전 — 인트로
-      if (!socraticSession) {
-        return wrap(
-          <Card icon={<Brain size={17} color="var(--color-primary)" />} title="소크라테스 복습">
-            <p style={{ margin: '0 0 14px', fontSize: '14px', color: 'var(--color-text-main)', lineHeight: 1.7 }}>
-              오늘 학습할 내용을 자료 흐름에 맞춰 정리했습니다. 위에서부터 하나씩 확인하면서 완료한 항목을 체크하면, 이 자료의 핵심 목표를 빠짐없이 점검할 수 있습니다.
-            </p>
-            <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--color-text-muted)', lineHeight: 1.7 }}>
-              AI가 짧은 질문을 던지면 떠오르는 대로 답해 보세요. 답을 맞히는 시험이 아니라, 스스로 설명하면서 이해를 다지는 복습입니다.
-            </p>
-            {errorBox}
-            <button className="btn-primary" style={{ marginTop: errorBox ? '14px' : 0, width: 'auto', padding: '11px 20px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handleStartSocratic} disabled={socraticBusy}>
-              <Brain size={16} /> {socraticBusy ? '세션 준비 중…' : '복습 시작'}
-            </button>
-          </Card>
-        );
-      }
-
-      const completed = !!socraticFinish || (socraticSession?.status || '').toUpperCase() === 'COMPLETED';
-      const cur = socraticSession?.currentChunkIndex, tot = socraticSession?.totalChunks;
-      const turnBadge = (typeof cur === 'number' && typeof tot === 'number' && tot > 0)
-        ? <span style={{ fontSize: '12px', fontWeight: 700, color: '#15803D', background: '#EEF8EB', borderRadius: '8px', padding: '3px 10px' }}>{Math.min(cur + 1, tot)} / {tot}</span>
-        : null;
-      const weak = Array.isArray(socraticFinish?.weakConcepts) ? socraticFinish.weakConcepts.filter(Boolean) : [];
-      const mastery = socraticFinish?.overallMastery;
-
-      return wrap(
-        <>
-          <Card icon={<Brain size={17} color="var(--color-primary)" />} title="소크라테스 복습" right={turnBadge}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '46vh', overflowY: 'auto', paddingRight: '4px' }}>
-              {socraticHistory.map((m, i) => (
-                <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                  <div style={{
-                    maxWidth: '85%', padding: '10px 14px', borderRadius: '14px', fontSize: '13.5px', lineHeight: 1.65, ...codeSafe,
-                    background: m.role === 'user' ? 'var(--color-primary)' : '#F3F4F6',
-                    color: m.role === 'user' ? '#fff' : 'var(--color-text-main)',
-                    borderTopRightRadius: m.role === 'user' ? '4px' : '14px',
-                    borderTopLeftRadius: m.role === 'user' ? '14px' : '4px',
-                  }}>{m.text}</div>
-                </div>
-              ))}
-              {socraticBusy && !completed && (
-                <div style={{ fontSize: '12.5px', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Sparkles size={13} /> AI가 생각하고 있어요…
-                </div>
-              )}
-            </div>
-            {errorBox}
-            {!completed && (
-              <div style={{ marginTop: '14px', borderTop: '1px solid var(--color-border)', paddingTop: '14px' }}>
-                <textarea
-                  value={socraticAnswer}
-                  onChange={(e) => setSocraticAnswer(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleSubmitSocraticAnswer(); } }}
-                  placeholder="떠오르는 대로 답해 보세요. (Ctrl+Enter로 보내기)"
-                  disabled={socraticBusy}
-                  style={{ width: '100%', minHeight: '88px', boxSizing: 'border-box', borderRadius: '12px', border: '1px solid var(--color-border)', padding: '12px', fontSize: '13.5px', lineHeight: 1.6, resize: 'vertical' }}
-                />
-                <div style={{ display: 'flex', gap: '8px', marginTop: '10px', justifyContent: 'space-between' }}>
-                  <button className="btn-outline" style={{ width: 'auto', padding: '9px 14px', borderRadius: '12px', fontSize: '13px' }} onClick={handleFinishSocratic} disabled={socraticBusy}>
-                    복습 마치기
-                  </button>
-                  <button className="btn-primary" style={{ width: 'auto', padding: '9px 18px', borderRadius: '12px', fontWeight: 'bold', opacity: (socraticBusy || !socraticAnswer.trim()) ? 0.6 : 1 }} onClick={handleSubmitSocraticAnswer} disabled={socraticBusy || !socraticAnswer.trim()}>
-                    <Send size={15} /> 답변 보내기
-                  </button>
-                </div>
-              </div>
-            )}
-          </Card>
-
-          {completed && (
-            <Card icon={<Award size={17} color="#15803D" />} title="복습 요약">
-              {mastery != null && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', fontSize: '14px' }}>
-                  <span style={{ color: 'var(--color-text-muted)' }}>전반적 이해도</span>
-                  <b style={{ color: '#15803D' }}>{typeof mastery === 'number' ? `${Math.round(mastery <= 1 ? mastery * 100 : mastery)}%` : mastery}</b>
-                </div>
-              )}
-              {weak.length > 0 && (
-                <div style={{ marginBottom: '14px' }}>
-                  <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '6px' }}>더 살펴보면 좋을 개념</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                    {weak.map((w, i) => (
-                      <span key={i} style={{ fontSize: '12.5px', fontWeight: 600, color: '#92400E', background: '#FEF3C7', borderRadius: '8px', padding: '4px 10px', ...codeSafe }}>{w}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {socraticFinish?.summaryForPlanner && (
-                <p style={{ margin: '0 0 14px', fontSize: '13.5px', color: 'var(--color-text-main)', lineHeight: 1.7, ...codeSafe }}>{socraticFinish.summaryForPlanner}</p>
-              )}
-              {socraticFinish?.recommendedReviewDate && (
-                <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '14px' }}>
-                  추천 복습일: <b style={{ color: 'var(--color-text-main)' }}>{String(socraticFinish.recommendedReviewDate).slice(0, 10)}</b>
-                </div>
-              )}
-              {errorBox}
-              {socraticSchedule ? (
-                <div style={{ borderRadius: '12px', border: '1px solid #DCFCE7', background: '#F0FDF4', padding: '14px', color: '#166534', fontSize: '13.5px', lineHeight: 1.6 }}>
-                  {socraticSchedule.alreadyRegistered
-                    ? '이미 주간 일정에 등록되어 있습니다.'
-                    : socraticSchedule.registered
-                      ? `주간 일정에 복습이 등록되었습니다${socraticSchedule.reviewDate ? ` (${String(socraticSchedule.reviewDate).slice(0, 10)})` : ''}.`
-                      : (socraticSchedule.message || '복습 일정을 등록했습니다.')}
-                  <button className="btn-outline" style={{ marginLeft: '10px', width: 'auto', padding: '5px 12px', borderRadius: '10px', fontSize: '12.5px' }} onClick={() => navigate('/planner')}>주간 일정 보기</button>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                  <button className="btn-primary" style={{ width: 'auto', padding: '11px 18px', borderRadius: '12px', fontWeight: 'bold', opacity: socraticBusy ? 0.6 : 1 }} onClick={handleScheduleSocraticReview} disabled={socraticBusy}>
-                    <CalendarPlus size={16} /> 다음 복습일 주간 일정에 등록하기
-                  </button>
-                  <button className="btn-outline" style={{ width: 'auto', padding: '11px 16px', borderRadius: '12px' }} onClick={() => { resetSocraticState(); handleStartSocratic(); }} disabled={socraticBusy}>
-                    <RotateCcw size={15} /> 다시 복습
-                  </button>
-                </div>
-              )}
-            </Card>
-          )}
-        </>
       );
     }
 
@@ -2383,8 +2069,8 @@ export default function ArchiveDetail() {
   };
 
   const renderPlannerRightPanel = () => {
-    // 신규 4탭(AI 계획 분석 / 다음 학습 추천 / 메모 / 소크라테스 복습)은 renderLearningToolPanel 에서 렌더
-    if (['analysis', 'next', 'memo', 'socratic'].includes(plannerDetailView)) {
+    // 3탭(AI 계획 분석 / 다음 학습 추천 / 메모)은 renderLearningToolPanel 에서 렌더
+    if (['analysis', 'next', 'memo'].includes(plannerDetailView)) {
       return renderLearningToolPanel();
     }
     const overview = getSummaryOverview(summaryData);
@@ -3757,12 +3443,11 @@ export default function ArchiveDetail() {
                 </div>
                 {/* AI 도구 버튼: PLANNER 는 플래너 전용(메모/퀴즈/AI질문 없음), 그 외 PDF 는 기존 학습 도구 유지 */}
                 {isPlanner ? (
-                  /* 우측 학습 도구: AI 계획 분석 / 다음 학습 추천 / 메모 / 소크라테스 복습 (보조 버튼·중복 진행률 제거) */
+                  /* 우측 학습 도구: AI 계획 분석 / 다음 학습 추천 / 메모 (보조 버튼·중복 진행률 제거) */
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     <button className={`archive-action-btn ${plannerDetailView === 'analysis' ? 'active' : ''}`} onClick={() => setPlannerDetailView('analysis')}><Sparkles size={16} /> AI 계획 분석</button>
                     <button className={`archive-action-btn ${plannerDetailView === 'next' ? 'active' : ''}`} onClick={() => setPlannerDetailView('next')}><ArrowRight size={16} /> 다음 학습 추천</button>
                     <button className={`archive-action-btn ${plannerDetailView === 'memo' ? 'active' : ''}`} onClick={() => setPlannerDetailView('memo')}><Edit3 size={16} /> 메모</button>
-                    <button className={`archive-action-btn ${plannerDetailView === 'socratic' ? 'active' : ''}`} onClick={() => setPlannerDetailView('socratic')}><Brain size={16} /> 소크라테스 복습</button>
                   </div>
                 ) : (
                   <div className="archive-tools" style={{ display: 'flex', gap: '8px' }}>
