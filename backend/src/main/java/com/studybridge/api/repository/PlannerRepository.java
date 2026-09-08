@@ -5,6 +5,7 @@ import com.studybridge.api.entity.PlannerType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 
@@ -38,4 +39,21 @@ public interface PlannerRepository extends JpaRepository<Planner, Long> {
     List<Planner> findByUserIdAndMaterialId(Long userId, Long materialId);
     List<Planner> findByUserIdAndSourceMaterialId(Long userId, Long sourceMaterialId);
     List<Planner> findBySourceType(String sourceType);
+
+    // ── 다음 학습 추천(DB 기반) ──
+    /** 같은 로드맵에서 생성된 형제 플래너 전부(순서는 서비스에서 week/day → plannerDate 로 결정). 1회 SELECT. */
+    List<Planner> findByUserIdAndSourceRoadmapId(Long userId, Long sourceRoadmapId);
+
+    /**
+     * 사용자 플래너: 같은 사용자·같은 과목(공백/대소문자 무시)·기준일 이후 중 가장 가까운 것.
+     * 로드맵 흔적(sourceType/sourceRoadmapId)이 있는 행은 제외한다. Pageable 로 1건만 가져온다.
+     */
+    @Query("SELECT p FROM Planner p WHERE p.userId = :userId AND p.id <> :excludeId AND p.plannerDate > :afterDate " +
+            "AND LOWER(TRIM(p.subject)) = :subject " +
+            "AND (p.plannerType = com.studybridge.api.entity.PlannerType.USER " +
+            "     OR (p.plannerType IS NULL AND p.sourceType IS NULL AND p.sourceRoadmapId IS NULL)) " +
+            "ORDER BY p.plannerDate ASC, p.id ASC")
+    List<Planner> findNextUserPlanners(@Param("userId") Long userId, @Param("excludeId") Long excludeId,
+                                       @Param("subject") String subjectNormalized, @Param("afterDate") java.time.LocalDate afterDate,
+                                       org.springframework.data.domain.Pageable pageable);
 }

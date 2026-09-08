@@ -10,6 +10,7 @@ import MaterialPdfViewer from '../components/archive/MaterialPdfViewer';
 import ObsidianArchiveGraphViewer from '../components/graph/ObsidianArchiveGraphViewer';
 import ReviewNoteLearningEntry from '../components/review-note/ReviewNoteLearningEntry';
 import PlannerPlanAnalysisPanel from '../components/planner/PlannerPlanAnalysisPanel';
+import NextLearningCard from '../components/planner/NextLearningCard';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
 import { cleanLearningOrNull, filterLearningList } from '../utils/learningContent';
 
@@ -1937,9 +1938,19 @@ export default function ArchiveDetail() {
     const wrap = (children) => (<div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px' }}>{children}</div>);
 
     // ── 다음 학습 추천 ──
+    // 위: DB 기반 결정적 추천(같은 로드맵의 다음 week/day · 같은 과목의 다음 사용자 플래너, AI 호출 없음, 클릭 시에만 이동).
+    // 아래: 기존 AI 계획 분석에서 나온 추천 목록(유지).
     if (plannerDetailView === 'next') {
       return wrap(
-        <Card icon={<ArrowRight size={17} color="#15803D" />} title="다음 학습 추천"
+        <>
+        <NextLearningCard
+          plannerId={material?.plannerId ?? null}
+          onOpen={(next) => {
+            if (next?.nextMaterialId != null) navigate(`/archive/pdf/${next.nextMaterialId}`);
+            else if (next?.nextPlannerId != null) navigate('/planner', { state: { openPlannerId: next.nextPlannerId } });
+          }}
+        />
+        <Card icon={<ArrowRight size={17} color="#15803D" />} title="AI 계획 분석 기반 추천"
           right={<button className="btn-outline" style={{ width: 'auto', padding: '6px 12px', fontSize: '12px' }} onClick={handleNextRecommend} disabled={planLoading}>새로 추천</button>}>
           {!pa ? (
             <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. ‘AI 계획 분석’을 먼저 실행하세요.</p>
@@ -1951,6 +1962,7 @@ export default function ArchiveDetail() {
             </ul>
           )}
         </Card>
+        </>
       );
     }
 

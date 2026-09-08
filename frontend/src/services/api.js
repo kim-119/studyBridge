@@ -1360,6 +1360,13 @@ export const plannerService = {
     const res = await api.post(`/api/planners/${id}/archive`);
     return res.data;
   },
+  // 다음 학습 추천(DB + 결정적 규칙, AI 호출 없음): 같은 로드맵의 다음 week/day 또는 같은 과목의 다음 사용자 플래너.
+  // → { currentPlannerId, available, status(READY|IN_PROGRESS|NO_NEXT|NO_DATA), completionRate, recommendationType,
+  //     nextPlannerId, nextMaterialId, title, subject, plannerDate, roadmapWeek, roadmapDay, reason }
+  getNextLearning: async (plannerId) => {
+    const res = await api.get(`/api/planners/${plannerId}/next-learning`);
+    return res.data;
+  },
   getDownloadUrl: async (id) => {
     const res = await api.get(`/api/planners/${id}/download-url`);
     return res.data;

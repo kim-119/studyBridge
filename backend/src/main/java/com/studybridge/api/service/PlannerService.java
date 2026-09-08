@@ -135,6 +135,7 @@ public class PlannerService {
                     .userId(userId)
                     .plannerType(PlannerType.ROADMAP)   // 로드맵 저장 경로는 프론트 요청과 무관하게 ROADMAP 강제
                     .title(roadmapTitle)
+                    .roadmapWeek(weekNo).roadmapDay(dayNo)   // 학습 순서(다음 학습 추천)의 1차 근거
                     .year(date.getYear()).month(date.getMonthValue()).day(date.getDayOfMonth())
                     .plannerDate(date)
                     .term(weekNo + "주차")

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Plus, Save, Download, Archive, Trash2, NotebookPen, FileText, Clock,
   CalendarDays, Layers, ChevronDown, ChevronUp, CalendarPlus, ExternalLink,
@@ -127,6 +127,14 @@ export default function Planner() {
   };
 
   useEffect(() => { refreshList(); }, []);
+
+  // 다음 학습 추천 카드 등에서 특정 플래너를 열도록 이동한 경우(state.openPlannerId) — 사용자가 클릭했을 때만 호출된다.
+  const location = useLocation();
+  useEffect(() => {
+    const openId = location.state?.openPlannerId;
+    if (openId != null) handleSelect(openId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state?.openPlannerId]);
 
   const toggleSlot = (hour, slot) => {
     setTimeTable((prev) => {

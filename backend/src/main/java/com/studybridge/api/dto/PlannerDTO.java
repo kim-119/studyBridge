@@ -128,4 +128,31 @@ public class PlannerDTO {
         private Boolean duplicate;       // 기존 자동생성 플래너 존재 + force 아님
         private Long existingCount;
     }
+
+    /**
+     * 다음 학습 추천(DB + 결정적 규칙, AI 호출 없음). GET /api/planners/{plannerId}/next-learning
+     *  - status: READY(현재 계획 체크리스트 전부 완료, 다음 항목 있음) | IN_PROGRESS(다음 항목은 있으나 현재 계획 미완료)
+     *            | NO_NEXT(다음 항목 없음) | NO_DATA(순서를 정할 DB 근거 없음)
+     *  - recommendationType: ROADMAP_NEXT | USER_NEXT | null
+     *  - completionRate: 체크리스트가 없으면 null(이해도가 아니라 계획 이행도)
+     */
+    @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+    public static class NextLearningResponse {
+        private Long currentPlannerId;
+        private boolean available;
+        private String status;
+        private Double completionRate;
+        private Integer checklistTotal;
+        private Integer checklistCompleted;
+        private String recommendationType;
+        private Long nextPlannerId;
+        private Long nextMaterialId;
+        private String title;
+        private String subject;
+        private LocalDate plannerDate;
+        private Integer roadmapWeek;
+        private Integer roadmapDay;
+        private String reason;
+        private String errorCode;
+    }
 }

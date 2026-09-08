@@ -5,6 +5,7 @@ import com.studybridge.api.dto.PlannerSemanticDTO;
 import com.studybridge.api.security.domain.CustomUserDetails;
 import com.studybridge.api.service.PlanAnalysisException;
 import com.studybridge.api.service.PlannerScheduleService;
+import com.studybridge.api.service.PlannerNextLearningService;
 import com.studybridge.api.service.PlannerSemanticAnalyzer;
 import com.studybridge.api.service.PlannerService;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +28,7 @@ public class PlannerController {
     private final PlannerService plannerService;
     private final com.studybridge.api.service.PlannerAiService plannerAiService;
     private final PlannerSemanticAnalyzer plannerSemanticAnalyzer;
+    private final PlannerNextLearningService plannerNextLearningService;
     private final PlannerScheduleService plannerScheduleService;
 
     @PostMapping
@@ -199,6 +201,22 @@ public class PlannerController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(errorAnalysis(plannerId, "FORBIDDEN", e.getMessage()));
         } catch (NoSuchElementException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorAnalysis(plannerId, "NOT_FOUND", e.getMessage()));
+        }
+    }
+
+    /** 다음 학습 추천 — DB + 결정적 규칙(AI 호출 없음). 추천만 하며 플래너를 만들거나 바꾸지 않는다. */
+    @GetMapping("/{plannerId}/next-learning")
+    public ResponseEntity<PlannerDTO.NextLearningResponse> nextLearning(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long plannerId) {
+        try {
+            return ResponseEntity.ok(plannerNextLearningService.recommend(userDetails.getId(), plannerId));
+        } catch (SecurityException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(PlannerDTO.NextLearningResponse.builder()
+                    .currentPlannerId(plannerId).available(false).status("NO_DATA").errorCode("FORBIDDEN").reason(e.getMessage()).build());
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(PlannerDTO.NextLearningResponse.builder()
+                    .currentPlannerId(plannerId).available(false).status("NO_DATA").errorCode("NOT_FOUND").reason(e.getMessage()).build());
         }
     }
 
