@@ -298,7 +298,7 @@ export default function Planner() {
 
   const handleDelete = async (id, e) => {
     e?.stopPropagation();
-    if (!window.confirm('이 플래너를 삭제할까요? (연결된 PDF도 함께 삭제됩니다)')) return;
+    if (!window.confirm('이 플래너를 삭제할까요? (자료보관함에 저장한 항목은 그대로 유지됩니다)')) return;
     try {
       setBusy('delete');
       await plannerService.deletePlanner(id);
@@ -928,7 +928,7 @@ export default function Planner() {
               <h3 className="m-0 text-[17px] font-extrabold text-[#111827]">{tabLabel} 플래너 전체삭제</h3>
             </div>
             <p className="m-0 text-[14px] leading-relaxed text-[#374151]">
-              현재 탭의 <b>{tabLabel} 플래너</b>만 삭제합니다. 자료보관함에 저장된 해당 플래너 항목도 함께 삭제됩니다.
+              현재 탭의 <b>{tabLabel} 플래너</b>만 삭제합니다. 자료보관함에 저장한 플래너 항목은 삭제되지 않고 그대로 유지됩니다.
               PDF 학습자료는 삭제되지 않습니다. 이 작업은 되돌릴 수 없습니다.
             </p>
             <p className="mt-2 text-[13px] leading-relaxed text-[#6B7280]">

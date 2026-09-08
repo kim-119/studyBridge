@@ -166,7 +166,8 @@ class PlanAnalysisServiceTest {
         PlanAnalysisDTO.Response response = service.analyze(USER_ID, 304L);
 
         assertEquals("PLANNER", response.getSourceType());
-        assertEquals(1, response.getMeta().getTaskCount());
+        // 스냅샷의 tmi("문맥 교환 복습") + content("프로세스 상태 정리") 가 각각 task 줄이 된다 → 2
+        assertEquals(2, response.getMeta().getTaskCount());
         assertEquals(1, response.getMeta().getScheduleCount());
         assertNotNull(capturedBody.get());
         assertTrue(capturedBody.get().contains("운영체제 1일차"));

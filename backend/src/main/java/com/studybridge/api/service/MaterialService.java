@@ -387,7 +387,10 @@ public class MaterialService {
                 }
             }
         }
-        if (presignedUrl == null && !isStructured(material) && material.getS3FileUrl() != null && !material.getS3FileUrl().isBlank()) {
+        // 원본 플래너가 삭제된 보관 항목(PLANNER)은 넘겨받은 다운로드 PDF 키(s3FileUrl)로 미리보기를 유지한다.
+        boolean detachedPlannerPdf = material.getMaterialType() == MaterialType.PLANNER && presignedUrl == null;
+        if (presignedUrl == null && (!isStructured(material) || detachedPlannerPdf)
+                && material.getS3FileUrl() != null && !material.getS3FileUrl().isBlank()) {
             try {
                 presignedUrl = s3Service.getPresignedUrl(material.getS3FileUrl(), material.getOriginalFileName());
             } catch (Exception e) {

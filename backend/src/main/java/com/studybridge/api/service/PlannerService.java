@@ -277,7 +277,7 @@ public class PlannerService {
     /**
      * 자료 기반(ROADMAP_AUTO) 플래너 전체삭제.
      * 현재 화면에 표시 중인 plannerIds 만 삭제한다. 수동 플래너/주간일정(todos)/다른 유저 데이터는 절대 건드리지 않는다.
-     * 기존 단일 삭제와 동일하게 hard delete + 연결 S3/Material 정리. @Transactional 로 일부 실패 시 전체 rollback.
+     * 기존 단일 삭제와 동일하게 hard delete. 자료보관함에 보관한 항목은 유지(연결만 해제). @Transactional 로 일부 실패 시 전체 rollback.
      */
     @Transactional
     public PlannerDTO.BulkDeleteResponse bulkDelete(Long userId, PlannerDTO.BulkDeleteRequest req) {
@@ -334,7 +334,7 @@ public class PlannerService {
             }
         }
 
-        // 5) 삭제 (단일 삭제와 동일 정책: hard delete + S3/Material 정리)
+        // 5) 삭제 (단일 삭제와 동일 정책: hard delete, 자료보관함 보관 항목은 유지)
         int deleted = 0;
         for (Planner p : planners) {
             cleanupAndDelete(p);
@@ -378,32 +378,52 @@ public class PlannerService {
     }
 
     /**
-     * hard delete + 연결 S3 객체 / 자료보관함 Material 정리 (단일/전체삭제 공통).
-     * 플래너 삭제 시 자료보관함에 보관된 그 플래너의 항목(PLANNER)도 함께 삭제한다.
-     * 단, PDF/학습일지 등 일반 학습자료는 절대 삭제하지 않는다(materialType=PLANNER 로 한정).
+     * 플래너 hard delete (단일/선택/전체삭제 공통).
+     * <p>자료보관함에 보관한 플래너 항목(materialType=PLANNER)은 <b>삭제하지 않는다</b>. 보관 항목은 사용자가 따로 저장한
+     * 스냅샷이므로 원본 플래너가 사라져도 남아야 한다. 대신 원본과의 연결만 끊어 독립 자료로 만든다:
+     * <ul>
+     *   <li>스냅샷(contentJson)이 비어 있으면 삭제 직전 상태로 채운다(구조화 자료로 계속 열람·분석 가능).</li>
+     *   <li>다운로드용 PDF(planner.s3Key)가 있으면 S3 객체를 지우지 않고 보관 항목으로 소유권을 옮긴다(미리보기 유지,
+     *       보관 항목 삭제 시 함께 정리).</li>
+     *   <li>plannerId 참조는 비운다(존재하지 않는 플래너를 가리키지 않게).</li>
+     * </ul>
+     * PDF/학습일지 등 일반 학습자료는 어떤 경우에도 건드리지 않는다.
      */
     private void cleanupAndDelete(Planner planner) {
-        // 연결된 S3 다운로드 PDF 정리
-        if (planner.getS3Key() != null) {
-            try { s3Service.deleteFile(planner.getS3Key()); } catch (Exception e) { log.warn("플래너 S3 삭제 실패: {}", e.getMessage()); }
-        }
-        // 삭제 대상 자료보관함 항목을 합집합으로 모아 한 번씩만 삭제(이중삭제 방지).
-        java.util.LinkedHashSet<Long> materialIds = new java.util.LinkedHashSet<>();
-        // 1) 정방향 링크: planner.materialId 가 가리키는 항목. 단 PLANNER 타입일 때만 삭제 대상에 넣는다.
-        //    (레거시 오염으로 materialId 가 출처 PDF 를 가리킬 수 있어, 타입 무관 삭제 시 원본 PDF/학습자료가 사라진다.)
+        // 보관 항목(정방향 링크 + 역참조 링크)을 합집합으로 모은다. PLANNER 타입만 대상.
+        java.util.LinkedHashMap<Long, Material> archives = new java.util.LinkedHashMap<>();
         if (planner.getMaterialId() != null) {
             materialRepository.findById(planner.getMaterialId())
                     .filter(m -> m.getMaterialType() == MaterialType.PLANNER)
-                    .ifPresent(m -> materialIds.add(m.getMaterialId()));
+                    .ifPresent(m -> archives.put(m.getMaterialId(), m));
         }
-        // 2) 역참조 링크(레거시/끊어진 링크 보강): material.plannerId == planner.id 인 PLANNER 자료만.
-        //    PDF/학습일지 등 일반 학습자료는 타입 조건으로 절대 포함되지 않는다.
         for (Material m : materialRepository.findByPlannerIdAndMaterialType(planner.getId(), MaterialType.PLANNER)) {
-            materialIds.add(m.getMaterialId());
+            archives.putIfAbsent(m.getMaterialId(), m);
         }
-        if (!materialIds.isEmpty()) {
-            materialRepository.findAllById(materialIds).forEach(materialRepository::delete);
-            log.info("플래너 삭제 cascade: plannerId={} 연결 자료보관함 항목 {}건 정리", planner.getId(), materialIds.size());
+
+        boolean pdfTransferred = false;
+        for (Material m : archives.values()) {
+            if (m.getContentJson() == null || m.getContentJson().isBlank()) {
+                m.setContentJson(buildSnapshotJson(planner));
+            }
+            if (planner.getS3Key() != null && !planner.getS3Key().isBlank()
+                    && (m.getStoredFileName() == null || m.getStoredFileName().isBlank())) {
+                m.setStoredFileName(planner.getS3Key());
+                m.setS3FileUrl(planner.getS3Key());
+                m.setOriginalFileName((planner.getTitle() == null ? "planner" : planner.getTitle()) + ".pdf");
+                pdfTransferred = true;
+            }
+            m.setPlannerId(null);
+            materialRepository.save(m);
+        }
+        if (!archives.isEmpty()) {
+            log.info("플래너 삭제: plannerId={} 자료보관함 보관 항목 {}건 유지(연결 해제, pdfTransferred={})",
+                    planner.getId(), archives.size(), pdfTransferred);
+        }
+
+        // 다운로드용 PDF 는 보관 항목이 넘겨받지 않은 경우에만 S3 에서 정리한다.
+        if (planner.getS3Key() != null && !pdfTransferred) {
+            try { s3Service.deleteFile(planner.getS3Key()); } catch (Exception e) { log.warn("플래너 S3 삭제 실패: {}", e.getMessage()); }
         }
         plannerRepository.delete(planner);
     }

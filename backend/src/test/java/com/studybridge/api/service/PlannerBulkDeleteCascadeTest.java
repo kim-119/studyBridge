@@ -22,10 +22,10 @@ import static org.mockito.Mockito.*;
 
 /**
  * 플래너 전체삭제(PlannerService.bulkDelete) 회귀 방어 테스트.
- *  - 플래너 삭제 시 자료보관함의 PLANNER 항목도 함께 삭제되는가
+ *  - 플래너 삭제 시 자료보관함의 PLANNER 보관 항목은 삭제되지 않고 독립 자료로 유지되는가(연결 해제·스냅샷·PDF 이관)
  *  - PDF/일반 학습자료는 절대 삭제되지 않는가 (타입 가드)
  *  - 다른 사용자 데이터는 건드리지 않는가 (userId 스코프)
- *  - 자료 삭제 실패 시 예외가 전파되어(=@Transactional 롤백) 부분 삭제가 남지 않는가
+ *  - 보관 항목 갱신 실패 시 예외가 전파되어(=@Transactional 롤백) 부분 삭제가 남지 않는가
  * 순수 단위 테스트(Mockito) — Spring 컨텍스트/DB 없이 서비스 로직만 검증.
  */
 class PlannerBulkDeleteCascadeTest {
@@ -125,21 +125,45 @@ class PlannerBulkDeleteCascadeTest {
     }
 
     @Test
-    void deleteAllPlanners_shouldDeletePlannerArchiveItems() {
+    void deleteAllPlanners_shouldKeepPlannerArchiveItemsDetached() {
         Planner planner = roadmapPlanner(1L, 100L);
-        Material archive = plannerMaterial(100L, 1L);
+        planner.setTitle("[로드맵 1주차 1일] 선형회귀");
+        planner.setS3Key("planners/downloads/user_13/1.pdf");
+        Material archive = plannerMaterial(100L, 1L);   // contentJson 없음 → 삭제 직전 스냅샷으로 채워져야 한다
 
         when(plannerRepository.findByUserIdAndIdIn(USER_ID, List.of(1L))).thenReturn(List.of(planner));
-        when(materialRepository.findByPlannerIdAndMaterialType(1L, MaterialType.PLANNER))
-                .thenReturn(Collections.emptyList());
-        when(materialRepository.findAllById(any())).thenReturn(List.of(archive));
+        when(materialRepository.findById(100L)).thenReturn(java.util.Optional.of(archive));
+        when(materialRepository.findByPlannerIdAndMaterialType(1L, MaterialType.PLANNER)).thenReturn(List.of(archive));
+        when(materialRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         PlannerDTO.BulkDeleteResponse res = service.bulkDelete(USER_ID, bulkReq(List.of(1L)));
 
         assertTrue(res.isSuccess());
         assertEquals(1, res.getDeletedCount());
-        verify(materialRepository).delete(archive);          // 연결된 PLANNER 자료 삭제됨
-        verify(plannerRepository).delete(planner);           // 플래너 본체 삭제됨
+        verify(materialRepository, never()).delete(any(Material.class));   // 보관 항목은 삭제되지 않는다
+        verify(materialRepository, times(1)).save(archive);                 // 합집합이라 한 번만 갱신
+        assertNull(archive.getPlannerId());                                  // 존재하지 않는 플래너를 가리키지 않는다
+        assertEquals(MaterialType.PLANNER, archive.getMaterialType());
+        assertNotNull(archive.getContentJson());
+        assertTrue(archive.getContentJson().contains("\"title\":\"[로드맵 1주차 1일] 선형회귀\""), archive.getContentJson());
+        // 다운로드 PDF 는 S3 에서 지우지 않고 보관 항목이 넘겨받는다(미리보기 유지, 보관 항목 삭제 시 정리)
+        assertEquals("planners/downloads/user_13/1.pdf", archive.getStoredFileName());
+        assertEquals("planners/downloads/user_13/1.pdf", archive.getS3FileUrl());
+        verify(s3Service, never()).deleteFile(anyString());
+        verify(plannerRepository).delete(planner);                           // 플래너 본체만 삭제
+    }
+
+    @Test
+    void deletePlannerWithoutArchive_shouldRemoveDownloadPdf() {
+        Planner planner = roadmapPlanner(1L, null);
+        planner.setS3Key("planners/downloads/user_13/1.pdf");
+        when(plannerRepository.findByUserIdAndIdIn(USER_ID, List.of(1L))).thenReturn(List.of(planner));
+        when(materialRepository.findByPlannerIdAndMaterialType(1L, MaterialType.PLANNER)).thenReturn(Collections.emptyList());
+
+        assertTrue(service.bulkDelete(USER_ID, bulkReq(List.of(1L))).isSuccess());
+        verify(s3Service).deleteFile("planners/downloads/user_13/1.pdf");   // 보관 항목이 없으면 다운로드 PDF 는 정리
+        verify(materialRepository, never()).save(any(Material.class));
+        verify(plannerRepository).delete(planner);
     }
 
     @Test
@@ -178,20 +202,19 @@ class PlannerBulkDeleteCascadeTest {
     }
 
     @Test
-    void deleteAllPlanners_shouldRollbackWhenArchiveDeleteFails() {
+    void deleteAllPlanners_shouldRollbackWhenArchiveDetachFails() {
         Planner planner = roadmapPlanner(1L, 100L);
         Material archive = plannerMaterial(100L, 1L);
 
         when(plannerRepository.findByUserIdAndIdIn(USER_ID, List.of(1L))).thenReturn(List.of(planner));
-        when(materialRepository.findByPlannerIdAndMaterialType(1L, MaterialType.PLANNER))
-                .thenReturn(Collections.emptyList());
-        when(materialRepository.findAllById(any())).thenReturn(List.of(archive));
-        doThrow(new RuntimeException("archive delete failed")).when(materialRepository).delete(archive);
+        when(materialRepository.findById(100L)).thenReturn(java.util.Optional.of(archive));
+        when(materialRepository.findByPlannerIdAndMaterialType(1L, MaterialType.PLANNER)).thenReturn(Collections.emptyList());
+        doThrow(new RuntimeException("archive save failed")).when(materialRepository).save(archive);
 
         // 예외가 @Transactional 경계 밖으로 전파 → 런타임에서 전체 롤백된다.
         assertThrows(RuntimeException.class, () -> service.bulkDelete(USER_ID, bulkReq(List.of(1L))));
 
-        // 자료 삭제가 실패한 뒤 플래너 본체 삭제까지 진행되지 않아야 함(부분 삭제 방지).
+        // 보관 항목 갱신이 실패한 뒤 플래너 본체 삭제까지 진행되지 않아야 함(부분 삭제 방지).
         verify(plannerRepository, never()).delete(any(Planner.class));
     }
 }
