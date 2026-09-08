@@ -12,6 +12,7 @@ import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.PlannerRepository;
 import com.studybridge.api.util.ConceptFallbackProvider;
 import com.studybridge.api.util.LearningContentSanitizer;
+import com.studybridge.api.util.LearningConceptValidator;
 import com.lowagie.text.Document;
 import com.lowagie.text.Element;
 import com.lowagie.text.Font;
@@ -110,19 +111,39 @@ public class PlannerService {
         java.time.LocalDate start = req.getStartDate() != null ? req.getStartDate() : java.time.LocalDate.now();
 
         int created = 0;
-        int[] noiseStats = new int[4]; // [0]=noiseCandidate, [1]=cleaned, [2]=rejected, [3]=fallbackUsedFields
+        int[] noiseStats = new int[5]; // [0]=noiseCandidate, [1]=cleaned, [2]=rejected, [3]=fallbackUsedFields, [4]=sentenceFragments
         for (int i = 0; i < items.size(); i++) {
             PlannerDTO.RoadmapItem it = items.get(i);
             java.time.LocalDate date = start.plusDays(i);
 
             // 노이즈 정제: PDF 표지 날짜/교수명/코스 제목이 섞인 항목 제거, 비면 개념형 fallback으로 대체.
             ConceptFallbackProvider.Concept fb = ConceptFallbackProvider.forTopicAt(subject, i);
+            // topic: 정제된 제목 우선, 노이즈/비면 개념형 fallback 제목 사용(메타데이터를 제목으로 쓰지 않는다)
+            String topic = (it.getTitle() != null && !LearningContentSanitizer.isNoise(it.getTitle(), subject))
+                    ? LearningContentSanitizer.clean(it.getTitle())
+                    : fb.title;
             String objective = sanitizeRequiredField(it.getObjective(), subject, fb.objective, noiseStats);
             java.util.List<String> tasks = sanitizeStrListHard(it.getTasks(), subject, fb.tasks, noiseStats);
             java.util.List<String> coreConcepts = sanitizeStrListSoft(it.getCoreConcepts(), subject, fb.coreConcepts, noiseStats);
             java.util.List<String> reviewQuestions = sanitizeStrListSoft(it.getReviewQuestions(), subject, fb.reviewQuestions, noiseStats);
             String checkpoint = sanitizeOptionalField(it.getCheckpoint(), subject, "", noiseStats);
             String deliverable = sanitizeOptionalField(it.getDeliverable(), subject, fb.deliverable, noiseStats);
+
+            // 개념형 검증: 메타데이터 노이즈가 아니어도 core_concepts 에 PDF 본문 문장/예제("~은 종속변수이다",
+            // "~을 추정하는 것")가 들어오면 개념이 아니므로 제외하고, 그 조각이 템플릿으로 끼워진
+            // objective/tasks/질문/체크포인트/산출물은 day 주제어로 치환한다(특정 문자열 하드코딩 없음).
+            LearningConceptValidator.Split conceptSplit = LearningConceptValidator.split(coreConcepts);
+            if (conceptSplit.hasRejected()) {
+                java.util.List<String> fragments = conceptSplit.rejected();
+                String dayTopic = LearningConceptValidator.topicOf(topic);
+                noiseStats[0] += fragments.size(); noiseStats[2] += fragments.size(); noiseStats[4] += fragments.size();
+                coreConcepts = new java.util.ArrayList<>(conceptSplit.accepted());
+                objective = LearningConceptValidator.scrub(objective, fragments, dayTopic);
+                tasks = scrubList(tasks, fragments, dayTopic);
+                reviewQuestions = scrubList(reviewQuestions, fragments, dayTopic);
+                checkpoint = LearningConceptValidator.scrub(checkpoint, fragments, dayTopic);
+                deliverable = LearningConceptValidator.scrub(deliverable, fragments, dayTopic);
+            }
 
             StringBuilder content = new StringBuilder();
             if (!objective.isBlank()) content.append("[오늘 목표] ").append(objective).append("\n\n");
@@ -144,10 +165,6 @@ public class PlannerService {
             // week/day는 명시값 우선, 없으면 index 기반 계산(84개=12주×7일): index/7+1 주차, index%7+1 일차
             int weekNo = it.getWeek() != null ? it.getWeek() : (i / 7 + 1);
             int dayNo = it.getDayIndex() != null ? it.getDayIndex() : (i % 7 + 1);
-            // topic: 정제된 제목 우선, 노이즈/비면 개념형 fallback 제목 사용(메타데이터를 제목으로 쓰지 않는다)
-            String topic = (it.getTitle() != null && !LearningContentSanitizer.isNoise(it.getTitle(), subject))
-                    ? LearningContentSanitizer.clean(it.getTitle())
-                    : fb.title;
             // DB에 저장되는 title 자체를 "[로드맵 N주차 M일] topic" 형식으로 통일 (목록/상세/캘린더 공통)
             String roadmapTitle = buildRoadmapPlannerTitle(weekNo, dayNo, topic);
 
@@ -174,10 +191,10 @@ public class PlannerService {
         }
 
         boolean fallbackUsed = noiseStats[3] > 0;
-        log.info("[planner:validation] materialId={} roadmapId={} created={} noiseCandidates={} cleaned={} rejected={} fallbackUsed={} reason={}",
+        log.info("[planner:validation] materialId={} roadmapId={} created={} noiseCandidates={} cleaned={} rejected={} sentenceFragments={} fallbackUsed={} reason={}",
                 req.getMaterialId(), req.getRoadmapId(), created,
-                noiseStats[0], noiseStats[1], noiseStats[2], fallbackUsed,
-                fallbackUsed ? "metadata_noise" : "none");
+                noiseStats[0], noiseStats[1], noiseStats[2], noiseStats[4], fallbackUsed,
+                fallbackUsed ? "metadata_noise" : (noiseStats[4] > 0 ? "sentence_fragments" : "none"));
 
         return PlannerDTO.FromRoadmapResponse.builder()
                 .createdCount(created).duplicate(false).existingCount(existing)
@@ -185,7 +202,17 @@ public class PlannerService {
                 .build();
     }
 
-    // ── 로드맵→플래너 노이즈 정제 헬퍼 (stats: [0]=noiseCandidate,[1]=cleaned,[2]=rejected,[3]=fallbackUsed) ──
+    // 리스트 각 항목에서 문장형 조각을 주제어로 치환(빈 결과·중복 제거).
+    private static java.util.List<String> scrubList(java.util.List<String> in, java.util.List<String> fragments, String topic) {
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        for (String v : in) {
+            String c = LearningConceptValidator.scrub(v, fragments, topic);
+            if (c != null && !c.isBlank()) out.add(c);
+        }
+        return new java.util.ArrayList<>(out);
+    }
+
+    // ── 로드맵→플래너 노이즈 정제 헬퍼 (stats: [0]=noiseCandidate,[1]=cleaned,[2]=rejected,[3]=fallbackUsed,[4]=sentenceFragments) ──
     private String sanitizeRequiredField(String raw, String course, String fallback, int[] st) {
         if (raw == null || raw.isBlank()) { st[3]++; return fallback; }
         if (LearningContentSanitizer.isNoise(raw, course)) { st[0]++; st[2]++; st[3]++; return fallback; }

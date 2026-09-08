@@ -135,7 +135,8 @@ export default function PlannerPlanAnalysisPanel({ plannerId }) {
     }
   }, [plannerId, analyzing]);
 
-  // 로컬 시간표 미리보기(서버 재호출 없음). flow 우선, 없으면 tasks 사용.
+  // 로컬 시간표 미리보기(서버 재호출 없음). analysis.flow 만 사용하고, 없을 때만 학습 활동(tasks)으로 대체한다.
+  // 선행 개념(prerequisites)은 시간표/플로우에 절대 섞지 않는다(목표 학습시간에 포함되지 않는 항목).
   const previewRows = useMemo(() => {
     if (!analysis) return [];
     const src = Array.isArray(analysis.flow) && analysis.flow.length > 0
@@ -209,9 +210,16 @@ export default function PlannerPlanAnalysisPanel({ plannerId }) {
   }
 
   const goal = analysis.goalAlignment || {};
-  const prerequisites = Array.isArray(analysis.prerequisites) ? analysis.prerequisites.filter((p) => p && p.name) : [];
+  // 선행 개념 전용 영역. 서버가 검증한 prerequisites 만 쓰고, tasks/flow 를 대신 보여주지 않는다(없으면 empty 상태).
+  const prerequisites = Array.isArray(analysis.prerequisites)
+    ? analysis.prerequisites.filter((p) => p && typeof p.name === 'string' && p.name.trim())
+    : [];
   const tasks = Array.isArray(analysis.tasks) ? analysis.tasks : [];
+  // 학습 Data Flow = analysis.flow(학습 활동 순서). 부득이한 fallback 도 학습 활동(tasks)만이며 prerequisites 와 혼합하지 않는다.
   const flow = Array.isArray(analysis.flow) && analysis.flow.length > 0 ? analysis.flow : tasks;
+  const targetLabel = analysis.targetMinutesEstimated
+    ? `AI 예상 학습시간 ${analysis.totalRecommendedMinutes ?? 0}분`
+    : `목표 학습시간 ${analysis.targetMinutes ?? 0}분`;
   const cp = analysis.checklistProgress || { total: 0, completed: 0, percent: 0 };
   const warnings = Array.isArray(analysis.warnings) ? analysis.warnings.filter(Boolean) : [];
 
@@ -285,20 +293,25 @@ export default function PlannerPlanAnalysisPanel({ plannerId }) {
         )}
       </Card>
 
-      {/* 선수지식 */}
-      {prerequisites.length > 0 && (
-        <Card icon={<BookOpen size={17} color="#15803D" />} title="학습 전 확인 권장">
+      {/* 선행 개념(prerequisite 전용). 오늘의 학습 활동과 독립이며 목표 학습시간에 포함되지 않는다. */}
+      <Card icon={<BookOpen size={17} color="#15803D" />} title="선행 개념 · 학습 전 확인 권장">
+        <p style={{ margin: '0 0 10px', fontSize: '12.5px', color: 'var(--color-text-muted)', ...codeSafe }}>
+          오늘 내용을 이해하는 데 바탕이 되는 기초 개념입니다. 이미 알고 있다면 넘어가도 되고, 익숙하지 않다면 학습 전에 한 번 확인해 두는 것을 권장합니다.
+        </p>
+        {prerequisites.length === 0 ? (
+          <p style={{ margin: 0, fontSize: '13.5px', color: 'var(--color-text-muted)' }}>이 계획에 대해 별도로 확인이 권장되는 선행 개념이 없습니다.</p>
+        ) : (
           <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {prerequisites.map((p, i) => (
-              <li key={i} style={{ fontSize: '13.5px', color: 'var(--color-text-main)', ...codeSafe }}>
+              <li key={`${p.name}-${i}`} style={{ fontSize: '13.5px', color: 'var(--color-text-main)', ...codeSafe }}>
                 <b>{p.name}</b>
                 {p.reason && <span style={{ display: 'block', fontSize: '12.5px', color: 'var(--color-text-muted)', marginTop: '2px' }}>{p.reason}</span>}
               </li>
             ))}
           </ul>
-          <p style={{ margin: '12px 0 0', fontSize: '12px', color: 'var(--color-text-muted)' }}>현재 플래너의 목표 학습시간에는 포함되지 않습니다.</p>
-        </Card>
-      )}
+        )}
+        <p style={{ margin: '12px 0 0', fontSize: '12px', color: 'var(--color-text-muted)' }}>선행 개념 확인 시간은 {targetLabel}에 포함되지 않습니다.</p>
+      </Card>
 
       {/* 학습 Data Flow */}
       {flow.length > 0 && (

@@ -7,6 +7,7 @@ import com.studybridge.api.entity.*;
 import com.studybridge.api.repository.*;
 import com.studybridge.api.util.ConceptFallbackProvider;
 import com.studybridge.api.util.LearningContentSanitizer;
+import com.studybridge.api.util.LearningConceptValidator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -1303,9 +1304,54 @@ public class AiIntegrationService {
                                 if (d.containsKey("checkpoint")) {
                                         d.put("checkpoint", sanitizeOptionalField(d.get("checkpoint"), courseTitle, "", stats));
                                 }
+                                scrubSentenceFragments(d, stats);
                         }
                 }
                 return stats;
+        }
+
+        /**
+         * 개념형 검증(메타데이터 노이즈와 별개): core_concepts 에 PDF 본문 문장/예제 조각("~은 종속변수이다",
+         * "~을 추정하는 것")이 오면 개념이 아니므로 제외하고, 같은 조각이 템플릿으로 끼워진
+         * objective/tasks/review_questions/practice/checkpoint/deliverable 은 day 주제어로 치환한다.
+         * 특정 문자열이 아니라 {@link LearningConceptValidator}의 형태 신호로 판단하므로 다른 자료에서도 동일하게 동작.
+         */
+        @SuppressWarnings("unchecked")
+        private void scrubSentenceFragments(Map<String, Object> d, int[] stats) {
+                Object conceptsRaw = d.get("core_concepts");
+                if (!(conceptsRaw instanceof List)) return;
+                List<String> concepts = new ArrayList<>();
+                for (Object o : (List<?>) conceptsRaw) if (o != null) concepts.add(o.toString());
+                LearningConceptValidator.Split split = LearningConceptValidator.split(concepts);
+                if (!split.hasRejected()) return;
+                List<String> fragments = split.rejected();
+                String topic = LearningConceptValidator.topicOf(d.get("title") == null ? "" : d.get("title").toString());
+                stats[0] += fragments.size(); stats[2] += fragments.size();
+                d.put("core_concepts", new ArrayList<>(split.accepted()));
+                for (String key : new String[]{"objective", "practice", "checkpoint", "deliverable"}) {
+                        if (d.get(key) instanceof String v) d.put(key, LearningConceptValidator.scrub(v, fragments, topic));
+                }
+                if (d.get("review_questions") instanceof List<?> qs) {
+                        List<Object> out = new ArrayList<>();
+                        for (Object q : qs) out.add(q instanceof String v ? LearningConceptValidator.scrub(v, fragments, topic) : q);
+                        d.put("review_questions", out);
+                }
+                if (d.get("tasks") instanceof List<?> ts) {
+                        List<Object> out = new ArrayList<>();
+                        for (Object t : ts) {
+                                if (t instanceof Map<?, ?> tm) {
+                                        Map<String, Object> m = (Map<String, Object>) tm;
+                                        for (String key : new String[]{"title", "content", "description"})
+                                                if (m.get(key) instanceof String v) m.put(key, LearningConceptValidator.scrub(v, fragments, topic));
+                                        out.add(m);
+                                } else if (t instanceof String v) {
+                                        out.add(LearningConceptValidator.scrub(v, fragments, topic));
+                                } else out.add(t);
+                        }
+                        d.put("tasks", out);
+                }
+                log.info("[roadmap:validation] sentenceFragments={} dayTitle={} acceptedConcepts={}",
+                                fragments.size(), topic, split.accepted().size());
         }
 
         // 필수 필드(title/objective): 비거나 노이즈면 fallback 으로 대체.

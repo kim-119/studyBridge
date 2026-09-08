@@ -32,13 +32,22 @@ public class PlannerSemanticDTO {
         private Integer currentWeek; private Integer currentDay; private String term; private String learningGoal;
         private List<String> previousLearning; private List<String> nextLearning;
     }
+    /**
+     * AI07 analyze-semantic 요청. 신뢰 우선순위(ROADMAP): topic/title/subject → 해당 week/day objective →
+     * 해당 day 의 개념형 core concepts / tasks → content/memo(보조 컨텍스트).
+     *  - coreConcepts: 오늘 학습할 개념(개념형만). 선행 개념이 아니다.
+     *  - priorConcepts: 로드맵에서 오늘보다 앞선 날에 다룬 개념형 개념(선행 개념 후보).
+     *  - excludedFragments: 개념명이 아니라 문장/예제로 판정되어 제외한 원문 조각(AI07 전송·지문 계산에서 제외).
+     */
     @Data @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class Request {
-        private Long plannerId; private String title; private String subject; private String learningType;
+        private Long plannerId; private String title; private String topic; private String subject; private String learningType;
         private String priority; private Integer targetMinutes; private String learningGoal; private String content;
         private String memo; private List<InputItem> detailTasks; private List<InputItem> checklist;
         private List<String> reviewQuestions; private List<String> outputs; private List<String> coreConcepts;
+        private List<String> priorConcepts;
         private String sourceType; private RoadmapContext roadmapContext;
+        @com.fasterxml.jackson.annotation.JsonIgnore private List<String> excludedFragments;
     }
     @Data @NoArgsConstructor
     public static class ScheduleRequest { private String startTime; }

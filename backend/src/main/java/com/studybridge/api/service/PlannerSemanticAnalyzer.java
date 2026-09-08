@@ -6,6 +6,7 @@ import com.studybridge.api.dto.PlannerSemanticDTO;
 import com.studybridge.api.dto.PlannerSemanticDTO.*;
 import com.studybridge.api.entity.Planner;
 import com.studybridge.api.repository.PlannerRepository;
+import com.studybridge.api.util.LearningConceptValidator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,6 +23,14 @@ import java.util.*;
  *  - AI 응답을 검증하고, task 별 권장시간은 AI를 그대로 신뢰하지 않고 {@link PlannerTimeAllocator} 로 targetMinutes 에 맞춰 결정적 정규화.
  *  - AI07 장애/오형식 시에도 실제 데이터 기반 결정적 폴백으로 동일 구조를 반환(플래너 열람은 절대 막지 않는다).
  *  - 결과는 planner.planAnalysisJson 에 캐시되어 시간표/PDF 생성 시 재사용된다(시간 변경 시 AI 재호출 없음).
+ *
+ * <p>prerequisites / tasks / flow 는 논리적으로 독립이다.
+ *  - prerequisites: "오늘 내용을 이해하기 위해 미리 알아두면 좋은 기초 개념". AI 응답이든 폴백이든
+ *    {@link LearningConceptValidator}로 개념명 형태를 검증하고, task 문장·플래너 원문·제외 조각과 사실상 같은 항목은 버린다.
+ *    폴백은 오늘의 개념을 복사하지 않고 로드맵에서 <b>앞서 다룬</b> 개념 중 주제와 연관된 것만 고른다(없으면 빈 목록).
+ *    선행 개념 시간은 targetMinutes 에 절대 포함되지 않는다(includedInPlanTime=false).
+ *  - tasks: 실제 플래너/로드맵 day 의 학습 활동(순서·식별자 authoritative).
+ *  - flow: tasks 의 학습 활동 순서(권장시간 합 = targetMinutes). prerequisites 를 복사하거나 섞지 않는다.
  */
 @Slf4j
 @Service
@@ -82,7 +91,7 @@ public class PlannerSemanticAnalyzer {
                 .tasks(tasks)
                 .flow(flow(tasks))
                 .checklistProgress(progress(req))
-                .warnings(strings(ai == null ? null : ai.get("warnings")))
+                .warnings(warnings(req, ai))
                 .sourceFingerprint(fingerprint)
                 .stale(false)
                 .empty(false)
@@ -161,10 +170,14 @@ public class PlannerSemanticAnalyzer {
             t.setTitle(in.getTitle());
             t.setDescription(blankToNull(in.getDescription()));
             t.setType(type);
-            t.setGoalAlignment(taskAlignment(a, in.getTitle(), type, req.getLearningGoal()));
-            t.setWhyImportant(text(a, "whyImportant", whyImportant(type, in.getTitle())));
+            GoalAlignment ga = taskAlignment(a, in.getTitle(), type, req.getLearningGoal());
+            ga.setReason(prose(req, ga.getReason()));
+            t.setGoalAlignment(ga);
+            t.setWhyImportant(prose(req, text(a, "whyImportant", whyImportant(type, in.getTitle()))));
             t.setPrerequisites(taskPrereqs(a, req, type));
-            t.setLearningSequence(sequence(a, type));
+            List<String> seq = new ArrayList<>();
+            for (String step : sequence(a, type)) seq.add(prose(req, step));
+            t.setLearningSequence(seq);
             out.add(t);
         }
         return out;
@@ -190,7 +203,7 @@ public class PlannerSemanticAnalyzer {
     // ---------------- 시맨틱 필드(AI 우선, 실데이터 기반 결정적 폴백) ----------------
 
     private String summary(Request req, JsonNode ai, int total) {
-        String s = text(ai, "summary", null);
+        String s = prose(req, text(ai, "summary", null));
         if (s != null) return s;
         int n = req.getDetailTasks() == null ? 0 : req.getDetailTasks().size();
         String goal = shortGoal(req.getLearningGoal(), req.getTitle());
@@ -203,10 +216,12 @@ public class PlannerSemanticAnalyzer {
         JsonNode a = ai == null ? null : ai.get("goalAlignment");
         g.setLevel(a != null && a.hasNonNull("level") ? parseLevel(a.get("level").asText()) : Level.MEDIUM);
         String goal = shortGoal(req.getLearningGoal(), req.getTitle());
-        g.setSummary(text(a, "summary", "현재 학습 활동 대부분이 " + goal + " 이해와 연결되어 있습니다."));
-        g.setReason(text(a, "reason",
-                "구성된 활동이 오늘의 학습 목표를 향해 순차적으로 배치되어 있어 전반적인 정합성은 양호합니다."));
-        g.setIssues(strings(a == null ? null : a.get("issues")));
+        g.setSummary(prose(req, text(a, "summary", "현재 학습 활동 대부분이 " + goal + " 이해와 연결되어 있습니다.")));
+        g.setReason(prose(req, text(a, "reason",
+                "구성된 활동이 오늘의 학습 목표를 향해 순차적으로 배치되어 있어 전반적인 정합성은 양호합니다.")));
+        List<String> issues = new ArrayList<>();
+        for (String i : strings(a == null ? null : a.get("issues"))) issues.add(prose(req, i));
+        g.setIssues(issues);
         return g;
     }
 
@@ -219,21 +234,66 @@ public class PlannerSemanticAnalyzer {
         return g;
     }
 
+    static final String PREREQ_REASON_DEFAULT = "익숙하지 않다면 학습 전에 한 번 확인해 두는 것을 권장합니다.";
+    static final String PREREQ_REASON_PRIOR = "앞선 로드맵 학습에서 다룬 개념입니다. 익숙하지 않다면 학습 전에 확인을 권장합니다.";
+    private static final int MAX_FALLBACK_PREREQS = 5;
+
+    /**
+     * 선행 개념: AI 응답을 검증해 통과한 것만 쓰고, 하나도 없으면 로드맵에서 앞서 다룬 연관 개념으로 폴백한다.
+     * 오늘의 core concepts 는 "오늘 배울 내용"이므로 선행 개념으로 복사하지 않는다. 폴백도 비면 정직하게 빈 목록.
+     */
     private List<Prerequisite> prerequisites(Request req, JsonNode ai) {
-        List<Prerequisite> fromAi = prereqNodes(ai == null ? null : ai.get("prerequisites"));
+        List<Prerequisite> fromAi = validatePrerequisites(prereqNodes(ai == null ? null : ai.get("prerequisites")), req);
         if (!fromAi.isEmpty()) return fromAi;
+        return fallbackPrerequisites(req);
+    }
+
+    private List<Prerequisite> taskPrereqs(JsonNode a, Request req, TaskType type) {
+        // 실데이터가 없으면 추측하지 않는다(로드맵 핵심개념은 task 선행개념으로 쓰지 않는다).
+        return validatePrerequisites(prereqNodes(a == null ? null : a.get("prerequisites")), req);
+    }
+
+    /**
+     * 선행 개념 검증(도메인 문자열 하드코딩 없음):
+     *  - 개념명 형태(짧은 명사구)여야 한다 — 문장/설명문/예제 문장/코드 조각/"~이다·~하는 것" 서술은 거부
+     *  - task 제목·설명, 학습 목표, 플래너 원문 줄과 사실상 동일하면 거부(task 를 선행 개념으로 재포장 금지)
+     *  - 로드맵에서 이미 제외한 문장형 조각과 사실상 동일하면 거부
+     *  - 중복 제거, includedInPlanTime 은 항상 false(선행 개념 시간은 목표 학습시간에 포함하지 않는다)
+     */
+    List<Prerequisite> validatePrerequisites(List<Prerequisite> candidates, Request req) {
+        List<String> forbidden = new ArrayList<>();
+        for (InputItem t : safe(req.getDetailTasks())) { forbidden.add(t.getTitle()); forbidden.add(t.getDescription()); }
+        for (InputItem t : safe(req.getChecklist())) forbidden.add(t.getTitle());
+        forbidden.add(req.getLearningGoal());
+        for (String line : (req.getContent() == null ? "" : req.getContent()).split("\\R"))
+            forbidden.add(line.replaceFirst("^\\s*\\d+[.)]\\s*", "").replace("[오늘 목표]", "").trim());
+        forbidden.addAll(safe(req.getExcludedFragments()));
+        forbidden.removeIf(f -> f == null || f.isBlank());
+
         List<Prerequisite> out = new ArrayList<>();
-        for (String c : safe(req.getCoreConcepts())) {
-            out.add(new Prerequisite(c, "학습 전 미리 확인하면 오늘 내용을 이해하기 쉽습니다.", false));
+        Set<String> seen = new HashSet<>();
+        for (Prerequisite c : candidates) {
+            String name = c.getName() == null ? "" : c.getName().trim();
+            if (!LearningConceptValidator.isConceptLike(name)) continue;
+            if (LearningConceptValidator.duplicatesAny(name, forbidden)) continue;
+            if (!seen.add(LearningConceptValidator.normalize(name))) continue;
+            String reason = c.getReason() == null || c.getReason().isBlank() ? PREREQ_REASON_DEFAULT : prose(req, c.getReason());
+            out.add(new Prerequisite(name, reason, false));
         }
         return out;
     }
 
-    private List<Prerequisite> taskPrereqs(JsonNode a, Request req, TaskType type) {
-        List<Prerequisite> fromAi = prereqNodes(a == null ? null : a.get("prerequisites"));
-        if (!fromAi.isEmpty()) return fromAi;
-        // 실데이터가 없으면 추측하지 않는다(로드맵 핵심개념은 상위 prerequisites 에만 노출).
-        return List.of();
+    /** 폴백: 로드맵에서 오늘보다 앞서 다룬 개념형 개념 중 주제어/과목/오늘 개념과 어휘적으로 연관된 것(최대 5개). */
+    private List<Prerequisite> fallbackPrerequisites(Request req) {
+        List<String> anchors = new ArrayList<>();
+        if (req.getTopic() != null) anchors.add(req.getTopic());
+        if (req.getSubject() != null && !req.getSubject().isBlank()) anchors.add(req.getSubject());
+        anchors.addAll(safe(req.getCoreConcepts()));
+        List<Prerequisite> candidates = new ArrayList<>();
+        for (String c : safe(req.getPriorConcepts()))
+            if (LearningConceptValidator.isRelated(c, anchors)) candidates.add(new Prerequisite(c, PREREQ_REASON_PRIOR, false));
+        List<Prerequisite> valid = validatePrerequisites(candidates, req);
+        return valid.size() > MAX_FALLBACK_PREREQS ? new ArrayList<>(valid.subList(0, MAX_FALLBACK_PREREQS)) : valid;
     }
 
     private List<Prerequisite> prereqNodes(JsonNode node) {
@@ -242,9 +302,23 @@ public class PlannerSemanticAnalyzer {
             for (JsonNode p : node) {
                 String name = p.isTextual() ? p.asText() : text(p, "name", null);
                 if (name == null || name.isBlank()) continue;
-                out.add(new Prerequisite(name, text(p, "reason", "먼저 알아두면 좋은 개념입니다."), false));
+                out.add(new Prerequisite(name, text(p, "reason", null), false));
             }
         }
+        return out;
+    }
+
+    /** AI 산문에 로드맵 제외 조각이 다시 섞여 오면 주제어로 치환한다(AI 응답을 무조건 신뢰하지 않는다). */
+    private String prose(Request req, String s) {
+        if (s == null) return null;
+        return LearningConceptValidator.scrub(s, req.getExcludedFragments(), req.getTopic());
+    }
+
+    private List<String> warnings(Request req, JsonNode ai) {
+        List<String> out = new ArrayList<>();
+        for (String w : strings(ai == null ? null : ai.get("warnings"))) out.add(prose(req, w));
+        int excluded = safe(req.getExcludedFragments()).size();
+        if (excluded > 0) out.add("로드맵 원문에서 개념명이 아닌 문장형 항목 " + excluded + "개를 제외하고 분석했습니다.");
         return out;
     }
 
@@ -271,6 +345,7 @@ public class PlannerSemanticAnalyzer {
         };
     }
 
+    /** 학습 Data Flow = 실제 학습 활동(tasks)의 순서. 선행 개념과 독립이며 합계는 targetMinutes 와 같다. */
     private List<FlowNode> flow(List<Task> tasks) {
         List<FlowNode> out = new ArrayList<>();
         for (Task t : tasks) out.add(FlowNode.builder()

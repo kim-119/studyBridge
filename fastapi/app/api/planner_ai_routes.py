@@ -8,6 +8,7 @@
 모델: GPT (material_ai_manager._call_gpt 재사용). 타임아웃/구조 보정은 서버에서 강제.
 """
 import asyncio
+import re
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -573,6 +574,113 @@ def _prereq_list(raw: Any) -> List[Dict[str, Any]]:
     return out
 
 
+# ── 선행 개념(prerequisite) 형태 검증: 도메인 문자열이 아니라 형태 신호만 사용 ──
+_PREREQ_PREDICATE_END = re.compile(
+    r"(?:(?:이|하|되|있|없|않|같|많|르|크|작|좋|겠|었|았|였|된|한|인|온|운|는|린|난)다"
+    r"|(?:이|하|되|있|없|않|가|오|나|지)고|(?:이|하|되|있|없)며|(?:하|되|이|라|다|있|없|으)면"
+    r"|것|것들|하기|되기|니다|세요|보세요|십시오|까|죠|네요|때문에|때문"
+    r"|(?:을|를|은|는|에|에서|으로|까지|부터|처럼|보다|에게|한테|이란|란|이라고|라고|라도|이라도))$"
+)
+_PREREQ_INNER_PARTICLE = re.compile(r"(?<=[가-힣)A-Za-z0-9])(?:을|를|은|는|이|가|의|에|에서|로|으로|와|과|도|만|까지|부터|처럼|보다|에게)(?=[가-힣])")
+_PREREQ_INNER_VERB = re.compile(
+    r"(?:하는|되는|있는|없는|않는|않은|하여|되어|해서|통해|따라|위해|대한|대해|가진|좋은|나쁜|높은|낮은|같은|많은|적은"
+    r"|이용해|사용해|수록|하면|되면|라면|다면|이고|하고|되고|이며|하며|되며|중요한|필요한|가능한|다양한|유사한|불가능한"
+    r"|간단한|복잡한|이라고|라고|했|됐|였|았|었|중에서|에서의|에대한|로부터|으로써|에의해|에따라|에따른|에대해)"
+)
+_PREREQ_CODE = re.compile(r"[=;{}\[\]<>]|\w+_\w*\(|\b(?:import|from|def|return|print|self|class)\b")
+_PREREQ_NONWORD = re.compile(r"[^\w]+", re.UNICODE)
+
+
+def _norm_text(s: str) -> str:
+    return _PREREQ_NONWORD.sub("", s or "").lower()
+
+
+def _is_concept_like(raw: str) -> bool:
+    """짧은 명사구(개념명)인가. 문장/설명문/예제 문장/코드 조각/"~이다·~하는 것" 서술은 False.
+    Spring `LearningConceptValidator.isConceptLike` 와 같은 규칙(형태 신호만, 특정 문자열 없음)."""
+    s = (raw or "").strip()
+    if len(s) < 2:
+        return False
+    if re.match(r"^[^\w(\[\"'“‘]", s, re.UNICODE):
+        return False
+    if re.search(r"[.?!…:,]\s*$", s):
+        return False
+    if _PREREQ_CODE.search(s):
+        return False
+    if s.count("(") != s.count(")"):
+        return False
+    compact = s.replace(" ", "")
+    if len(compact) > 40 or len(s.split()) > 5:
+        return False
+    segments = [compact] + re.findall(r"\(([^()]*)\)", compact) + [re.sub(r"\([^()]*\)", "", compact)]
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        if _PREREQ_PREDICATE_END.search(seg):
+            return False
+        if len(seg) >= 4 and re.search(r"[가-힣]다$", seg):
+            return False
+    for w in s.split():
+        if len(w) >= 3 and _PREREQ_PREDICATE_END.search(w):
+            return False
+    score = len(_PREREQ_INNER_PARTICLE.findall(compact)) + 2 * len(_PREREQ_INNER_VERB.findall(compact))
+    if score >= 3:
+        return False
+    longest = max((len(m) for m in re.findall(r"[가-힣]+", compact)), default=0)
+    if longest > 18 and score >= 1:
+        return False
+    return True
+
+
+def _near_duplicate(a: str, b: str) -> bool:
+    x, y = _norm_text(a), _norm_text(b)
+    if not x or not y:
+        return False
+    if x == y:
+        return True
+    short, long_ = (x, y) if len(x) <= len(y) else (y, x)
+    return short in long_ and len(short) >= (len(long_) * 0.8)
+
+
+def _validate_prereqs(prereqs: List[Dict[str, Any]], forbidden: List[str]) -> List[Dict[str, Any]]:
+    """prerequisite 검증: 개념명 형태 + task/목표/원문과 사실상 동일하지 않음 + 중복 제거. includedInPlanTime 은 항상 False."""
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for p in prereqs:
+        name = str(p.get("name") or "").strip()
+        if not _is_concept_like(name):
+            continue
+        if any(_near_duplicate(name, f) for f in forbidden if f):
+            continue
+        key = _norm_text(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "name": name,
+            "reason": str(p.get("reason") or "").strip() or "익숙하지 않다면 학습 전에 한 번 확인해 두는 것을 권장합니다.",
+            "includedInPlanTime": False,
+        })
+    return out
+
+
+def _related(concept: str, anchors: List[str]) -> bool:
+    c = _norm_text(concept)
+    if not c:
+        return False
+    for a in anchors:
+        an = _norm_text(a)
+        if an and (an in c or c in an):
+            return True
+        for tok in _PREREQ_NONWORD.split(a or ""):
+            t = tok.lower()
+            hangul = any("가" <= ch <= "힣" for ch in t)
+            if ((hangul and len(t) >= 2) or (not hangul and len(t) >= 3)) and t in c:
+                return True
+    return False
+
+
 def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
     from app.utils.json_parser import extract_json
 
@@ -584,6 +692,7 @@ def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
         return default
 
     title = g("title", "plannerTitle")
+    topic = g("topic") or re.sub(r"^\s*\[로드맵\s+\d+주차\s+\d+일\]\s*", "", title).strip()
     subject = g("subject", "category")
     learning_type = g("learningType", "studyType")
     priority = g("priority")
@@ -602,7 +711,8 @@ def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
     except (TypeError, ValueError):
         target_minutes = None
 
-    core_concepts = _listify(body.get("coreConcepts"))
+    core_concepts = _listify(body.get("coreConcepts"))          # 오늘 배울 개념(선행 개념이 아니다)
+    prior_concepts = _listify(body.get("priorConcepts"))        # 로드맵에서 앞서 다룬 개념(선행 개념 후보)
     review_questions = _listify(body.get("reviewQuestions"))
     outputs = _listify(body.get("outputs"))
 
@@ -644,12 +754,16 @@ def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
         for idx, dt in enumerate(det_tasks):
             dt["recommendedMinutes"] = base + (1 if idx < rem else 0)
 
-    # 결정적 선행지식(전체): coreConcepts 기반, 정직하게 generic
-    det_prereqs: List[Dict[str, Any]] = [
-        {"name": c, "reason": f"{c}은(는) 본 학습 내용을 이해하는 데 기반이 되는 핵심 개념입니다.",
-         "includedInPlanTime": False}
-        for c in core_concepts
-    ]
+    # prerequisite 검증에서 금지되는 텍스트: task 제목/설명, 학습 목표, 플래너 원문 줄(선행 개념은 이들의 복사본이면 안 된다)
+    prereq_forbidden: List[str] = [learning_goal] + [dt["title"] for dt in det_tasks] + [dt["description"] for dt in det_tasks]
+    prereq_forbidden += [re.sub(r"^\s*\d+[.)]\s*", "", ln).replace("[오늘 목표]", "").strip() for ln in (content or "").splitlines()]
+
+    # 결정적 선행지식(전체): 오늘의 coreConcepts 를 복사하지 않고, 앞서 다룬 개념 중 주제와 연관된 것만(없으면 빈 목록)
+    prereq_anchors = [a for a in [topic, subject] if a] + core_concepts
+    det_prereqs: List[Dict[str, Any]] = _validate_prereqs([
+        {"name": c, "reason": "앞선 로드맵 학습에서 다룬 개념입니다. 익숙하지 않다면 학습 전에 확인을 권장합니다."}
+        for c in prior_concepts if _related(c, prereq_anchors)
+    ], prereq_forbidden)[:5]
 
     # 결정적 목표 정합성
     det_goal_level = "MEDIUM"
@@ -663,10 +777,11 @@ def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
     if not body.get("_no_llm"):
         try:
             ctx_lines = [
-                f"제목: {title}", f"과목: {subject}", f"학습 유형: {learning_type}",
+                f"제목: {title}", f"주제: {topic}", f"과목: {subject}", f"학습 유형: {learning_type}",
                 f"우선순위: {priority}", f"목표 학습 시간(분): {target_minutes}",
                 f"학습 목표: {learning_goal}", f"내용: {content}", f"메모: {memo}",
-                f"핵심 개념: {', '.join(core_concepts)}",
+                f"오늘 배울 핵심 개념: {', '.join(core_concepts)}",
+                f"이전에 다룬 개념: {', '.join(prior_concepts)}",
                 f"복습 질문: {', '.join(review_questions)}",
                 f"산출물: {', '.join(outputs)}", f"출처: {source_type}",
             ]
@@ -688,7 +803,10 @@ def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
             system = (
                 "너는 학습 설계 코치다. 이미 저장된 공부 플래너를 받아 구조화된 학습 분석을 만든다. "
                 "'먼저 저장하세요' 류 안내는 절대 하지 않는다. 입력에서 도출되지 않는 사실은 지어내지 마라. "
-                "선행지식은 핵심 개념/명백한 개념 의존성에서만 도출하고 모르면 일반적으로 정직하게 쓴다. "
+                "선행 개념(prerequisites)은 '오늘 내용을 이해하기 위해 미리 알아두면 좋은 기초 개념'이며 "
+                "짧은 개념명(명사구, 예: '독립변수와 종속변수')만 쓴다. task 문장·설명문·예제 문장·'~이다/~하는 것' 서술·"
+                "오늘 배울 핵심 개념 자체·세부 학습 항목 제목은 선행 개념이 아니다. 학습자가 모른다고 단정하지 말고 "
+                "'익숙하지 않다면 확인을 권장' 의미로 reason 을 쓴다. 모르면 빈 배열로 둔다. "
                 "반드시 한국어로, 마크다운 없이 아래 JSON 스키마로만 응답한다. "
                 "task 배열은 반드시 입력 순서(order)와 동일한 개수·순서로 채우고 각 항목의 id를 그대로 echo 한다."
             )
@@ -733,7 +851,7 @@ def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
         )
         ga_level = _norm_level(lt.get("goalLevel"), default=det_goal_level)
         seq = _listify(lt.get("learningSequence"))
-        prereqs = _prereq_list(lt.get("prerequisites"))
+        prereqs = _validate_prereqs(_prereq_list(lt.get("prerequisites")), prereq_forbidden)
         final_tasks.append({
             "id": dt["id"], "order": dt["order"], "title": dt["title"],
             "description": dt["description"], "type": dt["type"],
@@ -759,8 +877,8 @@ def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
         "issues": _listify(ga_in.get("issues")),
     }
 
-    # ── 전체 선행지식 병합 (LLM + 결정적) ──
-    prerequisites = _prereq_list(parsed.get("prerequisites")) or det_prereqs
+    # ── 전체 선행지식 병합 (LLM 검증 통과분 → 결정적 폴백 → 빈 목록). tasks/flow 와 독립 ──
+    prerequisites = _validate_prereqs(_prereq_list(parsed.get("prerequisites")), prereq_forbidden) or det_prereqs
 
     # ── summary ──
     summary = str(parsed.get("summary") or "").strip()

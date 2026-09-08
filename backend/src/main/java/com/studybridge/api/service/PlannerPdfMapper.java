@@ -53,10 +53,10 @@ public class PlannerPdfMapper {
             reviews.addAll(strings(field(daily, "review_questions", "reviewQuestions")));
             deliverable = text(daily, "deliverable", "output");
         }
-        // Legacy relational steps are weeks; select the matching day task, never another week's tasks.
-        if (tasks.isEmpty() && roadmap != null && root == null && week != null && day != null) {
-            for (RoadmapTask t : roadmapTasks.findByStep_Roadmap_RoadmapIdAndStep_StepOrderAndTaskOrderOrderByTaskId(
-                    roadmap.getRoadmapId(), week, day)) {
+        // Legacy relational steps are weeks with no day granularity: use that week's tasks, never another week's.
+        if (tasks.isEmpty() && roadmap != null && root == null && week != null) {
+            for (RoadmapTask t : roadmapTasks.findByStep_Roadmap_RoadmapIdAndStep_StepOrderOrderByTaskOrderAscTaskIdAsc(
+                    roadmap.getRoadmapId(), week)) {
                 if (t.getContent() != null && !t.getContent().isBlank()) tasks.add(t.getContent());
             }
         }
