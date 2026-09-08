@@ -39,6 +39,8 @@ import java.util.*;
 public class PlannerSemanticAnalyzer {
 
     private static final String SEMANTIC_PATH = "/api/ai/planner/analyze-semantic";
+    /** 사용자 노출 문장 규칙 버전. 올리면 기존 캐시는 다음 조회 때 AI 재호출 없이 문장만 다시 생성된다. */
+    static final int NARRATIVE_VERSION = 2;
 
     private final PlannerAnalysisContext context;
     private final PlannerTimeAllocator allocator;
@@ -96,6 +98,7 @@ public class PlannerSemanticAnalyzer {
                 .stale(false)
                 .empty(false)
                 .aiSource(fromAi ? "AI07" : "FALLBACK")
+                .narrativeVersion(NARRATIVE_VERSION)
                 .build();
 
         try { planner.setPlanAnalysisJson(json.writeValueAsString(resp)); planners.save(planner); }
@@ -106,10 +109,14 @@ public class PlannerSemanticAnalyzer {
         return resp;
     }
 
-    /** 캐시된 분석 조회(없으면 empty). 플래너 의미가 바뀌면 stale=true 로 재분석을 안내. */
+    /**
+     * 캐시된 분석 조회(없으면 empty). 플래너 의미가 바뀌면 stale=true 로 재분석을 안내.
+     * 문장 규칙이 바뀐 구버전 캐시는 여기서 문장만 재생성해 저장한다(쓰기 필요).
+     */
+    @Transactional
     public AnalysisResponse get(Long userId, Long plannerId) {
         Planner planner = context.owned(userId, plannerId);
-        AnalysisResponse cached = read(planner.getPlanAnalysisJson());
+        AnalysisResponse cached = renarrateIfOutdated(planner, read(planner.getPlanAnalysisJson()));
         if (cached == null) {
             return AnalysisResponse.builder().plannerId(plannerId).title(planner.getTitle()).empty(true).build();
         }
@@ -122,9 +129,77 @@ public class PlannerSemanticAnalyzer {
     @Transactional
     public AnalysisResponse ensure(Long userId, Long plannerId) {
         Planner planner = context.owned(userId, plannerId);
-        AnalysisResponse cached = read(planner.getPlanAnalysisJson());
+        AnalysisResponse cached = renarrateIfOutdated(planner, read(planner.getPlanAnalysisJson()));
         if (cached != null && cached.getTasks() != null && !cached.getTasks().isEmpty()) return cached;
         return analyze(userId, plannerId);
+    }
+
+    // ---------------- 구버전 캐시 문장 재생성 ----------------
+
+    /**
+     * 캐시의 narrativeVersion 이 현재와 다르면 summary / goalAlignment / task reason·whyImportant·learningSequence 를
+     * 현재 규칙({@link PlannerGoalNarrator})으로 다시 만든다. 구조(tasks/flow/prerequisites/시간)는 그대로, AI 재호출 없음.
+     * 재생성본은 캐시에 다시 저장한다(저장 실패는 조회를 막지 않는다).
+     */
+    AnalysisResponse renarrateIfOutdated(Planner planner, AnalysisResponse cached) {
+        if (cached == null || Objects.equals(cached.getNarrativeVersion(), NARRATIVE_VERSION)) return cached;
+        Request req;
+        try { req = context.build(planner); }
+        catch (Exception e) {
+            // 빈 플래너 등으로 구조화가 안 되면 캐시가 가진 정보만으로 최소 요청을 만든다.
+            req = new Request();
+            req.setPlannerId(planner.getId()); req.setTitle(planner.getTitle()); req.setSubject(planner.getSubject());
+            req.setTopic(LearningConceptValidator.topicOf(planner.getTitle()));
+            req.setLearningGoal(cached.getLearningGoal());
+        }
+        List<Task> tasks = cached.getTasks() == null ? List.of() : cached.getTasks();
+        int total = cached.getTotalRecommendedMinutes() != null ? cached.getTotalRecommendedMinutes()
+                : tasks.stream().mapToInt(t -> t.getRecommendedMinutes() == null ? 0 : t.getRecommendedMinutes()).sum();
+
+        String goal = cached.getLearningGoal() != null ? cached.getLearningGoal() : req.getLearningGoal();
+        cached.setLearningGoal(blankToNull(PlannerGoalNarrator.clean(goal)));
+        String summary = narrate(req, cached.getSummary());
+        cached.setSummary(summary != null ? summary : PlannerGoalNarrator.planSummary(req, tasks, total));
+
+        PlanGoalAlignment g = cached.getGoalAlignment() == null ? new PlanGoalAlignment() : cached.getGoalAlignment();
+        Level level = g.getLevel() == null ? Level.MEDIUM : g.getLevel();
+        g.setLevel(level);
+        String gs = narrate(req, g.getSummary());
+        g.setSummary(gs != null ? gs : PlannerGoalNarrator.alignmentSummary(req, tasks, level));
+        String gr = narrate(req, g.getReason());
+        g.setReason(gr != null ? gr
+                : "구성된 활동이 오늘의 학습 목표를 향해 순차적으로 배치되어 있어 전반적인 정합성은 양호합니다.");
+        List<String> issues = new ArrayList<>();
+        for (String i : g.getIssues() == null ? List.<String>of() : g.getIssues()) {
+            String c = narrate(req, i);
+            if (c != null) issues.add(c);
+        }
+        g.setIssues(issues);
+        cached.setGoalAlignment(g);
+
+        for (Task t : tasks) {
+            TaskType type = t.getType() == null ? TaskType.CONCEPT : t.getType();
+            GoalAlignment ga = t.getGoalAlignment() == null ? new GoalAlignment() : t.getGoalAlignment();
+            Level lv = ga.getLevel() == null ? defaultLevel(type) : ga.getLevel();
+            ga.setLevel(lv);
+            String reason = narrate(req, ga.getReason());
+            ga.setReason(reason != null ? reason : PlannerGoalNarrator.taskAlignmentReason(req, type, lv));
+            t.setGoalAlignment(ga);
+            String why = narrate(req, t.getWhyImportant());
+            t.setWhyImportant(why != null ? why : whyImportant(type, t.getTitle()));
+            List<String> seq = new ArrayList<>();
+            for (String step : t.getLearningSequence() == null ? List.<String>of() : t.getLearningSequence()) {
+                String c = prose(req, PlannerGoalNarrator.clean(step));
+                if (c != null && !c.isBlank()) seq.add(c);
+            }
+            t.setLearningSequence(seq);
+        }
+        cached.setNarrativeVersion(NARRATIVE_VERSION);
+
+        try { planner.setPlanAnalysisJson(json.writeValueAsString(cached)); planners.save(planner); }
+        catch (Exception e) { log.warn("[planner:semantic] 구버전 캐시 문장 재생성 저장 실패 plannerId={}: {}", planner.getId(), e.getMessage()); }
+        log.info("[planner:semantic] 구버전 캐시 문장 재생성 plannerId={} tasks={}", planner.getId(), tasks.size());
+        return cached;
     }
 
     // ---------------- AI07 호출 ----------------

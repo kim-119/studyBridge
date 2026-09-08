@@ -89,5 +89,6 @@ public class PlannerSemanticDTO {
         private boolean empty;                    // no analysis yet
         private String errorCode;                 // null when OK
         private String aiSource;                  // AI07 | FALLBACK
+        private Integer narrativeVersion;         // 사용자 노출 문장 규칙 버전(구버전 캐시는 조회 시 문장만 재생성)
     }
 }

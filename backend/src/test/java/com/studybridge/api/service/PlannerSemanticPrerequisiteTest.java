@@ -119,6 +119,44 @@ class PlannerSemanticPrerequisiteTest {
         assertTrue(req.getReviewQuestions().get(0).startsWith("고급 회귀 기법의"));
     }
 
+    @Test void outdatedCachedAnalysisIsRenarratedOnReadWithoutAiCall() throws Exception {
+        Planner p = planner();
+        PlannerAnalysisContext ctx = context(p);
+        PlannerSemanticAnalyzer analyzer = analyzerWithAiDown(ctx);
+        AnalysisResponse fresh = analyzer.analyze(1L, 10L);
+
+        // 운영 DB 에 남아 있는 구버전 캐시 재현: 목표 원문 결합 + 40자 말줄임 절단 문장, narrativeVersion 없음
+        String goal = "선형회귀의 고급 회귀 기법을(를) 코드 흐름 추적 중심으로 학습한다. (주차 흐름: 복습과 시험 대비)";
+        fresh.setNarrativeVersion(null);
+        fresh.setLearningGoal(goal);
+        fresh.setSummary("‘[로드맵 2주차 2일] 고급 회귀 기법’ 학습은 3개의 활동으로 구성되어 있으며, 총 115분을 목표로 "
+                + goal.substring(0, 40) + "…에 초점을 둡니다.");
+        fresh.getGoalAlignment().setSummary("현재 학습 활동 대부분이 " + goal.substring(0, 40) + "… 이해와 연결되어 있습니다.");
+        for (Task t : fresh.getTasks()) t.getGoalAlignment().setReason("현재 목표(" + goal.substring(0, 40) + "…)와 직접적으로 연결되는 활동입니다.");
+        p.setPlanAnalysisJson(json.writeValueAsString(fresh));
+
+        AnalysisResponse got = analyzer.get(1L, 10L);   // AI 호출 없음(analyzerWithAiDown 은 post() 시 예외)
+        assertFalse(got.isEmpty());
+        assertEquals(PlannerSemanticAnalyzer.NARRATIVE_VERSION, got.getNarrativeVersion());
+        assertEquals("FALLBACK", got.getAiSource());
+        // 구조는 그대로
+        assertEquals(3, got.getTasks().size());
+        assertEquals(115, got.getTotalRecommendedMinutes());
+        assertEquals(fresh.getPrerequisites().stream().map(Prerequisite::getName).toList(), got.getPrerequisites().stream().map(Prerequisite::getName).toList());
+        // 문장은 현재 규칙으로 재생성
+        List<String> prose = new ArrayList<>(List.of(got.getSummary(), got.getGoalAlignment().getSummary(), got.getLearningGoal()));
+        for (Task t : got.getTasks()) { prose.add(t.getGoalAlignment().getReason()); prose.add(t.getWhyImportant()); }
+        for (String s : prose) {
+            assertFalse(s.contains("(를)") || s.contains("(을)") || s.contains("주차 흐름") || s.contains("…") || s.contains("학습한다. ("), s);
+        }
+        assertTrue(got.getSummary().endsWith("다.") && got.getSummary().contains("115분"), got.getSummary());
+        assertEquals("현재 학습 활동은 고급 회귀 기법의 개념 이해, 코드 흐름 추적, 실습을 중심으로 구성되어 있어 학습 목표와 대체로 잘 연결되어 있습니다.",
+                got.getGoalAlignment().getSummary());
+        // 재생성본이 캐시에 다시 저장되어 다음 조회는 재생성 없이 그대로 나온다
+        assertTrue(p.getPlanAnalysisJson().contains("\"narrativeVersion\":" + PlannerSemanticAnalyzer.NARRATIVE_VERSION), p.getPlanAnalysisJson());
+        assertEquals(got.getSummary(), analyzer.get(1L, 10L).getSummary());
+    }
+
     @Test void fallbackAnalysisKeepsPrerequisitesTasksFlowIndependentAndSumsToGoalTime() {
         Planner p = planner();
         PlannerAnalysisContext ctx = context(p);
