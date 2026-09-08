@@ -69,7 +69,8 @@ public final class LearningConceptValidator {
     private static final Pattern NON_WORD = Pattern.compile("[^\\p{L}\\p{N}]+");
     private static final Pattern ROADMAP_PREFIX = Pattern.compile("^\\s*\\[로드맵\\s+\\d+주차\\s+\\d+일\\]\\s*");
     private static final Pattern DAY_PREFIX = Pattern.compile("^\\s*\\d+\\s*일차\\s*[:\\-–~]?\\s*");
-    private static final Pattern BULLET = Pattern.compile("\\s*[•·▪‣∙]\\s*");
+    // 불릿 마커: 공백으로 둘러싸인(또는 줄 앞) 기호만. "입력·처리·출력" 처럼 단어 사이 가운뎃점은 보존한다.
+    private static final Pattern BULLET = Pattern.compile("(?:^|\\s)[•·▪‣∙]+(?=\\s|$)|[•▪‣∙]");
     private static final Pattern MULTISPACE = Pattern.compile("[\\t ]{2,}");
 
     /** 허용(concept)·거부(fragment) 목록. 순서는 입력 순서를 유지하고 중복은 제거한다. */

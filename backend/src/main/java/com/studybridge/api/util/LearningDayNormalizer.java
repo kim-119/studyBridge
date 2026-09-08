@@ -121,10 +121,38 @@ public final class LearningDayNormalizer {
                 List.copyOf(fragments), List.copyOf(unrelated));
     }
 
-    /** 문장 재구성 한 단위: 조각/무관 개념 → 치환어, 불릿·메타 괄호 제거, 조사 확정, 공백 정리. */
+    /** 문장 재구성 한 단위: 조각/무관 개념 → 치환어, 빈 개념 슬롯 채움, 불릿·메타 괄호 제거, 조사 확정, 공백 정리. */
     public static String rewrite(String text, Collection<String> replacements, String replacement) {
         if (text == null) return "";
-        return KoreanTextNormalizer.clean(LearningConceptValidator.scrub(text, replacements, replacement));
+        String s = LearningConceptValidator.scrub(text, replacements, replacement);
+        s = fillEmptyConceptSlots(s, replacement);
+        return KoreanTextNormalizer.clean(s);
+    }
+
+    // 개념 슬롯이 빈 문자열로 채워진 템플릿 흔적: "구조 비교: 을(를) 대체…", "MVVM 1의를 …", "MVVM 1에서를 …", "의 핵심을 …"
+    private static final Pattern ORPHAN_JOSA_PAIR = Pattern.compile(
+            "(?<=^|[:\\s(（])(?=(?:을\\(를\\)|를\\(을\\)|이\\(가\\)|가\\(이\\)|은\\(는\\)|는\\(은\\)|과\\(와\\)|와\\(과\\)|으로\\(로\\)|로\\(으로\\))(?:\\s|$))");
+    private static final Pattern PARTICLE_THEN_BARE_JOSA = Pattern.compile(
+            "(?<=[가-힣\\p{Alnum})])(?<lead>의|에서|에게|으로|로)(?<josa>을|를|이|가|은|는)(?=\\s|$)");
+    private static final Pattern ORPHAN_POSSESSIVE = Pattern.compile("(?<=^|[:\\s(（])의(?=\\s)");
+
+    /** 빈 개념 슬롯을 치환어로 채운다(조사는 보정 표기로 바꿔 두고 이후 clean 이 받침으로 확정). */
+    static String fillEmptyConceptSlots(String s, String replacement) {
+        if (s == null || replacement == null || replacement.isBlank()) return s == null ? "" : s;
+        String r = replacement.trim();
+        String out = ORPHAN_JOSA_PAIR.matcher(s).replaceAll(Matcher.quoteReplacement(r));
+        Matcher m = PARTICLE_THEN_BARE_JOSA.matcher(out);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String pair = switch (m.group("josa")) {
+                case "을", "를" -> "을(를)"; case "이", "가" -> "이(가)"; default -> "은(는)";
+            };
+            m.appendReplacement(sb, Matcher.quoteReplacement(m.group("lead") + " " + r + pair));
+        }
+        m.appendTail(sb);
+        out = sb.toString();
+        out = ORPHAN_POSSESSIVE.matcher(out).replaceAll(Matcher.quoteReplacement(r + "의"));
+        return out;
     }
 
     /** objective 대상구("X의 Y을 Z 중심으로 학습한다")에서 개념 형태의 항목만 추출. 템플릿이 아니면 빈 목록. */
@@ -135,7 +163,7 @@ public final class LearningDayNormalizer {
         Matcher m = GOAL_TEMPLATE.matcher(s);
         if (!m.matches()) return out;
         for (String part : POSSESSIVE_SPLIT.split(m.group("object").trim())) {
-            String p = part.trim();
+            String p = part.trim().replaceAll("(?<=[가-힣\\p{Alnum})])의$", "").trim();
             if (!p.isEmpty() && LearningConceptValidator.isConceptLike(p)) addUnique(out, p);
         }
         return out;

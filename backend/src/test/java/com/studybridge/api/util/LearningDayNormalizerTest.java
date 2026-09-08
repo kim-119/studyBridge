@@ -117,6 +117,30 @@ class LearningDayNormalizerTest {
         assertEquals("선형회귀 핵심 개념 요약 노트", c.deliverable());
     }
 
+    @Test void emptyConceptSlotsAreFilledWithDayTopic() {
+        // 실제 사례: 로드맵 JSON 의 개념 슬롯이 빈 문자열 → "구조 비교: 을(를) …", "MVVM 1의를", "의 핵심을"
+        DayInput in = new DayInput("[로드맵 12주차 6일] 최종 점검", "MVVM 1",
+                "MVVM 1의 을(를) 실제 프로젝트 적용 중심으로 학습한다. (주차 흐름: 최종 정리 및 회고)",
+                List.of("구조 비교: 을(를) 대체 가능한 방식과 비교해 장단점과 선택 기준을 표로 정리한다",
+                        "동작 원리 분석: 이(가) 내부적으로 어떻게 동작하는지 입력·처리·출력 흐름으로 분석해 정리한다"),
+                List.of("", "권한 요청"),
+                List.of("MVVM 1에서 을(를) 사용하는 이유는 무엇인가?"),
+                "의 핵심을 본인 말로 설명할 수 있다", " 정리 노트 또는 권한 요청 비교 표");
+        DayContent c = LearningDayNormalizer.normalize(in);
+        assertEquals("MVVM 1의 최종 점검을 실제 프로젝트 적용 중심으로 학습한다. 이번 주는 최종 정리 및 회고 단계이다.", c.objective());
+        assertEquals("구조 비교: 최종 점검을 대체 가능한 방식과 비교해 장단점과 선택 기준을 표로 정리한다.", c.tasks().get(0));
+        assertEquals("동작 원리 분석: 최종 점검이 내부적으로 어떻게 동작하는지 입력·처리·출력 흐름으로 분석해 정리한다.", c.tasks().get(1));
+        assertEquals("MVVM 1에서 최종 점검을 사용하는 이유는 무엇인가?", c.reviewQuestions().get(0));
+        assertEquals("최종 점검의 핵심을 본인 말로 설명할 수 있다.", c.checkpoint());
+        assertEquals(List.of("최종 점검", "MVVM 1", "권한 요청"), c.concepts());
+        for (String s : allUserFacing(c)) assertNoTemplateArtifacts(s);
+        // 저장본 형태("MVVM 1의를", "MVVM 1에서를")도 같은 규칙으로 복구된다
+        assertEquals("MVVM 1의 최종 점검을 실제 프로젝트 적용 중심으로 학습한다.",
+                LearningDayNormalizer.rewrite("MVVM 1의를 실제 프로젝트 적용 중심으로 학습한다.", List.of(), "최종 점검"));
+        assertEquals("MVVM 1에서 최종 점검을 사용하는 이유는 무엇인가?",
+                LearningDayNormalizer.rewrite("MVVM 1에서를 사용하는 이유는 무엇인가?", List.of(), "최종 점검"));
+    }
+
     @Test void reviewDayWithOnlyFragmentsFallsBackToTopicAndSubject() {
         // 12주차 복습 day: core_concepts 가 전부 설명문 조각인 실제 사례
         DayInput in = new DayInput("[로드맵 12주차 7일] 시험 전 최종 점검", "선형회귀",
