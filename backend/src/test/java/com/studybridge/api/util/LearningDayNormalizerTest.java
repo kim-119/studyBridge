@@ -134,6 +134,19 @@ class LearningDayNormalizerTest {
         assertEquals("최종 점검의 핵심을 본인 말로 설명할 수 있다.", c.checkpoint());
         assertEquals(List.of("최종 점검", "MVVM 1", "권한 요청"), c.concepts());
         for (String s : allUserFacing(c)) assertNoTemplateArtifacts(s);
+        // 저장본 개념 목록에 "MVVM 1의" 처럼 조사가 붙은 채 남은 항목도 개념명으로 정리된다
+        DayContent stored = LearningDayNormalizer.normalize(new DayInput("[로드맵 12주차 6일] 최종 점검", "MVVM 1",
+                "MVVM 1의 최종 점검을 실제 프로젝트 적용 중심으로 학습한다.", List.of(), List.of("최종 점검", "MVVM 1의"), List.of(), "", ""));
+        assertEquals(List.of("최종 점검", "MVVM 1"), stored.concepts());
+        // "정의/논의" 처럼 '의'로 끝나는 단어는 잘리지 않는다
+        assertEquals("회귀 문제 정의", LearningDayNormalizer.stripTrailingPossessive("회귀 문제 정의"));
+        assertEquals("ViewModel", LearningDayNormalizer.stripTrailingPossessive("ViewModel의"));
+        DayContent def = LearningDayNormalizer.normalize(new DayInput("[로드맵 5주차 1일] 회귀 문제 정의", "머신러닝",
+                "머신러닝의 회귀 문제 정의를 개념 정의 이해 중심으로 학습한다.", List.of("회귀 문제 정의 핵심 개념 정리: 정의를 노트에 정리한다"),
+                List.of("회귀 문제 정의", "ViewModel의 정의"), List.of("회귀 문제 정의가 해결하는 문제는 무엇인가?"), "", ""));
+        assertEquals(List.of("회귀 문제 정의", "머신러닝", "ViewModel의 정의"), def.concepts());
+        assertEquals("회귀 문제 정의가 해결하는 문제는 무엇인가?", def.reviewQuestions().get(0));
+        assertEquals("머신러닝의 회귀 문제 정의를 개념 정의 이해 중심으로 학습한다.", def.objective());
         // 저장본 형태("MVVM 1의를", "MVVM 1에서를")도 같은 규칙으로 복구된다
         assertEquals("MVVM 1의 최종 점검을 실제 프로젝트 적용 중심으로 학습한다.",
                 LearningDayNormalizer.rewrite("MVVM 1의를 실제 프로젝트 적용 중심으로 학습한다.", List.of(), "최종 점검"));

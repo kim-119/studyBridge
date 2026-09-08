@@ -52,8 +52,10 @@ public final class LearningDayNormalizer {
         if (topic.isBlank()) topic = DEFAULT_TOPIC;
         String subject = subjectOf(in.subject());
 
-        // 1) 개념 형태 검증
-        LearningConceptValidator.Split split = LearningConceptValidator.split(safe(in.coreConcepts()));
+        // 1) 개념 형태 검증(빈 슬롯 흔적으로 남은 끝 조사 "MVVM 1의" 는 뗀다)
+        List<String> candidates = new ArrayList<>();
+        for (String c : safe(in.coreConcepts())) candidates.add(stripTrailingPossessive(c));
+        LearningConceptValidator.Split split = LearningConceptValidator.split(candidates);
         List<String> fragments = new ArrayList<>(split.rejected());
 
         // 주제어의 개념형("선형회귀란?" → "선형회귀"). 치환어는 개념형 주제어 → 과목명 → 주제어 순.
@@ -163,7 +165,7 @@ public final class LearningDayNormalizer {
         Matcher m = GOAL_TEMPLATE.matcher(s);
         if (!m.matches()) return out;
         for (String part : POSSESSIVE_SPLIT.split(m.group("object").trim())) {
-            String p = part.trim().replaceAll("(?<=[가-힣\\p{Alnum})])의$", "").trim();
+            String p = stripTrailingPossessive(part);
             if (!p.isEmpty() && LearningConceptValidator.isConceptLike(p)) addUnique(out, p);
         }
         return out;
@@ -184,6 +186,15 @@ public final class LearningDayNormalizer {
             }
         }
         return related;
+    }
+
+    /**
+     * "MVVM 1의", "API의" 처럼 한글이 아닌 글자 뒤에 붙은 채 남은 관형격 조사를 뗀다(빈 개념 슬롯 템플릿 흔적).
+     * 한글 뒤의 "의"("정의", "논의", "회귀 문제 정의")는 단어의 일부일 수 있어 건드리지 않는다.
+     */
+    static String stripTrailingPossessive(String s) {
+        if (s == null) return "";
+        return s.trim().replaceAll("(?<=[\\p{Alnum})])(?<![가-힣])의$", "").trim();
     }
 
     /** 주제어의 개념형: 끝 문장 부호·"이란/란" 을 뗀 형태가 개념명이면 그것, 아니면 null. */
