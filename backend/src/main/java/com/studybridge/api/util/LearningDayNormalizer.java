@@ -134,8 +134,11 @@ public final class LearningDayNormalizer {
     // 개념 슬롯이 빈 문자열로 채워진 템플릿 흔적: "구조 비교: 을(를) 대체…", "MVVM 1의를 …", "MVVM 1에서를 …", "의 핵심을 …"
     private static final Pattern ORPHAN_JOSA_PAIR = Pattern.compile(
             "(?<=^|[:\\s(（])(?=(?:을\\(를\\)|를\\(을\\)|이\\(가\\)|가\\(이\\)|은\\(는\\)|는\\(은\\)|과\\(와\\)|와\\(과\\)|으로\\(로\\)|로\\(으로\\))(?:\\s|$))");
+    // "MVVM 1의를": 비한글 글자 뒤의 관형격 '의' + 조사(한글 뒤 '의'는 "정의가/논의를" 처럼 단어 일부일 수 있어 제외).
+    // "MVVM 1에서를": '에서/에게' 뒤에 목적격·주격이 바로 오는 경우("에서는" 은 정상 문장이므로 제외).
     private static final Pattern PARTICLE_THEN_BARE_JOSA = Pattern.compile(
-            "(?<=[가-힣\\p{Alnum})])(?<lead>의|에서|에게|으로|로)(?<josa>을|를|이|가|은|는)(?=\\s|$)");
+            "(?:(?<=[\\p{Alnum})])(?<![가-힣])(?<lead>의)(?<josa>을|를|이|가|은|는)"
+            + "|(?<=[가-힣\\p{Alnum})])(?<lead2>에서|에게)(?<josa2>을|를|이|가))(?=\\s|$)");
     private static final Pattern ORPHAN_POSSESSIVE = Pattern.compile("(?<=^|[:\\s(（])의(?=\\s)");
 
     /** 빈 개념 슬롯을 치환어로 채운다(조사는 보정 표기로 바꿔 두고 이후 clean 이 받침으로 확정). */
@@ -146,10 +149,12 @@ public final class LearningDayNormalizer {
         Matcher m = PARTICLE_THEN_BARE_JOSA.matcher(out);
         StringBuilder sb = new StringBuilder();
         while (m.find()) {
-            String pair = switch (m.group("josa")) {
+            String lead = m.group("lead") != null ? m.group("lead") : m.group("lead2");
+            String josa = m.group("josa") != null ? m.group("josa") : m.group("josa2");
+            String pair = switch (josa) {
                 case "을", "를" -> "을(를)"; case "이", "가" -> "이(가)"; default -> "은(는)";
             };
-            m.appendReplacement(sb, Matcher.quoteReplacement(m.group("lead") + " " + r + pair));
+            m.appendReplacement(sb, Matcher.quoteReplacement(lead + " " + r + pair));
         }
         m.appendTail(sb);
         out = sb.toString();
