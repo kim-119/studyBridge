@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
@@ -33,6 +33,7 @@ class PlannerArchiveTest {
     private PlannerRepository plannerRepository;
     private MaterialRepository materialRepository;
     private FolderRepository folderRepository;
+    private S3Service s3Service;
     private PlannerService service;
 
     @BeforeEach
@@ -40,7 +41,8 @@ class PlannerArchiveTest {
         plannerRepository = mock(PlannerRepository.class);
         materialRepository = mock(MaterialRepository.class);
         folderRepository = mock(FolderRepository.class);
-        service = new PlannerService(plannerRepository, materialRepository, mock(S3Service.class), new ObjectMapper(), folderRepository);
+        s3Service = mock(S3Service.class);
+        service = new PlannerService(plannerRepository, materialRepository, s3Service, new ObjectMapper(), folderRepository);
         when(plannerRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(materialRepository.save(any())).thenAnswer(inv -> {
             Material m = inv.getArgument(0);
@@ -112,5 +114,58 @@ class PlannerArchiveTest {
         verify(materialRepository).save(archive);
         assertEquals(13L, archive.getFolderId());
         assertEquals(2383L, archive.getPlannerId());
+    }
+
+    @Test
+    void archive_generatesPreviewPdfForTheArchiveItem() {
+        Planner planner = roadmapPlanner(2383L, null);
+        planner.setYear(2026); planner.setMonth(11); planner.setDay(26);
+        planner.setContent("[오늘 목표] 선형회귀의 모의 시험을 응용 문제 풀이 중심으로 학습한다.\n\n[할 일]\n1. 모의 시험 오류 원인 추론: 원인을 적는다.");
+        when(plannerRepository.findById(2383L)).thenReturn(Optional.of(planner));
+        when(materialRepository.findByPlannerIdAndMaterialType(2383L, MaterialType.PLANNER)).thenReturn(List.of());
+
+        service.archivePlanner(USER_ID, 2383L);
+
+        ArgumentCaptor<byte[]> pdf = ArgumentCaptor.forClass(byte[].class);
+        verify(s3Service).uploadBytes(pdf.capture(), eq("planners/downloads/user_8/2383.pdf"), eq("application/pdf"));
+        assertTrue(pdf.getValue().length > 800);
+        assertEquals("planners/downloads/user_8/2383.pdf", planner.getS3Key());
+    }
+
+    @Test
+    void ensurePreviewPdf_buildsFromSnapshotWhenPlannerIsGone() {
+        Material detached = Material.builder().materialId(700L).userId(USER_ID).materialType(MaterialType.PLANNER)
+                .title("[로드맵 11주차 7일] 질의응답 및 토론").plannerId(null)
+                .contentJson("{\"plannerId\":1,\"title\":\"[로드맵 11주차 7일] 질의응답 및 토론\",\"subject\":\"선형회귀\",\"term\":\"11주차\","
+                        + "\"plannerDate\":\"2026-11-23\",\"goalTime\":\"120분\",\"content\":\"[오늘 목표] 질의응답 및 토론을 정리한다.\\n\\n[할 일]\\n1. 질문 목록 정리\","
+                        + "\"tmi\":\"핵심 개념: 질의응답, 선형회귀\"}")
+                .build();
+
+        service.ensurePreviewPdf(detached);
+
+        verify(s3Service).uploadBytes(any(byte[].class), eq("planners/downloads/user_8/material_700.pdf"), eq("application/pdf"));
+        assertEquals("planners/downloads/user_8/material_700.pdf", detached.getStoredFileName());
+        assertEquals("planners/downloads/user_8/material_700.pdf", detached.getS3FileUrl());
+        assertEquals("[로드맵 11주차 7일] 질의응답 및 토론.pdf", detached.getOriginalFileName());
+        verify(materialRepository).save(detached);
+        // 두 번째 호출은 아무것도 하지 않는다
+        service.ensurePreviewPdf(detached);
+        verify(s3Service, times(1)).uploadBytes(any(byte[].class), anyString(), anyString());
+    }
+
+    @Test
+    void ensurePreviewPdf_usesLinkedPlannerAndSkipsWhenPdfExists() {
+        Planner planner = roadmapPlanner(2383L, 700L);
+        planner.setS3Key("planners/downloads/user_8/2383.pdf");
+        Material archive = Material.builder().materialId(700L).userId(USER_ID).materialType(MaterialType.PLANNER).plannerId(2383L).build();
+        when(plannerRepository.findById(2383L)).thenReturn(Optional.of(planner));
+
+        service.ensurePreviewPdf(archive);
+        verify(s3Service, never()).uploadBytes(any(byte[].class), anyString(), anyString());
+
+        planner.setS3Key(null);
+        service.ensurePreviewPdf(archive);
+        verify(s3Service).uploadBytes(any(byte[].class), eq("planners/downloads/user_8/2383.pdf"), eq("application/pdf"));
+        assertEquals("planners/downloads/user_8/2383.pdf", planner.getS3Key());
     }
 }

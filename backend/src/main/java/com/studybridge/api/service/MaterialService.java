@@ -36,6 +36,7 @@ public class MaterialService {
     private final FolderRepository folderRepository;
     private final PlannerRepository plannerRepository;
     private final StudyNoteAnalysisService studyNoteAnalysisService;
+    private final PlannerService plannerService;
 
     @Transactional
     public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords,
@@ -357,6 +358,7 @@ public class MaterialService {
     // 자료 상세 조회
     // context="review-note" 인 경우에만 오답노트(REVIEW_NOTE) 상세를 허용한다(전용 복습 화면 ReviewNoteArchiveDetail 진입).
     // 그 외(일반 자료보관함 상세) 경로로 오답노트 materialId가 들어오면 404 로 차단한다.
+    @Transactional
     public MaterialDTO getMaterial(Long userId, Long materialId, String context) {
         Material material = materialRepository.findById(materialId)
                 .orElseThrow(() -> new IllegalArgumentException("자료를 찾을 수 없습니다."));
@@ -367,6 +369,12 @@ public class MaterialService {
 
         if (material.getMaterialType() == MaterialType.REVIEW_NOTE && !"review-note".equals(context)) {
             throw new java.util.NoSuchElementException("오답노트 자료는 자료보관함 상세에서 열 수 없습니다.");
+        }
+
+        // 플래너 보관 항목: 미리보기 PDF 가 없으면 지금 만들어 둔다(레거시·원본 삭제 항목 포함). 실패해도 상세는 보여준다.
+        if (material.getMaterialType() == MaterialType.PLANNER) {
+            try { plannerService.ensurePreviewPdf(material); }
+            catch (Exception e) { log.warn("플래너 보관 항목 미리보기 PDF 생성 실패 materialId={}: {}", materialId, e.getMessage()); }
         }
 
         return convertToDTO(material);

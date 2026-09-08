@@ -1,5 +1,6 @@
 package com.studybridge.api.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.PlannerDTO;
 import com.studybridge.api.entity.DocumentDomain;
@@ -486,8 +487,86 @@ public class PlannerService {
         planner.setMaterialId(savedMaterial.getMaterialId());
         Planner saved = plannerRepository.save(planner);
 
-        log.info("플래너 구조화 보관 완료(PDF 미사용). plannerId={}, materialId={}", plannerId, savedMaterial.getMaterialId());
+        // 보관 항목 미리보기용 다운로드 PDF 를 항상 최신 상태로 만든다(편집 후 재저장 시 갱신). 실패해도 보관 자체는 유지.
+        try { regenerateDownloadPdf(saved); }
+        catch (Exception e) { log.warn("플래너 보관 PDF 생성 실패(보관은 완료) plannerId={}: {}", plannerId, e.getMessage()); }
+
+        log.info("플래너 구조화 보관 완료. plannerId={}, materialId={}, pdf={}", plannerId, savedMaterial.getMaterialId(), saved.getS3Key());
         return toResponse(saved, false);
+    }
+
+    // ---------- 보관 항목 미리보기 PDF ----------
+
+    /** 플래너 현재 상태로 다운로드/미리보기 PDF 를 생성해 S3 에 올리고 s3Key 를 저장한다. */
+    @Transactional
+    public String regenerateDownloadPdf(Planner planner) {
+        byte[] pdf = buildPdf(planner);
+        String key = "planners/downloads/user_" + planner.getUserId() + "/" + planner.getId() + ".pdf";
+        s3Service.uploadBytes(pdf, key, "application/pdf");
+        planner.setS3Key(key);
+        plannerRepository.save(planner);
+        return key;
+    }
+
+    /**
+     * 자료보관함 PLANNER 항목을 열 때 미리보기 PDF 가 없으면 만들어 둔다(레거시 보관 항목·원본 플래너가 삭제된 항목 포함).
+     *  - 원본 플래너가 있으면 그 플래너의 다운로드 PDF(planner.s3Key)를 생성한다.
+     *  - 원본이 없으면 스냅샷(contentJson)으로 임시 플래너를 만들어 PDF 를 생성하고 보관 항목 자체에 파일 키를 저장한다.
+     * 이미 PDF 가 있으면 아무것도 하지 않는다. 실패는 상세 조회를 막지 않는다(호출부에서 처리).
+     */
+    @Transactional
+    public void ensurePreviewPdf(Material material) {
+        if (material == null || material.getMaterialType() != MaterialType.PLANNER) return;
+        Planner planner = material.getPlannerId() != null ? plannerRepository.findById(material.getPlannerId()).orElse(null) : null;
+        if (planner != null) {
+            if (planner.getS3Key() == null || planner.getS3Key().isBlank()) {
+                regenerateDownloadPdf(planner);
+                log.info("플래너 보관 항목 미리보기 PDF 생성(원본 플래너) materialId={} plannerId={}", material.getMaterialId(), planner.getId());
+            }
+            return;
+        }
+        if (material.getStoredFileName() != null && !material.getStoredFileName().isBlank()) return;
+        Planner transientPlanner = plannerFromSnapshot(material);
+        if (transientPlanner == null) return;
+        byte[] pdf = buildPdf(transientPlanner);
+        String key = "planners/downloads/user_" + material.getUserId() + "/material_" + material.getMaterialId() + ".pdf";
+        s3Service.uploadBytes(pdf, key, "application/pdf");
+        material.setStoredFileName(key);
+        material.setS3FileUrl(key);
+        material.setOriginalFileName((material.getTitle() == null ? "planner" : material.getTitle()) + ".pdf");
+        materialRepository.save(material);
+        log.info("플래너 보관 항목 미리보기 PDF 생성(스냅샷) materialId={}", material.getMaterialId());
+    }
+
+    /** 보관 스냅샷(contentJson)으로 렌더링 전용 임시 Planner 를 만든다(저장하지 않는다). 스냅샷이 없으면 null. */
+    Planner plannerFromSnapshot(Material material) {
+        if (material.getContentJson() == null || material.getContentJson().isBlank()) return null;
+        try {
+            JsonNode n = objectMapper.readTree(material.getContentJson());
+            java.time.LocalDate date = null;
+            if (n.hasNonNull("plannerDate")) {
+                try { date = java.time.LocalDate.parse(n.get("plannerDate").asText()); } catch (Exception ignored) { /* 형식 불일치 시 날짜 생략 */ }
+            }
+            String title = n.hasNonNull("title") ? n.get("title").asText() : material.getTitle();
+            return Planner.builder()
+                    .id(material.getPlannerId()).userId(material.getUserId())
+                    .title(title != null && !title.isBlank() ? title : material.getTitle())
+                    .subject(text(n, "subject")).term(text(n, "term")).studyType(text(n, "studyType")).priority(text(n, "priority"))
+                    .dDay(text(n, "dDay")).goalTime(text(n, "goalTime")).netStudyTime(text(n, "netStudyTime"))
+                    .content(text(n, "content")).tmi(text(n, "tmi")).timeTableJson(text(n, "timeTableJson"))
+                    .plannerDate(date)
+                    .year(date != null ? date.getYear() : null).month(date != null ? date.getMonthValue() : null)
+                    .day(date != null ? date.getDayOfMonth() : null)
+                    .dayOfWeek(date != null ? date.getDayOfWeek().getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.KOREAN) : null)
+                    .build();
+        } catch (Exception e) {
+            log.warn("플래너 스냅샷 파싱 실패 materialId={}: {}", material.getMaterialId(), e.getMessage());
+            return null;
+        }
+    }
+
+    private static String text(JsonNode n, String key) {
+        return n.hasNonNull(key) && n.get(key).isValueNode() ? n.get(key).asText() : null;
     }
 
     /**
@@ -522,19 +601,12 @@ public class PlannerService {
      */
     @Transactional
     public PlannerDTO.Response generatePdfDownload(Long userId, Long plannerId) {
-        // 자료보관함에는 항상 구조화 PLANNER 로 보관(없으면 생성, 있으면 정정)
+        // 자료보관함에는 항상 구조화 PLANNER 로 보관(없으면 생성, 있으면 정정). 보관 과정에서 다운로드 PDF 도 생성된다.
         archivePlanner(userId, plannerId);
-
         Planner planner = getOwned(userId, plannerId);
-        byte[] pdf = buildPdf(planner);
-        String s3Key = "planners/downloads/user_" + userId + "/" + plannerId + ".pdf";
-        s3Service.uploadBytes(pdf, s3Key, "application/pdf");
-
-        planner.setS3Key(s3Key); // 다운로드 전용 PDF (자료보관함 Material 아님)
-        Planner saved = plannerRepository.save(planner);
-
-        log.info("플래너 다운로드 PDF 생성 완료. plannerId={}, s3Key={}", plannerId, s3Key);
-        return toResponse(saved, true);
+        if (planner.getS3Key() == null || planner.getS3Key().isBlank()) regenerateDownloadPdf(planner);
+        log.info("플래너 다운로드 PDF 준비 완료. plannerId={}, s3Key={}", plannerId, planner.getS3Key());
+        return toResponse(planner, true);
     }
 
     /** 플래너를 PDF 로 변환하지 않고 데이터 원형으로 보관하기 위한 스냅샷 JSON. */
