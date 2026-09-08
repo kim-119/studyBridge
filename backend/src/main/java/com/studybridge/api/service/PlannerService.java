@@ -2,11 +2,14 @@ package com.studybridge.api.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.PlannerDTO;
+import com.studybridge.api.entity.DocumentDomain;
 import com.studybridge.api.entity.ExtractionStatus;
+import com.studybridge.api.entity.Folder;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialType;
 import com.studybridge.api.entity.Planner;
 import com.studybridge.api.entity.PlannerType;
+import com.studybridge.api.repository.FolderRepository;
 import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.PlannerRepository;
 import com.studybridge.api.util.ConceptFallbackProvider;
@@ -32,6 +35,7 @@ public class PlannerService {
     private final MaterialRepository materialRepository;
     private final S3Service s3Service;
     private final ObjectMapper objectMapper;
+    private final FolderRepository folderRepository;
 
     // ---------- CRUD ----------
 
@@ -447,9 +451,7 @@ public class PlannerService {
         Planner planner = getOwned(userId, plannerId);
         String snapshot = buildSnapshotJson(planner);
 
-        Material material = planner.getMaterialId() != null
-                ? materialRepository.findById(planner.getMaterialId()).orElse(null)
-                : null;
+        Material material = findArchiveItem(userId, planner);
 
         if (material == null) {
             material = Material.builder()
@@ -462,7 +464,7 @@ public class PlannerService {
                     .uploadedAt(LocalDateTime.now())
                     .build();
         } else {
-            // 재보관(편집 후 재저장) 시에도 타입을 PLANNER 로 고정하고, 과거 PDF 잔재 파일 메타를 모두 제거한다.
+            // 재보관(편집 후 재저장): 같은 보관 항목을 갱신한다. 타입은 PLANNER 로 고정.
             material.setTitle(planner.getTitle());
             material.setMaterialType(MaterialType.PLANNER);
             material.setPlannerId(planner.getId());
@@ -473,6 +475,12 @@ public class PlannerService {
             material.setS3FileUrl(null);
             material.setFileSize(null);
         }
+        // 보관 항목은 플래너 탭에서 보여야 한다: 플래너 도메인이 아닌 폴더(학습자료 폴더 등)에 놓이면 어느 탭에도
+        // 나타나지 않으므로 그런 경우 루트로 옮긴다.
+        if (material.getFolderId() != null && !isPlannerDomainFolder(material.getFolderId())) {
+            log.info("플래너 보관 항목 folderId={} 는 플래너 도메인이 아니라 루트로 이동. plannerId={}", material.getFolderId(), plannerId);
+            material.setFolderId(null);
+        }
         Material savedMaterial = materialRepository.save(material);
 
         planner.setMaterialId(savedMaterial.getMaterialId());
@@ -480,6 +488,32 @@ public class PlannerService {
 
         log.info("플래너 구조화 보관 완료(PDF 미사용). plannerId={}, materialId={}", plannerId, savedMaterial.getMaterialId());
         return toResponse(saved, false);
+    }
+
+    /**
+     * 이 플래너의 기존 보관 항목(materialType=PLANNER)만 찾는다. 없으면 null → 새로 만든다.
+     * <p>주의: planner.materialId 는 로드맵 플래너에서 <b>출처 PDF 자료</b>를 가리킨다(createFromRoadmap). 과거에는 이 id 를
+     * 그대로 보관 항목으로 재사용해 원본 PDF 자료가 PLANNER 로 덮어써지고(제목·파일 메타 소실), 학습자료 폴더 안에 남아
+     * 어느 탭에도 보이지 않았다. 따라서 PLANNER 타입이면서 이 플래너에 연결된(또는 연결이 비어 있는) 항목만 재사용한다.
+     */
+    private Material findArchiveItem(Long userId, Planner planner) {
+        for (Material m : materialRepository.findByPlannerIdAndMaterialType(planner.getId(), MaterialType.PLANNER)) {
+            if (userId.equals(m.getUserId())) return m;
+        }
+        if (planner.getMaterialId() != null) {
+            Material linked = materialRepository.findById(planner.getMaterialId()).orElse(null);
+            if (linked != null && userId.equals(linked.getUserId())
+                    && linked.getMaterialType() == MaterialType.PLANNER
+                    && (linked.getPlannerId() == null || linked.getPlannerId().equals(planner.getId()))) {
+                return linked;
+            }
+        }
+        return null;
+    }
+
+    private boolean isPlannerDomainFolder(Long folderId) {
+        Folder f = folderRepository.findById(folderId).orElse(null);
+        return f != null && DocumentDomain.PLANNER.equals(DocumentDomain.normalize(f.getDomain()));
     }
 
     /**

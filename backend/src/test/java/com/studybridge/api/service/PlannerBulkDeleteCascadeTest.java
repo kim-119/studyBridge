@@ -6,6 +6,7 @@ import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialType;
 import com.studybridge.api.entity.Planner;
 import com.studybridge.api.entity.PlannerType;
+import com.studybridge.api.repository.FolderRepository;
 import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.PlannerRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,7 +43,7 @@ class PlannerBulkDeleteCascadeTest {
         plannerRepository = mock(PlannerRepository.class);
         materialRepository = mock(MaterialRepository.class);
         s3Service = mock(S3Service.class);
-        service = new PlannerService(plannerRepository, materialRepository, s3Service, new ObjectMapper());
+        service = new PlannerService(plannerRepository, materialRepository, s3Service, new ObjectMapper(), mock(FolderRepository.class));
     }
 
     private Planner roadmapPlanner(long id, Long materialId) {

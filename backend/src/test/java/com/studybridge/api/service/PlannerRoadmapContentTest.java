@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.PlannerDTO;
 import com.studybridge.api.entity.Planner;
 import com.studybridge.api.entity.PlannerType;
+import com.studybridge.api.repository.FolderRepository;
 import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.PlannerRepository;
 import com.studybridge.api.util.LearningConceptValidator;
@@ -29,7 +30,7 @@ class PlannerRoadmapContentTest {
     private static final String FRAG_CLS = "이산적인라벨값에따라데이터를분류하는것";
 
     private PlannerRepository planners = mock(PlannerRepository.class);
-    private final PlannerService service = new PlannerService(planners, mock(MaterialRepository.class), mock(S3Service.class), new ObjectMapper());
+    private final PlannerService service = new PlannerService(planners, mock(MaterialRepository.class), mock(S3Service.class), new ObjectMapper(), mock(FolderRepository.class));
 
     private static void assertClean(String s) {
         for (String bad : List.of("을(를)", "이(가)", "은(는)", "과(와)", "•", "(주차 흐름", "…"))
