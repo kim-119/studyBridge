@@ -153,6 +153,14 @@ class PlannerSemanticPrerequisiteTest {
         // 목표 정합성/요약에도 예제 문장이 남지 않는다
         assertFalse(resp.getGoalAlignment().getSummary().contains("추정하는것"));
         assertFalse(resp.getSummary().contains("추정하는것"));
+        // 목표 원문("…학습한다. (주차 흐름: …)")을 결합하지 않은 완결 문장이어야 한다(조사 보정 표기·메타 괄호·말줄임 없음)
+        for (String s : List.of(resp.getGoalAlignment().getSummary(), resp.getSummary(), resp.getTasks().get(0).getGoalAlignment().getReason())) {
+            assertFalse(s.contains("(를)") || s.contains("(을)") || s.contains("주차 흐름") || s.contains("…") || s.contains("학습한다."), s);
+            assertTrue(s.endsWith("다."), s);
+        }
+        assertEquals("현재 학습 활동은 고급 회귀 기법의 개념 이해, 코드 흐름 추적, 실습을 중심으로 구성되어 있어 학습 목표와 대체로 잘 연결되어 있습니다.",
+                resp.getGoalAlignment().getSummary());
+        assertFalse(resp.getLearningGoal().contains("(를)") || resp.getLearningGoal().contains("주차 흐름"), resp.getLearningGoal());
         assertTrue(resp.getWarnings().stream().anyMatch(w -> w.contains("문장형 항목 3개")));
 
         // E. Material → Planner 연결(materialId/sourceMaterialId/sourceRoadmapId)은 분석이 건드리지 않는다

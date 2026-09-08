@@ -845,9 +845,10 @@ def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
         why = str(lt.get("whyImportant") or "").strip() or (
             f"{dt['title']}은(는) 이 학습 목표를 달성하기 위한 핵심 단계입니다."
         )
+        # 학습 목표 원문을 문장에 결합하지 않는다(템플릿 objective 는 문법이 깨진다). 완결 문장만 반환.
         ga_reason = str(lt.get("reason") or "").strip() or (
-            f"{dt['title']} 학습은 '{learning_goal or subject or title}'와 직접 연결됩니다."
-            if (learning_goal or subject or title) else f"{dt['title']}은(는) 전체 학습 목표를 뒷받침합니다."
+            f"{subject}에 대한 학습 목표와 직접 연결되는 활동입니다."
+            if subject else "오늘의 학습 목표와 직접 연결되는 활동입니다."
         )
         ga_level = _norm_level(lt.get("goalLevel"), default=det_goal_level)
         seq = _listify(lt.get("learningSequence"))
@@ -871,7 +872,7 @@ def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
             else "학습 목표가 명확하지 않아 세부 항목과의 정합성 판단이 제한적입니다."
         ),
         "summary": str(ga_in.get("summary") or "").strip() or (
-            f"'{learning_goal}'을(를) 향해 세부 학습이 배치되어 있습니다." if learning_goal
+            "세부 학습 활동이 학습 목표를 향해 단계적으로 배치되어 있어 전반적으로 잘 연결되어 있습니다." if learning_goal
             else "학습 목표를 먼저 구체화하면 세부 항목과의 정합성이 뚜렷해집니다."
         ),
         "issues": _listify(ga_in.get("issues")),
@@ -883,10 +884,8 @@ def _analyze_semantic_sync(body: Dict[str, Any]) -> Dict[str, Any]:
     # ── summary ──
     summary = str(parsed.get("summary") or "").strip()
     if not summary:
-        goal_txt = learning_goal or subject or title or "이 학습"
         summary = (
-            f"'{title or subject or goal_txt}' 계획은 총 {len(final_tasks)}개의 세부 학습으로 구성되어 있습니다. "
-            f"{('목표는 ' + learning_goal + '이며, ') if learning_goal else ''}"
+            f"'{title or subject or '이 학습'}' 계획은 총 {len(final_tasks)}개의 세부 학습으로 구성되어 있습니다. "
             f"개념 이해부터 실습·분석·복습까지 단계적으로 학습을 진행하도록 설계되었습니다."
         )
 

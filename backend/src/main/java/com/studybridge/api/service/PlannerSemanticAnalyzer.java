@@ -81,12 +81,12 @@ public class PlannerSemanticAnalyzer {
                 .title(req.getTitle())
                 .subject(blankToNull(req.getSubject()))
                 .sourceType(req.getSourceType())
-                .learningGoal(blankToNull(req.getLearningGoal()))
+                .learningGoal(blankToNull(PlannerGoalNarrator.clean(req.getLearningGoal())))
                 .targetMinutes(estimated ? total : target)
                 .targetMinutesEstimated(estimated)
                 .totalRecommendedMinutes(total)
-                .summary(summary(req, ai, total))
-                .goalAlignment(goalAlignment(req, ai))
+                .summary(summary(req, ai, tasks, total))
+                .goalAlignment(goalAlignment(req, ai, tasks))
                 .prerequisites(prerequisites(req, ai))
                 .tasks(tasks)
                 .flow(flow(tasks))
@@ -170,13 +170,12 @@ public class PlannerSemanticAnalyzer {
             t.setTitle(in.getTitle());
             t.setDescription(blankToNull(in.getDescription()));
             t.setType(type);
-            GoalAlignment ga = taskAlignment(a, in.getTitle(), type, req.getLearningGoal());
-            ga.setReason(prose(req, ga.getReason()));
-            t.setGoalAlignment(ga);
-            t.setWhyImportant(prose(req, text(a, "whyImportant", whyImportant(type, in.getTitle()))));
+            t.setGoalAlignment(taskAlignment(a, req, type));
+            String why = narrate(req, text(a, "whyImportant", null));
+            t.setWhyImportant(why != null ? why : whyImportant(type, in.getTitle()));
             t.setPrerequisites(taskPrereqs(a, req, type));
             List<String> seq = new ArrayList<>();
-            for (String step : sequence(a, type)) seq.add(prose(req, step));
+            for (String step : sequence(a, type)) seq.add(prose(req, PlannerGoalNarrator.clean(step)));
             t.setLearningSequence(seq);
             out.add(t);
         }
@@ -202,35 +201,42 @@ public class PlannerSemanticAnalyzer {
 
     // ---------------- 시맨틱 필드(AI 우선, 실데이터 기반 결정적 폴백) ----------------
 
-    private String summary(Request req, JsonNode ai, int total) {
-        String s = prose(req, text(ai, "summary", null));
-        if (s != null) return s;
-        int n = req.getDetailTasks() == null ? 0 : req.getDetailTasks().size();
-        String goal = shortGoal(req.getLearningGoal(), req.getTitle());
-        return String.format("‘%s’ 학습은 %d개의 활동으로 구성되어 있으며, 총 %d분을 목표로 %s에 초점을 둡니다.",
-                req.getTitle(), n, total, goal);
+    /** 계획 summary: AI 산문이 검사를 통과하면 사용, 아니면 실제 활동 구성으로 완결 문장을 생성한다. */
+    private String summary(Request req, JsonNode ai, List<Task> tasks, int total) {
+        String s = narrate(req, text(ai, "summary", null));
+        return s != null ? s : PlannerGoalNarrator.planSummary(req, tasks, total);
     }
 
-    private PlanGoalAlignment goalAlignment(Request req, JsonNode ai) {
+    /**
+     * 목표 정합성: summary/reason 은 학습 목표 원문을 결합하지 않고, 목표의 학습 방식·활동 유형·정합성 수준으로
+     * 완결된 한국어 문장을 만든다({@link PlannerGoalNarrator}). AI 산문도 같은 검사를 통과해야만 그대로 쓴다.
+     */
+    private PlanGoalAlignment goalAlignment(Request req, JsonNode ai, List<Task> tasks) {
         PlanGoalAlignment g = new PlanGoalAlignment();
         JsonNode a = ai == null ? null : ai.get("goalAlignment");
-        g.setLevel(a != null && a.hasNonNull("level") ? parseLevel(a.get("level").asText()) : Level.MEDIUM);
-        String goal = shortGoal(req.getLearningGoal(), req.getTitle());
-        g.setSummary(prose(req, text(a, "summary", "현재 학습 활동 대부분이 " + goal + " 이해와 연결되어 있습니다.")));
-        g.setReason(prose(req, text(a, "reason",
-                "구성된 활동이 오늘의 학습 목표를 향해 순차적으로 배치되어 있어 전반적인 정합성은 양호합니다.")));
+        Level level = a != null && a.hasNonNull("level") ? parseLevel(a.get("level").asText()) : Level.MEDIUM;
+        g.setLevel(level);
+        String summary = narrate(req, text(a, "summary", null));
+        g.setSummary(summary != null ? summary : PlannerGoalNarrator.alignmentSummary(req, tasks, level));
+        String reason = narrate(req, text(a, "reason", null));
+        g.setReason(reason != null ? reason
+                : "구성된 활동이 오늘의 학습 목표를 향해 순차적으로 배치되어 있어 전반적인 정합성은 양호합니다.");
         List<String> issues = new ArrayList<>();
-        for (String i : strings(a == null ? null : a.get("issues"))) issues.add(prose(req, i));
+        for (String i : strings(a == null ? null : a.get("issues"))) {
+            String c = narrate(req, i);
+            if (c != null) issues.add(c);
+        }
         g.setIssues(issues);
         return g;
     }
 
-    private GoalAlignment taskAlignment(JsonNode a, String title, TaskType type, String goal) {
+    private GoalAlignment taskAlignment(JsonNode a, Request req, TaskType type) {
         GoalAlignment g = new GoalAlignment();
         JsonNode ga = a == null ? null : a.get("goalAlignment");
-        g.setLevel(ga != null && ga.hasNonNull("level") ? parseLevel(ga.get("level").asText()) : defaultLevel(type));
-        g.setReason(text(ga, "reason",
-                "현재 목표(" + shortGoal(goal, title) + ")와 직접적으로 연결되는 활동입니다."));
+        Level level = ga != null && ga.hasNonNull("level") ? parseLevel(ga.get("level").asText()) : defaultLevel(type);
+        g.setLevel(level);
+        String reason = narrate(req, text(ga, "reason", null));
+        g.setReason(reason != null ? reason : PlannerGoalNarrator.taskAlignmentReason(req, type, level));
         return g;
     }
 
@@ -312,6 +318,15 @@ public class PlannerSemanticAnalyzer {
     private String prose(Request req, String s) {
         if (s == null) return null;
         return LearningConceptValidator.scrub(s, req.getExcludedFragments(), req.getTopic());
+    }
+
+    /**
+     * 사용자 노출 산문(AI 응답): 조사 보정 표기·메타 괄호 정리 → 목표 원문 결합/말줄임/미완결 문장이면 null(폴백 생성) →
+     * 제외 조각 치환. null 이면 호출자가 결정적 문장을 생성한다.
+     */
+    private String narrate(Request req, String s) {
+        String c = PlannerGoalNarrator.sanitizeAiProse(s, req.getLearningGoal());
+        return c == null ? null : prose(req, c);
     }
 
     private List<String> warnings(Request req, JsonNode ai) {
@@ -411,10 +426,4 @@ public class PlannerSemanticAnalyzer {
     }
     private <T> List<T> safe(List<T> l) { return l == null ? List.of() : l; }
     private String blankToNull(String s) { return s == null || s.isBlank() ? null : s; }
-    private String shortGoal(String goal, String title) {
-        String g = goal == null || goal.isBlank() ? title : goal;
-        if (g == null) return "오늘의 학습 목표";
-        g = g.replace("[오늘 목표]", "").trim();
-        return g.length() > 40 ? g.substring(0, 40).trim() + "…" : g;
-    }
 }
