@@ -37,4 +37,5 @@ public interface PlannerRepository extends JpaRepository<Planner, Long> {
     // AI 계획 분석: 자료에 연결된 플래너 텍스트 수집용
     List<Planner> findByUserIdAndMaterialId(Long userId, Long materialId);
     List<Planner> findByUserIdAndSourceMaterialId(Long userId, Long sourceMaterialId);
+    List<Planner> findBySourceType(String sourceType);
 }

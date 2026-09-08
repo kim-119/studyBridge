@@ -135,13 +135,15 @@ public final class LearningConceptValidator {
             for (String f : fragments) if (f != null && f.trim().length() >= 2) sorted.add(f.trim());
             sorted.sort(Comparator.comparingInt(String::length).reversed());
             for (String f : sorted) {
-                // 조각 바로 앞 불릿/공백까지 한 덩어리로 치환해 "선형회귀의 • X" → "선형회귀의 고급 회귀 기법"
-                Pattern p = Pattern.compile("(?:\\s*[•·▪‣∙]\\s*|\\s*)" + Pattern.quote(f));
+                // 조각 바로 앞 불릿/공백까지 한 덩어리로 치환해 "선형회귀의 • X" → "선형회귀의 고급 회귀 기법".
+                // 조각은 공백 유무와 무관하게 매칭한다("데이터를서로…묶는것" ↔ "데이터를 서로 … 묶는 것").
+                Pattern p = Pattern.compile("(?:\\s*[•·▪‣∙]\\s*|\\s*)" + lenient(f));
                 Matcher m = p.matcher(out);
                 StringBuilder sb = new StringBuilder();
                 while (m.find()) {
-                    // 앞 글자가 문자/숫자면 한 칸 띄우고, 문장 시작이나 괄호 뒤면 바로 붙인다.
-                    boolean afterWord = m.start() > 0 && Character.isLetterOrDigit(out.charAt(m.start() - 1));
+                    // 앞 글자가 있으면(문자·숫자·콜론 등) 한 칸 띄우고, 문장 시작이나 여는 괄호/따옴표 뒤면 바로 붙인다.
+                    boolean afterWord = m.start() > 0 && !Character.isWhitespace(out.charAt(m.start() - 1))
+                            && "([{\"'“‘".indexOf(out.charAt(m.start() - 1)) < 0;
                     m.appendReplacement(sb, Matcher.quoteReplacement((afterWord ? " " : "") + replacement.trim()));
                 }
                 m.appendTail(sb);
@@ -151,6 +153,23 @@ public final class LearningConceptValidator {
         out = BULLET.matcher(out).replaceAll(" ");
         out = MULTISPACE.matcher(out).replaceAll(" ").trim();
         return out;
+    }
+
+    /** 조각을 공백 삽입에 무관하게 찾는 정규식 조각(문자마다 \\s* 허용). */
+    static String lenient(String fragment) {
+        StringBuilder sb = new StringBuilder();
+        String compact = fragment.replaceAll("\\s+", "");
+        for (int i = 0; i < compact.length(); i++) {
+            if (i > 0) sb.append("\\s*");
+            sb.append(Pattern.quote(String.valueOf(compact.charAt(i))));
+        }
+        return sb.toString();
+    }
+
+    /** 문장에 조각(공백 무시)이 들어 있는지. */
+    public static boolean containsFragment(String text, String fragment) {
+        if (text == null || fragment == null || fragment.isBlank()) return false;
+        return Pattern.compile(lenient(fragment)).matcher(text).find();
     }
 
     /** 두 문자열이 사실상 동일(정규화 후 같거나, 짧은 쪽이 긴 쪽의 80% 이상을 차지하며 포함)하면 true. */
@@ -183,6 +202,53 @@ public final class LearningConceptValidator {
             if (!an.isEmpty() && (an.contains(c) || c.contains(an))) return true;
         }
         return false;
+    }
+
+    // 학습 범주를 구분하지 못하는 일반 학술어(도메인 개념이 아닌 구조어). 범주 연관 판정에서 제외한다.
+    private static final Set<String> GENERIC_WORDS = Set.of(
+            "기법", "방법", "개념", "기초", "기본", "심화", "고급", "입문", "활용", "응용", "실습", "예제", "원리", "구조",
+            "이해", "정리", "학습", "복습", "소개", "개요", "종류", "특징", "비교", "설계", "구현", "분석", "점검", "최종",
+            "시험", "준비", "마무리", "정의", "핵심", "요약", "총정리", "실전", "문제", "풀이", "이론", "과정", "단계");
+
+    /**
+     * 개념이 day 정체성(anchors: 주제어·과목·이미 연관된 개념)과 <b>학습 범주</b>를 공유하는지.
+     * 일반 학술어("기법", "개념", "분석" …)를 뺀 뒤, 전체 포함 / 어절 일치 / 한글 2-gram(복합명사 형태소 근사) 겹침으로 판단한다.
+     * 예) "회귀계수" ~ "선형회귀"(회귀) ✓, "K-평균 군집화" ~ "고급 회귀 기법" ✗(기법은 일반어).
+     */
+    public static boolean isLexicallyRelated(String concept, Collection<String> anchors) {
+        if (concept == null || anchors == null) return false;
+        String c = normalize(concept);
+        if (c.isEmpty()) return false;
+        Set<String> cGrams = contentGrams(concept);
+        for (String a : anchors) {
+            String an = normalize(a);
+            if (an.isEmpty()) continue;
+            if (an.contains(c) || c.contains(an)) return true;
+            Set<String> aGrams = contentGrams(a);
+            for (String g : cGrams) if (aGrams.contains(g)) return true;
+        }
+        return false;
+    }
+
+    /** 일반 학술어를 뺀 내용 어절의 한글 2-gram + 영문/숫자 어절(3자 이상) 집합. */
+    static Set<String> contentGrams(String s) {
+        Set<String> out = new HashSet<>();
+        if (s == null) return out;
+        for (String w : NON_WORD.split(s)) {
+            String t = w.toLowerCase(Locale.ROOT);
+            if (t.isEmpty() || GENERIC_WORDS.contains(t)) continue;
+            // 어절 끝에 붙은 일반어("회귀기법" → "회귀")는 떼고 본다.
+            for (String g : GENERIC_WORDS) if (t.length() > g.length() && t.endsWith(g)) { t = t.substring(0, t.length() - g.length()); break; }
+            boolean hangul = t.chars().anyMatch(ch -> ch >= 0xAC00 && ch <= 0xD7A3);
+            if (hangul) {
+                if (t.length() == 1) continue;
+                for (int i = 0; i + 2 <= t.length(); i++) {
+                    String g = t.substring(i, i + 2);
+                    if (!GENERIC_WORDS.contains(g)) out.add(g);
+                }
+            } else if (t.length() >= 3) out.add(t);
+        }
+        return out;
     }
 
     /** 플래너/로드맵 제목에서 "[로드맵 N주차 M일]"·"N일차" 접두어를 뗀 주제어. */

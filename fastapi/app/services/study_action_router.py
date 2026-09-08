@@ -25,6 +25,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from app.services.korean_text import clean_sentence, concept_keywords
+
 logger = logging.getLogger(__name__)
 
 # PDF 메타데이터(날짜/연도/교수명/표지/footer)를 학습 주제로 쓰지 못하게 하는 LLM 규칙
@@ -325,7 +327,8 @@ def build_day(day_index: int, *, subject: str, keywords: List[str],
     """단일 일차 스켈레톤. tasks>=tasks_min, review_questions>=2 보장. level별 깊이 차등(스펙 E·G)."""
     subject = subject or "학습"
     lvl = normalize_level(level)
-    kws = keywords or [subject]
+    # 개념 자리에는 개념명(명사구)만 쓴다. PDF 본문 설명문 조각("~을 추정하는 것")은 템플릿에 끼우지 않는다.
+    kws = concept_keywords(keywords or []) or [subject]
     templates = _TASK_TEMPLATES_BY_LEVEL[lvl]
     focuses = _DAY_FOCUS_BY_LEVEL[lvl]
     # 날짜/주차 전역 순번으로 개념·문구를 회전시켜 중복(단순 반복) 방지
@@ -370,18 +373,22 @@ def build_day(day_index: int, *, subject: str, keywords: List[str],
     while len(reviews) < 2:
         reviews.append(f"{concept}에 대해 오늘 새로 알게 된 것은 무엇인가?")
 
+    for t in tasks:
+        t["title"] = clean_sentence(t["title"])
+        t["description"] = clean_sentence(t["description"])
+    # 사용자 노출 문장: 조사 보정 표기("을(를)")는 받침으로 확정하고 불릿은 제거한다.
     return {
         "day_index": day_index,
         "day_label": f"{day_index}일차",
         "date": date,
-        "title": day_title,
-        "objective": day_obj,
+        "title": clean_sentence(day_title),
+        "objective": clean_sentence(day_obj),
         "core_concepts": core,
         "tasks": tasks,
-        "practice": f"{concept}을(를) {subject} 상황에 직접 적용하는 간단한 과제를 수행한다.",
-        "review_questions": reviews,
-        "checkpoint": f"{concept}의 핵심을 본인 말로 설명할 수 있다.",
-        "deliverable": f"{concept} 정리 노트 또는 {concept2} 비교 표",
+        "practice": clean_sentence(f"{concept}을(를) {subject} 상황에 직접 적용하는 간단한 과제를 수행한다."),
+        "review_questions": [clean_sentence(r) for r in reviews],
+        "checkpoint": clean_sentence(f"{concept}의 핵심을 본인 말로 설명할 수 있다."),
+        "deliverable": clean_sentence(f"{concept} 정리 노트 또는 {concept2} 비교 표"),
     }
 
 

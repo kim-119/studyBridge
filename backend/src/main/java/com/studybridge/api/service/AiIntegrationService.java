@@ -8,6 +8,7 @@ import com.studybridge.api.repository.*;
 import com.studybridge.api.util.ConceptFallbackProvider;
 import com.studybridge.api.util.LearningContentSanitizer;
 import com.studybridge.api.util.LearningConceptValidator;
+import com.studybridge.api.util.LearningDayNormalizer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -1311,48 +1312,69 @@ public class AiIntegrationService {
         }
 
         /**
-         * 개념형 검증(메타데이터 노이즈와 별개): core_concepts 에 PDF 본문 문장/예제 조각("~은 종속변수이다",
-         * "~을 추정하는 것")이 오면 개념이 아니므로 제외하고, 같은 조각이 템플릿으로 끼워진
-         * objective/tasks/review_questions/practice/checkpoint/deliverable 은 day 주제어로 치환한다.
-         * 특정 문자열이 아니라 {@link LearningConceptValidator}의 형태 신호로 판단하므로 다른 자료에서도 동일하게 동작.
+         * 의미 단위 정규화(메타데이터 노이즈와 별개): core_concepts 의 설명문 조각·무관 범주 개념을 제외하고 개념은
+         * day 주제/objective 에서 구조적으로 구성하며, objective/tasks/review_questions/checkpoint/deliverable 은
+         * 조각 치환·조사 확정·불릿/메타 괄호 제거·완결 문장으로 재구성한다({@link LearningDayNormalizer}).
+         * 특정 문자열이 아니라 형태·어휘 신호로 판단하므로 다른 자료에서도 동일하게 동작.
          */
         @SuppressWarnings("unchecked")
         private void scrubSentenceFragments(Map<String, Object> d, int[] stats) {
-                Object conceptsRaw = d.get("core_concepts");
-                if (!(conceptsRaw instanceof List)) return;
-                List<String> concepts = new ArrayList<>();
-                for (Object o : (List<?>) conceptsRaw) if (o != null) concepts.add(o.toString());
-                LearningConceptValidator.Split split = LearningConceptValidator.split(concepts);
-                if (!split.hasRejected()) return;
-                List<String> fragments = split.rejected();
-                String topic = LearningConceptValidator.topicOf(d.get("title") == null ? "" : d.get("title").toString());
-                stats[0] += fragments.size(); stats[2] += fragments.size();
-                d.put("core_concepts", new ArrayList<>(split.accepted()));
-                for (String key : new String[]{"objective", "practice", "checkpoint", "deliverable"}) {
-                        if (d.get(key) instanceof String v) d.put(key, LearningConceptValidator.scrub(v, fragments, topic));
-                }
-                if (d.get("review_questions") instanceof List<?> qs) {
-                        List<Object> out = new ArrayList<>();
-                        for (Object q : qs) out.add(q instanceof String v ? LearningConceptValidator.scrub(v, fragments, topic) : q);
-                        d.put("review_questions", out);
-                }
+                String title = d.get("title") == null ? "" : d.get("title").toString();
+                List<String> concepts = stringList(d.get("core_concepts"));
+                List<String> questions = stringList(d.get("review_questions"));
+                List<String> taskTexts = new ArrayList<>();
+                List<Map<String, Object>> taskMaps = new ArrayList<>();
                 if (d.get("tasks") instanceof List<?> ts) {
-                        List<Object> out = new ArrayList<>();
                         for (Object t : ts) {
                                 if (t instanceof Map<?, ?> tm) {
                                         Map<String, Object> m = (Map<String, Object>) tm;
-                                        for (String key : new String[]{"title", "content", "description"})
-                                                if (m.get(key) instanceof String v) m.put(key, LearningConceptValidator.scrub(v, fragments, topic));
-                                        out.add(m);
-                                } else if (t instanceof String v) {
-                                        out.add(LearningConceptValidator.scrub(v, fragments, topic));
-                                } else out.add(t);
+                                        taskMaps.add(m);
+                                        String tt = m.get("title") == null ? "" : m.get("title").toString();
+                                        String desc = m.get("description") != null ? m.get("description").toString()
+                                                : m.get("content") != null ? m.get("content").toString() : "";
+                                        taskTexts.add(desc.isBlank() ? tt : tt + ": " + desc);
+                                } else if (t != null) { taskMaps.add(null); taskTexts.add(t.toString()); }
+                        }
+                }
+                LearningDayNormalizer.DayContent day = LearningDayNormalizer.normalize(new LearningDayNormalizer.DayInput(
+                                title, null, str(d.get("objective")), taskTexts, concepts, questions,
+                                str(d.get("checkpoint")), str(d.get("deliverable"))));
+                List<String> replacements = new ArrayList<>(day.rejectedFragments());
+                replacements.addAll(day.unrelatedConcepts());
+                String replacement = day.topic();
+
+                d.put("core_concepts", new ArrayList<>(day.concepts()));
+                d.put("objective", day.objective());
+                d.put("review_questions", new ArrayList<>(day.reviewQuestions()));
+                if (d.containsKey("checkpoint")) d.put("checkpoint", day.checkpoint());
+                if (d.containsKey("deliverable")) d.put("deliverable", day.deliverable());
+                if (d.get("practice") instanceof String v) d.put("practice", LearningDayNormalizer.rewrite(v, replacements, replacement));
+                if (d.get("tasks") instanceof List<?>) {
+                        List<Object> out = new ArrayList<>();
+                        for (int i = 0; i < taskMaps.size(); i++) {
+                                Map<String, Object> m = taskMaps.get(i);
+                                if (m == null) { out.add(LearningDayNormalizer.rewrite(taskTexts.get(i), replacements, replacement)); continue; }
+                                for (String key : new String[]{"title", "content", "description"})
+                                        if (m.get(key) instanceof String v) m.put(key, LearningDayNormalizer.rewrite(v, replacements, replacement));
+                                out.add(m);
                         }
                         d.put("tasks", out);
                 }
-                log.info("[roadmap:validation] sentenceFragments={} dayTitle={} acceptedConcepts={}",
-                                fragments.size(), topic, split.accepted().size());
+                if (day.hasRewrites()) {
+                        int n = replacements.size();
+                        stats[0] += n; stats[2] += n;
+                        log.info("[roadmap:validation] sentenceFragments={} unrelatedConcepts={} dayTitle={} acceptedConcepts={}",
+                                        day.rejectedFragments().size(), day.unrelatedConcepts().size(), day.topic(), day.concepts().size());
+                }
         }
+
+        private static List<String> stringList(Object raw) {
+                List<String> out = new ArrayList<>();
+                if (raw instanceof List<?> l) for (Object o : l) if (o != null) out.add(o.toString());
+                return out;
+        }
+
+        private static String str(Object o) { return o == null ? "" : o.toString(); }
 
         // 필수 필드(title/objective): 비거나 노이즈면 fallback 으로 대체.
         private String sanitizeRequiredField(Object raw, String courseTitle, String fallback, int[] stats) {

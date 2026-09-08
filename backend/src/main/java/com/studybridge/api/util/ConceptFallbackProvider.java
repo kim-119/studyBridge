@@ -145,7 +145,7 @@ public final class ConceptFallbackProvider {
                 t + "의 주요 구성 요소를 정리한다.")),
             new ArrayList<>(Arrays.asList(
                 t + "의 핵심 개념은 무엇인가?",
-                t + "은(는) 어떤 상황에서 사용되는가?")),
+                "어떤 상황에서 " + KoreanTextNormalizer.withJosa(t, "이", "가") + " 필요한가?")),
             t + " 핵심 개념 요약 노트");
     }
 }

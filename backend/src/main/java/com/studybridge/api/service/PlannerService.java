@@ -1,6 +1,5 @@
 package com.studybridge.api.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.PlannerDTO;
 import com.studybridge.api.entity.ExtractionStatus;
@@ -12,25 +11,12 @@ import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.PlannerRepository;
 import com.studybridge.api.util.ConceptFallbackProvider;
 import com.studybridge.api.util.LearningContentSanitizer;
-import com.studybridge.api.util.LearningConceptValidator;
-import com.lowagie.text.Document;
-import com.lowagie.text.Element;
-import com.lowagie.text.Font;
-import com.lowagie.text.PageSize;
-import com.lowagie.text.Paragraph;
-import com.lowagie.text.Phrase;
-import com.lowagie.text.pdf.BaseFont;
-import com.lowagie.text.pdf.PdfPCell;
-import com.lowagie.text.pdf.PdfPTable;
-import com.lowagie.text.pdf.PdfWriter;
+import com.studybridge.api.util.LearningDayNormalizer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.awt.Color;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -46,13 +32,6 @@ public class PlannerService {
     private final MaterialRepository materialRepository;
     private final S3Service s3Service;
     private final ObjectMapper objectMapper;
-
-    private static final Color GREEN_DARK = new Color(0x15, 0x80, 0x3D);
-    private static final Color GREEN_LIGHT = new Color(0xEC, 0xFD, 0xF3);
-    private static final Color GREEN_BORDER = new Color(0xBB, 0xF7, 0xD0);
-    private static final Color GREY_LINE = new Color(0xD1, 0xD5, 0xDB);
-
-    private static byte[] cachedFont;
 
     // ---------- CRUD ----------
 
@@ -129,37 +108,16 @@ public class PlannerService {
             String checkpoint = sanitizeOptionalField(it.getCheckpoint(), subject, "", noiseStats);
             String deliverable = sanitizeOptionalField(it.getDeliverable(), subject, fb.deliverable, noiseStats);
 
-            // 개념형 검증: 메타데이터 노이즈가 아니어도 core_concepts 에 PDF 본문 문장/예제("~은 종속변수이다",
-            // "~을 추정하는 것")가 들어오면 개념이 아니므로 제외하고, 그 조각이 템플릿으로 끼워진
-            // objective/tasks/질문/체크포인트/산출물은 day 주제어로 치환한다(특정 문자열 하드코딩 없음).
-            LearningConceptValidator.Split conceptSplit = LearningConceptValidator.split(coreConcepts);
-            if (conceptSplit.hasRejected()) {
-                java.util.List<String> fragments = conceptSplit.rejected();
-                String dayTopic = LearningConceptValidator.topicOf(topic);
-                noiseStats[0] += fragments.size(); noiseStats[2] += fragments.size(); noiseStats[4] += fragments.size();
-                coreConcepts = new java.util.ArrayList<>(conceptSplit.accepted());
-                objective = LearningConceptValidator.scrub(objective, fragments, dayTopic);
-                tasks = scrubList(tasks, fragments, dayTopic);
-                reviewQuestions = scrubList(reviewQuestions, fragments, dayTopic);
-                checkpoint = LearningConceptValidator.scrub(checkpoint, fragments, dayTopic);
-                deliverable = LearningConceptValidator.scrub(deliverable, fragments, dayTopic);
+            // 의미 단위 정규화: 문장형 조각·무관 범주 개념 제거, 개념은 주제/objective 에서 구조적으로 구성,
+            // 조사 보정 표기·불릿·메타 괄호 제거 + 완결 문장(단일 진실 지점: LearningDayNormalizer / PlannerDayContent).
+            LearningDayNormalizer.DayContent day = LearningDayNormalizer.normalize(new LearningDayNormalizer.DayInput(
+                    topic, subject, objective, tasks, coreConcepts, reviewQuestions, checkpoint, deliverable));
+            if (day.hasRewrites()) {
+                int n = day.rejectedFragments().size() + day.unrelatedConcepts().size();
+                noiseStats[0] += n; noiseStats[2] += n; noiseStats[4] += n;
             }
-
-            StringBuilder content = new StringBuilder();
-            if (!objective.isBlank()) content.append("[오늘 목표] ").append(objective).append("\n\n");
-            if (!tasks.isEmpty()) {
-                content.append("[할 일]\n");
-                for (int t = 0; t < tasks.size(); t++) content.append(t + 1).append(". ").append(tasks.get(t)).append("\n");
-            }
-
-            StringBuilder memo = new StringBuilder();
-            if (!coreConcepts.isEmpty()) memo.append("핵심 개념: ").append(String.join(", ", coreConcepts)).append("\n");
-            if (!reviewQuestions.isEmpty()) {
-                memo.append("복습 질문:\n");
-                for (String q : reviewQuestions) memo.append("- ").append(q).append("\n");
-            }
-            if (!checkpoint.isBlank()) memo.append("체크포인트: ").append(checkpoint).append("\n");
-            if (!deliverable.isBlank()) memo.append("산출물: ").append(deliverable).append("\n");
+            String content = PlannerDayContent.composeContent(day);
+            String memo = PlannerDayContent.composeTmi(day);
 
             String targetTime = it.getTargetMinutes() != null && it.getTargetMinutes() > 0 ? (it.getTargetMinutes() + "분") : null;
             // week/day는 명시값 우선, 없으면 index 기반 계산(84개=12주×7일): index/7+1 주차, index%7+1 일차
@@ -179,8 +137,8 @@ public class PlannerService {
                     .studyType("자료 기반 학습")
                     .priority("보통")
                     .goalTime(targetTime)
-                    .content(content.toString().trim())
-                    .tmi(memo.toString().trim())
+                    .content(content)
+                    .tmi(memo)
                     .materialId(req.getMaterialId())
                     .sourceType(SOURCE_TYPE)
                     .sourceMaterialId(req.getMaterialId())
@@ -200,16 +158,6 @@ public class PlannerService {
                 .createdCount(created).duplicate(false).existingCount(existing)
                 .message(created + "개의 플래너가 생성되었습니다.")
                 .build();
-    }
-
-    // 리스트 각 항목에서 문장형 조각을 주제어로 치환(빈 결과·중복 제거).
-    private static java.util.List<String> scrubList(java.util.List<String> in, java.util.List<String> fragments, String topic) {
-        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
-        for (String v : in) {
-            String c = LearningConceptValidator.scrub(v, fragments, topic);
-            if (c != null && !c.isBlank()) out.add(c);
-        }
-        return new java.util.ArrayList<>(out);
     }
 
     // ── 로드맵→플래너 노이즈 정제 헬퍼 (stats: [0]=noiseCandidate,[1]=cleaned,[2]=rejected,[3]=fallbackUsed,[4]=sentenceFragments) ──
@@ -640,177 +588,40 @@ public class PlannerService {
         return s.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
     }
 
-    private static synchronized byte[] fontBytes() {
-        if (cachedFont == null) {
-            try (InputStream is = PlannerService.class.getResourceAsStream("/fonts/NanumGothic.ttf")) {
-                if (is == null) throw new IllegalStateException("NanumGothic.ttf 폰트를 찾을 수 없습니다.");
-                cachedFont = is.readAllBytes();
-            } catch (Exception e) {
-                throw new RuntimeException("한글 폰트 로딩 실패", e);
-            }
+    /**
+     * 기존 로드맵 플래너(ROADMAP_AUTO) 저장본의 content/tmi 를 현재 문장 규칙으로 재구성한다(1회성 backfill).
+     * 구조화 불가/빈 행은 건너뛰고, 결과가 같은 행은 저장하지 않는다(idempotent). 변경 건수를 반환한다.
+     */
+    @Transactional
+    public int normalizeRoadmapPlannerContent() {
+        int changed = 0, skipped = 0;
+        for (Planner p : plannerRepository.findBySourceType("ROADMAP_AUTO")) {
+            LearningDayNormalizer.DayContent day;
+            try { day = PlannerDayContent.normalizeStored(p); }
+            catch (Exception e) { log.warn("[planner:content-backfill] plannerId={} 구조화 실패: {}", p.getId(), e.getMessage()); skipped++; continue; }
+            if (day == null) { skipped++; continue; }
+            PlannerDayContent.Sections s = PlannerDayContent.parse(p.getContent(), p.getTmi());
+            String content = PlannerDayContent.composeContent(day);
+            String tmi = PlannerDayContent.composeTmi(day, s == null ? List.of() : s.extraMemo());
+            if (content.equals(p.getContent()) && tmi.equals(p.getTmi())) continue;
+            p.setContent(content);
+            p.setTmi(tmi);
+            plannerRepository.save(p);
+            changed++;
         }
-        return cachedFont;
+        log.info("[planner:content-backfill] changed={} skipped={}", changed, skipped);
+        return changed;
     }
 
-    private Font font(float size, int style, Color color) {
-        try {
-            BaseFont base = BaseFont.createFont("NanumGothic.ttf", BaseFont.IDENTITY_H, BaseFont.EMBEDDED,
-                    BaseFont.CACHED, fontBytes(), null);
-            Font f = new Font(base, size, style);
-            if (color != null) f.setColor(color);
-            return f;
-        } catch (Exception e) {
-            throw new RuntimeException("한글 폰트 생성 실패", e);
-        }
-    }
-
-    /** A4 세로 플래너 PDF 생성 (한글 임베드, 표 레이아웃). */
+    /**
+     * A4 세로 플래너 PDF. 로드맵 플래너는 저장본을 구조화·정규화한 {@link LearningDayNormalizer.DayContent}
+     * (오늘 목표/할 일/핵심 개념/복습 질문/체크포인트/산출물)로, 자유 입력 플래너는 원문 줄 단위로 렌더링한다.
+     * 문자열 절단 없음·어절 경계 줄바꿈·동적 높이·페이지 이어쓰기는 {@link PlannerPdfRenderer} 책임.
+     */
     byte[] buildPdf(Planner p) {
-        try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-            Document doc = new Document(PageSize.A4, 36, 36, 40, 40);
-            PdfWriter.getInstance(doc, baos);
-            doc.open();
-
-            // 제목
-            Paragraph title = new Paragraph(p.getTitle() != null ? p.getTitle() : "공부 플래너", font(20, Font.BOLD, GREEN_DARK));
-            title.setSpacingAfter(4);
-            doc.add(title);
-
-            String dateLine = String.format("%s년 %s월 %s일 %s",
-                    nz(p.getYear()), nz(p.getMonth()), nz(p.getDay()), p.getDayOfWeek() != null ? "(" + p.getDayOfWeek() + ")" : "");
-            if (p.getTerm() != null && !p.getTerm().isBlank()) {
-                dateLine = dateLine.trim() + "  ·  " + p.getTerm();
-            }
-            Paragraph dateP = new Paragraph(dateLine.trim(), font(11, Font.NORMAL, new Color(0x4B, 0x55, 0x63)));
-            dateP.setSpacingAfter(12);
-            doc.add(dateP);
-
-            // 상단 정보 표: 학습 유형/우선순위/목표 학습 시간/마감일·시험일
-            PdfPTable info = new PdfPTable(4);
-            info.setWidthPercentage(100);
-            info.setSpacingAfter(14);
-            addInfoCell(info, "학습 유형", str(p.getStudyType()));
-            addInfoCell(info, "우선순위", str(p.getPriority()));
-            addInfoCell(info, "목표 학습 시간", str(p.getGoalTime()));
-            addInfoCell(info, "마감일/시험일", str(p.getDDay()));
-            doc.add(info);
-
-            // 과목명 / 학습 목표
-            PdfPTable sc = new PdfPTable(new float[]{1f, 3f});
-            sc.setWidthPercentage(100);
-            sc.setSpacingAfter(14);
-            sc.addCell(labelCell("과목명"));
-            sc.addCell(valueCell(str(p.getSubject())));
-            sc.addCell(labelCell("학습 목표"));
-            sc.addCell(valueCell(str(p.getContent())));
-            doc.add(sc);
-
-            // 10분 단위 시간 체크표 (6~23시)
-            Paragraph ttTitle = new Paragraph("시간 체크표 (10분 단위)", font(12, Font.BOLD, GREEN_DARK));
-            ttTitle.setSpacingAfter(6);
-            doc.add(ttTitle);
-            doc.add(buildTimeTable(p.getTimeTableJson()));
-
-            // 세부 할 일 / 메모
-            Paragraph tmiTitle = new Paragraph("세부 할 일 / 메모", font(12, Font.BOLD, GREEN_DARK));
-            tmiTitle.setSpacingBefore(14);
-            tmiTitle.setSpacingAfter(6);
-            doc.add(tmiTitle);
-            PdfPTable tmi = new PdfPTable(1);
-            tmi.setWidthPercentage(100);
-            PdfPCell tmiCell = new PdfPCell(new Phrase(str(p.getTmi()), font(11, Font.NORMAL, Color.BLACK)));
-            tmiCell.setMinimumHeight(70);
-            tmiCell.setPadding(8);
-            tmiCell.setBorderColor(GREY_LINE);
-            tmi.addCell(tmiCell);
-            doc.add(tmi);
-
-            doc.close();
-            return baos.toByteArray();
-        } catch (Exception e) {
-            throw new RuntimeException("플래너 PDF 생성에 실패했습니다.", e);
-        }
+        LearningDayNormalizer.DayContent day = null;
+        try { day = PlannerDayContent.normalizeStored(p); }
+        catch (Exception e) { log.warn("[planner:pdf] 저장본 구조화 실패 plannerId={} — 원문으로 렌더링: {}", p.getId(), e.getMessage()); }
+        return new PlannerPdfRenderer(objectMapper).render(p, day);
     }
-
-    private PdfPTable buildTimeTable(String json) {
-        // columns: 시 + 00,10,20,30,40,50
-        PdfPTable table = new PdfPTable(7);
-        try { table.setWidths(new float[]{1.2f, 1f, 1f, 1f, 1f, 1f, 1f}); } catch (Exception ignored) {}
-        table.setWidthPercentage(100);
-
-        String[] headers = {"시", "00", "10", "20", "30", "40", "50"};
-        for (String h : headers) {
-            PdfPCell c = new PdfPCell(new Phrase(h, font(9, Font.BOLD, GREEN_DARK)));
-            c.setBackgroundColor(GREEN_LIGHT);
-            c.setBorderColor(GREEN_BORDER);
-            c.setHorizontalAlignment(Element.ALIGN_CENTER);
-            c.setPadding(3);
-            table.addCell(c);
-        }
-
-        JsonNode node = null;
-        if (json != null && !json.isBlank()) {
-            try { node = objectMapper.readTree(json); } catch (Exception e) { log.warn("플래너 시간표 JSON 파싱 실패: {}", e.getMessage()); }
-        }
-
-        for (int hour = 6; hour <= 23; hour++) {
-            PdfPCell hc = new PdfPCell(new Phrase(String.format("%02d", hour), font(9, Font.NORMAL, Color.BLACK)));
-            hc.setHorizontalAlignment(Element.ALIGN_CENTER);
-            hc.setBorderColor(GREY_LINE);
-            hc.setPadding(3);
-            table.addCell(hc);
-
-            for (int slot = 0; slot < 6; slot++) {
-                boolean checked = isChecked(node, hour, slot);
-                PdfPCell c = new PdfPCell(new Phrase(checked ? "■" : "", font(9, Font.NORMAL, GREEN_DARK)));
-                c.setHorizontalAlignment(Element.ALIGN_CENTER);
-                c.setBorderColor(GREY_LINE);
-                if (checked) c.setBackgroundColor(GREEN_LIGHT);
-                c.setMinimumHeight(14);
-                c.setPadding(2);
-                table.addCell(c);
-            }
-        }
-        return table;
-    }
-
-    private boolean isChecked(JsonNode node, int hour, int slot) {
-        if (node == null) return false;
-        JsonNode row = node.get(String.valueOf(hour));
-        if (row == null || !row.isArray() || slot >= row.size()) return false;
-        JsonNode v = row.get(slot);
-        return v != null && (v.asBoolean(false) || v.asInt(0) == 1);
-    }
-
-    private void addInfoCell(PdfPTable table, String label, String value) {
-        PdfPCell c = new PdfPCell();
-        c.setBorderColor(GREEN_BORDER);
-        c.setPadding(8);
-        Paragraph l = new Paragraph(label, font(9, Font.BOLD, GREEN_DARK));
-        Paragraph v = new Paragraph(value, font(12, Font.BOLD, Color.BLACK));
-        c.addElement(l);
-        c.addElement(v);
-        table.addCell(c);
-    }
-
-    private PdfPCell labelCell(String text) {
-        PdfPCell c = new PdfPCell(new Phrase(text, font(10, Font.BOLD, GREEN_DARK)));
-        c.setBackgroundColor(GREEN_LIGHT);
-        c.setBorderColor(GREEN_BORDER);
-        c.setPadding(8);
-        c.setHorizontalAlignment(Element.ALIGN_CENTER);
-        c.setVerticalAlignment(Element.ALIGN_MIDDLE);
-        return c;
-    }
-
-    private PdfPCell valueCell(String text) {
-        PdfPCell c = new PdfPCell(new Phrase(text, font(11, Font.NORMAL, Color.BLACK)));
-        c.setBorderColor(GREY_LINE);
-        c.setPadding(8);
-        c.setMinimumHeight(28);
-        return c;
-    }
-
-    private String str(String s) { return s == null ? "" : s; }
-    private String nz(Integer i) { return i == null ? "____" : String.valueOf(i); }
 }

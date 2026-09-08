@@ -4,6 +4,7 @@ import com.studybridge.api.dto.PlannerSemanticDTO.Level;
 import com.studybridge.api.dto.PlannerSemanticDTO.Request;
 import com.studybridge.api.dto.PlannerSemanticDTO.Task;
 import com.studybridge.api.dto.PlannerSemanticDTO.TaskType;
+import com.studybridge.api.util.KoreanTextNormalizer;
 import com.studybridge.api.util.LearningConceptValidator;
 
 import java.util.*;
@@ -34,15 +35,6 @@ final class PlannerGoalNarrator {
     /** 로드맵 objective 템플릿: "[X의] Y을/를 Z 중심으로 학습한다" → 학습 방식 Z 를 추출한다. */
     private static final Pattern GOAL_TEMPLATE = Pattern.compile(
             "^(?<object>.+?)(?:을|를)\\s+(?<method>.+?)\\s*(?:중심으로|위주로)\\s*(?:학습|공부|정리|연습|익히)[가-힣]*[.!]?$");
-    private static final Pattern JOSA_MARKER = Pattern.compile(
-            "(?<prev>[\\p{L}\\p{N})\\]”’\"'])\\s*(?<pair>을\\(를\\)|를\\(을\\)|이\\(가\\)|가\\(이\\)|은\\(는\\)|는\\(은\\)|과\\(와\\)|와\\(과\\)|으로\\(로\\)|로\\(으로\\)|이\\(라\\)|아\\(야\\))");
-    private static final Pattern META_PAREN = Pattern.compile(
-            "\\s*[(（][^()（）]*(?:주차\\s*흐름|흐름\\s*[:：]|주차\\s*[:：]|메타|참고\\s*[:：])[^()（）]*[)）]");
-    private static final Pattern TRAILING_PAREN_AFTER_SENTENCE = Pattern.compile("(?<=[.!?])\\s*[(（][^()（）]*[)）]");
-    private static final Pattern TODAY_GOAL_PREFIX = Pattern.compile("\\[오늘\\s*목표\\]\\s*");
-    private static final Pattern BULLET = Pattern.compile("\\s*[•·▪‣∙]\\s*");
-    private static final Pattern MULTISPACE = Pattern.compile("\\s{2,}");
-    private static final Pattern SPACE_BEFORE_PUNCT = Pattern.compile("\\s+(?=[.,!?])");
     private static final Pattern ELLIPSIS = Pattern.compile("…|\\.{3,}|‥");
     private static final Pattern SENTENCE_END = Pattern.compile("(?<=[.!?])\\s+");
     private static final Pattern COMPLETE_SENTENCE = Pattern.compile("(?:[가-힣][.!?]|[다요죠까][.!?]?|[.!?])$");
@@ -125,42 +117,18 @@ final class PlannerGoalNarrator {
         return s;
     }
 
-    /** 메타 괄호·불릿·"[오늘 목표]" 제거 + 조사 보정 표기 확정 + 공백 정리. */
-    static String clean(String s) {
-        if (s == null) return "";
-        String out = TODAY_GOAL_PREFIX.matcher(s).replaceAll("");
-        out = META_PAREN.matcher(out).replaceAll("");
-        out = TRAILING_PAREN_AFTER_SENTENCE.matcher(out).replaceAll("");
-        out = BULLET.matcher(out).replaceAll(" ");
-        out = resolveJosa(out);
-        out = MULTISPACE.matcher(out).replaceAll(" ");
-        out = SPACE_BEFORE_PUNCT.matcher(out).replaceAll("");
-        return out.trim();
-    }
+    /** 메타 괄호·불릿·"[오늘 목표]" 제거 + 조사 보정 표기 확정 + 공백 정리({@link KoreanTextNormalizer#clean}). */
+    static String clean(String s) { return KoreanTextNormalizer.clean(s); }
 
-    /** "기법을(를)" → "기법을", "모델이(가)" → "모델이" 처럼 앞 글자 받침으로 조사를 확정한다. */
-    static String resolveJosa(String s) {
-        if (s == null) return null;
-        Matcher m = JOSA_MARKER.matcher(s);
-        StringBuilder sb = new StringBuilder();
-        while (m.find()) {
-            String prev = m.group("prev");
-            String pair = m.group("pair");
-            String a = pair.substring(0, pair.indexOf('('));
-            String b = pair.substring(pair.indexOf('(') + 1, pair.length() - 1);
-            String chosen = josa(lastLetter(s, m.start("pair")), a, b);
-            m.appendReplacement(sb, Matcher.quoteReplacement(prev + chosen));
-        }
-        m.appendTail(sb);
-        return sb.toString();
-    }
+    /** "기법을(를)" → "기법을" 처럼 앞 글자 받침으로 조사를 확정한다({@link KoreanTextNormalizer#resolveJosa}). */
+    static String resolveJosa(String s) { return KoreanTextNormalizer.resolveJosa(s); }
 
-    /** word 뒤에 받침 유무에 맞는 조사(withBatchim/withoutBatchim)를 붙인다. 한글로 끝나지 않으면 조사를 생략한다. */
+    /** word 뒤에 받침에 맞는 조사를 붙인다. 한글로 끝나지 않으면 조사를 생략한다(문장 생성용). */
     static String withJosa(String word, String withBatchim, String withoutBatchim) {
         if (word == null || word.isEmpty()) return "";
         char last = word.charAt(word.length() - 1);
-        if (!isHangul(last)) return word;
-        return word + josa(last, withBatchim, withoutBatchim);
+        if (!KoreanTextNormalizer.isHangul(last)) return word;
+        return word + KoreanTextNormalizer.josa(last, withBatchim, withoutBatchim);
     }
 
     // ---------------- 내부 ----------------
@@ -229,27 +197,4 @@ final class PlannerGoalNarrator {
         if (parts.length <= n) return s.trim();
         return String.join(" ", Arrays.copyOfRange(parts, 0, n)).trim();
     }
-
-    private static char lastLetter(String s, int beforeIndex) {
-        for (int i = beforeIndex - 1; i >= 0; i--) {
-            char c = s.charAt(i);
-            if (!Character.isWhitespace(c)) return c;
-        }
-        return ' ';
-    }
-
-    private static String josa(char last, String withBatchim, String withoutBatchim) {
-        if (isHangul(last)) {
-            int jong = (last - 0xAC00) % 28;
-            if (withBatchim.equals("으로") && jong == 8) return withoutBatchim;   // ㄹ 받침은 "로"
-            return jong == 0 ? withoutBatchim : withBatchim;
-        }
-        if (Character.isDigit(last)) {
-            // 숫자 읽기 기준 받침: 0(영) 1(일) 3(삼) 6(육) 7(칠) 8(팔)
-            return "013678".indexOf(last) >= 0 ? withBatchim : withoutBatchim;
-        }
-        return withoutBatchim;
-    }
-
-    private static boolean isHangul(char c) { return c >= 0xAC00 && c <= 0xD7A3; }
 }

@@ -54,6 +54,25 @@ class LearningConceptValidatorTest {
         assertEquals("선형회귀의 넘파이 관련 코드", LearningConceptValidator.scrub("선형회귀의 • 넘파이  관련 코드", List.of(), "x"));
     }
 
+    @Test void scrubMatchesFragmentsRegardlessOfSpacing() {
+        String frag = "데이터를서로유사한특성을가진그룹으로묶는것";
+        assertEquals("선형회귀에서 고급 회귀 기법을(를) 사용하는 이유는 무엇인가?",
+                LearningConceptValidator.scrub("선형회귀에서 데이터를 서로 유사한 특성을 가진 그룹으로 묶는 것을(를) 사용하는 이유는 무엇인가?",
+                        List.of(frag), "고급 회귀 기법"));
+        assertTrue(LearningConceptValidator.containsFragment("데이터를 서로 유사한 특성을 가진 그룹으로 묶는 것", frag));
+        assertFalse(LearningConceptValidator.containsFragment("고급 회귀 기법", frag));
+    }
+
+    @Test void lexicalRelatednessIgnoresGenericAcademicWords() {
+        List<String> anchors = List.of("고급 회귀 기법", "선형회귀");
+        assertTrue(LearningConceptValidator.isLexicallyRelated("회귀계수", anchors));
+        assertTrue(LearningConceptValidator.isLexicallyRelated("릿지 회귀", anchors));
+        assertTrue(LearningConceptValidator.isLexicallyRelated("다중회귀분석", anchors));
+        assertFalse(LearningConceptValidator.isLexicallyRelated("K-평균 군집화 기법", anchors));   // "기법"은 일반어
+        assertFalse(LearningConceptValidator.isLexicallyRelated("의사결정나무 분류", anchors));
+        assertFalse(LearningConceptValidator.isLexicallyRelated("개념 정리", anchors));
+    }
+
     @Test void nearDuplicateDetectsTaskCopies() {
         assertTrue(LearningConceptValidator.isNearDuplicate("고급 회귀 기법 코드 흐름 추적", "고급회귀기법 코드흐름 추적"));
         assertTrue(LearningConceptValidator.duplicatesAny("선형회귀 핵심 개념 점검", List.of("1. 선형회귀 핵심 개념 점검")));

@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body
 from pydantic import BaseModel, Field
 
+from app.services.korean_text import is_concept_like
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ai/planner", tags=["Planner AI"])
 
@@ -596,41 +598,8 @@ def _norm_text(s: str) -> str:
 
 
 def _is_concept_like(raw: str) -> bool:
-    """짧은 명사구(개념명)인가. 문장/설명문/예제 문장/코드 조각/"~이다·~하는 것" 서술은 False.
-    Spring `LearningConceptValidator.isConceptLike` 와 같은 규칙(형태 신호만, 특정 문자열 없음)."""
-    s = (raw or "").strip()
-    if len(s) < 2:
-        return False
-    if re.match(r"^[^\w(\[\"'“‘]", s, re.UNICODE):
-        return False
-    if re.search(r"[.?!…:,]\s*$", s):
-        return False
-    if _PREREQ_CODE.search(s):
-        return False
-    if s.count("(") != s.count(")"):
-        return False
-    compact = s.replace(" ", "")
-    if len(compact) > 40 or len(s.split()) > 5:
-        return False
-    segments = [compact] + re.findall(r"\(([^()]*)\)", compact) + [re.sub(r"\([^()]*\)", "", compact)]
-    for seg in segments:
-        seg = seg.strip()
-        if not seg:
-            continue
-        if _PREREQ_PREDICATE_END.search(seg):
-            return False
-        if len(seg) >= 4 and re.search(r"[가-힣]다$", seg):
-            return False
-    for w in s.split():
-        if len(w) >= 3 and _PREREQ_PREDICATE_END.search(w):
-            return False
-    score = len(_PREREQ_INNER_PARTICLE.findall(compact)) + 2 * len(_PREREQ_INNER_VERB.findall(compact))
-    if score >= 3:
-        return False
-    longest = max((len(m) for m in re.findall(r"[가-힣]+", compact)), default=0)
-    if longest > 18 and score >= 1:
-        return False
-    return True
+    """짧은 명사구(개념명)인가. 규칙은 app.services.korean_text.is_concept_like (Spring LearningConceptValidator 와 동일)."""
+    return is_concept_like(raw)
 
 
 def _near_duplicate(a: str, b: str) -> bool:
