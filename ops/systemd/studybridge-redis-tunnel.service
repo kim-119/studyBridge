@@ -1,0 +1,24 @@
+[Unit]
+Description=StudyBridge ai07 Local Tunnel to EC2 Redis (capstone-redis)
+After=network-online.target
+Wants=network-online.target
+# 네트워크 단절은 기다리면 복구된다. 재시도 횟수를 제한하지 않는다.
+StartLimitIntervalSec=0
+
+[Service]
+User=ai07
+Restart=always
+RestartSec=5
+Environment="AUTOSSH_GATETIME=0"
+ExecStart=/usr/bin/autossh -M 0 -N \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -o IdentitiesOnly=yes \
+  -o StrictHostKeyChecking=accept-new \
+  -i /home/ai07/.ssh/studybridge2026.pem \
+  -L 127.0.0.1:16379:127.0.0.1:6379 \
+  ubuntu@43.202.211.123
+
+[Install]
+WantedBy=multi-user.target

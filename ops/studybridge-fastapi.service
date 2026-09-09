@@ -1,3 +1,14 @@
+# ##################################################################
+# DO NOT ENABLE — 2026-09-09 폐기됨
+#
+# 이 유닛은 studybridge-ai.service 와 같은 :8000 에 바인딩한다.
+# 둘 다 enabled 이던 탓에 2026-09-07 22:27 재시작 경합에서 이 구버전
+# (main:app, 라우트 43개)이 포트를 선점했고, /api/ai/multi-chat/stream 이
+# 404 가 되어 41시간 동안 StudyMate 채팅이 죽었다.
+#
+# 운영 진입점은 studybridge-ai.service (hotfix_main:app, 라우트 73개) 하나뿐이다.
+# 이 파일은 사고 기록용으로만 남긴다. 절대 enable 하지 말 것.
+# ##################################################################
 # 배포: GitHub Actions cd.yml의 fastapi-deploy 잡이 이 파일을 /etc/systemd/system에 설치/갱신한다.
 [Unit]
 Description=StudyBridge FastAPI AI server (EC2)
