@@ -196,7 +196,8 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
 
   // 복습 필요 분석(AI) — 결과 캐싱(재클릭 토글), 로딩/에러 분리, 중복 호출 방지
   const [rnOpen, setRnOpen] = useState(false);
-  const [rnText, setRnText] = useState('');
+  // DB 에 저장된 분석(note.reviewNeededText)이 있으면 그것으로 시작 — 새로고침 후에도 유지, 재호출 없음.
+  const [rnText, setRnText] = useState(note.reviewNeededText || '');
   const [rnLoading, setRnLoading] = useState(false);
   const [rnError, setRnError] = useState('');
   const handleReviewNeeded = async () => {
@@ -246,31 +247,35 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
     finally { setMemoSaving(false); }
   };
 
-  // 학습 왕복 루프: 복습 추천일 계산 → 플래너(주간일정)에 등록
+  // 복습 일정 등록: DB 저장 추천일(note.recommendedReviewDate)로 주간 일정(todos)에 등록. ai07 재호출 없음.
+  //  · 서버 idempotent(같은 오답노트·날짜 → 기존 row, alreadyRegistered) → "이미 등록되어 있습니다" 정상 상태
+  //  · 성공 문구는 서버가 row 를 재조회한 응답(todoId)에만 띄운다. 실패/타임아웃은 오류 문구 + finally 에서 로딩 해제.
   const [schedLoading, setSchedLoading] = useState(false);
-  const [schedDone, setSchedDone] = useState('');
+  const [schedDone, setSchedDone] = useState(
+    note.reviewScheduled ? `${note.reviewScheduledDate || note.recommendedReviewDate} 주간 일정에 이미 등록되어 있습니다.` : ''
+  );
+  const [schedError, setSchedError] = useState(false);
   const handleRegisterReview = async () => {
     if (schedLoading) return;
     setSchedLoading(true);
     setSchedDone('');
+    setSchedError(false);
     try {
-      const wrongCount = (note.wrongCount ?? 0) + (note.unansweredCount ?? 0);
-      const rec = await learningLoopService.recommendReview({
-        wrongNoteId: noteId(note),
-        materialId: note.sourceMaterialId,
-        difficulty: note.difficulty,
-        wrongCount,
-      });
       const res = await learningLoopService.registerReviewSchedule({
         wrongNoteId: noteId(note),
-        materialId: note.sourceMaterialId,
         title: `[복습] ${note.sourceName || note.title || '오답'} 오답 복습`,
-        scheduledDate: rec?.recommendedReviewDate,
-        reason: rec?.reviewReason,
       });
-      setSchedDone(`${res?.scheduledDate || rec?.recommendedReviewDate} 주간 일정에 복습이 등록되었습니다.`);
-    } catch {
-      setSchedDone('복습 일정 등록에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+      if (!res || res.todoId == null) {
+        throw new Error('등록 결과를 확인하지 못했습니다.');
+      }
+      setSchedDone(res.alreadyRegistered
+        ? `${res.scheduledDate} 주간 일정에 이미 등록되어 있습니다.`
+        : `${res.scheduledDate} 주간 일정에 복습이 등록되었습니다.`);
+      onMemoSaved?.(); // 목록 재조회 → DB 기준 reviewScheduled/복습 필요 상태 갱신
+    } catch (e) {
+      const msg = e?.response?.data?.message || e?.message || '';
+      setSchedError(true);
+      setSchedDone(`복습 일정 등록에 실패했습니다. ${msg ? `(${msg}) ` : ''}잠시 후 다시 시도해 주세요.`);
     } finally {
       setSchedLoading(false);
     }
@@ -292,6 +297,16 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
             {(note.unansweredCount ?? 0) > 0 && <> · <span style={{ color: '#B45309', fontWeight: 700 }}>미응답 {note.unansweredCount}개</span></>}
           </div>
           <div>복습 필요: {note.reviewCount ?? ((note.wrongCount ?? 0) + (note.unansweredCount ?? 0))}개</div>
+          {/* 복습 필요 판정 = DB(review_notes.recommended_review_date + todos 등록/완료 상태) 기준 */}
+          {note.recommendedReviewDate && (
+            <div>
+              추천 복습일: {note.recommendedReviewDate}
+              {note.reviewCompleted ? <span style={{ marginLeft: '6px', color: '#15803D', fontWeight: 700 }}>복습 완료</span>
+                : note.reviewNeeded ? <span style={{ marginLeft: '6px', color: '#DC2626', fontWeight: 700 }}>복습 필요</span>
+                : null}
+              {note.reviewScheduled && !note.reviewCompleted && <span style={{ marginLeft: '6px', color: '#2563EB', fontWeight: 700 }}>일정 등록됨</span>}
+            </div>
+          )}
           <div>난이도: {DIFFICULTY_LABEL[note.difficulty] || note.difficulty || '-'}</div>
           <div>생성일: {formatDate(note.createdAt)}</div>
         </div>
@@ -312,7 +327,7 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
 
       {/* 복습 일정 등록 결과 안내 */}
       {schedDone && (
-        <div style={{ marginTop: '10px', fontSize: '13px', color: '#15803D', fontWeight: 600 }}>
+        <div style={{ marginTop: '10px', fontSize: '13px', color: schedError ? '#B91C1C' : '#15803D', fontWeight: 600 }}>
           {schedDone}
         </div>
       )}

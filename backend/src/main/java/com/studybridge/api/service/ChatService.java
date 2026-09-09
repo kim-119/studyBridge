@@ -260,12 +260,24 @@ public class ChatService {
                         requestBody.put("enableHallucinationValidation",
                                         request.getEnableHallucinationValidation() != null ? request.getEnableHallucinationValidation() : Boolean.TRUE);
                 }
-                // 토론 논제/구조 설정 — 프론트 → FastAPI로 유실 없이 패스스루 (없으면 null)
-                requestBody.put("debateConfig", request.getDebateConfig());
-                // 소크라테스 문답 설정 — 프론트 → FastAPI로 유실 없이 패스스루 (없으면 null)
-                requestBody.put("socraticConfig", request.getSocraticConfig());
-                // 상황극 설정 — 프론트 → FastAPI로 유실 없이 패스스루 (없으면 null)
-                requestBody.put("simulationConfig", request.getSimulationConfig());
+                // ── 모드별 설정(단일 지점): 요청 값 > 방 저장값(mode_config_json) > 기본값 ─────────────
+                //  · 현재 모드의 설정만 실어 보낸다 → 이전 모드 설정이 payload 에 남지 않는다.
+                //  · enum 문자열은 LearningModeContract 가 ai07 canonical 값으로 정규화한다.
+                //  · stream/non-stream(fallback) 모두 이 body 를 그대로 쓴다(AiMultiChatFailoverService 는 body 를 재구성하지 않음).
+                Map<String, Object> roomModeCfg = parseRoomModeConfig(room);
+                if ("debate".equals(effectiveLearningMode)) {
+                        Map<String, Object> debateCfg = LearningModeContract.buildDebateConfig(
+                                        request.getDebateStrength(), request.getDebateConfig(), subMap(roomModeCfg, "debateConfig"));
+                        requestBody.put("debateConfig", debateCfg);
+                        // 토론 강도는 top-level 로도 전달(ai07 resolve_strength 1순위). 논제 = message 자체(별도 topic 필드 없음).
+                        requestBody.put("debateStrength", debateCfg.get("debateStrength"));
+                } else if ("socratic".equals(effectiveLearningMode)) {
+                        requestBody.put("socraticConfig", LearningModeContract.buildSocraticConfig(
+                                        request.getSocraticConfig(), subMap(roomModeCfg, "socraticConfig")));
+                } else if ("simulation".equals(effectiveLearningMode)) {
+                        requestBody.put("simulationConfig", LearningModeContract.buildSimulationConfig(
+                                        request.getSimulationConfig(), subMap(roomModeCfg, "simulationConfig")));
+                }
                 requestBody.put("showFinalSynthesis", request.getShowFinalSynthesis() != null ? request.getShowFinalSynthesis() : false);
                 requestBody.put("personality", requestPersonality);
                 // 정규 성격 key + temperature(요청 personalityStyle 우선, 없으면 personality에서 유도).
@@ -334,14 +346,26 @@ public class ChatService {
                 if (request.getScenarioId() != null && !request.getScenarioId().isBlank()) {
                         requestBody.put("scenarioId", request.getScenarioId());
                 }
-                if (request.getSelectedChoice() != null && !request.getSelectedChoice().isBlank()) {
-                        requestBody.put("selectedChoice", request.getSelectedChoice());
+                Map<String, Object> selectedChoice = LearningModeContract.normalizeSelectedChoice(request.getSelectedChoice());
+                if (selectedChoice != null) {
+                        requestBody.put("selectedChoice", selectedChoice); // ai07 계약: 객체({choiceId,label})
                 }
                 if (request.getPreviousChoices() != null && !request.getPreviousChoices().isEmpty()) {
                         requestBody.put("previousChoices", request.getPreviousChoices());
                 }
                 if (request.getTurnIndex() != null) {
                         requestBody.put("turnIndex", request.getTurnIndex());
+                }
+                // ── 세션 유지(소크라테스/상황극): 같은 sessionId + 상태 echo → 짧은 답변("응", "덮어써져")이 새 세션으로 가지 않는다 ──
+                //  ai07 resolve_session_id: 명시 sessionId > *State.sessionId > room-{roomId}:{mode}.
+                if (request.getSessionId() != null && !request.getSessionId().isBlank()) {
+                        requestBody.put("sessionId", request.getSessionId());
+                }
+                if (request.getSocraticState() != null && !request.getSocraticState().isEmpty()) {
+                        requestBody.put("socraticState", request.getSocraticState());
+                }
+                if (request.getTopicSelected() != null) {
+                        requestBody.put("topicSelected", request.getTopicSelected());
                 }
                 // 답변 길이 사실상 무제한: FastAPI가 인식하면 사용, 아니면 무시(가산적 패스스루).
                 requestBody.put("answerLength", "unlimited");
@@ -558,9 +582,41 @@ public class ChatService {
                         }
                 }
 
+                // ai07 신계약 필드(세션/상태/가드) — non-stream 폴백도 stream 의 all_complete 와 같은 정보를 프론트에 준다.
+                Map<String, Object> rawSocraticState = asMap(response, "socraticState");
+                Map<String, Object> rawSimulationState = asMap(response, "simulationState");
+                Map<String, Object> rawDebateState = asMap(response, "debateState");
+                Map<String, Object> rawDebateResult = asMap(response, "debateResult");
+                Object rawBlocked = response != null ? response.get("blocked") : null;
+                String guardCode = response != null && response.get("code") != null ? response.get("code").toString() : null;
+                if (guardCode != null) {
+                        log.info("[CHAT MODE-GUARD] roomId={} mode={} code={} status={} — 모드 안내 상태로 전달(기본 답변 렌더 금지)",
+                                        roomId, responseLearningMode, guardCode, response.get("status"));
+                }
                 return ChatDTO.MultiChatResponse.builder()
                                 .mode(responseMode)
                                 .learningMode(responseLearningMode)
+                                .sessionId(response != null && response.get("sessionId") != null ? response.get("sessionId").toString() : null)
+                                .socraticState(rawSocraticState)
+                                .simulationState(rawSimulationState)
+                                .debateState(rawDebateState)
+                                .turnIndex(response != null ? asInteger(response.get("turnIndex")) : null)
+                                .status(response != null && response.get("status") != null ? response.get("status").toString() : null)
+                                .code(guardCode)
+                                .blocked(rawBlocked instanceof Boolean ? (Boolean) rawBlocked : (guardCode != null ? Boolean.TRUE : null))
+                                .message(response != null && response.get("message") != null ? response.get("message").toString() : null)
+                                .topic(response != null && response.get("topic") != null ? response.get("topic").toString() : null)
+                                .debateStrength(response != null && response.get("debateStrength") != null ? response.get("debateStrength").toString() : null)
+                                .debateResult(rawDebateResult)
+                                .debatePositions(response != null && response.get("debatePositions") instanceof List
+                                                ? (List<Object>) response.get("debatePositions") : null)
+                                .answers(response != null && response.get("answers") instanceof List
+                                                ? (List<Object>) response.get("answers") : null)
+                                .questionIntensity(response != null && response.get("questionIntensity") != null ? response.get("questionIntensity").toString() : null)
+                                .hintPolicy(response != null && response.get("hintPolicy") != null ? response.get("hintPolicy").toString() : null)
+                                .scenarioType(response != null && response.get("scenarioType") != null ? response.get("scenarioType").toString() : null)
+                                .difficulty(response != null && response.get("difficulty") != null ? response.get("difficulty").toString() : null)
+                                .choiceCount(response != null ? asInteger(response.get("choiceCount")) : null)
                                 .messages(discussionMessages.isEmpty() ? null : discussionMessages)
                                 .finalSynthesis(finalSynthesis)
                                 .replies(replies)
@@ -1468,6 +1524,31 @@ public class ChatService {
                                 .toolsFailed(asObjectList(src.get("toolsFailed")))
                                 .qualityChecked(asBoolean(src.get("qualityChecked")))
                                 .build();
+        }
+
+        /** 방에 저장된 모드 전용 설정(mode_config_json) → Map. 없으면 빈 맵. */
+        private Map<String, Object> parseRoomModeConfig(AgentChatRoom room) {
+                String json = room != null ? room.getModeConfigJson() : null;
+                if (json == null || json.isBlank()) return new LinkedHashMap<>();
+                try {
+                        Map<String, Object> m = objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+                        return m != null ? m : new LinkedHashMap<>();
+                } catch (Exception e) {
+                        log.warn("[CHAT MODE] roomId={} mode_config_json 파싱 실패: {}", room.getId(), e.getMessage());
+                        return new LinkedHashMap<>();
+                }
+        }
+
+        @SuppressWarnings("unchecked")
+        private static Map<String, Object> subMap(Map<String, Object> m, String key) {
+                Object v = m == null ? null : m.get(key);
+                return v instanceof Map ? (Map<String, Object>) v : null;
+        }
+
+        @SuppressWarnings("unchecked")
+        private static Map<String, Object> asMap(Map<String, Object> m, String key) {
+                Object v = m == null ? null : m.get(key);
+                return v instanceof Map ? (Map<String, Object>) v : null;
         }
 
         /**

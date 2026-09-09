@@ -8,13 +8,19 @@ import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.AgentChatRoomRepository;
 import com.studybridge.api.repository.AgentRepository;
 import com.studybridge.api.repository.UserRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -23,6 +29,7 @@ public class AgentChatRoomService {
         private final AgentChatRoomRepository agentChatRoomRepository;
         private final AgentRepository agentRepository;
         private final UserRepository userRepository;
+        private final ObjectMapper objectMapper;
 
         // 멀티 에이전트 채팅방 생성
         @Transactional
@@ -48,6 +55,8 @@ public class AgentChatRoomService {
                                 .user(user)
                                 .roomName(request.getRoomName())
                                 .learningMode(normalizedLearningMode)
+                                // 현재 모드의 설정만 canonical 값으로 정규화해 저장한다(다른 모드 설정 잔존 금지).
+                                .modeConfigJson(serializeModeConfig(normalizedLearningMode, request))
                                 .build();
 
                 AgentChatRoom savedRoom = agentChatRoomRepository.save(room);
@@ -183,13 +192,57 @@ public class AgentChatRoomService {
                                                 .build())
                                 .collect(Collectors.toList());
 
+                Map<String, Object> modeCfg = parseModeConfig(room.getModeConfigJson());
                 return AgentRoomDTO.Response.builder()
                                 .roomId(room.getId())
                                 .roomName(room.getRoomName())
                                 // 기존 DB에 learning_mode가 null인 방은 basic으로 간주(마이그레이션 없이 서비스 레벨 폴백).
                                 .learningMode(normalizeLearningMode(room.getLearningMode()))
+                                .debateConfig(subMap(modeCfg, "debateConfig"))
+                                .socraticConfig(subMap(modeCfg, "socraticConfig"))
+                                .simulationConfig(subMap(modeCfg, "simulationConfig"))
                                 .agents(agentResponses)
                                 .createdAt(room.getCreatedAt() != null ? room.getCreatedAt().toString() : null)
                                 .build();
+        }
+
+        // ── 모드 전용 설정 영속화(mode_config_json) ───────────────────────────────
+        //  저장 시 LearningModeContract 로 canonical 값만 남긴다. 읽기는 ChatService.buildFastApiRequestBody 폴백과
+        //  프론트 복원(Response.*Config) 두 곳이며 모두 parseModeConfig 를 쓴다.
+        private String serializeModeConfig(String learningMode, AgentRoomDTO.CreateRequest request) {
+                Map<String, Object> cfg = new LinkedHashMap<>();
+                if ("debate".equals(learningMode)) {
+                        cfg.put("debateConfig", LearningModeContract.buildDebateConfig(null, request.getDebateConfig(), null));
+                } else if ("socratic".equals(learningMode)) {
+                        cfg.put("socraticConfig", LearningModeContract.buildSocraticConfig(request.getSocraticConfig(), null));
+                } else if ("simulation".equals(learningMode)) {
+                        cfg.put("simulationConfig", LearningModeContract.buildSimulationConfig(request.getSimulationConfig(), null));
+                } else {
+                        return null;
+                }
+                try {
+                        return objectMapper.writeValueAsString(cfg);
+                } catch (Exception e) {
+                        log.warn("[AGENT-ROOM] mode config 직렬화 실패 mode={} err={}", learningMode, e.getMessage());
+                        return null;
+                }
+        }
+
+        /** mode_config_json → Map. null/깨진 JSON 은 빈 맵. */
+        public Map<String, Object> parseModeConfig(String json) {
+                if (json == null || json.isBlank()) return new LinkedHashMap<>();
+                try {
+                        Map<String, Object> m = objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+                        return m != null ? m : new LinkedHashMap<>();
+                } catch (Exception e) {
+                        log.warn("[AGENT-ROOM] mode config 파싱 실패: {}", e.getMessage());
+                        return new LinkedHashMap<>();
+                }
+        }
+
+        @SuppressWarnings("unchecked")
+        private static Map<String, Object> subMap(Map<String, Object> m, String key) {
+                Object v = m == null ? null : m.get(key);
+                return v instanceof Map ? (Map<String, Object>) v : null;
         }
 }

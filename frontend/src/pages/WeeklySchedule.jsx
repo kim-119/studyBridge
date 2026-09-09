@@ -13,9 +13,11 @@ import { todoService } from '../services/api';
  */
 const eventColors = ['#DDF5E3', '#D9F0FF', '#FDF0D5', '#EEE3FF', '#E6FFF4'];
 
-// 플래너에서 추가된 Todo 는 text 가 '[플래너]' 로 시작한다(Todo 모델에 별도 출처 필드가 없어 접두어로 구분).
+// 플래너/복습에서 등록된 Todo 는 서버 sourceType(PLANNER | REVIEW_NOTE)으로 구분한다.
+//  (레거시 row 는 text 가 '[플래너]' 로 시작하므로 접두어 폴백을 유지한다.)
 const PLANNER_PREFIX = '[플래너]';
-const isPlannerTodo = (t) => typeof t?.text === 'string' && t.text.startsWith(PLANNER_PREFIX);
+const isPlannerTodo = (t) => t?.sourceType === 'PLANNER' || (typeof t?.text === 'string' && t.text.startsWith(PLANNER_PREFIX));
+const isReviewTodo = (t) => t?.sourceType === 'REVIEW_NOTE';
 const displayTodoText = (text) =>
   (typeof text === 'string' && text.startsWith(PLANNER_PREFIX)) ? text.slice(PLANNER_PREFIX.length).trim() : text;
 
@@ -192,6 +194,9 @@ export default function WeeklySchedule() {
                 <div key={todo.id} className={`todo-item ${todo.completed ? 'completed' : ''}`}>
                   <input type="checkbox" checked={todo.completed} onChange={() => handleToggleTodo(todo.id)} />
                   <span className="todo-text">
+                    {isReviewTodo(todo) && (
+                      <span style={{ display: 'inline-block', marginRight: '6px', padding: '1px 7px', borderRadius: '999px', backgroundColor: '#FEE2E2', color: '#B91C1C', fontSize: '11px', fontWeight: 700, verticalAlign: 'middle' }}>복습</span>
+                    )}
                     {isPlannerTodo(todo) && (
                       <span style={{ display: 'inline-block', marginRight: '6px', padding: '1px 7px', borderRadius: '999px', backgroundColor: '#DCFCE7', color: '#15803D', fontSize: '11px', fontWeight: 700, verticalAlign: 'middle' }}>플래너</span>
                     )}

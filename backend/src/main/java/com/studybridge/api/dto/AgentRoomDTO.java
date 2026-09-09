@@ -22,7 +22,7 @@ public class AgentRoomDTO {
         // 학습 진행 모드 (basic/socratic/debate/simulation). 미지정 시 basic.
         private String learningMode;
 
-        // 모드별 설정 (토론/소크라테스/상황극). 현재는 per-message로 FastAPI에 전달되며, 방 단위 영속화는 미지원.
+        // 모드별 설정 (토론/소크라테스/상황극). 방 단위(mode_config_json)로 영속화되며 채팅 턴의 폴백 설정이 된다.
         private java.util.Map<String, Object> debateConfig;
         private java.util.Map<String, Object> socraticConfig;
         private java.util.Map<String, Object> simulationConfig;
@@ -42,6 +42,10 @@ public class AgentRoomDTO {
         private String roomName;
         // 방에 저장된 학습 진행 모드 (프론트 selectAgent에서 라디오 상태 복원에 사용)
         private String learningMode;
+        // 방에 저장된 모드 전용 설정(현재 모드 것만 non-null). 프론트 selectAgent/전송 payload 복원용.
+        private java.util.Map<String, Object> debateConfig;
+        private java.util.Map<String, Object> socraticConfig;
+        private java.util.Map<String, Object> simulationConfig;
         private List<AgentDTO.Response> agents;
         private String createdAt;
     }

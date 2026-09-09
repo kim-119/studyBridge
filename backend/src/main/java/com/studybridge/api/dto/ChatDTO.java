@@ -104,9 +104,14 @@ public class ChatDTO {
         private String debateSessionId;               // 토론: 세션 id
         private Map<String, Object> simulationState;  // 상황극: 진행 상태(불투명 객체)
         private String scenarioId;                    // 상황극: 시나리오 id
-        private String selectedChoice;                // 상황극: 이번 턴에 고른 선택지
+        private Object selectedChoice;                // 상황극: 이번 턴에 고른 선택지 — ai07 계약은 객체({choiceId,label}); 문자열이면 Spring이 감싼다
         private List<Object> previousChoices;         // 상황극: 이전까지 고른 선택 이력
         private Integer turnIndex;                     // 토론/상황극 공통: 턴 인덱스
+        // ── ai07 신계약(2026-09) 세션/상태 echo: 짧은 답변이 새 세션으로 가지 않도록 같은 sessionId 를 유지한다 ──
+        private String sessionId;                     // 소크라테스/상황극 세션 id (turn_start/all_complete 가 내려준 값 그대로)
+        private Map<String, Object> socraticState;    // 소크라테스 진행 상태(불투명 객체, all_complete.socraticState echo)
+        private Boolean topicSelected;                // 토론: 논제 확정 여부(레거시 echo)
+        private String debateStrength;                // 토론 강도 light | normal | deep (top-level; debateConfig.debateStrength 와 동일)
     }
 
     @Getter
@@ -171,6 +176,26 @@ public class ChatDTO {
         private String errorMessage;
         private String errorCode;
         private Boolean success;
+        // ── ai07 신계약 패스스루(non-stream 폴백도 stream 과 같은 세션/가드 정보를 준다) ──
+        private String sessionId;                     // 소크라테스/상황극 세션 id
+        private Map<String, Object> socraticState;
+        private Map<String, Object> simulationState;
+        private Map<String, Object> debateState;
+        private Integer turnIndex;
+        private String status;                        // COMPLETED | BLOCKED ...
+        private String code;                          // NON_LEARNING_INPUT 등 모드 가드/모드별 오류 코드
+        private Boolean blocked;                      // true 면 답변 카드가 아니라 모드 안내 상태로 렌더링
+        private String message;                       // 가드/안내 문구
+        private String topic;                         // 토론: 논제(= 사용자 메시지)
+        private String debateStrength;
+        private Map<String, Object> debateResult;
+        private List<Object> debatePositions;
+        private List<Object> answers;                 // ai07 answers 원본(stageType/speechType 포함)
+        private String questionIntensity;
+        private String hintPolicy;
+        private String scenarioType;
+        private String difficulty;
+        private Integer choiceCount;
     }
 
     @Getter

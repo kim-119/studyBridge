@@ -4,7 +4,7 @@ import {
   Plus, Save, Download, Archive, Trash2, NotebookPen, FileText, Clock,
   CalendarDays, Layers, ChevronDown, ChevronUp, CalendarPlus, ExternalLink,
 } from 'lucide-react';
-import { plannerService, todoService } from '../services/api';
+import { plannerService } from '../services/api';
 import { cleanLearningOrNull } from '../utils/learningContent';
 
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
@@ -265,42 +265,28 @@ export default function Planner() {
       : '';
 
   // Todo 모델이 text 한 필드뿐이라, 출처/과목/학습목표를 text 에 담는다. ('[플래너]' 접두어로 주간일정에서 badge 표시)
-  const buildScheduleText = () => {
-    const goal = (form.content || '').trim() || (form.title || '').trim();
-    const subject = (form.subject || '').trim();
-    const core = subject ? `${subject} - ${goal}` : goal;
-    return `[플래너] ${core}`.slice(0, 250);
-  };
-
   const handleAddToSchedule = async () => {
     const date = buildScheduleDate();
     if (!date) { alert('날짜(년/월/일)를 먼저 입력하세요.'); return; }
-    const goal = (form.content || '').trim() || (form.title || '').trim();
-    if (!goal) { alert('제목 또는 학습 목표를 입력하세요.'); return; }
-
-    const text = buildScheduleText();
+    if (!(form.title || '').trim()) { alert('플래너 제목을 입력하세요. (주간 일정 제목으로 그대로 사용됩니다)'); return; }
     try {
       setBusy('schedule');
-      const savedUserId = localStorage.getItem('userId');
-      // 중복 방지: 같은 날짜 + 같은 제목이 이미 등록돼 있으면 막는다.
-      const existing = await todoService.getTodos(savedUserId);
-      const dup = Array.isArray(existing) && existing.some(
-        (t) => (t.startDate ? String(t.startDate).split('T')[0] : '') === date && t.text === text
-      );
-      if (dup) { alert('이미 주간일정에 추가된 플래너입니다.'); setBusy(''); return; }
-
-      // 기존 createTodo 그대로 사용 (text/startDate/endDate/completed)
-      await todoService.createTodo(savedUserId, {
-        text,
-        startDate: `${date}T00:00:00`,
-        endDate: `${date}T23:59:59`,
-        completed: false,
-      });
+      const id = await persist();
+      const res = await plannerService.registerSchedule(id);
+      if (!res || res.todoId == null) {
+        throw new Error('주간 일정 등록 결과를 확인하지 못했습니다.');
+      }
+      await refreshList();
       setAddedToSchedule(true);
-      alert('주간일정에 추가되었습니다.');
+      if (res.alreadyRegistered) {
+        alert(`이미 주간 일정에 등록되어 있습니다. (${res.scheduledDate} · ${res.title})`);
+      } else {
+        alert(`주간 일정에 추가되었습니다. (${res.scheduledDate} · ${res.title})`);
+      }
     } catch (e) {
       console.error('주간일정 추가 실패:', e);
-      alert('주간일정 추가에 실패했습니다. 다시 시도해 주세요.');
+      const msg = e?.response?.data?.message || e?.message || '주간일정 추가에 실패했습니다. 다시 시도해 주세요.';
+      alert(`주간일정 추가에 실패했습니다: ${msg}`);
     } finally { setBusy(''); }
   };
 

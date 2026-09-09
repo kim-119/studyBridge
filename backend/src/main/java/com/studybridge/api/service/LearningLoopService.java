@@ -30,7 +30,7 @@ import java.util.Map;
  *  2) queryEvents         : materialId/documentId/source 기준으로 이벤트 이력을 조회한다.
  *  3) assembleContext     : 다음 AI 호출에 붙일 learningLoopContext 패키지를 구성한다.
  *  4) recommendReview     : 난이도/오답 수 기반으로 복습 추천일을 결정적으로 계산한다.
- *  5) registerReviewSchedule : 추천 복습일을 플래너(주간일정)에 등록한다(+이벤트 기록).
+ *  5) (복습 일정 등록은 ScheduleRegistrationService 로 이관 — 주간 일정 = todos 테이블)
  *
  * 모든 기록은 본래 학습 기능을 깨뜨리지 않도록 best-effort 로 동작한다.
  */
@@ -188,8 +188,10 @@ public class LearningLoopService {
     // 4) 복습 추천일 계산 (결정적)
     // ------------------------------------------------------------------
 
-    public Map<String, Object> recommendReview(Long userId, Long materialId, Long wrongNoteId, String difficulty,
-                                               Integer wrongCount) {
+    /** 결정적 복습 추천(난이도/오답수 → 간격·날짜·근거). ReviewNoteService/ScheduleRegistrationService 와 공유하는 단일 규칙. */
+    public record ReviewRecommendation(int days, LocalDate date, String reason) {}
+
+    public static ReviewRecommendation computeReviewRecommendation(String difficulty, Integer wrongCount, LocalDate base) {
         String diff = difficulty == null ? "" : difficulty.trim().toLowerCase();
         int days;
         String reason;
@@ -207,7 +209,27 @@ public class LearningLoopService {
         else if (days >= 7) reason = "비교적 쉬운 내용이라 일주일 뒤 가볍게 다시 확인하면 좋습니다.";
         else reason = "기억이 흐려지기 전, 며칠 안에 한 번 더 복습하면 정착에 효과적입니다.";
 
-        LocalDate date = LocalDate.now().plusDays(days);
+        LocalDate from = base != null ? base : LocalDate.now();
+        return new ReviewRecommendation(days, from.plusDays(days), reason);
+    }
+
+    public Map<String, Object> recommendReview(Long userId, Long materialId, Long wrongNoteId, String difficulty,
+                                               Integer wrongCount) {
+        // 오답노트가 지정됐고 DB 에 추천일이 이미 있으면 그 값을 그대로 돌려준다(DB 가 source of truth).
+        ReviewNote stored = wrongNoteId != null
+                ? reviewNoteRepository.findByReviewNoteIdAndUserId(wrongNoteId, userId).orElse(null) : null;
+        ReviewRecommendation rec;
+        if (stored != null && stored.getRecommendedReviewDate() != null) {
+            rec = new ReviewRecommendation(
+                    stored.getRecommendReviewInDays() != null ? stored.getRecommendReviewInDays() : 0,
+                    stored.getRecommendedReviewDate(),
+                    stored.getReviewReason() != null ? stored.getReviewReason() : "");
+        } else {
+            rec = computeReviewRecommendation(difficulty, wrongCount, LocalDate.now());
+        }
+        int days = rec.days();
+        String reason = rec.reason();
+        LocalDate date = rec.date();
 
         // 추천 자체도 이벤트로 남긴다(루프 추적).
         recordSafe(LearningLoopEvent.builder()
@@ -235,88 +257,8 @@ public class LearningLoopService {
     // 5) 복습 일정 → 플래너(주간일정) 등록
     // ------------------------------------------------------------------
 
-    @Transactional
-    public Map<String, Object> registerReviewSchedule(Long userId, Long materialId, Long wrongNoteId,
-                                                      String title, LocalDate scheduledDate, String reason) {
-        // 소유권 검증
-        if (materialId != null) {
-            Material m = materialRepository.findById(materialId).orElse(null);
-            if (m != null && !userId.equals(m.getUserId())) {
-                throw new SecurityException("해당 자료에 대한 권한이 없습니다.");
-            }
-        }
-        ReviewNote note = null;
-        if (wrongNoteId != null) {
-            note = reviewNoteRepository.findByReviewNoteIdAndUserId(wrongNoteId, userId)
-                    .orElseThrow(() -> new SecurityException("해당 오답노트에 대한 권한이 없습니다."));
-            if (materialId == null) materialId = note.getSourceMaterialId();
-        }
-
-        LocalDate date = scheduledDate != null ? scheduledDate : LocalDate.now().plusDays(3);
-        String safeTitle = buildReviewTitle(title, note);
-        String content = (reason != null && !reason.isBlank())
-                ? reason
-                : "이전 학습 내용을 복습합니다.";
-
-        Planner planner = Planner.builder()
-                .userId(userId)
-                .title(safeTitle)
-                .year(date.getYear())
-                .month(date.getMonthValue())
-                .day(date.getDayOfMonth())
-                .plannerDate(date)
-                .dayOfWeek(koreanDayOfWeek(date))
-                .studyType("강의 복습")
-                .priority("높음")
-                .content(content)
-                .materialId(materialId)
-                .sourceType("REVIEW_AUTO")
-                .sourceMaterialId(materialId)
-                .build();
-        planner = plannerRepository.save(planner);
-
-        recordSafe(LearningLoopEvent.builder()
-                .userId(userId)
-                .eventType(LearningEventType.PLANNER_REVIEW_CREATED)
-                .sourceType(LearningSourceType.PLANNER)
-                .sourceId(planner.getId())
-                .materialId(materialId)
-                .wrongNoteId(wrongNoteId)
-                .plannerId(planner.getId())
-                .recommendedReviewDate(date)
-                .aiOutputSummary(safeTitle)
-                .userAction("REVIEW_SCHEDULED")
-                .build());
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("plannerId", planner.getId());
-        out.put("title", safeTitle);
-        out.put("scheduledDate", date.toString());
-        return out;
-    }
-
-    /** 복습 일정 제목. 교수명/연도/무의미 문자열을 임의로 넣지 않는다. */
-    private String buildReviewTitle(String requested, ReviewNote note) {
-        if (requested != null && !requested.isBlank()) {
-            String t = requested.trim();
-            return t.startsWith("[복습]") ? t : "[복습] " + t;
-        }
-        String src = note != null ? note.getSourceTitle() : null;
-        if (src == null || src.isBlank()) src = "학습 내용";
-        return "[복습] " + src.trim() + " 복습";
-    }
-
-    private String koreanDayOfWeek(LocalDate date) {
-        switch (date.getDayOfWeek()) {
-            case MONDAY: return "월";
-            case TUESDAY: return "화";
-            case WEDNESDAY: return "수";
-            case THURSDAY: return "목";
-            case FRIDAY: return "금";
-            case SATURDAY: return "토";
-            default: return "일";
-        }
-    }
+    // 5) 복습 일정 → 주간 일정(todos) 등록은 ScheduleRegistrationService 가 소유한다(LearningLoopController 가 직접 호출).
+    //    (과거엔 여기서 planners 에 REVIEW_AUTO 행을 만들어 주간 일정 화면(todos)에 나타나지 않았다.)
 
     // ------------------------------------------------------------------
     // 헬퍼

@@ -1337,6 +1337,12 @@ export const plannerService = {
     const res = await api.put(`/api/planners/${id}`, data);
     return res.data;
   },
+  // 플래너 → 주간 일정(todos) 등록. 제목 = planners.title, 날짜 = year/month/day (서버 검증). idempotent.
+  //  → { todoId, title, scheduledDate, created, alreadyRegistered, plannerId, hasTimeTable, ... } (201 생성 / 200 기존)
+  registerSchedule: async (plannerId) => {
+    const res = await api.post(`/api/planners/${plannerId}/schedule/register`, {});
+    return res.data;
+  },
   // type 미지정 시 전체. 'ROADMAP'/'USER' 로 원천 필터 가능(백엔드 ?type 지원).
   getPlanners: async (type) => {
     const query = type ? `?type=${encodeURIComponent(type)}` : '';
@@ -1566,8 +1572,9 @@ export const learningLoopService = {
     const res = await api.post('/api/learning-loop/review-recommendation', body);
     return res.data;
   },
-  // 복습 일정을 플래너(주간일정)에 등록. body { materialId, wrongNoteId, title, scheduledDate, reason }
-  // → { plannerId, title, scheduledDate }
+  // 복습 일정을 주간 일정(todos)에 등록. body { wrongNoteId (필수), title (선택) }
+  //  서버가 review_notes.recommended_review_date(DB)를 쓴다 — ai07 재호출 없음, idempotent.
+  // → { todoId, title, scheduledDate, created, alreadyRegistered, recommendedReviewDate, ... }
   registerReviewSchedule: async (body) => {
     const res = await api.post('/api/learning-loop/review-schedule', body);
     return res.data;

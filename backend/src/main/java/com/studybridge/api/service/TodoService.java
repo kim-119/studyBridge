@@ -70,6 +70,9 @@ public class TodoService {
                 .startDate(todo.getStartDate())
                 .endDate(todo.getEndDate())
                 .createdAt(todo.getCreatedAt())
+                .sourceType(todo.getSourceType())
+                .sourceId(todo.getSourceId())
+                .scheduleDate(todo.getScheduleDate())
                 .build();
     }
 }

@@ -259,26 +259,17 @@ const isDebateModeValue = (value) => DEBATE_MODE_VALUES.has(String(value || '').
 const SIMULATION_MODE_VALUES = new Set(['simulation', '상황극', '상황극 모드', '시뮬레이션', '시뮬레이션 모드']);
 const isSimulationModeValue = (value) => SIMULATION_MODE_VALUES.has(String(value || '').trim().toLowerCase());
 
-// 토론 모드 논제/구조 설정 기본값 (프론트 → Spring → FastAPI)
+// ── 학습 모드 계약(프론트 → Spring → ai07) ─────────────────────────────────
+//  모드 enum 은 basic / socratic / debate / simulation 하나뿐이다. 표시명(상황극/토론 강도 등)과 무관하게
+//  전송 값은 ai07 canonical 값만 쓴다(Spring LearningModeContract 가 최종 정규화).
+//   · simulation : scenarioType realistic|interview|project, difficulty easy|normal|hard, choiceCount 2..4
+//   · debate     : debateStrength light|normal|deep (논제 = 사용자 메시지, 별도 topic 필드 없음)
+//   · socratic   : questionIntensity gentle|normal|intensive, hintPolicy concept|example|choice|counterexample|step
 const DEFAULT_SIMULATION_CONFIG = {
   scenarioType: 'realistic',
-  domain: 'auto',
-  interactionStyle: 'choice_based',
   difficulty: 'normal',
-  userRoleMode: 'auto',
   choiceCount: 3,
-  includeChoices: true,
-  includeConsequences: true,
-  includeConceptMapping: true,
-  includeMisconceptionTrap: true,
-  includeReflectionQuestion: true,
-  includeNextScenario: true,
-  simulationDepth: 'normal',
-  outputStages: [
-    'SCENARIO_SETUP', 'USER_ROLE', 'SITUATION_CONTEXT', 'CHOICES',
-    'CONSEQUENCE_PREVIEW', 'CONCEPT_MAPPING', 'MISCONCEPTION_TRAP',
-    'REFLECTION_QUESTION', 'NEXT_SCENARIO',
-  ],
+  userRoleMode: 'auto', // 사용자 역할은 ai07 가 장면에서 생성(userRole). 명시 선택이 생기면 userRole 로 그대로 전달된다.
 };
 
 const SIMULATION_STAGE_META = {
@@ -299,23 +290,9 @@ const SIMULATION_STAGE_META = {
   SUMMARY: { title: '상황극 요약', className: 'context', color: '#64748b' },
 };
 
+// 토론 설정: 강도만. 논제 방식/직접 입력 논제 UI·state 는 제거됐다(사용자 채팅 message 가 곧 논제).
 const DEFAULT_DEBATE_CONFIG = {
-  topicMode: 'auto',
-  manualTopic: '',
-  motionType: 'learning_strategy',
-  stancePolicy: 'agent1_con_agent2_pro_agent3_neutral',
-  issueAxes: ['개념정확성', '학습효율', '실무적용', '오개념위험'],
-  debateDepth: 'normal',
-  debateStyle: 'academic_practical',
-  includeExamples: true,
-  includeCounterexamples: true,
-  includeStudyPlan: true,
-  judgeCriteria: ['논리성', '근거성', '반박력', '학습가치', '실무성'],
-  outputStages: [
-    'TOPIC', 'CON_OPENING', 'PRO_OPENING', 'NEUTRAL_ANALYSIS',
-    'CON_REBUTTAL', 'PRO_REBUTTAL', 'NEUTRAL_CHECK',
-    'CON_CLOSING', 'PRO_CLOSING', 'NEUTRAL_JUDGEMENT',
-  ],
+  debateStrength: 'normal',
 };
 
 // 토론 설정 모달용 스타일/헬퍼
@@ -365,34 +342,42 @@ const sanitizeQuestion = (raw) => {
     .replace(/^\s+|\s+$/g, '');
 };
 
-// 소크라테스 문답 설정 기본값
+// 소크라테스 문답 설정 기본값(ai07 가 실제로 읽는 두 값만)
 const DEFAULT_SOCRATIC_CONFIG = {
-  goal: 'concept_understanding',
-  diagnosisMode: 'quick',
   questionIntensity: 'normal',
-  hintPolicy: 'step_by_step',
-  answerRevealPolicy: 'final_only',
-  questionTypes: ['definition', 'comparison', 'why', 'application', 'metacognition'],
-  progressFlow: ['diagnosis', 'core_concept', 'misconception_check', 'hint', 'application', 'self_explanation', 'summary'],
-  feedbackStyle: 'concept_check',
-  maxQuestionsPerTurn: 3,
-  requireUserAnswerFirst: true,
-  includeExamples: true,
-  includeCounterexamples: true,
-  includeFinalSummary: true,
-  includeNextStudyPlan: true,
-  trackMisconceptions: true,
+  hintPolicy: 'concept',
 };
 
 // ── 스터디방 학습 방식(모드) 표시용 라벨 매핑 ──
 // 실제 코드 enum 값 기준(생성 모달 칩 value와 동일). 알 수 없는 값은 원문을 그대로 노출.
 const labelOr = (map, v, fallback) => map[String(v || '').toLowerCase()] || (v ? String(v) : fallback);
-const TOPIC_MODE_LABELS = { auto: '자동 생성', manual: '직접 입력' };
-const DEBATE_DEPTH_LABELS = { light: '가볍게', normal: '보통', deep: '깊게' };
-const QUESTION_INTENSITY_LABELS = { gentle: '부드럽게', normal: '보통', strict: '집중적으로' };
-const HINT_STYLE_LABELS = { step_by_step: '단계별 힌트', example_hint: '예시 힌트', partial_answer_when_stuck: '막히면 일부 공개' };
-const SCENARIO_TYPE_LABELS = { realistic: '현실 상황', roleplay: '면접 상황', lab_scenario: '프로젝트 상황' };
+const DEBATE_STRENGTH_LABELS = { light: '가볍게', normal: '보통', deep: '깊게' };
+const QUESTION_INTENSITY_LABELS = { gentle: '부드럽게', normal: '보통', intensive: '집중적으로' };
+const HINT_STYLE_LABELS = { concept: '개념 힌트', example: '예시 힌트', choice: '선택지 힌트', counterexample: '반례 힌트', step: '단계별 힌트' };
+const SCENARIO_TYPE_LABELS = { realistic: '현실', interview: '면접', project: '프로젝트' };
 const DIFFICULTY_LABELS = { easy: '쉬움', normal: '보통', hard: '어려움' };
+// 생성 모달 칩 옵션(단일 출처) — 라벨과 전송값을 여기서만 묶는다.
+const DEBATE_STRENGTH_OPTIONS = Object.entries(DEBATE_STRENGTH_LABELS).map(([v, t]) => ({ v, t }));
+const QUESTION_INTENSITY_OPTIONS = Object.entries(QUESTION_INTENSITY_LABELS).map(([v, t]) => ({ v, t }));
+const HINT_STYLE_OPTIONS = Object.entries(HINT_STYLE_LABELS).map(([v, t]) => ({ v, t }));
+const SCENARIO_TYPE_OPTIONS = Object.entries(SCENARIO_TYPE_LABELS).map(([v, t]) => ({ v, t }));
+const DIFFICULTY_OPTIONS = Object.entries(DIFFICULTY_LABELS).map(([v, t]) => ({ v, t }));
+const CHOICE_COUNT_OPTIONS = [2, 3, 4];
+// ai07 모드 가드/모드 전용 오류 코드 → 안내 문구. 답변 카드가 아니라 모드 안내 상태로 렌더한다.
+const MODE_GUARD_MESSAGES = {
+  NON_LEARNING_INPUT: '학습할 개념, 문제, 비교 논제 또는 연습 상황을 입력해 주세요.',
+};
+const MODE_LABELS = { socratic: '소크라테스', debate: '토론', simulation: '상황극', basic: '기본' };
+// 이벤트/응답이 모드 가드(BLOCKED) 또는 모드 전용 오류인지 판정. 기본 답변처럼 렌더하면 안 되는 경우.
+const isModeGuardPayload = (d) => !!d && (
+  d.blocked === true || String(d.status || '').toUpperCase() === 'BLOCKED' || (!!d.code && !!MODE_GUARD_MESSAGES[d.code])
+);
+const modeGuardText = (d, mode) => {
+  const code = d?.code;
+  const base = (d && (d.message || d.content)) || MODE_GUARD_MESSAGES[code] || '이 모드에서 처리할 수 없는 입력입니다.';
+  const label = MODE_LABELS[mode] || '';
+  return label ? `[${label} 모드] ${base}` : base;
+};
 
 // ── 추천 방 설정 프리셋 (소크라테스 / 토론 / 상황극) ────────────────────────────
 // 카드 클릭 시 모드 세부 설정(질문 강도·힌트·토론 깊이·상황 유형 등)과 함께 에이전트 3명을
@@ -402,7 +387,7 @@ const SOCRATIC_ROOM_PRESETS = [
   {
     id: 'socratic-basic', label: '추천 방 설정 1', title: '기본 개념 유도형', mode: 'socratic',
     roomName: '000-소크라테스', purpose: '핵심 개념을 질문으로 스스로 이해',
-    questionIntensity: 'normal', hintPolicy: 'step_by_step',
+    questionIntensity: 'normal', hintPolicy: 'step',
     agents: [
       { name: '개념 유도자', role: '핵심 개념을 질문으로 끌어내는 역할', tone: '친근함', learnerLevel: 'BACHELOR', additionalRequest: '정답을 바로 말하지 말고 쉬운 질문으로 사용자의 사고를 유도해줘.' },
       { name: '오개념 점검자', role: '사용자 답변에서 오개념과 논리적 빈틈을 찾는 역할', tone: '솔직함', learnerLevel: 'MASTER', additionalRequest: '사용자의 답변이 애매하거나 틀렸으면 근거를 들어 다시 질문해줘.' },
@@ -412,7 +397,7 @@ const SOCRATIC_ROOM_PRESETS = [
   {
     id: 'socratic-exam', label: '추천 방 설정 2', title: '시험 대비 압박형', mode: 'socratic',
     roomName: '000-소크라테스', purpose: '시험처럼 집요하게 개념 점검',
-    questionIntensity: 'strict', hintPolicy: 'partial_answer_when_stuck',
+    questionIntensity: 'intensive', hintPolicy: 'concept',
     agents: [
       { name: '출제자', role: '시험에 나올 법한 핵심 질문을 던지는 역할', tone: '솔직함', learnerLevel: 'BACHELOR', additionalRequest: '시험 상황처럼 핵심 개념을 집요하게 질문해줘.' },
       { name: '반례 질문자', role: '사용자 답변에 반례와 예외 상황을 제시하는 역할', tone: '냉소적', learnerLevel: 'MASTER', additionalRequest: '사용자의 답변이 성립하지 않는 조건, 예외, 반례를 질문해줘.' },
@@ -422,7 +407,7 @@ const SOCRATIC_ROOM_PRESETS = [
   {
     id: 'socratic-intro', label: '추천 방 설정 3', title: '입문자 친화형', mode: 'socratic',
     roomName: '000-소크라테스', purpose: '쉬운 질문과 비유로 입문자 유도',
-    questionIntensity: 'gentle', hintPolicy: 'example_hint',
+    questionIntensity: 'gentle', hintPolicy: 'example',
     agents: [
       { name: '쉬운 질문자', role: '쉬운 질문부터 시작하는 역할', tone: '친근함', learnerLevel: 'INTRO', additionalRequest: '초보자도 답할 수 있는 쉬운 질문부터 시작해줘.' },
       { name: '비유 설명자', role: '어려운 개념을 비유로 풀어주는 역할', tone: '독특함', learnerLevel: 'BACHELOR', additionalRequest: '어려운 용어는 생활 비유와 간단한 예시로 설명해줘.' },
@@ -432,7 +417,7 @@ const SOCRATIC_ROOM_PRESETS = [
   {
     id: 'socratic-correct', label: '추천 방 설정 4', title: '오개념 교정형', mode: 'socratic',
     roomName: '000-소크라테스', purpose: '틀린 이해를 발견하고 교정',
-    questionIntensity: 'normal', hintPolicy: 'step_by_step',
+    questionIntensity: 'normal', hintPolicy: 'step',
     agents: [
       { name: '진단 질문자', role: '사용자의 현재 이해 상태를 확인하는 역할', tone: '솔직함', learnerLevel: 'BACHELOR', additionalRequest: '사용자가 지금 무엇을 어떻게 이해하고 있는지 확인하는 질문을 먼저 해줘.' },
       { name: '오류 추적자', role: '틀린 전제와 용어 혼동을 추적하는 역할', tone: '냉소적', learnerLevel: 'MASTER', additionalRequest: '답변 속 틀린 전제, 용어 혼동, 인과 오류가 어디서 시작됐는지 짚어줘.' },
@@ -442,7 +427,7 @@ const SOCRATIC_ROOM_PRESETS = [
   {
     id: 'socratic-deep', label: '추천 방 설정 5', title: '심화 탐구형', mode: 'socratic',
     roomName: '000-소크라테스', purpose: '원리와 응용까지 확장 탐구',
-    questionIntensity: 'strict', hintPolicy: 'example_hint',
+    questionIntensity: 'intensive', hintPolicy: 'example',
     agents: [
       { name: '원리 질문자', role: '왜 그런지 원리 중심으로 질문하는 역할', tone: '전문적', learnerLevel: 'MASTER', additionalRequest: '단순 암기가 아니라 왜 그렇게 되는지 원리와 근거를 묻는 질문을 해줘.' },
       { name: '응용 확장자', role: '실제 사례와 확장 문제를 제시하는 역할', tone: '독특함', learnerLevel: 'EXPERT', additionalRequest: '배운 개념을 실제 사례나 한 단계 어려운 확장 문제로 연결해 질문해줘.' },
@@ -455,7 +440,7 @@ const DEBATE_ROOM_PRESETS = [
   {
     id: 'debate-balanced', label: '추천 방 설정 1', title: '찬반 균형 토론형', mode: 'debate',
     roomName: '000-토론', purpose: '찬성·반대·중재로 균형 토론',
-    topicMode: 'auto', debateDepth: 'normal',
+    debateStrength: 'normal',
     agents: [
       { name: '찬성 측', role: '주제에 찬성 근거를 제시하는 역할', tone: '전문적', learnerLevel: 'BACHELOR', additionalRequest: '찬성 입장에서 핵심 근거와 사례를 제시해줘.' },
       { name: '반대 측', role: '주제에 반대 근거를 제시하는 역할', tone: '냉소적', learnerLevel: 'BACHELOR', additionalRequest: '반대 입장에서 전제의 약점과 반박 근거를 제시해줘.' },
@@ -465,7 +450,7 @@ const DEBATE_ROOM_PRESETS = [
   {
     id: 'debate-critical', label: '추천 방 설정 2', title: '비판 검증형', mode: 'debate',
     roomName: '000-토론', purpose: '전제·근거·논리 비약 검증',
-    topicMode: 'auto', debateDepth: 'deep',
+    debateStrength: 'deep',
     agents: [
       { name: '주장 제시자', role: '하나의 주장을 명확히 제시하는 역할', tone: '효율적', learnerLevel: 'BACHELOR', additionalRequest: '논쟁 가능한 주장을 명확한 근거와 함께 제시해줘.' },
       { name: '비판 검증자', role: '주장 속 전제와 논리적 허점을 검증하는 역할', tone: '냉소적', learnerLevel: 'MASTER', additionalRequest: '전제 오류, 근거 부족, 논리적 비약을 찾아 지적해줘.' },
@@ -475,7 +460,7 @@ const DEBATE_ROOM_PRESETS = [
   {
     id: 'debate-presentation', label: '추천 방 설정 3', title: '발표 질의응답 대비형', mode: 'debate',
     roomName: '000-토론', purpose: '발표·세미나·구술시험 질문 대비',
-    topicMode: 'manual', debateDepth: 'normal',
+    debateStrength: 'normal',
     agents: [
       { name: '발표자 관점', role: '발표자의 논리를 구성하는 역할', tone: '전문적', learnerLevel: 'BACHELOR', additionalRequest: '발표자가 사용할 수 있는 핵심 주장과 근거를 정리해줘.' },
       { name: '질문자 관점', role: '발표에 대한 예상 질문과 반박을 제시하는 역할', tone: '솔직함', learnerLevel: 'MASTER', additionalRequest: '교수나 평가자가 물을 법한 날카로운 질문을 제시해줘.' },
@@ -485,7 +470,7 @@ const DEBATE_ROOM_PRESETS = [
   {
     id: 'debate-method', label: '추천 방 설정 4', title: '방법론 비교형', mode: 'debate',
     roomName: '000-토론', purpose: '여러 이론·방법·접근법의 장단점 비교',
-    topicMode: 'auto', debateDepth: 'deep',
+    debateStrength: 'deep',
     agents: [
       { name: '방법 A 옹호자', role: '첫 번째 접근법의 장점과 적용 상황을 설명하는 역할', tone: '전문적', learnerLevel: 'BACHELOR', additionalRequest: '첫 번째 이론이나 방법의 장점과 잘 맞는 적용 상황을 근거와 함께 설명해줘.' },
       { name: '방법 B 옹호자', role: '대안 접근법의 관점과 차별점을 제시하는 역할', tone: '독특함', learnerLevel: 'MASTER', additionalRequest: '대안이 되는 이론이나 방법의 관점, 차별점, 강점을 제시해줘.' },
@@ -495,7 +480,7 @@ const DEBATE_ROOM_PRESETS = [
   {
     id: 'debate-ethics', label: '추천 방 설정 5', title: '윤리·사회적 영향 토론형', mode: 'debate',
     roomName: '000-토론', purpose: '지식·기술·정책이 사회에 미치는 영향 토론',
-    topicMode: 'auto', debateDepth: 'deep',
+    debateStrength: 'deep',
     agents: [
       { name: '긍정 효과 분석가', role: '기대효과와 사회적 가치를 제시하는 역할', tone: '전문적', learnerLevel: 'BACHELOR', additionalRequest: '기대되는 긍정적 효과와 사회적 가치를 근거와 함께 제시해줘.' },
       { name: '위험·한계 분석가', role: '부작용과 윤리 문제를 지적하는 역할', tone: '냉소적', learnerLevel: 'MASTER', additionalRequest: '예상되는 부작용, 윤리 문제, 불평등 가능성을 구체적으로 지적해줘.' },
@@ -508,7 +493,7 @@ const ROLEPLAY_ROOM_PRESETS = [
   {
     id: 'roleplay-interview', label: '추천 방 설정 1', title: '면접·구술시험 상황극', mode: 'simulation',
     roomName: '000-상황극', purpose: '면접·구술시험처럼 질문과 피드백',
-    scenarioType: 'roleplay', difficulty: 'normal',
+    scenarioType: 'interview', difficulty: 'normal',
     agents: [
       { name: '질문자', role: '기본 개념과 동기, 이해도를 묻는 역할', tone: '솔직함', learnerLevel: 'BACHELOR', additionalRequest: '면접이나 구술시험처럼 기본 개념, 동기, 이해도를 질문해줘.' },
       { name: '심화 검증자', role: '답변의 깊이와 적용 가능성을 검증하는 역할', tone: '전문적', learnerLevel: 'MASTER', additionalRequest: '답변의 깊이, 근거, 실제 상황에서의 적용 가능성을 검증하는 질문을 해줘.' },
@@ -538,7 +523,7 @@ const ROLEPLAY_ROOM_PRESETS = [
   {
     id: 'roleplay-case', label: '추천 방 설정 4', title: '사례 기반 문제 해결형', mode: 'simulation',
     roomName: '000-상황극', purpose: '실제 사례·문제 상황을 분석하고 해결 전략 수립',
-    scenarioType: 'lab_scenario', difficulty: 'hard',
+    scenarioType: 'project', difficulty: 'hard',
     agents: [
       { name: '상황 파악자', role: '문제의 조건과 관련 정보를 정리하는 역할', tone: '솔직함', learnerLevel: 'BACHELOR', additionalRequest: '문제 상황의 조건, 원인 후보, 관련 정보를 먼저 정리해줘.' },
       { name: '원인 분석가', role: '개념·자료·맥락으로 원인을 분석하는 역할', tone: '전문적', learnerLevel: 'MASTER', additionalRequest: '관련 개념, 자료, 맥락을 바탕으로 문제의 원인을 분석해줘.' },
@@ -548,7 +533,7 @@ const ROLEPLAY_ROOM_PRESETS = [
   {
     id: 'roleplay-rehearsal', label: '추천 방 설정 5', title: '발표 리허설형', mode: 'simulation',
     roomName: '000-상황극', purpose: '발표 전달력과 예상 질문 대비',
-    scenarioType: 'roleplay', difficulty: 'normal',
+    scenarioType: 'interview', difficulty: 'normal',
     agents: [
       { name: '발표자 코치', role: '발표 흐름과 전달력을 개선하는 역할', tone: '친근함', learnerLevel: 'BACHELOR', additionalRequest: '발표 흐름, 도입, 전달력 측면에서 개선점을 코칭해줘.' },
       { name: '날카로운 질문자', role: '교수/평가자 관점의 질문을 제시하는 역할', tone: '냉소적', learnerLevel: 'MASTER', additionalRequest: '교수나 평가자가 던질 법한 날카로운 질문을 제시해줘.' },
@@ -574,8 +559,7 @@ const roomPresetSummary = (p) => {
     out.push(`질문 ${QUESTION_INTENSITY_LABELS[p.questionIntensity] || p.questionIntensity}`);
     out.push(`힌트 ${HINT_STYLE_LABELS[p.hintPolicy] || p.hintPolicy}`);
   } else if (p.mode === 'debate') {
-    out.push(`논제 ${TOPIC_MODE_LABELS[p.topicMode] || p.topicMode}`);
-    out.push(`깊이 ${DEBATE_DEPTH_LABELS[p.debateDepth] || p.debateDepth}`);
+    out.push(`강도 ${DEBATE_STRENGTH_LABELS[p.debateStrength] || p.debateStrength}`);
   } else if (p.mode === 'simulation') {
     out.push(`상황 ${SCENARIO_TYPE_LABELS[p.scenarioType] || p.scenarioType}`);
     out.push(`난이도 ${DIFFICULTY_LABELS[p.difficulty] || p.difficulty}`);
@@ -593,12 +577,11 @@ const buildRoomModeInfo = (room) => {
   if (isDebateModeValue(raw)) {
     const c = room?.debateConfig || {};
     const rows = [
-      { k: '논제 방식', v: labelOr(TOPIC_MODE_LABELS, c.topicMode, '자동 생성') },
-      { k: '토론 깊이', v: labelOr(DEBATE_DEPTH_LABELS, c.debateDepth, '보통') },
+      { k: '토론 강도', v: labelOr(DEBATE_STRENGTH_LABELS, c.debateStrength ?? c.debateDepth, '보통') },
+      { k: '논제', v: '채팅에 입력한 메시지' },
     ];
-    if (String(c.topicMode).toLowerCase() === 'manual' && c.manualTopic) rows.push({ k: '논제', v: c.manualTopic });
-    return { label: '토론 모드', badge: '주장 · 근거 · 반박 · 결론', color: accent.debate,
-      desc: 'AI들이 하나의 논제를 두고 찬성·반대·중립 관점에서 주장, 반박, 판정을 진행합니다.', rows };
+    return { label: '토론 모드', badge: '입론 · 상호반박 · 예외 정리 · 최종 결론', color: accent.debate,
+      desc: '입력한 메시지를 논제로 두 입장이 입론, 상호 반박, 예외 정리를 거쳐 하나의 최종 결론을 냅니다.', rows };
   }
   if (isSocraticModeValue(raw)) {
     const c = room?.socraticConfig || {};
@@ -606,7 +589,7 @@ const buildRoomModeInfo = (room) => {
       desc: 'AI가 정답을 바로 알려주기보다 질문과 힌트로 사용자의 이해를 유도합니다.',
       rows: [
         { k: '질문 강도', v: labelOr(QUESTION_INTENSITY_LABELS, c.questionIntensity, '보통') },
-        { k: '힌트 방식', v: labelOr(HINT_STYLE_LABELS, c.hintPolicy, '단계별 힌트') },
+        { k: '힌트 방식', v: labelOr(HINT_STYLE_LABELS, c.hintPolicy, '개념 힌트') },
       ] };
   }
   if (isSimulationModeValue(raw)) {
@@ -614,7 +597,7 @@ const buildRoomModeInfo = (room) => {
     return { label: '상황극 모드', badge: '상황 · 선택 · 피드백', color: accent.simulation,
       desc: 'AI가 현실적인 상황을 만들고, 사용자가 선택과 피드백을 통해 개념을 체험하도록 진행합니다.',
       rows: [
-        { k: '상황 유형', v: labelOr(SCENARIO_TYPE_LABELS, c.scenarioType, '현실 상황') },
+        { k: '상황 유형', v: labelOr(SCENARIO_TYPE_LABELS, c.scenarioType, '현실') },
         { k: '난이도', v: labelOr(DIFFICULTY_LABELS, c.difficulty, '보통') },
         { k: '선택지 개수', v: `${Number(c.choiceCount) || 3}개` },
       ] };
@@ -2451,7 +2434,7 @@ export default function StudyMate() {
     if (preset.mode === 'socratic') {
       setSocraticConfig((c) => ({ ...c, questionIntensity: preset.questionIntensity, hintPolicy: preset.hintPolicy }));
     } else if (preset.mode === 'debate') {
-      setDebateConfig((c) => ({ ...c, topicMode: preset.topicMode, debateDepth: preset.debateDepth }));
+      setDebateConfig((c) => ({ ...c, debateStrength: preset.debateStrength }));
     } else if (preset.mode === 'simulation') {
       setSimulationConfig((c) => ({ ...c, scenarioType: preset.scenarioType, difficulty: preset.difficulty }));
     }
@@ -2803,10 +2786,17 @@ export default function StudyMate() {
     // 소크라테스 모드: 사용자가 방금 입력한 내용을 시도 답변(userAttempt)으로도 보내 오개념을 좁혀간다.
     // RAG 자료가 방에 연결돼 있으면 materialId도 함께 보낸다.
     const turnExtras = {};
+    // 방별 멀티턴 상태(convStateRef)는 모드 단위로 유효하다. 다른 모드로 바뀐 방/세션이면 이전 모드 상태를 버린다
+    // (같은 active session 진행 중이면 유지). 세션 토큰이 다른 모드로 흘러가 잘못된 세션에 붙는 것을 막는다.
+    if (convStateRef.current[agentId] && convStateRef.current[agentId].mode && convStateRef.current[agentId].mode !== activeLearningMode) {
+      if (import.meta.env.DEV) console.debug('[StudyMate] mode changed → conv state reset', { roomId: agentId, from: convStateRef.current[agentId].mode, to: activeLearningMode });
+      convStateRef.current[agentId] = {};
+    }
     if (activeLearningMode === 'socratic') {
       turnExtras.userAttempt = inputMsg;
       // 소크라테스 문답 설정 전송. 방 저장값(selectedAgent.socraticConfig)이 있으면 우선, 없으면 현재 설정.
-      turnExtras.socraticConfig = selectedAgent?.socraticConfig || socraticConfig;
+      const sc = selectedAgent?.socraticConfig || socraticConfig || DEFAULT_SOCRATIC_CONFIG;
+      turnExtras.socraticConfig = { questionIntensity: sc.questionIntensity, hintPolicy: sc.hintPolicy };
     }
     // ── 단일 대상(이 교수에게 질문 / @멘션 1명) 판정 ─────────────────────────────
     //   '@모두' 또는 멘션 없음 → 전체(all). 한 명만 지목되면 single scope로 "그 교수만" 답한다.
@@ -2870,8 +2860,21 @@ export default function StudyMate() {
       }));
     };
     // 토론 모드: 논제/구조 설정을 함께 전송한다(프론트 → Spring → FastAPI).
-    if (activeLearningMode === 'debate') turnExtras.debateConfig = selectedAgent?.debateConfig || debateConfig;
-    if (activeLearningMode === 'simulation') turnExtras.simulationConfig = selectedAgent?.simulationConfig || simulationConfig || DEFAULT_SIMULATION_CONFIG;
+    if (activeLearningMode === 'debate') {
+      // 토론: 별도 topic 필드 없이 message + 강도만 보낸다(debateConfig.debateStrength + top-level debateStrength).
+      const dc = selectedAgent?.debateConfig || debateConfig || DEFAULT_DEBATE_CONFIG;
+      const strength = dc.debateStrength || dc.debateDepth || 'normal';
+      turnExtras.debateConfig = { debateStrength: strength };
+      turnExtras.debateStrength = strength;
+    }
+    if (activeLearningMode === 'simulation') {
+      const sim = selectedAgent?.simulationConfig || simulationConfig || DEFAULT_SIMULATION_CONFIG;
+      turnExtras.simulationConfig = {
+        scenarioType: sim.scenarioType, difficulty: sim.difficulty, choiceCount: Number(sim.choiceCount) || 3,
+        ...(sim.userRole ? { userRole: sim.userRole } : {}),
+        ...(sim.userRoleMode ? { userRoleMode: sim.userRoleMode } : {}),
+      };
+    }
     const roomMaterialId = selectedAgent?.materialId ?? selectedAgent?.material_id;
     if (roomMaterialId) turnExtras.materialId = roomMaterialId;
 
@@ -2879,6 +2882,11 @@ export default function StudyMate() {
     //  직전 응답에서 캡처한 상태(convStateRef)를 같은 방의 다음 요청 payload에 다시 싣는다.
     //  이게 빠지면 ai07가 매 턴 TOPIC_SELECTION/선택지 제시로 되돌아가 같은 논제·선택지를 반복한다.
     const savedConv = convStateRef.current[agentId] || {};
+    // 세션 유지: ai07 가 내려준 sessionId(소크라테스/상황극)를 같은 방의 다음 턴에 그대로 싣는다 → 짧은 답변도 같은 세션.
+    if ((activeLearningMode === 'socratic' || activeLearningMode === 'simulation') && savedConv.sessionId) {
+      turnExtras.sessionId = savedConv.sessionId;
+    }
+    if (activeLearningMode === 'socratic' && savedConv.socraticState != null) turnExtras.socraticState = savedConv.socraticState;
     if (activeLearningMode === 'debate') {
       if (savedConv.debateState != null) turnExtras.debateState = savedConv.debateState;
       if (savedConv.selectedTopic) turnExtras.selectedTopic = savedConv.selectedTopic;
@@ -2913,9 +2921,13 @@ export default function StudyMate() {
       const prevState = convStateRef.current[agentId] || {};
       const next = { ...prevState };
       const setIf = (k, v) => { if (v !== undefined && v !== null && v !== '') next[k] = v; };
+      next.mode = activeLearningMode; // 상태의 소속 모드(모드 변경 시 초기화 판정용)
       setIf('debateState', d.debateState ?? d.debate_state);
       setIf('selectedTopic', d.selectedTopic ?? d.selected_topic);
-      setIf('debateSessionId', d.debateSessionId ?? d.debate_session_id ?? d.sessionId);
+      setIf('debateSessionId', d.debateSessionId ?? d.debate_session_id);
+      // 소크라테스/상황극 세션: top-level sessionId > *State.sessionId
+      setIf('sessionId', d.sessionId ?? d.session_id ?? d.socraticState?.sessionId ?? d.simulationState?.sessionId);
+      setIf('socraticState', d.socraticState ?? d.socratic_state);
       setIf('simulationState', d.simulationState ?? d.simulation_state);
       setIf('scenarioId', d.scenarioId ?? d.scenario_id);
       const ti = d.turnIndex ?? d.turn_index;
@@ -2968,6 +2980,28 @@ export default function StudyMate() {
     // 누적 processSteps(전체 map)로부터 단계별 말풍선(1차/2차/3차)을 만든다.
     // 단계가 도착할 때마다 1차→2차→3차 순으로 메인 대화에 누적 표시된다(상세과정 클릭 불필요).
     const buildStreamAiMsgs = (ps) => buildStageBubbles(ps, userMsg.id, new Date().toISOString(), { showInternal: isInternalVisibleMode(activeLearningMode) });
+
+    // ── 모드 가드/모드 전용 오류(NON_LEARNING_INPUT 등) → 기본 답변 카드가 아니라 "모드 안내 상태" 한 건으로 렌더 ──
+    //  stream(turn_start/agent_answer/all_complete 의 code/status=BLOCKED/blocked)과 non-stream(res.code/blocked) 공통.
+    let modeGuardShown = false;
+    const buildModeGuardMessage = (d, { isError = false } = {}) => ({
+      id: `${userMsg.id}::mode-guard`,
+      content: modeGuardText(d, activeLearningMode),
+      sender: 'AI',
+      senderName: `${MODE_LABELS[activeLearningMode] || '학습'} 모드 안내`,
+      isNotice: true,
+      isModeGuard: true,
+      isError,
+      modeGuardCode: d?.code || null,
+      mode: activeLearningMode,
+      createdAt: new Date().toISOString(),
+      parentId: userMsg.id,
+    });
+    const renderModeGuard = (d, opts) => {
+      modeGuardShown = true;
+      if (import.meta.env.DEV) console.debug('[StudyMate] mode guard', { mode: activeLearningMode, code: d?.code, status: d?.status });
+      setTurnAiMessages([buildModeGuardMessage(d, opts)]);
+    };
 
     try {
       // ── 단계/섹션별 SSE 선출력 우선 시도 (default/debate/socratic 모두 스트리밍, 실패 시 블로킹 폴백) ──
@@ -3322,7 +3356,11 @@ export default function StudyMate() {
             },
             // Spring keepalive ':hb' 주석 등 — 데이터 없는 생존 신호. watchdog 만 rearm.
             onComment: () => { markLiveness('comment'); },
-            onTurnStart: () => { markLiveness('turn_start'); },
+            onTurnStart: (d) => {
+              markLiveness('turn_start');
+              // 첫 이벤트부터 가드 코드가 오면(NON_LEARNING_INPUT) 즉시 모드 안내 상태로 전환한다.
+              if (isModeGuardPayload(d)) { renderModeGuard(d); streamRendered = true; }
+            },
             onHeartbeat: (d) => {
               if (streamCompleted) return; // 목표 B.5
               if (!d || d.agentIndex == null) return;
@@ -3365,6 +3403,8 @@ export default function StudyMate() {
             onAgentAnswer: (d) => {
               armWatchdog();
               if (!d) return;
+              // 가드/BLOCKED 답변은 에이전트 답변 카드로 만들지 않는다(모드 안내 상태 1건만).
+              if (modeGuardShown || isModeGuardPayload(d)) { renderModeGuard(d); streamRendered = true; return; }
               agentAnswerCount += 1;
               // 실제 답변 도착 → 기본 모드 filler 폴백을 즉시 양보(취소)한다.
               sawRealAnswer = true;
@@ -3639,6 +3679,7 @@ export default function StudyMate() {
                 });
               }
               if (routedTerminal) return; // 라우팅으로 종료 — 기존 답변 렌더 스킵(중복 방지)
+              if (modeGuardShown || isModeGuardPayload(d)) { renderModeGuard(d); streamRendered = true; return; }
               renderAllComplete(d);
             },
             // done: 종결 신호. all_complete 가 이미 최종 반영했으면 중복 렌더하지 않고 finalize 만 한다.
@@ -3676,6 +3717,13 @@ export default function StudyMate() {
                 return;
               }
               if (streamRendered) return; // 일부 답변은 이미 표시됨 → 유지
+              // 모드 전용 오류(code 보유: DEBATE_FAILED/AI_CONTRACT_FAILURE 등)는 해당 모드의 안내 상태로 표시하고
+              // 기본 답변/일반 "연결 중단" 문구로 바꾸지 않는다(fail-closed: 가짜 성공·모드 바꿔치기 금지).
+              if (d && d.code) {
+                renderModeGuard({ ...d, message: d.message || d.reason || `${MODE_LABELS[activeLearningMode] || ''} 모드 처리에 실패했습니다. (${d.code})` }, { isError: true });
+                streamRendered = true;
+                return;
+              }
               throw new Error('stream error event');
             },
           }, { signal: streamAbort.signal });
@@ -3746,6 +3794,16 @@ export default function StudyMate() {
         }
         pendingDetailParentId.current = null;
         return; // alert 없이 종료 (finally에서 typing 상태 해제)
+      }
+
+      // non-stream 폴백도 가드/모드 오류를 기본 답변으로 렌더하지 않는다.
+      if (isModeGuardPayload(res)) {
+        const guardMsg = buildModeGuardMessage(res);
+        const addGuard = (list) => [...(list || []).filter((m) => m.id !== guardMsg.id), guardMsg];
+        setRoomHistories((prev) => ({ ...prev, [agentId]: addGuard(prev[agentId]) }));
+        if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => addGuard(prev));
+        pendingDetailParentId.current = null;
+        return; // finally 에서 typing 해제
       }
 
       let newMsgs = [];
@@ -4510,7 +4568,8 @@ export default function StudyMate() {
                                   //  ai07가 같은 선택지 목록을 반복하지 않고 선택 결과/반응 단계로 진행한다.
                                   if (activeId) {
                                     const prevState = convStateRef.current[activeId] || {};
-                                    convStateRef.current[activeId] = { ...prevState, selectedChoice: choiceId };
+                                    // ai07 계약: selectedChoice 는 객체({choiceId,label}) — 문자열로 보내면 422.
+                                    convStateRef.current[activeId] = { ...prevState, selectedChoice: { choiceId, label } };
                                     setRoomDrafts((prev) => ({ ...prev, [activeId]: promptText }));
                                   }
                                   setMessage(promptText);
@@ -4918,7 +4977,11 @@ export default function StudyMate() {
                             name="learningMode"
                             value={opt.value}
                             checked={active}
-                            onChange={() => { setLearningMode(opt.value); setSelectedPresetId(null); setPresetCarouselIndex(0); }}
+                            onChange={() => {
+                              // 모드 변경 시 이전 모드 설정이 남지 않도록 모드 전용 설정을 모두 기본값으로 되돌린다.
+                              setLearningMode(opt.value); setSelectedPresetId(null); setPresetCarouselIndex(0);
+                              setDebateConfig(DEFAULT_DEBATE_CONFIG); setSocraticConfig(DEFAULT_SOCRATIC_CONFIG); setSimulationConfig(DEFAULT_SIMULATION_CONFIG);
+                            }}
                             style={{ marginTop: '3px' }}
                           />
                           <div style={{ flex: 1 }}>
@@ -5037,10 +5100,15 @@ export default function StudyMate() {
                     <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>상황극 모드</div>
                     <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>AI가 현실적인 상황을 만들고, 사용자가 선택과 피드백을 통해 개념을 체험하도록 진행합니다.</div>
 
+                    {/* N = 실제 상황극 preset list 길이(ROOM_PRESETS_BY_MODE.simulation)에서 동적 계산. DB 방 개수/하드코딩 아님. */}
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--color-primary)' }} data-testid="simulation-preset-count">
+                      총 {(ROOM_PRESETS_BY_MODE.simulation || []).length}개의 방 설정을 준비했습니다.
+                    </div>
+
                     <div>
                       <div style={dbLabelStyle}>상황 유형</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ v: 'realistic', t: '현실 상황' }, { v: 'roleplay', t: '면접 상황' }, { v: 'lab_scenario', t: '프로젝트 상황' }].map((o) => (
+                        {SCENARIO_TYPE_OPTIONS.map((o) => (
                           <button type="button" key={o.v} onClick={() => setSimulationConfig((c) => ({ ...c, scenarioType: o.v }))} style={dbChipStyle(simulationConfig.scenarioType === o.v)}>{o.t}</button>
                         ))}
                       </div>
@@ -5049,7 +5117,7 @@ export default function StudyMate() {
                     <div>
                       <div style={dbLabelStyle}>난이도</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ v: 'easy', t: '쉬움' }, { v: 'normal', t: '보통' }, { v: 'hard', t: '어려움' }].map((o) => (
+                        {DIFFICULTY_OPTIONS.map((o) => (
                           <button type="button" key={o.v} onClick={() => setSimulationConfig((c) => ({ ...c, difficulty: o.v }))} style={dbChipStyle(simulationConfig.difficulty === o.v)}>{o.t}</button>
                         ))}
                       </div>
@@ -5058,7 +5126,7 @@ export default function StudyMate() {
                     <div>
                       <div style={dbLabelStyle}>선택지 개수</div>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        {[2, 3, 4].map((count) => <button type="button" key={count} onClick={() => setSimulationConfig((c) => ({ ...c, choiceCount: count }))} style={dbChipStyle(Number(simulationConfig.choiceCount) === count)}>{count}개</button>)}
+                        {CHOICE_COUNT_OPTIONS.map((count) => <button type="button" key={count} onClick={() => setSimulationConfig((c) => ({ ...c, choiceCount: count }))} style={dbChipStyle(Number(simulationConfig.choiceCount) === count)}>{count}개</button>)}
                       </div>
                     </div>
                   </div>
@@ -5068,42 +5136,16 @@ export default function StudyMate() {
                 {learningMode === 'debate' && (
                   <div style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: '1px solid var(--color-border)', background: 'rgba(124,58,237,0.04)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     <div style={{ fontSize: '13px', fontWeight: 800, color: 'var(--color-text-main)' }}>토론 모드</div>
-                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>AI들이 하나의 논제를 두고 찬성·반대·중립 관점에서 주장, 반박, 판정을 진행합니다.</div>
+                    <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>채팅에 입력하는 메시지가 곧 논제입니다. 두 입장이 입론 → 상호 반박 → 예외 정리 → 하나의 최종 결론 순으로 진행합니다.</div>
 
-                    {/* 논제 방식 */}
+                    {/* 토론 강도 (light / normal / deep). 논제 방식·논제 입력 UI 는 계약에서 제거됨 — message 가 논제. */}
                     <div>
-                      <div style={dbLabelStyle}>논제 방식</div>
+                      <div style={dbLabelStyle}>토론 강도</div>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        {[{ v: 'auto', t: '자동 생성' }, { v: 'manual', t: '직접 입력' }].map((o) => (
+                        {DEBATE_STRENGTH_OPTIONS.map((o) => (
                           <button type="button" key={o.v}
-                            onClick={() => setDebateConfig((c) => ({ ...c, topicMode: o.v }))}
-                            style={dbChipStyle(debateConfig.topicMode === o.v)}>{o.t}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* 직접 입력 논제 (직접 입력 선택 시에만) */}
-                    {debateConfig.topicMode === 'manual' && (
-                      <div>
-                        <div style={dbLabelStyle}>논제 입력</div>
-                        <input
-                          type="text"
-                          value={debateConfig.manualTopic}
-                          onChange={(e) => setDebateConfig((c) => ({ ...c, manualTopic: e.target.value }))}
-                          placeholder="예: 새로운 개념을 배울 때 이론을 먼저 익히는 것과 사례를 먼저 보는 것 중 무엇이 더 효과적인가?"
-                          style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--color-border)', fontSize: '13px' }}
-                        />
-                      </div>
-                    )}
-
-                    {/* 토론 깊이 */}
-                    <div>
-                      <div style={dbLabelStyle}>토론 깊이</div>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        {[{ v: 'light', t: '가볍게' }, { v: 'normal', t: '보통' }, { v: 'deep', t: '깊게' }].map((o) => (
-                          <button type="button" key={o.v}
-                            onClick={() => setDebateConfig((c) => ({ ...c, debateDepth: o.v }))}
-                            style={dbChipStyle(debateConfig.debateDepth === o.v)}>{o.t}</button>
+                            onClick={() => setDebateConfig((c) => ({ ...c, debateStrength: o.v }))}
+                            style={dbChipStyle(debateConfig.debateStrength === o.v)}>{o.t}</button>
                         ))}
                       </div>
                     </div>
@@ -5120,7 +5162,7 @@ export default function StudyMate() {
                     <div>
                       <div style={dbLabelStyle}>질문 강도</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ v: 'gentle', t: '부드럽게' }, { v: 'normal', t: '보통' }, { v: 'strict', t: '집중적으로' }].map((o) => (
+                        {QUESTION_INTENSITY_OPTIONS.map((o) => (
                           <button type="button" key={o.v}
                             onClick={() => setSocraticConfig((c) => ({ ...c, questionIntensity: o.v }))}
                             style={dbChipStyle(socraticConfig.questionIntensity === o.v)}>{o.t}</button>
@@ -5132,7 +5174,7 @@ export default function StudyMate() {
                     <div>
                       <div style={dbLabelStyle}>힌트 방식</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {[{ v: 'step_by_step', t: '단계별 힌트' }, { v: 'example_hint', t: '예시 힌트' }, { v: 'partial_answer_when_stuck', t: '막히면 일부 공개' }].map((o) => (
+                        {HINT_STYLE_OPTIONS.map((o) => (
                           <button type="button" key={o.v}
                             onClick={() => setSocraticConfig((c) => ({ ...c, hintPolicy: o.v }))}
                             style={dbChipStyle(socraticConfig.hintPolicy === o.v)}>{o.t}</button>

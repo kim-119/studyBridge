@@ -65,6 +65,25 @@ public class ReviewNote {
     @Column(columnDefinition = "TEXT")
     private String retryResultJson;
 
+    // ── 복습 필요 판정의 source of truth(브라우저 임시 state 아님) ──────────────────
+    //  · 오답노트 생성(=복습 세션 완료) 트랜잭션에서 난이도/오답수 기반 추천일을 결정적으로 저장한다(ai07 무관).
+    //  · "복습 필요" AI 분석 결과(reviewNeededText)도 같은 row 에 저장돼 새로고침 후 유지된다.
+    //  · ddl-auto=update 로 nullable 컬럼 자동 추가(기존 row 는 null → 조회 시 서비스 폴백 계산).
+    @Column(name = "recommend_review_in_days")
+    private Integer recommendReviewInDays;
+
+    @Column(name = "recommended_review_date")
+    private java.time.LocalDate recommendedReviewDate;
+
+    @Column(name = "review_reason", length = 300)
+    private String reviewReason;
+
+    @Column(name = "review_needed_text", columnDefinition = "TEXT")
+    private String reviewNeededText;
+
+    @Column(name = "review_needed_at")
+    private LocalDateTime reviewNeededAt;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 }

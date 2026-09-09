@@ -29,5 +29,15 @@ public class ReviewNoteDTO {
     private String memo;
     private String pdfUrl;                 // S3 presigned URL (열람/다운로드용)
     private String downloadUrl;            // 다운로드 API 경로 (/api/review-notes/{id}/download)
+    // ── 복습 필요/일정(DB 기준) ──
+    private Integer recommendReviewInDays;         // 추천 복습 간격(일)
+    private java.time.LocalDate recommendedReviewDate; // DB 저장 추천 복습일(source of truth)
+    private String reviewReason;                   // 추천 근거(결정적 규칙)
+    private String reviewNeededText;               // 저장된 "복습 필요" AI 분석(없으면 null)
+    private Boolean reviewNeeded;                  // 오늘 기준 복습 필요(추천일 도래 & 미등록/미완료)
+    private Boolean reviewScheduled;               // 주간 일정(todos)에 이미 등록됨
+    private Long reviewTodoId;                     // 등록된 주간 일정 row id
+    private java.time.LocalDate reviewScheduledDate; // 등록된 주간 일정 날짜
+    private Boolean reviewCompleted;               // 등록된 주간 일정 완료 여부
     private LocalDateTime createdAt;
 }

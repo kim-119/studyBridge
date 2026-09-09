@@ -29,5 +29,9 @@ public class TodoDTO {
         private LocalDateTime startDate;
         private LocalDateTime endDate;
         private LocalDateTime createdAt;
+        // 출처(주간 일정 화면의 플래너/복습 구분용). 수동 Todo 는 null.
+        private String sourceType;   // REVIEW_NOTE | PLANNER | null
+        private Long sourceId;
+        private java.time.LocalDate scheduleDate;
     }
 }

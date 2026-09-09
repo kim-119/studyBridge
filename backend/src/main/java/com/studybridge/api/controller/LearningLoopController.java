@@ -5,6 +5,8 @@ import com.studybridge.api.entity.LearningLoopEvent;
 import com.studybridge.api.entity.LearningSourceType;
 import com.studybridge.api.security.domain.CustomUserDetails;
 import com.studybridge.api.service.LearningLoopService;
+import com.studybridge.api.service.ScheduleRegistrationService;
+import org.springframework.http.HttpStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -31,6 +33,7 @@ import java.util.Map;
 public class LearningLoopController {
 
     private final LearningLoopService learningLoopService;
+    private final ScheduleRegistrationService scheduleRegistrationService;
 
     @GetMapping("/events")
     public ResponseEntity<List<Map<String, Object>>> events(
@@ -93,14 +96,23 @@ public class LearningLoopController {
                 str(body, "difficulty"), intOrNull(body, "wrongCount")));
     }
 
+    /**
+     * 복습 일정 등록: 오답노트의 DB 저장 추천일(recommended_review_date)로 주간 일정(todos)에 등록한다.
+     *  · ai07 재호출 없음 · idempotent(같은 사용자·오답노트·날짜면 기존 row, alreadyRegistered=true)
+     *  · DB write 실패/검증 실패는 예외 → 4xx/5xx (성공처럼 보이는 메모리 state 없음)
+     *  body: { wrongNoteId (필수), title (선택) } — scheduledDate/reason 은 무시(DB 값이 원천).
+     */
     @PostMapping("/review-schedule")
     public ResponseEntity<Map<String, Object>> reviewSchedule(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @RequestBody(required = false) Map<String, Object> body) {
-        LocalDate date = parseDate(str(body, "scheduledDate"));
-        return ResponseEntity.ok(learningLoopService.registerReviewSchedule(
-                userDetails.getId(), lng(body, "materialId"), lng(body, "wrongNoteId"),
-                str(body, "title"), date, str(body, "reason")));
+        Long wrongNoteId = lng(body, "wrongNoteId");
+        if (wrongNoteId == null) {
+            throw new IllegalArgumentException("wrongNoteId(오답노트 id)가 필요합니다.");
+        }
+        ScheduleRegistrationService.Result r = scheduleRegistrationService.registerReviewNote(
+                userDetails.getId(), wrongNoteId, str(body, "title"));
+        return ResponseEntity.status(r.created() ? HttpStatus.CREATED : HttpStatus.OK).body(r.toMap());
     }
 
     @PostMapping("/study-log")

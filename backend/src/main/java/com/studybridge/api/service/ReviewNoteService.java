@@ -57,6 +57,7 @@ public class ReviewNoteService {
     private final S3Service s3Service;
     private final WebClient fastApiWebClient;
     private final LearningLoopService learningLoopService;
+    private final com.studybridge.api.repository.TodoRepository todoRepository;
 
     @Value("${ai.server.fastapi.review-timeout-seconds:120}")
     private long reviewTimeoutSeconds;
@@ -192,6 +193,12 @@ public class ReviewNoteService {
                 .difficulty(mapDifficulty(quiz.getDifficulty()))
                 .retryJson(retryJson)
                 .build();
+        // 복습 세션 완료 = 오답노트 생성. 같은 트랜잭션에서 추천 복습일을 결정적으로 확정해 저장한다(ai07 의존 없음).
+        LearningLoopService.ReviewRecommendation rec = LearningLoopService.computeReviewRecommendation(
+                note.getDifficulty(), wrongOnly + unansweredOnly, java.time.LocalDate.now());
+        note.setRecommendReviewInDays(rec.days());
+        note.setRecommendedReviewDate(rec.date());
+        note.setReviewReason(rec.reason());
         note = reviewNoteRepository.save(note);
 
         log.info("[REVIEW_NOTE] OK userId={} reviewNoteId={} archiveMaterialId={} wrong={} unanswered={} aiEnriched={} elapsedMs={}",
@@ -340,8 +347,20 @@ public class ReviewNoteService {
     //   오답노트 데이터 기반 "{구체 개념}에 대한 개념이 부족하여 복습이 필요합니다. ..." 500자 내외 생성.
     //   AI(/api/ai/multi-chat, basic) 호출 → 실패/빈응답 시 데이터 기반 결정적 폴백.
     // ---------------------------------------------------------------------
+    @Transactional
     public Map<String, Object> generateReviewNeeded(Long userId, Long id) {
         ReviewNote note = loadOwnedStrict(userId, id);
+        // 이미 저장된 분석이 있으면 ai07 재호출 없이 DB 값을 돌려준다(새로고침/재클릭 idempotent).
+        if (note.getReviewNeededText() != null && !note.getReviewNeededText().isBlank()) {
+            ensureRecommendation(note);
+            Map<String, Object> cached = new LinkedHashMap<>();
+            cached.put("reviewNoteId", id);
+            cached.put("reviewNeededText", note.getReviewNeededText());
+            cached.put("recommendedReviewDate", note.getRecommendedReviewDate() != null ? note.getRecommendedReviewDate().toString() : null);
+            cached.put("recommendReviewInDays", note.getRecommendReviewInDays());
+            cached.put("cached", true);
+            return cached;
+        }
 
         List<Map<String, Object>> items = parseRetryQuestions(note.getRetryJson());
         // 최초 풀이 결과에 '다시 풀기 1회' 결과를 합친다. 재풀이 기록이 없으면 최초 결과만 간다.
@@ -373,10 +392,31 @@ public class ReviewNoteService {
                 .userAction("REVIEW_NEEDED")
                 .build());
 
+        // 분석 결과 + 추천 복습일을 같은 트랜잭션에서 저장 → "복습 필요" 판정은 DB 가 소유한다.
+        note.setReviewNeededText(text);
+        note.setReviewNeededAt(java.time.LocalDateTime.now());
+        ensureRecommendation(note);
+        reviewNoteRepository.save(note);
+
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("reviewNoteId", id);
         out.put("reviewNeededText", text);
+        out.put("recommendedReviewDate", note.getRecommendedReviewDate() != null ? note.getRecommendedReviewDate().toString() : null);
+        out.put("recommendReviewInDays", note.getRecommendReviewInDays());
+        out.put("cached", false);
         return out;
+    }
+
+    /** 추천 복습일이 비어 있는 레거시 row 에 결정적 추천을 채운다(생성일 기준). 호출자가 save 한다. */
+    private void ensureRecommendation(ReviewNote note) {
+        if (note.getRecommendedReviewDate() != null) return;
+        int cnt = (note.getWrongCount() == null ? 0 : note.getWrongCount())
+                + (note.getUnansweredCount() == null ? 0 : note.getUnansweredCount());
+        java.time.LocalDate base = note.getCreatedAt() != null ? note.getCreatedAt().toLocalDate() : java.time.LocalDate.now();
+        LearningLoopService.ReviewRecommendation rec = LearningLoopService.computeReviewRecommendation(note.getDifficulty(), cnt, base);
+        note.setRecommendReviewInDays(rec.days());
+        note.setRecommendedReviewDate(rec.date());
+        note.setReviewReason(rec.reason());
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -802,7 +842,31 @@ public class ReviewNoteService {
     private ReviewNoteDTO toDTO(ReviewNote n, boolean withPresign) {
         int wrong = n.getWrongCount() == null ? 0 : n.getWrongCount();
         int unanswered = n.getUnansweredCount() == null ? 0 : n.getUnansweredCount();
+        // 복습 필요/일정 상태는 DB(review_notes + todos) 기준으로 계산한다. 레거시 row(추천일 null)는 조회 시 결정적으로 보정(저장은 안 함).
+        java.time.LocalDate recDate = n.getRecommendedReviewDate();
+        Integer recDays = n.getRecommendReviewInDays();
+        String recReason = n.getReviewReason();
+        if (recDate == null) {
+            java.time.LocalDate base = n.getCreatedAt() != null ? n.getCreatedAt().toLocalDate() : java.time.LocalDate.now();
+            LearningLoopService.ReviewRecommendation rec = LearningLoopService.computeReviewRecommendation(n.getDifficulty(), wrong + unanswered, base);
+            recDate = rec.date(); recDays = rec.days(); recReason = rec.reason();
+        }
+        java.util.List<com.studybridge.api.entity.Todo> sched = todoRepository
+                .findByUserIdAndSourceTypeAndSourceIdOrderByScheduleDateDesc(n.getUserId(), "REVIEW_NOTE", n.getReviewNoteId());
+        com.studybridge.api.entity.Todo latest = sched.isEmpty() ? null : sched.get(0);
+        boolean scheduled = latest != null;
+        boolean completed = latest != null && Boolean.TRUE.equals(latest.getCompleted());
+        boolean needed = !recDate.isAfter(java.time.LocalDate.now()) && !completed;
         return ReviewNoteDTO.builder()
+                .recommendReviewInDays(recDays)
+                .recommendedReviewDate(recDate)
+                .reviewReason(recReason)
+                .reviewNeededText(n.getReviewNeededText())
+                .reviewNeeded(needed)
+                .reviewScheduled(scheduled)
+                .reviewTodoId(latest != null ? latest.getId() : null)
+                .reviewScheduledDate(latest != null ? latest.getScheduleDate() : null)
+                .reviewCompleted(completed)
                 .id(n.getReviewNoteId())
                 .title(n.getTitle())
                 .sourceName(n.getSourceTitle())

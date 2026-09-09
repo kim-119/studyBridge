@@ -8,6 +8,7 @@ import com.studybridge.api.service.PlannerScheduleService;
 import com.studybridge.api.service.PlannerNextLearningService;
 import com.studybridge.api.service.PlannerSemanticAnalyzer;
 import com.studybridge.api.service.PlannerService;
+import com.studybridge.api.service.ScheduleRegistrationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -30,6 +31,7 @@ public class PlannerController {
     private final PlannerSemanticAnalyzer plannerSemanticAnalyzer;
     private final PlannerNextLearningService plannerNextLearningService;
     private final PlannerScheduleService plannerScheduleService;
+    private final com.studybridge.api.service.ScheduleRegistrationService scheduleRegistrationService;
 
     @PostMapping
     public ResponseEntity<PlannerDTO.Response> create(
@@ -218,6 +220,19 @@ public class PlannerController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(PlannerDTO.NextLearningResponse.builder()
                     .currentPlannerId(plannerId).available(false).status("NO_DATA").errorCode("NOT_FOUND").reason(e.getMessage()).build());
         }
+    }
+
+    /**
+     * 플래너 → 주간 일정(todos) 등록. 제목 = planners.title, 날짜 = LocalDate.of(year, month, day).
+     *  · ai07 분석 성공 여부와 무관(time_table_json 있으면 응답에 동봉) · idempotent(중복 클릭 → 기존 row, alreadyRegistered=true)
+     *  · 날짜 검증 실패 400, 타인 플래너 403, DB 실패는 rollback + 5xx (가짜 성공 없음)
+     */
+    @PostMapping("/{plannerId}/schedule/register")
+    public ResponseEntity<?> registerSchedule(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long plannerId) {
+        ScheduleRegistrationService.Result r = scheduleRegistrationService.registerPlanner(userDetails.getId(), plannerId);
+        return ResponseEntity.status(r.created() ? HttpStatus.CREATED : HttpStatus.OK).body(r.toMap());
     }
 
     /** 시작시간 기준 결정적 시간표 미리보기(AI 재호출 없음). */
