@@ -85,14 +85,14 @@ services:
     container_name: capstone-openvidu
     # 외부에는 직접 노출하지 않고 호스트 Nginx(정식 Let's Encrypt 인증서)가 4443을 종단한다.
     #  - openvidu-dev 이미지는 owncert를 지원하지 않고 내부 self-signed 인증서만 쓴다.
-    #  - 따라서 브라우저는 wss://www.studybridge.co.kr:4443 (Nginx, 정식 인증서)로 붙고,
+    #  - 따라서 브라우저는 wss://studybridge.co.kr:4443 (Nginx, 정식 인증서)로 붙고,
     #    Nginx가 내부 self-signed openvidu(127.0.0.1:14443)로 프록시한다.
     ports:
       - "127.0.0.1:14443:4443"
     environment:
       OPENVIDU_SECRET: ${OPENVIDU_SECRET:-MY_SECRET}
       DOMAIN_OR_PUBLIC_IP: ${OPENVIDU_DOMAIN_OR_PUBLIC_IP:-localhost}
-      OPENVIDU_PUBLICURL: ${OPENVIDU_PUBLICURL:-https://www.studybridge.co.kr:4443}
+      OPENVIDU_PUBLICURL: ${OPENVIDU_PUBLICURL:-https://studybridge.co.kr:4443}
       CERTIFICATE_TYPE: selfsigned
       OPENVIDU_WEBHOOK: "false"
       # KMS(Kurento)가 coturn을 TURN relay로 사용하도록 주입(/kms.sh가 turnURL=$KMS_TURN_URL 기록).

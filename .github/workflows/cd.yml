@@ -177,8 +177,8 @@ jobs:
             # react Docker pull/재시작 금지 — 정적 배포만 수행한다.
             sleep 2
             echo "----- 운영 검증 -----"
-            curl -sI https://www.studybridge.co.kr | head -1
-            if curl -s https://www.studybridge.co.kr | grep -nE "/@vite/client|react-refresh|/src/main\.jsx"; then
+            curl -sI https://studybridge.co.kr | head -1
+            if curl -s https://studybridge.co.kr | grep -nE "/@vite/client|react-refresh|/src/main\.jsx"; then
               echo "FAIL: 운영 HTML에 vite dev 문자열"
               exit 1
             fi
