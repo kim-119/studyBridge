@@ -46,6 +46,8 @@ _DIFF_ALIASES = {
 MAX_STEP_RETRIES = int(os.getenv("SIMULATION_MAX_STEP_RETRIES", "2"))
 CONTENT_MAX_TOKENS = int(os.getenv("SIMULATION_MAX_TOKENS", "900"))
 MIN_CHOICES, MAX_CHOICES = 2, 4
+# 등장인물 대사가 "한 줄 질문"으로 쪼그라드는 것을 막는 최소 길이(문자).
+MIN_LINE_CHARS = int(os.getenv("SIMULATION_MIN_LINE_CHARS", "40"))
 
 
 def resolve_config(request: Any) -> Tuple[str, str, int]:
@@ -212,106 +214,318 @@ _DIFF_DIRECTIVE = {
 
 
 def _choice_spec(count: int) -> str:
-    return (f"- choices: 정확히 {count}개. 각 항목은 {{\"label\":\"사용자가 고를 행동/답변\"}} 형태다. "
+    if count <= 0:
+        return ("- choices: 빈 배열 []. 이 상황은 자유 답변 상황이라 선택지를 만들지 않는다.")
+    return (f"- choices: 정확히 {count}개. 각 항목은 {{\"label\":\"사용자가 고를 행동/입장\"}} 형태다. "
+            "각 label 은 30자 이내의 짧은 선택지다. 사용자의 답변을 대신 완성해 주면 실패다. "
             f"{count}개가 아니면 실패다.")
 
 
+def choices_enabled(request: Any) -> bool:
+    """선택지를 붙일 상황인가.
+
+    기존 simulationConfig 계약(includeChoices / interactionStyle / scenarioType)만 읽는다.
+      - includeChoices=False 또는 자유응답 스타일이면 붙이지 않는다.
+      - 면접/발표(프로젝트) 상황은 자유 답변이 자연스럽다. 설정이 선택지를 명시하지 않았다면
+        억지로 붙이지 않는다(설정이 명시했으면 그 개수를 정확히 지킨다).
+    """
+    cfg = getattr(request, "simulationConfig", None)
+    if isinstance(cfg, dict):
+        include = cfg.get("includeChoices", cfg.get("include_choices", None))
+        style = cfg.get("interactionStyle") or cfg.get("interaction_style") or ""
+        explicit_count = cfg.get("choiceCount", cfg.get("choice_count", None)) is not None
+    elif cfg is not None:
+        include = getattr(cfg, "includeChoices", None)
+        style = getattr(cfg, "interactionStyle", "") or ""
+        explicit_count = getattr(cfg, "choiceCount", None) is not None
+    else:
+        include, style, explicit_count = None, "", False
+
+    if include is False:
+        return False
+    style_key = str(style).strip().lower()
+    if style_key in _FREE_RESPONSE_STYLES:
+        return False
+    if include is True or explicit_count or style_key in _CHOICE_STYLES:
+        return True
+    stype, _diff, _count = resolve_config(request)
+    return stype not in (INTERVIEW, PROJECT)
+
+
+_FREE_RESPONSE_STYLES = {"free_response", "free", "freeform", "자유", "자유응답", "자유답변", "dialogue_only"}
+_CHOICE_STYLES = {"choice_based", "choice", "선택지", "선택형"}
+
+
+def effective_choice_count(request: Any, choice_count: int) -> int:
+    return choice_count if choices_enabled(request) else 0
+
+
+def _parse_choices(raw: Any) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for i, c in enumerate(raw or []):
+        label = _s(c.get("label") if isinstance(c, dict) else c)
+        if not label:
+            continue
+        out.append({"choiceId": chr(65 + i), "label": label, "text": label})
+    return out
+
+
+def _quote(line: str) -> str:
+    """등장인물 대사는 따옴표로 감싼다(설명문과 대사를 눈으로 구분하기 위해)."""
+    t = _s(line).strip('"“”')
+    return f'"{t}"' if t else ""
+
+
+# ── 1턴: 상황 짧게 + 즉시 대사 ──────────────────────────────────────────────
+
 def generate_scene_setup(topic: str, stype: str, difficulty: str, choice_count: int,
                          agent_name: str, llm=None) -> SimSpeech:
+    """진행/주질문자의 첫 발화. 설명문이 아니라 '장면 한 줄 + 실제 대사'다."""
     call = llm or _default_llm
     user = (
         f"[사용자가 연습하고 싶은 것]\n{topic}\n\n"
         f"{_TYPE_DIRECTIVE[stype]}\n{_DIFF_DIRECTIVE[difficulty]}\n\n"
-        "너는 '진행/질의' 역할이다. 세션의 첫 장면을 만든다. 다음 JSON만 출력하라.\n"
-        "- scenario: 상황 한 문단(어디서, 누가, 무엇이 걸려 있는지).\n"
-        "- userRole: 이 상황에서 사용자가 맡는 역할.\n"
-        "- goal: 사용자가 이 장면에서 달성해야 할 목표 한 줄.\n"
-        "- prompt: 사용자에게 던지는 질문 또는 사건(1~2문장, 물음표로 끝난다).\n"
+        "너는 이 장면의 '주 질문자'다(교수/면접관/리뷰어 등 상황에 맞는 인물).\n"
+        "상황 안내문을 길게 쓰지 마라. 지금 바로 그 인물로서 사용자에게 말을 건다.\n\n"
+        "다음 JSON만 출력하라.\n"
+        "- sceneBrief: 어디서 무슨 일이 벌어지는지 딱 한 문장(40자 내외).\n"
+        "- userRole: 사용자가 맡는 역할(짧은 명사구).\n"
+        "- goal: 사용자가 이 장면에서 해내야 할 것 한 줄.\n"
+        "- speakerRole: 네가 맡은 인물의 호칭(예: 교수, 면접관, 팀장).\n"
+        "- line: 그 인물이 사용자에게 직접 하는 실제 대사 2~4문장. 마지막은 질문이다. "
+        "따옴표·지문·괄호 없이 대사 본문만 쓴다. '상황을 설명하겠습니다' 같은 진행 안내 문장 금지.\n"
         f"{_choice_spec(choice_count)}\n\n"
-        '{"scenario":"...","userRole":"...","goal":"...","prompt":"...?","choices":[{"label":"..."}]}'
+        '{"sceneBrief":"...","userRole":"...","goal":"...","speakerRole":"...","line":"...?","choices":[{"label":"..."}]}'
     )
 
     def build(o: Dict[str, Any]) -> SimSpeech:
-        choices = [{"choiceId": chr(65 + i), "label": _s(c.get("label") if isinstance(c, dict) else c),
-                    "text": _s(c.get("label") if isinstance(c, dict) else c)}
-                   for i, c in enumerate(o.get("choices") or [])]
-        scenario, role, goal, prompt = (_s(o.get("scenario")), _s(o.get("userRole")),
-                                        _s(o.get("goal")), _s(o.get("prompt")))
-        text = "\n\n".join(p for p in [scenario, f"당신의 역할: {role}" if role else "",
-                                       f"목표: {goal}" if goal else "", prompt] if p)
-        return SimSpeech(role=HOST, stage_type=SCENE_SETUP, stage_title="상황 제시", text=text,
-                         agent_name=agent_name, choices=choices,
-                         structured={"scenario": scenario, "userRole": role, "goal": goal, "prompt": prompt})
+        brief, role, goal = _s(o.get("sceneBrief")), _s(o.get("userRole")), _s(o.get("goal"))
+        speaker, line = _s(o.get("speakerRole")) or "주 질문자", _s(o.get("line"))
+        if brief and brief[-1] not in ".!?…":
+            brief = brief + "."
+        head = " ".join(p for p in [brief, f"당신은 {role}입니다." if role else ""] if p)
+        text = "\n\n".join(p for p in [head, _quote(line)] if p)
+        return SimSpeech(role=HOST, stage_type=SCENE_SETUP, stage_title="상황 시작", text=text,
+                         agent_name=agent_name, choices=_parse_choices(o.get("choices")),
+                         structured={"sceneBrief": brief, "userRole": role, "goal": goal,
+                                     "speakerRole": speaker, "line": line})
 
     def validate(sp: SimSpeech) -> List[str]:
+        from app.services.korean_text_match import is_question_like
         issues = validate_choices(sp.choices, choice_count)
-        if len(_s(sp.structured.get("scenario"))) < 20:
-            issues.append("scenario_missing")
+        brief = _s(sp.structured.get("sceneBrief"))
+        line = _s(sp.structured.get("line"))
+        if len(brief) < 8:
+            issues.append("scene_brief_missing")
+        if len(brief) > 160:
+            issues.append("scene_brief_too_long")
         if not _s(sp.structured.get("userRole")):
             issues.append("user_role_missing")
-        from app.services.korean_text_match import is_question_like
-        if not is_question_like(_s(sp.structured.get("prompt"))):
-            issues.append("prompt_missing")
+        if len(line) < MIN_LINE_CHARS:
+            issues.append("line_too_short")
+        if not is_question_like(line):
+            issues.append("line_not_addressing_user")
         return issues
 
     return _generate(call, _SYSTEM, user, build, validate,
-                     repair_hint=f"choices 를 정확히 {choice_count}개로 맞추고 scenario/userRole/prompt 를 채워라.",
+                     repair_hint=("sceneBrief 는 한 문장으로 줄이고, line 에는 그 인물이 사용자에게 하는 "
+                                  "실제 대사(질문으로 끝남)를 써라."),
                      role=HOST)
 
 
+def generate_opening_challenge(scene: Dict[str, Any], host_line: str, stype: str, difficulty: str,
+                               agent_name: str, llm=None) -> SimSpeech:
+    """1턴의 두 번째 인물(심화 검증자). 주 질문자의 대사를 이어받아 압박 질문을 던진다."""
+    call = llm or _default_llm
+    user = (
+        f"{_scene_block(scene)}\n[주 질문자가 방금 한 말]\n{host_line}\n\n"
+        f"{_TYPE_DIRECTIVE[stype]}\n{_DIFF_DIRECTIVE[difficulty]}\n\n"
+        "너는 같은 자리에 있는 '심화 검증자'다(깐깐한 심사위원/시니어 개발자 등).\n"
+        "주 질문자의 질문을 반복하지 말고, 그 질문이 건드리지 않은 비용·위험·트레이드오프를 파고든다.\n"
+        "사용자는 아직 답하지 않았다. 사용자의 답을 네가 대신 만들어내지 마라.\n\n"
+        "- speakerRole: 네가 맡은 인물의 호칭.\n"
+        "- line: 사용자에게 직접 하는 실제 대사 2~4문장. 마지막은 질문이다.\n\n"
+        '{"speakerRole":"...","line":"...?"}'
+    )
+
+    def build(o: Dict[str, Any]) -> SimSpeech:
+        line = _s(o.get("line"))
+        return SimSpeech(role=CHALLENGER, stage_type=CHALLENGE, stage_title="심화 검증",
+                         text=_quote(line), agent_name=agent_name,
+                         structured={"speakerRole": _s(o.get("speakerRole")) or "심화 검증자",
+                                     "line": line})
+
+    def validate(sp: SimSpeech) -> List[str]:
+        from app.services.korean_text_match import is_question_like
+        issues = []
+        line = _s(sp.structured.get("line"))
+        if len(line) < MIN_LINE_CHARS:
+            issues.append("line_too_short")
+        if not is_question_like(line):
+            issues.append("challenge_question_missing")
+        if host_line and is_repeat_of(line, host_line):
+            issues.append("repeats_host_question")
+        return issues
+
+    return _generate(call, _SYSTEM, user, build, validate,
+                     repair_hint="주 질문자와 다른 지점을 공격하는 실제 대사 2~4문장을 질문으로 끝내라.",
+                     role=CHALLENGER)
+
+
+def generate_answer_brief(scene: Dict[str, Any], host_line: str, challenge_line: str,
+                          agent_name: str, llm=None) -> SimSpeech:
+    """1턴의 세 번째 인물(답변 코치). 사용자가 답하기 전에 '무엇을 담아야 하는지'만 짚는다.
+
+    사용자의 답을 대신 만들지 않는다. 답의 내용이 아니라 답의 구성 요소만 말한다.
+    """
+    call = llm or _default_llm
+    user = (
+        f"{_scene_block(scene)}\n[주 질문자의 질문]\n{host_line}\n[심화 검증자의 질문]\n{challenge_line}\n\n"
+        "너는 사용자 편에 선 '답변 코치'다. 사용자는 지금부터 답해야 한다.\n"
+        "★ 사용자의 답을 대신 작성하면 실패다. 정답 내용을 말하지 말고, 좋은 답이 갖춰야 할 "
+        "구성 요소(무엇을 근거로, 어떤 순서로 말할지)만 짚어라.\n\n"
+        "- focusPoints: 답변에 반드시 들어가야 할 요소 2~3개(내용이 아니라 요소).\n"
+        "- line: 사용자에게 하는 짧은 코칭 대사 1~2문장.\n\n"
+        '{"focusPoints":["...","..."],"line":"..."}'
+    )
+
+    def build(o: Dict[str, Any]) -> SimSpeech:
+        points, line = _slist(o.get("focusPoints"), 3), _s(o.get("line"))
+        body = _quote(line)
+        if points:
+            body = "\n".join([body, "답변에 담을 것"] + [f"- {p}" for p in points]).strip()
+        return SimSpeech(role=COACH, stage_type=FEEDBACK, stage_title="답변 준비 코칭",
+                         text=body, agent_name=agent_name,
+                         structured={"focusPoints": points, "line": line})
+
+    def validate(sp: SimSpeech) -> List[str]:
+        issues = []
+        if len(sp.structured.get("focusPoints") or []) < 2:
+            issues.append("focus_points_missing")
+        if len(_s(sp.structured.get("line"))) < 5:
+            issues.append("coach_line_missing")
+        return issues
+
+    return _generate(call, _SYSTEM, user, build, validate,
+                     repair_hint="focusPoints 2개 이상과 짧은 코칭 대사를 채워라. 정답 내용은 쓰지 마라.",
+                     role=COACH)
+
+
+# ── 2턴 이후 ────────────────────────────────────────────────────────────────
+
 def _scene_block(session_data: Dict[str, Any]) -> str:
-    return (f"[고정된 상황]\n{session_data.get('scenario', '')}\n"
+    return (f"[고정된 장면]\n{session_data.get('scenario', '')}\n"
             f"[사용자 역할] {session_data.get('userRole', '')}\n"
             f"[목표] {session_data.get('goal', '')}\n"
-            f"[직전 질문/사건] {session_data.get('prompt', '')}\n")
+            f"[직전 발언/질문] {session_data.get('prompt', '')}\n")
 
 
-def generate_challenge(session_data: Dict[str, Any], user_answer: str, stype: str, difficulty: str,
-                       agent_name: str, llm=None) -> SimSpeech:
+def is_repeat_of(text: str, other: str, threshold: float = 0.8) -> bool:
+    import difflib
+    a, b = _s(text), _s(other)
+    if not a or not b:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= threshold
+
+
+def generate_follow_up(session_data: Dict[str, Any], user_answer: str, stype: str, difficulty: str,
+                       choice_count: int, agent_name: str, llm=None) -> SimSpeech:
+    """주 질문자의 꼬리질문. 사용자의 답 중 실제로 한 부분을 집어 이어간다."""
     call = llm or _default_llm
     user = (
         f"{_scene_block(session_data)}\n[사용자의 이번 답변/선택]\n{user_answer}\n\n"
         f"{_TYPE_DIRECTIVE[stype]}\n{_DIFF_DIRECTIVE[difficulty]}\n\n"
-        "너는 '심화 검증' 역할이다. 사용자의 답에서 근거가 약하거나 빠진 지점을 하나 골라 꼬리질문을 던진다.\n"
-        "- targetPoint: 사용자의 답에서 실제로 짚을 지점(사용자가 한 말을 근거로).\n"
-        "- challengeQuestion: 그 지점을 검증하는 질문 1개(물음표로 끝난다).\n"
-        "사용자가 하지 않은 말을 지어내서 공격하지 마라.\n\n"
-        '{"targetPoint":"...","challengeQuestion":"...?"}'
+        "너는 이 장면의 '주 질문자'다. 같은 장면을 이어간다(장면을 처음부터 다시 설명하지 마라).\n"
+        "- reaction: 사용자의 답을 들은 인물의 짧은 반응/장면 진행 1문장.\n"
+        "- targetPart: 사용자의 답에서 네가 집어든 부분(사용자가 실제로 한 말).\n"
+        "- line: 그 부분을 파고드는 꼬리질문 대사 2~4문장. 마지막은 질문이다.\n"
+        f"{_choice_spec(choice_count)}\n\n"
+        '{"reaction":"...","targetPart":"...","line":"...?","choices":[{"label":"..."}]}'
     )
 
     def build(o: Dict[str, Any]) -> SimSpeech:
-        target, q = _s(o.get("targetPoint")), _s(o.get("challengeQuestion"))
-        text = "\n\n".join(p for p in [target, q] if p)
-        return SimSpeech(role=CHALLENGER, stage_type=CHALLENGE, stage_title="심화 검증",
-                         text=text, agent_name=agent_name,
-                         structured={"targetPoint": target, "challengeQuestion": q})
+        reaction, target, line = _s(o.get("reaction")), _s(o.get("targetPart")), _s(o.get("line"))
+        text = "\n\n".join(p for p in [reaction, _quote(line)] if p)
+        return SimSpeech(role=HOST, stage_type=NEXT_SCENE, stage_title="꼬리 질문", text=text,
+                         agent_name=agent_name, choices=_parse_choices(o.get("choices")),
+                         structured={"reaction": reaction, "targetPart": target, "line": line,
+                                     "prompt": line})
 
     def validate(sp: SimSpeech) -> List[str]:
-        issues = []
         from app.services.korean_text_match import is_question_like
-        if not is_question_like(_s(sp.structured.get("challengeQuestion"))):
-            issues.append("challenge_question_missing")
-        if len(_s(sp.structured.get("targetPoint"))) < 5:
-            issues.append("target_point_missing")
-        if not references_user_answer(sp.text, user_answer):
+        issues = validate_choices(sp.choices, choice_count)
+        line = _s(sp.structured.get("line"))
+        if len(line) < MIN_LINE_CHARS:
+            issues.append("line_too_short")
+        if not is_question_like(line):
+            issues.append("prompt_missing")
+        if not _s(sp.structured.get("targetPart")):
+            issues.append("target_part_missing")
+        if not references_user_answer(f"{sp.structured.get('targetPart', '')} {line}", user_answer):
             issues.append("not_referencing_user_answer")
         return issues
 
     return _generate(call, _SYSTEM, user, build, validate,
-                     repair_hint="사용자가 실제로 쓴 표현을 근거로 targetPoint 를 정하고 질문 1개로 끝내라.",
+                     repair_hint=("사용자가 실제로 쓴 표현을 targetPart 로 집고, 그 부분을 파고드는 "
+                                  "대사를 질문으로 끝내라."),
+                     role=HOST)
+
+
+def generate_challenge(session_data: Dict[str, Any], user_answer: str, stype: str, difficulty: str,
+                       agent_name: str, llm=None, host_line: str = "") -> SimSpeech:
+    """심화 검증자의 반박. 사용자의 답에서 기술적으로 약한 근거를 공격한다."""
+    call = llm or _default_llm
+    host_block = f"[주 질문자가 방금 한 꼬리질문]\n{host_line}\n" if host_line else ""
+    user = (
+        f"{_scene_block(session_data)}\n[사용자의 이번 답변/선택]\n{user_answer}\n{host_block}\n"
+        f"{_TYPE_DIRECTIVE[stype]}\n{_DIFF_DIRECTIVE[difficulty]}\n\n"
+        "너는 '심화 검증자'다. 주 질문자와 같은 질문을 반복하지 마라.\n"
+        "사용자의 답에서 근거가 약한 지점 하나를 골라 실제 대사로 반박한다.\n"
+        "사용자가 하지 않은 말을 지어내서 공격하지 마라.\n\n"
+        "- targetPoint: 사용자의 답에서 실제로 짚을 지점.\n"
+        "- line: 그 지점을 공격하는 대사 2~4문장. 마지막은 질문이다.\n\n"
+        '{"targetPoint":"...","line":"...?"}'
+    )
+
+    def build(o: Dict[str, Any]) -> SimSpeech:
+        target, line = _s(o.get("targetPoint")), _s(o.get("line"))
+        return SimSpeech(role=CHALLENGER, stage_type=CHALLENGE, stage_title="심화 검증",
+                         text=_quote(line), agent_name=agent_name,
+                         structured={"targetPoint": target, "line": line,
+                                     "challengeQuestion": line})
+
+    def validate(sp: SimSpeech) -> List[str]:
+        from app.services.korean_text_match import is_question_like
+        issues = []
+        line = _s(sp.structured.get("line"))
+        if not is_question_like(line):
+            issues.append("challenge_question_missing")
+        if len(line) < MIN_LINE_CHARS:
+            issues.append("line_too_short")
+        if len(_s(sp.structured.get("targetPoint"))) < 5:
+            issues.append("target_point_missing")
+        if not references_user_answer(f"{sp.structured.get('targetPoint', '')} {line}", user_answer):
+            issues.append("not_referencing_user_answer")
+        if host_line and is_repeat_of(line, host_line):
+            issues.append("repeats_host_question")
+        return issues
+
+    return _generate(call, _SYSTEM, user, build, validate,
+                     repair_hint="사용자가 실제로 쓴 표현을 근거로 targetPoint 를 정하고 대사를 질문으로 끝내라.",
                      role=CHALLENGER)
 
 
 def generate_feedback(session_data: Dict[str, Any], user_answer: str, difficulty: str,
                       agent_name: str, llm=None) -> SimSpeech:
+    """답변 코치. 방금 답변의 강점/약점과 보완점을 짧게 피드백한다."""
     call = llm or _default_llm
     user = (
         f"{_scene_block(session_data)}\n[사용자의 이번 답변/선택]\n{user_answer}\n\n"
         f"{_DIFF_DIRECTIVE[difficulty]}\n\n"
-        "너는 '피드백 코치' 역할이다. 이번 답변만 평가한다. 다음 JSON만 출력하라.\n"
+        "너는 '답변 코치'다. 이번 답변만 평가한다. 사용자의 다음 답을 대신 쓰지 마라.\n"
         "- strengths: 잘한 점 1~2개(사용자가 실제로 말한 내용 기준).\n"
         "- weaknesses: 부족한 점 1~2개.\n"
-        "- improvement: 다음 번에 바로 적용할 개선 방향 한 줄.\n\n"
+        "- improvement: 다음 답변에서 바로 적용할 개선 방향 한 줄.\n\n"
         '{"strengths":["..."],"weaknesses":["..."],"improvement":"..."}'
     )
 
@@ -340,62 +554,29 @@ def generate_feedback(session_data: Dict[str, Any], user_answer: str, difficulty
                      repair_hint="strengths/weaknesses/improvement 를 모두 채워라.", role=COACH)
 
 
-def generate_next_scene(session_data: Dict[str, Any], user_answer: str, stype: str, difficulty: str,
-                        choice_count: int, agent_name: str, llm=None) -> SimSpeech:
-    call = llm or _default_llm
-    user = (
-        f"{_scene_block(session_data)}\n[사용자의 이번 답변/선택]\n{user_answer}\n\n"
-        f"{_TYPE_DIRECTIVE[stype]}\n{_DIFF_DIRECTIVE[difficulty]}\n\n"
-        "너는 '진행/질의' 역할이다. 같은 상황을 이어간다(장면을 처음부터 새로 만들지 마라).\n"
-        "- consequence: 사용자의 답/선택이 이 상황에서 만든 결과 1~2문장.\n"
-        "- conceptLink: 이 장면이 연결되는 학습 개념 한 줄.\n"
-        "- prompt: 이어지는 질문 또는 사건 1개(물음표로 끝난다).\n"
-        f"{_choice_spec(choice_count)}\n\n"
-        '{"consequence":"...","conceptLink":"...","prompt":"...?","choices":[{"label":"..."}]}'
-    )
-
-    def build(o: Dict[str, Any]) -> SimSpeech:
-        choices = [{"choiceId": chr(65 + i), "label": _s(c.get("label") if isinstance(c, dict) else c),
-                    "text": _s(c.get("label") if isinstance(c, dict) else c)}
-                   for i, c in enumerate(o.get("choices") or [])]
-        cons, link, prompt = _s(o.get("consequence")), _s(o.get("conceptLink")), _s(o.get("prompt"))
-        text = "\n\n".join(p for p in [cons, f"연결 개념: {link}" if link else "", prompt] if p)
-        return SimSpeech(role=HOST, stage_type=NEXT_SCENE, stage_title="다음 장면", text=text,
-                         agent_name=agent_name, choices=choices,
-                         structured={"consequence": cons, "conceptLink": link, "prompt": prompt})
-
-    def validate(sp: SimSpeech) -> List[str]:
-        issues = validate_choices(sp.choices, choice_count)
-        if len(_s(sp.structured.get("consequence"))) < 10:
-            issues.append("consequence_missing")
-        from app.services.korean_text_match import is_question_like
-        if not is_question_like(_s(sp.structured.get("prompt"))):
-            issues.append("prompt_missing")
-        return issues
-
-    return _generate(call, _SYSTEM, user, build, validate,
-                     repair_hint=f"consequence/prompt 를 채우고 choices 를 정확히 {choice_count}개로 맞춰라.",
-                     role=HOST)
-
-
 # ── 턴 검증 ─────────────────────────────────────────────────────────────────
 
 def validate_turn(speeches: List[SimSpeech], choice_count: int, first_turn: bool,
                   user_answer: str = "") -> List[str]:
-    """세션 유지 / 3역할 / 선택지 수 / 사용자 응답 반영 / 검증질문 / 피드백 / 다음 상태."""
+    """3역할 전원 발화 / 대사 형태 / 선택지 수 / 사용자 응답 반영."""
     issues: List[str] = []
     roles = [sp.role for sp in speeches]
-    if first_turn:
-        if roles != [HOST]:
-            issues.append("scene_setup_role_invalid")
-    else:
-        for required in (CHALLENGER, COACH, HOST):
-            if required not in roles:
-                issues.append(f"missing_role_{required.lower()}")
-        challenge = next((s for s in speeches if s.role == CHALLENGER), None)
-        if challenge and not references_user_answer(challenge.text, user_answer):
-            issues.append("challenge_not_referencing_user")
-    last = speeches[-1] if speeches else None
-    if last is not None and last.role == HOST:
-        issues.extend(validate_choices(last.choices, choice_count))
+    for required in (HOST, CHALLENGER, COACH):
+        if required not in roles:
+            issues.append(f"missing_role_{required.lower()}")
+    if not first_turn:
+        for sp in speeches:
+            if sp.role in (HOST, CHALLENGER) and not references_user_answer(sp.text, user_answer):
+                issues.append(f"{sp.role.lower()}_not_referencing_user")
+    host = next((s for s in speeches if s.role == HOST), None)
+    if host is not None:
+        issues.extend(validate_choices(host.choices, choice_count))
     return issues
+
+
+def scene_choices(speeches: List[SimSpeech]) -> List[Dict[str, Any]]:
+    """이번 턴에서 사용자가 고를 선택지(진행 역할이 낸 것)."""
+    for sp in speeches:
+        if sp.role == HOST:
+            return sp.choices
+    return []

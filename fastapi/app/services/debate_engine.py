@@ -112,6 +112,21 @@ def uses_convergence_step(strength: str) -> bool:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
+class DebateAgentFailure(RuntimeError):
+    """한 참여자가 실제로 발언을 만들어내지 못했다.
+
+    남은 참여자로 일반 답변을 만들어 성공 처리하면 안 된다(토론이 아니라 설명문이 된다).
+    호출부는 이 예외를 DEBATE_AGENT_FAILURE 로 사용자에게 전달한다.
+    """
+
+    def __init__(self, agent_name: str, agent_id, stage: str, issues: List[str]):
+        self.agent_name = agent_name
+        self.agent_id = agent_id
+        self.stage = stage
+        self.issues = list(issues or [])
+        super().__init__(f"{agent_name} 의 {stage} 단계 생성 실패: {', '.join(self.issues)}")
+
+
 @dataclass
 class DebatePosition:
     """에이전트에게 배정된 관점(대립축의 한쪽)."""
@@ -183,6 +198,7 @@ class DebateTranscript:
     exceptions: Dict[str, ExceptionNote] = field(default_factory=dict)
     convergence: List[str] = field(default_factory=list)
     final: Optional[FinalConclusion] = None
+    consensus: Optional["ConsensusOutcome"] = None
 
     def position(self, slot: str) -> Optional[DebatePosition]:
         for p in self.positions:
@@ -395,7 +411,9 @@ def validate_transcript(t: DebateTranscript) -> Tuple[bool, List[str]]:
     elif _s(t.positions[0].label).lower() == _s(t.positions[1].label).lower():
         issues.append("positions_not_opposed")
 
-    for slot in ("A", "B"):
+    # 참여자 전원이 실제로 입론/반박/예외 정리를 했는가(2명이든 3명이든 동일하게 본다).
+    slots = [p.slot for p in t.positions] or ["A", "B"]
+    for slot in slots:
         opening = t.openings.get(slot)
         if opening is None:
             issues.append(f"{slot}_opening_missing")
@@ -410,11 +428,20 @@ def validate_transcript(t: DebateTranscript) -> Tuple[bool, List[str]]:
             issues.append(f"{slot}_exception_missing")
 
     # 반박이 실제 상대 발언을 겨냥했는지(교차 검증)
-    for slot, other in (("A", "B"), ("B", "A")):
+    opponent_of = {slots[i]: slots[(i + 1) % len(slots)] for i in range(len(slots))}
+    for slot in slots:
+        other = opponent_of[slot]
         other_text = _opponent_corpus(t, other)
         for idx, reb in enumerate(t.rebuttals.get(slot) or [], start=1):
             if not references_opponent(reb.target_claim + " " + reb.counter_argument, other_text):
                 issues.append(f"{slot}_rebuttal{idx}_not_targeting_{other}")
+
+    # 최종 결론이 한 참여자의 단독 저작이면 실패다(합의 절차를 거쳐야 한다).
+    finals = [s for s in t.speeches if s.speech_type == "FINAL_CONCLUSION"]
+    if finals and any(s.slot != CONSENSUS_SLOT for s in finals):
+        issues.append("final_owned_by_single_agent")
+    if len(slots) >= 2 and not [s for s in t.speeches if s.speech_type == "CONSENSUS_REVIEW"]:
+        issues.append("consensus_review_missing")
 
     if t.final is None:
         issues.append("final_conclusion_missing")
@@ -870,6 +897,240 @@ def generate_final(topic: str, pos_a: DebatePosition, pos_b: DebatePosition,
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 5-b) 다중 참여자 관점 배정 + 합의(consensus) 프로토콜
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MAX_CONSENSUS_ROUNDS = int(os.getenv("DEBATE_MAX_CONSENSUS_ROUNDS", "2"))
+
+
+@dataclass
+class ConsensusReview:
+    """다른 참여자가 초안 결론을 읽고 낸 동의 여부와 수정 요구."""
+    slot: str
+    agent_id: Any
+    agent_name: str
+    agree: bool = False
+    corrections: List[str] = field(default_factory=list)
+    reason: str = ""
+
+
+@dataclass
+class ConsensusOutcome:
+    final: FinalConclusion
+    agreed: bool = False
+    rounds: int = 0
+    reviews: List[ConsensusReview] = field(default_factory=list)
+    open_points: List[str] = field(default_factory=list)
+
+
+def _perspectives_fallback(n: int) -> Dict[str, Any]:
+    # content-free 폴백: 도메인 용어를 코드에 박지 않는다(안건 문구만 사용).
+    base = [
+        "안건에서 제시된 조건을 유지했을 때의 이점을 우선한다.",
+        "안건에서 제시된 조건을 바꿨을 때의 이점을 우선한다.",
+        "안건이 성립하는 범위 자체를 먼저 따져야 한다고 본다.",
+        "안건의 비용을 누가 부담하는지를 먼저 본다.",
+    ]
+    return {"axis": "이 안건에서 무엇을 먼저 지킬 것인가",
+            "perspectives": [{"label": f"관점 {SLOT_LETTERS[i]}", "stance": base[i % len(base)]}
+                             for i in range(n)]}
+
+
+def assign_positions_multi(topic: str, agents: List[AgentProfile],
+                           llm: Optional[LLMCall] = None) -> List[DebatePosition]:
+    """참여자 수만큼 서로 다른 관점을 만들어 '전원'에게 배정한다.
+
+    2명이면 대립하는 두 관점, 3명 이상이면 서로 겹치지 않는 판단 기준 N개를 만든다.
+    억지 찬반이 아니라 실제로 갈리는 지점을 축으로 삼는다.
+    """
+    n = len(agents)
+    call = llm or _default_llm
+    user = (
+        f"[안건(사용자 질문 원문)]\n{topic}\n\n"
+        f"이 안건에서 실제로 논리적으로 갈리는 관점 {n}개를 잡아라.\n"
+        "- 안건이 선택지 비교면 각 선택지를 지지하는 관점으로 나눈다.\n"
+        "- 아니면 서로 다른 '판단 기준'(무엇을 우선하는가)으로 나눈다.\n"
+        "- 관점끼리 같은 말을 다르게 쓴 것이면 실패다.\n\n"
+        '{"axis":"관점들을 가르는 판단 기준 한 줄","perspectives":['
+        '{"label":"관점 이름(10자 내외)","stance":"이 관점이 무엇을 우선하는지 1~2문장"}]}'
+    )
+
+    def build(o: Dict[str, Any]) -> Dict[str, Any]:
+        items = []
+        for p in (o.get("perspectives") or [])[:n]:
+            if isinstance(p, dict):
+                items.append({"label": _s(p.get("label")), "stance": _s(p.get("stance"))})
+        return {"axis": _s(o.get("axis")), "perspectives": items}
+
+    def validate(o: Dict[str, Any]) -> List[str]:
+        items = o.get("perspectives") or []
+        issues: List[str] = []
+        if len(items) != n:
+            issues.append(f"perspective_count_{len(items)}_expected_{n}")
+            return issues
+        for i, p in enumerate(items):
+            if len(_s(p.get("label"))) < 2:
+                issues.append(f"{i}_label_missing")
+            if len(_s(p.get("stance"))) < 10:
+                issues.append(f"{i}_stance_missing")
+        labels = [_s(p.get("label")).lower() for p in items]
+        if len(set(labels)) != len(labels):
+            issues.append("labels_identical")
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                if difflib.SequenceMatcher(None, _s(items[i].get("stance")),
+                                           _s(items[j].get("stance"))).ratio() > 0.85:
+                    issues.append("stances_identical")
+                    break
+        if len(_s(o.get("axis"))) < 4:
+            issues.append("axis_missing")
+        return issues
+
+    obj, issues, _ = _generate_structured(
+        call, system=_DEBATE_SYSTEM, user=user, build=build, validate=validate,
+        repair_hint=f"관점을 정확히 {n}개, 서로 확실히 다른 label/stance 로 다시 써라.",
+        temperature=0.5,
+    )
+    if issues or not obj or not obj.get("perspectives"):
+        obj = _perspectives_fallback(n)
+        logger.warning("[DEBATE] 관점 배정 폴백 사용 n=%d issues=%s", n, issues)
+
+    axis = obj["axis"]
+    return [
+        DebatePosition(agent_id=_agent_id(agent), agent_name=_agent_name(agent, i + 1),
+                       slot=SLOT_LETTERS[i], label=obj["perspectives"][i]["label"],
+                       stance=obj["perspectives"][i]["stance"], axis=axis)
+        for i, agent in enumerate(agents)
+    ]
+
+
+def _notes_block(positions: List[DebatePosition], notes: Dict[str, ExceptionNote]) -> str:
+    lines = []
+    for pos in positions:
+        note = notes.get(pos.slot)
+        if note is None:
+            continue
+        lines.append(
+            f"[{pos.label}({pos.agent_name}) 수정 결론] {note.revised_conclusion}\n"
+            f"[{pos.label}이 인정한 부분] {note.acknowledged_from_opponent}\n"
+            f"[{pos.label} 예외] {'; '.join(note.exceptions)}"
+        )
+    return "\n\n".join(lines)
+
+
+def generate_conclusion_draft(topic: str, drafter: DebatePosition, positions: List[DebatePosition],
+                              notes: Dict[str, ExceptionNote], agent: AgentProfile,
+                              criteria: List[str], corrections: Optional[List[str]] = None,
+                              llm: Optional[LLMCall] = None) -> Tuple[FinalConclusion, List[str], int]:
+    """합의 초안. 자기 승리 선언이 아니라 '토론 전체를 통과한 하나의 답' 초안이다."""
+    call = llm or _default_llm
+    criteria_block = ("\n[참여자들이 합의한 판단 기준]\n" + _bullet(criteria)) if criteria else ""
+    fix_block = ("\n[다른 참여자가 요구한 수정 사항 — 반드시 반영하라]\n" + _bullet(corrections)
+                 if corrections else "")
+    user = (
+        f"[안건(사용자 질문 원문)]\n{topic}\n\n{_notes_block(positions, notes)}\n{criteria_block}{fix_block}\n\n"
+        "너는 토론 참여자로서 '합의 초안'을 쓴다. 사회자도 심판도 아니다.\n"
+        "- 어느 쪽이 이겼는지 말하지 마라. 승자/패자/판정은 금지다.\n"
+        "- '양쪽 다 장단점이 있다'로 끝내지 마라. 조건을 명시한 하나의 판단을 내려야 한다.\n"
+        "- 네 관점만 담지 마라. 다른 참여자의 예외와 수정 결론이 조건 안에 실제로 반영돼야 한다.\n"
+        "- decision: 사용자가 실제로 무엇을 택해야 하는지 한두 문장.\n"
+        "- conditions: 그 판단이 성립하는 조건 2개 이상.\n"
+        "- reason: 왜 그 판단이 타당한지(반박을 통과한 근거).\n"
+        "- recommendation: 지금 당장 취할 수 있는 실행 권고.\n\n"
+        '{"decision":"...","conditions":["...","..."],"reason":"...","recommendation":"..."}'
+    )
+
+    def build(o: Dict[str, Any]) -> FinalConclusion:
+        return FinalConclusion(
+            decision=_s(o.get("decision")), conditions=_slist(o.get("conditions"), 4),
+            reason=_s(o.get("reason")), recommendation=_s(o.get("recommendation")),
+        )
+
+    return _generate_structured(
+        call, system=_DEBATE_SYSTEM, user=user, build=build, validate=validate_final,
+        repair_hint="승패 표현을 빼고 decision/conditions/reason/recommendation 을 모두 채워라.",
+    )
+
+
+def generate_conclusion_review(topic: str, reviewer: DebatePosition, draft: FinalConclusion,
+                               agent: AgentProfile, note: Optional[ExceptionNote] = None,
+                               llm: Optional[LLMCall] = None) -> Tuple[ConsensusReview, List[str], int]:
+    """다른 참여자가 초안을 읽고 동의/수정 요구를 낸다(최종 결론의 단독 소유를 막는다)."""
+    call = llm or _default_llm
+    own = f"\n[네 수정 결론] {note.revised_conclusion}\n[네가 든 예외] {'; '.join(note.exceptions)}\n" if note else ""
+    user = (
+        f"[안건]\n{topic}\n\n"
+        f"[다른 참여자가 낸 합의 초안]\n결론: {draft.decision}\n"
+        f"조건:\n{_bullet(draft.conditions)}\n이유: {draft.reason}\n권고: {draft.recommendation}\n"
+        f"{own}\n"
+        f"{_position_block_solo(reviewer)}\n\n"
+        "지금은 토론이 끝나고 '합의' 단계다. 초안을 다시 쓰지 말고 판정만 하라.\n"
+        "★ 합의 판정 기준은 '내 입장이 이겼는가'가 아니다. 초안이 조건을 명확히 달고 있고,\n"
+        "  네가 든 예외가 그 조건 안에 반영돼 있으면 네 관점과 결론이 달라도 동의해야 한다.\n"
+        "  네 주장이 그대로 채택되지 않았다는 이유로 false 를 내면 실패다.\n"
+        "- agree: 이 초안을 최종 결론으로 받아들일 수 있으면 true, 아니면 false.\n"
+        "- corrections: false 라면 반드시 고쳐야 할 점 1~2개(무엇을 조건에 추가해야 하는지 구체적으로).\n"
+        "  true 면 빈 배열.\n"
+        "- reason: 그렇게 판단한 이유 한두 문장.\n\n"
+        '{"agree":true,"corrections":[],"reason":"..."}'
+    )
+
+    def build(o: Dict[str, Any]) -> ConsensusReview:
+        agree = o.get("agree")
+        if isinstance(agree, str):
+            agree = agree.strip().lower() in ("true", "yes", "y", "1", "동의", "예")
+        return ConsensusReview(
+            slot=reviewer.slot, agent_id=reviewer.agent_id, agent_name=reviewer.agent_name,
+            agree=bool(agree), corrections=_slist(o.get("corrections"), 3), reason=_s(o.get("reason")),
+        )
+
+    def validate(rv: ConsensusReview) -> List[str]:
+        issues = []
+        if len(_s(rv.reason)) < 5:
+            issues.append("review_reason_missing")
+        if not rv.agree and not rv.corrections:
+            issues.append("corrections_missing")
+        return issues
+
+    return _generate_structured(
+        call, system=_DEBATE_SYSTEM, user=user, build=build, validate=validate,
+        repair_hint="agree 를 true/false 로 명확히 내고, false 면 corrections 를 1개 이상 써라.",
+        temperature=0.35,
+    )
+
+
+def _position_block_solo(pos: DebatePosition) -> str:
+    return f"[너의 관점 — 반드시 유지] {pos.label}\n{pos.stance}\n[판단 기준 축] {pos.axis}"
+
+
+def render_consensus_draft(draft: FinalConclusion, pos: DebatePosition, round_no: int) -> str:
+    lines = [f"[{pos.label} 합의 초안{f' (수정 {round_no - 1}차)' if round_no > 1 else ''}]",
+             draft.decision, "", "적용 조건", _bullet(draft.conditions), "", f"이유: {draft.reason}"]
+    return "\n".join(l for l in lines if l is not None).strip()
+
+
+def render_consensus_review(review: ConsensusReview, pos: DebatePosition) -> str:
+    head = f"[{pos.label} 검토] {'초안에 동의한다' if review.agree else '아직 동의할 수 없다'}"
+    lines = [head, review.reason]
+    if review.corrections:
+        lines.extend(["", "수정 요구", _bullet(review.corrections)])
+    return "\n".join(l for l in lines if l).strip()
+
+
+def render_consensus_final(final: FinalConclusion, outcome: "ConsensusOutcome",
+                           positions: List[DebatePosition]) -> str:
+    names = ", ".join(p.agent_name for p in positions)
+    head = ("[최종 결론 — 참여자 합의]" if outcome.agreed
+            else "[최종 결론 — 합의된 부분까지]")
+    lines = [head, final.decision, "", "적용 조건", _bullet(final.conditions), "",
+             f"이유: {final.reason}", "", f"권고: {final.recommendation}"]
+    if outcome.open_points:
+        lines.extend(["", "합의되지 않아 남겨둔 쟁점", _bullet(outcome.open_points)])
+    lines.extend(["", f"이 결론은 {names} 의 토론과 상호 검토를 거쳐 수렴한 것이다."])
+    return "\n".join(l for l in lines if l is not None).strip()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 6) 에이전트 선택 / 안건 추출
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -887,21 +1148,33 @@ def extract_topic(request: MultiChatRequest) -> str:
     return _s(getattr(request, "message", ""))
 
 
-def select_debate_agents(agents: List[AgentProfile]) -> Tuple[AgentProfile, AgentProfile]:
-    """토론 참여자 2명. 사회자/심판을 만들지 않는다."""
+SLOT_LETTERS = "ABCDEFGH"
+
+
+def select_debate_participants(agents: List[AgentProfile]) -> List[AgentProfile]:
+    """토론 참여자 = 선택된 에이전트 '전원'. 사회자/심판을 따로 만들지 않는다.
+
+    선택된 사람을 2명으로 잘라내면 나머지는 화면에 아예 등장하지 못한다(관측된 버그).
+    1명뿐이면 토론이 성립하지 않으므로 대립 관점 1명을 복제해 최소 2명을 만든다.
+    """
     live = [a for a in (agents or []) if a is not None]
     if len(live) >= 2:
-        return live[0], live[1]
+        return live[:len(SLOT_LETTERS)]
     if len(live) == 1:
         base = live[0]
         clone = base.model_copy(deep=True)
         clone.agentId = f"{_agent_id(base) or 'agent'}-b"
         clone.id = clone.agentId
         clone.name = "대립 관점 토론자"
-        return base, clone
-    a = AgentProfile(agentId="debate-a", id="debate-a", name="토론자 1")
-    b = AgentProfile(agentId="debate-b", id="debate-b", name="토론자 2")
-    return a, b
+        return [base, clone]
+    return [AgentProfile(agentId="debate-a", id="debate-a", name="토론자 1"),
+            AgentProfile(agentId="debate-b", id="debate-b", name="토론자 2")]
+
+
+def select_debate_agents(agents: List[AgentProfile]) -> Tuple[AgentProfile, AgentProfile]:
+    """하위 호환: 앞의 2명만 필요한 호출부용."""
+    parts = select_debate_participants(agents)
+    return parts[0], parts[1]
 
 
 _ARGUMENT_TYPES = ("OPENING", "REBUTTAL")
@@ -937,14 +1210,18 @@ def run_debate(request: MultiChatRequest, agents: List[AgentProfile],
                llm: Optional[LLMCall] = None,
                on_speech: Optional[Callable[[Speech], None]] = None,
                on_stage: Optional[Callable[[str, str], None]] = None) -> DebateTranscript:
-    """토론 전체를 실행하고 transcript를 반환한다. 발언마다 on_speech 콜백을 호출한다."""
+    """토론 전체를 실행하고 transcript를 반환한다. 발언마다 on_speech 콜백을 호출한다.
+
+    선택된 에이전트는 '전원' 입론 → 상호 반박 → 예외 정리에 실제로 참여한다.
+    최종 결론은 한 명이 독단으로 쓰지 않는다. 초안 → 상호 검토 → 수정의 합의 절차를 거친다.
+    """
     call = llm or _default_llm
     topic = extract_topic(request)
     strength = resolve_strength(request)
     rounds = rebuttal_rounds(strength)
     request_id = f"dbt_{uuid.uuid4().hex[:12]}"
 
-    agent_a, agent_b = select_debate_agents(agents)
+    participants = select_debate_participants(agents)
     t = DebateTranscript(topic=topic, strength=strength, request_id=request_id)
 
     def emit(speech: Speech) -> None:
@@ -960,20 +1237,30 @@ def run_debate(request: MultiChatRequest, agents: List[AgentProfile],
 
     # ── 관점 배정 ────────────────────────────────────────────────────────────
     stage("POSITION_ASSIGNMENT", "관점 배정")
-    pos_a, pos_b = assign_positions(topic, agent_a, agent_b, llm=call)
-    t.positions = [pos_a, pos_b]
+    positions = assign_positions_multi(topic, participants, llm=call)
+    t.positions = positions
     _log(request_id, strength, 0, "system", "-", "POSITION_ASSIGNMENT")
 
-    agent_of = {"A": agent_a, "B": agent_b}
-    pos_of = {"A": pos_a, "B": pos_b}
+    slots = [p.slot for p in positions]
+    agent_of = {p.slot: participants[i] for i, p in enumerate(positions)}
+    pos_of = {p.slot: p for p in positions}
+    # 반박 상대는 다음 순번(순환). 2명이면 A↔B, 3명이면 A→B→C→A 로 전원이 때리고 전원이 맞는다.
+    opponent_of = {slots[i]: slots[(i + 1) % len(slots)] for i in range(len(slots))}
 
-    # ── 입론 (2·3·4단계) ─────────────────────────────────────────────────────
+    logger.info("[DEBATE] request_id=%s participants=%d slots=%s", request_id, len(slots), slots)
+
+    # ── 입론 ─────────────────────────────────────────────────────────────────
     stage("OPENING", "입론")
-    for slot in ("A", "B"):
-        me, other = pos_of[slot], pos_of["B" if slot == "A" else "A"]
-        arg, issues, retries = generate_opening(topic, me, other, agent_of[slot], llm=call)
-        if arg is None:
-            arg = InitialArgument()
+    for slot in slots:
+        me, other = pos_of[slot], pos_of[opponent_of[slot]]
+        try:
+            arg, issues, retries = generate_opening(topic, me, other, agent_of[slot], llm=call)
+        except Exception as exc:
+            raise DebateAgentFailure(me.agent_name, me.agent_id, "OPENING",
+                                     [type(exc).__name__]) from exc
+        # 한 명이 실제로 주장하지 못했는데 나머지로 진행하면 토론이 아니라 설명문이 된다.
+        if arg is None or not _s(arg.conclusion) or (not arg.reasons and not _s(arg.explanation)):
+            raise DebateAgentFailure(me.agent_name, me.agent_id, "OPENING", issues or ["empty_opening"])
         t.openings[slot] = arg
         emit(Speech(
             slot=slot, agent_id=me.agent_id, agent_name=me.agent_name,
@@ -983,23 +1270,29 @@ def run_debate(request: MultiChatRequest, agents: List[AgentProfile],
                         "explanation": arg.explanation, "issues": issues, "position": me.label},
         ))
 
-    # ── 상호 반박 (5단계) — 강도만큼 라운드 반복 ──────────────────────────────
+    # ── 상호 반박 — 강도만큼 라운드 반복 ─────────────────────────────────────
     for rnd in range(1, rounds + 1):
         stage(f"REBUTTAL_R{rnd}", f"{rnd}차 상호 반박")
-        for slot, other_slot in (("A", "B"), ("B", "A")):
+        for slot in slots:
+            other_slot = opponent_of[slot]
             me, other = pos_of[slot], pos_of[other_slot]
-            # ★ 상대의 '실제 발언'만 컨텍스트로 넘긴다(최근 2건 + 입론).
+            # ★ 상대의 '실제 발언'만 컨텍스트로 넘긴다.
             opponent_text = _speech_corpus(t, other_slot)
             own_previous = [r.target_claim + " " + r.counter_argument for r in t.rebuttals.get(slot, [])]
             already = [r.target_claim for r in t.rebuttals.get(slot, [])]
             candidates = untargeted_claims(claim_candidates(t, other_slot), already)
-            reb, issues, retries = generate_rebuttal(
-                topic, me, other, agent_of[slot], opponent_text, own_previous, rnd, llm=call,
-                opponent_latest=_speech_corpus(t, other_slot, last_only=True),
-                target_candidates=candidates,
-                own_previous_counters=[r.counter_argument for r in t.rebuttals.get(slot, [])])
-            if reb is None:
-                reb = Rebuttal()
+            try:
+                reb, issues, retries = generate_rebuttal(
+                    topic, me, other, agent_of[slot], opponent_text, own_previous, rnd, llm=call,
+                    opponent_latest=_speech_corpus(t, other_slot, last_only=True),
+                    target_candidates=candidates,
+                    own_previous_counters=[r.counter_argument for r in t.rebuttals.get(slot, [])])
+            except Exception as exc:
+                raise DebateAgentFailure(me.agent_name, me.agent_id, f"REBUTTAL_R{rnd}",
+                                         [type(exc).__name__]) from exc
+            if reb is None or not _s(reb.counter_argument):
+                raise DebateAgentFailure(me.agent_name, me.agent_id, f"REBUTTAL_R{rnd}",
+                                         issues or ["empty_rebuttal"])
             t.rebuttals.setdefault(slot, []).append(reb)
             emit(Speech(
                 slot=slot, agent_id=me.agent_id, agent_name=me.agent_name,
@@ -1014,9 +1307,10 @@ def run_debate(request: MultiChatRequest, agents: List[AgentProfile],
                             "issues": issues, "position": me.label},
             ))
 
-    # ── 예외 정리 (6단계) + 입장 수정 ────────────────────────────────────────
+    # ── 예외 정리 + 입장 수정 ────────────────────────────────────────────────
     stage("EXCEPTION", "예외 정리")
-    for slot, other_slot in (("A", "B"), ("B", "A")):
+    for slot in slots:
+        other_slot = opponent_of[slot]
         me, other = pos_of[slot], pos_of[other_slot]
         note, issues, retries = generate_exception(
             topic, me, other, agent_of[slot],
@@ -1042,7 +1336,7 @@ def run_debate(request: MultiChatRequest, agents: List[AgentProfile],
 
     if uses_position_revision(strength):
         stage("REVISION", "입장 수정")
-        for slot in ("A", "B"):
+        for slot in slots:
             me, note = pos_of[slot], t.exceptions[slot]
             emit(Speech(
                 slot=slot, agent_id=me.agent_id, agent_name=me.agent_name,
@@ -1053,33 +1347,131 @@ def run_debate(request: MultiChatRequest, agents: List[AgentProfile],
             ))
 
     # ── 수렴 (deep 전용) ─────────────────────────────────────────────────────
-    last_slot = "B"
-    if uses_convergence_step(strength):
+    if uses_convergence_step(strength) and len(slots) >= 2:
         stage("CONVERGENCE", "판단 기준 수렴")
         criteria, _issues, _r = generate_convergence(
-            topic, pos_a, pos_b, t.exceptions["A"], t.exceptions["B"], agent_of[last_slot], llm=call)
+            topic, pos_of[slots[0]], pos_of[slots[1]], t.exceptions[slots[0]],
+            t.exceptions[slots[1]], agent_of[slots[-1]], llm=call)
         t.convergence = criteria or []
-        _log(request_id, strength, rounds + 3, f"agent_{last_slot.lower()}", "-", "DEBATE_CONVERGENCE")
+        _log(request_id, strength, rounds + 3, f"agent_{slots[-1].lower()}", "-", "DEBATE_CONVERGENCE")
 
-    # ── 최종 결론 — 사회자가 아니라 마지막 발언 에이전트가 작성한다 ────────────
+    # ── 최종 결론 — 합의 프로토콜 (특정 에이전트의 단독 저작 금지) ────────────
+    stage("CONSENSUS", "합의 절차")
+    outcome = run_consensus(topic, positions, t.exceptions, agent_of, t.convergence,
+                            llm=call, emit=emit, rounds_base=rounds + 3)
+    t.final = outcome.final
+    t.consensus = outcome
+
     stage("FINAL_CONCLUSION", "최종 결론")
-    final, issues, retries = generate_final(
-        topic, pos_a, pos_b, t.exceptions["A"], t.exceptions["B"],
-        agent_of[last_slot], t.convergence, llm=call)
-    if final is None:
-        final = FinalConclusion()
-    t.final = final
-    me = pos_of[last_slot]
     emit(Speech(
-        slot=last_slot, agent_id=me.agent_id, agent_name=me.agent_name,
+        slot=CONSENSUS_SLOT, agent_id=CONSENSUS_AGENT_ID, agent_name=CONSENSUS_AGENT_NAME,
         speech_type="FINAL_CONCLUSION", stage_type="DEBATE_FINAL_CONCLUSION",
-        stage_title="최종 결론", round_no=rounds + 4,
-        text=render_final(final, me), regenerated=retries,
-        structured={"decision": final.decision, "conditions": final.conditions,
-                    "reason": final.reason, "recommendation": final.recommendation,
-                    "issues": issues, "convergenceCriteria": t.convergence},
+        stage_title="최종 결론", round_no=rounds + 6,
+        text=render_consensus_final(outcome.final, outcome, positions),
+        structured={"decision": outcome.final.decision, "conditions": outcome.final.conditions,
+                    "reason": outcome.final.reason, "recommendation": outcome.final.recommendation,
+                    "convergenceCriteria": t.convergence,
+                    "consensusAgreed": outcome.agreed, "consensusRounds": outcome.rounds,
+                    "openPoints": outcome.open_points,
+                    "authoredBy": [p.agent_name for p in positions],
+                    "agreement": {f"agent{p.slot}Agree": _slot_agreed(outcome, p.slot)
+                                  for p in positions}},
     ))
     return t
+
+
+CONSENSUS_SLOT = "*"
+CONSENSUS_AGENT_ID = "debate-consensus"
+CONSENSUS_AGENT_NAME = "최종 결론 (합의)"
+
+
+def _slot_agreed(outcome: "ConsensusOutcome", slot: str) -> bool:
+    """마지막 라운드에서 그 슬롯이 동의했는가. 초안 작성자는 자기 초안에 동의한 것으로 본다."""
+    for rv in reversed(outcome.reviews):
+        if rv.slot == slot:
+            return bool(rv.agree)
+    return True
+
+
+def run_consensus(topic: str, positions: List[DebatePosition], notes: Dict[str, ExceptionNote],
+                  agent_of: Dict[str, AgentProfile], criteria: List[str],
+                  llm: Optional[LLMCall] = None,
+                  emit: Optional[Callable[[Speech], None]] = None,
+                  rounds_base: int = 0) -> ConsensusOutcome:
+    """합의 절차.
+
+      1) 첫 참여자가 토론 결과로 결론 초안을 쓴다.
+      2) 나머지 참여자가 각자 읽고 agree / corrections 를 낸다.
+      3) 동의하지 않으면 초안 작성자가 corrections 를 반영해 다시 쓴다.
+      4) 다시 검토한다. (최대 MAX_CONSENSUS_ROUNDS 회)
+      5) 모두 agree 면 합의 확정, 아니면 남은 쟁점을 open_points 로 명시한다.
+
+    최종 결론이 특정 에이전트 소유가 되지 않게 하는 것이 이 절차의 목적이다.
+    """
+    call = llm or _default_llm
+    drafter = positions[0]
+    reviewers = positions[1:]
+    draft = FinalConclusion()
+    all_reviews: List[ConsensusReview] = []
+    last_round_reviews: List[ConsensusReview] = []
+    corrections: List[str] = []
+    agreed = False
+    rnd = 0
+
+    for rnd in range(1, MAX_CONSENSUS_ROUNDS + 1):
+        new_draft, issues, retries = generate_conclusion_draft(
+            topic, drafter, positions, notes, agent_of[drafter.slot], criteria,
+            corrections=corrections or None, llm=call)
+        if new_draft is not None and _s(new_draft.decision):
+            draft = new_draft
+        elif rnd == 1:
+            raise DebateAgentFailure(drafter.agent_name, drafter.agent_id, "CONSENSUS_DRAFT",
+                                     issues or ["empty_draft"])
+        if emit:
+            emit(Speech(
+                slot=drafter.slot, agent_id=drafter.agent_id, agent_name=drafter.agent_name,
+                speech_type="CONSENSUS_DRAFT", stage_type=f"DEBATE_CONSENSUS_DRAFT_R{rnd}",
+                stage_title=f"{drafter.label} 합의 초안" + (f" (수정 {rnd - 1}차)" if rnd > 1 else ""),
+                round_no=rounds_base + rnd, text=render_consensus_draft(draft, drafter, rnd),
+                regenerated=retries,
+                structured={"decision": draft.decision, "conditions": draft.conditions,
+                            "reason": draft.reason, "recommendation": draft.recommendation,
+                            "consensusRound": rnd, "issues": issues, "position": drafter.label},
+            ))
+
+        last_round_reviews = []
+        for rev_pos in reviewers:
+            review, r_issues, r_retries = generate_conclusion_review(
+                topic, rev_pos, draft, agent_of[rev_pos.slot], notes.get(rev_pos.slot), llm=call)
+            if review is None:
+                review = ConsensusReview(slot=rev_pos.slot, agent_id=rev_pos.agent_id,
+                                         agent_name=rev_pos.agent_name, agree=False,
+                                         corrections=["초안 검토 응답을 만들지 못했다."],
+                                         reason="검토 응답 생성 실패")
+            last_round_reviews.append(review)
+            all_reviews.append(review)
+            if emit:
+                emit(Speech(
+                    slot=rev_pos.slot, agent_id=rev_pos.agent_id, agent_name=rev_pos.agent_name,
+                    speech_type="CONSENSUS_REVIEW", stage_type=f"DEBATE_CONSENSUS_REVIEW_R{rnd}",
+                    stage_title=f"{rev_pos.label} 초안 검토", round_no=rounds_base + rnd,
+                    text=render_consensus_review(review, rev_pos),
+                    target_agent_id=drafter.agent_id, target_agent_name=drafter.agent_name,
+                    regenerated=r_retries,
+                    structured={"agree": review.agree, "corrections": review.corrections,
+                                "reason": review.reason, "consensusRound": rnd,
+                                "issues": r_issues, "position": rev_pos.label},
+                ))
+
+        agreed = all(rv.agree for rv in last_round_reviews) if last_round_reviews else True
+        if agreed:
+            break
+        corrections = [c for rv in last_round_reviews for c in rv.corrections][:4]
+
+    open_points = ([c for rv in last_round_reviews if not rv.agree for c in rv.corrections][:4]
+                   if not agreed else [])
+    return ConsensusOutcome(final=draft, agreed=agreed, rounds=rnd,
+                            reviews=all_reviews, open_points=open_points)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1129,8 +1521,9 @@ def transcript_payload(t: DebateTranscript) -> Dict[str, Any]:
             {"stageType": s.stage_type, "stageTitle": s.stage_title, "speechType": s.speech_type,
              # side/agentIndex 는 기존 프론트 토론 렌더러(색상/마인드맵 노드) 호환 필드다.
              # 찬반 프레임이 아니라 '두 관점'이므로 슬롯 A/B를 색상 축으로만 매핑한다.
-             "side": "NEUTRAL" if s.speech_type == "FINAL_CONCLUSION" else ("PRO" if s.slot == "A" else "CON"),
-             "agentIndex": 1 if s.slot == "A" else 2,
+             "side": "NEUTRAL" if s.slot == CONSENSUS_SLOT else ("PRO" if s.slot == "A" else "CON"),
+             "agentIndex": (0 if s.slot == CONSENSUS_SLOT
+                            else (SLOT_LETTERS.index(s.slot) + 1 if s.slot in SLOT_LETTERS else 1)),
              "agentId": s.agent_id, "agentName": s.agent_name, "round": s.round_no,
              "targetAgentName": s.target_agent_name, "content": s.text}
             for s in t.speeches
@@ -1138,7 +1531,21 @@ def transcript_payload(t: DebateTranscript) -> Dict[str, Any]:
         "debateResult": ({
             "decision": t.final.decision, "conditions": t.final.conditions,
             "reason": t.final.reason, "recommendation": t.final.recommendation,
+            # 최종 결론은 특정 에이전트 소유가 아니다. 누가 무엇에 동의했는지만 남긴다.
+            "consensus": ({
+                "agreed": t.consensus.agreed,
+                "rounds": t.consensus.rounds,
+                "openPoints": t.consensus.open_points,
+                "authoredBy": [p.agent_name for p in t.positions],
+                "agreement": [{"agentId": p.agent_id, "agentName": p.agent_name,
+                               "slot": p.slot, "agree": _slot_agreed(t.consensus, p.slot)}
+                              for p in t.positions],
+            } if t.consensus else None),
         } if t.final else None),
+        "debateParticipants": [
+            {"slot": p.slot, "agentId": p.agent_id, "agentName": p.agent_name, "label": p.label}
+            for p in t.positions
+        ],
         "debateConvergenceCriteria": t.convergence,
         "debateValidation": {"passed": ok, "issues": issues},
     }

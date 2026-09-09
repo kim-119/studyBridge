@@ -61,15 +61,13 @@ def run_debate_mode_stream(
     topic = DE.extract_topic(request)
     strength = DE.resolve_strength(request)
     rounds = DE.rebuttal_rounds(strength)
-    agent_a, agent_b = DE.select_debate_agents(agents)
+    # 선택된 에이전트 전원이 참여한다(앞의 2명만 쓰면 나머지는 화면에 등장하지 못한다).
+    participants = DE.select_debate_participants(agents)
     index_of = _agent_index_map(agents)
-    identity_of = {
-        str(DE._agent_id(agent_a)): _identity(agent_a),
-        str(DE._agent_id(agent_b)): _identity(agent_b),
-    }
+    identity_of = {str(DE._agent_id(a)): _identity(a) for a in participants}
 
-    logger.info("[DEBATE] stream 시작 mode=debate debate_strength=%s rounds=%d agents=%d",
-                strength, rounds, len(agents or []))
+    logger.info("[DEBATE] stream 시작 mode=debate debate_strength=%s rounds=%d selected=%d participants=%d",
+                strength, rounds, len(agents or []), len(participants))
 
     yield {
         "event": "turn_start",
@@ -83,7 +81,8 @@ def run_debate_mode_stream(
             "topic": topic,
             "debateStrength": strength,
             "rebuttalRounds": rounds,
-            "responderAgentIds": [str(DE._agent_id(agent_a)), str(DE._agent_id(agent_b))],
+            "expectedAgentCount": len(participants),
+            "responderAgentIds": [str(DE._agent_id(a)) for a in participants],
         },
     }
 
@@ -102,6 +101,11 @@ def run_debate_mode_stream(
         try:
             box["transcript"] = DE.run_debate(request, agents, llm=llm,
                                               on_speech=on_speech, on_stage=on_stage)
+        except DE.DebateAgentFailure as exc:
+            # 한 명이 실패했다고 남은 한 명으로 일반 답변을 만들어 성공 처리하지 않는다.
+            logger.error("[DEBATE] 참여자 발언 실패 agent=%s stage=%s issues=%s",
+                         exc.agent_name, exc.stage, exc.issues)
+            box["agent_failure"] = exc
         except Exception as exc:  # pragma: no cover - 방어
             logger.exception("[DEBATE] 실행 실패: %s", type(exc).__name__)
             box["error"] = exc
@@ -132,8 +136,11 @@ def run_debate_mode_stream(
 
         speech: DE.Speech = payload
         order += 1
-        ident = identity_of.get(str(speech.agent_id), {})
-        agent_index = index_of.get(str(speech.agent_id), 1 if speech.slot == "A" else 2)
+        is_consensus = speech.slot == DE.CONSENSUS_SLOT
+        ident = {} if is_consensus else identity_of.get(str(speech.agent_id), {})
+        agent_index = 0 if is_consensus else index_of.get(
+            str(speech.agent_id), (DE.SLOT_LETTERS.index(speech.slot) + 1)
+            if speech.slot in DE.SLOT_LETTERS else 1)
 
         yield {
             "event": "agent_start",
@@ -145,7 +152,8 @@ def run_debate_mode_stream(
         }
         data = DE.speech_answer(speech, order, ident)
         data.update({"type": "agent_answer", "agentIndex": agent_index,
-                     "phase": "DEBATE", "visible": True, "learningMode": "debate"})
+                     "phase": "DEBATE", "visible": True, "learningMode": "debate",
+                     "consensus": is_consensus})
         yield {"event": "agent_answer", "data": data}
         answers.append({k: v for k, v in data.items() if k != "type"})
         if gap:
@@ -155,6 +163,20 @@ def run_debate_mode_stream(
     transcript: Optional[DE.DebateTranscript] = box.get("transcript")
 
     if transcript is None:
+        failure = box.get("agent_failure")
+        if failure is not None:
+            yield {
+                "event": "error",
+                "data": {"type": "error", "mode": "debate", "learningMode": "debate",
+                         "phase": "ERROR", "visible": True, "status": "error",
+                         "code": "DEBATE_AGENT_FAILURE",
+                         "failedAgentId": failure.agent_id, "failedAgentName": failure.agent_name,
+                         "failedStage": failure.stage, "issues": failure.issues,
+                         "expectedAgentCount": len(participants),
+                         "message": (f"{failure.agent_name} 이(가) 토론 발언을 만들지 못했습니다. "
+                                     "한 명만으로 토론을 진행하지 않습니다. 잠시 후 다시 시도해 주세요.")},
+            }
+            return
         yield {
             "event": "error",
             "data": {"type": "error", "mode": "debate", "phase": "ERROR", "visible": True,
@@ -201,7 +223,9 @@ def run_debate_mode_sync(request: MultiChatRequest, agents: List[AgentProfile], 
     if result.get("type") == "error":
         return {"success": False, "mode": "debate", "learningMode": "debate",
                 "status": "FAILED", "answers": [], "messages": [],
-                "code": result.get("code"), "message": result.get("message")}
+                "code": result.get("code"), "message": result.get("message"),
+                "failedAgentName": result.get("failedAgentName"),
+                "failedStage": result.get("failedStage")}
 
     messages = [
         {"senderType": "AGENT", "agentId": a.get("agentId"), "agentName": a.get("agentName"),

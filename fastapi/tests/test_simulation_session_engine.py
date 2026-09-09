@@ -30,34 +30,55 @@ class FakeLLM:
         self.choice_count = choice_count
         self.calls = []
 
+    @staticmethod
+    def _user_answer(user):
+        """실제 모델처럼 '사용자의 이번 답변' 블록을 읽어 그 표현을 인용한다."""
+        marker = "[사용자의 이번 답변/선택]"
+        if marker not in user:
+            return ""
+        return user.split(marker, 1)[1].strip().splitlines()[0].strip()
+
     def __call__(self, system, user, *, max_tokens, temperature):
         self.calls.append({"user": user})
         n = self.choice_count
-        if '"scenario"' in user:
+        said = self._user_answer(user)
+        if '"sceneBrief"' in user:
             return json.dumps({
-                "scenario": "당신은 지금 백엔드 신입 채용 면접실에 앉아 있고, 면접관 두 명이 인증 방식을 묻는다.",
-                "userRole": "지원자",
-                "goal": "JWT 를 실무 관점에서 설명하기",
-                "prompt": "먼저 JWT 를 어떻게 설명하시겠습니까?",
+                "sceneBrief": "백엔드 신입 채용 면접실, 면접관 두 명이 마주 앉아 있다.",
+                "userRole": "지원자", "goal": "JWT 를 실무 관점에서 설명하기",
+                "speakerRole": "면접관",
+                "line": "이력서에 인증을 직접 구현했다고 쓰셨는데, JWT 를 왜 선택했는지 "
+                        "먼저 설명해 주시겠습니까?",
                 "choices": [{"label": f"선택지 {i + 1}"} for i in range(n)],
+            }, ensure_ascii=False)
+        if '"focusPoints"' in user:
+            return json.dumps({
+                "focusPoints": ["선택 이유", "대안과의 비교"],
+                "line": "결론부터 말하고 근거를 두 개만 붙이세요.",
+            }, ensure_ascii=False)
+        if '"speakerRole"' in user:
+            return json.dumps({
+                "speakerRole": "기술 면접관",
+                "line": "토큰을 클라이언트가 보관하면 탈취 위험이 생깁니다. "
+                        "그 위험을 감수할 만한 이점이 무엇입니까?",
+            }, ensure_ascii=False)
+        if '"reaction"' in user:
+            return json.dumps({
+                "reaction": "면접관이 고개를 끄덕이며 메모한다.",
+                "targetPart": f"{said} 라고 말한 부분",
+                "line": f"{said} 라고 하셨는데, 그 판단이 무너지는 경우에는 어떻게 대응하시겠습니까?",
+                "choices": [{"label": f"다음 선택지 {i + 1}"} for i in range(n)],
             }, ensure_ascii=False)
         if '"targetPoint"' in user:
             return json.dumps({
-                "targetPoint": "토큰을 저장한다고 말한 부분",
-                "challengeQuestion": "그 저장 위치에서 토큰이 탈취되면 어떻게 대응하시겠습니까?",
+                "targetPoint": f"{said} 라고 말한 부분",
+                "line": f"{said} 라고 하셨는데 그 근거가 실무에서도 그대로 성립합니까?",
             }, ensure_ascii=False)
         if '"strengths"' in user:
             return json.dumps({
                 "strengths": ["토큰 구조를 먼저 짚었다"],
                 "weaknesses": ["보안 위협에 대한 언급이 없다"],
                 "improvement": "설명 끝에 만료와 갱신 전략을 한 줄 붙여라.",
-            }, ensure_ascii=False)
-        if '"consequence"' in user:
-            return json.dumps({
-                "consequence": "면접관이 고개를 끄덕이며 후속 질문을 준비한다.",
-                "conceptLink": "토큰 기반 인증의 상태 비저장 특성",
-                "prompt": "그렇다면 세션 방식과 비교해 어떤 점이 더 낫습니까?",
-                "choices": [{"label": f"다음 선택지 {i + 1}"} for i in range(n)],
             }, ensure_ascii=False)
         return "{}"
 
@@ -95,9 +116,9 @@ def test_wrong_choice_count_is_regenerated_then_fails_loudly():
     class BadCount(FakeLLM):
         def __call__(self, system, user, *, max_tokens, temperature):
             return json.dumps({
-                "scenario": "충분히 긴 상황 설명 문장이 여기에 들어간다 정말로.",
-                "userRole": "지원자", "goal": "목표",
-                "prompt": "무엇을 하시겠습니까?",
+                "sceneBrief": "면접실에 면접관 두 명이 앉아 있다.",
+                "userRole": "지원자", "goal": "목표", "speakerRole": "면접관",
+                "line": "JWT 를 왜 선택했는지 먼저 설명해 주시겠습니까? 근거를 들어 말해 주세요.",
                 "choices": [{"label": "하나"}],       # 설정은 3개인데 1개
             }, ensure_ascii=False)
 
@@ -107,13 +128,15 @@ def test_wrong_choice_count_is_regenerated_then_fails_loudly():
 
 
 # ── 3역할 ──────────────────────────────────────────────────────────────────
-def test_first_turn_is_scene_setup_only():
+def test_first_turn_starts_dialogue_not_a_briefing():
+    """1턴은 상황 설명문 한 장이 아니라 등장인물의 대사로 시작하고, 세 역할이 모두 말한다."""
     events = _events(_req(TOPIC), FakeLLM())
     answers = [e["data"] for e in events if e["event"] == "agent_answer"]
-    assert len(answers) == 1
-    assert answers[0]["simulationRole"] == SE.HOST
+    assert [a["simulationRole"] for a in answers] == [SE.HOST, SE.CHALLENGER, SE.COACH]
     assert answers[0]["stageType"] == SE.SCENE_SETUP
     assert "면접실" in answers[0]["answer"]
+    assert '"' in answers[0]["answer"]                   # 실제 대사
+    assert "당신의 역할:" not in answers[0]["answer"]     # 옛 설명문 블록 금지
 
 
 def test_second_turn_runs_three_roles_in_order():
@@ -121,10 +144,11 @@ def test_second_turn_runs_three_roles_in_order():
     _events(_req(TOPIC), llm)
     events = _events(_req("JWT는 서명된 토큰이고 클라이언트가 저장합니다"), llm)
     answers = [e["data"] for e in events if e["event"] == "agent_answer"]
-    assert [a["simulationRole"] for a in answers] == [SE.CHALLENGER, SE.COACH, SE.HOST]
-    assert answers[0]["answer"].endswith("?")            # 꼬리질문
-    assert "보완할 점" in answers[1]["answer"]            # 코치 피드백
-    assert len(answers[2]["choices"]) == 3               # 다음 장면 선택지
+    assert [a["simulationRole"] for a in answers] == [SE.HOST, SE.CHALLENGER, SE.COACH]
+    assert answers[0]["answer"].rstrip().endswith('"')   # 꼬리질문 대사
+    assert "?" in answers[1]["answer"]                   # 검증자 반박
+    assert "보완할 점" in answers[2]["answer"]            # 코치 피드백
+    assert len(answers[0]["choices"]) == 3               # 다음 장면 선택지
     assert events[-1]["data"]["simulationValidation"]["passed"]
 
 
@@ -183,7 +207,7 @@ def test_difficulty_and_type_reach_the_prompt():
     llm = FakeLLM(2)
     _events(_req("캡스톤 발표에서 교수님이 왜 FastAPI를 따로 썼냐고 묻는 상황을 연습하고 싶어",
                  count=2, difficulty="어려움", stype="프로젝트"), llm)
-    prompt = llm.calls[-1]["user"]
+    prompt = next(c["user"] for c in llm.calls if '"sceneBrief"' in c["user"])
     assert "프로젝트/발표 상황" in prompt
     assert "난이도 어려움" in prompt
     assert "정확히 2개" in prompt
@@ -195,7 +219,7 @@ def test_agent_profiles_are_preserved_for_three_roles():
     _events(_req(TOPIC, room=999), llm)
     second = _events(_req("JWT는 토큰입니다", room=999), llm)
     names = [e["data"]["agentName"] for e in second if e["event"] == "agent_answer"]
-    assert names == ["교수2", "교수3", "교수1"]           # 방 에이전트 이름 보존
+    assert names == ["교수1", "교수2", "교수3"]           # 방 에이전트 이름 보존(진행/검증/코치)
 
 
 def test_plain_number_reply_resolves_to_stored_choice():

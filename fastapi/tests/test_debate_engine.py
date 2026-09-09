@@ -30,14 +30,29 @@ class FakeLLM:
     def __call__(self, system, user, *, max_tokens, temperature):
         self.calls.append({"system": system, "user": user,
                            "max_tokens": max_tokens, "temperature": temperature})
+        if '"perspectives"' in user:
+            import re as _re
+            m = _re.search(r"관점 (\d+)개", user)
+            n = int(m.group(1)) if m else 2
+            terms = [A_TERM, B_TERM, "점진전환", "비용전가"]
+            labels = ["운영 단순성 우선", "확장 유연성 우선", "전환 속도 우선", "비용 주체 우선"]
+            return json.dumps({
+                "axis": "운영 단순성과 확장 유연성 중 무엇을 먼저 지킬 것인가",
+                "perspectives": [{"label": labels[i], "stance": f"{terms[i]}로 얻는 편익을 우선한다."}
+                                 for i in range(n)],
+            }, ensure_ascii=False)
         if '"axis"' in user:
             return json.dumps({
                 "axis": "운영 단순성과 확장 유연성 중 무엇을 먼저 지킬 것인가",
                 "a": {"label": "운영 단순성 우선", "stance": f"{A_TERM}로 복잡도를 억제하는 편익을 우선한다."},
                 "b": {"label": "확장 유연성 우선", "stance": f"{B_TERM}로 얻는 확장성을 우선한다."},
             }, ensure_ascii=False)
+        if '"agree"' in user:
+            return json.dumps({"agree": True, "corrections": [],
+                               "reason": "조건이 명시되어 있고 내 예외가 반영되었다."}, ensure_ascii=False)
         if '"conclusion"' in user:
-            term = A_TERM if "운영 단순성 우선" in user.split("[상대 관점]")[0] else B_TERM
+            head = user.split("[상대 관점]")[0]
+            term = A_TERM if A_TERM in head else B_TERM
             return json.dumps({
                 "conclusion": f"{term} 관점에서 이 선택이 더 타당하다.",
                 "reasons": [f"{term} 때문에 초기 비용이 낮다", f"{term} 덕분에 회수 가능성이 높다"],
@@ -232,7 +247,9 @@ def test_rebuttal_does_not_repeat_previous_round():
 def test_no_moderator_agent():
     t = DE.run_debate(_req(), _agents(), llm=FakeLLM())
     speakers = {s.agent_id for s in t.speeches}
-    assert speakers == {"a1", "a2"}
+    # 제3의 '사람'(사회자/심판)은 없다. 합의 결론 카드는 참여자 공동 소유이지 인물이 아니다.
+    assert speakers == {"a1", "a2", DE.CONSENSUS_AGENT_ID}
+    assert {s.agent_id for s in t.speeches if s.speech_type != "FINAL_CONCLUSION"} == {"a1", "a2"}
     joined = "\n".join(s.text for s in t.speeches)
     for banned in ("사회자", "중재자", "심판", "판정단"):
         assert banned not in joined
@@ -243,7 +260,9 @@ def test_final_conclusion_is_single_answer_not_a_winner():
     assert t.final is not None
     assert DE.validate_final(t.final) == []
     final_speech = next(s for s in t.speeches if s.speech_type == "FINAL_CONCLUSION")
-    assert final_speech.agent_id in {"a1", "a2"}   # 제3의 인물이 아니다
+    # 최종 결론은 특정 에이전트 소유가 아니다(합의 결과).
+    assert final_speech.slot == DE.CONSENSUS_SLOT
+    assert final_speech.agent_id == DE.CONSENSUS_AGENT_ID
     assert "승" not in t.final.decision
 
 
@@ -304,8 +323,10 @@ def test_stream_emits_turn_start_answers_and_all_complete():
     assert names[-1] == "all_complete"
     assert names.count("all_complete") == 1
     answers = [e for e in events if e["event"] == "agent_answer"]
-    # light: 입론2 + 반박2 + 예외2 + 최종1 = 7
-    assert len(answers) == 7
+    # light: 입론2 + 반박2 + 예외2 + 합의 초안1 + 검토1 + 최종1 = 9
+    assert len(answers) == 9
+    types = [e["data"]["speechType"] for e in answers]
+    assert types.count("CONSENSUS_DRAFT") == 1 and types.count("CONSENSUS_REVIEW") == 1
     assert all(e["data"]["answer"].strip() for e in answers)
 
 
@@ -330,17 +351,22 @@ def test_stream_all_complete_carries_debate_result_and_validation():
     assert data["rebuttalRounds"] == 1
 
 
-def test_stream_with_three_selected_agents_uses_two_debaters():
+def test_stream_with_three_selected_agents_uses_all_three():
+    """선택된 3명이 모두 토론에 참여한다(앞의 2명만 쓰면 나머지가 화면에서 사라진다)."""
     events = _events(n=3)
     answers = [e["data"] for e in events if e["event"] == "agent_answer"]
-    assert {a["agentId"] for a in answers} == {"a1", "a2"}
+    debaters = {a["agentId"] for a in answers if a["speechType"] != "FINAL_CONCLUSION"}
+    assert debaters == {"a1", "a2", "a3"}
+    openings = {a["agentId"] for a in answers if a["speechType"] == "OPENING"}
+    rebuttals = {a["agentId"] for a in answers if a["speechType"] == "REBUTTAL"}
+    assert openings == rebuttals == {"a1", "a2", "a3"}
 
 
 def test_sync_handler_returns_answers_and_messages():
     result = H.run_debate_mode_sync(_req(strength="light"), _agents(), llm=FakeLLM())
     assert result["success"] is True
     assert result["mode"] == "debate"
-    assert len(result["answers"]) == len(result["messages"]) == 7
+    assert len(result["answers"]) == len(result["messages"]) == 9
     assert result["debateResult"]["recommendation"]
     assert result["question"]
 
@@ -398,7 +424,7 @@ def test_transcript_payload_keeps_frontend_debate_stage_fields():
     for st in stages:
         assert st["stageTitle"] and st["content"] and st["stageType"]
         assert st["side"] in ("PRO", "CON", "NEUTRAL")
-        assert st["agentIndex"] in (1, 2)
+        assert st["agentIndex"] in (0, 1, 2)
     assert stages[-1]["side"] == "NEUTRAL"          # 최종 결론 카드
     assert payload["debateResult"]["decision"]
 

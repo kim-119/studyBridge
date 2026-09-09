@@ -78,6 +78,7 @@ def run_simulation_mode_stream(
     echo = getattr(request, "simulationState", None)
     key, session, is_new = LS.resolve_active_session(request, MODE, message, echo=echo)
     stype, difficulty, choice_count = SE.resolve_config(request)
+    choice_count = SE.effective_choice_count(request, choice_count)
     role_map = _roles(agents)
     _prev_choices = (session.data.get("choices") if session is not None else None) or []
     user_answer = _selected_choice_text(request, message, _prev_choices)
@@ -111,27 +112,41 @@ def run_simulation_mode_stream(
     speeches: List[SE.SimSpeech] = []
     try:
         if is_new:
-            sp = SE.generate_scene_setup(session.topic, stype, difficulty, choice_count,
-                                         getattr(role_map[SE.HOST], "name", "진행자"), llm=llm)
-            speeches.append(sp)
+            # 1턴부터 설명문이 아니라 '대사'다. 주 질문자 → 심화 검증자 → 답변 코치 세 인물이
+            # 모두 실제로 모델 호출을 받고, 뒤 인물은 앞 인물의 대사를 입력으로 읽는다.
+            host = SE.generate_scene_setup(session.topic, stype, difficulty, choice_count,
+                                           getattr(role_map[SE.HOST], "name", "진행자"), llm=llm)
+            speeches.append(host)
             session.data.update({
-                "scenario": sp.structured.get("scenario", ""),
-                "userRole": sp.structured.get("userRole", ""),
-                "goal": sp.structured.get("goal", ""),
-                "prompt": sp.structured.get("prompt", ""),
-                "choices": sp.choices,
+                "scenario": host.structured.get("sceneBrief", ""),
+                "userRole": host.structured.get("userRole", ""),
+                "goal": host.structured.get("goal", ""),
+                "prompt": host.structured.get("line", ""),
+                "choices": host.choices,
             })
+            challenger = SE.generate_opening_challenge(
+                session.data, host.structured.get("line", ""), stype, difficulty,
+                getattr(role_map[SE.CHALLENGER], "name", "검증자"), llm=llm)
+            speeches.append(challenger)
+            coach = SE.generate_answer_brief(
+                session.data, host.structured.get("line", ""),
+                challenger.structured.get("line", ""),
+                getattr(role_map[SE.COACH], "name", "코치"), llm=llm)
+            speeches.append(coach)
         else:
             data = session.data
-            speeches.append(SE.generate_challenge(data, user_answer, stype, difficulty,
-                                                  getattr(role_map[SE.CHALLENGER], "name", "검증자"), llm=llm))
-            speeches.append(SE.generate_feedback(data, user_answer, difficulty,
-                                                 getattr(role_map[SE.COACH], "name", "코치"), llm=llm))
-            nxt = SE.generate_next_scene(data, user_answer, stype, difficulty, choice_count,
+            host = SE.generate_follow_up(data, user_answer, stype, difficulty, choice_count,
                                          getattr(role_map[SE.HOST], "name", "진행자"), llm=llm)
-            speeches.append(nxt)
-            data["prompt"] = nxt.structured.get("prompt", "")
-            data["choices"] = nxt.choices
+            speeches.append(host)
+            speeches.append(SE.generate_challenge(
+                data, user_answer, stype, difficulty,
+                getattr(role_map[SE.CHALLENGER], "name", "검증자"), llm=llm,
+                host_line=host.structured.get("line", "")))
+            speeches.append(SE.generate_feedback(
+                data, user_answer, difficulty,
+                getattr(role_map[SE.COACH], "name", "코치"), llm=llm))
+            data["prompt"] = host.structured.get("line", "")
+            data["choices"] = host.choices
     except SE.SimulationStageError as exc:
         logger.error("[SIMULATION] 역할 단계 실패 role=%s issues=%s", exc.role, exc.issues)
         yield {
@@ -153,7 +168,8 @@ def run_simulation_mode_stream(
         return
 
     issues = SE.validate_turn(speeches, choice_count, is_new, user_answer)
-    session.state = speeches[-1].stage_type
+    session.state = next((sp.stage_type for sp in speeches if sp.role == SE.HOST),
+                         speeches[-1].stage_type)
     session.turn_index += 1
     LS.save(key, session)
 
@@ -200,7 +216,7 @@ def run_simulation_mode_stream(
         "simulationState": session.to_payload(),
         "sessionId": session.session_id, "turnIndex": session.turn_index,
         "scenarioType": stype, "difficulty": difficulty, "choiceCount": choice_count,
-        "choices": speeches[-1].choices,
+        "choices": SE.scene_choices(speeches),
         "simulationValidation": {"passed": not issues, "issues": issues},
     }
     logger.info("[SIMULATION] done session_id=%s state=%s turn=%d roles=%s issues=%s",

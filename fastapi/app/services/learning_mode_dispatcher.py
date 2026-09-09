@@ -121,7 +121,48 @@ def run_learning_mode_stream(
                 "pipeline=%s fallback_used=false new_session=%s agents=%d",
                 request_id, requested_mode or mode, mode, session_id or "-", pipeline, is_new, len(agents or []))
     # 전용 핸들러가 실패하면 error 이벤트로 끝난다. 절대 basic 파이프라인으로 넘기지 않는다.
-    yield from handler(request, agents)
+    yield from _audited(handler(request, agents), request_id, mode, agents)
+
+
+def _agent_key(agent: Any) -> str:
+    return str(getattr(agent, "agentId", None) or getattr(agent, "id", None) or "")
+
+
+def _audited(events: Generator[Dict[str, Any], None, None], request_id: str, mode: str,
+             agents: List[AgentProfile]) -> Generator[Dict[str, Any], None, None]:
+    """선택 / 실행 / 방출 에이전트를 실제 이벤트에서 세어 한 줄로 남긴다.
+
+    selected 는 N인데 executed/emitted 가 그보다 적으면 그 자체가 장애다.
+    로그에 FAIL 마커를 남겨 사후 추적이 가능하게 한다(사용자 응답은 바꾸지 않는다).
+    """
+    selected = [_agent_key(a) for a in (agents or [])]
+    executed: List[str] = []
+    emitted: List[str] = []
+    error_code = None
+    try:
+        for ev in events:
+            data = ev.get("data") if isinstance(ev, dict) else None
+            if isinstance(data, dict):
+                if ev.get("event") == "agent_start":
+                    executed.append(str(data.get("agentId")))
+                elif ev.get("event") == "agent_answer":
+                    emitted.append(str(data.get("agentId")))
+                elif ev.get("event") == "error":
+                    error_code = data.get("code")
+            yield ev
+    finally:
+        uniq_exec = sorted(set(executed))
+        uniq_emit = sorted(set(emitted))
+        # 합의 발언처럼 특정 에이전트 소유가 아닌 이벤트는 참여자 수 판정에서 제외한다.
+        covered = {e for e in uniq_emit if e in set(selected)}
+        ok = (not error_code) and len(covered) >= len(set(selected)) and bool(selected)
+        logger.info(
+            "[MODE-AUDIT] request_id=%s mode=%s selected_agent_ids=%s expected_agent_count=%d "
+            "executed_agent_ids=%s executed_agent_count=%d emitted_agent_ids=%s "
+            "emitted_agent_count=%d speeches=%d result=%s%s",
+            request_id, mode, selected, len(set(selected)), uniq_exec, len(uniq_exec),
+            uniq_emit, len(uniq_emit), len(emitted), "OK" if ok else "FAIL",
+            f" error_code={error_code}" if error_code else "")
 
 
 def run_learning_mode_sync(request: MultiChatRequest, agents: List[AgentProfile], mode: str) -> Dict[str, Any]:
