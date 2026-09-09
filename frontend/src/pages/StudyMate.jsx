@@ -9,7 +9,7 @@ import '../components/studymate/studymate-premium.css';
 import PixelProfessorStage from '../components/studymate/pixel/PixelProfessorStage';
 import { useMinuteRecap } from '../components/studymate/pixel/useMinuteRecap';
 import { roleForAgentIndex, ROLE_TO_AGENT_INDEX, ROLE_NAMES, ROLE_TO_TARGET_KEY } from '../components/studymate/pixel/professorSprites';
-import { resolveMentionTarget, resolveRoomAgentSlot, isEventForTarget } from '../utils/agentIdentity';
+import { agentIdOf, applyMentionPrefill, resolveMentionTarget, resolveRoomAgentSlot, isEventForTarget } from '../utils/agentIdentity';
 import ProfessorInteractionTimeline from '../components/studymate/pixel/ProfessorInteractionTimeline';
 import { normalizeMotionStates, phaseStatesFor, deriveInteractions } from '../components/studymate/pixel/modeInteractionProfiles';
 import {
@@ -2280,6 +2280,12 @@ export default function StudyMate() {
     selectedAgentIdRef.current = getAgentId(selectedAgent);
   }, [selectedAgent]);
 
+  // "이 교수에게 질문" 클릭으로 지정한 교수의 stable id(방별). 표시명은 identity 가 아니므로
+  //  (동명이인이면 이름 매칭이 항상 첫 번째 교수로 붕괴한다) 클릭 시점의 agent.id 를 함께 기억한다.
+  //  실제 대상 판정은 utils/agentIdentity.resolveMentionTarget 이 하며, 입력창에 그 교수의 @멘션이
+  //  남아 있을 때만 이 핀이 쓰인다(멘션을 지우거나 다른 교수로 바꾸면 자동으로 무효 → stale 없음).
+  const professorPinRef = useRef({});   // { [roomId]: agentId }
+
   // 동시 전송/중복 요청 방어.
   //  - typingRooms(state)는 setState가 비동기라 Enter키 + 전송버튼 동시 입력을 못 막는다.
   //    → ref로 동기적으로 잠가 같은 방에 같은 질문이 두 번 전송되는 것을 차단한다(StrictMode 재호출 포함).
@@ -2677,7 +2683,8 @@ export default function StudyMate() {
     //   identity 의 기준은 stable id(agent.id). 배열 위치(index)는 sprite 슬롯(0-based) 표시용일 뿐이다.
     //   백엔드 SSE agentIndex 는 1-based 이고 대상 지정 시 "필터된 배열" 위치라 신뢰하지 않는다.
     const roomAgents = selectedAgent?.agents || [];
-    const mentionTarget = resolveMentionTarget(inputMsg, roomAgents);
+    //   클릭 프리필로 지정한 교수의 stable id 를 tie-breaker 로 넘긴다(동명이인 방어).
+    const mentionTarget = resolveMentionTarget(inputMsg, roomAgents, professorPinRef.current[agentId] ?? null);
     // 이벤트 → 0-based 방 슬롯(agentId → 이름 → 레거시 1-based agentIndex). 식별 불가면 null.
     const slotOf = (d) => { const s = resolveRoomAgentSlot(roomAgents, d); return s >= 0 ? s : null; };
     // single scope(이 교수에게 질문): 비대상 교수가 허용 가능한 보조 시각 상태(목표 5).
@@ -3771,18 +3778,51 @@ export default function StudyMate() {
           socraticConfig: res.socraticConfig || socraticConfigOf(res),
         }];
       } else {
-        const blockingStages = buildStageBubbles(res.processSteps, userMsg.id, new Date().toISOString(), { showInternal: isInternalVisibleMode(res.learningMode || res.mode || activeLearningMode) });
-        if (blockingStages.length > 0) {
+        // 비스트림(블로킹) 폴백도 스트림 경로와 같은 identity 계약을 따른다.
+        //  single scope(이 교수에게 질문)면 대상 교수 것만 렌더한다 — 백엔드가 실수로 다른 교수 답변을
+        //  함께 내려도 1번 교수 말풍선이 대신 뜨지 않는다(스트림 all_complete 경로와 동일 규칙).
+        const blockingPS = (askScope === 'single' && res.processSteps)
+          ? {
+              ...res.processSteps,
+              initialAnswers: scopeAnswers(res.processSteps.initialAnswers),
+              validatedAnswers: scopeAnswers(res.processSteps.validatedAnswers),
+              peerFeedback: scopeAnswers(res.processSteps.peerFeedback),
+            }
+          : res.processSteps;
+        const blockingStages = buildStageBubbles(blockingPS, userMsg.id, new Date().toISOString(), { showInternal: isInternalVisibleMode(res.learningMode || res.mode || activeLearningMode) });
+        const scopedReplies = scopeAnswers(res.replies || []);
+        // 대상 지정인데 응답에 그 교수 것이 하나도 없으면 — 다른 교수 답변을 대신 붙이지 않고 명시한다.
+        const targetMismatch = askScope === 'single'
+          && Array.isArray(res.replies) && res.replies.length > 0 && scopedReplies.length === 0;
+        if (targetMismatch) {
+          console.warn('[StudyMate] 지정 교수 응답 없음 — 다른 교수 답변으로 대체하지 않음', {
+            targetAgentId, targetAgentName, replyAgentIds: res.replies.map((r) => r.agentId),
+          });
+          newMsgs = [{
+            id: Date.now() + 1,
+            content: `${targetAgentName || '지정한 교수'}님의 답변을 받지 못했습니다. 잠시 후 다시 시도해주세요.`,
+            sender: 'AI',
+            senderName: targetAgentName || selectedAgent?.name || 'StudyMate',
+            isError: true,
+            createdAt: new Date().toISOString(),
+            parentId: userMsg.id,
+          }];
+        } else if (blockingStages.length > 0) {
           newMsgs = blockingStages;
-        } else if (res.replies && res.replies.length > 0) {
-        newMsgs = res.replies.map((reply, index) => {
+        } else if (scopedReplies.length > 0) {
+        newMsgs = scopedReplies.map((reply, index) => {
           const senderName = reply.agentName || reply.agent_name;
+          // 응답 identity → 0-based 방 슬롯(agentId 우선). 말풍선/캐릭터는 이 슬롯으로 붙는다.
+          const _slot = slotOf({ agentId: reply.agentId, agentName: senderName, agentIndex: reply.agentIndex });
           return {
             id: Date.now() + 1 + index,
             content: reply.answer || reply.content,
             sender: 'AI',
             senderName,
             agentId: reply.agentId,
+            agentIndex: _slot ?? undefined,
+            agentSlot: _slot ?? undefined,
+            agentRole: _slot != null ? roleForAgentIndex(_slot) : undefined,
             createdAt: new Date().toISOString(),
             parentId: userMsg.id, // AI 응답은 방금 작성한 유저 질문의 자식이 됨
             processSteps: res.processSteps,
@@ -4039,16 +4079,8 @@ export default function StudyMate() {
     });
   };
   // 기존 draft를 지우지 않고 맨 앞 교수 멘션만 새 멘션으로 교체(없으면 앞에 붙인다). 목표 2.
-  //   멘션 후보는 방의 실제 교수 이름 기준(전송 측 매칭이 ag.name 기반이라 동일 기준 유지).
-  const applyProfessorMention = (draft, mention) => {
-    const current = String(draft || '');
-    const names = (selectedAgent?.agents || []).map((a) => a?.name).filter(Boolean);
-    const esc = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    const pattern = esc.length ? `^@(?:${esc.join('|')}|모두)\\s*` : '^@모두\\s*';
-    const re = new RegExp(pattern);
-    if (re.test(current)) return current.replace(re, mention);
-    return current ? `${mention}${current}` : mention;
-  };
+  //   규칙은 utils/agentIdentity.applyMentionPrefill 단일 구현(전송 측 매칭과 같은 기준)을 쓴다.
+  const applyProfessorMention = (draft, mention) => applyMentionPrefill(draft, mention, selectedAgent?.agents || []);
   // 질문 정제 — 안전 동작(자동 전송 없음): 입력창 포커스 + 안내.
   const handleProfRefine = () => {
     setSelectedProfessorRole(null);
@@ -4062,7 +4094,11 @@ export default function StudyMate() {
   // 이 교수에게 질문 — @멘션 프리필(자동 전송 없음). 기존 draft 보존 + 캐럿을 멘션 뒤로.
   const handleProfAskOne = (role) => {
     const idx = ROLE_TO_AGENT_INDEX[role] ?? 0;
-    const name = selectedAgent?.agents?.[idx]?.name;
+    const clicked = selectedAgent?.agents?.[idx];
+    const name = clicked?.name;
+    // 클릭 identity(stable id)를 방별로 고정한다. 전송 시 resolveMentionTarget 이 이 id 를 우선한다.
+    const roomKey = getAgentId(selectedAgent);
+    if (roomKey) professorPinRef.current[roomKey] = agentIdOf(clicked);
     const mention = name ? `@${name} ` : '@모두 ';
     const next = applyProfessorMention(message, mention);
     prefillProfessorDraft(next, mention.length);
@@ -4074,6 +4110,8 @@ export default function StudyMate() {
   };
   // 모두에게 질문 — @모두 프리필(자동 전송 없음). 기존 draft 보존 + 캐럿을 멘션 뒤로.
   const handleProfAskAll = () => {
+    const roomKey = getAgentId(selectedAgent);
+    if (roomKey) delete professorPinRef.current[roomKey];   // 전체 협업 모드로 복귀
     const nextAll = applyProfessorMention(message, '@모두 ');
     prefillProfessorDraft(nextAll, '@모두 '.length);
     setSelectedProfessorRole(null);
@@ -4397,9 +4435,15 @@ export default function StudyMate() {
                       let speakingAgent = null;
 
                       if (!isUser && selectedAgent && selectedAgent.agents) {
-                        speakingAgent = selectedAgent.agents.find(
-                          (ag) => ag.name === senderName || ag.name === msg.senderName || ag.name === msg.sender_name
-                        ) || null;
+                        // 발화자 판정은 응답 identity 기준(agentId(stable) → 프론트 슬롯 → 표시명) 이다.
+                        //  이름만으로 찾으면 동명이인 방에서 항상 배열 첫 번째 교수로 붕괴한다(표시명 ≠ identity).
+                        //  새로고침 후 서버 이력에도 agentId 가 실려 오므로 같은 규칙으로 복원된다.
+                        const _speakSlot = resolveRoomAgentSlot(selectedAgent.agents, {
+                          agentId: msg.agentId ?? msg.agent_id,
+                          agentSlot: msg.agentSlot,
+                          agentName: senderName || msg.senderName || msg.sender_name,
+                        });
+                        speakingAgent = _speakSlot >= 0 ? selectedAgent.agents[_speakSlot] : null;
                         if (speakingAgent) {
                           agentPersonality = getAgentPersonality(speakingAgent);
                           agentTheme = getAgentStyleTheme(agentPersonality);
@@ -4652,6 +4696,13 @@ export default function StudyMate() {
                                   setMessage(newMsg);
                                   const activeId = getAgentId(selectedAgent);
                                   if (activeId) setRoomDrafts((prev) => ({ ...prev, [activeId]: newMsg }));
+                                  // 멘션 팝업 선택도 클릭 identity 다 — 고른 agent 의 stable id 를 고정한다
+                                  // ('모두'는 항목에 id 가 없으므로 핀 해제 = 전체 협업 모드).
+                                  if (activeId) {
+                                    const pickedId = agentIdOf(ag);
+                                    if (pickedId != null) professorPinRef.current[activeId] = pickedId;
+                                    else delete professorPinRef.current[activeId];
+                                  }
                                 }
                                 setShowMentionPopup(false);
                                 const inputEl = document.querySelector('.chat-input-premium input');

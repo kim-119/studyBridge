@@ -1471,19 +1471,64 @@ def build_agent_turn_instruction(agent_index: int, total_agents: int) -> str:
     )
 
 
+# STRICT TARGETING 예외는 스트림 경로(app.services.multi_agent_service._filter_agents)와 동일 타입/계약을 쓴다.
+#  라우트는 이 예외를 422 TARGET_AGENT_NOT_FOUND 로 변환한다.
+try:
+    from app.services.multi_agent_service import UnknownTargetAgentError
+except Exception:  # pragma: no cover - app 패키지가 없는 축소 실행 환경 방어
+    class UnknownTargetAgentError(ValueError):
+        """targetAgentId 가 요청 agents 에 없을 때. 첫 번째/전체 에이전트 폴백 금지."""
+
+        def __init__(self, target_id: Any, available: List[Any]):
+            self.target_id = str(target_id)
+            self.available = [str(a) for a in available]
+            super().__init__(f"targetAgentId={self.target_id} 에 해당하는 에이전트 없음 (available={self.available})")
+
+
+def _target_agent_not_found_detail(exc: "UnknownTargetAgentError") -> Dict[str, Any]:
+    """422 본문 — 정식 라우트(app/api/multi_chat_routes.py)/compat 스트림과 동일 계약."""
+    return {
+        "code": "TARGET_AGENT_NOT_FOUND",
+        "targetAgentId": getattr(exc, "target_id", None),
+        "availableAgentIds": getattr(exc, "available", []),
+        "message": "지정한 교수(targetAgentId)가 이 방의 에이전트 목록에 없습니다.",
+    }
+
+
 def select_agents_for_response(
-    agents: List[Any], target_id: Optional[int]
+    agents: List[Any], target_id: Optional[Any]
 ) -> List[Any]:
-    """targetAgentId 필터링. 매칭 없으면 전체 반환."""
-    if target_id is None:
+    """STRICT TARGETING: targetAgentId → 그 1명만. None/blank → 전체(기존 멀티에이전트 협업 모드).
+
+    · Spring 은 targetAgentId 를 문자열("102")로, agents[].id/agentId 는 숫자(102)로 보낸다.
+      타입이 달라 매칭에 실패하면 안 되므로 양쪽을 문자열로 정규화해 비교한다.
+    · 모르는 id 는 전체/첫 번째 에이전트로 조용히 폴백하지 않고 UnknownTargetAgentError 로 거절한다
+      (폴백하면 지정하지 않은 교수 — 실질적으로 배열 첫 번째 교수 — 가 대신 답하는 identity 오류가 된다).
+      라우트에서 422 TARGET_AGENT_NOT_FOUND 로 변환한다. 스트림 경로(compat/정식)와 동일 계약.
+    """
+    if target_id is None or str(target_id).strip() == "":
         return agents
-    filtered = [
-        a for a in agents
-        if getattr(a, "agentId", None) == target_id or getattr(a, "id", None) == target_id
-    ]
+    tid = str(target_id).strip()
+
+    def _same(value: Any) -> bool:
+        return value is not None and str(value).strip() == tid
+
+    filtered = [a for a in agents if _same(getattr(a, "agentId", None)) or _same(getattr(a, "id", None))]
     if not filtered:
-        logger.warning("targetAgentId=%s 매칭 없음. 전체 에이전트 사용.", target_id)
-        return agents
+        available = [
+            str(getattr(a, "agentId", None) if getattr(a, "agentId", None) is not None else getattr(a, "id", None))
+            for a in agents
+        ]
+        logger.warning(
+            "[AGENT-RESOLVE] nonstream targetAgentId=%s 에 해당하는 에이전트 없음 available=%s → 거절(폴백 금지)",
+            tid, available,
+        )
+        raise UnknownTargetAgentError(tid, available)
+    a0 = filtered[0]
+    logger.info(
+        "[AGENT-RESOLVE] nonstream targetAgentId=%s → agentId=%s name=%s (요청 agents=%d, 대상 %d명)",
+        tid, getattr(a0, "agentId", None), getattr(a0, "name", None), len(agents), len(filtered),
+    )
     return filtered
 
 
@@ -2620,7 +2665,11 @@ async def multi_chat_endpoint(request: MultiChatRequest):
     else:
         default_count = max(1, min(env_int("AI_DEFAULT_AGENT_COUNT", 3), 10))
         agents = [AgentProfile(**normalize_agent({}, idx)) for idx in range(default_count)]
-    active_agents = select_agents_for_response(agents, request.targetAgentId)
+    # STRICT TARGETING: 지정한 교수만 답한다. 모르는 id 는 전체/첫 교수 폴백 없이 422 로 거절한다.
+    try:
+        active_agents = select_agents_for_response(agents, request.targetAgentId)
+    except UnknownTargetAgentError as target_exc:
+        raise HTTPException(status_code=422, detail=_target_agent_not_found_detail(target_exc))
     previous_context = build_context_from_previous_answers(request.previousAnswers)
     rag_context = await build_rag_context_for_multi_chat(request)
     context = "\n\n".join(part for part in [rag_context, previous_context] if part)

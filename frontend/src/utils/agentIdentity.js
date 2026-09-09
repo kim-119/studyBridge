@@ -60,21 +60,29 @@ export const hasAgentIdentity = (evt) => {
  *  · '@모두' 포함 → all.
  *  · '@{agent.name}' 이 포함된 agent 가 있으면 single(이름이 긴 쪽 우선: "@AI 교수" vs "@AI 교수 2").
  *  · 없으면 all(기존 멀티에이전트 협업 모드 유지).
+ *
+ * pinnedAgentId: 사용자가 방금 "이 교수에게 질문"으로 클릭한 agent 의 stable id.
+ *  이름은 identity 가 아니다 — 같은 이름의 교수가 둘 이상이면 이름 매칭은 항상 배열 첫 번째로 붕괴한다.
+ *  멘션 후보 중 이 id 를 가진 agent 가 있으면 그 agent 를 대상으로 확정한다(클릭 identity 우선).
+ *  후보에 없으면(멘션을 지웠거나 다른 교수로 바꿨거나 방을 옮김) 무시한다 → stale 핀이 남지 않는다.
  */
-export function resolveMentionTarget(text, roomAgents) {
+export function resolveMentionTarget(text, roomAgents, pinnedAgentId = null) {
   const msg = String(text || '');
   const agents = Array.isArray(roomAgents) ? roomAgents : [];
   const all = { scope: 'all', slot: null, agent: null, agentId: null, agentName: null };
   if (msg.includes(MENTION_ALL)) return all;
-  let best = null;
+  const mentioned = [];
   agents.forEach((ag, slot) => {
     const name = normName(ag?.name);
     if (!name || !msg.includes(`@${name}`)) return;
-    if (!best || name.length > best.agentName.length) {
-      best = { scope: 'single', slot, agent: ag, agentId: agentIdOf(ag), agentName: name };
-    }
+    mentioned.push({ scope: 'single', slot, agent: ag, agentId: agentIdOf(ag), agentName: name });
   });
-  return best || all;
+  if (!mentioned.length) return all;
+  const pinned = pinnedAgentId == null
+    ? null
+    : mentioned.find((m) => sameAgentId(m.agentId, pinnedAgentId));
+  if (pinned) return pinned;
+  return mentioned.reduce((best, m) => (!best || m.agentName.length > best.agentName.length ? m : best), null);
 }
 
 /**
@@ -89,4 +97,20 @@ export function isEventForTarget(roomAgents, target, evt) {
   const slot = resolveRoomAgentSlot(roomAgents, evt);
   if (slot >= 0) return slot === target.slot;
   return !hasAgentIdentity(evt);
+}
+
+/**
+ * 입력창 draft 의 맨 앞 교수 멘션만 새 멘션으로 교체한다(없으면 앞에 붙인다).
+ *  · 클릭("이 교수에게 질문")/멘션 팝업/직접 타이핑이 모두 같은 문자열 규칙을 쓰도록 여기 둔다.
+ *  · 교체 대상은 방의 실제 교수 이름 + '@모두' 뿐이라, 사용자가 쓴 본문은 보존된다.
+ *  · 1번 → 2번 → 3번으로 빠르게 바꿔도 이전 멘션이 남지 않는다(stale target 방지).
+ */
+export function applyMentionPrefill(draft, mention, roomAgents) {
+  const current = String(draft || '');
+  const names = (Array.isArray(roomAgents) ? roomAgents : []).map((a) => normName(a?.name)).filter(Boolean);
+  const esc = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = esc.length ? `^@(?:${esc.join('|')}|모두)\\s*` : '^@모두\\s*';
+  const re = new RegExp(pattern);
+  if (re.test(current)) return current.replace(re, mention);
+  return current ? `${mention}${current}` : mention;
 }

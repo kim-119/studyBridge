@@ -219,3 +219,93 @@ def test_compat_live_route_passes_known_target_and_keeps_slot(monkeypatch):
     assert len(answers) == 1  # 누락 교수 filler 합성 없음(대상 1명만)
     assert answers[0]["agentId"] == 102 and answers[0]["agentName"] == "쉬운 풀이 튜터"
     assert answers[0]["agentIndex"] == 2
+
+
+# ── 비스트림 라이브 엔드포인트(fastapi/main.py) ────────────────────────────────
+# 운영 앱은 hotfix_main(=main:app + compat 스트림 라우터)이다. SSE 가 실패하면 프론트/Spring 은
+# 같은 요청을 비스트림 POST /api/ai/multi-chat 로 재시도하므로, 이 경로도 STRICT TARGETING 이어야 한다.
+def _live_agents():
+    import main as LIVE
+    return [LIVE.AgentProfile(**a) for a in _agents()]
+
+
+def test_live_nonstream_resolver_matches_string_target_against_int_id():
+    """Spring 은 targetAgentId 를 문자열로, agents[].id 는 숫자로 보낸다(101 == "101" → False)."""
+    import main as LIVE
+    got = LIVE.select_agents_for_response(_live_agents(), "102")
+    assert [a.name for a in got] == ["쉬운 풀이 튜터"]
+    assert [str(a.agentId) for a in got] == ["102"]
+
+
+def test_live_nonstream_resolver_matches_int_target():
+    import main as LIVE
+    got = LIVE.select_agents_for_response(_live_agents(), 103)
+    assert [a.name for a in got] == ["논점 검증 코치"]
+
+
+def test_live_nonstream_resolver_rejects_unknown_target():
+    """모르는 id 는 '전체 에이전트 사용' 으로 조용히 폴백하지 않는다(=1번 교수가 대신 답하는 원인)."""
+    import main as LIVE
+    with pytest.raises(M.UnknownTargetAgentError) as ei:
+        LIVE.select_agents_for_response(_live_agents(), "999")
+    assert ei.value.target_id == "999"
+    assert ei.value.available == ["101", "102", "103"]
+
+
+def test_live_nonstream_resolver_keeps_group_mode_when_no_target():
+    import main as LIVE
+    for empty in (None, "", "   "):
+        got = LIVE.select_agents_for_response(_live_agents(), empty)
+        assert [a.name for a in got] == ["개념 정리 교수", "쉬운 풀이 튜터", "논점 검증 코치"]
+
+
+@pytest.fixture
+def live_client(monkeypatch):
+    """LLM 없이 비스트림 엔드포인트를 태운다. 답변은 '실제로 넘겨받은 AgentProfile' 을 각인한다."""
+    import main as LIVE
+
+    def fake_parallel(agents, message, context, timeout_seconds, learning_mode="basic",
+                      strict_persona=True, generation_payload=None):
+        answers = [
+            LIVE.AgentAnswer(agentName=a.name, agentId=a.agentId,
+                             answer=f"[persona:{a.agentId}:{a.name}] 답변")
+            for a in agents
+        ]
+        return answers, LIVE.ProcessSteps()
+
+    monkeypatch.setattr(LIVE, "_run_agents_parallel", fake_parallel)
+    return TestClient(LIVE.app)
+
+
+def _live_body(target=None):
+    body = {"message": "스택과 큐의 차이를 설명해줘", "mode": "multi_agent_discussion",
+            "learningMode": "basic", "roomId": 1, "rounds": 1, "agents": _agents()}
+    if target is not None:
+        body["targetAgentId"] = target
+    return body
+
+
+def test_live_nonstream_route_answers_only_target(live_client):
+    """2번 교수 지정 → 2번만 답변. (버그 시엔 3명 전원이 답해 1번 답변이 맨 위에 붙었다)"""
+    resp = live_client.post("/api/ai/multi-chat", json=_live_body("102"))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [a["agentId"] for a in data["answers"]] == [102]
+    assert [a["agentName"] for a in data["answers"]] == ["쉬운 풀이 튜터"]
+    assert "[persona:102:쉬운 풀이 튜터]" in data["answers"][0]["answer"]
+    assert [m["agentId"] for m in data["messages"]] == [102]
+
+
+def test_live_nonstream_route_without_target_keeps_group_mode(live_client):
+    resp = live_client.post("/api/ai/multi-chat", json=_live_body())
+    assert resp.status_code == 200
+    assert [a["agentId"] for a in resp.json()["answers"]] == [101, 102, 103]
+
+
+def test_live_nonstream_route_unknown_target_422(live_client):
+    resp = live_client.post("/api/ai/multi-chat", json=_live_body("999"))
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["code"] == "TARGET_AGENT_NOT_FOUND"
+    assert detail["targetAgentId"] == "999"
+    assert detail["availableAgentIds"] == ["101", "102", "103"]
