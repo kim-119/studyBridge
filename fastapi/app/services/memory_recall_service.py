@@ -107,6 +107,21 @@ def _parse_nth(msg: str) -> Optional[int]:
     return _KO_ORD.get(tok)
 
 
+# multi_chat_redis_memory.attach_memory_to_request 가 message 앞에 붙이는 블록의 구분자.
+#  분류는 반드시 사용자의 원문(현재 질문)에만 적용해야 한다. 기억 블록에는 "[현재 질문]"(회상어 '질문')과
+#  이전 답변 속 '처음/최근/마지막' 같은 앵커가 흔히 들어 있어, 블록째 분류하면 모든 후속 질문이
+#  EXACT 회상(LLM 우회)으로 오판된다(2026-09-09 ai07 라이브 회귀: 2번째 질문부터 "마지막 질문은 다음이었어").
+_MEMORY_BLOCK_CURRENT_MARKER = "[현재 질문]"
+
+
+def strip_memory_block(message: Optional[str]) -> str:
+    """기억 블록이 주입된 message 에서 사용자의 현재 질문 원문만 돌려준다(블록이 없으면 그대로)."""
+    msg = (message or "").strip()
+    if _MEMORY_BLOCK_CURRENT_MARKER in msg:
+        msg = msg.rsplit(_MEMORY_BLOCK_CURRENT_MARKER, 1)[1].strip()
+    return msg
+
+
 def classify_memory_intent(message: str) -> Tuple[MemoryIntent, Dict[str, Any]]:
     """사용자 메시지의 기억 관련 의도를 분류한다. (intent, extra) 반환.
     extra: TOPIC_RECALL이면 {"topic": ...}, EXACT_NTH_MESSAGE면 {"n": ...}.
@@ -115,7 +130,7 @@ def classify_memory_intent(message: str) -> Tuple[MemoryIntent, Dict[str, Any]]:
     - "TCP가 뭐야"처럼 시간/순서 앵커가 없는 개념 질문은 절대 회상으로 오판하지 않는다(→ NORMAL).
     - EXACT(첫/마지막/n번째)는 '앵커 + 회상어'가 함께 있어야 성립한다.
     """
-    msg = (message or "").strip()
+    msg = strip_memory_block(message)
     if not msg:
         return MemoryIntent.NORMAL, {}
 
