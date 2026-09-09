@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 import httpx
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 logger = logging.getLogger("studybridge.multi_chat_stream_compat")
 
@@ -183,6 +183,33 @@ def _synth_agent_answer(agent: Dict[str, Any], index: int, mode: str) -> Dict[st
     }
 
 
+def _reject_unknown_target(payload: Dict[str, Any]):
+    """targetAgentId 가 있는데 agents 에서 해석되지 않으면 422 JSONResponse, 아니면 None.
+    대상 없음/blank 는 기존 전체 협업 모드이므로 통과. 그 외 검증 오류는 기존 스트림 경로에 맡긴다."""
+    target_id = str(payload.get("targetAgentId") or payload.get("target_agent_id") or "").strip()
+    if not target_id:
+        return None
+    try:
+        from app.schemas.multi_chat_schema import MultiChatRequest
+        from app.services.multi_agent_service import UnknownTargetAgentError, _filter_agents, _get_agents
+        req = MultiChatRequest(**payload)
+        resolved = _filter_agents(_get_agents(req), req.targetAgentId)
+        logger.info("[AGENT-RESOLVE] compat targetAgentId=%s → %s", target_id,
+                    [(a.agentId, a.name, getattr(a, "agentSlot", None)) for a in resolved])
+        return None
+    except UnknownTargetAgentError as e:
+        logger.warning("[AGENT-RESOLVE] compat targetAgentId=%s 거절: %s", target_id, e)
+        return JSONResponse(status_code=422, content={"detail": {
+            "code": "TARGET_AGENT_NOT_FOUND",
+            "targetAgentId": e.target_id,
+            "availableAgentIds": e.available,
+            "message": "지정한 교수(targetAgentId)가 이 방의 에이전트 목록에 없습니다.",
+        }})
+    except Exception as exc:  # 스키마 오류 등은 기존 스트림 경로에서 처리
+        logger.warning("[AGENT-RESOLVE] compat 사전 검증 건너뜀: %s", type(exc).__name__)
+        return None
+
+
 @router.post("/multi-chat/stream")
 async def multi_chat_stream_compat(request: Request):
     """
@@ -195,6 +222,13 @@ async def multi_chat_stream_compat(request: Request):
     turn_start → agent_start → heartbeat → agent_answer/error → all_complete 순서로 즉시 전송한다.
     """
     payload = await request.json()
+
+    # ── STRICT TARGETING ──────────────────────────────────────────────────────
+    # targetAgentId 가 요청 agents 에 없으면 스트림(200)을 열지 않고 422 로 명시 거절한다.
+    # (첫 번째/전체 에이전트로 조용히 폴백하면 다른 교수가 대신 답하는 identity 오류가 된다.)
+    rejected = _reject_unknown_target(payload)
+    if rejected is not None:
+        return rejected
 
     async def event_generator():
         route_request_id = f"compat_{uuid.uuid4().hex[:12]}"

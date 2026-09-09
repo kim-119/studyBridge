@@ -40,6 +40,12 @@ ReplyFn = Callable[[str, Any, DialogueActDecision, Optional[PreviousTurnContext]
 
 
 # ── 유사도/반복 감지 ─────────────────────────────────────────────────────────
+
+def _room_slot(agent, fallback: int) -> int:
+    """SSE agentIndex = 방 슬롯(1-based). targetAgentId 로 필터돼도 원래 교수 위치를 유지한다."""
+    s = getattr(agent, "agentSlot", None)
+    return int(s) if isinstance(s, int) and s >= 1 else fallback
+
 def _norm(s: str) -> str:
     return "".join((s or "").split())
 
@@ -317,7 +323,7 @@ def run_basic_contextual_turn_stream(
             "event": "agent_start",
             "data": {
                 "type": "agent_start",
-                "agentIndex": idx + 1,
+                "agentIndex": _room_slot(agent, idx + 1),
                 "agentName": agent_name,
                 "agentId": agent_id,
                 "phase": "CONTEXTUAL_FOLLOWUP",
@@ -335,7 +341,7 @@ def run_basic_contextual_turn_stream(
             "event": "agent_answer",
             "data": {
                 "type": "agent_answer",
-                "agentIndex": idx + 1,
+                "agentIndex": _room_slot(agent, idx + 1),
                 "agentName": agent_name,
                 "agentId": agent_id,
                 "answer": answer,

@@ -9,6 +9,7 @@ import '../components/studymate/studymate-premium.css';
 import PixelProfessorStage from '../components/studymate/pixel/PixelProfessorStage';
 import { useMinuteRecap } from '../components/studymate/pixel/useMinuteRecap';
 import { roleForAgentIndex, ROLE_TO_AGENT_INDEX, ROLE_NAMES, ROLE_TO_TARGET_KEY } from '../components/studymate/pixel/professorSprites';
+import { resolveMentionTarget, resolveRoomAgentSlot, isEventForTarget } from '../utils/agentIdentity';
 import ProfessorInteractionTimeline from '../components/studymate/pixel/ProfessorInteractionTimeline';
 import { normalizeMotionStates, phaseStatesFor, deriveInteractions } from '../components/studymate/pixel/modeInteractionProfiles';
 import {
@@ -2672,11 +2673,20 @@ export default function StudyMate() {
     let askScope = 'all';
     let targetAgentIndex = null;
     let targetProfessorRole = null;
+    // ── 공통 Agent Resolver(@멘션 타이핑 / "이 교수에게 질문" 클릭 프리필 동일 경로) ──────────
+    //   identity 의 기준은 stable id(agent.id). 배열 위치(index)는 sprite 슬롯(0-based) 표시용일 뿐이다.
+    //   백엔드 SSE agentIndex 는 1-based 이고 대상 지정 시 "필터된 배열" 위치라 신뢰하지 않는다.
+    const roomAgents = selectedAgent?.agents || [];
+    const mentionTarget = resolveMentionTarget(inputMsg, roomAgents);
+    // 이벤트 → 0-based 방 슬롯(agentId → 이름 → 레거시 1-based agentIndex). 식별 불가면 null.
+    const slotOf = (d) => { const s = resolveRoomAgentSlot(roomAgents, d); return s >= 0 ? s : null; };
     // single scope(이 교수에게 질문): 비대상 교수가 허용 가능한 보조 시각 상태(목표 5).
     //   answering/peer_feedback/completed/walking 등 "답변처럼 보이는" 상태는 금지 → idle 로 강등.
     const SINGLE_SECONDARY_STATES = new Set(['idle', 'thinking', 'listening', 'validating']);
     const visFor = (idx, state) => {
       if (backendMotionDriven || !visualActive()) return;
+      // idx = 0-based 방 슬롯(slotOf 결과). 식별 불가(null) 이벤트는 어떤 교수도 움직이지 않는다.
+      if (idx == null || !Number.isInteger(Number(idx))) return;
       // single scope: 대상 1명만 적극 모션, 비대상은 보조 상태만(목표 4,5).
       if (askScope === 'single' && Number.isInteger(targetAgentIndex) && Number(idx) !== targetAgentIndex) {
         setProfVisual(roleForAgentIndex(idx), SINGLE_SECONDARY_STATES.has(state) ? state : 'idle');
@@ -2701,14 +2711,10 @@ export default function StudyMate() {
     //   초기 visAll('thinking')/기본 안무가 비대상 교수를 움직이거나 전체 문구를 띄우지 않도록,
     //   @멘션 1명 여부(scope)를 여기서 먼저 확정한다(목표 3,5). 식별자(id/key/name)·turnExtras 의
     //   상세 채움은 아래 기존 블록에서 그대로 수행한다(idempotent).
-    if (!/@모두/.test(inputMsg)) {
-      const _roomAgents = selectedAgent?.agents || [];
-      const _idx = _roomAgents.findIndex((ag) => ag?.name && inputMsg.includes(`@${ag.name}`));
-      if (_idx >= 0) {
-        askScope = 'single';
-        targetAgentIndex = _idx;
-        targetProfessorRole = roleForAgentIndex(_idx);
-      }
+    if (mentionTarget.scope === 'single') {
+      askScope = 'single';
+      targetAgentIndex = mentionTarget.slot;
+      targetProfessorRole = roleForAgentIndex(mentionTarget.slot);
     }
 
     const userMsg = {
@@ -2804,47 +2810,38 @@ export default function StudyMate() {
     let targetAgentId = null;
     let targetAgentKey = null;
     let targetAgentName = null;
-    if (!/@모두/.test(inputMsg)) {
-      const roomAgents = selectedAgent?.agents || [];
-      const mentionedIdx = roomAgents.findIndex((ag) => ag?.name && inputMsg.includes(`@${ag.name}`));
-      if (mentionedIdx >= 0) {
-        const mentioned = roomAgents[mentionedIdx];
-        askScope = 'single';
-        targetAgentId = mentioned.agentId ?? mentioned.id ?? null;
-        targetAgentIndex = mentionedIdx;
-        targetAgentName = mentioned.name || null;
-        targetProfessorRole = roleForAgentIndex(mentionedIdx);
-        targetAgentKey = ROLE_TO_TARGET_KEY[targetProfessorRole] || null;
-        // 백엔드 호환: targetAgentId(이미 honored) + 명시 single-target 필드(forward-compat; 미지원 필드는 무시됨).
-        turnExtras.targetAgentId = targetAgentId;
-        turnExtras.askScope = 'single';
-        turnExtras.targetProfessorRole = targetProfessorRole;
-        turnExtras.targetAgentIndex = targetAgentIndex;
-        turnExtras.targetAgentKey = targetAgentKey;
-        turnExtras.targetAgentName = mentioned.name;
-        turnExtras.professorSelectedTarget = targetAgentKey;
-        turnExtras.selectedProfessorRole = targetProfessorRole;
-      }
+    if (mentionTarget.scope === 'single') {
+      askScope = 'single';
+      targetAgentId = mentionTarget.agentId;
+      targetAgentIndex = mentionTarget.slot;
+      targetAgentName = mentionTarget.agentName;
+      targetProfessorRole = roleForAgentIndex(mentionTarget.slot);
+      targetAgentKey = ROLE_TO_TARGET_KEY[targetProfessorRole] || null;
+      // 요청 계약: targetAgentId(stable id, 방 agent PK)가 1순위. Spring 은 방에 없는 id 를 400 으로 거절하고
+      // FastAPI 는 그 id 1명만 답하도록 필터한다(모르는 id → 422, 첫 교수 폴백 금지).
+      // 나머지 필드는 진단/호환용 패스스루(미지원 필드는 무시됨).
+      turnExtras.targetAgentId = targetAgentId != null ? String(targetAgentId) : null;
+      turnExtras.askScope = 'single';
+      turnExtras.targetProfessorRole = targetProfessorRole;
+      turnExtras.targetAgentIndex = targetAgentIndex;
+      turnExtras.targetAgentKey = targetAgentKey;
+      turnExtras.targetAgentName = targetAgentName;
+      turnExtras.professorSelectedTarget = targetAgentKey;
+      turnExtras.selectedProfessorRole = targetProfessorRole;
+      if (import.meta.env.DEV) console.debug('[StudyMate] target agent', { roomId: agentId, targetAgentId, targetSlot: targetAgentIndex, targetAgentName });
     }
-    // single scope일 때 "이 이벤트가 대상 교수의 것인가".
-    //   · 양성 일치 우선: 이름 > agentId > agentIndex(0-based) > role→key.
-    //     멘션이 이름 기반이라 agentName이 가장 신뢰도 높다(백엔드가 agentId를 안 줘도 식별됨).
-    //   · 위에서 못 맞춘 채로 식별자가 하나라도 있으면 비대상 → 드롭(single은 1명만 답변).
-    //   · 식별자가 전혀 없으면(단일 대상의 유일 답변일 수 있어) 보존.
-    //   ⚠ 과거 index+1 허용은 인접 교수 답변까지 통과시키던 버그라 제거함.
-    const normName = (s) => String(s ?? '').trim();
+    // single scope일 때 "이 이벤트가 대상 교수의 것인가" — utils/agentIdentity.isEventForTarget 위임.
+    //   · 이벤트 → 방 슬롯 해석 순서: agentId(stable) > agentName > agentSlot > 레거시 1-based agentIndex.
+    //   · 해석된 슬롯이 대상 슬롯과 같을 때만 통과. 식별 정보가 전혀 없으면 보존(단일 대상의 유일 답변일 수 있음).
+    //   · 식별 정보가 있는데 다른 교수로 해석되면 드롭(single 은 1명만 답변).
     const isAnswerForTarget = (d = {}, patch = {}) => {
       if (askScope !== 'single') return true;
-      const evId = d.agentId ?? patch.agentId;
-      const evIdx = d.agentIndex ?? patch.agentIndex;
-      const evRole = d.agentRole || d.role || patch.role;
-      const evName = d.agentName || d.agent_name || patch.agentName;
-      if (targetAgentName && evName && normName(evName) === normName(targetAgentName)) return true;
-      if (targetAgentId != null && evId != null && String(evId) === String(targetAgentId)) return true;
-      if (Number.isInteger(targetAgentIndex) && evIdx != null && Number(evIdx) === targetAgentIndex) return true;
-      if (targetAgentKey && evRole && ROLE_TO_TARGET_KEY[evRole] === targetAgentKey) return true;
-      if (evName || evId != null || evIdx != null || evRole) return false;
-      return true;
+      return isEventForTarget(roomAgents, mentionTarget, {
+        agentId: d?.agentId ?? patch?.agentId,
+        agentName: d?.agentName ?? d?.agent_name ?? patch?.agentName,
+        agentIndex: d?.agentIndex ?? patch?.agentIndex,
+        agentSlot: d?.agentSlot ?? patch?.agentSlot,
+      });
     };
     // single scope: 백엔드 professor_motion이 3명 상태를 한꺼번에 내려도 비대상은 idle로 눌러
     //   "1명만 움직임"을 보장한다(목표 4, presentation only). 대상이 안 잡히면 원본 유지.
@@ -2860,10 +2857,9 @@ export default function StudyMate() {
     const scopeAnswers = (arr) => {
       if (askScope !== 'single' || !Array.isArray(arr)) return arr || [];
       return arr.filter((a, i) => isAnswerForTarget({
-        agentIndex: a?.agentIndex ?? i,
+        agentIndex: a?.agentIndex ?? (i + 1),
         agentId: a?.agentId,
         agentName: a?.agentName || a?.agent_name,
-        role: a?.role || a?.agentRole,
       }));
     };
     // 토론 모드: 논제/구조 설정을 함께 전송한다(프론트 → Spring → FastAPI).
@@ -3003,6 +2999,8 @@ export default function StudyMate() {
           if (!isAnswerForTarget(d, patch)) return;
           const idx = d?.agentIndex ?? patch.agentIndex ?? 0;
           const aid = d?.agentId ?? patch.agentId ?? idx;
+          // identity: 이벤트 agentId → 방 agent 슬롯(0-based). 카드/그래프/말풍선이 모두 이 슬롯을 본다.
+          const slot = slotOf({ agentId: d?.agentId ?? patch.agentId, agentName: d?.agentName ?? patch.agentName, agentIndex: idx });
           const hash = contentHash(d?.content ?? d?.answer ?? patch.content ?? '');
           // 확률적 다중답변 플래너: 같은 교수가 DIRECT 후 REACTION 등 여러 번 발화할 수 있다.
           // stageType만으로 키를 만들면 카드가 서로 덮어써 유실되므로 actType+displayOrder(발화순번)를
@@ -3025,7 +3023,9 @@ export default function StudyMate() {
             sender: 'AI',
             senderName: d?.agentName || patch.agentName || selectedAgent?.name || 'AI',
             agentId: aid,
-            agentIndex: idx,
+            agentIndex: slot ?? idx,
+            agentSlot: slot ?? undefined,
+            agentRole: slot != null ? roleForAgentIndex(slot) : undefined,
             displayOrder: Number(d?.displayOrder ?? patch.displayOrder ?? seq ?? 0) || undefined,
             role: d?.role || patch.role,
             stageType: d?.stageType || 'FIRST_DRAFT',
@@ -3094,7 +3094,10 @@ export default function StudyMate() {
         };
         // 단건 콘텐츠 이벤트 → 인터랙션 1행(도착 순서를 라벨 fallback hint 로 사용).
         const addInteraction = (kind, d) => {
-          try { pushInteractions(deriveInteractions(activeLearningMode, kind, d, requestId, interactionSeq++)); }
+          // 타임라인의 교수 role 도 agentId 기준(roleFromAny 가 agentRole 을 index 보다 우선한다).
+          const _s = (d && typeof d === 'object' && !Array.isArray(d)) ? slotOf(d) : null;
+          const _d = (_s != null && !d.agentRole) ? { ...d, agentRole: roleForAgentIndex(_s) } : d;
+          try { pushInteractions(deriveInteractions(activeLearningMode, kind, _d, requestId, interactionSeq++)); }
           catch (e) { if (import.meta.env.DEV) console.warn('[StudyMate] interaction derive 실패', e); }
         };
 
@@ -3162,12 +3165,16 @@ export default function StudyMate() {
           if (Array.isArray(scopedAnswers) && scopedAnswers.length) {
             setTurnAiMessages(sortByAgentOrder(scopedAnswers).map((a, i) => {
               const c = coerceAgentText(a.answer || a.content || '', { requestId: d?.requestId || requestId, roomId: agentId, agentId: a.agentId, stage: 'all_complete', idx: i });
+              const _slot = slotOf({ agentId: a.agentId, agentName: a.agentName || a.agent_name, agentIndex: a.agentIndex ?? (i + 1) });
               return {
                 id: `${userMsg.id}::ans::${i}`,
                 content: c.text,
                 sender: 'AI',
                 senderName: a.agentName || a.agent_name || selectedAgent?.name || 'AI',
                 agentId: a.agentId,
+                agentIndex: _slot ?? undefined,
+                agentSlot: _slot ?? undefined,
+                agentRole: _slot != null ? roleForAgentIndex(_slot) : undefined,
                 isError: !c.ok,
                 validation: extractValidation(a),
                 createdAt: ts,
@@ -3346,7 +3353,7 @@ export default function StudyMate() {
               // 보여준다(이전 "에이전트 N …" 생성 인덱스 노출 제거).
               upsertAgentMessage(d, { isPending: true, content: '답변 생성 중…' });
               // (목표 5 fallback) agent_start → 해당 교수 walking_to_question.
-              visFor(d.agentIndex, 'walking_to_question');
+              visFor(slotOf(d), 'walking_to_question');
             },
             onAgentAnswer: (d) => {
               armWatchdog();
@@ -3368,15 +3375,18 @@ export default function StudyMate() {
                 { ...d, content: _shown, answer: _shown, replyToName: _replyToName },
                 { isPending: false, content: _shown },
               );
-              const bubbleRole = roleForAgentIndex(d.agentIndex);
+              // 말풍선/모션이 붙는 교수 = 이벤트 agentId 로 해석한 슬롯(index 아님).
+              const answerSlot = slotOf(d);
+              const bubbleRole = answerSlot != null ? roleForAgentIndex(answerSlot) : null;
+              if (import.meta.env.DEV) console.debug('[StudyMate] agent_answer identity', { agentId: d.agentId, agentName: d.agentName, agentIndex: d.agentIndex, resolvedSlot: answerSlot, role: bubbleRole, targeted });
               if (askScope === 'single' && !targeted) {
                 // 비대상 교수: 보조 모션 + 짧은 "확인 중" 말풍선만(장문 답변/카드 금지 — 목표).
-                visFor(d.agentIndex, 'validating');
+                visFor(answerSlot, 'validating');
                 if (bubbleRole) setProfBubble(bubbleRole, { text: '확인 중...', kind: 'thinking', agentName: d.agentName });
                 return;
               }
               // 대상 교수(또는 전체 모드): answering + 짧은 답변 말풍선(전체 본문은 채팅 카드에만).
-              visFor(d.agentIndex, 'answering');
+              visFor(answerSlot, 'answering');
               if (bubbleRole) {
                 setProfBubble(bubbleRole, {
                   text: makeBubbleText(d.content || d.answer || ''),
@@ -3395,7 +3405,7 @@ export default function StudyMate() {
             onAgentError: (d) => {
               if (!d) return;
               upsertAgentMessage(d, { isPending: false, isError: true, content: d.message || '이 에이전트의 응답 생성에 실패했습니다.' });
-              sawError = true; visFor(d.agentIndex, 'error');
+              sawError = true; visFor(slotOf(d), 'error');
             },
             // 확률적 다중답변 플래너: 재개입 칩(더 깊이/다른 의견/쉬운 예시) 수신 → 입력창 위에 노출.
             onFollowUpSuggestions: (d) => {
@@ -3425,9 +3435,9 @@ export default function StudyMate() {
               // 시각: 1차=각자 답변(single이면 대상만 answering, 나머지는 보조 모션 validating),
               //   2차=이론 교수 검증, 3차=전체 피어 피드백.
               if (d.stage === 1) (d.answers || []).forEach((a, i) => {
-                const idx = a?.agentIndex ?? i;
-                const targeted = isAnswerForTarget({ agentIndex: idx, agentId: a?.agentId, agentName: a?.agentName || a?.agent_name, role: a?.role || a?.agentRole });
-                visFor(idx, (askScope === 'single' && !targeted) ? 'validating' : 'answering');
+                const evt = { agentIndex: a?.agentIndex ?? (i + 1), agentId: a?.agentId, agentName: a?.agentName || a?.agent_name };
+                const targeted = isAnswerForTarget(evt);
+                visFor(slotOf(evt), (askScope === 'single' && !targeted) ? 'validating' : 'answering');
               });
               else if (d.stage === 2) visFor(0, 'validating');
               else if (d.stage === 3) visAll('peer_feedback');
@@ -3455,7 +3465,7 @@ export default function StudyMate() {
               });
               if (d.debateConfig) debateConfigAcc = d.debateConfig;
               addInteraction('debate', d); // 타임라인: 주장/반박/재반박/판정 라벨로 추가
-              visFor(d.agentIndex, String(d.stageType || '').includes('REBUTTAL') ? 'peer_feedback' : 'answering');
+              visFor(slotOf(d), String(d.stageType || '').includes('REBUTTAL') ? 'peer_feedback' : 'answering');
               streamRendered = true;
               setTurnAiMessages([buildDebateTurnMessage(
                 { debateStages: debateStagesArr(), debateConfig: debateConfigAcc },
@@ -3484,7 +3494,7 @@ export default function StudyMate() {
               });
               if (d.socraticConfig) socraticConfigAcc = d.socraticConfig;
               addInteraction('socratic', d); // 타임라인: 유도 질문/힌트/오개념 점검/재질문 라벨로 추가
-              visFor(d.agentIndex, 'answering');
+              visFor(slotOf(d), 'answering');
               streamRendered = true;
               setTurnAiMessages([buildSocraticTurnMessage(
                 { socraticSteps: socraticStepsArr(), socraticConfig: socraticConfigAcc },
@@ -3515,7 +3525,7 @@ export default function StudyMate() {
               });
               if (d.simulationConfig) simulationConfigAcc = d.simulationConfig;
               addInteraction('simulation', d); // 타임라인: 역할 대사/상황 반응/결과 피드백/디브리핑 라벨로 추가
-              visFor(d.agentIndex, 'answering');
+              visFor(slotOf(d), 'answering');
               streamRendered = true;
               setTurnAiMessages([buildSimulationTurnMessage(
                 { simulationStages: simulationStagesArr(), simulationConfig: simulationConfigAcc || DEFAULT_SIMULATION_CONFIG },
@@ -3643,7 +3653,8 @@ export default function StudyMate() {
             onError: (d) => {
               if (streamCompleted) return; // all_complete 이후 늦게 온 error는 무시
               sawError = true;
-              if (d && d.agentIndex != null) visFor(d.agentIndex, 'error'); else visAll('error');
+              const _errSlot = d ? slotOf(d) : null;
+              if (_errSlot != null) visFor(_errSlot, 'error'); else visAll('error');
               if (import.meta.env.DEV) {
                 console.warn('[StudyMate] SSE error event', {
                   code: d?.code ?? d?.errorCode, reason: d?.reason ?? d?.message,

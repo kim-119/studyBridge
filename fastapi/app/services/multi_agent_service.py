@@ -411,7 +411,7 @@ def _get_agents(request: MultiChatRequest) -> List[AgentProfile]:
     if not request.agents:
         default_count = max(1, min(_env_int("AI_DEFAULT_AGENT_COUNT", 3), 10))
         logger.info("에이전트 목록이 비어있습니다. env 기본 에이전트 사용 count=%d", default_count)
-        return _normalize_studymate_agents([AgentProfile(
+        return _assign_agent_slots(_normalize_studymate_agents([AgentProfile(
             id=idx,
             agentId=f"agent-{idx + 1}",
             name=f"에이전트 {idx + 1}",
@@ -421,20 +421,54 @@ def _get_agents(request: MultiChatRequest) -> List[AgentProfile]:
             personalityStrength="moderate",
             knowledgeLevel=os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL", "undergraduate"),
             knowledgeLevelLabel=os.getenv("AI_DEFAULT_KNOWLEDGE_LEVEL_LABEL", "학사"),
-        ) for idx in range(default_count)])
-    return _normalize_studymate_agents(request.agents)
+        ) for idx in range(default_count)]))
+    return _assign_agent_slots(_normalize_studymate_agents(request.agents))
+
+
+class UnknownTargetAgentError(ValueError):
+    """targetAgentId 가 요청 agents 에 없을 때. 첫 번째/전체 에이전트로 조용히 폴백하지 않는다(STRICT TARGETING)."""
+
+    def __init__(self, target_id: Any, available: List[Any]):
+        self.target_id = str(target_id)
+        self.available = [str(a) for a in available]
+        super().__init__(f"targetAgentId={self.target_id} 에 해당하는 에이전트 없음 (available={self.available})")
+
+
+def _assign_agent_slots(agents: Optional[List[AgentProfile]]) -> Optional[List[AgentProfile]]:
+    """요청 agents 배열 위치(1-based)를 agentSlot 으로 고정한다. targetAgentId 로 필터한 뒤에도
+    각 에이전트가 방에서 몇 번째 교수인지 보존되어야 프론트 sprite/말풍선이 맞는 교수에 붙는다."""
+    for i, a in enumerate(agents or [], start=1):
+        if getattr(a, "agentSlot", None) is None:
+            try:
+                a.agentSlot = i
+            except Exception:  # pragma: no cover - 방어
+                pass
+    return agents
+
+
+def agent_slot(agent: Any, fallback: int) -> int:
+    """SSE agentIndex 용 방 슬롯(1-based). 없으면 호출자가 준 순번을 그대로 쓴다(레거시 호환)."""
+    s = getattr(agent, "agentSlot", None)
+    return int(s) if isinstance(s, int) and s >= 1 else fallback
 
 
 def _filter_agents(agents: List[AgentProfile], target_id: Optional[int]) -> List[AgentProfile]:
+    """targetAgentId → 그 1명만. None/blank → 전체(기존 멀티에이전트 협업 모드).
+    모르는 id 는 UnknownTargetAgentError(라우트에서 422) — agents[0]/전체 silent fallback 금지."""
     if target_id is None or str(target_id).strip() == "":
         return agents
     # Spring은 targetAgentId를 String으로 보내고 agent.agentId는 int일 수 있다(5 == "5" → False).
-    # 타입 불일치로 매칭 실패→전체 폴백되는 걸 막기 위해 문자열로 정규화해 비교한다.
+    # 타입 불일치로 매칭 실패하지 않도록 문자열로 정규화해 비교한다.
     tid = str(target_id).strip()
     filtered = [a for a in agents if (str(a.agentId).strip() == tid or str(a.id).strip() == tid)]
     if not filtered:
-        logger.warning("targetAgentId=%s에 해당하는 에이전트 없음. 전체 사용.", target_id)
-        return agents
+        available = [a.agentId if a.agentId is not None else a.id for a in agents]
+        logger.warning("[AGENT-RESOLVE] targetAgentId=%s 에 해당하는 에이전트 없음 available=%s → 거절(폴백 금지)",
+                       tid, available)
+        raise UnknownTargetAgentError(tid, available)
+    a0 = filtered[0]
+    logger.info("[AGENT-RESOLVE] targetAgentId=%s → agentId=%s name=%s slot=%s (요청 agents=%d, 대상 %d명)",
+                tid, a0.agentId, a0.name, getattr(a0, "agentSlot", None), len(agents), len(filtered))
     return filtered
 
 
@@ -1775,7 +1809,7 @@ def _run_default_mode_stream_impl(
         yield {"event": "agent_start", "data": {
             "type": "agent_start",
             "requestId": request_id,
-            "agentIndex": idx,
+            "agentIndex": agent_slot(agent, idx),
             "agentId": agent.agentId,
             "agentName": agent.name,
             "role": agent.role or "default",
@@ -1808,7 +1842,7 @@ def _run_default_mode_stream_impl(
                     yield {"event": "heartbeat", "data": {
                         "type": "heartbeat",
                         "requestId": request_id,
-                        "agentIndex": idx,
+                        "agentIndex": agent_slot(agent, idx),
                         "agentName": agent.name,
                         "elapsedMs": elapsed_ms,
                         "message": "답변 생성 중입니다.",
@@ -1834,7 +1868,7 @@ def _run_default_mode_stream_impl(
             yield {"event": "agent_error", "data": {
                 "type": "agent_error",
                 "requestId": request_id,
-                "agentIndex": idx,
+                "agentIndex": agent_slot(agent, idx),
                 "agentId": agent.agentId,
                 "agentName": agent.name,
                 "role": agent.role or "default",
@@ -1874,7 +1908,7 @@ def _run_default_mode_stream_impl(
             "turn_id": request_id,
             "stage": "FIRST_ANSWER",
             "agent_id": _agent_id,
-            "agentIndex": idx,
+            "agentIndex": agent_slot(agent, idx),
             "agentId": agent.agentId,
             "agentName": agent.name,
             "role": agent.role or "default",
@@ -1898,7 +1932,7 @@ def _run_default_mode_stream_impl(
         for idx, agent in enumerate(agents, start=1):
             yield {"event": "agent_start", "data": {
                 "type": "agent_start", "requestId": request_id,
-                "agentIndex": idx, "agentId": agent.agentId, "agentName": agent.name,
+                "agentIndex": agent_slot(agent, idx), "agentId": agent.agentId, "agentName": agent.name,
                 "role": agent.role or "default",
                 "stageType": "VALIDATION", "phase": "PEER_FEEDBACK", "visible": True,
                 "route": route, "mode": "feedback",
@@ -1937,7 +1971,7 @@ def _run_default_mode_stream_impl(
         for idx, agent in enumerate(agents, start=1):
             yield {"event": "agent_start", "data": {
                 "type": "agent_start", "requestId": request_id,
-                "agentIndex": idx, "agentId": agent.agentId, "agentName": agent.name,
+                "agentIndex": agent_slot(agent, idx), "agentId": agent.agentId, "agentName": agent.name,
                 "role": agent.role or "default",
                 "stageType": "PEER_FEEDBACK", "phase": "PEER_FEEDBACK", "visible": True,
                 "route": route, "mode": "feedback",
@@ -2052,9 +2086,12 @@ def run_direct_reply_stream(request: MultiChatRequest, route_result):
         "route": route_result.route, "mode": "direct",
         "message": "응답을 준비합니다.",
     }}
+    _dr_agents = _normalize_studymate_agents(_filter_agents(_get_agents(request), request.targetAgentId) or [_DEFAULT_AGENT])
+    _dr_agent = _dr_agents[0]
     yield {"event": "direct_reply", "data": {
         "type": "direct_reply", "requestId": request_id,
-        "agentIndex": 1, "phase": "DIRECT_REPLY", "visible": True,
+        "agentIndex": agent_slot(_dr_agent, 1), "agentId": _dr_agent.agentId, "agentName": _dr_agent.name,
+        "phase": "DIRECT_REPLY", "visible": True,
         "route": route_result.route, "mode": "direct", "status": "done",
         "content": reply, "answer": reply,
         "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

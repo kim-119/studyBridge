@@ -23,6 +23,7 @@ class AgentProfile(BaseModel):
 
     id: Optional[Any] = Field(None, description="DB 레코드 ID")
     agentId: Optional[Any] = Field(None, validation_alias=AliasChoices("agentId", "agent_id", "id"), description="에이전트 ID")
+    agentSlot: Optional[int] = Field(None, validation_alias=AliasChoices("agentSlot", "agent_slot"), description="요청 agents 배열에서의 1-based 위치(방 슬롯). targetAgentId 필터 후에도 보존되어 SSE agentIndex 로 나간다")
     name: str = Field("에이전트", validation_alias=AliasChoices("name", "agentName", "agent_name", "displayName"), description="에이전트 표시 이름")
     role: Optional[str] = Field(
         None,

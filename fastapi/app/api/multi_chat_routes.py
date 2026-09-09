@@ -22,6 +22,16 @@ router = APIRouter(prefix="/api/ai", tags=["Multi Agent Chat"])
 _STREAM_SENTINEL = object()
 
 
+def _target_not_found_detail(e) -> dict:
+    """targetAgentId 불일치 422 본문(Spring 은 4xx 를 CONTRACT 오류로 그대로 노출한다)."""
+    return {
+        "code": "TARGET_AGENT_NOT_FOUND",
+        "targetAgentId": getattr(e, "target_id", None),
+        "availableAgentIds": getattr(e, "available", []),
+        "message": "지정한 교수(targetAgentId)가 이 방의 에이전트 목록에 없습니다.",
+    }
+
+
 def _sse(event: str, data) -> str:
     """SSE 프레임 포맷: event: <name>\\ndata: <json>\\n\\n"""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -42,8 +52,12 @@ async def multi_chat_stream(request: MultiChatRequest):
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="message는 비워둘 수 없습니다.")
 
-    from app.services.multi_agent_service import build_stream_generator
-    gen = build_stream_generator(request)
+    from app.services.multi_agent_service import build_stream_generator, UnknownTargetAgentError
+    try:
+        gen = build_stream_generator(request)
+    except UnknownTargetAgentError as e:
+        # STRICT TARGETING: 방에 없는 targetAgentId 는 스트림을 열지 않고 명시 거절(첫 교수 폴백 금지).
+        raise HTTPException(status_code=422, detail=_target_not_found_detail(e))
 
     async def event_source():
         heartbeat_s = max(5.0, float(os.getenv("AI_STREAM_HEARTBEAT_SECONDS", "10")))
@@ -115,7 +129,7 @@ async def multi_chat(request: MultiChatRequest) -> MultiChatResponse:
         raise HTTPException(status_code=400, detail="message는 비워둘 수 없습니다.")
 
     try:
-        from app.services.multi_agent_service import run_multi_chat
+        from app.services.multi_agent_service import run_multi_chat, UnknownTargetAgentError
         from app.core.config import MULTI_CHAT_TIMEOUT_SECONDS, USE_LANGGRAPH_ORCHESTRATOR
         from app.schemas.multi_chat_schema import AgentAnswer
 
@@ -126,11 +140,16 @@ async def multi_chat(request: MultiChatRequest) -> MultiChatResponse:
         else:
             runner = run_multi_chat
 
-        result = await asyncio.wait_for(
-            asyncio.to_thread(runner, request),
-            timeout=MULTI_CHAT_TIMEOUT_SECONDS,
-        )
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(runner, request),
+                timeout=MULTI_CHAT_TIMEOUT_SECONDS,
+            )
+        except UnknownTargetAgentError as e:
+            raise HTTPException(status_code=422, detail=_target_not_found_detail(e))
         return result
+    except HTTPException:
+        raise
     except asyncio.TimeoutError:
         logger.warning("멀티 에이전트 채팅 타임아웃 (%ss)", MULTI_CHAT_TIMEOUT_SECONDS)
         from app.schemas.multi_chat_schema import AgentAnswer

@@ -376,6 +376,14 @@ public class ChatService {
                         throw new RuntimeException("해당 채팅방에 접근할 권한이 없습니다.");
                 }
 
+                // STRICT TARGETING: targetAgentId 는 방 agent 의 stable id(PK) 로만 해석한다.
+                //  방에 없는 id 는 첫 번째 교수로 폴백하지 않고 400 으로 거절한다(null/blank = 기존 전체 협업 모드).
+                Agent explicitTarget = resolveExplicitTargetAgent(room.getAgents(), request.getTargetAgentId());
+                log.info("[TARGET-AGENT] roomId={} mode=sync targetAgentId={} resolved={} scope={}",
+                                roomId, request.getTargetAgentId(),
+                                explicitTarget != null ? explicitTarget.getId() + ":" + explicitTarget.getName() : null,
+                                explicitTarget != null ? "single" : "all");
+
                 // 사용자의 메시지 저장
                 transactionTemplate.execute(status -> {
                         saveRoomMessage(room, null, request.getMessage(), "USER", null);
@@ -496,11 +504,8 @@ public class ChatService {
                                 String agentName = String.valueOf(messageMap.getOrDefault("agentName", "AI"));
                                 String responseAgentId = String.valueOf(messageMap.getOrDefault("agentId", ""));
 
-                                // IndexOutOfBoundsException 방어: agents가 비어있으면 null 허용
-                                Agent targetAgent = room.getAgents().stream()
-                                                .filter(a -> String.valueOf(a.getId()).equals(responseAgentId) || a.getName().equals(agentName))
-                                                .findFirst()
-                                                .orElse(room.getAgents().isEmpty() ? null : room.getAgents().get(0));
+                                // 응답 identity 보존: agentId → 이름 → null. 첫 번째 교수로 폴백하지 않는다.
+                                Agent targetAgent = resolveResponseAgent(room.getAgents(), responseAgentId, agentName);
 
                                 saveRoomMessage(room, targetAgent, aiContent, "AI", processStepsJson);
 
@@ -539,14 +544,8 @@ public class ChatService {
                                 String aiAnswer = answerObj != null ? answerObj.toString() : "";
                                 String agentName = nameObj != null ? nameObj.toString() : "AI";
 
-                                // IndexOutOfBoundsException 방어
-                                final String finalAgentName = agentName;
-                                final int finalIdx = i;
-                                Agent targetAgent = room.getAgents().stream()
-                                                .filter(a -> a.getName().equals(finalAgentName))
-                                                .findFirst()
-                                                .orElse(room.getAgents().isEmpty() ? null
-                                                                : room.getAgents().get(Math.min(finalIdx, room.getAgents().size() - 1)));
+                                // 응답 identity 보존: agentId → 이름 → null. 배열 index/첫 번째 교수 폴백 금지.
+                                Agent targetAgent = resolveResponseAgent(room.getAgents(), answerMap.get("agentId"), agentName);
 
                                 saveRoomMessage(room, targetAgent, aiAnswer, "AI", processStepsJson);
 
@@ -596,6 +595,16 @@ public class ChatService {
                 // 요청 상관관계 ID (로그 상관용, 프롬프트/크리덴셜 미포함)
                 final String requestId = "req_" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12);
 
+                // STRICT TARGETING: targetAgentId 는 방 agent 의 stable id(PK) 로만 해석한다.
+                //  방에 없는 id 는 첫 번째 교수로 폴백하지 않고 400(IllegalArgumentException) 으로 거절한다.
+                //  null/blank 는 기존 전체 멀티에이전트 협업 모드 그대로.
+                Agent explicitTarget = resolveExplicitTargetAgent(room.getAgents(), request.getTargetAgentId());
+                log.info("[TARGET-AGENT] roomId={} requestId={} targetAgentId={} resolved={} scope={} roomAgents={}",
+                                roomId, requestId, request.getTargetAgentId(),
+                                explicitTarget != null ? explicitTarget.getId() + ":" + explicitTarget.getName() : null,
+                                explicitTarget != null ? "single" : "all",
+                                room.getAgents().stream().map(a -> a.getId() + ":" + a.getName()).toList());
+
                 // 사용자 메시지 저장
                 transactionTemplate.execute(status -> {
                         saveRoomMessage(room, null, request.getMessage(), "USER", null);
@@ -629,8 +638,8 @@ public class ChatService {
                 // 그 외(다중 에이전트, validation/collaboration/debate/socratic/simulation)는 ai07 stream을 그대로 중계한다.
                 boolean useBasicOrchestration = "basic".equals(effectiveLearningMode) && agentCount <= 1;
 
-                log.info("[CHAT ROUTE] roomId={} requestId={} effectiveLearningMode={} effectiveMode={} agents.size={} fastapiPayload.mode={} fastapiPayload.learningMode={} route={}",
-                                roomId, requestId, effectiveLearningMode, fapiMode, agentCount, fapiMode, fapiLearningMode,
+                log.info("[CHAT ROUTE] roomId={} requestId={} effectiveLearningMode={} effectiveMode={} agents.size={} targetAgentId={} fastapiPayload.mode={} fastapiPayload.learningMode={} route={}",
+                                roomId, requestId, effectiveLearningMode, fapiMode, agentCount, requestBody.get("targetAgentId"), fapiMode, fapiLearningMode,
                                 useBasicOrchestration ? "orchestrateBasicStream" : "relayRemoteStream");
 
                 // WARN: 경고 notice를 먼저 보내고 기존 학습 답변 스트림을 그대로 이어간다(중복 토큰 append 아님).
@@ -1085,10 +1094,8 @@ public class ChatService {
                                         if (content.isBlank()) {
                                                 continue;
                                         }
-                                        Agent targetAgent = room.getAgents().stream()
-                                                        .filter(ag -> ag.getName().equals(agentName))
-                                                        .findFirst()
-                                                        .orElse(room.getAgents().isEmpty() ? null : room.getAgents().get(0));
+                                        // 응답 identity 보존: agentId → 이름 → null(첫 번째 교수 폴백 금지 — 새로고침 후 작성자 뒤바뀜 방지).
+                                        Agent targetAgent = resolveResponseAgent(room.getAgents(), a.get("agentId"), agentName);
                                         saveRoomMessage(room, targetAgent, content, "AI", processStepsJson);
                                 }
                                 return null;
@@ -1127,6 +1134,52 @@ public class ChatService {
         }
 
         // 채팅 기록 저장 (processSteps 없는 경우)
+        // ── Agent Identity 리졸버(STRICT TARGETING) ───────────────────────────────────
+        //  · 요청 targetAgentId 는 방 agent 의 stable id(PK)로만 해석한다. 배열 index/표시명은 identity 가 아니다.
+        //  · 못 찾으면 IllegalArgumentException(→ GlobalExceptionHandler 400). 첫 번째 교수 silent fallback 금지.
+        //  · null/blank 는 "대상 미지정" = 기존 전체 멀티에이전트 협업 모드.
+        static Agent resolveExplicitTargetAgent(List<Agent> roomAgents, String targetAgentId) {
+                if (targetAgentId == null || targetAgentId.isBlank()) {
+                        return null;
+                }
+                final String tid = targetAgentId.trim();
+                List<Agent> agents = roomAgents != null ? roomAgents : java.util.Collections.emptyList();
+                return agents.stream()
+                                .filter(a -> a != null && a.getId() != null && String.valueOf(a.getId()).equals(tid))
+                                .findFirst()
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "TARGET_AGENT_NOT_FOUND: targetAgentId=" + tid + " 는 이 채팅방의 에이전트가 아닙니다. available="
+                                                                + agents.stream().map(a -> String.valueOf(a.getId())).toList()));
+        }
+
+        //  응답(agent_answer/answers/messages)의 작성자 결정: agentId(문자/숫자 무관) → 이름 → null.
+        //  null 이면 agent 없이 저장한다(다른 교수로 귀속시키지 않는다).
+        static Agent resolveResponseAgent(List<Agent> roomAgents, Object agentId, String agentName) {
+                List<Agent> agents = roomAgents != null ? roomAgents : java.util.Collections.emptyList();
+                if (agentId != null) {
+                        final String aid = String.valueOf(agentId).trim();
+                        if (!aid.isEmpty() && !"null".equals(aid)) {
+                                java.util.Optional<Agent> byId = agents.stream()
+                                                .filter(a -> a != null && a.getId() != null && String.valueOf(a.getId()).equals(aid))
+                                                .findFirst();
+                                if (byId.isPresent()) {
+                                        return byId.get();
+                                }
+                        }
+                }
+                if (agentName != null && !agentName.isBlank()) {
+                        final String nm = agentName.trim();
+                        java.util.Optional<Agent> byName = agents.stream()
+                                        .filter(a -> a != null && a.getName() != null && a.getName().trim().equals(nm))
+                                        .findFirst();
+                        if (byName.isPresent()) {
+                                return byName.get();
+                        }
+                }
+                log.warn("[TARGET-AGENT] 응답 작성자 미해석 agentId={} agentName={} → agent 없이 저장(첫 교수 폴백 금지)", agentId, agentName);
+                return null;
+        }
+
         private void saveRoomMessage(AgentChatRoom room, Agent agent, String content, String sender) {
                 saveRoomMessage(room, agent, content, sender, null);
         }

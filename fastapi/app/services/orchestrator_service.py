@@ -427,6 +427,13 @@ def _build_level_grounding(query: str, lvl: str, cache: Dict[str, str]) -> str:
 _MODE_KEYS = {"basic", "default", "debate", "socratic", "simulation"}
 
 
+def _slot(agent: Any, fallback: int) -> int:
+    """SSE agentIndex = 방 슬롯(1-based, 요청 agents 배열 위치). targetAgentId 로 필터된 배열의
+    위치(항상 1)가 아니라 원래 방에서 몇 번째 교수인지를 내보내야 프론트가 맞는 교수에 붙인다."""
+    s = getattr(agent, "agentSlot", None)
+    return int(s) if isinstance(s, int) and s >= 1 else fallback
+
+
 def _resolve_effective_mode(request: MultiChatRequest) -> str:
     lm = (getattr(request, "learningMode", None) or "").strip().lower()
     raw = (request.mode or "default").strip().lower()
@@ -1022,7 +1029,7 @@ def _run_discussion_plan(
             return {
                 "event": "agent_start",
                 "data": {
-                    "type": "agent_start", "agentIndex": idx + 1, "agentName": agent_name,
+                    "type": "agent_start", "agentIndex": _slot(agent, idx + 1), "agentName": agent_name,
                     "agentId": aid, "phase": phase, "actType": act.act_type,
                     "replyTo": reply_to, "displayOrder": order, "visible": True, **identity,
                 },
@@ -1085,14 +1092,14 @@ def _run_discussion_plan(
         # 정렬/지연 렌더하도록 한다(비동기 도착 순서 뒤섞임 방지).
         delay_ms = (cur_display - 1) * int(min_gap * 1000)
         entry = {
-            "agentId": aid, "agentName": agent_name, "answer": answer,
+            "agentId": aid, "agentName": agent_name, "agentIndex": _slot(agent, idx + 1), "answer": answer,
             "displayOrder": cur_display, "displayDelayMs": delay_ms, "stage": stage, "status": "SUCCESS",
             "actType": act.act_type, "replyTo": reply_to, **identity,
         }
         yield {
             "event": "agent_answer",
             "data": {
-                "type": "agent_answer", "agentIndex": idx + 1, "agentName": agent_name,
+                "type": "agent_answer", "agentIndex": _slot(agent, idx + 1), "agentName": agent_name,
                 "agentId": aid, "answer": answer, "displayOrder": cur_display, "displayDelayMs": delay_ms,
                 "stage": stage, "phase": phase, "actType": act.act_type, "replyTo": reply_to,
                 "visible": True, "status": "SUCCESS", **identity,
@@ -1148,7 +1155,7 @@ def _run_summary_only(
     }
     yield {
         "event": "agent_start",
-        "data": {"type": "agent_start", "agentIndex": 1, "agentName": agent_name, "agentId": aid,
+        "data": {"type": "agent_start", "agentIndex": _slot(speaker, 1), "agentName": agent_name, "agentId": aid,
                  "phase": "WRAP", "actType": "WRAP", "replyTo": None, "displayOrder": 1,
                  "visible": True, **identity},
     }
@@ -1161,7 +1168,7 @@ def _run_summary_only(
     }
     yield {
         "event": "agent_answer",
-        "data": {"type": "agent_answer", "agentIndex": 1, "agentName": agent_name, "agentId": aid,
+        "data": {"type": "agent_answer", "agentIndex": _slot(speaker, 1), "agentName": agent_name, "agentId": aid,
                  "answer": text, "displayOrder": 1, "displayDelayMs": 0, "stage": 3, "phase": "WRAP",
                  "actType": "WRAP", "replyTo": None, "visible": True, "status": "SUCCESS", **identity},
     }
@@ -1194,11 +1201,11 @@ def _run_memory_recall(request, agents, effective_mode, identity_payload, intent
     }
     yield {
         "event": "agent_start",
-        "data": {"type": "agent_start", "agentIndex": 1, "agentName": agent_name,
+        "data": {"type": "agent_start", "agentIndex": _slot(first, 1), "agentName": agent_name,
                  "agentId": agent_id, "phase": "FIRST_DRAFT", "visible": True, **identity},
     }
     entry = {
-        "type": "agent_answer", "agentIndex": 1, "agentName": agent_name, "agentId": agent_id,
+        "type": "agent_answer", "agentIndex": _slot(first, 1), "agentName": agent_name, "agentId": agent_id,
         "answer": answer, "content": answer, "displayOrder": 1, "displayDelayMs": 0,
         "stage": 1, "phase": "FIRST_DRAFT", "visible": True, "status": "SUCCESS",
         "memoryAnswer": True, "memoryIntent": intent.value,
@@ -1328,6 +1335,7 @@ def build_orchestrator_stream(
         except Exception as e:  # pragma: no cover - 방어: 무조건 기존 경로로 폴백
             logger.warning("[Orchestrator] dialogue-act 게이트 건너뜀: %s", e)
 
+    _tid = getattr(request, "targetAgentId", None)
     yield {
         "event": "turn_start",
         "data": {
@@ -1335,6 +1343,9 @@ def build_orchestrator_stream(
             "message": "에이전트가 답변을 준비하고 있습니다...",
             "phase": "FIRST_DRAFT",
             "visible": True,
+            # STRICT TARGETING 진단: 대상 지정 시 그 agent 1명(agents==필터 결과)만 답한다.
+            "targetAgentId": (str(_tid) if _tid not in (None, "") else None),
+            "responderAgentIds": [str(a.agentId if a.agentId is not None else a.id) for a in agents],
         },
     }
 
@@ -1366,7 +1377,7 @@ def build_orchestrator_stream(
             "event": "agent_start",
             "data": {
                 "type": "agent_start",
-                "agentIndex": idx + 1,
+                "agentIndex": _slot(agent, idx + 1),
                 "agentName": agent_name,
                 "agentId": agent_id,
                 "phase": "FIRST_DRAFT",
@@ -1388,7 +1399,7 @@ def build_orchestrator_stream(
             "event": "agent_answer",
             "data": {
                 "type": "agent_answer",
-                "agentIndex": idx + 1,
+                "agentIndex": _slot(agent, idx + 1),
                 "agentName": agent_name,
                 "agentId": agent_id,
                 "answer": answer,
@@ -1431,7 +1442,7 @@ def build_orchestrator_stream(
             others = [a for j, a in enumerate(round1) if j != idx]
             yield {
                 "event": "agent_start",
-                "data": {"type": "agent_start", "agentIndex": idx + 1, "agentName": agent_name,
+                "data": {"type": "agent_start", "agentIndex": _slot(agent, idx + 1), "agentName": agent_name,
                          "agentId": agent_id, "phase": "FEEDBACK", "visible": True, **identity},
             }
             try:
@@ -1444,7 +1455,7 @@ def build_orchestrator_stream(
                          "displayOrder": len(all_answers) + 1, "stage": 2, "status": "SUCCESS", **identity}
                 yield {
                     "event": "agent_answer",
-                    "data": {"type": "agent_answer", "agentIndex": idx + 1, "agentName": agent_name,
+                    "data": {"type": "agent_answer", "agentIndex": _slot(agent, idx + 1), "agentName": agent_name,
                              "agentId": agent_id, "answer": fb, "displayOrder": entry["displayOrder"],
                              "stage": 2, "phase": "FEEDBACK", "visible": True, "status": "SUCCESS", **identity},
                 }

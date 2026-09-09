@@ -173,7 +173,9 @@ export const PROFESSORS = [
 
 export const ROLE_NAMES = { theory: '이론 교수', book: '문헌 교수', ai: 'AI 교수' };
 
-// SSE agentIndex → 역할. 명시 메타데이터가 없을 때의 결정적 fallback(첫=theory, 둘=book, 셋=ai).
+// 0-based 방 슬롯(agents 배열 위치) → 역할(첫=theory, 둘=book, 셋=ai).
+//  ⚠ 백엔드 SSE agentIndex(1-based, 대상 지정 시 필터된 배열 위치)를 직접 넣지 말 것 —
+//    utils/agentIdentity.resolveRoomAgentSlot 로 agentId → 슬롯을 먼저 해석한다.
 export const AGENT_INDEX_TO_ROLE = ['theory', 'book', 'ai'];
 export const roleForAgentIndex = (idx) => AGENT_INDEX_TO_ROLE[Math.max(0, Number(idx) || 0) % 3];
 
