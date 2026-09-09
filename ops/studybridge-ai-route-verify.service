@@ -1,0 +1,8 @@
+[Unit]
+Description=StudyBridge AI upstream route-surface verifier (primary ai07 :18000 / secondary :8000)
+
+[Service]
+Type=oneshot
+# 상태 파일(/run/studybridge, tmpfiles.d 로 ubuntu 소유)을 fastapi 유닛(User=ubuntu)과 공유하므로 같은 사용자로 실행.
+User=ubuntu
+ExecStart=/home/ubuntu/studyBridge/ops/studybridge-ai-route-verify.sh

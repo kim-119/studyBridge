@@ -40,7 +40,19 @@ services:
       AWS_REGION: ${AWS_REGION}
       AWS_S3_BUCKET: ${AWS_S3_BUCKET}
 
+      # ── AI 서버 업스트림 (Source of Truth) ──────────────────────────────────────
+      #  PRIMARY   = ai07 FastAPI (reverse SSH :18000 ← systemd studybridge-bridge-18000 socat 172.17.0.1:18000)
+      #  SECONDARY = EC2 로컬 hot-standby FastAPI (systemd studybridge-fastapi, :8000). 비우면 secondary 없음.
+      #  FASTAPI_BASE_URL 은 레거시 호환 키(= PRIMARY). 새 코드는 PRIMARY/SECONDARY 만 본다.
       FASTAPI_BASE_URL: http://host.docker.internal:18000
+      FASTAPI_PRIMARY_BASE_URL: ${FASTAPI_PRIMARY_BASE_URL:-http://host.docker.internal:18000}
+      FASTAPI_SECONDARY_BASE_URL: ${FASTAPI_SECONDARY_BASE_URL:-http://host.docker.internal:8000}
+      # 멀티에이전트 채팅 failover 정책(AiMultiChatFailoverService). 동일 대상 최대 2회, 냉각 15s, 라우트 프로브 15s.
+      AI_STREAM_ATTEMPTS_PER_UPSTREAM: ${AI_STREAM_ATTEMPTS_PER_UPSTREAM:-2}
+      AI_UPSTREAM_CIRCUIT_COOLDOWN_SECONDS: ${AI_UPSTREAM_CIRCUIT_COOLDOWN_SECONDS:-15}
+      AI_UPSTREAM_PROBE_INTERVAL_SECONDS: ${AI_UPSTREAM_PROBE_INTERVAL_SECONDS:-15}
+      AI_STREAM_IDLE_TIMEOUT_SECONDS: ${AI_STREAM_IDLE_TIMEOUT_SECONDS:-180}
+      AI_STREAM_TOTAL_TIMEOUT_SECONDS: ${AI_STREAM_TOTAL_TIMEOUT_SECONDS:-900}
       AI_SERVER_API_KEY: ${AI_SERVER_API_KEY:-}
       FASTAPI_EXTRACTION_URL: http://host.docker.internal:18000/api/extract
       FASTAPI_TIMEOUT: ${FASTAPI_TIMEOUT:-180000}

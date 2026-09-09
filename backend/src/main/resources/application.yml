@@ -31,7 +31,25 @@ spring:
 ai:
   server:
     fastapi:
-      base-url: ${FASTAPI_BASE_URL:http://localhost:8000}
+      # Source of Truth = docker-compose.yml spring.environment (FASTAPI_PRIMARY_BASE_URL / FASTAPI_SECONDARY_BASE_URL).
+      #  base-url 은 레거시 호환 키: 다른 서비스들이 쓰는 fastApiWebClient 는 항상 PRIMARY 를 가리킨다.
+      base-url: ${FASTAPI_PRIMARY_BASE_URL:${FASTAPI_BASE_URL:http://localhost:8000}}
+      # PRIMARY = ai07(reverse SSH 터널 :18000). SECONDARY = EC2 로컬 hot-standby FastAPI(:8000). 비우면 secondary 비활성.
+      primary-base-url: ${FASTAPI_PRIMARY_BASE_URL:${FASTAPI_BASE_URL:http://localhost:8000}}
+      secondary-base-url: ${FASTAPI_SECONDARY_BASE_URL:}
+      # 멀티에이전트 채팅 failover 정책 (AiMultiChatFailoverService). 하드코딩 금지 — env 제어.
+      failover:
+        # 동일 업스트림 최대 시도 횟수(첫 이벤트 수신 전 실패에만 적용). 무한 retry 금지.
+        attempts-per-upstream: ${AI_STREAM_ATTEMPTS_PER_UPSTREAM:2}
+        backoff-ms: ${AI_STREAM_BACKOFF_MS:400}
+        # 실패한 업스트림을 잠시 건너뛰는 냉각 시간. 만료 후 자동 재시도 → ai07 복구 시 수동 조치 없이 PRIMARY 복귀.
+        circuit-cooldown-seconds: ${AI_UPSTREAM_CIRCUIT_COOLDOWN_SECONDS:15}
+        # /openapi.json 라우트 표면 프로브 주기. stream 라우트 부재(=구버전 회귀)면 해당 업스트림 stream 을 건너뛴다.
+        probe-interval-seconds: ${AI_UPSTREAM_PROBE_INTERVAL_SECONDS:15}
+        # 이벤트 간 무응답 상한(ai07 heartbeat 10s) — 끊긴 터널을 감지해 failover.
+        stream-idle-timeout-seconds: ${AI_STREAM_IDLE_TIMEOUT_SECONDS:180}
+        # 사용자 응답 전체 상한. 초과 시 error+done 으로 정상 종료(500 금지).
+        total-timeout-seconds: ${AI_STREAM_TOTAL_TIMEOUT_SECONDS:900}
       # FastAPI /api/ai/multi-chat/stream 은 agent별 순차 생성으로 오래 걸린다 → read 타임아웃을 길게 둔다.
       read-timeout-seconds: ${AI_SERVER_FASTAPI_READ_TIMEOUT_SECONDS:1800}
       # 키워드 정의 / 플래너 AI 확장 / 플래너 로드맵 호출 타임아웃 (초). 하드코딩 금지 — env 제어.

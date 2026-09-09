@@ -11,7 +11,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.springframework.http.codec.ServerSentEvent;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
 
@@ -34,9 +35,11 @@ public class ChatController {
         return ResponseEntity.ok(chatService.chatWithRoom(userDetails.getId(), roomId, request));
     }
 
-    // 멀티 에이전트 채팅 — 1차/2차/3차 단계별 SSE 스트리밍 (선출력)
+    // 멀티 에이전트 채팅 — SSE 스트리밍. 리액티브 체인(Flux)을 컨트롤러까지 유지한다:
+    //  PRIMARY(ai07) stream → SECONDARY(EC2 :8000) stream → non-stream 폴백은 ChatService/AiMultiChatFailoverService 가
+    //  block() 없이 처리하며, 어떤 경우에도 error/done 이벤트로 정상 종료한다(500·premature close 금지).
     @PostMapping(value = "/{roomId}/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter chatStream(
+    public Flux<ServerSentEvent<String>> chatStream(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long roomId,
             @Valid @RequestBody ChatDTO.MultiChatRequest request,

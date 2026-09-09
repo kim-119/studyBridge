@@ -10,10 +10,15 @@
 # 이 파일은 사고 기록용으로만 남긴다. 절대 enable 하지 말 것.
 # ##################################################################
 # 배포: GitHub Actions cd.yml의 fastapi-deploy 잡이 이 파일을 /etc/systemd/system에 설치/갱신한다.
+#  (ops/install-ai-resilience-units.sh 로도 설치 가능)
+# 역할: EC2 로컬 FastAPI = Spring 의 SECONDARY(hot-standby) 업스트림(:8000). PRIMARY 는 ai07 터널(:18000).
 [Unit]
-Description=StudyBridge FastAPI AI server (EC2)
+Description=StudyBridge FastAPI AI server (EC2, secondary hot-standby :8000)
 After=network-online.target
 Wants=network-online.target
+# 포트 점유/라우트 회귀로 반복 실패해도 restart loop 로 폭주하지 않는다(5회/5분 초과 시 failed 상태로 멈춤 = unhealthy).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -21,13 +26,17 @@ User=ubuntu
 WorkingDirectory=/home/ubuntu/studyBridge/fastapi
 EnvironmentFile=-/home/ubuntu/studyBridge/fastapi/.env
 Environment=PYTHONUNBUFFERED=1
+# 8000 을 다른 프로세스(수동 nohup 등)가 물고 있으면 CRITICAL + PID 기록 후 기동 중단(fail-safe).
+ExecStartPre=/home/ubuntu/studyBridge/ops/studybridge-port-owner-check.sh 8000
 # 라이브 엔트리포인트는 항상 hotfix_main:app (= from main import app + /api/ai/multi-chat/stream compat 라우터).
 ExecStart=/home/ubuntu/studyBridge/fastapi/.venv/bin/python -m uvicorn hotfix_main:app --host 0.0.0.0 --port 8000
+# 기동 후 라우트 표면 검증: /health 200 이 아니라 /openapi.json 의 필수 라우트(canary=/api/ai/multi-chat/stream)로 판정.
+#  누락(=route regression)이면 exit 1 → 유닛 실패(unhealthy). Ollama 접근은 경고만.
+ExecStartPost=/home/ubuntu/studyBridge/ops/studybridge-fastapi-postcheck.sh
 Restart=always
 RestartSec=3
-TimeoutStartSec=120
+TimeoutStartSec=180
 
 [Install]
 WantedBy=multi-user.target
-
 # (cd: pkill 자기매칭 회피 위해 fuser -k 포트 기반으로 정리)

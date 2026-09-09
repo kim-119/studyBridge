@@ -1,0 +1,11 @@
+[Unit]
+Description=Run StudyBridge AI route-surface verifier every minute
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=studybridge-ai-route-verify.service
+
+[Install]
+WantedBy=timers.target
