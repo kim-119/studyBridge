@@ -73,6 +73,10 @@ const normalizeAgentFromRoom = (room) => {
     roomId: room?.roomId ?? room?.id,
     roomName: room?.roomName,
     learningMode: room?.learningMode || 'basic',
+    // 방 생성 시 저장된 모드 전용 설정(mode_config_json) — 전송 payload 가 모달 기본값 대신 이 값을 쓴다.
+    debateConfig: room?.debateConfig || null,
+    socraticConfig: room?.socraticConfig || null,
+    simulationConfig: room?.simulationConfig || null,
     name: primaryAgent?.name || room?.roomName || 'AI 에이전트',
     role: primaryAgent?.role || '학습 도우미',
     persona: primaryAgent?.persona || '',
