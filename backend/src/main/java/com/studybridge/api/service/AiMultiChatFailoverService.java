@@ -570,7 +570,8 @@ public class AiMultiChatFailoverService {
         Throwable t = unwrap(err);
         if (t instanceof WebClientResponseException wre) {
             HttpStatusCode sc = wre.getStatusCode();
-            return sc.value();
+            // 2xx 뒤 본문 중단은 "HTTP 상태 실패"가 아니므로 상태코드를 실패 원인으로 기록하지 않는다.
+            return sc.is2xxSuccessful() ? null : sc.value();
         }
         return null;
     }
@@ -596,7 +597,13 @@ public class AiMultiChatFailoverService {
         }
         Throwable t = err;
         if (t instanceof WebClientResponseException wre) {
-            return "HTTP " + wre.getStatusCode().value() + " " + wre.getRequest().getMethod() + " " + wre.getRequest().getURI().getPath();
+            String path = wre.getRequest() != null ? wre.getRequest().getMethod() + " " + wre.getRequest().getURI().getPath() : "";
+            if (wre.getStatusCode().is2xxSuccessful()) {
+                // 응답은 200 이었지만 본문 스트림이 중간에 끊긴 경우(premature close 등): 상태코드가 아니라 원인을 남긴다.
+                Throwable c = wre.getCause();
+                return "stream aborted after HTTP 200 (" + (c != null ? c.getClass().getSimpleName() + ": " + c.getMessage() : wre.getMessage()) + ") " + path;
+            }
+            return "HTTP " + wre.getStatusCode().value() + " " + path;
         }
         if (t instanceof TimeoutException) {
             return "timeout";
