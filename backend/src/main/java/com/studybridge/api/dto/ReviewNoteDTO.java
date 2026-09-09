@@ -27,6 +27,7 @@ public class ReviewNoteDTO {
     private Integer reviewCount;           // 복습 필요 수 = wrongCount + unansweredCount
     private String difficulty;             // easy | medium | hard
     private String memo;
+    private String aiStatus;               // PENDING | DONE | FALLBACK | null(구버전) — AI 해설 보강 진행 상태
     private String pdfUrl;                 // S3 presigned URL (열람/다운로드용)
     private String downloadUrl;            // 다운로드 API 경로 (/api/review-notes/{id}/download)
     // ── 복습 필요/일정(DB 기준) ──

@@ -26,6 +26,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.awt.Color;
@@ -37,11 +39,22 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 오답노트 생성/조회 서비스.
- * 흐름: 퀴즈 채점으로 틀린 문제 추출 → ai07 wrong-note-feedback 호출(없으면 폴백) →
- *   PDF 생성 → S3 업로드 → review_note 메타 저장 → 자료보관함(Material) 자동 추가.
+ * 흐름: 퀴즈 채점으로 틀린 문제 추출 → (ai07 wrong-note-feedback 을 백그라운드로 발사) →
+ *   퀴즈 자체 해설로 PDF 즉시 생성 → S3 업로드 → review_note 메타 저장 → 자료보관함(Material) 자동 추가
+ *   → 응답. ai07 응답이 도착하면 백그라운드에서 PDF/평문/다시풀기 JSON 을 AI 강화본으로 교체한다.
+ *
+ * ★ 왜 비동기인가: ai07 wrong-note-feedback 은 문항 수에 따라 15~60초가 걸린다(운영 로그 elapsedMs=58329).
+ *   예전엔 이 응답을 동기로 기다려 "저장 중..." 이 그만큼 길었다. 오답노트의 핵심 데이터(문항/정답/내 답/
+ *   퀴즈 해설)는 이미 DB 에 있으므로 먼저 만들어 주고, AI 보강은 도착하는 대로 덮어쓴다(aiStatus 로 추적).
  */
 @Slf4j
 @Service
@@ -61,6 +74,26 @@ public class ReviewNoteService {
 
     @Value("${ai.server.fastapi.review-timeout-seconds:120}")
     private long reviewTimeoutSeconds;
+
+    // 생성 요청이 ai07 응답을 동기로 기다려 주는 최대 시간(초). 0 이면 기다리지 않고 즉시 폴백본으로 응답.
+    // ai07 이 이 시간 안에 답하면 처음부터 AI 강화본으로 저장되고, 늦으면 백그라운드 보강으로 넘어간다.
+    @Value("${ai.server.fastapi.review-sync-budget-seconds:0}")
+    private long reviewSyncBudgetSeconds;
+
+    // aiStatus 값: PENDING(백그라운드 보강 대기) | DONE(AI 강화본 반영) | FALLBACK(AI 실패, 퀴즈 해설본 유지)
+    static final String AI_STATUS_PENDING = "PENDING";
+    static final String AI_STATUS_DONE = "DONE";
+    static final String AI_STATUS_FALLBACK = "FALLBACK";
+
+    // ai07 호출 + 백그라운드 보강 전용 소형 풀(요청 스레드/doc-extract 풀과 분리). final+초기화라 생성자 인자에서 제외됨.
+    private final ExecutorService aiEnrichExecutor = Executors.newFixedThreadPool(2, new java.util.concurrent.ThreadFactory() {
+        private final AtomicInteger seq = new AtomicInteger();
+        @Override public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "review-note-ai-" + seq.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        }
+    });
 
     private byte[] cachedFont;
 
@@ -111,7 +144,7 @@ public class ReviewNoteService {
             throw new IllegalStateException("복습할 문제가 없습니다. 모든 문제를 맞혔어요.");
         }
 
-        // 2) ai07 호출 (있으면 AI 강화본, 실패/부재 시 보유 데이터로 폴백)
+        // 2) ai07 호출을 백그라운드로 발사. 기본(sync budget 0)은 기다리지 않고 바로 폴백본을 만든다.
         Map<String, Object> requestBody = new LinkedHashMap<>();
         requestBody.put("material_id", source.getMaterialId());
         requestBody.put("material_title", source.getTitle());
@@ -122,30 +155,29 @@ public class ReviewNoteService {
         requestBody.put("wrong_questions", wrongQuestions);
 
         long t0 = System.currentTimeMillis();
-        log.info("[REVIEW_NOTE] start userId={} quizId={} materialId={} wrong={} unanswered={}",
-                userId, quizId, source.getMaterialId(), wrongOnly, unansweredOnly);
+        log.info("[REVIEW_NOTE] start userId={} quizId={} materialId={} wrong={} unanswered={} syncBudgetSec={}",
+                userId, quizId, source.getMaterialId(), wrongOnly, unansweredOnly, reviewSyncBudgetSeconds);
+
+        final Long quizIdF = quizId;
+        CompletableFuture<Map> aiFuture = CompletableFuture.supplyAsync(
+                () -> callWrongNoteFeedback(requestBody, quizIdF), aiEnrichExecutor);
 
         Map response = null;
-        try {
-            response = fastApiWebClient.post().uri("/api/ai/review/wrong-note-feedback")
-                    .bodyValue(requestBody).retrieve().bodyToMono(Map.class)
-                    .block(Duration.ofSeconds(reviewTimeoutSeconds));
-        } catch (Exception e) {
-            log.warn("[REVIEW_NOTE] ai07 unavailable quizId={} cause={} -> 폴백 생성",
-                    quizId, e.getClass().getSimpleName() + ": " + e.getMessage());
+        if (reviewSyncBudgetSeconds > 0) {
+            try {
+                response = aiFuture.get(reviewSyncBudgetSeconds, TimeUnit.SECONDS);
+            } catch (TimeoutException te) {
+                log.info("[REVIEW_NOTE] ai07 응답이 {}s 내 미도착 quizId={} -> 폴백본 즉시 저장 + 백그라운드 보강", reviewSyncBudgetSeconds, quizId);
+            } catch (Exception e) {
+                log.warn("[REVIEW_NOTE] ai07 sync wait 실패 quizId={} cause={}", quizId, e.getMessage());
+            }
         }
 
-        Object errorCode = response != null ? response.get("error_code") : null;
-        boolean aiEnriched = (errorCode == null && response != null);
+        boolean aiEnriched = isAiOk(response);
+        boolean aiSettled = aiFuture.isDone();   // 이미 결론(성공/실패)이 났으면 백그라운드 보강 불필요
 
-        // ai07 의 per-문제 해설/개념(있으면)으로 보강. PDF 레이아웃은 항상 우리 구조로 렌더(품질 일관).
-        String overallFeedback = aiEnriched ? firstNonBlank(
-                asStr(response.get("overall_feedback")), asStr(response.get("overallFeedback")),
-                asStr(response.get("feedback")), asStr(response.get("summary"))) : null;
-        if (overallFeedback == null || overallFeedback.isBlank()) {
-            overallFeedback = "아래 문제들을 다시 확인하고, 정답과 해설을 비교하며 복습하세요."
-                    + (unansweredOnly > 0 ? " 미응답 문제는 시간 내에 풀이를 시도하는 연습이 필요합니다." : "");
-        }
+        String defaultFeedback = defaultOverallFeedback(unansweredOnly);
+        String overallFeedback = aiEnriched ? overallFeedbackOf(response, defaultFeedback) : defaultFeedback;
         if (aiEnriched) enrichFromAi(reviewItems, response);
 
         // 2-1) 구조화된 오답노트 문서 모델 → PDF + 검색용 평문 + 다시풀기 JSON
@@ -164,6 +196,8 @@ public class ReviewNoteService {
         // 4) S3 업로드
         String s3Key = "wrong-notes/" + userId + "/" + source.getMaterialId() + "/" + quizId + "/" + UUID.randomUUID() + "/wrong-note.pdf";
         s3Service.uploadBytes(pdf, s3Key, "application/pdf");
+
+        String aiStatus = aiEnriched ? AI_STATUS_DONE : (aiSettled ? AI_STATUS_FALLBACK : AI_STATUS_PENDING);
 
         // 5) 자료보관함 노출용 Material(REVIEW_NOTE) 자동 추가
         Material archive = Material.builder()
@@ -192,6 +226,7 @@ public class ReviewNoteService {
                 .unansweredCount(unansweredOnly)
                 .difficulty(mapDifficulty(quiz.getDifficulty()))
                 .retryJson(retryJson)
+                .aiStatus(aiStatus)
                 .build();
         // 복습 세션 완료 = 오답노트 생성. 같은 트랜잭션에서 추천 복습일을 결정적으로 확정해 저장한다(ai07 의존 없음).
         LearningLoopService.ReviewRecommendation rec = LearningLoopService.computeReviewRecommendation(
@@ -201,8 +236,29 @@ public class ReviewNoteService {
         note.setReviewReason(rec.reason());
         note = reviewNoteRepository.save(note);
 
-        log.info("[REVIEW_NOTE] OK userId={} reviewNoteId={} archiveMaterialId={} wrong={} unanswered={} aiEnriched={} elapsedMs={}",
-                userId, note.getReviewNoteId(), archive.getMaterialId(), wrongOnly, unansweredOnly, aiEnriched, System.currentTimeMillis() - t0);
+        log.info("[REVIEW_NOTE] OK userId={} reviewNoteId={} archiveMaterialId={} wrong={} unanswered={} aiStatus={} elapsedMs={}",
+                userId, note.getReviewNoteId(), archive.getMaterialId(), wrongOnly, unansweredOnly, aiStatus, System.currentTimeMillis() - t0);
+
+        // 6-1) ai07 응답이 아직이면: 트랜잭션 커밋 후 도착 시점에 PDF/평문/retryJson 을 AI 강화본으로 교체
+        if (AI_STATUS_PENDING.equals(aiStatus)) {
+            final Long noteId = note.getReviewNoteId();
+            final Long archiveId = archive.getMaterialId();
+            final String srcTitle = source.getTitle();
+            final List<WrongItem> itemsF = reviewItems;
+            final int wrongF = wrongOnly, unansweredF = unansweredOnly;
+            Runnable hook = () -> aiFuture.whenComplete((resp, err) -> {
+                if (err != null) log.warn("[REVIEW_NOTE] ai07 background 실패 reviewNoteId={} cause={}", noteId, err.toString());
+                applyAiEnrichment(noteId, archiveId, s3Key, err == null ? resp : null, itemsF,
+                        noteTitle, srcTitle, diffKo, createdDate, wrongF, unansweredF, defaultFeedback, t0);
+            });
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override public void afterCommit() { hook.run(); }
+                });
+            } else {
+                hook.run();
+            }
+        }
 
         // 학습 왕복 루프: 퀴즈 제출 + 오답노트 생성 이벤트 기록(best-effort, 본 기능에 영향 없음)
         int reviewTotal = wrongOnly + unansweredOnly;
@@ -243,6 +299,91 @@ public class ReviewNoteService {
         if (vals == null) return null;
         for (String v : vals) if (v != null && !v.isBlank()) return v;
         return null;
+    }
+
+    // ai07 wrong-note-feedback 동기 호출(백그라운드 스레드에서 실행). 실패/404 는 null 로 돌려 폴백을 유도한다.
+    private Map callWrongNoteFeedback(Map<String, Object> requestBody, Long quizId) {
+        long t = System.currentTimeMillis();
+        try {
+            Map resp = fastApiWebClient.post().uri("/api/ai/review/wrong-note-feedback")
+                    .bodyValue(requestBody).retrieve().bodyToMono(Map.class)
+                    .block(Duration.ofSeconds(reviewTimeoutSeconds));
+            log.info("[REVIEW_NOTE] ai07 wrong-note-feedback 응답 quizId={} ok={} elapsedMs={}",
+                    quizId, isAiOk(resp), System.currentTimeMillis() - t);
+            return resp;
+        } catch (Exception e) {
+            log.warn("[REVIEW_NOTE] ai07 unavailable quizId={} cause={} elapsedMs={} -> 폴백 유지",
+                    quizId, e.getClass().getSimpleName() + ": " + e.getMessage(), System.currentTimeMillis() - t);
+            return null;
+        }
+    }
+
+    private boolean isAiOk(Map response) {
+        return response != null && response.get("error_code") == null;
+    }
+
+    private String defaultOverallFeedback(int unansweredOnly) {
+        return "아래 문제들을 다시 확인하고, 정답과 해설을 비교하며 복습하세요."
+                + (unansweredOnly > 0 ? " 미응답 문제는 시간 내에 풀이를 시도하는 연습이 필요합니다." : "");
+    }
+
+    private String overallFeedbackOf(Map response, String dflt) {
+        String fb = firstNonBlank(
+                asStr(response.get("overall_feedback")), asStr(response.get("overallFeedback")),
+                asStr(response.get("feedback")), asStr(response.get("summary")));
+        return (fb == null || fb.isBlank()) ? dflt : fb;
+    }
+
+    /**
+     * 백그라운드 보강: ai07 응답으로 항목을 보강해 PDF 를 다시 만들고 같은 S3 key 에 덮어쓴 뒤,
+     * 자료보관함 Material 평문/크기와 review_note 의 retryJson/aiStatus 를 갱신한다.
+     * 요청 트랜잭션과 무관한 스레드에서 실행되며 각 repository.save 는 자체 트랜잭션이다. 어떤 실패도 사용자 응답에 영향 없음.
+     */
+    void applyAiEnrichment(Long noteId, Long archiveId, String s3Key, Map response, List<WrongItem> items,
+                           String noteTitle, String sourceTitle, String diffKo, String createdDate,
+                           int wrongOnly, int unansweredOnly, String defaultFeedback, long t0) {
+        if (!isAiOk(response)) {
+            markAiStatus(noteId, AI_STATUS_FALLBACK);
+            log.info("[REVIEW_NOTE] background enrich skip(폴백 유지) reviewNoteId={} totalMs={}", noteId, System.currentTimeMillis() - t0);
+            return;
+        }
+        try {
+            String overallFeedback = overallFeedbackOf(response, defaultFeedback);
+            enrichFromAi(items, response);
+            String plainText = buildFallbackPlainText(noteTitle, sourceTitle, diffKo, createdDate,
+                    wrongOnly, unansweredOnly, overallFeedback, items);
+            String retryJson = buildRetryJsonFromWrong(items);
+            byte[] pdf = buildPdf(noteTitle, sourceTitle, diffKo, createdDate,
+                    wrongOnly, unansweredOnly, overallFeedback, items);
+            s3Service.uploadBytes(pdf, s3Key, "application/pdf");
+
+            materialRepository.findById(archiveId).ifPresent(m -> {
+                m.setExtractedText(plainText);
+                m.setFileSize((long) pdf.length);
+                materialRepository.save(m);
+            });
+            ReviewNote note = reviewNoteRepository.findById(noteId).orElse(null);
+            if (note == null) {
+                log.warn("[REVIEW_NOTE] background enrich: note 없음(삭제됨?) reviewNoteId={}", noteId);
+                return;
+            }
+            note.setRetryJson(retryJson);
+            note.setAiStatus(AI_STATUS_DONE);
+            reviewNoteRepository.save(note);
+            log.info("[REVIEW_NOTE] background enrich DONE reviewNoteId={} archiveMaterialId={} totalMs={}",
+                    noteId, archiveId, System.currentTimeMillis() - t0);
+        } catch (Exception e) {
+            log.warn("[REVIEW_NOTE] background enrich 실패(폴백 유지) reviewNoteId={} cause={}", noteId, e.toString());
+            markAiStatus(noteId, AI_STATUS_FALLBACK);
+        }
+    }
+
+    private void markAiStatus(Long noteId, String status) {
+        try {
+            reviewNoteRepository.findById(noteId).ifPresent(n -> { n.setAiStatus(status); reviewNoteRepository.save(n); });
+        } catch (Exception e) {
+            log.warn("[REVIEW_NOTE] aiStatus 갱신 실패 reviewNoteId={} status={} cause={}", noteId, status, e.toString());
+        }
     }
 
     // ai07 wrong-note-feedback 응답의 per-문제 해설/개념을 reviewItems 순서대로 보강(있을 때만).
@@ -879,6 +1020,7 @@ public class ReviewNoteService {
                 .reviewCount(wrong + unanswered)
                 .difficulty(n.getDifficulty())
                 .memo(n.getMemo())
+                .aiStatus(n.getAiStatus())
                 .pdfUrl(withPresign ? presign(n) : null)
                 .downloadUrl("/api/review-notes/" + n.getReviewNoteId() + "/download")
                 .createdAt(n.getCreatedAt())

@@ -2830,6 +2830,9 @@ export default function ArchiveDetail() {
                       <>
                         <h3 style={{ margin: '0 0 8px', fontSize: '18px', color: '#15803D' }}>오답노트가 저장되었습니다.</h3>
                         <p style={{ margin: '0 0 10px', fontSize: '13.5px', color: 'var(--color-text-muted)' }}>{reviewNoteResult.message || '오답노트가 자료보관함과 오답노트 탭에 저장되었습니다.'}</p>
+                        {reviewNoteResult.aiStatus === 'PENDING' && (
+                          <p style={{ margin: '0 0 10px', fontSize: '12.5px', color: '#2563EB' }}>AI 해설은 백그라운드에서 보강 중입니다. 잠시 후 PDF·AI 해설이 자동으로 업데이트됩니다.</p>
+                        )}
                         {(reviewNoteResult.wrongCount != null || reviewNoteResult.unansweredCount != null) && (
                           <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--color-text-main)' }}>
                             <b style={{ color: '#DC2626' }}>오답 {reviewNoteResult.wrongCount ?? 0}개</b>

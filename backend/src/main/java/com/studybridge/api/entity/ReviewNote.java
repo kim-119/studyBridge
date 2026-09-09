@@ -84,6 +84,11 @@ public class ReviewNote {
     @Column(name = "review_needed_at")
     private LocalDateTime reviewNeededAt;
 
+    // AI 해설 보강 진행 상태: PENDING(백그라운드 보강 대기) | DONE(AI 강화본 반영) | FALLBACK(AI 실패, 퀴즈 해설본 유지)
+    // ai07 wrong-note-feedback 을 기다리지 않고 즉시 응답하기 위한 추적 컬럼 (ddl-auto=update 로 nullable 추가)
+    @Column(name = "ai_status", length = 20)
+    private String aiStatus;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 }
