@@ -435,13 +435,22 @@ def _slot(agent: Any, fallback: int) -> int:
 
 
 def _resolve_effective_mode(request: MultiChatRequest) -> str:
-    lm = (getattr(request, "learningMode", None) or "").strip().lower()
-    raw = (request.mode or "default").strip().lower()
-    if lm in _MODE_KEYS:
-        return lm
-    if raw in _MODE_KEYS:
-        return raw
-    return "basic"
+    """실행 모드 SSOT. mode_router 가 canonical 모드를 확정한다(알 수 없는 값은 상위에서 422).
+
+    mode_router 의 canonical 값(basic/socratic/debate/simulation/group_study_ai)을 그대로 쓴다.
+    strict 검증이 꺼져 있거나 상위 게이트를 우회한 호출은 basic 으로 떨어진다.
+    """
+    from app.services import mode_router
+
+    try:
+        resolved = mode_router.resolve_request_mode(request)
+        # group_study_ai 는 별도 라우트(봇 모드)가 처리한다. 스트림 오케스트레이터에서는
+        # 기존과 동일하게 basic 흐름을 탄다(동작 불변).
+        return "basic" if resolved == mode_router.GROUP_STUDY_AI else resolved
+    except mode_router.UnsupportedModeError as exc:
+        # 스트림 진입 전 라우터가 422 로 막는 것이 정상 경로. 여기까지 왔다면 로그로 남기고 basic.
+        logger.warning("[MODE-ROUTER] 알 수 없는 모드가 스트림까지 도달: %s", exc)
+        return "basic"
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1292,6 +1301,18 @@ def build_orchestrator_stream(
     except Exception as _e:  # pragma: no cover - 회상 실패 시 기존 LLM 경로로 진행
         logger.warning("[MEMORY-RECALL] 우회 실패, LLM 경로로 진행: %s", _e)
 
+    # ── 학습 모드 전용 파이프라인 (debate / socratic / simulation) ────────────
+    # 이 모드들은 '프롬프트만 다른 기본 모드'가 아니다. 각각 별도 실행 파이프라인을 타며,
+    # 새 세션 첫 입력은 LearningIntentGuard 를 먼저 통과해야 한다.
+    # 실패하더라도 basic 경로로 내려가지 않는다(모드 전용 오류를 낸다).
+    from app.services import learning_mode_dispatcher as _dispatcher
+    if effective_mode in _dispatcher.DEDICATED_MODES:
+        yield from _dispatcher.run_learning_mode_stream(
+            request, agents, effective_mode,
+            requested_mode=str(getattr(request, "learningMode", None) or getattr(request, "mode", "") or ""),
+        )
+        return
+
     # ── 온디맨드 정리(🧩) ──────────────────────────────────────────────────────
     # 사용자가 '정리/요약/3줄/핵심만'을 요청했고 직전 대화가 있으면, 새 토론을 다시 돌리지 않고
     # 구조화된 정리(핵심 개념 / 오개념·주의점 / 복습 포인트) 한 장만 낸다. (WRAP은 이때만)
@@ -1355,6 +1376,8 @@ def build_orchestrator_stream(
     try:
         from app.services import studymate_discussion_planner as _planner
         if effective_mode in ("basic", "default") and _planner.planner_enabled() and not social and len(agents) >= 1:
+            logger.info("[MODE-DISPATCH] mode=%s handler=_run_discussion_plan agents=%d",
+                        effective_mode, len(agents))
             yield from _run_discussion_plan(
                 request, agents, effective_mode, grounding_cache, context,
                 min_gap, feedback_on, social, _agent_identity_payload,
@@ -1363,6 +1386,31 @@ def build_orchestrator_stream(
     except Exception as e:  # pragma: no cover - 방어: 어떤 오류든 기존 경로로 폴백
         logger.warning("[Orchestrator] 플래너 건너뜀(폴백): %s", e)
 
+    yield from _dispatch_mode_stream(
+        effective_mode, request, agents, grounding_cache, context,
+        min_gap, feedback_on, social, _agent_identity_payload,
+    )
+
+
+def _dispatch_mode_stream(effective_mode, request, agents, grounding_cache, context,
+                          min_gap, feedback_on, social, identity_fn):
+    """basic 계열 디스패치. debate/socratic/simulation 은 위에서 전용 파이프라인으로 빠진다."""
+    logger.info("[MODE-DISPATCH] resolved_mode=%s pipeline=orchestrator_basic agents=%d",
+                effective_mode, len(agents))
+    yield from run_basic_mode_stream(request, agents, effective_mode, grounding_cache, context,
+                                     min_gap, feedback_on, social, identity_fn)
+
+
+def run_basic_mode_stream(request, agents, effective_mode, grounding_cache, context,
+                          min_gap, feedback_on, social, identity_fn):
+    """기본 대화 모드."""
+    yield from _run_agent_turn_stream(request, agents, effective_mode, grounding_cache, context,
+                                      min_gap, feedback_on, social, identity_fn)
+
+
+def _run_agent_turn_stream(request, agents, effective_mode, grounding_cache, context,
+                           min_gap, feedback_on, social, _agent_identity_payload):
+    """basic/socratic/roleplay 공통 per-agent 턴 실행(기존 동작 유지)."""
     n = len(agents)
     all_answers: List[Dict[str, Any]] = []
 

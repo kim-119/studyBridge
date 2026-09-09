@@ -210,6 +210,23 @@ def _reject_unknown_target(payload: Dict[str, Any]):
         return None
 
 
+def _reject_unknown_mode(payload: Dict[str, Any]):
+    """알 수 없는 mode/learningMode 는 basic 으로 조용히 폴백하지 않고 422 로 거절한다.
+    (mode 자체가 없는 legacy 요청은 basic 으로 통과.)"""
+    from app.services import mode_router
+    try:
+        resolved = mode_router.resolve_mode(payload.get("mode"), payload.get("learningMode") or payload.get("learning_mode"))
+        logger.info("[MODE-ROUTER] compat mode=%r learningMode=%r → %s",
+                    payload.get("mode"), payload.get("learningMode"), resolved)
+        return None
+    except mode_router.UnsupportedModeError as exc:
+        logger.warning("[MODE-ROUTER] compat 거절: %s", exc)
+        return JSONResponse(status_code=422, content={"detail": mode_router.error_detail(exc)})
+    except Exception as exc:  # pragma: no cover - 라우터 장애가 스트림을 막지 않게
+        logger.warning("[MODE-ROUTER] compat 검증 건너뜀: %s", type(exc).__name__)
+        return None
+
+
 @router.post("/multi-chat/stream")
 async def multi_chat_stream_compat(request: Request):
     """
@@ -229,6 +246,12 @@ async def multi_chat_stream_compat(request: Request):
     rejected = _reject_unknown_target(payload)
     if rejected is not None:
         return rejected
+
+    # ── STRICT MODE ───────────────────────────────────────────────────────────
+    # mode=debate 오타 하나가 basic 답변으로 조용히 나가던 silent fallback 을 막는다.
+    rejected_mode = _reject_unknown_mode(payload)
+    if rejected_mode is not None:
+        return rejected_mode
 
     async def event_generator():
         route_request_id = f"compat_{uuid.uuid4().hex[:12]}"
@@ -320,7 +343,10 @@ async def multi_chat_stream_compat(request: Request):
                         # selectedAgents N명 중 agent_answer 누락분을 실제 SSE로 보강 emit한다.
                         # 단, @멘션으로 1명을 지목한 경우(target_id)엔 누락 보강을 하지 않는다(그 1명만 답해야 함).
                         synth_answers = []
-                        for i, a in enumerate(selected_agents if not target_id else []):
+                        # suppressAgentFill: 참여자 수가 모드 계약으로 정해진 경우(토론 2명 등)
+                        # 나머지 선택 에이전트를 채우면 토론에 참여하지 않은 발언이 섞인다.
+                        _suppress = bool(data.get("suppressAgentFill"))
+                        for i, a in enumerate(selected_agents if not (target_id or _suppress) else []):
                             if str(a.get("agentId") or "") in emitted_ids or str(a.get("agentName") or "") in emitted_names:
                                 continue
                             syn = _synth_agent_answer(a, i, mode)

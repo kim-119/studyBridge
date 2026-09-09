@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
  *  - archiveMaterialId: 자료보관함 노출용으로 자동 생성한 Material(REVIEW_NOTE) id
  *  - s3Key            : 오답노트 PDF의 S3 key
  *  - retryJson        : 다시 풀기용 재출제 문제 JSON
+ *  - retryResultJson  : 다시 풀기(문제당 1회) 채점 결과 JSON. 없으면 재풀이 기록이 없는 것이다.
  */
 @Entity
 @Table(name = "review_notes")
@@ -58,6 +59,11 @@ public class ReviewNote {
 
     @Column(columnDefinition = "TEXT")
     private String retryJson;
+
+    // 다시 풀기 결과(문제당 정확히 1회). [{index,userAnswer,correct,answeredAt}]
+    // 재풀이는 1회뿐이므로 시도 횟수/힌트 같은 필드는 두지 않는다. (ddl-auto=update 로 컬럼 추가)
+    @Column(columnDefinition = "TEXT")
+    private String retryResultJson;
 
     @CreationTimestamp
     private LocalDateTime createdAt;

@@ -62,12 +62,18 @@ class ReviewNeededRequest(BaseModel):
     reviewNoteId: Optional[int] = None
     subject: Optional[str] = ""
     materialTitle: Optional[str] = ""
+    # 기존 단일 문제 계약(하위 호환). 재풀이 정보가 없다.
     question: str = ""
     choices: Optional[Any] = None  # list 또는 string 모두 허용
     correctAnswer: Optional[str] = ""
     userAnswer: Optional[str] = ""
     explanation: Optional[str] = ""
     difficulty: Optional[str] = ""
+    # 권장 계약: 문제별 최초 결과 + 재풀이 1회 결과.
+    #   questions[]: {question, choices, correctAnswer, explanation, concept,
+    #                 firstAnswer, firstCorrect, retryAnswer, retryCorrect}
+    #   (다시풀기는 문제당 1회다. retry 횟수/힌트 관련 필드는 존재하지 않는다.)
+    questions: Optional[List[Any]] = None
 
 
 def _choices_text(value: Any) -> str:
@@ -76,6 +82,19 @@ def _choices_text(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return ", ".join(str(v).strip() for v in value if str(v).strip())[:_MAX_FIELD]
     return str(value).strip()[:_MAX_FIELD]
+
+
+_WRAPPING_QUOTES = ('"', "'", "“", "”", "‘", "’")
+
+
+def _unquote_first_sentence(text: str) -> str:
+    """프롬프트 예시를 그대로 따라 첫 문장을 따옴표로 감싸는 출력을 정리한다."""
+    body = (text or "").strip()
+    if body[:1] in _WRAPPING_QUOTES:
+        closing = next((i for i, ch in enumerate(body[1:], start=1) if ch in _WRAPPING_QUOTES), -1)
+        if closing > 0:
+            body = (body[1:closing] + body[closing + 1:]).strip()
+    return body
 
 
 def _strip_markdown(text: str) -> str:
@@ -175,67 +194,115 @@ def _enforce_first_sentence(text: str, req: ReviewNeededRequest) -> str:
     return text
 
 
-def _build_prompt(req: ReviewNeededRequest) -> str:
-    return (
-        "아래 오답노트 정보를 바탕으로 학습자가 어떤 개념이 부족해서 복습이 필요한지 "
-        "한국어로 500자 내외로 설명하라.\n\n"
-        "반드시 첫 문장은 다음 형식을 따른다.\n"
-        '"{구체 개념명}에 대한 개념이 부족하여 복습이 필요합니다."\n\n'
-        "작성 규칙:\n"
-        "1. {구체 개념명}은 과목명 전체가 아니라 문제에서 드러난 세부 개념으로 작성한다.\n"
-        "2. 사용자를 비난하지 않는다.\n"
-        "3. 정답만 반복하지 않는다.\n"
-        "4. 오답 원인, 부족 개념, 복습 순서를 포함한다.\n"
-        "5. 500자 내외로 작성한다.\n"
-        "6. 불필요한 인사말, 제목, 마크다운은 쓰지 않는다.\n"
-        "7. 문제 정보가 부족하면 '핵심 개념 식별이 제한적'이라고 솔직히 표현하되, "
-        "그래도 복습 방향을 제시한다.\n\n"
-        "[오답노트 정보]\n"
-        f"과목명: {(req.subject or '')[:_MAX_FIELD]}\n"
-        f"원본 자료명: {(req.materialTitle or '')[:_MAX_FIELD]}\n"
-        f"문제: {(req.question or '')[:_MAX_QUESTION]}\n"
-        f"보기: {_choices_text(req.choices)}\n"
-        f"정답: {(req.correctAnswer or '')[:_MAX_FIELD]}\n"
-        f"사용자 오답: {(req.userAnswer or '')[:_MAX_FIELD]}\n"
-        f"기존 해설: {(req.explanation or '')[:_MAX_EXPLANATION]}\n"
-        f"난이도: {(req.difficulty or '')[:_MAX_FIELD]}\n"
-    )
+def _payload(req: ReviewNeededRequest) -> dict:
+    return req.model_dump()
 
 
-_SYSTEM = "너는 대학생 학습자의 오답노트를 분석하는 학습 코치다."
+def _decision(req: ReviewNeededRequest):
+    from app.services import review_needed_analyzer as RA
+    questions = RA.parse_questions(_payload(req))
+    return RA.decide(questions, req.subject or "")
 
 
-def _generate_sync(req: ReviewNeededRequest) -> str:
-    """Ollama(Qwen) 우선, 실패 시 OpenAI 보강, 둘 다 실패 시 fallback."""
+_SYSTEM_FALLBACK = "너는 대학생 학습자의 오답노트를 분석하는 학습 코치다."
+
+
+def _generate_sync(req: ReviewNeededRequest) -> dict:
+    """현재 오답노트 데이터만으로 생성한다(대화 기억/이전 문제 컨텍스트 사용 금지).
+
+    반환: {"text", "reviewNeeded", "cases", "concept", "source"}
+    """
+    from app.services import review_needed_analyzer as RA
     from app.services.ai_pipeline import openai_refine, qwen_draft
 
-    prompt = _build_prompt(req)
-    raw = qwen_draft(_SYSTEM, prompt, max_tokens=700)
-    if not (raw and raw.strip()):
-        raw = openai_refine(_SYSTEM, prompt, max_tokens=700)
-    if not (raw and raw.strip()):
-        return _FALLBACK_TEXT
+    decision = _decision(req)
+    base = {"reviewNeeded": decision.review_needed,
+            "cases": decision.cases, "concept": decision.concept}
 
-    cleaned = _strip_markdown(raw)
-    if not cleaned:
-        return _FALLBACK_TEXT
-    cleaned = _enforce_first_sentence(cleaned, req)
-    cleaned = _shorten(cleaned)
-    return cleaned or _FALLBACK_TEXT
+    # CASE D: 최초 정답만 있으면 AI를 호출하지 않는다(불필요한 호출 금지).
+    if not decision.review_needed:
+        text = (RA.build_no_review_text(decision) if decision.questions else _FALLBACK_TEXT)
+        return {**base, "text": text, "source": "deterministic"}
+
+    prompt = RA.build_prompt(decision, req.subject or "", req.materialTitle or "",
+                             req.difficulty or "")
+    issues: list = []
+    # 검증 실패 시 그 요청만 1회 재생성한다(전체 파이프라인 재실행 아님).
+    for attempt in range(2):
+        ask = prompt if attempt == 0 else (
+            f"{prompt}\n\n[재작성 지시 — 직전 출력이 계약을 어겼다: {', '.join(issues)}]\n"
+            "재풀이 결과를 문장 안에 명시하고, 부족한 개념과 복습 순서를 반드시 포함하라.")
+        raw = qwen_draft(RA.SYSTEM, ask, max_tokens=700)
+        if not (raw and raw.strip()):
+            raw = openai_refine(RA.SYSTEM, ask, max_tokens=700)
+
+        cleaned = _strip_markdown(raw or "")
+        if not cleaned:
+            break
+        cleaned = _enforce_first_sentence_v2(_unquote_first_sentence(cleaned), decision)
+        cleaned = _shorten(cleaned)
+        issues = RA.validate_text(cleaned, decision)
+        if not issues:
+            return {**base, "text": cleaned, "source": "ai"}
+        logger.info("review-needed 생성 검증 실패(attempt=%d) issues=%s", attempt + 1, issues)
+
+    # AI 실패/검증 실패: 현재 문제 데이터 기반 결정론 텍스트(의미 없는 고정 문장 금지)
+    return {**base, "text": RA.build_fallback(decision, req.materialTitle or ""),
+            "source": "deterministic"}
+
+
+def _enforce_first_sentence_v2(text: str, decision) -> str:
+    """첫 문장 계약({개념}에 대한 개념이 부족하여 복습이 필요합니다.) 유지."""
+    from app.services import review_needed_analyzer as RA
+    if RA.FIRST_SENTENCE_SUFFIX in text[:120]:
+        return text
+    concept = decision.concept or "핵심 개념"
+    return f"{concept}{RA.FIRST_SENTENCE_SUFFIX} {text.strip()}".strip()
 
 
 @router.post("/api/ai/review-needed", summary="오답노트 '복습 필요' 부족 개념 분석")
 async def review_needed(req: ReviewNeededRequest = Body(...)):
-    # 입력이 거의 비어도 fallback으로 200 성공 응답을 보장(발표 안정성).
+    """최초 풀이 + 재풀이(1회) 결과를 함께 보고 '왜 다시 봐야 하는가'를 생성한다.
+
+    실패/timeout 이어도 200 + 현재 문제 기반 텍스트를 반환한다(빈 영역 금지).
+    """
     try:
-        text = await asyncio.wait_for(
+        result = await asyncio.wait_for(
             asyncio.to_thread(_generate_sync, req), timeout=REVIEW_NEEDED_TIMEOUT
         )
     except asyncio.TimeoutError:
-        logger.info("review-needed timeout reviewNoteId=%s → fallback", req.reviewNoteId)
-        text = _FALLBACK_TEXT
+        logger.info("review-needed timeout reviewNoteId=%s → 결정론 폴백", req.reviewNoteId)
+        result = _timeout_fallback(req)
     except Exception as e:  # noqa: BLE001
-        logger.warning("review-needed 실패 reviewNoteId=%s: %s → fallback", req.reviewNoteId, e)
-        text = _FALLBACK_TEXT
+        logger.warning("review-needed 실패 reviewNoteId=%s: %s → 결정론 폴백", req.reviewNoteId, e)
+        result = _timeout_fallback(req)
 
-    return {"reviewNoteId": req.reviewNoteId, "reviewNeededText": text}
+    logger.info("review-needed done reviewNoteId=%s reviewNeeded=%s cases=%s source=%s len=%d",
+                req.reviewNoteId, result.get("reviewNeeded"), result.get("cases"),
+                result.get("source"), len(result.get("text") or ""))
+    return {
+        "reviewNoteId": req.reviewNoteId,
+        "reviewNeededText": result.get("text") or _FALLBACK_TEXT,
+        # additive — 기존 UI 계약(reviewNeededText)은 그대로 두고 진단 필드만 추가한다.
+        "reviewNeeded": result.get("reviewNeeded", True),
+        "cases": result.get("cases", []),
+        "concept": result.get("concept", ""),
+        "generatedBy": result.get("source", "deterministic"),
+    }
+
+
+def _timeout_fallback(req: ReviewNeededRequest) -> dict:
+    """AI 실패 시에도 현재 문제의 개념/최초·재풀이 결과를 반영한 텍스트를 만든다."""
+    from app.services import review_needed_analyzer as RA
+    try:
+        decision = _decision(req)
+        if not decision.questions:
+            return {"text": _FALLBACK_TEXT, "reviewNeeded": True, "cases": [],
+                    "concept": "", "source": "deterministic"}
+        text = (RA.build_no_review_text(decision) if not decision.review_needed
+                else RA.build_fallback(decision, req.materialTitle or ""))
+        return {"text": text, "reviewNeeded": decision.review_needed,
+                "cases": decision.cases, "concept": decision.concept, "source": "deterministic"}
+    except Exception:  # pragma: no cover
+        return {"text": _FALLBACK_TEXT, "reviewNeeded": True, "cases": [],
+                "concept": "", "source": "deterministic"}

@@ -295,6 +295,8 @@ public class ReviewNoteService {
         out.put("reviewNoteId", id);
         out.put("sourceMaterialId", note.getSourceMaterialId());
         out.put("questions", questions);
+        // 다시 풀기는 문제당 1회다. 이미 기록된 결과를 함께 내려 중복 제출을 막는다.
+        out.put("retryResults", parseRetryResults(note.getRetryResultJson()));
         return out;
     }
 
@@ -342,6 +344,8 @@ public class ReviewNoteService {
         ReviewNote note = loadOwnedStrict(userId, id);
 
         List<Map<String, Object>> items = parseRetryQuestions(note.getRetryJson());
+        // 최초 풀이 결과에 '다시 풀기 1회' 결과를 합친다. 재풀이 기록이 없으면 최초 결과만 간다.
+        List<Map<String, Object>> merged = mergeRetryResults(items, note.getRetryResultJson());
         String sourceTitle = (note.getSourceTitle() == null || note.getSourceTitle().isBlank())
                 ? "학습자료" : note.getSourceTitle();
         String difficultyKo = difficultyLabel(note.getDifficulty());
@@ -351,10 +355,10 @@ public class ReviewNoteService {
             text = "문제의 핵심 개념을 정확히 식별하기 어려워 기본 개념 복습이 필요합니다. "
                     + "원본 자료와 기존 해설을 다시 확인한 뒤, 오답 선택지가 왜 틀렸는지 비교하며 복습해 주세요.";
         } else {
-            String aiText = callReviewNeededAi(sourceTitle, difficultyKo, items);
+            String aiText = callReviewNeededAi(id, sourceTitle, difficultyKo, merged);
             text = (aiText != null && !aiText.isBlank())
                     ? ensureLeadSentence(trimToLength(aiText.trim(), 600), items)
-                    : buildReviewNeededFallback(sourceTitle, items);
+                    : buildReviewNeededFallback(sourceTitle, merged);
         }
 
         learningLoopService.recordSafe(LearningLoopEvent.builder()
@@ -376,35 +380,30 @@ public class ReviewNoteService {
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private String callReviewNeededAi(String sourceTitle, String difficultyKo, List<Map<String, Object>> items) {
-        String prompt = buildReviewNeededPrompt(sourceTitle, difficultyKo, items);
-
-        Map<String, Object> agent = new LinkedHashMap<>();
-        agent.put("agentName", "학습 코치");
-        agent.put("tone", "친근한");
-        agent.put("knowledgeLevel", "intermediate");
-        agent.put("knowledge_level", "intermediate");
-        agent.put("persona", "학습 코치");
-
+    private String callReviewNeededAi(Long reviewNoteId, String sourceTitle, String difficultyKo,
+                                      List<Map<String, Object>> items) {
+        // 일반 채팅(/api/ai/multi-chat) 을 쓰지 않는다.
+        //  - 그 경로는 대화 기억을 붙이므로 이전 문제 내용이 이번 분석에 섞일 수 있다.
+        //  - 전용 엔드포인트는 현재 오답노트 데이터만 보고, 실패해도 200 + 데이터 기반 문장을 준다.
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("message", prompt);
-        body.put("mode", "basic");
-        body.put("learningMode", "basic");
-        body.put("rounds", 1);
-        body.put("tone", "친근한");
-        body.put("knowledgeLevel", "intermediate");
-        body.put("knowledge_level", "intermediate");
-        body.put("persona", "학습 코치");
-        body.put("agents", List.of(agent));
-        body.put("answerLength", "short");
+        body.put("reviewNoteId", reviewNoteId);
+        body.put("subject", sourceTitle);
+        body.put("materialTitle", sourceTitle);
+        body.put("difficulty", difficultyKo);
+        body.put("questions", items);
 
         try {
-            Map resp = fastApiWebClient.post().uri("/api/ai/multi-chat")
+            Map resp = fastApiWebClient.post().uri("/api/ai/review-needed")
                     .bodyValue(body).retrieve().bodyToMono(Map.class)
                     .block(Duration.ofSeconds(reviewTimeoutSeconds));
-            return flattenChatAnswer(resp);
+            if (resp == null) return null;
+            Object text = resp.get("reviewNeededText");
+            log.info("[REVIEW_NOTE] review-needed ai ok reviewNoteId={} generatedBy={} cases={}",
+                    reviewNoteId, resp.get("generatedBy"), resp.get("cases"));
+            return text == null ? null : text.toString();
         } catch (Exception e) {
-            log.warn("[REVIEW_NOTE] review-needed ai unavailable -> 폴백 cause={}", e.getMessage());
+            log.warn("[REVIEW_NOTE] review-needed ai unavailable reviewNoteId={} -> 폴백 cause={}",
+                    reviewNoteId, e.getMessage());
             return null;
         }
     }
@@ -440,6 +439,13 @@ public class ReviewNoteService {
         String correct = asStr(first.get("correct_answer"));
         StringBuilder b = new StringBuilder();
         b.append(concept).append("에 대한 개념이 부족하여 복습이 필요합니다. ");
+        // 재풀이 1회 결과가 있으면 그 사실을 문장에 반영한다(의미 없는 고정 문장 금지).
+        Boolean retryCorrect = boolVal(first.get("retryCorrect"));
+        if (retryCorrect != null) {
+            b.append(retryCorrect
+                    ? "다시 풀기에서는 정답을 골랐지만 최초 풀이에서 틀린 이유가 정리되지 않았다면 같은 개념에서 다시 흔들릴 수 있습니다. "
+                    : "다시 풀기에서도 같은 문제를 정확히 해결하지 못해 개념 자체가 아직 정착되지 않은 상태입니다. ");
+        }
         if (userAns != null && userAns.contains("미응답")) {
             b.append("일부 문제에 답하지 못한 것으로 보아 해당 개념을 떠올릴 단서가 충분히 정리되지 않은 상태입니다. ");
         } else if (correct != null && !correct.isBlank()) {
@@ -638,6 +644,122 @@ public class ReviewNoteService {
                 .aiOutputSummary("유사문제 생성" + (fallback ? "(원본 재출제 폴백)" : ""))
                 .userAction("SIMILAR_QUESTION")
                 .build());
+    }
+
+    // ---------------------------------------------------------------------
+    // 다시 풀기(문제당 정확히 1회) 결과 저장 / 병합
+    //   재풀이는 1회뿐이다. 시도 횟수·힌트 같은 필드는 만들지 않는다.
+    // ---------------------------------------------------------------------
+    @Transactional
+    public Map<String, Object> submitRetryResult(Long userId, Long id, Map<String, Object> body) {
+        ReviewNote note = loadOwnedStrict(userId, id);
+        List<Map<String, Object>> incoming = extractRetryResults(body);
+        if (incoming.isEmpty()) {
+            throw new IllegalArgumentException("다시 풀기 결과가 비어 있습니다.");
+        }
+        List<Map<String, Object>> questions = parseRetryQuestions(note.getRetryJson());
+
+        Map<Integer, Map<String, Object>> saved = new LinkedHashMap<>();
+        for (Map<String, Object> r : parseRetryResults(note.getRetryResultJson())) {
+            saved.put(intVal(r, "index", 0), r);
+        }
+        int stored = 0;
+        for (Map<String, Object> r : incoming) {
+            int index = intVal(r, "index", 0);
+            if (index <= 0 || index > questions.size()) continue;
+            // 재풀이는 1회다. 이미 기록이 있으면 덮어쓰지 않는다.
+            if (saved.containsKey(index)) continue;
+            Map<String, Object> q = questions.get(index - 1);
+            String userAnswer = asStr(r.get("userAnswer"));
+            Boolean correct = boolVal(r.get("correct"));
+            if (correct == null) {
+                correct = userAnswer != null && !userAnswer.isBlank()
+                        && userAnswer.trim().equals(asStr(q.get("correct_answer")) == null
+                            ? "" : asStr(q.get("correct_answer")).trim());
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("index", index);
+            row.put("userAnswer", (userAnswer == null || userAnswer.isBlank()) ? "미응답" : userAnswer);
+            row.put("correct", correct);
+            row.put("answeredAt", java.time.LocalDateTime.now().toString());
+            saved.put(index, row);
+            stored++;
+        }
+        try {
+            note.setRetryResultJson(MAPPER.writeValueAsString(new ArrayList<>(saved.values())));
+            reviewNoteRepository.save(note);
+        } catch (Exception e) {
+            log.warn("[REVIEW_NOTE] retry 결과 저장 실패 reviewNoteId={} msg={}", id, e.getMessage());
+            throw new IllegalStateException("다시 풀기 결과를 저장하지 못했습니다.");
+        }
+        log.info("[REVIEW_NOTE] retry 결과 저장 reviewNoteId={} stored={} total={}/{}",
+                id, stored, saved.size(), questions.size());
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("reviewNoteId", id);
+        out.put("retryResults", new ArrayList<>(saved.values()));
+        out.put("completed", saved.size());
+        out.put("total", questions.size());
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractRetryResults(Map<String, Object> body) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (body == null) return out;
+        Object results = body.get("results");
+        if (results instanceof List<?> list) {
+            for (Object o : list) if (o instanceof Map) out.add((Map<String, Object>) o);
+            return out;
+        }
+        if (body.get("index") != null) out.add(body);
+        return out;
+    }
+
+    private List<Map<String, Object>> parseRetryResults(String json) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (json == null || json.isBlank()) return out;
+        try {
+            JsonNode arr = MAPPER.readTree(json);
+            if (arr.isArray()) for (JsonNode n : arr) out.add(MAPPER.convertValue(n, Map.class));
+        } catch (Exception e) {
+            log.warn("[REVIEW_NOTE] retryResult parse fail msg={}", e.getMessage());
+        }
+        return out;
+    }
+
+    /** 최초 풀이 문제 + 재풀이 1회 결과를 ai07 review-needed 계약으로 합친다. */
+    private List<Map<String, Object>> mergeRetryResults(List<Map<String, Object>> questions, String retryResultJson) {
+        Map<Integer, Map<String, Object>> results = new LinkedHashMap<>();
+        for (Map<String, Object> r : parseRetryResults(retryResultJson)) {
+            results.put(intVal(r, "index", 0), r);
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (int i = 0; i < questions.size(); i++) {
+            Map<String, Object> q = questions.get(i);
+            Map<String, Object> m = new LinkedHashMap<>(q);
+            String first = asStr(q.get("user_answer"));
+            m.put("firstAnswer", first == null ? "" : first);
+            // 오답노트에 실린 문제는 정의상 최초 오답 또는 미응답이다.
+            m.put("firstCorrect", false);
+            Map<String, Object> r = results.get(i + 1);
+            if (r != null) {
+                m.put("retryAnswer", asStr(r.get("userAnswer")));
+                Boolean c = boolVal(r.get("correct"));
+                m.put("retryCorrect", c != null && c);
+            }
+            out.add(m);
+        }
+        return out;
+    }
+
+    private Boolean boolVal(Object v) {
+        if (v == null) return null;
+        if (v instanceof Boolean b) return b;
+        String t = v.toString().trim().toLowerCase();
+        if (t.equals("true") || t.equals("1") || t.equals("정답")) return true;
+        if (t.equals("false") || t.equals("0") || t.equals("오답")) return false;
+        return null;
     }
 
     private List<Map<String, Object>> parseRetryQuestions(String retryJson) {

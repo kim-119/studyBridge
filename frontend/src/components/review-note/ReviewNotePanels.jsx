@@ -50,9 +50,28 @@ export function NotePicker({ items, onPick, label }) {
 }
 
 /* ---------------- 문제 풀이 러너(다시 풀기 / 유사문제 공통) ---------------- */
-export function QuestionRunner({ questions }) {
+// onAnswer: 제출 1회를 상위에 알린다(다시 풀기에서만 서버에 저장한다).
+// initialResults: 이미 제출된 재풀이 결과([{index,userAnswer,correct}]). 재풀이는 문제당 1회다.
+export function QuestionRunner({ questions, onAnswer, initialResults }) {
   const [answers, setAnswers] = useState({});
   const [submitted, setSubmitted] = useState({});
+
+  // 서버에 기록된 재풀이 결과가 있으면 그 문제는 이미 푼 상태로 복원한다(중복 제출 방지).
+  useEffect(() => {
+    if (!Array.isArray(initialResults) || initialResults.length === 0) return;
+    const nextAnswers = {}; const nextSubmitted = {};
+    initialResults.forEach((r) => {
+      const qi = Number(r?.index) - 1;
+      const q = questions?.[qi];
+      if (!q) return;
+      const choices = q.choices || q.options || [];
+      const ci = choices.findIndex((c) => String(c) === String(r?.userAnswer));
+      if (ci >= 0) nextAnswers[qi] = ci;
+      nextSubmitted[qi] = true;
+    });
+    setAnswers((p) => ({ ...nextAnswers, ...p }));
+    setSubmitted((p) => ({ ...nextSubmitted, ...p }));
+  }, [initialResults, questions]);
 
   if (!questions || questions.length === 0) {
     return <p style={{ color: '#6B7280', fontSize: '14px', margin: 0 }}>표시할 문제가 없습니다.</p>;
@@ -93,7 +112,16 @@ export function QuestionRunner({ questions }) {
               <button
                 style={{ ...btnPrimary, marginTop: '10px', opacity: picked == null ? 0.5 : 1 }}
                 disabled={picked == null}
-                onClick={() => setSubmitted((p) => ({ ...p, [qi]: true }))}
+                onClick={() => {
+                  setSubmitted((p) => ({ ...p, [qi]: true }));
+                  if (typeof onAnswer === 'function') {
+                    onAnswer({
+                      index: qi + 1,
+                      userAnswer: picked == null ? '' : String(choices[picked] ?? ''),
+                      correct: String(choices[picked]) === String(correct),
+                    });
+                  }
+                }}
               >
                 제출
               </button>
@@ -119,17 +147,21 @@ export function QuestionRunner({ questions }) {
 /* ---------------- 다시 풀기 ---------------- */
 export function RetryPanel({ note, items, onPick }) {
   const [questions, setQuestions] = useState(null);
+  const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
 
   useEffect(() => {
-    if (!note) { setQuestions(null); return; }
+    if (!note) { setQuestions(null); setResults([]); return; }
     let alive = true;
     (async () => {
       setLoading(true); setErr('');
       try {
         const data = await reviewNoteService.retry(noteId(note));
-        if (alive) setQuestions(Array.isArray(data?.questions) ? data.questions : []);
+        if (alive) {
+          setQuestions(Array.isArray(data?.questions) ? data.questions : []);
+          setResults(Array.isArray(data?.retryResults) ? data.retryResults : []);
+        }
       } catch {
         if (alive) setErr('다시 풀기 문제를 불러오지 못했습니다.');
       } finally { if (alive) setLoading(false); }
@@ -137,13 +169,24 @@ export function RetryPanel({ note, items, onPick }) {
     return () => { alive = false; };
   }, [note]);
 
+  // 재풀이 결과를 서버에 남긴다. 이 기록이 '복습 필요' 분석의 입력이 된다.
+  // 저장에 실패해도 풀이 화면은 막지 않는다(사용자 흐름 우선).
+  const saveResult = async (row) => {
+    try {
+      const data = await reviewNoteService.submitRetryResult(noteId(note), [row]);
+      if (Array.isArray(data?.retryResults)) setResults(data.retryResults);
+    } catch (e) {
+      console.warn('[RETRY] 결과 저장 실패', e?.message || e);
+    }
+  };
+
   if (!note) return <NotePicker items={items} onPick={onPick} label="다시 풀 오답노트를 선택하세요." />;
   return (
     <div>
       <h2 style={panelTitle}>다시 풀기 · {note.title}</h2>
       {loading ? <p style={muted}>문제를 불러오는 중입니다.</p>
         : err ? <p style={{ ...muted, color: '#B91C1C' }}>{err}</p>
-        : <QuestionRunner questions={questions} />}
+        : <QuestionRunner questions={questions} initialResults={results} onAnswer={saveResult} />}
     </div>
   );
 }

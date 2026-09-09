@@ -227,8 +227,19 @@ class MultiChatRequest(BaseModel):
     learningMode: Optional[str] = Field(None, validation_alias=AliasChoices("learningMode", "learning_mode"), description="학습 진행 모드 (basic/socratic/debate/simulation)")
     # 토론 모드 논제/구조 설정 (debate 모드에서만 사용)
     debateConfig: Optional[DebateConfig] = Field(None, description="토론 논제/구조 설정")
+    # 토론 강도 (light | normal | deep). EC2가 최상위 필드로 보낼 수 있다.
+    # 미지정 시 debateConfig.debateDepth → normal 순으로 결정된다. 라운드 수에 반영된다.
+    debateStrength: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("debateStrength", "debate_strength", "strength", "debateIntensity"),
+        description="토론 강도: light | normal | deep (상호 반박 라운드 수에 반영)",
+    )
     # 소크라테스 모드 문답 설정 (socratic 모드에서만 사용)
     socraticConfig: Optional[SocraticConfig] = Field(None, description="소크라테스 문답 설정")
+    # 학습 세션 식별자(모드별 상태 머신). 없으면 roomId+mode 로 대체한다.
+    sessionId: Optional[str] = Field(None, validation_alias=AliasChoices("sessionId", "session_id"), description="학습 세션 ID")
+    # 소크라테스 세션 상태(서버 재시작/다중 워커 대비 클라이언트 echo). simulationState 와 동일 방식.
+    socraticState: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("socraticState", "socratic_state"), description="이전 턴 소크라테스 세션 상태")
     # 상황극 모드 설정 (simulation 모드에서만 사용)
     simulationConfig: Optional[SimulationConfig] = Field(None, description="상황극 학습 설정")
     # ── 분기형 상황극(미연시/비주얼 노벨) 상태 머신 입력 (simulation 모드, additive) ──

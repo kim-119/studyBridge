@@ -81,6 +81,16 @@ public class ReviewNoteController {
         return ResponseEntity.ok(reviewNoteService.updateMemo(userDetails.getId(), id, memo));
     }
 
+    // 다시 풀기 결과 저장(문제당 1회). body { results: [{index, userAnswer, correct}] }
+    //   저장된 재풀이 결과는 '복습 필요' 분석의 입력이 된다.
+    @PostMapping("/{id}/retry/submit")
+    public ResponseEntity<Map<String, Object>> submitRetry(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id,
+            @RequestBody(required = false) Map<String, Object> body) {
+        return ResponseEntity.ok(reviewNoteService.submitRetryResult(userDetails.getId(), id, body));
+    }
+
     // 복습 필요 분석: 오답노트 데이터 기반 AI 생성("OOO에 대한 개념이 부족하여 복습이 필요합니다. ...", 500자 내외)
     //   본인 오답노트만 접근(없으면 404, 타인 403). AI 실패 시 데이터 기반 폴백 문장 반환.
     @PostMapping("/{id}/review-needed")

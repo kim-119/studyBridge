@@ -1507,6 +1507,12 @@ export const reviewNoteService = {
     const res = await api.get(`/api/review-notes/${id}/retry`);
     return res.data;
   },
+  // 다시 풀기 결과 저장(문제당 1회). results: [{ index, userAnswer, correct }]
+  //   저장된 재풀이 결과가 '복습 필요' 분석의 입력이 된다.
+  submitRetryResult: async (id, results) => {
+    const res = await api.post(`/api/review-notes/${id}/retry/submit`, { results });
+    return res.data;
+  },
   // 메모 수정/저장
   updateMemo: async (id, memo) => {
     const res = await api.patch(`/api/review-notes/${id}/memo`, { memo });

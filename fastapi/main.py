@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from openai import OpenAI
@@ -1833,6 +1834,17 @@ class MultiChatRequest(BaseModel):
     selectedTopic: Optional[Any] = Field(None, validation_alias=AliasChoices("selectedTopic", "selected_topic"))
     topicSelected: Optional[bool] = Field(None, validation_alias=AliasChoices("topicSelected", "topic_selected"))
     debateState: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("debateState", "debate_state"))
+    # 토론 강도(light|normal|deep). EC2가 최상위 또는 debateConfig.debateDepth 로 보낸다.
+    # 없으면 normal. 상호 반박 라운드 수에 반영된다(응답 길이가 아니다).
+    debateStrength: Optional[str] = Field(None, validation_alias=AliasChoices("debateStrength", "debate_strength", "strength", "debateIntensity"))
+    debateConfig: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("debateConfig", "debate_config"))
+    # 학습 세션(소크라테스/상황극 상태 머신) — 스트림 경로와 동일한 계약을 비스트림에서도 유지한다.
+    sessionId: Optional[str] = Field(None, validation_alias=AliasChoices("sessionId", "session_id"))
+    socraticConfig: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("socraticConfig", "socratic_config"))
+    socraticState: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("socraticState", "socratic_state"))
+    simulationConfig: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("simulationConfig", "simulation_config"))
+    simulationState: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("simulationState", "simulation_state"))
+    selectedChoice: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("selectedChoice", "selected_choice"))
 
 class AgentAnswer(BaseModel):
     agentName: str
@@ -2570,74 +2582,8 @@ async def build_rag_context_for_multi_chat(request: MultiChatRequest) -> str:
     return context[:max_chars]
 
 
-def build_debate_mode_payload(request: "MultiChatRequest", active_agents: list) -> Dict[str, Any]:
-    """비스트림 /api/ai/multi-chat 토론 게이트.
-
-    selectedTopic 없음 → TOPIC_SELECTION(논제 후보 5개), 있음 → DEBATE_ROUND(찬반/반박/쟁점/학습정리).
-    debate_topic_engine에 위임하고, 엔진 payload + 하위호환 answers/messages를 합친
-    JSON 직렬화 가능한 dict를 반환한다(JSONResponse로 그대로 내보낸다). 기존 필드는 건드리지 않는다.
-    """
-    from app.services import debate_topic_engine as DTE
-    state = getattr(request, "debateState", None) or {}
-    session_id = state.get("debateSessionId") or DTE.make_debate_session_id()
-    phase = DTE.resolve_debate_phase(request)
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-    def _msg(name, content, seq, role, speech):
-        return {
-            "senderType": "AGENT", "agentId": None, "agentName": name,
-            "role": role, "mode": "debate", "round": 1, "sequence": seq,
-            "content": content, "speechType": speech, "createdAt": now,
-            "groupId": request.groupId, "roomId": request.roomId,
-        }
-
-    def _side_text(s: Dict[str, Any]) -> str:
-        parts = [s.get("claim", "")]
-        if s.get("evidence"):
-            parts.append("근거: " + " / ".join(s["evidence"]))
-        if s.get("example"):
-            parts.append("예시: " + s["example"])
-        return "\n".join(p for p in parts if p)
-
-    if phase == "TOPIC_SELECTION":
-        payload = DTE.build_topic_selection(request)
-        lines = ["토론할 논제를 선택해 주세요. 아래 5개 후보 중 하나를 고르면 찬반 토론을 시작합니다.", ""]
-        for c in payload["debateTopicCandidates"]:
-            lines.append(f"{c.get('topicId')}. {c.get('title')}  (쟁점: {c.get('axis', '')})")
-        guide = "\n".join(lines)
-        name = getattr(active_agents[0], "name", None) if active_agents else "토론 진행자"
-        answers = [{"agentName": name or "토론 진행자", "answer": guide, "content": guide,
-                    "role": "moderator", "speechType": "topic_selection", "displayOrder": 1,
-                    "displayDelayMs": 0, "status": "SUCCESS", "mode": "debate"}]
-        messages = [_msg(name or "토론 진행자", guide, 1, "moderator", "topic_selection")]
-    else:
-        payload = DTE.build_debate_round(request)
-        payload["debateStages"] = DTE.synthesize_debate_stages(payload)
-        con_t, pro_t = _side_text(payload["con"]), _side_text(payload["pro"])
-        neu_t = (("핵심 쟁점: " + ", ".join(payload["keyIssues"]) + "\n\n") if payload.get("keyIssues") else "") + payload["learningTakeaway"]
-        names = [getattr(a, "name", None) for a in active_agents]
-        con_n = names[0] if len(names) > 0 and names[0] else "반대측"
-        pro_n = names[1] if len(names) > 1 and names[1] else "찬성측"
-        neu_n = names[2] if len(names) > 2 and names[2] else "중립"
-        answers = [
-            {"agentName": con_n, "answer": con_t, "content": con_t, "role": "con", "speechType": "counter_argument", "displayOrder": 1, "displayDelayMs": 0, "status": "SUCCESS", "mode": "debate"},
-            {"agentName": pro_n, "answer": pro_t, "content": pro_t, "role": "pro", "speechType": "support_argument", "displayOrder": 2, "displayDelayMs": 0, "status": "SUCCESS", "mode": "debate"},
-            {"agentName": neu_n, "answer": neu_t, "content": neu_t, "role": "neutral", "speechType": "moderation_summary", "displayOrder": 3, "displayDelayMs": 0, "status": "SUCCESS", "mode": "debate"},
-        ]
-        messages = [
-            _msg(con_n, con_t, 1, "con", "counter_argument"),
-            _msg(pro_n, pro_t, 2, "pro", "support_argument"),
-            _msg(neu_n, neu_t, 3, "neutral", "moderation_summary"),
-        ]
-
-    result = dict(payload)
-    result.update({
-        "success": True, "mode": "debate", "learningMode": "debate",
-        "groupId": request.groupId, "roomId": request.roomId, "agentRoomId": request.agentRoomId,
-        "status": "COMPLETED", "question": payload.get("rawQuestion"),
-        "answers": answers, "messages": messages, "debateSessionId": session_id,
-    })
-    return result
+# 토론(DEBATE) 비스트림 처리는 app/services/debate_mode_handler.run_debate_mode_sync 가 담당한다.
+# (구 build_debate_mode_payload = 논제 후보 5개 선택 게이트는 제거됐다. 사용자의 질문 자체가 안건이다.)
 
 
 @app.post(
@@ -2659,6 +2605,16 @@ async def multi_chat_endpoint(request: MultiChatRequest):
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="message는 비워둘 수 없습니다.")
 
+    # ── STRICT MODE: 알 수 없는 mode/learningMode 는 basic 으로 조용히 폴백하지 않는다 ──
+    from app.services import mode_router as _mode_router
+    try:
+        canonical_mode = _mode_router.resolve_request_mode(request)
+    except _mode_router.UnsupportedModeError as mode_exc:
+        logger.warning("[MODE-ROUTER] multi-chat 거절: %s", mode_exc)
+        raise HTTPException(status_code=422, detail=_mode_router.error_detail(mode_exc))
+    logger.info("[MODE-ROUTER] multi-chat mode=%r learningMode=%r → %s",
+                request.mode, request.learningMode, canonical_mode)
+
     raw_agents = [_to_agent_dict(agent) for agent in (request.agents or [])]
     if raw_agents:
         agents = [AgentProfile(**normalize_agent(agent, idx)) for idx, agent in enumerate(raw_agents)]
@@ -2678,14 +2634,15 @@ async def multi_chat_endpoint(request: MultiChatRequest):
     learning_mode = normalize_learning_mode(request.learningMode or request.mode)
     persona_mode = requested_mode.lower()
 
-    # 토론 모드 논제선택 게이트: 개념 질문을 바로 찬반 설명하지 않고,
-    # selectedTopic이 없으면 논제 후보 5개(TOPIC_SELECTION)를, 있으면 본 토론(DEBATE_ROUND)을 반환한다.
-    if learning_mode == "debate":
-        try:
-            debate_result = await asyncio.to_thread(build_debate_mode_payload, request, active_agents)
-            return JSONResponse(content=debate_result)
-        except Exception as _debate_err:
-            logger.error("[debate] 비스트림 게이트 실패 → 기존 멀티에이전트 경로로 fallback: %s", _debate_err)
+    # ── 학습 모드 전용 파이프라인 (비스트림) ──────────────────────────────────
+    # debate/socratic/simulation 은 basic 과 다른 실행 함수를 탄다. 실패해도 basic 으로 폴백하지 않는다.
+    # (토론: 사용자의 질문 자체가 안건 / 소크라테스·상황극: 세션 상태 머신 + 학습 의도 가드)
+    from app.services import learning_mode_dispatcher as _dispatcher
+    if canonical_mode in _dispatcher.DEDICATED_MODES:
+        mode_result = await asyncio.to_thread(
+            _dispatcher.run_learning_mode_sync, request, active_agents, canonical_mode)
+        status_code = 200 if mode_result.get("success") else 503
+        return JSONResponse(status_code=status_code, content=jsonable_encoder(mode_result))
     effective_timeout = resolve_multi_chat_timeout(request.mode, learning_mode)
     generation_payload = {
         "temperature": request.temperature,
