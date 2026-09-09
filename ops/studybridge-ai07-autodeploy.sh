@@ -46,11 +46,13 @@ mkdir -p "$STATE_DIR" "$REL_DIR"
 as_ai07() { sudo -u ai07 "$@"; }
 
 snapshot_commit() {
-  local sha="$1" out="$REL_DIR/$sha.tar"
+  local sha="$1"
+  local out="$REL_DIR/$sha.tar"
   [ -f "$out" ] && return 0
-  as_ai07 git -C "$REPO" archive --format=tar -o "$out.tmp" "$sha" fastapi ops 2>/dev/null || {
+  # -o 로 직접 쓰면 ai07 이 root 소유 디렉터리에 못 쓴다. stdout 을 root 셸이 받아 기록한다.
+  if ! as_ai07 git -C "$REPO" archive --format=tar "$sha" fastapi ops > "$out.tmp" 2>/dev/null; then
     rm -f "$out.tmp"; return 1
-  }
+  fi
   mv "$out.tmp" "$out"
   sb_log "스냅샷 저장: $out"
   ls -1t "$REL_DIR"/*.tar 2>/dev/null | tail -n +$((KEEP_RELEASES + 1)) | xargs -r rm -f
@@ -58,7 +60,8 @@ snapshot_commit() {
 
 # 추적 파일만 덮어쓴다. 미추적 사용자 파일은 보존된다. HEAD 는 옮기지 않는다.
 restore_snapshot() {
-  local sha="$1" tarf="$REL_DIR/$sha.tar"
+  local sha="$1"
+  local tarf="$REL_DIR/$sha.tar"
   [ -f "$tarf" ] || { sb_log "복원 실패: 스냅샷 없음 ($tarf)"; return 1; }
   tar -xf "$tarf" -C "$REPO" && chown -R ai07:ai07 "$REPO/fastapi" "$REPO/ops" 2>/dev/null || true
   sb_log "스냅샷 복원 완료: $sha"
@@ -88,8 +91,10 @@ do_rollback() {
   sleep 10
   if verify_ready canary; then
     sb_tok ROLLBACK_SUCCESS "restored=${good}"
-    [ "$bad" != "unknown" ] && echo "$bad" > "$QUARANTINE"
-    sb_log "격리 등록: $bad (동일 커밋은 재배포하지 않는다)"
+    if [ "$bad" != "unknown" ] && [ "$bad" != "worktree" ] && [ "$bad" != "manual" ]; then
+      echo "$bad" > "$QUARANTINE"
+      sb_log "격리 등록: $bad (동일 커밋은 재배포하지 않는다)"
+    fi
     return 0
   fi
   sb_tok ROLLBACK_FAILED "restored=${good} — 롤백 후에도 NOT_READY. operator 개입 필요."
@@ -140,7 +145,8 @@ if [ "$LOCAL" = "$REMOTE" ]; then
     exit 0
   fi
   sb_tok DEPLOY_VERIFY_FAIL "no_changes commit=${LOCAL:0:8} — 재시작으로 복구 실패"
-  do_rollback "$LOCAL" && exit 0
+  # 변경 없음 경로의 실패는 작업트리 손상이지 커밋 결함이 아니다 → 커밋을 격리하지 않는다.
+  do_rollback "worktree" && exit 0
   exit 1
 fi
 
