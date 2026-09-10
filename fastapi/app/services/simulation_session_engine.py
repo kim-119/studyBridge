@@ -120,6 +120,8 @@ class SimulationStageError(RuntimeError):
 
 def _generate(llm, system: str, user: str, build, validate, repair_hint: str, role: str,
               temperature: float = 0.5):
+    import time as _time
+    started = _time.time()
     last_issues = ["empty_response"]
     for attempt in range(MAX_STEP_RETRIES + 1):
         prompt = user if attempt == 0 else (
@@ -129,6 +131,9 @@ def _generate(llm, system: str, user: str, build, validate, repair_hint: str, ro
         issues = validate(obj)
         if not issues:
             obj.regenerated = attempt
+            logger.info("[SIMULATION] llm_call role=%s agent=%s attempts=%d elapsed_ms=%d chars=%d",
+                        role, getattr(obj, "agent_name", ""), attempt + 1,
+                        int((_time.time() - started) * 1000), len(getattr(obj, "text", "") or ""))
             return obj
         last_issues = issues
         logger.warning("[SIMULATION] %s 단계 검증 실패(attempt=%d) issues=%s", role, attempt + 1, issues)

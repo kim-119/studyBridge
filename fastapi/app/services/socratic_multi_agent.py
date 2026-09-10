@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -40,6 +41,9 @@ ROLE_STAGE_TITLE = {PROBE: "생각 확인 질문", PERSPECTIVE: "다른 관점/�
 MIN_TURN_CHARS = int(os.getenv("SOCRATIC_MIN_TURN_CHARS", "80"))
 MAX_TURN_CHARS = int(os.getenv("SOCRATIC_MULTI_MAX_CHARS", "700"))
 MAX_STEP_RETRIES = int(os.getenv("SOCRATIC_MAX_STEP_RETRIES", "2"))
+# 같은 주제를 다루면 어휘가 겹치는 것이 정상이다. '사실상 복사'만 반복으로 판정한다.
+# 너무 낮게 잡으면 정상 발언까지 폴백 문구로 대체돼 오히려 내용이 빈약해진다.
+PEER_COPY_THRESHOLD = float(os.getenv("SOCRATIC_PEER_COPY_THRESHOLD", "0.86"))
 
 
 @dataclass
@@ -125,14 +129,20 @@ _JSON_SPEC_WITH_ASSESSMENT = (
 )
 
 
-def _peer_block(peers: List[AgentSpeech]) -> str:
+def _peer_block(peers: List[AgentSpeech], asked: Optional[List[str]] = None) -> str:
     if not peers:
-        return "[이번 사이클에서 너보다 먼저 말한 참여자] 없음(네가 첫 번째다)\n"
-    lines = ["[이번 사이클에서 너보다 먼저 말한 참여자 — 실제 발언 원문]"]
-    for sp in peers:
-        lines.append(f"- {sp.agent_name}({ROLE_LABEL.get(sp.role, sp.role)}): {sp.text}")
-    lines.append("위 발언과 같은 질문을 반복하면 실패다.")
-    return "\n".join(lines) + "\n"
+        block = "[이번 사이클에서 너보다 먼저 말한 참여자] 없음(네가 첫 번째다)\n"
+    else:
+        lines = ["[이번 사이클에서 너보다 먼저 말한 참여자 — 실제 발언 원문]"]
+        for sp in peers:
+            lines.append(f"- {sp.agent_name}({ROLE_LABEL.get(sp.role, sp.role)}): {sp.text}")
+        lines.append("★ 위 문장을 그대로 옮겨 쓰지 마라. 사용자의 말을 똑같이 요약해 되풀이하는 것도 반복이다.")
+        lines.append("★ 너는 앞 참여자가 이미 짚은 지점 '다음'을 맡는다.")
+        block = "\n".join(lines) + "\n"
+    if asked:
+        block += ("[이미 나온 질문 — 같은 것을 다시 묻지 마라]\n"
+                  + "\n".join(f"- {q}" for q in asked) + "\n")
+    return block
 
 
 def _transcript_block(transcript: List[Dict[str, str]], limit: int = 8) -> str:
@@ -148,7 +158,7 @@ def _transcript_block(transcript: List[Dict[str, str]], limit: int = 8) -> str:
 def _build_user_prompt(*, topic: str, user_message: str, role: str, agent: Any,
                        peers: List[AgentSpeech], transcript: List[Dict[str, str]],
                        intensity: str, hint_style: str, is_first_cycle: bool,
-                       expected_idea: str) -> str:
+                       expected_idea: str, asked: Optional[List[str]] = None) -> str:
     from app.services.debate_engine import build_style_directive
 
     head = f"[사용자가 지금 배우려는 주제]\n{topic}\n"
@@ -161,7 +171,7 @@ def _build_user_prompt(*, topic: str, user_message: str, role: str, agent: Any,
               if (role == PROBE and not is_first_cycle) else "")
     spec = _JSON_SPEC_WITH_ASSESSMENT if assess else _JSON_SPEC
     return (
-        f"{head}{_transcript_block(transcript)}\n{_peer_block(peers)}\n"
+        f"{head}{_transcript_block(transcript)}\n{_peer_block(peers, asked)}\n"
         f"{_ROLE_DIRECTIVE[role]}\n\n"
         f"{SE._intensity_directive(intensity, hint_style)}\n"
         f"{secret}\n"
@@ -179,8 +189,17 @@ def _build_user_prompt(*, topic: str, user_message: str, role: str, agent: Any,
 
 # ── 검증 ────────────────────────────────────────────────────────────────────
 
+def _too_similar(a: str, b: str, threshold: float) -> bool:
+    import difflib
+    a, b = (a or "").strip(), (b or "").strip()
+    if not a or not b:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= threshold
+
+
 def validate_speech(sp: AgentSpeech, *, expected_idea: str, known_text: str,
-                    keywords: Optional[List[str]], used_questions: List[str]) -> List[str]:
+                    keywords: Optional[List[str]], used_questions: List[str],
+                    peers: Optional[List[AgentSpeech]] = None) -> List[str]:
     issues: List[str] = []
     if not sp.question or not sp.question.strip().endswith("?"):
         issues.append("question_missing")
@@ -201,6 +220,17 @@ def validate_speech(sp: AgentSpeech, *, expected_idea: str, known_text: str,
         from app.services.korean_text_match import repeats_any
         if repeats_any(sp.question, used_questions, 0.85):
             issues.append("question_repeated")
+        elif any(_too_similar(sp.question, q, PEER_COPY_THRESHOLD) for q in used_questions):
+            issues.append("question_repeated")
+    # 세 명이 같은 말을 조금씩 바꿔 세 번 하는 것을 막는다(역할 분리의 핵심).
+    for peer in peers or []:
+        if _too_similar(f"{sp.acknowledge} {sp.direction}",
+                        f"{peer.acknowledge} {peer.direction}", PEER_COPY_THRESHOLD):
+            issues.append("repeats_peer_body")
+            break
+        if _too_similar(sp.acknowledge, peer.acknowledge, PEER_COPY_THRESHOLD):
+            issues.append("repeats_peer_acknowledge")
+            break
     return issues
 
 
@@ -210,7 +240,8 @@ def _render(acknowledge: str, direction: str, question: str) -> str:
 
 
 def _repair(sp: AgentSpeech, *, topic: str, expected_idea: str, known_text: str,
-            keywords: Optional[List[str]], used_questions: List[str]) -> AgentSpeech:
+            keywords: Optional[List[str]], used_questions: List[str],
+            peers: Optional[List[AgentSpeech]] = None) -> AgentSpeech:
     """재생성 상한을 넘겨도 계약 위반 텍스트를 사용자에게 내보내지 않는다.
 
     모델을 더 부르지 않고 구조만 고친다. 에이전트를 침묵시키지는 않는다
@@ -221,19 +252,28 @@ def _repair(sp: AgentSpeech, *, topic: str, expected_idea: str, known_text: str,
     ack, direction = sp.acknowledge, sp.direction
     question = SE.first_question(sp.question or sp.text)
 
+    # 앞 참여자가 이미 한 말을 그대로 옮긴 부분은 지운다(세 명이 같은 문장을 반복하는 것 방지).
+    for peer in peers or []:
+        if ack and _too_similar(ack, peer.acknowledge, PEER_COPY_THRESHOLD):
+            ack = ""
+        if direction and _too_similar(direction, peer.direction, PEER_COPY_THRESHOLD):
+            direction = ""
     if ack and SE.leaks_answer(ack, expected_idea, known_text, keywords):
         ack = ""
     if direction and SE.leaks_answer(direction, expected_idea, known_text, keywords):
         direction = ""
     if question and SE.leaks_answer(question, expected_idea, known_text, keywords):
         question = ""
-    if not question.endswith("?") or (used_questions and repeats_any(question, used_questions, 0.9)):
-        question = SE.topic_anchored_question(topic, used_questions)
+    if (not question.endswith("?")
+            or (used_questions and repeats_any(question, used_questions, 0.9))
+            or any(_too_similar(question, q, PEER_COPY_THRESHOLD) for q in used_questions or [])):
+        question = _ROLE_FALLBACK_QUESTION.get(sp.role) or SE.topic_anchored_question(topic, used_questions)
 
     body = f"{ack} {direction}".strip()
     if len(body) < MIN_TURN_CHARS:
         # content-free 보강: 도메인 용어를 코드에 박지 않고 역할이 하는 일만 말한다.
-        direction = (direction + " " + _ROLE_BRIDGE[sp.role]).strip()
+        bridge = _ROLE_BRIDGE.get(sp.role, _ROLE_BRIDGE[PROBE])
+        direction = (direction + " " + bridge).strip() if direction else bridge
 
     sp.acknowledge, sp.direction, sp.question = ack, direction, question
     sp.text = _render(ack, direction, question)
@@ -241,11 +281,21 @@ def _repair(sp: AgentSpeech, *, topic: str, expected_idea: str, known_text: str,
     return sp
 
 
+# 마지막 수단으로 쓰는 역할별 질문(도메인 용어를 코드에 박지 않는다).
+_ROLE_FALLBACK_QUESTION = {
+    PROBE: "지금 확실하다고 말할 수 있는 부분은 어디까지이고, 어디부터가 아직 추측인가?",
+    PERSPECTIVE: "조건이 지금과 반대였다면 같은 결론이 그대로 유지될까?",
+    VERIFY: "방금 설명에서 근거 없이 건너뛴 연결 고리는 어디인가?",
+}
+
 # 마지막 수단으로 붙이는 역할별 다리 문장(주제어를 박지 않는다).
 _ROLE_BRIDGE = {
-    PROBE: "지금 확실하게 말할 수 있는 부분과 아직 확인되지 않은 부분을 나눠서 정리해보자.",
-    PERSPECTIVE: "조건이 지금과 달랐다면 같은 결론이 유지되는지도 함께 따져보자.",
-    VERIFY: "여기까지의 설명에서 근거 없이 넘어간 연결 고리가 있는지 확인해보자.",
+    PROBE: ("네가 지금 확실하게 말할 수 있는 부분과 아직 확인하지 못한 부분을 먼저 나눠보자. "
+            "그 경계가 그려져야 다음에 무엇을 확인해야 하는지도 정해진다."),
+    PERSPECTIVE: ("앞에서 나온 설명과는 다른 각도에서도 한 번 보자. "
+                  "조건이 지금과 달랐을 때 같은 결론이 그대로 유지되는지가 이 관점의 시험대다."),
+    VERIFY: ("여기까지의 추론을 한 단계씩 되짚어 보자. "
+             "근거 없이 건너뛴 연결 고리가 하나라도 있으면 결론 전체가 흔들린다."),
 }
 
 
@@ -261,17 +311,19 @@ def generate_speech(*, topic: str, user_message: str, agent: Any, role: str, age
     user_prompt = _build_user_prompt(
         topic=topic, user_message=user_message, role=role, agent=agent, peers=peers,
         transcript=transcript, intensity=intensity, hint_style=hint_style,
-        is_first_cycle=is_first_cycle, expected_idea=expected_idea)
+        is_first_cycle=is_first_cycle, expected_idea=expected_idea, asked=used_questions)
     known_text = f"{topic}\n{user_message}"
     aid = _agent_id(agent, f"socratic-{agent_index}")
     name = _agent_name(agent, agent_index)
 
     last: Optional[AgentSpeech] = None
     last_issues: List[str] = ["empty_response"]
+    started = time.time()
     for attempt in range(MAX_STEP_RETRIES + 1):
         prompt = user_prompt if attempt == 0 else (
             f"{user_prompt}\n\n[재작성 지시 — 직전 출력이 계약을 어겼다: {', '.join(last_issues)}]\n"
-            f"질문은 1개만, 앞부분 설명은 {MIN_TURN_CHARS}자 이상, 정답은 말하지 마라.")
+            f"질문은 1개만, 앞부분 설명은 {MIN_TURN_CHARS}자 이상, 정답은 말하지 마라. "
+            "앞 참여자의 문장과 겹치면 실패다. 네 역할이 맡은 다른 지점을 잡아라.")
         raw = call(_SYSTEM, prompt, max_tokens=SE.CONTENT_MAX_TOKENS, temperature=0.45 + 0.05 * attempt)
         obj = SE._parse(raw)
         ack = _s(obj.get("acknowledge"))
@@ -290,8 +342,11 @@ def generate_speech(*, topic: str, user_message: str, agent: Any, role: str, age
                         "roleLabel": ROLE_LABEL.get(role, role)},
         )
         issues = validate_speech(sp, expected_idea=expected_idea, known_text=known_text,
-                                 keywords=keywords, used_questions=used_questions)
+                                 keywords=keywords, used_questions=used_questions, peers=peers)
         if not issues:
+            logger.info("[SOCRATIC-MULTI] llm_call agent_id=%s agent=%s role=%s attempts=%d "
+                        "elapsed_ms=%d chars=%d repaired=False",
+                        aid, name, role, attempt + 1, int((time.time() - started) * 1000), len(sp.text))
             return sp
         last, last_issues = sp, issues
         logger.warning("[SOCRATIC-MULTI] %s(%s) 계약 위반(attempt=%d) issues=%s",
@@ -300,8 +355,11 @@ def generate_speech(*, topic: str, user_message: str, agent: Any, role: str, age
     sp = last or AgentSpeech(role=role, agent_id=aid, agent_name=name,
                              agent_index=agent_index, text="")
     sp.issues = last_issues
+    logger.info("[SOCRATIC-MULTI] llm_call agent_id=%s agent=%s role=%s attempts=%d "
+                "elapsed_ms=%d issues=%s repaired=True",
+                aid, name, role, MAX_STEP_RETRIES + 1, int((time.time() - started) * 1000), last_issues)
     return _repair(sp, topic=topic, expected_idea=expected_idea, known_text=known_text,
-                   keywords=keywords, used_questions=used_questions)
+                   keywords=keywords, used_questions=used_questions, peers=peers)
 
 
 def run_cycle(*, topic: str, user_message: str, roles: List[Tuple[Any, str]],

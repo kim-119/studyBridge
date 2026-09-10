@@ -1144,8 +1144,17 @@ def _agent_name(agent: AgentProfile, idx: int) -> str:
 
 
 def extract_topic(request: MultiChatRequest) -> str:
-    """1단계 안건 = 사용자 메시지 원문. 별도 논제 생성을 하지 않는다."""
-    return _s(getattr(request, "message", ""))
+    """1단계 안건 = 사용자의 '현재' 메시지 원문. 별도 논제를 만들지 않는다.
+
+    앞단에서 주입된 [이전 대화 기억] 블록은 안건이 아니다. 그대로 두면 지난 대화가
+    이번 토론의 논제를 오염시킨다(현재 질문 최우선 규칙).
+    """
+    raw = _s(getattr(request, "message", ""))
+    try:
+        from app.services.memory_recall_service import strip_memory_block
+        return strip_memory_block(raw) or raw
+    except Exception:  # pragma: no cover - 방어
+        return raw
 
 
 SLOT_LETTERS = "ABCDEFGH"

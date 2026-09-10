@@ -238,18 +238,26 @@ class SocraticLLM:
                                "answerKeywords": ["프록시 우회"]}, ensure_ascii=False)
         if '"acknowledge"' in user:
             if "개념 유도" in user:
-                role, q = "PROBE", "그 호출은 어디에서 출발한다고 보나?"
+                role = "PROBE"
+                ack = "프록시 기반 동작을 이해했다고 말한 부분은 정확하게 짚은 것이다."
+                direction = ("이제 호출이 실제로 어떤 경로를 지나 들어오는지, 그 경로 중 어디가 "
+                             "빠지는지를 나눠서 살펴보는 것이 좋겠다.")
+                q = "그 호출은 어디에서 출발한다고 보나?"
             elif "다른 관점" in user:
-                role, q = "PERSPECTIVE", "다른 빈이 그 메서드를 부르면 결과가 달라질까?"
+                role = "PERSPECTIVE"
+                ack = "호출 경로를 나눠 보자는 앞의 제안은 출발점으로 삼을 만하다."
+                direction = ("같은 메서드를 바깥의 다른 객체가 부르는 상황을 함께 놓고 비교하면 "
+                             "두 경우의 차이가 훨씬 또렷하게 드러난다.")
+                q = "다른 빈이 그 메서드를 부르면 결과가 달라질까?"
             else:
-                role, q = "VERIFY", "지금 설명에서 근거 없이 넘어간 단계는 어디인가?"
+                role = "VERIFY"
+                ack = "두 호출을 비교해 보자는 제안까지는 논리가 이어진다."
+                direction = ("다만 그 비교에서 무엇이 결론을 결정했는지는 아직 말해지지 않았고, "
+                             "그 자리에 빠진 전제가 하나 있는지 확인할 필요가 있다.")
+                q = "지금 설명에서 근거 없이 넘어간 단계는 어디인가?"
             self.roles_seen.append(role)
-            return json.dumps({
-                "acknowledge": "프록시 기반 동작을 이해했다고 말한 부분은 정확하게 짚은 것이다.",
-                "direction": "이제 호출이 실제로 어떤 경로를 지나 들어오는지, 그 경로 중 어디가 "
-                             "빠지는지를 나눠서 살펴보는 것이 좋겠다.",
-                "question": q,
-            }, ensure_ascii=False)
+            return json.dumps({"acknowledge": ack, "direction": direction, "question": q},
+                              ensure_ascii=False)
         return "{}"
 
 
@@ -458,3 +466,31 @@ def test_dispatcher_logs_selected_executed_emitted(caplog, monkeypatch):
     assert "expected_agent_count=2" in line
     assert "emitted_agent_count=1" in line
     assert "result=FAIL" in line, "선택 2명인데 1명만 나갔으면 FAIL 로 표시돼야 한다"
+
+
+def test_debate_topic_ignores_injected_memory_block():
+    """앞단에서 주입된 [이전 대화 기억] 블록이 이번 토론의 안건이 되면 안 된다."""
+    from app.services import memory_recall_service as MR
+
+    current = "지금 물어보는 것은 캐시 무효화 전략이 정당한가이다"
+    injected = (f"[이전 대화 기억]\n- 사용자: 완전히 다른 옛날 질문\n\n"
+                f"{MR._MEMORY_BLOCK_CURRENT_MARKER}\n{current}")
+    req = MultiChatRequest(message=injected, mode="debate", learningMode="debate",
+                           roomId=77, agents=_agents(2))
+    assert DE.extract_topic(req) == current
+
+
+def test_socratic_rejects_agent_that_repeats_the_previous_speaker():
+    """세 명이 같은 말을 조금씩 바꿔 세 번 하면 계약 위반으로 잡는다."""
+    first = SMA.AgentSpeech(role=SMA.PROBE, agent_id=1, agent_name="김교수", agent_index=1,
+                            text="", acknowledge="프록시 기반 동작을 이해했다고 말한 부분은 정확하다.",
+                            direction="이제 호출 경로가 어디서 끊기는지 나눠서 살펴보자.",
+                            question="그 호출은 어디에서 출발하나?")
+    copycat = SMA.AgentSpeech(role=SMA.PERSPECTIVE, agent_id=2, agent_name="이선배", agent_index=2,
+                              text="", acknowledge=first.acknowledge,
+                              direction=first.direction,
+                              question="그 호출은 어디에서 시작되나?")
+    copycat.text = SMA._render(copycat.acknowledge, copycat.direction, copycat.question)
+    issues = SMA.validate_speech(copycat, expected_idea="", known_text="",
+                                 keywords=None, used_questions=[first.question], peers=[first])
+    assert "question_repeated" in issues or "repeats_peer_body" in issues
