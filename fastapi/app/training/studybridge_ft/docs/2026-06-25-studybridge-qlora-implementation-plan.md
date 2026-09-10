@@ -19,7 +19,7 @@
 - 7카테고리 수량(시드): concept 640 / archive_qa 400 / quiz 400 / socratic 240 / debate 240 / professor 240 / format_safety 240 = 2,400. (30k: 8000/5000/5000/3000/3000/3000/3000)
 - Ollama: `OLLAMA_BASE_URL` 기본 `http://localhost:11434`, `/api/chat`, payload에 `"think": False`. `max_concurrent_generation=1`.
 - 중단 임계값: 전체 reject>20% / quiz JSON invalid>5% / empty assistant>1% / secret·PII>0건 → 즉시 abort.
-- 커밋: 각 Task 끝에 commit. 메시지 끝에 `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`. 의미 단위로 `git push origin LLM-clean`(durable).
+- 커밋: 각 Task 끝에 commit. 의미 단위로 `git push origin LLM-clean`(durable).
 - 모든 pytest는 `fastapi/.venv/bin/python -m pytest`로 실행. 테스트는 Ollama/GPU를 **모킹**(네트워크/GPU 없이 통과).
 
 ### StudyBridge 축 (모든 generator/validator/eval가 반영 — 상세 Addendum A)
@@ -272,9 +272,7 @@ cd /home/ai07/capstoneLLM
 git add fastapi/app/training/studybridge_ft/__init__.py fastapi/app/training/studybridge_ft/paths.py \
   fastapi/app/training/studybridge_ft/config.example.yaml fastapi/app/training/studybridge_ft/README.md \
   fastapi/app/training/studybridge_ft/tests/ .gitignore
-git commit -m "feat(studybridge_ft): 패키지 스켈레톤 + paths/config/README + gitignore
-
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+git commit -m "feat(studybridge_ft): 패키지 스켈레톤 + paths/config/README + gitignore"
 git push origin LLM-clean
 ```
 
