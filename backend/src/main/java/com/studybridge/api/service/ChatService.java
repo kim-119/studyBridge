@@ -511,7 +511,11 @@ public class ChatService {
                                 ? (Map<String, Object>) response.get("simulationConfig")
                                 : null;
                 // processSteps를 JSON 문자열로 직렬화해 AI 메시지와 함께 영속화한다 (새로고침 후 복원용).
+                //  모드 전용 응답(processSteps 없음)은 구조화 payload(debateStages/socraticSteps/simulationStages …)를 대신 저장한다.
                 String processStepsJson = null;
+                if (processSteps == null) {
+                        processSteps = structuredProcessSteps(response);
+                }
                 if (processSteps != null) {
                         try {
                                 processStepsJson = objectMapper.writeValueAsString(processSteps);
@@ -1129,7 +1133,13 @@ public class ChatService {
                 try {
                         Map<String, Object> resp = objectMapper.readValue(
                                         allCompleteJson, new TypeReference<Map<String, Object>>() {});
+                        // 모드 전용 핸들러(토론/소크라테스/상황극)는 processSteps 대신 debateStages/socraticSteps/simulationStages 를
+                        // top-level 로 내린다. 그대로 두면 DB 에는 에이전트별 평문 행만 남아 새로고침/보정 후 구조(최종 결론 독립 영역·
+                        // 선택지·단계 카드)가 사라지고 최종 결론이 특정 교수의 답변처럼 보인다. → 구조화 payload 를 processSteps 로 영속화.
                         Object psObj = resp.get("processSteps");
+                        if (psObj == null) {
+                                psObj = structuredProcessSteps(resp);
+                        }
                         String processStepsJson = psObj != null ? objectMapper.writeValueAsString(psObj) : null;
                         Object ansObj = resp.get("answers");
                         if (!(ansObj instanceof List)) {
@@ -1524,6 +1534,96 @@ public class ChatService {
                                 .toolsFailed(asObjectList(src.get("toolsFailed")))
                                 .qualityChecked(asBoolean(src.get("qualityChecked")))
                                 .build();
+        }
+
+        /**
+         * 모드 전용 응답(all_complete / non-stream JSON)에서 새로고침 후 복원에 필요한 구조화 payload 만 골라 processSteps 맵을 만든다.
+         *  · 토론: debateStages(+final conclusion 단계), debateResult, debateStrength, topic, debateParticipants
+         *  · 소크라테스: socraticSteps, questionIntensity/hintPolicy, sessionId
+         *  · 상황극: simulationStages, choices, scenarioType/difficulty/choiceCount, sessionId
+         * 구조화 필드가 하나도 없으면 null(기본 모드는 기존 processSteps 규칙 그대로).
+         */
+        static Map<String, Object> structuredProcessSteps(Map<String, Object> resp) {
+                if (resp == null) {
+                        return null;
+                }
+                List<?> debateStages = resp.get("debateStages") instanceof List<?> l && !l.isEmpty() ? l : null;
+                List<?> socraticSteps = resp.get("socraticSteps") instanceof List<?> l && !l.isEmpty() ? l : null;
+                List<?> simulationStages = resp.get("simulationStages") instanceof List<?> l && !l.isEmpty() ? l : null;
+                if (debateStages == null && socraticSteps == null && simulationStages == null) {
+                        return null;
+                }
+                Map<String, Object> ps = new LinkedHashMap<>();
+                String mode = resp.get("learningMode") != null ? String.valueOf(resp.get("learningMode"))
+                                : (resp.get("mode") != null ? String.valueOf(resp.get("mode")) : null);
+                if (debateStages != null) {
+                        ps.put("mode", mode != null ? mode : "debate");
+                        ps.put("learningMode", mode != null ? mode : "debate");
+                        ps.put("debateStages", debateStages);
+                        Map<String, Object> cfg = new LinkedHashMap<>();
+                        if (resp.get("debateConfig") instanceof Map<?, ?> dc) {
+                                for (Map.Entry<?, ?> e : dc.entrySet()) {
+                                        cfg.put(String.valueOf(e.getKey()), e.getValue());
+                                }
+                        }
+                        if (resp.get("debateStrength") != null) {
+                                cfg.putIfAbsent("debateStrength", resp.get("debateStrength"));
+                        }
+                        if (!cfg.isEmpty()) {
+                                ps.put("debateConfig", cfg);
+                        }
+                        putIfPresent(ps, resp, "debateResult");
+                        putIfPresent(ps, resp, "debateParticipants");
+                        putIfPresent(ps, resp, "topic");
+                } else if (socraticSteps != null) {
+                        ps.put("mode", mode != null ? mode : "socratic");
+                        ps.put("learningMode", mode != null ? mode : "socratic");
+                        ps.put("socraticSteps", socraticSteps);
+                        Map<String, Object> cfg = new LinkedHashMap<>();
+                        if (resp.get("socraticConfig") instanceof Map<?, ?> sc) {
+                                for (Map.Entry<?, ?> e : sc.entrySet()) {
+                                        cfg.put(String.valueOf(e.getKey()), e.getValue());
+                                }
+                        }
+                        if (resp.get("questionIntensity") != null) {
+                                cfg.putIfAbsent("questionIntensity", resp.get("questionIntensity"));
+                        }
+                        if (resp.get("hintPolicy") != null) {
+                                cfg.putIfAbsent("hintPolicy", resp.get("hintPolicy"));
+                        }
+                        if (!cfg.isEmpty()) {
+                                ps.put("socraticConfig", cfg);
+                        }
+                } else {
+                        ps.put("mode", mode != null ? mode : "simulation");
+                        ps.put("learningMode", mode != null ? mode : "simulation");
+                        ps.put("simulationStages", simulationStages);
+                        Map<String, Object> cfg = new LinkedHashMap<>();
+                        if (resp.get("simulationConfig") instanceof Map<?, ?> sc) {
+                                for (Map.Entry<?, ?> e : sc.entrySet()) {
+                                        cfg.put(String.valueOf(e.getKey()), e.getValue());
+                                }
+                        }
+                        for (String k : new String[] {"scenarioType", "difficulty", "choiceCount"}) {
+                                if (resp.get(k) != null) {
+                                        cfg.putIfAbsent(k, resp.get(k));
+                                }
+                        }
+                        if (!cfg.isEmpty()) {
+                                ps.put("simulationConfig", cfg);
+                        }
+                        putIfPresent(ps, resp, "choices");
+                }
+                putIfPresent(ps, resp, "sessionId");
+                putIfPresent(ps, resp, "turnIndex");
+                return ps;
+        }
+
+        private static void putIfPresent(Map<String, Object> target, Map<String, Object> src, String key) {
+                Object v = src.get(key);
+                if (v != null) {
+                        target.put(key, v);
+                }
         }
 
         /** 방에 저장된 모드 전용 설정(mode_config_json) → Map. 없으면 빈 맵. */

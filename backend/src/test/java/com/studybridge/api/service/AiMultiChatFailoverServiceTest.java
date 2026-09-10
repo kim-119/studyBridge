@@ -53,6 +53,7 @@ class AiMultiChatFailoverServiceTest {
         int nonStreamStatus = 200;
         boolean openapiHasStream = true;
         boolean streamFatalErrorEvent = false;
+        boolean streamModeErrorEvent = false;
         String name;
 
         Stub(String name) throws IOException {
@@ -74,7 +75,10 @@ class AiMultiChatFailoverServiceTest {
                 sb.append("event: turn_start\ndata: {\"type\":\"turn_start\"}\n\n");
                 sb.append("event: agent_answer\ndata: {\"type\":\"agent_answer\",\"agentIndex\":1,\"agentName\":\"교수\",\"answer\":\"from ")
                         .append(name).append("\"}\n\n");
-                if (streamFatalErrorEvent) {
+                if (streamModeErrorEvent) {
+                    sb.append("event: error\ndata: {\"type\":\"error\",\"mode\":\"debate\",\"code\":\"DEBATE_AGENT_FAILURE\",\"status\":\"error\",\"failedAgentName\":\"교수\",\"message\":\"토론 발언 실패\"}\n\n");
+                    sb.append("event: done\ndata: {\"type\":\"done\",\"status\":\"error\"}\n\n");
+                } else if (streamFatalErrorEvent) {
                     sb.append("event: error\ndata: {\"type\":\"error\",\"message\":\"boom\"}\n\n");
                     sb.append("event: done\ndata: {\"type\":\"done\",\"status\":\"error\"}\n\n");
                 } else {
@@ -296,6 +300,28 @@ class AiMultiChatFailoverServiceTest {
 
         assertFalse(events(evs).contains("error"), "대상 미특정 fatal error 는 중계하지 않고 failover");
         assertTrue(find(evs, "all_complete").data().contains("from secondary"));
+    }
+
+    @Test
+    void modeSpecificErrorEvent_isRelayedAsIs_noFailover_noNonStreamFallback() throws IOException {
+        // ai07 모드 전용 실패(DEBATE_AGENT_FAILURE 등)는 다른 서버로 숨기거나 일반 답변으로 바꿔치기하지 않는다.
+        Stub primary = stub("primary");
+        primary.streamModeErrorEvent = true;
+        Stub secondary = stub("secondary");
+        AiMultiChatFailoverService svc = service(primary.baseUrl(), secondary.baseUrl());
+
+        List<ServerSentEvent<String>> evs = run(svc);
+        List<String> names = events(evs);
+        assertTrue(names.contains("error"), names.toString());
+        ServerSentEvent<String> err = find(evs, "error");
+        assertNotNull(err);
+        assertTrue(err.data().contains("DEBATE_AGENT_FAILURE"), err.data());
+        assertTrue(err.data().contains("failedAgentName"), "원본 semantic 정보 보존: " + err.data());
+        assertEquals("done", names.get(names.size() - 1));
+        assertTrue(find(evs, "done").data().contains("\"status\":\"error\""));
+        assertFalse(names.contains("all_complete"));
+        assertEquals(0, secondary.streamHits.get(), "모드 오류는 SECONDARY 로 재생성하지 않는다");
+        assertEquals(0, primary.nonStreamHits.get() + secondary.nonStreamHits.get(), "non-stream 일반 답변으로 전환하지 않는다");
     }
 
     @Test

@@ -354,6 +354,10 @@ public class AiMultiChatFailoverService {
         final long t0 = System.currentTimeMillis();
         final AtomicBoolean emitted = new AtomicBoolean(false);
         final AtomicBoolean sawAllComplete = new AtomicBoolean(false);
+        // 모드 전용 오류(DEBATE_AGENT_FAILURE/SOCRATIC_TURN_FAILED/SIMULATION_STAGE_FAILED …)는 업스트림 장애가 아니라
+        // "이 모드로는 이번 입력을 진행할 수 없다"는 정상 종료 신호다. 다른 서버로 넘겨 같은 모드를 재생성하거나
+        // non-stream 일반 답변으로 바꿔치기하지 않고 그대로 프론트에 중계한다(프론트는 모드 오류 상태로 렌더).
+        final AtomicBoolean sawModeError = new AtomicBoolean(false);
 
         return up.client().post()
                 .uri(STREAM_PATH)
@@ -376,6 +380,13 @@ public class AiMultiChatFailoverService {
                         // done 은 Spring 이 마지막에 자체 생성한다(업스트림 done 은 삼킨다).
                         return Flux.<ServerSentEvent<String>>empty();
                     }
+                    if ("error".equals(event) && isModeSpecificErrorEvent(ev.data())) {
+                        sawModeError.set(true);
+                        ctx.result.set("mode_error");
+                        log.warn("[AI-UPSTREAM] roomId={} requestId={} upstream={} 모드 전용 오류 이벤트 중계(failover 없음): {}",
+                                ctx.roomId, ctx.requestId, up.name(), briefData(ev.data()));
+                        return Flux.just(ev);
+                    }
                     if ("error".equals(event) && isFatalErrorEvent(ev.data())) {
                         // 대상 에이전트가 특정되지 않은 fatal error = 업스트림 생성 실패 → failover.
                         return Flux.<ServerSentEvent<String>>error(new UpstreamFatalEventException(up.name()));
@@ -385,7 +396,7 @@ public class AiMultiChatFailoverService {
                     }
                     return Flux.just(ev);
                 })
-                .concatWith(Flux.defer(() -> sawAllComplete.get()
+                .concatWith(Flux.defer(() -> (sawAllComplete.get() || sawModeError.get())
                         ? Flux.<ServerSentEvent<String>>empty()
                         : Flux.<ServerSentEvent<String>>error(new UpstreamIncompleteException(up.name(), emitted.get()))))
                 .onErrorResume(err -> {
@@ -520,6 +531,30 @@ public class AiMultiChatFailoverService {
         } catch (Exception e) {
             return "{}";
         }
+    }
+
+    /** 모드 전용 오류 코드: 업스트림 장애가 아니라 모드 계약상의 정상 실패(그대로 중계, failover 금지). */
+    static final java.util.regex.Pattern MODE_ERROR_CODE = java.util.regex.Pattern.compile(
+            "^(DEBATE|SOCRATIC|SIMULATION)_[A-Z_]+$|^NON_LEARNING_INPUT$|^TARGET_AGENT_NOT_FOUND$");
+
+    boolean isModeSpecificErrorEvent(String data) {
+        if (data == null || data.isBlank()) {
+            return false;
+        }
+        try {
+            Map<String, Object> m = objectMapper.readValue(data, new TypeReference<Map<String, Object>>() {});
+            Object code = m.get("code");
+            return code != null && MODE_ERROR_CODE.matcher(String.valueOf(code)).matches();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static String briefData(String data) {
+        if (data == null) {
+            return "null";
+        }
+        return data.length() > 200 ? data.substring(0, 200) : data;
     }
 
     /** 업스트림 error 이벤트가 특정 에이전트(agentIndex/agentId) 범위가 아니면 fatal 로 본다. */

@@ -287,6 +287,11 @@ const SIMULATION_STAGE_META = {
   REFLECTION_QUESTION: { title: '성찰 질문', className: 'reflection', color: '#ca8a04' },
   NEXT_SCENARIO: { title: '다음 분기', className: 'next', color: '#4c1d95' },
   NEXT_BRANCH: { title: '다음 사건', className: 'next', color: '#4c1d95' },
+  // ai07 라이브 계약(2026-09): 진행/심화 검증/피드백 코치 3역할 대사. 매 턴 각 역할이 한 번씩 발화한다.
+  SCENE_SETUP: { title: '상황 제시', className: 'scenario', color: '#1d4ed8' },
+  CHALLENGE: { title: '심화 검증', className: 'trap', color: '#dc2626' },
+  FEEDBACK: { title: '피드백', className: 'concept', color: '#2563eb' },
+  NEXT_SCENE: { title: '다음 장면', className: 'next', color: '#4c1d95' },
   SUMMARY: { title: '상황극 요약', className: 'context', color: '#64748b' },
 };
 
@@ -369,8 +374,14 @@ const MODE_GUARD_MESSAGES = {
 };
 const MODE_LABELS = { socratic: '소크라테스', debate: '토론', simulation: '상황극', basic: '기본' };
 // 이벤트/응답이 모드 가드(BLOCKED) 또는 모드 전용 오류인지 판정. 기본 답변처럼 렌더하면 안 되는 경우.
+const MODE_ERROR_CODE_RE = /^(DEBATE|SOCRATIC|SIMULATION)_/;
 const isModeGuardPayload = (d) => !!d && (
   d.blocked === true || String(d.status || '').toUpperCase() === 'BLOCKED' || (!!d.code && !!MODE_GUARD_MESSAGES[d.code])
+  // 모드 전용 실패(DEBATE_AGENT_FAILURE/SOCRATIC_TURN_FAILED/SIMULATION_STAGE_FAILED …): 일반 답변으로 바꿔치기하지 않는다.
+  || (!!d.code && MODE_ERROR_CODE_RE.test(String(d.code)) && (d.success === false || ['FAILED', 'ERROR'].includes(String(d.status || '').toUpperCase())))
+);
+const isModeErrorPayload = (d) => !!d && !!d.code && (
+  MODE_ERROR_CODE_RE.test(String(d.code)) || d.success === false || ['FAILED', 'ERROR'].includes(String(d.status || '').toUpperCase())
 );
 const modeGuardText = (d, mode) => {
   const code = d?.code;
@@ -691,7 +702,21 @@ const buildDebateTurnMessage = (acc, parentId, createdAt) => ({
   parentId,
   debateStages: Array.isArray(acc?.debateStages) ? acc.debateStages : [],
   debateConfig: acc?.debateConfig || null,
+  // 최종 결론 구조(decision/conditions/reason/recommendation) + 참여자 — 특정 에이전트 소유가 아니다.
+  debateResult: acc?.debateResult || null,
+  debateParticipants: Array.isArray(acc?.debateParticipants) ? acc.debateParticipants : null,
 });
+
+// 토론 단계가 '최종 결론(합의)' 인가 — 에이전트 발언이 아니라 독립 영역으로 렌더한다.
+//  ai07 신계약: stageType DEBATE_FINAL_CONCLUSION / speechType FINAL_CONCLUSION / agentId debate-consensus / consensus:true.
+//  구계약(ai07 미배포 시): 같은 stageType 을 특정 에이전트 이름으로 보내므로 stageType 으로도 판정한다(에이전트 귀속 금지).
+const DEBATE_FINAL_STAGE_TYPES = new Set(['DEBATE_FINAL_CONCLUSION', 'FINAL_CONCLUSION', 'JUDGEMENT']);
+const isDebateFinalStage = (s) => !!s && (
+  DEBATE_FINAL_STAGE_TYPES.has(String(s.stageType || '').toUpperCase())
+  || String(s.speechType || '').toUpperCase() === 'FINAL_CONCLUSION'
+  || String(s.agentId || '') === 'debate-consensus'
+  || s.consensus === true
+);
 
 // 하위 호환: initialAnswers/peerFeedbacks/revisedAnswers/debateSummary → 구조화 debateStages.
 // 역할 정책(에이전트1=반대, 에이전트2=찬성)에 맞춰 매핑한다.
@@ -731,6 +756,10 @@ const normalizeDebateStages = (message) => {
       agentIndex: s.agentIndex,
       agentId: s.agentId,
       agentName: s.agentName,
+      speechType: s.speechType,
+      round: s.round ?? s.debateRound,
+      consensus: s.consensus,
+      targetAgentName: s.targetAgentName,
       content: s.content ?? s.text ?? s.answer ?? s.feedback ?? '',
     }));
   }
@@ -748,6 +777,8 @@ const normalizeDebateStages = (message) => {
 // 메시지에서 사용된 debateConfig를 추출한다(액션 프롬프트 컨텍스트용).
 const debateConfigOf = (message) =>
   message?.debateConfig || message?.processSteps?.debateConfig || null;
+const debateResultOf = (message) =>
+  message?.debateResult || message?.processSteps?.debateResult || null;
 
 // 소크라테스 단계 메타 (stageType → 제목/색상). 채팅/마인드맵 공통.
 const SOCRATIC_STAGE_META = {
@@ -789,6 +820,7 @@ const normalizeSocraticSteps = (message) => {
       stageTitle: s.stageTitle || SOCRATIC_STAGE_META[s.stageType]?.title || s.stageType,
       role: s.role,
       agentIndex: s.agentIndex,
+      agentId: s.agentId,
       agentName: s.agentName,
       question: s.question,
       hint: s.hint,
@@ -831,6 +863,7 @@ const normalizeSimulationStages = (message) => {
       stageTitle: s.stageTitle || SIMULATION_STAGE_META[s.stageType]?.title || s.stageType || '상황극 요약',
       role: s.role,
       agentIndex: s.agentIndex,
+      agentId: s.agentId,
       agentName: s.agentName,
       content: s.content ?? s.text ?? s.answer ?? '',
       userRole: s.userRole,
@@ -853,8 +886,28 @@ const normalizeSimulationStages = (message) => {
   return null;
 };
 
-const buildSimulationPayload = (data) => {
-  const stages = normalizeSimulationStages(data);
+// 구조화 단계(stages/steps)에 agentId 가 빠져 있으면 같은 응답의 answers(agentId 보유)에서 이름(+stageType)으로 보충한다.
+//  ai07 simulationStages 는 agentName/agentIndex 만 실어 보내므로, 에이전트별 identity(data-agent-id)를 잃지 않게 한다.
+const enrichStagesWithAgentIds = (stages, answers, roomAgents) => {
+  if (!Array.isArray(stages) || !stages.length) return stages;
+  const ans = Array.isArray(answers) ? answers : [];
+  const agents = Array.isArray(roomAgents) ? roomAgents : [];
+  if (!ans.length && !agents.length) return stages;
+  return stages.map((st) => {
+    if (!st || st.agentId != null) return st;
+    const name = String(st.agentName || '');
+    const hit = ans.find((a) => a && a.agentId != null && a.stageType && a.stageType === st.stageType && String(a.agentName || '') === name)
+      || ans.find((a) => a && a.agentId != null && String(a.agentName || '') === name);
+    if (hit) return { ...st, agentId: hit.agentId };
+    // DB 복원(answers 없음): 방 에이전트의 stable id 를 이름으로 보충한다(동명이인 방은 첫 매칭 — 표시용).
+    const ag = name ? agents.find((a) => String(a?.name || '').trim() === name.trim()) : null;
+    const id = ag ? (ag.agentId ?? ag.id) : null;
+    return id != null ? { ...st, agentId: id } : st;
+  });
+};
+
+const buildSimulationPayload = (data, roomAgents) => {
+  const stages = enrichStagesWithAgentIds(normalizeSimulationStages(data), data?.answers, roomAgents);
   if (!stages || stages.length === 0) return null;
   const choiceStage = stages.find((s) => Array.isArray(s.choices) && s.choices.length > 0);
   const roleStage = stages.find((s) => s.userRole);
@@ -912,7 +965,8 @@ const SocraticRenderer = ({ steps }) => {
       {steps.map((s, idx) => {
         const meta = SOCRATIC_STAGE_META[s.stageType] || { title: s.stageTitle, color: '#0ea5e9' };
         return (
-          <div key={`socratic-step-${s.stageType}-${idx}`} style={{ ...cardStyle, borderLeft: `3px solid ${meta.color}` }}>
+          <div key={`socratic-step-${s.stageType}-${s.agentId ?? s.agentIndex ?? ''}-${idx}`} style={{ ...cardStyle, borderLeft: `3px solid ${meta.color}` }}
+            data-card-kind="agent" data-stage-type={s.stageType} data-agent-id={s.agentId != null ? String(s.agentId) : undefined} data-agent-name={s.agentName || undefined}>
             <div style={{ ...metaStyle, color: meta.color }}>
               {s.stageTitle || meta.title}{s.agentName ? ` · ${s.agentName}` : (s.role ? ` · ${s.role}` : '')}
             </div>
@@ -937,7 +991,8 @@ const SimulationRenderer = ({ stages, onChoice }) => {
         const title = s.stageTitle || meta.title;
         const body = s.content || s.consequence || s.misconceptionTrap || s.reflectionQuestion || s.nextScenarioPrompt || '';
         return (
-          <div key={`simulation-stage-${s.stageType}-${s.agentIndex ?? 0}-${idx}`} className={`simulation-stage-card simulation-stage-card--${meta.className}`}>
+          <div key={`simulation-stage-${s.stageType}-${s.agentId ?? s.agentIndex ?? 0}-${idx}`} className={`simulation-stage-card simulation-stage-card--${meta.className}`}
+            data-card-kind="agent" data-stage-type={s.stageType} data-agent-id={s.agentId != null ? String(s.agentId) : undefined} data-agent-name={s.agentName || undefined}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', flexWrap: 'wrap' }}>
               <span className="simulation-role-badge">{s.role || '상황극'}</span>
               <span style={{ color: meta.color, fontSize: '12px', fontWeight: 800 }}>{title}</span>
@@ -983,24 +1038,58 @@ const DEBATE_SIDE_COLOR = { CON: '#ea580c', PRO: '#059669', NEUTRAL: '#7c3aed', 
 
 // 채팅 화면 토론 렌더러 — 구조화 debateStages를 그대로 표시한다.
 // "1차 의견 / 서로 피드백 / 보완 답변 / 토론 정리" 라벨은 절대 쓰지 않는다.
-const DebateRenderer = ({ stages }) => {
+const DebateRenderer = ({ stages, debateResult }) => {
   if (!stages || stages.length === 0) return null;
   const cardStyle = { padding: '11px 12px', borderRadius: '8px', background: 'rgba(0,0,0,0.035)', border: '1px solid rgba(0,0,0,0.06)' };
   const metaStyle = { fontSize: '12px', fontWeight: 800, marginBottom: '5px' };
   const bodyStyle = { whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere', color: 'var(--color-text-muted)', fontSize: '13px', lineHeight: 1.55 };
+  // 에이전트 발언(입론/반박/예외 정리/입장 수정/합의 초안·검토)은 도착 순서 그대로, 최종 결론은 맨 아래 독립 영역.
+  const dialogue = stages.filter((s) => !isDebateFinalStage(s));
+  const finals = stages.filter((s) => isDebateFinalStage(s));
+  const result = debateResult && typeof debateResult === 'object' ? debateResult : null;
+  const conditions = Array.isArray(result?.conditions) ? result.conditions.filter(Boolean) : [];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-      {stages.map((s, idx) => {
+      {dialogue.map((s, idx) => {
         const accent = DEBATE_SIDE_COLOR[s.side] || '#64748b';
+        const roundLabel = Number.isInteger(Number(s.round)) && Number(s.round) > 0 ? `R${Number(s.round)}` : '';
         return (
-          <div key={`debate-stage-${s.stageType}-${s.side}-${idx}`} style={{ ...cardStyle, borderLeft: `3px solid ${accent}` }}>
-            <div style={{ ...metaStyle, color: accent }}>
-              {s.stageTitle}{s.agentName && s.side !== 'TOPIC' ? ` · ${s.agentName}` : ''}
+          <div key={`debate-stage-${s.stageType}-${s.agentId ?? s.side}-${idx}`} style={{ ...cardStyle, borderLeft: `3px solid ${accent}` }}
+            data-card-kind="agent" data-stage-type={s.stageType} data-round={s.round ?? undefined}
+            data-agent-id={s.agentId != null ? String(s.agentId) : undefined} data-agent-name={s.agentName || undefined}>
+            <div style={{ ...metaStyle, color: accent, display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+              <span>{s.stageTitle}{s.agentName && s.side !== 'TOPIC' ? ` · ${s.agentName}` : ''}</span>
+              {roundLabel && <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '8px', background: 'rgba(0,0,0,0.06)', color: '#475569' }}>{roundLabel}</span>}
+              {s.targetAgentName && <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b' }}>→ {s.targetAgentName}</span>}
             </div>
             <div style={bodyStyle}>{s.content}</div>
           </div>
         );
       })}
+      {(finals.length > 0 || result) && (
+        <div className="debate-final-conclusion" data-card-kind="final" data-stage-type="DEBATE_FINAL_CONCLUSION"
+          style={{ marginTop: '4px', padding: '12px 13px', borderRadius: '10px', background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.25)' }}>
+          {/* 최종 결론은 특정 에이전트의 답변이 아니다 — 아바타/이름을 붙이지 않는다. */}
+          <div style={{ fontSize: '12.5px', fontWeight: 900, color: DEBATE_SIDE_COLOR.NEUTRAL, marginBottom: '6px' }}>최종 결론</div>
+          {finals.map((s, idx) => (
+            <div key={`debate-final-${idx}`} style={bodyStyle}>{s.content}</div>
+          ))}
+          {result && !finals.length && result.decision && <div style={bodyStyle}>{result.decision}</div>}
+          {conditions.length > 0 && (
+            <div style={{ marginTop: '8px' }}>
+              <div style={{ fontSize: '11.5px', fontWeight: 800, color: '#475569', marginBottom: '3px' }}>적용 조건</div>
+              <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--color-text-muted)', fontSize: '12.5px', lineHeight: 1.5 }}>
+                {conditions.map((c, i) => <li key={i}>{String(c)}</li>)}
+              </ul>
+            </div>
+          )}
+          {result?.recommendation && (
+            <div style={{ marginTop: '8px', fontSize: '12.5px', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+              <span style={{ fontWeight: 800, color: '#475569' }}>권고: </span>{String(result.recommendation)}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -1174,7 +1263,8 @@ const explodeHistoryToStageBubbles = (history) => {
       if (seenTurn.has(turnKey)) continue;
       seenTurn.add(turnKey);
       // debateConfig는 마인드맵 액션 프롬프트용으로 보존한다.
-      out.push({ ...msg, debateStages: stages, debateConfig: debateConfigOf(msg), processSteps: undefined, content: msg.content || '토론' });
+      // 턴 말풍선은 특정 에이전트 소유가 아니다(DB 행의 agentId/이름을 헤더로 쓰면 최종 결론이 그 교수 답변처럼 보인다).
+      out.push({ ...msg, senderName: '토론', agentId: undefined, agent_id: undefined, agentSlot: undefined, debateStages: stages, debateConfig: debateConfigOf(msg), debateResult: debateResultOf(msg), processSteps: undefined, content: msg.content || '토론' });
       continue;
     }
     // 소크라테스 복원: processSteps.socraticSteps가 있으면 같은 턴 1회만 단일 소크라테스 말풍선으로 폭발.
@@ -1185,7 +1275,7 @@ const explodeHistoryToStageBubbles = (history) => {
       const turnKey = msg.parentId ?? `socratic::${socKey}`;
       if (seenTurn.has(turnKey)) continue;
       seenTurn.add(turnKey);
-      out.push({ ...msg, isSocratic: true, socraticSteps: socSteps, socraticConfig: socraticConfigOf(msg), processSteps: undefined, content: msg.content || '소크라테스 문답' });
+      out.push({ ...msg, senderName: '소크라테스', agentId: undefined, agent_id: undefined, agentSlot: undefined, isSocratic: true, socraticSteps: socSteps, socraticConfig: socraticConfigOf(msg), processSteps: undefined, content: msg.content || '소크라테스 문답' });
       continue;
     }
     const simPayload = msg && msg.sender === 'AI' ? buildSimulationPayload(msg) : null;
@@ -1194,7 +1284,7 @@ const explodeHistoryToStageBubbles = (history) => {
       const turnKey = msg.parentId ?? `simulation::${simKey}`;
       if (seenTurn.has(turnKey)) continue;
       seenTurn.add(turnKey);
-      out.push({ ...msg, isSimulation: true, simulationStages: simPayload.simulationStages, simulationConfig: simPayload.simulationConfig, processSteps: undefined, content: msg.content || '상황극' });
+      out.push({ ...msg, senderName: '상황극', agentId: undefined, agent_id: undefined, agentSlot: undefined, isSimulation: true, simulationStages: simPayload.simulationStages, simulationConfig: simPayload.simulationConfig, processSteps: undefined, content: msg.content || '상황극' });
       continue;
     }
     const ps = msg && msg.sender === 'AI' ? msg.processSteps : null;
@@ -1722,9 +1812,21 @@ const writePersistedHistory = (userId, roomId, list) => {
 // 방 전환/새로고침 시 서버 이력과 로컬 캐시를 합친다.
 //  - 서버가 로컬보다 같거나 많으면 서버를 정본으로 사용(중복 방지).
 //  - 서버가 더 적으면(스트리밍분 미영속 등) 로컬 캐시를 유지해 "대화 사라짐"을 막는다.
+const isStructuredTurnMessage = (m) => !!m && m.sender === 'AI' && (
+  m.isSocratic === true || m.isSimulation === true
+  || (Array.isArray(m.debateStages) && m.debateStages.length > 0)
+  || (Array.isArray(m.socraticSteps) && m.socraticSteps.length > 0)
+  || (Array.isArray(m.simulationStages) && m.simulationStages.length > 0)
+);
 const reconcileHistory = (server, local) => {
   const s = Array.isArray(server) ? server : [];
   const l = Array.isArray(local) ? local : [];
+  // 서버 이력이 구조화 턴(토론/소크라테스/상황극 말풍선)을 로컬보다 적게 복원하면(영속화 지연·구버전 저장분)
+  //  '더 긴 쪽' 규칙이 라이브 구조화 말풍선을 에이전트별 평문 행으로 덮어쓴다 → 최종 결론이 특정 교수 답변처럼 보임.
+  //  구조화 턴 수가 줄어드는 교체는 하지 않는다(라이브 유지). 서버가 같거나 더 완전하면 서버가 정본.
+  const sStructured = s.filter(isStructuredTurnMessage).length;
+  const lStructured = l.filter(isStructuredTurnMessage).length;
+  if (lStructured > sStructured) return l;
   return s.length >= l.length ? s : l;
 };
 
@@ -3000,7 +3102,9 @@ export default function StudyMate() {
     const renderModeGuard = (d, opts) => {
       modeGuardShown = true;
       if (import.meta.env.DEV) console.debug('[StudyMate] mode guard', { mode: activeLearningMode, code: d?.code, status: d?.status });
-      setTurnAiMessages([buildModeGuardMessage(d, opts)]);
+      // 모드 전용 실패는 오류 상태로 표시(가드/안내와 구분). 기본 답변으로 자동 전환하지 않는다.
+      const o = opts || (isModeErrorPayload(d) && String(d?.status || '').toUpperCase() !== 'BLOCKED' ? { isError: true } : undefined);
+      setTurnAiMessages([buildModeGuardMessage(d, o)]);
     };
 
     try {
@@ -3049,12 +3153,19 @@ export default function StudyMate() {
           const actType = d?.actType ?? patch.actType ?? '';
           const seq = d?.displayOrder ?? patch.displayOrder ?? '';
           const actSeg = actType ? `${actType}::${seq}` : (d?.stageType || 'FIRST_DRAFT');
-          const key = `${d?.requestId || requestId}::basic::${actSeg}::${idx}::${aid}::${hash}`;
+          // 발언 identity = requestId(턴) + stage(actType/displayOrder 또는 stageType) + agentIndex + agentId.
+          //  · 다른 Agent/다른 단계 → 다른 key → 새 카드로 누적(절대 서로 덮어쓰지 않는다).
+          //  · 같은 identity 재수신 → 같은 카드 갱신(전체 본문 교체). delta/chunk 플래그가 있으면 이어붙인다.
+          //  · stableKey 접두 비교는 '::' 경계까지 포함한다(agentId 63 과 632 가 접두 충돌로 서로 지우던 문제 방지).
           const stableKey = `${d?.requestId || requestId}::basic::${actSeg}::${idx}::${aid}`;
-          const prevKey = Array.from(agentAnswerMap.keys()).find((k) => k.startsWith(stableKey));
+          const key = `${stableKey}::${hash}`;
+          const prevKey = Array.from(agentAnswerMap.keys()).find((k) => k === stableKey || k.startsWith(`${stableKey}::`));
+          const prevMsg = prevKey ? agentAnswerMap.get(prevKey) : null;
           if (prevKey && prevKey !== key) agentAnswerMap.delete(prevKey);
+          const isDelta = !!(d && (d.delta === true || d.isDelta === true || d.chunk === true || d.partial === true));
           // 진행 중(isPending) 플레이스홀더는 방어 대상에서 제외하고, 실제 답변만 빈/진단 응답을 차단한다.
-          const rawContent = d?.content ?? d?.answer ?? patch.content ?? '';
+          const incoming = d?.content ?? d?.answer ?? patch.content ?? '';
+          const rawContent = (isDelta && prevMsg && !prevMsg.isPending) ? `${prevMsg.content || ''}${incoming}` : incoming;
           const coerced = (patch.isPending || patch.isError)
             ? { ok: !patch.isError, text: rawContent }
             : coerceAgentText(rawContent, { requestId: d?.requestId || requestId, roomId: agentId, agentId: aid, agentIndex: idx, stageType: d?.stageType || 'FIRST_DRAFT' });
@@ -3160,9 +3271,9 @@ export default function StudyMate() {
           }
           // 2) 소크라테스 — 구조화 socraticSteps 우선, 없으면 누적 단계/answer fallback
           if (respMode === 'socratic' || isSocraticModeValue(activeLearningMode)) {
-            const finalSteps = (Array.isArray(d?.socraticSteps) && d.socraticSteps.length)
+            const finalSteps = enrichStagesWithAgentIds((Array.isArray(d?.socraticSteps) && d.socraticSteps.length)
               ? d.socraticSteps
-              : (socraticStepMap.size ? socraticStepsArr() : (normalizeSocraticSteps(d) || []));
+              : (socraticStepMap.size ? socraticStepsArr() : (normalizeSocraticSteps(d) || [])), d?.answers);
             if (finalSteps.length > 0) {
               setTurnAiMessages([buildSocraticTurnMessage(
                 { socraticSteps: finalSteps, socraticConfig: d?.socraticConfig || socraticConfigAcc },
@@ -3177,7 +3288,8 @@ export default function StudyMate() {
             : (debateStageMap.size ? debateStagesArr() : (normalizeDebateStages(d) || []));
           if (finalStages.length > 0) {
             setTurnAiMessages([buildDebateTurnMessage(
-              { debateStages: finalStages, debateConfig: d?.debateConfig || debateConfigAcc },
+              { debateStages: finalStages, debateConfig: d?.debateConfig || debateConfigAcc,
+                debateResult: d?.debateResult || null, debateParticipants: d?.debateParticipants || null },
               userMsg.id, ts,
             )]);
             return;
@@ -3358,6 +3470,7 @@ export default function StudyMate() {
             onComment: () => { markLiveness('comment'); },
             onTurnStart: (d) => {
               markLiveness('turn_start');
+              captureConvState(d);
               // 첫 이벤트부터 가드 코드가 오면(NON_LEARNING_INPUT) 즉시 모드 안내 상태로 전환한다.
               if (isModeGuardPayload(d)) { renderModeGuard(d); streamRendered = true; }
             },
@@ -3403,6 +3516,7 @@ export default function StudyMate() {
             onAgentAnswer: (d) => {
               armWatchdog();
               if (!d) return;
+              captureConvState(d);
               // 가드/BLOCKED 답변은 에이전트 답변 카드로 만들지 않는다(모드 안내 상태 1건만).
               if (modeGuardShown || isModeGuardPayload(d)) { renderModeGuard(d); streamRendered = true; return; }
               agentAnswerCount += 1;
@@ -3716,7 +3830,21 @@ export default function StudyMate() {
                 });
                 return;
               }
-              if (streamRendered) return; // 일부 답변은 이미 표시됨 → 유지
+              if (streamRendered) {
+                // 일부 답변은 이미 표시됨 → 유지. 단 모드 전용 오류(code)면 "완성된 답변"처럼 두지 않고
+                // 별도 모드 오류 안내 버블을 덧붙인다(부분 답변은 보존, 기본 답변으로 바꿔치기 금지).
+                if (d && d.code) {
+                  const notice = {
+                    ...buildModeGuardMessage({ ...d, message: d.message || d.reason || `${MODE_LABELS[activeLearningMode] || ''} 모드 처리에 실패했습니다. (${d.code})` }, { isError: true }),
+                    id: `${userMsg.id}::mode-error`,
+                    parentId: `${userMsg.id}::mode-error`, // 부분 답변(parentId=userMsg.id)을 덮지 않도록 별도 parent
+                  };
+                  const add = (list) => ((list || []).some((m) => m.id === notice.id) ? list : [...(list || []), notice]);
+                  setRoomHistories((prev) => ({ ...prev, [agentId]: add(prev[agentId]) }));
+                  if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => add(prev));
+                }
+                return;
+              }
               // 모드 전용 오류(code 보유: DEBATE_FAILED/AI_CONTRACT_FAILURE 등)는 해당 모드의 안내 상태로 표시하고
               // 기본 답변/일반 "연결 중단" 문구로 바꾸지 않는다(fail-closed: 가짜 성공·모드 바꿔치기 금지).
               if (d && d.code) {
@@ -4477,12 +4605,12 @@ export default function StudyMate() {
                   ) : (
                     chatHistory.map((msg, idx) => {
                       const isUser = msg.sender === 'USER';
-                      const simulationPayload = !isUser ? buildSimulationPayload(msg) : null;
+                      const simulationPayload = !isUser ? buildSimulationPayload(msg, selectedAgent?.agents) : null;
                       const simulationStages = simulationPayload?.simulationStages || null;
                       const hasSimulationPayload = simulationStages && simulationStages.length > 0;
-                      const debateStages = (!isUser && !hasSimulationPayload) ? normalizeDebateStages(msg) : null;
+                      const debateStages = (!isUser && !hasSimulationPayload) ? enrichStagesWithAgentIds(normalizeDebateStages(msg), null, selectedAgent?.agents) : null;
                       const debatePayload = debateStages && debateStages.length > 0;
-                      const socraticSteps = (!isUser && !hasSimulationPayload && !debatePayload) ? normalizeSocraticSteps(msg) : null;
+                      const socraticSteps = (!isUser && !hasSimulationPayload && !debatePayload) ? enrichStagesWithAgentIds(normalizeSocraticSteps(msg), null, selectedAgent?.agents) : null;
                       const socraticPayload = socraticSteps && socraticSteps.length > 0;
                       const senderName = isUser ? '나' : (msg.senderName || msg.sender_name || selectedAgent.name);
 
@@ -4582,7 +4710,7 @@ export default function StudyMate() {
                             </div>
                           ) : debatePayload ? (
                             <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', borderLeft: `4px solid ${agentColor.border}`, maxWidth: '100%' }}>
-                              <DebateRenderer stages={debateStages} />
+                              <DebateRenderer stages={debateStages} debateResult={debateResultOf(msg)} />
                             </div>
                           ) : socraticPayload ? (
                             <div className="chat-bubble ai" style={{ backgroundColor: agentTheme.bg, border: 'none', borderLeft: `4px solid ${agentColor.border}`, maxWidth: '100%' }}>
