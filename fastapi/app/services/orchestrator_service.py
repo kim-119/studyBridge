@@ -98,6 +98,7 @@ def _output_format() -> str:
 
 def build_basic_prompt(agents: List[AgentProfile]) -> str:
     """기본 설명 모드: 질문에 답 + 에이전트 간 상호 피드백."""
+    from app.services.persona_leak_guard import NO_ROLE_EXPOSURE_RULE
     agents_json = json.dumps(_agents_to_json_list(agents), ensure_ascii=False, indent=2)
     return f"""{_common_header(agents_json)}
 
@@ -106,9 +107,11 @@ def build_basic_prompt(agents: List[AgentProfile]) -> str:
 1. 질문의 맥락에 가장 적합한 1~3명의 에이전트가 먼저 답변한다.
 2. 설명 시 전문적인 비유, 구체적인 코드/실무 예시, 동작 원리를 상세히 풀어서 다루어야 한다.
 3. 두 번째 이후 에이전트는 앞 에이전트의 답변을 참조하여 심화된 내용을 덧붙이거나 보완한다.
-   - 예: "친절봇이 개념을 설명했으니, 저는 실제 활용 사례와 주의점을 추가로 말씀드릴게요~"
+   - 앞 답변을 짚을 때는 '내용'으로 지칭한다(예: "앞 설명이 동작 원리는 짚었지만 실패 사례가 빠졌다").
 4. 마지막 에이전트는 앞선 답변들의 허점이나 놓친 부분을 날카롭게 검증(피드백)한다.
 5. 각 에이전트의 성격이 답변 톤에 분명히 드러나야 하며, 대화가 유기적으로 엮여야 한다.
+
+{NO_ROLE_EXPOSURE_RULE}
 {_output_format()}"""
 
 
@@ -601,6 +604,7 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
     social=True(인사/잡담/짧은 사회적 입력)이면 공격적 비판 대신 가볍게 인사로 받는다.
     """
     from app.services.personality_prompt_builder import build_personality_prompt
+    from app.services.persona_leak_guard import NO_ROLE_EXPOSURE_RULE as _NO_ROLE_EXPOSURE
 
     persona_block = build_personality_prompt(_agent_personality_label(agent), _agent_custom_instruction(agent))
     name = agent.name or "AI"
@@ -637,7 +641,9 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
 - 학습 질문이 아니다. 비판·지적·분석을 하지 말고, 네 성격 톤만 살짝 살려 1~2문장으로 가볍게 받아라.
 - 없는 내용을 트집잡거나 길게 늘어놓지 마라. 자연스럽게 인사하고, 필요하면 무엇을 도와줄지 한 번 물어봐라.{peers}
 
-[규칙] 한국어로, 머리말/꼬리말/JSON 없이 본문만. 같은 문장 반복 금지."""
+[규칙] 한국어로, 머리말/꼬리말/JSON 없이 본문만. 같은 문장 반복 금지.
+
+{_NO_ROLE_EXPOSURE}"""
 
     # 비-basic 모드(소크라테스/토론/상황극): 모드 지시가 지배한다.
     # basic 전용 프레이밍(역할분담·'깊이있게 설명하라'·비판규칙)은 넣지 않는다 — 소크라테스가 일반 설명으로 변질되는 걸 막는다.
@@ -680,7 +686,9 @@ def _build_single_agent_system_prompt(agent: AgentProfile, mode: str, all_agents
 - 이전 대화 맥락이 주어지면 그 흐름을 자연스럽게 이어가라(앞 이야기를 기억하는 것처럼).
 - 위 성격(톤)이 답변 문장에 분명히 드러나야 한다. GPT처럼 무색무취하게 쓰지 마라.
 - 모든 답변은 한국어로 작성한다.
-- JSON·머리말·꼬리말 없이, 너의 답변 본문만 작성하라."""
+- JSON·머리말·꼬리말 없이, 너의 답변 본문만 작성하라.
+
+{_NO_ROLE_EXPOSURE}"""
 
 
 def _build_single_agent_user_prompt(
@@ -766,6 +774,23 @@ def _cross_feedback_enabled(request: MultiChatRequest, agents: List[AgentProfile
         return True
 
 
+def _basic_answer_guard(text: str, agent: AgentProfile, mode: str) -> str:
+    """BASIC 응답에 남은 역할 선언 메타 절을 제거한다.
+
+    프롬프트 계약(NO_ROLE_EXPOSURE_RULE)이 1차 방어이고 이건 2차 방어다.
+    basic/default 가 아니면 원문을 그대로 둔다(토론/소크라테스/상황극의 역할 발화는 정상 구조다).
+    """
+    m = (mode or "basic").strip().lower()
+    if m not in ("", "basic", "default"):
+        return text
+    try:
+        from app.services.persona_leak_guard import strip_role_meta
+        return strip_role_meta(text, agent)
+    except Exception as e:  # pragma: no cover - 가드 실패가 답변을 막지 않는다
+        logger.warning("[PERSONA-GUARD] 적용 실패: %s", e)
+        return text
+
+
 def _generate_single_agent_answer(
     agent: AgentProfile, request: MultiChatRequest, mode: str, grounding_cache: Optional[Dict[str, str]], context: str,
     all_agents: List[AgentProfile], peer_answers: Optional[List[Dict[str, Any]]] = None,
@@ -802,7 +827,7 @@ def _generate_single_agent_answer(
                 agent.name, mode, lvl, len(grounding), max_tokens, elapsed_ms, len(answer))
     if not answer:
         answer = "(응답을 생성하지 못했어요. 잠시 후 다시 시도해 주세요.)"
-    return answer
+    return _basic_answer_guard(answer, agent, mode)
 
 
 def _feedback_round_enabled() -> bool:
@@ -814,6 +839,7 @@ def _generate_round2_feedback(agent: AgentProfile, request: MultiChatRequest, mo
     """2라운드: 다른 메이트들의 1라운드 답을 보고 '가장 중요한 보충/반박 한 가지'만 짧게."""
     from app.services.ollama_client import ask_ollama
     from app.services.personality_prompt_builder import build_personality_prompt, build_persona_directive, get_generation_params
+    from app.services.persona_leak_guard import NO_ROLE_EXPOSURE_RULE
 
     persona = build_personality_prompt(_agent_personality_label(agent), _agent_custom_instruction(agent))
     sys = (
@@ -826,7 +852,8 @@ def _generate_round2_feedback(agent: AgentProfile, request: MultiChatRequest, mo
         "④ 그 근거 또는 구체적인 예시 1개.\n"
         "- ★ 결국 '사용자'가 더 정확히 이해하게 만드는 게 목적이다. 사용자에게 설명하듯 말하라.\n"
         "- 앞 답을 복붙·재서술하지 마라(단순 요약 금지). 인신공격·욕설만 빼고 비꼼·시니컬은 네 성격대로 살려라.\n"
-        "- 한국어로, 머리말/꼬리말/JSON 없이 본문만."
+        "- 한국어로, 머리말/꼬리말/JSON 없이 본문만.\n\n"
+        + NO_ROLE_EXPOSURE_RULE
     )
     other_lines = "\n".join(f"- {str(a.get('answer', ''))[:200]}" for a in others_answers)
     usr = (
@@ -841,7 +868,7 @@ def _generate_round2_feedback(agent: AgentProfile, request: MultiChatRequest, mo
         max_tokens=min(request.maxTokens or 640, 640),
         temperature=gen.get("temperature", 0.5), think=False,
     )
-    return (raw or "").strip()
+    return _basic_answer_guard((raw or "").strip(), agent, mode)
 
 
 def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> MultiChatResponse:
@@ -945,6 +972,7 @@ def _generate_discussion_wrap(request: MultiChatRequest, all_answers: List[Dict[
     학습자가 다시 보기 좋게 구조화한다.
     """
     from app.services.ollama_client import ask_ollama
+    from app.services.persona_leak_guard import NO_ROLE_EXPOSURE_RULE
     joined = "\n".join(f"- {str(a.get('answer', ''))[:200]}" for a in all_answers[:8])
     sys = (
         "너는 학습 내용을 깔끔하게 구조화해 정리하는 정리자다. 항상 사용자를 향해 말한다.\n"
@@ -952,7 +980,8 @@ def _generate_discussion_wrap(request: MultiChatRequest, all_answers: List[Dict[
         "1) 핵심 개념 정리 — 이번 대화의 요지를 군더더기 없이.\n"
         "2) 오개념·주의점 — 헷갈리기 쉬운 지점이나 자주 하는 실수.\n"
         "3) 복습 포인트 — 다음에 스스로 점검하면 좋을 질문/항목.\n"
-        "정의를 그대로 베끼지 말고 학습자가 다시 보기 좋게 재구성하라. 머리말/꼬리말/JSON 없이 한국어 본문만."
+        "정의를 그대로 베끼지 말고 학습자가 다시 보기 좋게 재구성하라. 머리말/꼬리말/JSON 없이 한국어 본문만.\n\n"
+        + NO_ROLE_EXPOSURE_RULE
     )
     usr = (
         f"[사용자 질문] {request.message}\n[지금까지 나온 설명들]\n{joined}\n\n"
@@ -965,7 +994,7 @@ def _generate_discussion_wrap(request: MultiChatRequest, all_answers: List[Dict[
     except Exception as e:  # pragma: no cover - 방어
         logger.warning("[Orchestrator] WRAP(정리) 생성 실패: %s", e)
         raw = ""
-    return (raw or "").strip()
+    return _basic_answer_guard((raw or "").strip(), agent, mode)
 
 
 # 재개입 칩: 도메인 용어를 박지 않는 content-free 후속 택(대화행위 패턴만).
