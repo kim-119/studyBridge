@@ -135,31 +135,19 @@ def _messages_from_complete_payload(data: Dict[str, Any], payload: Dict[str, Any
 # agent_answer SSE를 백엔드에서 실제로 보강 emit한다(프론트 fake 아님). simulation에서
 # NPC 1명이 selected 교수 N명을 대체하던 버그(agent_answer=0) 방어. content는 mode/agent
 # role 기반 fallback으로 채워 빈 content/누락이 없도록 한다.
-_SIM_FALLBACK = (
-    "{agentName} 관점에서 이 상황의 목표, 제약, 선택 결과를 차례로 따져보겠습니다. "
-    "이 장면에서는 먼저 누가 어떤 자원을 기다리고 있는지 확인하는 것이 핵심입니다."
+# ── 필러는 '정상 AI 답변'이 아니라 '실행 누락 표시'다 ────────────────────────
+# 과거엔 모드별로 그럴듯한 문장("{agentName} 관점에서 핵심을 정리하면…")을 합성했는데,
+# 그 결과 (a) 실제 LLM 실행 실패가 정상 답변처럼 위장되고, (b) 의도적 partial route
+# (정리 요청 WRAP / 기억 회상 / direct reply)에서 교수 2~3명이 똑같은 문장을 내뱉었다.
+# 의도적 partial 은 handler 가 suppressAgentFill=True 로 알리고, 그 외의 누락은
+# 여기서 degraded 카드로 '드러내야' 한다(조용한 성공 위장 금지).
+_MISSING_ANSWER_TEXT = (
+    "{agentName}의 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요."
 )
-_FALLBACK_BY_MODE = {
-    "simulation": _SIM_FALLBACK,
-    "basic": "{agentName} 관점에서 핵심을 정리하면, 이 질문은 개념 정의와 실제 예시를 나누어 이해하는 것이 좋습니다.",
-    "socratic": "{agentName} 관점에서 먼저 생각해볼 질문은 이것입니다. 이 문제에서 확실히 알고 있는 전제와 아직 확인하지 못한 전제는 무엇인가요?",
-    "debate": "{agentName} 입장에서 검토해야 할 핵심은 주장에 필요한 근거와 반례 가능성입니다.",
-}
 
 
 def _fallback_content(mode: str, agent_name: str) -> str:
-    m = (mode or "").lower()
-    tmpl = _FALLBACK_BY_MODE.get(m)
-    if not tmpl:
-        if "simul" in m or "상황" in m or "역할" in m:
-            tmpl = _SIM_FALLBACK
-        elif "socr" in m or "소크라" in m:
-            tmpl = _FALLBACK_BY_MODE["socratic"]
-        elif "debate" in m or "토론" in m:
-            tmpl = _FALLBACK_BY_MODE["debate"]
-        else:
-            tmpl = _FALLBACK_BY_MODE["basic"]
-    return tmpl.format(agentName=agent_name or "에이전트")
+    return _MISSING_ANSWER_TEXT.format(agentName=agent_name or "이 에이전트")
 
 
 def _synth_agent_answer(agent: Dict[str, Any], index: int, mode: str) -> Dict[str, Any]:
@@ -180,6 +168,10 @@ def _synth_agent_answer(agent: Dict[str, Any], index: int, mode: str) -> Dict[st
         "content": content,
         "answer": content,
         "synthesized": True,
+        # 성공 위장 금지: 이 카드는 실패 표시다.
+        "degraded": True,
+        "status": "FAILED",
+        "code": "AGENT_ANSWER_MISSING",
     }
 
 
@@ -289,8 +281,13 @@ async def multi_chat_stream_compat(request: Request):
             # (그 1명만 답하는 게 의도이므로 나머지를 채우면 안 됨).
             target_id = str(payload.get("targetAgentId") or payload.get("target_agent_id") or "").strip()
             # selectedAgents 보존 + agent_answer 커버리지 추적(누락 보강 / all_complete 1회 보장).
+            # executed_*: 파이프라인이 '실제로 실행'해 내보낸 agent_answer.
+            # emitted_*: 최종적으로 SSE 로 나간 것(= executed + 합성 필러).
             emitted_ids: set = set()
             emitted_names: set = set()
+            executed_ids: set = set()
+            executed_names: set = set()
+            dialogue_act = None
             all_complete_sent = False
             chat_request = MultiChatRequest(**payload)
             # ── Redis 대화기억(서버측 보관/조회): 같은 방/세션의 최근 대화를 message 앞에
@@ -336,6 +333,10 @@ async def multi_chat_stream_compat(request: Request):
                     if event == "agent_answer":
                         emitted_ids.add(str(data.get("agentId") or ""))
                         emitted_names.add(str(data.get("agentName") or ""))
+                        executed_ids.add(str(data.get("agentId") or ""))
+                        executed_names.add(str(data.get("agentName") or ""))
+                    if data.get("dialogueAct"):
+                        dialogue_act = data.get("dialogueAct")
                     if event == "all_complete":
                         # all_complete는 정확히 1회. 내부/레거시 중복 all_complete는 흡수한다.
                         if all_complete_sent:
@@ -343,9 +344,13 @@ async def multi_chat_stream_compat(request: Request):
                         # selectedAgents N명 중 agent_answer 누락분을 실제 SSE로 보강 emit한다.
                         # 단, @멘션으로 1명을 지목한 경우(target_id)엔 누락 보강을 하지 않는다(그 1명만 답해야 함).
                         synth_answers = []
-                        # suppressAgentFill: 참여자 수가 모드 계약으로 정해진 경우(토론 2명 등)
-                        # 나머지 선택 에이전트를 채우면 토론에 참여하지 않은 발언이 섞인다.
+                        # suppressAgentFill: 참여자 수가 모드 계약으로 정해진 경우(토론 2명,
+                        # 정리 요청 WRAP 1명, 기억 회상 1명, direct reply 1건 등).
+                        # 이때 나머지 선택 에이전트를 채우면 참여하지 않은 발언이 섞인다.
                         _suppress = bool(data.get("suppressAgentFill"))
+                        _route = data.get("route") or ("target_agent" if target_id else "multi_agent")
+                        if data.get("dialogueAct"):
+                            dialogue_act = data.get("dialogueAct")
                         for i, a in enumerate(selected_agents if not (target_id or _suppress) else []):
                             if str(a.get("agentId") or "") in emitted_ids or str(a.get("agentName") or "") in emitted_names:
                                 continue
@@ -356,6 +361,30 @@ async def multi_chat_stream_compat(request: Request):
                             last_agent_index = syn.get("agentIndex", last_agent_index)
                             last_agent_name = syn.get("agentName", last_agent_name)
                             yield _emit("agent_answer", syn)
+
+                        # ── 라우팅/커버리지 계측(필수 로그) ──────────────────────
+                        # 계약: 정상 multi-agent 는 selected == executed == emitted.
+                        #       의도적 partial 은 executed < selected 이되 suppress_agent_fill=True.
+                        _selected_ids = [str(a.get("agentId") or "") for a in selected_agents]
+                        logger.info(
+                            "[MULTI-CHAT-ROUTE] turn=%s mode=%s route=%s selected_agent_ids=%s "
+                            "executed_agent_ids=%s emitted_agent_ids=%s suppress_agent_fill=%s dialogue_act=%s",
+                            turn_id, mode, _route, _selected_ids,
+                            sorted(x for x in executed_ids if x), sorted(x for x in emitted_ids if x),
+                            _suppress, dialogue_act,
+                        )
+                        if synth_answers:
+                            # 억제되지 않은 경로에서 필러가 나갔다는 건 '실제 실행 누락'이다.
+                            # 조용한 성공 위장 금지 → ERROR 로그 + degraded 카드로 드러낸다.
+                            logger.error(
+                                "[AGENT-FILL] turn=%s mode=%s route=%s 실행 누락 %d명 "
+                                "(selected=%d executed=%d) missing=%s — degraded 카드로 대체",
+                                turn_id, mode, _route, len(synth_answers),
+                                len(selected_agents), len([x for x in executed_ids if x]),
+                                [s.get("agentName") for s in synth_answers],
+                            )
+                            data["degraded"] = True
+                            data["missingAgentIds"] = [s.get("agentId") for s in synth_answers]
 
                         data.setdefault("success", True)
                         data.setdefault("groupId", payload.get("groupId") or payload.get("group_id"))

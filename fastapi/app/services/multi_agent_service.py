@@ -2104,6 +2104,9 @@ def run_direct_reply_stream(request: MultiChatRequest, route_result):
     data["phase"] = "DIRECT_REPLY"
     data["visible"] = True
     data["message"] = "응답이 완료되었습니다."
+    # 의도적 partial route(직접 응답 1건만). 나머지 선택 에이전트 슬롯을 compat 가 필러로 채우면
+    # hard stop 이 다인 답변처럼 보인다.
+    data["suppressAgentFill"] = True
     yield {"event": "all_complete", "data": data}
 
 
@@ -2129,8 +2132,11 @@ def _build_stream_generator_impl(request: MultiChatRequest):
     simulation/debate/socratic → 기존 전용 모드 스트림 유지.
     """
     # ── Router hard stop ───────────────────────────────────────────────────
+    # 라우팅 입력은 Redis 대화기억 블록을 제거한 '현재 사용자 입력'이어야 한다.
+    # (기억 블록째 분류하면 과거 발화 때문에 현재 턴이 hard stop / 사회적 입력으로 오염된다.)
+    from app.services.orchestrator_service import current_user_message as _current_msg
     route_result = _guard.classify_route(
-        request.message, mode=request.mode, learning_mode=getattr(request, "learningMode", None)
+        _current_msg(request), mode=request.mode, learning_mode=getattr(request, "learningMode", None)
     )
     logger.info("[Guardrail] stream route=%s visibleMode=%s reason=%s matched=%s",
                 route_result.route, route_result.visibleMode, route_result.reason, route_result.matched)

@@ -379,6 +379,10 @@ def run_basic_contextual_turn_stream(
             "messages": all_answers,
             "suppressValidation": True,
             "suppressPeerFeedback": True,
+            # 후속 발화 턴은 앞 3명만 짧게 답하는 '의도적 partial'이다(selected 가 4명 이상일 때).
+            # 그 경우 나머지 슬롯을 compat 필러로 채우면 같은 문장이 복제된다.
+            "route": "basic_contextual_followup",
+            "suppressAgentFill": len(selected) < len(agents or []),
             "status": "COMPLETED",
             "phase": "ALL_COMPLETE",
             "visible": True,

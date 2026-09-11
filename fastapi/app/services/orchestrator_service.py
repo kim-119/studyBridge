@@ -741,19 +741,43 @@ def _build_single_agent_user_prompt(
     return "\n\n".join(parts)
 
 
-def _is_social_input(request: MultiChatRequest) -> bool:
-    """인사/잡담/자기소개/불명확(내용 없는 사회적 입력)인지. guardrail 라우터 재사용."""
+def current_user_message(request: MultiChatRequest) -> str:
+    """라우팅/의도 판정에만 쓰는 '현재 사용자 입력' 원문(canonical current message).
+
+    multi_chat_redis_memory.attach_memory_to_request 는 Ollama 프롬프트용으로
+    `[이전 대화 기억] … [현재 질문] <원문>` 형태를 request.message 앞에 붙인다.
+    기억은 **생성 컨텍스트**이지 **현재 의도**가 아니다. 이 블록째로 라우팅하면
+    과거 대화에 '정리'/교수 이름 같은 토큰이 있다는 이유만으로 현재 질문이
+    summary/social/follow-up 경로로 오염된다(2026-09-11 라이브 회귀).
+
+    토론/소크라테스/상황극은 이미 strip_memory_block 을 쓰고 basic 만 빠져 있었다.
+    """
+    raw = getattr(request, "message", "") or ""
+    try:
+        from app.services.memory_recall_service import strip_memory_block
+        return strip_memory_block(raw)
+    except Exception:  # pragma: no cover - 방어: strip 실패해도 흐름 불변
+        return raw.strip()
+
+
+def _is_social_input(request: MultiChatRequest, message: Optional[str] = None) -> bool:
+    """인사/잡담/자기소개/불명확(내용 없는 사회적 입력)인지. guardrail 라우터 재사용.
+
+    message 를 넘기면 그 값(canonical current message)으로만 판정한다.
+    """
     try:
         from app.services import guardrail_router as _g
+        current = message if message is not None else current_user_message(request)
         route = _g.classify_route(
-            request.message, mode=request.mode, learning_mode=getattr(request, "learningMode", None)
+            current, mode=request.mode, learning_mode=getattr(request, "learningMode", None)
         ).route
         return route in (_g.GREETING, _g.SMALL_TALK, _g.SELF_INTRO, _g.UNCLEAR)
     except Exception:
         return False
 
 
-def _cross_feedback_enabled(request: MultiChatRequest, agents: List[AgentProfile]) -> bool:
+def _cross_feedback_enabled(request: MultiChatRequest, agents: List[AgentProfile],
+                            message: Optional[str] = None) -> bool:
     """동료 피드백(앞 메이트 의견 참조)을 '어쩔 때만' 켠다.
     env STUDYMATE_CROSS_FEEDBACK: auto(기본)/on/off.
       - off: 항상 끔 / on: 2명↑이면 항상
@@ -769,7 +793,7 @@ def _cross_feedback_enabled(request: MultiChatRequest, agents: List[AgentProfile
         return True
     # auto: 사회적 입력이면 끄고, 실제 질문이면 켠다.
     try:
-        return not _is_social_input(request)
+        return not _is_social_input(request, message)
     except Exception:
         return True
 
@@ -881,8 +905,10 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
     grounding_cache: Dict[str, str] = {}  # 메시지 단위 근거 캐시(위키/Tavily/GPT 중복호출 방지)
     gap_ms = int(_min_gap_seconds() * 1000)
 
-    feedback_on = _cross_feedback_enabled(request, agents)
-    social = _is_social_input(request)
+    # 라우팅 입력 SSOT: Redis 기억 블록을 제거한 '현재 사용자 입력' 1개를 만들어 모든 게이트에 동일 전달.
+    current_message = current_user_message(request)
+    feedback_on = _cross_feedback_enabled(request, agents, current_message)
+    social = _is_social_input(request, current_message)
     logger.info("[Orchestrator] (sync) mode=%s agents=%d cross_feedback=%s social=%s", effective_mode, len(agents), feedback_on, social)
 
     # ── basic 모드 후속 발화 게이트 (비스트림 패리티) ──────────────────────────
@@ -898,7 +924,7 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
             prev_ctx = build_previous_context(request.previousAnswers, mode=effective_mode)
             if prev_ctx.has_context:
                 decision = classify_dialogue_act(
-                    request.message,
+                    current_message,
                     previous_context=prev_ctx,
                     mode=request.mode,
                     learning_mode=getattr(request, "learningMode", None),
@@ -957,9 +983,13 @@ def run_orchestrator(request: MultiChatRequest, agents: List[AgentProfile]) -> M
 _SUMMARY_PATTERNS = ("정리", "요약", "3줄", "세 줄", "세줄", "핵심만", "한눈에", "summary", "summarize")
 
 
-def _summary_requested(request: MultiChatRequest) -> bool:
-    """사용자가 '정리/요약/3줄/핵심만' 등 정리를 명시적으로 요청했는지."""
-    msg = (request.message or "").strip().lower()
+def _summary_requested(request: MultiChatRequest, message: Optional[str] = None) -> bool:
+    """사용자가 '정리/요약/3줄/핵심만' 등 정리를 명시적으로 요청했는지.
+
+    반드시 canonical current message(기억 블록 제거본)로만 판정한다. 과거 대화에
+    '정리'가 있었다는 이유로 새 질문이 WRAP 경로로 새는 것을 막는다.
+    """
+    msg = (message if message is not None else current_user_message(request)).strip().lower()
     if not msg:
         return False
     return any(p in msg for p in _SUMMARY_PATTERNS)
@@ -1159,12 +1189,18 @@ def _run_discussion_plan(
         },
     }
 
+    # 플래너는 앞 min(N, max_answers)명에게만 DIRECT_ANSWER 를 배정한다. 배정 자체가 일부만이면
+    # 그건 '의도적 partial'이므로 필러를 막고, 전원 배정인데 빠진 게 있으면 실제 실행 누락이므로
+    # compat 가 감지/로그할 수 있게 열어 둔다(정상 multi-agent: selected == executed == emitted).
+    planned_speakers = {a.speaker for a in acts}
+    partial_by_design = len(planned_speakers) < len(agents)
     yield {
         "event": "all_complete",
         "data": {
             "type": "all_complete", "mode": effective_mode, "learningMode": effective_mode,
             "answers": all_answers, "messages": all_answers,
             "status": "COMPLETED", "phase": "ALL_COMPLETE", "visible": True,
+            "route": "discussion_plan", "suppressAgentFill": partial_by_design,
         },
     }
 
@@ -1214,7 +1250,10 @@ def _run_summary_only(
         "event": "all_complete",
         "data": {"type": "all_complete", "mode": effective_mode, "learningMode": effective_mode,
                  "answers": [entry], "messages": [entry], "status": "COMPLETED",
-                 "phase": "ALL_COMPLETE", "visible": True},
+                 "phase": "ALL_COMPLETE", "visible": True,
+                 # 의도적 partial route(정리는 교수 1명만 발화). 나머지 선택 교수 슬롯을
+                 # compat 필러로 채우면 "관점에서 핵심을 정리하면…" 동일 문장이 복제된다.
+                 "route": "summary_only", "suppressAgentFill": True},
     }
 
 
@@ -1254,7 +1293,9 @@ def _run_memory_recall(request, agents, effective_mode, identity_payload, intent
         "event": "all_complete",
         "data": {"type": "all_complete", "mode": effective_mode, "learningMode": effective_mode,
                  "answers": [entry], "messages": [entry], "status": "COMPLETED",
-                 "phase": "ALL_COMPLETE", "visible": True, "memoryAnswer": True},
+                 "phase": "ALL_COMPLETE", "visible": True, "memoryAnswer": True,
+                 # 의도적 partial route(회상 답변은 1개만). compat 가 나머지 슬롯을 필러로 합성하면 안 된다.
+                 "route": "memory_recall", "suppressAgentFill": True},
     }
 
 
@@ -1277,8 +1318,17 @@ def build_orchestrator_stream(
     context = _build_conversation_context(request.previousAnswers)
     grounding_cache: Dict[str, str] = {}  # 메시지 단위 근거 캐시(위키/Tavily/GPT 중복호출 방지)
     min_gap = _min_gap_seconds()
-    feedback_on = _cross_feedback_enabled(request, agents)
-    social = _is_social_input(request)
+    # ── 라우팅 입력 SSOT ──────────────────────────────────────────────────────
+    # Redis 대화기억은 '생성 컨텍스트'이지 '현재 의도'가 아니다. 기억 블록을 벗긴
+    # canonical current message 를 한 번 만들어 social / summary / dialogue-act
+    # 세 게이트에 **동일하게** 전달한다(각 함수에서 제각각 strip 하지 않는다).
+    current_message = current_user_message(request)
+    feedback_on = _cross_feedback_enabled(request, agents, current_message)
+    social = _is_social_input(request, current_message)
+    _raw_message = getattr(request, "message", "") or ""
+    if len(_raw_message) != len(current_message):
+        logger.info("[ROUTE-INPUT] 기억 블록 제거: rawLen=%d currentLen=%d current=%r",
+                    len(_raw_message), len(current_message), current_message[:80])
 
     # ── [MODE-TRACE] 진단용 계측(수정 아님): 프론트→Spring→FastAPI로 도달한 최종 mode 값을 증명한다.
     #    socratic 모드일 때만 "진단:" 프리픽스가 나오므로, 여기서 finalMode가 무엇인지 로그로 확정한다.
@@ -1345,8 +1395,8 @@ def build_orchestrator_stream(
     # ── 온디맨드 정리(🧩) ──────────────────────────────────────────────────────
     # 사용자가 '정리/요약/3줄/핵심만'을 요청했고 직전 대화가 있으면, 새 토론을 다시 돌리지 않고
     # 구조화된 정리(핵심 개념 / 오개념·주의점 / 복습 포인트) 한 장만 낸다. (WRAP은 이때만)
-    if effective_mode in ("basic", "default") and not social and _summary_requested(request) and request.previousAnswers:
-        logger.info("[Orchestrator] 정리 요청 감지 → 온디맨드 WRAP")
+    if effective_mode in ("basic", "default") and not social and _summary_requested(request, current_message) and request.previousAnswers:
+        logger.info("[Orchestrator] 정리 요청 감지 → 온디맨드 WRAP (current=%r)", current_message[:80])
         yield from _run_summary_only(request, agents, effective_mode, _agent_identity_payload)
         return
 
@@ -1365,7 +1415,7 @@ def build_orchestrator_stream(
             prev_ctx = build_previous_context(request.previousAnswers, mode=effective_mode)
             if prev_ctx.has_context:
                 decision = classify_dialogue_act(
-                    request.message,
+                    current_message,
                     previous_context=prev_ctx,
                     mode=request.mode,
                     learning_mode=getattr(request, "learningMode", None),
@@ -1553,5 +1603,9 @@ def _run_agent_turn_stream(request, agents, effective_mode, grounding_cache, con
             "status": "COMPLETED",
             "phase": "ALL_COMPLETE",
             "visible": True,
+            # 정상 multi-agent 경로: 전원 실행이 계약이다(selected == executed == emitted).
+            # 누락이 있으면 숨기지 말고 compat 가 degraded 로 드러내야 한다.
+            "route": "basic_per_agent",
+            "suppressAgentFill": False,
         },
     }
