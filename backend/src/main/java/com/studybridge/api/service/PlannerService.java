@@ -502,7 +502,7 @@ public class PlannerService {
     @Transactional
     public String regenerateDownloadPdf(Planner planner) {
         byte[] pdf = buildPdf(planner);
-        String key = "planners/downloads/user_" + planner.getUserId() + "/" + planner.getId() + ".pdf";
+        String key = Material.PLANNER_PREVIEW_KEY_PREFIX + "user_" + planner.getUserId() + "/" + planner.getId() + ".pdf";
         s3Service.uploadBytes(pdf, key, "application/pdf");
         planner.setS3Key(key);
         plannerRepository.save(planner);
@@ -526,13 +526,14 @@ public class PlannerService {
             }
             return;
         }
-        if (material.getStoredFileName() != null && !material.getStoredFileName().isBlank()) return;
+        // 이미 미리보기 PDF 키가 있으면 재생성하지 않는다. 기준은 s3FileUrl 이다.
+        // (storedFileName 은 PLANNER 불변식 가드가 계속 제거하므로 '이미 생성됨' 표식이 될 수 없다.)
+        if (material.getS3FileUrl() != null && !material.getS3FileUrl().isBlank()) return;
         Planner transientPlanner = plannerFromSnapshot(material);
         if (transientPlanner == null) return;
         byte[] pdf = buildPdf(transientPlanner);
-        String key = "planners/downloads/user_" + material.getUserId() + "/material_" + material.getMaterialId() + ".pdf";
+        String key = Material.PLANNER_PREVIEW_KEY_PREFIX + "user_" + material.getUserId() + "/material_" + material.getMaterialId() + ".pdf";
         s3Service.uploadBytes(pdf, key, "application/pdf");
-        material.setStoredFileName(key);
         material.setS3FileUrl(key);
         material.setOriginalFileName((material.getTitle() == null ? "planner" : material.getTitle()) + ".pdf");
         materialRepository.save(material);

@@ -144,7 +144,9 @@ class PlannerArchiveTest {
         service.ensurePreviewPdf(detached);
 
         verify(s3Service).uploadBytes(any(byte[].class), eq("planners/downloads/user_8/material_700.pdf"), eq("application/pdf"));
-        assertEquals("planners/downloads/user_8/material_700.pdf", detached.getStoredFileName());
+        // storedFileName 은 더 이상 쓰지 않는다: PLANNER 불변식 가드가 영속 시 항상 지우므로
+        // '이미 생성됨' 표식이 될 수 없다. 미리보기 PDF 의 SSOT 는 s3FileUrl(= S3 object key)이다.
+        assertNull(detached.getStoredFileName());
         assertEquals("planners/downloads/user_8/material_700.pdf", detached.getS3FileUrl());
         assertEquals("[로드맵 11주차 7일] 질의응답 및 토론.pdf", detached.getOriginalFileName());
         verify(materialRepository).save(detached);
