@@ -7,7 +7,10 @@ import org.hibernate.annotations.CreationTimestamp;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "chat_messages")
+// history 조회(agent_room_id + created_at 정렬)가 매번 전체 스캔이던 문제 → 복합 인덱스(ddl-auto=update 가 생성, RDS 에는 수동 CONCURRENTLY 적용).
+@Table(name = "chat_messages", indexes = {
+        @jakarta.persistence.Index(name = "idx_chat_messages_room_created", columnList = "agent_room_id, created_at")
+})
 @Getter
 @Setter
 @NoArgsConstructor

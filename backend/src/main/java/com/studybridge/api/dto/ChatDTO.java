@@ -33,6 +33,9 @@ public class ChatDTO {
     @Builder
     @ToString
     public static class MultiChatRequest {
+        // 빈 질문은 사용자 메시지로 저장되고 AI 호출까지 이어지므로 컨트롤러 @Valid 에서 400 으로 거절한다.
+        @jakarta.validation.constraints.NotBlank(message = "message 는 비어 있을 수 없습니다.")
+        @jakarta.validation.constraints.Size(max = 20000, message = "message 는 20000자를 넘을 수 없습니다.")
         private String message;
         private Long agentId;
         private Long roomId;

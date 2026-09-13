@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
 public class AgentChatRoomService {
 
         private final AgentChatRoomRepository agentChatRoomRepository;
+        private final RedisChatService redisChatService;
         private final AgentRepository agentRepository;
         private final UserRepository userRepository;
         private final ObjectMapper objectMapper;
@@ -40,13 +41,17 @@ public class AgentChatRoomService {
                 // 플랜별 방(AI 그룹) 개수 제한 (FREE=3, PREMIUM/ROOT/ADMIN=10).
                 int roomLimit = resolveRoomLimit(user);
                 if (agentChatRoomRepository.countByUserId(userId) >= roomLimit) {
-                        throw new RuntimeException("현재 플랜에서는 학습방을 최대 " + roomLimit + "개까지 생성할 수 있습니다.");
+                        // IllegalStateException → GlobalExceptionHandler 409 (RuntimeException 은 500 으로 새어 나가 프론트가 원인을 못 보여줬다)
+                        throw new IllegalStateException("현재 플랜에서는 학습방을 최대 " + roomLimit + "개까지 생성할 수 있습니다.");
                 }
 
                 // 플랜별 에이전트 생성 제한 (FREE=3, PREMIUM/ROOT=10). 하드코딩 3 대신 resolveAgentLimit 사용.
                 int agentLimit = resolveAgentLimit(user);
-                if (request.getAgents() != null && request.getAgents().size() > agentLimit) {
-                        throw new RuntimeException("현재 플랜에서는 에이전트를 최대 " + agentLimit + "명까지 생성할 수 있습니다.");
+                if (request.getAgents() == null || request.getAgents().isEmpty()) {
+                        throw new IllegalArgumentException("최소 1명 이상의 에이전트를 생성해야 합니다.");
+                }
+                if (request.getAgents().size() > agentLimit) {
+                        throw new IllegalStateException("현재 플랜에서는 에이전트를 최대 " + agentLimit + "명까지 생성할 수 있습니다.");
                 }
 
                 String normalizedLearningMode = normalizeLearningMode(request.getLearningMode());
@@ -89,10 +94,10 @@ public class AgentChatRoomService {
         @Transactional
         public void deleteRoom(Long userId, Long roomId) {
                 AgentChatRoom room = agentChatRoomRepository.findById(roomId)
-                                .orElseThrow(() -> new RuntimeException("채팅방을 찾을 수 없습니다."));
+                                .orElseThrow(() -> new java.util.NoSuchElementException("채팅방을 찾을 수 없습니다."));
 
                 if (!room.getUser().getId().equals(userId)) {
-                        throw new RuntimeException("삭제 권한이 없습니다.");
+                        throw new SecurityException("삭제 권한이 없습니다.");
                 }
 
                 // ChatMessage가 Agent를 참조하므로, 메시지를 먼저 지워야 외래 키 제약 조건 위배 방지 가능
@@ -100,6 +105,8 @@ public class AgentChatRoomService {
                 agentChatRoomRepository.flush();
 
                 agentChatRoomRepository.delete(room);
+                // 방 삭제 후 Redis 대화 캐시(studybridge:personal:{roomId}:chats)가 영구히 남던 누수 정리.
+                redisChatService.clearPersonalHistory(roomId);
         }
 
         /** 학습 진행 모드를 basic/socratic/debate/simulation 중 하나로 정규화한다. 잘못된 값/null은 basic. */

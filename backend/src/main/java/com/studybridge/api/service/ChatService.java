@@ -205,9 +205,9 @@ public class ChatService {
                                         .collect(Collectors.toList());
                 }
 
-                log.info("[CHAT REQUEST] mode={} message={} agents.size={}",
+                log.info("[CHAT REQUEST] mode={} messageLength={} agents.size={}",
                                 firstNonBlank(request.getMode(), agentsList.size() > 1 ? "multi_agent_discussion" : "single_answer"),
-                                request.getMessage(),
+                                request.getMessage() != null ? request.getMessage().length() : 0,
                                 agentsList.size());
                 for (int i = 0; i < agentsList.size(); i++) {
                         Map<String, Object> agent = agentsList.get(i);
@@ -394,10 +394,10 @@ public class ChatService {
         @Transactional
         public ChatDTO.MultiChatResponse chatWithRoom(Long userId, Long roomId, ChatDTO.MultiChatRequest request) {
                 AgentChatRoom room = agentChatRoomRepository.findById(roomId)
-                                .orElseThrow(() -> new RuntimeException("해당 채팅방을 찾을 수 없습니다."));
+                                .orElseThrow(() -> new java.util.NoSuchElementException("해당 채팅방을 찾을 수 없습니다."));
 
                 if (!room.getUser().getId().equals(userId)) {
-                        throw new RuntimeException("해당 채팅방에 접근할 권한이 없습니다.");
+                        throw new SecurityException("해당 채팅방에 접근할 권한이 없습니다.");
                 }
 
                 // STRICT TARGETING: targetAgentId 는 방 agent 의 stable id(PK) 로만 해석한다.
@@ -415,7 +415,8 @@ public class ChatService {
                 });
 
                 Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request);
-                log.info("chat fastapi payload roomId={} payload={}", roomId, requestBody);
+                log.info("chat fastapi payload roomId={} keys={} agents={}", roomId, requestBody.keySet(),
+                                requestBody.get("agents") instanceof List ? ((List<?>) requestBody.get("agents")).size() : 0);
 
                 // 모드별 타임아웃: 소크라테스/토론/멀티에이전트는 단계적 검토로 오래 걸리므로 길게 허용한다.
                 //  request에 learningMode가 없으면 방 값으로 폴백해 토론/소크라테스 타임아웃을 정확히 적용한다.
@@ -647,9 +648,9 @@ public class ChatService {
         @Transactional
         public Flux<ServerSentEvent<String>> chatStream(Long userId, Long roomId, ChatDTO.MultiChatRequest request) {
                 AgentChatRoom room = agentChatRoomRepository.findById(roomId)
-                                .orElseThrow(() -> new RuntimeException("해당 채팅방을 찾을 수 없습니다."));
+                                .orElseThrow(() -> new java.util.NoSuchElementException("해당 채팅방을 찾을 수 없습니다."));
                 if (!room.getUser().getId().equals(userId)) {
-                        throw new RuntimeException("해당 채팅방에 접근할 권한이 없습니다.");
+                        throw new SecurityException("해당 채팅방에 접근할 권한이 없습니다.");
                 }
 
                 // 요청 상관관계 ID (로그 상관용, 프롬프트/크리덴셜 미포함)
@@ -665,8 +666,13 @@ public class ChatService {
                                 explicitTarget != null ? "single" : "all",
                                 room.getAgents().stream().map(a -> a.getId() + ":" + a.getName()).toList());
 
-                // 사용자 메시지 저장
+                // 사용자 메시지 저장 — "다시 시도" 멱등: 직전 메시지가 같은 내용의 USER 메시지(= AI 답변 없이 끝난 턴)면
+                //  다시 저장하지 않는다(재시도마다 USER 행이 중복 적재되던 문제. RDS 에서 연속 중복 16건 관측).
                 transactionTemplate.execute(status -> {
+                        if (isRetryOfUnansweredTurn(roomId, request.getMessage())) {
+                                log.info("[CHAT RETRY] roomId={} requestId={} 직전 미응답 USER 메시지와 동일 → 중복 저장 생략", roomId, requestId);
+                                return null;
+                        }
                         saveRoomMessage(room, null, request.getMessage(), "USER", null);
                         return null;
                 });
@@ -748,6 +754,7 @@ public class ChatService {
                         List<Map<String, Object>> initialAnswers = new java.util.ArrayList<>();
                         List<Map<String, Object>> validatedAnswers = new java.util.ArrayList<>();
                         List<Map<String, Object>> peerFeedback = new java.util.ArrayList<>();
+                        final java.util.concurrent.atomic.AtomicBoolean stage1Failed = new java.util.concurrent.atomic.AtomicBoolean(false);
 
                         safeSend(out, "turn_start",
                                         Map.of("type", "turn_start", "message", "AI 응답 생성을 시작합니다.", "requestId", requestId));
@@ -765,15 +772,13 @@ public class ChatService {
                                         })
                                         .flatMap(primaryRows -> {
                                                 if (primaryRows.isEmpty()) {
-                                                        // 실패: 전체를 죽이지 않고 안내를 1차로 내려보낸 뒤 종료한다.
-                                                        Map<String, Object> fb = new LinkedHashMap<>();
-                                                        fb.put("agentName", "StudyMate");
-                                                        fb.put("answer", "1차 답변 생성이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.");
-                                                        fb.put("agentIndex", 1);
-                                                        fb.put("displayOrder", 1);
-                                                        fb.put("stage", 1);
-                                                        initialAnswers.add(fb);
-                                                        emitStage(out, 1, "primary", "FIRST_DRAFT", "answers", initialAnswers, true);
+                                                        // 실패: 예전엔 "1차 답변 생성이 지연되고 있습니다" 를 정상 답변(stage_complete/all_complete)로 내려
+                                                        //  AI 메시지로 DB 에 저장하고 done=done 으로 끝냈다(실패가 성공으로 위장). 이제는 error 이벤트로 알리고
+                                                        //  all_complete/영속화 없이 done(status=error) 로 종료한다 → 프론트가 재시도 안내를 띄운다.
+                                                        stage1Failed.set(true);
+                                                        safeSend(out, "error", Map.of("type", "error", "code", "AI_BASIC_STAGE1_FAILED",
+                                                                        "message", "AI 답변 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.",
+                                                                        "requestId", requestId));
                                                         return Mono.<List<Map<String, Object>>>empty();
                                                 }
                                                 initialAnswers.addAll(primaryRows);
@@ -835,7 +840,15 @@ public class ChatService {
                                                                 sink.complete();
                                                         },
                                                         () -> {
-                                                                finishBasicStream(out, roomId, requestId, startedAt, initialAnswers, validatedAnswers, peerFeedback);
+                                                                if (stage1Failed.get()) {
+                                                                        long elapsed = System.currentTimeMillis() - startedAt;
+                                                                        out.send("done", toJson(Map.of("type", "done", "status", "error",
+                                                                                        "requestId", requestId, "elapsedMs", elapsed, "mode", "basic-orchestration")));
+                                                                        log.warn("[AI-STREAM-RESULT] roomId={} requestId={} route=orchestrateBasicStream elapsedMs={} allComplete=false answers=0 reason=stage1-failed",
+                                                                                        roomId, requestId, elapsed);
+                                                                } else {
+                                                                        finishBasicStream(out, roomId, requestId, startedAt, initialAnswers, validatedAnswers, peerFeedback);
+                                                                }
                                                                 sink.complete();
                                                         });
                         sink.onDispose(subscription::dispose);
@@ -1143,6 +1156,8 @@ public class ChatService {
                         String processStepsJson = psObj != null ? objectMapper.writeValueAsString(psObj) : null;
                         Object ansObj = resp.get("answers");
                         if (!(ansObj instanceof List)) {
+                                log.warn("[CHAT PERSIST] roomId={} all_complete 에 answers 배열이 없어 AI 메시지 영속화 생략 keys={}",
+                                                roomId, resp.keySet());
                                 return;
                         }
                         @SuppressWarnings("unchecked")
@@ -1167,13 +1182,19 @@ public class ChatService {
                                 return null;
                         });
                 } catch (Exception e) {
-                        log.warn("스트리밍 결과 영속화 실패 roomId={}: {}", roomId, e.getMessage());
+                        // 화면엔 답변이 보였는데 DB 에는 없는 "조용한 유실" — 반드시 ERROR 로 남긴다.
+                        log.error("[CHAT PERSIST] 스트리밍 결과 영속화 실패 roomId={} (화면 답변은 브라우저 캐시에만 존재): {}", roomId, e.toString(), e);
                 }
         }
 
-        // 채팅방 기록 조회
-        public List<ChatDTO.MessageResponse> getRoomChatHistory(Long roomId) {
-                return chatMessageRepository.findByAgentChatRoomIdOrderByCreatedAtAsc(roomId).stream()
+        // 채팅방 기록 조회 — 소유자 검증(IDOR 방지) + created_at,id 정렬(같은 턴의 AI 답변 순서 고정)
+        public List<ChatDTO.MessageResponse> getRoomChatHistory(Long userId, Long roomId) {
+                AgentChatRoom room = agentChatRoomRepository.findById(roomId)
+                                .orElseThrow(() -> new java.util.NoSuchElementException("해당 채팅방을 찾을 수 없습니다."));
+                if (userId == null || room.getUser() == null || !room.getUser().getId().equals(userId)) {
+                        throw new SecurityException("해당 채팅방에 접근할 권한이 없습니다.");
+                }
+                return chatMessageRepository.findByAgentChatRoomIdOrderByCreatedAtAscIdAsc(roomId).stream()
                                 .map(msg -> ChatDTO.MessageResponse.builder()
                                                 .id(msg.getId())
                                                 .content(msg.getContent())
@@ -1196,6 +1217,24 @@ public class ChatService {
                 } catch (Exception e) {
                         log.warn("processSteps 역직렬화 실패 (생략): {}", e.getMessage());
                         return null;
+                }
+        }
+
+        // 재시도 멱등 판정: 방의 마지막 메시지가 최근 10분 내 같은 내용의 USER 메시지인가(= 답변 없이 끝난 턴의 재전송).
+        private boolean isRetryOfUnansweredTurn(Long roomId, String message) {
+                if (message == null) {
+                        return false;
+                }
+                try {
+                        return chatMessageRepository.findTopByAgentChatRoomIdOrderByCreatedAtDescIdDesc(roomId)
+                                        .filter(last -> "USER".equals(last.getSender()))
+                                        .filter(last -> message.trim().equals(String.valueOf(last.getContent()).trim()))
+                                        .filter(last -> last.getCreatedAt() != null
+                                                        && last.getCreatedAt().isAfter(java.time.LocalDateTime.now().minusMinutes(10)))
+                                        .isPresent();
+                } catch (Exception e) {
+                        log.warn("[CHAT RETRY] 멱등 판정 실패 roomId={} — 기본 저장 진행: {}", roomId, e.toString());
+                        return false;
                 }
         }
 

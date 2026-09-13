@@ -1798,13 +1798,16 @@ const readPersistedHistory = (userId, roomId) => {
     const raw = localStorage.getItem(chatStorageKey(userId, roomId));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : null;
+    // 스트리밍 도중 새로고침하면 "답변 생성 중…" 플레이스홀더(isPending)가 영속본에 남아
+    // 서버 이력보다 길다는 이유로 영원히 복원되던 문제 → 읽을 때도 진행중 플레이스홀더는 버린다.
+    return Array.isArray(parsed) ? parsed.filter((m) => !(m && m.isPending)) : null;
   } catch { return null; }
 };
 const writePersistedHistory = (userId, roomId, list) => {
   if (!roomId) return;
   try {
-    const arr = Array.isArray(list) ? list : [];
+    // 진행중 플레이스홀더(isPending)는 화면 전용 상태라 영속화하지 않는다(새로고침 후 고착 방지).
+    const arr = (Array.isArray(list) ? list : []).filter((m) => !(m && m.isPending));
     const tail = arr.length > CHAT_PERSIST_CAP ? arr.slice(arr.length - CHAT_PERSIST_CAP) : arr;
     localStorage.setItem(chatStorageKey(userId, roomId), JSON.stringify(tail));
   } catch { /* quota/직렬화 실패는 무시 — 서버 조회가 폴백 */ }
@@ -1834,6 +1837,30 @@ const reconcileHistory = (server, local) => {
 // 내부 roomId/agentId/DB id는 건드리지 않고 표시명만 roomName으로 렌더. roomName이 없을 때만 기본 브랜드명.
 const STUDYBRIDGE_ROOM_TITLE = '스터디 브릿지';
 // 표시 우선순위: 사용자가 입력한 방 이름(roomName) → name → title → groupName → (없을 때만) 브랜드 폴백.
+// ── 메모(북마크) identity ─────────────────────────────────────────────────────
+//  message.id 는 라이브 스트림 키("req::basic::…") 였다가 post-stream reconcile/새로고침 후 DB 숫자 id 로 바뀐다.
+//  id 로 메모를 기억하면 보정 직후 메모가 사라지므로 (발신자 + 본문) 지문을 identity 로 쓴다.
+const MEMO_PERSIST_PREFIX = 'sb_memo_v1';
+const memoKeyOf = (msg) => {
+  if (!msg) return null;
+  const body = String(msg.content ?? '').trim();
+  if (!body) return null;
+  return `${msg.sender || ''}|${msg.senderName || msg.agentId || ''}|${body.slice(0, 300)}`;
+};
+const memoStorageKey = (userId) => `${MEMO_PERSIST_PREFIX}:${userId ?? 'anon'}`;
+const readPersistedMemos = (userId) => {
+  try {
+    const raw = localStorage.getItem(memoStorageKey(userId));
+    const parsed = raw ? JSON.parse(raw) : null;
+    return new Set(Array.isArray(parsed) ? parsed.filter((k) => typeof k === 'string') : []);
+  } catch { return new Set(); }
+};
+const writePersistedMemos = (userId, set) => {
+  try { localStorage.setItem(memoStorageKey(userId), JSON.stringify(Array.from(set).slice(-300))); } catch { /* quota 무시 */ }
+};
+// 메모 가능한 메시지 = 실제 AI 답변만(오류/안내/진행중 플레이스홀더는 제외).
+const isMemoable = (msg) => !!msg && msg.sender === 'AI' && !msg.isError && !msg.isNotice && !msg.isPending && !!memoKeyOf(msg);
+
 const getDisplayRoomTitle = (room) =>
   room?.roomName || room?.name || room?.title || room?.groupName || STUDYBRIDGE_ROOM_TITLE;
 
@@ -2265,7 +2292,7 @@ export default function StudyMate() {
   // 멘션(@) 관련 상태
   const [showMentionPopup, setShowMentionPopup] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
-  const [bookmarkedIds, setBookmarkedIds] = useState(new Set());
+  const [bookmarkedIds, setBookmarkedIds] = useState(new Set()); // 메모 지문(memoKeyOf) 집합 — userId 별 localStorage 영속
   const [toastMsg, setToastMsg] = useState('');
   
   // 패널 토글 상태
@@ -2481,7 +2508,9 @@ export default function StudyMate() {
   useEffect(() => {
     if (userId) {
       loadAgents();
+      setBookmarkedIds(readPersistedMemos(userId));
     } else {
+      setBookmarkedIds(new Set());
       setAgents([]);
       setSelectedAgent(null);
       setChatHistory([]);
@@ -2716,10 +2745,13 @@ export default function StudyMate() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  const sendMessage = async (e, directMessage = null) => {
+  const sendMessage = async (e, directMessage = null, sendOpts = {}) => {
     if (e) e.preventDefault();
     setFollowUpChips([]); // 새 질문 전송 시 이전 턴의 재개입 칩 제거
     const agentId = getAgentId(selectedAgent);
+    // "다시 시도": 실패 안내 버블과, 답변을 하나도 받지 못한 직전 사용자 버블을 치우고 같은 질문을 다시 보낸다.
+    //  (사용자 버블이 두 번 쌓이고 실패 안내가 영원히 남던 문제 방지. 답변이 일부라도 있던 턴은 그대로 둔다.)
+    const retryOf = sendOpts && sendOpts.retryOf;
     // 목표 F: 최소 정제만 수행(공백 정리). 사용자 내용(코드/명령/마크다운)은 보존한다.
     const inputMsg = sanitizeQuestion(directMessage || message);
     // 빈 입력/방 미선택은 조용히 무시(보존할 입력값 자체가 없음).
@@ -2743,6 +2775,23 @@ export default function StudyMate() {
       return;
     }
     sendingRoomsRef.current.add(agentId);
+
+    if (retryOf && retryOf.id) {
+      const failedTurnUserId = String(retryOf.parentId || '').replace(/::notice$/, '') || null;
+      const prune = (list) => {
+        const arr = list || [];
+        const turnHasAnswer = failedTurnUserId
+          ? arr.some((m) => m.sender === 'AI' && m.parentId === failedTurnUserId && !m.isError && !m.isNotice && !m.isPending)
+          : true;
+        return arr.filter((m) => {
+          if (m.id === retryOf.id) return false; // 실패 안내 버블 제거
+          if (!turnHasAnswer && failedTurnUserId && m.id === failedTurnUserId && m.sender === 'USER') return false; // 답변 없던 질문 버블 제거
+          return true;
+        });
+      };
+      setRoomHistories((prev) => ({ ...prev, [agentId]: prune(prev[agentId]) }));
+      if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => prune(prev));
+    }
 
     // 이번 전송만의 고유 requestId. 방을 바꾼 뒤 늦게 도착하는 이전 요청 이벤트는 무시한다.
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3047,12 +3096,13 @@ export default function StudyMate() {
       turnExtras.enableHallucinationValidation = true;
     }
 
-    // 다시 생성 처리: 직전과 같은 질문이면 attempt를 증가시키고 forceRegenerate로 cache 우회/변형을 유도한다.
+    // 다시 생성 처리: 직전에 "답변을 실제로 받은" 같은 질문이면 attempt를 증가시키고 forceRegenerate로 cache 우회/변형을 유도한다.
+    //  regenTrackRef 는 턴이 성공했을 때만(finally) 갱신한다 → 실패 후 "다시 시도"가 재생성(변형 지시)으로 둔갑하지 않는다.
     const regenTrack = regenTrackRef.current[agentId];
     const regenerateAttempt = (regenTrack && regenTrack.question === inputMsg)
       ? (regenTrack.attempt + 1)
       : 1;
-    regenTrackRef.current[agentId] = { question: inputMsg, attempt: regenerateAttempt };
+    let turnSucceeded = false;
     turnExtras.messageId = requestId;
     turnExtras.regenerateAttempt = regenerateAttempt;
     turnExtras.forceRegenerate = regenerateAttempt > 1;
@@ -3402,13 +3452,27 @@ export default function StudyMate() {
         // 부분/실패 안내 버블(별도 parentId 라 기존 부분 답변을 덮지 않음) + 재시도 버튼.
         const INTERRUPTED_MSG = 'AI 응답 연결이 중단되었습니다. 다시 시도해 주세요.';
         const PARTIAL_MSG = 'AI 응답 일부가 도착했지만 최종 완료 신호를 받지 못했습니다. 이어서 다시 시도할 수 있습니다.';
+        // HTTP 오류(StreamHttpError)/watchdog/네트워크 단절을 원인별 문구로 구분한다(전부 "연결 중단"으로 뭉개지 않음).
+        const describeStreamFailure = (err) => {
+          const st = err && typeof err.status === 'number' ? err.status : null;
+          if (err && err.authFailure) return '로그인 세션이 만료되어 답변을 받지 못했습니다. 다시 시도해 주세요. (계속 실패하면 다시 로그인해 주세요)';
+          if (err && err.retryable) return `AI 서버 연결이 잠시 불안정합니다(HTTP ${st}). 서버가 재시작 중일 수 있어요. 잠시 후 다시 시도해 주세요.`;
+          if (st != null && st >= 500) return `서버 오류로 답변을 받지 못했습니다(HTTP ${st}). 다시 시도해 주세요.`;
+          if (st != null && st >= 400) {
+            let detail = '';
+            try { const j = JSON.parse(err.bodySnippet || ''); detail = j && (j.message || j.error) ? ` ${String(j.message || j.error).slice(0, 120)}` : ''; } catch { /* 본문 없음 */ }
+            return `요청이 거부되었습니다(HTTP ${st}).${detail} 다시 시도해 주세요.`;
+          }
+          if (watchdogTimedOut) return `${Math.round(WATCHDOG_FAIL_MS / 1000)}초 동안 AI 응답 신호가 없어 연결을 종료했습니다. 다시 시도해 주세요.`;
+          return INTERRUPTED_MSG;
+        };
         const showStreamNotice = (text) => {
           sawError = true;
           const notice = {
             id: `${userMsg.id}::stream-notice`,
             content: text,
             sender: 'AI',
-            senderName: selectedAgent?.name || 'StudyMate',
+            senderName: 'StudyMate', // 실패 안내는 특정 교수의 발화가 아니다(첫 교수 이름으로 귀속시키지 않음)
             isError: true,
             isNotice: true,
             canRetry: true,
@@ -3425,24 +3489,34 @@ export default function StudyMate() {
         //  · finalReceived 면: 정상 종료(렌더 있으면 조용히 성공, 없으면 연결중단 안내)
         //  · finalReceived 아니지만 부분 답변 있으면: 부분 보존 + "이어서 다시 시도" 안내
         //  · 둘 다 아니면: "연결이 중단되었습니다" 안내
-        const concludeStream = () => {
+        const concludeStream = (streamErr = null) => {
           clearWatchdog();
           pendingDetailParentId.current = null;
           if (finalReceived) {
             streamState = 'FINALIZED';
-            if (streamRendered || streamCompleted) return; // 정상 — 오류 표시 없음
+            if (streamRendered || streamCompleted) { turnSucceeded = !sawError; return; } // 정상 — 오류 표시 없음
             // 최종 신호는 왔지만 아무것도 렌더되지 않은 드문 경우(done=error 등)
             showStreamNotice(anyAnswerReceived ? PARTIAL_MSG : INTERRUPTED_MSG);
             return;
           }
           streamState = 'FAILED';
-          showStreamNotice((anyAnswerReceived || streamRendered) ? PARTIAL_MSG : INTERRUPTED_MSG);
+          showStreamNotice((anyAnswerReceived || streamRendered) ? PARTIAL_MSG : describeStreamFailure(streamErr));
+        };
+        // 502/503/504(Spring 재기동·게이트웨이) 는 첫 이벤트를 받기 전이면 안전하게 자동 재시도한다(서버에 저장된 것이 없음).
+        const GATEWAY_RETRY_DELAYS_MS = [6000, 12000];
+        const showGatewayRetryNotice = (attemptNo, waitMs) => {
+          if (!isActiveRequest()) return;
+          setTurnAiMessages([{
+            id: `${userMsg.id}::gw-retry`, sender: 'AI', senderName: 'StudyMate', isPending: true,
+            content: '', statusText: `서버가 잠시 재시작 중입니다. ${Math.round(waitMs / 1000)}초 후 자동으로 다시 시도합니다… (${attemptNo}/${GATEWAY_RETRY_DELAYS_MS.length})`,
+            createdAt: new Date().toISOString(), parentId: userMsg.id,
+          }]);
         };
 
         armWatchdog();
 
         try {
-          await agentService.streamMessage(userId, agentId, {
+          const streamPayload = {
             message: inputMsg,
             // 사용자가 고른 학습모드(라이브 토글)를 우선 전송한다(검증/협업/토론/소크라테스/상황극 분기).
             learningMode: activeLearningMode,
@@ -3450,7 +3524,8 @@ export default function StudyMate() {
             mode: activeLearningMode === 'basic' ? undefined : activeLearningMode,
             rounds: 1,
             ...turnExtras,
-          }, {
+          };
+          const streamHandlers = {
             // 모든 이벤트의 단일 진입점: liveness(watchdog rearm) + 첫 이벤트 지연 측정 + 부분답변/디듀프 표시.
             onAnyEvent: (event, data) => {
               markLiveness(event);
@@ -3854,7 +3929,23 @@ export default function StudyMate() {
               }
               throw new Error('stream error event');
             },
-          }, { signal: streamAbort.signal });
+          };
+          for (let gwAttempt = 0; ; gwAttempt += 1) {
+            try {
+              await agentService.streamMessage(userId, agentId, streamPayload, streamHandlers, { signal: streamAbort.signal });
+              break;
+            } catch (gwErr) {
+              const canRetry = !!(gwErr && gwErr.retryable) && lastEventType === null && !anyAnswerReceived && !streamRendered
+                && !watchdogTimedOut && isActiveRequest() && gwAttempt < GATEWAY_RETRY_DELAYS_MS.length;
+              if (!canRetry) throw gwErr;
+              const waitMs = GATEWAY_RETRY_DELAYS_MS[gwAttempt];
+              if (import.meta.env.DEV) console.warn('[StudyMate] gateway error → auto retry', { status: gwErr.status, gwAttempt, waitMs });
+              showGatewayRetryNotice(gwAttempt + 1, waitMs);
+              await new Promise((r) => setTimeout(r, waitMs));
+              if (!isActiveRequest() || watchdogTimedOut) throw gwErr;
+              armWatchdog();
+            }
+          }
           // 스트림이 정상적으로 끝까지 읽힘(reader done). 상태머신으로 결과를 판정한다.
           //  · finalReceived 면 close 는 정상 종료(오류 표시 없음).
           //  · 최종 신호 없이 끝났으면 부분/전무에 따라 안내 + 재시도.
@@ -3870,7 +3961,7 @@ export default function StudyMate() {
               streamState, finalReceived, anyAnswerReceived, streamRendered, watchdogTimedOut,
             });
           }
-          concludeStream();
+          concludeStream(streamErr);
           return;
         }
       }
@@ -4028,6 +4119,7 @@ export default function StudyMate() {
       }
       // 태깅 초기화
       pendingDetailParentId.current = null;
+      turnSucceeded = true;
 
       // 5. 해당 방의 캐시 갱신 (사용자가 다른 방에 있더라도 백그라운드 캐시에 완벽히 반영)
       setRoomHistories((prev) => {
@@ -4094,6 +4186,7 @@ export default function StudyMate() {
       if (visualActive() && !sawError) setProfessorTurnDoneAt(Date.now());
       sendingRoomsRef.current.delete(agentId);
       lastTurnAtRef.current[agentId] = Date.now();
+      if (turnSucceeded) regenTrackRef.current[agentId] = { question: inputMsg, attempt: regenerateAttempt };
       // 9. 스트림 종료 후 명시적 보정 — 백엔드 비동기 영속화(persistStreamedAnswers) 커밋을 잠깐 기다린 뒤
       //    서버 저장본과 화면을 맞춘다. reconcileHistory가 '더 긴 쪽'을 채택하므로 라이브 답변을 깎지 않는다.
       //    (라우팅 종료/중복 전송 차단 등으로 활성 요청이 아니면 자연히 no-op)
@@ -4125,16 +4218,24 @@ export default function StudyMate() {
   // 로그아웃 상태일 때도 UI는 렌더링되도록 함
 
   const handleBookmark = (node) => {
+    // 오류/안내/진행중 메시지는 메모 대상이 아니다(실패 응답이 "저장된 메모"로 남지 않게).
+    if (!isMemoable(node)) {
+      setToastMsg('실제 AI 답변만 메모할 수 있어요.');
+      setTimeout(() => setToastMsg(''), 2500);
+      return;
+    }
+    const key = memoKeyOf(node);
     setBookmarkedIds((prev) => {
       const newSet = new Set(prev);
-      if (newSet.has(node.id)) {
-        newSet.delete(node.id);
+      if (newSet.has(key)) {
+        newSet.delete(key);
         setToastMsg('❌ 메모가 취소되었습니다.');
       } else {
-        newSet.add(node.id);
+        newSet.add(key);
         setToastMsg('📌 메모에 저장되었습니다.');
       }
       setTimeout(() => setToastMsg(''), 2500);
+      writePersistedMemos(userId, newSet);
       return newSet;
     });
   };
@@ -4728,7 +4829,7 @@ export default function StudyMate() {
                             <div style={{ marginTop: '6px' }}>
                               <button
                                 type="button"
-                                onClick={() => sendMessage(null, msg.retryMessage)}
+                                onClick={() => sendMessage(null, msg.retryMessage, { retryOf: msg })}
                                 disabled={!!typingRooms[getAgentId(selectedAgent)]}
                                 style={{
                                   display: 'inline-flex', alignItems: 'center', gap: '6px',
@@ -4772,15 +4873,15 @@ export default function StudyMate() {
                           {/* 답변 하단 액션: 메모하기만 유지(저장된 메모 패널과 연동).
                               더 자세히/반박/비교/예시 등 후속 비교 액션은 발표 화면 단순화를 위해 제거.
                               (handleNodeAction은 '교수님들과 대화' 탭에서 계속 사용되므로 유지) */}
-                          {!isUser && !hasSimulationPayload && !debatePayload && !socraticPayload && (
+                          {!isUser && !hasSimulationPayload && !debatePayload && !socraticPayload && isMemoable(msg) && (
                             <div className="chat-answer-actions">
                               <button
                                 type="button"
-                                className={`answer-act is-memo ${bookmarkedIds.has(msg.id) ? 'on' : ''}`}
+                                className={`answer-act is-memo ${bookmarkedIds.has(memoKeyOf(msg)) ? 'on' : ''}`}
                                 onClick={() => handleBookmark(msg)}
                               >
-                                <Bookmark size={12} fill={bookmarkedIds.has(msg.id) ? '#16a34a' : 'none'} />
-                                {bookmarkedIds.has(msg.id) ? '메모됨' : '메모하기'}
+                                <Bookmark size={12} fill={bookmarkedIds.has(memoKeyOf(msg)) ? '#16a34a' : 'none'} />
+                                {bookmarkedIds.has(memoKeyOf(msg)) ? '메모됨' : '메모하기'}
                               </button>
                             </div>
                           )}
@@ -5001,9 +5102,7 @@ export default function StudyMate() {
               </div>
             ) : (
               <ProfessorLearningPanel
-                memos={Array.from(bookmarkedIds)
-                  .map((id) => chatHistory.find((m) => m.id === id))
-                  .filter(Boolean)}
+                memos={chatHistory.filter((m) => isMemoable(m) && bookmarkedIds.has(memoKeyOf(m)))}
                 onScrollToMemo={handleScrollToNode}
               />
             )}

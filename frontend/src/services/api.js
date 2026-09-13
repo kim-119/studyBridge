@@ -162,6 +162,45 @@ const normalizeChatResponse = (data) => {
   };
 };
 
+// ── 액세스 토큰 갱신(단일 지점) ────────────────────────────────────────────────
+//  · axios 응답 인터셉터(401/403)와 SSE fetch(streamMessage)가 같은 경로를 쓴다.
+//  · refreshToken 은 URL 쿼리가 아니라 JSON body 로 보낸다(nginx access log 에 토큰이 남지 않게).
+//    (서버는 하위 호환으로 ?refreshToken= 도 계속 받는다.)
+//  · 동시 다발 갱신을 막기 위해 진행 중인 갱신 Promise 를 공유한다.
+let refreshInFlight = null;
+export const refreshAccessToken = async () => {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    const refreshToken = localStorage.getItem('refreshToken');
+    if (!refreshToken) throw new Error('No refresh token');
+    const res = await axios.post(`${API_BASE_URL}/api/users/refresh`, { refreshToken }, { timeout: 15000 });
+    if (!res.data || !res.data.accessToken) throw new Error('refresh response without accessToken');
+    localStorage.setItem('token', res.data.accessToken);
+    if (res.data.refreshToken) localStorage.setItem('refreshToken', res.data.refreshToken);
+    return res.data.accessToken;
+  })().finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
+};
+
+const forceLogout = () => {
+  localStorage.removeItem('token');
+  localStorage.removeItem('refreshToken');
+  window.dispatchEvent(new Event('auth-change'));
+};
+
+// SSE 스트림 HTTP 오류(2xx 가 아닌 응답). status 로 UI 가 원인별 안내/자동 재시도를 분기한다.
+export class StreamHttpError extends Error {
+  constructor(status, bodySnippet = '') {
+    super(`stream http ${status}`);
+    this.name = 'StreamHttpError';
+    this.status = status;
+    this.bodySnippet = bodySnippet;
+    // 502/503/504 = 업스트림(Spring) 재시작/과부하 — 이벤트를 받기 전이면 자동 재시도 가능.
+    this.retryable = status === 502 || status === 503 || status === 504;
+    this.authFailure = status === 401 || status === 403;
+  }
+}
+
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
@@ -209,32 +248,12 @@ api.interceptors.response.use(
       originalRequest._retry = true;
 
       try {
-        const refreshToken = localStorage.getItem('refreshToken');
-
-        if (!refreshToken) {
-          throw new Error('No refresh token');
-        }
-
-        const res = await axios.post(
-          `${API_BASE_URL}/api/users/refresh?refreshToken=${refreshToken}`,
-          null,
-          {
-            timeout: AI_TIMEOUT_MS,
-          }
-        );
-
-        if (res.data && res.data.accessToken) {
-          localStorage.setItem('token', res.data.accessToken);
-          localStorage.setItem('refreshToken', res.data.refreshToken);
-
-          originalRequest.headers.Authorization = `Bearer ${res.data.accessToken}`;
-          return api(originalRequest);
-        }
+        const accessToken = await refreshAccessToken();
+        originalRequest.headers.Authorization = `Bearer ${accessToken}`;
+        return api(originalRequest);
       } catch (refreshErr) {
         console.warn('토큰 갱신 실패. 로그아웃 처리됩니다.');
-        localStorage.removeItem('token');
-        localStorage.removeItem('refreshToken');
-        window.dispatchEvent(new Event('auth-change'));
+        forceLogout();
         return Promise.reject(refreshErr);
       }
     }
@@ -297,9 +316,9 @@ export const agentService = {
         ? { message: payloadOrMessage, agentId, roomId: agentId }
         : { agentId, roomId: agentId, ...payloadOrMessage };
 
-    const token = localStorage.getItem('token');
-
-    const resp = await fetch(`${API_BASE_URL}/api/agent-rooms/${agentId}/chat/stream`, {
+    // SSE 는 axios 가 아니라 fetch 라 401/403 자동 갱신 인터셉터를 타지 않는다.
+    //  액세스 토큰(30분) 만료 뒤 첫 전송이 403 → "연결이 중단" 으로 보이던 문제: 여기서 1회 갱신 후 재시도한다.
+    const doFetch = async (token) => fetch(`${API_BASE_URL}/api/agent-rooms/${agentId}/chat/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -311,9 +330,22 @@ export const agentService = {
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
 
-    if (!resp.ok || !resp.body) {
-      throw new Error(`stream http ${resp.status}`);
+    let resp = await doFetch(localStorage.getItem('token'));
+    if (resp.status === 401 || resp.status === 403) {
+      let refreshed = null;
+      try { refreshed = await refreshAccessToken(); } catch (refreshErr) {
+        forceLogout();
+        throw new StreamHttpError(resp.status, 'refresh failed');
+      }
+      resp = await doFetch(refreshed);
     }
+
+    if (!resp.ok || !resp.body) {
+      let snippet = '';
+      try { snippet = (await resp.text()).slice(0, 200); } catch { /* body 없음 */ }
+      throw new StreamHttpError(resp.status, snippet);
+    }
+    handlers.onOpen?.(resp);
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();

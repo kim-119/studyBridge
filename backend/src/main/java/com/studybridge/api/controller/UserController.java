@@ -42,9 +42,20 @@ public class UserController {
     }
 
     // 리프레시 토큰
+    //  refreshToken 은 JSON body({"refreshToken": ...}) 로 받는 것이 기본이다(URL 쿼리는 nginx access log 에 토큰이 남는다).
+    //  구버전 프론트 호환으로 ?refreshToken= 쿼리도 계속 받는다.
     @PostMapping("/refresh")
-    public ResponseEntity<?> refresh(@RequestParam String refreshToken) {
+    public ResponseEntity<?> refresh(
+            @RequestParam(value = "refreshToken", required = false) String refreshTokenParam,
+            @RequestBody(required = false) java.util.Map<String, Object> body) {
         try {
+            String refreshToken = refreshTokenParam;
+            if ((refreshToken == null || refreshToken.isBlank()) && body != null && body.get("refreshToken") != null) {
+                refreshToken = String.valueOf(body.get("refreshToken"));
+            }
+            if (refreshToken == null || refreshToken.isBlank()) {
+                return ResponseEntity.status(401).body("refreshToken 이 필요합니다.");
+            }
             UserDTO.Response response = userService.refreshToken(refreshToken);
             return ResponseEntity.ok(response);
         } catch (IllegalArgumentException e) {

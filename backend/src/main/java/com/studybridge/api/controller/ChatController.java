@@ -31,7 +31,9 @@ public class ChatController {
             @PathVariable Long roomId,
             @Valid @RequestBody ChatDTO.MultiChatRequest request) {
 
-        log.info("chat controller received roomId={} request={}", roomId, request);
+        // 요청 본문(사용자 질문 원문)은 로그에 남기지 않는다(PII). 길이만 기록.
+        log.info("chat controller received roomId={} messageLength={}", roomId,
+                request.getMessage() != null ? request.getMessage().length() : 0);
         return ResponseEntity.ok(chatService.chatWithRoom(userDetails.getId(), roomId, request));
     }
 
@@ -55,11 +57,12 @@ public class ChatController {
         return chatService.chatStream(userDetails.getId(), roomId, request);
     }
 
-    // 채팅방 내역 조회
+    // 채팅방 내역 조회 — 방 소유자만 조회 가능(IDOR 방지: roomId 만으로 타인 대화가 열리던 문제).
     @GetMapping("/{roomId}/history")
     public ResponseEntity<List<ChatDTO.MessageResponse>> getRoomChatHistory(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long roomId) {
 
-        return ResponseEntity.ok(chatService.getRoomChatHistory(roomId));
+        return ResponseEntity.ok(chatService.getRoomChatHistory(userDetails.getId(), roomId));
     }
 }
