@@ -22,10 +22,11 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    # 운영 stdout 에 모든 SQL 이 pretty-print 로 찍히던 설정(로그 노이즈/IO). 필요 시 env 로만 켠다.
+    show-sql: ${SPRING_JPA_SHOW_SQL:false}
     properties:
       hibernate:
-        format_sql: true
+        format_sql: ${SPRING_JPA_FORMAT_SQL:false}
         dialect: org.hibernate.dialect.PostgreSQLDialect
 
 ai:

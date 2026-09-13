@@ -197,7 +197,11 @@ export class StreamHttpError extends Error {
     this.bodySnippet = bodySnippet;
     // 502/503/504 = 업스트림(Spring) 재시작/과부하 — 이벤트를 받기 전이면 자동 재시도 가능.
     this.retryable = status === 502 || status === 503 || status === 504;
-    this.authFailure = status === 401 || status === 403;
+    // 401 = 인증 없음/토큰 만료(갱신 대상). 403 = 인증은 됐지만 권한 없음(방 소유자 아님) — 갱신해도 달라지지 않는다.
+    //  (Spring 이 미인증도 403 으로 내리던 시절엔 둘을 구분할 수 없어 진짜 403 에도 "세션 만료" 문구가 떴다.)
+    this.authFailure = status === 401;
+    this.forbidden = status === 403;
+    this.notFound = status === 404;
   }
 }
 
@@ -233,9 +237,11 @@ api.interceptors.response.use(
 
     const originalRequest = err.config;
 
+    // 401 만 토큰 갱신 대상이다. 403 은 권한 없음(타인의 방/자료)이라 갱신·재시도해도 같은 결과이고,
+    //  갱신 실패 시 강제 로그아웃까지 이어지던 오동작을 막는다.
     if (
       err.response &&
-      (err.response.status === 401 || err.response.status === 403) &&
+      err.response.status === 401 &&
       !originalRequest._retry
     ) {
       if (
@@ -316,8 +322,9 @@ export const agentService = {
         ? { message: payloadOrMessage, agentId, roomId: agentId }
         : { agentId, roomId: agentId, ...payloadOrMessage };
 
-    // SSE 는 axios 가 아니라 fetch 라 401/403 자동 갱신 인터셉터를 타지 않는다.
-    //  액세스 토큰(30분) 만료 뒤 첫 전송이 403 → "연결이 중단" 으로 보이던 문제: 여기서 1회 갱신 후 재시도한다.
+    // SSE 는 axios 가 아니라 fetch 라 401 자동 갱신 인터셉터를 타지 않는다.
+    //  액세스 토큰(30분) 만료 뒤 첫 전송이 401 → "연결이 중단" 으로 보이던 문제: 여기서 1회 갱신 후 재시도한다.
+    //  403(권한 없음)/404(삭제된 방) 은 갱신 대상이 아니라 그대로 StreamHttpError 로 올려 원인별 안내를 띄운다.
     const doFetch = async (token) => fetch(`${API_BASE_URL}/api/agent-rooms/${agentId}/chat/stream`, {
       method: 'POST',
       headers: {
@@ -331,7 +338,7 @@ export const agentService = {
     });
 
     let resp = await doFetch(localStorage.getItem('token'));
-    if (resp.status === 401 || resp.status === 403) {
+    if (resp.status === 401) {
       let refreshed = null;
       try { refreshed = await refreshAccessToken(); } catch (refreshErr) {
         forceLogout();

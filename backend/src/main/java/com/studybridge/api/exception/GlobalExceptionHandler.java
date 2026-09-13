@@ -2,7 +2,9 @@ package com.studybridge.api.exception;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -13,6 +15,11 @@ import java.util.NoSuchElementException;
 /**
  * 서비스 계층에서 던지는 비즈니스 예외를 적절한 HTTP 상태코드 + 메시지 본문으로 변환한다.
  * 매핑되지 않은 예외는 그대로 전파되어 기본 500 처리된다.
+ *
+ * <p>Content-Type 을 application/json 으로 명시하는 이유: SSE 컨트롤러({@code produces=text/event-stream}, 요청 Accept 도
+ * text/event-stream)에서 403/404/400 이 나면 Spring 이 이 핸들러의 Map 본문을 text/event-stream 으로 쓸 수 없어
+ * "Failure in @ExceptionHandler" 로 실패하고 빈 본문 500 으로 새어 나갔다(방 소유자 아님/없는 방/잘못된 targetAgentId 가 모두 500).
+ * ResponseEntity 에 Content-Type 이 미리 지정돼 있으면 Accept 협상을 건너뛰고 그대로 쓰므로 상태코드가 보존된다.</p>
  */
 @Slf4j
 @RestControllerAdvice
@@ -22,7 +29,7 @@ public class GlobalExceptionHandler {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("status", status.value());
         payload.put("message", message);
-        return ResponseEntity.status(status).body(payload);
+        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).body(payload);
     }
 
     // 비즈니스 규칙 위반(예: 정원 마감, 이미 가입됨) → 409
@@ -37,6 +44,17 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
         log.warn("Invalid argument: {}", ex.getMessage());
         return body(HttpStatus.BAD_REQUEST, ex.getMessage());
+    }
+
+    // @Valid 검증 실패(빈 message, 20000자 초과 등) → 400 + 첫 위반 메시지. 기본 처리는 본문 없는 400 이라 프론트가 원인을 못 보여줬다.
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<Map<String, Object>> handleValidation(MethodArgumentNotValidException ex) {
+        String message = ex.getBindingResult().getFieldErrors().stream()
+                .map(fe -> fe.getDefaultMessage() != null ? fe.getDefaultMessage() : fe.getField() + " 값이 올바르지 않습니다.")
+                .findFirst()
+                .orElse("요청 값이 올바르지 않습니다.");
+        log.warn("Validation failed: {}", message);
+        return body(HttpStatus.BAD_REQUEST, message);
     }
 
     // 대상 없음 → 404

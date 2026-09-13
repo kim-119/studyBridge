@@ -199,16 +199,24 @@ public class ChatService {
                                 })
                                 .collect(Collectors.toList());
 
+                // 방 에이전트가 유일한 Source of Truth. 과거엔 요청 body 의 agents[] 가 있으면 방 구성을 통째로 대체했는데,
+                //  (1) 클라이언트가 임의 이름/persona 의 가짜 교수를 주입할 수 있고 (2) 그 답변은 방 agent 와 매칭되지 않아
+                //  agent=null 행으로 영속돼 새로고침 후 작성자 없는 답변이 남았다(감사 재현: agentId=999 "가짜교수").
+                //  학습메이트 프론트는 이 필드를 보내지 않으므로(그룹스터디 봇은 별도 컨트롤러) 무시하고 로그만 남긴다.
                 if (request.getAgents() != null && !request.getAgents().isEmpty()) {
-                        agentsList = request.getAgents().stream()
-                                        .map(agent -> mapRequestAgent(agent, requestKnowledgeLevel, requestPersonality, requestPersonalityStrength))
-                                        .collect(Collectors.toList());
+                        log.warn("[CHAT REQUEST] roomId={} 요청 body 의 agents[]({}명)는 무시한다 — 방 에이전트({}명)만 사용",
+                                        roomId, request.getAgents().size(), agentsList.size());
                 }
 
-                log.info("[CHAT REQUEST] mode={} messageLength={} agents.size={}",
+                // previousAnswers: Redis 캐시 전량(최대 100건, USER 포함)이 매 턴 그대로 ai07 로 나가고(방 201 실측 77KB),
+                //  직전에 저장한 "이번 질문" USER 항목까지 이전 대화로 실려 갔다 → 최근 N건으로 자르고 이번 질문 echo 는 제외한다.
+                previousAnswers = trimPreviousAnswers(previousAnswers, request.getMessage(),
+                                (int) envSeconds("AI_PREVIOUS_ANSWERS_MAX", 20));
+
+                log.info("[CHAT REQUEST] mode={} messageLength={} agents.size={} previousAnswers={}",
                                 firstNonBlank(request.getMode(), agentsList.size() > 1 ? "multi_agent_discussion" : "single_answer"),
                                 request.getMessage() != null ? request.getMessage().length() : 0,
-                                agentsList.size());
+                                agentsList.size(), previousAnswers.size());
                 for (int i = 0; i < agentsList.size(); i++) {
                         Map<String, Object> agent = agentsList.get(i);
                         log.info("[AGENT {}] name={} personality={} knowledgeLevel={}",
@@ -599,6 +607,8 @@ public class ChatService {
                                         roomId, responseLearningMode, guardCode, response.get("status"));
                 }
                 return ChatDTO.MultiChatResponse.builder()
+                                // 실패 응답은 success=false 를 명시하는데 성공은 null 이라 계약이 비대칭이었다 → 성공도 명시.
+                                .success(Boolean.TRUE)
                                 .mode(responseMode)
                                 .learningMode(responseLearningMode)
                                 .sessionId(response != null && response.get("sessionId") != null ? response.get("sessionId").toString() : null)
@@ -851,7 +861,14 @@ public class ChatService {
                                                                 }
                                                                 sink.complete();
                                                         });
-                        sink.onDispose(subscription::dispose);
+                        // 클라이언트 절단 시 체인을 dispose 하지 않는다: 1차 생성이 끝나면 finishBasicStream 이 영속화까지 완주하고,
+                        //  sink.next 는 cancel 뒤 no-op 이라 전달만 멈춘다(relayRemoteStream 과 같은 정책 — 새로고침 시 답변 유실 방지).
+                        sink.onDispose(() -> {
+                                if (!subscription.isDisposed()) {
+                                        log.info("[AI-STREAM] roomId={} requestId={} 클라이언트 연결 종료 — 기본 오케스트레이션은 영속화를 위해 완주시킨다",
+                                                        roomId, requestId);
+                                }
+                        });
                 }, FluxSink.OverflowStrategy.BUFFER);
         }
 
@@ -1124,7 +1141,8 @@ public class ChatService {
                 final long relayOpenAt = System.currentTimeMillis();
                 final java.util.concurrent.atomic.AtomicBoolean firstSeen = new java.util.concurrent.atomic.AtomicBoolean(false);
 
-                return aiFailover.streamMultiChat(roomId, requestId, requestBody, Duration.ofSeconds(nonStreamTimeout))
+                Flux<ServerSentEvent<String>> upstream = aiFailover
+                                .streamMultiChat(roomId, requestId, requestBody, Duration.ofSeconds(nonStreamTimeout))
                                 .publishOn(Schedulers.boundedElastic())
                                 .doOnNext(ev -> {
                                         String event = ev.event() != null ? ev.event() : "message";
@@ -1139,6 +1157,28 @@ public class ChatService {
                                                 persistStreamedAnswers(roomId, ev.data());
                                         }
                                 });
+
+                // 영속화를 브라우저 연결 수명에서 분리한다.
+                //  과거엔 이 Flux 를 MVC 가 직접 구독해, 사용자가 스트림 도중 새로고침/탭 종료/네트워크 절단을 하면 MVC 가 체인을 cancel →
+                //  업스트림 호출까지 취소돼 all_complete 가 오지 않았고, USER 행만 남고 AI 답변은 영속되지 않았다(RDS 고아 USER 행,
+                //  감사 재현: reload 25초 뒤에도 답변 없음). 이제 업스트림 구독은 서비스가 쥐고 완주시키며(총 상한 AI_STREAM_TOTAL_TIMEOUT),
+                //  클라이언트가 떠나면 이벤트 전달만 멈춘다(sink.next 는 cancel 뒤 no-op). 답변은 DB 에 남아 재입장/새로고침 시 복원된다.
+                final java.util.concurrent.atomic.AtomicBoolean clientGone = new java.util.concurrent.atomic.AtomicBoolean(false);
+                return Flux.create(sink -> {
+                        Disposable upstreamSub = upstream.subscribe(
+                                        ev -> { if (!clientGone.get()) sink.next(ev); },
+                                        err -> {
+                                                log.error("[AI-STREAM] roomId={} requestId={} 업스트림 체인 오류: {}", roomId, requestId, err.toString());
+                                                if (!clientGone.get()) sink.error(err);
+                                        },
+                                        sink::complete);
+                        sink.onDispose(() -> {
+                                if (clientGone.compareAndSet(false, true) && !upstreamSub.isDisposed()) {
+                                        log.info("[AI-STREAM] roomId={} requestId={} 클라이언트 연결 종료 — 업스트림은 영속화를 위해 완주시킨다(취소하지 않음)",
+                                                        roomId, requestId);
+                                }
+                        });
+                }, FluxSink.OverflowStrategy.BUFFER);
         }
 
         // 스트리밍 all_complete 결과(JSON)를 파싱해 AI 메시지 + processStepsJson을 영속화한다.
@@ -1287,6 +1327,29 @@ public class ChatService {
 
         private void saveRoomMessage(AgentChatRoom room, Agent agent, String content, String sender) {
                 saveRoomMessage(room, agent, content, sender, null);
+        }
+
+        /**
+         * ai07 로 보낼 previousAnswers 를 정리한다.
+         *  · 마지막 항목이 이번 질문과 같은 USER 항목이면 제외한다(chatStream 은 USER 를 먼저 저장하므로 캐시 끝에 항상 이번 질문이 붙는다).
+         *  · 최근 max 건만 남긴다(max ≤ 0 이면 전부 유지). 순서(오래된 → 최신)는 보존.
+         */
+        static List<Map<String, Object>> trimPreviousAnswers(List<Map<String, Object>> previousAnswers,
+                        String currentMessage, int max) {
+                if (previousAnswers == null || previousAnswers.isEmpty()) {
+                        return previousAnswers == null ? java.util.Collections.emptyList() : previousAnswers;
+                }
+                List<Map<String, Object>> out = new java.util.ArrayList<>(previousAnswers);
+                Map<String, Object> last = out.get(out.size() - 1);
+                if (last != null && currentMessage != null
+                                && "USER".equals(String.valueOf(last.get("role")))
+                                && currentMessage.trim().equals(String.valueOf(last.get("answer")).trim())) {
+                        out.remove(out.size() - 1);
+                }
+                if (max > 0 && out.size() > max) {
+                        out = new java.util.ArrayList<>(out.subList(out.size() - max, out.size()));
+                }
+                return out;
         }
 
         // 채팅 기록 저장 (AI 메시지는 processStepsJson 함께 영속화)

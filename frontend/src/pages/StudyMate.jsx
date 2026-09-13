@@ -2636,6 +2636,18 @@ export default function StudyMate() {
         setSelectedAgent(null);
         setChatHistory([]);
       }
+      // 삭제된 방의 클라이언트 잔재 정리: 메모리 캐시/타이핑 잠금/드래프트/멀티턴 상태/활성 요청/localStorage 영속본.
+      //  (남겨두면 write-through 효과가 삭제된 방 히스토리를 영원히 localStorage 에 다시 쓰고, typingRooms 잠금이 고착될 수 있다.)
+      const dropKey = (obj) => { const next = { ...(obj || {}) }; delete next[agentId]; return next; };
+      setRoomHistories(dropKey);
+      setTypingRooms(dropKey);
+      setRoomDrafts(dropKey);
+      delete convStateRef.current[agentId];
+      delete activeRequestRef.current[agentId];
+      delete regenTrackRef.current[agentId];
+      delete professorPinRef.current[agentId];
+      clearPendingTurnRefresh();
+      try { localStorage.removeItem(chatStorageKey(userId, agentId)); } catch { /* storage 접근 불가는 무시 */ }
       await loadAgents();
     } catch (err) {
       console.error('에이전트 삭제 실패:', err);
@@ -2643,8 +2655,39 @@ export default function StudyMate() {
     }
   };
 
+  // ── 미응답 턴 후속 조회(스트림 중 새로고침/탭 종료 복구) ─────────────────────────
+  //  서버는 클라이언트가 끊겨도 업스트림을 완주해 답변을 영속화한다. 방을 열었을 때 마지막 실제 메시지가 USER 면
+  //  8s/20s/45s 뒤 서버 이력을 다시 맞춰 답변을 채운다. 방을 바꾸면 이전 예약은 취소한다(다른 방 간섭 방지).
+  const pendingTurnTimersRef = useRef([]);
+  const clearPendingTurnRefresh = () => {
+    pendingTurnTimersRef.current.forEach(clearTimeout);
+    pendingTurnTimersRef.current = [];
+  };
+  useEffect(() => () => clearPendingTurnRefresh(), []);
+  const schedulePendingTurnRefresh = (agentId, list) => {
+    clearPendingTurnRefresh();
+    if (!agentId || !Array.isArray(list) || !list.length) return;
+    // 안내/오류/진행중 버블은 서버 메시지가 아니므로 제외하고 마지막 실제 메시지를 본다.
+    let last = null;
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const m = list[i];
+      if (m && !m.isNotice && !m.isError && !m.isPending && !m.isModeGuard) { last = m; break; }
+    }
+    if (!last || last.sender !== 'USER') return;
+    if (typingRoomsRef.current[agentId]) return; // 이 탭에서 스트리밍 중이면 스트림 종료 후 보정이 처리한다.
+    [8000, 20000, 45000].forEach((ms) => {
+      const t = setTimeout(() => {
+        if (selectedAgentIdRef.current !== agentId) return;
+        if (typingRoomsRef.current[agentId]) return;
+        reconcileRoomFromServer(agentId, `pending-turn-${ms}`);
+      }, ms);
+      pendingTurnTimersRef.current.push(t);
+    });
+  };
+
   const selectAgent = async (agent) => {
     const agentId = getAgentId(agent);
+    clearPendingTurnRefresh();
     setSelectedAgent(agent);
     // 방을 바꾸면 이전 방의 교수뷰 잔상(타임라인/말풍선/교수선택/모션)을 즉시 비운다.
     // (mindmapMessages는 chatHistory에서 파생되므로 아래 setChatHistory로 자동 교체된다.)
@@ -2694,6 +2737,9 @@ export default function StudyMate() {
       // 비동기 복귀 시점에도 여전히 이 방이 활성화되어 있을 때만 UI에 반영하여 다른 방 간섭 방지
       if (selectedAgentIdRef.current === agentId) {
         setChatHistory(reconciled);
+        // 마지막 턴이 "질문만 있고 답변이 아직 없는" 상태(스트림 도중 새로고침/탭 종료)면 서버가 백그라운드로 답변을
+        //  영속화하는 중일 수 있다 → 잠시 뒤 몇 번 다시 조회해 답변을 채운다(사용자가 방을 다시 열어야만 보이던 문제).
+        schedulePendingTurnRefresh(agentId, reconciled);
       }
     } catch (err) {
       console.error('채팅 이력 조회 실패:', err);
@@ -3456,6 +3502,9 @@ export default function StudyMate() {
         const describeStreamFailure = (err) => {
           const st = err && typeof err.status === 'number' ? err.status : null;
           if (err && err.authFailure) return '로그인 세션이 만료되어 답변을 받지 못했습니다. 다시 시도해 주세요. (계속 실패하면 다시 로그인해 주세요)';
+          // 403/404 는 토큰 갱신으로 해결되지 않는다: 삭제된 방(다른 탭/기기) 또는 다른 계정의 방. 세션 만료 문구로 뭉개지 않는다.
+          if (err && err.forbidden) return '이 학습방에 접근할 권한이 없습니다. 방이 삭제되었거나 다른 계정의 방일 수 있어요. 방 목록을 새로 고친 뒤 다시 시도해 주세요.';
+          if (err && err.notFound) return '학습방을 찾을 수 없습니다(다른 탭이나 기기에서 삭제되었을 수 있어요). 방 목록을 새로 고쳐 주세요.';
           if (err && err.retryable) return `AI 서버 연결이 잠시 불안정합니다(HTTP ${st}). 서버가 재시작 중일 수 있어요. 잠시 후 다시 시도해 주세요.`;
           if (st != null && st >= 500) return `서버 오류로 답변을 받지 못했습니다(HTTP ${st}). 다시 시도해 주세요.`;
           if (st != null && st >= 400) {
@@ -3501,6 +3550,8 @@ export default function StudyMate() {
           }
           streamState = 'FAILED';
           showStreamNotice((anyAnswerReceived || streamRendered) ? PARTIAL_MSG : describeStreamFailure(streamErr));
+          // 방이 사라졌거나(404) 권한이 없으면(403) 좌측 방 목록이 stale 하다 → 서버 목록으로 갱신해 잘못된 selectedAgent 상태를 끊는다.
+          if (streamErr && (streamErr.notFound || streamErr.forbidden)) loadAgents();
         };
         // 502/503/504(Spring 재기동·게이트웨이) 는 첫 이벤트를 받기 전이면 안전하게 자동 재시도한다(서버에 저장된 것이 없음).
         const GATEWAY_RETRY_DELAYS_MS = [6000, 12000];
