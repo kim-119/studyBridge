@@ -21,7 +21,9 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.Collection;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -58,6 +60,7 @@ class PasswordResetServiceTest {
     private final Map<String, String> values = new HashMap<>();
     private final Map<String, Long> expiresAt = new HashMap<>();
     private long now = 1_000L; // 가짜 시계(초)
+    private int scriptCalls = 0;
 
     private StringRedisTemplate redis;
     private UserRepository userRepository;
@@ -81,6 +84,7 @@ class PasswordResetServiceTest {
         values.clear();
         expiresAt.clear();
         now = 1_000L;
+        scriptCalls = 0;
 
         ValueOperations<String, String> ops = mock(ValueOperations.class, inv -> {
             purgeExpired();
@@ -97,6 +101,12 @@ class PasswordResetServiceTest {
                     return null;
                 }
                 case "get": return values.get((String) a[0]);
+                case "setIfAbsent": { // SET NX EX
+                    if (values.containsKey((String) a[0])) return false;
+                    values.put((String) a[0], (String) a[1]);
+                    expiresAt.put((String) a[0], now + TimeUnit.SECONDS.convert((Long) a[2], (TimeUnit) a[3]));
+                    return true;
+                }
                 case "increment": {
                     long n = Long.parseLong(values.getOrDefault((String) a[0], "0")) + 1;
                     values.put((String) a[0], String.valueOf(n));
@@ -112,6 +122,17 @@ class PasswordResetServiceTest {
             Object[] a = inv.getArguments();
             switch (m) {
                 case "opsForValue": return ops;
+                case "execute": { // PROMOTE_CODE_SCRIPT: code SET EX / attempts DEL / cooldown SET EX / sending DEL
+                    if (!(a[0] instanceof org.springframework.data.redis.core.script.RedisScript)) throw new UnsupportedOperationException("execute");
+                    List<String> keys = (List<String>) a[1];
+                    Object[] argv = java.util.Arrays.copyOfRange(a, 2, a.length); // Mockito 는 varargs 를 펼쳐 전달한다
+                    scriptCalls++;
+                    values.put(keys.get(0), (String) argv[0]); expiresAt.put(keys.get(0), now + Long.parseLong((String) argv[1]));
+                    values.remove(keys.get(1)); expiresAt.remove(keys.get(1));
+                    values.put(keys.get(2), "1"); expiresAt.put(keys.get(2), now + Long.parseLong((String) argv[2]));
+                    values.remove(keys.get(3)); expiresAt.remove(keys.get(3));
+                    return 1L;
+                }
                 case "getExpire": {
                     Long exp = expiresAt.get((String) a[0]);
                     if (!values.containsKey((String) a[0])) return -2L;
@@ -222,12 +243,14 @@ class PasswordResetServiceTest {
     }
 
     @Test
-    void sendCode_mailFailure_removesCode_andPropagates503() {
+    void sendCode_mailFailure_leavesRedisUntouched_andPropagates503() {
         doThrow(new PasswordResetException(HttpStatus.SERVICE_UNAVAILABLE, Reason.MAIL_SEND_FAILED, "smtp down"))
                 .when(mailService).sendVerificationCode(anyString(), anyString(), anyLong());
         expect(Reason.MAIL_SEND_FAILED, () -> service.sendCode(EMAIL, "1.1.1.1"));
-        assertNull(storedCode());
+        assertNull(storedCode(), "발송되지 않은 코드는 저장되지 않는다");
         assertFalse(values.containsKey("password-reset:cooldown:" + EMAIL), "발송 실패는 cooldown 을 걸지 않는다");
+        assertFalse(values.containsKey("password-reset:sending:" + EMAIL), "발송 잠금 해제");
+        assertEquals(0, scriptCalls);
     }
 
     @Test
@@ -361,6 +384,121 @@ class PasswordResetServiceTest {
         }
         assertTrue(thrown.get());
         assertTrue(values.containsKey("password-reset:verified:" + EMAIL), "DB 실패 시 인증 상태는 유지되어 재시도 가능");
+    }
+
+    // ── 발송/재전송 정합성 (mail code == authoritative Redis code) ──
+
+    /** 메일로 실제 전달된 코드를 순서대로 기록하는 스파이. */
+    private List<String> captureSentCodes() {
+        List<String> sent = new ArrayList<>();
+        org.mockito.Mockito.doAnswer(inv -> { sent.add(inv.getArgument(1)); return null; })
+                .when(mailService).sendVerificationCode(anyString(), anyString(), anyLong());
+        return sent;
+    }
+
+    @Test // TEST 1
+    void initialSend_redisCodeEqualsMailedCode() {
+        List<String> sent = captureSentCodes();
+        service.sendCode(EMAIL, "1.1.1.1");
+        assertEquals(1, sent.size());
+        assertEquals(sent.get(0), storedCode());
+        assertEquals(1, scriptCalls, "원자 스크립트 1회");
+        assertFalse(values.containsKey("password-reset:sending:" + EMAIL), "성공 후 잠금 해제");
+    }
+
+    @Test // TEST 2 + TEST 4 + TEST 5
+    void resendMailFailure_keepsExistingCode_attempts_andTtl() {
+        List<String> sent = captureSentCodes();
+        service.sendCode(EMAIL, "1.1.1.1");
+        String a = storedCode();
+        // A 로 1회 오입력 → attempts=1
+        expect(Reason.CODE_MISMATCH, () -> service.verifyCode(EMAIL, a.equals("000000") ? "000001" : "000000"));
+        assertEquals("1", values.get("password-reset:attempts:" + EMAIL));
+        now += 100; // cooldown(60) 지남, code TTL 200 남음
+        doThrow(new PasswordResetException(HttpStatus.SERVICE_UNAVAILABLE, Reason.MAIL_SEND_FAILED, "smtp down"))
+                .when(mailService).sendVerificationCode(anyString(), anyString(), anyLong());
+        expect(Reason.MAIL_SEND_FAILED, () -> service.sendCode(EMAIL, "1.1.1.1"));
+        assertEquals(a, storedCode(), "SMTP 실패 시 기존 A 유지");
+        assertEquals("1", values.get("password-reset:attempts:" + EMAIL), "attempts 가 초기화되지 않는다");
+        assertEquals(200L, redis.getExpire("password-reset:code:" + EMAIL, TimeUnit.SECONDS), "기존 TTL 보존");
+        assertEquals(1, sent.size(), "실패한 발송은 사용자에게 전달된 코드 목록에 없다");
+        // 사용자가 가진 A 는 여전히 유효
+        service.verifyCode(EMAIL, a);
+        assertTrue(values.containsKey("password-reset:verified:" + EMAIL));
+    }
+
+    @Test // TEST 3 + TEST 6
+    void resendSuccess_replacesCode_resetsAttempts_ttlAndCooldown() {
+        List<String> sent = captureSentCodes();
+        service.sendCode(EMAIL, "1.1.1.1");
+        String a = storedCode();
+        expect(Reason.CODE_MISMATCH, () -> service.verifyCode(EMAIL, a.equals("000000") ? "000001" : "000000"));
+        now += 100;
+        service.sendCode(EMAIL, "1.1.1.1");
+        String b = storedCode();
+        assertEquals(2, sent.size());
+        assertEquals(sent.get(1), b, "Redis 최종 코드 == 마지막으로 실제 발송된 코드");
+        assertNull(values.get("password-reset:attempts:" + EMAIL), "attempts reset");
+        assertEquals(300L, redis.getExpire("password-reset:code:" + EMAIL, TimeUnit.SECONDS));
+        assertEquals(60L, redis.getExpire("password-reset:cooldown:" + EMAIL, TimeUnit.SECONDS));
+        if (!a.equals(b)) {
+            expect(Reason.CODE_MISMATCH, () -> service.verifyCode(EMAIL, a));
+        }
+        service.verifyCode(EMAIL, b);
+        assertTrue(values.containsKey("password-reset:verified:" + EMAIL));
+    }
+
+    @Test // TEST 10: 동시/중복 재전송 — 첫 발송이 진행 중이면 두 번째는 잠금으로 거부되고 최종 코드는 실제 발송 코드
+    void concurrentResend_secondIsRejectedByLock_finalCodeMatchesMailed() {
+        List<String> sent = new ArrayList<>();
+        List<PasswordResetException> nested = new ArrayList<>();
+        org.mockito.Mockito.doAnswer(inv -> {
+            sent.add(inv.getArgument(1));
+            if (sent.size() == 1) {
+                // 첫 SMTP 전송 도중 같은 이메일로 두 번째 요청이 들어온 상황
+                try { service.sendCode(EMAIL, "2.2.2.2"); } catch (PasswordResetException e) { nested.add(e); }
+            }
+            return null;
+        }).when(mailService).sendVerificationCode(anyString(), anyString(), anyLong());
+
+        service.sendCode(EMAIL, "1.1.1.1");
+        assertEquals(1, sent.size(), "두 번째 요청은 메일을 보내지 않는다");
+        assertEquals(1, nested.size());
+        assertEquals(Reason.RESEND_COOLDOWN, nested.get(0).getReason());
+        assertEquals(HttpStatus.TOO_MANY_REQUESTS, nested.get(0).getStatus());
+        assertEquals(sent.get(0), storedCode(), "authoritative 코드 == 실제 발송 코드");
+        assertFalse(values.containsKey("password-reset:sending:" + EMAIL));
+    }
+
+    @Test
+    void sendingLock_isSelfExpiring() {
+        values.put("password-reset:sending:" + EMAIL, "1");
+        expiresAt.put("password-reset:sending:" + EMAIL, now + 12);
+        PasswordResetException ex = expect(Reason.RESEND_COOLDOWN, () -> service.sendCode(EMAIL, "1.1.1.1"));
+        assertEquals(12L, ex.getRetryAfterSeconds());
+        verify(mailService, never()).sendVerificationCode(anyString(), anyString(), anyLong());
+        now += 13;
+        service.sendCode(EMAIL, "1.1.1.1");
+        assertNotNull(storedCode());
+    }
+
+    @Test
+    void redisFailureAfterMailSent_returns503_andKeepsPreviousCode() {
+        List<String> sent = captureSentCodes();
+        service.sendCode(EMAIL, "1.1.1.1");
+        String a = storedCode();
+        now += 100;
+        // 스크립트(원자 교체) 단계에서만 Redis 장애
+        StringRedisTemplate flaky = mock(StringRedisTemplate.class, inv -> {
+            if (inv.getMethod().getName().equals("execute")) throw new DataAccessResourceFailureException("redis down");
+            return inv.getMethod().invoke(redis, inv.getArguments());
+        });
+        PasswordResetService s2 = new PasswordResetService(flaky, userRepository, refreshTokenRepository, encoder, mailService, props, mock(TransactionTemplate.class));
+        PasswordResetException ex = expect(Reason.STORE_UNAVAILABLE, () -> s2.sendCode(EMAIL, "1.1.1.1"));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getStatus());
+        assertEquals(2, sent.size(), "메일은 나갔다(불일치 창) — 503 으로 재요청 유도");
+        assertEquals(a, storedCode(), "기존 A 는 손대지 않는다");
+        assertFalse(values.containsKey("password-reset:sending:" + EMAIL), "잠금 해제");
     }
 
     // ── 메일 본문 ──

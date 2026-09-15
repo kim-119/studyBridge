@@ -123,12 +123,17 @@ export default function ForgotPassword() {
     }
     setLoading(true);
     try {
+      const isResend = step === 2;
       const res = await authService.sendPasswordResetCode(trimmed);
       setEmail(trimmed);
       setCode('');
       setResendLeft(Number(res?.resendAfterSeconds) || 60);
       setCodeLeft(Number(res?.expiresInSeconds) || 300);
-      setNotice(res?.message || '인증번호를 발송했습니다. 메일함을 확인해 주세요.');
+      // 재전송 성공 = 서버가 새 인증번호로 교체(마지막 발급분만 유효). 같은 제목이라 Gmail 은 한 스레드로 묶으므로
+      //  "가장 최근 메일" 을 보라고 명시해 이전 메일의 번호를 입력하는 혼동을 막는다.
+      setNotice(isResend
+        ? '새 인증번호를 발송했습니다. 가장 최근에 받은 메일의 인증번호를 입력해 주세요. 이전 인증번호는 더 이상 사용할 수 없습니다.'
+        : (res?.message || '인증번호를 발송했습니다. 메일함을 확인해 주세요.'));
       setStep(2);
     } catch (err) {
       if (err?.reason === 'RESEND_COOLDOWN') {

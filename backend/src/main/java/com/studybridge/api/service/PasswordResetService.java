@@ -11,6 +11,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -31,8 +33,9 @@ import java.util.regex.Pattern;
  * 비밀번호 찾기(이메일 인증번호) 핵심 흐름. 임시 상태는 전부 Redis(TTL) 에만 둔다.
  *
  * <pre>
- *  send-code   : 이메일 → (IP/재전송 제한) → 사용자 존재 확인 → 6자리 SecureRandom 코드 → code 키 저장(TTL 5분, 덮어쓰기)
- *                → SMTP 발송 → cooldown 키(60초). 미가입 이메일은 메일 없이 동일한 200 (계정 존재 여부 비노출).
+ *  send-code   : 이메일 → (IP/재전송 제한) → 사용자 존재 확인 → 발송 잠금(SET NX) → 6자리 SecureRandom 코드 → SMTP 발송
+ *                → 성공 시에만 Lua 원자 교체(code TTL 5분 덮어쓰기 + attempts 초기화 + cooldown 60초 + 잠금 해제).
+ *                SMTP 실패 시 기존 유효 코드 보존. 미가입 이메일은 메일 없이 동일한 200 (계정 존재 여부 비노출).
  *  verify-code : code 키 조회(없음=만료) → 상수시간 비교 → 실패 시 attempts 증가(상한 초과=코드 무효화)
  *                → 성공 시 code/attempts 삭제 + verified 키(TTL 10분).
  *  reset       : verified 키 필수 → 비밀번호 정책/확인/기존 동일 검사 → BCrypt → users.password UPDATE
@@ -41,7 +44,7 @@ import java.util.regex.Pattern;
  *
  * Redis 키:
  *  password-reset:code:{email}, password-reset:verified:{email}, password-reset:attempts:{email},
- *  password-reset:cooldown:{email}, password-reset:ip:{ip}
+ *  password-reset:cooldown:{email}, password-reset:sending:{email}(발송 잠금), password-reset:ip:{ip}
  *
  * 인증번호·비밀번호는 절대 로그에 남기지 않는다.
  */
@@ -56,6 +59,21 @@ public class PasswordResetService {
     static final String KEY_ATTEMPTS = KEY_PREFIX + "attempts:";
     static final String KEY_COOLDOWN = KEY_PREFIX + "cooldown:";
     static final String KEY_IP = KEY_PREFIX + "ip:";
+    /** 이메일 단위 발송 진행 중 잠금(SET NX EX). 동시 재전송 역전 방지. */
+    static final String KEY_SENDING = KEY_PREFIX + "sending:";
+    /** SMTP connect(5s)+read(10s)+write(10s) 타임아웃 합보다 길게 잡아 잠금이 먼저 풀리지 않게 한다. */
+    static final long SENDING_LOCK_SECONDS = 30;
+
+    /**
+     * SMTP 성공 후 authoritative 상태 원자 교체:
+     *  KEYS[1]=code SET EX ARGV[2], KEYS[2]=attempts DEL, KEYS[3]=cooldown SET EX ARGV[3], KEYS[4]=sending 잠금 DEL.
+     */
+    static final RedisScript<Long> PROMOTE_CODE_SCRIPT = new DefaultRedisScript<>(
+            "redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2]) "
+                    + "redis.call('DEL', KEYS[2]) "
+                    + "redis.call('SET', KEYS[3], '1', 'EX', ARGV[3]) "
+                    + "redis.call('DEL', KEYS[4]) "
+                    + "return 1", Long.class);
 
     /** 회원가입 화면과 동일 정책: 8~16자, 영문+숫자+특수문자 각 1개 이상, 공백 불가. */
     static final Pattern PASSWORD_POLICY =
@@ -75,6 +93,14 @@ public class PasswordResetService {
 
     // ─────────────────────────────── A. 인증번호 발송 ───────────────────────────────
 
+    /**
+     * 불변조건: "사용자가 실제로 받은 최신 인증번호" == "Redis 가 검증하는 인증번호".
+     *  - 외부 side effect(SMTP) 가 성공한 뒤에만 Redis 를 바꾼다. SMTP 실패 시 기존 유효 코드/attempts/TTL 은 그대로 남는다.
+     *  - 성공 시 code SET / attempts DEL / cooldown SET / 잠금 DEL 을 Lua 스크립트 하나로 원자 교체한다(부분 반영 없음).
+     *  - 이메일 단위 발송 잠금(SET NX EX)으로 동시 재전송을 1건만 통과시켜 "메일 A 뒤에 메일 B, Redis 는 A" 같은 역전이 생기지 않는다.
+     *  - 남는 창: SMTP 성공 후 Redis 장애. 이때는 503(STORE_UNAVAILABLE) 로 재요청을 유도하고 ERROR 로 불일치 위험을 기록한다.
+     *    (잠금/cooldown 이 없어도 잠금 TTL 만료 후 재요청 가능, 기존 코드는 손대지 않음.)
+     */
     public PasswordResetDTO.Response sendCode(String rawEmail, String clientIp) {
         String email = normalize(rawEmail);
         String key = keyOf(email);
@@ -103,31 +129,39 @@ public class PasswordResetService {
                     .build();
         }
 
-        String code = generateCode();
-        // 마지막 발급분만 유효: 덮어쓰기 + 이전 실패 횟수 초기화.
-        redis(() -> {
-            redisTemplate.opsForValue().set(KEY_CODE + key, code, properties.getCodeTtlSeconds(), TimeUnit.SECONDS);
-            redisTemplate.delete(KEY_ATTEMPTS + key);
-            return null;
-        });
+        // 발송 잠금: 같은 이메일의 동시 발송은 1건만. 잠금 TTL 은 SMTP connect+read+write 타임아웃 합보다 길다.
+        String sendingKey = KEY_SENDING + key;
+        Boolean locked = redis(() -> redisTemplate.opsForValue().setIfAbsent(sendingKey, "1",
+                SENDING_LOCK_SECONDS, TimeUnit.SECONDS));
+        if (!Boolean.TRUE.equals(locked)) {
+            Long lockTtl = redis(() -> redisTemplate.getExpire(sendingKey, TimeUnit.SECONDS));
+            long retry = lockTtl == null || lockTtl <= 0 ? SENDING_LOCK_SECONDS : lockTtl;
+            throw new PasswordResetException(HttpStatus.TOO_MANY_REQUESTS, Reason.RESEND_COOLDOWN,
+                    "인증메일을 발송하는 중입니다. " + retry + "초 후에 다시 시도해 주세요.", retry);
+        }
 
+        String code = generateCode();
         try {
+            // 1) 외부 side effect 먼저. 실패하면 Redis 는 아무것도 바뀌지 않는다(기존 코드·attempts·TTL 보존).
             mailService.sendVerificationCode(user.get().getEmail(), code, properties.getCodeTtlSeconds());
         } catch (RuntimeException e) {
-            // 발송되지 않은 코드는 남기지 않는다(성공 위장 금지).
-            try {
-                redisTemplate.delete(List.of(KEY_CODE + key, KEY_ATTEMPTS + key));
-            } catch (DataAccessException ignored) {
-                log.warn("[password-reset] 발송 실패 후 코드 정리 실패 to={}", PasswordResetMailService.mask(email));
-            }
+            releaseSendingLock(sendingKey, email);
             throw e;
         }
 
-        redis(() -> {
-            redisTemplate.opsForValue().set(KEY_COOLDOWN + key, "1",
-                    properties.getResendCooldownSeconds(), TimeUnit.SECONDS);
-            return null;
-        });
+        // 2) SMTP 성공 확인 후에만 authoritative 코드 교체(원자).
+        try {
+            redisTemplate.execute(PROMOTE_CODE_SCRIPT,
+                    List.of(KEY_CODE + key, KEY_ATTEMPTS + key, KEY_COOLDOWN + key, sendingKey),
+                    code, String.valueOf(properties.getCodeTtlSeconds()), String.valueOf(properties.getResendCooldownSeconds()));
+        } catch (DataAccessException e) {
+            // 메일은 나갔는데 저장 실패 → 수신한 인증번호가 검증되지 않는 불일치 창. 재요청을 유도하고 명확히 기록한다.
+            log.error("[password-reset] 메일 발송 후 Redis 저장 실패 — 수신 인증번호와 서버 상태 불일치 위험, 재요청 필요 to={} cause={}",
+                    PasswordResetMailService.mask(email), e.getClass().getSimpleName());
+            releaseSendingLock(sendingKey, email);
+            throw new PasswordResetException(HttpStatus.SERVICE_UNAVAILABLE, Reason.STORE_UNAVAILABLE,
+                    "인증번호 저장에 실패했습니다. 인증번호를 다시 요청해 주세요.");
+        }
         log.info("[password-reset] 인증번호 발급 to={} ttl={}s", PasswordResetMailService.mask(email), properties.getCodeTtlSeconds());
 
         return PasswordResetDTO.Response.builder()
@@ -135,6 +169,15 @@ public class PasswordResetService {
                 .expiresInSeconds(properties.getCodeTtlSeconds())
                 .resendAfterSeconds(properties.getResendCooldownSeconds())
                 .build();
+    }
+
+    private void releaseSendingLock(String sendingKey, String email) {
+        try {
+            redisTemplate.delete(sendingKey);
+        } catch (DataAccessException ignored) {
+            log.warn("[password-reset] 발송 잠금 해제 실패(TTL {}s 후 자동 해제) to={}", SENDING_LOCK_SECONDS,
+                    PasswordResetMailService.mask(email));
+        }
     }
 
     // ─────────────────────────────── B. 인증번호 검증 ───────────────────────────────
