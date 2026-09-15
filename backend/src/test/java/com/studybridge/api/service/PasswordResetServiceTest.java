@@ -501,13 +501,62 @@ class PasswordResetServiceTest {
         assertFalse(values.containsKey("password-reset:sending:" + EMAIL), "잠금 해제");
     }
 
+    // ── 값 경로: 요청 문자열 → DTO(String) → 서비스 비교 (leading zero 보존) ──
+
+    @Test // TEST 1: 사용자가 입력한 "952372" 그대로 전달되면 성공
+    void verifyCode_literal952372_succeeds() {
+        values.put("password-reset:code:" + EMAIL, "952372");
+        expiresAt.put("password-reset:code:" + EMAIL, now + 300);
+        service.verifyCode(EMAIL, "952372");
+        assertTrue(values.containsKey("password-reset:verified:" + EMAIL));
+    }
+
+    @Test // TEST 2: leading zero 코드 "098867" 문자열 그대로 성공(숫자 변환 없음)
+    void verifyCode_leadingZero098867_succeeds() {
+        values.put("password-reset:code:" + EMAIL, "098867");
+        expiresAt.put("password-reset:code:" + EMAIL, now + 300);
+        service.verifyCode(EMAIL, "098867");
+        assertTrue(values.containsKey("password-reset:verified:" + EMAIL));
+        // 숫자로 취급됐다면 통과했을 "98867" 은 실패해야 한다
+        values.put("password-reset:code:" + EMAIL, "098867");
+        expect(Reason.CODE_MISMATCH, () -> service.verifyCode(EMAIL, "98867"));
+    }
+
+    @Test // TEST 3: 요청 본문 JSON → DTO 바인딩은 String 이며 leading zero 와 6자리 형식이 보존된다
+    void dto_jsonBinding_keepsStringAndLeadingZero() throws Exception {
+        com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+        com.studybridge.api.dto.PasswordResetDTO.VerifyCodeRequest r =
+                om.readValue("{\"email\":\"" + EMAIL + "\",\"code\":\"098867\"}", com.studybridge.api.dto.PasswordResetDTO.VerifyCodeRequest.class);
+        assertEquals("098867", r.getCode());
+        assertEquals(String.class, r.getCode().getClass());
+        jakarta.validation.Validator validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
+        assertTrue(validator.validate(r).isEmpty(), "6자리 숫자 문자열은 @Pattern 통과");
+        // 공백/구분자가 섞인 값은 서버 @Pattern 에서 차단된다(프론트 onChange 가 \D 제거 + 6자리 절단으로 정규화)
+        com.studybridge.api.dto.PasswordResetDTO.VerifyCodeRequest bad =
+                om.readValue("{\"email\":\"" + EMAIL + "\",\"code\":\"0 9 8 8 6 7\"}", com.studybridge.api.dto.PasswordResetDTO.VerifyCodeRequest.class);
+        assertFalse(validator.validate(bad).isEmpty());
+        assertEquals("098867", "0 9 8 8 6 7".replaceAll("\\D", "").substring(0, 6), "프론트 정규화 규칙과 동일한 결과");
+    }
+
+    @Test // 입력 앞뒤 공백은 서버가 trim 하고, 그 외 변형(개행/전각 숫자)은 불일치
+    void verifyCode_trimsOnlyOuterWhitespace() {
+        values.put("password-reset:code:" + EMAIL, "952372");
+        expiresAt.put("password-reset:code:" + EMAIL, now + 300);
+        expect(Reason.CODE_MISMATCH, () -> service.verifyCode(EMAIL, "９５２３７２"));
+        expect(Reason.CODE_MISMATCH, () -> service.verifyCode(EMAIL, "95237"));
+        service.verifyCode(EMAIL, " 952372 ");
+        assertTrue(values.containsKey("password-reset:verified:" + EMAIL));
+    }
+
     // ── 메일 본문 ──
 
     @Test
     void mailBody_containsCodeAndRequiredSentences_noExternalResources() {
-        String text = PasswordResetMailService.buildPlainText("483921", 5);
-        String html = PasswordResetMailService.buildHtml("483921", 5);
+        String text = PasswordResetMailService.buildPlainText("483921", 5, "who@example.com");
+        String html = PasswordResetMailService.buildHtml("483921", 5, "who@example.com");
         assertTrue(text.contains("[ 483921 ]"));
+        assertTrue(text.contains("요청 계정: who@example.com"), "어느 계정용 번호인지 본문에 명시");
+        assertTrue(html.contains("요청 계정: who@example.com"));
         assertTrue(text.contains("5분 동안 유효"));
         assertTrue(text.contains("본인이 요청하지 않은 경우"));
         assertTrue(html.contains("483921"));

@@ -100,9 +100,9 @@ public class PasswordResetMailService {
             // 최상위 multipart/alternative: text/plain 폴백 + 단순 HTML (첨부/인라인 리소스 없음)
             MimeMultipart alternative = new MimeMultipart("alternative");
             MimeBodyPart textPart = new MimeBodyPart();
-            textPart.setText(buildPlainText(code, minutes), StandardCharsets.UTF_8.name());
+            textPart.setText(buildPlainText(code, minutes, toEmail), StandardCharsets.UTF_8.name());
             MimeBodyPart htmlPart = new MimeBodyPart();
-            htmlPart.setContent(buildHtml(code, minutes), "text/html; charset=UTF-8");
+            htmlPart.setContent(buildHtml(code, minutes, toEmail), "text/html; charset=UTF-8");
             alternative.addBodyPart(textPart);
             alternative.addBodyPart(htmlPart);
             message.setContent(alternative);
@@ -117,11 +117,14 @@ public class PasswordResetMailService {
         }
     }
 
-    static String buildPlainText(String code, long minutes) {
+    /** 요청 계정을 본문에 명시한다: 한 수신함에 여러 계정(예: Gmail plus-addressing)의 메일이 섞여도 어느 계정용 번호인지 구분된다. */
+    static String buildPlainText(String code, long minutes, String account) {
         return String.join("\n", List.of(
                 "안녕하십니까, 회원님.",
                 "",
                 "StudyBridge 비밀번호 찾기 인증번호를 안내드립니다.",
+                "",
+                "요청 계정: " + account,
                 "",
                 "인증번호",
                 "",
@@ -138,13 +141,14 @@ public class PasswordResetMailService {
         ));
     }
 
-    static String buildHtml(String code, long minutes) {
+    static String buildHtml(String code, long minutes, String account) {
         // 인라인 스타일만 사용. 외부 이미지/링크/스크립트 없음.
         return "<!DOCTYPE html><html lang=\"ko\"><head><meta charset=\"UTF-8\"></head>"
                 + "<body style=\"margin:0;padding:24px;background:#f5f6f8;font-family:'Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;color:#1f2937;\">"
                 + "<div style=\"max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:32px;\">"
                 + "<p style=\"margin:0 0 16px;font-size:15px;line-height:1.7;\">안녕하십니까, 회원님.</p>"
-                + "<p style=\"margin:0 0 20px;font-size:15px;line-height:1.7;\">StudyBridge 비밀번호 찾기 인증번호를 안내드립니다.</p>"
+                + "<p style=\"margin:0 0 12px;font-size:15px;line-height:1.7;\">StudyBridge 비밀번호 찾기 인증번호를 안내드립니다.</p>"
+                + "<p style=\"margin:0 0 20px;font-size:13px;color:#6b7280;\">요청 계정: " + escapeHtml(account) + "</p>"
                 + "<p style=\"margin:0 0 8px;font-size:13px;color:#6b7280;\">인증번호</p>"
                 + "<div style=\"margin:0 0 20px;padding:18px;text-align:center;background:#f3f4f6;border-radius:10px;"
                 + "font-size:30px;font-weight:700;letter-spacing:8px;color:#111827;\">" + code + "</div>"
@@ -154,6 +158,11 @@ public class PasswordResetMailService {
                 + "<p style=\"margin:0 0 4px;font-size:15px;\">감사합니다.</p>"
                 + "<p style=\"margin:0;font-size:15px;font-weight:700;\">StudyBridge</p>"
                 + "</div></body></html>";
+    }
+
+    static String escapeHtml(String v) {
+        if (v == null) return "";
+        return v.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
     }
 
     /** 로그용 마스킹: a***@domain */

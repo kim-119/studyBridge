@@ -357,6 +357,10 @@ export default function ForgotPassword() {
                 <Mail size={20} style={iconStyle} />
                 <input type="email" value={email} readOnly style={{ ...inputStyle, background: '#f3f4f6', color: 'var(--color-text-muted)' }} />
               </div>
+              {/* 한 수신함에 여러 계정 메일이 섞이는 경우(예: 별칭 주소) 다른 계정용 번호를 입력하는 혼동 방지 */}
+              <p style={{ margin: '6px 0 0', fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                메일 본문의 "요청 계정"이 위 이메일과 같은, 가장 최근에 받은 메일의 인증번호를 입력하세요.
+              </p>
             </div>
             <div style={{ marginBottom: '8px' }}>
               <label style={labelStyle} htmlFor="reset-code">인증번호</label>
