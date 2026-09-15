@@ -30,6 +30,8 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'org.springframework.boot:spring-boot-starter-aop'
 	implementation 'org.springframework.boot:spring-boot-starter-websocket'
+	// 비밀번호 찾기 이메일 인증번호 발송(SMTP). 설정은 application.yml spring.mail.* ← SMTP_* 환경변수.
+	implementation 'org.springframework.boot:spring-boot-starter-mail'
 	
 	implementation platform('software.amazon.awssdk:bom:2.25.15')
 	implementation 'software.amazon.awssdk:s3'

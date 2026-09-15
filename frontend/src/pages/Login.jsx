@@ -334,10 +334,23 @@ export default function Login() {
           </button>
         </form>
 
+        <p style={{ textAlign: 'center', marginTop: '16px' }}>
+          <Link
+            to="/forgot-password"
+            style={{
+              color: 'var(--color-text-muted)',
+              fontSize: '14px',
+              textDecoration: 'underline',
+            }}
+          >
+            비밀번호를 잊으셨나요?
+          </Link>
+        </p>
+
         <p
           style={{
             textAlign: 'center',
-            marginTop: '20px',
+            marginTop: '12px',
             color: 'var(--color-text-muted)',
           }}
         >

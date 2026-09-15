@@ -43,7 +43,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         
-                .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll().requestMatchers("/api/users/register", "/api/users/login", "/api/users/refresh", "/error", "/temp-materials/**", "/ws-group/**", "/api/banners/main", "/api/test/**").permitAll()
+                .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll().requestMatchers("/api/users/register", "/api/users/login", "/api/users/refresh", "/api/users/password-reset/**", "/error", "/temp-materials/**", "/ws-group/**", "/api/banners/main", "/api/test/**").permitAll()
 
                         .anyRequest().authenticated())
                 // 인증 없음/토큰 만료·변조 = 401. 기본(Http403ForbiddenEntryPoint)은 403 이라 "세션 만료" 와 "방 소유자 아님(403)" 을

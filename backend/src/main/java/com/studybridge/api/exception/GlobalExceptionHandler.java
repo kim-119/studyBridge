@@ -64,6 +64,22 @@ public class GlobalExceptionHandler {
         return body(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 
+    // 비밀번호 찾기(이메일 인증) 흐름: 예외가 지정한 상태코드 + reason 코드. 인증번호/비밀번호는 메시지에 포함되지 않는다.
+    @ExceptionHandler(PasswordResetException.class)
+    public ResponseEntity<Map<String, Object>> handlePasswordReset(PasswordResetException ex) {
+        log.warn("Password reset rejected: reason={} message={}", ex.getReason(), ex.getMessage());
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("status", ex.getStatus().value());
+        payload.put("message", ex.getMessage());
+        payload.put("reason", ex.getReason().name());
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(ex.getStatus()).contentType(MediaType.APPLICATION_JSON);
+        if (ex.getRetryAfterSeconds() != null) {
+            payload.put("retryAfterSeconds", ex.getRetryAfterSeconds());
+            builder.header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()));
+        }
+        return builder.body(payload);
+    }
+
     // 권한 없음(서비스 계층에서 던지는 SecurityException) → 403
     @ExceptionHandler(SecurityException.class)
     public ResponseEntity<Map<String, Object>> handleForbidden(SecurityException ex) {

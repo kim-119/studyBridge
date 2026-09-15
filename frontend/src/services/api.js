@@ -632,7 +632,48 @@ export const authService = {
       throw err.response?.data || { message: '본인 확인 실패' };
     }
   },
+
+  // ── 비밀번호 찾기(이메일 인증번호) — 비로그인 공개 API. 오류는 {status, message, reason, retryAfterSeconds} 로 전달 ──
+  sendPasswordResetCode: async (email) => {
+    try {
+      const res = await api.post('/api/users/password-reset/send-code', { email });
+      return res.data;
+    } catch (err) {
+      throw normalizePasswordResetError(err, '인증번호 발송에 실패했습니다.');
+    }
+  },
+
+  verifyPasswordResetCode: async (email, code) => {
+    try {
+      const res = await api.post('/api/users/password-reset/verify-code', { email, code });
+      return res.data;
+    } catch (err) {
+      throw normalizePasswordResetError(err, '인증번호 확인에 실패했습니다.');
+    }
+  },
+
+  resetPassword: async (email, newPassword, newPasswordConfirm) => {
+    try {
+      const res = await api.post('/api/users/password-reset/reset', { email, newPassword, newPasswordConfirm });
+      return res.data;
+    } catch (err) {
+      throw normalizePasswordResetError(err, '비밀번호 변경에 실패했습니다.');
+    }
+  },
 };
+
+// 비밀번호 찾기 오류를 화면이 분기할 수 있는 단일 형태로 정규화한다(서버 스택트레이스 원문은 전달하지 않음).
+function normalizePasswordResetError(err, fallback) {
+  if (err?.response) {
+    const data = err.response.data;
+    const status = err.response.status;
+    if (data && typeof data === 'object') {
+      return { status, message: data.message || fallback, reason: data.reason, retryAfterSeconds: data.retryAfterSeconds };
+    }
+    return { status, message: typeof data === 'string' && data.length < 200 ? data : fallback };
+  }
+  return { message: '서버에 연결할 수 없습니다. 네트워크 상태를 확인해주세요.', networkError: true };
+}
 
 export const todoService = {
   getTodos: async (userId) => {
