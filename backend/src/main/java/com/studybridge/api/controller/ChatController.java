@@ -45,6 +45,7 @@ public class ChatController {
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long roomId,
             @Valid @RequestBody ChatDTO.MultiChatRequest request,
+            @RequestHeader(value = "X-Request-ID", required = false) String clientRequestId,
             HttpServletResponse response) {
 
         // SSE가 Nginx/프록시/브라우저에서 버퍼링되지 않도록 응답 헤더를 명시한다.
@@ -53,8 +54,12 @@ public class ChatController {
         response.setHeader("Cache-Control", "no-cache, no-transform");
         response.setHeader("Connection", "keep-alive");
 
-        log.info("chat stream controller received roomId={}", roomId);
-        return chatService.chatStream(userDetails.getId(), roomId, request);
+        // 요청 상관 id: 브라우저 X-Request-ID(형식 검증) → 없으면 Spring 이 발급. 같은 id 가 Spring 로그·AI07 요청·SSE 이벤트에 실린다.
+        final String requestId = ChatService.resolveRequestId(clientRequestId, request.getMessageId());
+        response.setHeader("X-Request-ID", requestId);
+
+        log.info("chat stream controller received roomId={} requestId={}", roomId, requestId);
+        return chatService.chatStream(userDetails.getId(), roomId, request, requestId);
     }
 
     // 채팅방 내역 조회 — 방 소유자만 조회 가능(IDOR 방지: roomId 만으로 타인 대화가 열리던 문제).

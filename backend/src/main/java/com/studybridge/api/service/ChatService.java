@@ -2,8 +2,10 @@ package com.studybridge.api.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.contract.AgentProfileContract;
 import com.studybridge.api.dto.ChatDTO;
 import com.studybridge.api.dto.IntentDTO;
+import com.studybridge.api.exception.AiUpstreamException;
 import com.studybridge.api.dto.QuizDTO;
 import com.studybridge.api.entity.Agent;
 import com.studybridge.api.entity.ChatMessage;
@@ -76,21 +78,51 @@ public class ChatService {
 
         // 브라우저 keep-alive: SSE 주석(':hb')을 N초 간격으로 병합한다. 주석이라 프론트 이벤트 핸들러를 건드리지 않는다.
         //  본 스트림이 끝나면 sentinel 로 interval 을 함께 정리한다(누수 없음).
-        private Flux<ServerSentEvent<String>> withHeartbeat(Flux<ServerSentEvent<String>> main) {
-                long hb = envSeconds("AI_SSE_HEARTBEAT_SECONDS", 12);
-                if (hb <= 0) {
-                        hb = 12;
-                }
+        //  · 첫 business 이벤트가 나간 뒤에만 tick 을 시작한다 → 스트림을 열기 전(pre-stream) 실패는 응답이 커밋되기 전이라
+        //    AiUpstreamException 으로 상태코드+JSON 응답이 가능하다(정상 SSE 위장 금지, §10).
+        //  · tick 은 control event 라 backpressure 시 drop 해도 된다(business event 는 절대 drop 하지 않는다, §18).
+        static Flux<ServerSentEvent<String>> withHeartbeat(Flux<ServerSentEvent<String>> main, long hbSeconds) {
+                final long hb = hbSeconds <= 0 ? 12 : hbSeconds;
                 final ServerSentEvent<String> end = ServerSentEvent.<String>builder().comment("end").build();
-                Flux<ServerSentEvent<String>> ticks = Flux.interval(Duration.ofSeconds(hb), Duration.ofSeconds(hb))
-                                .map(i -> ServerSentEvent.<String>builder().comment("hb").build());
-                return Flux.merge(main.concatWith(Mono.just(end)), ticks)
-                                .takeUntil(ev -> ev == end)
-                                .filter(ev -> ev != end);
+                return main.switchOnFirst((signal, flux) -> {
+                        if (!signal.hasValue()) {
+                                return flux; // 값 없이 error/complete → 그대로 전파(heartbeat 없음)
+                        }
+                        Flux<ServerSentEvent<String>> ticks = Flux.interval(Duration.ofSeconds(hb), Duration.ofSeconds(hb))
+                                        .onBackpressureDrop()
+                                        .map(i -> ServerSentEvent.<String>builder().comment("hb").build());
+                        return Flux.merge(flux.concatWith(Mono.just(end)), ticks)
+                                        .takeUntil(ev -> ev == end)
+                                        .filter(ev -> ev != end);
+                });
+        }
+
+        private Flux<ServerSentEvent<String>> withHeartbeat(Flux<ServerSentEvent<String>> main) {
+                return withHeartbeat(main, envSeconds("AI_SSE_HEARTBEAT_SECONDS", 12));
+        }
+
+        // ── 요청 상관 id: 브라우저 X-Request-ID → (없으면) 프론트 messageId → (없으면) Spring 발급 ─────────────
+        //  허용 형식 [A-Za-z0-9._:-]{4,64}. 같은 값이 Spring 로그·AI07 요청(X-Request-ID 헤더 + body.requestId)·모든 SSE 이벤트에 실린다.
+        private static final Pattern REQUEST_ID_PATTERN = Pattern.compile("^[A-Za-z0-9._:-]{4,64}$");
+
+        public static String resolveRequestId(String... candidates) {
+                if (candidates != null) {
+                        for (String c : candidates) {
+                                if (c != null && REQUEST_ID_PATTERN.matcher(c.trim()).matches()) {
+                                        return c.trim();
+                                }
+                        }
+                }
+                return "req_" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         }
 
         // FastAPI(/api/ai/multi-chat[/stream]) 요청 바디 구성 — 블로킹/스트리밍 공용.
         private Map<String, Object> buildFastApiRequestBody(AgentChatRoom room, Long roomId, ChatDTO.MultiChatRequest request) {
+                return buildFastApiRequestBody(room, roomId, request, null, null);
+        }
+
+        private Map<String, Object> buildFastApiRequestBody(AgentChatRoom room, Long roomId, ChatDTO.MultiChatRequest request,
+                        Long userId, String requestId) {
                 // Redis에서 최근 대화 가져오기
                 List<com.studybridge.api.dto.RedisChatMessage> recentHistory = redisChatService.getRecentPersonalHistory(roomId);
                 
@@ -154,50 +186,14 @@ public class ChatService {
                                 requestKnowledgeLevel,
                                 requestCustomInstruction != null && !requestCustomInstruction.isBlank());
 
-                // FastAPI의 /api/ai/multi-chat 요구사항에 맞춰 데이터 구성
-                List<Map<String, Object>> agentsList = room.getAgents().stream()
-                                .map(agent -> {
-                                        String persona = nullToEmpty(agent.getPersona());
-                                        String agentKnowledgeLevel = normalizeKnowledgeLevel(firstNonBlank(
-                                                        extractPersonaTag(persona, "지식수준"),
-                                                        requestKnowledgeLevel,
-                                                        "학사 수준"));
-                                        String agentPersonality = firstNonBlank(
-                                                        agent.getTone(),
-                                                        extractPersonaTag(persona, "성격"),
-                                                        requestPersonality,
-                                                        "전문적");
-                                        String agentCustomInstruction = firstNonBlank(
-                                                        stripPersonaTags(persona),
-                                                        requestCustomInstruction,
-                                                        agent.getGoal(),
-                                                        "");
-
-                                        Map<String, Object> agentMap = new LinkedHashMap<>();
-                                        agentMap.put("id", agent.getId());
-                                        agentMap.put("agentId", agent.getId());
-                                        agentMap.put("name", agent.getName());
-                                        agentMap.put("role", agent.getRole());
-                                        // agentPreset은 persona [프리셋: X] 태그에서 복원해 FastAPI 프롬프트로 전달
-                                        agentMap.put("agentPreset", extractPersonaTag(persona, "프리셋"));
-                                        agentMap.put("personality", agentPersonality);
-                                        // canonical key + temperature를 함께 전달(FastAPI가 key를 우선 사용).
-                                        agentMap.put("personalityStyle", personalityStyleKey(agentPersonality));
-                                        agentMap.put("temperature", personalityTemperature(agentPersonality, request.getTemperature()));
-                                        agentMap.put("personalityStrength", requestPersonalityStrength);
-                                        agentMap.put("personality_strength", requestPersonalityStrength);
-                                        agentMap.put("style", agentPersonality);
-                                        agentMap.put("tone", agentPersonality);
-                                        agentMap.put("knowledgeLevel", agentKnowledgeLevel);
-                                        agentMap.put("knowledge_level", agentKnowledgeLevel);
-                                        agentMap.put("knowledgeLevelLabel", knowledgeLevelLabel(agentKnowledgeLevel));
-                                        agentMap.put("customInstruction", agentCustomInstruction);
-                                        agentMap.put("custom_instruction", agentCustomInstruction);
-                                        agentMap.put("persona", persona);
-                                        agentMap.put("goal", agent.getGoal());
-                                        return agentMap;
-                                })
-                                .collect(Collectors.toList());
+                // FastAPI의 /api/ai/multi-chat 요구사항에 맞춰 데이터 구성 — canonical contract(AgentProfileContract) 단일 지점.
+                //  agentSlot = 방 에이전트 배열의 1-based 위치(순서 identity). identity 는 agentId, 표시는 name.
+                final List<Agent> roomAgents = room.getAgents();
+                List<Map<String, Object>> agentsList = new java.util.ArrayList<>();
+                for (int i = 0; i < roomAgents.size(); i++) {
+                        agentsList.add(buildAgentPayload(roomAgents.get(i), i + 1, requestKnowledgeLevel, requestPersonality,
+                                        requestPersonalityStrength, requestCustomInstruction, request.getTemperature()));
+                }
 
                 // 방 에이전트가 유일한 Source of Truth. 과거엔 요청 body 의 agents[] 가 있으면 방 구성을 통째로 대체했는데,
                 //  (1) 클라이언트가 임의 이름/persona 의 가짜 교수를 주입할 수 있고 (2) 그 답변은 방 agent 와 매칭되지 않아
@@ -287,11 +283,23 @@ public class ChatService {
                                         request.getSimulationConfig(), subMap(roomModeCfg, "simulationConfig")));
                 }
                 requestBody.put("showFinalSynthesis", request.getShowFinalSynthesis() != null ? request.getShowFinalSynthesis() : false);
+                // 상관 id(브라우저 X-Request-ID ↔ Spring ↔ AI07) + JWT 사용자 id(본문 userId 는 신뢰하지 않는다).
+                if (requestId != null) {
+                        requestBody.put("requestId", requestId);
+                }
+                if (userId != null) {
+                        requestBody.put("userId", userId);
+                }
+                requestBody.put("contractVersion", AiMultiChatFailoverService.CONTRACT_VERSION);
                 requestBody.put("personality", requestPersonality);
-                // 정규 성격 key + temperature(요청 personalityStyle 우선, 없으면 personality에서 유도).
-                String requestPersonalityKey = firstNonBlank(request.getPersonalityStyle(), personalityStyleKey(requestPersonality));
+                // 정규 성격 key + temperature(요청 personalityStyle 우선, 없으면 personality에서 유도). canonical 6키도 함께 전달.
+                AgentProfileContract.PersonaResolution reqPersona = AgentProfileContract.resolvePersona(
+                                request.getPersonalityStyle(), requestPersonality);
+                String requestPersonalityKey = reqPersona.legacyStyle() != null ? reqPersona.legacyStyle()
+                                : firstNonBlank(request.getPersonalityStyle(), personalityStyleKey(requestPersonality));
                 requestBody.put("personalityStyle", requestPersonalityKey);
-                requestBody.put("temperature", personalityTemperature(requestPersonality, request.getTemperature()));
+                requestBody.put("personalityKey", reqPersona.key());
+                requestBody.put("temperature", AgentProfileContract.temperatureFor(reqPersona, request.getTemperature()));
                 requestBody.put("personalityStrength", requestPersonalityStrength);
                 requestBody.put("personality_strength", requestPersonalityStrength);
                 requestBody.put("style", firstNonBlank(request.getStyle(), requestPersonality));
@@ -300,6 +308,7 @@ public class ChatService {
                 requestBody.put("knowledgeLevel", normalizedRequestLevel);
                 requestBody.put("knowledge_level", normalizedRequestLevel);
                 requestBody.put("knowledgeLevelLabel", knowledgeLevelLabel(normalizedRequestLevel));
+                requestBody.put("knowledgeLevelKey", AgentProfileContract.resolveKnowledge(requestKnowledgeLevel).key());
                 requestBody.put("customInstruction", requestCustomInstruction);
                 requestBody.put("custom_instruction", requestCustomInstruction);
                 requestBody.put("persona", request.getPersona());
@@ -386,9 +395,9 @@ public class ChatService {
                         StringBuilder agentSummary = new StringBuilder();
                         for (Map<String, Object> a : agentsList) {
                                 if (agentSummary.length() > 0) agentSummary.append(" | ");
-                                agentSummary.append(a.get("name")).append(":")
-                                        .append(a.get("personalityStyle")).append("/")
-                                        .append(a.get("knowledgeLevel")).append("/t=")
+                                agentSummary.append(a.get("name")).append("#").append(a.get("agentSlot")).append(":")
+                                        .append(a.get("personalityKey")).append("(").append(a.get("personalityStyle")).append(")/")
+                                        .append(a.get("knowledgeLevelKey")).append("/t=")
                                         .append(a.get("temperature"));
                         }
                         log.info("[CHAT PAYLOAD] roomId={} mode={} learningMode={} reqPersonality={} reqLevel={} reqTemp={} strength={} agents=[{}]",
@@ -416,14 +425,16 @@ public class ChatService {
                                 explicitTarget != null ? explicitTarget.getId() + ":" + explicitTarget.getName() : null,
                                 explicitTarget != null ? "single" : "all");
 
-                // 사용자의 메시지 저장
+                final String syncRequestId = resolveRequestId(request.getMessageId());
+                // 사용자의 메시지 저장(requestId 를 함께 남겨 늦게 영속되는 AI 답변과 같은 턴으로 묶인다)
                 transactionTemplate.execute(status -> {
-                        saveRoomMessage(room, null, request.getMessage(), "USER", null);
+                        saveRoomMessage(room, null, request.getMessage(), "USER", null,
+                                        new AnswerMeta(syncRequestId, null, null, null, null, null, null, null, null));
                         return null;
                 });
 
-                Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request);
-                log.info("chat fastapi payload roomId={} keys={} agents={}", roomId, requestBody.keySet(),
+                Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request, userId, syncRequestId);
+                log.info("chat fastapi payload roomId={} requestId={} keys={} agents={}", roomId, syncRequestId, requestBody.keySet(),
                                 requestBody.get("agents") instanceof List ? ((List<?>) requestBody.get("agents")).size() : 0);
 
                 // 모드별 타임아웃: 소크라테스/토론/멀티에이전트는 단계적 검토로 오래 걸리므로 길게 허용한다.
@@ -437,8 +448,7 @@ public class ChatService {
                 long faStart = System.currentTimeMillis();
                 try {
                         // PRIMARY→SECONDARY failover 포함 non-stream 호출. 여기는 MVC(Tomcat) 요청 스레드라 block 허용.
-                        response = aiFailover.callMultiChat(roomId,
-                                        "req_" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12),
+                        response = aiFailover.callMultiChat(roomId, syncRequestId,
                                         requestBody, Duration.ofSeconds(aiTimeoutSeconds))
                                         .block(Duration.ofSeconds(aiTimeoutSeconds * 2 + 5));
                         log.info("chat fastapi elapsed_ms={} roomId={} timeout_s={}",
@@ -536,7 +546,11 @@ public class ChatService {
                 if (response != null && response.containsKey("messages") && response.get("messages") instanceof List) {
                         List<Map<String, Object>> messages = (List<Map<String, Object>>) response.get("messages");
 
+                        final String respTurnId = response.get("turnId") != null ? String.valueOf(response.get("turnId")) : null;
+                        final String respMode = responseLearningMode != null ? responseLearningMode : responseMode;
+                        int msgIndex = 0;
                         for (Map<String, Object> messageMap : messages) {
+                                int idx = msgIndex++;
                                 String aiContent = String.valueOf(messageMap.getOrDefault("content", ""));
                                 String agentName = String.valueOf(messageMap.getOrDefault("agentName", "AI"));
                                 String responseAgentId = String.valueOf(messageMap.getOrDefault("agentId", ""));
@@ -544,7 +558,22 @@ public class ChatService {
                                 // 응답 identity 보존: agentId → 이름 → null. 첫 번째 교수로 폴백하지 않는다.
                                 Agent targetAgent = resolveResponseAgent(room.getAgents(), responseAgentId, agentName);
 
-                                saveRoomMessage(room, targetAgent, aiContent, "AI", processStepsJson);
+                                // stream 과 같은 규칙으로 영속화: 실패/빈 답변 제외, 멱등 키(turnId:agentId:round:sequence) 로 중복 저장 방지.
+                                if (!aiContent.isBlank() && !AgentProfileContract.isFailedAnswer(messageMap)) {
+                                        Map<String, Object> keyed = new LinkedHashMap<>(messageMap);
+                                        keyed.putIfAbsent("stage", messageMap.get("round"));
+                                        keyed.putIfAbsent("displayOrder", messageMap.get("sequence"));
+                                        String dedupKey = dedupKeyOf(keyed, respTurnId, syncRequestId, idx);
+                                        Map<String, Object> identity = AgentProfileContract.identityOf(messageMap);
+                                        AnswerMeta meta = new AnswerMeta(syncRequestId, respTurnId, dedupKey, (Integer) identity.get("agentIndex"),
+                                                        str(messageMap.get("round")), str(identity.get("status")), respMode,
+                                                        str(identity.get("personalityKey")), str(identity.get("knowledgeLevelKey")));
+                                        if (dedupKey == null || !chatMessageRepository.existsByAgentChatRoomIdAndEventId(roomId, dedupKey)) {
+                                                saveRoomMessage(room, targetAgent, aiContent, "AI", processStepsJson, meta);
+                                        } else {
+                                                log.info("[CHAT PERSIST] roomId={} requestId={} non-stream 중복 답변 건너뜀 key={}", roomId, syncRequestId, dedupKey);
+                                        }
+                                }
 
                                 ChatDTO.DiscussionMessage discussionMessage = ChatDTO.DiscussionMessage.builder()
                                                 .id(String.valueOf(messageMap.getOrDefault("id", "")))
@@ -657,14 +686,18 @@ public class ChatService {
         //  · debate/socratic/simulation 모드: 원격 FastAPI /api/ai/multi-chat/stream 의 SSE를 그대로 중계한다.
         @Transactional
         public Flux<ServerSentEvent<String>> chatStream(Long userId, Long roomId, ChatDTO.MultiChatRequest request) {
+                return chatStream(userId, roomId, request, resolveRequestId(request.getMessageId()));
+        }
+
+        @Transactional
+        public Flux<ServerSentEvent<String>> chatStream(Long userId, Long roomId, ChatDTO.MultiChatRequest request, String clientRequestId) {
                 AgentChatRoom room = agentChatRoomRepository.findById(roomId)
                                 .orElseThrow(() -> new java.util.NoSuchElementException("해당 채팅방을 찾을 수 없습니다."));
                 if (!room.getUser().getId().equals(userId)) {
                         throw new SecurityException("해당 채팅방에 접근할 권한이 없습니다.");
                 }
-
-                // 요청 상관관계 ID (로그 상관용, 프롬프트/크리덴셜 미포함)
-                final String requestId = "req_" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+                final String requestId = (clientRequestId != null && !clientRequestId.isBlank()) ? clientRequestId
+                                : resolveRequestId(request.getMessageId());
 
                 // STRICT TARGETING: targetAgentId 는 방 agent 의 stable id(PK) 로만 해석한다.
                 //  방에 없는 id 는 첫 번째 교수로 폴백하지 않고 400(IllegalArgumentException) 으로 거절한다.
@@ -683,7 +716,10 @@ public class ChatService {
                                 log.info("[CHAT RETRY] roomId={} requestId={} 직전 미응답 USER 메시지와 동일 → 중복 저장 생략", roomId, requestId);
                                 return null;
                         }
-                        saveRoomMessage(room, null, request.getMessage(), "USER", null);
+                        // USER 행에도 requestId 를 남긴다: 취소/새로고침으로 늦게(다음 이벤트 시점) partial 영속되는 AI 답변이
+                        //  다음 질문 뒤에 저장되더라도 프론트가 requestId 로 원래 질문 아래에 붙일 수 있다(history ordering).
+                        saveRoomMessage(room, null, request.getMessage(), "USER", null,
+                                        new AnswerMeta(requestId, null, null, null, null, null, null, null, null));
                         return null;
                 });
 
@@ -699,7 +735,7 @@ public class ChatService {
                 final String routeWarning = route.isWarn() ? route.userMessage() : null;
 
                 // FastAPI 요청 바디 (블로킹과 동일 로직 재사용; room.getAgents() lazy 접근은 현재 트랜잭션 내)
-                Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request);
+                Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request, userId, requestId);
 
                 String effectiveLearningMode = normalizeLearningMode(firstNonBlank(
                                 request.getLearningMode(), room.getLearningMode(), "basic"));
@@ -710,9 +746,11 @@ public class ChatService {
                 Object fapiMode = requestBody.get("mode");
                 Object fapiLearningMode = requestBody.get("learningMode");
 
-                // basic + 단일 에이전트일 때만 Spring 자체 1차/2차/3차 오케스트레이션을 사용한다.
-                // 그 외(다중 에이전트, validation/collaboration/debate/socratic/simulation)는 ai07 stream을 그대로 중계한다.
-                boolean useBasicOrchestration = "basic".equals(effectiveLearningMode) && agentCount <= 1;
+                // AI07 v2(basic_v2 파이프라인)는 단일 에이전트 basic 도 같은 SSE 계약(turn_start/agent_start/agent_answer/all_complete/done,
+                //  eventId/turnId/agentCoverage)으로 스트리밍한다 → 기본은 모두 relayRemoteStream 으로 중계한다(stream/non-stream 의미 동일).
+                //  Spring 자체 1차/2차/3차 오케스트레이션(non-stream 3회 호출)은 AI_BASIC_INTERNAL_STAGES_ENABLED=true 일 때만 유지한다(레거시).
+                boolean useBasicOrchestration = "basic".equals(effectiveLearningMode) && agentCount <= 1
+                                && envBool("AI_BASIC_INTERNAL_STAGES_ENABLED", false);
 
                 log.info("[CHAT ROUTE] roomId={} requestId={} effectiveLearningMode={} effectiveMode={} agents.size={} targetAgentId={} fastapiPayload.mode={} fastapiPayload.learningMode={} route={}",
                                 roomId, requestId, effectiveLearningMode, fapiMode, agentCount, requestBody.get("targetAgentId"), fapiMode, fapiLearningMode,
@@ -728,15 +766,28 @@ public class ChatService {
                                 ? orchestrateBasicStream(roomId, requestId, request, requestBody)
                                 : relayRemoteStream(roomId, requestId, requestBody, request, room);
 
-                // 어떤 예외도 컨트롤러로 던지지 않는다: SSE 는 항상 error/done 이벤트로 정상 종료(500·premature close 금지).
+                final String rid = requestId;
+                final java.util.concurrent.atomic.AtomicBoolean committed = new java.util.concurrent.atomic.AtomicBoolean(false);
+                // 응답 커밋 전(이벤트 0건) 실패는 상태코드+JSON 으로(AiUpstreamException → GlobalExceptionHandler), 커밋 후 실패는
+                //  error/done 이벤트로 정상 종료한다(500·premature close 금지). 정상 SSE 로 위장하지 않는다(§10).
                 return withHeartbeat(notice.concatWith(body))
+                                .doOnNext(ev -> committed.set(true))
                                 .onErrorResume(err -> {
+                                        if (!committed.get()) {
+                                                if (err instanceof AiUpstreamException) {
+                                                        return Flux.error(err);
+                                                }
+                                                log.error("[AI-STREAM] roomId={} requestId={} 스트림 개시 전 오류 → 503 JSON: {}", roomId, rid, err.toString());
+                                                return Flux.error(AiUpstreamException.unavailable(rid, null));
+                                        }
                                         log.error("[AI-STREAM] roomId={} requestId={} 예기치 못한 스트림 오류 — error/done 으로 종료: {}",
-                                                        roomId, requestId, err.toString());
+                                                        roomId, rid, err.toString());
                                         return Flux.just(
-                                                        sse("error", toJson(Map.of("type", "error", "code", "AI_STREAM_INTERNAL",
-                                                                        "message", "AI 스트리밍 중 오류가 발생했습니다.", "requestId", requestId))),
-                                                        sse("done", toJson(Map.of("type", "done", "status", "error", "requestId", requestId))));
+                                                        sse("error", toJson(Map.of("type", "error", "eventType", "stream_error", "code", "AI_STREAM_INTERNAL",
+                                                                        "failureCode", "AI_STREAM_INTERNAL", "status", "error", "degraded", true,
+                                                                        "message", "AI 스트리밍 중 오류가 발생했습니다.", "requestId", rid))),
+                                                        sse("done", toJson(Map.of("type", "done", "eventType", "done", "status", "error", "requestId", rid,
+                                                                        "isFinal", true))));
                                 });
         }
 
@@ -1137,11 +1188,19 @@ public class ChatService {
                         ChatDTO.MultiChatRequest request, AgentChatRoom room) {
                 final long nonStreamTimeout = resolveAiTimeoutSeconds(
                                 firstNonBlank(request.getLearningMode(), room.getLearningMode()), request.getMode());
-                // 성능 측정: Spring stream open → upstream 첫 이벤트 → all_complete 지연을 분리해 로깅한다.
+                // 성능 측정: Spring stream open → upstream 첫 이벤트 → 첫 agent_answer → all_complete 지연을 분리해 로깅한다.
                 final long relayOpenAt = System.currentTimeMillis();
                 final java.util.concurrent.atomic.AtomicBoolean firstSeen = new java.util.concurrent.atomic.AtomicBoolean(false);
+                final java.util.concurrent.atomic.AtomicBoolean firstAnswerSeen = new java.util.concurrent.atomic.AtomicBoolean(false);
+                final java.util.concurrent.atomic.AtomicBoolean persisted = new java.util.concurrent.atomic.AtomicBoolean(false);
+                final java.util.concurrent.atomic.AtomicReference<String> turnIdRef = new java.util.concurrent.atomic.AtomicReference<>(null);
+                // 취소(브라우저 절단/Stop/새 질문/모드·방 전환) 시점까지 받은 성공 답변 — 이미 사용자에게 보인 답변은 잃지 않는다.
+                final List<String> receivedAnswers = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
-                Flux<ServerSentEvent<String>> upstream = aiFailover
+                // 리액티브 체인을 끊지 않는다(Flux.create/내부 subscribe 없음): MVC 가 이 Flux 를 구독하고, 브라우저가 끊기면 MVC cancel →
+                //  이 체인 cancel → WebClient 구독 취소(업스트림 소켓 종료) → AI07 [SSE-CANCEL] 절단 감시가 추론을 멈춘다(§16).
+                //  backpressure 도 WebClient 까지 그대로 전파된다(무한 버퍼 없음, §18). 영속화(JDBC)는 boundedElastic 에서 수행한다.
+                return aiFailover
                                 .streamMultiChat(roomId, requestId, requestBody, Duration.ofSeconds(nonStreamTimeout))
                                 .publishOn(Schedulers.boundedElastic())
                                 .doOnNext(ev -> {
@@ -1150,81 +1209,180 @@ public class ChatService {
                                                 log.info("[CHAT PERF] roomId={} requestId={} first event='{}' after {}ms", roomId, requestId, event,
                                                                 System.currentTimeMillis() - relayOpenAt);
                                         }
+                                        if ("turn_start".equals(event) && ev.data() != null && turnIdRef.get() == null) {
+                                                turnIdRef.set(extractString(ev.data(), "turnId"));
+                                        }
+                                        if ("agent_answer".equals(event) && ev.data() != null) {
+                                                if (firstAnswerSeen.compareAndSet(false, true)) {
+                                                        log.info("[CHAT PERF] roomId={} requestId={} first agent_answer after {}ms", roomId, requestId,
+                                                                        System.currentTimeMillis() - relayOpenAt);
+                                                }
+                                                receivedAnswers.add(ev.data());
+                                        }
                                         if ("all_complete".equals(event) && ev.data() != null) {
                                                 log.info("[CHAT PERF] roomId={} requestId={} all_complete after {}ms", roomId, requestId,
                                                                 System.currentTimeMillis() - relayOpenAt);
-                                                // FastAPI 이벤트는 필드 변형 없이 그대로 중계하고, all_complete 만 별도 트랜잭션으로 영속화한다.
-                                                persistStreamedAnswers(roomId, ev.data());
+                                                // FastAPI 이벤트는 필드 변형 없이 그대로 중계하고, all_complete 만 별도 트랜잭션으로 영속화한다(멱등).
+                                                if (persisted.compareAndSet(false, true)) {
+                                                        persistStreamedAnswers(roomId, ev.data(), requestId);
+                                                }
+                                        }
+                                })
+                                .doOnCancel(() -> {
+                                        // 취소 체인: 이미 받은 성공 답변만 영속화(all_complete 가 없으므로 partial). 실패/대기 중 답변은 저장하지 않는다.
+                                        if (persisted.compareAndSet(false, true) && !receivedAnswers.isEmpty()) {
+                                                List<String> snapshot = new java.util.ArrayList<>(receivedAnswers);
+                                                log.info("[CHAT PERSIST] roomId={} requestId={} turnId={} 클라이언트 취소 — 수신 완료 답변 {}건만 영속화(partial)",
+                                                                roomId, requestId, turnIdRef.get(), snapshot.size());
+                                                Schedulers.boundedElastic().schedule(() ->
+                                                                persistPartialAnswers(roomId, requestId, turnIdRef.get(), snapshot));
                                         }
                                 });
+        }
 
-                // 영속화를 브라우저 연결 수명에서 분리한다.
-                //  과거엔 이 Flux 를 MVC 가 직접 구독해, 사용자가 스트림 도중 새로고침/탭 종료/네트워크 절단을 하면 MVC 가 체인을 cancel →
-                //  업스트림 호출까지 취소돼 all_complete 가 오지 않았고, USER 행만 남고 AI 답변은 영속되지 않았다(RDS 고아 USER 행,
-                //  감사 재현: reload 25초 뒤에도 답변 없음). 이제 업스트림 구독은 서비스가 쥐고 완주시키며(총 상한 AI_STREAM_TOTAL_TIMEOUT),
-                //  클라이언트가 떠나면 이벤트 전달만 멈춘다(sink.next 는 cancel 뒤 no-op). 답변은 DB 에 남아 재입장/새로고침 시 복원된다.
-                final java.util.concurrent.atomic.AtomicBoolean clientGone = new java.util.concurrent.atomic.AtomicBoolean(false);
-                return Flux.create(sink -> {
-                        Disposable upstreamSub = upstream.subscribe(
-                                        ev -> { if (!clientGone.get()) sink.next(ev); },
-                                        err -> {
-                                                log.error("[AI-STREAM] roomId={} requestId={} 업스트림 체인 오류: {}", roomId, requestId, err.toString());
-                                                if (!clientGone.get()) sink.error(err);
-                                        },
-                                        sink::complete);
-                        sink.onDispose(() -> {
-                                if (clientGone.compareAndSet(false, true) && !upstreamSub.isDisposed()) {
-                                        log.info("[AI-STREAM] roomId={} requestId={} 클라이언트 연결 종료 — 업스트림은 영속화를 위해 완주시킨다(취소하지 않음)",
-                                                        roomId, requestId);
-                                }
-                        });
-                }, FluxSink.OverflowStrategy.BUFFER);
+        private String extractString(String json, String key) {
+                try {
+                        Map<String, Object> m = objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+                        Object v = m.get(key);
+                        return v != null ? String.valueOf(v) : null;
+                } catch (Exception e) {
+                        return null;
+                }
+        }
+
+        // 취소 시점까지 받은 agent_answer 이벤트(JSON)들을 all_complete 와 같은 규칙으로 영속화한다(멱등 키 = eventId).
+        private void persistPartialAnswers(Long roomId, String requestId, String turnId, List<String> agentAnswerJsons) {
+                List<Map<String, Object>> answers = new java.util.ArrayList<>();
+                for (String json : agentAnswerJsons) {
+                        try {
+                                answers.add(objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {}));
+                        } catch (Exception e) {
+                                log.warn("[CHAT PERSIST] roomId={} requestId={} partial 답변 파싱 실패(생략)", roomId, requestId);
+                        }
+                }
+                Map<String, Object> synthetic = new LinkedHashMap<>();
+                synthetic.put("type", "all_complete");
+                synthetic.put("status", "CANCELLED");
+                synthetic.put("requestId", requestId);
+                synthetic.put("turnId", turnId);
+                synthetic.put("answers", answers);
+                persistAnswerRows(roomId, synthetic, requestId, "partial");
         }
 
         // 스트리밍 all_complete 결과(JSON)를 파싱해 AI 메시지 + processStepsJson을 영속화한다.
         private void persistStreamedAnswers(Long roomId, String allCompleteJson) {
+                persistStreamedAnswers(roomId, allCompleteJson, null);
+        }
+
+        private void persistStreamedAnswers(Long roomId, String allCompleteJson, String requestId) {
                 try {
                         Map<String, Object> resp = objectMapper.readValue(
                                         allCompleteJson, new TypeReference<Map<String, Object>>() {});
-                        // 모드 전용 핸들러(토론/소크라테스/상황극)는 processSteps 대신 debateStages/socraticSteps/simulationStages 를
-                        // top-level 로 내린다. 그대로 두면 DB 에는 에이전트별 평문 행만 남아 새로고침/보정 후 구조(최종 결론 독립 영역·
-                        // 선택지·단계 카드)가 사라지고 최종 결론이 특정 교수의 답변처럼 보인다. → 구조화 payload 를 processSteps 로 영속화.
-                        Object psObj = resp.get("processSteps");
-                        if (psObj == null) {
-                                psObj = structuredProcessSteps(resp);
-                        }
-                        String processStepsJson = psObj != null ? objectMapper.writeValueAsString(psObj) : null;
-                        Object ansObj = resp.get("answers");
-                        if (!(ansObj instanceof List)) {
-                                log.warn("[CHAT PERSIST] roomId={} all_complete 에 answers 배열이 없어 AI 메시지 영속화 생략 keys={}",
-                                                roomId, resp.keySet());
-                                return;
-                        }
-                        @SuppressWarnings("unchecked")
-                        List<Map<String, Object>> answers = (List<Map<String, Object>>) ansObj;
-
-                        transactionTemplate.execute(status -> {
-                                AgentChatRoom room = agentChatRoomRepository.findById(roomId).orElse(null);
-                                if (room == null) {
-                                        return null;
-                                }
-                                for (Map<String, Object> a : answers) {
-                                        String agentName = String.valueOf(a.getOrDefault("agentName", "AI"));
-                                        Object answerObj = a.get("answer");
-                                        String content = answerObj != null ? answerObj.toString() : "";
-                                        if (content.isBlank()) {
-                                                continue;
-                                        }
-                                        // 응답 identity 보존: agentId → 이름 → null(첫 번째 교수 폴백 금지 — 새로고침 후 작성자 뒤바뀜 방지).
-                                        Agent targetAgent = resolveResponseAgent(room.getAgents(), a.get("agentId"), agentName);
-                                        saveRoomMessage(room, targetAgent, content, "AI", processStepsJson);
-                                }
-                                return null;
-                        });
+                        persistAnswerRows(roomId, resp, requestId, "all_complete");
                 } catch (Exception e) {
                         // 화면엔 답변이 보였는데 DB 에는 없는 "조용한 유실" — 반드시 ERROR 로 남긴다.
                         log.error("[CHAT PERSIST] 스트리밍 결과 영속화 실패 roomId={} (화면 답변은 브라우저 캐시에만 존재): {}", roomId, e.toString(), e);
                 }
+        }
+
+        /** 영속화 메타(AI07 SSE 계약). content 는 담지 않는다. */
+        record AnswerMeta(String requestId, String turnId, String eventId, Integer agentIndex, String stage, String status,
+                        String mode, String personalityKey, String knowledgeLevelKey) { }
+
+        /**
+         * AI07 answers[] 1건의 멱등 키. eventId 가 있으면 그대로, 없으면 안전한 composite(turnId:agentId:stage:displayOrder).
+         * turnId 도 없으면(레거시 응답) requestId 기준 composite. 그것도 없으면 null(멱등 검사 불가 → 저장).
+         */
+        static String dedupKeyOf(Map<String, Object> answer, String turnId, String requestId, int index) {
+                Object ev = answer.get("eventId");
+                if (ev != null && !String.valueOf(ev).isBlank()) {
+                        return String.valueOf(ev);
+                }
+                String scope = turnId != null && !turnId.isBlank() ? turnId : (requestId != null && !requestId.isBlank() ? requestId : null);
+                if (scope == null) {
+                        return null;
+                }
+                Object aid = answer.get("agentId");
+                Object stage = answer.get("stage") != null ? answer.get("stage")
+                                : (answer.get("stageType") != null ? answer.get("stageType") : answer.get("actType"));
+                Object order = answer.get("displayOrder") != null ? answer.get("displayOrder")
+                                : (answer.get("sequence") != null ? answer.get("sequence") : index);
+                return scope + ":" + (aid != null ? aid : "-") + ":" + (stage != null ? stage : "-") + ":" + order;
+        }
+
+        /**
+         * answers[] 를 AI 메시지로 영속화한다(stream all_complete / cancel partial / non-stream 공용).
+         *  · 실패 답변(status FAILED/ERROR/CANCELLED/TIMEOUT)·빈 본문은 저장하지 않는다(실패를 성공으로 위장 금지, §23).
+         *  · 멱등: eventId(또는 composite) 가 이미 있으면 건너뛴다(reload/reconnect/late event/재시도 중복 방지, §25).
+         *  · identity: agentId → 이름 → null(가상 작성자 debate-consensus 등은 agent 없이 저장, 첫 교수 폴백 금지, §20/§22).
+         */
+        void persistAnswerRows(Long roomId, Map<String, Object> resp, String requestId, String source) {
+                Object psObj = resp.get("processSteps");
+                if (psObj == null) {
+                        psObj = structuredProcessSteps(resp);
+                }
+                String processStepsJson;
+                try {
+                        processStepsJson = psObj != null ? objectMapper.writeValueAsString(psObj) : null;
+                } catch (Exception e) {
+                        processStepsJson = null;
+                }
+                Object ansObj = resp.get("answers");
+                if (!(ansObj instanceof List)) {
+                        log.warn("[CHAT PERSIST] roomId={} {} 에 answers 배열이 없어 AI 메시지 영속화 생략 keys={}", roomId, source, resp.keySet());
+                        return;
+                }
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> answers = (List<Map<String, Object>>) ansObj;
+                final String turnId = resp.get("turnId") != null ? String.valueOf(resp.get("turnId")) : null;
+                final String rid = requestId != null ? requestId : (resp.get("requestId") != null ? String.valueOf(resp.get("requestId")) : null);
+                final String mode = resp.get("learningMode") != null ? String.valueOf(resp.get("learningMode"))
+                                : (resp.get("mode") != null ? String.valueOf(resp.get("mode")) : null);
+                final String psJson = processStepsJson;
+
+                int saved = 0, skippedDup = 0, skippedFailed = 0;
+                for (int i = 0; i < answers.size(); i++) {
+                        Map<String, Object> a = answers.get(i);
+                        if (a == null) {
+                                continue;
+                        }
+                        Object answerObj = a.get("answer") != null ? a.get("answer") : a.get("content");
+                        String content = answerObj != null ? answerObj.toString() : "";
+                        if (content.isBlank() || AgentProfileContract.isFailedAnswer(a)) {
+                                skippedFailed++;
+                                continue;
+                        }
+                        String dedupKey = dedupKeyOf(a, turnId, rid, i);
+                        Map<String, Object> identity = AgentProfileContract.identityOf(a);
+                        AnswerMeta meta = new AnswerMeta(rid, turnId, dedupKey, (Integer) identity.get("agentIndex"),
+                                        str(a.get("stage") != null ? a.get("stage") : a.get("stageType")), str(identity.get("status")), mode,
+                                        str(identity.get("personalityKey")), str(identity.get("knowledgeLevelKey")));
+                        String agentName = String.valueOf(a.getOrDefault("agentName", "AI"));
+                        Boolean stored = transactionTemplate.execute(status -> {
+                                AgentChatRoom room = agentChatRoomRepository.findById(roomId).orElse(null);
+                                if (room == null) {
+                                        return Boolean.FALSE;
+                                }
+                                if (dedupKey != null && chatMessageRepository.existsByAgentChatRoomIdAndEventId(roomId, dedupKey)) {
+                                        return null;
+                                }
+                                // 응답 identity 보존: agentId → 이름 → null(첫 번째 교수 폴백 금지 — 새로고침 후 작성자 뒤바뀜 방지).
+                                Agent targetAgent = resolveResponseAgent(room.getAgents(), a.get("agentId"), agentName);
+                                saveRoomMessage(room, targetAgent, content, "AI", psJson, meta);
+                                return Boolean.TRUE;
+                        });
+                        if (stored == null) {
+                                skippedDup++;
+                        } else if (stored) {
+                                saved++;
+                        }
+                }
+                log.info("[CHAT PERSIST] roomId={} requestId={} turnId={} source={} saved={} skippedDuplicate={} skippedFailedOrEmpty={}",
+                                roomId, rid, turnId, source, saved, skippedDup, skippedFailed);
+        }
+
+        private static String str(Object v) {
+                return v != null ? String.valueOf(v) : null;
         }
 
         // 채팅방 기록 조회 — 소유자 검증(IDOR 방지) + created_at,id 정렬(같은 턴의 AI 답변 순서 고정)
@@ -1243,6 +1401,17 @@ public class ChatService {
                                                 .agentId(msg.getAgent() != null ? msg.getAgent().getId() : null)
                                                 .createdAt(msg.getCreatedAt())
                                                 .processSteps(parseProcessSteps(msg.getProcessStepsJson()))
+                                                .requestId(msg.getRequestId())
+                                                .turnId(msg.getTurnId())
+                                                .eventId(msg.getEventId())
+                                                .agentIndex(msg.getAgentIndex())
+                                                .stage(msg.getStage())
+                                                .status(msg.getStatus())
+                                                .mode(msg.getMode())
+                                                .personalityKey(msg.getPersonalityKey())
+                                                .knowledgeLevelKey(msg.getKnowledgeLevelKey())
+                                                // 가상 작성자(debate-consensus/시스템)는 agent 가 없는 AI 행 — 프론트가 교수 카드가 아닌 시스템 작성자로 렌더.
+                                                .authorKind("USER".equals(msg.getSender()) ? "USER" : (msg.getAgent() != null ? "AGENT" : "VIRTUAL"))
                                                 .build())
                                 .collect(Collectors.toList());
         }
@@ -1354,13 +1523,23 @@ public class ChatService {
 
         // 채팅 기록 저장 (AI 메시지는 processStepsJson 함께 영속화)
         private void saveRoomMessage(AgentChatRoom room, Agent agent, String content, String sender, String processStepsJson) {
-                ChatMessage message = ChatMessage.builder()
+                saveRoomMessage(room, agent, content, sender, processStepsJson, null);
+        }
+
+        private void saveRoomMessage(AgentChatRoom room, Agent agent, String content, String sender, String processStepsJson,
+                        AnswerMeta meta) {
+                ChatMessage.ChatMessageBuilder b = ChatMessage.builder()
                                 .agentChatRoom(room)
                                 .agent(agent)
                                 .content(content)
                                 .sender(sender)
-                                .processStepsJson(processStepsJson)
-                                .build();
+                                .processStepsJson(processStepsJson);
+                if (meta != null) {
+                        b.requestId(meta.requestId()).turnId(meta.turnId()).eventId(meta.eventId()).agentIndex(meta.agentIndex())
+                                        .stage(meta.stage()).status(meta.status()).mode(meta.mode())
+                                        .personalityKey(meta.personalityKey()).knowledgeLevelKey(meta.knowledgeLevelKey());
+                }
+                ChatMessage message = b.build();
                 chatMessageRepository.save(message);
 
                 // Redis에도 캐싱
@@ -1466,6 +1645,74 @@ public class ChatService {
                         // 잘못된 값이면 기본값 사용
                 }
                 return defaultValue;
+        }
+
+        /**
+         * 방 에이전트 1명 → AI07 agents[] 항목. stream/non-stream/기본 오케스트레이션이 모두 같은 함수를 쓴다.
+         *
+         * <pre>
+         *  identity : agentId(=id), agentSlot(1-based 순서), name(표시)
+         *  persona  : personalityKey(6 canonical) / personalityLabel / personalityStyle(프론트 7키 호환) / personality(원문) / temperature
+         *  knowledge: knowledgeLevelKey(5 canonical) / knowledgeLevelLabel / knowledgeLevel(INTRO..EXPERT 호환)
+         *  unknown  : personalityKey/personalityStyle 을 비우고 원문만 전달(friendly/default 로 위장하지 않는다) + *Resolved=false
+         * </pre>
+         */
+        static Map<String, Object> buildAgentPayload(Agent agent, int slot, String requestKnowledgeLevel, String requestPersonality,
+                        String requestPersonalityStrength, String requestCustomInstruction, Double temperatureOverride) {
+                String persona = nullToEmpty(agent.getPersona());
+                AgentProfileContract.KnowledgeResolution knowledge = AgentProfileContract.resolveKnowledgeOrDefault(
+                                extractPersonaTag(persona, "지식수준"), requestKnowledgeLevel);
+                AgentProfileContract.PersonaResolution personaRes = AgentProfileContract.resolvePersona(
+                                agent.getTone(), extractPersonaTag(persona, "성격"), requestPersonality);
+                if ("missing".equals(personaRes.source())) {
+                        // 방 생성 시 성격을 고르지 않은 레거시 에이전트 → 과거 기본값(전문적=logical) 유지(explicit default 로 취급).
+                        personaRes = AgentProfileContract.resolvePersona("professional");
+                }
+                String agentPersonalityRaw = firstNonBlankStatic(agent.getTone(), extractPersonaTag(persona, "성격"), requestPersonality,
+                                personaRes.label());
+                String agentCustomInstruction = firstNonBlankStatic(stripPersonaTags(persona), requestCustomInstruction, agent.getGoal(), "");
+                double temperature = AgentProfileContract.temperatureFor(personaRes, temperatureOverride);
+
+                Map<String, Object> agentMap = new LinkedHashMap<>();
+                agentMap.put("id", agent.getId());
+                agentMap.put("agentId", agent.getId());
+                agentMap.put("agentSlot", slot);
+                agentMap.put("name", agent.getName());
+                agentMap.put("role", agent.getRole());
+                // agentPreset은 persona [프리셋: X] 태그에서 복원해 FastAPI 프롬프트로 전달
+                agentMap.put("agentPreset", extractPersonaTag(persona, "프리셋"));
+                agentMap.put("personality", agentPersonalityRaw);
+                agentMap.put("personalityKey", personaRes.key());
+                agentMap.put("personalityLabel", personaRes.label());
+                agentMap.put("personalityStyle", personaRes.legacyStyle());
+                agentMap.put("personalityResolved", personaRes.resolved());
+                agentMap.put("temperature", temperature);
+                agentMap.put("personalityStrength", requestPersonalityStrength);
+                agentMap.put("personality_strength", requestPersonalityStrength);
+                agentMap.put("style", agentPersonalityRaw);
+                agentMap.put("tone", agentPersonalityRaw);
+                agentMap.put("knowledgeLevelKey", knowledge.key());
+                agentMap.put("knowledgeLevelLabel", knowledge.resolved() ? knowledge.enumLabel() : knowledge.label());
+                agentMap.put("knowledgeLevel", knowledge.resolved() ? knowledge.enumValue() : knowledge.original());
+                agentMap.put("knowledge_level", knowledge.resolved() ? knowledge.enumValue() : knowledge.original());
+                agentMap.put("knowledgeLevelResolved", knowledge.resolved());
+                agentMap.put("customInstruction", agentCustomInstruction);
+                agentMap.put("custom_instruction", agentCustomInstruction);
+                agentMap.put("persona", persona);
+                agentMap.put("goal", agent.getGoal());
+                return agentMap;
+        }
+
+        private static String firstNonBlankStatic(String... values) {
+                if (values == null) {
+                        return null;
+                }
+                for (String value : values) {
+                        if (value != null && !value.isBlank()) {
+                                return value.trim();
+                        }
+                }
+                return null;
         }
 
         private String firstNonBlank(String... values) {
@@ -1783,11 +2030,11 @@ public class ChatService {
                 return "basic";
         }
 
-        private String nullToEmpty(String value) {
+        private static String nullToEmpty(String value) {
                 return value == null ? "" : value;
         }
 
-        private String extractPersonaTag(String persona, String tagName) {
+        private static String extractPersonaTag(String persona, String tagName) {
                 if (persona == null || persona.isBlank()) {
                         return null;
                 }
@@ -1796,7 +2043,7 @@ public class ChatService {
                 return matcher.find() ? matcher.group(1).trim() : null;
         }
 
-        private String stripPersonaTags(String persona) {
+        private static String stripPersonaTags(String persona) {
                 if (persona == null || persona.isBlank()) {
                         return "";
                 }

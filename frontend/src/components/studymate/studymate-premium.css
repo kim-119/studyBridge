@@ -1694,3 +1694,12 @@
 }
 
 
+
+/* ── 스트림 중단(Stop) 버튼: 진행 중에만 전송 버튼 자리에 표시. 취소 체인(abort → Spring cancel → AI07 절단)의 UI 끝. ── */
+.chat-input-premium button.stream-stop-btn {
+  background: linear-gradient(135deg, #f43f5e, #e11d48);
+  color: #fff;
+}
+.chat-input-premium button.stream-stop-btn:hover {
+  filter: brightness(1.08);
+}

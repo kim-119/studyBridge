@@ -10,6 +10,11 @@ import PixelProfessorStage from '../components/studymate/pixel/PixelProfessorSta
 import { useMinuteRecap } from '../components/studymate/pixel/useMinuteRecap';
 import { roleForAgentIndex, ROLE_TO_AGENT_INDEX, ROLE_NAMES, ROLE_TO_TARGET_KEY } from '../components/studymate/pixel/professorSprites';
 import { agentIdOf, applyMentionPrefill, resolveMentionTarget, resolveRoomAgentSlot, isEventForTarget } from '../utils/agentIdentity';
+import { createStreamStateMachine, STREAM_PHASES } from '../utils/studymate/streamStateMachine';
+import { createTurnGuard } from '../utils/studymate/turnGuard';
+import { createCancelRegistry } from '../utils/studymate/streamCancelRegistry';
+import { neutralizeErrorText, classifyFailure, DEFAULT_AGENT_ERROR } from '../utils/studymate/errorText';
+import { reorderHistoryByRequest } from '../utils/studymate/historyOrder';
 import ProfessorInteractionTimeline from '../components/studymate/pixel/ProfessorInteractionTimeline';
 import { normalizeMotionStates, phaseStatesFor, deriveInteractions } from '../components/studymate/pixel/modeInteractionProfiles';
 import {
@@ -188,10 +193,13 @@ const normalizeAgents = (list) => {
 };
 
 // 정규 성격 키 → 한글 라벨 (백엔드 personalityType: creative/sardonic/logical/...)
+// 표시 전용 라벨(presentation only). identity 는 canonical key(AI07 6키: friendly/critical/creative/concise/sardonic/logical)이며
+//  프론트 공통 7키(default/professional/friendly/honest/unique/efficient/cynical)는 utils/personality.js 가 담당한다.
 const PERSONALITY_TYPE_LABELS = {
   creative: '독특함', sardonic: '냉소적', logical: '논리형',
   critical: '비판형', friendly: '친근함', concise: '효율적',
   professional: '전문적', custom: '맞춤형',
+  default: '기본값', honest: '솔직함', unique: '독특함', efficient: '효율적', cynical: '냉소적',
 };
 const personalityLabel = (t) => PERSONALITY_TYPE_LABELS[t] || t || '';
 const stepContent = (row) => row?.content ?? row?.answer ?? row?.feedback ?? '';
@@ -1781,7 +1789,8 @@ const parsePersonaTag = (persona, tagName) => {
 };
 
 // 기록 로드 시에도 라이브와 동일하게 1→2→3 단계 말풍선으로 펼쳐 보여준다(상세과정 클릭 불필요).
-const hydrateHistoryProcessSteps = (history) => explodeHistoryToStageBubbles(history);
+// 서버 history: 질문(USER)→답변(AI) 을 requestId 로 묶어 재배열한 뒤(취소/새로고침 partial 영속의 늦은 행 보정) 단계 버블로 펼친다.
+const hydrateHistoryProcessSteps = (history) => explodeHistoryToStageBubbles(reorderHistoryByRequest(history));
 
 const getAgentId = (agent) => agent?.id ?? agent?.agentId;
 
@@ -2403,7 +2412,34 @@ export default function StudyMate() {
   //    → ref로 동기적으로 잠가 같은 방에 같은 질문이 두 번 전송되는 것을 차단한다(StrictMode 재호출 포함).
   //  - activeRequestRef: 방별 현재 활성 requestId. 방을 바꾼 뒤 늦게 도착하는 이전 스트림 이벤트는 무시한다.
   const sendingRoomsRef = useRef(new Set());
+  const lastSendRef = useRef({});
+  const cancelledReasonRef = useRef({});
   const activeRequestRef = useRef({});
+  // ── SSE 턴 가드/취소 레지스트리/상태 머신(방별) ─────────────────────────────────────
+  //  · turnGuardRef: 방별 활성 requestId 1개. 늦은 이벤트(이전 턴/다른 requestId/중복 eventId)를 차단한다.
+  //  · cancelRegistryRef: 방별 AbortController. Stop/새 질문/방 전환/언마운트 → abort → Spring cancel → AI07 절단.
+  //  · streamPhases: 방별 IDLE/CONNECTING/STREAMING/FINALIZING/COMPLETED/FAILED/CANCELLED (UI 표시/E2E 검증용).
+  const turnGuardRef = useRef(createTurnGuard());
+  const cancelRegistryRef = useRef(createCancelRegistry());
+  const [streamPhases, setStreamPhases] = useState({});
+  // 스트림 latency 관측(request sent → first event → first answer → all_complete → done → close). window.__studymatePerf 로 노출.
+  const streamPerfRef = useRef([]);
+  const recordPerf = (rec) => {
+    const arr = streamPerfRef.current;
+    const idx = arr.findIndex((r) => r.requestId === rec.requestId);
+    if (idx >= 0) arr[idx] = { ...arr[idx], ...rec }; else arr.push(rec);
+    if (arr.length > 20) arr.splice(0, arr.length - 20);
+    if (typeof window !== 'undefined') window.__studymatePerf = arr;
+  };
+  // 방의 진행 중 스트림 취소(취소 체인의 브라우저 끝). 반환: 실제 취소 여부.
+  const cancelRoomStream = (roomId, reason) => {
+    if (roomId == null) return false;
+    const did = cancelRegistryRef.current.cancel(roomId, reason);
+    if (did && import.meta.env.DEV) console.debug('[StudyMate] stream cancel', { roomId, reason });
+    return did;
+  };
+  // 언마운트: 진행 중인 모든 스트림을 끊는다(업스트림 AI 추론이 계속 살아 있지 않게).
+  useEffect(() => () => { cancelRegistryRef.current.cancelAll('unmount'); }, []);
   // 같은 질문을 연속으로 보내면(=다시 생성) attempt를 올려 백엔드가 이전 답변을 재사용하지 않게 한다.
   const regenTrackRef = useRef({});
 
@@ -2688,6 +2724,9 @@ export default function StudyMate() {
   const selectAgent = async (agent) => {
     const agentId = getAgentId(agent);
     clearPendingTurnRefresh();
+    // 방/모드 전환: 이전 방에서 진행 중이던 스트림은 끊는다(취소 체인). 이미 받은 답변은 유지·영속(Spring partial persist)된다.
+    const prevRoomId = selectedAgentIdRef.current;
+    if (prevRoomId != null && String(prevRoomId) !== String(agentId)) cancelRoomStream(prevRoomId, 'room_change');
     setSelectedAgent(agent);
     // 방을 바꾸면 이전 방의 교수뷰 잔상(타임라인/말풍선/교수선택/모션)을 즉시 비운다.
     // (mindmapMessages는 chatHistory에서 파생되므로 아래 setChatHistory로 자동 교체된다.)
@@ -2808,18 +2847,27 @@ export default function StudyMate() {
     //  - typingRooms: 스트리밍 상태(state). all_complete/error 시 finally에서 해제.
     //  - sendingRoomsRef: state 갱신 전에 들어오는 두 번째 호출(Enter+버튼 동시/더블클릭/StrictMode)을
     //    즉시 막는 동기 가드.
-    if (typingRooms[agentId] || sendingRoomsRef.current.has(agentId)) {
-      if (import.meta.env.DEV) console.debug('[StudyMate] 전송 차단(스트리밍/전송중) — draft 보존', { agentId });
-      // 일반 입력은 message/roomDrafts에 그대로 남아 보존되지만, 빠른 액션(directMessage)으로
-      // 들어온 텍스트는 입력창에 없을 수 있으므로 입력창/draft에 복원해 유실을 막는다.
-      if (directMessage) {
-        setMessage(directMessage);
-        if (agentId) setRoomDrafts((prev) => ({ ...prev, [agentId]: directMessage }));
-      }
-      setToastMsg('현재 답변 생성 중입니다. 완료 후 전송해주세요.');
-      setTimeout(() => setToastMsg(''), 2500);
+    // 더블클릭/Enter+버튼 동시 제출(수백 ms 안의 재진입)은 같은 턴의 중복 전송이라 막는다(§33 J).
+    const lastSent = lastSendRef.current[agentId];
+    if (lastSent && lastSent.text === inputMsg && Date.now() - lastSent.at < 1500) {
+      if (import.meta.env.DEV) console.debug('[StudyMate] 중복 전송 차단(같은 질문 1.5초 내)', { agentId });
       return;
     }
+    // 진행 중 스트림이 있으면 새 질문이 이전 턴을 취소한다(§16 취소 체인: abort → Spring cancel → AI07 절단).
+    //  이전 턴의 늦은 이벤트는 turnGuard(requestId 세대)로 차단되고, 이미 받은 답변은 화면/DB(partial persist)에 남는다.
+    if (typingRooms[agentId] || sendingRoomsRef.current.has(agentId) || cancelRegistryRef.current.has(agentId)) {
+      const did = cancelRoomStream(agentId, 'new_question');
+      if (!did && sendingRoomsRef.current.has(agentId)) {
+        // 아직 등록 전(전송 준비 단계) 재진입: draft 보존 후 무시.
+        if (directMessage) {
+          setMessage(directMessage);
+          if (agentId) setRoomDrafts((prev) => ({ ...prev, [agentId]: directMessage }));
+        }
+        return;
+      }
+    }
+    lastSendRef.current[agentId] = { text: inputMsg, at: Date.now() };
+    cancelledReasonRef.current[agentId] = null;
     sendingRoomsRef.current.add(agentId);
 
     if (retryOf && retryOf.id) {
@@ -2839,15 +2887,23 @@ export default function StudyMate() {
       if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => prune(prev));
     }
 
-    // 이번 전송만의 고유 requestId. 방을 바꾼 뒤 늦게 도착하는 이전 요청 이벤트는 무시한다.
-    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // 이번 전송만의 고유 requestId(= X-Request-ID, Spring/AI07 가 그대로 echo). 방을 바꾸거나 새 질문을 보내면 이전 턴은 stale.
+    const turnToken = turnGuardRef.current.begin(agentId);
+    const requestId = turnToken.requestId;
     activeRequestRef.current[agentId] = requestId;
     // 탭 복귀 보정의 '최근 진행 턴' 판정 기준. 시작 시각을 기록(완료 시 갱신).
     lastTurnAtRef.current[agentId] = Date.now();
-    // 성능 측정: client request start. 첫 이벤트/all_complete까지의 지연을 콘솔에서 분리 확인한다.
+    // 성능 측정: client request start. 첫 이벤트/첫 답변/all_complete/done/close 지연을 분리 기록한다(window.__studymatePerf).
     const perfT0 = Date.now();
     let perfFirstEvent = 0;
-    const isActiveRequest = () => activeRequestRef.current[agentId] === requestId;
+    let perfFirstAnswer = 0;
+    recordPerf({ requestId, roomId: agentId, mode: null, sentAt: perfT0, phase: STREAM_PHASES.IDLE });
+    const isActiveRequest = () => turnToken.isActive();
+    // 방별 SSE 상태 머신(단일 phase). typingRooms 는 isLoading 의 미러다.
+    const streamSm = createStreamStateMachine((phase) => {
+      setStreamPhases((prev) => (prev[agentId] === phase ? prev : { ...prev, [agentId]: phase }));
+      recordPerf({ requestId, phase, phaseAt: Date.now() - perfT0 });
+    });
 
     // ── 픽셀 교수 시각 상태 매핑(visual consumer). 현재 선택된 방의 스트림일 때만 애니메이션. ──
     //    답변 append/카드 로직은 건드리지 않고, 이벤트 수신 시 "시각 상태"만 갱신한다.
@@ -3286,6 +3342,17 @@ export default function StudyMate() {
             isError: !!patch.isError || !coerced.ok,
             statusText: patch.statusText || '',
             validation: extractValidation(d),
+            // AI07 canonical identity/metadata(표시가 아니라 검증·영속 대조용. 라벨은 presentation only).
+            personalityKey: d?.personalityKey ?? d?.personality ?? patch.personalityKey,
+            personalityLabel: d?.personalityLabel ?? patch.personalityLabel,
+            knowledgeLevelKey: d?.knowledgeLevelKey ?? d?.knowledgeLevel ?? patch.knowledgeLevelKey,
+            knowledgeLevelLabel: d?.knowledgeLevelLabel ?? patch.knowledgeLevelLabel,
+            eventId: d?.eventId ?? patch.eventId,
+            turnId: d?.turnId ?? patch.turnId ?? turnToken.turnId ?? undefined,
+            requestId: d?.requestId || requestId,
+            status: d?.status ?? patch.status,
+            degraded: !!(d?.degraded ?? patch.degraded),
+            failureCode: d?.failureCode ?? d?.code ?? patch.failureCode,
           });
           streamRendered = true;
           setTurnAiMessages(agentMsgsArr());
@@ -3450,6 +3517,15 @@ export default function StudyMate() {
         //  ※ Spring 기본모드 keepalive 는 12초 주기 ':hb' 주석이라 onComment 로 반드시 rearm 돼야
         //    긴 2차/3차 LLM 호출(최대 60초) 중에도 90초 watchdog 이 오발동하지 않는다.
         const streamAbort = new AbortController();
+        // 취소 레지스트리 등록: Stop 버튼/새 질문/방 전환/언마운트가 이 controller 를 abort 한다.
+        cancelRegistryRef.current.register(agentId, streamAbort, requestId);
+        let cancelledReason = null;
+        streamAbort.signal.addEventListener('abort', () => {
+          if (watchdogTimedOut) return;
+          cancelledReason = String(streamAbort.signal.reason || 'cancel');
+          cancelledReasonRef.current[agentId] = cancelledReason;
+          streamSm.cancel(cancelledReason);
+        }, { once: true });
         let watchdogTimedOut = false;
         const WATCHDOG_WARN_MS = 45000;
         const WATCHDOG_FAIL_MS = 90000;
@@ -3508,21 +3584,22 @@ export default function StudyMate() {
           if (err && err.retryable) return `AI 서버 연결이 잠시 불안정합니다(HTTP ${st}). 서버가 재시작 중일 수 있어요. 잠시 후 다시 시도해 주세요.`;
           if (st != null && st >= 500) return `서버 오류로 답변을 받지 못했습니다(HTTP ${st}). 다시 시도해 주세요.`;
           if (st != null && st >= 400) {
-            let detail = '';
-            try { const j = JSON.parse(err.bodySnippet || ''); detail = j && (j.message || j.error) ? ` ${String(j.message || j.error).slice(0, 120)}` : ''; } catch { /* 본문 없음 */ }
-            return `요청이 거부되었습니다(HTTP ${st}).${detail} 다시 시도해 주세요.`;
+            // Spring pre-stream JSON(code/message) 만 중립 문구로 노출한다(URL/모델/스택은 neutralizeErrorText 가 걸러낸다).
+            const detail = err.serverMessage ? ` ${neutralizeErrorText(err.serverMessage, '').slice(0, 120)}`.trimEnd() : '';
+            return `요청이 거부되었습니다(HTTP ${st}).${detail ? `${detail}` : ''} 입력을 확인한 뒤 다시 시도해 주세요.`;
           }
           if (watchdogTimedOut) return `${Math.round(WATCHDOG_FAIL_MS / 1000)}초 동안 AI 응답 신호가 없어 연결을 종료했습니다. 다시 시도해 주세요.`;
           return INTERRUPTED_MSG;
         };
-        const showStreamNotice = (text) => {
-          sawError = true;
+        const showStreamNotice = (text, noticeOpts = {}) => {
+          if (!isActiveRequest()) return; // stale 턴의 안내는 새 턴 화면에 섞지 않는다.
+          if (noticeOpts.isError !== false) sawError = true;
           const notice = {
             id: `${userMsg.id}::stream-notice`,
-            content: text,
+            content: neutralizeErrorText(text, text),
             sender: 'AI',
             senderName: 'StudyMate', // 실패 안내는 특정 교수의 발화가 아니다(첫 교수 이름으로 귀속시키지 않음)
-            isError: true,
+            isError: noticeOpts.isError !== false,
             isNotice: true,
             canRetry: true,
             retryMessage: inputMsg,
@@ -3541,6 +3618,31 @@ export default function StudyMate() {
         const concludeStream = (streamErr = null) => {
           clearWatchdog();
           pendingDetailParentId.current = null;
+          streamSm.close();
+          recordPerf({ requestId, closedMs: Date.now() - perfT0, finalReceived, anyAnswerReceived, streamRendered, cancelled: !!cancelledReason });
+          if (!isActiveRequest() && !cancelledReason) return; // 더 새로운 턴이 시작됨 — 이 턴의 결과 판정/안내는 하지 않는다.
+          if (cancelledReason) {
+            // 사용자/앱 주도 취소(Stop·새 질문·방 전환·언마운트): 실패가 아니다. 받은 답변은 유지하고 대기 카드만 '중단됨' 으로 닫는다.
+            streamState = 'CANCELLED';
+            let touched = false;
+            for (const [k, v] of agentAnswerMap) {
+              if (v.isPending) { agentAnswerMap.set(k, { ...v, isPending: false, isCancelled: true, statusText: '', content: v.content || '답변 생성을 중단했어요.' }); touched = true; }
+            }
+            if (touched && isActiveRequest()) setTurnAiMessages(agentMsgsArr());
+            // 새 질문/방 전환으로 stale 이 된 턴: setTurnAiMessages 는 stale 을 거부하므로 이 턴(parentId=userMsg.id)의 대기 카드만 직접 닫는다
+            //  → 이전 턴의 '답변 생성 중' 유령 카드(ghost typing)가 새 턴 화면에 남지 않는다.
+            if (!isActiveRequest()) {
+              const closePending = (list) => (list || []).map((m) => (m && m.sender === 'AI' && m.parentId === userMsg.id && m.isPending
+                ? { ...m, isPending: false, isCancelled: true, statusText: '', content: m.content || '답변 생성을 중단했어요.' }
+                : m));
+              setRoomHistories((prev) => ({ ...prev, [agentId]: closePending(prev[agentId]) }));
+              if (selectedAgentIdRef.current === agentId) setChatHistory((prev) => closePending(prev));
+            }
+            if (!streamRendered && isActiveRequest() && cancelledReason === 'user_stop') {
+              showStreamNotice('답변 생성을 중단했어요. 다시 시도할 수 있어요.', { isError: false });
+            }
+            return;
+          }
           if (finalReceived) {
             streamState = 'FINALIZED';
             if (streamRendered || streamCompleted) { turnSucceeded = !sawError; return; } // 정상 — 오류 표시 없음
@@ -3579,7 +3681,17 @@ export default function StudyMate() {
           const streamHandlers = {
             // 모든 이벤트의 단일 진입점: liveness(watchdog rearm) + 첫 이벤트 지연 측정 + 부분답변/디듀프 표시.
             onAnyEvent: (event, data) => {
+              // 턴 가드: stale 턴/다른 requestId/중복 eventId 는 어떤 핸들러도 타지 않는다(§15 exactly-once / stale 차단).
+              const verdict = turnToken.accept(data);
+              if (!verdict.ok) {
+                if (import.meta.env.DEV) console.debug('[StudyMate] [DROPPED] SSE event', { event, reason: verdict.reason, requestId, eventRequestId: data?.requestId, eventId: data?.eventId });
+                return false;
+              }
               markLiveness(event);
+              streamSm.event(event);
+              if (event === 'agent_answer' && !perfFirstAnswer) { perfFirstAnswer = Date.now(); recordPerf({ requestId, firstAnswerMs: perfFirstAnswer - perfT0 }); }
+              if (event === 'all_complete') recordPerf({ requestId, allCompleteMs: Date.now() - perfT0, turnId: data?.turnId ?? null, mode: data?.mode ?? data?.learningMode ?? null, coverage: data?.agentCoverage ?? null, degraded: !!data?.degraded, promptVersion: data?.promptVersion ?? null });
+              if (event === 'done') recordPerf({ requestId, doneMs: Date.now() - perfT0, doneStatus: data?.status ?? null, upstream: data?.upstream ?? null, relayCoverage: data?.coverage ?? null, serverLatency: data?.latency ?? null });
               if (CONTENT_EVENT_SET.has(event)) anyAnswerReceived = true;
               // 디듀프 추적(관찰용): 동일 fingerprint/키 재수신은 per-type Map upsert 가 흡수하지만, 통계로 남긴다.
               if (CONTENT_EVENT_SET.has(event)) {
@@ -3589,9 +3701,13 @@ export default function StudyMate() {
               }
               if (!perfFirstEvent && event !== 'heartbeat') {
                 perfFirstEvent = Date.now();
+                recordPerf({ requestId, firstEventMs: perfFirstEvent - perfT0, firstEvent: event });
                 if (import.meta.env.DEV) console.debug('[StudyMate][perf] first SSE event', { event, ttfbMs: perfFirstEvent - perfT0 });
               }
+              return true;
             },
+            // 제어/확장 이벤트(phase_progress/debate_round/validation_summary/direct_reply …): 말풍선 생성 없이 liveness 만.
+            onControlEvent: () => {},
             // Spring keepalive ':hb' 주석 등 — 데이터 없는 생존 신호. watchdog 만 rearm.
             onComment: () => { markLiveness('comment'); },
             onTurnStart: (d) => {
@@ -3603,8 +3719,9 @@ export default function StudyMate() {
             onHeartbeat: (d) => {
               if (streamCompleted) return; // 목표 B.5
               if (!d || d.agentIndex == null) return;
-              const stablePrefix = `${d.requestId || requestId}::basic::FIRST_DRAFT::${d.agentIndex}::`;
-              const found = Array.from(agentAnswerMap.keys()).find((k) => k.startsWith(stablePrefix));
+              // 카드 키 = requestId::basic::<actType::seq|stageType>::agentIndex::agentId — 진행 중(isPending) 인 같은 agentIndex 카드만 갱신(새 메시지 생성 금지).
+              const seg = `::${d.agentIndex}::`;
+              const found = Array.from(agentAnswerMap.keys()).find((k) => k.includes(seg) && agentAnswerMap.get(k)?.isPending);
               if (found) {
                 const prev = agentAnswerMap.get(found);
                 agentAnswerMap.set(found, { ...prev, isPending: true, statusText: d.message || '답변 생성 중입니다.' });
@@ -3691,8 +3808,19 @@ export default function StudyMate() {
             },
             onAgentError: (d) => {
               if (!d) return;
-              upsertAgentMessage(d, { isPending: false, isError: true, content: d.message || '이 에이전트의 응답 생성에 실패했습니다.' });
-              sawError = true; visFor(slotOf(d), 'error');
+              markLiveness('agent_error');
+              sawError = true;
+              const failure = classifyFailure(d);
+              const msgText = neutralizeErrorText(d.message, DEFAULT_AGENT_ERROR);
+              // 실패는 성공 답변으로 바꾸지 않는다(§23). 내부 model/stack/URL 은 노출하지 않는다. degraded/retryable 만 UX 에 반영.
+              upsertAgentMessage(d, {
+                isPending: false, isError: true,
+                content: failure.retryable ? `${msgText}` : msgText,
+                statusText: '',
+                failureCode: failure.code,
+                degraded: true,
+              });
+              visFor(slotOf(d), 'error');
             },
             // 확률적 다중답변 플래너: 재개입 칩(더 깊이/다른 의견/쉬운 예시) 수신 → 입력창 위에 노출.
             onFollowUpSuggestions: (d) => {
@@ -3864,7 +3992,7 @@ export default function StudyMate() {
             },
             // WARN: 경고를 별도 버블(다른 parentId)로 올려 이후 학습 답변 렌더에 덮이지 않게 한다(중복 append 아님).
             onRouteNotice: (d) => {
-              if (!d || !d.message) return;
+              if (!d || !d.message || !isActiveRequest()) return;
               const notice = {
                 id: `${userMsg.id}::warn-notice`,
                 content: d.message,
@@ -3882,6 +4010,7 @@ export default function StudyMate() {
             onAllComplete: (d) => {
               // all_complete/done 중 먼저 온 하나만 최종 반영한다(중복 렌더 금지 — 목표 8).
               if (streamCompleted) return;
+              streamSm.allComplete();
               finalize();
               streamCompleted = true;
               // 시각: 완료 표시(stage가 800ms 후 idle 복귀). single target은 대상 1명만 completed,
@@ -3927,6 +4056,7 @@ export default function StudyMate() {
             //  그 외엔 finalReceived 로만 표시(부분 답변은 보존, concludeStream 에서 안내 분기).
             onDone: (d) => {
               const status = String((d && d.status) || '').toLowerCase();
+              streamSm.done();
               finalize(); // close 는 이제 정상 종료로 처리됨
               if (streamCompleted) return; // all_complete 가 이미 최종 반영함 — 중복 금지
               if (status === 'error' && !streamRendered && !anyAnswerReceived) {
@@ -3952,16 +4082,18 @@ export default function StudyMate() {
               if (d && (d.agentId != null || d.agentIndex != null)) {
                 upsertAgentMessage(d, {
                   isPending: false, isError: true,
-                  content: d.message || '이 교수의 응답 생성에 실패했습니다.',
+                  content: neutralizeErrorText(d.message, DEFAULT_AGENT_ERROR),
+                  failureCode: classifyFailure(d).code, degraded: true,
                 });
                 return;
               }
+              if (!isActiveRequest()) return;
               if (streamRendered) {
                 // 일부 답변은 이미 표시됨 → 유지. 단 모드 전용 오류(code)면 "완성된 답변"처럼 두지 않고
                 // 별도 모드 오류 안내 버블을 덧붙인다(부분 답변은 보존, 기본 답변으로 바꿔치기 금지).
                 if (d && d.code) {
                   const notice = {
-                    ...buildModeGuardMessage({ ...d, message: d.message || d.reason || `${MODE_LABELS[activeLearningMode] || ''} 모드 처리에 실패했습니다. (${d.code})` }, { isError: true }),
+                    ...buildModeGuardMessage({ ...d, message: neutralizeErrorText(d.message || d.reason, `${MODE_LABELS[activeLearningMode] || ''} 모드 처리에 실패했습니다. (${d.code})`) }, { isError: true }),
                     id: `${userMsg.id}::mode-error`,
                     parentId: `${userMsg.id}::mode-error`, // 부분 답변(parentId=userMsg.id)을 덮지 않도록 별도 parent
                   };
@@ -3974,7 +4106,7 @@ export default function StudyMate() {
               // 모드 전용 오류(code 보유: DEBATE_FAILED/AI_CONTRACT_FAILURE 등)는 해당 모드의 안내 상태로 표시하고
               // 기본 답변/일반 "연결 중단" 문구로 바꾸지 않는다(fail-closed: 가짜 성공·모드 바꿔치기 금지).
               if (d && d.code) {
-                renderModeGuard({ ...d, message: d.message || d.reason || `${MODE_LABELS[activeLearningMode] || ''} 모드 처리에 실패했습니다. (${d.code})` }, { isError: true });
+                renderModeGuard({ ...d, message: neutralizeErrorText(d.message || d.reason, `${MODE_LABELS[activeLearningMode] || ''} 모드 처리에 실패했습니다. (${d.code})`) }, { isError: true });
                 streamRendered = true;
                 return;
               }
@@ -3983,7 +4115,8 @@ export default function StudyMate() {
           };
           for (let gwAttempt = 0; ; gwAttempt += 1) {
             try {
-              await agentService.streamMessage(userId, agentId, streamPayload, streamHandlers, { signal: streamAbort.signal });
+              streamSm.open();
+              await agentService.streamMessage(userId, agentId, streamPayload, streamHandlers, { signal: streamAbort.signal, requestId });
               break;
             } catch (gwErr) {
               const canRetry = !!(gwErr && gwErr.retryable) && lastEventType === null && !anyAnswerReceived && !streamRendered
@@ -4194,6 +4327,7 @@ export default function StudyMate() {
     } catch (err) {
       sawError = true;
       console.error('메시지 전송 실패:', err);
+      if (!isActiveRequest()) { return; } // stale 턴의 오류 안내는 새 턴 화면에 섞지 않는다.
       // alert로 흐름을 막지 않고, 네트워크/서버 오류를 채팅 내부 메시지로 표시한다.
       const isNetwork = err?.code === 'ERR_NETWORK' || /Network|timeout|aborted/i.test(err?.message || '');
       const noticeText = isNetwork
@@ -4223,9 +4357,17 @@ export default function StudyMate() {
       }
     } finally {
       // 8. 해당 방의 타이핑/로딩 상태만 해제 + 전송 가드 해제(재진입 허용)
-      setTypingRooms((prev) => ({ ...prev, [agentId]: false }));
+      cancelRegistryRef.current.release(agentId, requestId);
+      if (isActiveRequest()) {
+        // 활성 턴이면 상태 머신 종결 → typingRooms(=isLoading 미러) 해제. stale 턴이면 새 턴의 로딩을 건드리지 않는다.
+        streamSm.close();
+        setTypingRooms((prev) => ({ ...prev, [agentId]: false }));
+        turnToken.end();
+      } else if (!turnGuardRef.current.activeRequestId(agentId)) {
+        setTypingRooms((prev) => ({ ...prev, [agentId]: false }));
+      }
       // 시각: 스트림 종료 안전망(all_complete/error 누락 시에도 idle 복귀 보장). backendMotionDriven 이어도 복귀하도록 ungated.
-      if (visualActive()) setAllProfVisual(sawError ? 'error' : 'completed');
+      if (visualActive() && isActiveRequest()) setAllProfVisual(sawError ? 'error' : (cancelledReasonRef.current[agentId] ? 'idle' : 'completed'));
       // 안무 안전망: 진행 중 filler 타이머 정리 + 안내문 idle 복귀 예약(어떤 종료 경로에서도 안내문이 고착되지 않게).
       if (visualActive()) {
         clearChoreoFiller();
@@ -4809,7 +4951,11 @@ export default function StudyMate() {
                       const isPlainReply = !!msg.routeAction || !!msg.isNotice;
 
                       return (
-                        <div key={msg.id ?? `${msg.parentId ?? 'root'}:${msg.sender}:${msg.badgeKey ?? msg.senderName ?? ''}`} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}>
+                        <div key={msg.id ?? `${msg.parentId ?? 'root'}:${msg.sender}:${msg.badgeKey ?? msg.senderName ?? ''}`} className={`chat-bubble-container ${isUser ? 'user' : 'ai'}`}
+                          data-agent-id={msg.agentId ?? undefined} data-agent-slot={msg.agentSlot ?? undefined}
+                          data-personality-key={msg.personalityKey ?? undefined} data-knowledge-key={msg.knowledgeLevelKey ?? undefined}
+                          data-event-id={msg.eventId ?? undefined} data-turn-id={msg.turnId ?? undefined} data-request-id={msg.requestId ?? undefined}
+                          data-status={msg.isPending ? 'PENDING' : (msg.isError ? 'ERROR' : (msg.isCancelled ? 'CANCELLED' : (msg.status ?? undefined)))}>
                           {/* 메시지 헤더: 에이전트 이름(+아이콘)만 노출. 모드/단계/모델/역할/성격/수준/글자수 배지는
                               발표 화면 단순화를 위해 렌더링하지 않는다(내부 데이터는 유지). */}
                           <div
@@ -5084,7 +5230,7 @@ export default function StudyMate() {
                   </div>
                 )}
                 {/* 라이브 모드 토글은 입력창 우측의 컴팩트 드롭다운으로 축소됨(아래 form 내부). */}
-                <form onSubmit={sendMessage} className="chat-input-premium">
+                <form onSubmit={sendMessage} className="chat-input-premium" data-stream-phase={streamPhases[getAgentId(selectedAgent)] || 'IDLE'}>
                   <input
                     type="text"
                     value={message}
@@ -5117,14 +5263,21 @@ export default function StudyMate() {
                         e.preventDefault();
                       }
                     }}
-                    placeholder={'교수님들과 학습할 질문을 입력하세요... (@를 입력해 에이전트 호출)'}
-                    disabled={typingRooms[getAgentId(selectedAgent)]}
+                    placeholder={typingRooms[getAgentId(selectedAgent)] ? '답변 생성 중… 새 질문을 보내면 현재 답변 생성을 중단합니다' : '교수님들과 학습할 질문을 입력하세요... (@를 입력해 에이전트 호출)'}
                   />
                   {/* 입력창 모드 선택 드롭다운 제거: 방 설정에서 정한 learningMode를 그대로 따른다.
                       (전송 payload의 mode/learningMode는 sendMessage에서 기존 방 모드로 계속 전송됨) */}
-                  <button type="submit" disabled={typingRooms[getAgentId(selectedAgent)] || !message.trim()}>
-                    <Send size={17} />
-                  </button>
+                  {typingRooms[getAgentId(selectedAgent)] ? (
+                    // Stop: 진행 중 스트림 취소(취소 체인: abort → Spring cancel → AI07 절단). 받은 답변은 유지된다.
+                    <button type="button" className="stream-stop-btn" aria-label="답변 생성 중단" title="답변 생성 중단"
+                      onClick={() => cancelRoomStream(getAgentId(selectedAgent), 'user_stop')}>
+                      <X size={17} />
+                    </button>
+                  ) : (
+                    <button type="submit" disabled={!message.trim()}>
+                      <Send size={17} />
+                    </button>
+                  )}
                 </form>
               </div>
             </div>

@@ -1,6 +1,7 @@
 package com.studybridge.api.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.contract.AgentProfileContract;
 import com.studybridge.api.dto.LearningMateDTO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -139,14 +140,26 @@ public class LearningMateService {
             guide += "\n[재생성 지시] " + rewrite.trim();
         }
 
+        // canonical contract(AgentProfileContract): 7키 말투 → 6키 personalityKey, 학습메이트 4단계 수준 → 5키 knowledgeLevelKey.
+        //  (advanced 는 과거 'unknown → bachelor' 로 조용히 떨어지던 값 — master 로 확정 전달)
+        AgentProfileContract.PersonaResolution personaRes = AgentProfileContract.resolvePersona(tone);
+        AgentProfileContract.KnowledgeResolution knowledgeRes = AgentProfileContract.resolveKnowledgeOrDefault(learnerLevel);
+        final String requestId = "lm_" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         Map<String, Object> agent = new LinkedHashMap<>();
+        agent.put("agentId", "learning-mate");
+        agent.put("agentSlot", 1);
         agent.put("agentName", name);
+        agent.put("name", name);
         agent.put("tone", tone);
         agent.put("personality", tone);
         agent.put("personalityStyle", tone);
+        agent.put("personalityKey", personaRes.key());
+        agent.put("personalityLabel", personaRes.label());
         agent.put("temperature", temperature);
-        agent.put("knowledgeLevel", learnerLevel);
-        agent.put("knowledge_level", learnerLevel);
+        agent.put("knowledgeLevel", knowledgeRes.enumValue());
+        agent.put("knowledge_level", knowledgeRes.enumValue());
+        agent.put("knowledgeLevelKey", knowledgeRes.key());
+        agent.put("knowledgeLevelLabel", knowledgeRes.enumLabel());
         if (p.getCustomInstruction() != null) agent.put("customInstruction", p.getCustomInstruction());
         agent.put("persona", name);
 
@@ -158,8 +171,12 @@ public class LearningMateService {
         body.put("tone", tone);
         body.put("personalityStyle", tone);
         body.put("temperature", temperature);
-        body.put("knowledgeLevel", learnerLevel);
-        body.put("knowledge_level", learnerLevel);
+        body.put("personalityKey", personaRes.key());
+        body.put("knowledgeLevel", knowledgeRes.enumValue());
+        body.put("knowledge_level", knowledgeRes.enumValue());
+        body.put("knowledgeLevelKey", knowledgeRes.key());
+        body.put("requestId", requestId);
+        body.put("contractVersion", AiMultiChatFailoverService.CONTRACT_VERSION);
         if (p.getCustomInstruction() != null) body.put("customInstruction", p.getCustomInstruction());
         body.put("persona", name);
         body.put("agents", List.of(agent));
@@ -175,10 +192,17 @@ public class LearningMateService {
             @SuppressWarnings("rawtypes")
             Map resp = fastApiWebClient.post()
                     .uri("/api/ai/multi-chat")
+                    .header(AiMultiChatFailoverService.REQUEST_ID_HEADER, requestId)
                     .bodyValue(body)
                     .retrieve()
                     .bodyToMono(Map.class)
                     .block(Duration.ofSeconds(aiTimeoutSeconds));
+            // AI07 v2: 실패는 answers 에 실패 문구를 넣지 않고 status=FAILED + agentErrors 로 드러낸다 → 성공 답변으로 위장 금지.
+            if (resp != null && AgentProfileContract.isFailedAnswer(resp)) {
+                log.warn("[learning-mate] AI07 status=FAILED requestId={} code={}", requestId, resp.get("code"));
+                return labeled(question, null, mode, tone, learnerLevel, quickAction, false,
+                        "AI_ERROR", "답변 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+            }
             answer = flattenAnswer(resp);
             if (answer == null || answer.isBlank()) {
                 return labeled(question, "답변을 생성하지 못했습니다. 다른 모드나 빠른 조정으로 다시 시도해 주세요.",

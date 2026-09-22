@@ -18,6 +18,9 @@ spring:
     username: ${DB_USER:capstone}
     password: ${DB_PASSWORD:1234}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      # 커넥션이 2분 넘게 반환되지 않으면 WARN + 스택(누수 조기 탐지). 운영 SSE 턴은 트랜잭션 단위로만 커넥션을 쓴다.
+      leak-detection-threshold: ${HIKARI_LEAK_DETECTION_MS:120000}
 
   # ── 비밀번호 찾기 인증메일 SMTP (PasswordResetMailService) ─────────────────────────────
   #  값은 전부 환경변수(.env → docker-compose spring.environment)로만 주입한다. 코드/yml 에 계정·비밀번호 하드코딩 금지.
@@ -50,6 +53,12 @@ spring:
       hibernate:
         format_sql: ${SPRING_JPA_FORMAT_SQL:false}
         dialect: org.hibernate.dialect.PostgreSQLDialect
+        # 2026-09-22 학습메이트 SSE 취소 체인 도입 후 발견: OSIV(open-in-view) EntityManager 가 요청 트랜잭션 커밋 뒤에도
+        #  JDBC 커넥션을 쥔 채(기본 DELAYED_ACQUISITION_AND_HOLD) 비동기 SSE 요청이 끝날 때까지 유지했고, 클라이언트가 스트림을
+        #  끊으면(Stop/새 질문/새로고침) MVC 가 async 요청을 정상 dispatch 하지 않아 커넥션이 영구 누수 → Hikari 풀(10) 고갈로 전체 API 500.
+        #  트랜잭션 종료 시 커넥션을 풀에 반환하도록 바꾼다(EntityManager 는 열려 있어도 커넥션은 잡지 않는다).
+        connection:
+          handling_mode: DELAYED_ACQUISITION_AND_RELEASE_AFTER_TRANSACTION
 
 ai:
   server:

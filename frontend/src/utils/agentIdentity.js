@@ -96,7 +96,22 @@ export function isEventForTarget(roomAgents, target, evt) {
   if (!target || target.scope !== 'single') return true;
   const slot = resolveRoomAgentSlot(roomAgents, evt);
   if (slot >= 0) return slot === target.slot;
+  // 가상/시스템 작성자(debate-consensus 등)는 특정 교수가 아니므로 단일 대상 필터로 드롭하지 않는다(메시지 유실 금지).
+  if (isVirtualAuthor(evt)) return true;
   return !hasAgentIdentity(evt);
+}
+
+/**
+ * 실체(방 agent) 가 없는 작성자인가 — debate-consensus / system / 'virtual' 류 문자열 id 또는 consensus 플래그.
+ *  숫자형 id(문자열 "37" 포함)는 실제 교수 후보라 가상 작성자가 아니다.
+ */
+export function isVirtualAuthor(evt) {
+  if (!evt) return false;
+  if (evt.consensus === true || evt.virtual === true || evt.authorKind === 'VIRTUAL') return true;
+  const id = evt.agentId ?? evt.agent_id;
+  if (id == null || id === '') return false;
+  const s = String(id).trim();
+  return !/^\d+$/.test(s) && /consensus|system|virtual|moderator|judge/i.test(s);
 }
 
 /**

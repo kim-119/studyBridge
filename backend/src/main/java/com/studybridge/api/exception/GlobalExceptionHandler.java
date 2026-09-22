@@ -80,6 +80,33 @@ public class GlobalExceptionHandler {
         return builder.body(payload);
     }
 
+    // AI 업스트림 사전(pre-stream) 실패 → 업스트림 상태 보존/매핑 + JSON. SSE 200 으로 위장하지 않는다.
+    //  (스트림이 이미 열린 뒤의 실패는 ChatService 가 error/done 이벤트로 처리한다.)
+    @ExceptionHandler(AiUpstreamException.class)
+    public ResponseEntity<Map<String, Object>> handleAiUpstream(AiUpstreamException ex) {
+        log.warn("AI upstream pre-stream failure: status={} code={} upstreamStatus={} upstreamCode={} requestId={}",
+                ex.getStatus().value(), ex.getCode(), ex.getUpstreamStatus(), ex.getUpstreamCode(), ex.getRequestId());
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("status", ex.getStatus().value());
+        payload.put("code", ex.getCode());
+        payload.put("message", ex.getMessage());
+        payload.put("retryable", ex.isRetryable());
+        if (ex.getRequestId() != null) {
+            payload.put("requestId", ex.getRequestId());
+        }
+        if (ex.getUpstreamCode() != null) {
+            payload.put("upstreamCode", ex.getUpstreamCode());
+        }
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(ex.getStatus()).contentType(MediaType.APPLICATION_JSON);
+        if (ex.getRequestId() != null) {
+            builder.header("X-Request-ID", ex.getRequestId());
+        }
+        if (ex.isRetryable()) {
+            builder.header("Retry-After", "5");
+        }
+        return builder.body(payload);
+    }
+
     // 권한 없음(서비스 계층에서 던지는 SecurityException) → 403
     @ExceptionHandler(SecurityException.class)
     public ResponseEntity<Map<String, Object>> handleForbidden(SecurityException ex) {

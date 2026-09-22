@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 // AI 요청 timeout. 중복 export 금지.
+import { createSseParser } from '../utils/sse/sseParser';
 export const AI_TIMEOUT_MS = Number(
   import.meta.env.VITE_AI_TIMEOUT_MS ||
   import.meta.env.VITE_FRONTEND_AI_TIMEOUT_MS ||
@@ -190,13 +191,21 @@ const forceLogout = () => {
 
 // SSE 스트림 HTTP 오류(2xx 가 아닌 응답). status 로 UI 가 원인별 안내/자동 재시도를 분기한다.
 export class StreamHttpError extends Error {
-  constructor(status, bodySnippet = '') {
+  constructor(status, bodySnippet = '', requestId = null) {
     super(`stream http ${status}`);
     this.name = 'StreamHttpError';
     this.status = status;
     this.bodySnippet = bodySnippet;
-    // 502/503/504 = 업스트림(Spring) 재시작/과부하 — 이벤트를 받기 전이면 자동 재시도 가능.
-    this.retryable = status === 502 || status === 503 || status === 504;
+    this.requestId = requestId;
+    // Spring pre-stream JSON({status, code, message, retryable, requestId}) — AI07 4xx/5xx 를 200 SSE 로 위장하지 않은 응답.
+    let parsed = null;
+    try { parsed = bodySnippet ? JSON.parse(bodySnippet) : null; } catch { parsed = null; }
+    this.code = parsed && typeof parsed.code === 'string' ? parsed.code : null;
+    this.serverMessage = parsed && typeof parsed.message === 'string' ? parsed.message : null;
+    // 502/503/504 = 업스트림(Spring) 재시작/과부하 — 이벤트를 받기 전이면 자동 재시도 가능. 서버가 retryable 을 주면 그 값을 따른다.
+    this.retryable = parsed && typeof parsed.retryable === 'boolean'
+      ? parsed.retryable
+      : (status === 502 || status === 503 || status === 504);
     // 401 = 인증 없음/토큰 만료(갱신 대상). 403 = 인증은 됐지만 권한 없음(방 소유자 아님) — 갱신해도 달라지지 않는다.
     //  (Spring 이 미인증도 403 으로 내리던 시절엔 둘을 구분할 수 없어 진짜 403 에도 "세션 만료" 문구가 떴다.)
     this.authFailure = status === 401;
@@ -325,11 +334,15 @@ export const agentService = {
     // SSE 는 axios 가 아니라 fetch 라 401 자동 갱신 인터셉터를 타지 않는다.
     //  액세스 토큰(30분) 만료 뒤 첫 전송이 401 → "연결이 중단" 으로 보이던 문제: 여기서 1회 갱신 후 재시도한다.
     //  403(권한 없음)/404(삭제된 방) 은 갱신 대상이 아니라 그대로 StreamHttpError 로 올려 원인별 안내를 띄운다.
+    // 요청 상관 id: 브라우저가 발급(X-Request-ID) → Spring 로그/AI07 요청/모든 SSE 이벤트에 같은 값이 실린다.
+    const requestId = opts.requestId || basePayload.requestId || basePayload.messageId || null;
+    if (requestId && !basePayload.requestId) basePayload.requestId = requestId;
     const doFetch = async (token) => fetch(`${API_BASE_URL}/api/agent-rooms/${agentId}/chat/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
+        ...(requestId ? { 'X-Request-ID': requestId } : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(basePayload),
@@ -349,52 +362,49 @@ export const agentService = {
 
     if (!resp.ok || !resp.body) {
       let snippet = '';
-      try { snippet = (await resp.text()).slice(0, 200); } catch { /* body 없음 */ }
-      throw new StreamHttpError(resp.status, snippet);
+      try { snippet = (await resp.text()).slice(0, 400); } catch { /* body 없음 */ }
+      throw new StreamHttpError(resp.status, snippet, resp.headers?.get?.('X-Request-ID') || requestId);
     }
     handlers.onOpen?.(resp);
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
+    // done(프로토콜 종결) 뒤 서버가 소켓을 닫지 않아도 로딩이 고착되지 않도록 짧은 유예 후 reader 를 닫는다(§12 loading stuck 방지).
+    const DONE_GRACE_MS = typeof opts.doneGraceMs === 'number' ? opts.doneGraceMs : 2500;
+    let doneGraceTimer = null;
+    let readerClosedByGrace = false;
 
     const dispatch = (frame) => {
-      let event = 'message';
-      const dataLines = [];
-      let commentSeen = false;
-
-      for (const line of frame.split('\n')) {
+      if (frame.control) {
         // SSE 주석 라인(':' 로 시작, 예: Spring keepalive ':hb')은 이벤트가 아니다.
         // 다만 '연결 생존(liveness)' 신호이므로 watchdog 갱신을 위해 따로 알린다.
-        if (line.startsWith(':')) {
-          commentSeen = true;
-        } else if (line.startsWith('event:')) {
-          event = line.slice(6).trim();
-        } else if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5).replace(/^ /, ''));
-        }
-      }
-
-      // data 없는 프레임(주석/빈 keepalive)은 파싱하지 않지만, 주석이면 liveness만 통지한다.
-      if (dataLines.length === 0) {
-        if (commentSeen) handlers.onComment?.(frame);
+        if (frame.comment != null) handlers.onComment?.(frame.comment);
         return;
       }
-
+      const event = frame.event || 'message';
       let data = null;
 
       // 프레임 단위로만 JSON.parse 한다(청크 경계로 깨지지 않음). 1프레임 파싱 실패가
       // 스트림 전체를 죽이지 않도록 null 로 흘려보내고 다음 프레임을 계속 처리한다.
       try {
-        data = JSON.parse(dataLines.join('\n'));
+        data = JSON.parse(frame.data);
       } catch (parseErr) {
-        if (import.meta.env.DEV) console.warn('[SSE] frame parse 실패(무시하고 계속):', dataLines.join('\n').slice(0, 200));
-        handlers.onParseError?.(event, dataLines.join('\n'), parseErr);
+        if (import.meta.env.DEV) console.warn('[SSE] frame parse 실패(무시하고 계속):', String(frame.data).slice(0, 200));
+        handlers.onParseError?.(event, frame.data, parseErr);
         return;
       }
 
-      // 진단/성능 측정용 단일 훅 — 첫 이벤트 도착 시각/liveness 갱신을 한 지점에서 잰다.
-      handlers.onAnyEvent?.(event, data);
+      // 진단/성능 측정 + stale/중복 판정의 단일 훅. false 를 돌려주면(다른 턴의 늦은 이벤트, 중복 eventId) 이하 핸들러를 건너뛴다.
+      if (handlers.onAnyEvent?.(event, data) === false) return;
+
+      if (event === 'done') {
+        if (doneGraceTimer == null) {
+          doneGraceTimer = setTimeout(() => {
+            readerClosedByGrace = true;
+            try { reader.cancel('done-grace'); } catch { /* 이미 닫힘 */ }
+          }, DONE_GRACE_MS);
+        }
+      }
 
       if (event === 'turn_start') handlers.onTurnStart?.(data);
       else if (event === 'heartbeat') handlers.onHeartbeat?.(data);
@@ -423,35 +433,37 @@ export const agentService = {
       // done: FastAPI finally 가 보내는 종결 이벤트. 과거엔 디스패치되지 않아 무시됐다.
       //  → all_complete 와 함께 '최종 수신(finalReceived)' 판정에 쓰도록 명시 전달한다.
       else if (event === 'done') handlers.onDone?.(data);
-      else if (event === 'error') handlers.onError?.(data);
+      // error(AI07 turn-level, eventType=stream_error) / stream_error(명시 이름) 둘 다 같은 핸들러. 미지 이벤트는 답변으로 간주하지 않는다.
+      else if (event === 'error' || event === 'stream_error') handlers.onError?.(data);
+      // 제어/확장 이벤트(phase_progress/debate_round/validation_summary/direct_reply …): 말풍선을 만들지 않고 통지만.
+      else handlers.onControlEvent?.(event, data);
     };
 
-    // SSE 프레임은 '\n\n' 로 구분된다. CRLF(\r\n) 도 허용하도록 정규화 후 분리한다.
-    const drainFrames = () => {
-      buffer = buffer.replace(/\r\n/g, '\n');
-      let idx;
-      while ((idx = buffer.indexOf('\n\n')) !== -1) {
-        const frame = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        if (frame.trim()) dispatch(frame);
+    // 표준 SSE 프레이밍(CRLF/멀티라인 data/주석/부분 청크)은 공용 파서가 담당한다(utils/sse/sseParser — 테스트 동일 구현).
+    const parser = createSseParser(dispatch);
+
+    try {
+      while (true) {
+        let chunk;
+        try {
+          chunk = await reader.read();
+        } catch (readErr) {
+          if (readerClosedByGrace) break; // done 이후 유예 종료 — 정상 종료
+          throw readErr;
+        }
+        const { done, value } = chunk;
+
+        if (done) {
+          // 멀티바이트 tail flush + 종결 빈 줄 없이 끝난 마지막 프레임도 유실 없이 처리한다.
+          parser.push(decoder.decode());
+          parser.flush();
+          break;
+        }
+
+        parser.push(decoder.decode(value, { stream: true }));
       }
-    };
-
-    while (true) {
-      const { done, value } = await reader.read();
-
-      if (done) {
-        // 멀티바이트 tail flush + 종결 '\n\n' 없이 끝난 마지막 프레임도 유실 없이 처리한다.
-        buffer += decoder.decode();
-        drainFrames();
-        const tail = buffer.replace(/\r\n/g, '\n').trim();
-        if (tail) dispatch(tail);
-        buffer = '';
-        break;
-      }
-
-      buffer += decoder.decode(value, { stream: true });
-      drainFrames();
+    } finally {
+      if (doneGraceTimer != null) clearTimeout(doneGraceTimer);
     }
   },
 

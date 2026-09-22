@@ -21,4 +21,7 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
     List<ChatMessage> findTop10ByAgentChatRoomIdAndSenderOrderByCreatedAtDesc(Long roomId, String sender);
 
     void deleteByAgentId(Long agentId);
+
+    // 멱등 영속화: 같은 방에 같은 eventId(또는 composite dedup 키)의 AI 답변이 이미 있으면 다시 저장하지 않는다.
+    boolean existsByAgentChatRoomIdAndEventId(Long roomId, String eventId);
 }

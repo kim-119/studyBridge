@@ -25,6 +25,17 @@ public class ChatDTO {
         private LocalDateTime createdAt;
         // 영속화된 1차/2차/3차 생성 과정 (AI 메시지에만 존재, 없으면 null)
         private Map<String, Object> processSteps;
+        // ── AI07 SSE 계약 metadata(없으면 null). authorKind: USER | AGENT | VIRTUAL(debate-consensus 등 실체 없는 작성자) ──
+        private String requestId;
+        private String turnId;
+        private String eventId;
+        private Integer agentIndex;
+        private String stage;
+        private String status;
+        private String mode;
+        private String personalityKey;
+        private String knowledgeLevelKey;
+        private String authorKind;
     }
 
     @Getter

@@ -250,13 +250,26 @@ class AiMultiChatFailoverServiceTest {
     }
 
     @Test
-    void primaryConnectionRefused_noSecondary_endsWithErrorAndDone_notException() throws IOException {
+    void primaryConnectionRefused_noSecondary_preStream_isTypedUnavailableException_notSse200() throws IOException {
         String dead = deadUrl(); // connection refused (ai07 restart 중)
-        List<ServerSentEvent<String>> evs = run(service(dead, null));
-
-        assertEquals(List.of("error", "done"), events(evs));
-        assertTrue(find(evs, "error").data().contains("AI_UPSTREAM_UNAVAILABLE"));
-        assertTrue(find(evs, "done").data().contains("\"status\":\"error\""));
+        // pre-stream(이벤트 0건) 실패는 정상 SSE(200 + error 이벤트)로 위장하지 않고 AiUpstreamException(503) 으로 전파된다(§10).
+        Throwable thrown = null;
+        try {
+            run(service(dead, null));
+        } catch (RuntimeException e) {
+            thrown = e;
+        }
+        assertNotNull(thrown, "pre-stream 실패는 예외로 전파되어야 한다");
+        Throwable cause = thrown;
+        while (cause != null && !(cause instanceof com.studybridge.api.exception.AiUpstreamException)) {
+            cause = cause.getCause();
+        }
+        assertNotNull(cause, "AiUpstreamException 이어야 한다: " + thrown);
+        com.studybridge.api.exception.AiUpstreamException aue = (com.studybridge.api.exception.AiUpstreamException) cause;
+        assertEquals(503, aue.getStatus().value());
+        assertEquals("AI_UPSTREAM_UNAVAILABLE", aue.getCode());
+        assertTrue(aue.isRetryable());
+        assertEquals("req_test", aue.getRequestId());
     }
 
     @Test
@@ -325,14 +338,26 @@ class AiMultiChatFailoverServiceTest {
     }
 
     @Test
-    void contractFailure422_isNotHiddenByFailover() throws IOException {
+    void contractFailure422_isNotHiddenByFailover_andPreservesStatusPreStream() throws IOException {
         Stub p = stub("primary");
         p.streamStatus = 422;
         Stub s = stub("secondary");
-        List<ServerSentEvent<String>> evs = run(service(p.baseUrl(), s.baseUrl()));
-
-        assertEquals(List.of("error", "done"), events(evs));
-        assertTrue(find(evs, "error").data().contains("AI_CONTRACT_FAILURE"));
+        Throwable thrown = null;
+        try {
+            run(service(p.baseUrl(), s.baseUrl()));
+        } catch (RuntimeException e) {
+            thrown = e;
+        }
+        assertNotNull(thrown);
+        Throwable cause = thrown;
+        while (cause != null && !(cause instanceof com.studybridge.api.exception.AiUpstreamException)) {
+            cause = cause.getCause();
+        }
+        assertNotNull(cause, "pre-stream 422 는 AiUpstreamException 으로 전파: " + thrown);
+        com.studybridge.api.exception.AiUpstreamException aue = (com.studybridge.api.exception.AiUpstreamException) cause;
+        assertEquals(422, aue.getStatus().value(), "업스트림 422 상태 보존");
+        assertEquals(422, aue.getUpstreamStatus());
+        assertFalse(aue.isRetryable());
         assertEquals(1, p.streamHits.get(), "계약 오류는 재시도하지 않는다");
         assertEquals(0, s.streamHits.get(), "계약 오류는 다른 서버로 숨기지 않는다");
         assertEquals(0, p.nonStreamHits.get());
