@@ -216,50 +216,30 @@ _STUDYMATE_KNOWLEDGE_DEFAULT_LABEL = "학사"
 
 
 def _studymate_personality_label(value: Any) -> str:
-    """personality key(또는 라벨/레거시 한글 표현)를 canonical 한글 라벨로 변환한다."""
-    raw = str(value or "").strip()
-    if not raw:
-        return _STUDYMATE_PERSONALITY_DEFAULT_LABEL
-    lower = raw.lower()
-    if lower in _STUDYMATE_PERSONALITY_LABELS:
-        return _STUDYMATE_PERSONALITY_LABELS[lower]
-    if raw in _STUDYMATE_PERSONALITY_LABELS.values():
-        return raw
-    # 레거시 한글/별칭("비판형","전문적" 등)은 기존 label→key 맵으로 한 번 더 정규화.
-    key = _resolve_label(raw, PERSONALITY_LABEL_MAP, "")
-    if key in _STUDYMATE_PERSONALITY_LABELS:
-        return _STUDYMATE_PERSONALITY_LABELS[key]
-    return _STUDYMATE_PERSONALITY_DEFAULT_LABEL
+    """personality key/라벨/레거시 표현 → canonical 한글 라벨. SSOT = app.studymate.profile_contract."""
+    from app.studymate.profile_contract import resolve_personality
+    return resolve_personality({"personality": value}).label
 
 
 def _studymate_knowledge_label(value: Any) -> str:
-    """knowledgeLevel key(또는 라벨/레거시 표현)를 canonical 한글 라벨로 변환한다."""
-    raw = str(value or "").strip()
-    if not raw:
-        return _STUDYMATE_KNOWLEDGE_DEFAULT_LABEL
-    lower = raw.lower()
-    if lower in _STUDYMATE_KNOWLEDGE_LABELS:
-        return _STUDYMATE_KNOWLEDGE_LABELS[lower]
-    if raw in _STUDYMATE_KNOWLEDGE_LABELS.values():
-        return raw
-    key = _resolve_label(raw, KNOWLEDGE_LABEL_MAP, "")
-    if key in _STUDYMATE_KNOWLEDGE_LABELS:
-        return _STUDYMATE_KNOWLEDGE_LABELS[key]
-    return _STUDYMATE_KNOWLEDGE_DEFAULT_LABEL
+    """knowledgeLevel key/라벨/레거시 표현 → canonical 한글 라벨. SSOT = app.studymate.profile_contract."""
+    from app.studymate.profile_contract import resolve_knowledge
+    return resolve_knowledge({"knowledgeLevel": value}).label
 
 
 def _normalize_studymate_agent_labels(agent: AgentProfile) -> AgentProfile:
-    """agent 의 표시 라벨을 원본 key 기준으로 강제 재계산한다(들어온 라벨은 불신)."""
+    """agent 표시 라벨을 canonical 계약으로 재계산한다. 해석 실패(unknown)는 라벨로 덮어써서
+    '해석된 것처럼' 위장하지 않는다(원문 유지 → profile_contract 가 resolved=false 로 드러냄)."""
     if agent is None:
         return agent
     try:
-        agent.personalityLabel = _studymate_personality_label(
-            getattr(agent, "personality", None) or getattr(agent, "personalityLabel", None)
-        )
-        agent.knowledgeLevelLabel = _studymate_knowledge_label(
-            getattr(agent, "knowledgeLevel", None) or getattr(agent, "knowledgeLevelLabel", None)
-        )
-    except Exception as e:  # 라벨 정규화 실패가 답변 생성을 막지 않도록 방어
+        from app.studymate.profile_contract import canonicalize_agent
+        ca = canonicalize_agent(agent, 0)
+        if ca.personalityResolved:
+            agent.personalityLabel = ca.personalityLabel
+        if ca.knowledgeResolved:
+            agent.knowledgeLevelLabel = ca.knowledgeLevelLabel
+    except Exception as e:  # 라벨 정규화 실패가 답변 생성을 막지 않도록 방어(로그로 드러냄)
         logger.warning("[studymate-label] agent 라벨 정규화 실패: %s", e)
     return agent
 
@@ -271,37 +251,37 @@ def _normalize_studymate_agents(agents: Optional[List[AgentProfile]]) -> Optiona
 
 
 def _agent_identity_payload(agent: AgentProfile, answer: Optional["AgentAnswer"] = None) -> Dict[str, Any]:
-    """emit 용 (personality/personalityLabel/knowledgeLevel/knowledgeLevelLabel) 묶음.
-    key 는 answer→agent 순으로 SSOT 채택하고, 라벨은 그 key 에서 다시 계산한다."""
-    a_personality = None
-    a_knowledge = None
-    if answer is not None:
-        a_personality = getattr(answer, "personality", None) or getattr(answer, "personalityType", None)
-        a_knowledge = getattr(answer, "knowledgeLevel", None)
-    personality_key = a_personality or getattr(agent, "personality", None) or _resolve_personality(agent)
-    knowledge_key = a_knowledge or getattr(agent, "knowledgeLevel", None) or _resolve_knowledge(agent)
-    return {
-        "personality": personality_key,
-        "personalityLabel": _studymate_personality_label(personality_key),
-        "knowledgeLevel": knowledge_key,
-        "knowledgeLevelLabel": _studymate_knowledge_label(knowledge_key),
-    }
+    """emit 용 identity 묶음. canonical key 기반(profile_contract) — stream/non-stream/모드 공통."""
+    from app.studymate.profile_contract import canonicalize_agent
+    if agent is None:
+        return {}
+    slot = getattr(agent, "agentSlot", None)
+    return canonicalize_agent(agent, (slot - 1) if isinstance(slot, int) and slot >= 1 else 0).identity_payload()
 
 
 def _canonicalize_identity_labels(obj: Any) -> Any:
-    """emit 직전 방어막: dict 트리를 재귀 순회하며 personality/knowledgeLevel key 가
-    있는 모든 노드의 personalityLabel/knowledgeLevelLabel 을 canonical 로 재계산한다.
-    (agent_start/agent_answer/all_complete/answers/messages/processSteps/stages 전부 커버.)
-    들어온 라벨은 신뢰하지 않으며, 라벨 필드만 건드리고 다른 계약 필드는 보존한다."""
+    """emit 직전 방어막: personality/knowledgeLevel 값이 있는 모든 노드의 key/label 을 canonical 로 재계산한다."""
+    from app.studymate.profile_contract import resolve_knowledge, resolve_personality
     if isinstance(obj, dict):
-        p_key = obj.get("personality") or obj.get("personalityType")
-        if "personalityLabel" in obj or p_key is not None:
-            obj["personalityLabel"] = _studymate_personality_label(p_key or obj.get("personalityLabel"))
-        k_key = obj.get("knowledgeLevel")
-        if "knowledgeLevelLabel" in obj or k_key is not None:
-            obj["knowledgeLevelLabel"] = _studymate_knowledge_label(k_key or obj.get("knowledgeLevelLabel"))
+        p_raw = obj.get("personalityKey") or obj.get("personality") or obj.get("personalityType")
+        if "personalityLabel" in obj or p_raw is not None:
+            r = resolve_personality({"personalityKey": obj.get("personalityKey"), "personality": obj.get("personality") or obj.get("personalityType"),
+                                     "personalityLabel": obj.get("personalityLabel")})
+            obj["personalityLabel"] = r.label
+            if obj.get("personality") is not None or obj.get("personalityKey") is not None:
+                obj["personality"] = r.key
+                obj["personalityKey"] = r.key
+        k_raw = obj.get("knowledgeLevelKey") or obj.get("knowledgeLevel")
+        if "knowledgeLevelLabel" in obj or k_raw is not None:
+            r = resolve_knowledge({"knowledgeLevelKey": obj.get("knowledgeLevelKey"), "knowledgeLevel": obj.get("knowledgeLevel"),
+                                   "knowledgeLevelLabel": obj.get("knowledgeLevelLabel")})
+            obj["knowledgeLevelLabel"] = r.label
+            if obj.get("knowledgeLevel") is not None or obj.get("knowledgeLevelKey") is not None:
+                obj["knowledgeLevel"] = r.key
+                obj["knowledgeLevelKey"] = r.key
         for v in list(obj.values()):
-            _canonicalize_identity_labels(v)
+            if isinstance(v, (dict, list)):
+                _canonicalize_identity_labels(v)
     elif isinstance(obj, list):
         for x in obj:
             _canonicalize_identity_labels(x)

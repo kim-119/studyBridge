@@ -106,13 +106,15 @@ def run_debate_mode_stream(
             logger.error("[DEBATE] 참여자 발언 실패 agent=%s stage=%s issues=%s",
                          exc.agent_name, exc.stage, exc.issues)
             box["agent_failure"] = exc
-        except Exception as exc:  # pragma: no cover - 방어
-            logger.exception("[DEBATE] 실행 실패: %s", type(exc).__name__)
+        except Exception as exc:  # LLM 타입드 실패/취소 포함
+            logger.exception("[DEBATE] 실행 실패: %s code=%s", type(exc).__name__, getattr(exc, "code", None))
             box["error"] = exc
         finally:
             q.put(_DONE)
 
-    th = threading.Thread(target=worker, name="debate-engine", daemon=True)
+    import contextvars as _cv
+    _ctx = _cv.copy_context()   # 요청 CancelToken/예산을 엔진 스레드로 전파
+    th = threading.Thread(target=lambda: _ctx.run(worker), name="debate-engine", daemon=True)
     th.start()
 
     order = 0
@@ -157,7 +159,13 @@ def run_debate_mode_stream(
         yield {"event": "agent_answer", "data": data}
         answers.append({k: v for k, v in data.items() if k != "type"})
         if gap:
-            time.sleep(gap)
+            from app.studymate import runtime_context as _rc
+            _rt = _rc.current()
+            if _rt is not None:
+                if _rt.cancel._event.wait(gap):
+                    break
+            else:
+                time.sleep(gap)
 
     th.join(timeout=1.0)
     transcript: Optional[DE.DebateTranscript] = box.get("transcript")
@@ -177,10 +185,16 @@ def run_debate_mode_stream(
                                      "한 명만으로 토론을 진행하지 않습니다. 잠시 후 다시 시도해 주세요.")},
             }
             return
+        _err = box.get("error")
+        from app.studymate.cancellation import CancelledByClient
+        if isinstance(_err, CancelledByClient):
+            return
+        _llm_code = getattr(_err, "code", None)
         yield {
             "event": "error",
             "data": {"type": "error", "mode": "debate", "phase": "ERROR", "visible": True,
-                     "status": "error", "code": "DEBATE_FAILED",
+                     "llmCode": _llm_code, "degraded": True,
+                     "status": "error", "code": f"DEBATE_{_llm_code}" if _llm_code else "DEBATE_FAILED",
                      "reason": type(box.get("error")).__name__ if box.get("error") else "UNKNOWN",
                      "message": "토론 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."},
         }

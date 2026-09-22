@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from app.services.ollama_client import _shared_num_ctx
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -534,7 +535,7 @@ def _call_ollama(
             {"role": "user", "content": user},
         ],
         "stream": False,
-        "options": {"temperature": temperature, "top_p": top_p if top_p is not None else env_float("AI_DEFAULT_TOP_P", 0.9), "num_predict": max_tokens},
+        "options": {"temperature": temperature, "top_p": top_p if top_p is not None else env_float("AI_DEFAULT_TOP_P", 0.9), "num_predict": max_tokens, "num_ctx": _shared_num_ctx()},
     }
     try:
         resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
@@ -2591,7 +2592,7 @@ async def build_rag_context_for_multi_chat(request: MultiChatRequest) -> str:
     response_model=MultiChatResponse,
     tags=["Multi Agent Chat"],
 )
-async def multi_chat_endpoint(request: MultiChatRequest):
+async def multi_chat_endpoint(request: MultiChatRequest, http_request: Request):
     """
     멀티 에이전트 응답 — 동기 JSON 반환 (SSE는 Spring Boot 담당).
 
@@ -2603,7 +2604,38 @@ async def multi_chat_endpoint(request: MultiChatRequest):
             항상 요청 agents 수만큼 answers 반환 보장.
     """
     if not request.message.strip():
-        raise HTTPException(status_code=400, detail="message는 비워둘 수 없습니다.")
+        raise HTTPException(status_code=422, detail={"code": "MESSAGE_REQUIRED", "message": "message는 비워둘 수 없습니다."})
+
+    # ── 학습메이트 v2: stream 과 같은 도메인 경로(generator → identity → 계약 시퀀서 → JSON) ──
+    #    transport 에 따라 personality/knowledge/status/agentId 가 달라지던 문제(감사 P1-5) 제거.
+    try:
+        from app.studymate import basic_pipeline as _v2bp
+        _v2_on = _v2bp.pipeline_enabled()
+    except Exception as _e:
+        logger.error("[MULTI-CHAT] v2 import 실패 → legacy: %s", _e)
+        _v2_on = False
+    if _v2_on:
+        from app.studymate import stream_runtime as _SR
+        try:
+            _payload = await http_request.json()   # 원본 body: main.MultiChatRequest 에 없는 필드(personalityStyle 등) 보존
+        except Exception:
+            _payload = request.model_dump(by_alias=False, exclude_none=True)
+        _req, _rejected = _SR.validate_before_open(_payload)
+        if _rejected is not None:
+            return _rejected
+        _rt = _SR.new_runtime_for(_req, getattr(_req, "requestId", None))
+        try:
+            from app.services import multi_chat_redis_memory as _MEM
+            _req, _ = await _MEM.attach_memory_to_request(_req)
+        except Exception as _me:
+            _rt.note("memory_attach_failed")
+            logger.warning("[MULTI-CHAT] memory attach failed: %s", type(_me).__name__)
+        _status, _body = await asyncio.to_thread(_SR.collect_turn, _req, _rt)
+        _body["requestId"] = _rt.request_id
+        logger.info("[MULTI-CHAT] non-stream v2 request=%s status=%s answers=%d errors=%d degraded=%s",
+                    _rt.request_id, _status, len(_body.get("answers") or []),
+                    len(_body.get("agentErrors") or []), _body.get("degraded"))
+        return JSONResponse(status_code=_status, content=jsonable_encoder(_body))
 
     # ── STRICT MODE: 알 수 없는 mode/learningMode 는 basic 으로 조용히 폴백하지 않는다 ──
     from app.services import mode_router as _mode_router

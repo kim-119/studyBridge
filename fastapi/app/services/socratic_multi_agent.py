@@ -183,7 +183,7 @@ def _build_user_prompt(*, topic: str, user_message: str, role: str, agent: Any,
         f"★ acknowledge+direction 은 합쳐서 최소 {MIN_TURN_CHARS}자 이상이어야 한다. "
         "한 문장짜리 질문만 던지면 실패다.\n"
         "★ 정답 문장을 그대로 알려주면 실패다.\n\n"
-        f"{build_style_directive(agent)}\n\n{spec}"
+        f"{build_style_directive(agent, mode='socratic', role='socratic_guide')}\n\n{spec}"
     )
 
 
@@ -424,6 +424,9 @@ def derive_expected_idea(topic: str, llm=None) -> Tuple[str, List[str]]:
         idea = _s(obj.get("expectedIdea"))
         kws = [_s(k) for k in (obj.get("answerKeywords") or []) if _s(k)][:3]
         return idea, kws
-    except Exception as exc:  # pragma: no cover - 방어
-        logger.warning("[SOCRATIC-MULTI] expectedIdea 확보 실패: %s", type(exc).__name__)
+    except Exception as exc:  # expectedIdea 는 선택(게이트만 느슨해짐). 취소는 전파.
+        from app.studymate.cancellation import CancelledByClient
+        if isinstance(exc, CancelledByClient):
+            raise
+        logger.warning("[SOCRATIC-MULTI] expectedIdea 확보 실패: %s code=%s", type(exc).__name__, getattr(exc, "code", None))
         return "", []

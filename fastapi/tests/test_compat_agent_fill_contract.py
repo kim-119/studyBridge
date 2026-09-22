@@ -121,15 +121,15 @@ def test_missing_agent_answer_is_surfaced_not_disguised(client, monkeypatch, cap
         parsed = _parse_sse(_post(client).text)
 
     answers = [d for e, d in parsed if e == "agent_answer"]
+    errors = [d for e, d in parsed if e == "agent_error"]
     complete = [d for e, d in parsed if e == "all_complete"][0]
-    filler = [a for a in answers if a.get("synthesized")]
 
-    assert len(answers) == 3
-    assert len(filler) == 1 and filler[0]["agentId"] == "a3"
-    assert filler[0]["degraded"] is True
-    assert filler[0]["status"] == "FAILED"
-    assert filler[0]["code"] == "AGENT_ANSWER_MISSING"
-    assert "관점에서 핵심을 정리하면" not in filler[0]["answer"]
+    # 2026-09-17 계약: 누락은 '필러 답변'이 아니라 agent_error 로 드러낸다(Spring 이 answers 를 AI 메시지로 영속하므로).
+    assert len(answers) == 2 and not any(a.get("synthesized") for a in answers)
+    assert len(errors) == 1 and errors[0]["agentId"] == "a3"
+    assert errors[0]["degraded"] is True and errors[0]["status"] == "FAILED"
+    assert errors[0]["code"] == "AGENT_ANSWER_MISSING"
+    assert all(a.get("agentId") != "a3" for a in complete["answers"])
     assert complete["degraded"] is True
     assert complete["missingAgentIds"] == ["a3"]
     assert any(r.levelno >= logging.ERROR and "[AGENT-FILL]" in r.getMessage() for r in caplog.records)

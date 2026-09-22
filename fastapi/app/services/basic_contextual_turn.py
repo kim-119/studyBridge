@@ -140,12 +140,16 @@ def _default_reply_fn(message: str, agent: Any, decision: DialogueActDecision,
         user += ("\n[주의] 직전 생성이 이전 답변을 반복했다. 설명을 다시 풀지 말고, "
                  "사용자의 후속 의도만 새 문장으로 아주 짧게 답하라.")
     max_tokens = 90 if decision.answer_depth == "micro" else 160
+    # 학습메이트 v2: 타입드 게이트웨이. 실패는 예외로 올려 agent_error 로 드러낸다(캔드 문장 위장 금지).
+    from app.studymate.llm_gateway import ask_text
+    persona = None
     try:
-        out = ask_ollama(system, user, max_tokens=max_tokens, temperature=0.6, think=False)
-        return (out or "").strip()
-    except Exception as e:
-        logger.warning("[BasicContextual] reply 생성 실패(%s): %s", _agent_attr(agent, "name"), e)
-        return ""
+        from app.studymate.profile_contract import canonicalize_agent
+        persona = canonicalize_agent(agent, 0).personalityKey
+    except Exception:
+        persona = None
+    out = ask_text(system, user, task="engine", max_tokens=max_tokens, temperature=0.6, persona=persona)
+    return (out or "").strip()
 
 
 # act별 결정론 폴백 — 절대 직전 답변의 내용(주제어)을 그대로 되풀이하지 않는다.
@@ -222,10 +226,18 @@ def _produce_contextual_answer(
 ) -> str:
     """한 에이전트의 짧은 맥락 답변 1개를 생성한다(반복 방지 가드 포함).
     스트림/논스트림 양쪽이 공유한다 — anti-repeat 정책을 한 곳에 둔다."""
+    meta = _LAST_META.setdefault(id(agent), {})
+    meta.clear()
     try:
         answer = (reply_fn(message, agent, decision, ctx) or "").strip()
-    except Exception as e:  # pragma: no cover - 방어
-        logger.warning("[BasicContextual] reply_fn 오류: %s", e)
+    except Exception as e:
+        from app.studymate.cancellation import CancelledByClient
+        if isinstance(e, CancelledByClient):
+            raise
+        code = getattr(e, "code", None)
+        logger.warning("[BasicContextual] reply_fn 오류 code=%s: %s", code, type(e).__name__)
+        if code:
+            raise   # LLM 타입드 실패는 호출부가 agent_error 로 내보낸다
         answer = ""
 
     # 반복 방지 가드: 직전 답변/이미 생성한 답변과 너무 유사하면 1회 재생성 → 폴백.
@@ -241,10 +253,16 @@ def _produce_contextual_answer(
             answer = regen
         else:
             answer = _compact_fallback(agent, decision, ctx, idx)
+            meta["fallbackUsed"] = "repetition"
 
     if not answer:
-        answer = _compact_fallback(agent, decision, ctx, idx)
+        from app.studymate.llm_gateway import LLMEmptyResponse
+        raise LLMEmptyResponse("contextual reply empty")
     return answer
+
+
+# 마지막 생성의 메타(fallback 사용 여부). 스트림 이벤트에 degraded 로 드러낸다.
+_LAST_META: Dict[int, Dict[str, Any]] = {}
 
 
 def run_basic_contextual_turn(
@@ -269,9 +287,16 @@ def run_basic_contextual_turn(
         agent_id = getattr(agent, "agentId", None) or f"agent-{getattr(agent, 'id', idx)}"
         agent_name = _agent_attr(agent, "name", "agentName", default="AI")
         identity = _identity_payload(agent)
-        answer = _produce_contextual_answer(
-            message, agent, decision, ctx, reply_fn, prev_texts, produced, idx
-        )
+        try:
+            answer = _produce_contextual_answer(
+                message, agent, decision, ctx, reply_fn, prev_texts, produced, idx
+            )
+        except Exception as exc:
+            from app.studymate.cancellation import CancelledByClient
+            if isinstance(exc, CancelledByClient):
+                raise
+            logger.warning("[BasicContextual] sync 생성 실패 agent=%s code=%s", agent_id, getattr(exc, "code", None))
+            continue
         produced.append(answer)
         all_answers.append({
             "agentId": agent_id, "agentName": agent_name, "answer": answer,
@@ -312,6 +337,7 @@ def run_basic_contextual_turn_stream(
 
     produced: List[str] = []
     all_answers: List[Dict[str, Any]] = []
+    failed: List[str] = []
     n = len(selected)
     for idx, agent in enumerate(selected):
         t0 = time.time()
@@ -333,9 +359,24 @@ def run_basic_contextual_turn_stream(
             },
         }
 
-        answer = _produce_contextual_answer(
-            message, agent, decision, ctx, reply_fn, prev_texts, produced, idx
-        )
+        try:
+            answer = _produce_contextual_answer(
+                message, agent, decision, ctx, reply_fn, prev_texts, produced, idx
+            )
+        except Exception as exc:
+            from app.studymate.cancellation import CancelledByClient
+            from app.studymate.llm_gateway import user_message_for
+            if isinstance(exc, CancelledByClient):
+                return
+            code = getattr(exc, "code", None) or "AGENT_FAILED"
+            yield {"event": "agent_error", "data": {
+                "type": "agent_error", "agentIndex": _room_slot(agent, idx + 1), "agentName": agent_name,
+                "agentId": agent_id, "displayOrder": idx + 1, "stage": 1, "phase": "CONTEXTUAL_FOLLOWUP",
+                "dialogueAct": decision.act, "visible": True, "status": "FAILED", "code": code,
+                "degraded": True, "message": user_message_for(code), **identity}}
+            failed.append(agent_id)
+            continue
+        fallback_used = (_LAST_META.get(id(agent)) or {}).get("fallbackUsed")
 
         yield {
             "event": "agent_answer",
@@ -352,6 +393,9 @@ def run_basic_contextual_turn_stream(
                 "answerDepth": decision.answer_depth,
                 "visible": True,
                 "status": "SUCCESS",
+                "degraded": bool(fallback_used),
+                "qualityStatus": "PARTIAL" if fallback_used else "PASS",
+                "fallbackUsed": fallback_used,
                 **identity,
             },
         }
@@ -383,7 +427,8 @@ def run_basic_contextual_turn_stream(
             # 그 경우 나머지 슬롯을 compat 필러로 채우면 같은 문장이 복제된다.
             "route": "basic_contextual_followup",
             "suppressAgentFill": len(selected) < len(agents or []),
-            "status": "COMPLETED",
+            "status": "COMPLETED" if not failed else ("PARTIAL" if all_answers else "FAILED"),
+            "degraded": bool(failed),
             "phase": "ALL_COMPLETE",
             "visible": True,
         },

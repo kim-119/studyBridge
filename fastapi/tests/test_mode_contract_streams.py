@@ -10,6 +10,12 @@ from app.services import multi_agent_service as M
 from app.services import debate_topic_engine as DTE
 from app.services import mode_stage_contract as MC
 
+
+@pytest.fixture(autouse=True)
+def _legacy_basic_pipeline(monkeypatch):
+    """레거시 basic/default 경로(롤백 플래그 STUDYMATE_PIPELINE_V2=off)의 계약 검증 파일."""
+    monkeypatch.setenv("STUDYMATE_PIPELINE_V2", "off")
+
 FORBIDDEN = ["1차 초안", "초안", "FIRST_ANSWER", "DRAFT", "validation_score", "성격 검증"]
 
 DEBATE_AGENTS = [
@@ -210,6 +216,14 @@ def test_no_internal_labels_socratic(monkeypatch):
     monkeypatch.setattr(M, "_get_rag_context", lambda *a, **k: "")
     monkeypatch.setattr(M, "_call_llm_no_think",
                         lambda *a, **k: "이 개념을 당신의 말로 설명해볼까요?")
+    # v2: 소크라테스 엔진 LLM 은 타입드 게이트웨이(SE._default_llm) 경유 → 테스트 LLM 을 그 지점에 주입
+    import json as _json
+    from app.services import socratic_session_engine as _SE
+    monkeypatch.setattr(_SE, "_default_llm", lambda s, u, **k: _json.dumps({
+        "expectedIdea": "객체는 상태와 행동을 묶는다", "answerKeywords": ["캡슐화"], "assessment": "partial",
+        "acknowledge": "지금 객체를 데이터 묶음 정도로 보고 있는 것 같아요. 그 출발점은 좋아요.",
+        "direction": "데이터와 그 데이터를 다루는 행동이 왜 한곳에 모이는지 떠올려 보면 방향이 잡혀요.",
+        "question": "자동차를 예로 들면 무엇이 상태이고 무엇이 행동일까요?"}, ensure_ascii=False))
     req = MultiChatRequest(message="객체지향이 뭐야?", mode="socratic", learningMode="socratic",
                            agents=DEBATE_AGENTS)
     events = _collect(M.build_stream_generator(req))

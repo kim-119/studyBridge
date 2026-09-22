@@ -16,6 +16,8 @@ Spring이 PDF/자료 본문을 추출해 그대로 넘겨주는 케이스를 안
 """
 from __future__ import annotations
 
+from app.services.ollama_client import _shared_num_ctx
+
 import json
 import logging
 import os
@@ -260,6 +262,7 @@ def _call_quiz_llm(system: str, user: str, request_id: str) -> str:
                 "options": {
                     "temperature": QUIZ_TEMPERATURE,
                     "num_predict": QUIZ_MAX_TOKENS,
+                    "num_ctx": _shared_num_ctx(),
                 },
             }
             resp = requests.post(

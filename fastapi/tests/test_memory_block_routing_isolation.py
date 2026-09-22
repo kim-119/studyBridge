@@ -18,6 +18,13 @@ from app.schemas.multi_chat_schema import AgentProfile, MultiChatRequest, Previo
 from app.services import orchestrator_service as orch
 
 
+
+@pytest.fixture(autouse=True)
+def _legacy_basic_pipeline(monkeypatch):
+    """이 파일은 레거시 basic 경로(롤백 플래그 STUDYMATE_PIPELINE_V2=off)의 계약을 검증한다.
+    v2 파이프라인 계약은 test_sse_* / test_shared_contribution_plan 등에서 검증한다."""
+    monkeypatch.setenv("STUDYMATE_PIPELINE_V2", "off")
+
 MEMORY_HEAD = (
     "[이전 대화 기억]\n"
     "아래 내용은 같은 방/세션의 최근 대화 맥락이다. 현재 질문에 필요한 경우에만 반영하고, 불필요하면 무시한다.\n"

@@ -65,6 +65,40 @@ def _selected_choice_text(request: MultiChatRequest, message: str,
     return message
 
 
+def _simulation_state_v2(session, speeches, user_answer: str, is_new: bool) -> Dict[str, Any]:
+    """세계 상태를 턴 간에 누적한다(매 턴 장면을 새로 만들지 않도록 엔진 입력(session.data)과 함께 보존)."""
+    prev = session.data.get("stateV2") if isinstance(session.data.get("stateV2"), dict) else {}
+    actions = list(prev.get("userActions") or [])
+    consequences = list(prev.get("consequences") or [])
+    if not is_new and user_answer:
+        actions.append({"turn": session.turn_index, "action": user_answer[:200]})
+        host = next((sp for sp in speeches if sp.role == SE.HOST), None)
+        if host is not None:
+            consequences.append({"turn": session.turn_index, "result": (host.structured.get("line") or host.text)[:240]})
+    return {
+        "version": 2,
+        "scenarioStage": next((sp.stage_type for sp in speeches if sp.role == SE.HOST), session.state),
+        "scenarioState": {"scenario": session.data.get("scenario", ""), "userRole": session.data.get("userRole", ""),
+                          "goal": session.data.get("goal", ""), "currentPrompt": session.data.get("prompt", "")},
+        "userActions": actions[-10:],
+        "consequences": consequences[-10:],
+        "unresolvedEvents": [c.get("label") for c in (session.data.get("choices") or []) if isinstance(c, dict) and c.get("label")][:5],
+        "turnIndex": session.turn_index + 1,
+    }
+
+
+def _styled_llm(base, agent: AgentProfile):
+    """역할 인물(에이전트)의 페르소나/지식수준/customInstruction 을 system 에 주입한다(4축 정책).
+    이전에는 상황극 엔진에 성격이 전혀 들어가지 않았다(2026-09-16 감사)."""
+    from app.services.debate_engine import build_style_directive
+    directive = build_style_directive(agent, mode="simulation", role="simulation_actor")
+    call = base or SE._default_llm
+
+    def styled(system_prompt: str, user_prompt: str, **kw):
+        return call(f"{system_prompt}\n\n{directive}", user_prompt, **kw)
+    return styled
+
+
 def _agent_id(agent: AgentProfile, fallback: str) -> Any:
     return getattr(agent, "agentId", None) or getattr(agent, "id", None) or fallback
 
@@ -110,12 +144,13 @@ def run_simulation_mode_stream(
     }
 
     speeches: List[SE.SimSpeech] = []
+    styled = {r: _styled_llm(llm, a) for r, a in role_map.items()}
     try:
         if is_new:
             # 1턴부터 설명문이 아니라 '대사'다. 주 질문자 → 심화 검증자 → 답변 코치 세 인물이
             # 모두 실제로 모델 호출을 받고, 뒤 인물은 앞 인물의 대사를 입력으로 읽는다.
             host = SE.generate_scene_setup(session.topic, stype, difficulty, choice_count,
-                                           getattr(role_map[SE.HOST], "name", "진행자"), llm=llm)
+                                           getattr(role_map[SE.HOST], "name", "진행자"), llm=styled[SE.HOST])
             speeches.append(host)
             session.data.update({
                 "scenario": host.structured.get("sceneBrief", ""),
@@ -126,25 +161,25 @@ def run_simulation_mode_stream(
             })
             challenger = SE.generate_opening_challenge(
                 session.data, host.structured.get("line", ""), stype, difficulty,
-                getattr(role_map[SE.CHALLENGER], "name", "검증자"), llm=llm)
+                getattr(role_map[SE.CHALLENGER], "name", "검증자"), llm=styled[SE.CHALLENGER])
             speeches.append(challenger)
             coach = SE.generate_answer_brief(
                 session.data, host.structured.get("line", ""),
                 challenger.structured.get("line", ""),
-                getattr(role_map[SE.COACH], "name", "코치"), llm=llm)
+                getattr(role_map[SE.COACH], "name", "코치"), llm=styled[SE.COACH])
             speeches.append(coach)
         else:
             data = session.data
             host = SE.generate_follow_up(data, user_answer, stype, difficulty, choice_count,
-                                         getattr(role_map[SE.HOST], "name", "진행자"), llm=llm)
+                                         getattr(role_map[SE.HOST], "name", "진행자"), llm=styled[SE.HOST])
             speeches.append(host)
             speeches.append(SE.generate_challenge(
                 data, user_answer, stype, difficulty,
-                getattr(role_map[SE.CHALLENGER], "name", "검증자"), llm=llm,
+                getattr(role_map[SE.CHALLENGER], "name", "검증자"), llm=styled[SE.CHALLENGER],
                 host_line=host.structured.get("line", "")))
             speeches.append(SE.generate_feedback(
                 data, user_answer, difficulty,
-                getattr(role_map[SE.COACH], "name", "코치"), llm=llm))
+                getattr(role_map[SE.COACH], "name", "코치"), llm=styled[SE.COACH]))
             data["prompt"] = host.structured.get("line", "")
             data["choices"] = host.choices
     except SE.SimulationStageError as exc:
@@ -157,17 +192,24 @@ def run_simulation_mode_stream(
                      "message": "상황극 진행 중 한 역할의 응답을 만들지 못했습니다. 잠시 후 다시 시도해 주세요."},
         }
         return
-    except Exception as exc:  # pragma: no cover - 방어
-        logger.exception("[SIMULATION] 실행 실패: %s", type(exc).__name__)
+    except Exception as exc:  # LLM 타입드 실패/취소 포함
+        from app.studymate.cancellation import CancelledByClient
+        if isinstance(exc, CancelledByClient):
+            logger.info("[SIMULATION] cancelled: %s", exc.reason)
+            return
+        llm_code = getattr(exc, "code", None)
+        logger.exception("[SIMULATION] 실행 실패: %s code=%s", type(exc).__name__, llm_code)
         yield {
             "event": "error",
             "data": {"type": "error", "mode": MODE, "phase": "ERROR", "visible": True,
-                     "status": "error", "code": "SIMULATION_FAILED", "reason": type(exc).__name__,
+                     "status": "error", "code": f"SIMULATION_{llm_code}" if llm_code else "SIMULATION_FAILED",
+                     "llmCode": llm_code, "degraded": True, "reason": type(exc).__name__,
                      "message": "상황극 진행 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."},
         }
         return
 
     issues = SE.validate_turn(speeches, choice_count, is_new, user_answer)
+    session.data["stateV2"] = _simulation_state_v2(session, speeches, user_answer, is_new)
     session.state = next((sp.stage_type for sp in speeches if sp.role == SE.HOST),
                          speeches[-1].stage_type)
     session.turn_index += 1

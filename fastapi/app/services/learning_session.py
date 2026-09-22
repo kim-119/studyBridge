@@ -97,15 +97,72 @@ def _prune() -> None:
         _STORE.pop(key, None)
 
 
+# ── 영속 계층(Redis) ────────────────────────────────────────────────────────
+# 프로세스 메모리만 쓰면 재시작/배포 때 소크라테스·상황극 상태가 사라져 매 턴 처음(진단/장면)부터 다시 시작한다.
+# 3단: 메모리 → Redis(버전 스키마) → 클라이언트 echo. Redis 장애는 백오프 후 자동 재시도(redis_sync).
+SESSION_SCHEMA_VERSION = 2
+_REDIS_PREFIX = "studybridge:learning-session:"
+
+
+def _redis():
+    try:
+        from app.studymate import redis_sync
+        return redis_sync.client()
+    except Exception:
+        return None
+
+
+def _to_json(session: "LearningSession") -> str:
+    import json
+    return json.dumps({"schemaVersion": SESSION_SCHEMA_VERSION, "session_id": session.session_id,
+                       "mode": session.mode, "topic": session.topic, "state": session.state,
+                       "turn_index": session.turn_index, "data": session.data,
+                       "created_at": session.created_at, "updated_at": session.updated_at},
+                      ensure_ascii=False, default=str)
+
+
+def _from_json(raw: str) -> Optional["LearningSession"]:
+    import json
+    try:
+        o = json.loads(raw)
+    except Exception:
+        return None
+    if int(o.get("schemaVersion") or 0) > SESSION_SCHEMA_VERSION:
+        logger.warning("[SESSION] 알 수 없는 상위 스키마 버전 %s — 무시", o.get("schemaVersion"))
+        return None
+    return LearningSession(session_id=o["session_id"], mode=o["mode"], topic=o.get("topic", ""),
+                           state=o.get("state", ""), turn_index=int(o.get("turn_index") or 0),
+                           data=o.get("data") or {}, created_at=float(o.get("created_at") or time.time()),
+                           updated_at=float(o.get("updated_at") or time.time()))
+
+
 def get(key: str) -> Optional[LearningSession]:
     with _LOCK:
         s = _STORE.get(key)
-        if s is None:
-            return None
-        if s.expired():
+        if s is not None and s.expired():
             _STORE.pop(key, None)
-            return None
-        return s
+            s = None
+        if s is not None:
+            return s
+    r = _redis()
+    if r is None:
+        return None
+    try:
+        raw = r.get(_REDIS_PREFIX + key)
+    except Exception as e:
+        from app.studymate import redis_sync
+        redis_sync.mark_failure(e)
+        return None
+    if not raw:
+        return None
+    sess = _from_json(raw)
+    if sess is None or sess.expired():
+        return None
+    with _LOCK:
+        _STORE[key] = sess
+    logger.info("[SESSION] Redis 복원 mode=%s session_id=%s state=%s turn=%d", sess.mode, sess.session_id,
+                sess.state, sess.turn_index)
+    return sess
 
 
 def save(key: str, session: LearningSession) -> LearningSession:
@@ -113,16 +170,31 @@ def save(key: str, session: LearningSession) -> LearningSession:
     with _LOCK:
         _STORE[key] = session
         _prune()
+    r = _redis()
+    if r is not None:
+        try:
+            r.set(_REDIS_PREFIX + key, _to_json(session), ex=ttl_seconds())
+        except Exception as e:
+            from app.studymate import redis_sync
+            redis_sync.mark_failure(e)
+            logger.warning("[SESSION] Redis 저장 실패(메모리만 유지) key=%s: %s", key, type(e).__name__)
     return session
 
 
 def end(key: str) -> None:
     with _LOCK:
         _STORE.pop(key, None)
+    r = _redis()
+    if r is not None:
+        try:
+            r.delete(_REDIS_PREFIX + key)
+        except Exception as e:
+            from app.studymate import redis_sync
+            redis_sync.mark_failure(e)
 
 
 def clear_all() -> None:
-    """테스트 전용."""
+    """테스트 전용(메모리만). Redis 키는 TTL 로 만료된다."""
     with _LOCK:
         _STORE.clear()
 

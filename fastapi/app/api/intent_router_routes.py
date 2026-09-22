@@ -16,6 +16,7 @@ LLM Intent Router — 자료보관함/그룹스터디/학습메이트 공통 의
   - 이 Router 실패가 전체 AI 채팅을 죽이면 안 된다 → 어떤 예외에서도 200 + fallback 응답.
   - 기존 SSE/Streaming 구조와 독립. EC2 Spring/React는 이 endpoint만 호출하면 된다.
 """
+from app.services.ollama_client import _shared_num_ctx
 import asyncio
 import logging
 import os
@@ -181,7 +182,7 @@ def _call_router_ollama(system_prompt: str, user_prompt: str) -> Optional[str]:
         ],
         "stream": False,
         "think": False,  # qwen3 thinking 비활성 — Router는 추론 불필요, 속도/예산 확보
-        "options": {"temperature": 0.0, "num_predict": 300, "num_ctx": 4096},
+        "options": {"temperature": 0.0, "num_predict": 300, "num_ctx": _shared_num_ctx()},
     }
     try:
         resp = requests.post(

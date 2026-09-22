@@ -995,7 +995,8 @@ def _summary_requested(request: MultiChatRequest, message: Optional[str] = None)
     return any(p in msg for p in _SUMMARY_PATTERNS)
 
 
-def _generate_discussion_wrap(request: MultiChatRequest, all_answers: List[Dict[str, Any]], mode: str, agent: AgentProfile) -> str:
+def _generate_discussion_wrap(request: MultiChatRequest, all_answers: List[Dict[str, Any]], mode: str, agent: AgentProfile,
+                              strict: bool = False) -> str:
     """온디맨드 🧩 정리: 사용자가 요청했을 때만. 깔끔+상세 구조로 학습 정리를 제공한다.
 
     구조: ① 핵심 개념 정리 ② 오개념·주의점 ③ 복습 포인트. 정의 단순 재진술이 아니라
@@ -1017,6 +1018,13 @@ def _generate_discussion_wrap(request: MultiChatRequest, all_answers: List[Dict[
         f"[사용자 질문] {request.message}\n[지금까지 나온 설명들]\n{joined}\n\n"
         "→ 위 세 묶음(핵심 개념 정리 / 오개념·주의점 / 복습 포인트)으로 구조화해 정리하라."
     )
+    if strict:
+        # 학습메이트 v2: 실패는 타입드 예외로 올린다(안내 문자열을 정리 결과로 위장하지 않음).
+        from app.studymate import llm_gateway as _G
+        from app.services.memory_recall_service import strip_memory_block as _strip
+        usr = usr.replace(f"[사용자 질문] {request.message}", f"[사용자 질문] {_strip(request.message)}")
+        raw = _G.ask_text(sys, usr, task="summary", max_tokens=700, temperature=0.4)
+        return _basic_answer_guard((raw or "").strip(), agent, mode)
     try:
         raw = ask_ollama(system_prompt=sys, user_prompt=usr,
                          max_tokens=min(request.maxTokens or 700, 700),
@@ -1233,8 +1241,25 @@ def _run_summary_only(
                  "phase": "WRAP", "actType": "WRAP", "replyTo": None, "displayOrder": 1,
                  "visible": True, **identity},
     }
-    text = _generate_discussion_wrap(request, prior, effective_mode, speaker) or \
-        "정리할 이전 내용을 찾지 못했어요. 먼저 질문을 해 주세요."
+    try:
+        text = _generate_discussion_wrap(request, prior, effective_mode, speaker, strict=True)
+    except Exception as _wrap_exc:
+        from app.studymate import llm_gateway as _G
+        _code = getattr(_wrap_exc, "code", None) or "AGENT_FAILED"
+        if getattr(_wrap_exc, "reason", None):
+            return   # 클라이언트 취소: 추가 이벤트 없음
+        logger.warning("[Orchestrator] WRAP 실패 code=%s", _code)
+        yield {"event": "agent_error", "data": {
+            "type": "agent_error", "agentIndex": _slot(speaker, 1), "agentName": agent_name, "agentId": aid,
+            "phase": "WRAP", "actType": "WRAP", "displayOrder": 1, "status": "FAILED", "code": _code,
+            "degraded": True, "message": _G.user_message_for(_code), **identity}}
+        yield {"event": "all_complete", "data": {
+            "type": "all_complete", "mode": effective_mode, "learningMode": effective_mode, "answers": [],
+            "messages": [], "status": "FAILED", "phase": "ALL_COMPLETE", "visible": True, "degraded": True,
+            "route": "summary_only", "suppressAgentFill": True}}
+        return
+    if not text:
+        text = "정리할 이전 내용을 찾지 못했어요. 먼저 질문을 해 주세요."
     entry = {
         "agentId": aid, "agentName": agent_name, "answer": text, "displayOrder": 1,
         "displayDelayMs": 0, "stage": 3, "status": "SUCCESS", "actType": "WRAP", "replyTo": None,
@@ -1363,7 +1388,8 @@ def build_orchestrator_stream(
         from app.services import memory_recall_service as _mem
         _turns = _mem.normalize_previous_answers(request.previousAnswers)
         _intent, _extra = _mem.classify_memory_intent(request.message)
-        _bypass = _mem.is_recall_intent(_intent)
+        # 회상은 '쓸 수 있는 이전 대화'가 있을 때만 성립한다. 이력이 없으면 LLM 경로로 진행(2026-09-16 P0).
+        _bypass = _mem.is_recall_intent(_intent) and bool(_turns)
         logger.info(
             "[MEMORY-TRACE] roomId=%s userId=%s rawMode=%s rawLearningMode=%s finalMode=%s "
             "memoryIntent=%s previousAnswerCount=%d normalizedTurnCount=%d memoryBypassLLM=%s msg=%r",
@@ -1434,6 +1460,21 @@ def build_orchestrator_stream(
                     return
         except Exception as e:  # pragma: no cover - 방어: 무조건 기존 경로로 폴백
             logger.warning("[Orchestrator] dialogue-act 게이트 건너뜀: %s", e)
+
+    # ── 학습메이트 v2 기본 모드 파이프라인(4축 PromptCompiler + 제약 우선 생성 + 품질 파이프라인) ──
+    try:
+        from app.studymate import basic_pipeline as _v2
+        _v2_on = _v2.pipeline_enabled() and effective_mode in ("basic", "default")
+    except Exception as _imp_exc:  # pragma: no cover - import 실패는 즉시 드러낸다
+        logger.error("[MODE-DISPATCH] basic_v2 import 실패 → legacy 경로: %s", _imp_exc)
+        _v2_on = False
+    if _v2_on:
+        from app.studymate import runtime_context as _rc
+        logger.info("[MODE-DISPATCH] mode=%s handler=basic_v2 agents=%d social=%s",
+                    effective_mode, len(agents), social)
+        yield from _v2.run_basic_turn(request, agents, current_message=current_message, social=social,
+                                      rt=_rc.current(), mode="basic")
+        return
 
     _tid = getattr(request, "targetAgentId", None)
     yield {

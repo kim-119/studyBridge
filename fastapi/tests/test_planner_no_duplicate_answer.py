@@ -12,6 +12,13 @@ from app.schemas.multi_chat_schema import AgentProfile, MultiChatRequest
 from app.services import orchestrator_service as orch
 
 
+
+@pytest.fixture(autouse=True)
+def _legacy_basic_pipeline(monkeypatch):
+    """이 파일은 레거시 basic 경로(롤백 플래그 STUDYMATE_PIPELINE_V2=off)의 계약을 검증한다.
+    v2 파이프라인 계약은 test_sse_* / test_shared_contribution_plan 등에서 검증한다."""
+    monkeypatch.setenv("STUDYMATE_PIPELINE_V2", "off")
+
 @pytest.fixture(autouse=True)
 def _base_env(monkeypatch):
     monkeypatch.setattr(orch, "_fetch_wikipedia_context", lambda q: "")

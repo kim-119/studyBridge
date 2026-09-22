@@ -6,6 +6,12 @@ from app.services import orchestrator_service as orch
 from app.services import dialogue_act_classifier as dac
 
 
+
+@pytest.fixture(autouse=True)
+def _legacy_basic_pipeline(monkeypatch):
+    """레거시 basic/default 경로(롤백 플래그 STUDYMATE_PIPELINE_V2=off)의 계약 검증 파일."""
+    monkeypatch.setenv("STUDYMATE_PIPELINE_V2", "off")
+
 def _ctx():
     return dac.build_previous_context(
         [PreviousAnswer(agentName="전문봇", answer="JOIN은 두 테이블을 공통 키로 결합한다.", role="ASSISTANT")],

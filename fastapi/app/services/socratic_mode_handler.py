@@ -41,6 +41,44 @@ def _current_message(request: MultiChatRequest) -> str:
     return strip_memory_block(getattr(request, "message", "") or "").strip()
 
 
+_CONFIDENCE = {"correct": 0.85, "partial": 0.55, "wrong": 0.2, "unknown": 0.3}
+
+
+def _progress_stage(role: str, is_new: bool, assessment: str, pending_summary: bool):
+    """첫 턴만 진단(DIAGNOSIS)으로 시작하고, 이후 턴은 학습자 답 평가에 따라 단계를 진행한다.
+    (2026-09-17 전: 매 턴 역할→DIAGNOSIS/COUNTEREXAMPLE/MISCONCEPTION_CHECK 고정)"""
+    if is_new:
+        return MA.ROLE_STAGE_TYPE.get(role, "DIAGNOSIS"), MA.ROLE_STAGE_TITLE.get(role, "질문")
+    if role == MA.PROBE:
+        if assessment in (SE.WRONG, SE.UNKNOWN):
+            return "HINT", "힌트"
+        return "APPLICATION", "적용 질문"
+    if role == MA.PERSPECTIVE:
+        return "COUNTEREXAMPLE", "반례"
+    if pending_summary:
+        return "SELF_EXPLANATION", "자기 설명"
+    return "MISCONCEPTION_CHECK", "논리 검증"
+
+
+def _socratic_state_v2(session, message: str, speeches, is_new: bool) -> Dict[str, Any]:
+    prev = session.data.get("stateV2") if isinstance(session.data.get("stateV2"), dict) else {}
+    lead = speeches[0] if speeches else None
+    assessment = (getattr(lead, "assessment", "") or "") if lead else ""
+    misconceptions = list(prev.get("knownMisconceptions") or [])
+    if assessment in (SE.WRONG, SE.PARTIAL) and message:
+        misconceptions.append({"turn": session.turn_index, "learnerSaid": message[:160], "assessment": assessment})
+    return {
+        "version": 2,
+        "stage": session.state,
+        "learnerHypothesis": (message[:240] if not is_new else prev.get("learnerHypothesis", "")),
+        "knownMisconceptions": misconceptions[-6:],
+        "hintsGiven": int(session.data.get("hintLevel") or 0),
+        "previousQuestion": next((sp.question for sp in reversed(speeches or []) if sp.question), prev.get("previousQuestion", "")),
+        "confidence": _CONFIDENCE.get(assessment, prev.get("confidence", 0.3)),
+        "turnIndex": session.turn_index + 1,
+    }
+
+
 def _agent_slot(agent: AgentProfile, fallback: int) -> int:
     slot = getattr(agent, "agentSlot", None)
     return int(slot) if isinstance(slot, int) and slot >= 1 else fallback
@@ -132,11 +170,17 @@ def run_socratic_mode_stream(
                 keywords=session.data.get("answerKeywords") or None,
                 used_questions=list(session.data.get("questions") or []), llm=llm)
     except Exception as exc:
-        logger.exception("[SOCRATIC] 사이클 생성 실패: %s", type(exc).__name__)
+        from app.studymate.cancellation import CancelledByClient
+        if isinstance(exc, CancelledByClient):
+            logger.info("[SOCRATIC] cancelled: %s", exc.reason)
+            return
+        llm_code = getattr(exc, "code", None)
+        logger.exception("[SOCRATIC] 사이클 생성 실패: %s code=%s", type(exc).__name__, llm_code)
         yield {
             "event": "error",
             "data": {"type": "error", "mode": MODE, "phase": "ERROR", "visible": True,
-                     "status": "error", "code": "SOCRATIC_TURN_FAILED",
+                     "status": "error", "code": f"SOCRATIC_{llm_code}" if llm_code else "SOCRATIC_TURN_FAILED",
+                     "llmCode": llm_code, "degraded": True,
                      "reason": type(exc).__name__,
                      "message": "소크라테스 진행 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."},
         }
@@ -196,8 +240,8 @@ def run_socratic_mode_stream(
             session.data["hintLevel"] = int(session.data.get("hintLevel") or 0) + 1
         for order, sp in enumerate(speeches, start=1):
             agent = roles[order - 1][0]
-            stage_type = MA.ROLE_STAGE_TYPE.get(sp.role, "DIAGNOSIS")
-            stage_title = MA.ROLE_STAGE_TITLE.get(sp.role, "질문")
+            stage_type, stage_title = _progress_stage(sp.role, is_new, lead_assessment,
+                                                      bool(session.data.get("pendingSummary")))
             yield {"event": "agent_start",
                    "data": {"type": "agent_start", "mode": MODE, "phase": "SOCRATIC", "visible": True,
                             "agentId": sp.agent_id, "agentName": sp.agent_name,
@@ -215,6 +259,7 @@ def run_socratic_mode_stream(
                           "directAnswerSuppressed": True})
             transcript.append({"role": "mate", "name": sp.agent_name, "text": sp.text})
 
+    session.data["stateV2"] = _socratic_state_v2(session, message, speeches, is_new)
     session.data["transcript"] = transcript[-16:]
     session.data["questions"] = ([q for q in (session.data.get("questions") or [])]
                                  + [sp.question for sp in speeches if sp.question])[-8:]

@@ -70,6 +70,15 @@ _TOPIC_MARKER_RE = re.compile(
 )
 _TOPIC_VERB_RE = re.compile(r"([\w가-힣A-Za-z0-9.\+\#\-]+)\s*(?:질문한|질문했|물어본|물어봤|물었)")
 _TOPIC_RECALL_CONTEXT = re.compile(r"(질문|물어|물었|물어봤|물어본|뭐\s*물|기록\s*있|한\s*적\s*있|물어본\s*거)")
+# 주제 회상은 '과거 앵커'가 있어야 성립한다(2026-09-16 P0: "TCP에 대해 질문할게"가 회상으로 오분류되어
+# LLM 을 건너뛰고 "관련 질문을 찾지 못했어"를 SUCCESS 로 반환).
+_PAST_ANCHOR_RE = re.compile(
+    r"(아까|이전에|전에|예전에|지난번|방금\s*전|처음에|내가\s*(뭐|무슨|어떤)|"
+    r"질문했었|질문했던|질문한\s*(적|거|것)|질문했(어|나|지|는지|던가)|물어봤던|물어봤었|물어본\s*(적|거|것)|물어봤(어|나|지|는지|던가)|"
+    r"물었(던|었|어|나|지)|첫\s*질문|마지막\s*질문|기록\s*있|한\s*적\s*있)"
+)
+# 의지/요청형(앞으로 하겠다는 발화)은 회상이 아니다.
+_FUTURE_REQUEST_RE = re.compile(r"(할게|할래|할께|할거|하려|하고\s*싶|있어요|있는데|있어\b|해도\s*돼|해줘|알려줘|설명해|답해|물어볼게|물어봐도)")
 _PARTICLES = ("으로", "로", "에서", "에게", "에", "을", "를", "이", "가", "은", "는", "도", "랑", "와", "과")
 
 
@@ -149,11 +158,12 @@ def classify_memory_intent(message: str) -> Tuple[MemoryIntent, Dict[str, Any]]:
     if re.search(_LAST_ANCHOR, msg) and has_recall_word:
         return MemoryIntent.EXACT_LAST_MESSAGE, {}
 
-    # 4) 주제 회상 ("내가 TCP에 대해 질문한 것 같은데?")
-    if _TOPIC_RECALL_CONTEXT.search(msg):
-        topic = _extract_topic(msg)
-        if topic:
-            return MemoryIntent.TOPIC_RECALL, {"topic": topic}
+    # 4) 주제 회상 ("내가 TCP에 대해 질문한 것 같은데?") — 과거 앵커 필수, 의지/요청형은 제외
+    if _TOPIC_RECALL_CONTEXT.search(msg) and _PAST_ANCHOR_RE.search(msg):
+        if not (_FUTURE_REQUEST_RE.search(msg) and not re.search(r"(했었|했던|봤던|봤었|적\s*있|아까|이전에|예전에|지난번)", msg)):
+            topic = _extract_topic(msg)
+            if topic:
+                return MemoryIntent.TOPIC_RECALL, {"topic": topic}
 
     # 5) 후속(맥락 의존)
     if _FOLLOWUP_RE.search(msg):

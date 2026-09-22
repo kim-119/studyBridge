@@ -18,6 +18,7 @@ Native Acceleration:
   - RAG 검색은 pgvector(DB측 ANN)를 그대로 사용 → Python cosine loop 없음.
   - 토큰 스트리밍(stream_ollama)으로 첫 토큰 지연(llm_first_token_ms)을 단축.
 """
+from app.services.ollama_client import _shared_num_ctx
 import logging
 import os
 import time
@@ -123,7 +124,7 @@ def stream_ollama(
         ],
         "stream": True,
         "think": _think,
-        "options": {"temperature": _temp, "num_predict": _max, "num_ctx": OLLAMA_CONTEXT_LENGTH},
+        "options": {"temperature": _temp, "num_predict": _max, "num_ctx": _shared_num_ctx()},
     }
 
     started = time.perf_counter()

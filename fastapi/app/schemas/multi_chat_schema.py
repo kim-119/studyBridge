@@ -37,6 +37,14 @@ class AgentProfile(BaseModel):
     )
     personality: Optional[str] = Field(None, validation_alias=AliasChoices("personality", "persona", "type"), description="성격 유형")
     personalityLabel: Optional[str] = Field(None, validation_alias=AliasChoices("personalityLabel", "personality_label"), description="성격 표시명")
+    # Spring 이 보내는 canonical key(프론트 7키: default/professional/friendly/honest/unique/efficient/cynical).
+    # 이전 스키마에 없어 extra="ignore" 로 조용히 소실됐다(2026-09-16 감사 EC2-2). 성격 해석 1순위 입력.
+    personalityStyle: Optional[str] = Field(None, validation_alias=AliasChoices("personalityStyle", "personality_style"), description="성격 canonical key(Spring)")
+    personalityKey: Optional[str] = Field(None, validation_alias=AliasChoices("personalityKey", "personality_key"), description="성격 canonical key(학습메이트 v2 6키)")
+    knowledgeLevelKey: Optional[str] = Field(None, validation_alias=AliasChoices("knowledgeLevelKey", "knowledge_level_key"), description="지식수준 canonical key")
+    goal: Optional[str] = Field(None, description="에이전트 목표(표시/로그용)")
+    persona: Optional[str] = Field(None, description="Spring persona 원문(태그 포함). 프롬프트에는 customInstruction 격리 블록만 쓴다")
+    temperature: Optional[float] = Field(None, description="Spring 성격 기본 temperature(디코드 정책은 persona_policy 가 소유, trace 기록용)")
     personalityStrength: Optional[str] = Field(None, validation_alias=AliasChoices("personalityStrength", "personality_strength"), description="성격 강도 (mild/moderate/extreme)")
     # 에이전트 역할/성격 프리셋 (learningMode와 별개). expert_professor/misconception_tracker 등.
     agentPreset: Optional[str] = Field(None, description="에이전트 프리셋 식별자")
@@ -191,6 +199,9 @@ class MultiChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     groupId: Optional[Any] = Field(None, validation_alias=AliasChoices("groupId", "group_id"), description="그룹 ID")
+    userId: Optional[Any] = Field(None, validation_alias=AliasChoices("userId", "user_id"), description="요청 사용자 ID(감사/로그 상관용)")
+    conversationId: Optional[Any] = Field(None, validation_alias=AliasChoices("conversationId", "conversation_id"), description="대화 ID")
+    requestId: Optional[str] = Field(None, validation_alias=AliasChoices("requestId", "request_id"), description="상관관계 ID(Spring requestId)")
     roomId: Optional[Any] = Field(None, validation_alias=AliasChoices("roomId", "room_id"), description="방 ID")
     agentRoomId: Optional[Any] = Field(None, validation_alias=AliasChoices("agentRoomId", "agent_room_id"), description="에이전트 방 ID")
     message: str = Field(..., min_length=1, description="사용자 메시지")

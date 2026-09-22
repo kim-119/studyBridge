@@ -211,15 +211,16 @@ class DebateTranscript:
 # 2) LLM 어댑터 (테스트에서 주입 가능)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+from app.studymate.cancellation import CancelledByClient as _CancelledByClient
+
 LLMCall = Callable[..., str]
 
 
 def _default_llm(system_prompt: str, user_prompt: str, *, max_tokens: int, temperature: float) -> str:
-    from app.services.ollama_client import ask_ollama
-    return ask_ollama(
-        system_prompt=system_prompt, user_prompt=user_prompt,
-        max_tokens=max_tokens, temperature=temperature, think=False,
-    )
+    # 학습메이트 v2 타입드 게이트웨이: 실패는 LLMError 예외(안내 문자열을 발언으로 쓰지 않는다),
+    # num_ctx=ModelRouter, 요청 CancelToken/턴 예산 deadline 자동 적용.
+    from app.studymate.llm_gateway import ask_text
+    return ask_text(system_prompt, user_prompt, task="engine", max_tokens=max_tokens, temperature=temperature)
 
 
 _FENCE = re.compile(r"^\s*```[a-zA-Z]*\s*|\s*```\s*$")
@@ -479,21 +480,15 @@ def _agent_level(agent: AgentProfile) -> str:
     )
 
 
-def build_style_directive(agent: AgentProfile) -> str:
-    """성격/지식수준/customInstruction → 표현 지시. 입장·논리에는 개입하지 않는다."""
-    from app.services import level_policy
-    from app.services.personality_prompt_builder import build_persona_directive
-
-    lvl = _agent_level(agent)
-    persona = build_persona_directive(
-        getattr(agent, "personalityLabel", None) or getattr(agent, "personality", None),
-        getattr(agent, "customInstruction", None),
-    )
-    return (
-        f"[표현 계층 — 논리가 아니라 '말투'에만 적용]\n"
-        f"- 학습자 수준: {level_policy.korean_label(lvl)} 눈높이의 어휘와 설명 밀도를 쓴다.\n"
-        f"{persona}\n{_CONTRACT_PRIORITY}"
-    )
+def build_style_directive(agent: AgentProfile, mode: str = "debate", role: str = "debater") -> str:
+    """4축 정책(PromptCompiler) 중 표현/깊이 계층만 주입한다. 입장·논리·JSON 계약은 엔진이 쥔다."""
+    from app.studymate.prompt_compiler import style_directive
+    from app.studymate.profile_contract import canonicalize_agent
+    ca = canonicalize_agent(agent, 0)
+    return style_directive(ca.personalityKey, ca.knowledgeLevelKey, mode, role,
+                           overlay=ca.personalityOverlay,
+                           custom_instruction=ca.customInstruction.text if ca.customInstruction else None) + \
+        f"\n{_CONTRACT_PRIORITY}"
 
 
 def _bullet(items: List[str], marker: str = "-") -> str:
@@ -1264,9 +1259,11 @@ def run_debate(request: MultiChatRequest, agents: List[AgentProfile],
         me, other = pos_of[slot], pos_of[opponent_of[slot]]
         try:
             arg, issues, retries = generate_opening(topic, me, other, agent_of[slot], llm=call)
+        except _CancelledByClient:
+            raise
         except Exception as exc:
             raise DebateAgentFailure(me.agent_name, me.agent_id, "OPENING",
-                                     [type(exc).__name__]) from exc
+                                     [getattr(exc, 'code', None) or type(exc).__name__]) from exc
         # 한 명이 실제로 주장하지 못했는데 나머지로 진행하면 토론이 아니라 설명문이 된다.
         if arg is None or not _s(arg.conclusion) or (not arg.reasons and not _s(arg.explanation)):
             raise DebateAgentFailure(me.agent_name, me.agent_id, "OPENING", issues or ["empty_opening"])
@@ -1296,9 +1293,11 @@ def run_debate(request: MultiChatRequest, agents: List[AgentProfile],
                     opponent_latest=_speech_corpus(t, other_slot, last_only=True),
                     target_candidates=candidates,
                     own_previous_counters=[r.counter_argument for r in t.rebuttals.get(slot, [])])
+            except _CancelledByClient:
+                raise
             except Exception as exc:
                 raise DebateAgentFailure(me.agent_name, me.agent_id, f"REBUTTAL_R{rnd}",
-                                         [type(exc).__name__]) from exc
+                                         [getattr(exc, 'code', None) or type(exc).__name__]) from exc
             if reb is None or not _s(reb.counter_argument):
                 raise DebateAgentFailure(me.agent_name, me.agent_id, f"REBUTTAL_R{rnd}",
                                          issues or ["empty_rebuttal"])

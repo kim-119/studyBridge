@@ -89,9 +89,9 @@ class SimSpeech:
 # ── LLM ─────────────────────────────────────────────────────────────────────
 
 def _default_llm(system_prompt: str, user_prompt: str, *, max_tokens: int, temperature: float) -> str:
-    from app.services.ollama_client import ask_ollama
-    return ask_ollama(system_prompt=system_prompt, user_prompt=user_prompt,
-                      max_tokens=max_tokens, temperature=temperature, think=False)
+    # 타입드 게이트웨이(실패=예외, num_ctx/취소/예산 적용)
+    from app.studymate.llm_gateway import ask_text
+    return ask_text(system_prompt, user_prompt, task="engine", max_tokens=max_tokens, temperature=temperature)
 
 
 def _parse(raw: str) -> Dict[str, Any]:

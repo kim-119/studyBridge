@@ -19,13 +19,23 @@ from app.schemas.multi_chat_schema import MultiChatRequest, AgentAnswer
 from app.services import multi_agent_service as M
 
 # (personality key, knowledge key, expected personalityLabel, expected knowledgeLevelLabel)
+
+@pytest.fixture(autouse=True)
+def _legacy_basic_pipeline(monkeypatch):
+    """이 파일은 레거시 basic 경로(롤백 플래그 STUDYMATE_PIPELINE_V2=off)의 계약을 검증한다.
+    v2 파이프라인 계약은 test_sse_* / test_shared_contribution_plan 등에서 검증한다."""
+    monkeypatch.setenv("STUDYMATE_PIPELINE_V2", "off")
+
+# 2026-09-17 라벨 SSOT = EC2 프론트 어휘(StudyMate.jsx PERSONALITY_TYPE_LABELS), key = canonical(profile_contract).
+# (이전 FastAPI 어휘 친절형/냉철형/창의형/간결형 은 프론트와 5/6 불일치 + critical/sardonic 라벨 붕괴라 교체)
 COMBOS = [
-    ("friendly", "undergraduate", "친절형", "학사"),
-    ("critical", "doctor", "냉철형", "박사"),
+    ("friendly", "undergraduate", "친근함", "학사"),
+    ("critical", "doctor", "비판형", "박사"),
     ("logical", "expert", "논리형", "전문가"),
-    ("creative", "graduate", "창의형", "석사"),
-    ("concise", "beginner", "간결형", "입문"),
+    ("creative", "graduate", "독특함", "석사"),
+    ("concise", "beginner", "효율적", "입문"),
 ]
+CANON_K = {"undergraduate": "bachelor", "doctor": "phd", "expert": "expert", "graduate": "master", "beginner": "beginner"}
 
 
 def _mock_default(monkeypatch, answer_text="이것은 설명입니다."):
@@ -83,8 +93,8 @@ def _no_stale_fallback(rows, personality, knowledge):
     """key 가 친절/학사가 아닌데 라벨이 친절형/학사로 남아 있으면 fallback 잔존."""
     for (ev, p, pl, k, kl) in rows:
         if p == personality and personality != "friendly":
-            assert pl != "친절형", f"{ev}: personalityLabel fallback(친절형) 잔존 (p={p})"
-        if k == knowledge and knowledge != "undergraduate":
+            assert pl not in ("친절형", "친근함"), f"{ev}: personalityLabel fallback 잔존 (p={p})"
+        if k == CANON_K.get(knowledge, knowledge) and knowledge != "undergraduate":
             assert kl != "학사", f"{ev}: knowledgeLevelLabel fallback(학사) 잔존 (k={k})"
 
 
@@ -105,7 +115,7 @@ def test_basic_stream_labels_from_key(monkeypatch, personality, knowledge, plabe
     astart = next(e for e in events if e["event"] == "agent_start")["data"]
     assert astart.get("personality") == personality
     assert astart.get("personalityLabel") == plabel
-    assert astart.get("knowledgeLevel") == knowledge
+    assert astart.get("knowledgeLevel") == CANON_K[knowledge]   # canonical key 로 정규화되어 나간다
     assert astart.get("knowledgeLevelLabel") == klabel
 
     # agent_answer
@@ -192,11 +202,11 @@ def test_mixed_agents_each_keep_own_label(monkeypatch):
     allc = next(e for e in M.build_stream_generator(req) if e["event"] == "all_complete")["data"]
 
     by_name = {m["agentName"]: m for m in allc["messages"]}
-    assert by_name["냉철 교수"]["personalityLabel"] == "냉철형"
+    assert by_name["냉철 교수"]["personalityLabel"] == "비판형"
     assert by_name["냉철 교수"]["knowledgeLevelLabel"] == "박사"
     assert by_name["전문가 교수"]["personalityLabel"] == "논리형"
     assert by_name["전문가 교수"]["knowledgeLevelLabel"] == "전문가"
-    assert by_name["친절 교수"]["personalityLabel"] == "친절형"
+    assert by_name["친절 교수"]["personalityLabel"] == "친근함"
     assert by_name["친절 교수"]["knowledgeLevelLabel"] == "학사"
 
 
@@ -212,7 +222,7 @@ def test_normalize_overrides_stale_label():
     a = AgentProfile(name="x", personality="critical", personalityLabel="친절형",
                      knowledgeLevel="doctor", knowledgeLevelLabel="학사")
     M._normalize_studymate_agent_labels(a)
-    assert a.personalityLabel == "냉철형"
+    assert a.personalityLabel == "비판형"
     assert a.knowledgeLevelLabel == "박사"
 
 

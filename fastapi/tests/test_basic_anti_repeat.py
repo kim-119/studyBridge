@@ -61,9 +61,13 @@ def test_fallback_is_content_free_no_topic_word():
 
 
 def test_blank_reply_falls_back_non_empty():
-    answers = _run(lambda *a, **k: "")  # LLM 빈 응답
-    assert len(answers) == 3
-    assert all(a.strip() for a in answers)
+    """2026-09-17 계약: LLM 빈 응답은 캔드 폴백 '답변'으로 위장하지 않고 agent_error(LLM_EMPTY_RESPONSE)로 드러낸다."""
+    decision = D.classify_dialogue_act("아니왜?", previous_context=_ctx(), mode="basic")
+    req = SimpleNamespace(message="아니왜?", previousAnswers=[], mode="basic", learningMode="basic")
+    evts = list(run_basic_contextual_turn_stream(req, _agents(), decision, _ctx(), reply_fn=lambda *a, **k: ""))
+    assert [e for e in evts if e["event"] == "agent_answer"] == []
+    errs = [e["data"] for e in evts if e["event"] == "agent_error"]
+    assert len(errs) == 3 and all(e["code"] == "LLM_EMPTY_RESPONSE" and e["status"] == "FAILED" for e in errs)
 
 
 def test_three_agents_do_not_copy_each_other_on_fallback():

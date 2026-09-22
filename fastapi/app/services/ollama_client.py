@@ -35,6 +35,14 @@ logger = logging.getLogger(__name__)
 _ADVANCED_LEVELS = {"박사", "전문가", "박사 수준", "전문가 수준"}
 
 
+def _shared_num_ctx() -> int:
+    try:
+        from app.studymate.model_router import num_ctx
+        return max(int(OLLAMA_CONTEXT_LENGTH), num_ctx())
+    except Exception:
+        return OLLAMA_CONTEXT_LENGTH
+
+
 def ask_ollama(
     system_prompt: str,
     user_prompt: str,
@@ -99,7 +107,8 @@ def ask_ollama(
         "temperature":  _temperature,
         "top_p":        _top_p,
         "num_predict":  _num_predict,
-        "num_ctx":      OLLAMA_CONTEXT_LENGTH,
+        # 앱 전체 단일 num_ctx(ModelRouter). 기능마다 다르면 Ollama 러너가 호출마다 재적재된다(실측 1.3~1.7s).
+        "num_ctx":      _shared_num_ctx(),
     }
     # 선택적 샘플링 파라미터: 전달된 경우에만 추가 (미전달 시 Ollama 기본값 사용)
     if top_k is not None:
