@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { bannerService } from '../services/api';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { authService, bannerService } from '../services/api';
+import { useAuth } from '../hooks/useAuth';
+import { hasStoredCredentials, restoreSession, watchSessionChanges } from './auth/session';
+import { withTimeout } from './data/withTimeout';
 import { getNetworkStatus } from './platform/connectivity';
 import { hideSplashScreen } from './platform/nativeShell';
-import { restoreSessionFromDevice } from './platform/tokenStore';
 
 const STATUS = {
   CHECKING: 'checking',
@@ -10,6 +12,8 @@ const STATUS = {
   OFFLINE: 'offline',
   UNREACHABLE: 'unreachable',
 };
+
+const BOOT_TIMEOUT_MS = 8000;
 
 const FAILURE_MESSAGE = {
   [STATUS.OFFLINE]: [
@@ -22,15 +26,40 @@ const FAILURE_MESSAGE = {
   ],
 };
 
+function isSuspended(profile) {
+  if (profile?.status === 'BANNED' || profile?.status === 'SUSPENDED') return true;
+  return Boolean(profile?.suspensionEndDate && new Date(profile.suspensionEndDate) > new Date());
+}
+
 export default function MobileBoot({ children }) {
   const [status, setStatus] = useState(STATUS.CHECKING);
+  const { logout, updateUser } = useAuth();
+
+  const authActions = useRef({ logout, updateUser });
+  authActions.current = { logout, updateUser };
 
   const bootstrap = useCallback(async () => {
     setStatus(STATUS.CHECKING);
 
     try {
-      await restoreSessionFromDevice();
-      await bannerService.getMainBanner();
+      await restoreSession();
+      await withTimeout(bannerService.getMainBanner(), BOOT_TIMEOUT_MS);
+
+      if (hasStoredCredentials()) {
+        try {
+          const profile = await withTimeout(authService.getProfile(), BOOT_TIMEOUT_MS);
+
+          if (isSuspended(profile)) {
+            authActions.current.logout();
+          } else {
+            authActions.current.updateUser(profile);
+          }
+        } catch (sessionError) {
+          console.warn('저장된 세션이 유효하지 않아 로그아웃합니다.', sessionError);
+          authActions.current.logout();
+        }
+      }
+
       setStatus(STATUS.READY);
     } catch (error) {
       console.warn('StudyBridge 서버에 연결하지 못했습니다.', error);
@@ -42,7 +71,9 @@ export default function MobileBoot({ children }) {
   }, []);
 
   useEffect(() => {
+    const stopWatching = watchSessionChanges();
     bootstrap();
+    return stopWatching;
   }, [bootstrap]);
 
   if (status === STATUS.CHECKING) {

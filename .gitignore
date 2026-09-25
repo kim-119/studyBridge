@@ -65,6 +65,7 @@ studybridge-ft/
 
 # Android / Capacitor
 frontend/dist-mobile/
+frontend/dist-check/
 android/.gradle/
 android/build/
 android/app/build/
