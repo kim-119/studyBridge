@@ -18,7 +18,8 @@ import PendingScreen from './screens/PendingScreen';
 import PlannerCreateScreen from './screens/planner/PlannerCreateScreen';
 import PlannerDetailScreen from './screens/planner/PlannerDetailScreen';
 import PlannerScreen from './screens/planner/PlannerScreen';
-import StudyMateScreen from './screens/StudyMateScreen';
+import StudyMateChatScreen from './screens/studymate/StudyMateChatScreen';
+import StudyMateScreen from './screens/studymate/StudyMateScreen';
 import KnowledgeCreateScreen from './screens/knowledge/KnowledgeCreateScreen';
 import KnowledgeDetailScreen from './screens/knowledge/KnowledgeDetailScreen';
 import KnowledgeScreen from './screens/knowledge/KnowledgeScreen';
@@ -96,6 +97,14 @@ export default function MobileApp() {
         element={
           <RequireAuth>
             <StudyMateScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/studymate/:roomId"
+        element={
+          <RequireAuth>
+            <StudyMateChatScreen />
           </RequireAuth>
         }
       />
