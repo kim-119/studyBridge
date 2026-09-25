@@ -1,0 +1,139 @@
+name: StudyBridge Android Release
+
+on:
+  push:
+    branches:
+      - android-main
+  workflow_dispatch:
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MOBILE_API_BASE_URL: https://studybridge.co.kr
+  KEYSTORE_PATH: android/studybridge-release.jks
+
+jobs:
+  signed-release-build:
+    name: Signed APK and AAB
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 소스코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 서명 시크릿 확인
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=""
+          [ -n "$KEYSTORE_BASE64" ]  || missing="$missing ANDROID_KEYSTORE_BASE64"
+          [ -n "$KEYSTORE_PASSWORD" ] || missing="$missing ANDROID_KEYSTORE_PASSWORD"
+          [ -n "$KEY_ALIAS" ]         || missing="$missing ANDROID_KEY_ALIAS"
+          [ -n "$KEY_PASSWORD" ]      || missing="$missing ANDROID_KEY_PASSWORD"
+
+          if [ -n "$missing" ]; then
+            echo "FAIL: 다음 GitHub Secrets가 없습니다 —$missing"
+            echo "서명되지 않은 릴리즈는 배포할 수 없으므로 빌드를 중단합니다."
+            exit 1
+          fi
+
+          echo "PASS: 서명 시크릿 4종 확인"
+
+      - name: Node.js 22 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Capacitor 의존성 설치
+        run: npm ci
+
+      - name: 프론트엔드 의존성 설치
+        run: npm --prefix frontend ci
+
+      - name: 모바일 레이어 정적 검사
+        run: npm --prefix frontend run lint:mobile
+
+      - name: 모바일 번들 빌드
+        env:
+          VITE_API_BASE_URL: ${{ env.MOBILE_API_BASE_URL }}
+        run: |
+          npm run build:mobile
+          test -f frontend/dist-mobile/index.html
+
+      - name: 모바일 번들 가드
+        run: |
+          BUNDLE=$(ls frontend/dist-mobile/assets/index-*.js)
+
+          if ! grep -q "${MOBILE_API_BASE_URL}" "$BUNDLE"; then
+            echo "FAIL: 모바일 번들에 절대 API base URL이 없습니다."
+            exit 1
+          fi
+
+          echo "PASS: 모바일 번들 검사 통과"
+
+      - name: JDK 21 설정
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Gradle 설정
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Capacitor Android 동기화
+        run: npx cap sync android
+
+      - name: 서명 키 준비
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+
+          cat > android/key.properties <<PROPERTIES
+          storeFile=$(basename "$KEYSTORE_PATH")
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          PROPERTIES
+
+      - name: Gradle Wrapper 실행 권한 부여
+        run: chmod +x android/gradlew
+
+      - name: Release APK 및 AAB 빌드
+        run: |
+          cd android
+          ./gradlew assembleRelease bundleRelease
+          test -f app/build/outputs/apk/release/app-release.apk
+          test -f app/build/outputs/bundle/release/app-release.aab
+
+      - name: 서명 검증
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
+          "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Release 산출물 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: studybridge-app-release-${{ github.sha }}
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 서명 키 임시 파일 제거
+        if: always()
+        run: rm -f "$KEYSTORE_PATH" android/key.properties
