@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-
 import BottomNav from './shell/BottomNav';
 import MobileBoot from './MobileBoot';
 import RequireAuth from './auth/RequireAuth';
+import { useSessionResume } from './auth/useSessionResume';
 import ForgotPasswordScreen from './screens/auth/ForgotPasswordScreen';
 import LoginScreen from './screens/auth/LoginScreen';
 import RegisterScreen from './screens/auth/RegisterScreen';
@@ -71,6 +72,7 @@ function ShellLayout({ children }) {
 export default function MobileApp() {
   const { pathname } = useLocation();
   useHardwareBackNavigation();
+  useSessionResume();
 
   useEffect(() => {
     applyNativeChrome();

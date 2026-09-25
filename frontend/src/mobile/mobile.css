@@ -1213,3 +1213,72 @@ textarea.mobile-field__input {
 .mobile-chat__send.is-stop {
   background-color: var(--color-danger);
 }
+
+.mobile-greeting {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.mobile-greeting__sub {
+  margin: 4px 0 0;
+  color: var(--color-text-muted);
+  font-size: 14px;
+}
+
+.mobile-flow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-basic);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mobile-flow li {
+  flex: 1;
+  padding: 10px 4px;
+  border-radius: 10px;
+  background-color: #ECFDF3;
+  color: var(--color-primary-hover);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.mobile-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-basic);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mobile-shortcuts button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 12px 4px;
+  border: none;
+  border-radius: var(--radius-card);
+  background-color: var(--color-bg-card);
+  box-shadow: var(--shadow-card);
+  color: var(--color-text-main);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mobile-shortcuts__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background-color: #ECFDF3;
+  color: var(--color-primary);
+}
