@@ -1004,3 +1004,116 @@ textarea.mobile-field__input {
 .mobile-video__control.is-danger {
   background-color: var(--color-danger);
 }
+
+.mobile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-basic);
+}
+
+.mobile-stat {
+  margin: 0;
+  color: var(--color-text-main);
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.mobile-todo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-basic);
+  padding: 8px var(--space-md);
+  border-radius: var(--radius-card);
+  background-color: var(--color-bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.mobile-todo__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-basic);
+  flex: 1;
+  min-height: 48px;
+  border: none;
+  background: none;
+  color: var(--color-text-main);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mobile-todo__toggle .is-completed {
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+}
+
+.mobile-todo__delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: none;
+  background: none;
+  color: var(--color-text-placeholder);
+  cursor: pointer;
+}
+
+.mobile-post {
+  display: flex;
+  gap: var(--space-md);
+  width: 100%;
+  padding: var(--space-md);
+  border: none;
+  border-radius: var(--radius-card);
+  background-color: var(--color-bg-card);
+  box-shadow: var(--shadow-card);
+  color: var(--color-text-main);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mobile-post__thumbnail {
+  flex: 0 0 72px;
+  width: 72px;
+  height: 72px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.mobile-post__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mobile-post__body strong {
+  font-size: 15px;
+}
+
+.mobile-post__summary {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mobile-post__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.mobile-post__meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mobile-post__image {
+  width: 100%;
+  margin-bottom: var(--space-md);
+  border-radius: var(--radius-card);
+}

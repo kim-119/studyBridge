@@ -17,6 +17,13 @@ import MoreScreen from './screens/MoreScreen';
 import PendingScreen from './screens/PendingScreen';
 import PlannerScreen from './screens/PlannerScreen';
 import StudyMateScreen from './screens/StudyMateScreen';
+import KnowledgeCreateScreen from './screens/knowledge/KnowledgeCreateScreen';
+import KnowledgeDetailScreen from './screens/knowledge/KnowledgeDetailScreen';
+import KnowledgeScreen from './screens/knowledge/KnowledgeScreen';
+import MyPageScreen from './screens/mypage/MyPageScreen';
+import ReviewNoteDetailScreen from './screens/reviewnotes/ReviewNoteDetailScreen';
+import ReviewNotesScreen from './screens/reviewnotes/ReviewNotesScreen';
+import WeeklyScheduleScreen from './screens/schedule/WeeklyScheduleScreen';
 import { SECONDARY_SCREENS } from './screens/secondaryScreens';
 import { applyNativeChrome, registerHardwareBackButton } from './platform/nativeShell';
 
@@ -151,6 +158,63 @@ export default function MobileApp() {
         element={
           <RequireAuth>
             <MoreScreen />
+          </RequireAuth>
+        }
+      />
+
+      <Route
+        path="/review-notes"
+        element={
+          <RequireAuth>
+            <ReviewNotesScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/review-notes/:reviewNoteId"
+        element={
+          <RequireAuth>
+            <ReviewNoteDetailScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/weekly-schedule"
+        element={
+          <RequireAuth>
+            <WeeklyScheduleScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/knowledge"
+        element={
+          <RequireAuth>
+            <KnowledgeScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/knowledge/new"
+        element={
+          <RequireAuth>
+            <KnowledgeCreateScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/knowledge/:blogId"
+        element={
+          <RequireAuth>
+            <KnowledgeDetailScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/mypage"
+        element={
+          <RequireAuth>
+            <MyPageScreen />
           </RequireAuth>
         }
       />
