@@ -1,0 +1,146 @@
+StudyBridge FastAPI AI 서버 — 서버컴 실행 명령어
+──────────────────────────────────────────────────────────────────────────────
+
+1. GPU 확인
+──────────
+nvidia-smi
+# 기대: RTX 5070 Ti, VRAM ~16GB
+
+2. Ollama 확인
+──────────────
+ollama --version
+ollama list
+ollama list | grep qwen
+
+3. Qwen2.5 14B 테스트
+─────────────────────
+ollama run qwen2.5:14b "StudyBridge 테스트입니다. 짧게 답해줘."
+# 응답이 없으면 모델명 확인 후 .env에서 OLLAMA_MODEL 수정
+
+4. FastAPI 정적 확인
+────────────────────
+cd fastapi
+python -m py_compile main.py && echo "main.py OK"
+python -m compileall . -q 2>&1 | grep -v "^Listing" | head -20
+
+5. .env 확인
+────────────
+cat .env | grep -v "KEY\|PASSWORD\|SECRET" | head -30
+# KEY/PASSWORD/SECRET 값은 노출 안 됨
+
+6. FastAPI 실행
+──────────────
+# 방법 1: main.py 직접 (uvicorn main:app)
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+# 방법 2: Docker 사용 (Dockerfile 있을 때)
+docker build -t studybridge-fastapi .
+docker run -p 8000:8000 --env-file .env studybridge-fastapi
+
+7. health 확인
+──────────────
+curl http://localhost:8000/api/health
+curl http://localhost:8000/health
+# 기대: {"status":"ok","service":"studybridge-fastapi",...}
+
+8. predict 확인
+───────────────
+curl -X POST http://localhost:8000/api/ai/predict/study-time \
+  -H "Content-Type: application/json" \
+  -d '{"userId":42,"weeklyStudySeconds":[3600,7200,5400,0,1800,9000,4500]}'
+# 기대: {"predictedStudySeconds": ...}
+
+9. quiz fallback 확인 (S3 없을 때)
+────────────────────────────────────
+curl -X POST http://localhost:8000/api/ai/quiz/generate \
+  -H "Content-Type: application/json" \
+  -d '{"materialId":12,"s3Key":"test/missing.pdf","fileName":"운영체제.pdf"}'
+# 기대: {"quizTitle":"자료 기반 학습 퀴즈 (기본 안내형)","questions":[...]}
+
+10. multi-chat 확인 (Ollama 연결 없어도 fallback)
+──────────────────────────────────────────────────
+curl -X POST http://localhost:8000/api/ai/multi-chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Python 리스트와 튜플의 차이를 설명해줘",
+    "mode": "multi_agent_discussion",
+    "rounds": 1,
+    "showFinalSynthesis": false,
+    "agents": [
+      {"name":"설명봇","personality":"친절_설명형","knowledgeLevel":"학사"},
+      {"name":"분석봇","personality":"비판적_분析형","knowledgeLevel":"석사"}
+    ]
+  }'
+# 기대: {"mode":"multi_agent_discussion","answers":[...]}
+
+11. roadmap fallback 확인 (S3/GPT 없을 때)
+────────────────────────────────────────────
+curl -X POST http://localhost:8000/api/materials/12/ai/roadmap \
+  -H "Content-Type: application/json" \
+  -H "X-AI-Server-Key: studybridge-internal-secret" \
+  -d '{
+    "materialId": 12,
+    "s3Key": "test/missing.pdf",
+    "fileName": "운영체제.pdf",
+    "weeks": 4,
+    "difficulty": "medium"
+  }'
+# 기대: {"materialId":12,"title":"운영체제.pdf 학습 로드맵","weeks":[...],"isFallback":true 또는 false}
+
+12. 응답시간 측정 항목
+───────────────────────
+# 1명 에이전트, rounds=1                    → 기본 목표
+# 3명 에이전트, rounds=1                    → 시연 기본 구성
+# 3명 + showFinalSynthesis=true             → Ollama 4회 호출
+# 3명 × rounds=2                           → Ollama 6+회 호출 → 느림
+
+13. 느릴 때 .env 조정
+──────────────────────
+OLLAMA_NUM_PREDICT=256
+OLLAMA_CONTEXT_LENGTH=2048
+MAX_ROUNDS=1
+DEFAULT_MAX_AGENTS=2
+PREVIOUS_ANSWERS_LIMIT=5
+AGENT_ANSWER_MAX_CHARS=350
+ADVANCED_AGENT_ANSWER_MAX_CHARS=500
+MULTI_CHAT_TIMEOUT_SECONDS=60
+
+14. DB/Redis 연결 확인
+──────────────────────
+# AI DB (pgvector)
+curl http://localhost:8000/api/health  # aiDb 상태는 health에 포함 안 됨
+# DB 직접 확인:
+psql $AI_DATABASE_URL -c "SELECT 1"
+
+# Redis
+redis-cli -u $REDIS_URL ping
+
+15. migration (AI DB 전용 — capstone-db 절대 금지)
+──────────────────────────────────────────────────
+# dry-run 먼저
+python scripts/run_migrations.py
+
+# apply (AI_DATABASE_URL 안전성 검사 통과 후)
+python scripts/run_migrations.py --apply
+
+16. 로그 확인
+─────────────
+tail -f /var/log/studybridge-fastapi.log
+# 또는 Docker:
+docker logs -f studybridge-fastapi
+
+──────────────────────────────────────────────────────────────────────────────
+Spring Boot 계약 API 경로 (변경 금지):
+  GET  /api/health
+  POST /api/ai/predict/study-time
+  POST /api/ai/quiz/generate
+  POST /api/ai/multi-chat
+
+v0.6 확장 API:
+  POST   /api/rag/ingest
+  POST   /api/rag/query
+  DELETE /api/rag/materials/{material_id}
+  POST   /api/agent/deep-search
+  POST   /api/materials/{material_id}/ai/roadmap   ← 신규
+  GET    /api/training-candidates/stats
+  GET    /api/training-candidates/export-jsonl

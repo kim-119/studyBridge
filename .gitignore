@@ -1,0 +1,64 @@
+.env
+.env.*
+!.env.example
+pycache/
+*.pyc
+.idea/
+venv/
+.venv/
+frontend/node_modules/
+node_modules/
+
+fastapi/.env
+
+backend/build/
+*.class
+backend/.gradle/
+backend/bin/
+.gradle/
+bin/
+
+# Python cache
+__pycache__/
+*.pyc
+
+*.egg-info/
+
+# local backup files
+*.bak_*
+*.backup*
+
+# secrets
+*.pem
+.env
+.env.*
+!.env.example
+
+# secrets
+*.pem
+.env
+.env.*
+!.env.example
+
+# secrets
+*.pem
+.env
+.env.*
+!.env.example
+
+
+# studybridge_ft 대용량 산출물 (repo 밖 ~/studybridge-ft 가 기본이나 이중 안전망)
+studybridge-ft/
+# QLoRA safe55: repo 내부 outputs/ 사용(체크포인트). git 추적/누출 방지.
+/outputs/
+**/studybridge_ft/**/data/
+**/studybridge_ft/**/outputs/
+**/studybridge_ft/**/logs/
+**/studybridge_ft/**/checkpoints/
+**/studybridge_ft/**/cache/
+**/studybridge_ft/**/raw/
+**/studybridge_ft/**/cleaned/
+**/studybridge_ft/**/rejected/
+*.safetensors
+*.bin
+*.pt

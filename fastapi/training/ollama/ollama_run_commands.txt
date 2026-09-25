@@ -1,0 +1,120 @@
+StudyBridge Ollama 실행 명령어 모음
+주력 모델: Qwen2.5 14B 양자화
+엔진: Ollama (vLLM 사용 안 함)
+──────────────────────────────────────────────────────────────────────────────
+
+1. GPU 및 VRAM 확인
+──────────────────
+nvidia-smi
+# 기대: RTX 5070 Ti, VRAM 약 16GB
+
+2. Ollama 설치 확인
+──────────────────
+ollama --version
+# 기대: ollama version 0.x.x
+
+3. 설치된 모델 목록 확인
+──────────────────────
+ollama list
+# qwen2.5 계열 모델 이름을 여기서 확인한다.
+# 예시 출력:
+#   NAME                              ID              SIZE    MODIFIED
+#   qwen2.5:14b                       ...             ...     ...
+#   qwen2.5:14b-instruct-q4_K_M       ...             ...     ...
+
+4. Qwen2.5 14B 모델 확인
+──────────────────────
+ollama list | grep qwen
+
+5. 모델이 없으면 다운로드 (q4_K_M 권장 — 16GB VRAM 기준)
+──────────────────────────────────────────────────────
+# q4_K_M: 가장 가볍고 빠름. 시연 환경 우선 권장.
+ollama pull qwen2.5:14b-instruct-q4_K_M
+
+# q5_K_M: 균형형. VRAM 여유 있으면 선택.
+# ollama pull qwen2.5:14b-instruct-q5_K_M
+
+# q6_K: 고품질. 16GB에서 테스트 필요.
+# ollama pull qwen2.5:14b-instruct-q6_K
+
+6. 빠른 동작 테스트
+──────────────────
+ollama run qwen2.5:14b "StudyBridge 테스트입니다. 한 문장으로 짧게 답해줘."
+# 기대: 짧은 한국어 응답
+
+7. .env 업데이트 (실제 모델명으로)
+───────────────────────────────
+# ollama list에서 확인한 실제 모델명을 .env에 기입한다.
+OLLAMA_MODEL=qwen2.5:14b-instruct-q4_K_M
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_TIMEOUT_SECONDS=45
+OLLAMA_NUM_PREDICT=512
+OLLAMA_CONTEXT_LENGTH=4096
+
+8. StudyBridge 커스텀 모델 생성 (Modelfile 사용 시)
+───────────────────────────────────────────────
+# Modelfile을 수정한 뒤 실행한다.
+cd fastapi/training/ollama
+ollama create studybridge-qwen25-14b -f Modelfile.qwen25_14b_studybridge.example
+
+# 생성 후 확인
+ollama list | grep studybridge
+
+# 커스텀 모델 사용 시 .env 수정
+OLLAMA_MODEL=studybridge-qwen25-14b
+
+9. FastAPI 실행
+──────────────
+cd fastapi
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+10. health 확인
+──────────────
+curl http://localhost:8000/api/health
+
+11. multi-chat 확인
+──────────────────
+curl -X POST http://localhost:8000/api/ai/multi-chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Python에서 리스트와 튜플의 차이를 설명해줘",
+    "mode": "multi_agent_discussion",
+    "rounds": 1,
+    "showFinalSynthesis": false,
+    "agents": [
+      {
+        "name": "설명봇",
+        "personality": "친절_설명형",
+        "knowledgeLevel": "학사"
+      }
+    ]
+  }'
+
+12. 응답시간 측정 항목
+───────────────────
+# 1명 에이전트, rounds=1, showFinalSynthesis=false  → 가장 빠름
+# 3명 에이전트, rounds=1                            → 허용 범위 목표
+# 3명 에이전트, rounds=2                            → 느릴 수 있음
+# 3명 에이전트 + showFinalSynthesis=true            → 추가 1회 호출
+
+13. 느릴 때 조정 옵션
+────────────────────
+# .env 또는 환경변수로 조정:
+OLLAMA_NUM_PREDICT=256         # 더 짧게
+OLLAMA_CONTEXT_LENGTH=2048     # context 줄이기
+MAX_ROUNDS=1                   # 라운드 1로 제한
+DEFAULT_MAX_AGENTS=2           # 에이전트 2명으로 제한
+MULTI_CHAT_TIMEOUT_SECONDS=60  # 타임아웃 늘리기
+
+14. QLoRA optional adapter smoke test (선택)
+─────────────────────────────────────────
+# bitsandbytes/CUDA 호환 확인 후 실행
+# 자세한 내용: fastapi/training/scripts/train_lora_adapter.py 참고
+python fastapi/training/scripts/train_lora_adapter.py --config fastapi/training/configs/qwen25_14b_qlora_optional.yaml --smoke-test
+
+──────────────────────────────────────────────────────────────────────────────
+주의사항:
+- 실제 모델명은 ollama list 결과를 기준으로 .env에 반영할 것
+- 14B full precision은 OOM 가능. 반드시 양자화 모델 사용.
+- 3명 × 2라운드는 응답이 느릴 수 있음 (기본 3명 × 1라운드 권장)
+- GPT/Tavily/Wikipedia를 매번 다 호출하면 느림 → query_classifier 라우팅 확인

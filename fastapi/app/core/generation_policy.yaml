@@ -1,0 +1,217 @@
+# ============================================================
+# 지식수준별 생성 파라미터 + 성격/모드/학문 미세조정
+# 코드에서 generation_config_resolver.py로 로드됨
+# ============================================================
+
+levels:
+  입문:
+    temperature: 0.35
+    top_p: 0.85
+    top_k: 30
+    max_tokens: 700
+    repeat_penalty: 1.05
+    presence_penalty: 0.0
+    frequency_penalty: 0.0
+    stop_sequences: []
+    reasoning_or_thinking_level: "low"
+    retrieval_top_k: 3
+    use_openalex: false
+    use_depth_verifier: false
+    use_depth_rewrite: false
+    style:
+      - "쉬운 비유"
+      - "짧은 문장"
+      - "전문용어 최소화"
+      - "핵심 한 문장 먼저 제시"
+      - "일상 예시 포함"
+
+  학사:
+    temperature: 0.45
+    top_p: 0.90
+    top_k: 40
+    max_tokens: 1000
+    repeat_penalty: 1.05
+    presence_penalty: 0.0
+    frequency_penalty: 0.0
+    stop_sequences: []
+    reasoning_or_thinking_level: "medium"
+    retrieval_top_k: 4
+    use_openalex: false
+    use_depth_verifier: false
+    use_depth_rewrite: false
+    style:
+      - "전공 기초 용어 사용"
+      - "정의와 예시"
+      - "기본 구조 설명"
+      - "이론과 실제 연결"
+
+  석사:
+    temperature: 0.50
+    top_p: 0.90
+    top_k: 50
+    max_tokens: 1400
+    repeat_penalty: 1.08
+    presence_penalty: 0.0
+    frequency_penalty: 0.0
+    stop_sequences: []
+    reasoning_or_thinking_level: "medium_high"
+    retrieval_top_k: 5
+    use_openalex: false
+    use_depth_verifier: false
+    use_depth_rewrite: false
+    style:
+      - "구조적 분석"
+      - "개념 간 관계"
+      - "방법론 또는 이론적 배경"
+      - "장단점 비교"
+      - "적용 조건 명시"
+
+  박사:
+    temperature: 0.55
+    top_p: 0.92
+    top_k: 60
+    max_tokens: 1900
+    repeat_penalty: 1.08
+    presence_penalty: 0.0
+    frequency_penalty: 0.0
+    stop_sequences: []
+    reasoning_or_thinking_level: "high"
+    retrieval_top_k: 7
+    use_openalex: true
+    use_depth_verifier: true
+    use_depth_rewrite: true
+    style:
+      - "엄밀한 개념 구분"
+      - "이론적 배경"
+      - "방법론적 한계"
+      - "반례 또는 예외"
+      - "논쟁점"
+      - "검증 기준"
+
+  전문가:
+    temperature: 0.50
+    top_p: 0.88
+    top_k: 50
+    max_tokens: 2200
+    repeat_penalty: 1.10
+    presence_penalty: 0.0
+    frequency_penalty: 0.0
+    stop_sequences: []
+    reasoning_or_thinking_level: "high"
+    retrieval_top_k: 8
+    use_openalex: false
+    use_depth_verifier: true
+    use_depth_rewrite: true
+    style:
+      - "현장 적용"
+      - "정책/실무/연구 맥락"
+      - "리스크"
+      - "트레이드오프"
+      - "의사결정 기준"
+
+
+# ── 성격별 미세조정 ─────────────────────────────────────────
+personality_adjustment:
+  친절_설명형:
+    temperature_delta: 0.00
+    top_p_delta: 0.00
+    max_tokens_multiplier: 1.0
+  비판적_분석형:
+    temperature_delta: -0.05
+    top_p_delta: -0.02
+    max_tokens_multiplier: 1.0
+  논리적_탐구형:
+    temperature_delta: -0.05
+    top_p_delta: -0.02
+    max_tokens_multiplier: 1.0
+  창의적_확장형:
+    temperature_delta: 0.10
+    top_p_delta: 0.03
+    max_tokens_multiplier: 1.1
+  간결형:
+    temperature_delta: -0.10
+    top_p_delta: 0.00
+    max_tokens_multiplier: 0.65
+  직접입력형:
+    temperature_delta: 0.00
+    top_p_delta: 0.00
+    max_tokens_multiplier: 1.0
+
+
+# ── 모드별 미세조정 ─────────────────────────────────────────
+mode_adjustment:
+  default:
+    temperature_delta: 0.00
+    top_p_delta: 0.00
+    max_tokens_multiplier: 1.0
+  tikitaka:
+    temperature_delta: 0.05
+    top_p_delta: 0.00
+    max_tokens_multiplier: 1.0
+  debate:
+    temperature_delta: 0.08
+    top_p_delta: 0.02
+    max_tokens_multiplier: 1.0
+  socratic:
+    temperature_delta: -0.05
+    top_p_delta: -0.02
+    max_tokens_multiplier: 0.55
+
+
+# ── 학문별 미세조정 ─────────────────────────────────────────
+domain_adjustment:
+  mathematics:
+    temperature_delta: -0.08
+    top_p_delta: -0.04
+  physics:
+    temperature_delta: -0.05
+    top_p_delta: -0.02
+  chemistry:
+    temperature_delta: -0.04
+    top_p_delta: -0.02
+  medicine_health:
+    temperature_delta: -0.10
+    top_p_delta: -0.04
+  law:
+    temperature_delta: -0.10
+    top_p_delta: -0.04
+  psychology:
+    temperature_delta: -0.02
+    top_p_delta: 0.00
+  philosophy:
+    temperature_delta: 0.05
+    top_p_delta: 0.02
+  literature:
+    temperature_delta: 0.08
+    top_p_delta: 0.02
+  art_design:
+    temperature_delta: 0.10
+    top_p_delta: 0.03
+  computer_science:
+    temperature_delta: -0.04
+    top_p_delta: -0.01
+  economics:
+    temperature_delta: -0.03
+    top_p_delta: -0.01
+  biology:
+    temperature_delta: -0.03
+    top_p_delta: -0.01
+  engineering:
+    temperature_delta: -0.04
+    top_p_delta: -0.01
+  general_study:
+    temperature_delta: 0.00
+    top_p_delta: 0.00
+  unknown:
+    temperature_delta: 0.00
+    top_p_delta: 0.00
+
+
+# ── 클램핑 범위 ──────────────────────────────────────────────
+clamp:
+  temperature_min: 0.20
+  temperature_max: 0.75
+  top_p_min: 0.70
+  top_p_max: 0.95
+  top_k_min: 10
+  top_k_max: 80

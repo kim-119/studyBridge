@@ -1,0 +1,22 @@
+{
+  "finetuning_status": "not_ready",
+  "description": "QLoRA/SFT 파이프라인은 준비되어 있으나, 학습 데이터 부족으로 본학습은 미진행 상태입니다.",
+  "statuses": {
+    "prepared": "학습 파이프라인(QLoRA 스크립트, 설정 파일) 준비됨",
+    "not_ready": "학습 데이터 부족 또는 품질 기준 미달로 본학습 미진행",
+    "trained": "실제 학습 완료 (현재는 해당 없음)"
+  },
+  "current_status": "not_ready",
+  "base_model": "Qwen2.5-14B",
+  "training_method": "QLoRA (4-bit quantization)",
+  "readiness_check": {
+    "pipeline_scripts": true,
+    "qlora_config": true,
+    "training_data_sufficient": false,
+    "minimum_samples_required": 300,
+    "current_sample_count": 0,
+    "quality_score_threshold": 0.8
+  },
+  "note": "현재 서비스는 RAG(pgvector 유사도 검색) 중심으로 운영됩니다. 파인튜닝은 데이터 수집 완료 후 진행 예정입니다.",
+  "last_updated": "2026-06-05"
+}

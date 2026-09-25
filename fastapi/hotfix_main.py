@@ -1,0 +1,176 @@
+from main import app
+from multi_chat_stream_compat import router as multi_chat_stream_compat_router
+
+paths = {getattr(route, "path", None) for route in app.routes}
+
+if "/api/ai/multi-chat/stream" not in paths:
+    app.include_router(multi_chat_stream_compat_router)
+
+# StudyBridge Spring PDF extraction compatibility endpoint
+try:
+    from .extract_compat import router as extract_compat_router
+except Exception:
+    from extract_compat import router as extract_compat_router
+
+paths = {getattr(route, "path", None) for route in app.routes}
+if "/api/extract" not in paths:
+    app.include_router(extract_compat_router)
+
+# StudyBridge group-study realtime quiz endpoint
+try:
+    from app.api.realtime_quiz_routes import router as realtime_quiz_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/realtime-quiz/generate" not in paths:
+        app.include_router(realtime_quiz_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("realtime_quiz 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 텍스트 기반 퀴즈 생성 endpoint (자료 본문 직접 전달용)
+try:
+    from quiz_text_compat import router as quiz_text_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/quiz/generate" not in paths:
+        app.include_router(quiz_text_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("quiz_text 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 업로드 자료 유형 자동 판별 endpoint (Spring classify-before-save 가 호출)
+try:
+    from app.api.material_classify_routes import router as material_classify_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/material/classify" not in paths:
+        app.include_router(material_classify_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("material_classify 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 자료보관함 퀴즈/로드맵 streaming + SSE job + 폴링 endpoint
+# (Spring /api/materials/{id}/quiz|roadmap/jobs|poll 가 릴레이)
+try:
+    from app.api.material_stream_routes import router as material_stream_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/quiz/generate-stream" not in paths:
+        app.include_router(material_stream_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("material_stream 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 오답노트 AI endpoint (해설/유사문제 생성 — Spring review-notes 가 호출)
+try:
+    from app.api.review_ai_routes import router as review_ai_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/review/wrong-note-feedback" not in paths:
+        app.include_router(review_ai_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("review_ai 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 자료보관함 통합 계약 endpoint
+# (자료 자동 분류 /api/ai/material-classify, 오답노트 유사문제/AI 해설 /api/ai/review-note/*)
+try:
+    from app.api.review_note_routes import router as review_note_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/material-classify" not in paths:
+        app.include_router(review_note_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("review_note 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge LLM Intent Router (자료보관함/그룹스터디/학습메이트 공통 의도·위험도 판정)
+# POST /api/ai/intent/route — 기존 SSE/HTTP와 독립, additive.
+try:
+    from app.api.intent_router_routes import router as intent_router_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/intent/route" not in paths:
+        app.include_router(intent_router_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("intent_router 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge Fetch Streaming (NDJSON) endpoint — 기존 SSE 고속도로와 별개의 우회도로.
+# POST /api/ai/agents/chat/fetch-stream, /api/group-study/ai/fetch-stream,
+#      /api/materials/{id}/ai/fetch-stream, /api/materials/{id}/roadmap/ai/fetch-stream,
+#      /api/ai/tasks/fetch-stream
+try:
+    from app.api.fetch_stream_routes import router as fetch_stream_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/agents/chat/fetch-stream" not in paths:
+        app.include_router(fetch_stream_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("fetch_stream 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 학습메이트 mode 기반 답변 생성 (Mode Policy Registry + Prompt Builder)
+# POST /api/ai/learning-mate/chat — 기존 endpoint/SSE와 독립, additive.
+try:
+    from app.learning_mate.router import router as learning_mate_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/learning-mate/chat" not in paths:
+        app.include_router(learning_mate_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("learning_mate 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 자료 상세 "나의 학습 메모" 검증 endpoint
+# POST /api/ai/study-journal/validate — 검증만 수행(원문/S3/DB 저장 없음), OpenAI 4단계 최종 판정.
+# 기존 endpoint/SSE와 독립, additive.
+try:
+    from app.api.study_journal_routes import router as study_journal_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/study-journal/validate" not in paths:
+        app.include_router(study_journal_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("study_journal 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 오답노트 '복습 필요' 부족개념 분석 endpoint
+# POST /api/ai/review-needed — 단일 오답노트 → reviewNeededText 1개. 기존 review/* 와 독립, additive.
+# 실패/timeout/빈응답은 성공 응답(200)+fallback 텍스트로 반환(발표 안정성).
+try:
+    from app.api.review_needed_routes import router as review_needed_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/review-needed" not in paths:
+        app.include_router(review_needed_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("review_needed 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 전공 분야+핵심 객체 중심 AI 핵심 요약 노트 endpoint
+# POST /api/ai/major-analysis/note — PDF 업로드 후 Spring 자동 호출. 14종 도메인 분류 + coreObject
+# 중심 학습 노트 + Wikipedia 보조. 기존 요약/퀴즈/로드맵/RAG와 독립, additive.
+# LLM/Wikipedia/timeout 실패는 항상 200 + 안전 fallback(업로드 실패 방지).
+try:
+    from app.api.major_analysis_routes import router as major_analysis_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/major-analysis/note" not in paths:
+        app.include_router(major_analysis_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("major_analysis 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 학습 왕복 루프(Learning Loop) 통합 endpoint
+# POST /api/ai/learning-loop — taskType 디스패치(채팅/요약/퀴즈/로드맵/오답해설/유사문제/
+# 복습추천/에이전트피드백). RAG 본문 근거 + 학습 이력 결합 → 구조화 JSON.
+# 기존 라우터/SSE 와 독립, additive. 어떤 필드가 비어도 실패하지 않음(fallback+warnings).
+try:
+    from app.api.learning_loop_routes import router as learning_loop_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/learning-loop" not in paths:
+        app.include_router(learning_loop_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("learning_loop 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge Grounded RAG endpoint (vector 후보 → cross-encoder rerank → top-3 근거 답변)
+# POST /api/ai/rag/grounded-query — 기존 /api/rag/query·/ai/chat·multi-chat 과 독립, additive.
+# reranker 로딩 실패/timeout 은 vectorScore fallback + warnings 로 처리(서버 죽지 않음).
+try:
+    from app.api.rag_grounded_routes import router as rag_grounded_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/rag/grounded-query" not in paths:
+        app.include_router(rag_grounded_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("rag_grounded 라우터 로드 실패 (계속 기동): %s", e)

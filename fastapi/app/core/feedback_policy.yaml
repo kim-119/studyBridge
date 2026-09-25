@@ -1,0 +1,57 @@
+blocked_patterns:
+  - "멍청"
+  - "쓰레기"
+  - "말도 안"
+  - "한심"
+  - "바보"
+  - "뇌가 없"
+  - "형편없"
+  - "최악"
+  - "개소리"
+  - "헛소리"
+  - "수준 이하"
+  - "아무것도 모르"
+  - "글렀"
+  - "조잡"
+  - "엉망"
+
+personal_attack_patterns:
+  - "\\d+번\\s*(에이전트|답변).*?(이상|못|안)"
+  - "이\\s*(에이전트|답).*?(가치\\s*없|무능)"
+  - "저\\s*(에이전트|답).*?(가치\\s*없|무능)"
+
+mockery_terms:
+  - "ㅋㅋ"
+  - "ㅎㅎ"
+  - "웃기"
+  - "말도 안 되는"
+  - "진짜로?"
+  - "그게 전부?"
+
+improvement_keywords:
+  - "보완"
+  - "개선"
+  - "추가"
+  - "대신"
+  - "더 나은"
+  - "더욱"
+  - "이렇게"
+  - "하면 좋"
+  - "하면 더"
+  - "해야"
+  - "필요"
+  - "제안"
+  - "방향"
+
+thresholds:
+  max_toxicity_score: 0.35
+  max_personal_attack_score: 0.5
+  max_mockery_score: 0.4
+  toxicity_weight_per_match: 0.35
+  attack_weight_per_match: 0.5
+  mockery_weight_per_match: 0.4
+  constructiveness_base: 0.3
+  constructiveness_weight_per_match: 0.15
+  max_rewrite_attempts: 1
+
+safe_fallback: "해당 피드백은 표현이 부적절하여 건설적인 개선 의견으로 대체되었습니다."

@@ -1,0 +1,34 @@
+modes:
+  tikitaka:
+    enabled: true
+    rounds:
+      - initial_answer
+      - critique
+      - rebuttal_or_refinement
+    default_delay_ms: 700
+    max_rewrite_attempts: 1
+
+  debate:
+    enabled: true
+    chain:
+      - role: supporter
+        speech_type: support_argument
+        prompt_template: debate_supporter.md
+      - role: critic
+        speech_type: counter_argument
+        prompt_template: debate_critic.md
+      - role: moderator
+        speech_type: moderation_summary
+        prompt_template: debate_moderator.md
+    default_delay_ms: 700
+    max_rewrite_attempts: 1
+
+  socratic:
+    enabled: true
+    chain:
+      - role: socratic_tutor
+        speech_type: follow_up_question
+        prompt_template: socratic_tutor.md
+    max_follow_up_questions: 1
+    direct_answer_policy: block
+    max_rewrite_attempts: 1

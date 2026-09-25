@@ -1,0 +1,457 @@
+package com.studybridge.api.service;
+
+import com.studybridge.api.dto.MaterialDTO;
+import com.studybridge.api.entity.DocumentDomain;
+import com.studybridge.api.entity.ExtractionStatus;
+import com.studybridge.api.entity.Material;
+import com.studybridge.api.entity.MaterialType;
+import com.studybridge.api.dto.ArchiveListDTO;
+import com.studybridge.api.dto.FolderDTO;
+import com.studybridge.api.entity.Folder;
+import com.studybridge.api.entity.Planner;
+import com.studybridge.api.repository.MaterialRepository;
+import com.studybridge.api.repository.MaterialFeedbackRepository;
+import com.studybridge.api.repository.MaterialSummaryRepository;
+import com.studybridge.api.repository.FolderRepository;
+import com.studybridge.api.repository.PlannerRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+@Transactional(readOnly = true)
+public class MaterialService {
+
+    private final MaterialRepository materialRepository;
+    private final S3Service s3Service;
+    private final PdfExtractionService pdfExtractionService;
+    private final MaterialFeedbackRepository materialFeedbackRepository;
+    private final MaterialSummaryRepository materialSummaryRepository;
+    private final FolderRepository folderRepository;
+    private final PlannerRepository plannerRepository;
+    private final StudyNoteAnalysisService studyNoteAnalysisService;
+    private final PlannerService plannerService;
+
+    @Transactional
+    public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords,
+            org.springframework.web.multipart.MultipartFile file, Long folderId) throws java.io.IOException {
+        // 자료보관함에서는 오답노트(REVIEW_NOTE) 유형 생성을 금지한다. (REVIEW_NOTE는 ReviewNoteService가 퀴즈 기반으로만 생성)
+        // 프론트에서 라디오를 막아도 API 직접 호출(type=REVIEW_NOTE)을 차단하기 위함. → 400, S3 업로드 전에 거부.
+        if (type == MaterialType.REVIEW_NOTE) {
+            throw new IllegalArgumentException("자료보관함에서는 오답노트 자료 유형을 생성할 수 없습니다. 오답노트는 별도 오답노트 메뉴에서 관리됩니다.");
+        }
+        // 플래너는 파일 업로드(PDF/DOCX) 경로로 저장될 수 없다. 플래너 보관은 PlannerService.archivePlanner(구조화 PLANNER)로만 한다.
+        // (과거 플래너가 PDF로 자료보관함에 섞여 들어가던 오염을 업로드 경계에서도 차단)
+        if (type == MaterialType.PLANNER) {
+            throw new IllegalArgumentException("플래너 자료는 파일 업로드로 저장할 수 없습니다. 플래너 화면에서 '자료보관함에 저장'을 사용하세요.");
+        }
+
+        // 업로드 형식 검증: PDF/DOCX만 허용. Content-Type만 믿지 않고 확장자도 함께 확인한다.
+        validateUploadFormat(file);
+
+        // 업로드 위치(폴더) 검증: 지정 시 본인 소유 폴더여야 한다. null 이면 루트.
+        Long resolvedFolderId = resolveOwnedFolderId(userId, folderId);
+
+        // S3에 파일 업로드
+        String s3Key = s3Service.uploadFile(file, userId);
+
+        // DB에 데이터 저장
+        Material material = Material.builder()
+                .userId(userId)
+                .title(title)
+                .materialType(type)
+                .keywords(keywords)
+                .folderId(resolvedFolderId)
+                .originalFileName(file.getOriginalFilename())
+                .storedFileName(s3Key)
+                .s3FileUrl(s3Key)
+                .fileSize(file.getSize())
+                .extractionStatus(ExtractionStatus.PENDING)
+                .build();
+
+        Material savedMaterial = materialRepository.save(material);
+
+        // AI 핵심 요약 노트(전공 분야·핵심 객체 중심) PENDING 행 생성 — 분석은 추출 성공 후 백그라운드.
+        try { studyNoteAnalysisService.initPending(savedMaterial); }
+        catch (Exception e) { log.warn("학습 노트 PENDING 초기화 실패 materialId={}: {}", savedMaterial.getMaterialId(), e.getMessage()); }
+
+        // FastAPI로 텍스트 추출
+        pdfExtractionService.sendToFastApiForExtraction(
+                savedMaterial.getMaterialId(),
+                file.getBytes(),
+                file.getOriginalFilename(),
+                file.getContentType());
+
+        return convertToDTO(savedMaterial);
+    }
+
+    // PDF / DOCX만 허용. 구형 .doc는 친화 메시지로 거부. Content-Type + 확장자 동시 확인.
+    private void validateUploadFormat(org.springframework.web.multipart.MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("업로드할 파일이 비어 있습니다.");
+        }
+        final String PDF = "application/pdf";
+        final String DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+        String name = file.getOriginalFilename() != null ? file.getOriginalFilename().toLowerCase() : "";
+        String contentType = file.getContentType() != null ? file.getContentType().toLowerCase() : "";
+
+        // 구형 .doc는 명시적으로 거부하고 변환 안내를 준다.
+        if (name.endsWith(".doc") && !name.endsWith(".docx")) {
+            throw new IllegalArgumentException("현재는 .docx 형식만 지원합니다. .doc 파일은 .docx로 변환 후 업로드해주세요.");
+        }
+
+        boolean extOk = name.endsWith(".pdf") || name.endsWith(".docx");
+        boolean typeOk = contentType.equals(PDF) || contentType.equals(DOCX)
+                // 일부 브라우저/OS는 docx에 빈/일반 content-type을 보낼 수 있어 확장자가 맞으면 허용
+                || contentType.isBlank() || contentType.equals("application/octet-stream");
+
+        if (!extOk || !typeOk) {
+            throw new IllegalArgumentException("지원하지 않는 파일 형식입니다. PDF 또는 DOCX 파일만 업로드할 수 있습니다.");
+        }
+    }
+
+    @Transactional
+    public MaterialDTO saveStudyLog(Long userId, String title, String keywords, java.time.LocalDate studyDate,
+            String learningContent, String nextPlan, Long folderId) {
+        Material material = Material.builder()
+                .userId(userId)
+                .title(title)
+                .materialType(MaterialType.STUDY_LOG)
+                .keywords(keywords)
+                .folderId(resolveOwnedFolderId(userId, folderId))
+                .studyDate(studyDate)
+                .learningContent(learningContent)
+                .nextPlan(nextPlan)
+                .fileSize(0L)
+                .extractionStatus(ExtractionStatus.SUCCESS) // 텍스트만 있으므로 추출 성공(완료)으로 간주
+                .build();
+
+        Material savedMaterial = materialRepository.save(material);
+        return convertToDTO(savedMaterial);
+    }
+
+    /**
+     * 마인드맵(Obsidian Graph) 저장. PDF 로 변환하지 않고 그래프 JSON 을 content_json 에 보관한다.
+     *  · 엔티티 불변식(구조화 자료 + PDF 금지)과 별개로, materialType=MINDMAP 자체가 PDF 가 아님을 보장한다.
+     */
+    @Transactional
+    public MaterialDTO saveMindMap(Long userId, MaterialDTO.MindMapRequest request) {
+        java.util.Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("viewType", "obsidian_graph");
+        payload.put("contentType", "application/vnd.studybridge.mindmap+json");
+        payload.put("sourceType", request.getSourceType());
+        payload.put("sourceId", request.getSourceId());
+        payload.put("nodeCount", request.getNodeCount() != null ? request.getNodeCount() : 0);
+        payload.put("edgeCount", request.getEdgeCount() != null ? request.getEdgeCount() : 0);
+        payload.put("rawGraphJson", request.getRawGraphJson());
+        payload.put("obsidianMarkdown", request.getObsidianMarkdown());
+        payload.put("canvasJson", request.getCanvasJson());
+
+        String contentJson;
+        try {
+            contentJson = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload);
+        } catch (Exception e) {
+            throw new IllegalStateException("마인드맵 직렬화에 실패했습니다.", e);
+        }
+
+        String title = (request.getTitle() == null || request.getTitle().isBlank())
+                ? "마인드맵" : request.getTitle();
+
+        Material material = Material.builder()
+                .userId(userId)
+                .title(title)
+                .materialType(MaterialType.MINDMAP)
+                .keywords(request.getKeywords())
+                .folderId(resolveOwnedFolderId(userId, request.getFolderId()))
+                .contentJson(contentJson)
+                .fileSize(0L)
+                .extractionStatus(ExtractionStatus.SUCCESS)
+                .build();
+
+        Material saved = materialRepository.save(material);
+        return convertToDTO(saved);
+    }
+
+    @Transactional
+    public MaterialDTO updateMaterial(Long userId, Long materialId, MaterialDTO.UpdateRequest request) {
+        Material material = materialRepository.findById(materialId)
+                .orElseThrow(() -> new IllegalArgumentException("자료를 찾을 수 없습니다."));
+
+        if (!material.getUserId().equals(userId)) {
+            throw new SecurityException("해당 자료에 대한 수정 권한이 없습니다.");
+        }
+
+        if (request.getTitle() != null && !request.getTitle().isBlank()) {
+            material.setTitle(request.getTitle());
+        }
+        if (request.getKeywords() != null) {
+            material.setKeywords(request.getKeywords());
+        }
+        
+        // 학습일지인 경우 학습 내용 및 계획 업데이트
+        if (material.getMaterialType() == MaterialType.STUDY_LOG) {
+            boolean contentChanged = false;
+            
+            if (request.getLearningContent() != null && !request.getLearningContent().equals(material.getLearningContent())) {
+                material.setLearningContent(request.getLearningContent());
+                contentChanged = true;
+            }
+            if (request.getNextPlan() != null && !request.getNextPlan().equals(material.getNextPlan())) {
+                material.setNextPlan(request.getNextPlan());
+                contentChanged = true;
+            }
+            
+            // 학습 내용이 변경되었다면, 기존에 생성된 AI 피드백 및 요약 데이터를 삭제하여 다음에 다시 생성되도록 함
+            if (contentChanged) {
+                materialFeedbackRepository.findByMaterial_MaterialId(materialId)
+                        .ifPresent(fb -> {
+                            material.setFeedback(null);
+                            materialFeedbackRepository.delete(fb);
+                        });
+                materialSummaryRepository.findByMaterial_MaterialId(materialId)
+                        .ifPresent(sm -> {
+                            material.setSummary(null);
+                            materialSummaryRepository.delete(sm);
+                        });
+                materialRepository.saveAndFlush(material); // 강제 동기화
+            }
+        }
+
+        return convertToDTO(material);
+    }
+
+    @Transactional
+    public void deleteMaterial(Long userId, Long materialId) {
+        Material material = materialRepository.findById(materialId)
+                .orElseThrow(() -> new IllegalArgumentException("자료를 찾을 수 없습니다."));
+
+        if (!material.getUserId().equals(userId)) {
+            throw new SecurityException("해당 자료에 대한 삭제 권한이 없습니다.");
+        }
+
+        // S3에서 삭제
+        if (material.getMaterialType() != MaterialType.STUDY_LOG && material.getStoredFileName() != null) {
+            s3Service.deleteFile(material.getStoredFileName());
+        }
+
+        materialRepository.delete(material);
+    }
+
+    public List<MaterialDTO> getUserMaterials(Long userId) {
+        return materialRepository.findByUserIdOrderByUploadedAtDesc(userId).stream()
+                // 자료보관함 목록에서 오답노트(REVIEW_NOTE)는 제외한다. 오답노트는 별도 /api/review-notes 로만 노출.
+                .filter(material -> material.getMaterialType() != MaterialType.REVIEW_NOTE)
+                .map(material -> {
+                    try {
+                        return convertToDTO(material);
+                    } catch (Exception e) {
+                        // S3 또는 기타 오류가 개별 자료에서 발생해도 목록 전체를 실패시키지 않는다
+                        log.warn("getUserMaterials: convertToDTO failed for materialId={} err={}", material.getMaterialId(), e.getMessage());
+                        return convertToDTOWithoutS3(material);
+                    }
+                })
+                .collect(Collectors.toList());
+    }
+
+    /** 폴더 id 검증: null 이면 그대로 루트, 아니면 본인 소유 폴더인지 확인 후 반환. */
+    private Long resolveOwnedFolderId(Long userId, Long folderId) {
+        if (folderId == null) return null;
+        Folder folder = folderRepository.findById(folderId)
+                .orElseThrow(() -> new IllegalArgumentException("폴더를 찾을 수 없습니다."));
+        if (!folder.getUserId().equals(userId)) {
+            throw new SecurityException("해당 폴더에 대한 권한이 없습니다.");
+        }
+        return folderId;
+    }
+
+    /** 하위 호환용(도메인 미지정) — 학습자료 도메인으로 처리. */
+    public ArchiveListDTO getArchiveItems(Long userId, Long parentId) {
+        return getArchiveItems(userId, parentId, DocumentDomain.LEARNING_MATERIAL);
+    }
+
+    /**
+     * 자료보관함 폴더 뷰 한 화면 조회(현재 위치의 하위 폴더 + 자료 + breadcrumb). parentId=null 이면 루트.
+     * 반드시 domain(학습자료/플래너/학습일지) 으로 폴더·자료를 분리 조회한다(탭 간 혼입 방지).
+     * 다른 도메인 폴더로 진입하려 하면 빈 결과를 반환한다(empty 처리).
+     */
+    public ArchiveListDTO getArchiveItems(Long userId, Long parentId, String domainRaw) {
+        final String domain = DocumentDomain.normalize(domainRaw);
+        resolveOwnedFolderId(userId, parentId); // 위치 소유/존재 검증
+
+        // 폴더 진입 시: 그 폴더가 현재 도메인 소속인지 검증. 다르면 빈 결과(타 탭 folderId 재사용 차단).
+        if (parentId != null) {
+            Folder cur = folderRepository.findById(parentId).orElse(null);
+            String curDomain = cur == null ? null : DocumentDomain.normalize(cur.getDomain());
+            if (cur == null || !domain.equals(curDomain)) {
+                log.warn("getArchiveItems: 도메인 불일치 진입 차단. userId={}, parentId={}, want={}, have={}",
+                        userId, parentId, domain, curDomain);
+                return ArchiveListDTO.builder()
+                        .currentFolderId(parentId)
+                        .breadcrumb(new java.util.ArrayList<>())
+                        .folders(new java.util.ArrayList<>())
+                        .materials(new java.util.ArrayList<>())
+                        .build();
+            }
+        }
+
+        List<FolderDTO> folders = (parentId == null
+                ? folderRepository.findRootByUserIdAndDomain(userId, domain)
+                : folderRepository.findChildrenByUserIdAndDomain(userId, parentId, domain))
+                .stream().map(FolderDTO::from).collect(Collectors.toList());
+
+        List<Material> rawMaterials = (parentId == null
+                ? materialRepository.findByUserIdAndFolderIdIsNullOrderByUploadedAtDesc(userId)
+                : materialRepository.findByUserIdAndFolderIdOrderByUploadedAtDesc(userId, parentId));
+
+        // 자료도 도메인으로 필터(REVIEW_NOTE 는 forMaterialType 이 null → 자동 제외).
+        List<MaterialDTO> materials = rawMaterials.stream()
+                .filter(m -> domain.equals(DocumentDomain.forMaterialType(m.getMaterialType())))
+                .map(m -> {
+                    try { return convertToDTO(m); }
+                    catch (Exception e) {
+                        log.warn("getArchiveItems: convertToDTO failed for materialId={} err={}", m.getMaterialId(), e.getMessage());
+                        return convertToDTOWithoutS3(m);
+                    }
+                })
+                .collect(Collectors.toList());
+
+        // breadcrumb: 현재 폴더 → 루트로 거슬러 올라간 뒤 뒤집어 루트→현재 순(같은 도메인 폴더만)
+        List<FolderDTO> breadcrumb = new java.util.ArrayList<>();
+        Long cursor = parentId;
+        int guard = 0;
+        while (cursor != null && guard++ < 1000) {
+            Folder f = folderRepository.findById(cursor).orElse(null);
+            if (f == null || !f.getUserId().equals(userId)) break;
+            if (!domain.equals(DocumentDomain.normalize(f.getDomain()))) break;
+            breadcrumb.add(FolderDTO.from(f));
+            cursor = f.getParentId();
+        }
+        java.util.Collections.reverse(breadcrumb);
+
+        return ArchiveListDTO.builder()
+                .currentFolderId(parentId)
+                .breadcrumb(breadcrumb)
+                .folders(folders)
+                .materials(materials)
+                .build();
+    }
+
+    /** 자료를 다른 폴더로 이동(folderId=null 이면 루트로). 자료/대상 폴더 모두 본인 소유여야 한다. */
+    @Transactional
+    public MaterialDTO moveMaterial(Long userId, Long materialId, Long targetFolderId) {
+        Material material = materialRepository.findById(materialId)
+                .orElseThrow(() -> new IllegalArgumentException("자료를 찾을 수 없습니다."));
+        if (!material.getUserId().equals(userId)) {
+            throw new SecurityException("해당 자료에 대한 권한이 없습니다.");
+        }
+        material.setFolderId(resolveOwnedFolderId(userId, targetFolderId));
+        return convertToDTO(materialRepository.save(material));
+    }
+
+    // 자료 상세 조회
+    // context="review-note" 인 경우에만 오답노트(REVIEW_NOTE) 상세를 허용한다(전용 복습 화면 ReviewNoteArchiveDetail 진입).
+    // 그 외(일반 자료보관함 상세) 경로로 오답노트 materialId가 들어오면 404 로 차단한다.
+    @Transactional
+    public MaterialDTO getMaterial(Long userId, Long materialId, String context) {
+        Material material = materialRepository.findById(materialId)
+                .orElseThrow(() -> new IllegalArgumentException("자료를 찾을 수 없습니다."));
+
+        if (!material.getUserId().equals(userId)) {
+            throw new SecurityException("해당 자료에 대한 조회 권한이 없습니다.");
+        }
+
+        if (material.getMaterialType() == MaterialType.REVIEW_NOTE && !"review-note".equals(context)) {
+            throw new java.util.NoSuchElementException("오답노트 자료는 자료보관함 상세에서 열 수 없습니다.");
+        }
+
+        // 플래너 보관 항목: 미리보기 PDF 가 없으면 지금 만들어 둔다(레거시·원본 삭제 항목 포함). 실패해도 상세는 보여준다.
+        if (material.getMaterialType() == MaterialType.PLANNER) {
+            try { plannerService.ensurePreviewPdf(material); }
+            catch (Exception e) { log.warn("플래너 보관 항목 미리보기 PDF 생성 실패 materialId={}: {}", materialId, e.getMessage()); }
+        }
+
+        return convertToDTO(material);
+    }
+
+    private MaterialDTO convertToDTO(Material material) {
+        String presignedUrl = null;
+        String plannerPdfS3Key = null;
+        if (material.getMaterialType() == MaterialType.PLANNER) {
+            Planner planner = resolvePlannerForMaterial(material);
+            if (planner != null && planner.getS3Key() != null && !planner.getS3Key().isBlank()) {
+                plannerPdfS3Key = planner.getS3Key();
+                try {
+                    presignedUrl = s3Service.getPresignedUrl(planner.getS3Key(), planner.getTitle() + ".pdf");
+                } catch (Exception e) {
+                    log.warn("플래너 PDF presignedUrl 생성 실패 materialId={} plannerId={}: {}",
+                            material.getMaterialId(), planner.getId(), e.getMessage());
+                }
+            }
+        }
+        // 원본 플래너가 삭제된 보관 항목(PLANNER)은 넘겨받은 다운로드 PDF 키(s3FileUrl)로 미리보기를 유지한다.
+        boolean detachedPlannerPdf = material.getMaterialType() == MaterialType.PLANNER && presignedUrl == null;
+        if (presignedUrl == null && (!isStructured(material) || detachedPlannerPdf)
+                && material.getS3FileUrl() != null && !material.getS3FileUrl().isBlank()) {
+            try {
+                presignedUrl = s3Service.getPresignedUrl(material.getS3FileUrl(), material.getOriginalFileName());
+            } catch (Exception e) {
+                // S3 Presigned URL 생성 실패는 해당 자료에만 영향을 줌 (목록 전체 실패 방지)
+                log.warn("S3 presignedUrl 생성 실패 materialId={}: {}", material.getMaterialId(), e.getMessage());
+            }
+        }
+        return baseDTO(material).s3PresignedUrl(presignedUrl).plannerPdfS3Key(plannerPdfS3Key).build();
+    }
+
+    // S3 없이 기본 정보만 반환 (fallback)
+    private MaterialDTO convertToDTOWithoutS3(Material material) {
+        return baseDTO(material).s3PresignedUrl(null).build();
+    }
+
+    /** PDF/구조화 공통 필드 매핑. 구조화 자료(PLANNER)는 plannerId/contentJson 을 함께 노출한다. */
+    private MaterialDTO.MaterialDTOBuilder baseDTO(Material material) {
+        return MaterialDTO.builder()
+                .materialId(material.getMaterialId())
+                .title(material.getTitle())
+                .materialType(material.getMaterialType())
+                .keywords(material.getKeywords())
+                .folderId(material.getFolderId())
+                .plannerId(material.getPlannerId())
+                .contentJson(material.getContentJson())
+                .studyDate(material.getStudyDate())
+                .learningContent(material.getLearningContent())
+                .nextPlan(material.getNextPlan())
+                .originalFileName(material.getOriginalFileName())
+                .fileSize(material.getFileSize())
+                .extractionStatus(material.getExtractionStatus())
+                .uploadedAt(material.getUploadedAt());
+    }
+
+    /** PLANNER/MINDMAP 등 PDF 가 아닌 구조화 자료 여부(S3 presigned URL 생성 대상에서 제외). */
+    private boolean isStructured(Material material) {
+        MaterialType t = material.getMaterialType();
+        return t == MaterialType.PLANNER || t == MaterialType.MINDMAP;
+    }
+
+    private Planner resolvePlannerForMaterial(Material material) {
+        if (material.getPlannerId() != null) {
+            Planner planner = plannerRepository.findById(material.getPlannerId()).orElse(null);
+            if (planner != null) return planner;
+        }
+        if (material.getUserId() != null && material.getMaterialId() != null) {
+            List<Planner> planners = plannerRepository.findByUserIdAndMaterialId(material.getUserId(), material.getMaterialId());
+            if (!planners.isEmpty()) return planners.get(0);
+        }
+        return null;
+    }
+
+    private String generatePresignedUrl(String s3Key) {
+        return s3Service.getPresignedUrl(s3Key);
+    }
+}
