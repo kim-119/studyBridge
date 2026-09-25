@@ -6,7 +6,8 @@ import RequireAuth from './auth/RequireAuth';
 import ForgotPasswordScreen from './screens/auth/ForgotPasswordScreen';
 import LoginScreen from './screens/auth/LoginScreen';
 import RegisterScreen from './screens/auth/RegisterScreen';
-import ArchiveScreen from './screens/ArchiveScreen';
+import ArchiveScreen from './screens/archive/ArchiveScreen';
+import MaterialDetailScreen from './screens/archive/MaterialDetailScreen';
 import GroupStudyScreen from './screens/GroupStudyScreen';
 import HomeScreen from './screens/HomeScreen';
 import MoreScreen from './screens/MoreScreen';
@@ -99,6 +100,14 @@ export default function MobileApp() {
         element={
           <RequireAuth>
             <ArchiveScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/archive/:materialId"
+        element={
+          <RequireAuth>
+            <MaterialDetailScreen />
           </RequireAuth>
         }
       />
