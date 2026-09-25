@@ -5,7 +5,11 @@ export default function MobileScreen({ title, showBackButton = false, actions = 
   return (
     <>
       <MobileAppBar title={title} showBackButton={showBackButton} actions={actions} />
-      <main className="mobile-screen">{children}</main>
+
+      <main className="mobile-screen">
+        {!showBackButton && <h1 className="mobile-screen__title">{title}</h1>}
+        {children}
+      </main>
     </>
   );
 }
