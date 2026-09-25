@@ -15,7 +15,9 @@ import VideoSessionScreen from './screens/groupstudy/VideoSessionScreen';
 import HomeScreen from './screens/HomeScreen';
 import MoreScreen from './screens/MoreScreen';
 import PendingScreen from './screens/PendingScreen';
-import PlannerScreen from './screens/PlannerScreen';
+import PlannerCreateScreen from './screens/planner/PlannerCreateScreen';
+import PlannerDetailScreen from './screens/planner/PlannerDetailScreen';
+import PlannerScreen from './screens/planner/PlannerScreen';
 import StudyMateScreen from './screens/StudyMateScreen';
 import KnowledgeCreateScreen from './screens/knowledge/KnowledgeCreateScreen';
 import KnowledgeDetailScreen from './screens/knowledge/KnowledgeDetailScreen';
@@ -150,6 +152,22 @@ export default function MobileApp() {
         element={
           <RequireAuth>
             <PlannerScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/planner/new"
+        element={
+          <RequireAuth>
+            <PlannerCreateScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/planner/:plannerId"
+        element={
+          <RequireAuth>
+            <PlannerDetailScreen />
           </RequireAuth>
         }
       />

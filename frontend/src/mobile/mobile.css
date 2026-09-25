@@ -1117,3 +1117,18 @@ textarea.mobile-field__input {
   margin-bottom: var(--space-md);
   border-radius: var(--radius-card);
 }
+
+.mobile-progress {
+  height: 8px;
+  margin: var(--space-basic) 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background-color: var(--color-secondary);
+}
+
+.mobile-progress span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background-color: var(--color-primary);
+}
