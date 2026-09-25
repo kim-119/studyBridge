@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:mobile": "vite build --config vite.mobile.config.js",
+    "lint:mobile": "eslint src/mobile --ext js,jsx --max-warnings 0"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1060.0",
