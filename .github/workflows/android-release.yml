@@ -71,10 +71,10 @@ jobs:
 
       - name: 모바일 번들 가드
         run: |
-          BUNDLE=$(ls frontend/dist-mobile/assets/index-*.js)
+          ENTRY=$(ls frontend/dist-mobile/assets/app-*.js)
 
-          if ! grep -q "${MOBILE_API_BASE_URL}" "$BUNDLE"; then
-            echo "FAIL: 모바일 번들에 절대 API base URL이 없습니다."
+          if ! grep -q "${MOBILE_API_BASE_URL}" "$ENTRY"; then
+            echo "FAIL: 앱 엔트리에 절대 API base URL이 없습니다."
             exit 1
           fi
 

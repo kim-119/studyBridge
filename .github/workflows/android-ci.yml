@@ -72,22 +72,29 @@ jobs:
 
       - name: 모바일 번들 가드
         run: |
-          BUNDLE=$(ls frontend/dist-mobile/assets/index-*.js)
-          echo "검사 대상: $BUNDLE"
+          ENTRY=$(ls frontend/dist-mobile/assets/app-*.js)
+          echo "앱 엔트리: $ENTRY"
 
-          if ! grep -q "${MOBILE_API_BASE_URL}" "$BUNDLE"; then
-            echo "FAIL: 모바일 번들에 절대 API base URL이 없습니다. WebView에서 모든 요청이 실패합니다."
+          if ! grep -q "${MOBILE_API_BASE_URL}" "$ENTRY"; then
+            echo "FAIL: 앱 엔트리에 절대 API base URL이 없습니다. WebView에서 모든 요청이 실패합니다."
             exit 1
           fi
 
-          for desktop_only in openvidu fullcalendar sockjs; do
-            if grep -q "$desktop_only" "$BUNDLE"; then
-              echo "FAIL: 모바일 번들에 데스크톱 전용 의존성($desktop_only)이 포함됐습니다."
+          # 데스크톱 화면을 통해 끌려 들어오면 안 되는 대형 의존성.
+          # openvidu 는 화상 스터디에서 실제로 쓰지만 동적 import 로 분리돼 엔트리에는 없어야 한다.
+          for pulled_in in openvidu fullcalendar sockjs app-container; do
+            if grep -q "$pulled_in" "$ENTRY"; then
+              echo "FAIL: 앱 엔트리에 데스크톱 경유 의존성($pulled_in)이 포함됐습니다."
               exit 1
             fi
           done
 
-          echo "PASS: 모바일 번들은 절대 API base URL을 쓰고 데스크톱 의존성을 포함하지 않습니다."
+          if ! ls frontend/dist-mobile/assets/chunk-*.js >/dev/null 2>&1; then
+            echo "FAIL: 지연 로드 청크가 생성되지 않았습니다."
+            exit 1
+          fi
+
+          echo "PASS: 앱 엔트리는 절대 API base URL을 쓰고 대형 의존성을 지연 로드합니다."
 
       - name: JDK 21 설정
         uses: actions/setup-java@v4

@@ -8,7 +8,10 @@ import LoginScreen from './screens/auth/LoginScreen';
 import RegisterScreen from './screens/auth/RegisterScreen';
 import ArchiveScreen from './screens/archive/ArchiveScreen';
 import MaterialDetailScreen from './screens/archive/MaterialDetailScreen';
-import GroupStudyScreen from './screens/GroupStudyScreen';
+import GroupCreateScreen from './screens/groupstudy/GroupCreateScreen';
+import GroupDetailScreen from './screens/groupstudy/GroupDetailScreen';
+import GroupStudyScreen from './screens/groupstudy/GroupStudyScreen';
+import VideoSessionScreen from './screens/groupstudy/VideoSessionScreen';
 import HomeScreen from './screens/HomeScreen';
 import MoreScreen from './screens/MoreScreen';
 import PendingScreen from './screens/PendingScreen';
@@ -92,6 +95,30 @@ export default function MobileApp() {
         element={
           <RequireAuth>
             <GroupStudyScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/groupstudy/new"
+        element={
+          <RequireAuth>
+            <GroupCreateScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/groupstudy/:groupId"
+        element={
+          <RequireAuth>
+            <GroupDetailScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/groupstudy/:groupId/video"
+        element={
+          <RequireAuth>
+            <VideoSessionScreen />
           </RequireAuth>
         }
       />

@@ -1,4 +1,5 @@
 apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
 
 def signingPropertiesFile = rootProject.file('key.properties')
 def signingProperties = new Properties()
@@ -31,6 +32,13 @@ android {
                 keyPassword signingProperties['keyPassword']
             }
         }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    kotlinOptions {
+        jvmTarget = '21'
     }
     buildTypes {
         release {
