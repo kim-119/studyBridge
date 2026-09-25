@@ -1,0 +1,14 @@
+{
+  "appId": "kr.co.studybridge.app",
+  "appName": "StudyBridge",
+  "webDir": "frontend/dist-mobile",
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": false,
+      "backgroundColor": "#60C95A"
+    }
+  }
+}

@@ -62,3 +62,18 @@ studybridge-ft/
 *.safetensors
 *.bin
 *.pt
+
+# Android / Capacitor
+frontend/dist-mobile/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/capacitor-cordova-android-plugins/
+android/app/src/main/assets/public/
+
+# Android signing
+*.jks
+*.keystore
+android/key.properties
