@@ -34,10 +34,18 @@ function describeStreamError(error) {
   return describeApiError(error);
 }
 
+const MAX_RETRY_ATTEMPTS = 2;
+const RETRY_BACKOFF_MS = [1500, 4000];
+
 export function useStudyMateStream(roomId) {
   const [messages, setMessages] = useState([]);
   const [phase, setPhase] = useState(STREAM_PHASES.IDLE);
   const [errorMessage, setErrorMessage] = useState(null);
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const [isReconnecting, setReconnecting] = useState(false);
+  const [canRetry, setCanRetry] = useState(false);
+  const lastQuestionRef = useRef(null);
+  const retryTimerRef = useRef(null);
 
   const cancelRegistry = useMemo(() => createCancelRegistry(), []);
   const turnGuard = useMemo(() => createTurnGuard(), []);
@@ -63,21 +71,31 @@ export function useStudyMateStream(roomId) {
   }, []);
 
   const stop = useCallback(() => {
+    clearTimeout(retryTimerRef.current);
     cancelRegistry.cancel(roomId, 'user-stop');
     machineRef.current?.cancel('user-stop');
+    setReconnecting(false);
     setPhase(STREAM_PHASES.CANCELLED);
   }, [cancelRegistry, roomId]);
 
   const send = useCallback(
-    async (question) => {
+    async (question, { isRetry = false } = {}) => {
       const text = question.trim();
       if (!text || machineRef.current?.isLoading) return;
 
+      lastQuestionRef.current = text;
       setErrorMessage(null);
-      setMessages((previous) => [
-        ...previous,
-        { id: `user-${previous.length}`, role: 'user', text },
-      ]);
+      setCanRetry(false);
+      if (!isRetry) {
+        setRetryAttempt(0);
+        setReconnecting(false);
+      }
+      if (!isRetry) {
+        setMessages((previous) => [
+          ...previous,
+          { id: `user-${previous.length}`, role: 'user', text },
+        ]);
+      }
 
       const machine = createStreamStateMachine(setPhase);
       machineRef.current = machine;
@@ -134,9 +152,28 @@ export function useStudyMateStream(roomId) {
         );
 
         machine.close();
+        setReconnecting(false);
+        setRetryAttempt(0);
       } catch (error) {
         const message = describeStreamError(error);
         machine.fail('exception');
+
+        // 업스트림 재시작/과부하(retryable)와 네트워크 단절은 자동 재시도한다.
+        // 401/403/404 처럼 재시도로 해결되지 않는 오류는 사용자에게 바로 알린다.
+        const isRetryable = error?.retryable === true || error?.name === 'TypeError';
+
+        if (isRetryable && retryAttempt < MAX_RETRY_ATTEMPTS) {
+          setReconnecting(true);
+          setRetryAttempt((attempt) => attempt + 1);
+          retryTimerRef.current = setTimeout(
+            () => send(text, { isRetry: true }),
+            RETRY_BACKOFF_MS[Math.min(retryAttempt, RETRY_BACKOFF_MS.length - 1)]
+          );
+          return;
+        }
+
+        setReconnecting(false);
+        setCanRetry(isRetryable);
         if (message) setErrorMessage(message);
       } finally {
         cancelRegistry.release(roomId, turn.requestId);
@@ -145,14 +182,19 @@ export function useStudyMateStream(roomId) {
         );
       }
     },
-    [appendAnswer, cancelRegistry, roomId, turnGuard]
+    [appendAnswer, cancelRegistry, retryAttempt, roomId, turnGuard]
   );
 
   useEffect(() => {
     return () => {
+      clearTimeout(retryTimerRef.current);
       cancelRegistry.cancel(roomId, 'unmount');
     };
   }, [cancelRegistry, roomId]);
+
+  const retry = useCallback(() => {
+    if (lastQuestionRef.current) send(lastQuestionRef.current, { isRetry: true });
+  }, [send]);
 
   return {
     messages,
@@ -163,7 +205,11 @@ export function useStudyMateStream(roomId) {
       phase === STREAM_PHASES.STREAMING ||
       phase === STREAM_PHASES.FINALIZING,
     errorMessage,
+    isReconnecting,
+    retryAttempt,
+    canRetry,
     send,
     stop,
+    retry,
   };
 }

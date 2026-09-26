@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { GraduationCap } from 'lucide-react';
+import { GraduationCap, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import BottomSheet from '../../components/BottomSheet';
 import Button from '../../components/Button';
@@ -48,10 +48,17 @@ export default function StudyMateScreen() {
     if (roomId) navigate(`/studymate/${roomId}`);
   });
 
+  const removeRoom = useSubmit(async (targetRoomId) => {
+    await agentService.deleteRoom(null, targetRoomId);
+    await rooms.reload();
+  });
+
   const roomList = Array.isArray(rooms.data) ? rooms.data : rooms.data?.content || [];
 
   return (
     <MobileScreen title="학습메이트">
+      {removeRoom.errorMessage && <p className="mobile-auth__error">{removeRoom.errorMessage}</p>}
+
       <ScreenState query={rooms} loadingLabel="AI 메이트를 불러오는 중입니다">
         {roomList.length === 0 ? (
           <EmptyState message="아직 만든 AI 메이트가 없습니다. 새 메이트를 만들어 대화를 시작해보세요." />
@@ -64,6 +71,19 @@ export default function StudyMateScreen() {
                   title={room.roomName || room.name || 'AI 메이트'}
                   subtitle={room.learningMode || 'basic'}
                   onClick={() => navigate(`/studymate/${room.roomId ?? room.id}`)}
+                  trailing={
+                    <button
+                      type="button"
+                      className="mobile-todo__delete"
+                      aria-label={`${room.roomName || 'AI 메이트'} 삭제`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        removeRoom.submit(room.roomId ?? room.id).catch(() => {});
+                      }}
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  }
                 />
               </li>
             ))}

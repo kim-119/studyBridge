@@ -1,9 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Send, Square } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AtSign, RotateCcw, Send, Square } from 'lucide-react';
 import { useParams } from 'react-router-dom';
-import { LoadingState } from '../../components/ScreenState';
+import MarkdownText from '../../components/MarkdownText';
+import { ErrorState, LoadingState } from '../../components/ScreenState';
 import MobileScreen from '../../shell/MobileScreen';
 import { agentService } from '../../../services/api';
+import { getAgentColor } from '../../../utils/agentColor';
 import { useAsync } from '../../data/useAsync';
 import { useStudyMateStream } from './useStudyMateStream';
 
@@ -13,10 +15,38 @@ function historyToMessages(history) {
   return entries.map((entry, index) => ({
     id: entry.id ?? `history-${index}`,
     role: entry.role === 'user' || entry.sender === 'user' ? 'user' : 'assistant',
+    agentId: entry.agentId ?? entry.agent_id ?? null,
     agentName: entry.agentName || entry.agent_name || 'AI 메이트',
     text: entry.content || entry.message || entry.answer || '',
     isSealed: true,
   }));
+}
+
+function AgentBubble({ message, onMention }) {
+  const palette = getAgentColor(message.agentId ?? message.agentName);
+
+  return (
+    <li
+      className="mobile-chat__bubble mobile-chat__bubble--agent"
+      style={{ borderLeftColor: palette.border, backgroundColor: palette.bg }}
+    >
+      <span className="mobile-chat__author" style={{ color: palette.text }}>
+        {message.agentName}
+      </span>
+
+      <MarkdownText>{message.text}</MarkdownText>
+
+      {message.isSealed && (
+        <button
+          type="button"
+          className="mobile-chat__mention"
+          onClick={() => onMention(message.agentName)}
+        >
+          <AtSign size={14} />이 교수님께 추가 질문
+        </button>
+      )}
+    </li>
+  );
 }
 
 export default function StudyMateChatScreen() {
@@ -24,6 +54,7 @@ export default function StudyMateChatScreen() {
   const stream = useStudyMateStream(roomId);
   const [question, setQuestion] = useState('');
   const bottomRef = useRef(null);
+  const inputRef = useRef(null);
 
   const history = useAsync(() => agentService.getChatHistory(null, roomId), [roomId]);
 
@@ -36,6 +67,18 @@ export default function StudyMateChatScreen() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [stream.messages, stream.isStreaming]);
+
+  const hasMultipleAgents = useMemo(() => {
+    const names = new Set(
+      stream.messages.filter((message) => message.role === 'assistant').map((message) => message.agentName)
+    );
+    return names.size > 1;
+  }, [stream.messages]);
+
+  const mentionAgent = (agentName) => {
+    setQuestion((previous) => (previous.startsWith(`@${agentName}`) ? previous : `@${agentName} ${previous}`));
+    inputRef.current?.focus();
+  };
 
   const handleSubmit = (event) => {
     event.preventDefault();
@@ -50,18 +93,20 @@ export default function StudyMateChatScreen() {
         <LoadingState label="대화를 불러오는 중입니다" />
       ) : (
         <div className="mobile-chat">
+          {hasMultipleAgents && (
+            <p className="mobile-chat__status">교수님별 답변은 색으로 구분됩니다</p>
+          )}
+
           <ul className="mobile-chat__messages">
-            {stream.messages.map((message) => (
-              <li
-                key={message.id}
-                className={message.role === 'user' ? 'mobile-chat__bubble is-user' : 'mobile-chat__bubble'}
-              >
-                {message.role === 'assistant' && (
-                  <span className="mobile-chat__author">{message.agentName}</span>
-                )}
-                <p className="mobile-paragraph">{message.text}</p>
-              </li>
-            ))}
+            {stream.messages.map((message) =>
+              message.role === 'user' ? (
+                <li key={message.id} className="mobile-chat__bubble is-user">
+                  <p className="mobile-paragraph">{message.text}</p>
+                </li>
+              ) : (
+                <AgentBubble key={message.id} message={message} onMention={mentionAgent} />
+              )
+            )}
 
             {stream.isStreaming && (
               <li className="mobile-chat__bubble">
@@ -72,10 +117,23 @@ export default function StudyMateChatScreen() {
             <li ref={bottomRef} />
           </ul>
 
-          {stream.errorMessage && <p className="mobile-auth__error">{stream.errorMessage}</p>}
+          {stream.errorMessage && (
+            <ErrorState
+              message={stream.errorMessage}
+              onRetry={stream.canRetry ? stream.retry : undefined}
+            />
+          )}
+
+          {stream.isReconnecting && (
+            <p className="mobile-chat__status">
+              <RotateCcw size={14} />
+              연결이 끊겨 다시 시도하는 중입니다 ({stream.retryAttempt}회차)
+            </p>
+          )}
 
           <form className="mobile-chat__composer" onSubmit={handleSubmit}>
             <textarea
+              ref={inputRef}
               className="mobile-chat__input"
               value={question}
               rows={1}

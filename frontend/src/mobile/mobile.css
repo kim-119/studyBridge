@@ -1410,3 +1410,72 @@ textarea.mobile-field__input {
 .mobile-card__meta button {
   margin-left: auto;
 }
+
+.mobile-chat__bubble--agent {
+  border-left: 3px solid var(--color-primary);
+}
+
+.mobile-chat__mention {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: var(--space-basic);
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background-color: var(--color-bg-card);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mobile-md__paragraph {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+.mobile-md__heading {
+  margin: 8px 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.mobile-md__list {
+  margin: 0 0 6px;
+  padding-left: 18px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.mobile-md__inline-code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background-color: rgba(17, 24, 39, 0.08);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.mobile-md__code {
+  position: relative;
+  margin: 6px 0;
+  padding: 28px 12px 12px;
+  overflow-x: auto;
+  border-radius: 8px;
+  background-color: #111827;
+  color: #E5E7EB;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.mobile-md__code-lang {
+  position: absolute;
+  top: 6px;
+  left: 12px;
+  color: #9CA3AF;
+  font-size: 11px;
+}
