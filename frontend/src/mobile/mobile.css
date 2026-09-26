@@ -1367,3 +1367,46 @@ textarea.mobile-field__input {
   border-color: var(--color-primary);
   background-color: var(--color-primary);
 }
+
+.mobile-period {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-basic);
+}
+
+.mobile-period button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.mobile-period span {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.mobile-period__today {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.mobile-avatar-edit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.mobile-card__meta button {
+  margin-left: auto;
+}

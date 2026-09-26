@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Heart, MessageCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Fab from '../../components/Fab';
@@ -13,19 +13,27 @@ function summarize(content) {
   return plain.length > 90 ? `${plain.slice(0, 90)}…` : plain;
 }
 
+const SEARCH_DEBOUNCE_MS = 350;
+
 export default function KnowledgeScreen() {
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
-  const posts = useAsync(() => knowledgeService.getPosts(), []);
+  const [appliedKeyword, setAppliedKeyword] = useState('');
 
-  const visiblePosts = useMemo(() => {
-    const list = Array.isArray(posts.data) ? posts.data : posts.data?.content || [];
-    if (!keyword) return list;
+  useEffect(() => {
+    const timer = setTimeout(() => setAppliedKeyword(keyword.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [keyword]);
 
-    return list.filter((post) =>
-      `${post.title || ''} ${post.content || ''}`.toLowerCase().includes(keyword.toLowerCase())
-    );
-  }, [posts.data, keyword]);
+  const posts = useAsync(
+    () => (appliedKeyword ? knowledgeService.searchPosts(appliedKeyword) : knowledgeService.getPosts()),
+    [appliedKeyword]
+  );
+
+  const visiblePosts = useMemo(
+    () => (Array.isArray(posts.data) ? posts.data : posts.data?.content || []),
+    [posts.data]
+  );
 
   return (
     <MobileScreen title="지식공유" showBackButton>
@@ -41,7 +49,7 @@ export default function KnowledgeScreen() {
 
       <ScreenState query={posts} loadingLabel="게시글을 불러오는 중입니다">
         {visiblePosts.length === 0 ? (
-          <EmptyState message={keyword ? '검색 결과가 없습니다.' : '아직 등록된 게시글이 없습니다.'} />
+          <EmptyState message={appliedKeyword ? '검색 결과가 없습니다.' : '아직 등록된 게시글이 없습니다.'} />
         ) : (
           <ul className="mobile-list">
             {visiblePosts.map((post) => (

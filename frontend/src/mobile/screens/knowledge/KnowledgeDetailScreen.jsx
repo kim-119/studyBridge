@@ -1,21 +1,28 @@
 import React, { useState } from 'react';
-import { FileText, Heart } from 'lucide-react';
+import { FileText, Heart, Trash2 } from 'lucide-react';
 import { useParams } from 'react-router-dom';
 import Button from '../../components/Button';
 import ScreenState from '../../components/ScreenState';
 import TextField from '../../components/TextField';
 import MobileScreen from '../../shell/MobileScreen';
 import { knowledgeService } from '../../../services/api';
+import { useAuth } from '../../../hooks/useAuth';
 import { useAsync, useSubmit } from '../../data/useAsync';
 import { openExternalUrl } from '../../platform/externalLink';
 
 export default function KnowledgeDetailScreen() {
   const { blogId } = useParams();
+  const { userId } = useAuth();
   const post = useAsync(() => knowledgeService.getPostDetail(blogId), [blogId]);
   const [comment, setComment] = useState('');
 
   const toggleLike = useSubmit(async () => {
     await knowledgeService.toggleLike(blogId);
+    await post.reload();
+  });
+
+  const removeComment = useSubmit(async (commentId) => {
+    await knowledgeService.deleteComment(blogId, commentId);
     await post.reload();
   });
 
@@ -66,13 +73,34 @@ export default function KnowledgeDetailScreen() {
           <section className="mobile-section">
             <h3 className="mobile-section__title">댓글 {data?.comments?.length ?? 0}</h3>
 
+            {removeComment.errorMessage && (
+              <p className="mobile-auth__error">{removeComment.errorMessage}</p>
+            )}
+
             <ul className="mobile-list">
-              {(data?.comments || []).map((entry) => (
-                <li key={entry.commentId ?? entry.id} className="mobile-card">
-                  <p className="mobile-card__meta">{entry.authorNickname}</p>
-                  <p className="mobile-paragraph">{entry.content}</p>
-                </li>
-              ))}
+              {(data?.comments || []).map((entry) => {
+                const commentId = entry.commentId ?? entry.id;
+                const isMine = String(entry.authorId ?? '') === String(userId);
+
+                return (
+                  <li key={commentId} className="mobile-card">
+                    <p className="mobile-card__meta">
+                      {entry.authorNickname}
+                      {isMine && (
+                        <button
+                          type="button"
+                          className="mobile-todo__delete"
+                          aria-label="댓글 삭제"
+                          onClick={() => removeComment.submit(commentId).catch(() => {})}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </p>
+                    <p className="mobile-paragraph">{entry.content}</p>
+                  </li>
+                );
+              })}
             </ul>
           </section>
 
