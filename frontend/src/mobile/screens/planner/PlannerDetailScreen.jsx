@@ -6,6 +6,7 @@ import ScreenState from '../../components/ScreenState';
 import MobileScreen from '../../shell/MobileScreen';
 import { plannerService } from '../../../services/api';
 import { useAsync, useSubmit } from '../../data/useAsync';
+import { extractDownloadUrl } from '../../platform/downloadUrl';
 import { openExternalUrl } from '../../platform/externalLink';
 import { toPlannerDetail } from './plannerAdapter';
 
@@ -25,7 +26,7 @@ export default function PlannerDetailScreen() {
 
   const downloadPdf = useSubmit(async () => {
     const response = await plannerService.getDownloadUrl(plannerId);
-    await openExternalUrl(response?.downloadUrl || response?.url || response);
+    await openExternalUrl(extractDownloadUrl(response));
   });
 
   const removePlanner = useSubmit(async () => {

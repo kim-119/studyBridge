@@ -8,6 +8,7 @@ import SubTabs from '../../components/SubTabs';
 import MobileScreen from '../../shell/MobileScreen';
 import { groupService } from '../../../services/api';
 import { useAsync, useSubmit } from '../../data/useAsync';
+import { extractDownloadUrl } from '../../platform/downloadUrl';
 import { openExternalUrl } from '../../platform/externalLink';
 
 const DETAIL_TABS = [
@@ -47,7 +48,7 @@ function MaterialsTab({ groupId }) {
 
   const download = useSubmit(async (materialId) => {
     const response = await groupService.getGroupMaterialDownloadUrl(materialId);
-    await openExternalUrl(response?.presignedUrl || response?.url || response);
+    await openExternalUrl(extractDownloadUrl(response));
   });
 
   return (

@@ -7,6 +7,7 @@ import TextField from '../../components/TextField';
 import MobileScreen from '../../shell/MobileScreen';
 import { reviewNoteService } from '../../../services/api';
 import { useAsync, useSubmit } from '../../data/useAsync';
+import { extractDownloadUrl } from '../../platform/downloadUrl';
 import { openExternalUrl } from '../../platform/externalLink';
 
 export default function ReviewNoteDetailScreen() {
@@ -25,7 +26,7 @@ export default function ReviewNoteDetailScreen() {
 
   const download = useSubmit(async () => {
     const response = await reviewNoteService.getDownloadUrl(reviewNoteId);
-    await openExternalUrl(response?.pdfUrl || response?.url || response?.downloadUrl || response);
+    await openExternalUrl(extractDownloadUrl(response));
   });
 
   const requestVariant = useSubmit(async () => {

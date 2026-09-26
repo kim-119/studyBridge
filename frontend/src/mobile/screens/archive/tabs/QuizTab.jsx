@@ -3,6 +3,7 @@ import Button from '../../../components/Button';
 import ScreenState, { EmptyState } from '../../../components/ScreenState';
 import { materialService } from '../../../../services/api';
 import { useAsync, useSubmit } from '../../../data/useAsync';
+import { gradeQuiz, toQuizQuestions } from '../quizModel';
 
 const DIFFICULTY_OPTIONS = [
   { key: 'easy', label: '쉬움' },
@@ -10,64 +11,34 @@ const DIFFICULTY_OPTIONS = [
   { key: 'hard', label: '어려움' },
 ];
 
-function parseQuestions(quiz) {
-  if (Array.isArray(quiz?.quizzes) && quiz.quizzes.length > 0) return quiz.quizzes;
-
-  if (typeof quiz?.quizData === 'string') {
-    try {
-      const parsed = JSON.parse(quiz.quizData);
-      if (Array.isArray(parsed)) return parsed;
-      if (Array.isArray(parsed?.quizzes)) return parsed.quizzes;
-      if (Array.isArray(parsed?.questions)) return parsed.questions;
-    } catch {
-      return [];
-    }
-  }
-
-  return [];
-}
-
-function questionOptions(question) {
-  const raw = question.options || question.choices || question.answers;
-  if (Array.isArray(raw)) return raw;
-  if (raw && typeof raw === 'object') return Object.values(raw);
-  return [];
-}
-
-function correctAnswerOf(question) {
-  return question.answer ?? question.correctAnswer ?? question.correct_answer;
-}
-
 function QuestionCard({ question, index, selected, onSelect, isRevealed }) {
-  const options = questionOptions(question);
-  const answer = correctAnswerOf(question);
-
   return (
     <li className="mobile-card mobile-section">
       <p className="mobile-quiz__stem">
-        {index + 1}. {question.question || question.stem || question.title}
+        {index + 1}. {question.stem}
       </p>
 
       <ul className="mobile-quiz__options">
-        {options.map((option, optionIndex) => {
-          const value = typeof option === 'string' ? option : option.text ?? String(option);
+        {question.options.map((option, optionIndex) => {
           const isSelected = selected === optionIndex;
-          const isCorrect = isRevealed && String(answer) === String(optionIndex + 1);
+          const isAnswer = isRevealed && optionIndex === question.answerIndex;
+          const isWrongPick = isRevealed && isSelected && optionIndex !== question.answerIndex;
 
           return (
-            <li key={value}>
+            <li key={`${question.id}-${optionIndex}`}>
               <button
                 type="button"
                 className={[
                   'mobile-quiz__option',
                   isSelected ? 'is-selected' : '',
-                  isCorrect ? 'is-correct' : '',
+                  isAnswer ? 'is-correct' : '',
+                  isWrongPick ? 'is-wrong' : '',
                 ]
                   .filter(Boolean)
                   .join(' ')}
                 onClick={() => onSelect(optionIndex)}
               >
-                {value}
+                {option}
               </button>
             </li>
           );
@@ -88,12 +59,10 @@ export default function QuizTab({ materialId }) {
   const [selections, setSelections] = useState({});
   const [isRevealed, setRevealed] = useState(false);
 
-  const latestQuiz = useMemo(() => {
+  const questions = useMemo(() => {
     const list = Array.isArray(quiz.data) ? quiz.data : quiz.data ? [quiz.data] : [];
-    return list[list.length - 1] || null;
+    return toQuizQuestions(list[list.length - 1] || null);
   }, [quiz.data]);
-
-  const questions = useMemo(() => parseQuestions(latestQuiz), [latestQuiz]);
 
   const generateQuiz = useSubmit(async () => {
     await materialService.generateQuiz(materialId, {
@@ -106,10 +75,7 @@ export default function QuizTab({ materialId }) {
     await quiz.reload();
   });
 
-  const correctCount = questions.reduce((total, question, index) => {
-    const answer = correctAnswerOf(question);
-    return String(answer) === String((selections[index] ?? -1) + 1) ? total + 1 : total;
-  }, 0);
+  const result = gradeQuiz(questions, selections);
 
   return (
     <ScreenState query={quiz} loadingLabel="퀴즈를 불러오는 중입니다">
@@ -163,7 +129,7 @@ export default function QuizTab({ materialId }) {
             <ul className="mobile-list">
               {questions.map((question, index) => (
                 <QuestionCard
-                  key={question.question || question.stem || index}
+                  key={question.id}
                   question={question}
                   index={index}
                   selected={selections[index]}
@@ -176,7 +142,9 @@ export default function QuizTab({ materialId }) {
             </ul>
 
             <Button fullWidth variant="secondary" onClick={() => setRevealed((value) => !value)}>
-              {isRevealed ? `정답 숨기기 (${correctCount}/${questions.length})` : '채점하기'}
+              {isRevealed
+                ? `정답 숨기기 (${result.correct}/${result.total})`
+                : `채점하기 (${result.answered}/${result.total} 응답)`}
             </Button>
           </>
         )}
