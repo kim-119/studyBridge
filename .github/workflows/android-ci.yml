@@ -58,6 +58,9 @@ jobs:
       - name: 모바일 레이어 정적 검사
         run: npm --prefix frontend run lint:mobile
 
+      - name: 모바일 단위 테스트
+        run: npm --prefix frontend run test:mobile
+
       - name: 데스크톱 번들 회귀 확인
         run: |
           npm run build
@@ -115,6 +118,11 @@ jobs:
         run: |
           cd android
           ./gradlew testDebugUnitTest
+
+      - name: Android 정적 검사
+        run: |
+          cd android
+          ./gradlew lintDebug
 
       - name: Debug APK 빌드
         run: |

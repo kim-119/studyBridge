@@ -62,6 +62,9 @@ jobs:
       - name: 모바일 레이어 정적 검사
         run: npm --prefix frontend run lint:mobile
 
+      - name: 모바일 단위 테스트
+        run: npm --prefix frontend run test:mobile
+
       - name: 모바일 번들 빌드
         env:
           VITE_API_BASE_URL: ${{ env.MOBILE_API_BASE_URL }}

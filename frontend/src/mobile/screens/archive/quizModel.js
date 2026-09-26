@@ -37,9 +37,14 @@ function optionLabel(option) {
  * 데스크톱 parseQuizQuestions 와 같은 0-based 계약으로 정규화한다.
  */
 function answerIndexOf(question, options) {
-  if (typeof question.answerIndex === 'number') return question.answerIndex;
-  if (typeof question.correctAnswer === 'number') return question.correctAnswer;
-  if (typeof question.answer === 'number') return question.answer;
+  const numericAnswer = [
+    question.answerIndex,
+    question.correctAnswer,
+    question.correct_answer,
+    question.answer,
+  ].find((value) => typeof value === 'number');
+
+  if (typeof numericAnswer === 'number') return numericAnswer;
 
   const labels = options.map(optionLabel);
   const candidate = question.answer ?? question.correctAnswer ?? question.correct_answer;

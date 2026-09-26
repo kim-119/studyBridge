@@ -23,13 +23,14 @@ function formatMinutes(minutes) {
   return hours > 0 ? `${hours}h ${rest}m` : `${rest}m`;
 }
 
+// TimerDTO.WeeklyStudyTimeResponse 계약: { totalSeconds, averageSeconds, attendanceDays, dailyStats }
 function weeklyMinutes(weekly) {
-  if (!weekly) return 0;
-  if (typeof weekly.totalMinutes === 'number') return weekly.totalMinutes;
-  if (typeof weekly.totalSeconds === 'number') return Math.round(weekly.totalSeconds / 60);
+  if (typeof weekly?.totalSeconds === 'number') return Math.round(weekly.totalSeconds / 60);
 
-  const days = Array.isArray(weekly) ? weekly : weekly.days || weekly.data || [];
-  return days.reduce((total, day) => total + (day.minutes ?? Math.round((day.seconds || 0) / 60)), 0);
+  return (weekly?.dailyStats || []).reduce(
+    (total, day) => total + Math.round((day.seconds ?? day.studySeconds ?? 0) / 60),
+    0
+  );
 }
 
 export default function HomeScreen() {

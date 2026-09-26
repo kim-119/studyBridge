@@ -33,6 +33,12 @@ android {
             }
         }
     }
+    lint {
+        // PropertyEscape 는 local.properties 만 건드린다. 이 파일은 gitignore 대상이라
+        // CI 에는 존재하지 않고, 개발자 로컬 경로 때문에 빌드가 실패하는 것을 막는다.
+        disable += 'PropertyEscape'
+        abortOnError true
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_21
         targetCompatibility JavaVersion.VERSION_21
@@ -64,6 +70,7 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
+    testImplementation "org.jetbrains.kotlin:kotlin-test-junit:$kotlinVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')

@@ -9,7 +9,8 @@
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "build:mobile": "vite build --config vite.mobile.config.js",
-    "lint:mobile": "eslint src/mobile --ext js,jsx --max-warnings 0"
+    "lint:mobile": "eslint src/mobile --ext js,jsx --max-warnings 0",
+    "test:mobile": "node --test \"src/mobile/__tests__/*.test.mjs\""
   },
   "dependencies": {
     "@fullcalendar/daygrid": "^6.1.11",
