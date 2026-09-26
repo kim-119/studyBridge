@@ -15,7 +15,6 @@ import GroupStudyScreen from './screens/groupstudy/GroupStudyScreen';
 import VideoSessionScreen from './screens/groupstudy/VideoSessionScreen';
 import HomeScreen from './screens/HomeScreen';
 import MoreScreen from './screens/MoreScreen';
-import PendingScreen from './screens/PendingScreen';
 import PlannerDetailScreen from './screens/planner/PlannerDetailScreen';
 import PlannerFormScreen from './screens/planner/PlannerFormScreen';
 import PlannerScreen from './screens/planner/PlannerScreen';
@@ -24,12 +23,12 @@ import StudyMateScreen from './screens/studymate/StudyMateScreen';
 import KnowledgeCreateScreen from './screens/knowledge/KnowledgeCreateScreen';
 import KnowledgeDetailScreen from './screens/knowledge/KnowledgeDetailScreen';
 import KnowledgeScreen from './screens/knowledge/KnowledgeScreen';
+import MindmapScreen from './screens/mindmap/MindmapScreen';
 import MyPageScreen from './screens/mypage/MyPageScreen';
 import ReviewNoteDetailScreen from './screens/reviewnotes/ReviewNoteDetailScreen';
 import ReviewNoteRetryScreen from './screens/reviewnotes/ReviewNoteRetryScreen';
 import ReviewNotesScreen from './screens/reviewnotes/ReviewNotesScreen';
 import WeeklyScheduleScreen from './screens/schedule/WeeklyScheduleScreen';
-import { SECONDARY_SCREENS } from './screens/secondaryScreens';
 import { applyNativeChrome, registerHardwareBackButton } from './platform/nativeShell';
 
 const HOME_PATH = '/';
@@ -264,18 +263,14 @@ export default function MobileApp() {
           </RequireAuth>
         }
       />
-
-      {SECONDARY_SCREENS.map(({ path, title, description }) => (
-        <Route
-          key={path}
-          path={path}
-          element={
-            <RequireAuth>
-              <PendingScreen title={title} description={description} showBackButton />
-            </RequireAuth>
-          }
-        />
-      ))}
+      <Route
+        path="/mindmap"
+        element={
+          <RequireAuth>
+            <MindmapScreen />
+          </RequireAuth>
+        }
+      />
 
       <Route path="*" element={<Navigate to={HOME_PATH} replace />} />
     </Routes>

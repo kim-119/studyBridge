@@ -1479,3 +1479,54 @@ textarea.mobile-field__input {
   color: #9CA3AF;
   font-size: 11px;
 }
+
+.mobile-mindmap {
+  position: relative;
+  height: 62vh;
+  min-height: 320px;
+  overflow: hidden;
+  border-radius: var(--radius-card);
+  background-color: #0B1020;
+  touch-action: none;
+}
+
+.mobile-mindmap__canvas {
+  display: block;
+}
+
+.mobile-mindmap__edge {
+  stroke: rgba(148, 163, 184, 0.45);
+  stroke-width: 1.2;
+}
+
+.mobile-mindmap__node {
+  cursor: pointer;
+}
+
+.mobile-mindmap__label {
+  fill: #E5E7EB;
+  font-size: 11px;
+  text-anchor: middle;
+}
+
+.mobile-mindmap__controls {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mobile-mindmap__controls button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 999px;
+  background-color: rgba(17, 24, 39, 0.85);
+  color: #F9FAFB;
+  cursor: pointer;
+}
