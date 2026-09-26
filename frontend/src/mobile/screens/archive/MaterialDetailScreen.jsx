@@ -13,6 +13,7 @@ import DocumentTab from './tabs/DocumentTab';
 import MemoTab from './tabs/MemoTab';
 import QuestionTab from './tabs/QuestionTab';
 import QuizTab from './tabs/QuizTab';
+import ReviewNoteLinkCard from './tabs/ReviewNoteLinkCard';
 import RoadmapTab from './tabs/RoadmapTab';
 import SummaryTab from './tabs/SummaryTab';
 
@@ -103,6 +104,8 @@ export default function MaterialDetailScreen() {
               <p className="mobile-auth__error">{removeMaterial.errorMessage}</p>
             )}
           </section>
+
+          <ReviewNoteLinkCard materialId={materialId} />
 
           <SubTabs tabs={DETAIL_TABS} activeKey={activeTab} onChange={setActiveTab} />
 

@@ -1,5 +1,16 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { ChevronRight, FileText, Folder, FolderPlus, Home, Upload } from 'lucide-react';
+import {
+  ChevronRight,
+  FileText,
+  Folder,
+  FolderInput,
+  FolderPlus,
+  Home,
+  MoreVertical,
+  PencilLine,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import BottomSheet from '../../components/BottomSheet';
 import Button from '../../components/Button';
@@ -11,6 +22,7 @@ import TextField from '../../components/TextField';
 import MobileScreen from '../../shell/MobileScreen';
 import { folderService, materialService } from '../../../services/api';
 import { useAsync, useSubmit } from '../../data/useAsync';
+import FolderPicker from './FolderPicker';
 import {
   ARCHIVE_TABS,
   SORT_OPTIONS,
@@ -20,6 +32,17 @@ import {
   matchesKeyword,
   sortItems,
 } from './archiveDomain';
+
+const SHEET = {
+  ACTIONS: 'actions',
+  NEW_FOLDER: 'new-folder',
+  UPLOAD: 'upload',
+  FOLDER_MENU: 'folder-menu',
+  FOLDER_RENAME: 'folder-rename',
+  FOLDER_MOVE: 'folder-move',
+  MATERIAL_MENU: 'material-menu',
+  MATERIAL_MOVE: 'material-move',
+};
 
 export default function ArchiveScreen() {
   const navigate = useNavigate();
@@ -33,6 +56,8 @@ export default function ArchiveScreen() {
   const [pendingFile, setPendingFile] = useState(null);
   const [uploadTitle, setUploadTitle] = useState('');
   const [uploadKeywords, setUploadKeywords] = useState('');
+  const [targetFolder, setTargetFolder] = useState(null);
+  const [targetMaterial, setTargetMaterial] = useState(null);
 
   const archive = useAsync(
     () => materialService.getArchiveItems(folderId, domain),
@@ -63,10 +88,42 @@ export default function ArchiveScreen() {
     setPendingFile(null);
     setUploadTitle('');
     setUploadKeywords('');
+    setTargetFolder(null);
+    setTargetMaterial(null);
   };
 
   const createFolder = useSubmit(async () => {
     await folderService.createFolder(newFolderName.trim(), folderId, domain);
+    closeSheet();
+    await archive.reload();
+  });
+
+  const renameFolder = useSubmit(async () => {
+    await folderService.renameFolder(targetFolder.folderId ?? targetFolder.id, newFolderName.trim());
+    closeSheet();
+    await archive.reload();
+  });
+
+  const moveFolder = useSubmit(async (parentId) => {
+    await folderService.moveFolder(targetFolder.folderId ?? targetFolder.id, parentId);
+    closeSheet();
+    await archive.reload();
+  });
+
+  const deleteFolder = useSubmit(async () => {
+    await folderService.deleteFolder(targetFolder.folderId ?? targetFolder.id);
+    closeSheet();
+    await archive.reload();
+  });
+
+  const moveMaterial = useSubmit(async (destinationId) => {
+    await materialService.moveMaterial(targetMaterial.materialId, destinationId);
+    closeSheet();
+    await archive.reload();
+  });
+
+  const deleteMaterial = useSubmit(async () => {
+    await materialService.deleteMaterial(targetMaterial.materialId);
     closeSheet();
     await archive.reload();
   });
@@ -90,10 +147,27 @@ export default function ArchiveScreen() {
 
     setPendingFile(file);
     setUploadTitle(file.name.replace(/\.[^.]+$/, ''));
-    setOpenSheet('upload');
+    setOpenSheet(SHEET.UPLOAD);
+  };
+
+  const openFolderMenu = (folder) => {
+    setTargetFolder(folder);
+    setNewFolderName(folder.name || '');
+    setOpenSheet(SHEET.FOLDER_MENU);
+  };
+
+  const openMaterialMenu = (material) => {
+    setTargetMaterial(material);
+    setOpenSheet(SHEET.MATERIAL_MENU);
   };
 
   const isEmpty = folders.length === 0 && materials.length === 0;
+  const actionError =
+    renameFolder.errorMessage ||
+    moveFolder.errorMessage ||
+    deleteFolder.errorMessage ||
+    moveMaterial.errorMessage ||
+    deleteMaterial.errorMessage;
 
   return (
     <MobileScreen title="자료보관함">
@@ -135,6 +209,8 @@ export default function ArchiveScreen() {
         </select>
       </div>
 
+      {actionError && <p className="mobile-auth__error">{actionError}</p>}
+
       <ScreenState query={archive} loadingLabel="자료를 불러오는 중입니다">
         {isEmpty ? (
           <EmptyState message={keyword ? '검색 결과가 없습니다.' : '이 폴더에는 아직 자료가 없습니다.'} />
@@ -147,6 +223,19 @@ export default function ArchiveScreen() {
                   title={folder.name}
                   subtitle={formatDate(folder.createdAt || folder.updatedAt)}
                   onClick={() => setFolderId(folder.folderId ?? folder.id)}
+                  trailing={
+                    <button
+                      type="button"
+                      className="mobile-row__more"
+                      aria-label={`${folder.name} 관리`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openFolderMenu(folder);
+                      }}
+                    >
+                      <MoreVertical size={18} />
+                    </button>
+                  }
                 />
               </li>
             ))}
@@ -160,6 +249,19 @@ export default function ArchiveScreen() {
                     .filter(Boolean)
                     .join(' · ')}
                   onClick={() => navigate(`/archive/${material.materialId}`)}
+                  trailing={
+                    <button
+                      type="button"
+                      className="mobile-row__more"
+                      aria-label={`${material.title} 관리`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openMaterialMenu(material);
+                      }}
+                    >
+                      <MoreVertical size={18} />
+                    </button>
+                  }
                 />
               </li>
             ))}
@@ -167,7 +269,7 @@ export default function ArchiveScreen() {
         )}
       </ScreenState>
 
-      <Fab label="자료 추가" onClick={() => setOpenSheet('actions')} />
+      <Fab label="자료 추가" onClick={() => setOpenSheet(SHEET.ACTIONS)} />
 
       <input
         ref={fileInput}
@@ -177,13 +279,13 @@ export default function ArchiveScreen() {
         onChange={handleFileSelected}
       />
 
-      <BottomSheet title="자료 추가" isOpen={openSheet === 'actions'} onClose={closeSheet}>
+      <BottomSheet title="자료 추가" isOpen={openSheet === SHEET.ACTIONS} onClose={closeSheet}>
         <ul className="mobile-list">
           <li>
             <ListRow
               icon={<FolderPlus size={20} />}
               title="새 폴더 만들기"
-              onClick={() => setOpenSheet('folder')}
+              onClick={() => setOpenSheet(SHEET.NEW_FOLDER)}
             />
           </li>
           {canUploadInto(domain) && (
@@ -198,7 +300,7 @@ export default function ArchiveScreen() {
         </ul>
       </BottomSheet>
 
-      <BottomSheet title="새 폴더" isOpen={openSheet === 'folder'} onClose={closeSheet}>
+      <BottomSheet title="새 폴더" isOpen={openSheet === SHEET.NEW_FOLDER} onClose={closeSheet}>
         <TextField
           label="폴더 이름"
           value={newFolderName}
@@ -215,7 +317,87 @@ export default function ArchiveScreen() {
         </Button>
       </BottomSheet>
 
-      <BottomSheet title="PDF 업로드" isOpen={openSheet === 'upload'} onClose={closeSheet}>
+      <BottomSheet title={targetFolder?.name || '폴더'} isOpen={openSheet === SHEET.FOLDER_MENU} onClose={closeSheet}>
+        <ul className="mobile-list">
+          <li>
+            <ListRow
+              icon={<PencilLine size={20} />}
+              title="이름 변경"
+              onClick={() => setOpenSheet(SHEET.FOLDER_RENAME)}
+            />
+          </li>
+          <li>
+            <ListRow
+              icon={<FolderInput size={20} />}
+              title="다른 폴더로 이동"
+              onClick={() => setOpenSheet(SHEET.FOLDER_MOVE)}
+            />
+          </li>
+          <li>
+            <ListRow
+              icon={<Trash2 size={20} />}
+              title="폴더 삭제"
+              onClick={() => deleteFolder.submit().catch(() => {})}
+              trailing={<span />}
+            />
+          </li>
+        </ul>
+      </BottomSheet>
+
+      <BottomSheet title="폴더 이름 변경" isOpen={openSheet === SHEET.FOLDER_RENAME} onClose={closeSheet}>
+        <TextField
+          label="새 이름"
+          value={newFolderName}
+          error={renameFolder.errorMessage}
+          onChange={(event) => setNewFolderName(event.target.value)}
+        />
+        <Button
+          fullWidth
+          isLoading={renameFolder.isSubmitting}
+          disabled={!newFolderName.trim()}
+          onClick={() => renameFolder.submit().catch(() => {})}
+        >
+          변경
+        </Button>
+      </BottomSheet>
+
+      <BottomSheet title="폴더 이동" isOpen={openSheet === SHEET.FOLDER_MOVE} onClose={closeSheet}>
+        <FolderPicker
+          domain={domain}
+          excludeFolderId={targetFolder?.folderId ?? targetFolder?.id}
+          onSelect={(parentId) => moveFolder.submit(parentId).catch(() => {})}
+        />
+      </BottomSheet>
+
+      <BottomSheet
+        title={targetMaterial?.title || '자료'}
+        isOpen={openSheet === SHEET.MATERIAL_MENU}
+        onClose={closeSheet}
+      >
+        <ul className="mobile-list">
+          <li>
+            <ListRow
+              icon={<FolderInput size={20} />}
+              title="다른 폴더로 이동"
+              onClick={() => setOpenSheet(SHEET.MATERIAL_MOVE)}
+            />
+          </li>
+          <li>
+            <ListRow
+              icon={<Trash2 size={20} />}
+              title="자료 삭제"
+              onClick={() => deleteMaterial.submit().catch(() => {})}
+              trailing={<span />}
+            />
+          </li>
+        </ul>
+      </BottomSheet>
+
+      <BottomSheet title="자료 이동" isOpen={openSheet === SHEET.MATERIAL_MOVE} onClose={closeSheet}>
+        <FolderPicker domain={domain} onSelect={(destinationId) => moveMaterial.submit(destinationId).catch(() => {})} />
+      </BottomSheet>
+
+      <BottomSheet title="PDF 업로드" isOpen={openSheet === SHEET.UPLOAD} onClose={closeSheet}>
         <p className="mobile-sheet__note">
           {pendingFile?.name} · {formatFileSize(pendingFile?.size)}
         </p>

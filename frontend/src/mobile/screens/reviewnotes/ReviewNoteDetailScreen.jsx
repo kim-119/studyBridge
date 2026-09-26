@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { CalendarPlus, Download, Sparkles } from 'lucide-react';
-import { useParams } from 'react-router-dom';
+import { CalendarPlus, Download, RotateCcw, Sparkles, Trash2 } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
 import Button from '../../components/Button';
 import ScreenState from '../../components/ScreenState';
 import TextField from '../../components/TextField';
@@ -12,6 +12,7 @@ import { openExternalUrl } from '../../platform/externalLink';
 
 export default function ReviewNoteDetailScreen() {
   const { reviewNoteId } = useParams();
+  const navigate = useNavigate();
   const note = useAsync(() => reviewNoteService.getReviewNote(reviewNoteId), [reviewNoteId]);
   const [memo, setMemo] = useState('');
 
@@ -32,6 +33,11 @@ export default function ReviewNoteDetailScreen() {
   const requestVariant = useSubmit(async () => {
     await reviewNoteService.variantQuestion(reviewNoteId, { count: 3 });
     await note.reload();
+  });
+
+  const removeNote = useSubmit(async () => {
+    await reviewNoteService.deleteReviewNote(reviewNoteId);
+    navigate('/review-notes', { replace: true });
   });
 
   const scheduleReview = useSubmit(async () => {
@@ -73,6 +79,11 @@ export default function ReviewNoteDetailScreen() {
               PDF 열기
             </Button>
 
+            <Button variant="secondary" onClick={() => navigate(`/review-notes/${reviewNoteId}/retry`)}>
+              <RotateCcw size={16} />
+              다시 풀기
+            </Button>
+
             <Button
               variant="secondary"
               isLoading={requestVariant.isSubmitting}
@@ -91,7 +102,18 @@ export default function ReviewNoteDetailScreen() {
               <CalendarPlus size={16} />
               {data?.reviewScheduled ? '일정 등록됨' : '복습 일정'}
             </Button>
+
+            <Button
+              variant="ghost"
+              isLoading={removeNote.isSubmitting}
+              onClick={() => removeNote.submit().catch(() => {})}
+            >
+              <Trash2 size={16} />
+              삭제
+            </Button>
           </div>
+
+          {removeNote.errorMessage && <p className="mobile-auth__error">{removeNote.errorMessage}</p>}
 
           {data?.reviewNeededText && (
             <section className="mobile-card mobile-section">

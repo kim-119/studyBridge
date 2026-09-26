@@ -26,6 +26,7 @@ import KnowledgeDetailScreen from './screens/knowledge/KnowledgeDetailScreen';
 import KnowledgeScreen from './screens/knowledge/KnowledgeScreen';
 import MyPageScreen from './screens/mypage/MyPageScreen';
 import ReviewNoteDetailScreen from './screens/reviewnotes/ReviewNoteDetailScreen';
+import ReviewNoteRetryScreen from './screens/reviewnotes/ReviewNoteRetryScreen';
 import ReviewNotesScreen from './screens/reviewnotes/ReviewNotesScreen';
 import WeeklyScheduleScreen from './screens/schedule/WeeklyScheduleScreen';
 import { SECONDARY_SCREENS } from './screens/secondaryScreens';
@@ -204,6 +205,14 @@ export default function MobileApp() {
         element={
           <RequireAuth>
             <ReviewNoteDetailScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/review-notes/:reviewNoteId/retry"
+        element={
+          <RequireAuth>
+            <ReviewNoteRetryScreen />
           </RequireAuth>
         }
       />
