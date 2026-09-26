@@ -6,6 +6,7 @@ import {
   parseConnectionMetadata,
 } from '../../../utils/webrtc/iceServers';
 import { describeApiError } from '../../data/useAsync';
+import { registerAppStateChange } from '../../platform/nativeShell';
 import {
   requestMediaPermissions,
   setSpeakerphone,
@@ -18,8 +19,12 @@ export const SESSION_STATE = {
   REQUESTING_PERMISSION: 'requesting-permission',
   CONNECTING: 'connecting',
   CONNECTED: 'connected',
+  RECONNECTING: 'reconnecting',
   FAILED: 'failed',
 };
+
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_BACKOFF_MS = [2000, 4000, 8000];
 
 const DEVICE_ERROR_MESSAGE = {
   NotAllowedError: '카메라 또는 마이크 권한이 거부되었습니다. 설정에서 권한을 허용해주세요.',
@@ -42,10 +47,14 @@ export function useVideoSession(groupId) {
   const [isCameraOn, setCameraOn] = useState(true);
   const [isMicrophoneOn, setMicrophoneOn] = useState(true);
   const [isSpeakerphoneOn, setSpeakerphoneOn] = useState(true);
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
 
   const sessionRef = useRef(null);
   const publisherRef = useRef(null);
   const openViduRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const isLeavingRef = useRef(false);
+  const joinRef = useRef(null);
 
   const upsertParticipant = useCallback((connectionId, patch) => {
     setParticipants((previous) => ({
@@ -62,7 +71,9 @@ export function useVideoSession(groupId) {
     });
   }, []);
 
-  const leave = useCallback(async () => {
+  const teardown = useCallback(async () => {
+    clearTimeout(reconnectTimerRef.current);
+
     publisherRef.current?.stream?.getMediaStream?.()?.getTracks?.().forEach((track) => track.stop());
     sessionRef.current?.disconnect();
 
@@ -71,103 +82,153 @@ export function useVideoSession(groupId) {
     openViduRef.current = null;
 
     setParticipants({});
-    setState(SESSION_STATE.IDLE);
-
     await stopVoiceSession();
   }, []);
 
-  const join = useCallback(async () => {
-    setErrorMessage(null);
-    setState(SESSION_STATE.REQUESTING_PERMISSION);
+  const leave = useCallback(async () => {
+    isLeavingRef.current = true;
+    await teardown();
+    setState(SESSION_STATE.IDLE);
+    setReconnectAttempt(0);
+  }, [teardown]);
 
-    try {
-      const permissions = await requestMediaPermissions();
+  const scheduleReconnect = useCallback(() => {
+    if (isLeavingRef.current) return;
 
-      if (!permissions.granted) {
-        setErrorMessage(DEVICE_ERROR_MESSAGE.NotAllowedError);
+    setReconnectAttempt((attempt) => {
+      if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+        setErrorMessage('연결이 끊어졌습니다. 다시 참여해주세요.');
         setState(SESSION_STATE.FAILED);
-        return;
+        return attempt;
       }
 
-      setState(SESSION_STATE.CONNECTING);
+      setState(SESSION_STATE.RECONNECTING);
+      reconnectTimerRef.current = setTimeout(() => {
+        joinRef.current?.({ isReconnect: true });
+      }, RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)]);
 
-      const { OpenVidu } = await import('openvidu-browser');
-      const { token } = await groupService.getVideoToken(groupId);
+      return attempt + 1;
+    });
+  }, []);
 
-      const openVidu = new OpenVidu();
-      forceSecureWebSocketTransport(openVidu);
-      openVidu.setAdvancedConfiguration({ iceServers: STUDYBRIDGE_ICE_SERVERS });
-      openViduRef.current = openVidu;
+  const join = useCallback(
+    async ({ isReconnect = false } = {}) => {
+      isLeavingRef.current = false;
+      setErrorMessage(null);
 
-      const session = openVidu.initSession();
-      sessionRef.current = session;
+      if (!isReconnect) {
+        setReconnectAttempt(0);
+        setState(SESSION_STATE.REQUESTING_PERMISSION);
 
-      session.on('connectionCreated', (event) => {
-        const { connectionId } = event.connection || {};
-        if (!connectionId || connectionId === session.connection?.connectionId) return;
+        const permissions = await requestMediaPermissions();
+        if (!permissions.granted) {
+          setErrorMessage(DEVICE_ERROR_MESSAGE.NotAllowedError);
+          setState(SESSION_STATE.FAILED);
+          return;
+        }
+      }
 
-        const metadata = parseConnectionMetadata(event.connection);
-        upsertParticipant(connectionId, { name: metadata.name || '참여자', isMe: false });
-      });
+      setState(isReconnect ? SESSION_STATE.RECONNECTING : SESSION_STATE.CONNECTING);
 
-      session.on('streamCreated', (event) => {
-        const connectionId = event.stream.connection.connectionId;
-        const metadata = parseConnectionMetadata(event.stream.connection);
-        const subscriber = session.subscribe(event.stream, undefined);
+      try {
+        await teardown();
 
-        upsertParticipant(connectionId, {
-          name: metadata.name || '참여자',
-          isMe: false,
-          streamManager: subscriber,
+        const { OpenVidu } = await import('openvidu-browser');
+        const { token } = await groupService.getVideoToken(groupId);
+
+        const openVidu = new OpenVidu();
+        forceSecureWebSocketTransport(openVidu);
+        openVidu.setAdvancedConfiguration({ iceServers: STUDYBRIDGE_ICE_SERVERS });
+        openViduRef.current = openVidu;
+
+        const session = openVidu.initSession();
+        sessionRef.current = session;
+
+        session.on('connectionCreated', (event) => {
+          const { connectionId } = event.connection || {};
+          if (!connectionId || connectionId === session.connection?.connectionId) return;
+
+          const metadata = parseConnectionMetadata(event.connection);
+          upsertParticipant(connectionId, { name: metadata.name || '참여자', isMe: false });
         });
-      });
 
-      session.on('streamDestroyed', (event) => {
-        upsertParticipant(event.stream.connection.connectionId, { streamManager: null });
-      });
+        session.on('streamCreated', (event) => {
+          const connectionId = event.stream.connection.connectionId;
+          const metadata = parseConnectionMetadata(event.stream.connection);
+          const subscriber = session.subscribe(event.stream, undefined);
 
-      session.on('connectionDestroyed', (event) => {
-        removeParticipant(event.connection.connectionId);
-      });
+          upsertParticipant(connectionId, {
+            name: metadata.name || '참여자',
+            isMe: false,
+            streamManager: subscriber,
+          });
+        });
 
-      session.on('sessionDisconnected', () => {
-        setState(SESSION_STATE.IDLE);
-      });
+        session.on('streamDestroyed', (event) => {
+          upsertParticipant(event.stream.connection.connectionId, { streamManager: null });
+        });
 
-      await session.connect(token, JSON.stringify({ name: '나' }));
+        session.on('connectionDestroyed', (event) => {
+          removeParticipant(event.connection.connectionId);
+        });
 
-      const publisher = await openVidu.initPublisherAsync(undefined, {
-        audioSource: undefined,
-        videoSource: undefined,
-        publishAudio: true,
-        publishVideo: true,
-        resolution: '480x640',
-        frameRate: 24,
-        mirror: true,
-      });
+        // 서버/네트워크가 끊어 세션이 종료된 경우에만 재연결한다(사용자 나가기는 제외).
+        session.on('sessionDisconnected', (event) => {
+          if (isLeavingRef.current || event?.reason === 'disconnect') return;
+          scheduleReconnect();
+        });
 
-      await session.publish(publisher);
-      publisherRef.current = publisher;
+        session.on('reconnecting', () => setState(SESSION_STATE.RECONNECTING));
+        session.on('reconnected', () => {
+          setReconnectAttempt(0);
+          setState(SESSION_STATE.CONNECTED);
+        });
 
-      upsertParticipant(session.connection.connectionId, {
-        name: '나',
-        isMe: true,
-        streamManager: publisher,
-      });
+        await session.connect(token, JSON.stringify({ name: '나' }));
 
-      const audioState = await startVoiceSession({ speakerphone: true });
-      setSpeakerphoneOn(Boolean(audioState.speakerphone));
+        const publisher = await openVidu.initPublisherAsync(undefined, {
+          audioSource: undefined,
+          videoSource: undefined,
+          publishAudio: true,
+          publishVideo: true,
+          resolution: '480x640',
+          frameRate: 24,
+          mirror: true,
+        });
 
-      setCameraOn(true);
-      setMicrophoneOn(true);
-      setState(SESSION_STATE.CONNECTED);
-    } catch (error) {
-      console.warn('화상 스터디 연결에 실패했습니다.', error);
-      setErrorMessage(describeSessionError(error));
-      setState(SESSION_STATE.FAILED);
-      await leave();
-    }
-  }, [groupId, leave, removeParticipant, upsertParticipant]);
+        await session.publish(publisher);
+        publisherRef.current = publisher;
+
+        upsertParticipant(session.connection.connectionId, {
+          name: '나',
+          isMe: true,
+          streamManager: publisher,
+        });
+
+        const audioState = await startVoiceSession({ speakerphone: true });
+        setSpeakerphoneOn(Boolean(audioState.speakerphone));
+
+        setCameraOn(true);
+        setMicrophoneOn(true);
+        setReconnectAttempt(0);
+        setState(SESSION_STATE.CONNECTED);
+      } catch (error) {
+        console.warn('화상 스터디 연결에 실패했습니다.', error);
+
+        if (isReconnect) {
+          scheduleReconnect();
+          return;
+        }
+
+        setErrorMessage(describeSessionError(error));
+        setState(SESSION_STATE.FAILED);
+        await teardown();
+      }
+    },
+    [groupId, removeParticipant, scheduleReconnect, teardown, upsertParticipant]
+  );
+
+  joinRef.current = join;
 
   const toggleCamera = useCallback(() => {
     setCameraOn((previous) => {
@@ -191,8 +252,31 @@ export function useVideoSession(groupId) {
     setSpeakerphoneOn(Boolean(audioState.speakerphone ?? next));
   }, [isSpeakerphoneOn]);
 
+  // 백그라운드 전환 시 카메라를 끊어 배터리/프라이버시를 지키고, 복귀 시 원래 상태로 되돌린다.
+  const cameraBeforeBackgroundRef = useRef(true);
+
+  useEffect(() => {
+    return registerAppStateChange(({ isActive }) => {
+      if (!publisherRef.current) return;
+
+      if (!isActive) {
+        cameraBeforeBackgroundRef.current = isCameraOn;
+        publisherRef.current.publishVideo(false);
+        setCameraOn(false);
+        return;
+      }
+
+      if (cameraBeforeBackgroundRef.current) {
+        publisherRef.current.publishVideo(true);
+        setCameraOn(true);
+      }
+    });
+  }, [isCameraOn]);
+
   useEffect(() => {
     return () => {
+      isLeavingRef.current = true;
+      clearTimeout(reconnectTimerRef.current);
       publisherRef.current?.stream?.getMediaStream?.()?.getTracks?.().forEach((track) => track.stop());
       sessionRef.current?.disconnect();
       stopVoiceSession();
@@ -206,6 +290,7 @@ export function useVideoSession(groupId) {
     isCameraOn,
     isMicrophoneOn,
     isSpeakerphoneOn,
+    reconnectAttempt,
     join,
     leave,
     toggleCamera,

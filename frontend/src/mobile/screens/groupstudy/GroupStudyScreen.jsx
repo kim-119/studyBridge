@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Fab from '../../components/Fab';
@@ -8,21 +8,27 @@ import MobileScreen from '../../shell/MobileScreen';
 import { groupService } from '../../../services/api';
 import { useAsync } from '../../data/useAsync';
 
-function matchesKeyword(group, keyword) {
-  if (!keyword) return true;
-  const haystack = `${group.title || ''} ${group.hashtags || ''} ${group.description || ''}`;
-  return haystack.toLowerCase().includes(keyword.toLowerCase());
-}
+const SEARCH_DEBOUNCE_MS = 350;
 
 export default function GroupStudyScreen() {
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
-  const groups = useAsync(() => groupService.getGroups(), []);
+  const [appliedKeyword, setAppliedKeyword] = useState('');
+
+  useEffect(() => {
+    const timer = setTimeout(() => setAppliedKeyword(keyword.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [keyword]);
+
+  const groups = useAsync(
+    () => (appliedKeyword ? groupService.searchGroups(appliedKeyword) : groupService.getGroups()),
+    [appliedKeyword]
+  );
 
   const visibleGroups = useMemo(() => {
     const list = Array.isArray(groups.data) ? groups.data : groups.data?.content || [];
-    return list.filter((group) => matchesKeyword(group, keyword));
-  }, [groups.data, keyword]);
+    return list;
+  }, [groups.data]);
 
   return (
     <MobileScreen title="그룹스터디">
@@ -38,7 +44,9 @@ export default function GroupStudyScreen() {
 
       <ScreenState query={groups} loadingLabel="스터디를 불러오는 중입니다">
         {visibleGroups.length === 0 ? (
-          <EmptyState message={keyword ? '검색 결과가 없습니다.' : '아직 개설된 스터디가 없습니다.'} />
+          <EmptyState
+            message={appliedKeyword ? '검색 결과가 없습니다.' : '아직 개설된 스터디가 없습니다.'}
+          />
         ) : (
           <ul className="mobile-list">
             {visibleGroups.map((group) => (

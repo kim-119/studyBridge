@@ -80,11 +80,11 @@ jobs:
             exit 1
           fi
 
-          # 데스크톱 화면을 통해 끌려 들어오면 안 되는 대형 의존성.
-          # openvidu 는 화상 스터디에서 실제로 쓰지만 동적 import 로 분리돼 엔트리에는 없어야 한다.
-          for pulled_in in openvidu fullcalendar sockjs app-container; do
-            if grep -q "$pulled_in" "$ENTRY"; then
-              echo "FAIL: 앱 엔트리에 데스크톱 경유 의존성($pulled_in)이 포함됐습니다."
+          # 대형 라이브러리는 동적 import 로 분리돼 엔트리에 본문이 들어가면 안 된다.
+          # 패키지 이름이 아니라 라이브러리 고유 심볼로 검사한다(청크 경로 문자열 오탐 방지).
+          for marker in OpenViduError SockJS fullcalendar app-container; do
+            if grep -q "$marker" "$ENTRY"; then
+              echo "FAIL: 앱 엔트리에 지연 로드 대상 라이브러리 본문($marker)이 포함됐습니다."
               exit 1
             fi
           done

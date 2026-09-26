@@ -1282,3 +1282,21 @@ textarea.mobile-field__input {
   background-color: #ECFDF3;
   color: var(--color-primary);
 }
+
+.mobile-quiz__option.is-wrong {
+  border-color: var(--color-danger);
+  background-color: #FEF2F2;
+}
+
+.mobile-chat__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 0 var(--space-basic);
+  padding: 8px;
+  border-radius: var(--radius-input);
+  background-color: var(--color-secondary);
+  color: var(--color-text-muted);
+  font-size: 12px;
+}

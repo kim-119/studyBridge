@@ -1161,6 +1161,26 @@ export const groupService = {
     return res.data;
   },
 
+  // 그룹 탈퇴(본인). 방장 위임/삭제와 달리 멤버 본인만 호출한다.
+  leaveGroup: async (id) => {
+    const res = await api.delete(`/api/groups/${id}/leave`);
+    return res.data;
+  },
+
+  // 서버 검색. 키워드가 비면 전체 목록과 동일하게 동작한다.
+  searchGroups: async (keyword) => {
+    const res = await api.get('/api/groups/search', {
+      params: keyword ? { keyword } : undefined,
+    });
+    return res.data;
+  },
+
+  // 그룹 채팅 최근 100건(오름차순). STOMP 구독 전 초기 렌더에 사용한다.
+  getChatHistory: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/chats/history`);
+    return res.data;
+  },
+
   kickMember: async (groupId, memberUserId) => {
     const res = await api.delete(`/api/groups/${groupId}/members/${memberUserId}`);
     return res.data;

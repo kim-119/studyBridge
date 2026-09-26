@@ -47,7 +47,7 @@ export default function VideoSessionScreen() {
           </p>
         </section>
 
-        <Button fullWidth onClick={session.join}>
+        <Button fullWidth onClick={() => session.join()}>
           화상 스터디 참여
         </Button>
       </MobileScreen>
@@ -57,21 +57,22 @@ export default function VideoSessionScreen() {
   if (session.state === SESSION_STATE.FAILED) {
     return (
       <MobileScreen title="화상 스터디" showBackButton>
-        <ErrorState message={session.errorMessage} onRetry={session.join} />
+        <ErrorState message={session.errorMessage} onRetry={() => session.join()} />
       </MobileScreen>
     );
   }
 
   if (session.state !== SESSION_STATE.CONNECTED) {
+    const label =
+      session.state === SESSION_STATE.REQUESTING_PERMISSION
+        ? '카메라와 마이크 권한을 확인하는 중입니다'
+        : session.state === SESSION_STATE.RECONNECTING
+          ? `연결이 끊겨 다시 연결하는 중입니다 (${session.reconnectAttempt}회차)`
+          : '화상 스터디에 연결하는 중입니다';
+
     return (
       <MobileScreen title="화상 스터디" showBackButton>
-        <LoadingState
-          label={
-            session.state === SESSION_STATE.REQUESTING_PERMISSION
-              ? '카메라와 마이크 권한을 확인하는 중입니다'
-              : '화상 스터디에 연결하는 중입니다'
-          }
-        />
+        <LoadingState label={label} />
       </MobileScreen>
     );
   }

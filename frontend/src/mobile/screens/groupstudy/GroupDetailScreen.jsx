@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Download, FileText, UserRound, Video } from 'lucide-react';
+import { Download, FileText, LogOut, UserRound, Video } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import Button from '../../components/Button';
 import ListRow from '../../components/ListRow';
@@ -10,11 +10,16 @@ import { groupService } from '../../../services/api';
 import { useAsync, useSubmit } from '../../data/useAsync';
 import { extractDownloadUrl } from '../../platform/downloadUrl';
 import { openExternalUrl } from '../../platform/externalLink';
+import GroupChatTab from './GroupChatTab';
+import GroupQuizTab from './GroupQuizTab';
+import StudyTimerCard from './StudyTimerCard';
 
 const DETAIL_TABS = [
   { key: 'overview', label: '소개' },
+  { key: 'chat', label: '채팅' },
   { key: 'members', label: '참여자' },
   { key: 'materials', label: '학습자료' },
+  { key: 'quiz', label: '퀴즈' },
 ];
 
 function MembersTab({ groupId }) {
@@ -58,24 +63,28 @@ function MaterialsTab({ groupId }) {
       emptyWhen={(value) => !value || value.length === 0}
       emptyMessage="공유된 학습자료가 없습니다."
     >
-      <ul className="mobile-list">
-        {(materials.data || []).map((material) => (
-          <li key={material.id ?? material.materialId}>
-            <ListRow
-              icon={<FileText size={20} />}
-              title={material.title}
-              subtitle={material.originalFileName}
-              onClick={() => download.submit(material.id ?? material.materialId).catch(() => {})}
-              trailing={<Download size={18} />}
-            />
-          </li>
-        ))}
-      </ul>
+      <>
+        <ul className="mobile-list">
+          {(materials.data || []).map((material) => (
+            <li key={material.id ?? material.materialId}>
+              <ListRow
+                icon={<FileText size={20} />}
+                title={material.title}
+                subtitle={material.originalFileName}
+                onClick={() => download.submit(material.id ?? material.materialId).catch(() => {})}
+                trailing={<Download size={18} />}
+              />
+            </li>
+          ))}
+        </ul>
+
+        {download.errorMessage && <p className="mobile-auth__error">{download.errorMessage}</p>}
+      </>
     </ScreenState>
   );
 }
 
-function OverviewTab({ group, onJoin, joinAction }) {
+function OverviewTab({ group, groupId, onJoin, joinAction, onLeave, leaveAction }) {
   return (
     <>
       <section className="mobile-card mobile-section">
@@ -100,11 +109,22 @@ function OverviewTab({ group, onJoin, joinAction }) {
         <p className="mobile-paragraph">{group?.description || '소개가 없습니다.'}</p>
       </section>
 
-      <Button fullWidth isLoading={joinAction.isSubmitting} onClick={onJoin}>
-        스터디 참여 신청
-      </Button>
+      <StudyTimerCard groupId={groupId} />
 
-      {joinAction.errorMessage && <p className="mobile-auth__error">{joinAction.errorMessage}</p>}
+      <div className="mobile-actions">
+        <Button isLoading={joinAction.isSubmitting} onClick={onJoin}>
+          참여 신청
+        </Button>
+
+        <Button variant="ghost" isLoading={leaveAction.isSubmitting} onClick={onLeave}>
+          <LogOut size={16} />
+          스터디 나가기
+        </Button>
+      </div>
+
+      {(joinAction.errorMessage || leaveAction.errorMessage) && (
+        <p className="mobile-auth__error">{joinAction.errorMessage || leaveAction.errorMessage}</p>
+      )}
     </>
   );
 }
@@ -119,6 +139,11 @@ export default function GroupDetailScreen() {
   const applyToGroup = useSubmit(async () => {
     await groupService.applyGroup(groupId, { message: '모바일에서 참여를 신청합니다.' });
     await group.reload();
+  });
+
+  const leaveGroup = useSubmit(async () => {
+    await groupService.leaveGroup(groupId);
+    navigate('/groupstudy', { replace: true });
   });
 
   return (
@@ -143,12 +168,17 @@ export default function GroupDetailScreen() {
           {activeTab === 'overview' && (
             <OverviewTab
               group={group.data}
+              groupId={groupId}
               joinAction={applyToGroup}
+              leaveAction={leaveGroup}
               onJoin={() => applyToGroup.submit().catch(() => {})}
+              onLeave={() => leaveGroup.submit().catch(() => {})}
             />
           )}
+          {activeTab === 'chat' && <GroupChatTab groupId={groupId} />}
           {activeTab === 'members' && <MembersTab groupId={groupId} />}
           {activeTab === 'materials' && <MaterialsTab groupId={groupId} />}
+          {activeTab === 'quiz' && <GroupQuizTab groupId={groupId} />}
         </>
       </ScreenState>
     </MobileScreen>
