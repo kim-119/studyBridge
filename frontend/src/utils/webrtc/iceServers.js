@@ -12,6 +12,23 @@ export const STUDYBRIDGE_ICE_SERVERS = [
   },
 ];
 
+/**
+ * 서버가 발급한 시간제한 TURN 자격증명이 있으면 그것을 쓰고, 없으면 기존 정적 설정으로 폴백한다.
+ * 토큰 응답 예: { token, iceServers: [{ urls, username, credential, ttlSeconds }] }
+ *
+ * 정적 자격증명은 웹 번들과 APK 에 그대로 실려 누구나 읽을 수 있다.
+ * coturn 을 --use-auth-secret 으로 전환하고 Spring 이 세션마다 발급하면 이 폴백은 제거할 수 있다.
+ */
+export function resolveIceServers(tokenResponse) {
+  const issued = tokenResponse?.iceServers;
+
+  if (Array.isArray(issued) && issued.length > 0) {
+    return issued;
+  }
+
+  return STUDYBRIDGE_ICE_SERVERS;
+}
+
 export function forceSecureWebSocketTransport(openViduInstance) {
   if (!openViduInstance || openViduInstance.__studybridgeWssPatched) return;
 

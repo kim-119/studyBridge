@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { groupService } from '../../../services/api';
 import {
-  STUDYBRIDGE_ICE_SERVERS,
   forceSecureWebSocketTransport,
   parseConnectionMetadata,
+  resolveIceServers,
 } from '../../../utils/webrtc/iceServers';
 import { describeApiError } from '../../data/useAsync';
 import { registerAppStateChange } from '../../platform/nativeShell';
@@ -134,11 +134,12 @@ export function useVideoSession(groupId) {
         await teardown();
 
         const { OpenVidu } = await import('openvidu-browser');
-        const { token } = await groupService.getVideoToken(groupId);
+        const tokenResponse = await groupService.getVideoToken(groupId);
+        const { token } = tokenResponse;
 
         const openVidu = new OpenVidu();
         forceSecureWebSocketTransport(openVidu);
-        openVidu.setAdvancedConfiguration({ iceServers: STUDYBRIDGE_ICE_SERVERS });
+        openVidu.setAdvancedConfiguration({ iceServers: resolveIceServers(tokenResponse) });
         openViduRef.current = openVidu;
 
         const session = openVidu.initSession();
