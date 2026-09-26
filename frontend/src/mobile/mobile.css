@@ -1314,3 +1314,56 @@ textarea.mobile-field__input {
   color: var(--color-text-placeholder);
   cursor: pointer;
 }
+
+.mobile-timetable {
+  overflow-x: auto;
+  padding: var(--space-basic);
+  border-radius: var(--radius-card);
+  background-color: var(--color-bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.mobile-timetable__head,
+.mobile-timetable__row {
+  display: grid;
+  grid-template-columns: 32px repeat(6, 1fr);
+  gap: 3px;
+  align-items: center;
+}
+
+.mobile-timetable__head {
+  margin-bottom: 4px;
+}
+
+.mobile-timetable__head span {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  text-align: center;
+}
+
+.mobile-timetable__row + .mobile-timetable__row {
+  margin-top: 3px;
+}
+
+.mobile-timetable__hour {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.mobile-timetable__slot {
+  height: 22px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg-base);
+  cursor: pointer;
+}
+
+.mobile-timetable__slot:disabled {
+  cursor: default;
+}
+
+.mobile-timetable__slot.is-on {
+  border-color: var(--color-primary);
+  background-color: var(--color-primary);
+}
