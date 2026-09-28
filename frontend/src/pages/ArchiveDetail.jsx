@@ -643,7 +643,10 @@ export default function ArchiveDetail() {
   const [quizSettings, setQuizSettings] = useState({ difficulty: '보통', count: 10, range: '전체' }); // R. 기본 10문항
   const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false);
   const [isSavingMemo, setIsSavingMemo] = useState(false);
-  const [userAnswers, setUserAnswers] = useState({});
+  const [userAnswers, setUserAnswers] = useState({}); // { [questionIndex]: optionIndex } — 선택만 보관(점수 없음)
+  const [quizResult, setQuizResult] = useState(null);   // 서버 채점 결과(QuizDTO.ResultResponse). 점수는 React 에서 계산하지 않는다.
+  const [isSubmittingQuiz, setIsSubmittingQuiz] = useState(false);
+  const [deletingQuizId, setDeletingQuizId] = useState(null);
   // 오답노트
   const [isCreatingReviewNote, setIsCreatingReviewNote] = useState(false);
   const [reviewNotesByQuiz, setReviewNotesByQuiz] = useState({}); // quizId -> 생성된 오답노트
@@ -1186,20 +1189,64 @@ export default function ArchiveDetail() {
 
   // ---------------- 핸들러 ----------------
 
-  // 퀴즈 옵션 선택
+  // 퀴즈 옵션 선택(채점 전에만). 채점 후에는 "다시 풀기" 로 결과를 비운 뒤 선택한다.
   const handleSelectOption = (questionIdx, optionIdx) => {
+    if (quizResult) return;
     setUserAnswers(prev => ({
       ...prev,
       [questionIdx]: optionIdx
     }));
   };
 
+  // 제출 → Spring 서버 채점(정답 키는 서버에만 있음) → Redis 저장 → 결과 표시. 더블클릭은 isSubmittingQuiz 로 차단.
+  const handleSubmitQuiz = async (quiz, questions) => {
+    if (!quiz || isSubmittingQuiz || quizResult) return;
+    // 계약: answers[{questionId, selectedOptionIds}] — 점수/정답 여부는 보내지 않는다(서버가 결정).
+    const answers = questions.map((q, idx) => ({
+      questionId: q.questionId,
+      selectedOptionIds: userAnswers[idx] !== undefined && q.optionIds[userAnswers[idx]] != null ? [q.optionIds[userAnswers[idx]]] : [],
+    }));
+    if (!answers.some((a) => a.selectedOptionIds.length > 0)) { alert('한 문제 이상 답을 선택한 뒤 제출해주세요.'); return; }
+    try {
+      setIsSubmittingQuiz(true);
+      const result = await materialService.submitQuiz(Number(id), quiz.quizId, answers);
+      setQuizResult(result);
+      setQuizzes((prev) => prev.map((q) => (q.quizId === quiz.quizId ? { ...q, lastResult: result } : q)));
+    } catch (e) {
+      console.error('퀴즈 제출 실패:', e);
+      alert(e?.response?.data?.message || '채점에 실패했습니다. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setIsSubmittingQuiz(false);
+    }
+  };
+
+  const handleRetakeQuiz = () => { setQuizResult(null); setUserAnswers({}); };
+
+  // 퀴즈 개별 삭제(자료 소유자). 서버가 소유/소속 검증 + Redis 점수 정리. 성공 시 목록 state 즉시 갱신.
+  const handleDeleteQuiz = async (quiz) => {
+    if (!quiz || deletingQuizId) return;
+    if (!window.confirm('이 퀴즈와 채점 기록을 삭제할까요? 되돌릴 수 없습니다.')) return;
+    try {
+      setDeletingQuizId(quiz.quizId);
+      await materialService.deleteQuiz(Number(id), quiz.quizId);
+      setQuizzes((prev) => prev.filter((q) => q.quizId !== quiz.quizId));
+      if (selectedQuizId === quiz.quizId) { setSelectedQuizId(null); setQuizResult(null); setUserAnswers({}); }
+    } catch (e) {
+      console.error('퀴즈 삭제 실패:', e);
+      alert(e?.response?.data?.message || '퀴즈 삭제에 실패했습니다.');
+    } finally {
+      setDeletingQuizId(null);
+    }
+  };
+
   // 오답노트 작성하기: 현재 퀴즈에서 틀린 문제를 모아 백엔드로 전송 → AI(또는 폴백) PDF 오답노트 생성
   const handleCreateReviewNote = async (quizId, questions) => {
     if (isCreatingReviewNote) return;
-    // 오답(WRONG) + 미응답(UNANSWERED) 모두 복습 대상. 미응답은 selectedAnswer 부재로 판별(서버도 동일하게 판별).
-    const wrong = questions.filter((q, idx) => userAnswers[idx] !== undefined && userAnswers[idx] !== q.answer);
-    const unanswered = questions.filter((q, idx) => userAnswers[idx] === undefined);
+    // 오답(WRONG) + 미응답(UNANSWERED) 모두 복습 대상. 판정은 서버 채점 결과(quizResult.results) 기준 — 브라우저에 정답 키가 없다.
+    if (!quizResult) { alert('먼저 퀴즈를 제출해 채점을 받아주세요.'); return; }
+    const byQid = new Map((quizResult.results || []).map((r) => [r.questionId, r]));
+    const wrong = questions.filter((q) => { const r = byQid.get(q.questionId); return r && r.answered && r.correct === false; });
+    const unanswered = questions.filter((q) => { const r = byQid.get(q.questionId); return !r || !r.answered; });
     if (wrong.length + unanswered.length === 0) { alert('복습할 문제가 없습니다. 모든 문제를 맞혔어요.'); return; }
     try {
       setIsCreatingReviewNote(true);
@@ -1338,13 +1385,20 @@ export default function ArchiveDetail() {
     if (appliedCount < 5) appliedCount = 5;
     if (appliedCount > 20) appliedCount = 20;
 
-    // 공통: 퀴즈를 화면에 올리고 정리(성공/폴백 공용)
+    // 공통: 퀴즈를 화면에 올리고 정리
     const applyQuiz = (quiz, notice) => {
       setQuizError(null);
       setQuizFallbackNotice(notice || null);
       setQuizzes((prev) => [quiz, ...prev]);
       setSelectedQuizId(quiz.quizId);
       setUserAnswers({});
+      setQuizResult(null);
+      setIsQuizSettingsOpen(false);
+    };
+    const failQuiz = (normalized) => {
+      // 실패는 실패로 보여준다. 브라우저에서 문제를 만들어 채우지 않는다(서버 채점 불가 + 실패 위장 금지).
+      setQuizError(normalized);
+      setQuizFallbackNotice(null);
       setIsQuizSettingsOpen(false);
     };
 
@@ -1354,6 +1408,7 @@ export default function ArchiveDetail() {
       setQuizError(null);
       setQuizFallbackNotice(null);
       setSelectedQuizId(null);
+      setQuizResult(null);
       if (appliedCount !== quizSettings.count) setQuizSettings((s) => ({ ...s, count: appliedCount }));
       const req = {
         difficulty: quizSettings.difficulty,
@@ -1363,28 +1418,23 @@ export default function ArchiveDetail() {
       };
       const newQuiz = await materialService.generateQuiz(id, req);
 
-      // AI 응답이 정상(성공 + 난이도검증 통과 + 문제 ≥1)이면 그대로 사용.
       const serverFailed = newQuiz?.success === false;
-      const hardInvalid = !serverFailed && isQuizHardInvalid(newQuiz);
-      const aiQuestions = serverFailed ? [] : parseQuizQuestions(newQuiz?.quizzes?.length ? newQuiz.quizzes : newQuiz?.quizData);
-      if (!serverFailed && !hardInvalid && aiQuestions.length > 0) {
-        // ai07 신규 계약: 서버가 자체 fallback 문제를 내려준 경우(metadata.usedFallback) 안내만 표시(문제는 그대로 사용)
-        const aiUsedFallback = newQuiz?.metadata?.usedFallback || newQuiz?.usedFallback;
-        applyQuiz(newQuiz, aiUsedFallback ? 'AI가 문서 정보가 부족하여 기본 문제로 구성했습니다. 문제 풀이는 그대로 가능합니다.' : null);
+      const aiQuestions = serverFailed ? [] : parseQuizQuestions(newQuiz);
+      if (!serverFailed && aiQuestions.length > 0) {
+        // quiz.v2 구조화 상태(서버가 status/degraded/fallbackUsed 로 판정): DEGRADED_FALLBACK 은 안내만, PARTIAL 은 생성된 문항만.
+        const degradedFallback = newQuiz?.status === 'DEGRADED_FALLBACK' || newQuiz?.degraded === true || newQuiz?.usedFallback === true;
+        const partial = newQuiz?.status === 'PARTIAL' || newQuiz?.partial === true;
+        applyQuiz(newQuiz, degradedFallback
+          ? 'AI가 문서 정보가 부족하여 축약 모드(DEGRADED_FALLBACK)로 문제를 구성했습니다. 문제 풀이는 그대로 가능합니다.'
+          : partial ? `요청한 문항 수보다 적게 생성되었습니다(검증 통과 ${newQuiz?.generatedCount ?? aiQuestions.length}문항만 표시).` : null);
         return;
       }
-
-      // 실패/검증실패/빈 응답 → deterministic fallback 으로 "무조건" 문제 제공.
-      const reason = serverFailed
-        ? 'AI 문제 생성이 불안정하여 기본 문제로 생성했습니다. 문제 풀이는 그대로 가능합니다.'
-        : hardInvalid
-          ? '요청한 난이도가 충분히 반영되지 않아 기본 문제로 대체했습니다. 다시 생성하면 AI 문제를 재시도합니다.'
-          : 'AI 문제 응답이 비어 있어 기본 문제로 생성했습니다.';
-      applyQuiz(buildFallbackQuiz(appliedCount, quizSettings.difficulty), reason);
+      failQuiz(normalizeAiResponse(serverFailed ? newQuiz : {
+        success: false, errorCode: 'QUIZ_EMPTY', message: 'AI 문제 응답이 비어 있습니다. 다시 생성해주세요.', retryable: true,
+      }));
     } catch (e) {
-      // timeout/404/500/parse 실패 모두 fallback 으로 흡수 — "생성 중" 고정·빈 화면 금지.
-      console.error('퀴즈 생성 실패 → fallback:', e);
-      applyQuiz(buildFallbackQuiz(appliedCount, quizSettings.difficulty), 'AI 서버 연결이 불안정하여 기본 문제로 생성했습니다.');
+      console.error('퀴즈 생성 실패:', e);
+      failQuiz(normalizeAiException(e));
     } finally {
       setIsGeneratingQuiz(false);
     }
@@ -1670,114 +1720,40 @@ export default function ArchiveDetail() {
     return '#10B981';
   };
 
-  // ---------------- 퀴즈 파서 ----------------
-  const parseQuizQuestions = (quizSource) => {
-    try {
-      const parsedRaw = typeof quizSource === 'string' ? parseMaybeJson(quizSource, []) : quizSource;
-      const parsed = Array.isArray(parsedRaw)
-        ? parsedRaw
-        : (parsedRaw?.quizzes || parsedRaw?.questions || parseMaybeJson(parsedRaw?.quizData, []));
-      return (Array.isArray(parsed) ? parsed : []).map((item, idx) => {
-        const options = item.options || item.choices || item.answers || [];
-        let answerIndex = typeof item.answerIndex === 'number' ? item.answerIndex : (typeof item.answer === 'number' ? item.answer : 0);
-        if (typeof item.answer === 'string' && Array.isArray(options) && options.includes(item.answer)) answerIndex = options.indexOf(item.answer);
-        return {
-          q: item.question || item.q || `Q${idx + 1}. 문제`,
-          options,
-          answer: answerIndex,
-          explanation: item.explanation || '',
-          difficulty: item.difficulty || quizSettings.difficulty,
-        };
-      });
-    } catch (e) {
-      console.error("Quiz JSON 파싱 실패:", e);
-      return [];
-    }
+  // ---------------- 퀴즈 파서(공개 DTO) ----------------
+  // 서버 QuizDTO.Response.questions = [{questionId, index, question, options:[{optionId,text}], gradable}] — 정답 키 없음.
+  const parseQuizQuestions = (quiz) => {
+    const list = Array.isArray(quiz?.questions) ? quiz.questions : [];
+    return list.map((item, idx) => {
+      const opts = Array.isArray(item.options) ? item.options : [];
+      return {
+        questionId: item.questionId || `q${quiz?.quizId ?? 0}-${idx + 1}`,
+        index: typeof item.index === 'number' ? item.index : idx,
+        q: item.question || `Q${idx + 1}. 문제`,
+        options: opts.map((o) => (typeof o === 'string' ? o : (o?.text ?? ''))),
+        optionIds: opts.map((o, i) => (typeof o === 'string' ? `o${i + 1}` : (o?.optionId || `o${i + 1}`))),
+        gradable: item.gradable !== false,
+        difficulty: item.difficulty || quizSettings.difficulty,
+      };
+    });
   };
 
-  // H. hard 퀴즈 클라이언트 보조 검증 — ai07이 단순 문제를 내려보내면 화면에 띄우지 않는다.
+  // H. hard 퀴즈 클라이언트 보조 검증 — ai07이 단순 문제를 내려보내면 문제 카드를 띄우지 않고 "다시 생성" 을 안내한다(문제를 대체 생성하지 않음).
   const HARD_SIMPLE_PATTERNS = [/주요 목적은 무엇인가요/, /주요 역할은 무엇인가요/, /정의는 무엇인가요/, /사용 이유는 무엇인가요/];
   const labelToDifficultyCode = { '쉬움': 'easy', '보통': 'normal', '어려움': 'hard' };
   const isQuizHardInvalid = (quiz) => {
     if (!quiz) return false;
-    if (quiz.isFallback) return false; // deterministic fallback 은 항상 렌더(문제 무조건 제공)
     const requested = quiz.difficultyRequested || labelToDifficultyCode[quiz.difficulty] || 'normal';
     if (requested !== 'hard') return false;
     if (quiz.difficultyValidation?.passed === false) return true;
     if (quiz.difficultyApplied && quiz.difficultyApplied !== 'hard') return true;
-    const questions = parseQuizQuestions(quiz.quizzes?.length ? quiz.quizzes : quiz.quizData);
+    const questions = parseQuizQuestions(quiz);
     if (questions.length === 0) return false; // 빈 퀴즈는 검증 실패 경로에서 처리
     return questions.some((q) => {
       const text = (q.q || '').trim();
       if (text.length < 80) return true;
       return HARD_SIMPLE_PATTERNS.some((p) => p.test(text));
     });
-  };
-
-  // ---------------- 퀴즈 deterministic fallback ----------------
-  // AI 퀴즈가 형식/난이도 검증 실패·timeout·404·빈 응답이면, 추출 텍스트/요약/키워드 기반으로
-  // 결정적(deterministic) 객관식 문제를 만들어 "무조건" 풀 수 있게 한다. 최소 3문제 보장.
-  const buildFallbackQuiz = (count, difficultyLabel) => {
-    const want = Math.max(3, Math.min(parseInt(count, 10) || 5, 20));
-    const snip = (t) => { const x = String(t || '').trim(); return x.length > 70 ? x.slice(0, 70) + '…' : x; };
-
-    // 1) 콘텐츠 풀: 섹션(제목+본문) 우선 → 학습/실습 포인트 → 본문 문장
-    const pool = getSummarySections(summaryData)
-      .map((s) => ({ term: sanitizeMarkdownText(s.title || '').replace(/^\d+\.\s*/, '').trim(), desc: sanitizeMarkdownText(s.content || '').trim() }))
-      .filter((p) => p.term && p.desc && p.desc.length > 8);
-    if (pool.length < 4) {
-      [...sanitizeList(getSummaryStringList(summaryData, 'learningPoints')), ...sanitizeList(getSummaryStringList(summaryData, 'practicePoints'))]
-        .forEach((p) => { const desc = String(p).trim(); if (desc.length > 8) pool.push({ term: desc.split(/[:：.]/)[0].slice(0, 40) || `핵심 ${pool.length + 1}`, desc }); });
-    }
-    if (pool.length < 4) {
-      const text = sanitizeMarkdownText(material?.extractedText || getSummaryOverview(summaryData) || '');
-      text.split(/(?<=[.。!?])\s+/).map((s) => s.trim()).filter((s) => s.length > 15).slice(0, 12)
-        .forEach((s, i) => { pool.push({ term: s.split(/[\s,]/).slice(0, 3).join(' ').slice(0, 30) || `문장 ${i + 1}`, desc: s }); });
-    }
-
-    const questions = [];
-    if (pool.length >= 2) {
-      const n = Math.min(want, pool.length);
-      for (let i = 0; i < n; i++) {
-        const correct = pool[i];
-        const others = pool.filter((_, j) => j !== i);
-        const distract = [];
-        for (let k = 0; k < others.length && distract.length < 3; k++) distract.push(others[(i + k) % others.length]);
-        const choices = distract.map((d) => snip(d.desc));
-        const answerIndex = i % (choices.length + 1);
-        choices.splice(answerIndex, 0, snip(correct.desc));
-        questions.push({
-          question: `‘${correct.term}’에 대한 설명으로 가장 적절한 것은?`,
-          choices, answerIndex, answer: answerIndex,
-          explanation: `정답: ${snip(correct.desc)}`,
-          page: 1, difficulty: difficultyLabel, source: 'FALLBACK',
-        });
-      }
-    }
-    // 최후 보루: 키워드 기반 최소 3문제(콘텐츠가 거의 없을 때)
-    if (questions.length < 3) {
-      const kws = getSummaryKeywords(summaryData).map(sanitizeMarkdownText).filter(Boolean);
-      const base = kws.length ? kws : (material?.keywords ? String(material.keywords).split(',').map((s) => s.trim()).filter(Boolean) : []);
-      for (let i = questions.length; i < 3; i++) {
-        const correct = base[i % Math.max(base.length, 1)] || `핵심 개념 ${i + 1}`;
-        const answerIndex = i % 4;
-        const choices = ['해당 없음', '관련 없는 보기', '문서에 없는 내용'];
-        choices.splice(answerIndex, 0, correct);
-        questions.push({
-          question: `이 자료의 핵심 내용과 가장 관련 있는 것은? (${i + 1})`,
-          choices, answerIndex, answer: answerIndex,
-          explanation: `이 자료의 핵심 키워드: ${correct}`,
-          page: 1, difficulty: difficultyLabel, source: 'FALLBACK',
-        });
-      }
-    }
-    return {
-      quizId: `fallback-${Date.now()}`,
-      isFallback: true,
-      difficulty: difficultyLabel,
-      difficultyRequested: 'normal', // hard 보조검증 우회(이중 안전)
-      quizzes: questions,
-    };
   };
 
   // ---------------- 로드맵 deterministic fallback (12주 × 7일 = 84일) ----------------
@@ -2530,15 +2506,18 @@ export default function ArchiveDetail() {
       case 'quiz': {
         const activeQuiz = quizzes.find(q => q.quizId === selectedQuizId);
         const activeQuizStatus = normalizeAiResponse(activeQuiz);
-        const rawParsedQuestions = activeQuiz ? parseQuizQuestions(activeQuiz.quizzes?.length ? activeQuiz.quizzes : activeQuiz.quizData) : [];
+        const rawParsedQuestions = activeQuiz ? parseQuizQuestions(activeQuiz) : [];
         // F/H. hard 보조검증 실패한 퀴즈는 문제 카드를 렌더링하지 않는다(단순 문제 노출 차단).
         const activeQuizHardInvalid = isQuizHardInvalid(activeQuiz);
         const parsedQuestions = activeQuizHardInvalid ? [] : rawParsedQuestions;
+        // 서버 채점 결과(questionId → {answered, correct, correctOptionId, explanation}). 채점 전에는 비어 있다.
+        const resultByQid = new Map(((quizResult && quizResult.results) || []).map((r) => [r.questionId, r]));
+        const graded = !!quizResult;
 
-        // 오답노트 작성하기 버튼 상태 (B) — 오답(WRONG) + 미응답(UNANSWERED) 모두 복습 대상
-        const rnAnsweredCount = parsedQuestions.filter((q, i) => userAnswers[i] !== undefined).length;
-        const rnWrongCount = parsedQuestions.filter((q, i) => userAnswers[i] !== undefined && userAnswers[i] !== q.answer).length;
-        const rnUnansweredCount = parsedQuestions.filter((q, i) => userAnswers[i] === undefined).length;
+        // 오답노트 작성하기 버튼 상태 (B) — 채점 결과 기준 오답(WRONG) + 미응답(UNANSWERED)
+        const rnAnsweredCount = Object.keys(userAnswers).length;
+        const rnWrongCount = graded ? parsedQuestions.filter((q) => { const r = resultByQid.get(q.questionId); return r && r.answered && r.correct === false; }).length : 0;
+        const rnUnansweredCount = graded ? parsedQuestions.filter((q) => { const r = resultByQid.get(q.questionId); return !r || !r.answered; }).length : 0;
         const rnReviewCount = rnWrongCount + rnUnansweredCount;
         const rnExistingNote = activeQuiz ? reviewNotesByQuiz[activeQuiz.quizId] : null;
         let rnButtonLabel = '오답노트 작성하기';
@@ -2547,9 +2526,12 @@ export default function ArchiveDetail() {
         if (rnExistingNote) {
           rnButtonLabel = '오답노트 보기';
           rnButtonDisabled = false;
-        } else if (!activeQuiz || parsedQuestions.length === 0 || rnAnsweredCount === 0) {
+        } else if (!activeQuiz || parsedQuestions.length === 0) {
           rnButtonDisabled = true;
-          rnButtonGuide = '퀴즈를 풀어보세요. 틀리거나 못 푼 문제로 오답노트를 만들 수 있습니다.';
+          rnButtonGuide = '퀴즈를 풀고 제출하면 틀리거나 못 푼 문제로 오답노트를 만들 수 있습니다.';
+        } else if (!graded) {
+          rnButtonDisabled = true;
+          rnButtonGuide = rnAnsweredCount === 0 ? '퀴즈를 풀어보세요. 제출하면 서버가 채점합니다.' : '제출하기를 눌러 채점을 받으면 오답노트를 만들 수 있습니다.';
         } else if (rnReviewCount === 0) {
           rnButtonDisabled = true;
           rnButtonGuide = '모든 문제를 맞혔어요. 복습할 문제가 없습니다.';
@@ -2573,9 +2555,9 @@ export default function ArchiveDetail() {
               <div className="glass-panel" style={{ padding: '24px', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
                 <div style={{ flex: '1 1 auto', minWidth: '200px' }}>
                   <h3 style={{ margin: '0 0 8px', fontSize: '20px', color: 'var(--color-text-main)' }}>퀴즈 생성</h3>
-                  <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px', wordBreak: 'keep-all' }}>원하는 문제 유형, 난이도 등으로 퀴즈 세트를 만들어보세요.</p>
+                  <p style={{ margin: 0, color: 'var(--color-text-muted)', fontSize: '14px', wordBreak: 'keep-all' }}>원하는 문제 유형, 난이도 등으로 퀴즈 세트를 만들어보세요. 제출하면 서버가 채점하고 점수를 저장합니다.</p>
                 </div>
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flex: '0 0 auto' }}>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flex: '0 0 auto', flexWrap: 'wrap' }}>
                   <button
                       className="btn-outline"
                       style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 20px', borderRadius: '30px', whiteSpace: 'nowrap', flexShrink: 0, width: 'auto' }}
@@ -2592,7 +2574,7 @@ export default function ArchiveDetail() {
                   >
                     {isGeneratingQuiz ? '생성 중...' : '생성'}
                   </button>
-                  {/* A/B. 오답노트 작성하기 (틀린 문제가 있을 때 활성화, 이미 생성 시 "오답노트 보기") */}
+                  {/* A/B. 오답노트 작성하기 (채점 후 틀린 문제가 있을 때 활성화, 이미 생성 시 "오답노트 보기") */}
                   <button
                       className={rnExistingNote ? 'btn-outline' : 'btn-primary'}
                       title={rnButtonGuide || undefined}
@@ -2621,7 +2603,7 @@ export default function ArchiveDetail() {
 
               {renderAiStatus(quizError, handleGenerateQuiz)}
 
-              {/* AI 실패 시 기본(fallback) 문제 안내 — 문제는 그대로 풀 수 있음 */}
+              {/* AI 가 문서 정보 부족으로 기본 문제를 구성한 경우 안내(서버가 usedFallback 으로 알려준 경우만) */}
               {quizFallbackNotice && (
                 <div style={{ margin: '0 0 16px', borderRadius: '12px', border: '1px solid #FDE68A', background: '#FFFBEB', padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
                   <HelpCircle size={16} color="#B45309" style={{ marginTop: '2px', flexShrink: 0 }} />
@@ -2641,21 +2623,40 @@ export default function ArchiveDetail() {
                               <div
                                   key={quiz.quizId}
                                   className="glass-panel hover-scale"
-                                  style={{ padding: '20px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', transition: 'all 0.2s', border: '1px solid transparent' }}
+                                  style={{ padding: '20px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', transition: 'all 0.2s', border: '1px solid transparent' }}
                                   onMouseEnter={(e) => e.currentTarget.style.border = '1px solid var(--color-primary)'}
                                   onMouseLeave={(e) => e.currentTarget.style.border = '1px solid transparent'}
                                   onClick={() => {
                                     setSelectedQuizId(quiz.quizId);
                                     setUserAnswers({});
+                                    setQuizResult(quiz.lastResult || null); // 서버에 저장된 최근 점수가 있으면 바로 표시
                                   }}
                               >
-                                <div>
+                                <div style={{ minWidth: 0, flex: 1 }}>
                                   <h5 style={{ margin: '0 0 8px', fontSize: '16px', color: 'var(--color-text-main)' }}>
                                     {quiz.createdAt ? quiz.createdAt.split('T')[0] + ' ' + quiz.createdAt.split('T')[1].substring(0, 5) : '작성일 없음'}
                                   </h5>
                                   <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>문항: {quiz.questionCount}개 • 난이도: {quiz.difficulty} • 범위: {quiz.pageRange || '전체'}</p>
                                 </div>
-                                <ChevronRight size={20} color="var(--color-text-muted)" />
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                                  {quiz.lastResult && typeof quiz.lastResult.score === 'number' && (
+                                    <span data-testid="quiz-last-score" style={{ fontSize: '12.5px', fontWeight: 700, padding: '4px 10px', borderRadius: '999px', backgroundColor: quiz.lastResult.score >= 80 ? '#DCFCE7' : '#FEF3C7', color: quiz.lastResult.score >= 80 ? '#15803D' : '#92400E', whiteSpace: 'nowrap' }}>
+                                      최근 {quiz.lastResult.score}점 ({quiz.lastResult.correctCount}/{quiz.lastResult.totalQuestions})
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="btn-outline"
+                                    aria-label="퀴즈 삭제"
+                                    title="이 퀴즈와 채점 기록 삭제"
+                                    disabled={deletingQuizId === quiz.quizId}
+                                    onClick={(e) => { e.stopPropagation(); handleDeleteQuiz(quiz); }}
+                                    style={{ width: '36px', height: '36px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', color: '#DC2626', borderColor: '#FCA5A5', opacity: deletingQuizId === quiz.quizId ? 0.5 : 1 }}
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                  <ChevronRight size={20} color="var(--color-text-muted)" />
+                                </div>
                               </div>
                           ))}
                         </div>
@@ -2667,7 +2668,7 @@ export default function ArchiveDetail() {
                       <button
                           className="btn-outline"
                           style={{ width: '40px', height: '40px', padding: 0, display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '50%' }}
-                          onClick={() => setSelectedQuizId(null)}
+                          onClick={() => { setSelectedQuizId(null); setQuizResult(null); setUserAnswers({}); }}
                       >
                         <ArrowLeft size={20} />
                       </button>
@@ -2675,13 +2676,12 @@ export default function ArchiveDetail() {
                     </div>
                     {renderAiStatus(activeQuizStatus, handleGenerateQuiz)}
                     {(() => {
-                      // G/H. 난이도 정책 표시 + hard fallback 경고
+                      // G/H. 난이도 정책 표시 + hard 경고
                       const labelToCode = { '쉬움': 'easy', '보통': 'normal', '어려움': 'hard' };
                       const codeToLabel = { easy: '쉬움', normal: '보통', hard: '어려움' };
                       const requested = activeQuiz?.difficultyRequested || labelToCode[activeQuiz?.difficulty] || 'normal';
                       const applied = activeQuiz?.difficultyApplied || null;
                       const POLICY = { easy: 'PDF에 직접 나온 내용 중심', normal: 'PDF 내용 기반에 응용 개념을 살짝 추가', hard: 'PDF 내용 기반에 응용 또는 실무 상황을 많이 포함' };
-                      const sourceTrace = activeQuiz?.sourceTrace || null;
                       const policyText = activeQuiz?.difficultyPolicy || POLICY[requested] || '';
                       const validationReason = activeQuiz?.difficultyValidation?.reason;
                       // 단순 문제 패턴 탐지 (hard인데 "주요 역할은 무엇인가요?" 류)
@@ -2700,10 +2700,15 @@ export default function ArchiveDetail() {
                             <div><b style={{ color: 'var(--color-text-main)' }}>난이도:</b> {codeToLabel[applied] || codeToLabel[requested] || activeQuiz?.difficulty}</div>
                             <div><b style={{ color: 'var(--color-text-main)' }}>정책:</b> {policyText}</div>
                             {validationReason && <div><b style={{ color: 'var(--color-text-main)' }}>검증:</b> {sanitizeMarkdownText(validationReason)}</div>}
-                            {sourceTrace && (sourceTrace.concepts || sourceTrace.evidence) && (
-                              <div style={{ marginTop: '6px', fontSize: '12px', color: '#9CA3AF' }}>
-                                {Array.isArray(sourceTrace.concepts) && sourceTrace.concepts.length > 0 && <span>근거 개념: {sourceTrace.concepts.join(', ')} </span>}
-                                {sourceTrace.evidence && <span>· {sanitizeMarkdownText(String(sourceTrace.evidence))}</span>}
+                            {/* quiz.v2 구조화 상태: PARTIAL(요청보다 적게 생성) / DEGRADED_FALLBACK(AI 축약 모드). 문자열 판정 없음. */}
+                            {activeQuiz?.status === 'PARTIAL' && (
+                              <div data-quiz-status="PARTIAL" style={{ marginTop: '6px', fontSize: '12px', color: '#B45309' }}>
+                                일부만 생성됨: 요청 {activeQuiz?.aiRequestedCount ?? activeQuiz?.appliedCount ?? '-'}문항 중 {activeQuiz?.generatedCount ?? rawParsedQuestions.length}문항이 검증을 통과해 표시됩니다.
+                              </div>
+                            )}
+                            {activeQuiz?.status === 'DEGRADED_FALLBACK' && (
+                              <div data-quiz-status="DEGRADED_FALLBACK" style={{ marginTop: '6px', fontSize: '12px', color: '#B45309' }}>
+                                AI 축약 모드(DEGRADED_FALLBACK)로 구성된 문제입니다{activeQuiz?.degradedReason ? ` · ${activeQuiz.degradedReason}` : ''}. 풀이는 가능하지만 근거 정밀도가 낮을 수 있어요.
                               </div>
                             )}
                           </div>
@@ -2720,49 +2725,64 @@ export default function ArchiveDetail() {
                         <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>{activeQuizStatus.success === false ? getAiErrorMessage(activeQuizStatus.errorCode, activeQuizStatus.textStatus, activeQuizStatus.message) : '퀴즈 형식 검증에 실패했습니다. 다시 생성해주세요.'}</p>
                     ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-                          {(() => { const anyAnswered = parsedQuestions.some((_, i) => userAnswers[i] !== undefined); return parsedQuestions.map((q, idx) => {
-                              const hasAnswered = userAnswers[idx] !== undefined;
-                              const isCorrectPick = hasAnswered && userAnswers[idx] === q.answer;
+                          {parsedQuestions.map((q, idx) => {
+                              const r = resultByQid.get(q.questionId);
+                              const picked = userAnswers[idx];
+                              // 채점 후: 서버 결과의 selectedOptionIds/correctOptionIds 로만 표시한다(정답 키는 결과에만 있음).
+                              const rSelected = Array.isArray(r?.selectedOptionIds) && r.selectedOptionIds.length ? r.selectedOptionIds[0] : null;
+                              const rCorrect = Array.isArray(r?.correctOptionIds) && r.correctOptionIds.length ? r.correctOptionIds[0] : null;
+                              const selectedIdx = graded
+                                ? (rSelected ? q.optionIds.indexOf(rSelected) : -1)
+                                : (picked !== undefined ? picked : -1);
+                              const correctIdx = graded && rCorrect ? q.optionIds.indexOf(rCorrect) : -1;
+                              const isAnsweredNow = selectedIdx >= 0;
+                              const isCorrectPick = graded && r ? r.correct === true : null;
+                              const borderColor = graded ? (isCorrectPick ? '#16A34A' : '#DC2626') : (isAnsweredNow ? 'var(--color-primary)' : 'var(--color-border)');
                               return (
-                              <div key={idx} className="glass-panel" style={{ padding: '24px', borderLeft: `4px solid ${hasAnswered ? (isCorrectPick ? '#16A34A' : '#DC2626') : 'var(--color-primary)'}` }}>
+                              <div key={q.questionId} className="glass-panel" style={{ padding: '24px', borderLeft: `4px solid ${borderColor}` }}>
                                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', marginBottom: '20px' }}>
                                   <span style={{ flexShrink: 0, fontSize: '13px', fontWeight: 700, color: 'var(--color-text-muted)', marginTop: '2px' }}>Q{idx + 1}.</span>
                                   {/* 문제 문장: 길어도 잘리지 않고 줄바꿈 */}
                                   <h5 style={{ margin: 0, fontSize: '16px', color: 'var(--color-text-main)', lineHeight: '1.6', whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word', flex: 1 }}>{q.q}</h5>
-                                  {/* 채점 후 정답/오답/미응답 배지 */}
-                                  {hasAnswered ? (
+                                  {/* 채점 후 정답/오답/미응답 배지 (서버 결과) */}
+                                  {graded && r && r.answered ? (
                                     <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12.5px', fontWeight: 700, padding: '4px 10px', borderRadius: '999px', backgroundColor: isCorrectPick ? '#DCFCE7' : '#FEE2E2', color: isCorrectPick ? '#15803D' : '#991B1B' }}>
                                       {isCorrectPick ? <><CheckCircle2 size={14} /> 정답</> : <><XCircle size={14} /> 오답</>}
                                     </span>
-                                  ) : anyAnswered ? (
+                                  ) : graded ? (
                                     <span style={{ flexShrink: 0, fontSize: '12.5px', fontWeight: 700, padding: '4px 10px', borderRadius: '999px', backgroundColor: '#FEF3C7', color: '#92400E' }}>미응답</span>
+                                  ) : isAnsweredNow ? (
+                                    <span style={{ flexShrink: 0, fontSize: '12.5px', fontWeight: 700, padding: '4px 10px', borderRadius: '999px', backgroundColor: '#EEF2FF', color: '#3730A3' }}>선택함</span>
                                   ) : null}
                                 </div>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                                   {q.options.map((opt, optIdx) => {
-                                    const isSelected = userAnswers[idx] === optIdx;
-                                    const isCorrectAnswer = optIdx === q.answer;
+                                    const isSelected = selectedIdx === optIdx;
+                                    const isCorrectAnswer = graded && correctIdx === optIdx;
 
                                     let optionBgColor = 'white';
                                     let optionTextColor = 'var(--color-text-main)';
                                     let optionBorderColor = 'var(--color-border)';
-                                    if (isSelected && isCorrectAnswer) {
+                                    if (!graded && isSelected) {
+                                      optionBgColor = '#EEF2FF'; optionBorderColor = 'var(--color-primary)';
+                                    } else if (isSelected && isCorrectAnswer) {
                                       optionBgColor = '#DCFCE7'; optionBorderColor = '#86EFAC'; optionTextColor = '#166534';
-                                    } else if (isSelected && !isCorrectAnswer) {
+                                    } else if (graded && isSelected && !isCorrectAnswer) {
                                       optionBgColor = '#FEE2E2'; optionBorderColor = '#FCA5A5'; optionTextColor = '#991B1B';
-                                    } else if (hasAnswered && isCorrectAnswer) {
+                                    } else if (graded && isCorrectAnswer) {
                                       optionBgColor = '#DCFCE7'; optionBorderColor = '#86EFAC'; optionTextColor = '#166534';
                                     }
 
                                     // 채점 후 정답=초록 O, 사용자가 고른 오답=빨강 X
-                                    let mark = <Circle size={18} color="#9CA3AF" style={{ flexShrink: 0, marginTop: '1px' }} />;
-                                    if (hasAnswered && isCorrectAnswer) mark = <CheckCircle2 size={18} color="#16A34A" style={{ flexShrink: 0, marginTop: '1px' }} />;
-                                    else if (isSelected && !isCorrectAnswer) mark = <XCircle size={18} color="#DC2626" style={{ flexShrink: 0, marginTop: '1px' }} />;
+                                    let mark = <Circle size={18} color={isSelected ? 'var(--color-primary)' : '#9CA3AF'} style={{ flexShrink: 0, marginTop: '1px' }} />;
+                                    if (graded && isCorrectAnswer) mark = <CheckCircle2 size={18} color="#16A34A" style={{ flexShrink: 0, marginTop: '1px' }} />;
+                                    else if (graded && isSelected && !isCorrectAnswer) mark = <XCircle size={18} color="#DC2626" style={{ flexShrink: 0, marginTop: '1px' }} />;
 
                                     return (
                                         <button
-                                            key={optIdx}
+                                            key={q.optionIds[optIdx] || optIdx}
                                             onClick={() => handleSelectOption(idx, optIdx)}
+                                            disabled={graded}
                                             className="btn-outline"
                                             style={{
                                               width: '100%', height: 'auto', display: 'flex', alignItems: 'flex-start', gap: '10px',
@@ -2771,44 +2791,68 @@ export default function ArchiveDetail() {
                                               backgroundColor: optionBgColor,
                                               borderColor: optionBorderColor,
                                               color: optionTextColor,
+                                              cursor: graded ? 'default' : 'pointer',
                                               whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word',
                                               transition: 'all 0.2s'
                                             }}
                                         >
                                           {mark}
                                           <span style={{ flex: 1, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{opt}</span>
-                                          {hasAnswered && isCorrectAnswer && <span style={{ flexShrink: 0, fontSize: '12px', fontWeight: 700, color: '#15803D' }}>○ 정답</span>}
-                                          {isSelected && !isCorrectAnswer && <span style={{ flexShrink: 0, fontSize: '12px', fontWeight: 700, color: '#DC2626' }}>✕ 내 답</span>}
+                                          {graded && isCorrectAnswer && <span style={{ flexShrink: 0, fontSize: '12px', fontWeight: 700, color: '#15803D' }}>○ 정답</span>}
+                                          {graded && isSelected && !isCorrectAnswer && <span style={{ flexShrink: 0, fontSize: '12px', fontWeight: 700, color: '#DC2626' }}>✕ 내 답</span>}
                                         </button>
                                     );
                                   })}
                                 </div>
-                                {q.explanation && hasAnswered && (
-                                  <p style={{ margin: '14px 0 0', fontSize: '13px', color: 'var(--color-text-muted)', lineHeight: 1.6, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>해설: {q.explanation}</p>
+                                {graded && r?.explanation && (
+                                  <p style={{ margin: '14px 0 0', fontSize: '13px', color: 'var(--color-text-muted)', lineHeight: 1.6, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>해설: {r.explanation}</p>
                                 )}
                               </div>
-                          ); }); })()}
+                          ); })}
                         </div>
                     )}
-                    {/* 채점 요약 (오답노트 생성은 상단 "오답노트 작성하기" 버튼으로 일원화) */}
-                    {parsedQuestions.length > 0 && (() => {
-                      const answered = parsedQuestions.filter((q, idx) => userAnswers[idx] !== undefined);
-                      const wrong = parsedQuestions.filter((q, idx) => userAnswers[idx] !== undefined && userAnswers[idx] !== q.answer);
-                      const unanswered = parsedQuestions.filter((q, idx) => userAnswers[idx] === undefined);
-                      if (answered.length === 0) return null;
-                      return (
-                        <div className="glass-panel" style={{ marginTop: '24px', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-                          <div style={{ fontSize: '14px', color: 'var(--color-text-main)' }}>
-                            <b>채점:</b> {parsedQuestions.length}문제 중 <b style={{ color: '#16A34A' }}>{answered.length - wrong.length}개 정답</b>
-                            {wrong.length > 0 && <> · <b style={{ color: '#DC2626' }}>{wrong.length}개 오답</b></>}
-                            {unanswered.length > 0 && <> · <b style={{ color: '#B45309' }}>{unanswered.length}개 미응답</b></>}
-                          </div>
-                          {(wrong.length + unanswered.length) > 0 && !rnExistingNote && (
-                            <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>상단의 <b style={{ color: '#DC2626' }}>오답노트 작성하기</b> 버튼으로 오답·미응답을 모아 복습할 수 있어요.</span>
-                          )}
-                        </div>
-                      );
-                    })()}
+                    {/* 제출 / 서버 채점 결과 (점수는 서버가 계산해 Redis 에 저장한 값만 표시) */}
+                    {parsedQuestions.length > 0 && (
+                      <div className="glass-panel" data-testid="quiz-score-panel" style={{ marginTop: '24px', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                        {graded ? (
+                          <>
+                            <div style={{ fontSize: '14px', color: 'var(--color-text-main)', lineHeight: 1.7 }}>
+                              <div><b>점수:</b> <b style={{ fontSize: '20px', color: quizResult.score >= 80 ? '#16A34A' : quizResult.score >= 50 ? '#B45309' : '#DC2626' }}>{quizResult.score}점</b>
+                                <span style={{ marginLeft: '8px', color: 'var(--color-text-muted)' }}>({quizResult.totalQuestions}문제 중 <b style={{ color: '#16A34A' }}>{quizResult.correctCount}개 정답</b>
+                                {rnWrongCount > 0 && <> · <b style={{ color: '#DC2626' }}>{rnWrongCount}개 오답</b></>}
+                                {rnUnansweredCount > 0 && <> · <b style={{ color: '#B45309' }}>{rnUnansweredCount}개 미응답</b></>})</span>
+                              </div>
+                              <div style={{ fontSize: '12.5px', color: 'var(--color-text-muted)' }}>
+                                서버 채점 · {quizResult.attempt ? `${quizResult.attempt}회차` : ''}{quizResult.submittedAt ? ` · ${String(quizResult.submittedAt).replace('T', ' ').slice(0, 16)}` : ''}
+                                {quizResult.persisted === false && ' · 점수 저장 실패(다시 제출하면 저장됩니다)'}
+                              </div>
+                              {rnReviewCount > 0 && !rnExistingNote && (
+                                <div style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>상단의 <b style={{ color: '#DC2626' }}>오답노트 작성하기</b> 버튼으로 오답·미응답을 모아 복습할 수 있어요.</div>
+                              )}
+                            </div>
+                            <button className="btn-outline" style={{ width: 'auto', padding: '10px 20px', borderRadius: '24px', display: 'inline-flex', alignItems: 'center', gap: '6px' }} onClick={handleRetakeQuiz}>
+                              <RotateCcw size={15} /> 다시 풀기
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <div style={{ fontSize: '14px', color: 'var(--color-text-main)' }}>
+                              <b>{parsedQuestions.length}문제</b> 중 <b style={{ color: 'var(--color-primary)' }}>{rnAnsweredCount}개 선택</b>
+                              <span style={{ marginLeft: '8px', fontSize: '12.5px', color: 'var(--color-text-muted)' }}>제출하면 서버가 채점하고 점수를 저장합니다. 선택하지 않은 문제는 미응답(오답)으로 처리됩니다.</span>
+                            </div>
+                            <button
+                              className="btn-primary"
+                              data-testid="quiz-submit"
+                              style={{ width: 'auto', padding: '12px 28px', borderRadius: '24px', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '8px', opacity: (isSubmittingQuiz || rnAnsweredCount === 0) ? 0.6 : 1, cursor: (isSubmittingQuiz || rnAnsweredCount === 0) ? 'not-allowed' : 'pointer' }}
+                              onClick={() => handleSubmitQuiz(activeQuiz, parsedQuestions)}
+                              disabled={isSubmittingQuiz || rnAnsweredCount === 0}
+                            >
+                              <Send size={16} /> {isSubmittingQuiz ? '채점 중…' : '제출하기'}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
               )}
 

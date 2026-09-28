@@ -2,7 +2,10 @@ import React, { useMemo, useState } from 'react';
 import ObsidianGraphView from './ObsidianGraphView';
 import LegacyMindMapView from './LegacyMindMapView';
 import GraphErrorBoundary from './GraphErrorBoundary';
+import SemanticGraphStatus from './SemanticGraphStatus';
 import { convertMindMapToObsidianGraph } from '../../utils/graph/mindmapToObsidianGraph';
+import { attachSemanticGraph, buildSemanticAnswers } from '../../utils/graph/semanticGraphMerge';
+import { useSemanticMindmap } from '../../hooks/useSemanticMindmap';
 import { buildObsidianMarkdown } from '../../utils/graph/obsidianMarkdownExport';
 import { generateJsonCanvas } from '../../utils/graph/jsonCanvasExport';
 import { computeLayout } from '../../utils/graph/graphLayout';
@@ -14,19 +17,29 @@ import {
 // 마인드맵 생성 화면(StudyMate)의 기본 뷰. 기존 입력을 Obsidian Graph 로 변환한다.
 //  · 기본 진입 = Obsidian Graph. 렌더 오류 시 "자동으로 예전 카드 UI로 되돌아가지 않는다".
 //    → 오류 패널 + [다시 시도] + [기존 보기](명시 클릭) 만 제공한다.
+//  · 개념(concept) 계층은 AI07 Semantic Graph(Spring 릴레이) 만 사용한다. 이 화면이 마운트될 때(LAZY) 요청하고,
+//    같은 답변 집합은 클라이언트/서버 캐시로 재호출하지 않는다. FAILED 면 개념 없이 명시적 상태를 보여준다.
 //  · 저장은 자료보관함 graph(JSON)로만. PDF 저장 경로 없음.
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ObsidianMindMapView({
-  question, agents = [], messages = [], interactions = [],
+  roomId = null, question, agents = [], messages = [], interactions = [],
   onSaveToArchive, saving = false, savedLabel,
 }) {
   const [showLegacy, setShowLegacy] = useState(false);
   const [retryKey, setRetryKey] = useState(0); // 오류 패널 [다시 시도] → 경계 remount
 
-  const graph = useMemo(
+  const baseGraph = useMemo(
     () => convertMindMapToObsidianGraph({ question, agents, messages, interactions }),
     [question, agents, messages, interactions],
   );
+  const answers = useMemo(() => buildSemanticAnswers(messages, agents), [messages, agents]);
+  const { state: semanticState, semantic, reason: semanticReason, retry } = useSemanticMindmap({
+    roomId, question, answers, enabled: roomId != null,
+  });
+  const graph = useMemo(() => {
+    if (semanticState === 'ok' || semanticState === 'degraded') return attachSemanticGraph(baseGraph, semantic);
+    return { ...baseGraph, semanticStatus: semanticState === 'loading' ? 'LOADING' : 'FAILED' };
+  }, [baseGraph, semantic, semanticState]);
 
   const title = useMemo(() => {
     const q = String(question || '').trim();
@@ -45,7 +58,10 @@ export default function ObsidianMindMapView({
       contentType: MINDMAP_CONTENT_TYPE,
       sourceType: 'multi_agent_chat',
       sourceId: String(graph.centerNodeId || 'session'),
-      rawGraphJson: { nodes: graph.nodes, edges: graph.edges, centerNodeId: graph.centerNodeId, stats: graph.stats },
+      rawGraphJson: {
+        nodes: graph.nodes, edges: graph.edges, centerNodeId: graph.centerNodeId, stats: graph.stats,
+        semanticStatus: graph.semanticStatus || null,
+      },
       obsidianMarkdown: buildObsidianMarkdown(graph, { title }),
       canvasJson: generateJsonCanvas(graph),
       nodeCount: graph.stats.nodeCount,
@@ -71,7 +87,13 @@ export default function ObsidianMindMapView({
   const extraActions = (
     <>
       {onSaveToArchive && (
-        <button type="button" className="obsg-btn is-active" onClick={handleSave} disabled={saving}>
+        <button
+          type="button"
+          className="obsg-btn is-active"
+          onClick={handleSave}
+          disabled={saving || semanticState === 'loading'}
+          title={semanticState === 'loading' ? '개념 구조 생성이 끝나면 저장할 수 있어요' : undefined}
+        >
           {savedLabel || (saving ? '저장 중…' : '자료보관함에 저장')}
         </button>
       )}
@@ -91,8 +113,13 @@ export default function ObsidianMindMapView({
   );
 
   return (
-    <GraphErrorBoundary key={retryKey} fallback={errorFallback}>
-      <ObsidianGraphView graph={graph} title={title} extraActions={extraActions} />
-    </GraphErrorBoundary>
+    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <SemanticGraphStatus state={semanticState} reason={semanticReason} onRetry={retry} />
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <GraphErrorBoundary key={retryKey} fallback={errorFallback}>
+          <ObsidianGraphView graph={graph} title={title} extraActions={extraActions} />
+        </GraphErrorBoundary>
+      </div>
+    </div>
   );
 }

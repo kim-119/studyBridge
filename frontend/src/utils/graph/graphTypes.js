@@ -20,7 +20,7 @@ export const NODE_TYPES = Object.freeze({
   CLUSTER: 'cluster',
 });
 
-/** @typedef {'asked_to'|'answered_by'|'produced'|'contains'|'validated_by'|'rebutted_by'|'exemplified_by'|'related_to'|'sourced_from'|'expanded_to'|'planned_by'|'references'} GraphEdgeType */
+/** @typedef {'asked_to'|'answered_by'|'produced'|'contains'|'validated_by'|'rebutted_by'|'exemplified_by'|'related_to'|'sourced_from'|'expanded_to'|'planned_by'|'references'|'core_concept'|'semantic_relation'} GraphEdgeType */
 export const EDGE_TYPES = Object.freeze({
   ASKED_TO: 'asked_to',
   ANSWERED_BY: 'answered_by',
@@ -34,6 +34,9 @@ export const EDGE_TYPES = Object.freeze({
   EXPANDED_TO: 'expanded_to',
   PLANNED_BY: 'planned_by',
   REFERENCES: 'references',
+  // AI07 Semantic MindMap 전용: 질문 → 핵심 개념 / 개념 ↔ 개념(AI07 관계 라벨 그대로 표시)
+  CORE_CONCEPT: 'core_concept',
+  SEMANTIC_RELATION: 'semantic_relation',
 });
 
 // 노드 타입별 색상 토큰(Obsidian 다크 캔버스 기준). 색상만으로 구분하지 않도록 shape 도 함께 둔다.
@@ -85,6 +88,8 @@ export const EDGE_RELATION_LABEL = Object.freeze({
   expanded_to: '확장',
   planned_by: '계획',
   references: '참조',
+  core_concept: '핵심 개념',
+  semantic_relation: '의미 관계',
 });
 
 export const relationLabelForEdgeType = (type) => EDGE_RELATION_LABEL[type] || EDGE_RELATION_LABEL.related_to;
@@ -100,9 +105,12 @@ export function displayLabelForNode(node) {
 }
 
 // 간선 표시 라벨: relationRole 기반.
+//  · semantic_relation 은 AI07 이 준 관계명(정의/목적/수행/구성 요소 ...)을 그대로 보여준다(displayLabel 우선).
 export function displayLabelForEdge(edge) {
   if (!edge) return '';
-  return relationLabelForEdgeType(edge.relationRole || edge.type);
+  const role = edge.relationRole || edge.type;
+  if (role === EDGE_TYPES.SEMANTIC_RELATION && edge.displayLabel) return edge.displayLabel;
+  return relationLabelForEdgeType(role);
 }
 
 // 간선 클릭 시 보여줄 "전체 관계 설명"(단일 출처). 선 위에는 짧은 라벨만, 전체 설명은 여기서 생성한다.
@@ -122,6 +130,8 @@ const EDGE_RELATION_SENTENCE = Object.freeze({
   expanded_to: (a, b) => `${a}을(를) ${b}(으)로 확장·심화한 관계입니다.`,
   planned_by: (a, b) => `${b}이(가) ${a}에 대한 학습 계획을 세운 관계입니다.`,
   references: (a, b) => `${a}이(가) ${b}을(를) 참조한 관계입니다.`,
+  core_concept: (a, b) => `"${a}"의 핵심 개념 "${b}" 입니다. AI 의미 분석으로 추출된 중심 개념입니다.`,
+  semantic_relation: (a, b, label) => `${a} ─[${label || '관계'}]→ ${b}. AI 의미 분석이 찾아낸 개념 간 관계입니다.`,
 });
 
 function edgeNodeName(node) {
@@ -143,7 +153,7 @@ export function fullDescriptionForEdge(edge, nodeById) {
 
   const sentenceFn = EDGE_RELATION_SENTENCE[role];
   let sentence = sentenceFn
-    ? sentenceFn(a, b)
+    ? sentenceFn(a, b, edge.displayLabel)
     : `${a}과(와) ${b} 사이의 ${relationLabelForEdgeType(role)} 관계입니다.`;
 
   // 대상 노드 본문(검증/반박/예시 등 실제 내용)이 있으면 덧붙인다.
@@ -185,6 +195,9 @@ export const EDGE_STYLE = Object.freeze({
   expanded_to: { color: '#2DD4BF', dashed: false, directed: true, label: '확장' },
   planned_by: { color: '#F472B6', dashed: false, directed: true, label: '계획' },
   references: { color: '#64748B', dashed: true, directed: true, label: '참조' },
+  // 기존 토큰 재사용(신규 색상 없음): 핵심 개념=질문 보라, 의미 관계=개념 하늘.
+  core_concept: { color: '#A78BFA', dashed: false, directed: true, label: '핵심 개념' },
+  semantic_relation: { color: '#93C5FD', dashed: false, directed: true, label: '관계' },
 });
 
 // 마인드맵 저장 포맷 상수(자료보관함 오염 방지의 단일 출처).
@@ -231,6 +244,6 @@ export const glowForNode = (type) => NODE_GLOW[type] ?? 0;
 // 선택/focus 시 "빛이 흐르는" flow 애니메이션을 줄 간선 타입(= AI 사고 흐름 강조).
 //  · 항상 흐르면 산만하므로, 강조(선택/hover/타입 하이라이트) 상태에서만 활성화한다.
 export const EDGE_FLOW_TYPES = Object.freeze(new Set([
-  'asked_to', 'answered_by', 'produced', 'validated_by', 'rebutted_by', 'expanded_to', 'sourced_from',
+  'asked_to', 'answered_by', 'produced', 'validated_by', 'rebutted_by', 'expanded_to', 'sourced_from', 'core_concept',
 ]));
 export const edgeFlows = (type) => EDGE_FLOW_TYPES.has(type);

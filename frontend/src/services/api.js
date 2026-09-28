@@ -976,8 +976,24 @@ export const materialService = {
 
   generateQuiz: async (materialId, quizRequest) => {
     const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest, {
-      timeout: AI_FALLBACK_TIMEOUT_MS, // 90초 초과 시 끊고 프론트 fallback 으로 전환
+      timeout: AI_FALLBACK_TIMEOUT_MS, // 90초 초과 시 끊고 명시적 실패 상태 표시(프론트 폴백 문제 생성 없음)
     });
+    return res.data;
+  },
+
+  // 서버 채점: 답안(questionId/selectedOptionId)만 보낸다. 점수는 서버가 결정해 Redis 에 저장한다.
+  submitQuiz: async (materialId, quizId, answers) => {
+    const res = await api.post(`/api/materials/${materialId}/quiz/${quizId}/submit`, { answers });
+    return res.data;
+  },
+
+  getQuizScore: async (materialId, quizId) => {
+    const res = await api.get(`/api/materials/${materialId}/quiz/${quizId}/score`);
+    return res.data;
+  },
+
+  deleteQuiz: async (materialId, quizId) => {
+    const res = await api.delete(`/api/materials/${materialId}/quiz/${quizId}`);
     return res.data;
   },
 
@@ -1034,6 +1050,16 @@ export const materialService = {
 // 마인드맵 노드별 메모. (저장된 MINDMAP material 의) materialId + nodeId 로 사용자별 단일 메모 관리.
 //  · 응답은 { success, memo:{...}|null } 로 통일. memo 가 null 이면 메모 없음.
 //  · nodeId 는 그래프 생성 id(특수문자 가능) → query/body 로 전달(encodeURIComponent).
+// 마인드맵 Semantic Graph(AI07) — 브라우저는 Spring 만 호출한다. 응답 status: OK | DEGRADED | FAILED.
+export const mindmapService = {
+  getSemanticGraph: async ({ roomId, question, answers, forceRefresh = false }) => {
+    const res = await api.post('/api/mindmap/semantic-graph', { roomId, question, answers, forceRefresh }, {
+      timeout: AI_TIMEOUT_MS,
+    });
+    return res.data;
+  },
+};
+
 export const mindmapMemoService = {
   getNodeMemo: async (materialId, nodeId) => {
     const res = await api.get(`/api/materials/${materialId}/mindmap-memo`, {
@@ -1224,6 +1250,17 @@ export const groupService = {
     if (options.questionCount != null) body.questionCount = options.questionCount;
     if (options.timeLimitSeconds != null) body.timeLimitSeconds = options.timeLimitSeconds;
     const res = await api.post(`/api/groups/${groupId}/materials/${materialId}/quiz`, body);
+    return res.data;
+  },
+
+  // 방장 전용 삭제(권한 검증은 Spring). 403/404/409 는 호출측에서 메시지 표시.
+  deleteGroupMaterial: async (groupId, materialId) => {
+    const res = await api.delete(`/api/groups/${groupId}/materials/${materialId}`);
+    return res.data;
+  },
+
+  deleteGroupQuiz: async (groupId, quizId) => {
+    const res = await api.delete(`/api/groups/${groupId}/quizzes/${quizId}`);
     return res.data;
   },
 };
