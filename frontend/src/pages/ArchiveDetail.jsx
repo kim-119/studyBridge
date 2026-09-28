@@ -1244,9 +1244,10 @@ export default function ArchiveDetail() {
     if (isCreatingReviewNote) return;
     // 오답(WRONG) + 미응답(UNANSWERED) 모두 복습 대상. 판정은 서버 채점 결과(quizResult.results) 기준 — 브라우저에 정답 키가 없다.
     if (!quizResult) { alert('먼저 퀴즈를 제출해 채점을 받아주세요.'); return; }
-    const byQid = new Map((quizResult.results || []).map((r) => [r.questionId, r]));
-    const wrong = questions.filter((q) => { const r = byQid.get(q.questionId); return r && r.answered && r.correct === false; });
-    const unanswered = questions.filter((q) => { const r = byQid.get(q.questionId); return !r || !r.answered; });
+    // 주의: 이 파일은 lucide 'Map' 아이콘을 import 해 전역 Map 이 가려진다 → Map 생성자 금지, plain object 사용.
+    const byQid = Object.fromEntries((quizResult.results || []).map((r) => [r.questionId, r]));
+    const wrong = questions.filter((q) => { const r = byQid[q.questionId]; return r && r.answered && r.correct === false; });
+    const unanswered = questions.filter((q) => { const r = byQid[q.questionId]; return !r || !r.answered; });
     if (wrong.length + unanswered.length === 0) { alert('복습할 문제가 없습니다. 모든 문제를 맞혔어요.'); return; }
     try {
       setIsCreatingReviewNote(true);
@@ -2511,13 +2512,14 @@ export default function ArchiveDetail() {
         const activeQuizHardInvalid = isQuizHardInvalid(activeQuiz);
         const parsedQuestions = activeQuizHardInvalid ? [] : rawParsedQuestions;
         // 서버 채점 결과(questionId → {answered, correct, correctOptionId, explanation}). 채점 전에는 비어 있다.
-        const resultByQid = new Map(((quizResult && quizResult.results) || []).map((r) => [r.questionId, r]));
+        // 주의: lucide 'Map' 아이콘 import 로 전역 Map 이 가려짐 → plain object 로 조회한다(Map 생성자는 런타임 크래시).
+        const resultByQid = Object.fromEntries(((quizResult && quizResult.results) || []).map((r) => [r.questionId, r]));
         const graded = !!quizResult;
 
         // 오답노트 작성하기 버튼 상태 (B) — 채점 결과 기준 오답(WRONG) + 미응답(UNANSWERED)
         const rnAnsweredCount = Object.keys(userAnswers).length;
-        const rnWrongCount = graded ? parsedQuestions.filter((q) => { const r = resultByQid.get(q.questionId); return r && r.answered && r.correct === false; }).length : 0;
-        const rnUnansweredCount = graded ? parsedQuestions.filter((q) => { const r = resultByQid.get(q.questionId); return !r || !r.answered; }).length : 0;
+        const rnWrongCount = graded ? parsedQuestions.filter((q) => { const r = resultByQid[q.questionId]; return r && r.answered && r.correct === false; }).length : 0;
+        const rnUnansweredCount = graded ? parsedQuestions.filter((q) => { const r = resultByQid[q.questionId]; return !r || !r.answered; }).length : 0;
         const rnReviewCount = rnWrongCount + rnUnansweredCount;
         const rnExistingNote = activeQuiz ? reviewNotesByQuiz[activeQuiz.quizId] : null;
         let rnButtonLabel = '오답노트 작성하기';
@@ -2726,7 +2728,7 @@ export default function ArchiveDetail() {
                     ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
                           {parsedQuestions.map((q, idx) => {
-                              const r = resultByQid.get(q.questionId);
+                              const r = resultByQid[q.questionId];
                               const picked = userAnswers[idx];
                               // 채점 후: 서버 결과의 selectedOptionIds/correctOptionIds 로만 표시한다(정답 키는 결과에만 있음).
                               const rSelected = Array.isArray(r?.selectedOptionIds) && r.selectedOptionIds.length ? r.selectedOptionIds[0] : null;
