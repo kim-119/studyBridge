@@ -764,10 +764,22 @@ _FALLBACK_QUESTIONS_DATA: List[Dict[str, Any]] = [
 
 
 def build_fallback_quiz(file_name: str = "", reason: str = "") -> Dict[str, Any]:
-    """Legacy non-strict fallback. Strict PDF quiz paths must not call this."""
+    """Legacy non-strict fallback. Strict PDF quiz paths must not call this.
+
+    Marked explicitly (status=DEGRADED_FALLBACK, degraded=True, fallbackUsed=True) so a
+    caller never has to string-match the title to tell it apart from a grounded quiz.
+    """
     if reason:
         logger.warning("퀴즈 fallback: file=%s reason=%s", file_name, reason)
-    return {"quizTitle": _FALLBACK_QUIZ_TITLE, "questions": _FALLBACK_QUESTIONS_DATA}
+    return {
+        "quizTitle": _FALLBACK_QUIZ_TITLE,
+        "questions": [dict(q) for q in _FALLBACK_QUESTIONS_DATA],
+        "schemaVersion": "quiz.v2",
+        "status": "DEGRADED_FALLBACK",
+        "degraded": True,
+        "fallbackUsed": True,
+        "degradedReason": reason or "FALLBACK",
+    }
 
 
 def _fallback_quiz_questions(count: int) -> List[Dict[str, Any]]:
@@ -777,6 +789,17 @@ def _fallback_quiz_questions(count: int) -> List[Dict[str, Any]]:
     for idx in range(count):
         questions.append(dict(_FALLBACK_QUESTIONS_DATA[idx % len(_FALLBACK_QUESTIONS_DATA)]))
     return questions
+
+
+def _finalize_fallback_questions(count: int) -> List[Dict[str, Any]]:
+    """Degraded fallback questions with contract ids. Never repeats an item to pad the
+    count (a repeated question would duplicate questionId); returns at most the unique set."""
+    from app.services.quiz_contract import attach_contract_fields
+    count = max(1, min(int(count or DEFAULT_QUIZ_COUNT), len(_FALLBACK_QUESTIONS_DATA)))
+    questions = [dict(q) for q in _FALLBACK_QUESTIONS_DATA[:count]]
+    for q in questions:
+        q.setdefault("questionType", "multiple_choice")
+    return attach_contract_fields(questions)
 
 
 def _normalize_quiz_type(question_type: str) -> str:
@@ -795,6 +818,9 @@ def _quiz_failure_response(
     logger.warning("[quiz:fail] code=%s reason=%s", code, reason or message)
     result: Dict[str, Any] = {
         "success": False,
+        "schemaVersion": "quiz.v2",
+        "status": "FAILED",
+        "degraded": False,
         "errorCode": code,
         "message": message,
         "materialId": material_id,
@@ -1054,9 +1080,12 @@ def validate_grounded_quiz_questions(
     if not isinstance(questions, list):
         return [], 1
 
+    from app.services.quiz_contract import option_integrity_error, resolve_single_answer_index
+
     requested_type = _normalize_quiz_type(question_type)
     valid: List[Dict[str, Any]] = []
     rejected = 0
+    seen_questions: set = set()
     for idx, item in enumerate(questions):
         if not isinstance(item, dict):
             rejected += 1
@@ -1075,24 +1104,26 @@ def validate_grounded_quiz_questions(
         if not source_snippet:
             source_snippet = "PDF 본문 내용 기반"
 
-        options = [safe_strip(o) for o in item.get("options", item.get("choices", []))]
+        question_key = re.sub(r"[\s\W_]+", "", question).casefold()
+        if question_key in seen_questions:
+            rejected += 1
+            continue
+        raw_options = item.get("options", item.get("choices", []))
+        if not isinstance(raw_options, list):
+            raw_options = []
+        options = [safe_strip(o) for o in raw_options]
         correct = item.get("correctAnswer", item.get("answer_index"))
         answer = safe_strip(item.get("answer"), "") or None
         if raw_type == "multiple_choice":
-            if len(options) != QUIZ_OPTIONS_COUNT:
+            if len(options) != QUIZ_OPTIONS_COUNT or option_integrity_error(options):
                 rejected += 1
                 continue
-            try:
-                correct = int(correct)
-            except Exception:
-                if answer and answer in options:
-                    correct = options.index(answer)
-                else:
-                    rejected += 1
-                    continue
-            if correct not in (0, 1, 2, 3):
+            resolved = resolve_single_answer_index(correct, answer, options)
+            if not isinstance(resolved, int):
+                logger.info("[quiz:validate] reject q%s reason=%s", idx, resolved)
                 rejected += 1
                 continue
+            correct = resolved
             answer = options[correct]
         elif raw_type in {"true_false", "ox"}:
             normalized_answer = str(item.get("answer") if item.get("answer") is not None else correct).strip().lower()
@@ -1110,6 +1141,7 @@ def validate_grounded_quiz_questions(
                 rejected += 1
                 continue
 
+        seen_questions.add(question_key)
         valid.append({
             "question": question,
             "questionType": raw_type,
@@ -1170,7 +1202,7 @@ def generate_quiz_from_pdf(
                 reason=str(e),
             )
         result = build_fallback_quiz(file_name, f"S3 로드 실패: {e}")
-        result["questions"] = _fallback_quiz_questions(count)
+        result["questions"] = _finalize_fallback_questions(count)
         return result
 
     try:
@@ -1189,7 +1221,7 @@ def generate_quiz_from_pdf(
                 reason=str(e),
             )
         result = build_fallback_quiz(file_name, f"PDF 추출 실패: {e}")
-        result["questions"] = _fallback_quiz_questions(count)
+        result["questions"] = _finalize_fallback_questions(count)
         return result
 
     if len(pdf_text) < 100:
@@ -1204,7 +1236,7 @@ def generate_quiz_from_pdf(
                 reason="PDF text shorter than 100 chars",
             )
         result = build_fallback_quiz(file_name, "PDF 텍스트 부족")
-        result["questions"] = _fallback_quiz_questions(count)
+        result["questions"] = _finalize_fallback_questions(count)
         return result
 
     pdf_context, chunk_count = build_pdf_quiz_context(pdf_text)
@@ -1236,17 +1268,38 @@ def generate_quiz_from_pdf(
             reason="no validated sourceSnippet",
         )
 
+    from app.services.quiz_contract import (
+        ANSWER_KEY_FIELDS, SCHEMA_VERSION, attach_contract_fields, stable_quiz_id, validate_quiz_contract,
+    )
+    final_questions = attach_contract_fields(valid_questions[:count])
+    contract_errors = validate_quiz_contract(final_questions)
+    if contract_errors:
+        return _quiz_failure_response(
+            "QUIZ_CONTRACT_INVALID",
+            "생성된 퀴즈가 계약 검증을 통과하지 못했습니다.",
+            material_id,
+            file_name,
+            group_id,
+            source_text_length=len(pdf_text),
+            reason=";".join(contract_errors[:5]),
+        )
+    partial = len(final_questions) < count
     result: Dict[str, Any] = {
         "success": True,
+        "schemaVersion": SCHEMA_VERSION,
+        "quizId": stable_quiz_id(material_id, [q["questionId"] for q in final_questions]),
+        "status": "PARTIAL" if partial else "OK",
+        "degraded": False,
+        "answerKeyFields": list(ANSWER_KEY_FIELDS),
         "quizTitle": f"[{file_name}] PDF 기반 학습 퀴즈",
         "materialId": material_id,
         "groupId": group_id,
         "fileName": file_name,
         "sourceTextLength": len(pdf_text),
         "usedContextLength": len(pdf_context),
-        "questions": valid_questions[:count],
+        "questions": final_questions,
     }
-    if len(valid_questions) < count:
+    if partial:
         result["warning"] = f"요청한 {count}개 중 PDF 근거 검증을 통과한 {len(valid_questions)}개만 반환했습니다."
     return result
 
@@ -1762,8 +1815,12 @@ class QuizGenerateRequest(BaseModel):
 
 
 class QuizQuestion(BaseModel):
+    questionId: Optional[str] = None
+    answerType: Optional[str] = None
     question: str
     options: List[str] = Field(default_factory=list)
+    optionIds: List[str] = Field(default_factory=list)
+    correctOptionIds: List[str] = Field(default_factory=list)
     correctAnswer: Optional[int] = Field(None, ge=0, le=3)
     answer: Optional[str] = None
     explanation: Optional[str] = None
@@ -1774,6 +1831,13 @@ class QuizQuestion(BaseModel):
 
 class QuizGenerateResponse(BaseModel):
     success: bool = True
+    schemaVersion: Optional[str] = None
+    quizId: Optional[str] = None
+    status: Optional[str] = None
+    degraded: bool = False
+    degradedReason: Optional[str] = None
+    fallbackUsed: Optional[bool] = None
+    answerKeyFields: List[str] = Field(default_factory=list)
     quizTitle: Optional[str] = None
     errorCode: Optional[str] = None
     message: Optional[str] = None

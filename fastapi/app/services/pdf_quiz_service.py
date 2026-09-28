@@ -25,6 +25,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.services.quiz_contract import option_integrity_error, resolve_single_answer_index
 from app.services.material_summary_builder import sanitize_markdown_text
 from app.services.quiz_difficulty_policy import (
     normalize_difficulty,
@@ -632,6 +633,7 @@ def generate_pdf_quiz(req: Dict[str, Any]) -> Dict[str, Any]:
     # source 판정: deterministic 으로 일부라도 채웠으면 DETERMINISTIC_PDF, 전부 LLM 이면 AI_REPAIRED.
     # 어느 쪽이든 PDF 근거 + 요청 난이도를 그대로 유지하므로 '기본문제 대체'가 아니다.
     source = "DETERMINISTIC_PDF" if det_used > 0 else "AI_REPAIRED"
+    deterministic_count = det_used
 
     # admin 문제 필터 (C) — 강의계획서 기본 동작에서 행정정보 암기형 제거
     if is_syllabus and not allow_admin_quiz:
@@ -663,6 +665,8 @@ def generate_pdf_quiz(req: Dict[str, Any]) -> Dict[str, Any]:
         "questions": final_q,
         "source": source,
         "fallback_used": False,
+        "deterministic_count": deterministic_count,
+        "llm_skipped": no_llm,
         "_allow_admin_quiz": allow_admin_quiz,
     }
     if is_syllabus:
@@ -684,6 +688,7 @@ def generate_pdf_quiz(req: Dict[str, Any]) -> Dict[str, Any]:
             rebuilt.append(qq)
         response["questions"] = rebuilt
         response["source"] = "DETERMINISTIC_PDF"  # 재구성은 PDF 기반 결정론 생성기로 보충
+        response["deterministic_count"] = len(rebuilt)
         check = validate_quiz_difficulty(response, difficulty, ctx.get("context", ""))
 
     response.pop("_allow_admin_quiz", None)
@@ -738,7 +743,8 @@ def _generate_questions(ctx, doc_type, diff, count, weekly, wiki_context, allow_
 
 def _question_shape_ok(q: Dict[str, Any]) -> bool:
     ch = q.get("choices") or []
-    return bool((q.get("question") or "").strip()) and len(ch) == 4 and bool(q.get("correct_answer"))
+    return (bool((q.get("question") or "").strip()) and len(ch) == 4 and bool(q.get("correct_answer"))
+            and option_integrity_error(ch) is None)
 
 
 # ── streaming 오케스트레이터 공용 헬퍼 (스펙 I/J/K) ────────────────────────────
@@ -855,13 +861,24 @@ def _llm_generate(ctx, doc_type, diff, count, weekly, wiki_context) -> List[Dict
         if not isinstance(it, dict):
             continue
         choices = it.get("choices") or it.get("options") or []
-        ca = it.get("correct_answer") or it.get("answer") or ""
-        if isinstance(ca, int) and 0 <= ca < len(choices):
-            ca = choices[ca]
+        if not isinstance(choices, list):
+            choices = []
+        # `or` chaining would drop a legitimate index 0, and int(True) would pick option B:
+        # resolve strictly (text / int index / letter; bool and ambiguous keys -> "" -> slot rejected).
+        ca = it.get("correct_answer")
+        if ca is None or ca == "":
+            ca = it.get("answer")
+        str_choices = [str(c) for c in choices][:4]
+        if isinstance(ca, str):   # text key; an index emitted alongside must agree with it
+            idx_hint = next((it.get(k) for k in ("answer_index", "answerIndex", "correct_index") if k in it), None)
+            resolved = resolve_single_answer_index(idx_hint, ca, str_choices)
+        else:
+            resolved = resolve_single_answer_index(ca, None, str_choices)
+        ca = str_choices[resolved] if isinstance(resolved, int) else ""
         out.append({
             "question": it.get("question") or "",
-            "choices": [str(c) for c in choices][:4],
-            "correct_answer": str(ca),
+            "choices": str_choices,
+            "correct_answer": ca,
             "explanation": it.get("explanation") or "",
             "wrong_explanations": it.get("wrong_explanations") or [],
             "_concept": it.get("concept") or "핵심 개념",
