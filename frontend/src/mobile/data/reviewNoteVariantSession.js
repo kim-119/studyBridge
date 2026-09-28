@@ -66,6 +66,7 @@ export function serializeVariantSession(session) {
     activeId: session.activeId,
     answers: session.answers,
     submitted: session.submitted,
+    completed: session.completed === true,
   });
 }
 
@@ -92,6 +93,7 @@ export function parseVariantSession(raw, defaultSettings) {
     activeId,
     answers: pickAnswers(parsed.answers),
     submitted: pickSubmitted(parsed.submitted),
+    ...(parsed.completed === true ? { completed: true } : {}),
   };
 }
 

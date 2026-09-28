@@ -145,12 +145,37 @@ function SimilarQuestionResult({ question, pickedIndex }) {
   );
 }
 
-function SimilarQuestionSolver({ question, pickedIndex, isSubmitted, onPick, onSubmit }) {
+function SolverFooter({ progress, isSubmitted, canSubmit, onSubmit, onNext, onComplete }) {
+  if (!isSubmitted) {
+    return (
+      <Button fullWidth disabled={!canSubmit} onClick={onSubmit}>
+        제출
+      </Button>
+    );
+  }
+
+  if (progress.isLast) {
+    return (
+      <Button fullWidth onClick={onComplete} data-variant-step="complete">
+        완료
+      </Button>
+    );
+  }
+
+  return (
+    <Button fullWidth onClick={onNext} data-variant-step="next">
+      다음 문제
+    </Button>
+  );
+}
+
+function SimilarQuestionSolver({ question, progress, pickedIndex, isSubmitted, onPick, onSubmit, onNext, onComplete }) {
   return (
     <div className="mobile-card mobile-review__solver">
-      <p className="mobile-quiz__stem">
-        {question.number}. {cleanText(question.question)}
+      <p className="mobile-review__progress" data-variant-progress={`${progress.currentNumber}/${progress.total}`}>
+        문제 {progress.currentNumber} / {progress.total}
       </p>
+      <p className="mobile-quiz__stem">{cleanText(question.question)}</p>
 
       {question.choices.length === 0 ? (
         <p className="mobile-card__meta">이 문제에는 선택지가 없습니다.</p>
@@ -178,13 +203,30 @@ function SimilarQuestionSolver({ question, pickedIndex, isSubmitted, onPick, onS
         </ul>
       )}
 
-      {isSubmitted ? (
-        <SimilarQuestionResult question={question} pickedIndex={pickedIndex} />
-      ) : (
-        <Button fullWidth disabled={pickedIndex == null} onClick={onSubmit}>
-          제출
-        </Button>
-      )}
+      {isSubmitted && <SimilarQuestionResult question={question} pickedIndex={pickedIndex} />}
+
+      <SolverFooter
+        progress={progress}
+        isSubmitted={isSubmitted}
+        canSubmit={pickedIndex != null || question.choices.length === 0}
+        onSubmit={onSubmit}
+        onNext={onNext}
+        onComplete={onComplete}
+      />
+    </div>
+  );
+}
+
+function VariantCompletion({ progress, onRestart }) {
+  return (
+    <div className="mobile-card mobile-review__solver" role="status" data-variant-step="completed">
+      <h3 className="mobile-section__title">유사문제 풀이 완료</h3>
+      <p className="mobile-paragraph">
+        {progress.total}문제 중 {progress.correctCount}문제를 맞혔습니다.
+      </p>
+      <Button fullWidth variant="secondary" onClick={onRestart}>
+        처음부터 다시 풀기
+      </Button>
     </div>
   );
 }
@@ -218,9 +260,9 @@ function VariantCountNotice({ countCheck, missingResult, isBusy, requestMissing 
 }
 
 export default function ReviewNoteVariantPanel({ note, variant }) {
-  const { session, countCheck, missingResult, generate, requestMissing, isBusy } = variant;
+  const { session, progress, countCheck, missingResult, generate, requestMissing, isBusy } = variant;
   const { questions, answers, submitted, activeId, hasResult, usedFallback } = session;
-  const activeQuestion = questions.find((question) => question.id === activeId) || null;
+  const activeQuestion = progress.currentQuestion;
 
   return (
     <section className="mobile-section">
@@ -235,6 +277,11 @@ export default function ReviewNoteVariantPanel({ note, variant }) {
         {hasResult ? '유사문제 새로 생성' : '유사문제 생성'}
       </Button>
 
+      {generate.isSubmitting && (
+        <p className="mobile-field__hint" role="status">
+          유사문제를 생성하고 있습니다. 다른 화면으로 이동해도 생성은 계속됩니다.
+        </p>
+      )}
       {generate.error && <p className="mobile-auth__error">{variantErrorMessage(generate.error)}</p>}
 
       {!hasResult && !generate.error && !generate.isSubmitting && (
@@ -264,8 +311,26 @@ export default function ReviewNoteVariantPanel({ note, variant }) {
             </p>
           )}
 
+          <h3 className="mobile-section__title">유사문제 풀이</h3>
+          {progress.isCompleted ? (
+            <VariantCompletion progress={progress} onRestart={variant.restart} />
+          ) : (
+            activeQuestion && (
+              <SimilarQuestionSolver
+                question={activeQuestion}
+                progress={progress}
+                pickedIndex={answers[activeQuestion.id]}
+                isSubmitted={Boolean(submitted[activeQuestion.id])}
+                onPick={(index) => variant.pickAnswer(activeQuestion.id, index)}
+                onSubmit={() => variant.submitAnswer(activeQuestion.id)}
+                onNext={variant.goToNext}
+                onComplete={variant.complete}
+              />
+            )
+          )}
+
           <h3 className="mobile-section__title">
-            생성된 유사문제 ({questions.length}/{countCheck.requested})
+            문제 목록 ({questions.length}/{countCheck.requested})
           </h3>
           <SimilarQuestionList
             questions={questions}
@@ -274,19 +339,6 @@ export default function ReviewNoteVariantPanel({ note, variant }) {
             submitted={submitted}
             onSelect={variant.selectQuestion}
           />
-
-          <h3 className="mobile-section__title">유사문제 풀이</h3>
-          {activeQuestion ? (
-            <SimilarQuestionSolver
-              question={activeQuestion}
-              pickedIndex={answers[activeQuestion.id]}
-              isSubmitted={Boolean(submitted[activeQuestion.id])}
-              onPick={(index) => variant.pickAnswer(activeQuestion.id, index)}
-              onSubmit={() => variant.submitAnswer(activeQuestion.id)}
-            />
-          ) : (
-            <p className="mobile-card__meta">위 목록에서 풀 문제를 선택하세요.</p>
-          )}
         </div>
       )}
     </section>

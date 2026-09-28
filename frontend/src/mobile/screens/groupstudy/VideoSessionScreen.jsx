@@ -4,6 +4,7 @@ import { groupService } from '../../../services/api';
 import { useAuth } from '../../../hooks/useAuth';
 import { useAsync } from '../../data/useAsync';
 import { resolveMyDisplayName } from './groupStudyModel';
+import { enterRoomClock } from './roomClock';
 import StudyRoomView from './room/StudyRoomView';
 import { useVideoSession } from './useVideoSession';
 import VideoPreJoin from './VideoPreJoin';
@@ -14,12 +15,14 @@ export default function VideoSessionScreen() {
   const { userId, user } = useAuth();
   const displayName = resolveMyDisplayName(user, userId);
   const [hasEnteredRoom, setEnteredRoom] = useState(false);
+  const [roomClock, setRoomClock] = useState(null);
 
   const group = useAsync(() => groupService.getGroupDetail(groupId), [groupId]);
   const session = useVideoSession(groupId, { userId, displayName });
 
   const enterRoom = (mediaOptions) => {
     setEnteredRoom(true);
+    setRoomClock((clock) => enterRoomClock(clock, Date.now()));
     session.join(mediaOptions);
   };
 
@@ -47,6 +50,7 @@ export default function VideoSessionScreen() {
     <StudyRoomView
       groupId={groupId}
       group={group}
+      enteredAt={roomClock?.enteredAt}
       session={session}
       userId={userId}
       displayName={displayName}

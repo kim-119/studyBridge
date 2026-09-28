@@ -198,9 +198,14 @@ export function describeCardAction(card) {
   return { label: '참여하기', disabled: false };
 }
 
+export function isGroupLeader(group, userId) {
+  if (userId == null || group?.leaderId == null) return false;
+  return Number(group.leaderId) === Number(userId);
+}
+
 export function resolveMembership(group, members, userId) {
   if (userId == null || !group) return MEMBERSHIP.GUEST;
-  if (Number(group.leaderId) === Number(userId)) return MEMBERSHIP.LEADER;
+  if (isGroupLeader(group, userId)) return MEMBERSHIP.LEADER;
 
   const isJoined = (members || []).some((member) => Number(member.userId) === Number(userId));
   return isJoined ? MEMBERSHIP.MEMBER : MEMBERSHIP.GUEST;

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { groupService } from '../../../../services/api';
-import { RESOURCE_KIND, describeDeleteFailure, shouldReloadAfterDeleteFailure } from '../resourceDeleteModel';
+import { RESOURCE_KIND, runResourceDeletion } from '../resourceDeleteModel';
 
 const DELETE_REQUEST = {
   [RESOURCE_KIND.MATERIAL]: (groupId, resourceId) => groupService.deleteGroupMaterial(groupId, resourceId),
@@ -16,15 +16,16 @@ export function useResourceDeletion(groupId, kind, listQuery) {
     setDeletingId(resourceId);
     setErrorMessage(null);
 
-    try {
-      await DELETE_REQUEST[kind](groupId, resourceId);
-      await listQuery.reload().catch(() => {});
-    } catch (error) {
-      setErrorMessage(describeDeleteFailure(error, kind));
-      if (shouldReloadAfterDeleteFailure(error)) await listQuery.reload().catch(() => {});
-    } finally {
-      setDeletingId(null);
-    }
+    const outcome = await runResourceDeletion({
+      kind,
+      resourceId,
+      deleteRequest: (id) => DELETE_REQUEST[kind](groupId, id),
+      removeFromList: listQuery.setData,
+      reloadList: listQuery.reload,
+    });
+
+    setErrorMessage(outcome.errorMessage);
+    setDeletingId(null);
   };
 
   return { deletingId, errorMessage, remove };

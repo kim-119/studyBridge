@@ -1,6 +1,7 @@
 import React from 'react';
 import { LogOut, Menu } from 'lucide-react';
 import { SOCKET_STATE } from '../socketConnectionModel';
+import RoomElapsedTime from './RoomElapsedTime';
 
 const SHORT_STATUS_LABEL = {
   [SOCKET_STATE.IDLE]: '연결 준비',
@@ -11,7 +12,7 @@ const SHORT_STATUS_LABEL = {
   [SOCKET_STATE.FAILED]: '연결 끊김',
 };
 
-export default function RoomHeader({ title, participantCount, socketState, onOpenMenu, onLeave }) {
+export default function RoomHeader({ title, enteredAt, participantCount, socketState, onOpenMenu, onLeave }) {
   return (
     <header className="mobile-room-header">
       <button type="button" className="mobile-room-header__icon" aria-label="메뉴 열기" onClick={onOpenMenu}>
@@ -19,7 +20,10 @@ export default function RoomHeader({ title, participantCount, socketState, onOpe
       </button>
 
       <div className="mobile-room-header__title">
-        <h1>{title}</h1>
+        <div className="mobile-room-header__title-row">
+          <h1>{title}</h1>
+          <RoomElapsedTime enteredAt={enteredAt} />
+        </div>
         <p>{participantCount}명 참여 중</p>
       </div>
 

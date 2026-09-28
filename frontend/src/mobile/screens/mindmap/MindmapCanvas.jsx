@@ -9,11 +9,13 @@ import {
   pinchTransform,
   zoomAround,
 } from './canvasTransform';
+import { EMPHASIS, edgeEmphasis, nodeEmphasis } from './mindmapSelection';
 
 const NODE_RADIUS = 18;
 const LABEL_MIN_SCALE = 0.75;
 const LABEL_MAX_LENGTH = 12;
 const ZOOM_STEP = 1.25;
+const RELATION_LABEL_MAX_LENGTH = 10;
 
 function useLatest(value) {
   const ref = useRef(value);
@@ -117,11 +119,11 @@ function useTouchGestures(containerRef, transformRef, setTransform) {
   return { handlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd }, isTap };
 }
 
-function truncateLabel(label) {
-  return label.length > LABEL_MAX_LENGTH ? `${label.slice(0, LABEL_MAX_LENGTH)}…` : label;
+function truncateLabel(label, maxLength = LABEL_MAX_LENGTH) {
+  return label.length > maxLength ? `${label.slice(0, maxLength)}…` : label;
 }
 
-function MindmapEdges({ edges }) {
+function MindmapEdges({ edges, neighborhood }) {
   return edges.map((edge) => (
     <line
       key={edge.id}
@@ -129,27 +131,57 @@ function MindmapEdges({ edges }) {
       y1={edge.from.y}
       x2={edge.to.x}
       y2={edge.to.y}
-      className="mobile-mindmap__edge"
+      className={`mobile-mindmap__edge is-${edgeEmphasis(neighborhood, edge.id)}`}
+      data-edge-emphasis={edgeEmphasis(neighborhood, edge.id)}
       style={{ stroke: edge.color }}
       strokeDasharray={edge.dashed ? '6 4' : undefined}
     />
   ));
 }
 
-function MindmapNodes({ nodes, highlightIds, showLabels, onTapNode }) {
+function RelationLabels({ edges, neighborhood }) {
+  return edges
+    .filter((edge) => edgeEmphasis(neighborhood, edge.id) === EMPHASIS.CONNECTED)
+    .map((edge) => (
+      <text
+        key={`${edge.id}-label`}
+        x={(edge.from.x + edge.to.x) / 2}
+        y={(edge.from.y + edge.to.y) / 2}
+        className="mobile-mindmap__relation"
+      >
+        {truncateLabel(edge.relationLabel, RELATION_LABEL_MAX_LENGTH)}
+      </text>
+    ));
+}
+
+function nodeClassName(isHighlighted, emphasis) {
+  return ['mobile-mindmap__dot', isHighlighted ? 'is-highlighted' : '', `is-${emphasis}`].filter(Boolean).join(' ');
+}
+
+function MindmapNodes({ nodes, highlightIds, neighborhood, showLabels, onTapNode }) {
   return nodes.map((node) => {
-    const isHighlighted = highlightIds?.has(node.id);
+    const emphasis = nodeEmphasis(neighborhood, node.id);
+    const isHighlighted = highlightIds?.has(node.id) || emphasis === EMPHASIS.SELECTED;
+    const showsLabel = showLabels || emphasis === EMPHASIS.SELECTED || emphasis === EMPHASIS.CONNECTED;
 
     return (
-      <g key={node.id} onClick={() => onTapNode(node)} className="mobile-mindmap__node">
+      <g
+        key={node.id}
+        onClick={(event) => {
+          event.stopPropagation();
+          onTapNode(node);
+        }}
+        className={`mobile-mindmap__node is-${emphasis}`}
+        data-node-emphasis={emphasis}
+      >
         <circle
           cx={node.x}
           cy={node.y}
           r={isHighlighted ? NODE_RADIUS + 4 : NODE_RADIUS}
           fill={node.color}
-          className={isHighlighted ? 'mobile-mindmap__dot is-highlighted' : 'mobile-mindmap__dot'}
+          className={nodeClassName(isHighlighted, emphasis)}
         />
-        {showLabels && (
+        {showsLabel && (
           <text x={node.x} y={node.y + NODE_RADIUS + 14} className="mobile-mindmap__label">
             {truncateLabel(node.label)}
           </text>
@@ -159,7 +191,15 @@ function MindmapNodes({ nodes, highlightIds, showLabels, onTapNode }) {
   });
 }
 
-export default function MindmapCanvas({ view, fitKey, highlightIds, focusTarget, onSelectNode }) {
+export default function MindmapCanvas({
+  view,
+  fitKey,
+  highlightIds,
+  neighborhood,
+  focusTarget,
+  onSelectNode,
+  onClearSelection,
+}) {
   const containerRef = useRef(null);
   const size = useElementSize(containerRef);
   const sizeRef = useLatest(size);
@@ -196,19 +236,31 @@ export default function MindmapCanvas({ view, fitKey, highlightIds, focusTarget,
     if (gestures.isTap()) onSelectNode(node);
   };
 
+  const handleTapBackground = () => {
+    if (gestures.isTap()) onClearSelection();
+  };
+
   if (!view) return null;
 
   return (
     <div className="mobile-mindmap" ref={containerRef}>
-      <svg className="mobile-mindmap__canvas" width={size.width} height={size.height} {...gestures.handlers}>
+      <svg
+        className="mobile-mindmap__canvas"
+        width={size.width}
+        height={size.height}
+        onClick={handleTapBackground}
+        {...gestures.handlers}
+      >
         <g transform={`translate(${transform.x} ${transform.y}) scale(${transform.scale})`}>
-          <MindmapEdges edges={view.edges} />
+          <MindmapEdges edges={view.edges} neighborhood={neighborhood} />
           <MindmapNodes
             nodes={view.nodes}
             highlightIds={highlightIds}
+            neighborhood={neighborhood}
             showLabels={transform.scale >= LABEL_MIN_SCALE}
             onTapNode={handleTapNode}
           />
+          <RelationLabels edges={view.edges} neighborhood={neighborhood} />
         </g>
       </svg>
 

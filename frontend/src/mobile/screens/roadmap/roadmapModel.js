@@ -258,3 +258,7 @@ export function buildFromRoadmapRequest({ materialId, roadmap, materialTitle, st
     items,
   };
 }
+
+export function roadmapRegenerationTaskKey(materialId) {
+  return `roadmap-regenerate:${materialId}`;
+}

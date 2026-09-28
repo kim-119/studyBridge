@@ -49,3 +49,14 @@ export function describeQuizGenerationFailure(reason) {
 export function describeQuizGenerationSuccess({ title, questionCount }) {
   return `퀴즈를 만들었습니다: ${title || '그룹 퀴즈'} (${questionCount}문항)`;
 }
+
+export function groupQuizTaskKey(groupId) {
+  return `group-quiz:${groupId}`;
+}
+
+export function describeGenerationOutcome(response, refreshedQuizzes) {
+  const evaluation = evaluateGeneratedQuiz(response, refreshedQuizzes);
+  return evaluation.ok
+    ? { isSuccess: true, message: describeQuizGenerationSuccess(evaluation) }
+    : { isSuccess: false, message: describeQuizGenerationFailure(evaluation.reason) };
+}

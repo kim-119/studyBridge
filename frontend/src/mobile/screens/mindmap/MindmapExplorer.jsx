@@ -7,6 +7,7 @@ import { EmptyState } from '../../components/ScreenState';
 import MindmapCanvas from './MindmapCanvas';
 import MindmapLegend from './MindmapLegend';
 import { matchNodes } from './mindmapModel';
+import { neighborhoodOf } from './mindmapSelection';
 
 const SEARCH_RESULT_LIMIT = 30;
 
@@ -34,6 +35,43 @@ function SearchSheet({ isOpen, onClose, keyword, onKeywordChange, matches, onPic
   );
 }
 
+function SelectedNodeCard({ node, relations, onSelectNode, onOpenDetail, onClear }) {
+  return (
+    <section className="mobile-card mobile-mindmap-selection" aria-live="polite" data-selected-node={node.id}>
+      <div className="mobile-mindmap-selection__header">
+        <div className="mobile-mindmap-selection__title">
+          <p className="mobile-card__meta">{node.typeLabel}</p>
+          <h3>{node.title}</h3>
+        </div>
+        <button type="button" className="mobile-mindmap-selection__clear" onClick={onClear}>
+          선택 해제
+        </button>
+      </div>
+
+      {relations.length === 0 ? (
+        <p className="mobile-card__meta">연결된 노드가 없습니다.</p>
+      ) : (
+        <ul className="mobile-mindmap-selection__relations" aria-label={`연결 ${relations.length}개`}>
+          {relations.map((relation) => (
+            <li key={relation.edgeId}>
+              <button type="button" onClick={() => onSelectNode(relation.neighbor)}>
+                <span className="mobile-mindmap-selection__relation">
+                  {relation.direction === 'outgoing' ? `${relation.label} →` : `← ${relation.label}`}
+                </span>
+                <span className="mobile-mindmap-selection__neighbor">{relation.neighbor.title}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <button type="button" className="mobile-mindmap-selection__detail" onClick={onOpenDetail}>
+        노드 설명 보기
+      </button>
+    </section>
+  );
+}
+
 function NodeSheet({ node, onClose }) {
   return (
     <BottomSheet title={node?.title || '노드'} isOpen={Boolean(node)} onClose={onClose}>
@@ -51,14 +89,24 @@ export default function MindmapExplorer({ view, fitKey, toolbarActions = null })
   const [keyword, setKeyword] = useState('');
   const [isSearchOpen, setSearchOpen] = useState(false);
   const [focusTarget, setFocusTarget] = useState(null);
-  const [selectedNode, setSelectedNode] = useState(null);
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [detailNode, setDetailNode] = useState(null);
 
   const matches = useMemo(() => matchNodes(view?.nodes || [], keyword), [view, keyword]);
   const highlightIds = useMemo(() => new Set(matches.map((node) => node.id)), [matches]);
+  const neighborhood = useMemo(() => neighborhoodOf(view, selectedNodeId), [view, selectedNodeId]);
+  const selectedNode = view?.nodes.find((node) => node.id === neighborhood.selectedNodeId) || null;
+
+  const selectNode = (node) => setSelectedNodeId(node.id);
+  const clearSelection = () => setSelectedNodeId(null);
+
+  const focusNode = (node) => {
+    setFocusTarget({ id: node.id, requestedAt: Date.now() });
+    selectNode(node);
+  };
 
   const pickSearchResult = (node) => {
-    setFocusTarget({ id: node.id, requestedAt: Date.now() });
-    setSelectedNode(node);
+    focusNode(node);
     setSearchOpen(false);
   };
 
@@ -79,9 +127,20 @@ export default function MindmapExplorer({ view, fitKey, toolbarActions = null })
         view={view}
         fitKey={fitKey}
         highlightIds={highlightIds}
+        neighborhood={neighborhood}
         focusTarget={focusTarget}
-        onSelectNode={setSelectedNode}
+        onSelectNode={selectNode}
+        onClearSelection={clearSelection}
       />
+      {selectedNode && (
+        <SelectedNodeCard
+          node={selectedNode}
+          relations={neighborhood.relations}
+          onSelectNode={focusNode}
+          onOpenDetail={() => setDetailNode(selectedNode)}
+          onClear={clearSelection}
+        />
+      )}
       <MindmapLegend view={view} />
 
       <SearchSheet
@@ -92,7 +151,7 @@ export default function MindmapExplorer({ view, fitKey, toolbarActions = null })
         matches={matches}
         onPick={pickSearchResult}
       />
-      <NodeSheet node={selectedNode} onClose={() => setSelectedNode(null)} />
+      <NodeSheet node={detailNode} onClose={() => setDetailNode(null)} />
     </div>
   );
 }

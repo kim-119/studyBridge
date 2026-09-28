@@ -11,7 +11,6 @@ import { useAsync, useSubmit } from '../../data/useAsync';
 import ConfirmAction from './ConfirmAction';
 import GroupInfoCard from './GroupInfoCard';
 import LeaderConsole from './LeaderConsole';
-import StudyTimerCard from './StudyTimerCard';
 import { DEFAULT_COVER_IMAGE_URL, MEMBERSHIP, resolveMembership } from './groupStudyModel';
 
 const PRIVATE_APPLY_DEFAULT_MESSAGE = '안녕하세요! 가입 신청합니다.';
@@ -147,8 +146,6 @@ export default function GroupDetailScreen() {
                 <GuestActions group={group.data} onJoined={reloadGroup} />
               )}
             </ScreenState>
-
-            {isJoined && <StudyTimerCard groupId={groupId} />}
 
             {membership === MEMBERSHIP.LEADER && (
               <LeaderConsole

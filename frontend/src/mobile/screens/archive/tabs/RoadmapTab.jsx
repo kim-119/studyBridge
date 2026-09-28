@@ -4,7 +4,8 @@ import { useNavigate } from 'react-router-dom';
 import Button from '../../../components/Button';
 import ScreenState, { EmptyState } from '../../../components/ScreenState';
 import { materialService } from '../../../../services/api';
-import { useAsync, useSubmit } from '../../../data/useAsync';
+import { describeApiError, useAsync, useSubmit } from '../../../data/useAsync';
+import { useBackgroundTask } from '../../../data/useBackgroundTask';
 import { PLANNER_TYPE } from '../../planner/plannerAdapter';
 import RoadmapDaySheet from '../../roadmap/RoadmapDaySheet';
 import RoadmapLegacyWeeks from '../../roadmap/RoadmapLegacyWeeks';
@@ -21,6 +22,7 @@ import {
   hasDayStructure,
   normalizeRoadmapWeeks,
   roadmapProgress,
+  roadmapRegenerationTaskKey,
   roadmapUsedServerFallback,
   toggleDayInWeeks,
   toggleTaskInWeeks,
@@ -70,11 +72,19 @@ export default function RoadmapTab({ materialId }) {
     setWeeks(roadmap.data ? normalizeRoadmapWeeks(roadmap.data) : []);
   }, [roadmap.data]);
 
-  const regenerate = useSubmit(async () => {
-    assertRoadmapSucceeded(await materialService.regenerateRoadmap(materialId, level));
+  const regeneration = useBackgroundTask(roadmapRegenerationTaskKey(materialId));
+  const { isReady: isRegenerated, reset: resetRegeneration } = regeneration;
+  const { reload: reloadRoadmap } = roadmap;
+
+  useEffect(() => {
+    if (!isRegenerated) return;
     setSelectedWeekNumber(null);
-    await roadmap.reload();
-  });
+    resetRegeneration();
+    reloadRoadmap().catch(() => {});
+  }, [isRegenerated, resetRegeneration, reloadRoadmap]);
+
+  const regenerate = () =>
+    regeneration.run(async () => assertRoadmapSucceeded(await materialService.regenerateRoadmap(materialId, level)));
 
   const toggleDay = useSubmit(async (weekNumber, dayIndex) => {
     setTogglingKey(dayKey(weekNumber, dayIndex));
@@ -146,9 +156,9 @@ export default function RoadmapTab({ materialId }) {
       <RoadmapRegenerateCard
         level={level}
         onChangeLevel={setLevel}
-        isRegenerating={regenerate.isSubmitting}
-        errorMessage={regenerate.errorMessage}
-        onRegenerate={regenerate.submit}
+        isRegenerating={regeneration.isGenerating}
+        errorMessage={regeneration.isFailed ? describeApiError(regeneration.error) : null}
+        onRegenerate={regenerate}
       />
 
       <ScreenState query={roadmap} loadingLabel="로드맵을 불러오는 중입니다">

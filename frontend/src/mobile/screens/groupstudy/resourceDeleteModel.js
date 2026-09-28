@@ -1,3 +1,5 @@
+import { quizIdOf } from './quizGenerationModel.js';
+
 export const RESOURCE_KIND = {
   MATERIAL: 'material',
   QUIZ: 'quiz',
@@ -25,4 +27,31 @@ export function describeDeleteFailure(error, kind) {
 
 export function shouldReloadAfterDeleteFailure(error) {
   return error?.response?.status === 404;
+}
+
+const RESOURCE_ID_OF = {
+  [RESOURCE_KIND.MATERIAL]: (material) => material?.id,
+  [RESOURCE_KIND.QUIZ]: quizIdOf,
+};
+
+export function resourceIdOf(kind, resource) {
+  return RESOURCE_ID_OF[kind](resource);
+}
+
+export function withoutResource(list, kind, resourceId) {
+  if (!Array.isArray(list)) return list;
+  return list.filter((resource) => String(resourceIdOf(kind, resource)) !== String(resourceId));
+}
+
+export async function runResourceDeletion({ kind, resourceId, deleteRequest, removeFromList, reloadList }) {
+  try {
+    await deleteRequest(resourceId);
+  } catch (error) {
+    if (shouldReloadAfterDeleteFailure(error)) await reloadList().catch(() => {});
+    return { ok: false, errorMessage: describeDeleteFailure(error, kind) };
+  }
+
+  removeFromList((list) => withoutResource(list, kind, resourceId));
+  reloadList().catch(() => {});
+  return { ok: true, errorMessage: null };
 }

@@ -181,6 +181,17 @@
   word-break: break-word;
 }
 
+.mobile-review__progress {
+  margin: 0 0 6px;
+  color: var(--color-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.mobile-review__solver .mobile-button {
+  margin-top: var(--space-md);
+}
+
 .mobile-review__solver .mobile-quiz__options {
   margin-bottom: var(--space-md);
 }

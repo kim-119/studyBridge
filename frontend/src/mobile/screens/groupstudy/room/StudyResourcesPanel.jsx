@@ -6,6 +6,7 @@ import ScreenState from '../../../components/ScreenState';
 import SubTabs from '../../../components/SubTabs';
 import { groupService } from '../../../../services/api';
 import { describeApiError, useSubmit } from '../../../data/useAsync';
+import { useBackgroundTask } from '../../../data/useBackgroundTask';
 import { extractDownloadUrl } from '../../../platform/downloadUrl';
 import { openExternalUrl } from '../../../platform/externalLink';
 import ConfirmAction from '../ConfirmAction';
@@ -14,9 +15,9 @@ import {
   DEFAULT_QUIZ_OPTIONS,
   QUESTION_COUNT_OPTIONS,
   TIME_LIMIT_OPTIONS,
+  describeGenerationOutcome,
   describeQuizGenerationFailure,
-  describeQuizGenerationSuccess,
-  evaluateGeneratedQuiz,
+  groupQuizTaskKey,
   quizIdOf,
   serverReasonOf,
 } from '../quizGenerationModel';
@@ -34,48 +35,40 @@ function formatQuizMeta(quiz) {
   return [quiz.creatorName, quiz.questionCount ? `${quiz.questionCount}문항` : null].filter(Boolean).join(' · ');
 }
 
-async function reloadQuizList(quizzes) {
+async function generateGroupQuiz({ groupId, materialId, options, quizzes }) {
+  const response = await groupService.generateMaterialQuiz(groupId, materialId, options);
+
   try {
-    return { list: await quizzes.reload(), error: null };
+    return describeGenerationOutcome(response, await quizzes.reload());
   } catch (error) {
-    return { list: null, error };
+    return { isSuccess: false, message: `퀴즈 목록을 새로고침하지 못했습니다. ${describeApiError(error)}` };
   }
 }
 
+function describeGenerationError(error) {
+  return describeQuizGenerationFailure(serverReasonOf(error) || describeApiError(error));
+}
+
+function outcomeOf(generation) {
+  if (generation.isReady) return generation.result;
+  if (generation.isFailed) return { isSuccess: false, message: describeGenerationError(generation.error) };
+  return null;
+}
+
 function useMaterialQuizGeneration(groupId, quizzes) {
-  const [generatingMaterialId, setGeneratingMaterialId] = useState(null);
-  const [outcome, setOutcome] = useState(null);
+  const generation = useBackgroundTask(groupQuizTaskKey(groupId));
 
-  const generate = async (materialId, options) => {
-    if (generatingMaterialId !== null) return;
-    setGeneratingMaterialId(materialId);
-    setOutcome(null);
-
-    try {
-      const response = await groupService.generateMaterialQuiz(groupId, materialId, options);
-      const refreshed = await reloadQuizList(quizzes);
-
-      if (refreshed.error) {
-        setOutcome({ isSuccess: false, message: `퀴즈 목록을 새로고침하지 못했습니다. ${describeApiError(refreshed.error)}` });
-        return;
-      }
-
-      const evaluation = evaluateGeneratedQuiz(response, refreshed.list);
-      setOutcome(
-        evaluation.ok
-          ? { isSuccess: true, message: describeQuizGenerationSuccess(evaluation) }
-          : { isSuccess: false, message: describeQuizGenerationFailure(evaluation.reason) }
-      );
-    } catch (error) {
-      console.warn('자료 기반 퀴즈 생성에 실패했습니다.', error);
-      const reason = serverReasonOf(error) || describeApiError(error);
-      setOutcome({ isSuccess: false, message: describeQuizGenerationFailure(reason) });
-    } finally {
-      setGeneratingMaterialId(null);
-    }
+  const generate = (materialId, options) => {
+    generation
+      .run(() => generateGroupQuiz({ groupId, materialId, options, quizzes }), { context: { materialId } })
+      .catch((error) => console.warn('자료 기반 퀴즈 생성에 실패했습니다.', error));
   };
 
-  return { generatingMaterialId, outcome, generate };
+  return {
+    generatingMaterialId: generation.isGenerating ? generation.context?.materialId ?? null : null,
+    outcome: outcomeOf(generation),
+    generate,
+  };
 }
 
 function QuizOptionsPicker({ options, onChange }) {
@@ -184,7 +177,11 @@ function MaterialsList({ groupId, isLeader, materials, quizzes, onOpenViewer }) 
           </li>
         ))}
       </ul>
-      {isGenerating && <p className="mobile-field__hint">AI가 PDF 내용을 읽고 퀴즈를 생성하는 중입니다…</p>}
+      {isGenerating && (
+        <p className="mobile-field__hint" role="status">
+          퀴즈를 생성하고 있습니다. 패널을 닫아도 생성은 계속됩니다.
+        </p>
+      )}
       {outcome && (
         <p
           className={outcome.isSuccess ? 'mobile-room-quiz-result' : 'mobile-auth__error'}

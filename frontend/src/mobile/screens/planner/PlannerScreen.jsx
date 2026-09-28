@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
-import { CalendarCheck, FileText, Route } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { CalendarCheck, CheckSquare, FileText, Route, Square } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import BottomSheet from '../../components/BottomSheet';
+import Button from '../../components/Button';
 import Fab from '../../components/Fab';
 import ListRow from '../../components/ListRow';
 import ScreenState, { EmptyState } from '../../components/ScreenState';
@@ -9,6 +10,7 @@ import SubTabs from '../../components/SubTabs';
 import MobileScreen from '../../shell/MobileScreen';
 import { materialService, plannerService } from '../../../services/api';
 import { useAsync, useSubmit } from '../../data/useAsync';
+import ConfirmAction from '../groupstudy/ConfirmAction';
 import RoadmapPlannerSheet from '../roadmap/RoadmapPlannerSheet';
 import {
   ROADMAP_DAYS_REQUIRED_MESSAGE,
@@ -23,6 +25,17 @@ import {
   summarizePlanners,
   toPlannerSummary,
 } from './plannerAdapter';
+import {
+  EMPTY_SELECTION,
+  bulkDeleteConfirmMessage,
+  isAllSelected,
+  pruneSelection,
+  runBulkDelete,
+  startSelecting,
+  toggleSelectAll,
+  toggleSelected,
+  withoutPlanners,
+} from './plannerSelection';
 
 const TAB_LABEL = {
   [PLANNER_TYPE.ROADMAP]: '로드맵',
@@ -102,6 +115,88 @@ function plannerSubtitle(planner) {
     .join(' · ');
 }
 
+function SelectionToolbar({ selection, visibleIds, isDeleting, onStart, onCancel, onToggleAll, onDelete }) {
+  if (!selection.isSelecting) {
+    return (
+      <div className="mobile-planner-selection">
+        <Button variant="ghost" disabled={visibleIds.length === 0} onClick={onStart}>
+          <CheckSquare size={16} />
+          선택 삭제
+        </Button>
+      </div>
+    );
+  }
+
+  const selectedCount = selection.selectedIds.length;
+
+  return (
+    <div className="mobile-planner-selection is-active" data-planner-selected={selectedCount}>
+      <div className="mobile-planner-selection__row">
+        <span className="mobile-planner-selection__count">{selectedCount}개 선택</span>
+        <Button variant="ghost" disabled={isDeleting} onClick={onToggleAll}>
+          {isAllSelected(selection, visibleIds) ? '전체 해제' : '전체 선택'}
+        </Button>
+        <Button variant="ghost" disabled={isDeleting} onClick={onCancel}>
+          취소
+        </Button>
+      </div>
+      <ConfirmAction
+        label={`선택한 ${selectedCount}개 삭제`}
+        triggerVariant="danger"
+        confirmMessage={bulkDeleteConfirmMessage(selectedCount)}
+        confirmLabel="삭제"
+        disabled={selectedCount === 0}
+        isLoading={isDeleting}
+        onConfirm={onDelete}
+      />
+    </div>
+  );
+}
+
+function PlannerRow({ planner, isSelecting, isSelected, onOpen, onToggle }) {
+  const icon = planner.type === PLANNER_TYPE.ROADMAP ? <Route size={20} /> : <CalendarCheck size={20} />;
+  const selectionMark = isSelected ? (
+    <CheckSquare size={20} className="mobile-planner-check is-checked" aria-label="선택됨" />
+  ) : (
+    <Square size={20} className="mobile-planner-check" aria-label="선택 안 됨" />
+  );
+
+  return (
+    <ListRow
+      icon={icon}
+      title={planner.title}
+      subtitle={plannerSubtitle(planner)}
+      meta={planner.plannedMinutes > 0 ? formatMinutes(planner.plannedMinutes) : undefined}
+      trailing={isSelecting ? selectionMark : undefined}
+      onClick={isSelecting ? onToggle : onOpen}
+    />
+  );
+}
+
+function useBulkPlannerDeletion(planners, onDeleted) {
+  const [isDeleting, setDeleting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState(null);
+
+  const deletePlanners = async (plannerIds) => {
+    if (isDeleting) return;
+    setDeleting(true);
+    setErrorMessage(null);
+
+    const outcome = await runBulkDelete({ plannerIds, bulkDelete: plannerService.bulkDeleteSelectedPlanners });
+
+    if (outcome.ok) {
+      planners.setData((list) => withoutPlanners(list, outcome.deletedIds));
+      onDeleted(outcome.message);
+    } else {
+      setErrorMessage(outcome.message);
+    }
+    setDeleting(false);
+    planners.reload().catch(() => {});
+  };
+
+  return { isDeleting, errorMessage, deletePlanners, clearError: () => setErrorMessage(null) };
+}
+
 export default function PlannerScreen() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -119,7 +214,23 @@ export default function PlannerScreen() {
   }, [planners.data]);
 
   const visiblePlanners = plannersByType[plannerType];
+  const visibleIds = useMemo(() => visiblePlanners.map((planner) => planner.id), [visiblePlanners]);
   const summary = summarizePlanners(visiblePlanners);
+  const [selection, setSelection] = useState(EMPTY_SELECTION);
+
+  useEffect(() => {
+    setSelection((current) => pruneSelection(current, visibleIds));
+  }, [visibleIds]);
+
+  const bulkDeletion = useBulkPlannerDeletion(planners, (message) => {
+    setSelection(EMPTY_SELECTION);
+    setNotice(message);
+  });
+
+  const cancelSelecting = () => {
+    bulkDeletion.clearError();
+    setSelection(EMPTY_SELECTION);
+  };
 
   const tabs = [
     { key: PLANNER_TYPE.ROADMAP, label: `로드맵 플래너 ${plannersByType[PLANNER_TYPE.ROADMAP].length}` },
@@ -150,7 +261,14 @@ export default function PlannerScreen() {
 
   return (
     <MobileScreen title="플래너">
-      <SubTabs tabs={tabs} activeKey={plannerType} onChange={setPlannerType} />
+      <SubTabs
+        tabs={tabs}
+        activeKey={plannerType}
+        onChange={(nextType) => {
+          cancelSelecting();
+          setPlannerType(nextType);
+        }}
+      />
 
       {notice && (
         <p className="mobile-notice mobile-section" role="status">
@@ -165,24 +283,40 @@ export default function PlannerScreen() {
           {visiblePlanners.length === 0 ? (
             <EmptyState message={`${TAB_LABEL[plannerType]} 플래너가 없습니다.`} />
           ) : (
-            <ul className="mobile-list">
-              {visiblePlanners.map((planner) => (
-                <li key={planner.id}>
-                  <ListRow
-                    icon={planner.type === PLANNER_TYPE.ROADMAP ? <Route size={20} /> : <CalendarCheck size={20} />}
-                    title={planner.title}
-                    subtitle={plannerSubtitle(planner)}
-                    meta={planner.plannedMinutes > 0 ? formatMinutes(planner.plannedMinutes) : undefined}
-                    onClick={() => navigate(`/planner/${planner.id}`)}
-                  />
-                </li>
-              ))}
-            </ul>
+            <>
+              <SelectionToolbar
+                selection={selection}
+                visibleIds={visibleIds}
+                isDeleting={bulkDeletion.isDeleting}
+                onStart={() => setSelection(startSelecting())}
+                onCancel={cancelSelecting}
+                onToggleAll={() => setSelection((current) => toggleSelectAll(current, visibleIds))}
+                onDelete={() => bulkDeletion.deletePlanners(selection.selectedIds)}
+              />
+              {bulkDeletion.errorMessage && (
+                <p className="mobile-auth__error" role="alert">
+                  {bulkDeletion.errorMessage}
+                </p>
+              )}
+              <ul className="mobile-list">
+                {visiblePlanners.map((planner) => (
+                  <li key={planner.id} data-planner-id={planner.id}>
+                    <PlannerRow
+                      planner={planner}
+                      isSelecting={selection.isSelecting}
+                      isSelected={selection.selectedIds.includes(planner.id)}
+                      onOpen={() => navigate(`/planner/${planner.id}`)}
+                      onToggle={() => setSelection((current) => toggleSelected(current, planner.id))}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </>
       </ScreenState>
 
-      <Fab label="플래너 추가" onClick={() => setOpenSheet(SHEET.ACTIONS)} />
+      {!selection.isSelecting && <Fab label="플래너 추가" onClick={() => setOpenSheet(SHEET.ACTIONS)} />}
 
       <BottomSheet title="플래너 추가" isOpen={openSheet === SHEET.ACTIONS} onClose={() => setOpenSheet(null)}>
         <ul className="mobile-list">

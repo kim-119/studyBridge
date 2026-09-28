@@ -1,6 +1,7 @@
 import { EDGE_RELATION_LABEL, NODE_LABEL_KO, colorForNode, styleForEdge } from '../../../utils/graph/graphTypes';
 import { sanitizeGraph, validateGraph } from '../../../utils/graph/graphValidation';
 import { computeLayout } from '../../../utils/graph/graphLayout';
+import { relationLabelOf } from './mindmapSelection';
 
 function tryParse(value) {
   if (!value) return null;
@@ -49,7 +50,15 @@ function toViewEdge(edge, index, positionOf) {
 
   const type = edge.type || 'related_to';
   const style = styleForEdge(type);
-  return { id: edge.id || `${edge.from}-${edge.to}-${index}`, type, from, to, color: style.color, dashed: style.dashed };
+  return {
+    id: edge.id || `${edge.from}-${edge.to}-${index}`,
+    type,
+    from,
+    to,
+    relationLabel: relationLabelOf(edge),
+    color: style.color,
+    dashed: style.dashed,
+  };
 }
 
 export function buildMindmapView(graph, centerNodeId) {

@@ -1,13 +1,23 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Button from '../../../components/Button';
 import ScreenState, { EmptyState } from '../../../components/ScreenState';
 import { materialService, reviewNoteService } from '../../../../services/api';
+import { backgroundTasks } from '../../../data/backgroundTasks';
 import { describeApiError, useAsync, useSubmit } from '../../../data/useAsync';
+import { useBackgroundTask } from '../../../data/useBackgroundTask';
 import ConfirmAction from '../../groupstudy/ConfirmAction';
 import { aiExceptionMessage, aiFailureMessage } from '../aiResponseModel';
 import { formatDate } from '../archiveDomain';
 import { reviewNotePath } from '../archiveNavigation';
+import {
+  DEFAULT_QUESTION_COUNT,
+  GENERATING_MESSAGE,
+  describeServerScore,
+  materialQuizTaskKey,
+  mergeGeneratedQuiz,
+  startMaterialQuizGeneration,
+} from '../materialQuizGeneration';
 import {
   QUESTION_OUTCOME,
   countOutcomes,
@@ -26,7 +36,6 @@ import { newestQuizzesFirst } from '../quizModel';
 
 const DIFFICULTY_OPTIONS = ['쉬움', '보통', '어려움'];
 const QUESTION_COUNT_OPTIONS = [5, 10, 15, 20];
-const DEFAULT_QUESTION_COUNT = 10;
 
 const OUTCOME_LABEL = {
   [QUESTION_OUTCOME.CORRECT]: '정답',
@@ -35,7 +44,7 @@ const OUTCOME_LABEL = {
 };
 
 function aiErrorText(error) {
-  return aiExceptionMessage(error) || describeApiError(error);
+  return error?.userMessage || aiExceptionMessage(error) || describeApiError(error);
 }
 
 function serverMessageOf(submitState) {
@@ -105,9 +114,7 @@ function QuestionCard({ question, index, selectedOptionId, questionResult, isGra
 function ScoreSummary({ result, outcomeCounts }) {
   return (
     <section className="mobile-card mobile-section">
-      <h3 className="mobile-section__title">
-        채점 결과 {result.score}점 ({result.correctCount}/{result.totalQuestions})
-      </h3>
+      <h3 className="mobile-section__title">{describeServerScore(result)}</h3>
       <dl className="mobile-quiz__result">
         <div>
           <dt>정답</dt>
@@ -126,29 +133,9 @@ function ScoreSummary({ result, outcomeCounts }) {
   );
 }
 
-function QuizGenerator({ materialId, onGenerated }) {
+function QuizGenerator({ generation, onGenerate }) {
   const [difficulty, setDifficulty] = useState('보통');
   const [questionCount, setQuestionCount] = useState(DEFAULT_QUESTION_COUNT);
-  const [failureMessage, setFailureMessage] = useState(null);
-
-  const generateQuiz = useSubmit(async () => {
-    setFailureMessage(null);
-    const created = await materialService.generateQuiz(materialId, {
-      difficulty,
-      questionCount: Number(questionCount),
-      pageRange: '전체',
-      sourceMode: 'PDF_BASED',
-    });
-
-    if (isQuizFailed(created)) {
-      setFailureMessage(aiFailureMessage(created));
-      return;
-    }
-
-    await onGenerated(created?.quizId ?? null);
-  });
-
-  const errorMessage = failureMessage || (generateQuiz.error ? aiErrorText(generateQuiz.error) : null);
 
   return (
     <section className="mobile-card mobile-section">
@@ -157,6 +144,7 @@ function QuizGenerator({ materialId, onGenerated }) {
           className="mobile-select"
           aria-label="난이도"
           value={difficulty}
+          disabled={generation.isGenerating}
           onChange={(event) => setDifficulty(event.target.value)}
         >
           {DIFFICULTY_OPTIONS.map((option) => (
@@ -170,6 +158,7 @@ function QuizGenerator({ materialId, onGenerated }) {
           className="mobile-select"
           aria-label="문항 수"
           value={questionCount}
+          disabled={generation.isGenerating}
           onChange={(event) => setQuestionCount(event.target.value)}
         >
           {QUESTION_COUNT_OPTIONS.map((count) => (
@@ -180,13 +169,56 @@ function QuizGenerator({ materialId, onGenerated }) {
         </select>
       </div>
 
-      <Button fullWidth isLoading={generateQuiz.isSubmitting} onClick={() => generateQuiz.submit().catch(() => {})}>
-        새 퀴즈 생성
+      <Button
+        fullWidth
+        isLoading={generation.isGenerating}
+        onClick={() => onGenerate({ difficulty, questionCount })}
+      >
+        {generation.isFailed ? '다시 시도' : '새 퀴즈 생성'}
       </Button>
 
-      {errorMessage && <p className="mobile-auth__error mobile-archive-gap">{errorMessage}</p>}
+      {generation.isGenerating && (
+        <p className="mobile-field__hint mobile-archive-gap" role="status" data-quiz-generation="generating">
+          {GENERATING_MESSAGE} 다른 화면으로 이동해도 생성은 계속됩니다.
+        </p>
+      )}
+      {generation.isFailed && (
+        <p className="mobile-auth__error mobile-archive-gap" role="alert" data-quiz-generation="failed">
+          {aiErrorText(generation.error)}
+        </p>
+      )}
     </section>
   );
+}
+
+function useMaterialQuizGeneration(materialId, quizzes, onQuizReady) {
+  const generation = useBackgroundTask(materialQuizTaskKey(materialId));
+  const onQuizReadyRef = useRef(onQuizReady);
+  onQuizReadyRef.current = onQuizReady;
+  const { isReady, isFailed, result, reset } = generation;
+  const { reload, setData } = quizzes;
+
+  useEffect(() => {
+    if (!isReady) return;
+    setData((previous) => mergeGeneratedQuiz(previous, result));
+    onQuizReadyRef.current(result?.quizId ?? null);
+    reset();
+    reload().catch(() => {});
+  }, [isReady, result, reset, reload, setData]);
+
+  useEffect(() => {
+    if (isFailed) reload().catch(() => {});
+  }, [isFailed, reload]);
+
+  const generate = (options) => {
+    startMaterialQuizGeneration(backgroundTasks, {
+      materialId,
+      options,
+      generateQuiz: materialService.generateQuiz,
+    }).catch((error) => console.warn('자료 퀴즈 생성에 실패했습니다.', error));
+  };
+
+  return { generation, generate };
 }
 
 function ReviewNoteAction({ quiz, material, questions, selections }) {
@@ -347,12 +379,7 @@ export default function QuizTab({ material }) {
   }, [orderedQuizzes, selectedQuizId]);
 
   const selectedQuiz = orderedQuizzes.find((quiz) => quiz.quizId === selectedQuizId) || null;
-
-  const showGeneratedQuiz = async (createdQuizId) => {
-    const reloaded = newestQuizzesFirst(await quizzes.reload());
-    const created = reloaded.find((quiz) => quiz.quizId === createdQuizId);
-    setSelectedQuizId((created || reloaded[0])?.quizId ?? null);
-  };
+  const { generation, generate } = useMaterialQuizGeneration(materialId, quizzes, setSelectedQuizId);
 
   const rememberGrade = (quizId, result) => {
     setGradedByQuizId((previous) => ({ ...previous, [quizId]: result }));
@@ -364,7 +391,7 @@ export default function QuizTab({ material }) {
 
   return (
     <>
-      <QuizGenerator materialId={materialId} onGenerated={showGeneratedQuiz} />
+      <QuizGenerator generation={generation} onGenerate={generate} />
 
       <ScreenState query={quizzes} loadingLabel="퀴즈를 불러오는 중입니다">
         {isQuizFailed(quizzes.data) ? (

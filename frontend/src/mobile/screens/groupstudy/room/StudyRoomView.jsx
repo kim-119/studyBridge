@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { groupService, timerService } from '../../../../services/api';
 import { describeApiError, useAsync } from '../../../data/useAsync';
 import { FACING_MODE } from '../cameraTrack';
+import { isGroupLeader } from '../groupStudyModel';
 import { MEDIA_PHASE, describeMediaStatus } from '../mediaJoinModel';
 import { buildLocalTile, buildParticipantTiles, indexMemberPhotos } from '../participantTileModel';
 import { isQuizActive } from '../quizSessionModel';
@@ -122,6 +123,7 @@ function MediaStatusNotice({ session }) {
 export default function StudyRoomView({
   groupId,
   group,
+  enteredAt,
   session,
   userId,
   displayName,
@@ -160,7 +162,7 @@ export default function StudyRoomView({
 
   const isChatOpen = overlay.panel === ROOM_PANEL.CHAT;
   const hasUnreadChat = useUnreadChat(room.chatMessages.length, room.history.isSuccess, isChatOpen);
-  const isLeader = Number(group.data?.leaderId) === Number(userId);
+  const isLeader = isGroupLeader(group.data, userId);
   const isMirrored = (participant) => participant.isMe && session.facingMode === FACING_MODE.FRONT;
   const showsQuizErrorNotice = Boolean(room.quizError) && !isQuizActive(room.quiz) && overlay.panel !== ROOM_PANEL.QUIZ;
 
@@ -233,6 +235,7 @@ export default function StudyRoomView({
     <div className="mobile-room">
       <RoomHeader
         title={group.data?.title || '그룹스터디'}
+        enteredAt={enteredAt}
         participantCount={participants.length}
         socketState={room.socketState}
         onOpenMenu={() => togglePanel(ROOM_PANEL.MENU)}

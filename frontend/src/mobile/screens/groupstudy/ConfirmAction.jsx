@@ -8,6 +8,7 @@ export default function ConfirmAction({
   confirmLabel = '확인',
   triggerVariant = 'ghost',
   isLoading = false,
+  disabled = false,
   onConfirm,
 }) {
   const [isAsking, setAsking] = useState(false);
@@ -15,7 +16,7 @@ export default function ConfirmAction({
 
   if (!isAsking) {
     return (
-      <Button variant={triggerVariant} isLoading={isLoading} onClick={() => setAsking(true)}>
+      <Button variant={triggerVariant} isLoading={isLoading} disabled={disabled} onClick={() => setAsking(true)}>
         {label}
       </Button>
     );
