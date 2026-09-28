@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.*;
 import com.studybridge.api.entity.*;
 import com.studybridge.api.repository.*;
+import com.studybridge.api.ai.AiFailoverExecutor;
+import com.studybridge.api.util.AiMaterialQuizContract;
 import com.studybridge.api.util.ConceptFallbackProvider;
 import com.studybridge.api.util.LearningContentSanitizer;
 import com.studybridge.api.util.LearningConceptValidator;
@@ -44,6 +46,9 @@ public class AiIntegrationService {
         private final WebClient fastApiWebClient;
         private final IntentRouterService intentRouterService;
         private final LearningLoopService learningLoopService;
+        private final MaterialQuizService materialQuizService;
+        // PRIMARY(ai07) → SECONDARY(EC2 hot-standby) 공통 failover. 현재는 /api/ai/quiz 에만 적용.
+        private final AiFailoverExecutor aiFailoverExecutor;
 
         // 키워드 정의 호출 타임아웃 (env 제어, 하드코딩 금지)
         @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.keyword-define-timeout-seconds:60}")
@@ -372,20 +377,6 @@ public class AiIntegrationService {
         }
 
 
-        private List<Map<String, Object>> parseQuizData(String quizData) {
-                if (quizData == null || quizData.isBlank()) return java.util.Collections.emptyList();
-                List<Map<String, Object>> direct = parseJsonList(quizData);
-                if (!direct.isEmpty()) return direct;
-                Map<String, Object> obj = parseJsonObject(quizData);
-                Object quizzes = obj.get("quizzes") != null ? obj.get("quizzes") : obj.get("questions");
-                if (quizzes instanceof List) {
-                        List<Map<String, Object>> out = new java.util.ArrayList<>();
-                        for (Object item : (List<?>) quizzes) if (item instanceof Map) out.add((Map<String, Object>) item);
-                        return out;
-                }
-                return java.util.Collections.emptyList();
-        }
-
         private Map<String, Object> roadmapDataFromSteps(String title, List<RoadmapDTO.RoadmapStepDTO> steps) {
                 Map<String, Object> data = new LinkedHashMap<>();
                 List<Map<String, Object>> weeks = new java.util.ArrayList<>();
@@ -550,8 +541,7 @@ public class AiIntegrationService {
                                 .difficulty(request != null ? request.getDifficulty() : null)
                                 .questionCount(request != null ? request.getQuestionCount() : null)
                                 .pageRange(request != null ? request.getPageRange() : null)
-                                .quizData("[]")
-                                .quizzes(java.util.Collections.emptyList())
+                                .questions(java.util.Collections.emptyList())
                                 .success(false)
                                 .errorCode(errorCode)
                                 .message(userMessageFor(errorCode, message))
@@ -769,8 +759,9 @@ public class AiIntegrationService {
                                                 .difficulty(quiz.getDifficulty())
                                                 .questionCount(quiz.getQuestionCount())
                                                 .pageRange(quiz.getPageRange())
-                                                .quizData(quiz.getQuizData())
-                                                .quizzes(parseQuizData(quiz.getQuizData()))
+                                                // 공개 DTO: 정답 키/원문 quizData 는 브라우저로 내보내지 않는다(MaterialQuizService 가 서버 채점).
+                                                .questions(MaterialQuizService.toPublicQuestions(quiz.getQuizId(), quiz.getQuizData()))
+                                                .lastResult(materialQuizService.latestResultOrNull(quiz, userId))
                                                 .createdAt(quiz.getCreatedAt())
                                                 .success(true)
                                                 .textStatus(textStatusFor(material, getTextToAnalyze(material)))
@@ -835,14 +826,22 @@ public class AiIntegrationService {
                 log.info("[AI_QUIZ_PDF_BASED] materialId={} difficulty={} sourceMode=PDF_BASED hasDocumentText={} hasSummary={} hasCoreContentText={} hasDetailedContentText={} count={}",
                                 material.getMaterialId(), quizDifficulty, isNotBlank(documentText), isNotBlank(summaryText), isNotBlank(coreContentText), isNotBlank(detailedContentText), request.getQuestionCount());
 
-                Map response;
+                // AI07 FINAL CONTRACT(quiz.v2): HTTP 는 항상 200, 성공 여부는 success. Map 대신 typed DTO 로 받는다.
+                // PRIMARY → SECONDARY failover: 전송 실패/timeout/404/5xx 와 "200 + success=false + retryable 일시 실패(AI_TIMEOUT 등)" 만
+                // 다음 업스트림으로 넘기고, PDF_TEXT_INSUFFICIENT 같은 domain 실패는 그대로 반환한다(AiMaterialQuizContract.transientFailureCode).
+                AiMaterialQuizDTO.Response ai;
+                String aiUpstream = "primary";
                 try {
-                        response = fastApiWebClient.post()
-                                        .uri("/api/ai/quiz")
-                                        .bodyValue(requestBody)
-                                        .retrieve()
-                                        .bodyToMono(Map.class)
-                                        .block(Duration.ofSeconds(125));
+                        AiFailoverExecutor.Result<AiMaterialQuizDTO.Response> picked = aiFailoverExecutor.execute("/api/ai/quiz",
+                                        up -> up.client().post()
+                                                        .uri("/api/ai/quiz")
+                                                        .bodyValue(requestBody)
+                                                        .retrieve()
+                                                        .bodyToMono(AiMaterialQuizDTO.Response.class)
+                                                        .block(Duration.ofSeconds(125)),
+                                        AiMaterialQuizContract::transientFailureCode);
+                        ai = picked.value();
+                        aiUpstream = picked.upstreamName();
                 } catch (Exception e) {
                         String __code = isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR";
                         log.warn("[AI_QUIZ_PDF_BASED] result=FAIL materialId={} difficulty={} sourceMode=PDF_BASED error_code={} elapsedMs={}",
@@ -850,24 +849,44 @@ public class AiIntegrationService {
                         return quizFailure(material, request, __code, null, true, null);
                 }
 
-                if (isAiFailure(response)) {
-                        log.warn("[AI_QUIZ_PDF_BASED] result=AI_FAIL materialId={} difficulty={} sourceMode=PDF_BASED statusCode=200 error_code={} reason={} elapsedMs={}",
-                                        material.getMaterialId(), quizDifficulty, aiStr(response, "errorCode"), aiStr(aiMap(response, "difficulty_validation"), "reason"), System.currentTimeMillis() - quizT0);
-                        return quizFailure(material, request, aiStr(response, "errorCode"), aiStr(response, "message"), aiBool(response, "retryable", true), response);
+                // 구조화 실패 판정: success=false / status=FAILED 는 HTTP 200 이어도 실패다.
+                String failureCode = AiMaterialQuizContract.failureCode(ai);
+                if (failureCode != null) {
+                        log.warn("[AI_QUIZ_PDF_BASED] result=AI_FAIL materialId={} difficulty={} sourceMode=PDF_BASED statusCode=200 error_code={} status={} elapsedMs={}",
+                                        material.getMaterialId(), quizDifficulty, failureCode, ai != null ? ai.getStatus() : null, System.currentTimeMillis() - quizT0);
+                        return quizFailureTyped(material, request, failureCode, ai);
                 }
 
-                log.info("[AI_QUIZ_PDF_BASED] result=OK materialId={} difficulty={} sourceMode=PDF_BASED applied={} elapsedMs={}",
-                                material.getMaterialId(), quizDifficulty, aiStr(response, "difficulty_applied"), System.currentTimeMillis() - quizT0);
+                // Spring 측 방어 검증(외부 boundary): 불일치 문항은 거절, 통과 문항만 저장/노출.
+                AiMaterialQuizContract.Result contract = AiMaterialQuizContract.validate(ai.getQuizzes());
+                if (contract.rejectedCount() > 0) {
+                        log.warn("[AI_QUIZ_PDF_BASED] contract rejected questions materialId={} rejected={} reasons={}",
+                                        material.getMaterialId(), contract.rejectedCount(), contract.getRejectedReasons());
+                }
+                if (contract.getAccepted().isEmpty()) {
+                        log.warn("[AI_QUIZ_PDF_BASED] result=AI_FAIL materialId={} error_code=QUIZ_CONTRACT_INVALID accepted=0 elapsedMs={}",
+                                        material.getMaterialId(), System.currentTimeMillis() - quizT0);
+                        return quizFailureTyped(material, request, "QUIZ_CONTRACT_INVALID", ai);
+                }
+                boolean degradedFallback = AiMaterialQuizContract.isDegradedFallback(ai);
+                boolean partial = AiMaterialQuizContract.isPartial(ai) || contract.rejectedCount() > 0;
 
-                String generatedQuizJson = "[]";
-                if (response != null && response.containsKey("quizData")) {
-                        generatedQuizJson = response.get("quizData").toString();
+                log.info("[AI_QUIZ_PDF_BASED] result=OK materialId={} difficulty={} sourceMode=PDF_BASED upstream={} applied={} status={} schema={} generated={} accepted={} degradedFallback={} partial={} elapsedMs={}",
+                                material.getMaterialId(), quizDifficulty, aiUpstream, ai.getDifficultyApplied(), ai.getStatus(), ai.getSchemaVersion(),
+                                ai.getGeneratedCount(), contract.getAccepted().size(), degradedFallback, partial, System.currentTimeMillis() - quizT0);
+
+                // 내부 저장: 검증 통과 문항(정답 포함)만 quiz_data 에 보관한다. 원문 quizData 문자열은 그대로 쓰지 않는다(거절 문항 제외).
+                String generatedQuizJson;
+                try {
+                        generatedQuizJson = AI_OBJECT_MAPPER.writeValueAsString(contract.getAccepted());
+                } catch (Exception e) {
+                        return quizFailureTyped(material, request, "QUIZ_CONTRACT_INVALID", ai);
                 }
 
                 MaterialQuiz quiz = MaterialQuiz.builder()
                                 .material(material)
                                 .difficulty(request.getDifficulty())
-                                .questionCount(appliedCount)
+                                .questionCount(contract.getAccepted().size())
                                 .pageRange(request.getPageRange())
                                 .quizData(generatedQuizJson)
                                 .build();
@@ -882,11 +901,12 @@ public class AiIntegrationService {
                                 .materialId(materialId)
                                 .quizId(quiz.getQuizId())
                                 .difficulty(quiz.getDifficulty())
-                                .aiOutputSummary("퀴즈 " + appliedCount + "문항 생성 (범위 " +
+                                .aiOutputSummary("퀴즈 " + contract.getAccepted().size() + "문항 생성 (범위 " +
                                                 (quiz.getPageRange() == null ? "전체" : quiz.getPageRange()) + ")")
                                 .userAction("QUIZ_GENERATED")
                                 .build());
 
+                // 공개 DTO: answerKeyFields(정답/해설/근거)와 quizData 는 싣지 않는다. status/partial/degraded 는 구조화 값으로 전달.
                 return QuizDTO.Response.builder()
                                 .quizId(quiz.getQuizId())
                                 .materialId(materialId)
@@ -895,28 +915,86 @@ public class AiIntegrationService {
                                 .requestedCount(requestedCount)
                                 .appliedCount(appliedCount)
                                 .pageRange(quiz.getPageRange())
-                                .quizData(quiz.getQuizData())
-                                .quizzes(parseQuizData(quiz.getQuizData()))
+                                .questions(MaterialQuizService.toPublicQuestions(quiz.getQuizId(), quiz.getQuizData()))
                                 .createdAt(quiz.getCreatedAt())
+                                .schemaVersion(ai.getSchemaVersion())
+                                .aiQuizId(ai.getQuizId())
+                                .status(degradedFallback ? AiMaterialQuizDTO.STATUS_DEGRADED_FALLBACK : partial ? AiMaterialQuizDTO.STATUS_PARTIAL : AiMaterialQuizDTO.STATUS_OK)
+                                .partial(partial)
+                                .generatedCount(contract.getAccepted().size())
+                                .aiRequestedCount(ai.getRequestedCount())
+                                .rejectedCount(contract.rejectedCount() + (ai.getRejectedCount() == null ? 0 : ai.getRejectedCount()))
+                                .degraded(degradedFallback)
+                                .degradedReason(ai.getDegradedReason())
                                 // G/H. 난이도 검증 전파 (ai07 제공 시), 없으면 요청값만 노출 → 프론트가 fallback 경고
                                 .difficultyRequested(quizDifficulty)
-                                .difficultyApplied(aiStr(response, "difficulty_applied"))
-                                .difficultyPolicy(aiStr(response, "difficulty_policy"))
-                                .difficultyValidation(aiMap(response, "difficulty_validation"))
-                                .sourceTrace(aiMap(response, "source_trace"))
-                                .success(aiBool(response, "success", true))
-                                .errorCode(aiStr(response, "errorCode"))
-                                .message(aiStr(response, "message"))
-                                .retryable(aiBool(response, "retryable", null))
-                                .textStatus(aiMap(response, "textStatus"))
-                                .warnings(aiWarnings(response))
-                                .metadata(aiMap(response, "metadata"))
-                                .provider(aiMetaStr(response, "provider"))
-                                .model(aiMetaStr(response, "model"))
-                                .elapsedMs(aiMetaLong(response, "elapsedMs"))
-                                .usedFallback(aiMetaBool(response, "usedFallback"))
-                                .cacheHit(aiMetaBool(response, "cacheHit"))
+                                .difficultyApplied(ai.getDifficultyApplied())
+                                .difficultyPolicy(ai.getDifficultyPolicy())
+                                .difficultyValidation(ai.getDifficultyValidation())
+                                .success(true)
+                                .errorCode(null)
+                                .message(ai.getMessage())
+                                .retryable(ai.getRetryable())
+                                .textStatus(ai.getTextStatus())
+                                .warnings(ai.getWarnings())
+                                .metadata(publicMetadata(ai.getMetadata()))
+                                .provider(metaStr(ai.getMetadata(), "provider"))
+                                .model(metaStr(ai.getMetadata(), "model"))
+                                .elapsedMs(metaLong(ai.getMetadata(), "elapsedMs"))
+                                .usedFallback(degradedFallback)
+                                .cacheHit(metaBool(ai.getMetadata(), "cacheHit"))
                                 .build();
+        }
+
+        // 자료 퀴즈 typed 실패 응답(HTTP 200 + success=false 또는 계약 위반). 정답/문항은 싣지 않는다.
+        private QuizDTO.Response quizFailureTyped(Material material, QuizDTO.Request request, String errorCode, AiMaterialQuizDTO.Response ai) {
+                String text = getTextToAnalyze(material);
+                return QuizDTO.Response.builder()
+                                .materialId(material.getMaterialId())
+                                .difficulty(request != null ? request.getDifficulty() : null)
+                                .questionCount(request != null ? request.getQuestionCount() : null)
+                                .pageRange(request != null ? request.getPageRange() : null)
+                                .questions(java.util.Collections.emptyList())
+                                .success(false)
+                                .status(AiMaterialQuizDTO.STATUS_FAILED)
+                                .schemaVersion(ai != null ? ai.getSchemaVersion() : null)
+                                .aiQuizId(ai != null ? ai.getQuizId() : null)
+                                .errorCode(errorCode)
+                                .message(userMessageFor(errorCode, ai != null ? ai.getMessage() : null))
+                                .retryable(ai != null && ai.getRetryable() != null ? ai.getRetryable() : Boolean.TRUE)
+                                .textStatus(ai != null && ai.getTextStatus() != null ? ai.getTextStatus() : textStatusFor(material, text))
+                                .warnings(ai != null ? ai.getWarnings() : null)
+                                .metadata(ai != null ? publicMetadata(ai.getMetadata()) : null)
+                                .provider(ai != null ? metaStr(ai.getMetadata(), "provider") : null)
+                                .model(ai != null ? metaStr(ai.getMetadata(), "model") : null)
+                                .elapsedMs(ai != null ? metaLong(ai.getMetadata(), "elapsedMs") : null)
+                                .usedFallback(ai != null && AiMaterialQuizContract.isDegradedFallback(ai))
+                                .build();
+        }
+
+        // metadata 는 정답 키를 담지 않지만, 방어적으로 answerKeyFields 계열 키는 제거하고 내려준다.
+        private Map<String, Object> publicMetadata(Map<String, Object> meta) {
+                if (meta == null) return null;
+                Map<String, Object> out = new LinkedHashMap<>(meta);
+                for (String k : new String[] {"answerKey", "answer_key", "answers", "correctAnswers", "sourceTrace", "source_trace"}) out.remove(k);
+                return out;
+        }
+
+        private String metaStr(Map<String, Object> meta, String key) {
+                Object v = meta == null ? null : meta.get(key);
+                return v == null ? null : String.valueOf(v);
+        }
+
+        private Long metaLong(Map<String, Object> meta, String key) {
+                Object v = meta == null ? null : meta.get(key);
+                if (v instanceof Number) return ((Number) v).longValue();
+                try { return v == null ? null : Long.parseLong(String.valueOf(v)); } catch (Exception e) { return null; }
+            }
+
+        private Boolean metaBool(Map<String, Object> meta, String key) {
+                Object v = meta == null ? null : meta.get(key);
+                if (v instanceof Boolean) return (Boolean) v;
+                return v == null ? null : Boolean.parseBoolean(String.valueOf(v));
         }
 
         // R. 퀴즈 문항 수 보정: null→10(기본), 5 미만→5, 20 초과→20.

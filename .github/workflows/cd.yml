@@ -272,7 +272,11 @@ jobs:
             git reset --hard "${DEPLOY_SHA}"
 
             cd "$APP_DIR/fastapi"
-            if [ -f requirements.txt ]; then .venv/bin/pip install -q -r requirements.txt || true; fi
+            # 의존성 설치 실패는 배포 실패다(|| true 로 숨기면 kiwipiepy 등 누락 상태의 secondary 가 READY 로 위장된다).
+            if [ -f requirements.txt ]; then
+              .venv/bin/pip install -q -r requirements.txt \
+                || (echo "PIP INSTALL FAIL — fastapi 배포 중단"; exit 1)
+            fi
 
             # systemd 유닛 설치/갱신(idempotent) — nohup 수동 기동을 대체한다.
             # 과거 mask(/dev/null 심볼릭) 잔재가 있으면 먼저 해제해야 cp/enable이 정상 동작한다.
@@ -292,4 +296,9 @@ jobs:
             sleep 5
             curl -fsS http://127.0.0.1:8000/health \
               || (echo "HEALTH FAIL"; sudo journalctl -u studybridge-fastapi -n 50 --no-pager; exit 1)
+
+            # health 200 은 판정 근거가 아니다. /openapi.json 에 Spring 이 실제 호출하는 필수 라우트
+            # (/api/ai/mindmap/semantic-graph, /api/ai/quiz, /api/ai/quiz/generate 포함)가 전부 있어야 배포 성공.
+            bash "$APP_DIR/scripts/ai-route-gate.sh" http://127.0.0.1:8000 --label "secondary:8000" \
+              || (echo "ROUTE GATE FAIL — 필수 라우트 누락/회귀"; sudo journalctl -u studybridge-fastapi -n 30 --no-pager; exit 1)
             echo "fastapi deploy OK ${DEPLOY_SHA:0:8}"

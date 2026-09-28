@@ -6,46 +6,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import {
   NODE_TYPES, EDGE_TYPES, colorForNode, displayLabelForNode, relationLabelForEdgeType,
-} from './graphTypes';
-import { normalizeObsidianName, dedupeObsidianName, makeShortLabel, normalizeTags, buildAliases } from './obsidianName';
+} from './graphTypes.js';
+import { normalizeObsidianName, dedupeObsidianName, makeShortLabel, normalizeTags, buildAliases } from './obsidianName.js';
 
 const ROLE_ORDER = ['theory', 'book', 'ai'];
 const ROLE_KO = { theory: '개념 정리 교수', book: '쉬운 풀이 튜터', ai: '논점 검증 코치' };
 
 const slotToRole = (slot) => ROLE_ORDER[((Number(slot) || 0) % 3 + 3) % 3];
 
-// 개념 추출용 경량 불용어(한국어/영어 혼합). 코드 토큰은 보존한다.
-const STOPWORDS = new Set([
-  '그리고', '그러나', '하지만', '또한', '이런', '저런', '그런', '있다', '없다', '한다', '된다', '입니다',
-  '에서', '으로', '하는', '하고', '에게', '까지', '부터', '대한', '대해', '경우', '때문', '통해', '위해',
-  'the', 'and', 'for', 'with', 'that', 'this', 'are', 'was', 'has', 'have', 'from', 'into', 'your', 'you',
-]);
-
-const isMeaningfulToken = (t) => {
-  if (!t) return false;
-  if (t.length < 2) return false;
-  if (STOPWORDS.has(t.toLowerCase())) return false;
-  if (/^\d+$/.test(t)) return false;
-  return true;
-};
-
-// 답변 본문에서 상위 빈도 키워드를 개념 후보로 뽑는다(노이즈 방지: 최대 limit개).
-function extractConcepts(text, limit) {
-  const tokens = String(text || '')
-    .replace(/[^\p{L}\p{N}_/.+#-]+/gu, ' ')
-    .split(/\s+/)
-    .filter(isMeaningfulToken);
-  const freq = new Map();
-  for (const raw of tokens) {
-    const t = raw.replace(/[.]+$/, '');
-    if (!isMeaningfulToken(t)) continue;
-    freq.set(t, (freq.get(t) || 0) + 1);
-  }
-  return Array.from(freq.entries())
-    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
-    .slice(0, limit)
-    .map(([term]) => term);
-}
+// ※ 개념(concept) 노드는 이 파일에서 만들지 않는다.
+//    예전 extractConcepts()(공백 split → 불용어 → 빈도 top-5)는 "JDBC가/JDBC의/있는/말할" 같은 표면형·조사 토큰을
+//    개념으로 만들었기 때문에 제거했다. 개념의 유일한 출처는 AI07 Semantic Graph(Spring /api/mindmap/semantic-graph)이며
+//    attachSemanticGraph(semanticGraphMerge.js) 가 이 그래프 위에 얹는다.
 
 const relationFromLabel = (rawLabel = '') => {
   const s = String(rawLabel);
@@ -57,14 +29,13 @@ const relationFromLabel = (rawLabel = '') => {
 };
 
 /**
- * @param {{question?:string, agents?:any[], messages?:any[], interactions?:any[], sourceId?:string|number, sourceType?:string, extractConceptsEnabled?:boolean}} input
+ * @param {{question?:string, agents?:any[], messages?:any[], interactions?:any[], sourceId?:string|number, sourceType?:string}} input
  * @returns {{nodes:object[], edges:object[], centerNodeId:string, stats:{nodeCount:number,edgeCount:number}, warnings:string[]}}
  */
 export function convertMindMapToObsidianGraph(input) {
   const {
     question = '', agents = [], messages = [], interactions = [],
     sourceId = 'session', sourceType = 'multi_agent_chat',
-    extractConceptsEnabled = true,
   } = input || {};
 
   const warnings = [];
@@ -178,7 +149,6 @@ export function convertMindMapToObsidianGraph(input) {
 
   const roleToAgentId = new Map();
   const roleToAnswerId = new Map();
-  const globalConceptByName = new Map(); // 중복 개념 병합
 
   uniqueRoles.forEach((role, i) => {
     const hit = byRole.get(role);
@@ -217,29 +187,6 @@ export function convertMindMapToObsidianGraph(input) {
     roleToAnswerId.set(role, answerId);
     pushEdge(agentId, answerId, EDGE_TYPES.PRODUCED, { label: '작성' });
     pushEdge(centerNodeId, answerId, EDGE_TYPES.ANSWERED_BY, { label: '답변', weight: 0.6 });
-
-    // concept 노드(경량 추출, 중복 병합).
-    if (extractConceptsEnabled) {
-      const concepts = extractConcepts(answerText, 5);
-      concepts.forEach((term) => {
-        const key = normalizeObsidianName(term).toLowerCase();
-        let conceptId = globalConceptByName.get(key);
-        if (!conceptId) {
-          conceptId = `concept-${globalConceptByName.size + 1}`;
-          globalConceptByName.set(key, conceptId);
-          pushNode({
-            id: conceptId, type: NODE_TYPES.CONCEPT,
-            title: term, label: makeShortLabel(term, 20), body: term,
-            importance: 1.5, tags: ['concept'],
-            metadata: { references: [] },
-          });
-        } else {
-          const cn = nodes.find((x) => x.id === conceptId);
-          if (cn) cn.importance += 0.5; // 공통 개념일수록 중심에 가깝게
-        }
-        pushEdge(answerId, conceptId, EDGE_TYPES.CONTAINS, { label: '포함', weight: 0.4 });
-      });
-    }
   });
 
   // 3) REACTION(보충·반박) → rebuttal 노드 + 간선.

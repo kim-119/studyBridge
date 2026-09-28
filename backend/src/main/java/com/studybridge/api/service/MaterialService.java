@@ -37,6 +37,7 @@ public class MaterialService {
     private final PlannerRepository plannerRepository;
     private final StudyNoteAnalysisService studyNoteAnalysisService;
     private final PlannerService plannerService;
+    private final MaterialQuizScoreService materialQuizScoreService;
 
     @Transactional
     public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords,
@@ -227,21 +228,52 @@ public class MaterialService {
         return convertToDTO(material);
     }
 
+    /**
+     * 자료 삭제 라이프사이클.
+     *  · RDS: Material + JPA cascade(summary/feedback/memo/roadmap/quizzes/questions). 플래너/plan_analysis/오답노트/학습일지는
+     *    FK 없는 Long 참조(사용자 후속 데이터)이므로 지우지 않는다(기존 도메인 정책: [[planner-delete-keeps-archive]]).
+     *  · Redis: 이 자료의 퀴즈별 서버 채점 점수 키(studybridge:quiz:{quizId}:scores) DEL.
+     *  · S3: DB 와 같은 ACID 트랜잭션이 아니므로 커밋 이후(afterCommit) best-effort 로 삭제한다.
+     *    DB 삭제가 실패하면 S3 객체는 그대로 남고(재시도 가능), S3 삭제가 실패하면 로그만 남긴다(고아 객체 > 깨진 DB 참조).
+     */
     @Transactional
     public void deleteMaterial(Long userId, Long materialId) {
         Material material = materialRepository.findById(materialId)
-                .orElseThrow(() -> new IllegalArgumentException("자료를 찾을 수 없습니다."));
+                .orElseThrow(() -> new java.util.NoSuchElementException("자료를 찾을 수 없습니다."));
 
         if (!material.getUserId().equals(userId)) {
             throw new SecurityException("해당 자료에 대한 삭제 권한이 없습니다.");
         }
 
-        // S3에서 삭제
-        if (material.getMaterialType() != MaterialType.STUDY_LOG && material.getStoredFileName() != null) {
-            s3Service.deleteFile(material.getStoredFileName());
-        }
+        List<Long> quizIds = material.getQuizzes() == null ? List.of()
+                : material.getQuizzes().stream().map(q -> q.getQuizId()).filter(id -> id != null).collect(Collectors.toList());
+        String s3Key = (material.getMaterialType() != MaterialType.STUDY_LOG) ? material.getStoredFileName() : null;
 
         materialRepository.delete(material);
+        materialQuizScoreService.deleteForQuizzes(quizIds);
+
+        if (s3Key != null && !s3Key.isBlank()) {
+            runAfterCommit(() -> {
+                try {
+                    s3Service.deleteFile(s3Key);
+                } catch (Exception e) {
+                    log.error("[MATERIAL_DELETE] S3 삭제 실패(DB 는 이미 삭제됨, 고아 객체) materialId={} key={}", materialId, s3Key, e);
+                }
+            });
+        }
+    }
+
+    // 트랜잭션 커밋 후 실행(활성 트랜잭션이 없으면 즉시 실행).
+    private static void runAfterCommit(Runnable task) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() { task.run(); }
+                    });
+        } else {
+            task.run();
+        }
     }
 
     public List<MaterialDTO> getUserMaterials(Long userId) {

@@ -3,7 +3,8 @@
 //  · 옵시디언 페이지가 source of truth 로 사용하는 단일 진입점.
 //  · 방 1개의 로그만 받아 그래프를 만든다(방 섞임 금지는 호출측 requestSeq 가드가 담당).
 //  · 검증/반박은 AI 메시지의 processSteps(validatedAnswers/peerFeedback)에서 best-effort 로 뽑는다.
-//  · 실제 노드/간선 생성은 검증된 convertMindMapToObsidianGraph 를 재사용한다.
+//  · 실제 노드/간선 생성은 검증된 convertMindMapToObsidianGraph 를 재사용한다(개념 노드는 만들지 않음).
+//  · 개념(concept) 계층은 ObsidianPage 가 AI07 Semantic Graph(Spring 릴레이)를 받아 attachSemanticGraph 로 얹는다.
 // ─────────────────────────────────────────────────────────────────────────────
 import { convertMindMapToObsidianGraph } from './mindmapToObsidianGraph';
 import { EDGE_TYPES } from './graphTypes';

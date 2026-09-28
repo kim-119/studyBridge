@@ -83,6 +83,28 @@ public class GroupStudyMaterialController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
+    // 방장 전용: 그룹 자료 삭제 (Spring 이 leader 검증 + 그룹 소속(IDOR) 검증)
+    @DeleteMapping("/{groupId}/materials/{materialId}")
+    public ResponseEntity<Void> deleteMaterial(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long groupId,
+            @PathVariable Long materialId) {
+        log.info("Request to delete group material. userId={}, groupId={}, materialId={}", userDetails.getId(), groupId, materialId);
+        groupStudyMaterialService.deleteMaterial(userDetails.getId(), groupId, materialId);
+        return ResponseEntity.noContent().build();
+    }
+
+    // 방장 전용: 그룹 퀴즈 개별 삭제 (진행 중 세션 있으면 409)
+    @DeleteMapping("/{groupId}/quizzes/{quizId}")
+    public ResponseEntity<Void> deleteQuiz(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long groupId,
+            @PathVariable Long quizId) {
+        log.info("Request to delete group quiz. userId={}, groupId={}, quizId={}", userDetails.getId(), groupId, quizId);
+        groupStudyMaterialService.deleteQuiz(userDetails.getId(), groupId, quizId);
+        return ResponseEntity.noContent().build();
+    }
+
     // 다운로드 URL 저장
     @GetMapping("/materials/{materialId}/download")
     public ResponseEntity<Map<String, String>> getDownloadUrl(

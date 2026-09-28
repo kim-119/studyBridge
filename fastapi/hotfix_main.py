@@ -174,3 +174,14 @@ try:
 except Exception as e:
     import logging
     logging.getLogger(__name__).warning("rag_grounded 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge Semantic Learning Concept Map (답변 → 개념 계층 그래프, AI07 소유)
+# POST /api/ai/mindmap/semantic-graph — additive. 프론트 어절 빈도 추출을 대체할 계약.
+try:
+    from app.api.mindmap_routes import router as mindmap_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/mindmap/semantic-graph" not in paths:
+        app.include_router(mindmap_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("mindmap 라우터 로드 실패 (계속 기동): %s", e)

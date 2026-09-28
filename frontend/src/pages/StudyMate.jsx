@@ -5127,6 +5127,7 @@ export default function StudyMate() {
               {viewTab === 'mindmap' && (
                 <div className="professor-discussion-view" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: '12px 14px' }}>
                   <ObsidianMindMapView
+                    roomId={selectedAgent?.id ?? null}
                     question={[...chatHistory].reverse().find((m) => m.sender === 'USER')?.content || ''}
                     agents={selectedAgent?.agents || []}
                     messages={mindmapMessages}
