@@ -81,5 +81,5 @@ export function describeSocketStatus(state, reconnectAttempt = 0) {
 }
 
 export function canRetryManually(state) {
-  return state === SOCKET_STATE.FAILED || state === SOCKET_STATE.RECONNECTING;
+  return state === SOCKET_STATE.FAILED || state === SOCKET_STATE.RECONNECTING || state === SOCKET_STATE.OFFLINE;
 }

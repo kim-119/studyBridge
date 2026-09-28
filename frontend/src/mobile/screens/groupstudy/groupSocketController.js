@@ -3,6 +3,7 @@ import { SockJsWebSocket, sockJsWebSocketUrl } from './sockJsWebSocket.js';
 
 export const STOMP_HEARTBEAT_MS = 10000;
 export const LIVENESS_CHECK_INTERVAL_MS = 10000;
+export const OFFLINE_RECHECK_INTERVAL_MS = 5000;
 
 function parseMessageBody(body) {
   try {
@@ -20,6 +21,7 @@ export function createGroupSocketController({
   onReconnected,
   loadLibraries,
   getToken,
+  checkNetwork = null,
   now = () => Date.now(),
 }) {
   let client = null;
@@ -27,6 +29,7 @@ export function createGroupSocketController({
   let attempt = 0;
   let retryTimer = null;
   let livenessTimer = null;
+  let offlineRecheckTimer = null;
   let lastActivityAt = 0;
   let hasConnectedBefore = false;
   let isStopped = false;
@@ -141,10 +144,37 @@ export function createGroupSocketController({
     handleConnectionLost(generation);
   };
 
+  const stopOfflineRecheck = () => {
+    clearInterval(offlineRecheckTimer);
+    offlineRecheckTimer = null;
+  };
+
+  const leaveOfflineState = () => {
+    isOffline = false;
+    stopOfflineRecheck();
+  };
+
   const reconnectNow = () => {
-    if (isStopped || isOffline) return;
+    if (isStopped) return;
+    if (isOffline) leaveOfflineState();
     attempt = 0;
     connect();
+  };
+
+  const recheckNetwork = async () => {
+    if (isStopped || !isOffline || !checkNetwork) return;
+
+    try {
+      const isConnected = await checkNetwork();
+      if (isConnected && isOffline && !isStopped) reconnectNow();
+    } catch (error) {
+      console.warn('네트워크 상태를 다시 확인하지 못했습니다.', error);
+    }
+  };
+
+  const startOfflineRecheck = () => {
+    if (!checkNetwork || offlineRecheckTimer) return;
+    offlineRecheckTimer = setInterval(recheckNetwork, OFFLINE_RECHECK_INTERVAL_MS);
   };
 
   return {
@@ -157,13 +187,18 @@ export function createGroupSocketController({
       isStopped = true;
       clearRetry();
       clearInterval(livenessTimer);
+      stopOfflineRecheck();
       discardClient();
     },
 
     reconnectNow,
 
     handleResume() {
-      if (isStopped || isOffline) return;
+      if (isStopped) return;
+      if (isOffline) {
+        recheckNetwork();
+        return;
+      }
       const isHealthy = client?.connected && !isConnectionStale(lastActivityAt, now());
       if (!isHealthy) reconnectNow();
     },
@@ -176,13 +211,11 @@ export function createGroupSocketController({
         clearRetry();
         discardClient();
         report(SOCKET_STATE.OFFLINE);
+        startOfflineRecheck();
         return;
       }
 
-      if (isOffline) {
-        isOffline = false;
-        reconnectNow();
-      }
+      if (isOffline) reconnectNow();
     },
 
     publish(destination, body) {

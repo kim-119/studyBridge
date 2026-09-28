@@ -274,6 +274,17 @@ test('마인드맵 라벨 정리는 표시용 마크다운만 걷어내고 기�
   assert.equal(cleanNodeLabel('__JPA__'), 'JPA');
 });
 
+test('R-MINDMAP 잘린 질문 라벨에 남은 ### 와 * 표시를 지우고 기술 문자열은 보존한다', () => {
+  assert.equal(
+    cleanNodeLabel('[ANDROID-E2E] JDBC와 ORM의 관계를 ### 소제목, *…'),
+    '[ANDROID-E2E] JDBC와 ORM의 관계를 소제목, …'
+  );
+  assert.equal(cleanNodeLabel('관계를 ### 소제목, **굵은 글씨**로'), '관계를 소제목, 굵은 글씨로');
+  assert.equal(cleanNodeLabel('C# 과 C++ 비교 *'), 'C# 과 C++ 비교');
+  assert.equal(cleanNodeLabel('a*b 곱셈'), 'a*b 곱셈');
+  assert.equal(cleanNodeLabel('#해시태그'), '#해시태그');
+});
+
 test('T23 저장된 마인드맵 탭은 없고 학습메이트 방 마인드맵만 남는다', async () => {
   installSemanticServer();
   api.agentService.getAgents = async () => [{ id: ROOM_ID, roomName: 'JDBC 방', agents: ROOM_AGENTS }];

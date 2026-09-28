@@ -7,6 +7,9 @@ const WRAPPING_UNDERSCORES = /^__(.+)__$/;
 const INLINE_CODE = /`([^`]*)`/g;
 const LINK = /\[([^\]]+)\]\([^)]*\)/g;
 const WRAPPING_ASTERISKS = /^\*+|\*+$/g;
+const INLINE_HEADING = /(^|\s)#{1,6}(?=\s)/g;
+const WORD_LEADING_ASTERISKS = /(^|\s)\*+/g;
+const WORD_TRAILING_ASTERISKS = /\*+(?=\s|…|$)/g;
 const WHITESPACE = /\s+/g;
 
 export function cleanNodeLabel(raw) {
@@ -20,6 +23,10 @@ export function cleanNodeLabel(raw) {
     .replace(LEADING_BULLET, '')
     .replace(LEADING_NUMBER, '')
     .replace(WRAPPING_ASTERISKS, '')
+    .replace(INLINE_HEADING, '$1')
+    .replace(WORD_LEADING_ASTERISKS, '$1')
+    .replace(WORD_TRAILING_ASTERISKS, '')
+    .replace(WHITESPACE, ' ')
     .trim()
     .replace(WRAPPING_UNDERSCORES, '$1')
     .trim();

@@ -25,6 +25,11 @@ async function currentAccessToken() {
   }
 }
 
+async function isNetworkConnected() {
+  const status = await getNetworkStatus();
+  return Boolean(status.connected);
+}
+
 function watchNetwork(controller) {
   getNetworkStatus()
     .then((status) => {
@@ -52,6 +57,7 @@ export function useGroupSocket(groupId, { subscriptions, onReconnected }) {
       onReconnected: () => onReconnectedRef.current?.(),
       loadLibraries: loadStompLibraries,
       getToken: currentAccessToken,
+      checkNetwork: isNetworkConnected,
     });
 
     controllerRef.current = controller;

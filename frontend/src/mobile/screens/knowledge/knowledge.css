@@ -104,6 +104,10 @@
   color: var(--color-danger);
 }
 
+.knowledge-action.is-liked .lucide {
+  color: inherit;
+}
+
 .knowledge-action[aria-busy='true'] {
   opacity: 0.7;
 }

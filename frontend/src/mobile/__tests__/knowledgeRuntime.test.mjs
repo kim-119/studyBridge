@@ -209,6 +209,26 @@ test('T35 like turns the outline heart into a filled heart and adds one', async 
   assert.deepEqual(calls, [11]);
 });
 
+test('R-LIKE the liked heart icon overrides the global muted .lucide color', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const stylesheetUrl = new URL('../screens/knowledge/knowledge.css', import.meta.url);
+  const globalUrl = new URL('../../index.css', import.meta.url);
+  const [knowledgeCss, globalCss] = await Promise.all([readFile(stylesheetUrl, 'utf8'), readFile(globalUrl, 'utf8')]);
+
+  const rules = [...knowledgeCss.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, selector, body]) => ({
+    selectors: selector.split(',').map((part) => part.trim()),
+    body,
+  }));
+  const likedIconRule = rules.find(
+    (rule) =>
+      rule.selectors.some((selector) => /\.knowledge-action\.is-liked\s+\.lucide$/.test(selector)) &&
+      /color:\s*inherit/.test(rule.body)
+  );
+
+  assert.match(globalCss, /\.lucide\s*\{\s*color:\s*var\(--color-text-muted\)/);
+  assert.ok(likedIconRule, 'liked heart must inherit the danger color instead of the global muted icon color');
+});
+
 test('T36 unlike returns to the outline heart and subtracts one', async () => {
   knowledgeService.getPostDetail = async () => samplePost({ likeCount: 5, likedByCurrentUser: true });
   knowledgeService.toggleLike = async () => samplePost({ likeCount: 4, likedByCurrentUser: false });

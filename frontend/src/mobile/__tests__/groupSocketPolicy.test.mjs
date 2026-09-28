@@ -1,6 +1,9 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { createGroupSocketController } from '../screens/groupstudy/groupSocketController.js';
+import {
+  OFFLINE_RECHECK_INTERVAL_MS,
+  createGroupSocketController,
+} from '../screens/groupstudy/groupSocketController.js';
 import {
   RECONNECT_POLICY,
   SOCKET_STATE,
@@ -101,7 +104,7 @@ async function flushAsyncWork() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-function createHarness() {
+function createHarness({ checkNetwork } = {}) {
   const stomp = createFakeStomp();
   const statuses = [];
   const received = [];
@@ -117,6 +120,7 @@ function createHarness() {
     },
     loadLibraries: async () => stomp.libraries,
     getToken: async () => 'token',
+    checkNetwork,
   });
 
   return {
@@ -221,6 +225,87 @@ test('네트워크가 끊기면 재시도를 멈추고, 복구되면 즉시 다�
     assert.equal(harness.reconnectedCount(), 1);
 
     harness.controller.stop();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('R-SOCKET 오프라인 보고 뒤 복구 이벤트가 오지 않아도 실제 네트워크를 다시 확인해 재연결한다', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  try {
+    let isNetworkUp = false;
+    const harness = createHarness({ checkNetwork: async () => isNetworkUp });
+    harness.controller.start();
+    await flushAsyncWork();
+    harness.clients[0].simulateConnect();
+
+    harness.controller.handleNetworkChange(false);
+    assert.equal(harness.lastState(), SOCKET_STATE.OFFLINE);
+
+    mock.timers.tick(OFFLINE_RECHECK_INTERVAL_MS);
+    await flushAsyncWork();
+    assert.equal(harness.clients.length, 1);
+    assert.equal(harness.lastState(), SOCKET_STATE.OFFLINE);
+
+    isNetworkUp = true;
+    mock.timers.tick(OFFLINE_RECHECK_INTERVAL_MS);
+    await flushAsyncWork();
+    assert.equal(harness.clients.length, 2);
+    assert.equal(harness.lastState(), SOCKET_STATE.CONNECTING);
+
+    mock.timers.tick(OFFLINE_RECHECK_INTERVAL_MS * 3);
+    await flushAsyncWork();
+    assert.equal(harness.clients.length, 2);
+
+    harness.controller.stop();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('R-SOCKET 오프라인 상태에서 앱으로 돌아오면 즉시 네트워크를 확인하고, 수동 재시도도 허용한다', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  try {
+    const harness = createHarness({ checkNetwork: async () => true });
+    harness.controller.start();
+    await flushAsyncWork();
+    harness.clients[0].simulateConnect();
+
+    harness.controller.handleNetworkChange(false);
+    harness.controller.handleResume();
+    await flushAsyncWork();
+    assert.equal(harness.clients.length, 2);
+
+    harness.controller.handleNetworkChange(false);
+    assert.equal(canRetryManually(SOCKET_STATE.OFFLINE), true);
+    harness.controller.reconnectNow();
+    await flushAsyncWork();
+    assert.equal(harness.clients.length, 3);
+
+    harness.controller.stop();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('R-SOCKET 방을 나가면 오프라인 재확인도 멈춘다', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  try {
+    let checks = 0;
+    const harness = createHarness({
+      checkNetwork: async () => {
+        checks += 1;
+        return false;
+      },
+    });
+    harness.controller.start();
+    await flushAsyncWork();
+    harness.controller.handleNetworkChange(false);
+    harness.controller.stop();
+
+    mock.timers.tick(OFFLINE_RECHECK_INTERVAL_MS * 3);
+    await flushAsyncWork();
+    assert.equal(checks, 0);
   } finally {
     mock.timers.reset();
   }
