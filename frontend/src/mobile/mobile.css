@@ -3332,6 +3332,38 @@ textarea.mobile-field__input {
   padding: 0 12px;
 }
 
+.mobile-mindmap-explorer__filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--space-basic);
+  min-width: 0;
+  min-height: 44px;
+  color: var(--color-text-main);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.mobile-mindmap-explorer__filter input {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--color-primary);
+}
+
+.mobile-mindmap-explorer__filter.is-disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.mobile-mindmap-explorer__filter-hint {
+  flex-basis: 100%;
+  padding-left: calc(20px + var(--space-basic));
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .mobile-mindmap__edge {
   stroke-opacity: 0.7;
 }

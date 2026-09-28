@@ -7,7 +7,7 @@ import { EmptyState } from '../../components/ScreenState';
 import MindmapCanvas from './MindmapCanvas';
 import MindmapLegend from './MindmapLegend';
 import { matchNodes } from './mindmapModel';
-import { neighborhoodOf } from './mindmapSelection';
+import { canShowRelationOnly, neighborhoodOf, visibleGraphOf } from './mindmapSelection';
 
 const SEARCH_RESULT_LIMIT = 30;
 
@@ -76,6 +76,25 @@ function SelectedNodeCard({ node, relations, onSelectNode, onOpenDetail, onClear
   );
 }
 
+function RelationOnlyToggle({ isChecked, isAvailable, onChange }) {
+  return (
+    <label className={`mobile-mindmap-explorer__filter${isAvailable ? '' : ' is-disabled'}`}>
+      <input
+        type="checkbox"
+        checked={isChecked}
+        disabled={!isAvailable}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span>선택 관계만 보기</span>
+      {!isAvailable && <span className="mobile-mindmap-explorer__filter-hint">노드를 선택하면 사용할 수 있어요</span>}
+    </label>
+  );
+}
+
+function relationFitKeyOf(fitKey, neighborhood) {
+  return `${fitKey}:relation:${neighborhood.selectedNodeId}`;
+}
+
 function NodeSheet({ node, onClose }) {
   return (
     <BottomSheet title={node?.title || '노드'} isOpen={Boolean(node)} onClose={onClose}>
@@ -95,14 +114,25 @@ export default function MindmapExplorer({ view, fitKey, toolbarActions = null })
   const [focusTarget, setFocusTarget] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [detailNode, setDetailNode] = useState(null);
+  const [relationOnly, setRelationOnly] = useState(false);
 
   const matches = useMemo(() => matchNodes(view?.nodes || [], keyword), [view, keyword]);
   const highlightIds = useMemo(() => new Set(matches.map((node) => node.id)), [matches]);
   const neighborhood = useMemo(() => neighborhoodOf(view, selectedNodeId), [view, selectedNodeId]);
   const selectedNode = view?.nodes.find((node) => node.id === neighborhood.selectedNodeId) || null;
+  const isRelationOnlyAvailable = canShowRelationOnly(neighborhood);
+  const isRelationOnly = relationOnly && isRelationOnlyAvailable;
+  const visibleView = useMemo(
+    () => visibleGraphOf(view, neighborhood, isRelationOnly),
+    [view, neighborhood, isRelationOnly]
+  );
+  const canvasFitKey = isRelationOnly ? relationFitKeyOf(fitKey, neighborhood) : fitKey;
 
   const selectNode = (node) => setSelectedNodeId(node.id);
-  const clearSelection = () => setSelectedNodeId(null);
+  const clearSelection = () => {
+    setSelectedNodeId(null);
+    setRelationOnly(false);
+  };
 
   const focusNode = (node) => {
     setFocusTarget({ id: node.id, requestedAt: Date.now() });
@@ -126,10 +156,15 @@ export default function MindmapExplorer({ view, fitKey, toolbarActions = null })
         </button>
         {toolbarActions}
       </div>
+      <RelationOnlyToggle
+        isChecked={isRelationOnly}
+        isAvailable={isRelationOnlyAvailable}
+        onChange={setRelationOnly}
+      />
 
       <MindmapCanvas
-        view={view}
-        fitKey={fitKey}
+        view={visibleView}
+        fitKey={canvasFitKey}
         highlightIds={highlightIds}
         neighborhood={neighborhood}
         focusTarget={focusTarget}

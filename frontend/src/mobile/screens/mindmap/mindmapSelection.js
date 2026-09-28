@@ -62,3 +62,42 @@ export function edgeEmphasis(neighborhood, edgeId) {
   if (neighborhood.selectedNodeId == null) return EMPHASIS.NORMAL;
   return neighborhood.edgeIds.has(edgeId) ? EMPHASIS.CONNECTED : EMPHASIS.DIMMED;
 }
+
+const RELATION_VIEW_MIN_SPAN = 240;
+
+function expandToMinimumSpan(min, max) {
+  const missing = RELATION_VIEW_MIN_SPAN - (max - min);
+  if (missing <= 0) return [min, max];
+  return [min - missing / 2, max + missing / 2];
+}
+
+function boundsOfNodes(nodes) {
+  const xs = nodes.map((node) => node.x);
+  const ys = nodes.map((node) => node.y);
+  const [minX, maxX] = expandToMinimumSpan(Math.min(...xs), Math.max(...xs));
+  const [minY, maxY] = expandToMinimumSpan(Math.min(...ys), Math.max(...ys));
+  return { minX, minY, maxX, maxY };
+}
+
+function touchesNode(edge, nodeId) {
+  return endpointId(edge.from) === nodeId || endpointId(edge.to) === nodeId;
+}
+
+export function canShowRelationOnly(neighborhood) {
+  return neighborhood.selectedNodeId != null;
+}
+
+export function visibleGraphOf(view, neighborhood, relationOnly) {
+  if (!view || !relationOnly || !canShowRelationOnly(neighborhood)) return view;
+
+  const selectedNodeId = neighborhood.selectedNodeId;
+  const edges = view.edges.filter((edge) => touchesNode(edge, selectedNodeId));
+  const visibleNodeIds = new Set([selectedNodeId]);
+  edges.forEach((edge) => {
+    visibleNodeIds.add(endpointId(edge.from));
+    visibleNodeIds.add(endpointId(edge.to));
+  });
+  const nodes = view.nodes.filter((node) => visibleNodeIds.has(node.id));
+
+  return { ...view, nodes, edges, bounds: boundsOfNodes(nodes) };
+}
