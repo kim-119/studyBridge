@@ -1,6 +1,7 @@
 package com.studybridge.api.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.AiFailoverExecutor;
 import com.studybridge.api.dto.GroupStudyQuizDTO;
 import com.studybridge.api.entity.GroupStudy;
 import com.studybridge.api.entity.GroupStudyMaterial;
@@ -82,7 +83,7 @@ class GroupStudyMaterialDeleteAuthorizationTest {
 
         service = new GroupStudyMaterialService(materials, groups, mock(GroupStudyMemberRepository.class), quizzes,
                 mock(GroupStudyQuizQuestionRepository.class), sessions, answers, mock(UserRepository.class), s3,
-                mock(WebClient.class), new ObjectMapper());
+                AiFailoverExecutor.single(mock(WebClient.class)), new ObjectMapper());
     }
 
     @Test

@@ -11,7 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.reactive.function.client.WebClient;
+import com.studybridge.api.ai.AiFailoverExecutor;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -35,7 +35,8 @@ public class GroupStudyMaterialService {
     private final GroupStudyQuizSessionAnswerRepository groupStudyQuizSessionAnswerRepository;
     private final UserRepository userRepository;
     private final S3Service s3Service;
-    private final WebClient fastApiWebClient;
+    // PRIMARY(ai07) → SECONDARY(EC2 hot-standby) 공통 failover(/api/ai/quiz/generate). 기존 fastApiWebClient 는 executor 의 primary 와 동일.
+    private final AiFailoverExecutor aiFailoverExecutor;
     private final ObjectMapper objectMapper;
 
     // 생성 옵션 기본값/보정 상수 (문제 수 1~20, 문제당 시간 5~120초)
@@ -195,18 +196,7 @@ public class GroupStudyMaterialService {
                 .numQuestions(questionCount)
                 .build();
 
-        GroupStudyQuizDTO.AIQuizResponse aiResponse = null;
-
-        try {
-            aiResponse = fastApiWebClient.post()
-                    .uri("/api/ai/quiz/generate")
-                    .bodyValue(requestPayload)
-                    .retrieve()
-                    .bodyToMono(GroupStudyQuizDTO.AIQuizResponse.class)
-                    .block(); // 동기식 대기
-        } catch (Exception e) {
-            log.error("FastAPI AI quiz generation communication failed. materialId={}. Error: ", material.getId(), e);
-        }
+        GroupStudyQuizDTO.AIQuizResponse aiResponse = requestAiQuiz(requestPayload, material.getId());
 
         // 그룹스터디 경로에서는 더미/placeholder/degraded 퀴즈를 절대 저장하지 않는다.
         // 판정은 AI07 의 구조화 상태(success/errorCode/status/degraded/fallbackUsed) 우선. 제목 문자열 판정은 마지막 안전망.
@@ -270,6 +260,31 @@ public class GroupStudyMaterialService {
 
         } catch (Exception e) {
             log.error("Failed to persist generated quiz in Database: ", e);
+            return null;
+        }
+    }
+
+    /**
+     * FastAPI {@code POST /api/ai/quiz/generate} 호출(PRIMARY → SECONDARY failover).
+     * 전송 실패/timeout/404/5xx 만 다음 업스트림으로 넘기고, 4xx 검증 오류는 failover 없이 실패(null) 로 끝낸다.
+     * 응답 본문의 success/status 판정은 기존대로 {@link #unusableAiQuizReason} 이 담당한다(session lifecycle 불변).
+     * @return 실패 시 null (기존 계약: null → 퀴즈 미저장)
+     */
+    GroupStudyQuizDTO.AIQuizResponse requestAiQuiz(GroupStudyQuizDTO.AIQuizRequest requestPayload, Long materialId) {
+        try {
+            AiFailoverExecutor.Result<GroupStudyQuizDTO.AIQuizResponse> picked = aiFailoverExecutor.execute("/api/ai/quiz/generate",
+                    up -> up.client().post()
+                            .uri("/api/ai/quiz/generate")
+                            .bodyValue(requestPayload)
+                            .retrieve()
+                            .bodyToMono(GroupStudyQuizDTO.AIQuizResponse.class)
+                            .block()); // 동기식 대기
+            if (picked.attempts() > 1) {
+                log.info("AI quiz generation served by upstream={} after failover. materialId={}", picked.upstreamName(), materialId);
+            }
+            return picked.value();
+        } catch (Exception e) {
+            log.error("FastAPI AI quiz generation communication failed. materialId={}. Error: ", materialId, e);
             return null;
         }
     }

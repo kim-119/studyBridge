@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.*;
 import com.studybridge.api.entity.*;
 import com.studybridge.api.repository.*;
+import com.studybridge.api.ai.AiFailoverExecutor;
 import com.studybridge.api.util.AiMaterialQuizContract;
 import com.studybridge.api.util.ConceptFallbackProvider;
 import com.studybridge.api.util.LearningContentSanitizer;
@@ -46,6 +47,8 @@ public class AiIntegrationService {
         private final IntentRouterService intentRouterService;
         private final LearningLoopService learningLoopService;
         private final MaterialQuizService materialQuizService;
+        // PRIMARY(ai07) → SECONDARY(EC2 hot-standby) 공통 failover. 현재는 /api/ai/quiz 에만 적용.
+        private final AiFailoverExecutor aiFailoverExecutor;
 
         // 키워드 정의 호출 타임아웃 (env 제어, 하드코딩 금지)
         @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.keyword-define-timeout-seconds:60}")
@@ -824,14 +827,21 @@ public class AiIntegrationService {
                                 material.getMaterialId(), quizDifficulty, isNotBlank(documentText), isNotBlank(summaryText), isNotBlank(coreContentText), isNotBlank(detailedContentText), request.getQuestionCount());
 
                 // AI07 FINAL CONTRACT(quiz.v2): HTTP 는 항상 200, 성공 여부는 success. Map 대신 typed DTO 로 받는다.
+                // PRIMARY → SECONDARY failover: 전송 실패/timeout/404/5xx 와 "200 + success=false + retryable 일시 실패(AI_TIMEOUT 등)" 만
+                // 다음 업스트림으로 넘기고, PDF_TEXT_INSUFFICIENT 같은 domain 실패는 그대로 반환한다(AiMaterialQuizContract.transientFailureCode).
                 AiMaterialQuizDTO.Response ai;
+                String aiUpstream = "primary";
                 try {
-                        ai = fastApiWebClient.post()
-                                        .uri("/api/ai/quiz")
-                                        .bodyValue(requestBody)
-                                        .retrieve()
-                                        .bodyToMono(AiMaterialQuizDTO.Response.class)
-                                        .block(Duration.ofSeconds(125));
+                        AiFailoverExecutor.Result<AiMaterialQuizDTO.Response> picked = aiFailoverExecutor.execute("/api/ai/quiz",
+                                        up -> up.client().post()
+                                                        .uri("/api/ai/quiz")
+                                                        .bodyValue(requestBody)
+                                                        .retrieve()
+                                                        .bodyToMono(AiMaterialQuizDTO.Response.class)
+                                                        .block(Duration.ofSeconds(125)),
+                                        AiMaterialQuizContract::transientFailureCode);
+                        ai = picked.value();
+                        aiUpstream = picked.upstreamName();
                 } catch (Exception e) {
                         String __code = isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR";
                         log.warn("[AI_QUIZ_PDF_BASED] result=FAIL materialId={} difficulty={} sourceMode=PDF_BASED error_code={} elapsedMs={}",
@@ -861,8 +871,8 @@ public class AiIntegrationService {
                 boolean degradedFallback = AiMaterialQuizContract.isDegradedFallback(ai);
                 boolean partial = AiMaterialQuizContract.isPartial(ai) || contract.rejectedCount() > 0;
 
-                log.info("[AI_QUIZ_PDF_BASED] result=OK materialId={} difficulty={} sourceMode=PDF_BASED applied={} status={} schema={} generated={} accepted={} degradedFallback={} partial={} elapsedMs={}",
-                                material.getMaterialId(), quizDifficulty, ai.getDifficultyApplied(), ai.getStatus(), ai.getSchemaVersion(),
+                log.info("[AI_QUIZ_PDF_BASED] result=OK materialId={} difficulty={} sourceMode=PDF_BASED upstream={} applied={} status={} schema={} generated={} accepted={} degradedFallback={} partial={} elapsedMs={}",
+                                material.getMaterialId(), quizDifficulty, aiUpstream, ai.getDifficultyApplied(), ai.getStatus(), ai.getSchemaVersion(),
                                 ai.getGeneratedCount(), contract.getAccepted().size(), degradedFallback, partial, System.currentTimeMillis() - quizT0);
 
                 // 내부 저장: 검증 통과 문항(정답 포함)만 quiz_data 에 보관한다. 원문 quizData 문자열은 그대로 쓰지 않는다(거절 문항 제외).

@@ -47,13 +47,16 @@ REQUIRED_ROUTES=(
   /api/ai/study-journal/validate
   /api/ai/intent/route
   /api/ai/predict-study-time
+  # PRIMARY→SECONDARY failover 대상(AiFailoverExecutor): 세 라우트가 없으면 secondary 가 hot-standby 역할을 못 한다.
+  /api/ai/mindmap/semantic-graph
+  /api/ai/quiz
+  /api/ai/quiz/generate
 )
 # 있으면 좋지만 게이트 판정에는 쓰지 않는 라우트(경고만).
 OPTIONAL_ROUTES=(
   /api/ai/feedback
   /api/ai/summary
   /api/ai/keyword/define
-  /api/ai/quiz/generate
   /api/ai/roadmap/generate
   /api/ai/planner/assist
   /api/ai/planner/analyze

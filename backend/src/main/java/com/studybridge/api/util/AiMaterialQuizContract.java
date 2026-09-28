@@ -41,6 +41,34 @@ public final class AiMaterialQuizContract {
         return null;
     }
 
+    /**
+     * PRIMARY → SECONDARY failover 대상이 되는 "일시적 AI 실패" 사유 코드(HTTP 200 + success=false 본문 기준).
+     * <ul>
+     *   <li>null = 성공 응답이거나, 다른 서버로 보내도 해결되지 않는 domain 실패
+     *       (PDF_TEXT_INSUFFICIENT / PDF_OCR_REQUIRED / SYLLABUS_WEEKLY_CONTENT_REQUIRED / QUIZ_CONTRACT_INVALID 등).</li>
+     *   <li>non-null = retryable=true 이고 AI 인프라 성격의 코드(AI_TIMEOUT / AI_RESPONSE_PARSE_FAILED 등) → secondary 재시도 타당.</li>
+     * </ul>
+     * 응답 자체가 null(빈 본문) 이면 해당 업스트림 결함으로 보고 failover 한다.
+     */
+    public static String transientFailureCode(AiMaterialQuizDTO.Response r) {
+        if (r == null) return "EMPTY_UPSTREAM_RESPONSE";
+        String code = failureCode(r);
+        if (code == null) return null;
+        if (NON_FAILOVER_DOMAIN_CODES.contains(code)) return null;
+        if (!Boolean.TRUE.equals(r.getRetryable())) return null;
+        return TRANSIENT_AI_CODES.contains(code) ? code : null;
+    }
+
+    /** 다른 서버로 보내도 같은 결과인 domain 실패(입력 자료/계약 문제). retryable 값과 무관하게 failover 하지 않는다. */
+    public static final java.util.Set<String> NON_FAILOVER_DOMAIN_CODES = java.util.Set.of(
+            "PDF_TEXT_INSUFFICIENT", "PDF_OCR_REQUIRED", "PDF_TEXT_EMPTY", "PDF_CONTEXT_REQUIRED",
+            "SYLLABUS_WEEKLY_CONTENT_REQUIRED", "QUIZ_CONTRACT_INVALID", "UNSUPPORTED_TASK_TYPE");
+
+    /** AI 인프라(모델/파서/타임아웃) 성격의 일시 실패. retryable=true 일 때만 secondary 로 넘긴다. */
+    public static final java.util.Set<String> TRANSIENT_AI_CODES = java.util.Set.of(
+            "AI_TIMEOUT", "TIMEOUT", "AI_RESPONSE_PARSE_FAILED", "AI_UNAVAILABLE", "AI_PROVIDER_ERROR",
+            "INTERNAL_ERROR", "UNKNOWN_ERROR", "EMPTY_UPSTREAM_RESPONSE");
+
     /** DEGRADED_FALLBACK 은 구조적으로만 판정한다(status/degraded/fallbackUsed/metadata.fallbackUsed). 제목 문자열 비교 없음. */
     public static boolean isDegradedFallback(AiMaterialQuizDTO.Response r) {
         if (r == null) return false;
