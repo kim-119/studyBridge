@@ -22,8 +22,10 @@ import {
   serverReasonOf,
 } from '../quizGenerationModel';
 import { DELETE_CONFIRM_MESSAGE, RESOURCE_KIND } from '../resourceDeleteModel';
+import MaterialUploadControl from './MaterialUploadControl';
 import RoomPanel from './RoomPanel';
 import { ROOM_PANEL } from './useRoomOverlay';
+import { useMaterialUpload } from './useMaterialUpload';
 import { useResourceDeletion } from './useResourceDeletion';
 
 const RESOURCE_TABS = [
@@ -118,6 +120,7 @@ function MaterialsList({ groupId, isLeader, materials, quizzes, onOpenViewer }) 
   const [quizOptions, setQuizOptions] = useState(DEFAULT_QUIZ_OPTIONS);
   const quizGeneration = useMaterialQuizGeneration(groupId, quizzes);
   const materialDeletion = useResourceDeletion(groupId, RESOURCE_KIND.MATERIAL, materials);
+  const materialUpload = useMaterialUpload(groupId, { materials, quizzes });
   const isGenerating = quizGeneration.generatingMaterialId !== null;
 
   const openExternally = useSubmit(async (materialId) => {
@@ -135,69 +138,71 @@ function MaterialsList({ groupId, isLeader, materials, quizzes, onOpenViewer }) 
     openExternally.submit(material.id).catch(() => {});
   };
 
-  const hasPdfMaterial = (materials.data || []).some(isPdfMaterial);
   const outcome = quizGeneration.outcome;
 
   return (
-    <ScreenState
-      query={materials}
-      loadingLabel="학습자료를 불러오는 중입니다"
-      emptyWhen={(value) => !value || value.length === 0}
-      emptyMessage="공유된 학습자료가 없습니다."
-    >
-      {hasPdfMaterial && <QuizOptionsPicker options={quizOptions} onChange={setQuizOptions} />}
-      <ul className="mobile-list">
-        {(materials.data || []).map((material) => (
-          <li key={material.id} data-material-id={material.id}>
-            <ListRow
-              icon={<FileText size={20} />}
-              title={material.title || material.originalFileName}
-              subtitle={[material.originalFileName, material.uploaderName].filter(Boolean).join(' · ')}
-              trailing={isPdfMaterial(material) ? null : <ExternalLink size={18} />}
-              onClick={() => openMaterial(material)}
-            />
-            {(isPdfMaterial(material) || isLeader) && (
-              <div className="mobile-card__actions mobile-room-resource__actions">
-                {isPdfMaterial(material) && (
-                  <Button
-                    variant="ghost"
-                    disabled={isGenerating && quizGeneration.generatingMaterialId !== material.id}
-                    isLoading={quizGeneration.generatingMaterialId === material.id}
-                    onClick={() => quizGeneration.generate(material.id, quizOptions)}
-                  >
-                    <ClipboardList size={16} />
-                    이 자료로 퀴즈 만들기
-                  </Button>
-                )}
-                {isLeader && (
-                  <LeaderDeleteAction kind={RESOURCE_KIND.MATERIAL} resourceId={material.id} deletion={materialDeletion} />
-                )}
-              </div>
-            )}
-          </li>
-        ))}
-      </ul>
-      {isGenerating && (
-        <p className="mobile-field__hint" role="status">
-          퀴즈를 생성하고 있습니다. 패널을 닫아도 생성은 계속됩니다.
-        </p>
-      )}
-      {outcome && (
-        <p
-          className={outcome.isSuccess ? 'mobile-room-quiz-result' : 'mobile-auth__error'}
-          role={outcome.isSuccess ? 'status' : 'alert'}
-          data-quiz-generation={outcome.isSuccess ? 'success' : 'failure'}
-        >
-          {outcome.message}
-        </p>
-      )}
-      {openExternally.errorMessage && <p className="mobile-auth__error">{openExternally.errorMessage}</p>}
-      {materialDeletion.errorMessage && (
-        <p className="mobile-auth__error" role="alert">
-          {materialDeletion.errorMessage}
-        </p>
-      )}
-    </ScreenState>
+    <>
+      <QuizOptionsPicker options={quizOptions} onChange={setQuizOptions} />
+      <MaterialUploadControl upload={materialUpload} quizOptions={quizOptions} onOpenViewer={onOpenViewer} />
+      <ScreenState
+        query={materials}
+        loadingLabel="학습자료를 불러오는 중입니다"
+        emptyWhen={(value) => !value || value.length === 0}
+        emptyMessage="공유된 학습자료가 없습니다."
+      >
+        <ul className="mobile-list">
+          {(materials.data || []).map((material) => (
+            <li key={material.id} data-material-id={material.id}>
+              <ListRow
+                icon={<FileText size={20} />}
+                title={material.title || material.originalFileName}
+                subtitle={[material.originalFileName, material.uploaderName].filter(Boolean).join(' · ')}
+                trailing={isPdfMaterial(material) ? null : <ExternalLink size={18} />}
+                onClick={() => openMaterial(material)}
+              />
+              {(isPdfMaterial(material) || isLeader) && (
+                <div className="mobile-card__actions mobile-room-resource__actions">
+                  {isPdfMaterial(material) && (
+                    <Button
+                      variant="ghost"
+                      disabled={isGenerating && quizGeneration.generatingMaterialId !== material.id}
+                      isLoading={quizGeneration.generatingMaterialId === material.id}
+                      onClick={() => quizGeneration.generate(material.id, quizOptions)}
+                    >
+                      <ClipboardList size={16} />
+                      이 자료로 퀴즈 만들기
+                    </Button>
+                  )}
+                  {isLeader && (
+                    <LeaderDeleteAction kind={RESOURCE_KIND.MATERIAL} resourceId={material.id} deletion={materialDeletion} />
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+        {isGenerating && (
+          <p className="mobile-field__hint" role="status">
+            퀴즈를 생성하고 있습니다. 패널을 닫아도 생성은 계속됩니다.
+          </p>
+        )}
+        {outcome && (
+          <p
+            className={outcome.isSuccess ? 'mobile-room-quiz-result' : 'mobile-auth__error'}
+            role={outcome.isSuccess ? 'status' : 'alert'}
+            data-quiz-generation={outcome.isSuccess ? 'success' : 'failure'}
+          >
+            {outcome.message}
+          </p>
+        )}
+        {openExternally.errorMessage && <p className="mobile-auth__error">{openExternally.errorMessage}</p>}
+        {materialDeletion.errorMessage && (
+          <p className="mobile-auth__error" role="alert">
+            {materialDeletion.errorMessage}
+          </p>
+        )}
+      </ScreenState>
+    </>
   );
 }
 

@@ -2,6 +2,7 @@ import React from 'react';
 import { LogOut, Menu } from 'lucide-react';
 import { SOCKET_STATE } from '../socketConnectionModel';
 import RoomElapsedTime from './RoomElapsedTime';
+import './groupRoom.css';
 
 const SHORT_STATUS_LABEL = {
   [SOCKET_STATE.IDLE]: '연결 준비',

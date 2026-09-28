@@ -16,6 +16,12 @@ const LABEL_MIN_SCALE = 0.75;
 const LABEL_MAX_LENGTH = 12;
 const ZOOM_STEP = 1.25;
 const RELATION_LABEL_MAX_LENGTH = 10;
+const MIN_TOUCH_TARGET_PX = 44;
+const EDGE_WIDTH_BY_EMPHASIS = {
+  [EMPHASIS.NORMAL]: 1.2,
+  [EMPHASIS.CONNECTED]: 3,
+  [EMPHASIS.DIMMED]: 1,
+};
 
 function useLatest(value) {
   const ref = useRef(value);
@@ -124,19 +130,27 @@ function truncateLabel(label, maxLength = LABEL_MAX_LENGTH) {
 }
 
 function MindmapEdges({ edges, neighborhood }) {
-  return edges.map((edge) => (
-    <line
-      key={edge.id}
-      x1={edge.from.x}
-      y1={edge.from.y}
-      x2={edge.to.x}
-      y2={edge.to.y}
-      className={`mobile-mindmap__edge is-${edgeEmphasis(neighborhood, edge.id)}`}
-      data-edge-emphasis={edgeEmphasis(neighborhood, edge.id)}
-      style={{ stroke: edge.color }}
-      strokeDasharray={edge.dashed ? '6 4' : undefined}
-    />
-  ));
+  return edges.map((edge) => {
+    const emphasis = edgeEmphasis(neighborhood, edge.id);
+    return (
+      <line
+        key={edge.id}
+        x1={edge.from.x}
+        y1={edge.from.y}
+        x2={edge.to.x}
+        y2={edge.to.y}
+        className={`mobile-mindmap__edge is-${emphasis}`}
+        data-edge-id={edge.id}
+        data-edge-emphasis={emphasis}
+        style={{ stroke: edge.color, strokeWidth: EDGE_WIDTH_BY_EMPHASIS[emphasis] }}
+        strokeDasharray={edge.dashed ? '6 4' : undefined}
+      />
+    );
+  });
+}
+
+function hitRadiusFor(scale) {
+  return Math.max(NODE_RADIUS + 4, MIN_TOUCH_TARGET_PX / 2 / scale);
 }
 
 function RelationLabels({ edges, neighborhood }) {
@@ -158,7 +172,7 @@ function nodeClassName(isHighlighted, emphasis) {
   return ['mobile-mindmap__dot', isHighlighted ? 'is-highlighted' : '', `is-${emphasis}`].filter(Boolean).join(' ');
 }
 
-function MindmapNodes({ nodes, highlightIds, neighborhood, showLabels, onTapNode }) {
+function MindmapNodes({ nodes, highlightIds, neighborhood, showLabels, hitRadius, onTapNode }) {
   return nodes.map((node) => {
     const emphasis = nodeEmphasis(neighborhood, node.id);
     const isHighlighted = highlightIds?.has(node.id) || emphasis === EMPHASIS.SELECTED;
@@ -172,8 +186,10 @@ function MindmapNodes({ nodes, highlightIds, neighborhood, showLabels, onTapNode
           onTapNode(node);
         }}
         className={`mobile-mindmap__node is-${emphasis}`}
+        data-node-id={node.id}
         data-node-emphasis={emphasis}
       >
+        <circle cx={node.x} cy={node.y} r={hitRadius} fill="transparent" className="mobile-mindmap__hit" />
         <circle
           cx={node.x}
           cy={node.y}
@@ -258,6 +274,7 @@ export default function MindmapCanvas({
             highlightIds={highlightIds}
             neighborhood={neighborhood}
             showLabels={transform.scale >= LABEL_MIN_SCALE}
+            hitRadius={hitRadiusFor(transform.scale)}
             onTapNode={handleTapNode}
           />
           <RelationLabels edges={view.edges} neighborhood={neighborhood} />

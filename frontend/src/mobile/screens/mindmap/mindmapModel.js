@@ -1,40 +1,19 @@
 import { EDGE_RELATION_LABEL, NODE_LABEL_KO, colorForNode, styleForEdge } from '../../../utils/graph/graphTypes';
-import { sanitizeGraph, validateGraph } from '../../../utils/graph/graphValidation';
+import { validateGraph } from '../../../utils/graph/graphValidation';
 import { computeLayout } from '../../../utils/graph/graphLayout';
 import { relationLabelOf } from './mindmapSelection';
-
-function tryParse(value) {
-  if (!value) return null;
-  if (typeof value === 'object') return value;
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
-export function parseMindmapGraph(material) {
-  const payload = tryParse(material?.contentJson);
-
-  let raw = payload?.rawGraphJson ? tryParse(payload.rawGraphJson) || payload.rawGraphJson : null;
-  if (!raw && material?.rawGraphJson) raw = tryParse(material.rawGraphJson) || material.rawGraphJson;
-  if (!raw && payload && Array.isArray(payload.nodes)) raw = payload;
-
-  if (!raw || !Array.isArray(raw.nodes)) return null;
-  return sanitizeGraph(raw);
-}
+import { cleanNodeLabel } from './nodeLabel';
 
 function toViewNode(node) {
   const type = node.type || 'concept';
-  const title = node.title || node.label || node.name || String(node.id);
+  const title = cleanNodeLabel(node.title || node.label || node.name) || String(node.id);
 
   return {
     id: node.id,
     type,
     typeLabel: NODE_LABEL_KO[type] || type,
     title,
-    label: node.displayLabel || node.shortLabel || node.label || title,
+    label: cleanNodeLabel(node.displayLabel || node.shortLabel || node.label) || title,
     detail: node.detail || node.body || node.markdownBody || node.description || node.summary || '',
     depth: node.depth ?? 0,
     x: node.position?.x ?? 0,
@@ -55,7 +34,7 @@ function toViewEdge(edge, index, positionOf) {
     type,
     from,
     to,
-    relationLabel: relationLabelOf(edge),
+    relationLabel: cleanNodeLabel(relationLabelOf(edge)),
     color: style.color,
     dashed: style.dashed,
   };

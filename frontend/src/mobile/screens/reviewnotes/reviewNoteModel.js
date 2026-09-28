@@ -63,8 +63,11 @@ function rawSimilarQuestions(response) {
 function toSimilarQuestion(question, index) {
   const choices = question?.choices || question?.options || [];
 
+  const serverId = question?.id ?? question?.questionId ?? null;
+
   return {
-    id: String(question?.id ?? question?.questionId ?? `sq-${index}`),
+    id: String(serverId ?? `sq-${index}`),
+    sourceId: serverId == null ? null : String(serverId),
     number: index + 1,
     question: question?.question ?? question?.prompt ?? question?.text ?? '',
     choices: Array.isArray(choices) ? choices : [],

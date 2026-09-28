@@ -18,7 +18,7 @@ export class QuizGenerationFailure extends Error {
 }
 
 export function materialQuizTaskKey(materialId) {
-  return `material-quiz:${materialId}`;
+  return `material:${materialId}:quiz`;
 }
 
 export function clampQuestionCount(value) {

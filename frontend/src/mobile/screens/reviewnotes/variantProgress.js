@@ -2,7 +2,7 @@ import { similarQuestionStatus } from './reviewNoteModel.js';
 import { numberVariantQuestions } from './variantCountModel.js';
 
 export function variantGenerationTaskKey(reviewNoteId) {
-  return `review-note-variant:${reviewNoteId}`;
+  return `wrongnote:${reviewNoteId}:similar`;
 }
 
 export function applyGeneratedResult(session, request, result) {

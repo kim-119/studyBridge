@@ -199,7 +199,7 @@ export function attachSemanticGraph(base, semantic) {
     const target = parent || fallbackParent;
     if (!target || target === nodeId) return;
     // 같은 쌍에 의미 관계가 있으면 계층 간선은 생략(중복 선 방지).
-    if (relationPairs.has(`${target}|${nodeId}`)) return;
+    if (relationPairs.has(`${target}|${nodeId}`) || relationPairs.has(`${nodeId}|${target}`)) return;
     pushEdge(target, nodeId, EDGE_TYPES.CONTAINS, { weight: 0.6 });
   });
 

@@ -12,7 +12,12 @@ import {
   similarQuestionStatus,
   wrongQuestionNumbers,
 } from './reviewNoteModel';
-import { canRequestMissing, missingRequestMessage, variantCountMessage } from './variantCountModel';
+import {
+  canRequestMissing,
+  generatedCountLabel,
+  missingRequestMessage,
+  variantCountMessage,
+} from './variantCountModel';
 
 const STATUS_TONE = { 정답: 'done', 오답: 'alert', '풀이 전': 'idle' };
 
@@ -329,9 +334,7 @@ export default function ReviewNoteVariantPanel({ note, variant }) {
             )
           )}
 
-          <h3 className="mobile-section__title">
-            문제 목록 ({questions.length}/{countCheck.requested})
-          </h3>
+          <h3 className="mobile-section__title">{generatedCountLabel(countCheck)}</h3>
           <SimilarQuestionList
             questions={questions}
             activeId={activeId}

@@ -35,6 +35,13 @@ function SearchSheet({ isOpen, onClose, keyword, onKeywordChange, matches, onPic
   );
 }
 
+function relationSentenceOf(node, relation) {
+  const isOutgoing = relation.direction === 'outgoing';
+  const source = isOutgoing ? node : relation.neighbor;
+  const target = isOutgoing ? relation.neighbor : node;
+  return `${source.title} → [${relation.label}] ${target.title}`;
+}
+
 function SelectedNodeCard({ node, relations, onSelectNode, onOpenDetail, onClear }) {
   return (
     <section className="mobile-card mobile-mindmap-selection" aria-live="polite" data-selected-node={node.id}>
@@ -55,10 +62,7 @@ function SelectedNodeCard({ node, relations, onSelectNode, onOpenDetail, onClear
           {relations.map((relation) => (
             <li key={relation.edgeId}>
               <button type="button" onClick={() => onSelectNode(relation.neighbor)}>
-                <span className="mobile-mindmap-selection__relation">
-                  {relation.direction === 'outgoing' ? `${relation.label} →` : `← ${relation.label}`}
-                </span>
-                <span className="mobile-mindmap-selection__neighbor">{relation.neighbor.title}</span>
+                <span className="mobile-mindmap-selection__neighbor">{relationSentenceOf(node, relation)}</span>
               </button>
             </li>
           ))}

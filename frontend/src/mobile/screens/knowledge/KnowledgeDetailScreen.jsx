@@ -1,128 +1,155 @@
-import React, { useState } from 'react';
-import { FileText, Heart, Trash2 } from 'lucide-react';
-import { useParams } from 'react-router-dom';
+import React, { useCallback, useRef, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import Button from '../../components/Button';
+import ImageViewer from '../../components/ImageViewer';
 import ScreenState from '../../components/ScreenState';
 import TextField from '../../components/TextField';
 import MobileScreen from '../../shell/MobileScreen';
 import { knowledgeService } from '../../../services/api';
 import { useAuth } from '../../../hooks/useAuth';
 import { useAsync, useSubmit } from '../../data/useAsync';
-import { openExternalUrl } from '../../platform/externalLink';
+import KnowledgeActionSheet from './KnowledgeActionSheet';
+import KnowledgeComments from './KnowledgeComments';
+import KnowledgePdfAttachment from './KnowledgePdfAttachment';
+import { KnowledgePostActions, KnowledgePostHeader, KnowledgePostImage } from './KnowledgePostParts';
+import { isOwnedBy, updatePostIn } from './knowledgeModel';
+import { useLikeToggle } from './useLikeToggle';
+import { useReloadWhenVisible } from './useReloadWhenVisible';
+import './knowledge.css';
+
+const REPORT_RECEIVED_NOTICE = '신고가 접수되었습니다. 운영진이 확인 후 조치합니다.';
+
+function useTargetActions(blogId, { reload, onPostDeleted, onReported }) {
+  const deleteTarget = async (target) => {
+    if (target.kind === 'post') {
+      await knowledgeService.deletePost(target.id);
+      onPostDeleted();
+      return;
+    }
+    await knowledgeService.deleteComment(blogId, target.id);
+    await reload();
+  };
+
+  const reportTarget = async (target, payload) => {
+    if (target.kind === 'post') await knowledgeService.reportPost(target.id, payload);
+    else await knowledgeService.reportComment(target.id, payload);
+    onReported();
+  };
+
+  return { deleteTarget, reportTarget };
+}
 
 export default function KnowledgeDetailScreen() {
   const { blogId } = useParams();
+  const navigate = useNavigate();
   const { userId } = useAuth();
   const post = useAsync(() => knowledgeService.getPostDetail(blogId), [blogId]);
+  const { setData, reload } = post;
+  const commentsSection = useRef(null);
   const [comment, setComment] = useState('');
+  const [viewerImage, setViewerImage] = useState(null);
+  const [sheetTarget, setSheetTarget] = useState(null);
+  const [notice, setNotice] = useState(null);
 
-  const toggleLike = useSubmit(async () => {
-    await knowledgeService.toggleLike(blogId);
-    await post.reload();
-  });
+  useReloadWhenVisible(reload);
 
-  const removeComment = useSubmit(async (commentId) => {
-    await knowledgeService.deleteComment(blogId, commentId);
-    await post.reload();
+  const updatePost = useCallback((id, updater) => setData((current) => updatePostIn(current, id, updater)), [setData]);
+  const like = useLikeToggle(updatePost);
+  const closeSheet = () => setSheetTarget(null);
+
+  const { deleteTarget, reportTarget } = useTargetActions(blogId, {
+    reload: async () => {
+      closeSheet();
+      await reload();
+    },
+    onPostDeleted: () => navigate('/knowledge', { replace: true }),
+    onReported: () => {
+      closeSheet();
+      setNotice(REPORT_RECEIVED_NOTICE);
+    },
   });
 
   const addComment = useSubmit(async () => {
     await knowledgeService.addComment(blogId, comment.trim());
     setComment('');
-    await post.reload();
+    await reload();
   });
+
+  const openSheet = (target) => {
+    setNotice(null);
+    setSheetTarget(target);
+  };
 
   const data = post.data;
 
   return (
-    <MobileScreen title={data?.title || '지식공유'} showBackButton>
+    <MobileScreen title="지식공유" showBackButton>
       <ScreenState query={post} loadingLabel="게시글을 불러오는 중입니다">
-        <>
-          <section className="mobile-card mobile-section">
-            <p className="mobile-card__meta">
-              {[data?.authorNickname, String(data?.createdAt || '').slice(0, 10)]
-                .filter(Boolean)
-                .join(' · ')}
-            </p>
+        {data && (
+          <>
+            <article className="knowledge-post">
+              <KnowledgePostHeader
+                post={data}
+                onMore={() => openSheet({ kind: 'post', id: data.blogId, isMine: isOwnedBy(data, userId) })}
+              />
+              <KnowledgePostImage post={data} onOpenImage={setViewerImage} />
+              <KnowledgePostActions
+                post={data}
+                isLikePending={like.isPending(data.blogId)}
+                onToggleLike={like.toggleLike}
+                onComment={() => commentsSection.current?.scrollIntoView?.({ behavior: 'smooth' })}
+              />
+              {like.errorMessage && <p className="mobile-auth__error">{like.errorMessage}</p>}
+              <div className="knowledge-post__content">
+                <h2 className="knowledge-post__title">{data.title}</h2>
+                <p className="knowledge-post__text">{data.content}</p>
+              </div>
+              <KnowledgePdfAttachment
+                url={data.pdfPresignedUrl}
+                title={data.title}
+                onRefreshUrl={async () => (await reload())?.pdfPresignedUrl}
+              />
+            </article>
 
-            {data?.imagePresignedUrl && (
-              <img className="mobile-post__image" src={data.imagePresignedUrl} alt="" />
+            {notice && (
+              <p className="mobile-notice mobile-section" role="status">
+                {notice}
+              </p>
             )}
 
-            <p className="mobile-paragraph">{data?.content}</p>
+            <section ref={commentsSection} className="mobile-section" aria-label="댓글">
+              <h3 className="mobile-section__title">댓글 {data.comments?.length ?? 0}</h3>
+              <KnowledgeComments comments={data.comments || []} userId={userId} onMore={openSheet} />
+            </section>
 
-            {data?.pdfPresignedUrl && (
-              <Button variant="action" onClick={() => openExternalUrl(data.pdfPresignedUrl)}>
-                <FileText size={16} />
-                첨부 자료 열기
-              </Button>
-            )}
+            <TextField
+              as="textarea"
+              label="댓글 작성"
+              value={comment}
+              placeholder="의견을 남겨보세요"
+              error={addComment.errorMessage}
+              onChange={(event) => setComment(event.target.value)}
+            />
 
-            <div className="mobile-card__actions">
-              <Button
-                variant={data?.likedByCurrentUser ? 'primary' : 'secondary'}
-                isLoading={toggleLike.isSubmitting}
-                onClick={() => toggleLike.submit().catch(() => {})}
-              >
-                <Heart size={16} />
-                {data?.likeCount ?? 0}
-              </Button>
-            </div>
-          </section>
-
-          <section className="mobile-section">
-            <h3 className="mobile-section__title">댓글 {data?.comments?.length ?? 0}</h3>
-
-            {removeComment.errorMessage && (
-              <p className="mobile-auth__error">{removeComment.errorMessage}</p>
-            )}
-
-            <ul className="mobile-list">
-              {(data?.comments || []).map((entry) => {
-                const commentId = entry.commentId ?? entry.id;
-                const isMine = String(entry.authorId ?? '') === String(userId);
-
-                return (
-                  <li key={commentId} className="mobile-card">
-                    <p className="mobile-card__meta">
-                      {entry.authorNickname}
-                      {isMine && (
-                        <button
-                          type="button"
-                          className="mobile-todo__delete"
-                          aria-label="댓글 삭제"
-                          onClick={() => removeComment.submit(commentId).catch(() => {})}
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      )}
-                    </p>
-                    <p className="mobile-paragraph">{entry.content}</p>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-
-          <TextField
-            as="textarea"
-            label="댓글 작성"
-            value={comment}
-            placeholder="의견을 남겨보세요"
-            error={addComment.errorMessage}
-            onChange={(event) => setComment(event.target.value)}
-          />
-
-          <Button
-            fullWidth
-            isLoading={addComment.isSubmitting}
-            disabled={!comment.trim()}
-            onClick={() => addComment.submit().catch(() => {})}
-          >
-            댓글 등록
-          </Button>
-        </>
+            <Button
+              fullWidth
+              isLoading={addComment.isSubmitting}
+              disabled={!comment.trim()}
+              onClick={() => addComment.submit().catch(() => {})}
+            >
+              댓글 등록
+            </Button>
+          </>
+        )}
       </ScreenState>
+
+      <KnowledgeActionSheet
+        target={sheetTarget}
+        onClose={closeSheet}
+        onDelete={deleteTarget}
+        onReport={reportTarget}
+      />
+      <ImageViewer src={viewerImage} alt={data?.title || ''} onClose={() => setViewerImage(null)} />
     </MobileScreen>
   );
 }

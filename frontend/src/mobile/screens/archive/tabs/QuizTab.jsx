@@ -191,8 +191,16 @@ function QuizGenerator({ generation, onGenerate }) {
   );
 }
 
+function refreshQuizzesQuietly(materialId, setData) {
+  materialService
+    .getQuizzes(materialId)
+    .then(setData)
+    .catch((error) => console.warn('퀴즈 목록을 새로 고치지 못했습니다.', error));
+}
+
 function useMaterialQuizGeneration(materialId, quizzes, onQuizReady) {
   const generation = useBackgroundTask(materialQuizTaskKey(materialId));
+  const [generated, setGenerated] = useState(null);
   const onQuizReadyRef = useRef(onQuizReady);
   onQuizReadyRef.current = onQuizReady;
   const { isReady, isFailed, result, reset } = generation;
@@ -200,11 +208,11 @@ function useMaterialQuizGeneration(materialId, quizzes, onQuizReady) {
 
   useEffect(() => {
     if (!isReady) return;
-    setData((previous) => mergeGeneratedQuiz(previous, result));
+    setGenerated({ materialId, quiz: result });
     onQuizReadyRef.current(result?.quizId ?? null);
     reset();
-    reload().catch(() => {});
-  }, [isReady, result, reset, reload, setData]);
+    refreshQuizzesQuietly(materialId, setData);
+  }, [isReady, result, reset, materialId, setData]);
 
   useEffect(() => {
     if (isFailed) reload().catch(() => {});
@@ -218,7 +226,14 @@ function useMaterialQuizGeneration(materialId, quizzes, onQuizReady) {
     }).catch((error) => console.warn('자료 퀴즈 생성에 실패했습니다.', error));
   };
 
-  return { generation, generate };
+  const isCurrentQuiz = generated?.materialId === materialId && generated.quiz?.quizId != null;
+  const generatedQuiz = isCurrentQuiz ? generated.quiz : null;
+  return { generation, generate, generatedQuiz };
+}
+
+function quizListQueryOf(quizzes, generatedQuiz) {
+  if (!generatedQuiz) return quizzes;
+  return { ...quizzes, isLoading: false, isError: false };
 }
 
 function ReviewNoteAction({ quiz, material, questions, selections }) {
@@ -364,13 +379,14 @@ export default function QuizTab({ material }) {
   const [selectedQuizId, setSelectedQuizId] = useState(null);
   const [gradedByQuizId, setGradedByQuizId] = useState({});
   const [deletedQuizIds, setDeletedQuizIds] = useState(() => new Set());
+  const { generation, generate, generatedQuiz } = useMaterialQuizGeneration(materialId, quizzes, setSelectedQuizId);
 
   const orderedQuizzes = useMemo(
     () =>
-      newestQuizzesFirst(quizzes.data)
+      newestQuizzesFirst(mergeGeneratedQuiz(quizzes.data, generatedQuiz))
         .filter((quiz) => !deletedQuizIds.has(quiz.quizId))
         .map((quiz) => (gradedByQuizId[quiz.quizId] ? { ...quiz, lastResult: gradedByQuizId[quiz.quizId] } : quiz)),
-    [quizzes.data, deletedQuizIds, gradedByQuizId]
+    [quizzes.data, generatedQuiz, deletedQuizIds, gradedByQuizId]
   );
 
   useEffect(() => {
@@ -379,7 +395,6 @@ export default function QuizTab({ material }) {
   }, [orderedQuizzes, selectedQuizId]);
 
   const selectedQuiz = orderedQuizzes.find((quiz) => quiz.quizId === selectedQuizId) || null;
-  const { generation, generate } = useMaterialQuizGeneration(materialId, quizzes, setSelectedQuizId);
 
   const rememberGrade = (quizId, result) => {
     setGradedByQuizId((previous) => ({ ...previous, [quizId]: result }));
@@ -393,7 +408,7 @@ export default function QuizTab({ material }) {
     <>
       <QuizGenerator generation={generation} onGenerate={generate} />
 
-      <ScreenState query={quizzes} loadingLabel="퀴즈를 불러오는 중입니다">
+      <ScreenState query={quizListQueryOf(quizzes, generatedQuiz)} loadingLabel="퀴즈를 불러오는 중입니다">
         {isQuizFailed(quizzes.data) ? (
           <p className="mobile-auth__error">{aiFailureMessage(quizzes.data)}</p>
         ) : orderedQuizzes.length === 0 ? (

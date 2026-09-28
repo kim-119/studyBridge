@@ -32,6 +32,11 @@ export function variantCountMessage(check) {
   return '';
 }
 
+export function generatedCountLabel(check) {
+  if (check.requested === 0) return `생성된 유사문제 ${check.received}개`;
+  return `생성된 유사문제 ${check.received}개 (요청 ${check.requested}개)`;
+}
+
 export function canRequestMissing(check) {
   return check.status === COUNT_STATUS.SHORT && check.missing > 0;
 }
@@ -50,6 +55,10 @@ function questionFingerprint(question) {
   return String(question?.question ?? '').replace(/\s+/g, ' ').trim();
 }
 
+function sourceIdOf(question) {
+  return question?.sourceId ? `source:${question.sourceId}` : '';
+}
+
 function withPosition(question, position) {
   return { ...question, id: `sq-${position}`, number: position };
 }
@@ -58,14 +67,24 @@ export function numberVariantQuestions(questions) {
   return questions.map((question, index) => withPosition(question, index + 1));
 }
 
+function isAlreadySeen(seen, question) {
+  const sourceId = sourceIdOf(question);
+  return seen.has(questionFingerprint(question)) || (sourceId !== '' && seen.has(sourceId));
+}
+
+function remember(seen, question) {
+  seen.add(questionFingerprint(question));
+  if (sourceIdOf(question)) seen.add(sourceIdOf(question));
+}
+
 export function appendMissingQuestions(existing, incoming) {
-  const seen = new Set(existing.map(questionFingerprint));
+  const seen = new Set();
+  existing.forEach((question) => remember(seen, question));
   const fresh = [];
 
   incoming.forEach((question) => {
-    const fingerprint = questionFingerprint(question);
-    if (!fingerprint || seen.has(fingerprint)) return;
-    seen.add(fingerprint);
+    if (!questionFingerprint(question) || isAlreadySeen(seen, question)) return;
+    remember(seen, question);
     fresh.push(question);
   });
 

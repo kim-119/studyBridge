@@ -51,7 +51,7 @@ export function describeQuizGenerationSuccess({ title, questionCount }) {
 }
 
 export function groupQuizTaskKey(groupId) {
-  return `group-quiz:${groupId}`;
+  return `group:${groupId}:quiz`;
 }
 
 export function describeGenerationOutcome(response, refreshedQuizzes) {

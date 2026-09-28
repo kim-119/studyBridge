@@ -14,6 +14,7 @@ import {
   normalizeMotionStates,
   phaseStatesFor,
 } from '../../../components/studymate/pixel/modeInteractionProfiles';
+import { sanitizeMarkdownText } from '../../../utils/markdown.js';
 import { professorDisplayName, professorRoleOfSlot } from './professorActions';
 
 const IDLE_STATES = { theory: 'idle', book: 'idle', ai: 'idle' };
@@ -176,7 +177,7 @@ export function useProfessorStage(roomAgents) {
 
       setSlotState(slot, 'answering');
       if (!role) return;
-      const fullText = String(data.content || data.answer || '').trim();
+      const fullText = sanitizeMarkdownText(data.content || data.answer || '');
       setBubble(role, { text: makeBubbleText(fullText), fullText, kind: 'answer', agentName: data.agentName });
       if (turn.mode === 'basic' || turn.scope === 'single') {
         setStatusMessage(`${data.agentName || displayName(role)}님이 답변 중이에요.`);
