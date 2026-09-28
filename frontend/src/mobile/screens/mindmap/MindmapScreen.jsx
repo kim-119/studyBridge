@@ -1,149 +1,129 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search } from 'lucide-react';
-import BottomSheet from '../../components/BottomSheet';
-import ListRow from '../../components/ListRow';
-import ScreenState, { EmptyState, ErrorState } from '../../components/ScreenState';
+import { useNavigate } from 'react-router-dom';
+import Button from '../../components/Button';
+import { EmptyState, ErrorState, LoadingState } from '../../components/ScreenState';
 import MobileScreen from '../../shell/MobileScreen';
-import { materialService } from '../../../services/api';
+import { agentService } from '../../../services/api';
+import { convertChatLogsToObsidianGraph } from '../../../utils/graph/chatLogsToObsidianGraph';
 import { useAsync } from '../../data/useAsync';
-import MindmapCanvas from './MindmapCanvas';
-import { buildMindmapView, matchNodes, parseMindmapGraph } from './mindmapModel';
+import MindmapExplorer from './MindmapExplorer';
+import SemanticStatusNotice from './SemanticStatusNotice';
+import { buildMindmapView } from './mindmapModel';
+import { useSemanticRoomGraph } from './useSemanticRoomGraph';
 
-export default function MindmapScreen() {
-  const [selectedId, setSelectedId] = useState(null);
-  const [keyword, setKeyword] = useState('');
-  const [isSearchOpen, setSearchOpen] = useState(false);
-  const [focusNodeId, setFocusNodeId] = useState(null);
-  const [selectedNode, setSelectedNode] = useState(null);
+function roomTitleOf(room) {
+  return room?.roomName || room?.name || '학습메이트 방';
+}
 
-  const archive = useAsync(() => materialService.getArchiveItems(null, 'MINDMAP'), []);
+function sortRoomsByRecent(rooms) {
+  return [...rooms].sort((a, b) =>
+    String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))
+  );
+}
 
-  const mindmaps = useMemo(() => archive.data?.materials || [], [archive.data]);
+function RoomSelect({ rooms, selectedRoomId, onChange }) {
+  return (
+    <div className="mobile-field">
+      <label className="mobile-field__label" htmlFor="mindmap-room">
+        학습메이트 방
+      </label>
+      <select
+        id="mindmap-room"
+        className="mobile-field__input"
+        value={selectedRoomId ?? ''}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {rooms.map((room) => (
+          <option key={room.id} value={room.id}>
+            {roomTitleOf(room)} · 교수 {(room.agents || []).length}명
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
 
-  useEffect(() => {
-    if (!selectedId && mindmaps.length > 0) setSelectedId(mindmaps[0].materialId);
-  }, [mindmaps, selectedId]);
+function lastUserQuestionOf(logs) {
+  const lastUser = [...logs].reverse().find((log) => log && log.sender === 'USER');
+  return String(lastUser?.content || '');
+}
 
-  const detail = useAsync(
-    async () => (selectedId ? materialService.getMaterialDetail(selectedId) : null),
-    [selectedId],
-    { immediate: Boolean(selectedId) }
+function RoomGraph({ room }) {
+  const navigate = useNavigate();
+  const history = useAsync(() => agentService.getChatHistory(null, room.id), [room.id]);
+  const logs = useMemo(() => (Array.isArray(history.data) ? history.data : []), [history.data]);
+  const baseGraph = useMemo(
+    () => (history.data ? convertChatLogsToObsidianGraph(room, history.data) : null),
+    [history.data, room]
   );
 
-  const view = useMemo(() => {
-    const graph = parseMindmapGraph(detail.data);
-    return graph ? buildMindmapView(graph) : null;
-  }, [detail.data]);
+  const { graph, semanticState, semanticReason, retrySemantic } = useSemanticRoomGraph({
+    roomId: room.id,
+    question: lastUserQuestionOf(logs),
+    messages: logs,
+    agents: room.agents || [],
+    baseGraph,
+  });
+  const view = useMemo(() => (graph ? buildMindmapView(graph) : null), [graph]);
 
-  const matches = useMemo(() => matchNodes(view?.nodes || [], keyword), [view, keyword]);
-  const highlightIds = useMemo(() => new Set(matches.map((node) => node.id)), [matches]);
+  if (history.isLoading && !history.data) return <LoadingState label="채팅 로그를 그래프로 변환하는 중입니다" />;
+  if (history.isError) return <ErrorState message={history.errorMessage} onRetry={history.reload} />;
+  if (view?.error) return <ErrorState message={view.error} onRetry={history.reload} />;
+  if (!view) {
+    return (
+      <EmptyState
+        message="이 방에는 아직 그래프로 만들 채팅 로그가 없습니다. 학습메이트에서 대화를 먼저 진행해 주세요."
+        action={
+          <Button variant="secondary" onClick={() => navigate(`/studymate/${room.id}`)}>
+            학습메이트로 이동
+          </Button>
+        }
+      />
+    );
+  }
 
   return (
-    <MobileScreen
-      title="마인드맵"
-      showBackButton
-      actions={
-        <button
-          type="button"
-          className="mobile-app-bar__action"
-          aria-label="노드 검색"
-          onClick={() => setSearchOpen(true)}
-        >
-          <Search size={22} />
-        </button>
-      }
-    >
-      <ScreenState
-        query={archive}
-        loadingLabel="마인드맵을 불러오는 중입니다"
-        emptyWhen={() => mindmaps.length === 0}
-        emptyMessage="저장된 마인드맵이 없습니다. 웹에서 학습 대화를 마인드맵으로 저장하면 여기에 표시됩니다."
-      >
-        <>
-          <div className="mobile-field">
-            <label className="mobile-field__label" htmlFor="mindmap-topic">
-              학습 주제
-            </label>
-            <select
-              id="mindmap-topic"
-              className="mobile-field__input"
-              value={selectedId ?? ''}
-              onChange={(event) => {
-                setSelectedId(Number(event.target.value));
-                setKeyword('');
-                setSelectedNode(null);
-              }}
-            >
-              {mindmaps.map((material) => (
-                <option key={material.materialId} value={material.materialId}>
-                  {material.title}
-                </option>
-              ))}
-            </select>
-          </div>
+    <>
+      <SemanticStatusNotice state={semanticState} reason={semanticReason} onRetry={retrySemantic} />
+      <MindmapExplorer view={view} fitKey={`${room.id}:${semanticState}`} />
+    </>
+  );
+}
 
-          {detail.isError ? (
-            <ErrorState message={detail.errorMessage} onRetry={detail.reload} />
-          ) : view?.error ? (
-            <EmptyState message={view.error} />
-          ) : view ? (
-            <>
-              <p className="mobile-card__meta">
-                노드 {view.nodes.length} · 연결 {view.edges.length} · 깊이 {view.depth}
-                {keyword && ` · 검색 ${matches.length}건`}
-              </p>
+function RoomMindmaps() {
+  const navigate = useNavigate();
+  const rooms = useAsync(() => agentService.getAgents(), []);
+  const [selectedRoomId, setSelectedRoomId] = useState(null);
+  const sortedRooms = useMemo(() => sortRoomsByRecent(Array.isArray(rooms.data) ? rooms.data : []), [rooms.data]);
+  const selectedRoom = sortedRooms.find((room) => String(room.id) === String(selectedRoomId)) || null;
 
-              <MindmapCanvas
-                view={view}
-                highlightIds={highlightIds}
-                focusNodeId={focusNodeId}
-                onSelectNode={setSelectedNode}
-              />
-            </>
-          ) : (
-            <EmptyState message="그래프 데이터를 불러오지 못했습니다." />
-          )}
-        </>
-      </ScreenState>
+  useEffect(() => {
+    if (!selectedRoomId && sortedRooms.length > 0) setSelectedRoomId(String(sortedRooms[0].id));
+  }, [selectedRoomId, sortedRooms]);
 
-      <BottomSheet title="노드 검색" isOpen={isSearchOpen} onClose={() => setSearchOpen(false)}>
-        <input
-          className="mobile-search"
-          type="search"
-          value={keyword}
-          placeholder="개념 이름으로 검색"
-          onChange={(event) => setKeyword(event.target.value)}
-        />
+  if (rooms.isLoading && !rooms.data) return <LoadingState label="학습메이트 방을 불러오는 중입니다" />;
+  if (rooms.isError) return <ErrorState message={rooms.errorMessage} onRetry={rooms.reload} />;
+  if (sortedRooms.length === 0) {
+    return (
+      <EmptyState
+        message="아직 학습메이트 방이 없습니다. 학습메이트에서 AI 방을 만들고 대화를 시작하세요."
+        action={<Button onClick={() => navigate('/studymate')}>학습메이트에서 방 만들기</Button>}
+      />
+    );
+  }
 
-        <ul className="mobile-list">
-          {matches.slice(0, 30).map((node) => (
-            <li key={node.id}>
-              <ListRow
-                title={node.label}
-                subtitle={node.type}
-                onClick={() => {
-                  setFocusNodeId(node.id);
-                  setSelectedNode(node);
-                  setSearchOpen(false);
-                }}
-              />
-            </li>
-          ))}
-        </ul>
+  return (
+    <>
+      <RoomSelect rooms={sortedRooms} selectedRoomId={selectedRoomId} onChange={setSelectedRoomId} />
+      {selectedRoom && <RoomGraph key={selectedRoom.id} room={selectedRoom} />}
+    </>
+  );
+}
 
-        {keyword && matches.length === 0 && <EmptyState message="일치하는 노드가 없습니다." />}
-      </BottomSheet>
-
-      <BottomSheet
-        title={selectedNode?.label || '노드'}
-        isOpen={Boolean(selectedNode)}
-        onClose={() => setSelectedNode(null)}
-      >
-        <p className="mobile-card__meta">유형 {selectedNode?.type}</p>
-        <p className="mobile-paragraph">
-          {selectedNode?.detail || '이 노드에는 추가 설명이 없습니다.'}
-        </p>
-      </BottomSheet>
+export default function MindmapScreen() {
+  return (
+    <MobileScreen title="마인드맵" showBackButton>
+      <RoomMindmaps />
     </MobileScreen>
   );
 }

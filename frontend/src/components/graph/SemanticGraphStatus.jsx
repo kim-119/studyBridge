@@ -6,7 +6,7 @@ import { AlertTriangle, Loader2, Info } from 'lucide-react';
 //  · 기존 Obsidian 다크 패널 토큰(#111827/#1f2937/#cbd5e1/#FB923C/#f87171)만 사용. 신규 색상/폰트 없음.
 //  · FAILED 는 "개념 구조를 생성하지 못했습니다" 를 명시한다(예전 토큰 그래프로 되돌아가지 않음).
 // ─────────────────────────────────────────────────────────────────────────────
-const REASON_KO = {
+export const SEMANTIC_REASON_KO = {
   EMPTY_ANSWER: '아직 교수 답변이 없어 개념 구조를 만들 수 없습니다.',
   NO_ANSWERS: '아직 교수 답변이 없어 개념 구조를 만들 수 없습니다.',
   NO_VALID_CONCEPTS: 'AI 가 이 답변에서 유효한 개념을 찾지 못했습니다.',
@@ -50,7 +50,7 @@ export default function SemanticGraphStatus({ state, reason, onRetry }) {
   return (
     <div className="obsg-semantic-status" role="alert" data-semantic-status="FAILED" style={{ ...base, color: '#f87171' }}>
       <AlertTriangle size={14} color="#f87171" style={{ flex: 'none' }} />
-      <span>개념 구조를 생성하지 못했습니다. {REASON_KO[reason] || (reason ? `(${reason})` : '')}</span>
+      <span>개념 구조를 생성하지 못했습니다. {SEMANTIC_REASON_KO[reason] || (reason ? `(${reason})` : '')}</span>
       {onRetry && reason !== 'NO_ANSWERS' && reason !== 'EMPTY_ANSWER' && <button type="button" className="obsg-btn" onClick={() => onRetry(true)}>다시 시도</button>}
     </div>
   );

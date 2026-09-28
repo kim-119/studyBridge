@@ -4,18 +4,13 @@ import { useNavigate } from 'react-router-dom';
 import ListRow from '../../components/ListRow';
 import ScreenState from '../../components/ScreenState';
 import MobileScreen from '../../shell/MobileScreen';
-import { reviewNoteService } from '../../../services/api';
+import { fetchReviewNotes } from '../../data/reviewNotes';
 import { useAsync } from '../../data/useAsync';
-
-const DIFFICULTY_LABEL = {
-  easy: '쉬움',
-  medium: '보통',
-  hard: '어려움',
-};
+import { difficultyLabel } from './reviewNoteModel';
 
 export default function ReviewNotesScreen() {
   const navigate = useNavigate();
-  const notes = useAsync(() => reviewNoteService.listReviewNotes(), []);
+  const notes = useAsync(fetchReviewNotes, []);
 
   return (
     <MobileScreen title="오답노트" showBackButton>
@@ -34,7 +29,7 @@ export default function ReviewNotesScreen() {
                 subtitle={[
                   `오답 ${note.wrongCount ?? 0}`,
                   `미응답 ${note.unansweredCount ?? 0}`,
-                  DIFFICULTY_LABEL[note.difficulty] || note.difficulty,
+                  difficultyLabel(note.difficulty),
                 ]
                   .filter(Boolean)
                   .join(' · ')}

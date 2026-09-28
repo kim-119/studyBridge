@@ -398,6 +398,7 @@ def _variant_sync(body: Dict[str, Any]) -> Dict[str, Any]:
     difficulty = str(body.get("difficulty") or "normal").strip().lower()
     if difficulty not in _VALID_DIFFICULTY:
         difficulty = "normal"
+    slot_guide = _variant_slot_guide(body.get("_slot"), body.get("_total"))
 
     question = ""
     choices: List[str] = []
@@ -412,6 +413,7 @@ def _variant_sync(body: Dict[str, Any]) -> Dict[str, Any]:
                 f"## 자료: {material_title}\n## 문서 요약\n{document_context}\n"
                 f"## 기존 문제\n{original}\n## 정답\n{correct_answer}\n## 사용자 오답\n{user_wrong}\n"
                 f"## 개념\n{concepts}\n## 난이도\n{difficulty} — {_DIFFICULTY_GUIDE[difficulty]}\n\n"
+                f"{slot_guide}"
             )
             schema = (
                 '{ "question": "변형 문제", "choices": ["1","2","3","4"], "correct_answer": "정답", '
@@ -491,12 +493,59 @@ def _variant_sync(body: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_MAX_VARIANT_COUNT = 5
+
+
+def _variant_slot_guide(slot: Any, total: Any) -> str:
+    if not isinstance(slot, int) or not isinstance(total, int) or total <= 1:
+        return ""
+    return (
+        f"## 변형 번호\n{slot + 1}/{total} — 같은 요청으로 {total}개를 따로 만든다. "
+        "다른 번호와 겹치지 않도록 상황, 예시, 보기 구성을 다르게 하라.\n\n"
+    )
+
+
+def _requested_variant_count(body: Dict[str, Any]) -> int:
+    try:
+        count = int(body.get("count") or 1)
+    except (TypeError, ValueError):
+        count = 1
+    return max(1, min(_MAX_VARIANT_COUNT, count))
+
+
+async def _variant_many(body: Dict[str, Any], count: int) -> Dict[str, Any]:
+    slots = [
+        asyncio.wait_for(
+            asyncio.to_thread(_variant_sync, {**body, "_slot": slot, "_total": count}),
+            timeout=VARIANT_TIMEOUT,
+        )
+        for slot in range(count)
+    ]
+    results = await asyncio.gather(*slots, return_exceptions=True)
+    succeeded = [result for result in results if isinstance(result, dict) and result.get("questions")]
+    if not succeeded:
+        first_error = next((result for result in results if isinstance(result, BaseException)), None)
+        if isinstance(first_error, asyncio.TimeoutError):
+            raise first_error
+        raise RuntimeError(f"variant-question 전체 실패: {first_error}")
+    if len(succeeded) < count:
+        logger.warning("variant-question 요청 %d개 중 %d개만 생성", count, len(succeeded))
+    merged = dict(succeeded[0])
+    merged["questions"] = [question for result in succeeded for question in result["questions"]]
+    merged["requested_count"] = count
+    merged["generated_count"] = len(merged["questions"])
+    return merged
+
+
 @router.post("/variant-question", summary="개념 유지·난이도 조절 변형 4지선다 문제")
 async def variant_question(body: Dict[str, Any] = Body(default_factory=dict)) -> Dict[str, Any]:
-    """오답 복습용 변형 문제. choices 4개·correct_answer·explanation·difficulty_applied 보장."""
+    """오답 복습용 변형 문제. count(1~5)개의 questions, 각 choices 4개·correct_answer·explanation 보장."""
     if not isinstance(body, dict):
         body = {}
+    count = _requested_variant_count(body)
     try:
+        if count > 1:
+            return await _variant_many(body, count)
         return await asyncio.wait_for(asyncio.to_thread(_variant_sync, body), timeout=VARIANT_TIMEOUT)
     except asyncio.TimeoutError:
         try:

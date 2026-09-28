@@ -1,37 +1,93 @@
-import React, { useState } from 'react';
-import { Download, Trash2 } from 'lucide-react';
-import { useNavigate, useParams } from 'react-router-dom';
-import Button from '../../components/Button';
+import React, { useCallback } from 'react';
+import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ScreenState from '../../components/ScreenState';
-import SubTabs from '../../components/SubTabs';
 import MobileScreen from '../../shell/MobileScreen';
 import { materialService } from '../../../services/api';
-import { useAsync, useSubmit } from '../../data/useAsync';
-import { openExternalUrl } from '../../platform/externalLink';
-import { formatDate, formatFileSize } from './archiveDomain';
-import DocumentTab from './tabs/DocumentTab';
-import MemoTab from './tabs/MemoTab';
-import QuestionTab from './tabs/QuestionTab';
-import QuizTab from './tabs/QuizTab';
+import { describeApiError, useAsync, useSubmit } from '../../data/useAsync';
+import { MATERIAL_KIND, REVIEW_NOTE_CONTEXT, materialKindOf } from './archiveNavigation';
+import DocumentMaterialTabs from './DocumentMaterialTabs';
+import DocumentPreview from './DocumentPreview';
+import MaterialHeader from './MaterialHeader';
+import StudyJournalDetail from './journal/StudyJournalDetail';
+import PlannerMaterialTabs from './planner/PlannerMaterialTabs';
 import ReviewNoteLinkCard from './tabs/ReviewNoteLinkCard';
-import RoadmapTab from './tabs/RoadmapTab';
-import SummaryTab from './tabs/SummaryTab';
+import { isExtractionInProgress, useExtractionPolling } from './useExtractionPolling';
 
-const DETAIL_TABS = [
-  { key: 'document', label: '문서' },
-  { key: 'summary', label: '요약' },
-  { key: 'quiz', label: '퀴즈' },
-  { key: 'roadmap', label: '로드맵' },
-  { key: 'memo', label: '메모' },
-  { key: 'question', label: 'AI 질문' },
-];
+function detailContextFrom(searchParams) {
+  return searchParams.get('context') === REVIEW_NOTE_CONTEXT ? REVIEW_NOTE_CONTEXT : undefined;
+}
+
+function ExtractionWaiting({ pollError }) {
+  return (
+    <section className="mobile-card mobile-section">
+      <div className="mobile-state" role="status">
+        <span className="mobile-state__spinner" />
+        <p className="mobile-state__text">
+          AI가 문서를 분석하고 있습니다. 분석이 끝나면 요약 · 퀴즈 · 로드맵 · 메모 · AI 질문이 자동으로 열립니다.
+        </p>
+      </div>
+      {pollError && (
+        <p className="mobile-auth__error">
+          분석 상태를 확인하지 못했습니다. 계속 다시 확인합니다. ({describeApiError(pollError)})
+        </p>
+      )}
+    </section>
+  );
+}
+
+function MaterialBody({ material, kind, pollError, onRefreshUrl }) {
+  if (kind === MATERIAL_KIND.STUDY_JOURNAL) return <StudyJournalDetail material={material} />;
+
+  if (kind === MATERIAL_KIND.REVIEW_NOTE) {
+    return (
+      <>
+        <DocumentPreview material={material} onRefreshUrl={onRefreshUrl} />
+        <ReviewNoteLinkCard materialId={material.materialId} />
+      </>
+    );
+  }
+
+  if (kind === MATERIAL_KIND.PLANNER) {
+    return (
+      <>
+        <DocumentPreview material={material} onRefreshUrl={onRefreshUrl} />
+        <PlannerMaterialTabs material={material} />
+      </>
+    );
+  }
+
+  if (isExtractionInProgress(material)) return <ExtractionWaiting pollError={pollError} />;
+
+  return (
+    <>
+      <DocumentPreview material={material} onRefreshUrl={onRefreshUrl} />
+      <ReviewNoteLinkCard materialId={material.materialId} />
+      <DocumentMaterialTabs key={material.materialId} material={material} />
+    </>
+  );
+}
 
 export default function MaterialDetailScreen() {
   const { materialId } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState(DETAIL_TABS[0].key);
+  const context = detailContextFrom(searchParams);
 
-  const detail = useAsync(() => materialService.getMaterialDetail(materialId), [materialId]);
+  const detail = useAsync(() => materialService.getMaterialDetail(materialId, context), [materialId, context]);
+  const { setData: setMaterial } = detail;
+
+  const refreshMaterial = useCallback(async () => {
+    const fresh = await materialService.getMaterialDetail(materialId, context);
+    setMaterial(fresh);
+    return fresh;
+  }, [materialId, context, setMaterial]);
+
+  const refreshDocumentUrl = useCallback(async () => {
+    const fresh = await refreshMaterial();
+    return fresh?.s3PresignedUrl || null;
+  }, [refreshMaterial]);
+
+  const pollError = useExtractionPolling(detail.data, refreshMaterial);
 
   const removeMaterial = useSubmit(async () => {
     await materialService.deleteMaterial(materialId);
@@ -39,78 +95,32 @@ export default function MaterialDetailScreen() {
   });
 
   const material = detail.data;
+  const kind = materialKindOf(material);
 
-  const renderTab = () => {
-    switch (activeTab) {
-      case 'summary':
-        return <SummaryTab materialId={materialId} />;
-      case 'quiz':
-        return <QuizTab materialId={materialId} />;
-      case 'roadmap':
-        return <RoadmapTab materialId={materialId} />;
-      case 'memo':
-        return <MemoTab materialId={materialId} />;
-      case 'question':
-        return <QuestionTab materialId={materialId} />;
-      default:
-        return <DocumentTab material={material} />;
-    }
-  };
+  if (material && kind === MATERIAL_KIND.MINDMAP) {
+    return <Navigate to="/archive" replace />;
+  }
 
   return (
     <MobileScreen title={material?.title || '자료'} showBackButton>
       <ScreenState query={detail} loadingLabel="자료를 불러오는 중입니다">
-        <>
-          <section className="mobile-card mobile-section">
-            <p className="mobile-card__meta">
-              {[formatDate(material?.uploadedAt), formatFileSize(material?.fileSize), material?.materialType]
-                .filter(Boolean)
-                .join(' · ')}
-            </p>
-
-            {material?.keywords && (
-              <ul className="mobile-chips">
-                {material.keywords
-                  .split(',')
-                  .map((keyword) => keyword.trim())
-                  .filter(Boolean)
-                  .map((keyword) => (
-                    <li key={keyword}>#{keyword}</li>
-                  ))}
-              </ul>
-            )}
-
-            <div className="mobile-card__actions">
-              <Button
-                variant="secondary"
-                disabled={!material?.s3PresignedUrl}
-                onClick={() => openExternalUrl(material.s3PresignedUrl)}
-              >
-                <Download size={16} />
-                다운로드
-              </Button>
-
-              <Button
-                variant="ghost"
-                isLoading={removeMaterial.isSubmitting}
-                onClick={() => removeMaterial.submit().catch(() => {})}
-              >
-                <Trash2 size={16} />
-                삭제
-              </Button>
-            </div>
-
-            {removeMaterial.errorMessage && (
-              <p className="mobile-auth__error">{removeMaterial.errorMessage}</p>
-            )}
-          </section>
-
-          <ReviewNoteLinkCard materialId={materialId} />
-
-          <SubTabs tabs={DETAIL_TABS} activeKey={activeTab} onChange={setActiveTab} />
-
-          {renderTab()}
-        </>
+        {material && (
+          <>
+            <MaterialHeader
+              material={material}
+              kind={kind}
+              isDeleting={removeMaterial.isSubmitting}
+              deleteError={removeMaterial.errorMessage}
+              onDelete={() => removeMaterial.submit().catch(() => {})}
+            />
+            <MaterialBody
+              material={material}
+              kind={kind}
+              pollError={pollError}
+              onRefreshUrl={refreshDocumentUrl}
+            />
+          </>
+        )}
       </ScreenState>
     </MobileScreen>
   );

@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { BookMarked } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import ListRow from '../../../components/ListRow';
-import { reviewNoteService } from '../../../../services/api';
+import { fetchReviewNotes } from '../../../data/reviewNotes';
 import { useAsync } from '../../../data/useAsync';
 
 /**
@@ -11,7 +11,7 @@ import { useAsync } from '../../../data/useAsync';
  */
 export default function ReviewNoteLinkCard({ materialId }) {
   const navigate = useNavigate();
-  const notes = useAsync(() => reviewNoteService.listReviewNotes(), []);
+  const notes = useAsync(fetchReviewNotes, []);
 
   const linked = useMemo(() => {
     const list = Array.isArray(notes.data) ? notes.data : [];

@@ -2,7 +2,6 @@ export const ARCHIVE_TABS = [
   { key: 'LEARNING_MATERIAL', label: '학습자료' },
   { key: 'PLANNER', label: '플래너' },
   { key: 'STUDY_JOURNAL', label: '학습일지' },
-  { key: 'MINDMAP', label: '마인드맵' },
 ];
 
 export const SORT_OPTIONS = [

@@ -168,6 +168,7 @@ const normalizeChatResponse = (data) => {
 //  · refreshToken 은 URL 쿼리가 아니라 JSON body 로 보낸다(nginx access log 에 토큰이 남지 않게).
 //    (서버는 하위 호환으로 ?refreshToken= 도 계속 받는다.)
 //  · 동시 다발 갱신을 막기 위해 진행 중인 갱신 Promise 를 공유한다.
+export const AUTH_TOKENS_REFRESHED_EVENT = 'auth-tokens-refreshed';
 let refreshInFlight = null;
 export const refreshAccessToken = async () => {
   if (refreshInFlight) return refreshInFlight;
@@ -178,6 +179,7 @@ export const refreshAccessToken = async () => {
     if (!res.data || !res.data.accessToken) throw new Error('refresh response without accessToken');
     localStorage.setItem('token', res.data.accessToken);
     if (res.data.refreshToken) localStorage.setItem('refreshToken', res.data.refreshToken);
+    window.dispatchEvent(new Event(AUTH_TOKENS_REFRESHED_EVENT));
     return res.data.accessToken;
   })().finally(() => { refreshInFlight = null; });
   return refreshInFlight;

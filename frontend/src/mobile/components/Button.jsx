@@ -3,6 +3,7 @@ import React from 'react';
 const VARIANT_CLASS = {
   primary: 'mobile-button mobile-button--primary',
   secondary: 'mobile-button mobile-button--secondary',
+  action: 'mobile-button mobile-button--action',
   ghost: 'mobile-button mobile-button--ghost',
   danger: 'mobile-button mobile-button--danger',
 };

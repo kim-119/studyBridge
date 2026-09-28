@@ -1,12 +1,23 @@
 import React from 'react';
-import { BookMarked, CalendarRange, LogOut, Network, Newspaper, UserRound } from 'lucide-react';
+import {
+  BarChart3,
+  BookMarked,
+  CalendarDays,
+  CalendarRange,
+  LogOut,
+  Network,
+  Newspaper,
+  UserRound,
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import ListRow from '../components/ListRow';
 import MobileScreen from '../shell/MobileScreen';
 import { useAuth } from '../../hooks/useAuth';
 
 const MENU_ITEMS = [
+  { label: '플래너', path: '/planner', icon: <CalendarDays size={20} /> },
   { label: '오답노트', path: '/review-notes', icon: <BookMarked size={20} /> },
+  { label: '학습리포트', path: '/study-report', icon: <BarChart3 size={20} /> },
   { label: '주간일정', path: '/weekly-schedule', icon: <CalendarRange size={20} /> },
   { label: '지식공유', path: '/knowledge', icon: <Newspaper size={20} /> },
   { label: '마인드맵', path: '/mindmap', icon: <Network size={20} /> },

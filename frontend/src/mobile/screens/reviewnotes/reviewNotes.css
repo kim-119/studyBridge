@@ -1,0 +1,226 @@
+.mobile-review__counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0 0 var(--space-basic);
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.mobile-review__wrong {
+  color: #DC2626;
+  font-weight: 700;
+}
+
+.mobile-review__unanswered {
+  color: #B45309;
+  font-weight: 700;
+}
+
+.mobile-review__date {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--space-basic);
+  color: var(--color-text-main);
+  font-size: 13px;
+}
+
+.mobile-review__footnote {
+  margin: var(--space-basic) 0 0;
+}
+
+.mobile-review__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.mobile-review__badge {
+  padding: 2px 8px;
+  border: 1px solid #BBF7D0;
+  border-radius: 8px;
+  background-color: #ECFDF5;
+  color: #15803D;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mobile-review__badge--muted,
+.mobile-review__badge--idle {
+  border-color: var(--color-border);
+  background-color: var(--color-secondary);
+  color: var(--color-text-muted);
+}
+
+.mobile-review__badge--alert {
+  border-color: #FECACA;
+  background-color: #FEF2F2;
+  color: #B91C1C;
+}
+
+.mobile-review__badge--info {
+  border-color: var(--color-border);
+  background-color: var(--color-bg-card);
+  color: #2563EB;
+}
+
+.mobile-review__actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-basic);
+}
+
+.mobile-review__callout {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #BBF7D0;
+  border-radius: var(--radius-input);
+  background-color: #F0FDF4;
+  color: var(--color-text-main);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mobile-review__callout strong {
+  color: #15803D;
+  font-size: 14px;
+}
+
+.mobile-review__success {
+  margin: 0;
+  color: #15803D;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mobile-review__warning {
+  margin: 0 0 var(--space-basic);
+  color: #B45309;
+  font-size: 13px;
+}
+
+.mobile-review__hint {
+  margin-top: var(--space-md);
+}
+
+.mobile-review__settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-basic);
+  margin-bottom: var(--space-md);
+}
+
+.mobile-review__setting {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mobile-review__setting .mobile-select {
+  width: 100%;
+}
+
+.mobile-review__setting--wide {
+  grid-column: 1 / -1;
+}
+
+.mobile-review__levels {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.mobile-review__levels button {
+  min-height: 44px;
+  border: 1px solid var(--color-border-input);
+  border-radius: var(--radius-btn);
+  background-color: var(--color-bg-card);
+  color: var(--color-text-main);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-review__levels button.is-active {
+  border-color: #15803D;
+  background-color: #ECFDF5;
+  color: #15803D;
+}
+
+.mobile-review__item {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background-color: var(--color-bg-card);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mobile-review__item.is-active {
+  border-color: #15803D;
+  background-color: #ECFDF5;
+}
+
+.mobile-review__item-text {
+  display: block;
+  color: var(--color-text-main);
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mobile-review__solver .mobile-quiz__options {
+  margin-bottom: var(--space-md);
+}
+
+.mobile-review__result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mobile-review__verdict {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.mobile-review__verdict.is-right {
+  color: #15803D;
+}
+
+.mobile-review__verdict.is-wrong {
+  color: #DC2626;
+}
+
+.mobile-review__answer {
+  margin: 0 0 6px;
+  color: #15803D;
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.mobile-review__count-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-basic);
+  margin-top: var(--space-basic);
+}
+
+.mobile-review__count-notice .mobile-review__warning,
+.mobile-review__count-result {
+  margin: 0;
+}

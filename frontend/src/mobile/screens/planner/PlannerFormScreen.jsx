@@ -6,39 +6,33 @@ import TextField from '../../components/TextField';
 import MobileScreen from '../../shell/MobileScreen';
 import { plannerService } from '../../../services/api';
 import { useAsync, useSubmit } from '../../data/useAsync';
+import PlannerChoiceField from './PlannerChoiceField';
 import TimeTableGrid from './TimeTableGrid';
 import {
+  DAY_OF_WEEK_OPTIONS,
+  PLANNER_TYPE,
   PRIORITY_OPTIONS,
   STUDY_TYPE_OPTIONS,
-  formatMinutes,
-  plannedMinutes,
-  toPlannerDetail,
+  countCheckedSlots,
+  createBlankPlannerForm,
+  dayOfWeekOf,
+  parseTimeTable,
+  resolvePlannerType,
   toPlannerForm,
   toPlannerRequest,
   toggleSlot,
 } from './plannerAdapter';
-
-const EMPTY_FORM = {
-  title: '',
-  subject: '',
-  term: '',
-  studyType: STUDY_TYPE_OPTIONS[0],
-  priority: PRIORITY_OPTIONS[1],
-  goalTime: '',
-  date: '',
-  content: '',
-};
 
 export default function PlannerFormScreen({ mode }) {
   const { plannerId } = useParams();
   const navigate = useNavigate();
   const isEdit = mode === 'edit';
 
-  const [form, setForm] = useState(EMPTY_FORM);
+  const [form, setForm] = useState(createBlankPlannerForm);
   const [timeTable, setTimeTable] = useState({});
 
   const existing = useAsync(
-    async () => (isEdit ? toPlannerDetail(await plannerService.getPlanner(plannerId)) : null),
+    async () => (isEdit ? plannerService.getPlanner(plannerId) : null),
     [plannerId, isEdit],
     { immediate: isEdit }
   );
@@ -46,14 +40,24 @@ export default function PlannerFormScreen({ mode }) {
   useEffect(() => {
     if (!existing.data) return;
     setForm(toPlannerForm(existing.data));
-    setTimeTable(existing.data.timeTable || {});
+    setTimeTable(parseTimeTable(existing.data.timeTableJson));
   }, [existing.data]);
 
-  const updateField = (field) => (event) =>
-    setForm((previous) => ({ ...previous, [field]: event.target.value }));
+  const setField = (field, value) => setForm((previous) => ({ ...previous, [field]: value }));
+  const updateField = (field) => (event) => setField(field, event.target.value);
+
+  const updatePlannerDate = (event) => {
+    const plannerDate = event.target.value;
+    setForm((previous) => ({
+      ...previous,
+      plannerDate,
+      dayOfWeek: dayOfWeekOf(plannerDate) || previous.dayOfWeek,
+    }));
+  };
 
   const savePlanner = useSubmit(async () => {
-    const payload = toPlannerRequest(form, timeTable);
+    const plannerType = isEdit ? resolvePlannerType(existing.data) : PLANNER_TYPE.USER;
+    const payload = toPlannerRequest(form, timeTable, plannerType);
 
     if (isEdit) {
       await plannerService.updatePlanner(plannerId, payload);
@@ -72,70 +76,112 @@ export default function PlannerFormScreen({ mode }) {
 
   const body = (
     <form onSubmit={handleSubmit}>
-      <TextField label="제목" value={form.title} onChange={updateField('title')} />
-      <TextField label="과목명" value={form.subject} onChange={updateField('subject')} />
-      <TextField label="학기/주차" value={form.term} hint="예: 2학기 3주차" onChange={updateField('term')} />
+      <TextField label="플래너 제목" value={form.title} onChange={updateField('title')} />
 
-      <div className="mobile-field">
-        <label className="mobile-field__label" htmlFor="planner-study-type">
-          학습 유형
-        </label>
-        <select
-          id="planner-study-type"
-          className="mobile-field__input"
-          value={form.studyType}
-          onChange={updateField('studyType')}
-        >
-          {STUDY_TYPE_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
+      <div className="mobile-planner-form__row">
+        <TextField label="날짜" type="date" value={form.plannerDate} onChange={updatePlannerDate} />
+
+        <div className="mobile-field">
+          <label className="mobile-field__label" htmlFor="planner-day-of-week">
+            요일
+          </label>
+          <select
+            id="planner-day-of-week"
+            className="mobile-field__input"
+            value={form.dayOfWeek}
+            onChange={updateField('dayOfWeek')}
+          >
+            <option value="">-</option>
+            {DAY_OF_WEEK_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
-      <div className="mobile-field">
-        <label className="mobile-field__label" htmlFor="planner-priority">
-          우선순위
-        </label>
-        <select
-          id="planner-priority"
-          className="mobile-field__input"
-          value={form.priority}
-          onChange={updateField('priority')}
-        >
-          {PRIORITY_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
-      </div>
+      <TextField
+        label="학기 / 주차"
+        placeholder="예: 2026-1학기 · 3주차"
+        value={form.term}
+        onChange={updateField('term')}
+      />
+      <TextField
+        label="과목명"
+        placeholder="예: 모바일 앱 개발"
+        value={form.subject}
+        onChange={updateField('subject')}
+      />
 
-      <TextField label="목표 학습 시간" value={form.goalTime} hint="예: 3시간" onChange={updateField('goalTime')} />
-      <TextField label="마감일" type="date" value={form.date} onChange={updateField('date')} />
+      <PlannerChoiceField
+        label="학습 유형"
+        options={STUDY_TYPE_OPTIONS}
+        value={form.studyType}
+        onChange={(value) => setField('studyType', value)}
+      />
+      <PlannerChoiceField
+        label="우선순위"
+        options={PRIORITY_OPTIONS}
+        value={form.priority}
+        onChange={(value) => setField('priority', value)}
+      />
+
+      <TextField
+        label="목표 학습 시간"
+        placeholder="예: 2시간"
+        value={form.goalTime}
+        onChange={updateField('goalTime')}
+      />
+      <TextField
+        label="실제 학습 시간"
+        placeholder="예: 1시간 30분"
+        value={form.netStudyTime}
+        onChange={updateField('netStudyTime')}
+      />
+      <TextField
+        label="마감일 / 시험일"
+        placeholder="예: 2026-06-20"
+        value={form.dDay}
+        onChange={updateField('dDay')}
+      />
+
+      <TextField
+        as="textarea"
+        label="학습 목표"
+        placeholder="예: Retrofit2 개념 정리 및 실습 코드 완성"
+        value={form.content}
+        onChange={updateField('content')}
+      />
+      <TextField
+        as="textarea"
+        label="세부 할 일"
+        placeholder="예: 강의자료 1~5p 복습, 실습 코드 실행, 오류 메모"
+        value={form.tmi}
+        onChange={updateField('tmi')}
+      />
+
+      <TextField
+        label="기상 시간 (선택)"
+        placeholder="예: 07:00"
+        value={form.wakeUpTime}
+        onChange={updateField('wakeUpTime')}
+      />
 
       <section className="mobile-section">
         <h3 className="mobile-section__title">
-          학습 시간표 · {formatMinutes(plannedMinutes(timeTable))}
+          시간 체크표 (10분 단위) · 체크 {countCheckedSlots(timeTable)}칸
         </h3>
-        <p className="mobile-field__hint">10분 단위로 공부할 시간을 눌러 표시하세요.</p>
         <TimeTableGrid
           timeTable={timeTable}
           onToggle={(hour, slot) => setTimeTable((previous) => toggleSlot(previous, hour, slot))}
         />
       </section>
 
-      <TextField
-        as="textarea"
-        label="상세 학습 목표"
-        value={form.content}
-        error={savePlanner.errorMessage}
-        onChange={updateField('content')}
-      />
+      {savePlanner.errorMessage && <p className="mobile-auth__error">{savePlanner.errorMessage}</p>}
 
       <Button type="submit" fullWidth isLoading={savePlanner.isSubmitting} disabled={!form.title.trim()}>
-        {isEdit ? '플래너 수정' : '플래너 만들기'}
+        {isEdit ? '플래너 수정' : '플래너 저장'}
       </Button>
     </form>
   );

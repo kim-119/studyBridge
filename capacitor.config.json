@@ -9,6 +9,10 @@
     "SplashScreen": {
       "launchAutoHide": false,
       "backgroundColor": "#FFFFFF"
+    },
+    "Keyboard": {
+      "resize": "native",
+      "resizeOnFullScreen": false
     }
   }
 }

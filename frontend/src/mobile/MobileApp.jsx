@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import BottomNav from './shell/BottomNav';
+import { HOME_PATH } from './shell/navigationItems';
 import MobileBoot from './MobileBoot';
 import RequireAuth from './auth/RequireAuth';
 import { useSessionResume } from './auth/useSessionResume';
@@ -28,10 +29,11 @@ import MyPageScreen from './screens/mypage/MyPageScreen';
 import ReviewNoteDetailScreen from './screens/reviewnotes/ReviewNoteDetailScreen';
 import ReviewNoteRetryScreen from './screens/reviewnotes/ReviewNoteRetryScreen';
 import ReviewNotesScreen from './screens/reviewnotes/ReviewNotesScreen';
+import StudyReportScreen from './screens/report/StudyReportScreen';
 import WeeklyScheduleScreen from './screens/schedule/WeeklyScheduleScreen';
+import { dismissTopLayer } from './platform/backDismissStack';
 import { applyNativeChrome, registerHardwareBackButton } from './platform/nativeShell';
 
-const HOME_PATH = '/';
 const AUTH_PATHS = ['/login', '/register', '/forgot-password'];
 
 function useHardwareBackNavigation() {
@@ -40,6 +42,8 @@ function useHardwareBackNavigation() {
 
   useEffect(() => {
     return registerHardwareBackButton(({ canGoBack }) => {
+      if (dismissTopLayer()) return true;
+
       if (AUTH_PATHS.includes(pathname) && pathname !== '/login') {
         navigate('/login');
         return true;
@@ -60,7 +64,19 @@ function useHardwareBackNavigation() {
   }, [navigate, pathname]);
 }
 
+const IMMERSIVE_ROUTE_PATTERNS = [/^\/studymate\/[^/]+$/, /^\/groupstudy\/[^/]+\/video$/];
+
+function isImmersiveRoute(pathname) {
+  return IMMERSIVE_ROUTE_PATTERNS.some((pattern) => pattern.test(pathname));
+}
+
 function ShellLayout({ children }) {
+  const { pathname } = useLocation();
+
+  if (isImmersiveRoute(pathname)) {
+    return <div className="mobile-root mobile-root--immersive">{children}</div>;
+  }
+
   return (
     <div className="mobile-root">
       {children}
@@ -228,6 +244,14 @@ export default function MobileApp() {
         element={
           <RequireAuth>
             <WeeklyScheduleScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/study-report"
+        element={
+          <RequireAuth>
+            <StudyReportScreen />
           </RequireAuth>
         }
       />

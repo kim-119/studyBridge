@@ -6,6 +6,7 @@ import MobileScreen from '../../shell/MobileScreen';
 import { reviewNoteService } from '../../../services/api';
 import { useAsync, useSubmit } from '../../data/useAsync';
 import { toQuizQuestions } from '../archive/quizModel';
+import { buildRetrySubmission } from './reviewNoteModel';
 
 /**
  * 다시 풀기는 문제당 1회다. 서버가 이미 기록한 결과(retryResults)는 잠그고,
@@ -34,17 +35,7 @@ export default function ReviewNoteRetryScreen() {
   ).length;
 
   const submitResults = useSubmit(async () => {
-    const results = questions
-      .map((question, index) => {
-        if (selections[index] == null || lockedIndexes.has(index)) return null;
-
-        return {
-          index: index + 1,
-          userAnswer: question.options[selections[index]] ?? '',
-          correct: selections[index] === question.answerIndex,
-        };
-      })
-      .filter(Boolean);
+    const results = buildRetrySubmission(questions, selections, lockedIndexes);
 
     if (results.length === 0) return;
 

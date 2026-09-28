@@ -52,7 +52,7 @@ export default function KnowledgeDetailScreen() {
             <p className="mobile-paragraph">{data?.content}</p>
 
             {data?.pdfPresignedUrl && (
-              <Button variant="secondary" onClick={() => openExternalUrl(data.pdfPresignedUrl)}>
+              <Button variant="action" onClick={() => openExternalUrl(data.pdfPresignedUrl)}>
                 <FileText size={16} />
                 첨부 자료 열기
               </Button>

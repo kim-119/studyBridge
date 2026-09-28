@@ -22,6 +22,7 @@
     "framer-motion": "^12.40.0",
     "lucide-react": "^1.8.0",
     "openvidu-browser": "2.30.0",
+    "pdfjs-dist": "^4.10.38",
     "react": "^18.2.0",
     "react-chartjs-2": "^5.2.0",
     "react-dom": "^18.2.0",

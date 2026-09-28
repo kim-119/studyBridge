@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -37,10 +40,35 @@ function useMobileEntry() {
   };
 }
 
+const PDFJS_ASSET_DIRECTORIES = ['cmaps', 'standard_fonts'];
+
+function emitPdfjsAssets() {
+  const require = createRequire(import.meta.url);
+  const pdfjsRoot = dirname(require.resolve('pdfjs-dist/package.json'));
+
+  return {
+    name: 'studybridge-pdfjs-assets',
+    apply: 'build',
+    generateBundle() {
+      PDFJS_ASSET_DIRECTORIES.forEach((directory) => {
+        const sourceDirectory = join(pdfjsRoot, directory);
+
+        readdirSync(sourceDirectory).forEach((fileName) => {
+          this.emitFile({
+            type: 'asset',
+            fileName: `pdfjs/${directory}/${fileName}`,
+            source: readFileSync(join(sourceDirectory, fileName)),
+          });
+        });
+      });
+    },
+  };
+}
+
 const apiBaseUrl = resolveApiBaseUrl();
 
 export default defineConfig({
-  plugins: [react(), useMobileEntry()],
+  plugins: [react(), useMobileEntry(), emitPdfjsAssets()],
   base: './',
   define: {
     global: 'window',

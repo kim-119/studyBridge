@@ -1,17 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pause, Play } from 'lucide-react';
 import Button from '../../components/Button';
 import { timerService } from '../../../services/api';
 import { useAuth } from '../../../hooks/useAuth';
-import { useAsync, useSubmit } from '../../data/useAsync';
+import { describeApiError, useAsync, useSubmit } from '../../data/useAsync';
+import { toSeoulLocalDateTime } from '../report/reportStats';
+import { formatElapsed } from './groupStudyModel';
 
-function formatDuration(seconds) {
-  const safe = Math.max(0, Math.floor(seconds));
-  const hours = String(Math.floor(safe / 3600)).padStart(2, '0');
-  const minutes = String(Math.floor((safe % 3600) / 60)).padStart(2, '0');
-  const rest = String(safe % 60).padStart(2, '0');
-  return `${hours}:${minutes}:${rest}`;
-}
+const TICK_MS = 1000;
 
 function startedAtOf(session) {
   const raw = session?.startTime || session?.startedAt;
@@ -20,11 +16,29 @@ function startedAtOf(session) {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
+function useElapsedSince(startedAt) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!startedAt) {
+      setElapsed(0);
+      return undefined;
+    }
+
+    const tick = () => setElapsed((Date.now() - startedAt) / 1000);
+    tick();
+    const timer = setInterval(tick, TICK_MS);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+
+  return elapsed;
+}
+
 export default function StudyTimerCard({ groupId }) {
   const { userId } = useAuth();
   const [startedAt, setStartedAt] = useState(null);
-  const [elapsed, setElapsed] = useState(0);
-  const tickRef = useRef(null);
+  const [syncErrorMessage, setSyncErrorMessage] = useState(null);
+  const elapsed = useElapsedSince(startedAt);
 
   const current = useAsync(() => timerService.getCurrentSession(userId), [userId]);
 
@@ -33,42 +47,38 @@ export default function StudyTimerCard({ groupId }) {
     if (resumed) setStartedAt(resumed);
   }, [current.data]);
 
-  useEffect(() => {
-    if (!startedAt) {
-      clearInterval(tickRef.current);
-      setElapsed(0);
-      return undefined;
+  const syncWithGroup = async () => {
+    setSyncErrorMessage(null);
+    try {
+      await timerService.syncTimer(groupId);
+    } catch (error) {
+      setSyncErrorMessage(`그룹 타이머 동기화에 실패했습니다. ${describeApiError(error)}`);
     }
-
-    const tick = () => setElapsed((Date.now() - startedAt) / 1000);
-    tick();
-    tickRef.current = setInterval(tick, 1000);
-
-    return () => clearInterval(tickRef.current);
-  }, [startedAt]);
+  };
 
   const startTimer = useSubmit(async () => {
     const now = new Date();
-    await timerService.startTimer(userId, now.toISOString());
-    await timerService.syncTimer(groupId).catch(() => {});
+    await timerService.startTimer(userId, toSeoulLocalDateTime(now));
     setStartedAt(now.getTime());
+    await syncWithGroup();
   });
 
   const stopTimer = useSubmit(async () => {
     const now = new Date();
     const durationSeconds = startedAt ? Math.round((now.getTime() - startedAt) / 1000) : 0;
-    await timerService.endTimer(userId, now.toISOString(), durationSeconds);
+    await timerService.endTimer(userId, toSeoulLocalDateTime(now), durationSeconds);
     setStartedAt(null);
     await current.reload();
   });
 
   const isRunning = Boolean(startedAt);
   const action = isRunning ? stopTimer : startTimer;
+  const errorMessage = action.errorMessage || current.errorMessage || syncErrorMessage;
 
   return (
     <section className="mobile-card mobile-section">
       <p className="mobile-card__meta">스터디 진행 시간</p>
-      <p className="mobile-stat">{formatDuration(elapsed)}</p>
+      <p className="mobile-stat">{formatElapsed(elapsed)}</p>
 
       <Button
         fullWidth
@@ -80,7 +90,7 @@ export default function StudyTimerCard({ groupId }) {
         {isRunning ? '타이머 정지' : '타이머 시작'}
       </Button>
 
-      {action.errorMessage && <p className="mobile-auth__error">{action.errorMessage}</p>}
+      {errorMessage && <p className="mobile-auth__error">{errorMessage}</p>}
     </section>
   );
 }

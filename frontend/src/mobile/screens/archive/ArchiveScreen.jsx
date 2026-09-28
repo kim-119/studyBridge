@@ -5,7 +5,7 @@ import {
   Folder,
   FolderInput,
   FolderPlus,
-  Home,
+  FolderRoot,
   MoreVertical,
   PencilLine,
   Trash2,
@@ -21,6 +21,7 @@ import SubTabs from '../../components/SubTabs';
 import TextField from '../../components/TextField';
 import MobileScreen from '../../shell/MobileScreen';
 import { folderService, materialService } from '../../../services/api';
+import { fetchReviewNotes } from '../../data/reviewNotes';
 import { useAsync, useSubmit } from '../../data/useAsync';
 import FolderPicker from './FolderPicker';
 import {
@@ -32,6 +33,14 @@ import {
   matchesKeyword,
   sortItems,
 } from './archiveDomain';
+import {
+  MATERIAL_KIND,
+  findReviewNoteForMaterial,
+  materialDetailPath,
+  materialKindOf,
+  reviewNoteMaterialPath,
+  reviewNotePath,
+} from './archiveNavigation';
 
 const SHEET = {
   ACTIONS: 'actions',
@@ -140,6 +149,22 @@ export default function ArchiveScreen() {
     await archive.reload();
   });
 
+  const openReviewNoteMaterial = useSubmit(async (material) => {
+    const note = findReviewNoteForMaterial(await fetchReviewNotes(), material.materialId);
+    navigate(note ? reviewNotePath(note.id) : reviewNoteMaterialPath(material.materialId));
+  });
+
+  const openMaterial = (material) => {
+    const kind = materialKindOf(material);
+
+    if (kind === MATERIAL_KIND.REVIEW_NOTE) {
+      openReviewNoteMaterial.submit(material).catch(() => {});
+      return;
+    }
+
+    navigate(materialDetailPath(material.materialId));
+  };
+
   const handleFileSelected = (event) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -167,16 +192,19 @@ export default function ArchiveScreen() {
     moveFolder.errorMessage ||
     deleteFolder.errorMessage ||
     moveMaterial.errorMessage ||
-    deleteMaterial.errorMessage;
+    deleteMaterial.errorMessage ||
+    openReviewNoteMaterial.errorMessage;
 
   return (
     <MobileScreen title="자료보관함">
       <SubTabs tabs={ARCHIVE_TABS} activeKey={domain} onChange={changeDomain} />
 
       <nav className="mobile-breadcrumb">
-        <button type="button" onClick={() => setFolderId(null)}>
-          <Home size={14} />홈
-        </button>
+        {breadcrumb.length > 0 && (
+          <button type="button" aria-label="최상위 폴더로 이동" onClick={() => setFolderId(null)}>
+            <FolderRoot size={16} />
+          </button>
+        )}
         {breadcrumb.map((crumb) => (
           <span key={crumb.folderId ?? crumb.id}>
             <ChevronRight size={14} />
@@ -248,7 +276,7 @@ export default function ArchiveScreen() {
                   subtitle={[formatDate(material.uploadedAt), formatFileSize(material.fileSize)]
                     .filter(Boolean)
                     .join(' · ')}
-                  onClick={() => navigate(`/archive/${material.materialId}`)}
+                  onClick={() => openMaterial(material)}
                   trailing={
                     <button
                       type="button"

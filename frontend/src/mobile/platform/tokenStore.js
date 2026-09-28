@@ -1,32 +1,79 @@
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Preferences } from '@capacitor/preferences';
+import {
+  LEGACY_PLAINTEXT_TOKEN_KEYS,
+  PROFILE_KEYS,
+  planSessionRestore,
+  stripTokensFromProfile,
+} from '../auth/sessionRecovery';
 
-const MIRRORED_KEYS = ['token', 'refreshToken', 'user', 'userId', 'userEmail'];
+const SecureSession = registerPlugin('StudyBridgeSecureSession');
+
+function readLocalProfile() {
+  return Object.fromEntries(PROFILE_KEYS.map((key) => [key, localStorage.getItem(key)]));
+}
+
+async function readDeviceProfile() {
+  const entries = await Promise.all(
+    PROFILE_KEYS.map(async (key) => [key, (await Preferences.get({ key })).value])
+  );
+  return Object.fromEntries(entries);
+}
+
+async function readVaultRefreshToken() {
+  const { refreshToken } = await SecureSession.readRefreshToken();
+  return refreshToken || null;
+}
+
+async function removeLegacyPlaintextTokens() {
+  await Promise.all(LEGACY_PLAINTEXT_TOKEN_KEYS.map((key) => Preferences.remove({ key })));
+}
 
 export async function restoreSessionFromDevice() {
-  const entries = await Promise.all(
-    MIRRORED_KEYS.map(async (key) => [key, (await Preferences.get({ key })).value])
-  );
+  if (!Capacitor.isNativePlatform()) return;
 
-  entries.forEach(([key, value]) => {
-    if (value === null) {
-      localStorage.removeItem(key);
-    } else {
-      localStorage.setItem(key, value);
-    }
+  await removeLegacyPlaintextTokens();
+
+  const plan = planSessionRestore({
+    localRefreshToken: localStorage.getItem('refreshToken'),
+    vaultRefreshToken: await readVaultRefreshToken(),
+    localProfile: readLocalProfile(),
+    deviceProfile: await readDeviceProfile(),
+  });
+
+  if (plan.refreshTokenToRestore) {
+    localStorage.setItem('refreshToken', plan.refreshTokenToRestore);
+  }
+
+  Object.entries(plan.profileToRestore).forEach(([key, value]) => {
+    localStorage.setItem(key, value);
   });
 }
 
 export async function persistSessionToDevice() {
+  if (!Capacitor.isNativePlatform()) return;
+
+  const refreshToken = localStorage.getItem('refreshToken');
+
+  if (refreshToken) {
+    await SecureSession.writeRefreshToken({ refreshToken });
+  } else {
+    await SecureSession.clear();
+  }
+
   await Promise.all(
-    MIRRORED_KEYS.map((key) => {
-      const value = localStorage.getItem(key);
-      return value === null
-        ? Preferences.remove({ key })
-        : Preferences.set({ key, value });
+    PROFILE_KEYS.map((key) => {
+      const value = stripTokensFromProfile(key, localStorage.getItem(key));
+      return value === null ? Preferences.remove({ key }) : Preferences.set({ key, value });
     })
   );
 }
 
 export async function clearSessionOnDevice() {
-  await Promise.all(MIRRORED_KEYS.map((key) => Preferences.remove({ key })));
+  if (!Capacitor.isNativePlatform()) return;
+
+  await SecureSession.clear();
+  await Promise.all(
+    [...PROFILE_KEYS, ...LEGACY_PLAINTEXT_TOKEN_KEYS].map((key) => Preferences.remove({ key }))
+  );
 }

@@ -31,11 +31,6 @@ function optionLabel(option) {
   return option?.text ?? option?.label ?? String(option);
 }
 
-/**
- * 서버(ai07/material_legacy_routes)는 정답을 0-based 인덱스로 내려준다.
- * answerIndex · answer(number) · answer(문자열이면 options 에서 위치 탐색) 순으로 해석해
- * 데스크톱 parseQuizQuestions 와 같은 0-based 계약으로 정규화한다.
- */
 function answerIndexOf(question, options) {
   const numericAnswer = [
     question.answerIndex,
@@ -89,4 +84,54 @@ export function toRetryResults(questions, selections) {
     answerIndex: question.answerIndex,
     correct: selections[index] === question.answerIndex,
   }));
+}
+
+export const QUESTION_OUTCOME = {
+  CORRECT: 'correct',
+  WRONG: 'wrong',
+  UNANSWERED: 'unanswered',
+};
+
+export function questionOutcome(question, selectedIndex) {
+  if (selectedIndex == null) return QUESTION_OUTCOME.UNANSWERED;
+  if (selectedIndex === question.answerIndex) return QUESTION_OUTCOME.CORRECT;
+  return QUESTION_OUTCOME.WRONG;
+}
+
+export function summarizeSubmission(questions, selections) {
+  const outcomes = questions.map((question, index) => questionOutcome(question, selections[index]));
+  const countOf = (outcome) => outcomes.filter((value) => value === outcome).length;
+
+  return {
+    total: questions.length,
+    correct: countOf(QUESTION_OUTCOME.CORRECT),
+    wrong: countOf(QUESTION_OUTCOME.WRONG),
+    unanswered: countOf(QUESTION_OUTCOME.UNANSWERED),
+  };
+}
+
+export function needsReviewNote(submission) {
+  return submission.wrong + submission.unanswered > 0;
+}
+
+export function toReviewNoteAnswers(selections) {
+  return Object.fromEntries(
+    Object.entries(selections)
+      .filter(([, optionIndex]) => Number.isInteger(optionIndex))
+      .map(([questionIndex, optionIndex]) => [String(questionIndex), optionIndex])
+  );
+}
+
+function createdTime(quiz) {
+  const time = quiz?.createdAt ? new Date(quiz.createdAt).getTime() : 0;
+  return Number.isNaN(time) ? 0 : time;
+}
+
+export function newestQuizzesFirst(quizzes) {
+  const list = Array.isArray(quizzes) ? [...quizzes] : [];
+  return list.sort((left, right) => {
+    const byTime = createdTime(right) - createdTime(left);
+    if (byTime !== 0) return byTime;
+    return Number(right?.quizId ?? 0) - Number(left?.quizId ?? 0);
+  });
 }

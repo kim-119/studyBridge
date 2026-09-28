@@ -1,185 +1,164 @@
 import React, { useState } from 'react';
-import { Download, FileText, LogOut, UserRound, Video } from 'lucide-react';
+import { DoorOpen, LogOut } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import Button from '../../components/Button';
-import ListRow from '../../components/ListRow';
 import ScreenState from '../../components/ScreenState';
-import SubTabs from '../../components/SubTabs';
+import TextField from '../../components/TextField';
 import MobileScreen from '../../shell/MobileScreen';
 import { groupService } from '../../../services/api';
+import { useAuth } from '../../../hooks/useAuth';
 import { useAsync, useSubmit } from '../../data/useAsync';
-import { extractDownloadUrl } from '../../platform/downloadUrl';
-import { openExternalUrl } from '../../platform/externalLink';
-import GroupChatTab from './GroupChatTab';
-import GroupQuizTab from './GroupQuizTab';
+import ConfirmAction from './ConfirmAction';
+import GroupInfoCard from './GroupInfoCard';
+import LeaderConsole from './LeaderConsole';
 import StudyTimerCard from './StudyTimerCard';
+import { DEFAULT_COVER_IMAGE_URL, MEMBERSHIP, resolveMembership } from './groupStudyModel';
 
-const DETAIL_TABS = [
-  { key: 'overview', label: '소개' },
-  { key: 'chat', label: '채팅' },
-  { key: 'members', label: '참여자' },
-  { key: 'materials', label: '학습자료' },
-  { key: 'quiz', label: '퀴즈' },
-];
+const PRIVATE_APPLY_DEFAULT_MESSAGE = '안녕하세요! 가입 신청합니다.';
+const PUBLIC_JOIN_MESSAGE = '공개 스터디 바로 참가';
 
-function MembersTab({ groupId }) {
-  const members = useAsync(() => groupService.getMembers(groupId), [groupId]);
+function serverMessageOf(action) {
+  return action.error?.response?.data?.message || action.errorMessage;
+}
+
+function GuestActions({ group, onJoined }) {
+  const [introduction, setIntroduction] = useState('');
+  const [hasApplied, setApplied] = useState(false);
+  const isFull = Number(group.currentCount) >= Number(group.capacity);
+
+  const apply = useSubmit(async () => {
+    if (group.isPublic) {
+      await groupService.applyGroup(group.id, { introduction: PUBLIC_JOIN_MESSAGE });
+      await onJoined();
+      return;
+    }
+
+    await groupService.applyGroup(group.id, {
+      introduction: introduction.trim() || PRIVATE_APPLY_DEFAULT_MESSAGE,
+    });
+    setApplied(true);
+  });
+
+  if (hasApplied) {
+    return (
+      <p className="mobile-notice">신청 완료! 방장의 승인을 기다려주세요. 승인되면 스터디룸에 입장할 수 있습니다.</p>
+    );
+  }
+
+  if (isFull) {
+    return (
+      <Button fullWidth disabled>
+        정원이 마감되었습니다
+      </Button>
+    );
+  }
 
   return (
-    <ScreenState
-      query={members}
-      loadingLabel="참여자를 불러오는 중입니다"
-      emptyWhen={(value) => !value || value.length === 0}
-      emptyMessage="아직 참여자가 없습니다."
-    >
-      <ul className="mobile-list">
-        {(members.data || []).map((member) => (
-          <li key={member.userId}>
-            <ListRow
-              icon={<UserRound size={20} />}
-              title={member.displayName}
-              subtitle={member.major}
-              meta={member.role}
-            />
-          </li>
-        ))}
-      </ul>
-    </ScreenState>
+    <section className="mobile-section">
+      {!group.isPublic && (
+        <TextField
+          as="textarea"
+          label="방장에게 보낼 참가 신청 메시지 (선택)"
+          value={introduction}
+          placeholder="자기소개나 각오 등 방장에게 어필할 메시지를 남겨보세요!"
+          onChange={(event) => setIntroduction(event.target.value)}
+        />
+      )}
+      <Button fullWidth isLoading={apply.isSubmitting} onClick={() => apply.submit().catch(() => {})}>
+        {group.isPublic ? '바로 참여하기' : '참가 신청'}
+      </Button>
+      {apply.error && <p className="mobile-auth__error">{serverMessageOf(apply)}</p>}
+    </section>
   );
 }
 
-function MaterialsTab({ groupId }) {
-  const materials = useAsync(() => groupService.getGroupMaterials(groupId), [groupId]);
-
-  const download = useSubmit(async (materialId) => {
-    const response = await groupService.getGroupMaterialDownloadUrl(materialId);
-    await openExternalUrl(extractDownloadUrl(response));
+function MemberActions({ groupId, membership, onEnter, onLeft }) {
+  const leave = useSubmit(async () => {
+    await groupService.leaveGroup(groupId);
+    onLeft();
   });
 
   return (
-    <ScreenState
-      query={materials}
-      loadingLabel="학습자료를 불러오는 중입니다"
-      emptyWhen={(value) => !value || value.length === 0}
-      emptyMessage="공유된 학습자료가 없습니다."
-    >
-      <>
-        <ul className="mobile-list">
-          {(materials.data || []).map((material) => (
-            <li key={material.id ?? material.materialId}>
-              <ListRow
-                icon={<FileText size={20} />}
-                title={material.title}
-                subtitle={material.originalFileName}
-                onClick={() => download.submit(material.id ?? material.materialId).catch(() => {})}
-                trailing={<Download size={18} />}
-              />
-            </li>
-          ))}
-        </ul>
+    <section className="mobile-section">
+      <Button fullWidth onClick={onEnter}>
+        <DoorOpen size={18} />
+        스터디룸 입장
+      </Button>
 
-        {download.errorMessage && <p className="mobile-auth__error">{download.errorMessage}</p>}
-      </>
-    </ScreenState>
-  );
-}
-
-function OverviewTab({ group, groupId, onJoin, joinAction, onLeave, leaveAction }) {
-  return (
-    <>
-      <section className="mobile-card mobile-section">
-        <p className="mobile-card__meta">
-          {[group?.leaderName, `${group?.currentCount ?? 0}/${group?.capacity ?? 0}명`, group?.status]
-            .filter(Boolean)
-            .join(' · ')}
-        </p>
-
-        {group?.hashtags && (
-          <ul className="mobile-chips">
-            {group.hashtags
-              .split(',')
-              .map((tag) => tag.trim())
-              .filter(Boolean)
-              .map((tag) => (
-                <li key={tag}>#{tag}</li>
-              ))}
-          </ul>
-        )}
-
-        <p className="mobile-paragraph">{group?.description || '소개가 없습니다.'}</p>
-      </section>
-
-      <StudyTimerCard groupId={groupId} />
-
-      <div className="mobile-actions">
-        <Button isLoading={joinAction.isSubmitting} onClick={onJoin}>
-          참여 신청
-        </Button>
-
-        <Button variant="ghost" isLoading={leaveAction.isSubmitting} onClick={onLeave}>
-          <LogOut size={16} />
-          스터디 나가기
-        </Button>
-      </div>
-
-      {(joinAction.errorMessage || leaveAction.errorMessage) && (
-        <p className="mobile-auth__error">{joinAction.errorMessage || leaveAction.errorMessage}</p>
+      {membership === MEMBERSHIP.MEMBER && (
+        <div className="mobile-group-detail__leave">
+          <ConfirmAction
+            label={
+              <>
+                <LogOut size={16} />
+                스터디 나가기
+              </>
+            }
+            confirmMessage="이 스터디에서 탈퇴하시겠습니까? 다시 참여하려면 새로 신청해야 합니다."
+            confirmLabel="나가기"
+            isLoading={leave.isSubmitting}
+            onConfirm={() => leave.submit().catch(() => {})}
+          />
+          {leave.error && <p className="mobile-auth__error">{serverMessageOf(leave)}</p>}
+        </div>
       )}
-    </>
+    </section>
   );
 }
 
 export default function GroupDetailScreen() {
   const { groupId } = useParams();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState(DETAIL_TABS[0].key);
+  const { userId } = useAuth();
 
   const group = useAsync(() => groupService.getGroupDetail(groupId), [groupId]);
+  const members = useAsync(() => groupService.getMembers(groupId), [groupId]);
+  const membership = resolveMembership(group.data, members.data, userId);
+  const isJoined = membership !== MEMBERSHIP.GUEST;
 
-  const applyToGroup = useSubmit(async () => {
-    await groupService.applyGroup(groupId, { message: '모바일에서 참여를 신청합니다.' });
-    await group.reload();
-  });
+  const reloadGroup = async () => {
+    await Promise.all([group.reload(), members.reload()]);
+  };
 
-  const leaveGroup = useSubmit(async () => {
-    await groupService.leaveGroup(groupId);
-    navigate('/groupstudy', { replace: true });
-  });
+  const backToList = () => navigate('/groupstudy', { replace: true });
 
   return (
-    <MobileScreen
-      title={group.data?.title || '그룹스터디'}
-      showBackButton
-      actions={
-        <button
-          type="button"
-          className="mobile-app-bar__action"
-          aria-label="화상 스터디 입장"
-          onClick={() => navigate(`/groupstudy/${groupId}/video`)}
-        >
-          <Video size={22} />
-        </button>
-      }
-    >
+    <MobileScreen title={group.data?.title || '그룹스터디'} showBackButton>
       <ScreenState query={group} loadingLabel="스터디 정보를 불러오는 중입니다">
-        <>
-          <SubTabs tabs={DETAIL_TABS} activeKey={activeTab} onChange={setActiveTab} />
-
-          {activeTab === 'overview' && (
-            <OverviewTab
-              group={group.data}
-              groupId={groupId}
-              joinAction={applyToGroup}
-              leaveAction={leaveGroup}
-              onJoin={() => applyToGroup.submit().catch(() => {})}
-              onLeave={() => leaveGroup.submit().catch(() => {})}
+        {group.data && (
+          <>
+            <img
+              className="mobile-group-detail__cover"
+              src={group.data.coverImageUrl || DEFAULT_COVER_IMAGE_URL}
+              alt=""
             />
-          )}
-          {activeTab === 'chat' && <GroupChatTab groupId={groupId} />}
-          {activeTab === 'members' && <MembersTab groupId={groupId} />}
-          {activeTab === 'materials' && <MaterialsTab groupId={groupId} />}
-          {activeTab === 'quiz' && <GroupQuizTab groupId={groupId} />}
-        </>
+
+            <GroupInfoCard group={group.data} />
+
+            <ScreenState query={members} loadingLabel="참여 정보를 확인하는 중입니다">
+              {isJoined ? (
+                <MemberActions
+                  groupId={groupId}
+                  membership={membership}
+                  onEnter={() => navigate(`/groupstudy/${groupId}/video`)}
+                  onLeft={backToList}
+                />
+              ) : (
+                <GuestActions group={group.data} onJoined={reloadGroup} />
+              )}
+            </ScreenState>
+
+            {isJoined && <StudyTimerCard groupId={groupId} />}
+
+            {membership === MEMBERSHIP.LEADER && (
+              <LeaderConsole
+                groupId={groupId}
+                onChanged={() => reloadGroup().catch(() => {})}
+                onDisbanded={backToList}
+              />
+            )}
+          </>
+        )}
       </ScreenState>
     </MobileScreen>
   );

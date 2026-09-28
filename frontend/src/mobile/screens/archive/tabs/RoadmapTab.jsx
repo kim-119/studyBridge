@@ -1,108 +1,202 @@
-import React, { useState } from 'react';
-import { CheckCircle2, Circle } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { CalendarPlus } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import Button from '../../../components/Button';
 import ScreenState, { EmptyState } from '../../../components/ScreenState';
 import { materialService } from '../../../../services/api';
 import { useAsync, useSubmit } from '../../../data/useAsync';
+import { PLANNER_TYPE } from '../../planner/plannerAdapter';
+import RoadmapDaySheet from '../../roadmap/RoadmapDaySheet';
+import RoadmapLegacyWeeks from '../../roadmap/RoadmapLegacyWeeks';
+import RoadmapPlannerSheet from '../../roadmap/RoadmapPlannerSheet';
+import RoadmapRegenerateCard from '../../roadmap/RoadmapRegenerateCard';
+import RoadmapWeekView from '../../roadmap/RoadmapWeekView';
+import {
+  DEFAULT_ROADMAP_LEVEL,
+  ROADMAP_DAYS_REQUIRED_MESSAGE,
+  assertRoadmapSucceeded,
+  canCreatePlanners,
+  findDay,
+  firstOpenWeekNumber,
+  hasDayStructure,
+  normalizeRoadmapWeeks,
+  roadmapProgress,
+  roadmapUsedServerFallback,
+  toggleDayInWeeks,
+  toggleTaskInWeeks,
+} from '../../roadmap/roadmapModel';
 
-const LEVEL_OPTIONS = [
-  { key: 'beginner', label: '초급' },
-  { key: 'intermediate', label: '중급' },
-  { key: 'advanced', label: '고급' },
-];
+function dayKey(weekNumber, dayIndex) {
+  return `${weekNumber}-${dayIndex}`;
+}
 
-function stepsOf(roadmap) {
-  if (Array.isArray(roadmap?.steps)) return roadmap.steps;
+function ProgressCard({ weeks }) {
+  const progress = roadmapProgress(weeks);
 
-  const data = roadmap?.roadmapData;
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.steps)) return data.steps;
-  if (Array.isArray(data?.weeks)) return data.weeks;
-
-  return [];
+  return (
+    <section className="mobile-card mobile-section">
+      <p className="mobile-card__meta">전체 학습 진행률</p>
+      <p className="mobile-stat">
+        {progress.percent}% <span className="mobile-roadmap__progress-label">({progress.label})</span>
+      </p>
+      <div
+        className="mobile-progress"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progress.percent}
+      >
+        <span style={{ width: `${progress.percent}%` }} />
+      </div>
+    </section>
+  );
 }
 
 export default function RoadmapTab({ materialId }) {
-  const roadmap = useAsync(() => materialService.getRoadmap(materialId), [materialId]);
-  const [level, setLevel] = useState('intermediate');
+  const navigate = useNavigate();
+  const [level, setLevel] = useState(DEFAULT_ROADMAP_LEVEL);
+  const [weeks, setWeeks] = useState([]);
+  const [selectedWeekNumber, setSelectedWeekNumber] = useState(null);
+  const [openDayKey, setOpenDayKey] = useState(null);
+  const [togglingKey, setTogglingKey] = useState(null);
+  const [isPlannerSheetOpen, setPlannerSheetOpen] = useState(false);
+
+  const roadmap = useAsync(
+    async () => assertRoadmapSucceeded(await materialService.getRoadmap(materialId)),
+    [materialId]
+  );
+
+  useEffect(() => {
+    setWeeks(roadmap.data ? normalizeRoadmapWeeks(roadmap.data) : []);
+  }, [roadmap.data]);
 
   const regenerate = useSubmit(async () => {
-    await materialService.regenerateRoadmap(materialId, level);
+    assertRoadmapSucceeded(await materialService.regenerateRoadmap(materialId, level));
+    setSelectedWeekNumber(null);
     await roadmap.reload();
   });
 
-  const toggleTask = useSubmit(async (stepId) => {
-    await materialService.toggleRoadmapTask(materialId, stepId);
-    await roadmap.reload();
+  const toggleDay = useSubmit(async (weekNumber, dayIndex) => {
+    setTogglingKey(dayKey(weekNumber, dayIndex));
+    setWeeks((previous) => toggleDayInWeeks(previous, weekNumber, dayIndex));
+
+    try {
+      roadmap.setData(await materialService.toggleRoadmapDay(materialId, weekNumber, dayIndex));
+    } catch (error) {
+      setWeeks((previous) => toggleDayInWeeks(previous, weekNumber, dayIndex));
+      throw error;
+    } finally {
+      setTogglingKey(null);
+    }
   });
 
-  const steps = stepsOf(roadmap.data);
+  const toggleTask = useSubmit(async (taskId) => {
+    setTogglingKey(taskId);
+    setWeeks((previous) => toggleTaskInWeeks(previous, taskId));
+
+    try {
+      await materialService.toggleRoadmapTask(materialId, taskId);
+    } catch (error) {
+      setWeeks((previous) => toggleTaskInWeeks(previous, taskId));
+      throw error;
+    } finally {
+      setTogglingKey(null);
+    }
+  });
+
+  const usesDays = hasDayStructure(weeks);
+  const plannerReady = useMemo(() => canCreatePlanners(roadmap.data), [roadmap.data]);
+  const activeWeekNumber = selectedWeekNumber ?? firstOpenWeekNumber(weeks);
+  const [openWeekNumber, openDayIndex] = openDayKey ? openDayKey.split('-').map(Number) : [];
+  const openDay = openDayKey ? findDay(weeks, openWeekNumber, openDayIndex) : null;
+  const toggleError = toggleDay.errorMessage || toggleTask.errorMessage;
+
+  const openPlannerList = (result) => {
+    setPlannerSheetOpen(false);
+    navigate('/planner', { state: { plannerType: PLANNER_TYPE.ROADMAP, notice: result.message } });
+  };
+
+  const renderRoadmap = () => {
+    if (weeks.length === 0) return <EmptyState message="아직 생성된 로드맵이 없습니다." />;
+
+    if (!usesDays) {
+      return (
+        <RoadmapLegacyWeeks
+          weeks={weeks}
+          togglingTaskId={togglingKey}
+          onToggleTask={(taskId) => toggleTask.submit(taskId).catch(() => {})}
+        />
+      );
+    }
+
+    return (
+      <RoadmapWeekView
+        weeks={weeks}
+        selectedWeekNumber={activeWeekNumber}
+        onSelectWeek={setSelectedWeekNumber}
+        togglingDayKey={togglingKey}
+        onToggleDay={(weekNumber, dayIndex) => toggleDay.submit(weekNumber, dayIndex).catch(() => {})}
+        onOpenDay={(weekNumber, dayIndex) => setOpenDayKey(dayKey(weekNumber, dayIndex))}
+      />
+    );
+  };
 
   return (
-    <ScreenState query={roadmap} loadingLabel="로드맵을 불러오는 중입니다">
-      <>
-        <section className="mobile-card mobile-section">
-          <div className="mobile-toolbar">
-            <select
-              className="mobile-select"
-              aria-label="난이도"
-              value={level}
-              onChange={(event) => setLevel(event.target.value)}
-            >
-              {LEVEL_OPTIONS.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
+    <>
+      <RoadmapRegenerateCard
+        level={level}
+        onChangeLevel={setLevel}
+        isRegenerating={regenerate.isSubmitting}
+        errorMessage={regenerate.errorMessage}
+        onRegenerate={regenerate.submit}
+      />
 
-          <Button
-            fullWidth
-            isLoading={regenerate.isSubmitting}
-            onClick={() => regenerate.submit().catch(() => {})}
-          >
-            로드맵 생성
-          </Button>
+      <ScreenState query={roadmap} loadingLabel="로드맵을 불러오는 중입니다">
+        <>
+          <p className="mobile-card__meta">
+            업로드한 자료를 기반으로 AI가 설계한 12주 × 7일(84일) 학습 로드맵입니다.
+          </p>
 
-          {regenerate.errorMessage && <p className="mobile-auth__error">{regenerate.errorMessage}</p>}
-        </section>
+          {roadmapUsedServerFallback(roadmap.data) && (
+            <p className="mobile-notice mobile-section">
+              AI가 문서 정보가 부족하여 기본 학습 절차 기반으로 로드맵을 구성했습니다.
+            </p>
+          )}
 
-        {steps.length === 0 ? (
-          <EmptyState message="아직 생성된 로드맵이 없습니다." />
-        ) : (
-          <ul className="mobile-list">
-            {steps.map((step, index) => {
-              const stepId = step.stepId ?? step.id ?? index;
-              const isCompleted = Boolean(step.completed ?? step.isCompleted);
+          {weeks.length > 0 && <ProgressCard weeks={weeks} />}
 
-              return (
-                <li key={stepId} className="mobile-card">
-                  <button
-                    type="button"
-                    className="mobile-roadmap__step"
-                    disabled={step.stepId == null}
-                    onClick={() => toggleTask.submit(step.stepId).catch(() => {})}
-                  >
-                    {isCompleted ? (
-                      <CheckCircle2 size={20} className="mobile-roadmap__check is-done" />
-                    ) : (
-                      <Circle size={20} className="mobile-roadmap__check" />
-                    )}
+          <section className="mobile-section">
+            <Button fullWidth disabled={!plannerReady} onClick={() => setPlannerSheetOpen(true)}>
+              <CalendarPlus size={16} />
+              플래너 생성
+            </Button>
+            {weeks.length > 0 && !plannerReady && (
+              <p className="mobile-field__hint">{ROADMAP_DAYS_REQUIRED_MESSAGE}</p>
+            )}
+          </section>
 
-                    <span>
-                      <strong>
-                        {step.stepOrder ? `${step.stepOrder}주차` : `${index + 1}단계`} · {step.title || step.topic}
-                      </strong>
-                      {step.description && <span>{step.description}</span>}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </>
-    </ScreenState>
+          {toggleError && <p className="mobile-auth__error">{toggleError}</p>}
+
+          {renderRoadmap()}
+        </>
+      </ScreenState>
+
+      <RoadmapDaySheet
+        weekNumber={openWeekNumber}
+        day={openDay}
+        isToggling={togglingKey === openDayKey}
+        onToggle={() => toggleDay.submit(openWeekNumber, openDayIndex).catch(() => {})}
+        onClose={() => setOpenDayKey(null)}
+      />
+
+      <RoadmapPlannerSheet
+        isOpen={isPlannerSheetOpen}
+        onClose={() => setPlannerSheetOpen(false)}
+        materialId={materialId}
+        materialTitle={null}
+        roadmap={roadmap.data}
+        onCreated={openPlannerList}
+      />
+    </>
   );
 }

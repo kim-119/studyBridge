@@ -6,79 +6,80 @@ import Button from '../../components/Button';
 import Fab from '../../components/Fab';
 import ListRow from '../../components/ListRow';
 import ScreenState, { EmptyState } from '../../components/ScreenState';
-import TextField from '../../components/TextField';
 import MobileScreen from '../../shell/MobileScreen';
 import { agentService } from '../../../services/api';
+import { useAuth } from '../../../hooks/useAuth';
 import { useAsync, useSubmit } from '../../data/useAsync';
+import CreateRoomSheet from './CreateRoomSheet';
+import { STUDYBRIDGE_ROOM_TITLE, roomLimitForRole } from './agentDrafts';
+import { describeRoomMode } from './learningModes';
 
-const LEARNING_MODES = [
-  { key: 'basic', label: '기본 개념' },
-  { key: 'debate', label: '토론' },
-  { key: 'socratic', label: '소크라테스' },
-  { key: 'simulation', label: '시뮬레이션' },
-];
+function roomTitleOf(room) {
+  return room.roomName || room.name || STUDYBRIDGE_ROOM_TITLE;
+}
+
+function roomSubtitleOf(room) {
+  const agentNames = (room.agents || []).map((agent) => agent.name).filter(Boolean);
+  return [describeRoomMode(room).label, agentNames.join(' · ')].filter(Boolean).join(' · ');
+}
+
+function DeleteRoomSheet({ room, onClose, onConfirm, isDeleting, errorMessage }) {
+  return (
+    <BottomSheet title="스터디방 삭제" isOpen={Boolean(room)} onClose={onClose}>
+      <p className="mobile-paragraph">
+        {room ? `'${roomTitleOf(room)}'` : ''} 스터디방을 삭제하시겠습니까? 모든 대화 내용이 완전히 삭제됩니다.
+      </p>
+      {errorMessage && <p className="mobile-auth__error">{errorMessage}</p>}
+      <Button variant="danger" fullWidth isLoading={isDeleting} onClick={onConfirm}>
+        삭제
+      </Button>
+    </BottomSheet>
+  );
+}
 
 export default function StudyMateScreen() {
   const navigate = useNavigate();
-  const rooms = useAsync(() => agentService.getRooms(), []);
-  const [isSheetOpen, setSheetOpen] = useState(false);
-  const [roomName, setRoomName] = useState('');
-  const [learningMode, setLearningMode] = useState(LEARNING_MODES[0].key);
+  const { user } = useAuth();
+  const rooms = useAsync(() => agentService.getAgents(), []);
+  const [isCreateOpen, setCreateOpen] = useState(false);
+  const [roomToDelete, setRoomToDelete] = useState(null);
+  const roomList = Array.isArray(rooms.data) ? rooms.data : [];
 
-  const createRoom = useSubmit(async () => {
-    const created = await agentService.createRoom(null, {
-      roomName: roomName.trim(),
-      learningMode,
-      agents: [
-        {
-          name: roomName.trim() || 'AI 메이트',
-          role: '학습 도우미',
-          persona: '사용자의 학습을 돕는다',
-          tone: '전문적',
-          goal: '사용자의 학습을 돕는다',
-        },
-      ],
-    });
-
-    setSheetOpen(false);
-    setRoomName('');
-    await rooms.reload();
-
-    const roomId = created?.roomId ?? created?.id;
-    if (roomId) navigate(`/studymate/${roomId}`);
-  });
-
-  const removeRoom = useSubmit(async (targetRoomId) => {
-    await agentService.deleteRoom(null, targetRoomId);
+  const removeRoom = useSubmit(async () => {
+    await agentService.deleteAgent(null, roomToDelete.id);
+    setRoomToDelete(null);
     await rooms.reload();
   });
 
-  const roomList = Array.isArray(rooms.data) ? rooms.data : rooms.data?.content || [];
+  const handleCreated = async (created) => {
+    setCreateOpen(false);
+    await rooms.reload();
+    if (created?.id != null) navigate(`/studymate/${created.id}`);
+  };
 
   return (
     <MobileScreen title="학습메이트">
-      {removeRoom.errorMessage && <p className="mobile-auth__error">{removeRoom.errorMessage}</p>}
-
-      <ScreenState query={rooms} loadingLabel="AI 메이트를 불러오는 중입니다">
+      <ScreenState query={rooms} loadingLabel="학습메이트 방을 불러오는 중입니다">
         {roomList.length === 0 ? (
-          <EmptyState message="아직 만든 AI 메이트가 없습니다. 새 메이트를 만들어 대화를 시작해보세요." />
+          <EmptyState message="아직 만든 스터디방이 없습니다. 새 스터디방을 만들어 교수님들과 대화를 시작해보세요." />
         ) : (
           <ul className="mobile-list">
             {roomList.map((room) => (
-              <li key={room.roomId ?? room.id}>
+              <li key={room.id}>
                 <ListRow
                   icon={<GraduationCap size={20} />}
-                  title={room.roomName || room.name || 'AI 메이트'}
-                  subtitle={room.learningMode || 'basic'}
-                  onClick={() => navigate(`/studymate/${room.roomId ?? room.id}`)}
+                  title={roomTitleOf(room)}
+                  subtitle={roomSubtitleOf(room)}
+                  onClick={() => navigate(`/studymate/${room.id}`)}
                   trailing={
                     <button
                       type="button"
                       className="mobile-todo__delete"
-                      aria-label={`${room.roomName || 'AI 메이트'} 삭제`}
+                      aria-label={`${roomTitleOf(room)} 삭제`}
                       onClick={(event) => {
                         event.stopPropagation();
-                        removeRoom.submit(room.roomId ?? room.id).catch(() => {});
+                        removeRoom.clearError();
+                        setRoomToDelete(room);
                       }}
                     >
                       <Trash2 size={18} />
@@ -91,45 +92,23 @@ export default function StudyMateScreen() {
         )}
       </ScreenState>
 
-      <Fab label="새 AI 메이트" onClick={() => setSheetOpen(true)} />
+      <Fab label="새 스터디방" onClick={() => setCreateOpen(true)} />
 
-      <BottomSheet title="새 AI 메이트" isOpen={isSheetOpen} onClose={() => setSheetOpen(false)}>
-        <TextField
-          label="메이트 이름"
-          value={roomName}
-          placeholder="예: 개념 정리 교수"
-          onChange={(event) => setRoomName(event.target.value)}
-        />
+      <CreateRoomSheet
+        isOpen={isCreateOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={handleCreated}
+        roomCount={roomList.length}
+        roomLimit={roomLimitForRole(user?.role)}
+      />
 
-        <div className="mobile-field">
-          <label className="mobile-field__label" htmlFor="studymate-mode">
-            학습 모드
-          </label>
-          <select
-            id="studymate-mode"
-            className="mobile-field__input"
-            value={learningMode}
-            onChange={(event) => setLearningMode(event.target.value)}
-          >
-            {LEARNING_MODES.map((mode) => (
-              <option key={mode.key} value={mode.key}>
-                {mode.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {createRoom.errorMessage && <p className="mobile-auth__error">{createRoom.errorMessage}</p>}
-
-        <Button
-          fullWidth
-          isLoading={createRoom.isSubmitting}
-          disabled={!roomName.trim()}
-          onClick={() => createRoom.submit().catch(() => {})}
-        >
-          만들기
-        </Button>
-      </BottomSheet>
+      <DeleteRoomSheet
+        room={roomToDelete}
+        onClose={() => setRoomToDelete(null)}
+        onConfirm={() => removeRoom.submit().catch(() => {})}
+        isDeleting={removeRoom.isSubmitting}
+        errorMessage={removeRoom.errorMessage}
+      />
     </MobileScreen>
   );
 }

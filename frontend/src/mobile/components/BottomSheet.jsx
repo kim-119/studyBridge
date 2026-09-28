@@ -1,7 +1,10 @@
 import React, { useEffect } from 'react';
 import { X } from 'lucide-react';
+import { useBackDismiss } from '../platform/useBackDismiss';
 
 export default function BottomSheet({ title, isOpen, onClose, children }) {
+  useBackDismiss(isOpen, onClose);
+
   useEffect(() => {
     if (!isOpen) return undefined;
 

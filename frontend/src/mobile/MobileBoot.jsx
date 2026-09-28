@@ -26,6 +26,10 @@ const FAILURE_MESSAGE = {
   ],
 };
 
+function isAuthenticationFailure(error) {
+  return error?.response?.status === 401 || error?.message === 'No refresh token';
+}
+
 function isSuspended(profile) {
   if (profile?.status === 'BANNED' || profile?.status === 'SUSPENDED') return true;
   return Boolean(profile?.suspensionEndDate && new Date(profile.suspensionEndDate) > new Date());
@@ -55,9 +59,15 @@ export default function MobileBoot({ children }) {
             authActions.current.updateUser(profile);
           }
         } catch (sessionError) {
-          console.warn('저장된 세션이 유효하지 않아 로그아웃합니다.', sessionError);
-          authActions.current.logout();
+          if (isAuthenticationFailure(sessionError)) {
+            console.warn('[boot] 저장된 세션이 만료되어 로그아웃합니다.', sessionError);
+            authActions.current.logout();
+          } else {
+            console.warn('[boot] 프로필을 갱신하지 못해 저장된 사용자 정보로 계속합니다.', sessionError);
+          }
         }
+      } else if (localStorage.getItem('userId')) {
+        authActions.current.logout();
       }
 
       setStatus(STATUS.READY);
@@ -71,7 +81,9 @@ export default function MobileBoot({ children }) {
   }, []);
 
   useEffect(() => {
-    const stopWatching = watchSessionChanges();
+    const stopWatching = watchSessionChanges({
+      onSessionOrphaned: () => authActions.current.logout(),
+    });
     bootstrap();
     return stopWatching;
   }, [bootstrap]);

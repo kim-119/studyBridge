@@ -1,190 +1,222 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Crosshair, Minus, Plus } from 'lucide-react';
+import {
+  centerOn,
+  distanceBetween,
+  fitTransform,
+  hasMovedBeyondTap,
+  midpointOf,
+  pinchTransform,
+  zoomAround,
+} from './canvasTransform';
 
-const MIN_SCALE = 0.3;
-const MAX_SCALE = 3;
 const NODE_RADIUS = 18;
+const LABEL_MIN_SCALE = 0.75;
+const LABEL_MAX_LENGTH = 12;
+const ZOOM_STEP = 1.25;
 
-function clampScale(value) {
-  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, value));
+function useLatest(value) {
+  const ref = useRef(value);
+  ref.current = value;
+  return ref;
 }
 
-function distanceBetween(touches) {
-  const dx = touches[0].clientX - touches[1].clientX;
-  const dy = touches[0].clientY - touches[1].clientY;
-  return Math.hypot(dx, dy);
-}
-
-/**
- * SVG 기반 마인드맵 캔버스. 드래그 팬 + 핀치/버튼 줌 + 노드 탭을 지원한다.
- * 노드 수가 많아도 DOM 을 늘리지 않도록 원/선만 그리고 라벨은 확대 시에만 렌더한다.
- */
-export default function MindmapCanvas({ view, highlightIds, onSelectNode, focusNodeId }) {
-  const containerRef = useRef(null);
-  const [size, setSize] = useState({ width: 320, height: 420 });
-  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
-
-  const gestureRef = useRef(null);
+function useElementSize(elementRef) {
+  const [size, setSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
-    const element = containerRef.current;
+    const element = elementRef.current;
     if (!element) return undefined;
 
     const observer = new ResizeObserver(([entry]) => {
       setSize({ width: entry.contentRect.width, height: entry.contentRect.height });
     });
     observer.observe(element);
-
     return () => observer.disconnect();
-  }, []);
+  }, [elementRef]);
 
-  const fitToView = useCallback(() => {
-    if (!view?.bounds || size.width === 0) return;
+  return size;
+}
 
-    const { minX, minY, maxX, maxY } = view.bounds;
-    const graphWidth = Math.max(1, maxX - minX) + NODE_RADIUS * 4;
-    const graphHeight = Math.max(1, maxY - minY) + NODE_RADIUS * 4;
+function useTouchGestures(containerRef, transformRef, setTransform) {
+  const gestureRef = useRef(null);
+  const movedRef = useRef(false);
 
-    const scale = clampScale(Math.min(size.width / graphWidth, size.height / graphHeight));
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
+  const pointOf = useCallback(
+    (touch) => {
+      const rect = containerRef.current.getBoundingClientRect();
+      return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+    },
+    [containerRef]
+  );
 
-    setTransform({
-      scale,
-      x: size.width / 2 - centerX * scale,
-      y: size.height / 2 - centerY * scale,
-    });
-  }, [view, size]);
+  const beginPan = useCallback(
+    (touch) => {
+      gestureRef.current = { mode: 'pan', origin: pointOf(touch), start: transformRef.current };
+    },
+    [pointOf, transformRef]
+  );
 
-  useEffect(() => {
-    fitToView();
-  }, [fitToView]);
-
-  useEffect(() => {
-    if (!focusNodeId || !view) return;
-
-    const node = view.nodes.find((item) => item.id === focusNodeId);
-    if (!node) return;
-
-    setTransform((previous) => ({
-      ...previous,
-      x: size.width / 2 - node.x * previous.scale,
-      y: size.height / 2 - node.y * previous.scale,
-    }));
-  }, [focusNodeId, view, size]);
-
-  const handleTouchStart = (event) => {
-    if (event.touches.length === 2) {
+  const beginPinch = useCallback(
+    (touches) => {
+      const first = pointOf(touches[0]);
+      const second = pointOf(touches[1]);
+      movedRef.current = true;
       gestureRef.current = {
         mode: 'pinch',
-        distance: distanceBetween(event.touches),
-        scale: transform.scale,
+        start: transformRef.current,
+        distance: distanceBetween(first, second) || 1,
+        midpoint: midpointOf(first, second),
       };
+    },
+    [pointOf, transformRef]
+  );
+
+  const onTouchStart = (event) => {
+    if (event.touches.length >= 2) {
+      beginPinch(event.touches);
       return;
     }
-
-    gestureRef.current = {
-      mode: 'pan',
-      startX: event.touches[0].clientX,
-      startY: event.touches[0].clientY,
-      originX: transform.x,
-      originY: transform.y,
-    };
+    movedRef.current = false;
+    beginPan(event.touches[0]);
   };
 
-  const handleTouchMove = (event) => {
+  const onTouchMove = (event) => {
     const gesture = gestureRef.current;
     if (!gesture) return;
 
-    if (gesture.mode === 'pinch' && event.touches.length === 2) {
-      const ratio = distanceBetween(event.touches) / (gesture.distance || 1);
-      setTransform((previous) => ({ ...previous, scale: clampScale(gesture.scale * ratio) }));
+    if (gesture.mode === 'pinch' && event.touches.length >= 2) {
+      const first = pointOf(event.touches[0]);
+      const second = pointOf(event.touches[1]);
+      const ratio = distanceBetween(first, second) / gesture.distance;
+      setTransform(pinchTransform(gesture.start, gesture.midpoint, midpointOf(first, second), ratio));
       return;
     }
 
     if (gesture.mode === 'pan' && event.touches.length === 1) {
-      setTransform((previous) => ({
-        ...previous,
-        x: gesture.originX + (event.touches[0].clientX - gesture.startX),
-        y: gesture.originY + (event.touches[0].clientY - gesture.startY),
-      }));
+      const point = pointOf(event.touches[0]);
+      if (hasMovedBeyondTap(gesture.origin, point)) movedRef.current = true;
+      setTransform({
+        ...gesture.start,
+        x: gesture.start.x + (point.x - gesture.origin.x),
+        y: gesture.start.y + (point.y - gesture.origin.y),
+      });
     }
   };
 
-  const handleTouchEnd = () => {
+  const onTouchEnd = (event) => {
+    if (event.touches.length === 1) {
+      beginPan(event.touches[0]);
+      return;
+    }
     gestureRef.current = null;
   };
 
-  const zoomBy = (factor) => {
-    setTransform((previous) => {
-      const scale = clampScale(previous.scale * factor);
-      const centerX = size.width / 2;
-      const centerY = size.height / 2;
+  const isTap = () => !movedRef.current;
 
-      return {
-        scale,
-        x: centerX - ((centerX - previous.x) / previous.scale) * scale,
-        y: centerY - ((centerY - previous.y) / previous.scale) * scale,
-      };
-    });
+  return { handlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd }, isTap };
+}
+
+function truncateLabel(label) {
+  return label.length > LABEL_MAX_LENGTH ? `${label.slice(0, LABEL_MAX_LENGTH)}…` : label;
+}
+
+function MindmapEdges({ edges }) {
+  return edges.map((edge) => (
+    <line
+      key={edge.id}
+      x1={edge.from.x}
+      y1={edge.from.y}
+      x2={edge.to.x}
+      y2={edge.to.y}
+      className="mobile-mindmap__edge"
+      style={{ stroke: edge.color }}
+      strokeDasharray={edge.dashed ? '6 4' : undefined}
+    />
+  ));
+}
+
+function MindmapNodes({ nodes, highlightIds, showLabels, onTapNode }) {
+  return nodes.map((node) => {
+    const isHighlighted = highlightIds?.has(node.id);
+
+    return (
+      <g key={node.id} onClick={() => onTapNode(node)} className="mobile-mindmap__node">
+        <circle
+          cx={node.x}
+          cy={node.y}
+          r={isHighlighted ? NODE_RADIUS + 4 : NODE_RADIUS}
+          fill={node.color}
+          className={isHighlighted ? 'mobile-mindmap__dot is-highlighted' : 'mobile-mindmap__dot'}
+        />
+        {showLabels && (
+          <text x={node.x} y={node.y + NODE_RADIUS + 14} className="mobile-mindmap__label">
+            {truncateLabel(node.label)}
+          </text>
+        )}
+      </g>
+    );
+  });
+}
+
+export default function MindmapCanvas({ view, fitKey, highlightIds, focusTarget, onSelectNode }) {
+  const containerRef = useRef(null);
+  const size = useElementSize(containerRef);
+  const sizeRef = useLatest(size);
+  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+  const transformRef = useLatest(transform);
+  const fittedKeyRef = useRef(null);
+  const fitIdentity = fitKey ?? view;
+  const gestures = useTouchGestures(containerRef, transformRef, setTransform);
+
+  const fitToView = useCallback(() => {
+    const currentSize = sizeRef.current;
+    if (!view?.bounds || currentSize.width === 0) return;
+    setTransform(fitTransform(view.bounds, currentSize, NODE_RADIUS * 2));
+  }, [sizeRef, view]);
+
+  useEffect(() => {
+    if (!view || size.width === 0 || fittedKeyRef.current === fitIdentity) return;
+    fittedKeyRef.current = fitIdentity;
+    fitToView();
+  }, [fitIdentity, fitToView, size.width, view]);
+
+  useEffect(() => {
+    if (!focusTarget || !view?.nodes) return;
+    const node = view.nodes.find((item) => item.id === focusTarget.id);
+    if (node) setTransform((previous) => centerOn(previous, node, sizeRef.current));
+  }, [focusTarget, sizeRef, view]);
+
+  const zoomBy = (factor) => {
+    const center = { x: sizeRef.current.width / 2, y: sizeRef.current.height / 2 };
+    setTransform((previous) => zoomAround(previous, center, previous.scale * factor));
+  };
+
+  const handleTapNode = (node) => {
+    if (gestures.isTap()) onSelectNode(node);
   };
 
   if (!view) return null;
 
-  const showLabels = transform.scale >= 0.75;
-
   return (
     <div className="mobile-mindmap" ref={containerRef}>
-      <svg
-        className="mobile-mindmap__canvas"
-        width={size.width}
-        height={size.height}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-      >
+      <svg className="mobile-mindmap__canvas" width={size.width} height={size.height} {...gestures.handlers}>
         <g transform={`translate(${transform.x} ${transform.y}) scale(${transform.scale})`}>
-          {view.edges.map((edge) => (
-            <line
-              key={edge.id}
-              x1={edge.from.x}
-              y1={edge.from.y}
-              x2={edge.to.x}
-              y2={edge.to.y}
-              className="mobile-mindmap__edge"
-            />
-          ))}
-
-          {view.nodes.map((node) => {
-            const isHighlighted = highlightIds?.has(node.id);
-
-            return (
-              <g key={node.id} onClick={() => onSelectNode(node)} className="mobile-mindmap__node">
-                <circle
-                  cx={node.x}
-                  cy={node.y}
-                  r={isHighlighted ? NODE_RADIUS + 4 : NODE_RADIUS}
-                  fill={node.color}
-                  stroke={isHighlighted ? '#111827' : 'rgba(17,24,39,0.25)'}
-                  strokeWidth={isHighlighted ? 3 : 1}
-                />
-
-                {showLabels && (
-                  <text x={node.x} y={node.y + NODE_RADIUS + 14} className="mobile-mindmap__label">
-                    {node.label.length > 12 ? `${node.label.slice(0, 12)}…` : node.label}
-                  </text>
-                )}
-              </g>
-            );
-          })}
+          <MindmapEdges edges={view.edges} />
+          <MindmapNodes
+            nodes={view.nodes}
+            highlightIds={highlightIds}
+            showLabels={transform.scale >= LABEL_MIN_SCALE}
+            onTapNode={handleTapNode}
+          />
         </g>
       </svg>
 
       <div className="mobile-mindmap__controls">
-        <button type="button" aria-label="확대" onClick={() => zoomBy(1.25)}>
+        <button type="button" aria-label="확대" onClick={() => zoomBy(ZOOM_STEP)}>
           <Plus size={18} />
         </button>
-        <button type="button" aria-label="축소" onClick={() => zoomBy(0.8)}>
+        <button type="button" aria-label="축소" onClick={() => zoomBy(1 / ZOOM_STEP)}>
           <Minus size={18} />
         </button>
         <button type="button" aria-label="전체 보기" onClick={fitToView}>
