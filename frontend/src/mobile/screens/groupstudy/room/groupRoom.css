@@ -1,0 +1,56 @@
+.mobile-room-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: var(--space-md);
+}
+
+.mobile-room-upload .mobile-button.is-disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.mobile-room-upload__result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-basic);
+}
+
+.mobile-room-upload__result .mobile-room-quiz-result {
+  flex: 1 1 180px;
+  margin: 0;
+}
+
+@media (max-width: 374px) {
+  .mobile-room-header .mobile-room-header__title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+  }
+
+  .mobile-room-header .mobile-room-header__title-row {
+    display: contents;
+  }
+
+  .mobile-room-header .mobile-room-header__title h1 {
+    flex-basis: 100%;
+  }
+
+  .mobile-room-header .mobile-room-header__title p {
+    order: 1;
+  }
+
+  .mobile-room-header .mobile-room-header__timer {
+    order: 2;
+    color: #9CA3AF;
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .mobile-room-header .mobile-room-header__timer::before {
+    content: ' · ';
+    white-space: pre;
+  }
+}

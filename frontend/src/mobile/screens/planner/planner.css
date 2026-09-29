@@ -1,0 +1,11 @@
+.mobile-planner-selection.is-active {
+  position: sticky;
+  top: calc(var(--mobile-app-bar-height) + env(safe-area-inset-top));
+  z-index: 5;
+  padding: var(--space-basic) 0;
+  background-color: var(--color-bg-base);
+}
+
+.mobile-planner-list {
+  padding-bottom: calc(56px + var(--space-md));
+}
