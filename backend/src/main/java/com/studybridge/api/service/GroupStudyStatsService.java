@@ -1,0 +1,311 @@
+package com.studybridge.api.service;
+
+import com.studybridge.api.dto.GroupStudyStatsDTO;
+import com.studybridge.api.dto.GroupStudyStatsDTO.DaySummary;
+import com.studybridge.api.dto.GroupStudyStatsDTO.MemberAttendance;
+import com.studybridge.api.dto.GroupStudyStatsDTO.Range;
+import com.studybridge.api.entity.GroupStudy;
+import com.studybridge.api.entity.GroupStudyAttendance;
+import com.studybridge.api.entity.GroupStudyMember;
+import com.studybridge.api.entity.GroupStudyMemberStatus;
+import com.studybridge.api.entity.Timer;
+import com.studybridge.api.entity.TimerStatus;
+import com.studybridge.api.repository.GroupStudyAttendanceRepository;
+import com.studybridge.api.repository.GroupStudyMemberRepository;
+import com.studybridge.api.repository.GroupStudyRepository;
+import com.studybridge.api.repository.TimerRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Clock;
+import java.time.DayOfWeek;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.YearMonth;
+import java.time.temporal.TemporalAdjusters;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.stream.Collectors;
+
+/**
+ * 그룹 출석부 / 개인 공부 통계(DAY·WEEK·MONTH). 원천 = timers(세션, 서버 시각) + group_study_attendances(체크인 사실).
+ * 요청당 쿼리 4개(그룹, 멤버+사용자 fetch join, 기간 세션, 기간 출석행) — 날짜/멤버 수와 무관(N+1 없음).
+ * 권한: 그룹 멤버만(비공개/공개 무관) — 비멤버는 403. 개인 통계는 /me 만 제공(타인 userId 파라미터 없음).
+ */
+@Service
+@RequiredArgsConstructor
+@Slf4j
+@Transactional(readOnly = true)
+public class GroupStudyStatsService {
+
+    private final GroupStudyRepository groupStudyRepository;
+    private final GroupStudyMemberRepository memberRepository;
+    private final TimerRepository timerRepository;
+    private final GroupStudyAttendanceRepository attendanceRepository;
+    private final Clock clock;
+
+    // ── 기간 ──────────────────────────────────────────────────────────────────
+
+    public record Period(Range range, LocalDate start, LocalDate end) {
+        LocalDateTime startDateTime() { return start.atStartOfDay(); }
+        LocalDateTime endExclusive() { return end.plusDays(1).atStartOfDay(); }
+        List<LocalDate> dates() {
+            List<LocalDate> out = new ArrayList<>();
+            for (LocalDate d = start; !d.isAfter(end); d = d.plusDays(1)) out.add(d);
+            return out;
+        }
+    }
+
+    /** range/date/month 파라미터 → 기간. WEEK 은 월~일, MONTH 는 달력 월. 잘못된 값은 400. */
+    public Period resolvePeriod(String rangeParam, LocalDate date, String month) {
+        Range range;
+        try {
+            range = rangeParam == null || rangeParam.isBlank() ? Range.WEEK : Range.valueOf(rangeParam.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("range 는 DAY, WEEK, MONTH 중 하나여야 합니다.");
+        }
+        LocalDate anchor = date != null ? date : LocalDate.now(clock);
+        if (range == Range.MONTH && month != null && !month.isBlank()) {
+            try {
+                anchor = YearMonth.parse(month.trim()).atDay(1);
+            } catch (Exception e) {
+                throw new IllegalArgumentException("month 는 YYYY-MM 형식이어야 합니다.");
+            }
+        }
+        return switch (range) {
+            case DAY -> new Period(range, anchor, anchor);
+            case WEEK -> new Period(range, anchor.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)),
+                    anchor.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY)));
+            case MONTH -> new Period(range, YearMonth.from(anchor).atDay(1), YearMonth.from(anchor).atEndOfMonth());
+        };
+    }
+
+    // ── 집계 코어 ──────────────────────────────────────────────────────────────
+
+    /** (userId, date) 단위 누적기. */
+    static final class DayAcc {
+        long total;
+        long maxFocus;
+        LocalDateTime first;
+        LocalDateTime last;
+        int sessions;
+        boolean checkedIn;
+
+        void add(StudyIntervalSplitter.DaySegment seg) {
+            long secs = seg.seconds();
+            total += secs;
+            maxFocus = Math.max(maxFocus, secs);
+            if (first == null || seg.start().isBefore(first)) first = seg.start();
+            if (last == null || seg.end().isAfter(last)) last = seg.end();
+            sessions++;
+        }
+
+        boolean attended() { return total > 0 || sessions > 0 || checkedIn; }
+    }
+
+    private record Snapshot(GroupStudy group, List<GroupStudyMember> members, Period period, LocalDate today,
+                            Map<Long, Map<LocalDate, DayAcc>> byUser) {
+        long targetSeconds() {
+            Integer m = group.getTargetStudyMinutes();
+            return (m != null ? m : GroupStudySettingsPolicy.TARGET_STUDY_MINUTES_DEFAULT) * 60L;
+        }
+    }
+
+    private Snapshot load(Long groupId, Long requesterId, Period period) {
+        GroupStudy group = groupStudyRepository.findById(groupId)
+                .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
+        List<GroupStudyMember> members = memberRepository.findWithUserByGroupStudyIdAndStatus(groupId, GroupStudyMemberStatus.JOINED);
+        boolean requesterIsMember = members.stream().anyMatch(m -> m.getUser().getId().equals(requesterId));
+        if (!requesterIsMember) {
+            throw new SecurityException("그룹 멤버만 그룹 통계를 조회할 수 있습니다.");
+        }
+        List<Long> userIds = members.stream().map(m -> m.getUser().getId()).collect(Collectors.toList());
+        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDate today = now.toLocalDate();
+
+        Map<Long, Map<LocalDate, DayAcc>> byUser = new HashMap<>();
+        for (Long uid : userIds) byUser.put(uid, new HashMap<>());
+
+        List<Timer> sessions = timerRepository.findGroupSessionsOverlapping(groupId, userIds, period.startDateTime(), period.endExclusive());
+        for (Timer t : sessions) {
+            LocalDateTime end = effectiveEnd(t, now);
+            if (end == null) continue; // heartbeat 미지원 진행 중 세션: 생존 여부 불명 → 종료될 때까지 제외
+            Map<LocalDate, DayAcc> perDay = byUser.get(t.getUser().getId());
+            if (perDay == null) continue;
+            for (StudyIntervalSplitter.DaySegment seg : StudyIntervalSplitter.splitWithin(t.getStartTime(), end, period.startDateTime(), period.endExclusive())) {
+                perDay.computeIfAbsent(seg.date(), d -> new DayAcc()).add(seg);
+            }
+        }
+        for (GroupStudyAttendance a : attendanceRepository.findByGroupStudyIdAndDateBetween(groupId, period.start(), period.end())) {
+            Map<LocalDate, DayAcc> perDay = byUser.get(a.getUser().getId());
+            if (perDay == null) continue; // 탈퇴자 행은 제외
+            perDay.computeIfAbsent(a.getDate(), d -> new DayAcc()).checkedIn = true;
+        }
+        return new Snapshot(group, members, period, today, byUser);
+    }
+
+    /** 세션의 유효 종료 시각: 완료 → endTime, 진행 중 → 마지막 heartbeat(없으면 null), 미래 값은 now 로 클램프. */
+    static LocalDateTime effectiveEnd(Timer t, LocalDateTime now) {
+        LocalDateTime end;
+        if (t.getStatus() == TimerStatus.COMPLETED) {
+            end = t.getEndTime();
+        } else if (t.getStatus() == TimerStatus.STARTED) {
+            end = t.getLastHeartbeatAt();
+        } else {
+            return null;
+        }
+        if (end == null) return null;
+        return end.isAfter(now) ? now : end;
+    }
+
+    private static double pct(long num, long den, int scale) {
+        if (den <= 0) return 0.0;
+        double factor = Math.pow(10, scale);
+        return Math.round(num * 100.0 / den * factor) / factor;
+    }
+
+    private List<DaySummary> daySummaries(Snapshot s, Long userId) {
+        Map<LocalDate, DayAcc> perDay = s.byUser().getOrDefault(userId, Map.of());
+        long target = s.targetSeconds();
+        List<DaySummary> out = new ArrayList<>();
+        for (LocalDate d : s.period().dates()) {
+            DayAcc acc = perDay.get(d);
+            if (acc == null) {
+                out.add(DaySummary.builder().date(d).totalStudySeconds(0L).maxFocusSeconds(0L).sessionCount(0)
+                        .attended(false).achievementRate(0.0).build());
+                continue;
+            }
+            out.add(DaySummary.builder()
+                    .date(d)
+                    .totalStudySeconds(acc.total)
+                    .maxFocusSeconds(acc.maxFocus)
+                    .firstStartedAt(acc.first != null ? acc.first.toLocalTime() : null)
+                    .lastEndedAt(acc.last != null ? acc.last.toLocalTime() : null)
+                    .sessionCount(acc.sessions)
+                    .attended(acc.attended())
+                    .achievementRate(pct(acc.total, target, 2))
+                    .build());
+        }
+        return out;
+    }
+
+    private int eligibleDaysFor(Snapshot s, GroupStudyMember m) {
+        LocalDate periodEnd = s.period().end().isAfter(s.today()) ? s.today() : s.period().end();
+        LocalDate joined = m.getJoinedAt() != null ? m.getJoinedAt().toLocalDate() : null;
+        return GroupActivityMetrics.eligibleDays(s.period().start(), periodEnd, s.group().getStartDate(), joined);
+    }
+
+    // ── 개인 통계 ──────────────────────────────────────────────────────────────
+
+    public GroupStudyStatsDTO.MyStudyStats getMyStats(Long userId, Long groupId, Period period) {
+        Snapshot s = load(groupId, userId, period);
+        GroupStudyMember me = s.members().stream().filter(m -> m.getUser().getId().equals(userId)).findFirst().orElseThrow();
+        List<DaySummary> days = daySummaries(s, userId);
+
+        long total = days.stream().mapToLong(DaySummary::getTotalStudySeconds).sum();
+        long maxFocus = days.stream().mapToLong(DaySummary::getMaxFocusSeconds).max().orElse(0L);
+        int sessionCount = days.stream().mapToInt(DaySummary::getSessionCount).sum();
+        int attendanceDays = (int) days.stream().filter(d -> Boolean.TRUE.equals(d.getAttended())).count();
+        int eligibleDays = eligibleDaysFor(s, me);
+        long target = s.targetSeconds();
+        long avgDaily = eligibleDays > 0 ? total / eligibleDays : 0L;
+
+        GroupStudyStatsDTO.MyStudyStats.MyStudyStatsBuilder b = GroupStudyStatsDTO.MyStudyStats.builder()
+                .range(period.range())
+                .groupId(groupId)
+                .periodStart(period.start())
+                .periodEnd(period.end())
+                .totalStudySeconds(total)
+                .maxFocusSeconds(maxFocus)
+                .sessionCount(sessionCount)
+                .targetStudySeconds(target)
+                .averageDailyStudySeconds(avgDaily)
+                .attendanceDays(attendanceDays)
+                .eligibleDays(eligibleDays)
+                .attendanceRate(pct(attendanceDays, eligibleDays, 1))
+                .days(days);
+
+        if (period.range() == Range.DAY) {
+            DaySummary d = days.get(0);
+            b.date(period.start())
+             .firstStartedAt(d.getFirstStartedAt())
+             .lastEndedAt(d.getLastEndedAt())
+             .achievementRate(pct(total, target, 2));
+        } else {
+            b.achievementRate(pct(avgDaily, target, 2));
+        }
+        return b.build();
+    }
+
+    // ── 출석부 ────────────────────────────────────────────────────────────────
+
+    public GroupStudyStatsDTO.AttendanceBoard getAttendanceBoard(Long userId, Long groupId, Period period) {
+        Snapshot s = load(groupId, userId, period);
+
+        List<MemberAttendance> rows = new ArrayList<>();
+        long totalAttendance = 0L;
+        long totalEligible = 0L;
+        long totalStudy = 0L;
+        for (GroupStudyMember m : s.members()) {
+            Long uid = m.getUser().getId();
+            List<DaySummary> days = daySummaries(s, uid);
+            long study = days.stream().mapToLong(DaySummary::getTotalStudySeconds).sum();
+            int attended = (int) days.stream().filter(d -> Boolean.TRUE.equals(d.getAttended())).count();
+            int eligible = eligibleDaysFor(s, m);
+            totalAttendance += Math.min(attended, eligible);
+            totalEligible += eligible;
+            totalStudy += study;
+            rows.add(MemberAttendance.builder()
+                    .userId(uid)
+                    .memberId(m.getId())
+                    .nickname(m.getNickname() != null && !m.getNickname().isBlank() ? m.getNickname() : m.getUser().getDisplayName())
+                    .photoUrl(m.getUser().getPhotoUrl())
+                    .role(m.getRole() != null ? m.getRole().name() : null)
+                    .studySeconds(study)
+                    .attendanceDays(attended)
+                    .eligibleDays(eligible)
+                    .attendanceRate(pct(attended, eligible, 1))
+                    .days(days)
+                    .build());
+        }
+        assignCompetitionRank(rows);
+
+        MemberAttendance my = rows.stream().filter(r -> r.getUserId().equals(userId)).findFirst().orElse(null);
+        return GroupStudyStatsDTO.AttendanceBoard.builder()
+                .range(period.range())
+                .groupId(groupId)
+                .periodStart(period.start())
+                .periodEnd(period.end())
+                .targetStudySeconds(s.targetSeconds())
+                .memberCount(rows.size())
+                .totalAttendanceDays(totalAttendance)
+                .totalEligibleDays(totalEligible)
+                .attendanceRate(pct(totalAttendance, totalEligible, 1))
+                .totalStudySeconds(totalStudy)
+                .my(my)
+                .members(rows)
+                .build();
+    }
+
+    /** competition ranking: studySeconds DESC, 동률은 같은 등수, 다음 등수는 건너뜀(1,2,2,4). 동률 내 정렬은 이름 오름차순(결정적). */
+    static void assignCompetitionRank(List<MemberAttendance> rows) {
+        rows.sort(Comparator.comparing(MemberAttendance::getStudySeconds, Comparator.reverseOrder())
+                .thenComparing(r -> r.getNickname() == null ? "" : r.getNickname()));
+        int rank = 0;
+        long prev = -1L;
+        for (int i = 0; i < rows.size(); i++) {
+            long secs = rows.get(i).getStudySeconds();
+            if (secs != prev) {
+                rank = i + 1;
+                prev = secs;
+            }
+            rows.get(i).setRank(rank);
+        }
+    }
+}

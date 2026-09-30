@@ -155,10 +155,24 @@ public class GroupStudyService {
             log.warn("Group activity aggregate failed; metrics fall back to 0. reason={}", e.getMessage());
         }
 
+        // 멤버별 가입일(현재 멤버만) — 최근 가입자는 가입일부터만 출석 대상 일수에 포함한다.
+        Map<Long, List<LocalDate>> joinedDatesByGroup = new HashMap<>();
+        try {
+            for (Object[] row : groupStudyMemberRepository.findJoinedAtByGroupIds(ids)) {
+                Long groupId = ((Number) row[0]).longValue();
+                LocalDateTime joinedAt = (LocalDateTime) row[1];
+                joinedDatesByGroup.computeIfAbsent(groupId, k -> new java.util.ArrayList<>())
+                        .add(joinedAt == null ? null : joinedAt.toLocalDate());
+            }
+        } catch (RuntimeException e) {
+            log.warn("Group member join dates lookup failed; metrics fall back to 0. reason={}", e.getMessage());
+        }
+
         Map<Long, GroupActivityMetrics> result = new HashMap<>();
         for (GroupStudy g : groups) {
             long[] agg = aggregates.getOrDefault(g.getId(), new long[]{0L, 0L});
-            result.put(g.getId(), GroupActivityMetrics.compute(today, g.getStartDate(), g.getCurrentCount(), agg[0], agg[1]));
+            result.put(g.getId(), GroupActivityMetrics.compute(today, g.getStartDate(),
+                    joinedDatesByGroup.getOrDefault(g.getId(), Collections.emptyList()), agg[0], agg[1]));
         }
         return result;
     }
@@ -669,6 +683,8 @@ public class GroupStudyService {
                 .maxMembers(groupStudy.getCapacity())
                 .attendanceRate(m.attendanceRate())
                 .avgStudySeconds(m.avgStudySeconds())
+                .attendedMemberDays(m.attendedMemberDays())
+                .eligibleMemberDays(m.eligibleMemberDays())
                 .activityWindowDays(m.windowDays())
                 .build();
     }

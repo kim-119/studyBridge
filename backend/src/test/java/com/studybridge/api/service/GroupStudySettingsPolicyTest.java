@@ -72,39 +72,60 @@ class GroupStudySettingsPolicyTest {
         assertThrows(IllegalArgumentException.class, () -> GroupStudySettingsPolicy.normalizeStudyIconId("http://x"));
     }
 
+    private static List<LocalDate> joined(LocalDate... dates) { return List.of(dates); }
+
+    // T9/T11: 7일 전부터 있던 회원 3명 → 대상 21(멤버·일). 출석 16 → 76.2%, 공부 합 10800초 → 514초/멤버·일
     @Test
-    void metrics_useEligibleDaysAndMemberCountAsDenominator() {
+    void metrics_useEligibleMemberDaysAsDenominator() {
         LocalDate today = LocalDate.of(2026, 9, 30);
-        // 시작한 지 오래된 그룹, 3명, 7일 → 분모 21. 출석 행 16 → 76.2%, 공부 합 3시간 = 10800초 → 514초/인·일
-        GroupActivityMetrics m = GroupActivityMetrics.compute(today, LocalDate.of(2026, 1, 1), 3, 16, 10800);
+        LocalDate old = LocalDate.of(2026, 1, 1);
+        GroupActivityMetrics m = GroupActivityMetrics.compute(today, old, joined(old, old, old), 16, 10800);
+        assertEquals(21L, m.eligibleMemberDays());
         assertEquals(76.2, m.attendanceRate());
         assertEquals(514L, m.avgStudySeconds());
         assertEquals(7, m.windowDays());
+    }
+
+    // T10/T11/T12: 어제 가입한 회원은 2일만 대상 → 7 + 7 + 2 = 16 (21 이 아님). 같은 분모로 avg 계산.
+    @Test
+    void metrics_recentJoiner_countsFromJoinDate() {
+        LocalDate today = LocalDate.of(2026, 9, 30);
+        LocalDate old = LocalDate.of(2026, 1, 1);
+        LocalDate yesterday = today.minusDays(1);
+        assertEquals(7, GroupActivityMetrics.eligibleDays(today.minusDays(6), today, old, old));
+        assertEquals(2, GroupActivityMetrics.eligibleDays(today.minusDays(6), today, old, yesterday));
+        GroupActivityMetrics m = GroupActivityMetrics.compute(today, old, joined(old, old, yesterday), 16, 16000);
+        assertEquals(16L, m.eligibleMemberDays());
+        assertEquals(100.0, m.attendanceRate());
+        assertEquals(1000L, m.avgStudySeconds()); // 16000 / 16
     }
 
     @Test
     void metrics_capWindowAtStartDate_andZeroWhenNoDenominator() {
         LocalDate today = LocalDate.of(2026, 9, 30);
         // 3일 전 시작(28,29,30 → 3일) 2명 → 분모 6. 출석 6 → 100%
-        GroupActivityMetrics recent = GroupActivityMetrics.compute(today, LocalDate.of(2026, 9, 28), 2, 6, 0);
+        LocalDate start = LocalDate.of(2026, 9, 28);
+        GroupActivityMetrics recent = GroupActivityMetrics.compute(today, start, joined(start, start), 6, 0);
         assertEquals(100.0, recent.attendanceRate());
-        assertEquals(3, GroupActivityMetrics.eligibleDays(today, LocalDate.of(2026, 9, 28)));
+        assertEquals(6L, recent.eligibleMemberDays());
+        assertEquals(3, GroupActivityMetrics.eligibleDays(today, start));
 
         // 아직 시작 전 → 0
-        GroupActivityMetrics future = GroupActivityMetrics.compute(today, LocalDate.of(2026, 10, 5), 5, 0, 0);
+        GroupActivityMetrics future = GroupActivityMetrics.compute(today, LocalDate.of(2026, 10, 5), joined(today, today), 0, 0);
         assertEquals(0.0, future.attendanceRate());
         assertEquals(0L, future.avgStudySeconds());
 
-        // 인원 정보 없음/0 → 0 (예외 없음)
-        assertEquals(GroupActivityMetrics.EMPTY, GroupActivityMetrics.compute(today, LocalDate.of(2026, 1, 1), 0, 10, 100));
+        // 멤버 없음 → 0 (예외 없음)
+        assertEquals(GroupActivityMetrics.EMPTY, GroupActivityMetrics.compute(today, LocalDate.of(2026, 1, 1), List.of(), 10, 100));
         assertEquals(GroupActivityMetrics.EMPTY, GroupActivityMetrics.compute(today, LocalDate.of(2026, 1, 1), null, 10, 100));
     }
 
     @Test
     void metrics_clampAbove100() {
         LocalDate today = LocalDate.of(2026, 9, 30);
-        // 탈퇴한 멤버의 과거 출석이 남아 분자가 분모를 넘는 경우에도 100 을 넘지 않는다.
-        GroupActivityMetrics m = GroupActivityMetrics.compute(today, LocalDate.of(2026, 1, 1), 1, 9, 0);
+        // 집계 창 밖 데이터 등으로 분자가 분모를 넘어도 100 을 넘지 않는다.
+        GroupActivityMetrics m = GroupActivityMetrics.compute(today, LocalDate.of(2026, 1, 1), joined(LocalDate.of(2026, 1, 1)), 9, 0);
         assertEquals(100.0, m.attendanceRate());
+        assertEquals(7L, m.attendedMemberDays());
     }
 }

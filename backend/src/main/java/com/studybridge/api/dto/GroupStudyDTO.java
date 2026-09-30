@@ -123,8 +123,10 @@ public class GroupStudyDTO {
         // ── 활동 지표(최근 activityWindowDays 일, 서버 계산·프론트 포맷). 기록이 없으면 0.
         private Integer memberCount;      // == currentCount (앱 계약용 별칭)
         private Integer maxMembers;       // == capacity (앱 계약용 별칭)
-        private Double attendanceRate;    // 0.0 ~ 100.0 (소수 1자리)
-        private Long avgStudySeconds;     // 그룹원 1인·1일 평균 공부시간(초)
+        private Double attendanceRate;    // Σ출석(멤버·일)/Σ대상(멤버·일)×100, 0.0~100.0 (소수 1자리). 대상 일수는 멤버 가입일부터.
+        private Long avgStudySeconds;     // = avgDailyStudySecondsPerMember: 창 안 공부시간 합 / Σ대상(멤버·일) (초)
+        private Long attendedMemberDays;  // 분자(멤버·일)
+        private Long eligibleMemberDays;  // 분모(멤버·일)
         private Integer activityWindowDays;
     }
 

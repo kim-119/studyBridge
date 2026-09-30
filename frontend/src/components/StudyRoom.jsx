@@ -9,7 +9,7 @@ import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { OpenVidu } from 'openvidu-browser';
 import { useAuth } from '../hooks/useAuth';
-import { groupService, timerService, inquiryService } from '../services/api';
+import { groupService, timerService, inquiryService, STUDY_HEARTBEAT_INTERVAL_MS } from '../services/api';
 import { studyTypeLabel, formatTargetMinutes, memberDisplayName } from '../utils/groupStudy';
 
 // 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
@@ -2199,9 +2199,23 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
       loadMembers();
       loadApplications();
       timerService.syncTimer(study.id)
-        .then(() => console.log('Timer synced with group study room'))
         .catch(err => console.error('Failed to sync timer:', err));
     }
+  }, [study?.id, userId]);
+
+  // 그룹 공부 세션 내구성(2계층): 30초 heartbeat(서버가 진행분을 출석 원장에 크레딧) + 이탈 시 graceful stop.
+  //  · pagehide(탭 닫기/새로고침/앱 background) 와 언마운트(방 나가기/라우트 이동)에서 keepalive 종료 요청.
+  //  · 어느 경로가 유실돼도 서버 reaper 가 마지막 heartbeat 시각으로 종료한다(오차 ≤ 30초).
+  useEffect(() => {
+    if (!study?.id || !userId) return undefined;
+    const interval = setInterval(() => { timerService.heartbeat().catch(() => {}); }, STUDY_HEARTBEAT_INTERVAL_MS);
+    const onPageHide = () => timerService.endTimerKeepalive('PAGE_HIDE');
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('pagehide', onPageHide);
+      timerService.endTimerKeepalive('ROOM_LEAVE');
+    };
   }, [study?.id, userId]);
 
   // 커스텀 모달 상태

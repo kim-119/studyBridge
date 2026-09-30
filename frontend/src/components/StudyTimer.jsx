@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { timerService } from '../services/api';
+import { timerService, STUDY_HEARTBEAT_INTERVAL_MS } from '../services/api';
 
 export default function StudyTimer({ onTimeUpdate }) {
   const { userId } = useAuth();
@@ -77,6 +77,13 @@ export default function StudyTimer({ onTimeUpdate }) {
     return () => clearInterval(timer);
   }, [isRunning, sessionStartTime]);
 
+  // 실행 중 30초 heartbeat — 브라우저 종료 등 비정상 종료 시 서버가 마지막 heartbeat 시각으로 세션을 닫는다(공부시간 0초 방지).
+  useEffect(() => {
+    if (!isRunning) return undefined;
+    const hb = setInterval(() => { timerService.heartbeat().catch(() => {}); }, STUDY_HEARTBEAT_INTERVAL_MS);
+    return () => clearInterval(hb);
+  }, [isRunning]);
+
   const formatTime = (seconds) => {
     const totalSeconds = Math.max(0, Math.round(seconds || 0));
     const h = Math.floor(totalSeconds / 3600);
@@ -110,8 +117,8 @@ export default function StudyTimer({ onTimeUpdate }) {
 
     try {
       const endTime = toSeoulLocalDateTime(new Date());
-      const durationSeconds = sessionSeconds;
-      await timerService.endTimer(userId, endTime, durationSeconds);
+      const durationSeconds = sessionSeconds; // 참고값 — 서버는 자체 시각으로 duration 을 계산한다
+      await timerService.endTimer(userId, endTime, durationSeconds, 'USER_STOP');
       setIsRunning(false);
       setSessionStartTime(null);
       setSessionSeconds(0);

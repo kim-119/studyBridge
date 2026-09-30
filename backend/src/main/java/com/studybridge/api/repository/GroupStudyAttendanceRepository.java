@@ -17,10 +17,14 @@ public interface GroupStudyAttendanceRepository extends JpaRepository<GroupStudy
     List<GroupStudyAttendance> findByGroupStudyIdAndDate(Long groupStudyId, LocalDate date);
     List<GroupStudyAttendance> findByGroupStudyIdAndUserId(Long groupStudyId, Long userId);
 
-    /** 그룹별 기간 집계(카드 지표용): [groupStudyId, 출석 행 수(=사용자·날짜 unique), 공부시간 합(초)]. 목록 1회 조회로 N+1 방지. */
+    /** 통계/출석부: 그룹의 기간 내 출석 행(레거시 0초 행 포함 — 체크인 사실 = 출석). */
+    List<GroupStudyAttendance> findByGroupStudyIdAndDateBetween(Long groupStudyId, LocalDate from, LocalDate to);
+
+    /** 그룹별 기간 집계(카드 지표용): [groupStudyId, 출석 행 수(=사용자·날짜 unique), 공부시간 합(초)]. 현재(JOINED) 멤버의 행만 센다. 목록 1회 조회로 N+1 방지. */
     @Query("SELECT a.groupStudy.id, COUNT(a), COALESCE(SUM(a.studyDurationSeconds), 0) " +
            "FROM GroupStudyAttendance a " +
            "WHERE a.groupStudy.id IN :groupIds AND a.date BETWEEN :from AND :to AND a.status = 'PRESENT' " +
+           "AND EXISTS (SELECT 1 FROM GroupStudyMember m WHERE m.groupStudy.id = a.groupStudy.id AND m.user.id = a.user.id AND m.status = 'JOINED') " +
            "GROUP BY a.groupStudy.id")
     List<Object[]> aggregateByGroupIdsAndDateBetween(@Param("groupIds") Collection<Long> groupIds,
                                                      @Param("from") LocalDate from,

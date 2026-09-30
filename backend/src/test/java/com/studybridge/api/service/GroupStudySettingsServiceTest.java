@@ -85,6 +85,7 @@ class GroupStudySettingsServiceTest {
         when(members.save(any(GroupStudyMember.class))).thenAnswer(inv -> inv.getArgument(0));
         when(applications.save(any(GroupStudyJoinApplication.class))).thenAnswer(inv -> inv.getArgument(0));
         when(attendances.aggregateByGroupIdsAndDateBetween(anyCollection(), any(), any())).thenReturn(List.of());
+        when(members.findJoinedAtByGroupIds(anyCollection())).thenReturn(List.of());
 
         service = new GroupStudyService(groups, members, applications, attendances,
                 mock(GroupChatMessageRepository.class), mock(GroupStudyQuizSessionRepository.class),
@@ -321,7 +322,10 @@ class GroupStudySettingsServiceTest {
         GroupStudy g = existingGroup(true);
         g.setCurrentCount(3);
         when(groups.findAll()).thenReturn(List.of(g));
-        // 3명 × 7일 = 21 → 출석 16행(76.2%), 공부 합 10800초 → 514초
+        // 3명 모두 오래전 가입 × 7일 = 21 → 출석 16행(76.2%), 공부 합 10800초 → 514초
+        java.time.LocalDateTime old = java.time.LocalDateTime.of(2026, 1, 1, 0, 0);
+        when(members.findJoinedAtByGroupIds(anyCollection()))
+                .thenReturn(List.<Object[]>of(new Object[]{GROUP, old}, new Object[]{GROUP, old}, new Object[]{GROUP, old}));
         when(attendances.aggregateByGroupIdsAndDateBetween(anyCollection(), any(), any()))
                 .thenReturn(List.<Object[]>of(new Object[]{GROUP, 16L, 10800L}));
 
@@ -330,6 +334,7 @@ class GroupStudySettingsServiceTest {
         assertEquals(1, list.size());
         assertEquals(76.2, list.get(0).getAttendanceRate());
         assertEquals(514L, list.get(0).getAvgStudySeconds());
+        assertEquals(21L, list.get(0).getEligibleMemberDays());
         assertEquals(3, list.get(0).getMemberCount());
         verify(attendances, Mockito.times(1)).aggregateByGroupIdsAndDateBetween(anyCollection(), any(), any());
     }

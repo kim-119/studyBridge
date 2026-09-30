@@ -757,15 +757,41 @@ export const roomService = {
   },
 };
 
+// 공부 세션 heartbeat 간격(초). 서버(TimerService.HEARTBEAT_INTERVAL_SECONDS)와 동일. 서버는 90초 무응답 시 마지막 heartbeat 시각으로 종료한다.
+export const STUDY_HEARTBEAT_INTERVAL_MS = 30 * 1000;
+
 export const timerService = {
-  startTimer: async (userId, startTime) => {
-    const res = await api.post('/api/timers/start', { startTime });
+  // 서버 시각이 source of truth. startTime 은 하위 호환용으로만 보낸다. supportsHeartbeat=true → 비정상 종료 시 서버 fallback 대상.
+  startTimer: async (userId, startTime, groupStudyId = null) => {
+    const res = await api.post('/api/timers/start', { startTime, groupStudyId, supportsHeartbeat: true });
     return res.data;
   },
 
-  endTimer: async (userId, endTime, durationSeconds) => {
-    const res = await api.post('/api/timers/end', { endTime, durationSeconds });
-    return res.data;
+  // 30초마다 호출: 진행분이 서버 출석 원장에 즉시 반영된다. 활성 세션 없으면 204(null).
+  heartbeat: async () => {
+    const res = await api.post('/api/timers/heartbeat');
+    return res.status === 204 ? null : res.data;
+  },
+
+  // 멱등 종료. endTime/durationSeconds 는 서버가 무시(하위 호환 필드), reason 은 로그용.
+  endTimer: async (userId, endTime, durationSeconds, reason = 'USER_STOP') => {
+    const res = await api.post('/api/timers/end', { endTime, durationSeconds, reason });
+    return res.status === 204 ? null : res.data;
+  },
+
+  // 페이지 이탈(pagehide/unmount)용 graceful stop: keepalive 로 언로드 중에도 요청이 살아남는다(sendBeacon 은 Authorization 헤더를 못 붙임).
+  // 실패해도 서버 heartbeat fallback 이 최대 30초 오차로 복구하므로 결과를 기다리지 않는다.
+  endTimerKeepalive: (reason = 'PAGE_HIDE') => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      fetch(`${API_BASE_URL}/api/timers/end`, {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ reason }),
+      }).catch(() => {});
+    } catch (e) { /* best-effort */ }
   },
 
   getCurrentSession: async (userId) => {
@@ -778,8 +804,9 @@ export const timerService = {
     return res.data;
   },
 
+  // 그룹 방 입장: 이 그룹의 공부 세션 보장(없으면 시작, 다른 컨텍스트 세션은 서버가 종료 후 교체)
   syncTimer: async (groupId) => {
-    const res = await api.post(`/api/timers/sync/${groupId}`);
+    const res = await api.post(`/api/timers/sync/${groupId}?heartbeat=true`);
     return res.data;
   },
 };
