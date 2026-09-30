@@ -1845,3 +1845,92 @@ a {
 @keyframes sb-spin {
   to { transform: rotate(360deg); }
 }
+
+/* =========================================
+   그룹스터디 운영 정책/지표 UI (2026-09-30)
+   ※ 기존 토큰(--color-*, --radius-*, --space-*)만 사용. 새 팔레트/폰트 없음.
+   ========================================= */
+/* 생성/수정 폼: 라벨(120px) + 컨트롤 가로 배치, 모바일에서는 세로 스택 */
+.gs-form-row { display: flex; gap: var(--space-lg); }
+.gs-form-label { width: 120px; flex-shrink: 0; font-weight: 600; color: #374151; display: flex; align-items: flex-start; padding-top: 10px; line-height: 1.4; }
+.gs-form-label .gs-required { color: var(--color-danger); margin-left: 4px; }
+.gs-form-control { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.gs-form-hint { color: var(--color-text-muted); font-size: 13px; line-height: 1.5; }
+.gs-section-title { font-size: 15px; font-weight: 700; color: var(--color-text-main); margin: 0; padding-bottom: 10px; border-bottom: 1px solid var(--color-border); }
+.gs-create-panel { padding: 50px 70px; }
+
+/* 토글 스위치 (role=switch) */
+.gs-toggle { position: relative; width: 44px; height: 24px; border-radius: 24px; border: none; padding: 0; cursor: pointer; background-color: var(--color-border); transition: background-color 0.2s; flex-shrink: 0; }
+.gs-toggle[aria-checked="true"] { background-color: var(--color-primary); }
+.gs-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+.gs-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.gs-toggle-knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background-color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.15); transition: left 0.2s; }
+.gs-toggle[aria-checked="true"] .gs-toggle-knob { left: 22px; }
+.gs-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-input); background-color: var(--color-bg-card); min-height: 48px; box-sizing: border-box; }
+.gs-toggle-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.gs-toggle-row-title { font-size: 14px; font-weight: 600; color: var(--color-text-main); }
+.gs-toggle-row-desc { font-size: 12px; color: var(--color-text-muted); }
+
+/* 세그먼트(스터디 방식) & 시간 칩(목표시간) */
+.gs-segment { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.gs-segment-option { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--color-border-input); border-radius: var(--radius-input); background-color: var(--color-bg-card); cursor: pointer; text-align: left; font: inherit; color: var(--color-text-main); transition: border-color 0.2s, background-color 0.2s; min-height: 44px; }
+.gs-segment-option[aria-pressed="true"] { border-color: var(--color-primary); background-color: rgba(96, 201, 90, 0.08); }
+.gs-segment-option:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.gs-segment-option-title { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+.gs-segment-option-desc { font-size: 12px; color: var(--color-text-muted); line-height: 1.4; }
+.gs-chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
+.gs-chip { height: 40px; min-width: 64px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--color-border-input); background-color: var(--color-bg-card); color: var(--color-text-main); font-size: 14px; font-weight: 600; cursor: pointer; transition: border-color 0.2s, background-color 0.2s, color 0.2s; }
+.gs-chip[aria-pressed="true"] { border-color: var(--color-primary); background-color: var(--color-primary); color: #fff; }
+.gs-chip:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.gs-textarea { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 1px solid var(--color-border-input); border-radius: var(--radius-input); font: inherit; font-size: 14px; color: var(--color-text-main); resize: vertical; min-height: 72px; background-color: var(--color-bg-card); }
+.gs-textarea:focus, .gs-input:focus { outline: none; border-color: var(--color-primary); }
+.gs-input { width: 100%; box-sizing: border-box; height: 44px; padding: 0 14px; border: 1px solid var(--color-border-input); border-radius: var(--radius-input); font: inherit; font-size: 14px; color: var(--color-text-main); background-color: var(--color-bg-card); }
+.gs-counter { font-size: 12px; color: var(--color-text-placeholder); text-align: right; }
+
+/* 그룹 프로필(대표 이미지 + 기본 아이콘 폴백) */
+.gs-profile { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.gs-profile-avatar { width: 72px; height: 72px; border-radius: 16px; overflow: hidden; background-color: var(--color-secondary); display: flex; align-items: center; justify-content: center; flex-shrink: 0; border: 1px solid var(--color-border); }
+.gs-profile-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gs-profile-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.gs-profile-actions .btn-outline, .gs-profile-actions .btn-primary { width: auto; height: 36px; padding: 0 14px; font-size: 13px; }
+
+/* 카드 활동 지표 */
+.gs-card-badges { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 24px); }
+.gs-badge { display: inline-flex; align-items: center; gap: 4px; padding: 5px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; color: #fff; backdrop-filter: blur(4px); box-shadow: 0 2px 10px rgba(0,0,0,0.1); white-space: nowrap; }
+.gs-badge-type { background-color: rgba(17, 24, 39, 0.72); }
+.gs-badge-type.is-cam { background-color: rgba(96, 201, 90, 0.92); }
+.gs-card-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 13px; color: #374151; margin-bottom: 12px; }
+.gs-card-meta span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.gs-card-meta strong { font-weight: 700; color: var(--color-text-main); }
+.gs-card-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+.gs-stat { background-color: var(--color-bg-base); border-radius: var(--radius-btn); padding: 10px 12px; min-width: 0; }
+.gs-stat-label { font-size: 11px; color: var(--color-text-muted); margin-bottom: 2px; display: flex; align-items: center; gap: 4px; }
+.gs-stat-value { font-size: 15px; font-weight: 700; color: var(--color-text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gs-card-date { font-size: 12px; color: var(--color-text-placeholder); margin-bottom: 12px; }
+
+/* 수정 모달 */
+.gs-modal { background-color: var(--color-bg-card); border-radius: var(--radius-card); width: 100%; max-width: 640px; max-height: calc(100vh - 32px); display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); animation: slideUp 0.3s ease-out; }
+.gs-modal-header { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--color-border); }
+.gs-modal-header h2 { margin: 0; font-size: 18px; }
+.gs-modal-body { padding: 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 28px; }
+.gs-modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 24px; border-top: 1px solid var(--color-border); background-color: #F9FAFB; }
+.gs-modal-footer .btn-outline, .gs-modal-footer .btn-primary { width: auto; min-width: 96px; padding: 0 18px; }
+.gs-modal-footer .btn-primary { background-color: #22C55E; }
+
+/* 가입 모달 내 정책 안내 */
+.gs-join-block { margin-bottom: 20px; }
+.gs-join-question { background-color: rgba(96, 201, 90, 0.08); border: 1px solid rgba(96, 201, 90, 0.35); border-radius: var(--radius-btn); padding: 10px 12px; font-size: 13px; color: var(--color-text-main); font-weight: 600; margin-bottom: 8px; word-break: keep-all; }
+.gs-policy-list { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #374151; }
+.gs-policy-list span:first-child { color: var(--color-text-muted); margin-right: 6px; }
+
+@media (max-width: 768px) {
+  .gs-create-panel { padding: 24px 18px !important; gap: 24px !important; }
+  .gs-form-row { flex-direction: column; gap: 8px; }
+  .gs-form-label { width: auto; padding-top: 0; }
+  .gs-segment { grid-template-columns: 1fr; }
+  .gs-form-fixed { width: 100% !important; }
+  .gs-modal { max-height: calc(100dvh - 24px); }
+  .gs-modal-body { padding: 18px 16px; gap: 22px; }
+  .gs-modal-footer { padding: 12px 16px; }
+  .gs-modal-footer .btn-outline, .gs-modal-footer .btn-primary { flex: 1; }
+}

@@ -10,6 +10,7 @@ import SockJS from 'sockjs-client';
 import { OpenVidu } from 'openvidu-browser';
 import { useAuth } from '../hooks/useAuth';
 import { groupService, timerService, inquiryService } from '../services/api';
+import { studyTypeLabel, formatTargetMinutes, memberDisplayName } from '../utils/groupStudy';
 
 // 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
 // - 기존 렌더는 섹션 중심(한 카드에 모든 에이전트가 섞임)이라 에이전트별 사고가 구분되지 않았다.
@@ -617,7 +618,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
       const key = String(m.userId);
       byKey.set(key, {
         userId: m.userId,
-        displayName: m.displayName,
+        displayName: memberDisplayName(m) || m.displayName,
         photoUrl: m.photoUrl || null,
         role: m.role,
         connectionId: null,
@@ -3243,12 +3244,16 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
                   {/* 목표시간 */}
                   <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
-                    <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>목표시간</div>
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <select style={{ backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }}>
-                        <option>매일</option>
-                      </select>
-                      <input type="number" defaultValue={1} style={{ width: '80px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }} />
+                    <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>스터디 방식 · 목표</div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <div style={{ backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px' }}>{studyTypeLabel(study?.studyType)}</div>
+                        <div style={{ backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px' }}>매일 {formatTargetMinutes(study?.targetStudyMinutes)}</div>
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#9CA3AF' }}>
+                        가입 질문 {study?.joinQuestionEnabled ? `ON — "${study.joinQuestion}"` : 'OFF'} · 닉네임 규칙 {study?.nicknameRuleEnabled ? `ON — ${study.nicknameRule}` : 'OFF'}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#9CA3AF' }}>* 변경은 입장 준비 화면의 방장 관리 → "스터디 설정 수정"에서 할 수 있습니다.</div>
                     </div>
                   </div>
 
@@ -3615,6 +3620,14 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                           </td>
                           <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '13px', lineHeight: '1.5' }}>
                             {app.introduction || <span style={{ fontStyle: 'italic', color: '#9CA3AF' }}>(메시지 없음)</span>}
+                            {app.joinAnswer && (
+                              <div style={{ marginTop: '6px', color: '#CBD5E1' }}>
+                                <span style={{ color: '#9CA3AF' }}>Q. {app.joinQuestion || '가입 질문'}</span><br />A. {app.joinAnswer}
+                              </div>
+                            )}
+                            {app.nickname && (
+                              <div style={{ marginTop: '4px', color: '#CBD5E1' }}><span style={{ color: '#9CA3AF' }}>그룹 닉네임</span> {app.nickname}</div>
+                            )}
                           </td>
                           <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '13px' }}>
                             {app.createdAt ? new Date(app.createdAt).toLocaleDateString() : '-'}

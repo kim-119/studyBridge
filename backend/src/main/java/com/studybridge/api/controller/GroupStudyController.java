@@ -140,6 +140,17 @@ public class GroupStudyController {
         return ResponseEntity.noContent().build();
     }
 
+    // 본인 그룹 닉네임 설정/변경 (웹·앱 공통). 멤버 검증은 서비스 계층(SecurityException→403).
+    @PutMapping("/{id}/members/me/nickname")
+    public ResponseEntity<GroupStudyDTO.MemberResponse> updateMyNickname(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id,
+            @RequestBody GroupStudyDTO.MemberNicknameRequest request) {
+        log.info("Request to update my group nickname. userId={}, groupId={}", userDetails.getId(), id);
+        GroupStudyDTO.MemberResponse response = groupStudyService.updateMyNickname(userDetails.getId(), id, request);
+        return ResponseEntity.ok(response);
+    }
+
     @DeleteMapping("/{id}/leave")
     public ResponseEntity<Void> leaveGroup(
             @AuthenticationPrincipal CustomUserDetails userDetails,

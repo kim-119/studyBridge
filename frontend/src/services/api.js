@@ -1187,6 +1187,12 @@ export const groupService = {
     return res.data;
   },
 
+  // 본인 그룹 닉네임 설정/변경 (닉네임 규칙 ON 그룹은 빈 값으로 해제 불가 — 서버 검증)
+  updateMyNickname: async (groupId, nickname) => {
+    const res = await api.put(`/api/groups/${groupId}/members/me/nickname`, { nickname });
+    return res.data;
+  },
+
   kickMember: async (groupId, memberUserId) => {
     const res = await api.delete(`/api/groups/${groupId}/members/${memberUserId}`);
     return res.data;

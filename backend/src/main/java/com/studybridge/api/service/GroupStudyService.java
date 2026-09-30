@@ -17,8 +17,12 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -52,6 +56,13 @@ public class GroupStudyService {
             throw new IllegalArgumentException("그룹 정원은 최대 10명까지만 가능합니다. (WebRTC SFU 서비스 성능 보장)");
         }
 
+        // 운영 정책 검증/정규화 — S3 업로드 전에 수행해 잘못된 요청이 고아 이미지를 남기지 않게 한다.
+        GroupStudyType studyType = GroupStudySettingsPolicy.requireStudyType(request.getStudyType());
+        int targetStudyMinutes = GroupStudySettingsPolicy.requireTargetStudyMinutes(request.getTargetStudyMinutes());
+        String joinQuestion = GroupStudySettingsPolicy.normalizeJoinQuestion(request.isJoinQuestionEnabled(), request.getJoinQuestion());
+        String nicknameRule = GroupStudySettingsPolicy.normalizeNicknameRule(request.isNicknameRuleEnabled(), request.getNicknameRule());
+        String studyIconId = GroupStudySettingsPolicy.normalizeStudyIconId(request.getStudyIconId());
+
         String coverImageKey = null;
         if (image != null && !image.isEmpty()) {
             try {
@@ -74,6 +85,13 @@ public class GroupStudyService {
                 .status(GroupStudyStatus.RECRUITING)
                 .hashtags(request.getHashtags())
                 .coverImageKey(coverImageKey)
+                .studyType(studyType)
+                .targetStudyMinutes(targetStudyMinutes)
+                .joinQuestionEnabled(request.isJoinQuestionEnabled())
+                .joinQuestion(joinQuestion)
+                .nicknameRuleEnabled(request.isNicknameRuleEnabled())
+                .nicknameRule(nicknameRule)
+                .studyIconId(studyIconId)
                 .build();
 
         GroupStudy savedGroupStudy = groupStudyRepository.save(groupStudy);
@@ -97,15 +115,52 @@ public class GroupStudyService {
     public GroupStudyDTO.Response getGroupStudy(Long groupId) {
         GroupStudy groupStudy = groupStudyRepository.findById(groupId)
                 .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
-        return toResponseDTO(groupStudy);
+        return toResponseDTO(groupStudy, computeActivityMetrics(List.of(groupStudy)).get(groupId));
     }
 
     // 모든 모집 중인 혹은 활성화된 그룹스터디 목록을 조회합니다.
 
     public List<GroupStudyDTO.Response> getAllGroupStudies() {
-        return groupStudyRepository.findAll().stream()
-                .map(this::toResponseDTO)
+        return toResponseListWithMetrics(groupStudyRepository.findAll());
+    }
+
+    private List<GroupStudyDTO.Response> toResponseListWithMetrics(List<GroupStudy> groups) {
+        Map<Long, GroupActivityMetrics> metrics = computeActivityMetrics(groups);
+        return groups.stream()
+                .map(g -> toResponseDTO(g, metrics.get(g.getId())))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 카드 활동 지표: 최근 7일 출석 테이블을 그룹 묶음으로 1회 집계한다(N+1 방지).
+     * 집계 실패(예: 컬럼 미반영 DB)는 지표만 0 으로 두고 목록 조회 자체는 실패시키지 않는다.
+     */
+    private Map<Long, GroupActivityMetrics> computeActivityMetrics(List<GroupStudy> groups) {
+        if (groups == null || groups.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        LocalDate today = LocalDate.now();
+        LocalDate from = GroupActivityMetrics.windowStart(today);
+        List<Long> ids = groups.stream().map(GroupStudy::getId).collect(Collectors.toList());
+
+        Map<Long, long[]> aggregates = new HashMap<>();
+        try {
+            for (Object[] row : groupStudyAttendanceRepository.aggregateByGroupIdsAndDateBetween(ids, from, today)) {
+                Long groupId = ((Number) row[0]).longValue();
+                long rows = ((Number) row[1]).longValue();
+                long seconds = row[2] == null ? 0L : ((Number) row[2]).longValue();
+                aggregates.put(groupId, new long[]{rows, seconds});
+            }
+        } catch (RuntimeException e) {
+            log.warn("Group activity aggregate failed; metrics fall back to 0. reason={}", e.getMessage());
+        }
+
+        Map<Long, GroupActivityMetrics> result = new HashMap<>();
+        for (GroupStudy g : groups) {
+            long[] agg = aggregates.getOrDefault(g.getId(), new long[]{0L, 0L});
+            result.put(g.getId(), GroupActivityMetrics.compute(today, g.getStartDate(), g.getCurrentCount(), agg[0], agg[1]));
+        }
+        return result;
     }
 
     // 그룹스터디 가입을 신청합니다.
@@ -133,6 +188,12 @@ public class GroupStudyService {
             throw new IllegalStateException("이미 승인 대기 중인 신청이 존재합니다.");
         }
 
+        // 2-1. 그룹 정책(가입 질문/닉네임 규칙) 서버 검증 — 프론트 검증 우회 방지. 공개/비공개 공통.
+        boolean questionEnabled = Boolean.TRUE.equals(groupStudy.getJoinQuestionEnabled());
+        boolean nicknameRuleEnabled = Boolean.TRUE.equals(groupStudy.getNicknameRuleEnabled());
+        String joinAnswer = GroupStudySettingsPolicy.requireJoinAnswer(questionEnabled, request.getJoinAnswer());
+        String nickname = GroupStudySettingsPolicy.requireNickname(nicknameRuleEnabled, request.getNickname());
+
         // 3. 공개방인 경우: 승인 절차 없이 즉시 가입
         if (groupStudy.getIsPublic()) {
             if (groupStudy.getCurrentCount() >= groupStudy.getCapacity()) {
@@ -145,6 +206,7 @@ public class GroupStudyService {
                     .role(GroupStudyRole.MEMBER)
                     .status(GroupStudyMemberStatus.JOINED)
                     .points(0)
+                    .nickname(nickname)
                     .build();
             groupStudyMemberRepository.save(member);
 
@@ -157,6 +219,8 @@ public class GroupStudyService {
                     .groupStudy(groupStudy)
                     .user(user)
                     .introduction(request.getIntroduction())
+                    .joinAnswer(joinAnswer)
+                    .nickname(nickname)
                     .status(GroupStudyJoinStatus.APPROVED)
                     .build();
             GroupStudyJoinApplication savedDummy = groupStudyJoinApplicationRepository.save(dummyApp);
@@ -169,6 +233,8 @@ public class GroupStudyService {
                 .groupStudy(groupStudy)
                 .user(user)
                 .introduction(request.getIntroduction())
+                .joinAnswer(joinAnswer)
+                .nickname(nickname)
                 .status(GroupStudyJoinStatus.PENDING)
                 .build();
 
@@ -227,6 +293,7 @@ public class GroupStudyService {
                 .role(GroupStudyRole.MEMBER)
                 .status(GroupStudyMemberStatus.JOINED)
                 .points(0)
+                .nickname(application.getNickname())
                 .build();
         groupStudyMemberRepository.save(newMember);
 
@@ -302,6 +369,7 @@ public class GroupStudyService {
                     return GroupStudyDTO.MemberResponse.builder()
                             .userId(member.getUser().getId())
                             .displayName(member.getUser().getDisplayName())
+                            .nickname(member.getNickname())
                             .photoUrl(photoUrl)
                             .major(member.getUser().getMajor())
                             .role(member.getRole())
@@ -380,9 +448,7 @@ public class GroupStudyService {
 
     // 키워드로 그룹스터디 검색
     public List<GroupStudyDTO.Response> searchGroupStudies(String keyword) {
-        return groupStudyRepository.searchByKeyword(keyword).stream()
-                .map(this::toResponseDTO)
-                .collect(Collectors.toList());
+        return toResponseListWithMetrics(groupStudyRepository.searchByKeyword(keyword));
     }
 
     // 그룹스터디 정보 수정
@@ -423,6 +489,7 @@ public class GroupStudyService {
         if (request.getHashtags() != null) {
             groupStudy.setHashtags(request.getHashtags());
         }
+        applySettingsUpdate(groupStudy, request);
 
         // 이미지 수정/삭제 처리
         if (clearImage) {
@@ -454,7 +521,61 @@ public class GroupStudyService {
         }
 
         GroupStudy updated = groupStudyRepository.save(groupStudy);
-        return toResponseDTO(updated);
+        return toResponseDTO(updated, computeActivityMetrics(List.of(updated)).get(updated.getId()));
+    }
+
+    /**
+     * 운영 정책 부분 수정. null 인 필드는 유지한다.
+     * 토글이 켜지는데 문구가 오지 않으면 기존 문구를 재사용하고, 그것도 없으면 400 이다.
+     * 토글이 꺼지면 문구는 null 로 정규화된다(단일 계약).
+     */
+    private void applySettingsUpdate(GroupStudy groupStudy, GroupStudyDTO.UpdateRequest request) {
+        if (request.getStudyType() != null) {
+            groupStudy.setStudyType(GroupStudySettingsPolicy.requireStudyType(request.getStudyType()));
+        }
+        if (request.getTargetStudyMinutes() != null) {
+            groupStudy.setTargetStudyMinutes(GroupStudySettingsPolicy.requireTargetStudyMinutes(request.getTargetStudyMinutes()));
+        }
+        if (request.getJoinQuestionEnabled() != null || request.getJoinQuestion() != null) {
+            boolean enabled = request.getJoinQuestionEnabled() != null
+                    ? request.getJoinQuestionEnabled()
+                    : Boolean.TRUE.equals(groupStudy.getJoinQuestionEnabled());
+            String question = request.getJoinQuestion() != null ? request.getJoinQuestion() : groupStudy.getJoinQuestion();
+            groupStudy.setJoinQuestion(GroupStudySettingsPolicy.normalizeJoinQuestion(enabled, question));
+            groupStudy.setJoinQuestionEnabled(enabled);
+        }
+        if (request.getNicknameRuleEnabled() != null || request.getNicknameRule() != null) {
+            boolean enabled = request.getNicknameRuleEnabled() != null
+                    ? request.getNicknameRuleEnabled()
+                    : Boolean.TRUE.equals(groupStudy.getNicknameRuleEnabled());
+            String rule = request.getNicknameRule() != null ? request.getNicknameRule() : groupStudy.getNicknameRule();
+            groupStudy.setNicknameRule(GroupStudySettingsPolicy.normalizeNicknameRule(enabled, rule));
+            groupStudy.setNicknameRuleEnabled(enabled);
+        }
+        if (Boolean.TRUE.equals(request.getClearStudyIcon())) {
+            groupStudy.setStudyIconId(null);
+        } else if (request.getStudyIconId() != null) {
+            groupStudy.setStudyIconId(GroupStudySettingsPolicy.normalizeStudyIconId(request.getStudyIconId()));
+        }
+    }
+
+    // 본인 그룹 닉네임 변경(앱/웹 공통 계약). 닉네임 규칙 ON 그룹은 빈 값으로 해제할 수 없다.
+    @Transactional
+    public GroupStudyDTO.MemberResponse updateMyNickname(Long userId, Long groupId, GroupStudyDTO.MemberNicknameRequest request) {
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId)
+                .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
+        GroupStudyMember member = groupStudyMemberRepository
+                .findByGroupStudyIdAndUserIdAndStatus(groupId, userId, GroupStudyMemberStatus.JOINED)
+                .orElseThrow(() -> new SecurityException("해당 스터디그룹의 멤버만 그룹 닉네임을 설정할 수 있습니다."));
+
+        boolean ruleEnabled = Boolean.TRUE.equals(groupStudy.getNicknameRuleEnabled());
+        member.setNickname(GroupStudySettingsPolicy.requireNickname(ruleEnabled, request == null ? null : request.getNickname()));
+        groupStudyMemberRepository.save(member);
+
+        return getGroupMembers(groupId).stream()
+                .filter(m -> m.getUserId().equals(userId))
+                .findFirst()
+                .orElseThrow(() -> new NoSuchElementException("멤버 정보를 다시 불러오지 못했습니다."));
     }
 
     // 그룹스터디 탈퇴 또는 가입 신청 취소
@@ -495,6 +616,11 @@ public class GroupStudyService {
     }
 
     private GroupStudyDTO.Response toResponseDTO(GroupStudy groupStudy) {
+        return toResponseDTO(groupStudy, null);
+    }
+
+    private GroupStudyDTO.Response toResponseDTO(GroupStudy groupStudy, GroupActivityMetrics metrics) {
+        GroupActivityMetrics m = metrics != null ? metrics : GroupActivityMetrics.EMPTY;
         String coverImageUrl = null;
         if (groupStudy.getCoverImageKey() != null && !groupStudy.getCoverImageKey().isBlank()) {
             try {
@@ -529,6 +655,21 @@ public class GroupStudyService {
                 .hashtags(groupStudy.getHashtags())
                 .coverImageUrl(coverImageUrl)
                 .leaderPhotoUrl(leaderPhotoUrl)
+                // 운영 정책 — 구 row(컬럼 default 적용 전 캐시 등)도 null 이 새지 않도록 한 번 더 기본값을 보정한다.
+                .studyType(groupStudy.getStudyType() != null ? groupStudy.getStudyType() : GroupStudyType.GENERAL)
+                .targetStudyMinutes(groupStudy.getTargetStudyMinutes() != null
+                        ? groupStudy.getTargetStudyMinutes() : GroupStudySettingsPolicy.TARGET_STUDY_MINUTES_DEFAULT)
+                .joinQuestionEnabled(Boolean.TRUE.equals(groupStudy.getJoinQuestionEnabled()))
+                .joinQuestion(Boolean.TRUE.equals(groupStudy.getJoinQuestionEnabled()) ? groupStudy.getJoinQuestion() : null)
+                .nicknameRuleEnabled(Boolean.TRUE.equals(groupStudy.getNicknameRuleEnabled()))
+                .nicknameRule(Boolean.TRUE.equals(groupStudy.getNicknameRuleEnabled()) ? groupStudy.getNicknameRule() : null)
+                .studyIconId(groupStudy.getStudyIconId())
+                // 활동 지표
+                .memberCount(groupStudy.getCurrentCount())
+                .maxMembers(groupStudy.getCapacity())
+                .attendanceRate(m.attendanceRate())
+                .avgStudySeconds(m.avgStudySeconds())
+                .activityWindowDays(m.windowDays())
                 .build();
     }
 
@@ -579,6 +720,10 @@ public class GroupStudyService {
                 .applicantName(app.getUser().getDisplayName())
                 .applicantPhotoUrl(applicantPhotoUrl)
                 .introduction(app.getIntroduction())
+                .joinQuestion(Boolean.TRUE.equals(app.getGroupStudy().getJoinQuestionEnabled())
+                        ? app.getGroupStudy().getJoinQuestion() : null)
+                .joinAnswer(app.getJoinAnswer())
+                .nickname(app.getNickname())
                 .status(app.getStatus())
                 .createdAt(app.getCreatedAt())
                 .build();

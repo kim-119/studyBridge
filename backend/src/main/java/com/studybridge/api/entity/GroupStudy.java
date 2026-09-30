@@ -58,6 +58,38 @@ public class GroupStudy {
     @Column(name = "cover_image_key", length = 300)
     private String coverImageKey;
 
+    // ── 운영 정책(2026-09-30 추가). 모두 additive + DB default → 기존 row 는 GENERAL/240분/OFF 로 읽힌다.
+    //    ddl-auto=update 가 컬럼을 추가하고, 운영(RDS) 수동 적용 스크립트는 db/migration/V20260930__group_study_settings.sql.
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "study_type", nullable = false, columnDefinition = "varchar(20) default 'GENERAL'")
+    private GroupStudyType studyType = GroupStudyType.GENERAL;
+
+    // 하루 목표 공부시간(분). 화면 문자열이 아닌 숫자 저장. 허용 범위는 GroupStudySettingsPolicy 가 단일 관리.
+    @Builder.Default
+    @Column(name = "target_study_minutes", nullable = false, columnDefinition = "integer default 240")
+    private Integer targetStudyMinutes = 240;
+
+    // 가입 질문: enabled=false 이면 joinQuestion 은 항상 null 로 정규화한다.
+    @Builder.Default
+    @Column(name = "join_question_enabled", nullable = false, columnDefinition = "boolean default false")
+    private Boolean joinQuestionEnabled = false;
+
+    @Column(name = "join_question", length = 200)
+    private String joinQuestion;
+
+    // 그룹 닉네임 규칙 "안내 문자열"(실제 그룹 내 별칭은 GroupStudyMember.nickname). enabled=false 이면 null.
+    @Builder.Default
+    @Column(name = "nickname_rule_enabled", nullable = false, columnDefinition = "boolean default false")
+    private Boolean nicknameRuleEnabled = false;
+
+    @Column(name = "nickname_rule", length = 100)
+    private String nicknameRule;
+
+    // 스터디 아이콘 식별자(추후 사용자 제공 asset 연결용). 현재는 null → 클라이언트 기본 아이콘.
+    @Column(name = "study_icon_id", length = 50)
+    private String studyIconId;
+
     @Builder.Default
     @OneToMany(mappedBy = "groupStudy", cascade = CascadeType.ALL, orphanRemoval = true)
     private java.util.List<GroupStudyMember> members = new java.util.ArrayList<>();
