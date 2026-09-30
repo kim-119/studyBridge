@@ -106,6 +106,7 @@ class StudySessionTimerServiceTest {
             timers.put(t.getId(), t);
             return t;
         });
+        when(repo.saveAndFlush(any(Timer.class))).thenAnswer(inv -> repo.save(inv.getArgument(0)));
         when(repo.findByUserIdAndStatusForUpdate(eq(USER), eq(TimerStatus.STARTED))).thenAnswer(inv -> active());
         when(repo.findByUserIdAndStatus(eq(USER), eq(TimerStatus.STARTED))).thenAnswer(inv -> active());
         when(repo.findByIdForUpdate(anyLong())).thenAnswer(inv -> Optional.ofNullable(timers.get((Long) inv.getArgument(0))));

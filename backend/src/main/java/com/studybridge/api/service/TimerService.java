@@ -110,7 +110,9 @@ public class TimerService {
                                 return toResponseDTO(timerRepository.save(active), true);
                         }
                         endInternal(active, at, TimerEndReason.NEW_SESSION);
-                        timerRepository.save(active);
+                        // 반드시 flush: Hibernate 는 UPDATE 보다 INSERT 를 먼저 내보내므로, 이전 세션의 COMPLETED 전환이 DB 에 먼저 반영되지 않으면
+                        // 새 세션 INSERT 가 partial unique index(user_id WHERE status='STARTED') 에 걸린다(2026-09-30 운영 E2E 에서 실증).
+                        timerRepository.saveAndFlush(active);
                         log.info("Previous session ended for new context. timerId={}, userId={}, prevGroup={}, newGroup={}",
                                         active.getId(), userId, active.getGroupStudyId(), groupStudyId);
                 }
