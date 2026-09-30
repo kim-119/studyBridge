@@ -384,12 +384,22 @@ public class GroupStudyQuizSessionService {
     }
 
     private List<GroupStudySocketDTO.ScoreboardEntry> buildScoreboard(Long groupId) {
-        // JOINED 멤버 목록은 DB 에서(0점 멤버도 반드시 표시), points 는 Redis 랭킹(SoT)에서 가져온다.
+        return buildScoreboard(groupId, Map.of());
+    }
+
+    /**
+     * 점수판: JOINED 멤버 목록은 DB 에서(0점 멤버도 반드시 표시), points 는 랭킹 캐시(Redis, miss 시 RDS 재구축)에서
+     * 그룹 단위 1회 조회한다. {@code pendingDelta} 는 아직 커밋되지 않은 이번 채점분 — reveal 브로드캐스트가
+     * 커밋 전에 나가므로 캐시 값 위에 덮어 더해 실시간 점수판이 즉시 갱신되게 한다(캐시 자체는 커밋 후 재구축).
+     */
+    private List<GroupStudySocketDTO.ScoreboardEntry> buildScoreboard(Long groupId, Map<Long, Integer> pendingDelta) {
+        Map<Long, Integer> points = rankingService.getPointsMap(groupId);
         return groupStudyMemberRepository.findByGroupStudyIdAndStatus(groupId, GroupStudyMemberStatus.JOINED).stream()
                 .map(member -> new GroupStudySocketDTO.ScoreboardEntry(
                         member.getUser().getId(),
                         member.getUser().getDisplayName(),
-                        rankingService.getPoints(groupId, member.getUser().getId())))
+                        points.getOrDefault(member.getUser().getId(), 0)
+                                + pendingDelta.getOrDefault(member.getUser().getId(), 0)))
                 .sorted(Comparator
                         .comparingInt((GroupStudySocketDTO.ScoreboardEntry entry) -> entry.getPoints() != null ? entry.getPoints() : 0)
                         .reversed()
@@ -532,6 +542,7 @@ public class GroupStudyQuizSessionService {
                     .findBySessionIdAndQuestionIdOrderBySubmittedAtAsc(sessionId, question.getId());
             LocalDateTime now = LocalDateTime.now();
             int totalPointsAwarded = 0;
+            Map<Long, Integer> awardedThisReveal = new java.util.HashMap<>();
 
             for (GroupStudyQuizSessionAnswer answer : answers) {
                 if (answer.getGradedAt() != null) {
@@ -550,23 +561,20 @@ public class GroupStudyQuizSessionService {
                     points += bonus;
                 }
 
-                final int awardedPoints = points;
                 if (isCorrect) {
-                    // 점수 SoT 는 Redis ZSet. JOINED 멤버 검증은 유지하되, DB GroupStudyMember.points 에는
-                    // 더 이상 쓰지 않고(dormant) rankingService.addPoints(=ZINCRBY) 단일 경로로만 누적한다.
-                    groupStudyMemberRepository.findByGroupStudyIdAndUserIdAndStatus(session.getGroupStudy().getId(),
-                            answer.getUserId(), GroupStudyMemberStatus.JOINED)
-                            .ifPresent(member -> rankingService.addPoints(
-                                    session.getGroupStudy().getId(),
-                                    answer.getUserId(),
-                                    awardedPoints));
-                    totalPointsAwarded += awardedPoints;
+                    // 점수 정본은 RDS(answer.pointsAwarded, gradedAt). GroupStudyMember.points 는 dormant.
+                    // Redis 랭킹 캐시는 이 트랜잭션 커밋 후 RDS 로 재구축한다(아래 refreshAfterCommit).
+                    awardedThisReveal.merge(answer.getUserId(), points, Integer::sum);
+                    totalPointsAwarded += points;
                 }
 
                 answer.setIsCorrect(isCorrect);
                 answer.setPointsAwarded(points);
                 answer.setGradedAt(now);
                 groupStudyQuizSessionAnswerRepository.save(answer);
+            }
+            if (!awardedThisReveal.isEmpty()) {
+                rankingService.refreshAfterCommit(session.getGroupStudy().getId());
             }
 
             session.setStatus(GroupStudyQuizSessionStatus.REVEALING);
@@ -593,7 +601,7 @@ public class GroupStudyQuizSessionService {
                     .questionEndsAt(session.getQuestionEndsAt())
                     .revealAt(now)
                     .nextQuestionAt(session.getNextQuestionAt())
-                    .scoreboard(buildScoreboard(session.getGroupStudy().getId()))
+                    .scoreboard(buildScoreboard(session.getGroupStudy().getId(), awardedThisReveal))
                     .message("정답이 공개되었습니다.")
                     .build();
 

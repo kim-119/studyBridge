@@ -20,6 +20,8 @@ import java.time.LocalDate;
  * 그룹 출석부 / 개인 공부 통계 (웹·Android 공통).
  *  GET /api/groups/{groupId}/attendance?range=DAY|WEEK|MONTH&date=YYYY-MM-DD[&month=YYYY-MM]
  *  GET /api/groups/{groupId}/study-stats/me?range=DAY|WEEK|MONTH&date=YYYY-MM-DD[&month=YYYY-MM]
+ *  GET /api/groups/{groupId}/stats/study-time?range=ALL|DAY|WEEK|MONTH[&date][&month]  — 학습시간 랭킹(기본 ALL)
+ *  GET /api/groups/{groupId}/stats/quiz-ranking                                        — 퀴즈 누적 랭킹
  * 권한: JWT + 그룹 멤버(비멤버 403, 없는 그룹 404, 잘못된 range/month 400). 타인 userId 조회 파라미터는 제공하지 않는다.
  */
 @RestController
@@ -52,5 +54,25 @@ public class GroupStudyStatsController {
         GroupStudyStatsService.Period period = statsService.resolvePeriod(range, date, month);
         log.info("My study stats. userId={}, groupId={}, range={}, {}~{}", userDetails.getId(), groupId, period.range(), period.start(), period.end());
         return ResponseEntity.ok(statsService.getMyStats(userDetails.getId(), groupId, period));
+    }
+
+    @GetMapping("/stats/study-time")
+    public ResponseEntity<GroupStudyStatsDTO.StudyTimeRanking> studyTimeRanking(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long groupId,
+            @RequestParam(value = "range", required = false) String range,
+            @RequestParam(value = "date", required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(value = "month", required = false) String month) {
+        GroupStudyStatsService.Period period = statsService.resolveRankingPeriod(range, date, month);
+        log.info("Study-time ranking. userId={}, groupId={}, range={}", userDetails.getId(), groupId, period.range());
+        return ResponseEntity.ok(statsService.getStudyTimeRanking(userDetails.getId(), groupId, period));
+    }
+
+    @GetMapping("/stats/quiz-ranking")
+    public ResponseEntity<GroupStudyStatsDTO.QuizRanking> quizRanking(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long groupId) {
+        log.info("Quiz ranking. userId={}, groupId={}", userDetails.getId(), groupId);
+        return ResponseEntity.ok(statsService.getQuizRanking(userDetails.getId(), groupId));
     }
 }

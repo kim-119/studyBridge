@@ -17,7 +17,8 @@ import java.util.List;
  */
 public class GroupStudyStatsDTO {
 
-    public enum Range { DAY, WEEK, MONTH }
+    /** ALL 은 랭킹(study-time) 전용 — 출석부/개인 통계에서는 400. */
+    public enum Range { DAY, WEEK, MONTH, ALL }
 
     /** 날짜 셀(달력/출석부 공용). 기록이 없는 날은 0/false/null. */
     @Data
@@ -77,6 +78,75 @@ public class GroupStudyStatsDTO {
         private Double attendanceRate;
         private Integer rank;            // competition ranking(1,2,2,4) — studySeconds DESC, 동률 같은 등수
         private List<DaySummary> days;
+    }
+
+    /** 학습시간 랭킹 멤버 행. studySeconds = 서버 시각 기준 세션 구간 합(진행 중 세션은 마지막 heartbeat 까지). */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class StudyTimeMember {
+        private Integer rank;            // competition ranking(1,2,2,4) — studySeconds DESC
+        private Long userId;
+        private Long memberId;
+        private String nickname;         // 그룹 닉네임(없으면 사용자 표시명)
+        private String profileImageUrl;  // 원본 photoUrl(없으면 null)
+        private String role;             // LEADER | MEMBER
+        private Boolean isMe;
+        private Long studySeconds;
+        private Integer sessionCount;    // 집계에 포함된 세션 수(완료 + 진행 중)
+        private Boolean activeNow;       // 이 그룹에서 진행 중(heartbeat 생존) 세션이 있는지
+    }
+
+    /** GET /api/groups/{groupId}/stats/study-time?range=ALL|DAY|WEEK|MONTH */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class StudyTimeRanking {
+        private Long groupId;
+        private Range range;
+        private LocalDate periodStart;   // ALL 이면 null
+        private LocalDate periodEnd;     // ALL 이면 null
+        private java.time.LocalDateTime generatedAt; // 서버 시각(진행 중 세션 클램프 기준)
+        private Integer memberCount;
+        private Long totalStudySeconds;
+        private StudyTimeMember my;
+        private List<StudyTimeMember> members; // rank 순
+    }
+
+    /** 퀴즈 랭킹 멤버 행. 미참여 멤버는 전부 0. */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class QuizRankingMember {
+        private Integer rank;            // competition ranking — score DESC, accuracy DESC, correctCount DESC
+        private Long userId;
+        private Long memberId;
+        private String nickname;
+        private String profileImageUrl;
+        private String role;
+        private Boolean isMe;
+        private Integer score;           // Σ points_awarded (기존 채점 정책: rewardPoints + 속도 보너스)
+        private Integer correctCount;    // 정답 수
+        private Integer totalQuestions;  // 참여한 세션에서 출제(정답 공개)된 문제 수
+        private Double accuracy;         // correctCount / totalQuestions × 100 (소수 1자리)
+        private Integer quizParticipationCount; // 답안을 1개 이상 제출한 세션 수
+    }
+
+    /** GET /api/groups/{groupId}/stats/quiz-ranking */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class QuizRanking {
+        private Long groupId;
+        private java.time.LocalDateTime generatedAt;
+        private Integer memberCount;
+        private Integer sessionCount;    // 채점 이력이 있는 세션 수
+        private QuizRankingMember my;
+        private List<QuizRankingMember> members; // rank 순
     }
 
     /** GET /api/groups/{groupId}/attendance */

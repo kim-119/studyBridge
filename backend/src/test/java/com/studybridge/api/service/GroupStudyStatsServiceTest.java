@@ -91,7 +91,7 @@ class GroupStudyStatsServiceTest {
         });
 
         Clock clock = Clock.fixed(NOW.atZone(SEOUL).toInstant(), SEOUL);
-        service = new GroupStudyStatsService(groups, members, timerRepo, attRepo, clock);
+        service = new GroupStudyStatsService(groups, members, timerRepo, attRepo, mock(com.studybridge.api.repository.GroupStudyQuizSessionAnswerRepository.class), clock);
     }
 
     private void session(User u, LocalDateTime start, LocalDateTime end) {

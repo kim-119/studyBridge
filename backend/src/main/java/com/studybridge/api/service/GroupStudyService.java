@@ -345,6 +345,8 @@ public class GroupStudyService {
     }
 
     public List<GroupStudyDTO.MemberResponse> getGroupMembers(Long groupId) {
+        // 퀴즈 누적 점수는 그룹 단위 1회 조회(Redis 캐시, miss 시 RDS 재구축) — 멤버마다 Redis 를 치지 않는다.
+        java.util.Map<Long, Integer> quizPoints = rankingService.getPointsMap(groupId);
         return groupStudyMemberRepository.findByGroupStudyIdAndStatus(groupId, GroupStudyMemberStatus.JOINED)
                 .stream()
                 .map(member -> {
@@ -387,7 +389,7 @@ public class GroupStudyService {
                             .photoUrl(photoUrl)
                             .major(member.getUser().getMajor())
                             .role(member.getRole())
-                            .points(rankingService.getPoints(groupId, member.getUser().getId()))
+                            .points(quizPoints.getOrDefault(member.getUser().getId(), 0))
                             .joinedAt(member.getJoinedAt())
                             .recentAttendanceTime(recentAttendanceTime)
                             .recentStudyTimeSeconds(recentStudyTimeSeconds)
