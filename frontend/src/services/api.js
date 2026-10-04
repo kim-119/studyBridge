@@ -257,7 +257,8 @@ api.interceptors.response.use(
     ) {
       if (
         originalRequest.url.includes('/api/users/refresh') ||
-        originalRequest.url.includes('/api/users/login')
+        originalRequest.url.includes('/api/users/login') ||
+        originalRequest.url.includes('/api/users/register')
       ) {
         return Promise.reject(err);
       }
@@ -557,13 +558,35 @@ export const agentService = {
   },
 };
 
+function toAuthError(err, fallbackMessage) {
+  if (!err.response) {
+    return {
+      message: '서버에 연결할 수 없습니다. 네트워크 상태를 확인해주세요.',
+      networkError: true,
+      detail: err.message,
+    };
+  }
+
+  const { status, data } = err.response;
+
+  if (data && typeof data === 'object') {
+    return { ...data, status, message: data.message || fallbackMessage };
+  }
+
+  if (typeof data === 'string' && data.trim()) {
+    return { status, message: data.trim() };
+  }
+
+  return { status, message: fallbackMessage };
+}
+
 export const authService = {
   register: async (userData) => {
     try {
       const res = await api.post('/api/users/register', userData);
       return res.data;
     } catch (err) {
-      throw err.response?.data || { message: '회원가입 실패' };
+      throw toAuthError(err, '회원가입에 실패했습니다. 잠시 후 다시 시도해주세요.');
     }
   },
 

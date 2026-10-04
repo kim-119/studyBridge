@@ -5,60 +5,31 @@ import TextField from '../../components/TextField';
 import MobileScreen from '../../shell/MobileScreen';
 import { authService } from '../../../services/api';
 import { useSubmit } from '../../data/useAsync';
-
-const PASSWORD_MIN_LENGTH = 8;
-
-function validate({ email, password, passwordConfirm, displayName }) {
-  const errors = {};
-
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-    errors.email = '올바른 이메일 형식이 아닙니다.';
-  }
-
-  if (password.length < PASSWORD_MIN_LENGTH) {
-    errors.password = '비밀번호는 8자 이상이어야 합니다.';
-  }
-
-  if (password !== passwordConfirm) {
-    errors.passwordConfirm = '비밀번호가 일치하지 않습니다.';
-  }
-
-  if (!displayName.trim()) {
-    errors.displayName = '이름을 입력해주세요.';
-  }
-
-  return errors;
-}
+import {
+  EMPTY_REGISTER_FORM,
+  buildRegisterPayload,
+  validateRegisterForm,
+} from './registerForm';
 
 export default function RegisterScreen() {
   const navigate = useNavigate();
-  const [form, setForm] = useState({
-    email: '',
-    password: '',
-    passwordConfirm: '',
-    displayName: '',
-    major: '',
-  });
+  const [form, setForm] = useState(EMPTY_REGISTER_FORM);
   const [errors, setErrors] = useState({});
   const [hasAgreed, setAgreed] = useState(false);
 
   const updateField = (field) => (event) =>
     setForm((previous) => ({ ...previous, [field]: event.target.value }));
 
-  const { submit, isSubmitting, errorMessage } = useSubmit(async () => {
-    await authService.register({
-      email: form.email.trim(),
-      password: form.password,
-      displayName: form.displayName.trim(),
-      major: form.major.trim(),
-    });
+  const { submit, isSubmitting, errorMessage, clearError } = useSubmit(async () => {
+    await authService.register(buildRegisterPayload(form));
     navigate('/login', { replace: true });
   });
 
   const handleSubmit = (event) => {
     event.preventDefault();
+    clearError();
 
-    const validationErrors = validate(form);
+    const validationErrors = validateRegisterForm(form);
     setErrors(validationErrors);
 
     if (Object.keys(validationErrors).length > 0) return;
@@ -83,7 +54,7 @@ export default function RegisterScreen() {
           label="비밀번호"
           type="password"
           value={form.password}
-          hint="8자 이상 입력해주세요"
+          hint="영문, 숫자, 특수문자 포함 8~16자"
           error={errors.password}
           onChange={updateField('password')}
         />
@@ -97,7 +68,8 @@ export default function RegisterScreen() {
         />
 
         <TextField
-          label="이름"
+          label="닉네임"
+          hint="2~10자"
           value={form.displayName}
           error={errors.displayName}
           onChange={updateField('displayName')}
