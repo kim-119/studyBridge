@@ -378,7 +378,7 @@ export default function KnowledgeDetail() {
           )}
 
           {/* 액션 버튼 */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '48px' }}>
+          <div className="kn-detail-actions" style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '48px', flexWrap: 'wrap' }}>
             <button 
               onClick={handleLike}
               style={{ padding: '12px 32px', display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: isLiked ? '#FEE2E2' : 'white', border: isLiked ? '2px solid #EF4444' : '2px solid #E5E7EB', color: isLiked ? '#EF4444' : '#4B5563', borderRadius: '40px', fontSize: '16px', fontWeight: '700', cursor: 'pointer', transition: 'all 0.2s' }}

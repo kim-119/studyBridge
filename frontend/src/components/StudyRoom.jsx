@@ -3153,7 +3153,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
             {/* Content Area */}
             <div className="custom-scrollbar" style={{ flex: 1, padding: '0', overflowY: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+              <table className="room-manage-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: '#9CA3AF', fontSize: '13px' }}>
                     <th style={{ padding: '16px 32px', fontWeight: '500' }}>이름</th>
@@ -3303,7 +3303,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                 </>
               ) : roomManageTab === 'members' ? (
                 <div style={{ width: '100%', overflowX: 'auto', padding: '8px 0' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                  <table className="room-manage-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: '#9CA3AF', fontSize: '13px', fontWeight: '500' }}>
                         <th style={{ padding: '12px 16px', fontWeight: '500' }}>이름</th>
@@ -3612,7 +3612,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                       <UserPlus size={14} /> 멤버 초대하기
                     </button>
                   </div>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                  <table className="room-manage-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: '#9CA3AF', fontSize: '13px', fontWeight: '500' }}>
                         <th style={{ padding: '12px 16px', fontWeight: '500', width: '20%' }}>신청자</th>

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { agentService, materialService } from '../services/api';
 import { Bot, Plus, Send, Sparkles, Trash2, X, MessageSquare, MessageCircle, UsersRound, Network, ChevronLeft, ChevronRight, CheckCircle2, Bookmark, ShieldCheck, RefreshCw } from 'lucide-react';
 import AgentDiscussionThread from '../components/studymate/AgentDiscussionThread';
@@ -2309,6 +2310,8 @@ export default function StudyMate() {
   const isMobileInit = typeof window !== 'undefined' && window.innerWidth <= 768;
   const [isLeftOpen, setIsLeftOpen] = useState(!isMobileInit);
   const [isRightOpen, setIsRightOpen] = useState(!isMobileInit);
+  // 모바일 웹(≤768px): 좌/우 패널은 오버레이로 뜨므로 방 선택 후 자동으로 닫고, 바깥 탭으로 닫을 수 있게 한다.
+  const isMobile = useIsMobile();
 
   // 더 자세히 요청 시, 다음 AI 응답을 어떤 노드의 자식로 연결할지 추적
   const pendingDetailParentId = React.useRef(null);
@@ -2728,6 +2731,8 @@ export default function StudyMate() {
     const prevRoomId = selectedAgentIdRef.current;
     if (prevRoomId != null && String(prevRoomId) !== String(agentId)) cancelRoomStream(prevRoomId, 'room_change');
     setSelectedAgent(agent);
+    // 모바일: 오버레이 좌패널이 채팅을 가리지 않도록 방 선택 즉시 닫는다(데스크톱은 그대로 유지).
+    if (isMobile) setIsLeftOpen(false);
     // 방을 바꾸면 이전 방의 교수뷰 잔상(타임라인/말풍선/교수선택/모션)을 즉시 비운다.
     // (mindmapMessages는 chatHistory에서 파생되므로 아래 setChatHistory로 자동 교체된다.)
     setProfessorInteractions([]);
@@ -4777,8 +4782,19 @@ export default function StudyMate() {
         </div>
         )}
 
+        {/* 모바일: 열린 오버레이 패널 바깥 탭으로 닫는 백드롭(데스크톱에선 렌더하지 않음) */}
+        {isMobile && (isLeftOpen || isRightOpen) && (
+          <button
+            type="button"
+            className="pane-backdrop"
+            aria-label="패널 닫기"
+            onClick={() => { setIsLeftOpen(false); setIsRightOpen(false); }}
+          />
+        )}
+
         {/* 좌측 패널 토글 버튼 */}
         <button 
+          className={`pane-toggle pane-toggle-left ${isLeftOpen ? 'is-open' : ''}`}
           onClick={() => setIsLeftOpen(!isLeftOpen)}
           style={{
             position: 'absolute', left: isLeftOpen ? '300px' : '0', top: '50%', transform: 'translateY(-50%)', zIndex: 50,
@@ -5287,6 +5303,7 @@ export default function StudyMate() {
 
         {/* 우측 패널 토글 버튼 */}
         <button 
+          className={`pane-toggle pane-toggle-right ${isRightOpen ? 'is-open' : ''}`}
           onClick={() => setIsRightOpen(!isRightOpen)}
           style={{
             position: 'absolute', right: isRightOpen ? '320px' : '0', top: '50%', transform: 'translateY(-50%)', zIndex: 50,

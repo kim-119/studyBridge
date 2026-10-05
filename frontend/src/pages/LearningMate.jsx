@@ -133,7 +133,7 @@ export default function LearningMate() {
         onChange={(e) => setQuestion(e.target.value)}
         rows={2}
         placeholder={PLACEHOLDERS[0]}
-        className="w-full resize-none rounded-xl border-2 border-[#E5E7EB] bg-white px-4 py-3 text-[15px] text-[#111827] outline-none focus:border-[#69CB5B]"
+        className="lm-question-input w-full resize-none rounded-xl border-2 border-[#E5E7EB] bg-white px-4 py-3 text-[15px] text-[#111827] outline-none focus:border-[#69CB5B]"
         onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) run(); }}
       />
       <div className="mt-1 text-[12px] text-[#9CA3AF]">{PLACEHOLDERS.slice(1).join('   ')}</div>

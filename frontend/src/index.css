@@ -1617,6 +1617,21 @@ a {
   .room-tile--main { grid-column: 1 / -1 !important; order: -1; }
   .room-empty-slot { display: none !important; }
 
+  /* 룸 헤더: 로고/구분선/상단 미디어 pill(하단 컨트롤바와 중복)은 숨기고, 제목은 말줄임 + 인원 배지 한 줄 */
+  .room-header > div:first-child { gap: 8px !important; min-width: 0; flex: 1 1 auto; }
+  .room-header > div:first-child > .sb-logo,
+  .room-header > div:first-child > div:first-child,
+  .room-header > div:first-child > div:nth-child(2) { display: none !important; }
+  .room-header > div:first-child > div:last-child { min-width: 0; flex: 1 1 auto; gap: 8px !important; }
+  .room-header h1 { font-size: 14px !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .room-header > div:first-child > div:last-child > div { white-space: nowrap; flex-shrink: 0; }
+  .room-header > div:last-child { gap: 8px !important; flex-shrink: 0; }
+  .room-header > div:last-child > div:first-child,
+  .room-header > div:last-child > div:nth-child(2) { display: none !important; }
+  /* 방 관리 모달의 멤버/통계 표: 좁은 폭에서 열이 뭉개지지 않게 최소 폭 + 가로 스크롤 */
+  .room-manage-table { min-width: 520px; }
+  div:has(> .room-manage-table) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
   /* 하단 고정 컨트롤 바(마이크/카메라/채팅/나가기) */
   .room-mobile-controlbar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 96;
@@ -1809,6 +1824,8 @@ a {
     font-size: 1.15rem;
     text-align: center;
   }
+  /* 주 보기 7열 헤더("10. 4.(일)")가 좁은 폭에서 뭉개지지 않게 축소 */
+  .fc .fc-col-header-cell-cushion { font-size: 12px; padding: 4px 2px; }
   .dashboard-page .calendar-container,
   .dashboard-page .todo-section {
     padding: 14px;
@@ -1933,4 +1950,54 @@ a {
   .gs-modal-body { padding: 18px 16px; gap: 22px; }
   .gs-modal-footer { padding: 12px 16px; }
   .gs-modal-footer .btn-outline, .gs-modal-footer .btn-primary { flex: 1; }
+}
+
+/* =========================================
+   모바일 웹 9차: 공통 토대 보강(≤768px)
+   ※ 데스크톱(>768px)은 이 블록 밖이라 완전히 불변. 별도 모바일 라우트/컴포넌트 없이
+     동일 URL·동일 API 위에 presentation 만 재배치한다.
+   ========================================= */
+@media (max-width: 768px) {
+  /* 버튼/탭 라벨이 한글 음절 단위로 꺾이지 않게(넘칠 땐 강제 줄바꿈 허용) */
+  button, .btn-primary, .btn-outline, .archive-tab, .dashboard-tab { word-break: keep-all; overflow-wrap: anywhere; }
+  /* 긴 이메일/URL 이 컨테이너를 밀어내지 않게 */
+  a, p, li, td, th { overflow-wrap: anywhere; }
+  /* 학습메이트(질문형) textarea: w-full + padding(content-box) 으로 20px 넘치던 것 → 모바일에서만 border-box */
+  .lm-question-input { box-sizing: border-box; }
+
+  /* 자료보관함 상단 탭: inline-flex 고정 라벨 폭 → 풀폭 균등 + 한 줄 유지 */
+  .archive-tabs { display: flex; width: 100%; box-sizing: border-box; }
+  .archive-tab { flex: 1 1 0; min-width: 0; padding: 10px 8px; font-size: 14px; white-space: nowrap; }
+
+  /* 자료 상세 액션바: 우측 도구 그룹(인라인 flex-shrink:0)이 641px 로 넘쳐 화면이 가로로 밀리던 문제 →
+     제목 행 아래로 내리고, AI 도구 칩은 왼쪽 정렬로 줄바꿈(2줄) + 삭제 버튼 고정 */
+  .archive-action-bar { flex-wrap: wrap; }
+  .archive-action-right {
+    flex-shrink: 1 !important;
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    gap: 8px !important;
+  }
+  .archive-action-right .archive-tools {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .archive-action-right .archive-action-btn { white-space: nowrap; flex-shrink: 0; }
+  .archive-action-right > .btn-outline { flex-shrink: 0; white-space: nowrap; }
+
+  /* 채팅 말풍선: 75% 폭 제한 → 풀폭, 긴 코드/표/이미지는 말풍선 안에서 가로 스크롤 */
+  .chat-history { padding: 14px 12px; }
+  .chat-bubble-container { max-width: 100%; min-width: 0; }
+  .chat-bubble { max-width: 100%; min-width: 0; box-sizing: border-box; overflow-x: auto; }
+  .chat-bubble pre, .chat-bubble table, .chat-bubble img { max-width: 100%; }
+  .chat-bubble code { overflow-wrap: anywhere; }
+
+  /* 지식공유 상세: 액션 버튼 3개가 세로로 찌그러지던 문제 → 한 줄 라벨 + 줄바꿈 배치 */
+  .kn-detail-actions button { white-space: nowrap; padding-left: 18px !important; padding-right: 18px !important; }
+
+  /* 공통 모달: 고정 폭/높이가 화면을 넘지 않게 */
+  .modal-content { max-width: calc(100vw - 32px) !important; max-height: 90dvh; overflow-y: auto; box-sizing: border-box; }
 }

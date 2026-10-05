@@ -241,7 +241,7 @@ export default function ObsidianPage() {
         {selectedRoomId == null ? (
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: '#64748b' }}>
             <Network size={48} color="#312e81" />
-            <div style={{ fontSize: 15 }}>왼쪽에서 학습메이트 방을 선택하면 채팅 로그 기반 지식 그래프를 볼 수 있어요.</div>
+            <div style={{ fontSize: 15, textAlign: 'center', padding: '0 24px', maxWidth: '100%', boxSizing: 'border-box' }}>왼쪽에서 학습메이트 방을 선택하면 채팅 로그 기반 지식 그래프를 볼 수 있어요.</div>
           </div>
         ) : graphState === 'loading' ? (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 14 }}>채팅 로그를 그래프로 변환하는 중…</div>

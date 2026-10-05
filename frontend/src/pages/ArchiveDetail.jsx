@@ -3511,7 +3511,7 @@ export default function ArchiveDetail() {
                   {material.title || material.originalFileName}
                 </span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexShrink: 0 }}>
+              <div className="archive-action-right" style={{ display: 'flex', alignItems: 'center', gap: '16px', flexShrink: 0 }}>
                 {/* 뷰어 너비 (모바일은 세로 스택이라 무의미 → CSS로 숨김) */}
                 <div className="archive-viewer-width" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                   <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginRight: '4px' }}>뷰어 너비:</span>
