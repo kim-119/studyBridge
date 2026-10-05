@@ -1,11 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { Suspense, lazy, useMemo, useState } from 'react';
 import Fab from '../../components/Fab';
-import ScreenState, { EmptyState } from '../../components/ScreenState';
+import ScreenState, { EmptyState, LoadingState } from '../../components/ScreenState';
 import MobileScreen from '../../shell/MobileScreen';
 import { todoService } from '../../../services/api';
 import { useAuth } from '../../../hooks/useAuth';
 import { useAsync, useSubmit } from '../../data/useAsync';
-import ScheduleCalendar from './ScheduleCalendar';
 import TodoActionSheet from './TodoActionSheet';
 import TodoCreateSheet from './TodoCreateSheet';
 import TodoRow from './TodoRow';
@@ -17,6 +16,8 @@ import {
   todosOverlappingRange,
 } from './scheduleEvents';
 import './schedule.css';
+
+const ScheduleCalendar = lazy(() => import('./ScheduleCalendar'));
 
 function asTodoList(data) {
   return Array.isArray(data) ? data : [];
@@ -108,14 +109,16 @@ export default function WeeklyScheduleScreen() {
     <MobileScreen title="주간일정" showBackButton>
       <ScreenState query={todos} loadingLabel="일정을 불러오는 중입니다">
         <>
-          <ScheduleCalendar
-            events={events}
-            selectedDate={selectedDate}
-            visibleRange={visibleRange}
-            onSelectDate={setSelectedDate}
-            onSelectEvent={setActiveTodoId}
-            onVisibleRangeChange={updateVisibleRange}
-          />
+          <Suspense fallback={<LoadingState label="달력을 불러오는 중입니다" />}>
+            <ScheduleCalendar
+              events={events}
+              selectedDate={selectedDate}
+              visibleRange={visibleRange}
+              onSelectDate={setSelectedDate}
+              onSelectEvent={setActiveTodoId}
+              onVisibleRangeChange={updateVisibleRange}
+            />
+          </Suspense>
 
           <PeriodSummary visibleRange={visibleRange} periodTodos={periodTodos} />
 

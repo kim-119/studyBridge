@@ -20,9 +20,29 @@ on:
       - fastapi
 
 jobs:
+  branch-scope:
+    name: Branch Scope Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Android 전용 브랜치 PR 대상 확인
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [[ "$HEAD_REF" == android-* ]]; then
+            echo "FAIL: $HEAD_REF 는 Android 앱 전용 브랜치입니다(fastapi/ops/scripts 미포함)."
+            echo "$HEAD_REF → $BASE_REF 병합은 full-stack 서버 코드를 지우므로 이 파이프라인 대상이 아닙니다."
+            echo "android-features → android-main 으로 PR 하세요. 검증은 StudyBridge Android CI 가 담당합니다."
+            exit 1
+          fi
+
+          echo "PASS: full-stack 브랜치 (${HEAD_REF:-$GITHUB_REF_NAME})"
+
   backend-ci:
     name: Backend Spring Boot Gradle Build
     runs-on: ubuntu-latest
+    needs: branch-scope
 
     steps:
       - name: 소스코드 체크아웃
@@ -58,14 +78,15 @@ jobs:
       - name: Java 버전 확인
         run: java -version
 
-      - name: Spring Boot Gradle 빌드 테스트 제외
+      - name: Spring Boot Gradle 빌드 및 단위 테스트
         run: |
           cd backend
-          ./gradlew clean build -x test
+          ./gradlew clean build
 
   frontend-ci:
     name: Frontend React Build
     runs-on: ubuntu-latest
+    needs: branch-scope
 
     steps:
       - name: 소스코드 체크아웃
@@ -121,6 +142,7 @@ jobs:
   fastapi-ci:
     name: FastAPI Python 3.12 Check
     runs-on: ubuntu-latest
+    needs: branch-scope
 
     steps:
       - name: 소스코드 체크아웃
@@ -250,6 +272,7 @@ jobs:
     name: Final Build Check
     runs-on: ubuntu-latest
     needs:
+      - branch-scope
       - backend-ci
       - frontend-ci
       - fastapi-ci
@@ -259,10 +282,16 @@ jobs:
     steps:
       - name: 전체 CI 결과 확인
         run: |
+          echo "branch-scope result: ${{ needs.branch-scope.result }}"
           echo "backend-ci result: ${{ needs.backend-ci.result }}"
           echo "frontend-ci result: ${{ needs.frontend-ci.result }}"
           echo "fastapi-ci result: ${{ needs.fastapi-ci.result }}"
           echo "docker-ci result: ${{ needs.docker-ci.result }}"
+
+          if [ "${{ needs.branch-scope.result }}" != "success" ]; then
+            echo "branch-scope 실패: Android 전용 브랜치는 이 파이프라인 대상이 아닙니다"
+            exit 1
+          fi
 
           if [ "${{ needs.backend-ci.result }}" != "success" ]; then
             echo "backend-ci 실패"

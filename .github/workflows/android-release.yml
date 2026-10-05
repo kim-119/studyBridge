@@ -73,15 +73,7 @@ jobs:
           test -f frontend/dist-mobile/index.html
 
       - name: 모바일 번들 가드
-        run: |
-          ENTRY=$(ls frontend/dist-mobile/assets/app-*.js)
-
-          if ! grep -q "${MOBILE_API_BASE_URL}" "$ENTRY"; then
-            echo "FAIL: 앱 엔트리에 절대 API base URL이 없습니다."
-            exit 1
-          fi
-
-          echo "PASS: 모바일 번들 검사 통과"
+        run: bash .github/scripts/mobile-bundle-guard.sh
 
       - name: JDK 21 설정
         uses: actions/setup-java@v4
@@ -94,6 +86,19 @@ jobs:
 
       - name: Capacitor Android 동기화
         run: npx cap sync android
+
+      - name: Gradle Wrapper 실행 권한 부여
+        run: chmod +x android/gradlew
+
+      - name: Android 단위 테스트
+        run: |
+          cd android
+          ./gradlew testDebugUnitTest
+
+      - name: Android 정적 검사
+        run: |
+          cd android
+          ./gradlew lintDebug
 
       - name: 서명 키 준비
         env:
@@ -111,9 +116,6 @@ jobs:
           keyAlias=$KEY_ALIAS
           keyPassword=$KEY_PASSWORD
           PROPERTIES
-
-      - name: Gradle Wrapper 실행 권한 부여
-        run: chmod +x android/gradlew
 
       - name: Release APK 및 AAB 빌드
         run: |

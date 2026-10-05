@@ -12,6 +12,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/android-ci.yml"
+      - ".github/scripts/mobile-bundle-guard.sh"
   pull_request:
     branches:
       - android-features
@@ -23,6 +24,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/android-ci.yml"
+      - ".github/scripts/mobile-bundle-guard.sh"
 
 concurrency:
   group: android-ci-${{ github.ref }}
@@ -74,30 +76,7 @@ jobs:
           test -f frontend/dist-mobile/index.html
 
       - name: 모바일 번들 가드
-        run: |
-          ENTRY=$(ls frontend/dist-mobile/assets/app-*.js)
-          echo "앱 엔트리: $ENTRY"
-
-          if ! grep -q "${MOBILE_API_BASE_URL}" "$ENTRY"; then
-            echo "FAIL: 앱 엔트리에 절대 API base URL이 없습니다. WebView에서 모든 요청이 실패합니다."
-            exit 1
-          fi
-
-          # 대형 라이브러리는 동적 import 로 분리돼 엔트리에 본문이 들어가면 안 된다.
-          # 패키지 이름이 아니라 라이브러리 고유 심볼로 검사한다(청크 경로 문자열 오탐 방지).
-          for marker in OpenViduError SockJS fullcalendar app-container; do
-            if grep -q "$marker" "$ENTRY"; then
-              echo "FAIL: 앱 엔트리에 지연 로드 대상 라이브러리 본문($marker)이 포함됐습니다."
-              exit 1
-            fi
-          done
-
-          if ! ls frontend/dist-mobile/assets/chunk-*.js >/dev/null 2>&1; then
-            echo "FAIL: 지연 로드 청크가 생성되지 않았습니다."
-            exit 1
-          fi
-
-          echo "PASS: 앱 엔트리는 절대 API base URL을 쓰고 대형 의존성을 지연 로드합니다."
+        run: bash .github/scripts/mobile-bundle-guard.sh
 
       - name: JDK 21 설정
         uses: actions/setup-java@v4

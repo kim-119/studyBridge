@@ -9,9 +9,8 @@ name: StudyBridge CD Pipeline
 #   - docker-compose.yml → spring 재기동(운영 compose 서비스 정의 위치). react는 운영 미사용.
 # ⚠️ 배포 대상 브랜치 LLM-clean은 기본 브랜치(main)가 아니다.
 #    workflow_run 트리거는 "기본 브랜치에 있는 워크플로우"만 발동하므로 LLM-clean에선 동작하지 않는다.
-#    따라서 LLM-clean push 트리거로 동작한다. CI 통과 보장은 각 배포 잡의 빌드 스텝(npm run build /
-#    backend 이미지 build)이 깨진 커밋에서 자체 실패하는 것으로 대체한다. 정적 배포라 빌드 실패 시
-#    직전 릴리즈(current)가 그대로 유지된다.
+#    따라서 LLM-clean push 트리거로 동작하고, ci-gate 잡이 같은 SHA의 ci.yml push 실행이 success 로
+#    끝날 때까지 기다린 뒤에만 배포 잡을 연다(CI 실패/미완료 커밋은 배포하지 않는다).
 on:
   workflow_dispatch:
     inputs:
@@ -36,8 +35,36 @@ env:
   DEPLOY_SHA: ${{ github.sha }}
 
 jobs:
+  ci-gate:
+    name: CI gate (same SHA)
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: 배포 브랜치 확인
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/LLM-clean" ]; then
+            echo "FAIL: CD는 LLM-clean 에서만 실행합니다(현재 $GITHUB_REF)."
+            exit 1
+          fi
+
+      - name: 소스코드 체크아웃
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+
+      - name: 동일 SHA CI 성공 대기
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ env.DEPLOY_SHA }}
+        run: bash .github/scripts/wait-for-ci.sh
+
   detect-changes:
     name: Detect changed paths
+    needs: ci-gate
     runs-on: ubuntu-latest
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -168,6 +195,18 @@ jobs:
             fi
 
             sudo chown -R www-data:www-data "$REL"
+            PREV="$(readlink -f "$WWW/current" 2>/dev/null || true)"
+            ENTRY_ASSET="$(grep -oE 'assets/index-[^"]+\.js' "$REL/index.html" | head -1)"
+            test -n "$ENTRY_ASSET"
+
+            rollback_frontend() {
+              if [ -n "$PREV" ] && [ -d "$PREV" ]; then
+                echo "직전 릴리즈로 롤백: $PREV"
+                sudo ln -sfn "$PREV" "$WWW/current"
+                sudo systemctl reload nginx
+              fi
+            }
+
             # 원자적 심볼릭 링크 교체
             sudo ln -sfn "$REL" "$WWW/current"
             sudo nginx -t
@@ -177,12 +216,21 @@ jobs:
             # react Docker pull/재시작 금지 — 정적 배포만 수행한다.
             sleep 2
             echo "----- 운영 검증 -----"
-            curl -sI https://studybridge.co.kr | head -1
-            if curl -s https://studybridge.co.kr | grep -nE "/@vite/client|react-refresh|/src/main\.jsx"; then
+            SERVED_HTML="$(curl -fsS https://studybridge.co.kr/)" \
+              || { echo "FAIL: 운영 HTML 응답 실패"; rollback_frontend; exit 1; }
+            if echo "$SERVED_HTML" | grep -nE "/@vite/client|react-refresh|/src/main\.jsx"; then
               echo "FAIL: 운영 HTML에 vite dev 문자열"
+              rollback_frontend
               exit 1
             fi
-            echo "frontend released OK: $REL"
+            if ! echo "$SERVED_HTML" | grep -q "$ENTRY_ASSET"; then
+              echo "FAIL: 운영 HTML이 새 릴리즈 엔트리($ENTRY_ASSET)를 가리키지 않습니다"
+              rollback_frontend
+              exit 1
+            fi
+            curl -fsS -o /dev/null "https://studybridge.co.kr/$ENTRY_ASSET" \
+              || { echo "FAIL: 엔트리 에셋 응답 실패"; rollback_frontend; exit 1; }
+            echo "frontend released OK: $REL (prev=$PREV)"
 
   backend-deploy:
     name: Deploy backend (spring only)
@@ -208,8 +256,16 @@ jobs:
 
             # CI가 검증한 정확한 SHA로만 동기화한다. (git clean 금지: EC2의 미커밋/untracked 작업물 보호)
             git fetch origin LLM-clean
+            git merge-base --is-ancestor "${DEPLOY_SHA}" origin/LLM-clean \
+              || { echo "FAIL: ${DEPLOY_SHA} 는 origin/LLM-clean 이력에 없습니다"; exit 1; }
             git switch LLM-clean 2>/dev/null || git checkout LLM-clean
+            # reset --hard 는 추적 파일의 미커밋 수정을 지운다. 운영 작업물을 잃지 않도록 먼저 stash 로 보관한다.
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              git stash push -m "cd-autostash-before-${DEPLOY_SHA:0:8}-$(date +%Y%m%d%H%M%S)"
+              echo "WARN: 미커밋 수정을 stash 로 보관했습니다: $(git stash list | head -1)"
+            fi
             git reset --hard "${DEPLOY_SHA}"
+            test "$(git rev-parse HEAD)" = "${DEPLOY_SHA}"
 
             # 롤백용으로 현재 운영 이미지를 보관한다.
             if docker image inspect "$IMAGE:latest" >/dev/null 2>&1; then
@@ -227,6 +283,15 @@ jobs:
             NAME="$(docker ps --format '{{.Names}}' | grep -E '(^|_)capstone-spring$' | head -1)"
             if [ -n "$NAME" ] && [ "$NAME" != "capstone-spring" ]; then docker rename "$NAME" capstone-spring; fi
 
+            rollback_spring() {
+              echo "직전 이미지($IMAGE:prev)로 롤백"
+              docker logs --tail 80 capstone-spring 2>&1 || true
+              if docker image inspect "$IMAGE:prev" >/dev/null 2>&1; then
+                docker tag "$IMAGE:prev" "$IMAGE:latest"
+                docker compose up -d --no-build --force-recreate spring
+              fi
+            }
+
             # 기동 검증: 로그의 Started ApiApplication 을 최대 3분 기다린다.
             ok=0
             for i in $(seq 1 36); do
@@ -235,12 +300,20 @@ jobs:
               sleep 5
             done
             if [ "$ok" != "1" ]; then
-              echo "FAIL: spring 기동 실패 — 직전 이미지($IMAGE:prev)로 롤백"
-              docker logs --tail 80 capstone-spring 2>&1 || true
-              if docker image inspect "$IMAGE:prev" >/dev/null 2>&1; then
-                docker tag "$IMAGE:prev" "$IMAGE:latest"
-                docker compose up -d --no-build --force-recreate spring
-              fi
+              echo "FAIL: spring 기동 실패"
+              rollback_spring
+              exit 1
+            fi
+
+            # 기동 로그만으로는 nginx → spring 경로를 보장하지 못한다. 공개 API 로 실제 응답을 확인한다.
+            healthy=0
+            for i in $(seq 1 12); do
+              if curl -fsS -o /dev/null https://studybridge.co.kr/api/banners/main; then healthy=1; break; fi
+              sleep 5
+            done
+            if [ "$healthy" != "1" ]; then
+              echo "FAIL: /api/banners/main 헬스 체크 실패"
+              rollback_spring
               exit 1
             fi
 
@@ -250,8 +323,10 @@ jobs:
 
   fastapi-deploy:
     name: Deploy fastapi (AI server)
-    needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.fastapi == 'true' }}
+    # backend-deploy 와 같은 EC2 작업 트리에서 git reset 을 하므로 병렬로 돌리지 않고 뒤에 이어서 실행한다.
+    # backend 결과(성공/실패/생략)와 무관하게 fastapi 변경이 있으면 배포한다(기존 독립 배포 의미 유지).
+    needs: [detect-changes, backend-deploy]
+    if: ${{ !cancelled() && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.fastapi == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: EC2 fastapi 동기화 + systemd 재기동
@@ -268,8 +343,16 @@ jobs:
 
             # CI가 검증한 정확한 SHA로 동기화(.env 등 untracked는 reset이 건드리지 않음).
             git fetch origin LLM-clean
+            git merge-base --is-ancestor "${DEPLOY_SHA}" origin/LLM-clean \
+              || { echo "FAIL: ${DEPLOY_SHA} 는 origin/LLM-clean 이력에 없습니다"; exit 1; }
             git switch LLM-clean 2>/dev/null || git checkout LLM-clean
+            # reset --hard 는 추적 파일의 미커밋 수정을 지운다. 운영 작업물을 잃지 않도록 먼저 stash 로 보관한다.
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              git stash push -m "cd-autostash-before-${DEPLOY_SHA:0:8}-$(date +%Y%m%d%H%M%S)"
+              echo "WARN: 미커밋 수정을 stash 로 보관했습니다: $(git stash list | head -1)"
+            fi
             git reset --hard "${DEPLOY_SHA}"
+            test "$(git rev-parse HEAD)" = "${DEPLOY_SHA}"
 
             cd "$APP_DIR/fastapi"
             # 의존성 설치 실패는 배포 실패다(|| true 로 숨기면 kiwipiepy 등 누락 상태의 secondary 가 READY 로 위장된다).
