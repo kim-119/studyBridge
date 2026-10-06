@@ -2685,7 +2685,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                 style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', zIndex: 90 }}
               />
             )}
-            <div style={{
+            <div className="room-chat-drawer" style={{
               position: 'fixed', top: 0, right: 0, bottom: 0,
               width: 'min(100vw, 480px)',
               transform: showChatDrawer ? 'translateX(0)' : 'translateX(110%)',

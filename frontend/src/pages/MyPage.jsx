@@ -541,7 +541,7 @@ export default function MyPage() {
 
       {/* 나의 1:1 문의 메뉴 */}
       <div className="glass-panel animate-fade-in" style={{ padding: '30px', marginTop: '24px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <div className="mp-inquiry-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h3 style={{ margin: 0, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <MessageCircle size={20} /> 나의 1:1 문의 내역
           </h3>

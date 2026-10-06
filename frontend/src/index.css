@@ -2001,3 +2001,63 @@ a {
   /* 공통 모달: 고정 폭/높이가 화면을 넘지 않게 */
   .modal-content { max-width: calc(100vw - 32px) !important; max-height: 90dvh; overflow-y: auto; box-sizing: border-box; }
 }
+
+/* =========================================
+   모바일 웹 10차: 모바일 웹 진입점(m.studybridge.co.kr) 공통 결함 수정(≤768px)
+   ※ 데스크톱(>768px)은 이 블록 밖이라 완전히 불변. 별도 모바일 라우트/컴포넌트 없음.
+   근거: Playwright chromium/webkit × 6 뷰포트 × 전체 라우트 DOM 계측(src/__tests__/mobile/).
+   ========================================= */
+@media (max-width: 768px) {
+  /* [MW10-1] iOS Safari 입력 자동 확대 방지.
+     font-size < 16px 인 input/select/textarea 에 포커스하면 Safari 가 페이지를 확대(zoom)하고
+     확대가 풀리지 않아 이후 화면이 가로로 밀린다(전 라우트 107/228 케이스에서 16px 미만 입력 감지:
+     Login 13.33px 기본값, .input-field 14px, 채팅 입력 등). 인라인 style 의 fontSize 도 덮어야 하므로 !important. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* [MW10-2] safe-area 대응. index.html viewport 에 viewport-fit=cover 를 추가했으므로
+     노치/홈 인디케이터 기기에서 env() 가 실제 값을 갖는다(그 전엔 항상 0 → .room-mobile-controlbar 의 기존
+     env(safe-area-inset-bottom) 패딩이 무효였다). 가로 모드 노치 영역은 페이지 좌우 패딩으로 피하고,
+     하단 고정 입력/작업영역 컨테이너는 홈 인디케이터만큼 바닥 여백을 둔다. 인셋이 0 인 기기/브라우저에선 변화 없음. */
+  body {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  .container-workspace,
+  .archive-detail-container,
+  .room-right-sidebar {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* [MW10-3] 최소 터치 영역. 텍스트 링크(16px 높이: 로그인 '비밀번호를 잊으셨나요?'/'회원가입'),
+     자료 상세 태그 버튼(21px), 학습메이트 패널 토글(25px 폭)이 손가락 터치에 너무 작다.
+     기능·배치는 그대로 두고 패딩/최소 치수만 보강한다. */
+  button.tag { min-height: 32px; padding-top: 6px; padding-bottom: 6px; }
+  .pane-toggle { min-width: 32px; }
+  .auth-inline-link { display: inline-block; padding: 6px 2px; margin: -6px -2px; }
+
+  /* [MW10-4] 학습리포트 주간 통계 행(총 시간/평균 시간/집중 요일/내일 예측): 인라인 flex-wrap:nowrap 4열이
+     375px 에서 라벨·값이 서로 겹치고 잘림(webkit/chromium 공통) → 2열 줄바꿈. 세로 구분선(장식)은 2열에서 의미가 없어 숨김. */
+  .sr-weekly-stats { flex-wrap: wrap !important; row-gap: 14px; }
+  .sr-weekly-stats > div[style*="flex: 1"] { flex: 1 1 calc(50% - 8px) !important; }
+  .sr-weekly-stats-divider { display: none; }
+
+  /* [MW10-5] 마이페이지 '나의 1:1 문의 내역' 제목과 '새 문의하기' 버튼이 한 줄에서 겹침 → 줄바꿈 허용 */
+  .mp-inquiry-head { flex-wrap: wrap; gap: 10px; }
+
+  /* [MW10-7] 지식공유 상세 히어로: 220px 고정 높이 안에 absolute 상단바('목록으로'/수정/삭제)와 하단 제목 블록이
+     겹쳐 '목록으로' 버튼이 태그 칩·제목에 덮였다(webkit/chromium 공통) → 모바일은 흐름 배치(상단바 → 제목), 배경 이미지는 뒤에 깔림 */
+  .kn-hero { height: auto !important; min-height: 220px; display: flex; flex-direction: column; }
+  .kn-hero-img { position: absolute; inset: 0; height: 100% !important; }
+  .kn-hero-topbar { position: relative !important; top: auto !important; width: 100%; padding: 16px 16px 0 !important; flex-wrap: wrap; gap: 8px; }
+  .kn-hero-title { position: relative !important; bottom: auto !important; width: 100%; padding: 20px 16px 24px !important; margin-top: auto !important; }
+  .kn-hero-title h1 { font-size: 26px !important; overflow-wrap: anywhere; }
+  .kn-hero-title > div:last-child { flex-wrap: wrap; row-gap: 6px; }
+
+  /* [MW10-8] 그룹 룸 채팅 드로어(fixed, z-index 95, bottom:0)의 메시지 입력창이 모바일 하단 고정 컨트롤바(z-index 96, 64px+safe-area)에
+     덮여 chromium/webkit 모두에서 탭이 불가능했다 → 드로어 바닥에 컨트롤바 높이만큼 여백을 둬 입력창을 바 위로 올린다. */
+  .room-chat-drawer { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); box-sizing: border-box; }
+}

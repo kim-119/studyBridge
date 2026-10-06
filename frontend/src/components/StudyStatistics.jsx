@@ -237,7 +237,7 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
               });
 
               return (
-                <div style={{ display: 'flex', gap: '16px', width: '100%', flexWrap: 'nowrap', alignItems: 'center' }}>
+                <div className="sr-weekly-stats" style={{ display: 'flex', gap: '16px', width: '100%', flexWrap: 'nowrap', alignItems: 'center' }}>
                   <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
                     <div style={{ padding: '8px', backgroundColor: '#E0F2FE', borderRadius: '8px', color: '#0284C7', flexShrink: 0 }}>
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
@@ -250,7 +250,7 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
                     </div>
                   </div>
 
-                  <div style={{ width: '1px', height: '30px', backgroundColor: '#E5E7EB', flexShrink: 0 }}></div>
+                  <div className="sr-weekly-stats-divider" style={{ width: '1px', height: '30px', backgroundColor: '#E5E7EB', flexShrink: 0 }}></div>
 
                   <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
                     <div style={{ padding: '8px', backgroundColor: '#FEF3C7', borderRadius: '8px', color: '#D97706', flexShrink: 0 }}>
@@ -264,7 +264,7 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
                     </div>
                   </div>
 
-                  <div style={{ width: '1px', height: '30px', backgroundColor: '#E5E7EB', flexShrink: 0 }}></div>
+                  <div className="sr-weekly-stats-divider" style={{ width: '1px', height: '30px', backgroundColor: '#E5E7EB', flexShrink: 0 }}></div>
 
                   <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
                     <div style={{ padding: '8px', backgroundColor: '#DCFCE7', borderRadius: '8px', color: '#16A34A', flexShrink: 0 }}>
@@ -280,7 +280,7 @@ export default function StudyStatistics({ todayStudySeconds = 0 }) {
 
                   {predictionData && (
                     <>
-                      <div style={{ width: '1px', height: '30px', backgroundColor: '#E5E7EB', flexShrink: 0 }}></div>
+                      <div className="sr-weekly-stats-divider" style={{ width: '1px', height: '30px', backgroundColor: '#E5E7EB', flexShrink: 0 }}></div>
                       <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }} title={predictionData.message}>
                         <div style={{ padding: '8px', backgroundColor: '#F3E8FF', borderRadius: '8px', color: '#9333EA', flexShrink: 0 }}>
                           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

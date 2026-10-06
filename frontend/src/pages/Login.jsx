@@ -337,6 +337,7 @@ export default function Login() {
         <p style={{ textAlign: 'center', marginTop: '16px' }}>
           <Link
             to="/forgot-password"
+            className="auth-inline-link"
             style={{
               color: 'var(--color-text-muted)',
               fontSize: '14px',
@@ -357,6 +358,7 @@ export default function Login() {
           계정이 없으신가요?{' '}
           <Link
             to="/register"
+            className="auth-inline-link"
             style={{
               color: 'var(--color-primary)',
               fontWeight: '600',
