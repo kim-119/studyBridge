@@ -33,6 +33,7 @@ import StudyReportScreen from './screens/report/StudyReportScreen';
 import WeeklyScheduleScreen from './screens/schedule/WeeklyScheduleScreen';
 import { dismissTopLayer } from './platform/backDismissStack';
 import { applyNativeChrome, registerHardwareBackButton } from './platform/nativeShell';
+import AppUpdateGate from './update/AppUpdateGate';
 
 const AUTH_PATHS = ['/login', '/register', '/forgot-password'];
 
@@ -301,6 +302,8 @@ export default function MobileApp() {
   );
 
   return (
-    <MobileBoot>{isAuthRoute ? routes : <ShellLayout>{routes}</ShellLayout>}</MobileBoot>
+    <AppUpdateGate>
+      <MobileBoot>{isAuthRoute ? routes : <ShellLayout>{routes}</ShellLayout>}</MobileBoot>
+    </AppUpdateGate>
   );
 }

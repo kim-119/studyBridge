@@ -542,6 +542,77 @@ textarea.mobile-field__input {
   padding: var(--space-md) var(--space-md) calc(var(--space-lg) + env(safe-area-inset-bottom));
 }
 
+.mobile-update {
+  z-index: 70;
+}
+
+.mobile-update__message {
+  margin: 0 0 var(--space-md);
+  color: var(--color-text-main);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.mobile-update__versions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-basic);
+  margin-bottom: var(--space-md);
+  padding: var(--space-md);
+  border-radius: var(--radius-card);
+  background-color: var(--color-bg-base);
+}
+
+.mobile-update__version {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-md);
+  min-width: 0;
+  font-size: 14px;
+}
+
+.mobile-update__version-label {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.mobile-update__version-value {
+  min-width: 0;
+  font-weight: 600;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.mobile-update__notes {
+  margin-bottom: var(--space-md);
+}
+
+.mobile-update__notes-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.mobile-update__notes-list {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--color-text-main);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.mobile-update__error {
+  margin: 0 0 var(--space-md);
+  color: var(--color-danger);
+  font-size: 13px;
+}
+
+.mobile-update__actions {
+  display: flex;
+  gap: var(--space-basic);
+}
+
 .mobile-fab {
   position: fixed;
   right: var(--space-md);
