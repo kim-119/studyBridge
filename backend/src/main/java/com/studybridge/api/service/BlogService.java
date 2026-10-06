@@ -181,18 +181,53 @@ public class BlogService {
         return convertToDTO(blog, userId);
     }
 
-    // 전체 게시글 조회
+    /** 게시판 정렬 키. 알 수 없는 값/null 은 LATEST 로 정규화(기존 호출자 하위 호환). */
+    public enum SortKey {
+        LATEST, POPULAR, OLDEST;
+
+        public static SortKey from(String raw) {
+            if (raw == null) return LATEST;
+            switch (raw.trim().toLowerCase()) {
+                case "popular": return POPULAR;
+                case "oldest": return OLDEST;
+                default: return LATEST;
+            }
+        }
+    }
+
+    // 전체 게시글 조회(기존 계약: 최신순)
     public List<BlogDTO.Response> listPosts(Long userId) {
-        return blogRepository.findAllByOrderByCreatedAtDesc().stream()
+        return listPosts(userId, SortKey.LATEST);
+    }
+
+    // 전체 게시글 조회 + 정렬(latest: created_at DESC / oldest: ASC / popular: 좋아요→댓글→최신)
+    public List<BlogDTO.Response> listPosts(Long userId, SortKey sort) {
+        List<Blog> blogs;
+        switch (sort == null ? SortKey.LATEST : sort) {
+            case POPULAR: blogs = blogRepository.findAllOrderByPopularity(); break;
+            case OLDEST: blogs = blogRepository.findAllByOrderByCreatedAtAsc(); break;
+            default: blogs = blogRepository.findAllByOrderByCreatedAtDesc();
+        }
+        return blogs.stream()
                 .map(blog -> convertToDTO(blog, userId))
                 .collect(Collectors.toList());
     }
 
-    // 게시글 검색
+    // 게시글 검색(기존 계약: 최신순)
     public List<BlogDTO.Response> searchPosts(Long userId, String keyword) {
-        log.info("[블로그 검색] 키워드: {}, 요청자 ID: {}", keyword, userId);
-        return blogRepository.findByTitleContainingIgnoreCaseOrContentContainingIgnoreCaseOrAuthor_DisplayNameContainingIgnoreCaseOrderByCreatedAtDesc(
-                keyword, keyword, keyword).stream()
+        return searchPosts(userId, keyword, SortKey.LATEST);
+    }
+
+    // 게시글 검색 + 정렬
+    public List<BlogDTO.Response> searchPosts(Long userId, String keyword, SortKey sort) {
+        log.info("[블로그 검색] 키워드: {}, 정렬: {}, 요청자 ID: {}", keyword, sort, userId);
+        List<Blog> blogs;
+        switch (sort == null ? SortKey.LATEST : sort) {
+            case POPULAR: blogs = blogRepository.searchOrderByPopularity(keyword); break;
+            case OLDEST: blogs = blogRepository.findByTitleContainingIgnoreCaseOrContentContainingIgnoreCaseOrAuthor_DisplayNameContainingIgnoreCaseOrderByCreatedAtAsc(keyword, keyword, keyword); break;
+            default: blogs = blogRepository.findByTitleContainingIgnoreCaseOrContentContainingIgnoreCaseOrAuthor_DisplayNameContainingIgnoreCaseOrderByCreatedAtDesc(keyword, keyword, keyword);
+        }
+        return blogs.stream()
                 .map(blog -> convertToDTO(blog, userId))
                 .collect(Collectors.toList());
     }

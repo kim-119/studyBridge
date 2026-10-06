@@ -84,19 +84,22 @@ public class BlogController {
     }
 
     // 블로그 포스트 목록 조회
+    //  ?sort=latest(기본)|popular|oldest — 미지정/미지원 값은 latest(기존 계약 그대로)
     @GetMapping
     public ResponseEntity<List<BlogDTO.Response>> listPosts(
-            @AuthenticationPrincipal CustomUserDetails userDetails) {
-        List<BlogDTO.Response> responses = blogService.listPosts(userDetails.getId());
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestParam(value = "sort", required = false) String sort) {
+        List<BlogDTO.Response> responses = blogService.listPosts(userDetails.getId(), BlogService.SortKey.from(sort));
         return ResponseEntity.ok(responses);
     }
 
-    // 블로그 포스트 검색
+    // 블로그 포스트 검색(+ 동일 sort 파라미터)
     @GetMapping("/search")
     public ResponseEntity<List<BlogDTO.Response>> searchPosts(
             @AuthenticationPrincipal CustomUserDetails userDetails,
-            @RequestParam("keyword") String keyword) {
-        List<BlogDTO.Response> responses = blogService.searchPosts(userDetails.getId(), keyword);
+            @RequestParam("keyword") String keyword,
+            @RequestParam(value = "sort", required = false) String sort) {
+        List<BlogDTO.Response> responses = blogService.searchPosts(userDetails.getId(), keyword, BlogService.SortKey.from(sort));
         return ResponseEntity.ok(responses);
     }
 
