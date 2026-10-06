@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { ShieldAlert, Menu, X } from 'lucide-react';
+import { ShieldAlert, Menu, X, Smartphone } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
 /**
@@ -149,7 +149,7 @@ export function Navbar({ authed, username, active }) {
             onClick={() => setMenuOpen(false)}
             className="fixed inset-0 top-20 z-20 bg-black/20"
           />
-          <nav className="relative z-30 max-h-[calc(100vh-5rem)] overflow-y-auto border-b border-gray-100 bg-white px-4 py-3 shadow-lg">
+          <nav className="relative z-30 box-border max-h-[calc(100vh-5rem)] overflow-y-auto overscroll-contain supports-[height:100dvh]:max-h-[calc(100dvh-5rem)] border-b border-gray-100 bg-white px-4 py-3 shadow-lg">
             {NAV_ITEMS.map(({ to, label }) => {
               const isActive = activePath === to || activePath.startsWith(`${to}/`);
               return (
@@ -168,6 +168,18 @@ export function Navbar({ authed, username, active }) {
                 </Link>
               );
             })}
+
+            {/* 공개 메뉴(모바일): /app 은 로그인 없이 접근하는 공개 라우트라 handleNavClick 보호를 타지 않는다. */}
+            <div className="mt-2 border-t border-gray-100 pt-2">
+              <Link
+                to="/app"
+                onClick={() => setMenuOpen(false)}
+                className="flex items-center gap-2 rounded-[10px] px-3 py-3 text-base font-medium text-gray-700 transition hover:bg-gray-50"
+              >
+                <Smartphone size={18} className="text-green-600" />
+                Android 앱 다운로드
+              </Link>
+            </div>
 
             {/* 인증 액션(모바일) */}
             <div className="mt-2 border-t border-gray-100 pt-3">
