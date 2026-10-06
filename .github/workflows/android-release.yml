@@ -167,9 +167,10 @@ jobs:
           AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | tail -1)
           APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
           BADGING=$("$AAPT2" dump badging "$APK" | grep '^package:')
-          PKG=$(echo "$BADGING" | sed -n "s/.*name='\([^']*\)'.*/\1/p")
-          VC=$(echo "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
-          VN=$(echo "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          PKG=$(printf '%s\n' "$BADGING" | cut -d"'" -f2)
+          VC=$(printf '%s\n' "$BADGING" | cut -d"'" -f4)
+          VN=$(printf '%s\n' "$BADGING" | cut -d"'" -f6)
+          echo "Parsed packageName=$PKG versionCode=$VC versionName=$VN"
           if [ "$PKG" != "$EXPECTED_PACKAGE_NAME" ]; then
             echo "FAIL: packageName=$PKG (expected $EXPECTED_PACKAGE_NAME)"; exit 1
           fi
