@@ -32,10 +32,10 @@ for (const b of pickBrowsers(process.env.BROWSERS)) {
     rec(b.name, 'm. 로그인', new URL(page.url()).host === new URL(MOBILE).host, page.url());
     const auth = await page.evaluate(async () => {
       const token = localStorage.getItem('token'); const userId = localStorage.getItem('userId');
-      const r = await fetch(`/api/users/${userId}`, { headers: { Authorization: `Bearer ${token}` } });
+      const r = await fetch('/api/users/profile', { headers: { Authorization: `Bearer ${token}` } });
       return { status: r.status, hasToken: Boolean(token), hasRefresh: Boolean(localStorage.getItem('refreshToken')), origin: location.origin };
     });
-    rec(b.name, 'm. 인증 API(GET /api/users/{id}) 200 + 토큰 저장', auth.status === 200 && auth.hasToken && auth.hasRefresh, JSON.stringify(auth));
+    rec(b.name, 'm. 인증 API(GET /api/users/profile) 200 + 토큰 저장', auth.status === 200 && auth.hasToken && auth.hasRefresh, JSON.stringify(auth));
     // 3) refresh 토큰 플로우(POST /api/users/refresh 가 새 accessToken 반환)
     const refreshed = await page.evaluate(async () => {
       const r = await fetch('/api/users/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refreshToken: localStorage.getItem('refreshToken') }) });
@@ -61,7 +61,8 @@ for (const b of pickBrowsers(process.env.BROWSERS)) {
     rec(b.name, 'm. WebSocket(/ws-group) info 200 + wss 업그레이드 open', ws.info === 200 && ws.up === 'open', JSON.stringify(ws));
     // 7) SSE 스타일 요청이 m. 에서 302 없이 백엔드로 감(헤더 Accept: text/event-stream)
     const sse = await page.evaluate(async () => { const r = await fetch('/api/app/version', { headers: { Accept: 'text/event-stream' } }); return { status: r.status, redirected: r.redirected, url: r.url }; });
-    rec(b.name, 'm. SSE-style fetch 리다이렉트 없음', !sse.redirected && [200, 404].includes(sse.status), JSON.stringify(sse));
+    // Spring 이 text/event-stream 을 못 내는 엔드포인트라 406 을 돌려주는 것 자체가 "리다이렉트 없이 백엔드에 도달" 의 증거
+    rec(b.name, 'm. SSE-style fetch 리다이렉트 없음(백엔드 도달)', !sse.redirected && sse.status !== 302 && sse.url.startsWith(MOBILE), JSON.stringify(sse));
     // 8) 로그아웃
     await page.goto(`${MOBILE}/`, { waitUntil: 'load' });
     await page.click('header button[aria-label="메뉴 열기"]');
