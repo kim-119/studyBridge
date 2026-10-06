@@ -11,6 +11,13 @@ export default function Knowledge() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('전체');
   const [currentPage, setCurrentPage] = useState(1);
+  // 정렬: 서버 정렬(GET /api/blogs?sort=) — latest(최신순)/popular(인기순: 좋아요→댓글→최신)/oldest(오래된순)
+  const [sortKey, setSortKey] = useState('latest');
+  const SORT_OPTIONS = [
+    { key: 'latest', label: '최신순' },
+    { key: 'popular', label: '인기순' },
+    { key: 'oldest', label: '오래된순' },
+  ];
   const PAGE_SIZE = 15;
   
   const [showWriteModal, setShowWriteModal] = useState(false);
@@ -23,16 +30,28 @@ export default function Knowledge() {
 
   const filters = ['전체', '#로드맵', '#코딩테스트', '#토익', '#자료', '#취업', '#디자인'];
 
+  // 정렬이 바뀌면 현재 검색어를 유지한 채 다시 조회한다(페이지는 posts 변경 effect 로 1페이지 리셋).
   useEffect(() => {
-    fetchPosts();
-  }, []);
+    if (searchQuery.trim()) runSearch(searchQuery, sortKey);
+    else fetchPosts(sortKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortKey]);
 
-  const fetchPosts = async () => {
+  const fetchPosts = async (sort = sortKey) => {
     try {
-      const data = await knowledgeService.getPosts();
+      const data = await knowledgeService.getPosts(sort);
       setPosts(data);
     } catch (error) {
       console.error("Failed to fetch posts:", error);
+    }
+  };
+
+  const runSearch = async (keyword, sort = sortKey) => {
+    try {
+      const result = await knowledgeService.searchPosts(keyword, sort);
+      setPosts(result);
+    } catch (error) {
+      console.error("Failed to search posts:", error);
     }
   };
 
@@ -42,12 +61,7 @@ export default function Knowledge() {
         fetchPosts();
         return;
       }
-      try {
-        const result = await knowledgeService.searchPosts(searchQuery);
-        setPosts(result);
-      } catch (error) {
-        console.error("Failed to search posts:", error);
-      }
+      runSearch(searchQuery);
     }
   };
 
@@ -147,8 +161,24 @@ export default function Knowledge() {
           </button>
         </div>
 
+        {/* 정렬: 최신순 | 인기순 | 오래된순 (필터 칩과 같은 스타일, 모바일에선 줄바꿈) */}
+        <div className="kn-sort" role="tablist" aria-label="정렬" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', marginTop: '20px' }}>
+          {SORT_OPTIONS.map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              role="tab"
+              aria-selected={sortKey === opt.key}
+              onClick={() => setSortKey(opt.key)}
+              style={{ padding: '7px 14px', borderRadius: '20px', border: sortKey === opt.key ? '1px solid #60C95A' : '1px solid #E5E7EB', backgroundColor: sortKey === opt.key ? '#60C95A' : '#FFFFFF', color: sortKey === opt.key ? '#FFFFFF' : '#4B5563', fontSize: '13px', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s', whiteSpace: 'nowrap' }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
         {/* Filter Tags */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginTop: '24px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginTop: '14px' }}>
           {filters.map(filter => (
             <button
               key={filter}

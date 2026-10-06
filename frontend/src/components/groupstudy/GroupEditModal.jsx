@@ -115,6 +115,7 @@ export default function GroupEditModal({ study, onClose, onSaved, notify }) {
           <SettingRow label="프로필 이미지">
             <GroupProfileField
               previewUrl={previewUrl}
+              studyType={form.studyType}
               onPickFile={(file) => { setImageFile(file); setClearImage(false); }}
               onClear={() => { setImageFile(null); setPreviewUrl(null); setClearImage(true); }}
               onError={(msg) => setError(msg)}

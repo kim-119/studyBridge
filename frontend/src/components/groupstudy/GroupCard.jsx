@@ -3,6 +3,7 @@ import { User, Lock, Globe, Video, Users, Target, CalendarCheck, Clock } from 'l
 import {
   STUDY_TYPES, studyTypeLabel, formatTargetMinutes, formatStudySeconds, formatAttendanceRate, formatDateDot,
 } from '../../utils/groupStudy';
+import GroupProfileImage from './GroupProfileImage';
 
 const MAX_VISIBLE_TAGS = 3;
 
@@ -14,7 +15,7 @@ export default function GroupCard({ study, userId, applied, onOpen }) {
   const ctaDisabled = (isClosed && !isMine && !study.isPrivate) || applied;
   const ctaLabel = applied
     ? '신청완료'
-    : (isMine ? '내 스터디' : (study.isPrivate ? '참여신청' : (isClosed ? '모집마감' : '참여하기')));
+    : (isMine ? '내 스터디' : (study.isPrivate ? '초대 전용' : (isClosed ? '모집마감' : '참여하기')));
   const ctaBg = applied ? '#E5E7EB' : (isMine ? '#DCFCE7' : (study.isPrivate ? 'rgba(139, 92, 246, 0.1)' : '#EFF6FF'));
   const ctaColor = applied ? '#6B7280' : (isMine ? '#16A34A' : (study.isPrivate ? '#8B5CF6' : '#3B82F6'));
   const isCam = study.studyType === STUDY_TYPES.CAM;
@@ -29,7 +30,8 @@ export default function GroupCard({ study, userId, applied, onOpen }) {
     >
       {/* 썸네일 */}
       <div style={{ position: 'relative', width: '100%', paddingTop: '56.25%', backgroundColor: '#f3f4f6', overflow: 'hidden' }}>
-        <img src={study.thumbnailUrl} alt={study.title} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+        {/* 사용자 지정 이미지 → 없으면 스터디 타입별 기본 아이콘(GENERAL: Users / CAM: Video) */}
+        <GroupProfileImage imageUrl={study.hasCoverImage ? study.thumbnailUrl : null} studyType={study.studyType} iconSize={48} fill alt={study.title} />
         <div style={{ position: 'absolute', bottom: 0, left: 0, width: '100%', height: '50%', background: 'linear-gradient(to top, rgba(0,0,0,0.7), transparent)' }} />
 
         <div className="gs-card-badges">

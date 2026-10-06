@@ -10,6 +10,8 @@ import SockJS from 'sockjs-client';
 import { OpenVidu } from 'openvidu-browser';
 import { useAuth } from '../hooks/useAuth';
 import { groupService, timerService, inquiryService, STUDY_HEARTBEAT_INTERVAL_MS } from '../services/api';
+import GroupInvitePanel from './groupstudy/GroupInvitePanel';
+import GroupQuizRankingTable from './groupstudy/GroupQuizRankingTable';
 import { studyTypeLabel, formatTargetMinutes, memberDisplayName } from '../utils/groupStudy';
 
 // 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
@@ -3224,6 +3226,12 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               >
                 실시간 퀴즈
               </div>
+              <div
+                style={{ padding: '16px 24px', borderBottom: roomManageTab === 'ranking' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'ranking' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s', whiteSpace: 'nowrap' }}
+                onClick={() => setRoomManageTab('ranking')}
+              >
+                퀴즈 랭킹
+              </div>
               <div style={{ flex: 1 }} />
               <div style={{ padding: '0 20px', cursor: 'pointer' }} onClick={() => setShowRoomManageModal(false)}>
                 <X size={20} color="#9CA3AF" />
@@ -3374,6 +3382,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                     </tbody>
                   </table>
                 </div>
+              ) : roomManageTab === 'ranking' ? (
+                <GroupQuizRankingTable groupId={study.id} variant="dark" userId={userId} />
               ) : roomManageTab === 'quiz' ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '8px 0' }}>
                   <div style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '20px' }}>
@@ -3592,25 +3602,9 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                 </div>
               ) : (
                 <div style={{ width: '100%', overflowX: 'auto', padding: '8px 0' }}>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
-                    <button
-                      style={{ padding: '8px 16px', backgroundColor: '#22C55E', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', transition: '0.2s', boxShadow: '0 4px 12px rgba(34,197,94,0.3)' }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#16A34A'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#22C55E'}
-                      onClick={() => {
-                        showPrompt('멤버 초대', '초대할 사용자의 이메일을 입력하세요:', '예: user@example.com', (email) => {
-                          if (email) {
-                            if (email.includes('@')) {
-                              showAlert('초대 완료', `${email} 님에게 스터디 초대장을 발송했습니다!`);
-                            } else {
-                              showAlert('오류', '올바른 이메일 형식이 아닙니다.');
-                            }
-                          }
-                        });
-                      }}
-                    >
-                      <UserPlus size={14} /> 멤버 초대하기
-                    </button>
+                  {/* 비공개 스터디 초대 링크(방장 전용 — 서버가 403 검증). 이전의 이메일 prompt 가짜 초대는 제거. */}
+                  <div style={{ marginBottom: '16px' }}>
+                    <GroupInvitePanel groupId={study.id} variant="dark" onNotify={showAlert} />
                   </div>
                   <table className="room-manage-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                     <thead>

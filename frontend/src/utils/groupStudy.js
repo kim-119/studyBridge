@@ -78,7 +78,8 @@ export const formatDateDot = (value) => {
 };
 
 const DEFAULT_TAGS = ['자율', '캠스터디'];
-const DEFAULT_THUMBNAIL = 'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80';
+// 기본 썸네일: 외부 이미지(unsplash)를 내려받지 않는다. 사용자 지정 이미지가 없으면 GroupProfileImage 가 스터디 타입별 기본 아이콘을 그린다.
+const DEFAULT_THUMBNAIL = null;
 
 export const parseHashtags = (hashtags) => {
   if (!hashtags) return [...DEFAULT_TAGS];

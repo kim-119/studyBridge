@@ -10,6 +10,8 @@ import GroupSettingsFields, { DEFAULT_SETTINGS_FORM } from '../components/groups
 import SettingRow from '../components/groupstudy/SettingRow';
 import { ToggleSwitch } from '../components/groupstudy/ToggleSwitch';
 import { validateCoverImageFile } from '../components/groupstudy/GroupProfileField';
+import GroupProfileImage from '../components/groupstudy/GroupProfileImage';
+import GroupInvitePanel from '../components/groupstudy/GroupInvitePanel';
 import {
   normalizeGroup, buildSettingsPayload, validateSettingsForm, validateJoinInputs,
   studyTypeLabel, formatTargetMinutes, formatStudySeconds, formatAttendanceRate,
@@ -764,7 +766,7 @@ export default function GroupStudy() {
 
                 {/* 상단 이미지 및 제목 영역 */}
                 <div style={{ position: 'relative', height: '160px', backgroundColor: '#1F2937', color: 'white', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '20px' }}>
-                  <img src={selectedPost.thumbnailUrl || "https://images.unsplash.com/photo-1516321497487-e288fb19713f?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80"} alt="Background" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3 }} />
+                  <GroupProfileImage imageUrl={selectedPost.hasCoverImage ? selectedPost.thumbnailUrl : null} studyType={selectedPost.studyType} iconSize={72} fill alt="Background" style={{ opacity: 0.3 }} />
                   <button onClick={() => { setSelectedPost(null); setApplyMessage(''); setJoinAnswer(''); setJoinNickname(''); }} style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', color: 'white', cursor: 'pointer', padding: '4px', zIndex: 2 }}>
                     <X size={20} />
                   </button>
@@ -870,23 +872,12 @@ export default function GroupStudy() {
                   )}
 
                   {selectedPost.isPrivate && !selectedPost.isAlreadyJoined && !appliedStudies.includes(selectedPost.id) && (
-                    <div style={{ marginBottom: '24px' }}>
-                      <div style={{ fontSize: '13px', color: '#6B7280', marginBottom: '8px', display: 'flex', justifyContent: 'space-between' }}>
-                        <span>방장에게 보낼 참가 신청 메시지</span>
-                        <span style={{ fontSize: '11px', color: '#9CA3AF' }}>(선택)</span>
+                    <div style={{ marginBottom: '24px', padding: '14px', borderRadius: '8px', backgroundColor: 'var(--color-secondary)', border: '1px solid var(--color-border)', display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                      <Lock size={16} color="#8B5CF6" style={{ flexShrink: 0, marginTop: '2px' }} />
+                      <div style={{ fontSize: '13px', color: 'var(--color-text-main)', lineHeight: 1.6 }}>
+                        <strong>초대 전용 비공개 스터디</strong>
+                        <div style={{ color: 'var(--color-text-muted)', marginTop: '2px' }}>방장이 공유한 초대 링크로만 참여할 수 있습니다. 검색이나 주소 직접 입력으로는 가입할 수 없습니다.</div>
                       </div>
-                      <textarea
-                        placeholder="자기소개나 각오 등 방장에게 어필할 메시지를 남겨보세요!"
-                        value={applyMessage}
-                        onChange={(e) => setApplyMessage(e.target.value)}
-                        style={{
-                          width: '100%', height: '80px', padding: '12px', borderRadius: '8px', border: '1px solid #D1D5DB',
-                          fontSize: '13px', resize: 'none', outline: 'none', fontFamily: 'inherit',
-                          boxSizing: 'border-box'
-                        }}
-                        onFocus={(e) => e.target.style.borderColor = '#3B82F6'}
-                        onBlur={(e) => e.target.style.borderColor = '#D1D5DB'}
-                      />
                     </div>
                   )}
 
@@ -966,6 +957,10 @@ export default function GroupStudy() {
                         ...(selectedPost.nicknameRuleEnabled ? { nickname: joinNickname.trim() } : {}),
                       };
                       if (selectedPost.isPrivate) {
+                        // 서버(GroupStudyService.applyToGroupStudy)가 비공개 직접 가입을 403 으로 차단한다. 프론트는 안내만.
+                        showAlert('초대 전용 스터디', '비공개 스터디는 방장의 초대 링크로만 참여할 수 있습니다.');
+                        return;
+                        // eslint-disable-next-line no-unreachable
                         const processApplication = async () => {
                           showConfirm('참가 신청', `'${selectedPost.title}' 방장에게 참가 신청서를 전송하시겠습니까?`, async () => {
                             try {
@@ -1008,7 +1003,7 @@ export default function GroupStudy() {
                   >
                     {isFull
                       ? '정원이 마감되었습니다'
-                      : (selectedPost.isAlreadyJoined ? '스터디 입장' : (selectedPost.isPrivate ? '참가신청' : '바로 참여하기'))}
+                      : (selectedPost.isAlreadyJoined ? '스터디 입장' : (selectedPost.isPrivate ? '초대 링크로만 참여 가능' : '바로 참여하기'))}
                   </button>
                 </div>
                   );
@@ -1115,8 +1110,8 @@ export default function GroupStudy() {
               {/* Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', backgroundColor: 'white', borderBottom: '1px solid #E5E7EB', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <div style={{ width: '40px', height: '40px', borderRadius: '8px', overflow: 'hidden' }}>
-                    <img src={preJoinStudy.thumbnailUrl} alt="thumbnail" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <div style={{ width: '40px', height: '40px', borderRadius: '8px', overflow: 'hidden', position: 'relative', flexShrink: 0 }}>
+                    <GroupProfileImage imageUrl={preJoinStudy.hasCoverImage ? preJoinStudy.thumbnailUrl : null} studyType={preJoinStudy.studyType} iconSize={20} fill alt="thumbnail" />
                   </div>
                   <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#111827' }}>{preJoinStudy.title} <span style={{ fontWeight: '500', color: '#6B7280', fontSize: '15px', marginLeft: '8px' }}>입장 준비</span></h2>
                 </div>
@@ -1403,7 +1398,7 @@ export default function GroupStudy() {
                           }
                         });
                       } else {
-                        showAlert('권한 없음', '이 비공개 스터디의 멤버가 아닙니다. 모집게시판을 통해 가입 신청을 해주세요.');
+                        showAlert('권한 없음', '이 비공개 스터디의 멤버가 아닙니다. 방장이 공유한 초대 링크로만 참여할 수 있습니다.');
                       }
                     }
                   }}
@@ -1545,6 +1540,10 @@ export default function GroupStudy() {
 
                     {/* 관리 액션 */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderTop: '1px solid #E5E7EB', paddingTop: '16px', marginTop: 'auto' }}>
+                      {/* 비공개 스터디 초대 링크(방장 전용, 서버 403 검증) */}
+                      {preJoinStudy.isPrivate && (
+                        <GroupInvitePanel groupId={preJoinStudy.id} onNotify={showAlert} />
+                      )}
 
                       <button 
                         onClick={handleDeleteStudy}

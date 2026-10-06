@@ -1214,6 +1214,34 @@ export const groupService = {
     return res.data;
   },
 
+  // ── 비공개 그룹 초대 링크(방장 전용 관리 + 링크 수락) ──
+  createInvitation: async (groupId, body = {}) => {
+    const res = await api.post(`/api/groups/${groupId}/invitations`, body);
+    return res.data;
+  },
+  getActiveInvitations: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/invitations/active`);
+    return res.data;
+  },
+  revokeInvitation: async (groupId, invitationId) => {
+    const res = await api.delete(`/api/groups/${groupId}/invitations/${invitationId}`);
+    return res.data;
+  },
+  previewInvite: async (token) => {
+    const res = await api.get(`/api/groups/invite/${encodeURIComponent(token)}`);
+    return res.data;
+  },
+  acceptInvite: async (token, body = {}) => {
+    const res = await api.post(`/api/groups/invite/${encodeURIComponent(token)}/accept`, body);
+    return res.data;
+  },
+
+  // 그룹 퀴즈 랭킹(RDS 정본 집계, 멤버 전용): 순위/닉네임/점수/정답률/정답 수
+  getQuizRanking: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/stats/quiz-ranking`);
+    return res.data;
+  },
+
   // 본인 그룹 닉네임 설정/변경 (닉네임 규칙 ON 그룹은 빈 값으로 해제 불가 — 서버 검증)
   updateMyNickname: async (groupId, nickname) => {
     const res = await api.put(`/api/groups/${groupId}/members/me/nickname`, { nickname });
@@ -1299,8 +1327,9 @@ export const groupService = {
 };
 
 export const knowledgeService = {
-  getPosts: async () => {
-    const res = await api.get('/api/blogs');
+  // sort: 'latest'(기본) | 'popular' | 'oldest' — 서버 정렬(GET /api/blogs?sort=)
+  getPosts: async (sort = 'latest') => {
+    const res = await api.get('/api/blogs', { params: { sort } });
     return res.data;
   },
 
@@ -1383,10 +1412,11 @@ export const knowledgeService = {
     return res.data;
   },
 
-  searchPosts: async (keyword) => {
+  searchPosts: async (keyword, sort = 'latest') => {
     const res = await api.get('/api/blogs/search', {
       params: {
         keyword,
+        sort,
       },
     });
 

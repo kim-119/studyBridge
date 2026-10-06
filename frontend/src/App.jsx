@@ -13,6 +13,7 @@ import AdminPage from './pages/AdminPage';
 import StudyMate from './pages/StudyMate';
 import LearningMate from './pages/LearningMate';
 import GroupStudy from './pages/GroupStudy';
+import GroupInvitePage from './pages/GroupInvitePage';
 import Archive from './pages/Archive';
 import ArchiveDetail from './pages/ArchiveDetail';
 import Knowledge from './pages/Knowledge';
@@ -117,6 +118,8 @@ function App() {
           <Route path="/studymate" element={<PrivateRoute><StudyMate /></PrivateRoute>} />
           <Route path="/learning-mate" element={<PrivateRoute><LearningMate /></PrivateRoute>} />
           <Route path="/groupstudy" element={<PrivateRoute><GroupStudy /></PrivateRoute>} />
+          {/* 비공개 그룹 초대 링크(데스크톱/모바일/앱 동일 경로). 비로그인은 PrivateRoute 가 state.from 으로 로그인 후 복귀 */}
+          <Route path="/groups/invite/:token" element={<PrivateRoute><GroupInvitePage /></PrivateRoute>} />
           <Route path="/archive" element={<PrivateRoute><Archive /></PrivateRoute>} />
           <Route path="/archive/:type/:id" element={<PrivateRoute><ArchiveDetail /></PrivateRoute>} />
           <Route path="/review-notes" element={<PrivateRoute><ReviewNotesPage /></PrivateRoute>} />
