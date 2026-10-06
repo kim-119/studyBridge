@@ -208,53 +208,51 @@ public class GroupStudyService {
         String joinAnswer = GroupStudySettingsPolicy.requireJoinAnswer(questionEnabled, request.getJoinAnswer());
         String nickname = GroupStudySettingsPolicy.requireNickname(nicknameRuleEnabled, request.getNickname());
 
-        // 3. 공개방인 경우: 승인 절차 없이 즉시 가입
-        if (groupStudy.getIsPublic()) {
-            if (groupStudy.getCurrentCount() >= groupStudy.getCapacity()) {
-                throw new IllegalStateException("스터디 정원이 마감되었습니다.");
-            }
-
-            GroupStudyMember member = GroupStudyMember.builder()
-                    .groupStudy(groupStudy)
-                    .user(user)
-                    .role(GroupStudyRole.MEMBER)
-                    .status(GroupStudyMemberStatus.JOINED)
-                    .points(0)
-                    .nickname(nickname)
-                    .build();
-            groupStudyMemberRepository.save(member);
-
-            groupStudy.setCurrentCount(groupStudy.getCurrentCount() + 1);
-            groupStudyRepository.save(groupStudy);
-
-            log.info("Public group study: Joined immediately. userId={}, groupId={}", userId, groupId);
-
-            GroupStudyJoinApplication dummyApp = GroupStudyJoinApplication.builder()
-                    .groupStudy(groupStudy)
-                    .user(user)
-                    .introduction(request.getIntroduction())
-                    .joinAnswer(joinAnswer)
-                    .nickname(nickname)
-                    .status(GroupStudyJoinStatus.APPROVED)
-                    .build();
-            GroupStudyJoinApplication savedDummy = groupStudyJoinApplicationRepository.save(dummyApp);
-
-            return toApplicationResponseDTO(savedDummy);
+        // 3. 비공개방: 검색/URL 직접 접근으로는 가입할 수 없다. 방장이 발급한 초대 링크(GroupStudyInvitationService.accept)로만 참여.
+        //    (프론트 검증과 무관하게 서버가 최종 차단 — 403)
+        if (!Boolean.TRUE.equals(groupStudy.getIsPublic())) {
+            throw new SecurityException("비공개 스터디는 방장의 초대 링크로만 참여할 수 있습니다.");
         }
 
-        // 4. 비공개방인 경우: 승인제 가입 신청서 생성
-        GroupStudyJoinApplication application = GroupStudyJoinApplication.builder()
+        // 4. 공개방: 승인 절차 없이 즉시 가입
+        GroupStudyJoinApplication savedDummy = joinImmediately(user, groupStudy, request.getIntroduction(), joinAnswer, nickname);
+        log.info("Public group study: Joined immediately. userId={}, groupId={}", userId, groupId);
+        return toApplicationResponseDTO(savedDummy);
+    }
+
+    /**
+     * 승인 절차 없는 즉시 가입(공개방 참여·초대 링크 수락 공통). 정원 검사 → MEMBER 저장 → currentCount+1 → APPROVED 신청 기록.
+     * 호출자가 멤버 중복 검사를 먼저 수행한다. 트랜잭션은 호출자 것을 따른다.
+     */
+    @Transactional
+    public GroupStudyJoinApplication joinImmediately(User user, GroupStudy groupStudy, String introduction,
+            String joinAnswer, String nickname) {
+        if (groupStudy.getCurrentCount() >= groupStudy.getCapacity()) {
+            throw new IllegalStateException("스터디 정원이 마감되었습니다.");
+        }
+
+        GroupStudyMember member = GroupStudyMember.builder()
                 .groupStudy(groupStudy)
                 .user(user)
-                .introduction(request.getIntroduction())
+                .role(GroupStudyRole.MEMBER)
+                .status(GroupStudyMemberStatus.JOINED)
+                .points(0)
+                .nickname(nickname)
+                .build();
+        groupStudyMemberRepository.save(member);
+
+        groupStudy.setCurrentCount(groupStudy.getCurrentCount() + 1);
+        groupStudyRepository.save(groupStudy);
+
+        GroupStudyJoinApplication approved = GroupStudyJoinApplication.builder()
+                .groupStudy(groupStudy)
+                .user(user)
+                .introduction(introduction == null || introduction.isBlank() ? "즉시 참여" : introduction)
                 .joinAnswer(joinAnswer)
                 .nickname(nickname)
-                .status(GroupStudyJoinStatus.PENDING)
+                .status(GroupStudyJoinStatus.APPROVED)
                 .build();
-
-        GroupStudyJoinApplication savedApplication = groupStudyJoinApplicationRepository.save(application);
-        log.info("Private group study: Application submitted. applicationId={}", savedApplication.getId());
-        return toApplicationResponseDTO(savedApplication);
+        return groupStudyJoinApplicationRepository.save(approved);
     }
 
     // 그룹장 전용: 대기 중인 모든 지원서 목록을 조회합니다.
@@ -411,7 +409,9 @@ public class GroupStudyService {
         }
 
         purgeUncascadedChildren(groupId);
+        String coverImageKey = groupStudy.getCoverImageKey();
         groupStudyRepository.delete(groupStudy);
+        deleteCoverImageQuietly(coverImageKey);
         // Redis 랭킹 키 정리 — 내부에서 예외를 삼키므로 Redis 장애로 그룹 삭제가 실패하지 않는다.
         rankingService.clearRanking(groupId);
         log.info("Group study deleted successfully. groupId={}, deletedBy={}", groupId, userId);
@@ -434,10 +434,22 @@ public class GroupStudyService {
         GroupStudy groupStudy = groupStudyRepository.findById(groupId)
                 .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
         purgeUncascadedChildren(groupId);
+        String coverImageKey = groupStudy.getCoverImageKey();
         groupStudyRepository.delete(groupStudy);
+        deleteCoverImageQuietly(coverImageKey);
         // Redis 랭킹 키 정리 — 내부에서 예외를 삼키므로 Redis 장애로 그룹 삭제가 실패하지 않는다.
         rankingService.clearRanking(groupId);
         log.info("Group study force-deleted successfully by admin. groupId={}", groupId);
+    }
+
+    // 그룹 삭제 후 S3 대표 이미지 정리(고아 파일 방지). 실패해도 그룹 삭제는 이미 끝났으므로 로그만 남긴다.
+    private void deleteCoverImageQuietly(String coverImageKey) {
+        if (coverImageKey == null || coverImageKey.isBlank()) return;
+        try {
+            s3Service.deleteFile(coverImageKey);
+        } catch (Exception e) {
+            log.warn("Failed to delete group cover image from S3 (orphan). key={}", coverImageKey, e);
+        }
     }
 
     @Transactional

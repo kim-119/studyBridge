@@ -114,6 +114,11 @@ public class GroupStudy {
     @OneToMany(mappedBy = "groupStudy", cascade = CascadeType.ALL, orphanRemoval = true)
     private java.util.List<GroupStudyQuiz> quizzes = new java.util.ArrayList<>();
 
+    // 초대 링크 — 그룹 삭제 시 함께 삭제(삭제된 그룹의 토큰은 사용 불가).
+    @Builder.Default
+    @OneToMany(mappedBy = "groupStudy", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<GroupStudyInvitation> invitations = new java.util.ArrayList<>();
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
