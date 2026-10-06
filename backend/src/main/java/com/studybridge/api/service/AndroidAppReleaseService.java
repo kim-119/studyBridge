@@ -3,6 +3,7 @@ package com.studybridge.api.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.studybridge.api.dto.AppVersionDTO;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -47,6 +48,8 @@ public class AndroidAppReleaseService {
 
     private record CacheEntry(long expiresAtMillis, Optional<AppVersionDTO> value) {}
 
+    // 생성자가 둘(운영용/테스트용)이라 Spring 이 고를 생성자를 명시한다 — 없으면 "No default constructor found" 로 기동 실패.
+    @Autowired
     public AndroidAppReleaseService(S3Service s3Service,
                                     ObjectMapper objectMapper,
                                     @Value("${app.android.release.s3-prefix:android/}") String prefix,

@@ -53,6 +53,15 @@ class AndroidAppReleaseServiceTest {
     }
 
     @Test
+    void spring_bean_constructor_is_explicitly_autowired() {
+        // 생성자 2개(운영/테스트)인 @Service 는 @Autowired 로 선택 생성자를 못박아야 컨텍스트 기동이 된다(운영 CD 롤백 재발 방지).
+        long autowired = java.util.Arrays.stream(AndroidAppReleaseService.class.getDeclaredConstructors())
+                .filter(c -> c.isAnnotationPresent(org.springframework.beans.factory.annotation.Autowired.class))
+                .count();
+        assertThat(autowired).isEqualTo(1);
+    }
+
+    @Test
     void keys_follow_release_layout_and_prefix_is_normalized() {
         assertThat(service.latestMetadataKey()).isEqualTo("android/latest/version.json");
         assertThat(service.latestApkKey()).isEqualTo("android/latest/StudyBridge-latest.apk");
