@@ -6,6 +6,7 @@ import com.studybridge.api.security.jwt.JwtTokenProvider;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -44,6 +45,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         
                 .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll().requestMatchers("/api/users/register", "/api/users/login", "/api/users/refresh", "/api/users/password-reset/**", "/error", "/temp-materials/**", "/ws-group/**", "/api/banners/main", "/api/test/**").permitAll()
+                        // Android 앱 자체 배포 공개 read-only 엔드포인트(버전 메타데이터·APK 302). 개인정보 없음. GET 만 허용.
+                        .requestMatchers(HttpMethod.GET, "/api/app/version", "/api/app/downloads/android/*").permitAll()
 
                         .anyRequest().authenticated())
                 // 인증 없음/토큰 만료·변조 = 401. 기본(Http403ForbiddenEntryPoint)은 403 이라 "세션 만료" 와 "방 소유자 아님(403)" 을

@@ -22,6 +22,7 @@ import WeeklySchedule from './pages/WeeklySchedule';
 import Planner from './pages/Planner';
 import ReviewNotesPage from './pages/ReviewNotesPage';
 import ObsidianPage from './pages/ObsidianPage';
+import AppDownload from './pages/AppDownload';
 function PrivateRoute({ children }) {
   const { isLoggedIn } = useAuth();
   const location = useLocation();
@@ -83,12 +84,14 @@ function App() {
 
   // Hide Navbar and top padding for Archive Detail pages to make it full screen
   const hideNavbar = location.pathname.includes('/archive/pdf/') || location.pathname.includes('/archive/journal/') || location.pathname.includes('/archive/reviewNote/') || location.pathname.includes('/archive/mindmap/');
+  // /app: Android APK 다운로드 전용 단일 페이지 — 네비/상단 여백 없이 독립 렌더(공개, 로그인 불필요)
+  const isAppDownloadRoute = location.pathname === '/app';
 
   return (
     <div className={isAdminRoute ? "" : "app-container"} style={isAdminRoute ? { width: '100%', height: '100vh', overflow: 'hidden' } : {}}>
-      {(!isAdminRoute && !hideNavbar) && <Navbar />}
+      {(!isAdminRoute && !hideNavbar && !isAppDownloadRoute) && <Navbar />}
 
-      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
+      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : isAppDownloadRoute ? { paddingTop: '0', height: 'auto' } : { paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
         <Routes>
           {/* 메인페이지: 누구나 접근 가능 */}
           <Route path="/" element={<Dashboard />} />
@@ -97,6 +100,8 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
+          {/* Android APK 다운로드 페이지: 누구나 접근 가능(SPA 폴백 전에 명시 라우트로 고정) */}
+          <Route path="/app" element={<AppDownload />} />
 
           {/* 로그인 필요 페이지 */}
           <Route

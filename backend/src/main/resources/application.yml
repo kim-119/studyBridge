@@ -124,6 +124,18 @@ jwt:
   secret: ${JWT_SECRET:studybridge_super_secret_key_for_jwt_token_generation_2026_spring_boot_3_security_6}
   expiration-ms: ${JWT_EXPIRATION_MS:1800000}
 
+# Android 앱 자체 배포(APK). 원천은 S3 {s3-prefix}latest/version.json — 서버 재배포 없이 릴리즈 스크립트가 갱신한다.
+#  · 버킷은 cloud.aws.s3.bucket(비공개) 공유. 다운로드는 /downloads/android/* → Spring 302 presigned(presign-minutes).
+#  · public-base-url 은 응답 downloadUrl 의 단일 출처(메타데이터 값보다 우선).
+app:
+  android:
+    release:
+      s3-prefix: ${ANDROID_RELEASE_S3_PREFIX:android/}
+      public-base-url: ${ANDROID_RELEASE_PUBLIC_BASE_URL:https://studybridge.co.kr}
+      package-name: ${ANDROID_RELEASE_PACKAGE_NAME:kr.co.studybridge.app}
+      metadata-cache-seconds: ${ANDROID_RELEASE_METADATA_CACHE_SECONDS:30}
+      presign-minutes: ${ANDROID_RELEASE_PRESIGN_MINUTES:15}
+
 # 메인 배너 설정. 외부 이미지 원본 URL과 MCP 토큰은 서버 설정/환경변수로만 관리한다(프론트 노출 금지).
 banner:
   main:

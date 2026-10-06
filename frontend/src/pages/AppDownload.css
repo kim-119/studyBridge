@@ -1,0 +1,205 @@
+/* /app Android 다운로드 페이지 — 기존 디자인 토큰(index.css :root)만 사용. 모바일 우선, 가로 스크롤 금지. */
+.app-dl-page {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: var(--space-lg) var(--space-md);
+  box-sizing: border-box;
+  background-color: var(--color-bg-base);
+  overflow-x: hidden;
+}
+
+.app-dl-card {
+  width: 100%;
+  max-width: 440px;
+  box-sizing: border-box;
+  padding: var(--space-xl) var(--space-lg);
+  border-radius: var(--radius-card);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.app-dl-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-basic);
+  text-align: center;
+}
+
+.app-dl-logo {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+}
+
+.app-dl-title {
+  font-size: 24px;
+  margin: 0;
+}
+
+.app-dl-subtitle {
+  margin: 0;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.app-dl-version {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: var(--space-md);
+  background-color: var(--color-secondary);
+  border-radius: var(--radius-card);
+}
+
+.app-dl-version-value {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--color-primary-hover);
+  line-height: 1.1;
+}
+
+.app-dl-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-dl-meta {
+  font-size: 12px;
+  color: var(--color-text-placeholder);
+}
+
+.app-dl-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-basic);
+  padding-bottom: var(--space-basic);
+  border-bottom: 1px solid var(--color-border);
+  min-width: 0;
+}
+
+.app-dl-row--notes {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.app-dl-value {
+  font-size: 14px;
+  font-weight: 600;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.app-dl-value--muted {
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.app-dl-notes {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.app-dl-button {
+  height: 48px;
+  font-size: 16px;
+  text-decoration: none;
+}
+
+.app-dl-button:hover {
+  color: #FFFFFF;
+}
+
+.app-dl-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.app-dl-hint code,
+.app-dl-sha code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  background-color: var(--color-secondary);
+  padding: 1px 4px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.app-dl-sha {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+.app-dl-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-basic);
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  padding: var(--space-md) 0;
+}
+
+.app-dl-status p { margin: 0; }
+
+.app-dl-empty-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-text-main);
+}
+
+.app-dl-status--error {
+  color: var(--color-danger);
+}
+
+.app-dl-retry {
+  width: auto;
+  height: 36px;
+  padding: 0 var(--space-md);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.app-dl-footer {
+  text-align: center;
+  font-size: 13px;
+}
+
+.app-dl-footer a {
+  color: var(--color-primary-hover);
+  font-weight: 600;
+}
+
+@media (max-width: 400px) {
+  .app-dl-card { padding: var(--space-lg) var(--space-md); }
+  .app-dl-row { flex-direction: column; align-items: flex-start; }
+  .app-dl-value { text-align: left; }
+}
