@@ -5,6 +5,19 @@ on:
     branches:
       - android-main
   workflow_dispatch:
+    inputs:
+      publish_to_server:
+        description: "서명 APK 를 EC2/S3 로 배포(latest 갱신). push 트리거는 항상 배포한다."
+        type: boolean
+        default: true
+      force_update:
+        description: "메타데이터 forceUpdate=true (앱이 강제 업데이트로 처리)"
+        type: boolean
+        default: false
+      min_supported_version_code:
+        description: "minimumSupportedVersionCode 덮어쓰기(비우면 manifest→기존 latest→1)"
+        type: string
+        default: ""
 
 concurrency:
   group: android-release-${{ github.ref }}
@@ -13,6 +26,13 @@ concurrency:
 env:
   MOBILE_API_BASE_URL: https://studybridge.co.kr
   KEYSTORE_PATH: android/studybridge-release.jks
+  # ── 서버 배포(EC2/S3) 인터페이스 ─────────────────────────────────────────────
+  #  APK + release-manifest.json 을 기존 CD 와 같은 EC2 SSH 시크릿(EC2_HOST/EC2_USERNAME/EC2_SSH_KEY)으로 전송하고,
+  #  EC2 의 ops/android/publish-android-release.py(LLM-clean 체크아웃, EC2 .env 의 AWS 키 사용)가
+  #  S3 android/releases/ → android/latest/ → version.json 순서로 갱신한다. GitHub 에는 AWS 키를 두지 않는다.
+  RELEASE_INCOMING_ROOT: /home/ubuntu/studybridge-android-releases/incoming
+  RELEASE_PUBLISH_SCRIPT: /home/ubuntu/studyBridge/ops/android/publish-android-release.py
+  EXPECTED_PACKAGE_NAME: kr.co.studybridge.app
 
 jobs:
   signed-release-build:
@@ -138,6 +158,109 @@ jobs:
             android/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 30
+
+      # ── 이하: 서버 배포 단계(APK → EC2 → S3). 기존 테스트/서명/Artifact 단계는 위에서 그대로 유지된다. ──
+      - name: 릴리즈 매니페스트 생성 (packageName/versionCode/versionName/sha256)
+        id: manifest
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | tail -1)
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
+          BADGING=$("$AAPT2" dump badging "$APK" | grep '^package:')
+          PKG=$(echo "$BADGING" | sed -n "s/.*name='\([^']*\)'.*/\1/p")
+          VC=$(echo "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
+          VN=$(echo "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          if [ "$PKG" != "$EXPECTED_PACKAGE_NAME" ]; then
+            echo "FAIL: packageName=$PKG (expected $EXPECTED_PACKAGE_NAME)"; exit 1
+          fi
+          echo "$VN" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$' || { echo "FAIL: versionName 형식 오류: $VN"; exit 1; }
+          SIGNER=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: \(.*\)$/\1/p' | head -1)
+          SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          SIZE=$(stat -c%s "$APK")
+          RELEASE_DATE=$(TZ=Asia/Seoul date +%Y-%m-%dT%H:%M:%S+09:00)
+          # 변경사항: android/release-notes.txt(한 줄당 한 항목, 선택) → 없으면 커밋 제목 한 줄
+          if [ -s android/release-notes.txt ]; then
+            NOTES=$(grep -v '^\s*#' android/release-notes.txt | sed 's/^[-•[:space:]]*//' | grep -v '^$' | jq -R . | jq -s .)
+          else
+            NOTES=$(git log -1 --pretty=%s | jq -R . | jq -s .)
+          fi
+          mkdir -p release
+          cp "$APK" release/app-release.apk
+          jq -n --arg pkg "$PKG" --argjson vc "$VC" --arg vn "$VN" --arg sha "$SHA" --argjson size "$SIZE" \
+                --arg date "$RELEASE_DATE" --argjson notes "$NOTES" --arg signer "$SIGNER" \
+                --arg git "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
+                --argjson force "${{ github.event.inputs.force_update == 'true' }}" \
+                '{packageName:$pkg, versionCode:$vc, versionName:$vn, apkFileName:"app-release.apk", sha256:$sha, fileSize:$size,
+                  releaseDate:$date, releaseNotes:$notes, forceUpdate:$force, signerCertSha256:$signer, gitSha:$git, runId:$run}' \
+                > release/release-manifest.json
+          cat release/release-manifest.json
+          echo "version_name=$VN" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VC" >> "$GITHUB_OUTPUT"
+
+      - name: 릴리즈 매니페스트 Artifact 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: studybridge-app-release-manifest-${{ github.sha }}
+          path: release/release-manifest.json
+          retention-days: 30
+
+      - name: 서버 배포 조건 확인
+        id: gate
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          publish=false
+          if [ "$GITHUB_REF" = "refs/heads/android-main" ]; then
+            if [ "$GITHUB_EVENT_NAME" = "push" ] || [ "${{ github.event.inputs.publish_to_server }}" = "true" ]; then
+              publish=true
+            fi
+          fi
+          if [ "$publish" = "true" ] && { [ -z "$EC2_HOST" ] || [ -z "$EC2_USERNAME" ] || [ -z "$EC2_SSH_KEY" ]; }; then
+            echo "FAIL: EC2_HOST/EC2_USERNAME/EC2_SSH_KEY 시크릿이 없어 서버 배포를 할 수 없습니다."; exit 1
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish (ref=$GITHUB_REF event=$GITHUB_EVENT_NAME)"
+
+      - name: APK + 매니페스트 EC2 전송
+        if: steps.gate.outputs.publish == 'true'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "release/app-release.apk,release/release-manifest.json"
+          target: ${{ env.RELEASE_INCOMING_ROOT }}/${{ github.run_id }}
+          strip_components: 1
+
+      - name: EC2 배포 스크립트 실행 (S3 releases → latest → version.json, 공개 URL 검증)
+        if: steps.gate.outputs.publish == 'true'
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          RUN_ID: ${{ github.run_id }}
+          FORCE_UPDATE: ${{ github.event.inputs.force_update }}
+          MIN_SUPPORTED: ${{ github.event.inputs.min_supported_version_code }}
+          INCOMING_ROOT: ${{ env.RELEASE_INCOMING_ROOT }}
+          PUBLISH_SCRIPT: ${{ env.RELEASE_PUBLISH_SCRIPT }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: RUN_ID,FORCE_UPDATE,MIN_SUPPORTED,INCOMING_ROOT,PUBLISH_SCRIPT
+          command_timeout: 20m
+          script: |
+            set -e
+            IN="$INCOMING_ROOT/$RUN_ID"
+            test -f "$IN/app-release.apk" && test -f "$IN/release-manifest.json"
+            test -f "$PUBLISH_SCRIPT" || { echo "FAIL: 배포 스크립트 없음 $PUBLISH_SCRIPT (EC2 LLM-clean 체크아웃 확인)"; exit 1; }
+            EXTRA=""
+            [ "$FORCE_UPDATE" = "true" ] && EXTRA="$EXTRA --force-update"
+            [ -n "$MIN_SUPPORTED" ] && EXTRA="$EXTRA --min-supported-version-code $MIN_SUPPORTED"
+            python3 "$PUBLISH_SCRIPT" --incoming "$IN" --verify-public $EXTRA
+            rm -rf "$IN"
+            # 7일 이상 된 incoming 잔여 정리
+            find "$INCOMING_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
 
       - name: 서명 키 임시 파일 제거
         if: always()
