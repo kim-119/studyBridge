@@ -37,13 +37,14 @@ public class GroupStudySocketController {
 
         GroupStudy groupStudy = groupStudyRepository.findById(groupId).orElse(null);
         if (groupStudy != null) {
-            groupChatMessageRepository.save(GroupChatMessage.builder()
+            GroupChatMessage savedMessage = groupChatMessageRepository.save(GroupChatMessage.builder()
                 .groupStudy(groupStudy)
                 .senderName(payload.getSenderName())
                 .senderId(payload.getSenderId() != null ? payload.getSenderId() : "UNKNOWN")
                 .content(payload.getContent())
                 .role("USER")
                 .build());
+            payload.setId(savedMessage.getId());
         }
 
         messagingTemplate.convertAndSend("/topic/group/" + groupId + "/chat", payload);

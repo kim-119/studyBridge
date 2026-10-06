@@ -3,7 +3,7 @@ import {
   Users, User, X, MicOff, Video, VideoOff, Maximize, Minimize, Gift, UserPlus,
   Settings, MessageSquare, Calendar, ClipboardList, Mic,
   Search, AlertTriangle, Play, RefreshCw, VolumeX, Volume2, Monitor, Edit2, Send, Check,
-  Upload, Download, FileText, MessageCircle
+  Upload, Download, FileText, MessageCircle, Trash2
 } from 'lucide-react';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
@@ -1809,6 +1809,50 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     }
   };
 
+  // ── 방장 전용 삭제 (UI 노출은 UX, 실제 권한 검증은 Spring: leader 검증 + 그룹 소속(IDOR) 검증) ──
+  //  · 방장 판정은 서버가 내려준 study.leaderId(GroupStudy.leader) 기준. 삭제 성공 시 새로고침 없이 목록 state 갱신.
+  const isRoomLeader = Number(study?.leaderId) === Number(userId);
+  const [deletingMaterialId, setDeletingMaterialId] = useState(null);
+  const [deletingQuizId, setDeletingQuizId] = useState(null);
+
+  const deleteErrorMessage = (err, fallback) => {
+    const status = err?.response?.status;
+    if (status === 403) return '방장만 삭제할 수 있습니다.';
+    if (status === 404) return '이미 삭제되었거나 이 방의 항목이 아닙니다.';
+    if (status === 409) return err?.response?.data?.message || '진행 중인 퀴즈 세션이 있어 삭제할 수 없습니다.';
+    return err?.response?.data?.message || fallback;
+  };
+
+  const handleDeleteGroupMaterial = async (material) => {
+    if (!isRoomLeader || deletingMaterialId) return;
+    if (!window.confirm(`자료 "${material.title}" 을(를) 삭제할까요?\n파일(S3)도 함께 삭제되며 되돌릴 수 없습니다. 이미 생성된 퀴즈는 남습니다.`)) return;
+    setDeletingMaterialId(material.id);
+    try {
+      await groupService.deleteGroupMaterial(study.id, material.id);
+      setGroupMaterials((prev) => prev.filter((m) => m.id !== material.id));
+    } catch (err) {
+      showAlert('오류', deleteErrorMessage(err, '자료 삭제에 실패했습니다. 잠시 후 다시 시도해주세요.'));
+      if (err?.response?.status === 404) loadGroupMaterials();
+    } finally {
+      setDeletingMaterialId(null);
+    }
+  };
+
+  const handleDeleteGroupQuiz = async (quiz) => {
+    if (!isRoomLeader || deletingQuizId) return;
+    if (!window.confirm(`퀴즈 "${quiz.title}" 을(를) 삭제할까요?\n완료된 세션 기록도 함께 정리됩니다. 되돌릴 수 없습니다.`)) return;
+    setDeletingQuizId(quiz.id);
+    try {
+      await groupService.deleteGroupQuiz(study.id, quiz.id);
+      setGroupQuizzes((prev) => prev.filter((q) => q.id !== quiz.id));
+    } catch (err) {
+      showAlert('오류', deleteErrorMessage(err, '퀴즈 삭제에 실패했습니다. 잠시 후 다시 시도해주세요.'));
+      if (err?.response?.status === 404) loadGroupQuizzes();
+    } finally {
+      setDeletingQuizId(null);
+    }
+  };
+
   // 생성 옵션 값을 안전 범위로 보정 (문제 수 1~20, 시간 5~120초)
   const sanitizedQuizCount = () => Math.max(1, Math.min(20, Number(quizQuestionCount) || 5));
   const sanitizedQuizSeconds = () => Math.max(5, Math.min(120, Number(quizPerQuestionSeconds) || 15));
@@ -2753,6 +2797,17 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                                     >
                                       <Download size={14} />
                                     </button>
+                                    {isRoomLeader && (
+                                      <button
+                                        onClick={() => handleDeleteGroupMaterial(material)}
+                                        disabled={deletingMaterialId === material.id}
+                                        aria-label="자료 삭제"
+                                        title="자료 삭제 (방장 전용)"
+                                        style={{ flexShrink: 0, width: '30px', height: '30px', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.35)', backgroundColor: 'rgba(220,38,38,0.14)', color: '#FCA5A5', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: deletingMaterialId === material.id ? 'not-allowed' : 'pointer', opacity: deletingMaterialId === material.id ? 0.5 : 1 }}
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
                               ))}
@@ -2775,12 +2830,25 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                                     <div style={{ color: '#E5E7EB', fontSize: '12px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{quiz.title}</div>
                                     <div style={{ color: '#94A3B8', fontSize: '11px', marginTop: '3px' }}>{quiz.creatorName || '알 수 없음'} · {quiz.questionCount || 0}문항 · {formatShortDateTime(quiz.createdAt)}</div>
                                   </div>
-                                  <button
-                                    onClick={() => handleQuizStart(quiz.id)}
-                                    style={{ flexShrink: 0, padding: '7px 10px', borderRadius: '8px', border: 'none', backgroundColor: '#16A34A', color: 'white', fontSize: '11px', fontWeight: '800', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}
-                                  >
-                                    <Play size={12} fill="white" /> 시작
-                                  </button>
+                                  <div style={{ display: 'flex', gap: '6px', flexShrink: 0, alignItems: 'center' }}>
+                                    <button
+                                      onClick={() => handleQuizStart(quiz.id)}
+                                      style={{ flexShrink: 0, padding: '7px 10px', borderRadius: '8px', border: 'none', backgroundColor: '#16A34A', color: 'white', fontSize: '11px', fontWeight: '800', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}
+                                    >
+                                      <Play size={12} fill="white" /> 시작
+                                    </button>
+                                    {isRoomLeader && (
+                                      <button
+                                        onClick={() => handleDeleteGroupQuiz(quiz)}
+                                        disabled={deletingQuizId === quiz.id}
+                                        aria-label="퀴즈 삭제"
+                                        title="퀴즈 삭제 (방장 전용)"
+                                        style={{ flexShrink: 0, width: '30px', height: '30px', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.35)', backgroundColor: 'rgba(220,38,38,0.14)', color: '#FCA5A5', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: deletingQuizId === quiz.id ? 'not-allowed' : 'pointer', opacity: deletingQuizId === quiz.id ? 0.5 : 1 }}
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -3408,6 +3476,17 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                                       {isGeneratingQuiz === mat.id ? <RefreshCw size={13} className="animate-spin" style={{ animation: 'spin 1.5s linear infinite' }} /> : <FileText size={13} />}
                                       퀴즈
                                     </button>
+                                    {isRoomLeader && (
+                                      <button
+                                        onClick={() => handleDeleteGroupMaterial(mat)}
+                                        disabled={deletingMaterialId === mat.id}
+                                        aria-label="자료 삭제"
+                                        title="자료 삭제 (방장 전용)"
+                                        style={{ flexShrink: 0, width: '30px', height: '30px', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.35)', backgroundColor: 'rgba(220,38,38,0.14)', color: '#FCA5A5', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: deletingMaterialId === mat.id ? 'not-allowed' : 'pointer', opacity: deletingMaterialId === mat.id ? 0.5 : 1 }}
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
                               ))
@@ -3438,12 +3517,25 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                                   <div style={{ color: '#E5E7EB', fontSize: '13px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{quiz.title}</div>
                                   <div style={{ color: '#94A3B8', fontSize: '11px', marginTop: '3px' }}>#{quiz.id} · {quiz.creatorName || '알 수 없음'} · {quiz.questionCount || 0}문항</div>
                                 </div>
-                                <button
-                                  onClick={() => { handleQuizStart(quiz.id); setShowRoomManageModal(false); }}
-                                  style={{ flexShrink: 0, padding: '9px 16px', borderRadius: '8px', border: 'none', backgroundColor: '#16A34A', color: 'white', fontSize: '12px', fontWeight: '800', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
-                                >
-                                  <Play size={13} fill="white" /> 시작
-                                </button>
+                                <div style={{ display: 'flex', gap: '6px', flexShrink: 0, alignItems: 'center' }}>
+                                  <button
+                                    onClick={() => { handleQuizStart(quiz.id); setShowRoomManageModal(false); }}
+                                    style={{ flexShrink: 0, padding: '9px 16px', borderRadius: '8px', border: 'none', backgroundColor: '#16A34A', color: 'white', fontSize: '12px', fontWeight: '800', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
+                                  >
+                                    <Play size={13} fill="white" /> 시작
+                                  </button>
+                                    {isRoomLeader && (
+                                      <button
+                                        onClick={() => handleDeleteGroupQuiz(quiz)}
+                                        disabled={deletingQuizId === quiz.id}
+                                        aria-label="퀴즈 삭제"
+                                        title="퀴즈 삭제 (방장 전용)"
+                                        style={{ flexShrink: 0, width: '30px', height: '30px', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.35)', backgroundColor: 'rgba(220,38,38,0.14)', color: '#FCA5A5', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: deletingQuizId === quiz.id ? 'not-allowed' : 'pointer', opacity: deletingQuizId === quiz.id ? 0.5 : 1 }}
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    )}
+                                </div>
                               </div>
                             ))}
                           </div>

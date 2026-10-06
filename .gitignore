@@ -1,55 +1,71 @@
+# secrets
 .env
 .env.*
 !.env.example
-pycache/
-*.pyc
+fastapi/.env
+*.pem
+
+# dependencies
+node_modules/
+frontend/node_modules/
+
+# IDE
 .idea/
+
+# Python
 venv/
 .venv/
-frontend/node_modules/
-node_modules/
+pycache/
+__pycache__/
+*.pyc
+*.egg-info/
 
-fastapi/.env
-
+# backend build
 backend/build/
-*.class
 backend/.gradle/
 backend/bin/
 .gradle/
 bin/
+*.class
 
-# Python cache
-__pycache__/
-*.pyc
+# frontend build
+frontend/dist/
+frontend/.vite/
 
-*.egg-info/
+# Android / Capacitor build
+/dist-mobile/
+frontend/dist-mobile/
+frontend/dist-check/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/capacitor-cordova-android-plugins/
+android/app/src/main/assets/public/
+
+# Android signing
+*.jks
+*.keystore
+android/key.properties
 
 # local backup files
+*.bak-*
 *.bak_*
 *.backup*
 
-# secrets
-*.pem
-.env
-.env.*
-!.env.example
+# AI agent tooling
+.claude/
+CLAUDE.md
 
-# secrets
-*.pem
-.env
-.env.*
-!.env.example
+# outside the Android branch scope (kept locally, not tracked here)
+/docs/
+/fastapi/
+/ops/
+/scripts/
 
-# secrets
-*.pem
-.env
-.env.*
-!.env.example
-
-
-# studybridge_ft 대용량 산출물 (repo 밖 ~/studybridge-ft 가 기본이나 이중 안전망)
+# studybridge_ft model artifacts
 studybridge-ft/
-# QLoRA safe55: repo 내부 outputs/ 사용(체크포인트). git 추적/누출 방지.
 /outputs/
 **/studybridge_ft/**/data/
 **/studybridge_ft/**/outputs/

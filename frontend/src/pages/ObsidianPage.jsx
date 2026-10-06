@@ -5,7 +5,10 @@ import { agentService } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import ObsidianGraphView from '../components/graph/ObsidianGraphView';
 import GraphErrorBoundary from '../components/graph/GraphErrorBoundary';
+import SemanticGraphStatus from '../components/graph/SemanticGraphStatus';
 import { convertChatLogsToObsidianGraph } from '../utils/graph/chatLogsToObsidianGraph';
+import { attachSemanticGraph, buildSemanticAnswers } from '../utils/graph/semanticGraphMerge';
+import { useSemanticMindmap } from '../hooks/useSemanticMindmap';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 옵시디언 독립 페이지(/obsidian). 학습메이트처럼 좌측 방 목록 + 우측 그래프.
@@ -13,6 +16,8 @@ import { convertChatLogsToObsidianGraph } from '../utils/graph/chatLogsToObsidia
 //  · 방 선택 시 그 방의 채팅 로그(getChatHistory)를 Obsidian Graph 로 변환해 우측에 표시.
 //  · requestSeq + AbortController 로 늦게 도착한 이전 방 응답이 현재 그래프를 덮어쓰지 못하게 한다.
 //  · 자동 legacy fallback 없음 — 오류 시 오류 패널 + 다시 시도만. PDF 저장/변환/Viewer 경로 전무.
+//  · 개념(concept) 계층은 AI07 Semantic Graph(Spring /api/mindmap/semantic-graph) 만 사용(LAZY, 방 선택 시 1회 + 캐시).
+//    FAILED 면 개념 없이 상태 바에 명시한다(토큰 기반 폴백 없음).
 // ─────────────────────────────────────────────────────────────────────────────
 const SORTS = [
   { key: 'recent', label: '최근 대화순' },
@@ -36,9 +41,10 @@ export default function ObsidianPage() {
   const [roomsError, setRoomsError] = useState('');
   const [selectedRoomId, setSelectedRoomId] = useState(null);
 
-  const [graph, setGraph] = useState(null);
+  const [baseGraph, setBaseGraph] = useState(null);
   const [graphTitle, setGraphTitle] = useState('');
   const [graphState, setGraphState] = useState('idle'); // idle | loading | ready | empty | error
+  const [semanticInput, setSemanticInput] = useState({ roomId: null, question: '', answers: [] });
 
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('recent');
@@ -69,7 +75,8 @@ export default function ObsidianPage() {
   // 선택 방의 채팅 로그 → 그래프(stale 응답 차단: 최신 seq 만 반영).
   useEffect(() => {
     if (selectedRoomId == null) {
-      setGraph(null); setGraphState('idle');
+      setBaseGraph(null); setGraphState('idle');
+      setSemanticInput({ roomId: null, question: '', answers: [] });
       return undefined;
     }
     const room = rooms.find((r) => String(r.id) === String(selectedRoomId));
@@ -78,15 +85,25 @@ export default function ObsidianPage() {
     const ac = new AbortController();
     let alive = true;
     setGraphState('loading');
-    setGraph(null);
+    setBaseGraph(null);
     (async () => {
       try {
         const logs = await agentService.getChatHistory(userId, selectedRoomId);
         if (!alive || seq !== reqSeqRef.current || ac.signal.aborted) return; // 늦게 도착한 이전 방 응답 폐기
         const g = convertChatLogsToObsidianGraph(room, logs);
         if (!alive || seq !== reqSeqRef.current) return;
-        if (!g) { setGraph(null); setGraphState('empty'); }
-        else { setGraph(g); setGraphTitle(roomTitle(room)); setGraphState('ready'); }
+        if (!g) { setBaseGraph(null); setGraphState('empty'); }
+        else {
+          setBaseGraph(g); setGraphTitle(roomTitle(room)); setGraphState('ready');
+          // Semantic Graph 입력(LAZY): 방의 마지막 질문 + AI 답변들. 훅이 캐시/요청을 담당한다.
+          const msgs = Array.isArray(logs) ? logs : [];
+          const lastUser = [...msgs].reverse().find((m) => m && m.sender === 'USER');
+          setSemanticInput({
+            roomId: selectedRoomId,
+            question: String(lastUser?.content || ''),
+            answers: buildSemanticAnswers(msgs, room?.agents || []),
+          });
+        }
       } catch (e) {
         if (!alive || seq !== reqSeqRef.current) return;
         console.error('[Obsidian] 채팅 로그 로드 실패', e);
@@ -95,6 +112,18 @@ export default function ObsidianPage() {
     })();
     return () => { alive = false; ac.abort(); };
   }, [selectedRoomId, rooms, userId]);
+
+  const { state: semanticState, semantic, reason: semanticReason, retry: retrySemantic } = useSemanticMindmap({
+    roomId: semanticInput.roomId,
+    question: semanticInput.question,
+    answers: semanticInput.answers,
+    enabled: graphState === 'ready' && semanticInput.roomId != null,
+  });
+  const graph = useMemo(() => {
+    if (!baseGraph) return null;
+    if (semanticState === 'ok' || semanticState === 'degraded') return attachSemanticGraph(baseGraph, semantic);
+    return { ...baseGraph, semanticStatus: semanticState === 'loading' ? 'LOADING' : 'FAILED' };
+  }, [baseGraph, semantic, semanticState]);
 
   const visibleRooms = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -238,8 +267,13 @@ export default function ObsidianPage() {
               </div>
             )}
           >
-            {/* roomId 를 key 로 두어 방 전환 시 그래프 상태를 깨끗이 분리(섞임 방지) */}
-            <ObsidianGraphView key={selectedRoomId} graph={graph} title={graphTitle} />
+            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <SemanticGraphStatus state={semanticState} reason={semanticReason} onRetry={retrySemantic} />
+              <div style={{ flex: 1, minHeight: 0 }}>
+                {/* roomId 를 key 로 두어 방 전환 시 그래프 상태를 깨끗이 분리(섞임 방지) */}
+                <ObsidianGraphView key={selectedRoomId} graph={graph} title={graphTitle} />
+              </div>
+            </div>
           </GraphErrorBoundary>
         ) : null}
       </main>

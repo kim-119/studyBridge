@@ -11,7 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.reactive.function.client.WebClient;
+import com.studybridge.api.ai.AiFailoverExecutor;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -31,9 +31,12 @@ public class GroupStudyMaterialService {
     private final GroupStudyMemberRepository groupStudyMemberRepository;
     private final GroupStudyQuizRepository groupStudyQuizRepository;
     private final GroupStudyQuizQuestionRepository groupStudyQuizQuestionRepository;
+    private final GroupStudyQuizSessionRepository groupStudyQuizSessionRepository;
+    private final GroupStudyQuizSessionAnswerRepository groupStudyQuizSessionAnswerRepository;
     private final UserRepository userRepository;
     private final S3Service s3Service;
-    private final WebClient fastApiWebClient;
+    // PRIMARY(ai07) → SECONDARY(EC2 hot-standby) 공통 failover(/api/ai/quiz/generate). 기존 fastApiWebClient 는 executor 의 primary 와 동일.
+    private final AiFailoverExecutor aiFailoverExecutor;
     private final ObjectMapper objectMapper;
 
     // 생성 옵션 기본값/보정 상수 (문제 수 1~20, 문제당 시간 5~120초)
@@ -193,29 +196,20 @@ public class GroupStudyMaterialService {
                 .numQuestions(questionCount)
                 .build();
 
-        GroupStudyQuizDTO.AIQuizResponse aiResponse = null;
+        GroupStudyQuizDTO.AIQuizResponse aiResponse = requestAiQuiz(requestPayload, material.getId());
 
-        try {
-            aiResponse = fastApiWebClient.post()
-                    .uri("/api/ai/quiz/generate")
-                    .bodyValue(requestPayload)
-                    .retrieve()
-                    .bodyToMono(GroupStudyQuizDTO.AIQuizResponse.class)
-                    .block(); // 동기식 대기
-        } catch (Exception e) {
-            log.error("FastAPI AI quiz generation communication failed. materialId={}. Error: ", material.getId(), e);
-        }
-
-        // 그룹스터디 경로에서는 더미/placeholder 퀴즈를 절대 만들지 않는다.
-        // ai07(FastAPI)이 PDF 처리에 실패하면 자체 "기본 안내형" placeholder 세트를 HTTP 200으로 돌려준다.
-        // 이를 정상 퀴즈로 저장하면 사용자가 시작 시 PDF가 아닌 더미 문제를 보게 되므로, 저장하지 않고 실패 처리한다.
+        // 그룹스터디 경로에서는 더미/placeholder/degraded 퀴즈를 절대 저장하지 않는다.
+        // 판정은 AI07 의 구조화 상태(success/errorCode/status/degraded/fallbackUsed) 우선. 제목 문자열 판정은 마지막 안전망.
         if (aiResponse == null || aiResponse.getQuestions() == null || aiResponse.getQuestions().isEmpty()) {
-            log.error("AI quiz generation returned empty result. Not persisting a quiz. materialId={}", material.getId());
+            log.error("AI quiz generation returned empty result. Not persisting a quiz. materialId={} errorCode={} message={}",
+                    material.getId(), aiResponse != null ? aiResponse.getErrorCode() : null,
+                    aiResponse != null ? aiResponse.getMessage() : null);
             return null;
         }
-        if (isPlaceholderAiQuiz(aiResponse)) {
-            log.error("AI quiz generation returned a non-PDF placeholder (기본 안내형). Not persisting a quiz. materialId={}, title={}",
-                    material.getId(), aiResponse.getQuizTitle());
+        String unusable = unusableAiQuizReason(aiResponse);
+        if (unusable != null) {
+            log.error("AI quiz generation unusable(reason={}). Not persisting a quiz. materialId={}, status={}, errorCode={}, title={}",
+                    unusable, material.getId(), aiResponse.getStatus(), aiResponse.getErrorCode(), aiResponse.getQuizTitle());
             return null;
         }
 
@@ -230,22 +224,37 @@ public class GroupStudyMaterialService {
 
             GroupStudyQuiz savedQuiz = groupStudyQuizRepository.save(quiz);
 
+            int persisted = 0;
             for (GroupStudyQuizDTO.AIQuestion aiQ : aiResponse.getQuestions()) {
+                Integer correct = resolveCorrectAnswer(aiQ);
+                if (aiQ.getQuestion() == null || aiQ.getQuestion().isBlank() || aiQ.getOptions() == null
+                        || aiQ.getOptions().size() < 2 || correct == null) {
+                    // 정답 키가 없거나 보기 밖이면 그 문항은 저장하지 않는다(0 으로 위장 금지).
+                    log.warn("Skipping ungradable AI question. materialId={} questionId={} correctAnswer={} correctOptionIds={}",
+                            material.getId(), aiQ.getQuestionId(), aiQ.getCorrectAnswer(), aiQ.getCorrectOptionIds());
+                    continue;
+                }
                 String optionsJsonStr = objectMapper.writeValueAsString(aiQ.getOptions());
 
                 GroupStudyQuizQuestion question = GroupStudyQuizQuestion.builder()
                         .quiz(savedQuiz)
                         .question(aiQ.getQuestion())
                         .optionsJson(optionsJsonStr)
-                        .correctAnswer(aiQ.getCorrectAnswer())
+                        .correctAnswer(correct)
                         .timeLimitSeconds(perQuestionSeconds)
                         .build();
 
                 groupStudyQuizQuestionRepository.save(question);
+                persisted++;
+            }
+            if (persisted == 0) {
+                log.error("No gradable question in AI quiz. Rolling back quiz. materialId={}", material.getId());
+                groupStudyQuizRepository.delete(savedQuiz);
+                return null;
             }
 
-            log.info("Successfully persisted AI/Fallback Quiz. quizId={}, questionsCount={}",
-                    savedQuiz.getId(), aiResponse.getQuestions().size());
+            log.info("Successfully persisted AI Quiz. quizId={}, questionsCount={}, schemaVersion={}",
+                    savedQuiz.getId(), persisted, aiResponse.getSchemaVersion());
 
             return savedQuiz;
 
@@ -255,25 +264,164 @@ public class GroupStudyMaterialService {
         }
     }
 
-    // ai07(FastAPI)이 PDF 처리에 실패했을 때 돌려주는 자체 placeholder("기본 안내형") 응답인지 판별한다.
-    // 이 응답은 PDF와 무관한 일반 학습법 문제이므로 그룹스터디 퀴즈로 사용하면 안 된다.
+    /**
+     * FastAPI {@code POST /api/ai/quiz/generate} 호출(PRIMARY → SECONDARY failover).
+     * 전송 실패/timeout/404/5xx 만 다음 업스트림으로 넘기고, 4xx 검증 오류는 failover 없이 실패(null) 로 끝낸다.
+     * 응답 본문의 success/status 판정은 기존대로 {@link #unusableAiQuizReason} 이 담당한다(session lifecycle 불변).
+     * @return 실패 시 null (기존 계약: null → 퀴즈 미저장)
+     */
+    GroupStudyQuizDTO.AIQuizResponse requestAiQuiz(GroupStudyQuizDTO.AIQuizRequest requestPayload, Long materialId) {
+        try {
+            AiFailoverExecutor.Result<GroupStudyQuizDTO.AIQuizResponse> picked = aiFailoverExecutor.execute("/api/ai/quiz/generate",
+                    up -> up.client().post()
+                            .uri("/api/ai/quiz/generate")
+                            .bodyValue(requestPayload)
+                            .retrieve()
+                            .bodyToMono(GroupStudyQuizDTO.AIQuizResponse.class)
+                            .block()); // 동기식 대기
+            if (picked.attempts() > 1) {
+                log.info("AI quiz generation served by upstream={} after failover. materialId={}", picked.upstreamName(), materialId);
+            }
+            return picked.value();
+        } catch (Exception e) {
+            log.error("FastAPI AI quiz generation communication failed. materialId={}. Error: ", materialId, e);
+            return null;
+        }
+    }
+
+    /**
+     * AI07 퀴즈 응답을 저장하면 안 되는 이유 코드(null 이면 사용 가능).
+     *  1) 구조화 상태: success=false / errorCode / status∈{FAILED,DEGRADED,FALLBACK} / degraded / fallbackUsed.
+     *  2) 마지막 안전망: 구조화 필드가 전부 비어 있는(구버전 AI07) 응답에서만 "기본 안내형" placeholder 마커를 본다.
+     *     [AI07 FOLLOW-UP] 운영 AI07 이 quiz.v2(status/degraded) 를 내려주기 시작하면 2) 는 제거 가능.
+     */
+    static String unusableAiQuizReason(GroupStudyQuizDTO.AIQuizResponse aiResponse) {
+        if (aiResponse == null) return "NULL_RESPONSE";
+        if (Boolean.FALSE.equals(aiResponse.getSuccess())) return "SUCCESS_FALSE";
+        if (aiResponse.getErrorCode() != null && !aiResponse.getErrorCode().isBlank()) return "ERROR_CODE:" + aiResponse.getErrorCode();
+        String status = aiResponse.getStatus() == null ? "" : aiResponse.getStatus().trim().toUpperCase();
+        if (status.equals("FAILED") || status.equals("FAIL") || status.equals("ERROR")) return "STATUS_FAILED";
+        if (status.equals("DEGRADED") || status.equals("FALLBACK")) return "STATUS_DEGRADED";
+        if (Boolean.TRUE.equals(aiResponse.getDegraded())) return "DEGRADED_FLAG";
+        if (Boolean.TRUE.equals(aiResponse.getFallbackUsed())) return "FALLBACK_USED";
+
+        boolean hasStructuredSignals = aiResponse.getSuccess() != null || aiResponse.getStatus() != null
+                || aiResponse.getDegraded() != null || aiResponse.getFallbackUsed() != null
+                || aiResponse.getSchemaVersion() != null;
+        if (!hasStructuredSignals && isLegacyPlaceholderQuiz(aiResponse)) return "LEGACY_PLACEHOLDER_MARKER";
+        return null;
+    }
+
+    // 구버전 AI07(구조화 상태 없음) 전용 안전망. 새 응답에는 적용되지 않는다.
     private static final List<String> PLACEHOLDER_QUESTION_MARKERS = Arrays.asList(
             "다음 중 효과적인 학습 방법으로 알려진 것은",
             "학습 내용을 장기 기억으로 전환하는 데 가장 효과적인 방법",
             "포모도로 기법에서 기본 집중 시간");
 
-    private boolean isPlaceholderAiQuiz(GroupStudyQuizDTO.AIQuizResponse aiResponse) {
+    private static boolean isLegacyPlaceholderQuiz(GroupStudyQuizDTO.AIQuizResponse aiResponse) {
         String title = aiResponse.getQuizTitle();
-        if (title != null && title.contains("기본 안내형")) {
-            return true;
-        }
-        if (aiResponse.getQuestions() == null) {
-            return false;
-        }
+        if (title != null && title.contains("기본 안내형")) return true;
+        if (aiResponse.getQuestions() == null) return false;
         return aiResponse.getQuestions().stream()
                 .map(GroupStudyQuizDTO.AIQuestion::getQuestion)
                 .filter(q -> q != null)
                 .anyMatch(q -> PLACEHOLDER_QUESTION_MARKERS.stream().anyMatch(q::contains));
+    }
+
+    /**
+     * 정답 인덱스(0-based). 기존 correctAnswer 우선, 없으면 quiz.v2 correctOptionIds[0] 을 optionIds 에서 찾는다.
+     * 보기 범위 밖이면 null(문항 저장 안 함).
+     */
+    static Integer resolveCorrectAnswer(GroupStudyQuizDTO.AIQuestion q) {
+        if (q == null || q.getOptions() == null) return null;
+        int size = q.getOptions().size();
+        Integer idx = q.getCorrectAnswer();
+        if (idx == null && q.getCorrectOptionIds() != null && !q.getCorrectOptionIds().isEmpty()) {
+            String target = q.getCorrectOptionIds().get(0);
+            if (q.getOptionIds() != null && q.getOptionIds().contains(target)) {
+                idx = q.getOptionIds().indexOf(target);
+            } else if (q.getOptions().contains(target)) {
+                idx = q.getOptions().indexOf(target);
+            }
+        }
+        if (idx == null || idx < 0 || idx >= size) return null;
+        return idx;
+    }
+
+    // ── 방장 전용 삭제 ─────────────────────────────────────────────────────
+
+    /**
+     * 그룹 자료 삭제(방장만). 검증 순서: 그룹 404 → 방장 403 → 자료 404 → 그룹 소속(IDOR) 404.
+     * DB 삭제 후 커밋되면 S3 객체를 best-effort 삭제한다. GroupStudyQuiz 는 자료와 링크가 없어 함께 지우지 않는다.
+     */
+    @Transactional
+    public void deleteMaterial(Long userId, Long groupId, Long materialId) {
+        GroupStudy groupStudy = requireLeader(userId, groupId);
+        GroupStudyMaterial material = groupStudyMaterialRepository.findById(materialId)
+                .orElseThrow(() -> new NoSuchElementException("Material not found with ID: " + materialId));
+        if (material.getGroupStudy() == null || !material.getGroupStudy().getId().equals(groupStudy.getId())) {
+            throw new NoSuchElementException("이 그룹스터디에 속한 자료가 아닙니다.");
+        }
+        String s3Key = material.getS3Key();
+        groupStudyMaterialRepository.delete(material);
+        if (s3Key != null && !s3Key.isBlank()) {
+            runAfterCommit(() -> {
+                try {
+                    s3Service.deleteFile(s3Key);
+                } catch (Exception e) {
+                    log.error("[GROUP_MATERIAL_DELETE] S3 삭제 실패(DB 는 삭제됨, 고아 객체) groupId={} materialId={} key={}",
+                            groupId, materialId, s3Key, e);
+                }
+            });
+        }
+        log.info("Group material deleted. groupId={} materialId={} by userId={}", groupId, materialId, userId);
+    }
+
+    /**
+     * 그룹 퀴즈 삭제(방장만). 진행 중(QUESTION/REVEALING) 세션이 있으면 409. 완료 세션은 답변→세션 순으로 정리 후 퀴즈 삭제
+     * (문항은 cascade). Redis 랭킹은 groupId 단위 누적이라 퀴즈 삭제로 건드리지 않는다(퀴즈별 Redis 키 없음).
+     */
+    @Transactional
+    public void deleteQuiz(Long userId, Long groupId, Long quizId) {
+        GroupStudy groupStudy = requireLeader(userId, groupId);
+        GroupStudyQuiz quiz = groupStudyQuizRepository.findById(quizId)
+                .orElseThrow(() -> new NoSuchElementException("Quiz not found with ID: " + quizId));
+        if (quiz.getGroupStudy() == null || !quiz.getGroupStudy().getId().equals(groupStudy.getId())) {
+            throw new NoSuchElementException("이 그룹스터디에 속한 퀴즈가 아닙니다.");
+        }
+        if (groupStudyQuizSessionRepository.existsByQuizIdAndStatusIn(quizId,
+                List.of(GroupStudyQuizSessionStatus.QUESTION, GroupStudyQuizSessionStatus.REVEALING))) {
+            throw new IllegalStateException("진행 중인 퀴즈 세션이 있어 삭제할 수 없습니다. 세션이 끝난 뒤 다시 시도해주세요.");
+        }
+        List<Long> sessionIds = groupStudyQuizSessionRepository.findIdsByQuizId(quizId);
+        if (!sessionIds.isEmpty()) {
+            groupStudyQuizSessionAnswerRepository.deleteBySessionIdIn(sessionIds);
+            groupStudyQuizSessionRepository.deleteByQuizId(quizId);
+        }
+        groupStudyQuizRepository.delete(quiz);
+        log.info("Group quiz deleted. groupId={} quizId={} sessionsPurged={} by userId={}", groupId, quizId, sessionIds.size(), userId);
+    }
+
+    /** 그룹 존재(404) + 방장(GroupStudy.leader 가 authoritative, 403). 브라우저가 보낸 role/isHost 는 사용하지 않는다. */
+    private GroupStudy requireLeader(Long userId, Long groupId) {
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId)
+                .orElseThrow(() -> new NoSuchElementException("Group study not found with ID: " + groupId));
+        if (userId == null || groupStudy.getLeader() == null || !groupStudy.getLeader().getId().equals(userId)) {
+            throw new SecurityException("방장만 삭제할 수 있습니다.");
+        }
+        return groupStudy;
+    }
+
+    private static void runAfterCommit(Runnable task) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() { task.run(); }
+                    });
+        } else {
+            task.run();
+        }
     }
 
     private GroupStudyMaterialDTO toDTO(GroupStudyMaterial material) {

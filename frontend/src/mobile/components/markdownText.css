@@ -1,0 +1,21 @@
+.mobile-md__quote {
+  margin: 4px 0 8px;
+  padding: 6px 10px;
+  border-left: 3px solid rgba(99, 102, 241, 0.45);
+  border-radius: 0 6px 6px 0;
+  background-color: rgba(99, 102, 241, 0.06);
+}
+
+.mobile-md__quote .mobile-md__paragraph:last-child {
+  margin-bottom: 0;
+}
+
+.mobile-md__rule {
+  margin: 10px 0;
+  border: none;
+  border-top: 1px solid rgba(17, 24, 39, 0.12);
+}
+
+ol.mobile-md__list {
+  list-style: decimal;
+}

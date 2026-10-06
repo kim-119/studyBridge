@@ -168,6 +168,7 @@ const normalizeChatResponse = (data) => {
 //  · refreshToken 은 URL 쿼리가 아니라 JSON body 로 보낸다(nginx access log 에 토큰이 남지 않게).
 //    (서버는 하위 호환으로 ?refreshToken= 도 계속 받는다.)
 //  · 동시 다발 갱신을 막기 위해 진행 중인 갱신 Promise 를 공유한다.
+export const AUTH_TOKENS_REFRESHED_EVENT = 'auth-tokens-refreshed';
 let refreshInFlight = null;
 export const refreshAccessToken = async () => {
   if (refreshInFlight) return refreshInFlight;
@@ -178,6 +179,7 @@ export const refreshAccessToken = async () => {
     if (!res.data || !res.data.accessToken) throw new Error('refresh response without accessToken');
     localStorage.setItem('token', res.data.accessToken);
     if (res.data.refreshToken) localStorage.setItem('refreshToken', res.data.refreshToken);
+    window.dispatchEvent(new Event(AUTH_TOKENS_REFRESHED_EVENT));
     return res.data.accessToken;
   })().finally(() => { refreshInFlight = null; });
   return refreshInFlight;
@@ -255,7 +257,8 @@ api.interceptors.response.use(
     ) {
       if (
         originalRequest.url.includes('/api/users/refresh') ||
-        originalRequest.url.includes('/api/users/login')
+        originalRequest.url.includes('/api/users/login') ||
+        originalRequest.url.includes('/api/users/register')
       ) {
         return Promise.reject(err);
       }
@@ -555,13 +558,35 @@ export const agentService = {
   },
 };
 
+function toAuthError(err, fallbackMessage) {
+  if (!err.response) {
+    return {
+      message: '서버에 연결할 수 없습니다. 네트워크 상태를 확인해주세요.',
+      networkError: true,
+      detail: err.message,
+    };
+  }
+
+  const { status, data } = err.response;
+
+  if (data && typeof data === 'object') {
+    return { ...data, status, message: data.message || fallbackMessage };
+  }
+
+  if (typeof data === 'string' && data.trim()) {
+    return { status, message: data.trim() };
+  }
+
+  return { status, message: fallbackMessage };
+}
+
 export const authService = {
   register: async (userData) => {
     try {
       const res = await api.post('/api/users/register', userData);
       return res.data;
     } catch (err) {
-      throw err.response?.data || { message: '회원가입 실패' };
+      throw toAuthError(err, '회원가입에 실패했습니다. 잠시 후 다시 시도해주세요.');
     }
   },
 
@@ -976,8 +1001,24 @@ export const materialService = {
 
   generateQuiz: async (materialId, quizRequest) => {
     const res = await api.post(`/api/materials/${materialId}/quiz`, quizRequest, {
-      timeout: AI_FALLBACK_TIMEOUT_MS, // 90초 초과 시 끊고 프론트 fallback 으로 전환
+      timeout: AI_FALLBACK_TIMEOUT_MS, // 90초 초과 시 끊고 명시적 실패 상태 표시(프론트 폴백 문제 생성 없음)
     });
+    return res.data;
+  },
+
+  // 서버 채점: 답안(questionId/selectedOptionId)만 보낸다. 점수는 서버가 결정해 Redis 에 저장한다.
+  submitQuiz: async (materialId, quizId, answers) => {
+    const res = await api.post(`/api/materials/${materialId}/quiz/${quizId}/submit`, { answers });
+    return res.data;
+  },
+
+  getQuizScore: async (materialId, quizId) => {
+    const res = await api.get(`/api/materials/${materialId}/quiz/${quizId}/score`);
+    return res.data;
+  },
+
+  deleteQuiz: async (materialId, quizId) => {
+    const res = await api.delete(`/api/materials/${materialId}/quiz/${quizId}`);
     return res.data;
   },
 
@@ -1034,6 +1075,16 @@ export const materialService = {
 // 마인드맵 노드별 메모. (저장된 MINDMAP material 의) materialId + nodeId 로 사용자별 단일 메모 관리.
 //  · 응답은 { success, memo:{...}|null } 로 통일. memo 가 null 이면 메모 없음.
 //  · nodeId 는 그래프 생성 id(특수문자 가능) → query/body 로 전달(encodeURIComponent).
+// 마인드맵 Semantic Graph(AI07) — 브라우저는 Spring 만 호출한다. 응답 status: OK | DEGRADED | FAILED.
+export const mindmapService = {
+  getSemanticGraph: async ({ roomId, question, answers, forceRefresh = false }) => {
+    const res = await api.post('/api/mindmap/semantic-graph', { roomId, question, answers, forceRefresh }, {
+      timeout: AI_TIMEOUT_MS,
+    });
+    return res.data;
+  },
+};
+
 export const mindmapMemoService = {
   getNodeMemo: async (materialId, nodeId) => {
     const res = await api.get(`/api/materials/${materialId}/mindmap-memo`, {
@@ -1161,6 +1212,26 @@ export const groupService = {
     return res.data;
   },
 
+  // 그룹 탈퇴(본인). 방장 위임/삭제와 달리 멤버 본인만 호출한다.
+  leaveGroup: async (id) => {
+    const res = await api.delete(`/api/groups/${id}/leave`);
+    return res.data;
+  },
+
+  // 서버 검색. 키워드가 비면 전체 목록과 동일하게 동작한다.
+  searchGroups: async (keyword) => {
+    const res = await api.get('/api/groups/search', {
+      params: keyword ? { keyword } : undefined,
+    });
+    return res.data;
+  },
+
+  // 그룹 채팅 최근 100건(오름차순). STOMP 구독 전 초기 렌더에 사용한다.
+  getChatHistory: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/chats/history`);
+    return res.data;
+  },
+
   kickMember: async (groupId, memberUserId) => {
     const res = await api.delete(`/api/groups/${groupId}/members/${memberUserId}`);
     return res.data;
@@ -1224,6 +1295,17 @@ export const groupService = {
     if (options.questionCount != null) body.questionCount = options.questionCount;
     if (options.timeLimitSeconds != null) body.timeLimitSeconds = options.timeLimitSeconds;
     const res = await api.post(`/api/groups/${groupId}/materials/${materialId}/quiz`, body);
+    return res.data;
+  },
+
+  // 방장 전용 삭제(권한 검증은 Spring). 403/404/409 는 호출측에서 메시지 표시.
+  deleteGroupMaterial: async (groupId, materialId) => {
+    const res = await api.delete(`/api/groups/${groupId}/materials/${materialId}`);
+    return res.data;
+  },
+
+  deleteGroupQuiz: async (groupId, quizId) => {
+    const res = await api.delete(`/api/groups/${groupId}/quizzes/${quizId}`);
     return res.data;
   },
 };

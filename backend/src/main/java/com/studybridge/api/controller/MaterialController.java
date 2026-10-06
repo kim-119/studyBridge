@@ -24,6 +24,7 @@ public class MaterialController {
     private final MaterialService materialService;
     private final com.studybridge.api.service.AiIntegrationService aiIntegrationService;
     private final com.studybridge.api.service.StudyNoteAnalysisService studyNoteAnalysisService;
+    private final com.studybridge.api.service.MaterialQuizService materialQuizService;
 
     // 학습일지 생성
     @PostMapping("/log")
@@ -218,6 +219,33 @@ public class MaterialController {
             @PathVariable Long materialId,
             @RequestBody com.studybridge.api.dto.QuizDTO.Request request) {
         return ResponseEntity.ok(aiIntegrationService.generateQuiz(userDetails.getId(), materialId, request));
+    }
+
+    // ── 자료 퀴즈 서버 채점/점수/삭제 (브라우저는 답안만 보내고 점수는 서버가 결정) ──
+    @PostMapping("/{materialId}/quiz/{quizId}/submit")
+    public ResponseEntity<com.studybridge.api.dto.QuizDTO.ResultResponse> submitQuiz(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @PathVariable Long quizId,
+            @RequestBody com.studybridge.api.dto.QuizDTO.SubmitRequest request) {
+        return ResponseEntity.ok(materialQuizService.submit(userDetails.getId(), materialId, quizId, request));
+    }
+
+    @GetMapping("/{materialId}/quiz/{quizId}/score")
+    public ResponseEntity<com.studybridge.api.dto.QuizDTO.ResultResponse> getQuizScore(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @PathVariable Long quizId) {
+        return ResponseEntity.ok(materialQuizService.latestResult(userDetails.getId(), materialId, quizId));
+    }
+
+    @DeleteMapping("/{materialId}/quiz/{quizId}")
+    public ResponseEntity<Void> deleteQuiz(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @PathVariable Long quizId) {
+        materialQuizService.delete(userDetails.getId(), materialId, quizId);
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{materialId}/question")

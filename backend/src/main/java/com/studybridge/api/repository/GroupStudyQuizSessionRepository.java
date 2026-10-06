@@ -26,4 +26,14 @@ public interface GroupStudyQuizSessionRepository extends JpaRepository<GroupStud
     @Modifying
     @Query("delete from GroupStudyQuizSession s where s.groupStudy.id = :groupStudyId")
     void deleteByGroupStudyId(@Param("groupStudyId") Long groupStudyId);
+
+    // 퀴즈 개별 삭제(방장) 시: 진행 중 세션 존재 여부(409) → 답변 정리용 세션 id → 세션 삭제.
+    boolean existsByQuizIdAndStatusIn(Long quizId, Collection<GroupStudyQuizSessionStatus> statuses);
+
+    @Query("select s.id from GroupStudyQuizSession s where s.quiz.id = :quizId")
+    List<Long> findIdsByQuizId(@Param("quizId") Long quizId);
+
+    @Modifying
+    @Query("delete from GroupStudyQuizSession s where s.quiz.id = :quizId")
+    void deleteByQuizId(@Param("quizId") Long quizId);
 }
