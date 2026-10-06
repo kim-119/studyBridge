@@ -1,0 +1,189 @@
+.mobile-agent-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--agent-text, var(--color-primary-hover));
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.mobile-agent-label__dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--agent-border, var(--color-primary));
+}
+
+.mobile-agent-label__name {
+  font-weight: 700;
+}
+
+.mobile-agent-label__role {
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.mobile-chat__bubble--agent.has-agent:not(.is-error) {
+  border-left: 4px solid var(--agent-border);
+  background-color: var(--agent-bg);
+}
+
+.mobile-chat__stage.has-agent {
+  padding-left: 10px;
+  border-left: 3px solid var(--agent-border);
+}
+
+.mobile-chat__stage .mobile-agent-label {
+  margin-bottom: 4px;
+}
+
+.mobile-chat__bubble,
+.mobile-professor-answer {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.mobile-chat__bubble .mobile-md__paragraph,
+.mobile-chat__bubble .mobile-md__list,
+.mobile-professor-answer .mobile-md__paragraph,
+.mobile-professor-answer .mobile-md__list {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.mobile-chat__bubble .mobile-md__code,
+.mobile-professor-answer .mobile-md__code {
+  max-width: 100%;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.mobile-professor-card.has-agent {
+  border-left-color: var(--agent-border);
+}
+
+.mobile-professor-card__name {
+  color: var(--agent-text, var(--color-text-main));
+  overflow-wrap: anywhere;
+}
+
+.mobile-professor-answers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-basic);
+  min-width: 0;
+}
+
+.mobile-professor-answers__title {
+  margin: 0;
+  color: var(--color-text-main);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.mobile-professor-answers__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-basic);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mobile-professor-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 12px var(--space-md);
+  border-left: 4px solid var(--agent-border, var(--color-border));
+  border-radius: var(--radius-card);
+  background-color: var(--agent-bg, var(--color-bg-card));
+  box-shadow: var(--shadow-card);
+}
+
+.mobile-professor-answer__entry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mobile-professor-answer__entry > .mobile-md {
+  align-self: stretch;
+  min-width: 0;
+}
+
+.mobile-professor-answer__entry.is-error {
+  color: var(--color-danger);
+}
+
+.mobile-professor-stage {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mobile-professor-stage .prof-bubble-anchor {
+  top: 52px;
+  bottom: auto !important;
+  width: min(30%, 160px);
+}
+
+.mobile-professor-stage .prof-speech-bubble {
+  max-width: 100%;
+  padding: 5px 7px 6px;
+  font-size: 11px;
+}
+
+.mobile-professor-stage .prof-speech-head {
+  min-width: 0;
+}
+
+.mobile-professor-stage .prof-speech-name,
+.mobile-professor-stage .prof-speech-text {
+  min-width: 0;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.mobile-professor-stage .pixel-bubble-detail-body,
+.mobile-professor-tab .minute-recap-q,
+.mobile-professor-tab .minute-recap-a {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.mobile-professor-tab .pixel-recap-dock {
+  min-width: 0;
+}
+
+.mobile-room-mindmap__view-bar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.mobile-room-mindmap__view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+.mobile-room-mindmap__legacy {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-card);
+}
+
+.mobile-room-mindmap__legacy .pgraph-canvas-container {
+  height: clamp(420px, 64vh, 720px);
+}

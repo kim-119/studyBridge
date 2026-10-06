@@ -1,0 +1,80 @@
+# secrets
+.env
+.env.*
+!.env.example
+fastapi/.env
+*.pem
+
+# dependencies
+node_modules/
+frontend/node_modules/
+
+# IDE
+.idea/
+
+# Python
+venv/
+.venv/
+pycache/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# backend build
+backend/build/
+backend/.gradle/
+backend/bin/
+.gradle/
+bin/
+*.class
+
+# frontend build
+frontend/dist/
+frontend/.vite/
+
+# Android / Capacitor build
+/dist-mobile/
+frontend/dist-mobile/
+frontend/dist-check/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/capacitor-cordova-android-plugins/
+android/app/src/main/assets/public/
+
+# Android signing
+*.jks
+*.keystore
+android/key.properties
+
+# local backup files
+*.bak-*
+*.bak_*
+*.backup*
+
+# AI agent tooling
+.claude/
+CLAUDE.md
+
+# outside the Android branch scope (kept locally, not tracked here)
+/docs/
+/fastapi/
+/ops/
+/scripts/
+
+# studybridge_ft model artifacts
+studybridge-ft/
+/outputs/
+**/studybridge_ft/**/data/
+**/studybridge_ft/**/outputs/
+**/studybridge_ft/**/logs/
+**/studybridge_ft/**/checkpoints/
+**/studybridge_ft/**/cache/
+**/studybridge_ft/**/raw/
+**/studybridge_ft/**/cleaned/
+**/studybridge_ft/**/rejected/
+*.safetensors
+*.bin
+*.pt
