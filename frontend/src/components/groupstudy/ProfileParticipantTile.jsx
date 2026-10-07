@@ -62,7 +62,7 @@ export default function ProfileParticipantTile({ avatar, fallbackUrl = null, dis
     >
       {!isLocal && streamManager && <RemoteAudioSink streamManager={streamManager} stream={stream} />}
       {showEmoji ? (
-        <div data-testid="profile-participant-emoji" role="img" aria-label={`프로필 이모지 ${avatar.value}`} style={{ width: '72px', height: '72px', borderRadius: '50%', backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '38px', lineHeight: 1, boxShadow: ring, transition: 'box-shadow 0.15s ease' }}>
+        <div data-testid="profile-participant-emoji" role="img" aria-label={`프로필 이모지 ${avatar.value}`} style={{ width: '72px', height: '72px', borderRadius: '50%', backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--sb-emoji-profile-avatar)', lineHeight: 1, boxShadow: ring, transition: 'box-shadow 0.15s ease' }}>
           {avatar.value}
         </div>
       ) : showImage ? (

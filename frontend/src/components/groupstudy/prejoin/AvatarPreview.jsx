@@ -10,17 +10,18 @@ export default function AvatarPreview({ avatar, displayName, size = 160 }) {
   return (
     <div data-testid="prejoin-avatar-preview" data-avatar-kind={avatar?.kind || 'default'} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
       {isEmoji ? (
-        <div data-testid="prejoin-avatar-emoji" role="img" aria-label={`프로필 이모지 ${avatar.value}`} style={{ ...frame, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--color-secondary)', fontSize: Math.round(size * 0.52), lineHeight: 1 }}>
+        <div data-testid="prejoin-avatar-emoji" className="sb-profile-preview" role="img" aria-label={`프로필 이모지 ${avatar.value}`} style={{ ...frame, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--color-secondary)', fontSize: Math.round(size * 0.52), lineHeight: 1 }}>
           {avatar.value}
         </div>
       ) : hasImage ? (
         <img
           src={avatar.url}
+          className="sb-profile-preview"
           alt={displayName ? `${displayName} 프로필` : '프로필'}
           style={{ ...frame, objectFit: 'cover' }}
         />
       ) : (
-        <DefaultAvatar size={size} style={{ border: '4px solid #FFFFFF', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }} />
+        <DefaultAvatar size={size} className="sb-profile-preview" style={{ border: '4px solid #FFFFFF', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }} />
       )}
       <div data-testid="prejoin-avatar-name" style={{ fontSize: '18px', fontWeight: '700', color: 'var(--color-text-main)', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {displayName || '사용자'}

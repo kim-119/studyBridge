@@ -5724,7 +5724,7 @@ export default function StudyMate() {
                                 cursor: 'pointer'
                               }}
                             >
-                              {t.icon} {t.key}
+                              <span className="sb-emoji" aria-hidden="true">{t.icon}</span> {t.key}
                             </button>
                           );
                         })}

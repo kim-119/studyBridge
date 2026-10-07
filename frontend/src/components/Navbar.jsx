@@ -132,7 +132,7 @@ export function Navbar({ authed, username, active }) {
             aria-label={menuOpen ? '메뉴 닫기' : '메뉴 열기'}
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen((v) => !v)}
-            className="inline-flex items-center justify-center rounded-[10px] p-2 text-gray-700 transition hover:bg-gray-100 lg:hidden"
+            className="sb-icon-xl inline-flex items-center justify-center rounded-[10px] p-2 text-gray-700 transition hover:bg-gray-100 lg:hidden"
           >
             {menuOpen ? <X size={24} /> : <Menu size={24} />}
           </button>

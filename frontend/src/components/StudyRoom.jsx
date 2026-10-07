@@ -3045,7 +3045,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
                           <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignSelf: 'flex-start', maxWidth: '95%', width: '100%' }}>
                             <span style={{ fontSize: '11px', color: '#A5B4FC', display: 'flex', alignItems: 'center', gap: '4px' }}>
                               <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#6366F1' }} />
-                              🤖 AI 토론
+                              <span className="sb-emoji sb-emoji-sm" aria-hidden="true">🤖</span> AI 토론
                             </span>
                             {/* 에이전트별 독립 카드: 각 카드에는 해당 에이전트의 답변/피드백만 들어간다. */}
                             {agentCards.map((card, ci) => {

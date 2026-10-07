@@ -35,6 +35,22 @@
   /* 추가 액션 버튼 색상 (Danger) */
   --color-danger: #EF4444;
 
+  /* ── 아이콘 스케일 토큰(UI 아이콘 = lucide-react / UI 이모지 = Unicode). 프로필 이모지는 별도 토큰.
+     데스크톱은 기존 size 값을 유지하고, ≤768px 모바일 레이어(아래 "모바일 아이콘 스케일 시스템")가 이 토큰으로 정규화한다. */
+  --sb-icon-xs: 14px;   /* 아주 작은 상태표시/보조 indicator */
+  --sb-icon-sm: 15px;   /* badge / chip (공개방·비공개방·일반/캠 스터디) */
+  --sb-icon-md: 16px;   /* metadata (인원·목표·그룹장·날짜·출석률·평균 공부) */
+  --sb-icon-lg: 18px;   /* 일반 버튼 / 입력창 action */
+  --sb-icon-nav: 20px;  /* 주요 navigation action / 모달 닫기 / 검색 */
+  --sb-icon-xl: 24px;   /* hamburger / primary navigation / 독립된 큰 action */
+  --sb-icon-stroke: 1.8;
+  --sb-emoji-sm: 15px;  /* badge emoji */
+  --sb-emoji-md: 16px;  /* metadata emoji */
+  --sb-emoji-lg: 18px;  /* button emoji */
+  --sb-emoji-profile-picker: 30px;  /* 프로필 선택기 항목 (28~32) */
+  --sb-emoji-profile-preview: 56px; /* 선택된 프로필 preview, 모바일 (48~64) */
+  --sb-emoji-profile-avatar: 38px;  /* 참가자 아바타 (32~48) */
+
   /* 반경 (Radius) */
   --radius-btn: 8px;
   --radius-input: 8px;
@@ -2069,7 +2085,7 @@ a {
 .sb-emoji-picker { width: 100%; max-width: 420px; max-height: 90vh; display: flex; flex-direction: column; background-color: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: 16px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05); padding: 20px; box-sizing: border-box; overflow: hidden; }
 .sb-emoji-picker-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .sb-emoji-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; overflow-y: auto; padding: 2px; }
-.sb-emoji-option { position: relative; aspect-ratio: 1 / 1; min-height: 44px; display: flex; align-items: center; justify-content: center; font-size: 26px; line-height: 1; border-radius: var(--radius-btn); border: 1px solid var(--color-border); background-color: var(--color-bg-card); cursor: pointer; padding: 0; transition: background-color 0.15s ease, border-color 0.15s ease; }
+.sb-emoji-option { position: relative; aspect-ratio: 1 / 1; min-height: 44px; display: flex; align-items: center; justify-content: center; font-size: var(--sb-emoji-profile-picker); line-height: 1; border-radius: var(--radius-btn); border: 1px solid var(--color-border); background-color: var(--color-bg-card); cursor: pointer; padding: 0; transition: background-color 0.15s ease, border-color 0.15s ease; }
 .sb-emoji-option:hover { background-color: var(--color-secondary); }
 .sb-emoji-option.is-selected { border: 2px solid var(--color-primary); background-color: rgba(96, 201, 90, 0.12); }
 .sb-emoji-check { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border-radius: 50%; background-color: var(--color-primary); color: #FFFFFF; display: flex; align-items: center; justify-content: center; }
@@ -2078,6 +2094,48 @@ a {
   .sb-emoji-picker-overlay { align-items: flex-end; padding: 0; }
   .sb-emoji-picker { max-width: none; border-radius: 16px 16px 0 0; max-height: 80vh; padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px)); }
   .sb-emoji-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
-  .sb-emoji-option { font-size: 24px; min-height: 46px; }
+  .sb-emoji-option { font-size: 28px; min-height: 46px; }
   .sb-emoji-picker-footer .btn-primary { width: 100%; }
+}
+
+/* =========================================
+   UI 이모지 유틸: Unicode 이모지는 브라우저/OS 마다 glyph metrics 가 달라(특히 WebKit) 컨테이너 크기·font-size·line-height 를 명시한다.
+   버튼/배지 높이를 이모지가 결정하지 않도록 고정 박스 + flex-shrink:0. 프로필 이모지(picker/preview/avatar)는 별도 스케일.
+   ========================================= */
+.sb-emoji { display: inline-flex; align-items: center; justify-content: center; width: var(--sb-icon-md); height: var(--sb-icon-md); font-size: var(--sb-emoji-md); line-height: 1; flex: 0 0 auto; vertical-align: middle; }
+.sb-emoji-sm { width: var(--sb-icon-sm); height: var(--sb-icon-sm); font-size: var(--sb-emoji-sm); }
+.sb-emoji-lg { width: var(--sb-icon-lg); height: var(--sb-icon-lg); font-size: var(--sb-emoji-lg); }
+.sb-emoji-option { font-size: var(--sb-emoji-profile-picker); }
+
+/* =========================================
+   모바일 아이콘 스케일 시스템 (≤768px, 기존 breakpoint). Chromium/WebKit 공통 — 엔진별 분기 없음.
+   · 대상은 lucide-react UI 아이콘(svg.lucide)뿐. 차트/마인드맵/로고/QR/이미지/OpenVidu 영상 UI 는 해당 class 가 없어 영향 없음.
+   · 일러스트 용도의 큰 아이콘(width ≥ 32: 빈 상태·아바타 fallback·오류 오버레이)은 건드리지 않는다.
+   · lucide 는 width/height 를 presentation attribute 로 내리므로 CSS 가 우선한다(컴포넌트 fork 없음).
+   ========================================= */
+@media (max-width: 768px) {
+  svg.lucide { flex-shrink: 0; stroke-width: var(--sb-icon-stroke); }
+  /* XS/SM: 10~13 → 14 (배지·상태표시 하한. 텍스트보다 작아 보이지 않게) */
+  svg.lucide[width="10"], svg.lucide[width="11"], svg.lucide[width="12"], svg.lucide[width="13"] { width: var(--sb-icon-xs); height: var(--sb-icon-xs); }
+  /* MD: 17 → 16 */
+  svg.lucide[width="17"] { width: var(--sb-icon-md); height: var(--sb-icon-md); }
+  /* LG: 19 → 18 */
+  svg.lucide[width="19"] { width: var(--sb-icon-lg); height: var(--sb-icon-lg); }
+  /* NAV: 20~23 → 20, 24~30 → 20 (모달 닫기·헤더 action·입력창 action·하단 내비) */
+  svg.lucide[width="21"], svg.lucide[width="22"], svg.lucide[width="23"],
+  svg.lucide[width="24"], svg.lucide[width="25"], svg.lucide[width="26"], svg.lucide[width="27"], svg.lucide[width="28"], svg.lucide[width="29"], svg.lucide[width="30"] { width: var(--sb-icon-nav); height: var(--sb-icon-nav); }
+  /* XL: hamburger / primary navigation 만 24 유지(터치 영역은 버튼이 44px 이상 확보) */
+  .sb-icon-xl svg.lucide { width: var(--sb-icon-xl); height: var(--sb-icon-xl); }
+
+  /* 시맨틱 컨텍스트: badge/chip = SM, metadata = MD (그룹스터디 카드·상세·방장 콘솔 공통) */
+  .gs-badge svg.lucide, .gs-card-badges svg.lucide { width: var(--sb-icon-sm); height: var(--sb-icon-sm); }
+  .gs-card-meta svg.lucide, .gs-stat-label svg.lucide, .gs-card-members svg.lucide { width: var(--sb-icon-md); height: var(--sb-icon-md); }
+  .gs-badge { gap: 4px; padding: 5px 10px; font-size: 12px; line-height: 1; min-height: 28px; box-sizing: border-box; }
+  .gs-card-meta span, .gs-stat-label { gap: 5px; }
+  /* 아이콘이 줄 높이를 키우지 않게 */
+  .gs-card-meta svg.lucide, .gs-stat-label svg.lucide, .gs-badge svg.lucide { display: block; }
+
+  /* 프로필 이모지는 별도 스케일(축소 대상 아님): picker 28px(위 .sb-emoji-picker 모바일 블록), preview 56px(112px 원), 참가자 아바타 38px */
+  [data-testid="prejoin-avatar-preview"] .sb-profile-preview { width: 112px !important; height: 112px !important; font-size: var(--sb-emoji-profile-preview) !important; }
+  [data-testid="prejoin-avatar-preview"] .sb-profile-preview svg.lucide { width: 56px; height: 56px; }
 }

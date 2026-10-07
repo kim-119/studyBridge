@@ -623,19 +623,19 @@ export default function AgentDiscussionThread({
                                   onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, 'criticize'); }}
                                   style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: '1px solid #fecdd3', background: '#fff1f2', color: '#e11d48', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' }}
                                 >
-                                  ⚔️ 반박
+                                  <span className="sb-emoji sb-emoji-sm" aria-hidden="true">⚔️</span> 반박
                                 </button>
                                 <button
                                   onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, 'compare'); }}
                                   style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: '1px solid #ddd6fe', background: '#f5f3ff', color: '#7c3aed', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' }}
                                 >
-                                  ⚖️ 비교
+                                  <span className="sb-emoji sb-emoji-sm" aria-hidden="true">⚖️</span> 비교
                                 </button>
                                 <button
                                   onClick={(e) => { e.stopPropagation(); onRequestDetail?.(node, 'support'); }}
                                   style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', border: '1px solid #fef08a', background: '#fefce8', color: '#ca8a04', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' }}
                                 >
-                                  💡 예시
+                                  <span className="sb-emoji sb-emoji-sm" aria-hidden="true">💡</span> 예시
                                 </button>
                               </>
                             )}

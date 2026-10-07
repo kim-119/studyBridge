@@ -43,7 +43,7 @@ export default function GroupCard({ study, userId, applied, onOpen }) {
           </span>
         </div>
 
-        <div style={{ position: 'absolute', bottom: '12px', left: '12px', color: 'white', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px', fontWeight: '600', textShadow: '0 1px 3px rgba(0,0,0,0.5)' }}>
+        <div className="gs-card-members" style={{ position: 'absolute', bottom: '12px', left: '12px', color: 'white', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px', fontWeight: '600', textShadow: '0 1px 3px rgba(0,0,0,0.5)' }}>
           <User size={14} /> {study.currentMembers} / {study.maxMembers}명
         </div>
       </div>
