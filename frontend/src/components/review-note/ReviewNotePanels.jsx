@@ -194,6 +194,12 @@ export function RetryPanel({ note, items, onPick }) {
 /* ---------------- 유사문제 ---------------- */
 // ai07/Spring 응답 키가 흔들려도(questions / similarQuestions / possibleSimilarQuestions / data.* / result.*)
 // 항상 단일 배열로 정규화하고, 각 문항을 화면 계약(번호/본문/선택지/정답/해설/변형포인트)에 맞춰 표준화한다.
+// 요청 문항 수(count) 계약: AI/서버가 더 많이 돌려줘도 요청 수만 렌더하고, 번호를 1부터 다시 매긴다.
+export function limitSimilarQuestions(list, count) {
+  const n = Math.max(1, Math.min(5, Number(count) || 1));
+  return (Array.isArray(list) ? list : []).slice(0, n).map((q, i) => ({ ...q, number: i + 1 }));
+}
+
 export function normalizeSimilarQuestions(response) {
   const raw =
     response?.similarQuestions ??
@@ -320,8 +326,9 @@ export function VariantPanel({ note, items, onPick }) {
         setErr(data.message || data.error || '유사문제 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
         setQuestions([]); setActiveId(null);
       } else {
-        const qs = normalizeSimilarQuestions(data); // 응답 전체를 배열로 정규화(첫 요소만 쓰지 않음)
-        setQuestions(qs);                            // 새 생성 결과로 교체 → 전부 노출
+        // 응답 전체를 배열로 정규화한 뒤 "요청한 문항 수" 계약으로 자른다(3 선택 → 정확히 3개 렌더).
+        const qs = limitSimilarQuestions(normalizeSimilarQuestions(data), count);
+        setQuestions(qs);
         setAnswers({}); setSubmitted({});
         setActiveId(qs.length ? qs[0].id : null);
         setUsedFallback(Boolean(data?.usedFallback));
@@ -418,6 +425,7 @@ export function VariantPanel({ note, items, onPick }) {
                 return (
                   <button
                     key={q.id}
+                    data-testid="similar-question-item"
                     onClick={() => setActiveId(q.id)}
                     style={{
                       textAlign: 'left', width: '100%', boxSizing: 'border-box', cursor: 'pointer',

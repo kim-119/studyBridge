@@ -778,7 +778,12 @@ public class ReviewNoteService {
         if (aiResp != null && aiResp.get("error_code") == null && aiResp.get("questions") != null) {
             out.put("success", true);
             out.put("usedFallback", false);
-            out.put("questions", aiResp.get("questions"));
+            // 요청 문항 수(count) 계약: AI 가 더 많이 돌려줘도 count 만큼만 응답한다(프론트 3 선택 → 응답 3).
+            Object qsObj = aiResp.get("questions");
+            if (qsObj instanceof List<?> qsList && qsList.size() > count) {
+                qsObj = new ArrayList<>(qsList.subList(0, count));
+            }
+            out.put("questions", qsObj);
             recordSimilarQuestion(userId, id, note.getSourceMaterialId(), difficulty, false);
             return out;
         }
