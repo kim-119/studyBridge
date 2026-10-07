@@ -3,7 +3,7 @@ import {
   Users, User, X, MicOff, Video, VideoOff, Maximize, Minimize, Gift, UserPlus,
   Settings, MessageSquare, Calendar, ClipboardList, Mic,
   Search, AlertTriangle, Play, RefreshCw, VolumeX, Volume2, Monitor, Edit2, Send, Check,
-  Upload, Download, FileText, MessageCircle, Trash2
+  Upload, Download, FileText, MessageCircle, Trash2, Timer
 } from 'lucide-react';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
@@ -13,6 +13,7 @@ import { groupService, timerService, inquiryService, STUDY_HEARTBEAT_INTERVAL_MS
 import GroupInvitePanel from './groupstudy/GroupInvitePanel';
 import GroupQuizRankingTable from './groupstudy/GroupQuizRankingTable';
 import { studyTypeLabel, formatTargetMinutes, memberDisplayName, isCamStudy, resolveParticipantAvatar, resolveLeaderConsoleSections } from '../utils/groupStudy';
+import { anchorFromSession, elapsedSecondsFrom, formatHMS } from '../utils/studyTimer';
 import { toUserFacingError, userFacingMessage } from '../utils/userFacingError';
 import ProfileParticipantTile from './groupstudy/ProfileParticipantTile';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
@@ -2271,11 +2272,23 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
     }
   };
 
+  // 실시간 학습 타이머(표시 전용): 서버 세션 응답을 앵커로 삼아 1초마다 경과를 그린다(저장/통계는 서버 heartbeat 원장).
+  //  · 입장 sync 응답(기존 세션이면 resumed=true) → 새로고침/재입장 시 실제 경과로 복원. heartbeat 응답마다 앵커 보정.
+  const [timerAnchor, setTimerAnchor] = useState(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    if (!timerAnchor) { setElapsedSeconds(0); return undefined; }
+    setElapsedSeconds(elapsedSecondsFrom(timerAnchor));
+    const t = setInterval(() => setElapsedSeconds(elapsedSecondsFrom(timerAnchor)), 1000);
+    return () => clearInterval(t);
+  }, [timerAnchor]);
+
   useEffect(() => {
     if (study?.id) {
       loadMembers();
       loadApplications();
       timerService.syncTimer(study.id)
+        .then((session) => { const a = anchorFromSession(session); setTimerAnchor(a); console.info('[StudyRoomTimer] sync', { sessionId: session?.id ?? null, resumed: session?.resumed ?? null, elapsed: a ? elapsedSecondsFrom(a) : null }); })
         .catch(err => console.error('Failed to sync timer:', err));
     }
   }, [study?.id, userId]);
@@ -2285,7 +2298,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
   //  · 어느 경로가 유실돼도 서버 reaper 가 마지막 heartbeat 시각으로 종료한다(오차 ≤ 30초).
   useEffect(() => {
     if (!study?.id || !userId) return undefined;
-    const interval = setInterval(() => { timerService.heartbeat().catch(() => {}); }, STUDY_HEARTBEAT_INTERVAL_MS);
+    const interval = setInterval(() => {
+      timerService.heartbeat()
+        .then((session) => { if (session) { const a = anchorFromSession(session); if (a) setTimerAnchor(a); } })
+        .catch(() => {});
+    }, STUDY_HEARTBEAT_INTERVAL_MS);
     const onPageHide = () => timerService.endTimerKeepalive('PAGE_HIDE');
     window.addEventListener('pagehide', onPageHide);
     return () => {
@@ -2436,6 +2453,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
               <h1 style={{ margin: 0, color: '#F3F4F6', fontSize: '16px', fontWeight: '600' }}>{study.title}</h1>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#60A5FA', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
                 <Users size={14} /> {participantCount}명 입장
+              </div>
+              {/* 실시간 학습 타이머: 서버 세션 기준 경과(HH:MM:SS). GENERAL/CAM 공통, 데스크톱/모바일 공통 */}
+              <div className="room-timer" data-testid="room-timer" data-active={timerAnchor ? 'true' : 'false'} title="이 방에서의 학습 시간(서버 세션 기준)" style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: 'rgba(34, 197, 94, 0.12)', color: timerAnchor ? '#86EFAC' : '#9CA3AF', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '700', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                <Timer size={14} />
+                <span data-testid="room-timer-value">{formatHMS(elapsedSeconds)}</span>
               </div>
             </div>
           </div>

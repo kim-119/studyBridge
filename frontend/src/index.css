@@ -2146,6 +2146,9 @@ a {
   .doc-more { width: 40px; height: 40px; }
   .pane-toggle { min-width: 44px; min-height: 44px; }
   .obsp-refresh { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  /* 룸 실시간 학습 타이머 칩: 헤더 안 compact(영상/프로필/채팅 비가림, fixed 아님) */
+  .room-timer { font-size: 12px !important; padding: 3px 8px !important; }
+  .room-timer svg.lucide { width: var(--sb-icon-xs); height: var(--sb-icon-xs); }
   /* icon-only 버튼 공통 터치 영역(아이콘 크기와 분리): 모달/프리조인/콘솔/피커 닫기, 룸 새로고침 */
   .sb-icon-btn { min-width: 44px; min-height: 44px; display: inline-flex !important; align-items: center; justify-content: center; box-sizing: border-box; }
   /* 룸 채팅 전송(32px 원형) → 40px */
