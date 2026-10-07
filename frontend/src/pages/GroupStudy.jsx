@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Plus, Search, Lock, Globe, Filter, X, AlertTriangle, Settings, Check, ArrowLeft, Pencil, LogIn } from 'lucide-react';
+import { Plus, Search, Lock, Globe, Filter, X, AlertTriangle, Settings, Check, ArrowLeft, Pencil, LogIn, Camera } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { groupService, authService } from '../services/api';
 import StudyRoom from '../components/StudyRoom';
