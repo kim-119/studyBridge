@@ -792,6 +792,17 @@ public class ReviewNoteService {
                     break;
                 }
             }
+            // 그래도 부족하면 이 오답노트의 다른 오답 문제(원본)로 나머지를 채워 요청 수를 확정적으로 맞춘다(partialFallback 표시).
+            if (merged.size() < count && !retry.isEmpty()) {
+                int filled = 0;
+                for (int i = 0; i < retry.size() && merged.size() < count; i++) {
+                    int idx = ((wrongQuestionId - 1 + i) % retry.size() + retry.size()) % retry.size();
+                    Map<String, Object> fq = fallbackQuestion(id, retry.get(idx), idx, difficulty,
+                            "AI 가 요청한 문항 수만큼 변형하지 못해 원본 오답 문제로 채웠습니다.");
+                    if (seen.add(variantKey(fq))) { merged.add(fq); filled++; }
+                }
+                if (filled > 0) { aiResp = new LinkedHashMap<>(aiResp); aiResp.put("partialFallback", true); }
+            }
             aiResp = new LinkedHashMap<>(aiResp);
             aiResp.put("questions", merged);
             log.info("[REVIEW_NOTE] variant count contract id={} requested={} delivered={}", id, count, merged.size());
@@ -803,6 +814,7 @@ public class ReviewNoteService {
         if (aiResp != null && aiResp.get("error_code") == null && aiResp.get("questions") != null) {
             out.put("success", true);
             out.put("usedFallback", false);
+            if (Boolean.TRUE.equals(aiResp.get("partialFallback"))) out.put("partialFallback", true);
             // 요청 문항 수(count) 계약: AI 가 더 많이 돌려줘도 count 만큼만 응답한다(프론트 3 선택 → 응답 3).
             Object qsObj = aiResp.get("questions");
             if (qsObj instanceof List<?> qsList && qsList.size() > count) {
@@ -820,19 +832,8 @@ public class ReviewNoteService {
             int n = Math.min(count, retry.size());
             for (int i = 0; i < n; i++) {
                 int idx = ((wrongQuestionId - 1 + i) % retry.size() + retry.size()) % retry.size();
-                Map<String, Object> src = retry.get(idx);
-                Map<String, Object> q = new LinkedHashMap<>();
-                q.put("id", "fallback-" + id + "-" + (idx + 1));
-                q.put("wrongQuestionId", idx + 1);
-                q.put("sourceWrongNoteId", id);
-                q.put("question", src.get("question"));
-                q.put("choices", src.get("choices"));
-                q.put("correctAnswer", src.get("correct_answer"));
-                q.put("answer", src.get("correct_answer"));
-                q.put("explanation", src.get("explanation"));
-                q.put("difficulty", difficulty);
-                q.put("variationPoint", "AI 변형을 일시적으로 사용할 수 없어 원본 오답 문제를 다시 출제했습니다.");
-                questions.add(q);
+                questions.add(fallbackQuestion(id, retry.get(idx), idx, difficulty,
+                        "AI 변형을 일시적으로 사용할 수 없어 원본 오답 문제를 다시 출제했습니다."));
             }
         }
         out.put("success", true);
@@ -1546,5 +1547,21 @@ public class ReviewNoteService {
             return t == null ? String.valueOf(m.hashCode()) : String.valueOf(t).replaceAll("\\s+", " ").trim().toLowerCase();
         }
         return String.valueOf(q);
+    }
+
+    // 폴백 유사문제 1건(원본 오답을 다시 출제). AI 폴백/부분 top-up 공용.
+    private static Map<String, Object> fallbackQuestion(Long noteId, Map<String, Object> src, int idx, String difficulty, String variationPoint) {
+        Map<String, Object> q = new LinkedHashMap<>();
+        q.put("id", "fallback-" + noteId + "-" + (idx + 1));
+        q.put("wrongQuestionId", idx + 1);
+        q.put("sourceWrongNoteId", noteId);
+        q.put("question", src.get("question"));
+        q.put("choices", src.get("choices"));
+        q.put("correctAnswer", src.get("correct_answer"));
+        q.put("answer", src.get("correct_answer"));
+        q.put("explanation", src.get("explanation"));
+        q.put("difficulty", difficulty);
+        q.put("variationPoint", variationPoint);
+        return q;
     }
 }
