@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { materialService } from '../services/api';
 import { UploadCloud, FileText, CheckCircle, AlertCircle, Clock, ExternalLink } from 'lucide-react';
+import { userFacingMessage } from '../utils/userFacingError';
 
 export default function Materials() {
   const { user } = useAuth();
@@ -73,7 +74,7 @@ export default function Materials() {
       fetchMaterials();
     } catch (error) {
       console.error('업로드 실패:', error);
-      alert(error.message || '파일 업로드 중 오류가 발생했습니다. (백엔드 API 미구현일 수 있습니다)');
+      alert(userFacingMessage(error, '파일 업로드 중 오류가 발생했습니다.', { context: 'upload' }));
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {

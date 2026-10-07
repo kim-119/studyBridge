@@ -13,6 +13,7 @@ import { groupService, timerService, inquiryService, STUDY_HEARTBEAT_INTERVAL_MS
 import GroupInvitePanel from './groupstudy/GroupInvitePanel';
 import GroupQuizRankingTable from './groupstudy/GroupQuizRankingTable';
 import { studyTypeLabel, formatTargetMinutes, memberDisplayName, isCamStudy, resolveParticipantAvatar, resolveLeaderConsoleSections } from '../utils/groupStudy';
+import { toUserFacingError, userFacingMessage } from '../utils/userFacingError';
 import ProfileParticipantTile from './groupstudy/ProfileParticipantTile';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
 
@@ -755,6 +756,19 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
     }
   };
 
+  // 방 안 모든 그룹 요청의 groupId 단일 출처는 `study.id`(GroupStudy 가 서버 목록을 normalizeGroup 으로 정규화한 객체).
+  //  그룹이 해체되면 서버는 방에 아무 이벤트도 보내지 않아(deleteGroupStudy 에 브로드캐스트 없음) 열린 방은 죽은 id 를 계속 쓴다
+  //  → 자료/퀴즈/업로드가 전부 404 "Group study not found with ID: N". 한 번만 안내하고 방을 닫아 목록으로 돌려보낸다.
+  const groupGoneRef = React.useRef(false);
+  const handleGroupGone = (err) => {
+    if (groupGoneRef.current) return true;
+    groupGoneRef.current = true;
+    showAlert('스터디를 찾을 수 없음', '스터디 정보를 찾을 수 없습니다. 스터디가 해체되었거나 더 이상 접근할 수 없어 방을 닫습니다.', () => onClose?.());
+    return true;
+  };
+  // 그룹 404 면 방 닫기 처리 후 true, 아니면 false(호출자가 일반 오류 안내).
+  const guardGroupError = (err) => (toUserFacingError(err, { context: 'room' }).groupNotFound ? handleGroupGone(err) : false);
+
   const loadGroupMaterials = async () => {
     if (!study?.id) return;
     try {
@@ -762,6 +776,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
       setGroupMaterials(data || []);
     } catch (err) {
       console.error('Failed to load group materials', err);
+      guardGroupError(err);
     }
   };
 
@@ -772,6 +787,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
       setGroupQuizzes(data || []);
     } catch (err) {
       console.error('Failed to load group quizzes', err);
+      guardGroupError(err);
     }
   };
 
@@ -1927,7 +1943,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
       await Promise.all([loadGroupMaterials(), loadGroupQuizzes()]);
       showAlert('완료', `이 PDF로 ${sanitizedQuizCount()}문제(문제당 ${sanitizedQuizSeconds()}초) 퀴즈를 생성했습니다.`);
     } catch (err) {
-      showAlert('오류', err.response?.data?.message || '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      if (guardGroupError(err)) return;
+      showAlert('오류', userFacingMessage(err, '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.'));
     } finally {
       setIsGeneratingQuiz(null);
     }
@@ -1942,7 +1959,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
       await loadGroupQuizzes();
       showAlert('완료', '해당 자료로 새 퀴즈를 생성했습니다.');
     } catch (err) {
-      showAlert('오류', err.response?.data?.message || '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      if (guardGroupError(err)) return;
+      showAlert('오류', userFacingMessage(err, '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.'));
     } finally {
       setRegeneratingMaterialId(null);
     }
@@ -2002,9 +2020,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
         });
       }
     } catch (err) {
-      const message = err.response?.data?.message || err.message || 'PDF 등록/퀴즈 생성에 실패했습니다.';
-      setQuizUploadError(message);
-      showAlert('오류', message);
+      // 원본(axios "Request failed with status code 401" 등)은 userFacingError 가 console.error 로 남긴다.
+      const facing = toUserFacingError(err, { context: 'upload', fallback: 'PDF 등록/퀴즈 생성에 실패했습니다.' });
+      if (facing.groupNotFound) { handleGroupGone(err); return; }
+      setQuizUploadError(facing.message);
+      showAlert('오류', facing.message);
     } finally {
       setIsUploadingQuizPdf(false);
     }
