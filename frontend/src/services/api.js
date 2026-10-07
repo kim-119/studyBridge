@@ -602,7 +602,7 @@ export const authService = {
       const res = await api.get('/api/users/profile');
       return res.data;
     } catch (err) {
-      throw err.response?.data || { message: '프로필 조회 실패' };
+      throw err;
     }
   },
 

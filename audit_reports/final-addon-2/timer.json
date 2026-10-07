@@ -4,7 +4,7 @@
     "width": 1280,
     "type": "GENERAL",
     "name": "mounted/visible/ticking PASS",
-    "session": 308
+    "session": 316
   },
   {
     "engine": "chromium",
@@ -16,7 +16,7 @@
     "engine": "chromium",
     "width": 1280,
     "type": "GENERAL",
-    "name": "same-user second sync same session PASS"
+    "name": "same-user second tab same session PASS"
   },
   {
     "engine": "chromium",
@@ -24,22 +24,22 @@
     "type": "GENERAL",
     "name": "end/stats HTTP PASS",
     "before": {
-      "groupId": 205,
+      "groupId": 213,
       "range": "ALL",
       "periodStart": null,
       "periodEnd": null,
-      "generatedAt": "2026-10-07T21:28:02.978025958",
+      "generatedAt": "2026-10-07T21:46:35.722861322",
       "memberCount": 1,
-      "totalStudySeconds": 5,
+      "totalStudySeconds": 6,
       "my": {
         "rank": 1,
         "userId": 55,
-        "memberId": 317,
+        "memberId": 325,
         "nickname": "SRE오답",
         "profileImageUrl": "",
         "role": "LEADER",
         "isMe": true,
-        "studySeconds": 5,
+        "studySeconds": 6,
         "sessionCount": 1,
         "activeNow": true
       },
@@ -47,29 +47,29 @@
         {
           "rank": 1,
           "userId": 55,
-          "memberId": 317,
+          "memberId": 325,
           "nickname": "SRE오답",
           "profileImageUrl": "",
           "role": "LEADER",
           "isMe": true,
-          "studySeconds": 5,
+          "studySeconds": 6,
           "sessionCount": 1,
           "activeNow": true
         }
       ]
     },
     "after": {
-      "groupId": 205,
+      "groupId": 213,
       "range": "ALL",
       "periodStart": null,
       "periodEnd": null,
-      "generatedAt": "2026-10-07T21:28:03.343126855",
+      "generatedAt": "2026-10-07T21:46:35.856767103",
       "memberCount": 1,
       "totalStudySeconds": 6,
       "my": {
         "rank": 1,
         "userId": 55,
-        "memberId": 317,
+        "memberId": 325,
         "nickname": "SRE오답",
         "profileImageUrl": "",
         "role": "LEADER",
@@ -82,7 +82,7 @@
         {
           "rank": 1,
           "userId": 55,
-          "memberId": 317,
+          "memberId": 325,
           "nickname": "SRE오답",
           "profileImageUrl": "",
           "role": "LEADER",
@@ -99,7 +99,7 @@
     "width": 393,
     "type": "CAM",
     "name": "mounted/visible/ticking PASS",
-    "session": 309
+    "session": 317
   },
   {
     "engine": "chromium",
@@ -111,7 +111,7 @@
     "engine": "chromium",
     "width": 393,
     "type": "CAM",
-    "name": "same-user second sync same session PASS"
+    "name": "same-user second tab same session PASS"
   },
   {
     "engine": "chromium",
@@ -119,17 +119,17 @@
     "type": "CAM",
     "name": "end/stats HTTP PASS",
     "before": {
-      "groupId": 206,
+      "groupId": 214,
       "range": "ALL",
       "periodStart": null,
       "periodEnd": null,
-      "generatedAt": "2026-10-07T21:28:13.363259748",
+      "generatedAt": "2026-10-07T21:46:46.772602408",
       "memberCount": 1,
       "totalStudySeconds": 6,
       "my": {
         "rank": 1,
         "userId": 55,
-        "memberId": 318,
+        "memberId": 326,
         "nickname": "SRE오답",
         "profileImageUrl": "",
         "role": "LEADER",
@@ -142,7 +142,7 @@
         {
           "rank": 1,
           "userId": 55,
-          "memberId": 318,
+          "memberId": 326,
           "nickname": "SRE오답",
           "profileImageUrl": "",
           "role": "LEADER",
@@ -154,17 +154,17 @@
       ]
     },
     "after": {
-      "groupId": 206,
+      "groupId": 214,
       "range": "ALL",
       "periodStart": null,
       "periodEnd": null,
-      "generatedAt": "2026-10-07T21:28:13.547354324",
+      "generatedAt": "2026-10-07T21:46:46.897418867",
       "memberCount": 1,
       "totalStudySeconds": 6,
       "my": {
         "rank": 1,
         "userId": 55,
-        "memberId": 318,
+        "memberId": 326,
         "nickname": "SRE오답",
         "profileImageUrl": "",
         "role": "LEADER",
@@ -177,7 +177,7 @@
         {
           "rank": 1,
           "userId": 55,
-          "memberId": 318,
+          "memberId": 326,
           "nickname": "SRE오답",
           "profileImageUrl": "",
           "role": "LEADER",
@@ -194,7 +194,7 @@
     "width": 393,
     "type": "GENERAL",
     "name": "mounted/visible/ticking PASS",
-    "session": 310
+    "session": 318
   },
   {
     "engine": "webkit",
@@ -206,7 +206,7 @@
     "engine": "webkit",
     "width": 393,
     "type": "GENERAL",
-    "name": "same-user second sync same session PASS"
+    "name": "same-user second tab same session PASS"
   },
   {
     "engine": "webkit",
@@ -214,52 +214,52 @@
     "type": "GENERAL",
     "name": "end/stats HTTP PASS",
     "before": {
-      "groupId": 207,
+      "groupId": 215,
       "range": "ALL",
       "periodStart": null,
       "periodEnd": null,
-      "generatedAt": "2026-10-07T21:28:28.988258474",
-      "memberCount": 1,
-      "totalStudySeconds": 9,
-      "my": {
-        "rank": 1,
-        "userId": 55,
-        "memberId": 319,
-        "nickname": "SRE오답",
-        "profileImageUrl": "",
-        "role": "LEADER",
-        "isMe": true,
-        "studySeconds": 9,
-        "sessionCount": 1,
-        "activeNow": true
-      },
-      "members": [
-        {
-          "rank": 1,
-          "userId": 55,
-          "memberId": 319,
-          "nickname": "SRE오답",
-          "profileImageUrl": "",
-          "role": "LEADER",
-          "isMe": true,
-          "studySeconds": 9,
-          "sessionCount": 1,
-          "activeNow": true
-        }
-      ]
-    },
-    "after": {
-      "groupId": 207,
-      "range": "ALL",
-      "periodStart": null,
-      "periodEnd": null,
-      "generatedAt": "2026-10-07T21:28:29.245318907",
+      "generatedAt": "2026-10-07T21:47:02.127350658",
       "memberCount": 1,
       "totalStudySeconds": 10,
       "my": {
         "rank": 1,
         "userId": 55,
-        "memberId": 319,
+        "memberId": 327,
+        "nickname": "SRE오답",
+        "profileImageUrl": "",
+        "role": "LEADER",
+        "isMe": true,
+        "studySeconds": 10,
+        "sessionCount": 1,
+        "activeNow": true
+      },
+      "members": [
+        {
+          "rank": 1,
+          "userId": 55,
+          "memberId": 327,
+          "nickname": "SRE오답",
+          "profileImageUrl": "",
+          "role": "LEADER",
+          "isMe": true,
+          "studySeconds": 10,
+          "sessionCount": 1,
+          "activeNow": true
+        }
+      ]
+    },
+    "after": {
+      "groupId": 215,
+      "range": "ALL",
+      "periodStart": null,
+      "periodEnd": null,
+      "generatedAt": "2026-10-07T21:47:02.381832221",
+      "memberCount": 1,
+      "totalStudySeconds": 10,
+      "my": {
+        "rank": 1,
+        "userId": 55,
+        "memberId": 327,
         "nickname": "SRE오답",
         "profileImageUrl": "",
         "role": "LEADER",
@@ -272,7 +272,7 @@
         {
           "rank": 1,
           "userId": 55,
-          "memberId": 319,
+          "memberId": 327,
           "nickname": "SRE오답",
           "profileImageUrl": "",
           "role": "LEADER",
@@ -289,7 +289,7 @@
     "width": 430,
     "type": "CAM",
     "name": "mounted/visible/ticking PASS",
-    "session": 311
+    "session": 319
   },
   {
     "engine": "webkit",
@@ -301,7 +301,7 @@
     "engine": "webkit",
     "width": 430,
     "type": "CAM",
-    "name": "same-user second sync same session PASS"
+    "name": "same-user second tab same session PASS"
   },
   {
     "engine": "webkit",
@@ -309,22 +309,22 @@
     "type": "CAM",
     "name": "end/stats HTTP PASS",
     "before": {
-      "groupId": 208,
+      "groupId": 216,
       "range": "ALL",
       "periodStart": null,
       "periodEnd": null,
-      "generatedAt": "2026-10-07T21:28:43.456016719",
+      "generatedAt": "2026-10-07T21:47:17.524653693",
       "memberCount": 1,
-      "totalStudySeconds": 8,
+      "totalStudySeconds": 9,
       "my": {
         "rank": 1,
         "userId": 55,
-        "memberId": 320,
+        "memberId": 328,
         "nickname": "SRE오답",
         "profileImageUrl": "",
         "role": "LEADER",
         "isMe": true,
-        "studySeconds": 8,
+        "studySeconds": 9,
         "sessionCount": 1,
         "activeNow": true
       },
@@ -332,34 +332,34 @@
         {
           "rank": 1,
           "userId": 55,
-          "memberId": 320,
+          "memberId": 328,
           "nickname": "SRE오답",
           "profileImageUrl": "",
           "role": "LEADER",
           "isMe": true,
-          "studySeconds": 8,
+          "studySeconds": 9,
           "sessionCount": 1,
           "activeNow": true
         }
       ]
     },
     "after": {
-      "groupId": 208,
+      "groupId": 216,
       "range": "ALL",
       "periodStart": null,
       "periodEnd": null,
-      "generatedAt": "2026-10-07T21:28:43.760782427",
+      "generatedAt": "2026-10-07T21:47:17.888721734",
       "memberCount": 1,
-      "totalStudySeconds": 8,
+      "totalStudySeconds": 9,
       "my": {
         "rank": 1,
         "userId": 55,
-        "memberId": 320,
+        "memberId": 328,
         "nickname": "SRE오답",
         "profileImageUrl": "",
         "role": "LEADER",
         "isMe": true,
-        "studySeconds": 8,
+        "studySeconds": 9,
         "sessionCount": 1,
         "activeNow": false
       },
@@ -367,12 +367,12 @@
         {
           "rank": 1,
           "userId": 55,
-          "memberId": 320,
+          "memberId": 328,
           "nickname": "SRE오답",
           "profileImageUrl": "",
           "role": "LEADER",
           "isMe": true,
-          "studySeconds": 8,
+          "studySeconds": 9,
           "sessionCount": 1,
           "activeNow": false
         }

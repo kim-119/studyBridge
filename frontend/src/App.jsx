@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { authService } from './services/api';
+import { isRejectedSession } from './utils/authSession';
 
 import Navbar from './components/Navbar';
 import Login from './pages/Login';
@@ -43,8 +44,8 @@ function App() {
   const isAdminRoute = location.pathname.startsWith('/admin');
 
   useEffect(() => {
+    let active = true;
     const initAuth = async () => {
-      const storedUser = localStorage.getItem("user");
       const userId = localStorage.getItem("userId");
       const token = localStorage.getItem("token");
 
@@ -57,6 +58,7 @@ function App() {
       try {
         if (userId) {
           const profile = await authService.getProfile(userId);
+          if (!active) return;
           if (profile.status === 'BANNED' || profile.status === 'SUSPENDED' || (profile.suspensionEndDate && new Date(profile.suspensionEndDate) > new Date())) {
             console.warn('제재된 계정입니다. 자동 로그아웃됩니다.');
             logout();
@@ -65,17 +67,21 @@ function App() {
           }
           updateUser(profile);
         } else {
-          throw new Error('유효한 사용자 ID가 없습니다.');
+          logout();
         }
       } catch (e) {
-        console.warn('기존 로그인 세션이 유효하지 않습니다. 자동 로그아웃됩니다.');
-        logout();
+        if (active && isRejectedSession(e)) {
+          logout();
+        } else if (active) {
+          console.warn('프로필 조회 연결이 중단되었습니다. 기존 로그인 정보를 유지합니다.');
+        }
       } finally {
-        setIsAuthChecking(false);
+        if (active) setIsAuthChecking(false);
       }
     };
 
     initAuth();
+    return () => { active = false; };
   }, []);
 
   if (isAuthChecking) {
