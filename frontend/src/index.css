@@ -2149,7 +2149,7 @@ a {
   /* icon-only 버튼 공통 터치 영역(아이콘 크기와 분리): 모달/프리조인/콘솔/피커 닫기, 룸 새로고침 */
   .sb-icon-btn { min-width: 44px; min-height: 44px; display: inline-flex !important; align-items: center; justify-content: center; box-sizing: border-box; }
   /* 룸 채팅 전송(32px 원형) → 40px */
-  .sb-icon-btn-send { width: 40px !important; height: 40px !important; }
+  .sb-icon-btn-send { width: 40px !important; height: 40px !important; min-width: 40px; flex: 0 0 40px; }
 
   /* 프로필 이모지는 별도 스케일(축소 대상 아님): picker 28px(위 .sb-emoji-picker 모바일 블록), preview 56px(112px 원), 참가자 아바타 38px */
   [data-testid="prejoin-avatar-preview"] .sb-profile-preview { width: 112px !important; height: 112px !important; box-sizing: border-box; font-size: var(--sb-emoji-profile-preview) !important; }
