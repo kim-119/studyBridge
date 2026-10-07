@@ -75,7 +75,7 @@ export default function ReviewNotesPage() {
   };
 
   return (
-    <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '24px' }}>
+    <div className="rn-page" style={{ maxWidth: '1100px', margin: '0 auto', padding: '24px' }}>
       {/* 헤더 */}
       <div style={{ marginBottom: '20px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: 900, color: '#15803D', margin: '0 0 6px 0' }}>오답노트</h1>

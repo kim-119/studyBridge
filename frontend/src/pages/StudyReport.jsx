@@ -52,7 +52,7 @@ export default function StudyReport() {
   ];
 
   return (
-    <div className="container-main dashboard-page" style={{ maxWidth: '1100px', margin: '0 auto', padding: '24px' }}>
+    <div className="container-main dashboard-page sr-page" style={{ maxWidth: '1100px', margin: '0 auto', padding: '24px' }}>
       <div style={{ marginBottom: '20px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: 900, color: '#15803D', margin: '0 0 6px 0' }}>학습 리포트</h1>
         <p style={{ color: '#6B7280', margin: 0, fontSize: '14px' }}>

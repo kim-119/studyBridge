@@ -771,6 +771,31 @@ public class ReviewNoteService {
         } catch (Exception e) {
             log.warn("[REVIEW_NOTE] variant ai07 unavailable id={} cause={} -> 폴백", id, e.getMessage());
         }
+        // count 계약 top-up: AI 가 요청 수보다 적게 돌려주면(예: count=3 에 1개) 부족분만큼 최대 2회 더 요청해 채운다(문항 본문 기준 중복 제거).
+        if (aiResp != null && aiResp.get("error_code") == null && aiResp.get("questions") instanceof List<?> firstList && firstList.size() < count) {
+            List<Object> merged = new ArrayList<>(firstList);
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (Object q : merged) seen.add(variantKey(q));
+            for (int attempt = 0; attempt < 2 && merged.size() < count; attempt++) {
+                Map<String, Object> topReq = new LinkedHashMap<>(req);
+                topReq.put("count", count - merged.size());
+                try {
+                    Map more = fastApiWebClient.post().uri("/api/ai/review/variant-question")
+                            .bodyValue(topReq).retrieve().bodyToMono(Map.class)
+                            .block(Duration.ofSeconds(reviewTimeoutSeconds));
+                    if (more == null || more.get("error_code") != null || !(more.get("questions") instanceof List<?> moreList)) break;
+                    int before = merged.size();
+                    for (Object q : moreList) { if (merged.size() >= count) break; if (seen.add(variantKey(q))) merged.add(q); }
+                    if (merged.size() == before) break; // 새 문항이 없으면 중단
+                } catch (Exception e) {
+                    log.warn("[REVIEW_NOTE] variant top-up failed id={} attempt={} cause={}", id, attempt, e.getMessage());
+                    break;
+                }
+            }
+            aiResp = new LinkedHashMap<>(aiResp);
+            aiResp.put("questions", merged);
+            log.info("[REVIEW_NOTE] variant count contract id={} requested={} delivered={}", id, count, merged.size());
+        }
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("reviewNoteId", id);
@@ -778,7 +803,12 @@ public class ReviewNoteService {
         if (aiResp != null && aiResp.get("error_code") == null && aiResp.get("questions") != null) {
             out.put("success", true);
             out.put("usedFallback", false);
-            out.put("questions", aiResp.get("questions"));
+            // 요청 문항 수(count) 계약: AI 가 더 많이 돌려줘도 count 만큼만 응답한다(프론트 3 선택 → 응답 3).
+            Object qsObj = aiResp.get("questions");
+            if (qsObj instanceof List<?> qsList && qsList.size() > count) {
+                qsObj = new ArrayList<>(qsList.subList(0, count));
+            }
+            out.put("questions", qsObj);
             recordSimilarQuestion(userId, id, note.getSourceMaterialId(), difficulty, false);
             return out;
         }
@@ -1507,5 +1537,14 @@ public class ReviewNoteService {
             this.explanation = explanation;
             this.page = page;
         }
+    }
+
+    // 유사문제 중복 판정 키(문항 본문 정규화). top-up 재요청 결과 병합에 사용.
+    private static String variantKey(Object q) {
+        if (q instanceof Map<?, ?> m) {
+            Object t = m.get("question") != null ? m.get("question") : (m.get("prompt") != null ? m.get("prompt") : m.get("text"));
+            return t == null ? String.valueOf(m.hashCode()) : String.valueOf(t).replaceAll("\\s+", " ").trim().toLowerCase();
+        }
+        return String.valueOf(q);
     }
 }

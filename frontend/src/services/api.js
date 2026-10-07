@@ -56,6 +56,15 @@ const api = axios.create({
   },
 });
 
+// ── multipart(FormData) 업로드는 반드시 공통 `api` 인스턴스로 보낸다 ─────────────────────
+//  · 이유: 토큰 만료 시 401 → /api/users/refresh → 재시도 가 응답 인터셉터(아래)에 있어서,
+//    raw `axios.post` + 수동 Authorization 으로 우회하면 갱신 없이 "Request failed with status code 401" 로 끝난다.
+//  · Content-Type 을 명시하는 이유: `api` 기본 헤더가 application/json 이라 axios 1.x transformRequest 가
+//    FormData 를 JSON(formDataToJSON) 으로 직렬화해 파일이 사라진다. 'multipart/form-data' 로 덮어쓰면
+//    브라우저 어댑터(resolveConfig)가 FormData 에 한해 Content-Type 을 제거하고 브라우저가 boundary 를 붙인다.
+//    (재시도 시에도 같은 FormData/헤더가 다시 흘러 boundary 가 새로 생성된다 — 하드코딩 boundary 금지.)
+export const MULTIPART_HEADERS = Object.freeze({ 'Content-Type': 'multipart/form-data' });
+
 const fastApi = axios.create({
   baseURL: FASTAPI_BASE_URL,
   timeout: AI_TIMEOUT_MS,
@@ -611,14 +620,9 @@ export const authService = {
       const formData = new FormData();
       formData.append('file', file);
 
-      const token = localStorage.getItem('token');
-
-      const res = await axios.post(`${API_BASE_URL}/api/users/profile/image`, formData, {
+      const res = await api.post('/api/users/profile/image', formData, {
         timeout: AI_TIMEOUT_MS,
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        headers: MULTIPART_HEADERS,
       });
 
       return res.data;
@@ -903,13 +907,9 @@ export const materialService = {
 
     formData.append('file', file);
 
-    const token = localStorage.getItem('token');
-
-    const res = await axios.post(`${API_BASE_URL}/api/materials/upload`, formData, {
+    const res = await api.post('/api/materials/upload', formData, {
       timeout: MATERIAL_UPLOAD_TIMEOUT_MS,
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: MULTIPART_HEADERS,
     });
 
     return res.data;
@@ -922,10 +922,9 @@ export const materialService = {
     if (title) formData.append('title', title);
     if (keywords) formData.append('keywords', keywords);
     formData.append('file', file);
-    const token = localStorage.getItem('token');
-    const res = await axios.post(`${API_BASE_URL}/api/materials/classify-before-save`, formData, {
+    const res = await api.post('/api/materials/classify-before-save', formData, {
       timeout: 30000,
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: MULTIPART_HEADERS,
     });
     return res.data;
   },
@@ -1270,17 +1269,10 @@ export const groupService = {
     if (options.questionCount != null) formData.append('questionCount', String(options.questionCount));
     if (options.timeLimitSeconds != null) formData.append('timeLimitSeconds', String(options.timeLimitSeconds));
 
-    const token = localStorage.getItem('token');
-    const res = await axios.post(
-      `${API_BASE_URL}/api/groups/${groupId}/materials/upload-quiz`,
-      formData,
-      {
-        timeout: AI_TIMEOUT_MS,
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-      }
-    );
+    const res = await api.post(`/api/groups/${groupId}/materials/upload-quiz`, formData, {
+      timeout: AI_TIMEOUT_MS,
+      headers: MULTIPART_HEADERS,
+    });
 
     return res.data;
   },
@@ -1351,14 +1343,9 @@ export const knowledgeService = {
       formData.append('pdf', pdfFile);
     }
 
-    const token = localStorage.getItem('token');
-
-    const res = await axios.post(`${API_BASE_URL}/api/blogs`, formData, {
+    const res = await api.post('/api/blogs', formData, {
       timeout: AI_TIMEOUT_MS,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: MULTIPART_HEADERS,
     });
 
     return res.data;
@@ -1394,14 +1381,9 @@ export const knowledgeService = {
     formData.append('clearImage', clearImage);
     formData.append('clearPdf', clearPdf);
 
-    const token = localStorage.getItem('token');
-
-    const res = await axios.put(`${API_BASE_URL}/api/blogs/${blogId}`, formData, {
+    const res = await api.put(`/api/blogs/${blogId}`, formData, {
       timeout: AI_TIMEOUT_MS,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: MULTIPART_HEADERS,
     });
 
     return res.data;

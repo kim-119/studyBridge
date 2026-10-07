@@ -13,6 +13,7 @@ import { groupService, timerService, inquiryService, STUDY_HEARTBEAT_INTERVAL_MS
 import GroupInvitePanel from './groupstudy/GroupInvitePanel';
 import GroupQuizRankingTable from './groupstudy/GroupQuizRankingTable';
 import { studyTypeLabel, formatTargetMinutes, memberDisplayName, isCamStudy, resolveParticipantAvatar, resolveLeaderConsoleSections } from '../utils/groupStudy';
+import { toUserFacingError, userFacingMessage } from '../utils/userFacingError';
 import ProfileParticipantTile from './groupstudy/ProfileParticipantTile';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
 
@@ -755,6 +756,19 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
     }
   };
 
+  // 방 안 모든 그룹 요청의 groupId 단일 출처는 `study.id`(GroupStudy 가 서버 목록을 normalizeGroup 으로 정규화한 객체).
+  //  그룹이 해체되면 서버는 방에 아무 이벤트도 보내지 않아(deleteGroupStudy 에 브로드캐스트 없음) 열린 방은 죽은 id 를 계속 쓴다
+  //  → 자료/퀴즈/업로드가 전부 404 "Group study not found with ID: N". 한 번만 안내하고 방을 닫아 목록으로 돌려보낸다.
+  const groupGoneRef = React.useRef(false);
+  const handleGroupGone = (err) => {
+    if (groupGoneRef.current) return true;
+    groupGoneRef.current = true;
+    showAlert('스터디를 찾을 수 없음', '스터디 정보를 찾을 수 없습니다. 스터디가 해체되었거나 더 이상 접근할 수 없어 방을 닫습니다.', () => onClose?.());
+    return true;
+  };
+  // 그룹 404 면 방 닫기 처리 후 true, 아니면 false(호출자가 일반 오류 안내).
+  const guardGroupError = (err) => (toUserFacingError(err, { context: 'room' }).groupNotFound ? handleGroupGone(err) : false);
+
   const loadGroupMaterials = async () => {
     if (!study?.id) return;
     try {
@@ -762,6 +776,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
       setGroupMaterials(data || []);
     } catch (err) {
       console.error('Failed to load group materials', err);
+      guardGroupError(err);
     }
   };
 
@@ -772,6 +787,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
       setGroupQuizzes(data || []);
     } catch (err) {
       console.error('Failed to load group quizzes', err);
+      guardGroupError(err);
     }
   };
 
@@ -1927,7 +1943,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
       await Promise.all([loadGroupMaterials(), loadGroupQuizzes()]);
       showAlert('완료', `이 PDF로 ${sanitizedQuizCount()}문제(문제당 ${sanitizedQuizSeconds()}초) 퀴즈를 생성했습니다.`);
     } catch (err) {
-      showAlert('오류', err.response?.data?.message || '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      if (guardGroupError(err)) return;
+      showAlert('오류', userFacingMessage(err, '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.'));
     } finally {
       setIsGeneratingQuiz(null);
     }
@@ -1942,7 +1959,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
       await loadGroupQuizzes();
       showAlert('완료', '해당 자료로 새 퀴즈를 생성했습니다.');
     } catch (err) {
-      showAlert('오류', err.response?.data?.message || '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      if (guardGroupError(err)) return;
+      showAlert('오류', userFacingMessage(err, '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.'));
     } finally {
       setRegeneratingMaterialId(null);
     }
@@ -2002,9 +2020,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
         });
       }
     } catch (err) {
-      const message = err.response?.data?.message || err.message || 'PDF 등록/퀴즈 생성에 실패했습니다.';
-      setQuizUploadError(message);
-      showAlert('오류', message);
+      // 원본(axios "Request failed with status code 401" 등)은 userFacingError 가 console.error 로 남긴다.
+      const facing = toUserFacingError(err, { context: 'upload', fallback: 'PDF 등록/퀴즈 생성에 실패했습니다.' });
+      if (facing.groupNotFound) { handleGroupGone(err); return; }
+      setQuizUploadError(facing.message);
+      showAlert('오류', facing.message);
     } finally {
       setIsUploadingQuizPdf(false);
     }
@@ -3293,18 +3313,20 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
 
       {/* 방 관리 (설정) 모달 */}
       {showRoomManageModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000 }}>
-          <div style={{ backgroundColor: '#0F172A', borderRadius: '16px', width: '800px', maxWidth: '90vw', height: '720px', maxHeight: '90vh', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideUp 0.3s ease-out' }}>
+        <div className="sb-modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000 }}>
+          <div className="sb-modal sb-modal-dark" data-testid="room-manage-modal" style={{ backgroundColor: '#0F172A', borderRadius: '16px', width: '800px', maxWidth: '90vw', height: '720px', maxHeight: '90vh', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideUp 0.3s ease-out' }}>
 
             {/* Header Tabs */}
-            <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: '#1E293B', padding: '0 8px' }}>
+            <div className="sb-modal-head sb-modal-tabs" style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: '#1E293B', padding: '0 8px' }}>
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: roomManageTab === 'settings' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'settings' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setRoomManageTab('settings')}
               >
                 방 관리 (설정)
               </div>
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: roomManageTab === 'members' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'members' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setRoomManageTab('members')}
               >
@@ -3312,6 +3334,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
               </div>
               {(roomLeaderSections.showInviteManagement || roomLeaderSections.showPendingMembers) && (
                 <div
+                  className="sb-modal-tab"
                   style={{ padding: '16px 24px', borderBottom: roomManageTab === 'applications' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'applications' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s', display: 'flex', alignItems: 'center', gap: '6px' }}
                   onClick={() => setRoomManageTab('applications')}
                 >
@@ -3319,30 +3342,32 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
                 </div>
               )}
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: roomManageTab === 'quiz' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'quiz' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setRoomManageTab('quiz')}
               >
                 실시간 퀴즈
               </div>
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: roomManageTab === 'ranking' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'ranking' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s', whiteSpace: 'nowrap' }}
                 onClick={() => setRoomManageTab('ranking')}
               >
                 퀴즈 랭킹
               </div>
               <div style={{ flex: 1 }} />
-              <div style={{ padding: '0 20px', cursor: 'pointer' }} onClick={() => setShowRoomManageModal(false)}>
+              <div className="sb-modal-close sb-icon-btn" role="button" aria-label="방 관리 닫기" style={{ padding: '0 20px', cursor: 'pointer' }} onClick={() => setShowRoomManageModal(false)}>
                 <X size={20} color="#9CA3AF" />
               </div>
             </div>
 
             {/* Content Area */}
-            <div className="custom-scrollbar" style={{ flex: 1, padding: '24px 32px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div className="custom-scrollbar sb-modal-body" style={{ flex: 1, padding: '24px 32px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
               {roomManageTab === 'settings' ? (
                 <>
                   {/* 해시태그 */}
-                  <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
+                  <div className="sb-modal-row" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>해시태그</div>
                     <div style={{ flex: 1, paddingRight: '4px' }}>
                       <input type="text" placeholder="스터디를 대표하는 키워드를 입력하세요. (최대 3개)" style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }} />
@@ -3350,7 +3375,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
                   </div>
 
                   {/* 기간 */}
-                  <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
+                  <div className="sb-modal-row" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>기간</div>
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -3363,7 +3388,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
                   </div>
 
                   {/* 목표시간 */}
-                  <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
+                  <div className="sb-modal-row" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>스터디 방식 · 목표</div>
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
@@ -3379,7 +3404,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
 
 
                   {/* 초기 장치 설정 */}
-                  <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
+                  <div className="sb-modal-row" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '4px' }}>초기 장치 설정</div>
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
@@ -3395,7 +3420,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
                   </div>
 
                   {/* 스터디 공지사항 */}
-                  <div style={{ display: 'flex' }}>
+                  <div className="sb-modal-row" style={{ display: 'flex' }}>
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>스터디 공지사항</div>
                     <div style={{ flex: 1, paddingRight: '4px' }}>
                       <textarea
@@ -3521,7 +3546,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             <label style={{ color: '#CBD5E1', fontSize: '12px', fontWeight: '700' }}>문제당 시간</label>
-                            <div style={{ display: 'flex', gap: '6px' }}>
+                            <div className="sb-chip-row" style={{ display: 'flex', gap: '6px' }}>
                               {[10, 15, 20, 30, 60].map((sec) => {
                                 const active = Number(quizPerQuestionSeconds) === sec;
                                 return (
@@ -3793,7 +3818,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
             </div>
 
             {/* Save Button */}
-            <div style={{ padding: '24px 32px', display: 'flex', justifyContent: 'flex-end', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+            <div className="sb-modal-foot" style={{ padding: '24px 32px', display: 'flex', justifyContent: 'flex-end', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
               <button
                 style={{ padding: '8px 24px', backgroundColor: '#22C55E', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '600', cursor: 'pointer', boxShadow: '0 4px 12px rgba(34,197,94,0.3)', transition: '0.2s' }}
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#16A34A'}
@@ -3809,36 +3834,38 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
 
       {/* 관리자 신고/문의 관리 모달 */}
       {showAdminReportModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000 }}>
-          <div style={{ backgroundColor: '#0F172A', borderRadius: '16px', width: '800px', maxWidth: '90vw', height: 'auto', maxHeight: '90vh', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideUp 0.3s ease-out' }}>
+        <div className="sb-modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000 }}>
+          <div className="sb-modal sb-modal-dark" data-testid="admin-report-modal" style={{ backgroundColor: '#0F172A', borderRadius: '16px', width: '800px', maxWidth: '90vw', height: 'auto', maxHeight: '90vh', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideUp 0.3s ease-out' }}>
 
             {/* Header Tabs */}
-            <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: '#1E293B', padding: '0 8px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '16px 24px', color: '#60A5FA', fontWeight: '700', fontSize: '15px' }}>
+            <div className="sb-modal-head sb-modal-tabs" style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: '#1E293B', padding: '0 8px' }}>
+              <div className="sb-modal-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '16px 24px', color: '#60A5FA', fontWeight: '700', fontSize: '15px' }}>
                 <MessageSquare size={18} />
                 문의 및 신고하기
               </div>
-              <div style={{ width: '1px', height: '20px', backgroundColor: 'rgba(255,255,255,0.1)', margin: '0 16px' }} />
+              <div className="sb-modal-tab-divider" style={{ width: '1px', height: '20px', backgroundColor: 'rgba(255,255,255,0.1)', margin: '0 16px' }} />
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: adminReportTab === 'inquiry' ? '2px solid #60A5FA' : '2px solid transparent', color: adminReportTab === 'inquiry' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setAdminReportTab('inquiry')}
               >
                 1:1 문의
               </div>
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: adminReportTab === 'report' ? '2px solid #EF4444' : '2px solid transparent', color: adminReportTab === 'report' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setAdminReportTab('report')}
               >
                 유저 신고
               </div>
               <div style={{ flex: 1 }} />
-              <div style={{ padding: '0 20px', cursor: 'pointer' }} onClick={() => setShowAdminReportModal(false)}>
+              <div className="sb-modal-close sb-icon-btn" role="button" aria-label="문의 및 신고 닫기" style={{ padding: '0 20px', cursor: 'pointer' }} onClick={() => setShowAdminReportModal(false)}>
                 <X size={20} color="#9CA3AF" />
               </div>
             </div>
 
             {/* Content Area */}
-            <div className="custom-scrollbar" style={{ flex: 1, padding: '32px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div className="custom-scrollbar sb-modal-body" style={{ flex: 1, padding: '32px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
               {adminReportTab === 'inquiry' ? (
                 <>
                   {/* 문의 카테고리 */}
@@ -3925,7 +3952,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
             </div>
 
             {/* Submit Button Area */}
-            <div style={{ padding: '24px 32px', display: 'flex', justifyContent: 'flex-end', gap: '12px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+            <div className="sb-modal-foot" style={{ padding: '24px 32px', display: 'flex', justifyContent: 'flex-end', gap: '12px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
               <button
                 style={{ padding: '10px 24px', backgroundColor: 'transparent', color: '#9CA3AF', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)', fontWeight: '600', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setShowAdminReportModal(false)}

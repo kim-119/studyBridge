@@ -5333,18 +5333,18 @@ export default function StudyMate() {
       </div>
 
       {showModal && (
-        <div className="modal-overlay">
-          <div className="glass-panel modal-content" style={{ width: '95%', maxWidth: '600px', maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            <div className="modal-header">
-              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div className="modal-overlay sb-modal-overlay">
+          <div className="glass-panel modal-content sb-modal sb-modal-aig" data-testid="aig-modal" style={{ width: '95%', maxWidth: '600px', maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-header sb-modal-head">
+              <h3 className="sb-modal-title" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Sparkles size={20} color="var(--color-primary)" /> 새 AI 그룹 스터디 생성
               </h3>
-              <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)' }} onClick={() => setShowModal(false)} aria-label="닫기"><X size={20} /></button>
+              <button className="sb-icon-btn" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)' }} onClick={() => setShowModal(false)} aria-label="닫기"><X size={20} /></button>
             </div>
 
-            <form onSubmit={handleCreateAgent} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+            <form onSubmit={handleCreateAgent} className="sb-modal-form" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
               {/* 단계 표시 — 기본 설정 · AI 학습메이트 #1/#2/#3 (이미 만들어진 단계는 클릭으로 바로 이동) */}
-              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', padding: '4px 0 10px', flexWrap: 'wrap' }}>
+              <div className="sb-aig-steps" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', padding: '4px 0 10px', flexWrap: 'wrap' }}>
                 {['기본 설정', 'AI 학습메이트 #1', 'AI 학습메이트 #2', 'AI 학습메이트 #3'].map((label, i) => {
                   const on = modalStep === i;
                   const reachable = i === 0 || i <= createdAgents.length;
@@ -5367,13 +5367,14 @@ export default function StudyMate() {
                 })}
               </div>
 
-              {/* 좌(‹) · 본문 · 우(›) — 큰 › 를 누르면 화면 단계 전체가 옆으로 넘어간다 */}
-              <div style={{ display: 'flex', alignItems: 'stretch', gap: '6px', flex: 1, minHeight: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+              {/* 좌(‹) · 본문 · 우(›) — 큰 › 를 누르면 화면 단계 전체가 옆으로 넘어간다.
+                  ≤768px 에서는 좌우 화살표 열(.sb-aig-nav-col)을 숨기고 푸터의 컴팩트 ‹ ›(.sb-aig-nav-compact)로 대체한다(index.css). */}
+              <div className="sb-aig-nav-row" style={{ display: 'flex', alignItems: 'stretch', gap: '6px', flex: 1, minHeight: 0 }}>
+                <div className="sb-aig-nav-col" style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
                   <button type="button" onClick={goPrevModalStep} disabled={modalStep === 0} aria-label="이전 단계" style={modalStep === 0 ? BIG_NAV_OFF : BIG_NAV}>‹</button>
                 </div>
 
-                <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', paddingRight: '4px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div className="sb-modal-body" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', paddingRight: '4px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
                 {modalStep === 0 && (<>
                 {/* 스터디방 이름 설정 */}
@@ -5752,7 +5753,7 @@ export default function StudyMate() {
                       />
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    <div className="sb-aig-grid2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                       <div>
                         <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--color-text-main)', marginBottom: '4px' }}>답변 톤</label>
                         <select
@@ -5843,12 +5844,16 @@ export default function StudyMate() {
                 })()}
                 </div>{/* /본문 스크롤 */}
 
-                <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                <div className="sb-aig-nav-col" style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
                   <button type="button" onClick={goNextModalStep} disabled={modalStep >= MAX_AGENT_COUNT} aria-label="다음 단계" style={modalStep >= MAX_AGENT_COUNT ? BIG_NAV_OFF : BIG_NAV}>›</button>
                 </div>
               </div>{/* /좌·본문·우 */}
 
-              <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid var(--color-border)' }}>
+              <div className="sb-modal-foot" style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid var(--color-border)' }}>
+                {/* 모바일 전용 컴팩트 단계 이동(44px 터치 / 18px 아이콘). 데스크톱은 CSS 로 숨김(좌우 큰 화살표 열 사용). */}
+                <button type="button" className="sb-aig-nav-compact sb-icon-btn" onClick={goPrevModalStep} disabled={modalStep === 0} aria-label="이전 단계" data-testid="aig-nav-prev">
+                  <ChevronLeft size={18} />
+                </button>
                 <button
                   type="button"
                   className="btn-outline"
@@ -5863,6 +5868,9 @@ export default function StudyMate() {
                   style={{ flex: 2 }}
                 >
                   스터디방 생성하기
+                </button>
+                <button type="button" className="sb-aig-nav-compact sb-icon-btn" onClick={goNextModalStep} disabled={modalStep >= MAX_AGENT_COUNT} aria-label="다음 단계" data-testid="aig-nav-next">
+                  <ChevronRight size={18} />
                 </button>
               </div>
             </form>

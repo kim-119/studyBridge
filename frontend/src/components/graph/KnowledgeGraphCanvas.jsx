@@ -142,6 +142,9 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
 
   useImperativeHandle(ref, () => ({ fitView, centerOnNode, zoomBy, resetView }), [fitView, centerOnNode, zoomBy, resetView]);
 
+  // 터치 single tap 판정용(노드별 pointerdown 좌표 + click 중복 방지 플래그).
+  const tapRef = useRef({ id: null, x: 0, y: 0, consumed: null });
+
   // pan.
   const onPointerDown = (e) => {
     if (e.target.closest('[data-node-id]')) return;
@@ -449,8 +452,12 @@ const KnowledgeGraphCanvas = forwardRef(function KnowledgeGraphCanvas(props, ref
                   data-node-id={n.id}
                   className="obsg-node-hit"
                   transform={`translate(${p.x},${p.y})`}
-                  onClick={(ev) => { ev.stopPropagation(); onNodeClick?.(n); }}
+                  onClick={(ev) => { ev.stopPropagation(); if (tapRef.current.consumed === n.id) { tapRef.current.consumed = null; return; } onNodeClick?.(n); }}
                   onDoubleClick={(ev) => { ev.stopPropagation(); onNodeDoubleClick?.(n); }}
+                  // 터치: pointerdown→pointerup 사이 이동이 작으면 single tap 으로 즉시 선택(길게 누르기/두 번 탭 불필요).
+                  //  iOS Safari 는 hover 핸들러가 있는 요소의 첫 탭을 hover 로만 처리할 수 있어 click 에만 의존하지 않는다.
+                  onPointerDown={(ev) => { if (ev.pointerType !== 'mouse') tapRef.current = { id: n.id, x: ev.clientX, y: ev.clientY, consumed: null }; }}
+                  onPointerUp={(ev) => { const t = tapRef.current; if (ev.pointerType === 'mouse' || !t || t.id !== n.id) return; if (Math.hypot(ev.clientX - t.x, ev.clientY - t.y) < 10) { ev.stopPropagation(); tapRef.current = { ...t, consumed: n.id }; onNodeClick?.(n); } }}
                   onPointerEnter={() => setHoverId(n.id)}
                   onPointerLeave={() => setHoverId((h) => (h === n.id ? null : h))}
                   role="button"

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Heart, MessageSquare, Share2, FileText, Download, User, Flag, X, Pencil, Image as ImageIcon, Check } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { knowledgeService } from '../services/api';
+import { userFacingMessage } from '../utils/userFacingError';
 
 const REPORT_REASONS = [
   { value: 'SPAM', label: '스팸/광고' },
@@ -180,7 +181,7 @@ export default function KnowledgeDetail() {
       setShowEditModal(false);
     } catch (error) {
       console.error("Failed to update post:", error);
-      alert(error.response?.data?.message || "글 수정에 실패했습니다.");
+      alert(userFacingMessage(error, '글 수정에 실패했습니다.', { context: 'upload' }));
     } finally {
       setEditSubmitting(false);
     }

@@ -9,7 +9,7 @@ const COMPANY_LINKS = ['이용약관', '개인정보처리방침', '고객센터
 export default function Footer() {
   return (
     <footer className="border-t border-gray-200">
-      <div className="mx-auto max-w-6xl px-6 py-12">
+      <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
         <div className="grid gap-8 md:grid-cols-2">
           <div>
             <span className="text-lg font-extrabold text-green-600">StudyBridge</span>

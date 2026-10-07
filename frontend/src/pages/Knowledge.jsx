@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Search, Plus, Heart, MessageSquare, Image as ImageIcon, FileText, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { knowledgeService } from '../services/api';
+import { userFacingMessage } from '../utils/userFacingError';
 
 export default function Knowledge() {
   const { user } = useAuth();
@@ -84,7 +85,7 @@ export default function Knowledge() {
       fetchPosts();
     } catch (error) {
       console.error("Failed to create post:", error);
-      alert("글 작성에 실패했습니다.");
+      alert(userFacingMessage(error, '글 작성에 실패했습니다.', { context: 'upload' }));
     }
   };
 
@@ -130,7 +131,7 @@ export default function Knowledge() {
   };
 
   return (
-    <div style={{ width: '100%', boxSizing: 'border-box', padding: 'clamp(16px, 4vw, 40px)', fontFamily: '"Malgun Gothic", "맑은 고딕", sans-serif', backgroundColor: '#F9FAFB', minHeight: 'calc(100vh - 80px)' }}>
+    <div className="kn-page" style={{ width: '100%', boxSizing: 'border-box', padding: 'clamp(16px, 4vw, 40px)', fontFamily: '"Malgun Gothic", "맑은 고딕", sans-serif', backgroundColor: '#F9FAFB', minHeight: 'calc(100vh - 80px)' }}>
       
       {/* 중앙 집중형 검색 및 생성 헤더 */}
       <div style={{ maxWidth: '800px', margin: '0 auto 48px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -139,7 +140,7 @@ export default function Knowledge() {
              onFocus={(e) => { e.currentTarget.style.boxShadow = '0 12px 40px rgba(96, 201, 90, 0.15)'; e.currentTarget.style.borderColor = '#60C95A' }}
              onBlur={(e) => { e.currentTarget.style.boxShadow = '0 8px 30px rgba(0,0,0,0.06)'; e.currentTarget.style.borderColor = '#E5E7EB' }}
         >
-          <Search size={24} color="#9CA3AF" />
+          <Search size={24} color="#9CA3AF" className="sb-search-icon" />
           <input
             type="text"
             className="kn-search-input"
