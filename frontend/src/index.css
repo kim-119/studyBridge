@@ -2127,13 +2127,20 @@ a {
   /* XL: hamburger / primary navigation 만 24 유지(터치 영역은 버튼이 44px 이상 확보) */
   .sb-icon-xl svg.lucide { width: var(--sb-icon-xl); height: var(--sb-icon-xl); }
 
-  /* 시맨틱 컨텍스트: badge/chip = SM, metadata = MD (그룹스터디 카드·상세·방장 콘솔 공통) */
-  .gs-badge svg.lucide, .gs-card-badges svg.lucide { width: var(--sb-icon-sm); height: var(--sb-icon-sm); }
-  .gs-card-meta svg.lucide, .gs-stat-label svg.lucide, .gs-card-members svg.lucide { width: var(--sb-icon-md); height: var(--sb-icon-md); }
-  .gs-badge { gap: 4px; padding: 5px 10px; font-size: 12px; line-height: 1; min-height: 28px; box-sizing: border-box; }
+  /* 시맨틱 컨텍스트(그룹스터디 목록/카드): 아이콘은 "작은 보조 아이콘" — 텍스트 캡하이트 이하로.
+     badge/chip(공개방·비공개방·일반/캠·필터 칩·인원 오버레이) = 14, metadata(목표·인원·그룹장) = 16, metric card(출석률·평균 공부) = 16 */
+  .gs-badge svg.lucide, .gs-card-badges svg.lucide, .gs-filter-chip svg.lucide, .gs-card-members svg.lucide { width: var(--sb-icon-xs); height: var(--sb-icon-xs); }
+  .gs-card-meta svg.lucide, .gs-stat-label svg.lucide { width: var(--sb-icon-md); height: var(--sb-icon-md); }
+  /* badge compact: 높이 28 / 좌우 10 / gap 4 / 글자 13 — 아이콘이 높이를 결정하지 않게 line-height 1 + svg block */
+  .gs-badge { gap: 4px; padding: 0 10px; font-size: 13px; line-height: 1; height: 28px; min-height: 28px; box-sizing: border-box; }
+  .gs-card-badges { gap: 6px; }
+  .gs-filter-chip { gap: 5px !important; padding: 7px 14px !important; font-size: 13px !important; line-height: 1 !important; min-height: 32px; box-sizing: border-box; }
+  .gs-card-members { gap: 4px !important; font-size: 13px !important; }
+  .gs-card-meta { gap: 4px 10px; }
   .gs-card-meta span, .gs-stat-label { gap: 5px; }
+  .gs-stat-label { font-size: 12px; line-height: 1.2; }
   /* 아이콘이 줄 높이를 키우지 않게 */
-  .gs-card-meta svg.lucide, .gs-stat-label svg.lucide, .gs-badge svg.lucide { display: block; }
+  .gs-card-meta svg.lucide, .gs-stat-label svg.lucide, .gs-badge svg.lucide, .gs-filter-chip svg.lucide, .gs-card-members svg.lucide { display: block; }
 
   /* 접근성: 아이콘은 작아져도 icon-only 버튼 터치 영역은 유지/확대(자료보관함 더보기 28→40, 학습메이트 패널 토글 32→44) */
   .doc-more { width: 40px; height: 40px; }

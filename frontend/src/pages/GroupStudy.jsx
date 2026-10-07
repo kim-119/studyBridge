@@ -812,6 +812,7 @@ export default function GroupStudy() {
           {/* 필터 탭 */}
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
               <button
+                className="gs-filter-chip"
                 onClick={() => setFilter('PUBLIC')}
                 style={{
                   padding: '8px 20px', borderRadius: '30px', fontSize: '14px', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s', border: 'none',
@@ -823,6 +824,7 @@ export default function GroupStudy() {
                 <Globe size={16} /> 공개 스터디
               </button>
               <button
+                className="gs-filter-chip"
                 onClick={() => setFilter('PRIVATE')}
                 style={{
                   padding: '8px 20px', borderRadius: '30px', fontSize: '14px', fontWeight: '600', cursor: 'pointer', transition: 'all 0.2s', border: 'none',
