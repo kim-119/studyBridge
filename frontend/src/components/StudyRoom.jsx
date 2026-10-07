@@ -12,7 +12,9 @@ import { useAuth } from '../hooks/useAuth';
 import { groupService, timerService, inquiryService, STUDY_HEARTBEAT_INTERVAL_MS } from '../services/api';
 import GroupInvitePanel from './groupstudy/GroupInvitePanel';
 import GroupQuizRankingTable from './groupstudy/GroupQuizRankingTable';
-import { studyTypeLabel, formatTargetMinutes, memberDisplayName } from '../utils/groupStudy';
+import { studyTypeLabel, formatTargetMinutes, memberDisplayName, isCamStudy, resolveParticipantAvatar, resolveLeaderConsoleSections } from '../utils/groupStudy';
+import ProfileParticipantTile from './groupstudy/ProfileParticipantTile';
+import RemoteAudioSink from './groupstudy/RemoteAudioSink';
 
 // 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
 // - 기존 렌더는 섹션 중심(한 카드에 모든 에이전트가 섞임)이라 에이전트별 사고가 구분되지 않았다.
@@ -320,6 +322,8 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
             <User size={32} color="#9CA3AF" />
           </div>
         )}
+        {/* 영상 element 가 없는 동안에도 원격 음성은 재생되어야 한다(addVideoElement 미호출 시 OpenVidu 는 소리를 내지 않는다). */}
+        {!isLocal && streamManager && <RemoteAudioSink streamManager={streamManager} stream={stream} />}
         {micMeter}
         {nameTag}
       </div>
@@ -354,8 +358,10 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
   );
 }
 
-export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn, initialVideoOn, handoffVideoTrack }) {
+export default function StudyRoom({ study, onClose, selectedCamera, selectedMic, sessionAvatar, initialMicOn, initialVideoOn, handoffVideoTrack }) {
   const { userId, user } = useAuth();
+  // 서버 studyType(GroupStudyType) 기준: GENERAL 은 카메라 기능(송출/타일/토글/권한)이 전혀 없다. 음성(마이크)만 사용한다.
+  const isCam = isCamStudy(study?.studyType);
 
   const formatSecondsToStudyTime = (secs) => {
     if (!secs && secs !== 0) return '-';
@@ -382,7 +388,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const [activeTab, setActiveTab] = useState('chat');
   // 입장 전 미리보기에서 사용자가 선택한 카메라/마이크 ON/OFF 상태를 그대로 이어받는다(상태 불일치 방지).
   const [isMicOn, setIsMicOn] = useState(typeof initialMicOn === 'boolean' ? initialMicOn : false);
-  const [isVideoOn, setIsVideoOn] = useState(typeof initialVideoOn === 'boolean' ? initialVideoOn : true);
+  const [isVideoOn, setIsVideoOn] = useState(isCam ? (typeof initialVideoOn === 'boolean' ? initialVideoOn : true) : false);
   const [showSettings, setShowSettings] = useState(false);
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [showRoomManageModal, setShowRoomManageModal] = useState(false);
@@ -546,8 +552,21 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
       name: d.clientData || d.name || d.nickname || null,
       micOn: d.micOn,
       cameraOn: d.cameraOn,
+      // GENERAL 참가자 visual identity(이번 입장 선택): 'upload' | 'profile' | 'default' + presigned url(업로드 시)
+      avatarMode: typeof d.avatarMode === 'string' ? d.avatarMode : null,
+      avatarUrl: typeof d.avatarUrl === 'string' ? d.avatarUrl : null,
     };
   };
+
+  // 방 관리 모달 섹션 노출(프리조인 방장 콘솔과 같은 규칙): 대기자 명단 = 승인 정책 or 실제 대기자, 초대 = 비공개.
+  const roomLeaderSections = resolveLeaderConsoleSections(study, applications.length);
+
+  // 서버 members(presigned photoUrl) 를 userId 로 빠르게 찾기 위한 맵(GENERAL 프로필 타일 2순위 소스).
+  const memberByUserId = React.useMemo(() => {
+    const map = {};
+    for (const m of members) if (m?.userId != null) map[String(m.userId)] = m;
+    return map;
+  }, [members]);
 
   // 강퇴/퇴장된 유저를 참가자 목록과 화상 타일(subscribers)에서 한 번에 제거한다.
   const removeParticipantEverywhere = (targetUserId) => {
@@ -961,17 +980,24 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     stopPublisherTracksSafely(publisherRef.current);
 
     // 카메라+마이크 → 실패 시 오디오 전용 순으로 시도(사용자 제스처라 권한 프롬프트가 다시 뜬다).
-    const ladder = [
-      { publishVideo: true,  tag: 'av' },
-      { publishVideo: false, tag: 'audio-only' },
-    ];
+    // GENERAL 은 카메라 단계를 만들지 않는다(video:false 고정, 카메라 권한 요청 없음).
+    const baseLadder = isCam
+      ? [
+        { publishVideo: true,  tag: 'av' },
+        { publishVideo: false, tag: 'audio-only' },
+      ]
+      : [{ publishVideo: false, tag: 'audio-only' }];
+    // 입장 준비에서 고른 마이크를 우선 쓰고(stale 이면 실패) 기본 마이크로 한 번 더 시도한다.
+    const ladder = selectedMic
+      ? [...baseLadder.map(st => ({ ...st, audioSource: selectedMic, tag: `${st.tag}-selected-mic` })), ...baseLadder.map(st => ({ ...st, audioSource: undefined }))]
+      : baseLadder.map(st => ({ ...st, audioSource: undefined }));
     let pub = null;
     let lastErr = null;
     for (const step of ladder) {
       try {
         console.log('[OV_MEDIA_INIT_START]', step.tag);
         pub = await OV.initPublisherAsync(undefined, {
-          audioSource: undefined,
+          audioSource: step.audioSource,
           videoSource: step.publishVideo ? undefined : false,
           publishAudio: true,
           publishVideo: step.publishVideo,
@@ -1105,6 +1131,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               isMe: false,
               micOn: meta.micOn ?? prev[connectionId]?.micOn ?? false,
               cameraOn: meta.cameraOn ?? prev[connectionId]?.cameraOn ?? false,
+              avatarMode: meta.avatarMode ?? prev[connectionId]?.avatarMode ?? null,
+              avatarUrl: meta.avatarUrl ?? prev[connectionId]?.avatarUrl ?? null,
               connectedAt: prev[connectionId]?.connectedAt || Date.now(),
             },
           }));
@@ -1141,6 +1169,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               name: meta.name || prev[connectionId]?.name || '참여자',
               isMe: false,
               cameraOn: true,
+              avatarMode: meta.avatarMode ?? prev[connectionId]?.avatarMode ?? null,
+              avatarUrl: meta.avatarUrl ?? prev[connectionId]?.avatarUrl ?? null,
               connectedAt: prev[connectionId]?.connectedAt || Date.now(),
             },
           }));
@@ -1215,7 +1245,13 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           console.warn('[StudyRoomOV] exception', { name: exception?.name, message: exception?.message });
         });
 
-        const connectionData = JSON.stringify({ userId: userId, clientData: myDisplayName });
+        // GENERAL: 이번 입장에서 고른 프로필(avatarMode/avatarUrl)을 metadata 로 전파해 다른 참가자가 같은 identity 를 본다.
+        const connectionData = JSON.stringify({
+          userId: userId,
+          clientData: myDisplayName,
+          ...(sessionAvatar?.mode ? { avatarMode: sessionAvatar.mode } : {}),
+          ...(sessionAvatar?.mode === 'upload' && sessionAvatar.url ? { avatarUrl: sessionAvatar.url } : {}),
+        });
         console.info('[StudyRoomOV] listeners:registered-before-connect');
         await sessionInstance.connect(token, connectionData);
         if (!isMounted) return;
@@ -1255,26 +1291,33 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         // ── 장치 유효성 사전 검증 (stale deviceId / 장치 부재 방어) ──
         // 선택된 카메라 deviceId가 현재 실제 장치 목록에 없으면 stale로 간주해 기본 카메라로 떨어뜨린다.
         let videoDeviceId = selectedCamera || undefined;
-        let hasAnyVideo = true;
+        // 입장 준비에서 고른 마이크(deviceId). 실제 장치 목록에 없으면 기본 마이크로 떨어뜨린다.
+        let audioDeviceId = selectedMic || undefined;
+        let hasAnyVideo = isCam; // GENERAL 은 카메라 장치를 아예 고려하지 않는다(카메라 권한 요청 금지)
         let hasAnyAudio = true;
         try {
           const devices = await navigator.mediaDevices.enumerateDevices();
           const videoInputs = devices.filter(d => d.kind === 'videoinput');
           const audioInputs = devices.filter(d => d.kind === 'audioinput');
-          hasAnyVideo = videoInputs.length > 0;
+          hasAnyVideo = isCam && videoInputs.length > 0;
           hasAnyAudio = audioInputs.length > 0;
           if (videoDeviceId && !videoInputs.some(d => d.deviceId === videoDeviceId)) {
             console.warn('[StudyRoom] 선택 카메라가 stale → 기본 카메라로 대체. id=', String(videoDeviceId).slice(0, 4) + '****');
             videoDeviceId = undefined;
           }
-          console.log('[StudyRoom] 장치 점검 video=%d audio=%d', videoInputs.length, audioInputs.length);
+          if (audioDeviceId && !audioInputs.some(d => d.deviceId === audioDeviceId)) {
+            console.warn('[StudyRoom] 선택 마이크가 stale → 기본 마이크로 대체. id=', String(audioDeviceId).slice(0, 4) + '****');
+            audioDeviceId = undefined;
+          }
+          console.log('[StudyRoom] 장치 점검 studyType=%s video=%d audio=%d', isCam ? 'CAM' : 'GENERAL', videoInputs.length, audioInputs.length);
         } catch (enumErr) {
           console.warn('[StudyRoom] enumerateDevices 실패, 기본값으로 진행', enumErr?.name || enumErr);
         }
+        if (!isCam) videoDeviceId = undefined;
 
         // 사용자 의도(토글)와 실제 장치 존재 여부를 합쳐 송출 가능 여부를 계산한다.
         const effectiveAudio = Boolean(hasAnyAudio && isMicOn !== false);
-        const effectiveVideo = Boolean(hasAnyVideo && isVideoOn !== false);
+        const effectiveVideo = Boolean(isCam && hasAnyVideo && isVideoOn !== false);
         console.info('[StudyRoomOV] device availability', {
           hasAudioInput: hasAnyAudio,
           hasVideoInput: hasAnyVideo,
@@ -1291,7 +1334,10 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           setIsVideoOn(false);
           setPublisher(null);
           setOvError('');
-          setOvNotice('보기 전용으로 입장했습니다. 마이크/카메라 장치를 연결하거나 권한을 허용하면 송출할 수 있습니다.');
+          // GENERAL: 마이크가 없어도 입장은 허용(듣기 전용). CAM: 기존 문구 유지.
+          setOvNotice(isCam
+            ? '보기 전용으로 입장했습니다. 마이크/카메라 장치를 연결하거나 권한을 허용하면 송출할 수 있습니다.'
+            : '마이크 없음 — 듣기 전용으로 입장했습니다. 마이크를 연결하거나 권한을 허용하면 말할 수 있습니다.');
           return;
         }
 
@@ -1316,7 +1362,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         //   6) view-only (아래 publisherInstance 없음 분기에서 처리)
         // audioSource/videoSource가 동시에 false인 조합은 만들지 않는다(둘 다 없을 땐 위에서 이미 return).
         // 카메라 단계는 마이크가 있으면 함께 송출(audio=undefined), 없으면 video-only(audio=false).
-        const camAudio = hasAnyAudio ? undefined : false;
+        const camAudio = hasAnyAudio ? audioDeviceId : false; // undefined = 기본 마이크, string = 선택 마이크
         const videoLadder = [
           { v: videoDeviceId, resolution: '1280x720', frameRate: 30, tag: 'selected-720p30', usesSelected: !!videoDeviceId },
           { v: undefined,     resolution: '1280x720', frameRate: 30, tag: 'default-720p30' },
@@ -1327,7 +1373,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         if (hasAnyVideo) {
           for (const step of videoLadder) attempts.push({ ...step, a: camAudio });
         }
-        if (hasAnyAudio) attempts.push({ v: false, a: undefined, resolution: '640x480', frameRate: 30, tag: 'audio-only' });
+        if (hasAnyAudio) {
+          // 선택 마이크 → (실패 시) 기본 마이크 순. GENERAL 은 이 audio-only 단계만 존재한다(video:false, 카메라 권한 요청 없음).
+          if (audioDeviceId) attempts.push({ v: false, a: audioDeviceId, resolution: '640x480', frameRate: 30, tag: 'audio-only-selected-mic' });
+          attempts.push({ v: false, a: undefined, resolution: '640x480', frameRate: 30, tag: 'audio-only' });
+        }
 
         let publisherInstance = null;
         let chosen = null;
@@ -1359,10 +1409,10 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         // ── 0순위: 프리뷰에서 clone해 넘겨받은 live 카메라 트랙을 publisher videoSource로 그대로 사용 ──
         //   프리뷰 stop → 같은 deviceId 재획득 시 일부 장치가 "정지 프레임"을 반환하는 freeze를 근절한다.
         //   (오디오는 fresh로 획득. 실패 시 아래 카메라 재획득 ladder로 폴백)
-        if (hasHandoff && hasAnyVideo && isVideoOn !== false) {
+        if (isCam && hasHandoff && hasAnyVideo && isVideoOn !== false) {
           console.log('[StudyRoom] fallback 시도 tag=preview-handoff');
           const handoffPub = await tryInit({
-            audioSource: (hasAnyAudio && isMicOn) ? undefined : false,
+            audioSource: (hasAnyAudio && isMicOn) ? audioDeviceId : false,
             videoSource: handoffVideoTrack,
             publishAudio: Boolean(hasAnyAudio && isMicOn),
             publishVideo: isVideoOn !== false,
@@ -1372,7 +1422,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           if (!isMounted) { if (handoffPub) handoffPub.dispose(); return; }
           if (handoffPub) {
             publisherInstance = handoffPub;
-            chosen = { v: handoffVideoTrack, a: (hasAnyAudio && isMicOn) ? undefined : false, tag: 'preview-handoff' };
+            chosen = { v: handoffVideoTrack, a: (hasAnyAudio && isMicOn) ? audioDeviceId : false, tag: 'preview-handoff' };
             console.log('[StudyRoom] publisher 성공 단계=preview-handoff');
           } else {
             console.warn('[StudyRoom] preview-handoff 실패 → 카메라 재획득 ladder로 폴백');
@@ -1453,7 +1503,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         if (noVideo && noAudio) {
           setOvNotice('사용 가능한 카메라/마이크가 없어 시청 모드로 입장했습니다.');
         } else if (noVideo) {
-          setOvNotice('카메라 장치를 찾을 수 없어 오디오만 사용합니다.');
+          // GENERAL 은 원래 오디오 전용이므로 안내하지 않는다.
+          setOvNotice(isCam ? '카메라 장치를 찾을 수 없어 오디오만 사용합니다.' : '');
         } else if (noAudio) {
           setOvNotice('마이크 장치를 찾을 수 없어 음소거 상태로 입장했습니다.');
         } else {
@@ -2371,9 +2422,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               <div onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsMicOn(!isMicOn); } }} style={{ display: 'flex', alignItems: 'center' }} title={!publisher ? '마이크 권한 허용 후 송출 시작' : (isMicOn ? '마이크 끄기' : '마이크 켜기')}>
                 {isMicOn ? <Mic size={18} color="#D1D5DB" cursor="pointer" /> : <MicOff size={18} color="#F87171" cursor="pointer" />}
               </div>
-              <div onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsVideoOn(!isVideoOn); } }} style={{ display: 'flex', alignItems: 'center' }} title={!publisher ? '카메라 권한 허용 후 송출 시작' : (isVideoOn ? '카메라 끄기' : '카메라 켜기')}>
-                {isVideoOn ? <Video size={18} color="#D1D5DB" cursor="pointer" /> : <VideoOff size={18} color="#F87171" cursor="pointer" />}
-              </div>
+              {isCam && (
+                <div onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsVideoOn(!isVideoOn); } }} style={{ display: 'flex', alignItems: 'center' }} title={!publisher ? '카메라 권한 허용 후 송출 시작' : (isVideoOn ? '카메라 끄기' : '카메라 켜기')}>
+                  {isVideoOn ? <Video size={18} color="#D1D5DB" cursor="pointer" /> : <VideoOff size={18} color="#F87171" cursor="pointer" />}
+                </div>
+              )}
               <Settings size={18} color="#D1D5DB" cursor="pointer" onClick={() => setShowSettings(true)} />
             </div>
 
@@ -2400,9 +2453,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           <button onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsMicOn(!isMicOn); } }} aria-label={isMicOn ? '마이크 끄기' : '마이크 켜기'}>
             {isMicOn ? <Mic size={22} color="#E5E7EB" /> : <MicOff size={22} color="#F87171" />}
           </button>
-          <button onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsVideoOn(!isVideoOn); } }} aria-label={isVideoOn ? '카메라 끄기' : '카메라 켜기'}>
-            {isVideoOn ? <Video size={22} color="#E5E7EB" /> : <VideoOff size={22} color="#F87171" />}
-          </button>
+          {isCam && (
+            <button onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsVideoOn(!isVideoOn); } }} aria-label={isVideoOn ? '카메라 끄기' : '카메라 켜기'}>
+              {isVideoOn ? <Video size={22} color="#E5E7EB" /> : <VideoOff size={22} color="#F87171" />}
+            </button>
+          )}
           <button onClick={() => setShowChatDrawer(v => !v)} aria-label="채팅">
             <MessageCircle size={22} color={showChatDrawer ? '#60A5FA' : '#E5E7EB'} />
           </button>
@@ -2494,14 +2549,47 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               // 원격은 실제 트랙 active 값, 로컬(나)은 토글 의도로 표시(avatar/video 전환 일관성 유지).
               const camOn = isMe ? isVideoOn : (streamManager ? !!streamManager.stream.videoActive : false);
               const micOn = isMe ? isMicOn : (streamManager ? !!streamManager.stream.audioActive : false);
-              const photoUrl = participant.photoUrl || (isMe ? (user?.photoUrl || user?.photo_url || null) : null);
+              const memberPhoto = participant.userId != null ? (memberByUserId[String(participant.userId)]?.photoUrl || null) : null;
+              const photoUrl = participant.photoUrl || memberPhoto || (isMe ? (user?.photoUrl || user?.photo_url || null) : null);
+              const participantName = participant.name || (isMe ? myDisplayName : '참여자');
+              if (!isCam) {
+                // GENERAL: 카메라 타일/video track 없이 [프로필 이미지] 닉네임 마이크 상태 로만 표현한다.
+                //  우선순위: 이번 입장 선택(upload/default) > 계정 프로필(members presigned) > 기본 아바타.
+                const avatar = isMe
+                  ? resolveParticipantAvatar({ avatarMode: sessionAvatar?.mode || null, avatarUrl: sessionAvatar?.localUrl || sessionAvatar?.url || null, profilePhotoUrl: user?.photoUrl || user?.photo_url || null })
+                  : resolveParticipantAvatar({ avatarMode: participant.avatarMode || null, avatarUrl: participant.avatarUrl || null, profilePhotoUrl: memberPhoto || participant.photoUrl || null });
+                // 업로드 presigned URL(1시간) 만료 등으로 이미지 로드가 실패하면 계정 프로필로 폴백한다.
+                const fallbackUrl = isMe ? (user?.photoUrl || user?.photo_url || null) : (memberPhoto || null);
+                return (
+                  <div key={connectionId} className={`room-tile ${connectionId === mainConnectionId ? 'room-tile--main' : 'room-tile--thumb'}`} style={{ position: 'relative' }}>
+                    <ProfileParticipantTile
+                      avatar={avatar}
+                      fallbackUrl={avatar.url !== fallbackUrl ? fallbackUrl : null}
+                      displayName={participantName}
+                      isLocal={isMe}
+                      isMicOn={micOn}
+                      stream={stream}
+                      streamManager={streamManager}
+                      speakerId={participant.userId}
+                      onSpeakingChange={handleSpeakingChange}
+                    />
+                    {isMe && ovError && (
+                      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', color: '#FCA5A5', padding: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', zIndex: 10, borderRadius: '16px' }}>
+                        <AlertTriangle size={32} color="#EF4444" style={{ marginBottom: '8px' }} />
+                        <div style={{ fontSize: '14px', fontWeight: 'bold' }}>마이크 연결 실패</div>
+                        <div style={{ fontSize: '12px', marginTop: '4px', wordBreak: 'break-all' }}>{ovError}</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              }
               return (
                 <div key={connectionId} className={`room-tile ${connectionId === mainConnectionId ? 'room-tile--main' : 'room-tile--thumb'}`} style={{ position: 'relative' }}>
                   <VideoFeed
                     stream={stream}
                     streamManager={streamManager}
                     isLocal={isMe}
-                    displayName={participant.name || (isMe ? myDisplayName : '참여자')}
+                    displayName={participantName}
                     isMuted={isMe}
                     isCamOn={camOn}
                     isMicOn={micOn}
@@ -2637,7 +2725,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                   </div>
                 </div>
 
-                {/* 가입 신청 대기자 */}
+                {/* 가입 신청 대기자: 승인 정책이거나 실제 대기자가 있을 때만 렌더(DOM 미생성) */}
+                {roomLeaderSections.showPendingMembers && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
                   <div style={{ fontSize: '12px', fontWeight: '600', color: '#E5E7EB', display: 'flex', justifyContent: 'space-between' }}>
                     가입 신청 대기자 명단 ({applications.length})
@@ -2656,6 +2745,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                     )}
                   </div>
                 </div>
+                )}
 
                 {/* 관리 버튼 */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -3088,17 +3178,19 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              {/* 카메라 설정 */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#9CA3AF', marginBottom: '8px' }}>
-                  <Video size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>카메라</span>
+              {/* 카메라 설정(CAM 전용) */}
+              {isCam && (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#9CA3AF', marginBottom: '8px' }}>
+                    <Video size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>카메라</span>
+                  </div>
+                  <div style={{ backgroundColor: '#0F172A', borderRadius: '12px', padding: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <select disabled style={{ width: '100%', backgroundColor: 'transparent', border: 'none', outline: 'none', color: '#9CA3AF', fontSize: '14px', cursor: 'not-allowed' }}>
+                      <option value="cam1" style={{ backgroundColor: '#1E293B' }}>카메라 변경은 입장 전 미리보기에서 가능합니다.</option>
+                    </select>
+                  </div>
                 </div>
-                <div style={{ backgroundColor: '#0F172A', borderRadius: '12px', padding: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <select disabled style={{ width: '100%', backgroundColor: 'transparent', border: 'none', outline: 'none', color: '#9CA3AF', fontSize: '14px', cursor: 'not-allowed' }}>
-                    <option value="cam1" style={{ backgroundColor: '#1E293B' }}>카메라 변경은 입장 전 미리보기에서 가능합니다.</option>
-                  </select>
-                </div>
-              </div>
+              )}
 
               {/* 마이크 설정 */}
               <div>
@@ -3212,7 +3304,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               >
                 멤버 관리
               </div>
-              {study?.isPrivate && (
+              {(roomLeaderSections.showInviteManagement || roomLeaderSections.showPendingMembers) && (
                 <div
                   style={{ padding: '16px 24px', borderBottom: roomManageTab === 'applications' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'applications' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s', display: 'flex', alignItems: 'center', gap: '6px' }}
                   onClick={() => setRoomManageTab('applications')}

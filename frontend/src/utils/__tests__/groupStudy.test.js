@@ -103,3 +103,107 @@ test('memberDisplayName prefers group nickname', () => {
   assert.equal(memberDisplayName({ displayName: '김도현', nickname: '한양대/3/도현' }), '한양대/3/도현');
   assert.equal(memberDisplayName({ displayName: '김도현', nickname: null }), '김도현');
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// 스터디 타입별 입장 준비 UI / 미디어 권한 정책 / 가입 정책 섹션 노출 (2026-10-07)
+// ──────────────────────────────────────────────────────────────────────────
+import {
+  isCamStudy, resolvePreJoinLayout, buildMicConstraints, buildCameraPreviewConstraints, resolvePreJoinMediaPolicy,
+  micStateLabel, AVATAR_MODES, resolveParticipantAvatar,
+  JOIN_POLICIES, resolveJoinPolicy, isApprovalRequired, resolveLeaderConsoleSections,
+} from '../groupStudy.js';
+
+test('GENERAL prejoin layout: avatar/profile/mic only — no camera preview/toggle/device selector/permission', () => {
+  const l = resolvePreJoinLayout('GENERAL');
+  assert.equal(l.isCam, false);
+  assert.equal(l.showAvatarPreview, true);
+  assert.equal(l.showProfileSelector, true);
+  assert.equal(l.showMicrophoneToggle, true);
+  assert.equal(l.showMicrophoneDeviceSelector, true);
+  assert.equal(l.showCameraPreview, false);
+  assert.equal(l.showCameraToggle, false);
+  assert.equal(l.showCameraDeviceSelector, false);
+  assert.equal(l.requestsCameraPermission, false);
+  // 서버가 studyType 을 안 내려주는 구 row 도 GENERAL 로 취급(normalizeStudyType)
+  assert.equal(resolvePreJoinLayout(undefined).isCam, false);
+  assert.equal(isCamStudy('weird'), false);
+});
+
+test('CAM prejoin layout keeps camera preview/toggle/device selector + mic toggle/device selector', () => {
+  const l = resolvePreJoinLayout('CAM');
+  assert.equal(l.isCam, true);
+  assert.equal(l.showCameraPreview, true);
+  assert.equal(l.showCameraToggle, true);
+  assert.equal(l.showCameraDeviceSelector, true);
+  assert.equal(l.showMicrophoneToggle, true);
+  assert.equal(l.showMicrophoneDeviceSelector, true);
+  assert.equal(l.showAvatarPreview, false);
+  assert.equal(l.showProfileSelector, false);
+  assert.equal(l.requestsCameraPermission, true);
+});
+
+test('media policy: GENERAL getUserMedia is audio:true/video:false; CAM requests audio+video', () => {
+  assert.deepEqual(resolvePreJoinMediaPolicy('GENERAL'), { audio: true, video: false });
+  assert.deepEqual(resolvePreJoinMediaPolicy('CAM'), { audio: true, video: true });
+  assert.deepEqual(buildMicConstraints(''), { audio: true, video: false });
+  assert.deepEqual(buildMicConstraints('mic-1'), { audio: { deviceId: { exact: 'mic-1' } }, video: false });
+  // CAM 카메라 프리뷰는 video 만(audio:false) — 기존 정책 유지
+  assert.deepEqual(buildCameraPreviewConstraints(''), { video: true, audio: false });
+  assert.deepEqual(buildCameraPreviewConstraints('cam-1'), { video: { deviceId: { exact: 'cam-1' } }, audio: false });
+});
+
+test('mic state label distinguishes 켜짐 / 꺼짐 / 없음', () => {
+  assert.equal(micStateLabel(true, 'available'), '마이크 켜짐');
+  assert.equal(micStateLabel(false, 'available'), '마이크 꺼짐');
+  assert.equal(micStateLabel(true, 'unavailable'), '마이크 없음');
+  assert.equal(micStateLabel(true, 'error'), '마이크 권한/오류');
+  assert.equal(micStateLabel(true, 'checking'), '마이크 확인 중…');
+});
+
+test('participant avatar priority: upload > account profile > default', () => {
+  assert.deepEqual(resolveParticipantAvatar({ avatarMode: AVATAR_MODES.UPLOAD, avatarUrl: 'u.png', profilePhotoUrl: 'p.png' }), { kind: 'image', url: 'u.png' });
+  assert.deepEqual(resolveParticipantAvatar({ avatarMode: AVATAR_MODES.PROFILE, avatarUrl: null, profilePhotoUrl: 'p.png' }), { kind: 'image', url: 'p.png' });
+  assert.deepEqual(resolveParticipantAvatar({ avatarMode: AVATAR_MODES.DEFAULT, avatarUrl: 'u.png', profilePhotoUrl: 'p.png' }), { kind: 'default', url: null });
+  // 메타데이터 없는 구 클라이언트: 프로필 있으면 프로필, 없으면 기본
+  assert.deepEqual(resolveParticipantAvatar({ profilePhotoUrl: 'p.png' }), { kind: 'image', url: 'p.png' });
+  assert.deepEqual(resolveParticipantAvatar({}), { kind: 'default', url: null });
+  // upload 모드인데 url 이 없으면(업로드 실패) 프로필로 폴백
+  assert.deepEqual(resolveParticipantAvatar({ avatarMode: AVATAR_MODES.UPLOAD, avatarUrl: null, profilePhotoUrl: 'p.png' }), { kind: 'image', url: 'p.png' });
+});
+
+test('join policy derives from server fields only (isPublic + optional approvalRequired/joinPolicy)', () => {
+  assert.equal(resolveJoinPolicy({ isPrivate: false }), JOIN_POLICIES.OPEN);
+  assert.equal(resolveJoinPolicy({ isPrivate: false, approvalRequired: true }), JOIN_POLICIES.APPROVAL);
+  assert.equal(resolveJoinPolicy({ isPrivate: true }), JOIN_POLICIES.INVITE_ONLY);
+  assert.equal(resolveJoinPolicy({ isPrivate: true, approvalRequired: true }), JOIN_POLICIES.JOIN_REQUEST);
+  assert.equal(resolveJoinPolicy({ isPublic: false, joinPolicy: 'join_request' }), JOIN_POLICIES.JOIN_REQUEST);
+  assert.equal(resolveJoinPolicy(null), JOIN_POLICIES.OPEN);
+  // normalizeGroup: 서버 미전송 → approvalRequired=false (프론트가 승인 정책을 만들어내지 않는다)
+  const g = normalizeGroup({ id: 1, title: 't', isPublic: true });
+  assert.equal(g.approvalRequired, false);
+  assert.equal(g.joinPolicy, null);
+  assert.equal(isApprovalRequired(g), false);
+});
+
+test('leader console sections: pending list only when approval policy or real pending members; invite only for private', () => {
+  // approval OFF + 0 pending → PendingMemberSection 없음
+  let s = resolveLeaderConsoleSections({ isPrivate: false }, 0);
+  assert.equal(s.showPendingMembers, false);
+  assert.equal(s.showInviteManagement, false);
+  // approval ON → 있음
+  s = resolveLeaderConsoleSections({ isPrivate: false, approvalRequired: true }, 0);
+  assert.equal(s.showPendingMembers, true);
+  // approval OFF 라도 실제 대기자(레거시 PENDING row)가 있으면 방장이 처리할 수 있게 표시
+  s = resolveLeaderConsoleSections({ isPrivate: false }, 2);
+  assert.equal(s.showPendingMembers, true);
+  // INVITE_ONLY → 초대 관리 있음 / 대기자 명단 없음
+  s = resolveLeaderConsoleSections({ isPrivate: true }, 0);
+  assert.equal(s.policy, JOIN_POLICIES.INVITE_ONLY);
+  assert.equal(s.showInviteManagement, true);
+  assert.equal(s.showPendingMembers, false);
+  // JOIN_REQUEST → 둘 다
+  s = resolveLeaderConsoleSections({ isPrivate: true, approvalRequired: true }, 0);
+  assert.equal(s.policy, JOIN_POLICIES.JOIN_REQUEST);
+  assert.equal(s.showInviteManagement, true);
+  assert.equal(s.showPendingMembers, true);
+});

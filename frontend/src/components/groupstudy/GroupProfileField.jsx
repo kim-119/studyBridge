@@ -13,6 +13,17 @@ export const validateCoverImageFile = (file) => {
   return null;
 };
 
+// 입장 준비(GENERAL) 사용자 프로필 이미지 검증: 같은 허용 목록(PNG/JPG/JPEG/WEBP, 5MB)을 재사용한다.
+export const validateProfileImageFile = (file) => {
+  const name = (file?.name || '').toLowerCase();
+  const validMime = COVER_IMAGE_MIME_TYPES.has(file?.type);
+  const validExt = COVER_IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext));
+  if (!validMime && !validExt) return '프로필 이미지는 PNG, JPG, JPEG, WEBP 파일만 업로드할 수 있습니다.';
+  if (file.size > 5 * 1024 * 1024) return '프로필 이미지는 5MB 이하만 업로드할 수 있습니다.';
+  return null;
+};
+export const PROFILE_IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp';
+
 // 그룹 프로필 아바타: 대표 이미지가 있으면 이미지, 없으면 기본 그룹 아이콘.
 //  · 스터디콘(studyIconId) asset 은 추후 사용자가 제공할 예정 → 지금은 기본 아이콘만 사용하고 외부 이미지를 내려받지 않는다.
 export function GroupProfileAvatar({ imageUrl, size = 72, alt = '그룹 프로필', studyType }) {

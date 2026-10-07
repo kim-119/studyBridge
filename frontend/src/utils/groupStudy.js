@@ -39,6 +39,95 @@ export const normalizeStudyType = (value) => (value === STUDY_TYPES.CAM ? STUDY_
 
 export const studyTypeLabel = (value) => STUDY_TYPE_LABELS[normalizeStudyType(value)];
 
+// 서버 enum(GroupStudyType) 기준 분기. 입장 준비/스터디룸의 카메라 기능 유무는 오직 이 값으로 결정한다.
+export const isCamStudy = (studyType) => normalizeStudyType(studyType) === STUDY_TYPES.CAM;
+
+// ── 입장 준비(PreJoin) 레이아웃: 스터디 타입별로 어떤 하위 컴포넌트를 렌더할지의 단일 출처.
+//  GENERAL: 프로필(아바타/선택기) + 마이크(토글/장치) 만. 카메라 preview/토글/장치 선택/권한 요청 없음.
+//  CAM    : 기존 카메라 preview/토글 + 마이크(토글/장치) + 장치 설정.
+export const resolvePreJoinLayout = (studyType) => {
+  const cam = isCamStudy(studyType);
+  return Object.freeze({
+    studyType: normalizeStudyType(studyType),
+    isCam: cam,
+    showAvatarPreview: !cam,
+    showProfileSelector: !cam,
+    showCameraPreview: cam,
+    showCameraToggle: cam,
+    showCameraDeviceSelector: cam,
+    showMicrophoneToggle: true,
+    showMicrophoneDeviceSelector: true,
+    requestsCameraPermission: cam,
+  });
+};
+
+// ── 미디어 권한 정책(getUserMedia constraints 단일 출처).
+//  GENERAL 은 video:false 로만 호출한다(video permission 요청 자체가 버그). CAM 은 기존 정책(카메라/마이크 각각 획득) 유지.
+const audioConstraint = (micDeviceId) => (micDeviceId ? { deviceId: { exact: micDeviceId } } : true);
+export const buildMicConstraints = (micDeviceId) => ({ audio: audioConstraint(micDeviceId), video: false });
+export const buildCameraPreviewConstraints = (cameraDeviceId) => ({
+  video: cameraDeviceId ? { deviceId: { exact: cameraDeviceId } } : true,
+  audio: false,
+});
+// 입장 준비 화면이 스터디 타입별로 요청하는 미디어 종류(테스트/로그용 요약).
+export const resolvePreJoinMediaPolicy = (studyType) => (isCamStudy(studyType)
+  ? Object.freeze({ audio: true, video: true })
+  : Object.freeze({ audio: true, video: false }));
+
+// 마이크 상태 라벨: 켜짐/꺼짐/없음 세 상태를 명확히 구분한다(확인 중·권한 오류는 보조 상태).
+//  micStatus: 'idle' | 'checking' | 'available' | 'unavailable' | 'error' | 'off'
+export const micStateLabel = (isMicOn, micStatus) => {
+  if (!isMicOn) return '마이크 꺼짐';
+  if (micStatus === 'unavailable') return '마이크 없음';
+  if (micStatus === 'error') return '마이크 권한/오류';
+  if (micStatus === 'checking' || micStatus === 'idle') return '마이크 확인 중…';
+  return '마이크 켜짐';
+};
+
+// ── GENERAL 참가자 visual identity 우선순위.
+//  1) 이번 입장 화면에서 지정한 이미지(upload) 2) 기존 계정 프로필 이미지 3) StudyBridge 기본 아바타(lucide User fallback).
+//  avatarMode: 'upload' | 'profile' | 'default' (connection metadata 로 전파). 모르면 프로필→기본 순.
+export const AVATAR_MODES = Object.freeze({ UPLOAD: 'upload', PROFILE: 'profile', DEFAULT: 'default' });
+export const resolveParticipantAvatar = ({ avatarMode, avatarUrl, profilePhotoUrl } = {}) => {
+  if (avatarMode === AVATAR_MODES.DEFAULT) return { kind: 'default', url: null };
+  if (avatarMode === AVATAR_MODES.UPLOAD && avatarUrl) return { kind: 'image', url: avatarUrl };
+  const url = profilePhotoUrl || avatarUrl || null;
+  return url ? { kind: 'image', url } : { kind: 'default', url: null };
+};
+
+// ── 가입 정책(방장 콘솔 섹션 노출의 단일 출처).
+//  서버 계약(GroupStudyDTO.Response)에는 isPublic 만 있고 승인 플래그가 없다(현재 서버: 공개=즉시가입, 비공개=초대 링크 전용).
+//  서버가 approvalRequired / joinPolicy 를 내려주면 그대로 따르고, 없으면 isPublic 에서 유도한다(프론트가 값을 만들어내지 않는다).
+export const JOIN_POLICIES = Object.freeze({
+  OPEN: 'OPEN',                 // 공개 + 즉시가입
+  APPROVAL: 'APPROVAL',         // 공개 + 가입승인
+  INVITE_ONLY: 'INVITE_ONLY',   // 비공개 + 초대 전용
+  JOIN_REQUEST: 'JOIN_REQUEST', // 비공개 + 가입 신청
+});
+export const resolveJoinPolicy = (study) => {
+  if (!study) return JOIN_POLICIES.OPEN;
+  const explicit = typeof study.joinPolicy === 'string' ? study.joinPolicy.toUpperCase() : null;
+  if (explicit && JOIN_POLICIES[explicit]) return JOIN_POLICIES[explicit];
+  const isPrivate = study.isPrivate === true || study.isPublic === false;
+  const approvalRequired = study.approvalRequired === true;
+  if (isPrivate) return approvalRequired ? JOIN_POLICIES.JOIN_REQUEST : JOIN_POLICIES.INVITE_ONLY;
+  return approvalRequired ? JOIN_POLICIES.APPROVAL : JOIN_POLICIES.OPEN;
+};
+export const isApprovalRequired = (study) => {
+  const policy = resolveJoinPolicy(study);
+  return policy === JOIN_POLICIES.APPROVAL || policy === JOIN_POLICIES.JOIN_REQUEST;
+};
+// 방장 콘솔 섹션: 초대 관리는 비공개(INVITE_ONLY/JOIN_REQUEST)만, 대기자 명단은 승인 정책이거나 실제 대기자가 있을 때만(DOM 자체 미렌더).
+export const resolveLeaderConsoleSections = (study, pendingCount = 0) => {
+  const policy = resolveJoinPolicy(study);
+  const pending = Math.max(0, Number(pendingCount) || 0);
+  return Object.freeze({
+    policy,
+    showInviteManagement: policy === JOIN_POLICIES.INVITE_ONLY || policy === JOIN_POLICIES.JOIN_REQUEST,
+    showPendingMembers: isApprovalRequired(study) || pending > 0,
+  });
+};
+
 export const isValidTargetStudyMinutes = (minutes) => TARGET_STUDY_MINUTE_OPTIONS.includes(Number(minutes));
 
 // 240 → "4시간", 270 → "4시간 30분" (목표시간 표시)
@@ -125,6 +214,9 @@ export const normalizeGroup = (group) => {
     nicknameRuleEnabled: group.nicknameRuleEnabled === true,
     nicknameRule: group.nicknameRuleEnabled === true ? (group.nicknameRule || '') : '',
     studyIconId: group.studyIconId || null,
+    // ── 가입 정책(서버가 내려줄 때만 true/문자열. 현재 서버 계약은 미전송 → 공개=즉시가입, 비공개=초대 전용)
+    approvalRequired: group.approvalRequired === true,
+    joinPolicy: typeof group.joinPolicy === 'string' ? group.joinPolicy : null,
     // ── 활동 지표 (서버 계산값 그대로)
     attendanceRate: Number(group.attendanceRate) || 0,
     avgStudySeconds: Number(group.avgStudySeconds) || 0,

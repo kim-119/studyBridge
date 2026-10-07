@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Plus, Search, User, Lock, Globe, Filter, X, AlertTriangle, Video, VideoOff, Mic, MicOff, Settings, Volume2, Camera, Check, ArrowLeft, Shield, Pencil } from 'lucide-react';
+import { Plus, Search, Lock, Globe, Filter, X, AlertTriangle, Settings, Check, ArrowLeft, Pencil, LogIn } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
-import { groupService } from '../services/api';
+import { groupService, authService } from '../services/api';
 import StudyRoom from '../components/StudyRoom';
 import GroupCard from '../components/groupstudy/GroupCard';
 import GroupEditModal from '../components/groupstudy/GroupEditModal';
@@ -12,10 +12,14 @@ import { ToggleSwitch } from '../components/groupstudy/ToggleSwitch';
 import { validateCoverImageFile } from '../components/groupstudy/GroupProfileField';
 import GroupProfileImage from '../components/groupstudy/GroupProfileImage';
 import GroupInvitePanel from '../components/groupstudy/GroupInvitePanel';
+import PendingMemberSection from '../components/groupstudy/PendingMemberSection';
+import PreJoinMediaPanel from '../components/groupstudy/prejoin/PreJoinMediaPanel';
 import {
   normalizeGroup, buildSettingsPayload, validateSettingsForm, validateJoinInputs,
   studyTypeLabel, formatTargetMinutes, formatStudySeconds, formatAttendanceRate,
   JOIN_ANSWER_MAX_LENGTH, NICKNAME_MAX_LENGTH,
+  isCamStudy, resolveLeaderConsoleSections, buildMicConstraints, buildCameraPreviewConstraints,
+  AVATAR_MODES, resolveParticipantAvatar,
 } from '../utils/groupStudy';
 
 // getUserMedia 장치 오류를 원인별로 구분해 사용자 메시지로 변환한다.
@@ -113,6 +117,83 @@ export default function GroupStudy() {
   const [cameras, setCameras] = useState([]);
   const [mics, setMics] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState('');
+  // 마이크 입력 장치 선택(GENERAL/CAM 공통). '' = 기본 마이크. 입장 시 StudyRoom publisher audioSource 로 전달.
+  const [selectedMic, setSelectedMic] = useState('');
+  // GENERAL 입장 프로필(이번 입장 전용 visual identity): 'profile' | 'default' | 'upload'
+  const [profileMode, setProfileMode] = useState(AVATAR_MODES.DEFAULT);
+  const [profileFile, setProfileFile] = useState(null);
+  const [profilePreviewUrl, setProfilePreviewUrl] = useState(null); // objectURL(즉시 미리보기)
+  const [uploadingProfile, setUploadingProfile] = useState(false);
+  // StudyRoom 으로 넘기는 세션 아바타 { mode, url(presigned, 원격 전파용), localUrl(내 타일용) }
+  const [sessionAvatar, setSessionAvatar] = useState(null);
+  const myDisplayName = user?.displayName || user?.nickname || (userId ? `User_${userId}` : '');
+
+  const releaseProfilePreview = () => {
+    setProfilePreviewUrl(prev => {
+      if (prev) { try { URL.revokeObjectURL(prev); } catch (e) { /* ignore */ } }
+      return null;
+    });
+    setProfileFile(null);
+  };
+
+  // 업로드 파일 선택: 형식 검증은 ProfileSelector 가 끝냈고, 여기서는 objectURL 로 미리보기를 즉시 반영한다.
+  const handlePickProfileFile = (file) => {
+    setProfilePreviewUrl(prev => {
+      if (prev) { try { URL.revokeObjectURL(prev); } catch (e) { /* ignore */ } }
+      try { return URL.createObjectURL(file); } catch (e) { return null; }
+    });
+    setProfileFile(file);
+    setProfileMode(AVATAR_MODES.UPLOAD);
+  };
+
+  // 입장 준비 화면이 열릴 때 프로필 선택 초기화(계정 프로필 있으면 그것, 없으면 기본 아바타).
+  useEffect(() => {
+    if (!preJoinStudy) return;
+    setProfileMode((user?.photoUrl || user?.photo_url) ? AVATAR_MODES.PROFILE : AVATAR_MODES.DEFAULT);
+    setShowPreJoinSettings(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preJoinStudy?.id]);
+
+  // 미리보기용 아바타(우선순위: 이번 업로드 > 계정 프로필 > 기본). resolveParticipantAvatar 와 같은 규칙.
+  const preJoinAvatar = resolveParticipantAvatar({
+    avatarMode: profileMode,
+    avatarUrl: profileMode === AVATAR_MODES.UPLOAD ? profilePreviewUrl : null,
+    profilePhotoUrl: profileMode === AVATAR_MODES.PROFILE ? (user?.photoUrl || user?.photo_url || null) : null,
+  });
+
+  // 입장 확정: (CAM) 프리뷰 카메라 트랙 handoff, (GENERAL) 업로드 이미지는 기존 S3 프로필 업로드 API 로 올린 뒤 세션 아바타로 전달.
+  const enterStudyRoom = async (target) => {
+    const cam = isCamStudy(target.studyType);
+    let handoff = null;
+    if (cam) {
+      // 프리뷰 카메라 트랙을 clone해 StudyRoom으로 넘긴다(stop→재획득 freeze 제거).
+      //  · clone은 원본과 독립 생명주기 → 곧 이어질 프리뷰 cleanup의 stop에 영향받지 않는다.
+      try {
+        const vTrack = previewStreamRef.current?.getVideoTracks?.()[0];
+        if (vTrack && vTrack.readyState === 'live') handoff = vTrack.clone();
+      } catch (e) { handoff = null; }
+    }
+    const profileUrl = user?.photoUrl || user?.photo_url || null;
+    let avatar = profileMode === AVATAR_MODES.DEFAULT
+      ? { mode: AVATAR_MODES.DEFAULT, url: null, localUrl: null }
+      : { mode: AVATAR_MODES.PROFILE, url: profileUrl, localUrl: profileUrl };
+    if (!cam && profileMode === AVATAR_MODES.UPLOAD && profileFile) {
+      setUploadingProfile(true);
+      try {
+        const res = await authService.uploadProfileImage(profileFile); // 기존 S3 업로드 API 재사용(신규 API/컬럼 없음)
+        avatar = { mode: AVATAR_MODES.UPLOAD, url: res?.photoUrl || null, localUrl: profilePreviewUrl || res?.photoUrl || null };
+      } catch (err) {
+        setUploadingProfile(false);
+        showAlert('프로필 업로드 실패', (err?.message || '이미지를 업로드하지 못했습니다.') + ' 다른 이미지를 선택하거나 기본 아이콘으로 입장해주세요.');
+        return;
+      }
+      setUploadingProfile(false);
+    }
+    setHandoffVideoTrack(handoff);
+    setSessionAvatar(avatar);
+    setActiveStudyRoom(target);
+    setPreJoinStudy(null);
+  };
   // 열리지 않는(stale/고장) 카메라 deviceId를 기억해 무한 재시도/재선택 루프를 방지한다.
   const badCamerasRef = React.useRef(new Set());
 
@@ -123,8 +204,17 @@ export default function GroupStudy() {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoInputs = devices.filter(device => device.kind === 'videoinput');
       const audioInputs = devices.filter(device => device.kind === 'audioinput');
-      setCameras(videoInputs);
       setMics(audioInputs);
+      // 선택 마이크가 목록에서 사라지면(핫플러그 해제) 기본 마이크로 되돌린다.
+      if (selectedMic && !audioInputs.some(a => a.deviceId === selectedMic)) {
+        setSelectedMic('');
+      }
+      // GENERAL 은 카메라 장치를 다루지 않는다(목록도 비움).
+      if (!isCamStudy(preJoinStudy?.studyType)) {
+        setCameras([]);
+        return;
+      }
+      setCameras(videoInputs);
 
       // 선택된 카메라가 목록에 더 이상 없으면 stale → 초기화
       if (selectedCamera && !videoInputs.some(v => v.deviceId === selectedCamera)) {
@@ -149,6 +239,13 @@ export default function GroupStudy() {
     if (!preJoinStudy) {
       return undefined;
     }
+    // GENERAL(일반 스터디): 카메라 preview/권한 요청 자체를 하지 않는다(video permission 요청은 버그).
+    if (!isCamStudy(preJoinStudy.studyType)) {
+      setCameraStatus('off');
+      setCamError('');
+      previewStreamRef.current = null;
+      return undefined;
+    }
     if (!isVideoOn) {
       setCameraStatus('off');
       setCamError('');
@@ -168,10 +265,7 @@ export default function GroupStudy() {
     // 장치가 늦게 잡히거나(약 10초 지연) 직전 화면이 카메라를 늦게 릴리즈하는 경우를 위해
     // 일시적 오류(NotReadable/NotFound 등)는 곧바로 실패로 확정하지 않고 backoff로 최대 3회 재시도한다.
     const attempt = async (tryNo) => {
-      const constraints = {
-        video: selectedCamera ? { deviceId: { exact: selectedCamera } } : true,
-        audio: false
-      };
+      const constraints = buildCameraPreviewConstraints(selectedCamera); // CAM 전용: { video, audio:false }
       try {
         const s = await navigator.mediaDevices.getUserMedia(constraints);
         if (!isMounted) {
@@ -255,7 +349,8 @@ export default function GroupStudy() {
 
     (async () => {
       try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        // GENERAL/CAM 공통: 마이크만 요청(video:false). 선택 마이크가 있으면 deviceId exact.
+        micStream = await navigator.mediaDevices.getUserMedia(buildMicConstraints(selectedMic));
         if (cancelled) {
           micStream.getTracks().forEach(t => t.stop());
           return;
@@ -282,6 +377,11 @@ export default function GroupStudy() {
       } catch (err) {
         if (cancelled) return;
         console.error('마이크 에러:', err?.name, err?.message);
+        // 선택 마이크가 stale/제약 불일치면 기본 마이크로 자동 복귀(effect 재실행).
+        if ((err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') && selectedMic) {
+          setSelectedMic('');
+          return;
+        }
         if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') setMicStatus('error');
         else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') setMicStatus('unavailable');
         else setMicStatus('error');
@@ -295,7 +395,7 @@ export default function GroupStudy() {
       if (audioContext && audioContext.state !== 'closed') audioContext.close();
       if (micStream) micStream.getTracks().forEach(t => t.stop());
     };
-  }, [preJoinStudy, isMicOn]);
+  }, [preJoinStudy, isMicOn, selectedMic]);
 
   // 장치 핫플러그(연결/해제) 감지 시 목록을 갱신한다.
   useEffect(() => {
@@ -374,7 +474,7 @@ export default function GroupStudy() {
     setLoadingApps(true);
     try {
       const data = await groupService.getApplications(groupId);
-      setApplications((data || []).filter(app => app.status === 'WAITING'));
+      setApplications((data || []).filter(app => app.status === 'PENDING')); // 서버 enum GroupStudyJoinStatus.PENDING
     } catch (err) {
       console.error('Failed to load applications', err);
     } finally {
@@ -438,6 +538,18 @@ export default function GroupStudy() {
       }
     });
   };
+
+  // 방장 콘솔 섹션 노출 정책(utils 단일 지점): 초대 관리 = 비공개, 대기자 명단 = 승인 정책 or 실제 대기자 존재.
+  const leaderSections = resolveLeaderConsoleSections(preJoinStudy, applications.length);
+  const preJoinNavProps = preJoinStudy ? {
+    isLeader: Number(preJoinStudy.leaderId) === Number(userId),
+    showInfo: showPreJoinInfo,
+    showSettings: showPreJoinSettings,
+    showLeaderConsole,
+    onInfo: () => setShowPreJoinInfo(true),
+    onLeaderConsole: () => setShowLeaderConsole(true),
+    onSettings: () => setShowPreJoinSettings(v => !v),
+  } : null;
 
   const handleCardClick = async (study) => {
     if (!checkAuth()) return;
@@ -1115,7 +1227,7 @@ export default function GroupStudy() {
                   </div>
                   <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#111827' }}>{preJoinStudy.title} <span style={{ fontWeight: '500', color: '#6B7280', fontSize: '15px', marginLeft: '8px' }}>입장 준비</span></h2>
                 </div>
-                <button onClick={() => setPreJoinStudy(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6B7280', padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', transition: 'background-color 0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#F3F4F6'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}>
+                <button onClick={() => { releaseProfilePreview(); setPreJoinStudy(null); }} aria-label="입장 준비 닫기" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6B7280', padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', transition: 'background-color 0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#F3F4F6'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}>
                   <X size={24} />
                 </button>
               </div>
@@ -1147,234 +1259,70 @@ export default function GroupStudy() {
                   width: '100%'
                 }}>
                   <div style={{ textAlign: 'center' }}>
-                    <h1 style={{ margin: '0 0 12px', fontSize: '22px', fontWeight: '700', color: '#111827' }}>스터디룸에 입장하기 전에 내 화면을 마음대로 꾸며보세요.</h1>
-                    <p style={{ margin: 0, fontSize: '14px', color: '#6B7280' }}>지금 보이는 영상은 다른 사람이 볼 수 없습니다.</p>
-                  </div>
-
-                  {/* Video Box */}
-                  <div style={{ width: '100%', backgroundColor: 'black', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column' }}>
-                  <div style={{ position: 'relative', width: '100%', paddingTop: '56.25%', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: isVideoOn ? '#1F2937' : 'black' }}>
-                    {!isVideoOn ? (
-                      <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', color: '#4B5563' }}>
-                        {user?.photoUrl ? (
-                          <img src={user.photoUrl} alt="avatar" style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }} />
-                        ) : (
-                          <div style={{ width: '80px', height: '80px', borderRadius: '50%', backgroundColor: '#374151', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
-                            <User size={40} color="#9CA3AF" />
-                          </div>
-                        )}
-                      </div>
+                    {isCamStudy(preJoinStudy.studyType) ? (
+                      <>
+                        <h1 style={{ margin: '0 0 12px', fontSize: '22px', fontWeight: '700', color: '#111827' }}>스터디룸에 입장하기 전에 내 화면을 마음대로 꾸며보세요.</h1>
+                        <p style={{ margin: 0, fontSize: '14px', color: '#6B7280' }}>지금 보이는 영상은 다른 사람이 볼 수 없습니다.</p>
+                      </>
                     ) : (
                       <>
-                        <video
-                          ref={videoRef}
-                          autoPlay
-                          playsInline
-                          muted
-                          style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-                        />
-                        {/* 권한/장치 확인이 끝나기 전에는 "확인 중"을 보여주고, 실패 메시지는 retry가 끝난 뒤에만 노출 */}
-                        {cameraStatus === 'checking' && !camError && (
-                          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', backgroundColor: 'rgba(0,0,0,0.6)', color: '#E5E7EB', padding: '14px 18px', borderRadius: '8px', textAlign: 'center', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-                            <Camera size={28} color="#60A5FA" />
-                            <div style={{ fontSize: '13px', fontWeight: '600' }}>카메라를 확인하는 중입니다…</div>
-                          </div>
-                        )}
-                        {camError && (
-                          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', backgroundColor: 'rgba(0,0,0,0.7)', color: '#FCA5A5', padding: '16px', borderRadius: '8px', textAlign: 'center', maxWidth: '80%', zIndex: 10 }}>
-                            <AlertTriangle size={32} color="#EF4444" style={{ marginBottom: '8px' }} />
-                            <div style={{ fontSize: '14px', fontWeight: 'bold' }}>카메라 사용에 문제가 있습니다.</div>
-                            <div style={{ fontSize: '12px', marginTop: '4px', wordBreak: 'break-all' }}>{camError}</div>
-                            <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                              <button
-                                onClick={() => { setCamError(''); setIsVideoOn(false); setTimeout(() => setIsVideoOn(true), 100); }}
-                                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #FCA5A5', background: 'transparent', color: '#FCA5A5', cursor: 'pointer', fontSize: '12px' }}>
-                                다시 시도
-                              </button>
-                              <button
-                                onClick={() => { badCamerasRef.current.clear(); setSelectedCamera(''); setCamError(''); setIsVideoOn(false); setTimeout(() => setIsVideoOn(true), 100); }}
-                                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #93C5FD', background: 'transparent', color: '#93C5FD', cursor: 'pointer', fontSize: '12px' }}>
-                                기본 카메라로 전환
-                              </button>
-                              <button
-                                onClick={() => { setCamError(''); setIsVideoOn(false); }}
-                                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #D1D5DB', background: 'transparent', color: '#D1D5DB', cursor: 'pointer', fontSize: '12px' }}>
-                                카메라 없이 입장
-                              </button>
-                            </div>
-                          </div>
-                        )}
+                        <h1 style={{ margin: '0 0 12px', fontSize: '22px', fontWeight: '700', color: '#111827' }}>입장하기 전에 프로필과 마이크를 확인하세요.</h1>
+                        <p style={{ margin: 0, fontSize: '14px', color: '#6B7280' }}>일반 스터디는 카메라 없이 프로필 이미지와 음성으로 함께 공부합니다.</p>
                       </>
                     )}
-
-
-                    {/* 장치 설정 패널 (토글) - 비디오 영역 위에 오버레이 */}
-                    {showPreJoinSettings && (
-                      <div className="prejoin-settings" style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#F9FAFB', borderTop: '1px solid #E5E7EB', display: 'flex', padding: '24px', zIndex: 20 }}>
-                        {/* Camera */}
-                        <div style={{ flex: 1, padding: '0 16px', borderRight: '1px solid #E5E7EB' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#4B5563', marginBottom: '12px' }}>
-                            <Video size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>카메라</span>
-                          </div>
-                          <div style={{ position: 'relative', marginBottom: '8px' }}>
-                            <select 
-                              value={selectedCamera}
-                              onChange={(e) => setSelectedCamera(e.target.value)}
-                              style={{ width: '100%', appearance: 'none', border: 'none', backgroundColor: 'transparent', fontSize: '15px', color: '#111827', cursor: 'pointer', outline: 'none' }}
-                            >
-                              {cameras.length === 0 ? (
-                                <option value="">카메라 찾는 중...</option>
-                              ) : (
-                                cameras.map((cam, idx) => (
-                                  <option key={cam.deviceId} value={cam.deviceId}>
-                                    {cam.label || `카메라 ${idx + 1}`}
-                                  </option>
-                                ))
-                              )}
-                            </select>
-                            <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>▼</div>
-                          </div>
-                          <div style={{ fontSize: '12px', color: '#9CA3AF' }}>목록에서 다른 카메라를 선택해보세요</div>
-                        </div>
-                        {/* Mic */}
-                        <div style={{ flex: 1, padding: '0 16px', borderRight: '1px solid #E5E7EB' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#4B5563', marginBottom: '12px' }}>
-                            <Mic size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>마이크</span>
-                          </div>
-                          <div style={{ position: 'relative', marginBottom: '8px' }}>
-                            <select style={{ width: '100%', appearance: 'none', border: 'none', backgroundColor: 'transparent', fontSize: '15px', color: '#111827', cursor: 'pointer', outline: 'none' }}>
-                              {mics.length === 0 ? (
-                                <option value="">기본 마이크</option>
-                              ) : (
-                                mics.map((mic, idx) => (
-                                  <option key={mic.deviceId || idx} value={mic.deviceId}>
-                                    {mic.label || `마이크 ${idx + 1}`}
-                                  </option>
-                                ))
-                              )}
-                            </select>
-                            <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>▼</div>
-                          </div>
-                          {mics.length === 0 ? (
-                            <div style={{ fontSize: '12px', color: '#EF4444' }}>연결된 마이크가 없어 음소거로 입장합니다</div>
-                          ) : (
-                            <div style={{ fontSize: '12px', color: '#9CA3AF' }}>{mics.length}개의 마이크가 연결되어 있습니다</div>
-                          )}
-                        </div>
-                        {/* Speaker */}
-                        <div style={{ flex: 1, padding: '0 16px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#4B5563', marginBottom: '12px' }}>
-                            <Volume2 size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>스피커</span>
-                          </div>
-                          <div style={{ position: 'relative', marginBottom: '8px' }}>
-                            <select style={{ width: '100%', appearance: 'none', border: 'none', backgroundColor: 'transparent', fontSize: '15px', color: '#111827', cursor: 'pointer', outline: 'none' }}>
-                              <option>default</option>
-                            </select>
-                            <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>▼</div>
-                          </div>
-                          <div style={{ fontSize: '12px', color: '#9CA3AF' }}>정상적으로 작동중입니다</div>
-                        </div>
-                      </div>
-                    )}
                   </div>
 
-                  {/* 카메라/마이크 ON·OFF 토글 + 실시간 입력 상태(레벨 미터) — 입장 전에 실제로 동작하는지 확인 */}
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '12px 16px', backgroundColor: '#0F172A', borderTop: '1px solid #1F2937', flexWrap: 'wrap' }}>
-                    {/* 카메라 토글 */}
-                    <button
-                      onClick={() => { setCamError(''); setIsVideoOn(v => !v); }}
-                      style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', borderRadius: '999px', border: '1px solid', borderColor: isVideoOn ? 'rgba(96,165,250,0.5)' : 'rgba(148,163,184,0.4)', backgroundColor: isVideoOn ? 'rgba(59,130,246,0.15)' : 'rgba(148,163,184,0.1)', color: isVideoOn ? '#93C5FD' : '#94A3B8', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
-                    >
-                      {isVideoOn ? <Video size={16} /> : <VideoOff size={16} />}
-                      <span>
-                        {!isVideoOn ? '카메라 꺼짐'
-                          : cameraStatus === 'checking' ? '카메라 확인 중…'
-                          : cameraStatus === 'available' ? '카메라 켜짐'
-                          : cameraStatus === 'unavailable' ? '카메라 없음'
-                          : cameraStatus === 'error' ? '카메라 권한/오류'
-                          : '카메라'}
-                      </span>
-                    </button>
-
-                    {/* 마이크 토글 */}
-                    <button
-                      onClick={() => setIsMicOn(v => !v)}
-                      style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', borderRadius: '999px', border: '1px solid', borderColor: isMicOn ? 'rgba(34,197,94,0.5)' : 'rgba(148,163,184,0.4)', backgroundColor: isMicOn ? 'rgba(34,197,94,0.12)' : 'rgba(148,163,184,0.1)', color: isMicOn ? '#86EFAC' : '#94A3B8', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
-                    >
-                      {isMicOn ? <Mic size={16} /> : <MicOff size={16} />}
-                      <span>
-                        {!isMicOn ? '마이크 꺼짐'
-                          : micStatus === 'checking' ? '마이크 확인 중…'
-                          : micStatus === 'unavailable' ? '마이크 없음'
-                          : micStatus === 'error' ? '마이크 권한/오류'
-                          : micLevel > 12 ? '말하는 중'
-                          : micLevel > 0 ? '입력 감지 중'
-                          : '입력 대기 중'}
-                      </span>
-                    </button>
-
-                    {/* 마이크 입력 레벨 미터: 말하면 막대가 차오른다(실제 입력 여부 가시화) */}
-                    {isMicOn && (micStatus === 'available' || micStatus === 'checking') && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '120px' }}>
-                        <div style={{ flex: 1, height: '6px', borderRadius: '4px', backgroundColor: 'rgba(255,255,255,0.12)', overflow: 'hidden', minWidth: '90px' }}>
-                          <div style={{ width: `${micLevel}%`, height: '100%', backgroundColor: micLevel > 12 ? '#22C55E' : '#60A5FA', transition: 'width 0.1s linear' }} />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Bottom Device Controls */}
-                  <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'center', padding: '16px', backgroundColor: 'white', borderTop: '1px solid #E5E7EB' }}>
-                    <button
-                      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', background: 'none', border: 'none', cursor: 'pointer', color: showPreJoinInfo ? '#3B82F6' : '#6B7280', flex: 1 }}
-                      onClick={() => setShowPreJoinInfo(true)}
-                    >
-                      <AlertTriangle size={24} />
-                      <span style={{ fontSize: '12px', fontWeight: '500' }}>정보</span>
-                    </button>
-                    
-                    {Number(preJoinStudy.leaderId) === Number(userId) && (
-                      <button
-                        style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', background: 'none', border: 'none', cursor: 'pointer', color: showLeaderConsole ? '#10B981' : '#6B7280', flex: 1 }}
-                        onClick={() => setShowLeaderConsole(true)}
-                      >
-                        <Shield size={24} />
-                        <span style={{ fontSize: '12px', fontWeight: '500' }}>방장 관리</span>
-                      </button>
-                    )}
-
-                    <button
-                      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', background: 'none', border: 'none', cursor: 'pointer', color: showPreJoinSettings ? '#3B82F6' : '#6B7280', flex: 1 }}
-                      onClick={() => setShowPreJoinSettings(!showPreJoinSettings)}
-                    >
-                      <Settings size={24} />
-                      <span style={{ fontSize: '12px', fontWeight: '500' }}>장치 설정</span>
-                    </button>
-                  </div>
-                </div>
+                  {/* 스터디 타입별 미디어 패널: 서버 studyType(GENERAL/CAM) 기준 분기. GENERAL 은 카메라 요소/권한 요청 없음 */}
+                  <PreJoinMediaPanel
+                    studyType={preJoinStudy.studyType}
+                    general={{
+                      avatar: preJoinAvatar,
+                      displayName: myDisplayName,
+                      profile: {
+                        mode: profileMode,
+                        profilePhotoUrl: user?.photoUrl || user?.photo_url || null,
+                        uploadedFileName: profileFile?.name || null,
+                        onSelectMode: (mode) => setProfileMode(mode),
+                        onPickFile: handlePickProfileFile,
+                        onError: (msg) => showAlert('이미지 형식 오류', msg),
+                      },
+                      mic: {
+                        isMicOn, micStatus, micLevel, onToggle: () => setIsMicOn(v => !v),
+                        mics, selectedMic, onSelectMic: setSelectedMic,
+                        showDeviceSelector: showPreJoinSettings,
+                      },
+                      nav: preJoinNavProps,
+                    }}
+                    cam={{
+                      camera: {
+                        videoRef, isVideoOn, cameraStatus, camError,
+                        photoUrl: user?.photoUrl || null,
+                        onToggle: () => { setCamError(''); setIsVideoOn(v => !v); },
+                        onRetry: () => { setCamError(''); setIsVideoOn(false); setTimeout(() => setIsVideoOn(true), 100); },
+                        onUseDefaultCamera: () => { badCamerasRef.current.clear(); setSelectedCamera(''); setCamError(''); setIsVideoOn(false); setTimeout(() => setIsVideoOn(true), 100); },
+                        onEnterWithoutCamera: () => { setCamError(''); setIsVideoOn(false); },
+                      },
+                      mic: {
+                        isMicOn, micStatus, micLevel, onToggle: () => setIsMicOn(v => !v),
+                        mics, selectedMic, onSelectMic: setSelectedMic,
+                      },
+                      devices: { show: showPreJoinSettings, cameras, selectedCamera, onCameraChange: setSelectedCamera },
+                      nav: preJoinNavProps,
+                    }}
+                  />
 
                 <button
-                  style={{ padding: '16px 80px', borderRadius: '8px', backgroundColor: preJoinStudy.isPrivate ? '#8B5CF6' : '#3B82F6', color: 'white', fontSize: '18px', fontWeight: '700', border: 'none', cursor: 'pointer', boxShadow: preJoinStudy.isPrivate ? '0 4px 12px rgba(139, 92, 246, 0.3)' : '0 4px 12px rgba(59, 130, 246, 0.3)', transition: 'background-color 0.2s', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  data-testid="prejoin-enter-button"
+                  disabled={uploadingProfile}
+                  style={{ padding: '16px 80px', borderRadius: '8px', backgroundColor: preJoinStudy.isPrivate ? '#8B5CF6' : '#3B82F6', color: 'white', fontSize: '18px', fontWeight: '700', border: 'none', cursor: uploadingProfile ? 'wait' : 'pointer', opacity: uploadingProfile ? 0.7 : 1, boxShadow: preJoinStudy.isPrivate ? '0 4px 12px rgba(139, 92, 246, 0.3)' : '0 4px 12px rgba(59, 130, 246, 0.3)', transition: 'background-color 0.2s', display: 'flex', alignItems: 'center', gap: '8px' }}
                   onMouseEnter={(e) => e.currentTarget.style.backgroundColor = preJoinStudy.isPrivate ? '#7C3AED' : '#2563EB'}
                   onMouseLeave={(e) => e.currentTarget.style.backgroundColor = preJoinStudy.isPrivate ? '#8B5CF6' : '#3B82F6'}
                   onClick={() => {
                     const isMember = preJoinMembers.some(m => Number(m.userId) === Number(userId)) || Number(preJoinStudy.leaderId) === Number(userId);
                     
                     if (isMember) {
-                      showAlert('입장', `[${preJoinStudy.title}] 스터디룸으로 입장합니다!`, () => {
-                        // 프리뷰 카메라 트랙을 clone해 StudyRoom으로 넘긴다(stop→재획득 freeze 제거).
-                        //  · clone은 원본과 독립 생명주기 → 곧 이어질 프리뷰 cleanup의 stop에 영향받지 않는다.
-                        let handoff = null;
-                        try {
-                          const vTrack = previewStreamRef.current?.getVideoTracks?.()[0];
-                          if (vTrack && vTrack.readyState === 'live') {
-                            handoff = vTrack.clone();
-                          }
-                        } catch (e) { handoff = null; }
-                        setHandoffVideoTrack(handoff);
-                        setActiveStudyRoom(preJoinStudy);
-                        setPreJoinStudy(null);
-                      });
+                      if (uploadingProfile) return;
+                      showAlert('입장', `[${preJoinStudy.title}] 스터디룸으로 입장합니다!`, () => { enterStudyRoom(preJoinStudy); });
                     } else {
                       if (!preJoinStudy.isPrivate && (preJoinStudy.joinQuestionEnabled || preJoinStudy.nicknameRuleEnabled)) {
                         // 가입 질문/닉네임 입력이 필요한 그룹은 상세 모달에서 입력 후 가입한다.
@@ -1403,10 +1351,8 @@ export default function GroupStudy() {
                     }
                   }}
                 >
-                  <div style={{ width: '16px', height: '20px', border: '2px solid white', borderRight: 'none', borderTopLeftRadius: '4px', borderBottomLeftRadius: '4px', position: 'relative' }}>
-                    <div style={{ position: 'absolute', right: '-2px', top: '50%', transform: 'translateY(-50%)', width: '4px', height: '12px', backgroundColor: 'white' }}></div>
-                  </div>
-                  입장
+                  <LogIn size={20} />
+                  {uploadingProfile ? '프로필 업로드 중…' : '입장'}
                 </button>
               </div>
 
@@ -1474,75 +1420,23 @@ export default function GroupStudy() {
                       <Pencil size={16} /> 스터디 설정 수정
                     </button>
 
-                    {/* 가입 신청자 대기 명단 */}
-                    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '240px' }}>
-                      <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: '700', color: '#374151' }}>
-                        가입 신청 대기자 명단 ({applications.length})
-                      </h4>
-                      
-                      <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '10px', backgroundColor: '#F9FAFB', display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '300px' }}>
-                        {loadingApps ? (
-                          <div style={{ padding: '20px 0', textAlign: 'center', fontSize: '13px', color: '#9CA3AF' }}>불러오는 중...</div>
-                        ) : applications.length === 0 ? (
-                          <div style={{ padding: '40px 0', textAlign: 'center', fontSize: '13px', color: '#9CA3AF' }}>대기 중인 신청자가 없습니다.</div>
-                        ) : (
-                          applications.map(app => (
-                            <div key={app.applicationId} style={{ backgroundColor: '#ffffff', border: '1px solid #E5E7EB', borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  {app.applicantPhotoUrl ? (
-                                    <img
-                                      src={app.applicantPhotoUrl}
-                                      alt={app.applicantName}
-                                      style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover' }}
-                                    />
-                                  ) : (
-                                    <div style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: 'var(--color-primary)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 'bold' }}>
-                                      {app.applicantName ? app.applicantName.charAt(0) : '?'}
-                                    </div>
-                                  )}
-                                  <span style={{ fontWeight: '700', fontSize: '14px', color: '#111827' }}>{app.applicantName}</span>
-                                </div>
-                                <span style={{ fontSize: '11px', color: '#9CA3AF' }}>
-                                  {app.createdAt ? app.createdAt.split('T')[0] : ''}
-                                </span>
-                              </div>
-                              <p style={{ margin: 0, fontSize: '13px', color: '#4B5563', backgroundColor: '#F3F4F6', padding: '8px 10px', borderRadius: '6px', wordBreak: 'break-all', lineHeight: '1.4' }}>
-                                {app.introduction}
-                              </p>
-                              {app.joinAnswer && (
-                                <p style={{ margin: 0, fontSize: '12px', color: '#374151', lineHeight: '1.5', wordBreak: 'break-all' }}>
-                                  <span style={{ color: '#6B7280' }}>Q. {app.joinQuestion || '가입 질문'}</span><br />A. {app.joinAnswer}
-                                </p>
-                              )}
-                              {app.nickname && (
-                                <p style={{ margin: 0, fontSize: '12px', color: '#374151' }}><span style={{ color: '#6B7280' }}>그룹 닉네임</span> {app.nickname}</p>
-                              )}
-                              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                                <button 
-                                  onClick={() => handleApproveApp(app.applicationId)}
-                                  style={{ flex: 1, height: '32px', backgroundColor: '#10B981', color: 'white', border: 'none', borderRadius: '6px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
-                                >
-                                  승인
-                                </button>
-                                <button 
-                                  onClick={() => handleRejectApp(app.applicationId)}
-                                  style={{ flex: 1, height: '32px', backgroundColor: '#EF4444', color: 'white', border: 'none', borderRadius: '6px', fontWeight: '700', fontSize: '12px', cursor: 'pointer' }}
-                                >
-                                  거절
-                                </button>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
+                    {/* 가입 신청 대기자 명단: 승인 정책(approvalRequired/JOIN_REQUEST)이거나 실제 대기자가 있을 때만 DOM 에 렌더 */}
+                    {leaderSections.showPendingMembers && (
+                      <PendingMemberSection
+                        applications={applications}
+                        loading={loadingApps}
+                        onApprove={handleApproveApp}
+                        onReject={handleRejectApp}
+                      />
+                    )}
 
                     {/* 관리 액션 */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderTop: '1px solid #E5E7EB', paddingTop: '16px', marginTop: 'auto' }}>
-                      {/* 비공개 스터디 초대 링크(방장 전용, 서버 403 검증) */}
-                      {preJoinStudy.isPrivate && (
-                        <GroupInvitePanel groupId={preJoinStudy.id} onNotify={showAlert} />
+                      {/* 비공개(INVITE_ONLY/JOIN_REQUEST) 스터디 사용자 초대/초대 관리(방장 전용, 서버 403 검증) */}
+                      {leaderSections.showInviteManagement && (
+                        <div data-testid="invite-management">
+                          <GroupInvitePanel groupId={preJoinStudy.id} onNotify={showAlert} />
+                        </div>
                       )}
 
                       <button 
@@ -1631,10 +1525,15 @@ export default function GroupStudy() {
                   try { handoffVideoTrack.stop(); } catch (e) { /* ignore */ }
                   setHandoffVideoTrack(null);
                 }
+                // 이번 입장에서 쓴 프로필 objectURL 정리(세션 전용 identity 종료).
+                releaseProfilePreview();
+                setSessionAvatar(null);
               }}
               selectedCamera={selectedCamera}
+              selectedMic={selectedMic}
+              sessionAvatar={sessionAvatar}
               initialMicOn={isMicOn}
-              initialVideoOn={isVideoOn}
+              initialVideoOn={isCamStudy(activeStudyRoom.studyType) ? isVideoOn : false}
               handoffVideoTrack={handoffVideoTrack}
             />
           )}
