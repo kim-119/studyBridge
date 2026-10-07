@@ -2155,3 +2155,117 @@ a {
   [data-testid="prejoin-avatar-preview"] .sb-profile-preview { width: 112px !important; height: 112px !important; box-sizing: border-box; font-size: var(--sb-emoji-profile-preview) !important; }
   [data-testid="prejoin-avatar-preview"] .sb-profile-preview svg.lucide { width: 56px; height: 56px; }
 }
+
+/* =========================================
+   모바일 모달 시스템(≤768px) — TRACK B. 데스크톱(>768px)은 이 블록 밖이라 불변.
+   · 로직/마크업 구조는 그대로 두고 className 만 추가해 공통 정책을 적용한다:
+     .sb-modal-overlay / .sb-modal / .sb-modal-head / .sb-modal-body / .sb-modal-foot (+ .sb-modal-tabs/.sb-modal-tab/.sb-modal-row)
+   · 대상: StudyMate "새 AI 그룹 스터디 생성"(.sb-modal-aig), StudyRoom 방 관리·문의/신고(.sb-modal-dark),
+     GroupStudy 상세·방장 콘솔, GroupEditModal(.gs-modal). 이모지 바텀시트(.sb-emoji-picker)는 기존 정책 유지.
+   · 인라인 style(width 800px / height 720px / maxHeight 90vh / padding 24~32px)을 덮어야 하는 속성만 !important.
+   ========================================= */
+.sb-aig-nav-compact { display: none; } /* 모바일 전용 컴팩트 ‹ › (아래 ≤768px 블록에서 표시) */
+
+@media (max-width: 768px) {
+  /* ---- 골격: overlay / box / head / body / foot ---- */
+  .sb-modal-overlay { padding: 0 !important; box-sizing: border-box; align-items: center !important; justify-content: center !important; }
+  .sb-modal {
+    width: calc(100vw - 24px) !important;
+    max-width: 440px !important;
+    margin-inline: 12px;
+    height: auto !important;
+    max-height: 88vh !important;
+    max-height: calc(88dvh - env(safe-area-inset-bottom, 0px)) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    box-sizing: border-box;
+    overflow: hidden !important;
+  }
+  /* body 가 없는 단일 스크롤 박스(방장 관리 콘솔)는 박스 자체가 세로 스크롤 */
+  .sb-modal:not(:has(.sb-modal-body)) { overflow-x: hidden !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }
+  .sb-modal-head { flex-shrink: 0; }
+  .sb-modal-body { flex: 1 1 auto !important; min-height: 0; overflow-y: auto !important; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+  .sb-modal-foot { flex-shrink: 0; }
+
+  /* ---- 탭 스트립: 한글 라벨이 음절 단위로 세로 꺾이던 원인 = flex 자식의 기본 flex-shrink:1 + 글자 사이 줄바꿈 허용.
+          → 줄바꿈 금지 + 축소 금지 + 스트립 가로 스크롤. 닫기(X)는 sticky 로 항상 오른쪽에 보이게. ---- */
+  .sb-modal-tabs { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; padding: 0 4px !important; }
+  .sb-modal-tabs::-webkit-scrollbar { display: none; }
+  .sb-modal-tabs > * { flex-shrink: 0; white-space: nowrap; word-break: keep-all; }
+  .sb-modal-tab { padding: 12px 10px !important; font-size: 14px !important; min-height: 44px; display: flex; align-items: center; box-sizing: border-box; }
+  .sb-modal-tabs .sb-modal-title { padding: 12px 6px 12px 8px !important; font-size: 15px !important; }
+  .sb-modal-tabs .sb-modal-title svg.lucide { display: none; } /* 장식 아이콘: 360px 에서 스트립이 한 화면에 들어가도록 */
+  .sb-modal-tab-divider { margin: 0 4px !important; }
+  .sb-modal-tabs .sb-modal-close { position: sticky; right: 0; margin-left: auto; padding: 0 8px !important; background-color: #1E293B; }
+
+  /* ---- 폼: 1열 + 입력 풀폭 ---- */
+  .sb-modal input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  .sb-modal select,
+  .sb-modal textarea { max-width: 100%; min-width: 0; box-sizing: border-box; }
+  .sb-modal select, .sb-modal textarea { width: 100%; }
+  .sb-modal-row { flex-direction: column !important; gap: 8px; }
+  .sb-modal-row > div:first-child { width: auto !important; padding-top: 0 !important; }
+
+  /* ---- 타이포(모바일): 제목 18 / 섹션 15~16 / 라벨 13~14 / 본문 12~14 / 버튼 14~16 ---- */
+  .sb-modal-title, .sb-modal-head h2, .sb-modal-head h3 { font-size: 18px !important; word-break: keep-all; }
+  .sb-modal label { font-size: 13px !important; word-break: keep-all; }
+  .sb-modal-foot button, .gs-modal-footer button { white-space: nowrap; word-break: keep-all; font-size: 15px; }
+
+  /* ---- 다크(스터디룸) 모달 여백 ---- */
+  .sb-modal-dark .sb-modal-body { padding: 16px !important; gap: 18px !important; }
+  .sb-modal-dark .sb-modal-foot { padding: 12px 16px !important; gap: 10px !important; }
+  .sb-modal-dark .sb-modal-foot button { flex: 1 1 0; min-width: 0; min-height: 44px; padding: 10px 12px !important; }
+  .sb-modal-dark .sb-modal-row > div:first-child { font-size: 13px !important; }
+  /* 칩 행(문제당 시간 10초/15초…): flex 축소로 "10|초" 세로 꺾임 → 줄바꿈 허용 + 칩은 한 줄 */
+  .sb-chip-row { flex-wrap: wrap; }
+  .sb-chip-row > button { white-space: nowrap; word-break: keep-all; flex-shrink: 0; }
+
+  /* ---- 그룹스터디 상세 모달 ---- */
+  [data-testid="gs-detail-modal"] .sb-modal-body { padding: 16px !important; }
+  [data-testid="gs-detail-modal"] .sb-modal-foot button { min-height: 48px; font-size: 15px !important; }
+
+  /* ---- 방장 관리 콘솔(단일 스크롤) ---- */
+  [data-testid="leader-console-modal"] { padding: 16px !important; gap: 18px !important; }
+
+  /* ---- AI 그룹 스터디 생성 모달: 좌우 큰 화살표 열 제거 → 푸터 컴팩트 ‹ ›(44px 터치, 18px 아이콘), 카드가 거의 전폭 사용 ---- */
+  .sb-modal.sb-modal-aig { padding: 14px 16px !important; }
+  .sb-modal-aig .sb-aig-nav-col { display: none !important; } /* 인라인 display:flex 를 덮는다 */
+  .sb-modal-aig .sb-aig-nav-row { gap: 0 !important; }
+  .sb-modal-aig .sb-modal-body { padding-right: 0 !important; }
+  .sb-modal-aig .sb-aig-grid2 { grid-template-columns: 1fr !important; }
+  .sb-modal-aig .sb-aig-steps button { font-size: 12px !important; padding: 5px 9px !important; }
+  .sb-modal-aig .sb-modal-foot { gap: 8px !important; }
+  .sb-modal-aig .sb-modal-foot .btn-outline { flex: 0 0 auto !important; width: auto !important; min-width: 60px; padding: 0 14px; }
+  .sb-modal-aig .sb-modal-foot .btn-primary { flex: 1 1 auto !important; min-width: 0; padding: 0 10px; }
+  .sb-aig-nav-compact {
+    display: inline-flex !important; align-items: center; justify-content: center;
+    width: 44px; height: 44px; flex: 0 0 44px; padding: 0;
+    border: 1px solid var(--color-border); border-radius: var(--radius-btn); background-color: var(--color-bg-card);
+    color: var(--color-primary); cursor: pointer;
+  }
+  .sb-aig-nav-compact:disabled { opacity: 0.35; cursor: not-allowed; }
+  .sb-modal-aig button[aria-label="에이전트 줄이기"], .sb-modal-aig button[aria-label="에이전트 늘리기"] { width: 36px !important; height: 36px !important; }
+  .sb-aig-nav-compact svg.lucide { width: var(--sb-icon-lg); height: var(--sb-icon-lg); }
+
+  /* ---- 검색 입력 아이콘 공통(그룹스터디/지식공유/마인드맵 …): 18px, stroke 1.8, 세로 중앙 ---- */
+  svg.lucide.sb-search-icon { width: var(--sb-icon-lg); height: var(--sb-icon-lg); stroke-width: var(--sb-icon-stroke); flex-shrink: 0; }
+  svg.lucide.sb-search-icon-abs { top: 50% !important; transform: translateY(-50%); }
+  .sb-search-field-abs { padding-left: 36px !important; }
+
+  /* ---- 페이지 좌우 패딩 16px 정규화(카드/모달은 자체 토큰 유지) ---- */
+  .container-main { padding: 16px; }
+  .kn-page { padding: 16px !important; } /* 지식공유: clamp(16px,4vw,40px) → 모바일 16px 고정 */
+  .rn-page, .sr-page { padding: 16px !important; } /* 오답노트/학습리포트: 인라인 24px → 16px */
+  .mypage-page { padding: 24px 16px !important; } /* 마이페이지: 인라인 40px 5% → 좌우 16px */
+  .kn-page { min-height: calc(100dvh - 80px) !important; } /* 인라인 100vh 폴백 유지(dvh 미지원 시 이 선언만 무시됨) */
+  main:has(> .archive-detail-container) { height: 100dvh !important; } /* 자료 상세 전용 main(App.jsx 인라인 100vh) */
+  .gs-create-panel { padding: 20px 16px !important; }
+  .gs-create-title { font-size: 20px !important; }
+
+  /* ---- 전체 높이 컨테이너: vh 폴백 + dvh ---- */
+  .mindmap-layout { min-height: calc(100vh - 80px); min-height: calc(100dvh - 80px); }
+  .layout-split { height: calc(100vh - 120px); height: calc(100dvh - 120px); }
+
+  /* ---- 탭/칩 라벨은 항상 한 줄(본문 텍스트는 일반 줄바꿈 유지) ---- */
+  [role="tab"], .archive-tab, .dashboard-tab, .gs-filter-chip, .gs-badge, .gs-form-label { white-space: nowrap; word-break: keep-all; }
+}

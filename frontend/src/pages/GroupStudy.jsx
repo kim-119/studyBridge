@@ -614,7 +614,7 @@ export default function GroupStudy() {
             >
               <ArrowLeft size={24} color="#4B5563" strokeWidth={2.5} />
             </button>
-            <h2 style={{ fontSize: '26px', fontWeight: '700', color: '#111827', margin: 0, letterSpacing: '-0.5px' }}>새로운 스터디 개설하기</h2>
+            <h2 className="gs-create-title" style={{ fontSize: '26px', fontWeight: '700', color: '#111827', margin: 0, letterSpacing: '-0.5px' }}>새로운 스터디 개설하기</h2>
           </div>
 
           <h3 className="gs-section-title">기본 정보</h3>
@@ -839,7 +839,7 @@ export default function GroupStudy() {
 
             {/* 검색 바 */}
             <div className="glass-panel gs-searchbar" style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 20px', borderRadius: '12px' }}>
-              <Search size={20} color="#9CA3AF" style={{ flexShrink: 0 }} />
+              <Search size={20} color="#9CA3AF" className="sb-search-icon" style={{ flexShrink: 0 }} />
               <input
                 type="text"
                 className="gs-search-input"
@@ -882,11 +882,11 @@ export default function GroupStudy() {
 
           {/* 모집글 상세 모달 */}
           {selectedPost && (
-            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }} onClick={() => { setSelectedPost(null); setApplyMessage(''); setJoinAnswer(''); setJoinNickname(''); }}>
-              <div style={{ backgroundColor: 'white', borderRadius: '12px', width: '100%', maxWidth: '420px', maxHeight: 'calc(100vh - 40px)', overflow: 'hidden', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', animation: 'slideUp 0.3s ease-out' }} onClick={(e) => e.stopPropagation()}>
+            <div className="sb-modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }} onClick={() => { setSelectedPost(null); setApplyMessage(''); setJoinAnswer(''); setJoinNickname(''); }}>
+              <div className="sb-modal" data-testid="gs-detail-modal" style={{ backgroundColor: 'white', borderRadius: '12px', width: '100%', maxWidth: '420px', maxHeight: 'calc(100vh - 40px)', overflow: 'hidden', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', animation: 'slideUp 0.3s ease-out' }} onClick={(e) => e.stopPropagation()}>
 
                 {/* 상단 이미지 및 제목 영역 */}
-                <div style={{ position: 'relative', height: '160px', backgroundColor: '#1F2937', color: 'white', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '20px' }}>
+                <div className="sb-modal-head" style={{ position: 'relative', height: '160px', backgroundColor: '#1F2937', color: 'white', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '20px' }}>
                   <GroupProfileImage imageUrl={selectedPost.hasCoverImage ? selectedPost.thumbnailUrl : null} studyType={selectedPost.studyType} iconSize={72} fill alt="Background" style={{ opacity: 0.3 }} />
                   <button className="sb-icon-btn" aria-label="상세 닫기" onClick={() => { setSelectedPost(null); setApplyMessage(''); setJoinAnswer(''); setJoinNickname(''); }} style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', color: 'white', cursor: 'pointer', padding: '4px', zIndex: 2 }}>
                     <X size={20} />
@@ -920,7 +920,7 @@ export default function GroupStudy() {
                 </div>
 
                 {/* 하단 상세 내용 영역 */}
-                <div style={{ padding: '24px', flex: 1, overflowY: 'auto' }}>
+                <div className="sb-modal-body" style={{ padding: '24px', flex: 1, overflowY: 'auto' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '24px', paddingBottom: '24px', borderBottom: '1px solid #E5E7EB' }}>
                     <div>
                       <div style={{ fontSize: '13px', color: '#6B7280', marginBottom: '6px' }}>스터디 정원</div>
@@ -1021,7 +1021,7 @@ export default function GroupStudy() {
                   const isFull = !selectedPost.isAlreadyJoined
                     && Number(selectedPost.currentMembers) >= Number(selectedPost.maxMembers);
                   return (
-                <div style={{ backgroundColor: isFull ? '#9CA3AF' : '#3B82F6', padding: '0', display: 'flex' }}>
+                <div className="sb-modal-foot" style={{ backgroundColor: isFull ? '#9CA3AF' : '#3B82F6', padding: '0', display: 'flex' }}>
                   {Number(selectedPost.leaderId) === Number(userId) && (
                     <button
                       type="button"
@@ -1370,8 +1370,8 @@ export default function GroupStudy() {
 
               {/* Leader Console Panel - Changed to Modal */}
               {showLeaderConsole && Number(preJoinStudy.leaderId) === Number(userId) && (
-                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000, padding: '20px' }} onClick={() => setShowLeaderConsole(false)}>
-                  <div className="glass-panel animate-fade-in" style={{ 
+                <div className="sb-modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000, padding: '20px' }} onClick={() => setShowLeaderConsole(false)}>
+                  <div className="glass-panel animate-fade-in sb-modal" data-testid="leader-console-modal" style={{ 
                     width: '100%',
                     maxWidth: '420px', 
                     display: 'flex', 
@@ -1387,8 +1387,8 @@ export default function GroupStudy() {
                     maxHeight: '90vh',
                     overflowY: 'auto'
                   }} onClick={(e) => e.stopPropagation()}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#111827', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div className="sb-modal-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <h3 className="sb-modal-title" style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#111827', display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <Settings size={20} color="#10B981" /> 방장 관리 콘솔
                       </h3>
                       <button className="sb-icon-btn" aria-label="방장 관리 콘솔 닫기" onClick={() => setShowLeaderConsole(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>

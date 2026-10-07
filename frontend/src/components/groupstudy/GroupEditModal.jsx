@@ -72,18 +72,19 @@ export default function GroupEditModal({ study, onClose, onSaved, notify }) {
 
   return (
     <div
+      className="sb-modal-overlay"
       style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10001, padding: '16px', boxSizing: 'border-box' }}
       onClick={() => { if (!saving) onClose(); }}
     >
-      <div className="gs-modal" role="dialog" aria-modal="true" aria-label="스터디 설정 수정" onClick={(e) => e.stopPropagation()}>
-        <div className="gs-modal-header">
-          <h2>스터디 설정 수정</h2>
-          <button type="button" onClick={onClose} disabled={saving} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px', display: 'flex' }} aria-label="닫기">
+      <div className="gs-modal sb-modal" role="dialog" aria-modal="true" aria-label="스터디 설정 수정" data-testid="group-edit-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="gs-modal-header sb-modal-head">
+          <h2 className="sb-modal-title">스터디 설정 수정</h2>
+          <button type="button" className="sb-icon-btn" onClick={onClose} disabled={saving} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px', display: 'flex' }} aria-label="닫기">
             <X size={22} color="#6B7280" />
           </button>
         </div>
 
-        <div className="gs-modal-body">
+        <div className="gs-modal-body sb-modal-body">
           <h3 className="gs-section-title">기본 정보</h3>
           <SettingRow label="그룹 이름" required>
             <input
@@ -125,7 +126,7 @@ export default function GroupEditModal({ study, onClose, onSaved, notify }) {
           {error && <div className="error-text" role="alert" style={{ fontSize: '13px' }}>{error}</div>}
         </div>
 
-        <div className="gs-modal-footer">
+        <div className="gs-modal-footer sb-modal-foot">
           <button type="button" className="btn-outline" onClick={onClose} disabled={saving}>취소</button>
           <button type="button" className="btn-primary" onClick={handleSave} disabled={saving}>{saving ? '저장 중…' : '저장'}</button>
         </div>
