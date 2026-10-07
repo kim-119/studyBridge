@@ -2135,7 +2135,11 @@ a {
   /* 아이콘이 줄 높이를 키우지 않게 */
   .gs-card-meta svg.lucide, .gs-stat-label svg.lucide, .gs-badge svg.lucide { display: block; }
 
+  /* 접근성: 아이콘은 작아져도 icon-only 버튼 터치 영역은 유지/확대(자료보관함 더보기 28→40, 학습메이트 패널 토글 32→44) */
+  .doc-more { width: 40px; height: 40px; }
+  .pane-toggle { min-width: 44px; min-height: 44px; }
+
   /* 프로필 이모지는 별도 스케일(축소 대상 아님): picker 28px(위 .sb-emoji-picker 모바일 블록), preview 56px(112px 원), 참가자 아바타 38px */
-  [data-testid="prejoin-avatar-preview"] .sb-profile-preview { width: 112px !important; height: 112px !important; font-size: var(--sb-emoji-profile-preview) !important; }
+  [data-testid="prejoin-avatar-preview"] .sb-profile-preview { width: 112px !important; height: 112px !important; box-sizing: border-box; font-size: var(--sb-emoji-profile-preview) !important; }
   [data-testid="prejoin-avatar-preview"] .sb-profile-preview svg.lucide { width: 56px; height: 56px; }
 }
