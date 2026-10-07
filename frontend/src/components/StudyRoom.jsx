@@ -360,7 +360,16 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
   );
 }
 
-export default function StudyRoom({ study, onClose, selectedCamera, selectedMic, sessionAvatar, initialMicOn, initialVideoOn, handoffVideoTrack }) {
+export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, selectedMic, sessionAvatar, initialMicOn, initialVideoOn, handoffVideoTrack }) {
+  const onClose = async () => {
+    try {
+      await timerService.endTimer(null, null, null, 'ROOM_LEAVE');
+      closeRoom?.();
+    } catch {
+      showAlert('종료 실패', '학습 시간을 저장하지 못했습니다. 연결을 확인하고 다시 나가 주세요.');
+    }
+  };
+
   const { userId, user } = useAuth();
   // 서버 studyType(GroupStudyType) 기준: GENERAL 은 카메라 기능(송출/타일/토글/권한)이 전혀 없다. 음성(마이크)만 사용한다.
   const isCam = isCamStudy(study?.studyType);
@@ -2275,11 +2284,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
   // 실시간 학습 타이머(표시 전용): 서버 세션 응답을 앵커로 삼아 1초마다 경과를 그린다(저장/통계는 서버 heartbeat 원장).
   //  · 입장 sync 응답(기존 세션이면 resumed=true) → 새로고침/재입장 시 실제 경과로 복원. heartbeat 응답마다 앵커 보정.
   const [timerAnchor, setTimerAnchor] = useState(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [, refreshTimerDisplay] = useState(0);
+  const elapsedSeconds = elapsedSecondsFrom(timerAnchor);
   useEffect(() => {
-    if (!timerAnchor) { setElapsedSeconds(0); return undefined; }
-    setElapsedSeconds(elapsedSecondsFrom(timerAnchor));
-    const t = setInterval(() => setElapsedSeconds(elapsedSecondsFrom(timerAnchor)), 1000);
+    if (!timerAnchor) return undefined;
+    const t = setInterval(() => refreshTimerDisplay(tick => tick + 1), 1000);
     return () => clearInterval(t);
   }, [timerAnchor]);
 
@@ -2294,21 +2303,23 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
   }, [study?.id, userId]);
 
   // 그룹 공부 세션 내구성(2계층): 30초 heartbeat(서버가 진행분을 출석 원장에 크레딧) + 이탈 시 graceful stop.
-  //  · pagehide(탭 닫기/새로고침/앱 background) 와 언마운트(방 나가기/라우트 이동)에서 keepalive 종료 요청.
+  //  · 명시적 퇴장에서 종료. 새로고침은 세션 유지, 비정상 종료는 기존 reaper가 처리.
   //  · 어느 경로가 유실돼도 서버 reaper 가 마지막 heartbeat 시각으로 종료한다(오차 ≤ 30초).
   useEffect(() => {
     if (!study?.id || !userId) return undefined;
     const interval = setInterval(() => {
       timerService.heartbeat()
-        .then((session) => { if (session) { const a = anchorFromSession(session); if (a) setTimerAnchor(a); } })
+        .then(async (session) => {
+          const active = session || await timerService.syncTimer(study.id);
+          if (active?.groupStudyId != null && Number(active.groupStudyId) !== Number(study.id)) { setTimerAnchor(null); return; }
+          setTimerAnchor(anchorFromSession(active));
+        })
         .catch(() => {});
     }, STUDY_HEARTBEAT_INTERVAL_MS);
-    const onPageHide = () => timerService.endTimerKeepalive('PAGE_HIDE');
-    window.addEventListener('pagehide', onPageHide);
+    // Refresh/close leaves the active session resumable; existing server reaper handles missing heartbeats.
     return () => {
       clearInterval(interval);
-      window.removeEventListener('pagehide', onPageHide);
-      timerService.endTimerKeepalive('ROOM_LEAVE');
+
     };
   }, [study?.id, userId]);
 
@@ -2480,14 +2491,14 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <Maximize size={18} color="#9CA3AF" cursor="pointer" onClick={() => setIsCamFullScreen(true)} />
-              <div
+              <button aria-label="나가기"
                 onClick={onClose}
-                style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: 'rgba(239, 68, 68, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'all 0.2s' }}
+                style={{ border: 'none', width: '44px', height: '44px', borderRadius: '50%', backgroundColor: 'rgba(239, 68, 68, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'all 0.2s' }}
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.2)'}
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)'}
               >
                 <X size={16} color="#EF4444" />
-              </div>
+              </button>
             </div>
           </div>
         </div>

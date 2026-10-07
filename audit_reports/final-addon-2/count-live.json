@@ -1,0 +1,44 @@
+[
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "status": "PASS",
+    "noteId": 26,
+    "selectedCount": 3,
+    "requestCount": 3,
+    "backendReceivedCount": 3,
+    "frontendRenderedCount": 3,
+    "returnedCount": 3,
+    "aiRequestedCount": 3,
+    "aiReturnedCount": 3,
+    "aiEvidence": "FastAPI count log + Spring first-return log; no fallback"
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "status": "PASS",
+    "noteId": 26,
+    "selectedCount": 3,
+    "requestCount": 3,
+    "backendReceivedCount": 3,
+    "frontendRenderedCount": 3,
+    "returnedCount": 3,
+    "aiRequestedCount": 3,
+    "aiReturnedCount": 3,
+    "aiEvidence": "FastAPI count log + Spring first-return log; no fallback"
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "status": "PASS",
+    "noteId": 26,
+    "selectedCount": 3,
+    "requestCount": 3,
+    "backendReceivedCount": 3,
+    "frontendRenderedCount": 3,
+    "returnedCount": 3,
+    "aiRequestedCount": 3,
+    "aiReturnedCount": 3,
+    "aiEvidence": "FastAPI count log + Spring first-return log; no fallback"
+  }
+]

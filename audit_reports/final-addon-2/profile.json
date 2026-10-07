@@ -1,0 +1,154 @@
+[
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "name": "profile name HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "name": "profile major HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "name": "profile both HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "name": "my reports/deleted fallback/no overflow PASS"
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "name": "profile name HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "name": "profile major HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "name": "profile both HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "name": "my reports/deleted fallback/no overflow PASS"
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "name": "profile name HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "name": "profile major HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "name": "profile both HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "name": "my reports/deleted fallback/no overflow PASS"
+  },
+  {
+    "engine": "webkit",
+    "width": 430,
+    "name": "profile name HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "webkit",
+    "width": 430,
+    "name": "profile major HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "webkit",
+    "width": 430,
+    "name": "profile both HTTP/UI PASS",
+    "status": 200,
+    "authorization": "PRESENT",
+    "fields": [
+      "displayName",
+      "major"
+    ]
+  },
+  {
+    "engine": "webkit",
+    "width": 430,
+    "name": "my reports/deleted fallback/no overflow PASS"
+  }
+]

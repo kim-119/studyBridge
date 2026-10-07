@@ -11,7 +11,6 @@ import Dashboard from './pages/Dashboard';
 import MyPage from './pages/MyPage';
 import AdminPage from './pages/AdminPage';
 import StudyMate from './pages/StudyMate';
-import LearningMate from './pages/LearningMate';
 import GroupStudy from './pages/GroupStudy';
 import GroupInvitePage from './pages/GroupInvitePage';
 import Archive from './pages/Archive';
@@ -116,7 +115,8 @@ function App() {
 
           <Route path="/admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
           <Route path="/studymate" element={<PrivateRoute><StudyMate /></PrivateRoute>} />
-          <Route path="/learning-mate" element={<PrivateRoute><LearningMate /></PrivateRoute>} />
+          {/* 레거시 /learning-mate(질문형 학습메이트 중복 화면)는 canonical 학습메이트(/studymate)로 영구 이동 */}
+          <Route path="/learning-mate" element={<Navigate to="/studymate" replace />} />
           <Route path="/groupstudy" element={<PrivateRoute><GroupStudy /></PrivateRoute>} />
           {/* 비공개 그룹 초대 링크(데스크톱/모바일/앱 동일 경로). 비로그인은 PrivateRoute 가 state.from 으로 로그인 후 복귀 */}
           <Route path="/groups/invite/:token" element={<PrivateRoute><GroupInvitePage /></PrivateRoute>} />

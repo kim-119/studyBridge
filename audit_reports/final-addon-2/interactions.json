@@ -1,0 +1,80 @@
+[
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "name": "memo typing/composition/save/restore PASS"
+  },
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "name": "count/retry 3 attempts/independent PASS (AI response fixture)",
+    "selectedCount": 3,
+    "requestCount": 3,
+    "frontendRenderedCount": 3
+  },
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "name": "retry memo preserved PASS"
+  },
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "name": "journal PASS",
+    "overflow": 0,
+    "left": 640,
+    "columns": "none"
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "name": "memo typing/composition/save/restore PASS"
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "name": "count/retry 3 attempts/independent PASS (AI response fixture)",
+    "selectedCount": 3,
+    "requestCount": 3,
+    "frontendRenderedCount": 3
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "name": "retry memo preserved PASS"
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "name": "journal PASS",
+    "overflow": 0,
+    "left": 393,
+    "columns": "393px"
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "name": "memo typing/composition/save/restore PASS"
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "name": "count/retry 3 attempts/independent PASS (AI response fixture)",
+    "selectedCount": 3,
+    "requestCount": 3,
+    "frontendRenderedCount": 3
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "name": "retry memo preserved PASS"
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "name": "journal PASS",
+    "overflow": 0,
+    "left": 393,
+    "columns": "393px"
+  }
+]

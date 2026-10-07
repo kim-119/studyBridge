@@ -1,0 +1,382 @@
+[
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "type": "GENERAL",
+    "name": "mounted/visible/ticking PASS",
+    "session": 308
+  },
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "type": "GENERAL",
+    "name": "refresh/re-entry restores same session PASS"
+  },
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "type": "GENERAL",
+    "name": "same-user second sync same session PASS"
+  },
+  {
+    "engine": "chromium",
+    "width": 1280,
+    "type": "GENERAL",
+    "name": "end/stats HTTP PASS",
+    "before": {
+      "groupId": 205,
+      "range": "ALL",
+      "periodStart": null,
+      "periodEnd": null,
+      "generatedAt": "2026-10-07T21:28:02.978025958",
+      "memberCount": 1,
+      "totalStudySeconds": 5,
+      "my": {
+        "rank": 1,
+        "userId": 55,
+        "memberId": 317,
+        "nickname": "SRE오답",
+        "profileImageUrl": "",
+        "role": "LEADER",
+        "isMe": true,
+        "studySeconds": 5,
+        "sessionCount": 1,
+        "activeNow": true
+      },
+      "members": [
+        {
+          "rank": 1,
+          "userId": 55,
+          "memberId": 317,
+          "nickname": "SRE오답",
+          "profileImageUrl": "",
+          "role": "LEADER",
+          "isMe": true,
+          "studySeconds": 5,
+          "sessionCount": 1,
+          "activeNow": true
+        }
+      ]
+    },
+    "after": {
+      "groupId": 205,
+      "range": "ALL",
+      "periodStart": null,
+      "periodEnd": null,
+      "generatedAt": "2026-10-07T21:28:03.343126855",
+      "memberCount": 1,
+      "totalStudySeconds": 6,
+      "my": {
+        "rank": 1,
+        "userId": 55,
+        "memberId": 317,
+        "nickname": "SRE오답",
+        "profileImageUrl": "",
+        "role": "LEADER",
+        "isMe": true,
+        "studySeconds": 6,
+        "sessionCount": 1,
+        "activeNow": false
+      },
+      "members": [
+        {
+          "rank": 1,
+          "userId": 55,
+          "memberId": 317,
+          "nickname": "SRE오답",
+          "profileImageUrl": "",
+          "role": "LEADER",
+          "isMe": true,
+          "studySeconds": 6,
+          "sessionCount": 1,
+          "activeNow": false
+        }
+      ]
+    }
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "type": "CAM",
+    "name": "mounted/visible/ticking PASS",
+    "session": 309
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "type": "CAM",
+    "name": "refresh/re-entry restores same session PASS"
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "type": "CAM",
+    "name": "same-user second sync same session PASS"
+  },
+  {
+    "engine": "chromium",
+    "width": 393,
+    "type": "CAM",
+    "name": "end/stats HTTP PASS",
+    "before": {
+      "groupId": 206,
+      "range": "ALL",
+      "periodStart": null,
+      "periodEnd": null,
+      "generatedAt": "2026-10-07T21:28:13.363259748",
+      "memberCount": 1,
+      "totalStudySeconds": 6,
+      "my": {
+        "rank": 1,
+        "userId": 55,
+        "memberId": 318,
+        "nickname": "SRE오답",
+        "profileImageUrl": "",
+        "role": "LEADER",
+        "isMe": true,
+        "studySeconds": 6,
+        "sessionCount": 1,
+        "activeNow": true
+      },
+      "members": [
+        {
+          "rank": 1,
+          "userId": 55,
+          "memberId": 318,
+          "nickname": "SRE오답",
+          "profileImageUrl": "",
+          "role": "LEADER",
+          "isMe": true,
+          "studySeconds": 6,
+          "sessionCount": 1,
+          "activeNow": true
+        }
+      ]
+    },
+    "after": {
+      "groupId": 206,
+      "range": "ALL",
+      "periodStart": null,
+      "periodEnd": null,
+      "generatedAt": "2026-10-07T21:28:13.547354324",
+      "memberCount": 1,
+      "totalStudySeconds": 6,
+      "my": {
+        "rank": 1,
+        "userId": 55,
+        "memberId": 318,
+        "nickname": "SRE오답",
+        "profileImageUrl": "",
+        "role": "LEADER",
+        "isMe": true,
+        "studySeconds": 6,
+        "sessionCount": 1,
+        "activeNow": false
+      },
+      "members": [
+        {
+          "rank": 1,
+          "userId": 55,
+          "memberId": 318,
+          "nickname": "SRE오답",
+          "profileImageUrl": "",
+          "role": "LEADER",
+          "isMe": true,
+          "studySeconds": 6,
+          "sessionCount": 1,
+          "activeNow": false
+        }
+      ]
+    }
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "type": "GENERAL",
+    "name": "mounted/visible/ticking PASS",
+    "session": 310
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "type": "GENERAL",
+    "name": "refresh/re-entry restores same session PASS"
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "type": "GENERAL",
+    "name": "same-user second sync same session PASS"
+  },
+  {
+    "engine": "webkit",
+    "width": 393,
+    "type": "GENERAL",
+    "name": "end/stats HTTP PASS",
+    "before": {
+      "groupId": 207,
+      "range": "ALL",
+      "periodStart": null,
+      "periodEnd": null,
+      "generatedAt": "2026-10-07T21:28:28.988258474",
+      "memberCount": 1,
+      "totalStudySeconds": 9,
+      "my": {
+        "rank": 1,
+        "userId": 55,
+        "memberId": 319,
+        "nickname": "SRE오답",
+        "profileImageUrl": "",
+        "role": "LEADER",
+        "isMe": true,
+        "studySeconds": 9,
+        "sessionCount": 1,
+        "activeNow": true
+      },
+      "members": [
+        {
+          "rank": 1,
+          "userId": 55,
+          "memberId": 319,
+          "nickname": "SRE오답",
+          "profileImageUrl": "",
+          "role": "LEADER",
+          "isMe": true,
+          "studySeconds": 9,
+          "sessionCount": 1,
+          "activeNow": true
+        }
+      ]
+    },
+    "after": {
+      "groupId": 207,
+      "range": "ALL",
+      "periodStart": null,
+      "periodEnd": null,
+      "generatedAt": "2026-10-07T21:28:29.245318907",
+      "memberCount": 1,
+      "totalStudySeconds": 10,
+      "my": {
+        "rank": 1,
+        "userId": 55,
+        "memberId": 319,
+        "nickname": "SRE오답",
+        "profileImageUrl": "",
+        "role": "LEADER",
+        "isMe": true,
+        "studySeconds": 10,
+        "sessionCount": 1,
+        "activeNow": false
+      },
+      "members": [
+        {
+          "rank": 1,
+          "userId": 55,
+          "memberId": 319,
+          "nickname": "SRE오답",
+          "profileImageUrl": "",
+          "role": "LEADER",
+          "isMe": true,
+          "studySeconds": 10,
+          "sessionCount": 1,
+          "activeNow": false
+        }
+      ]
+    }
+  },
+  {
+    "engine": "webkit",
+    "width": 430,
+    "type": "CAM",
+    "name": "mounted/visible/ticking PASS",
+    "session": 311
+  },
+  {
+    "engine": "webkit",
+    "width": 430,
+    "type": "CAM",
+    "name": "refresh/re-entry restores same session PASS"
+  },
+  {
+    "engine": "webkit",
+    "width": 430,
+    "type": "CAM",
+    "name": "same-user second sync same session PASS"
+  },
+  {
+    "engine": "webkit",
+    "width": 430,
+    "type": "CAM",
+    "name": "end/stats HTTP PASS",
+    "before": {
+      "groupId": 208,
+      "range": "ALL",
+      "periodStart": null,
+      "periodEnd": null,
+      "generatedAt": "2026-10-07T21:28:43.456016719",
+      "memberCount": 1,
+      "totalStudySeconds": 8,
+      "my": {
+        "rank": 1,
+        "userId": 55,
+        "memberId": 320,
+        "nickname": "SRE오답",
+        "profileImageUrl": "",
+        "role": "LEADER",
+        "isMe": true,
+        "studySeconds": 8,
+        "sessionCount": 1,
+        "activeNow": true
+      },
+      "members": [
+        {
+          "rank": 1,
+          "userId": 55,
+          "memberId": 320,
+          "nickname": "SRE오답",
+          "profileImageUrl": "",
+          "role": "LEADER",
+          "isMe": true,
+          "studySeconds": 8,
+          "sessionCount": 1,
+          "activeNow": true
+        }
+      ]
+    },
+    "after": {
+      "groupId": 208,
+      "range": "ALL",
+      "periodStart": null,
+      "periodEnd": null,
+      "generatedAt": "2026-10-07T21:28:43.760782427",
+      "memberCount": 1,
+      "totalStudySeconds": 8,
+      "my": {
+        "rank": 1,
+        "userId": 55,
+        "memberId": 320,
+        "nickname": "SRE오답",
+        "profileImageUrl": "",
+        "role": "LEADER",
+        "isMe": true,
+        "studySeconds": 8,
+        "sessionCount": 1,
+        "activeNow": false
+      },
+      "members": [
+        {
+          "rank": 1,
+          "userId": 55,
+          "memberId": 320,
+          "nickname": "SRE오답",
+          "profileImageUrl": "",
+          "role": "LEADER",
+          "isMe": true,
+          "studySeconds": 8,
+          "sessionCount": 1,
+          "activeNow": false
+        }
+      ]
+    }
+  }
+]

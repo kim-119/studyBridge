@@ -1,0 +1,15 @@
+{
+  "method": "PUT",
+  "endpoint": "/api/users/profile",
+  "authorization": "PRESENT",
+  "payloadFields": [
+    "displayName",
+    "major",
+    "photoUrl"
+  ],
+  "beforeStatus": 500,
+  "afterStatus": 200,
+  "photoPreserved": true,
+  "reproduction": "controlled >255-character URL on QA account",
+  "beforeResponse": "server error; raw database details intentionally omitted"
+}

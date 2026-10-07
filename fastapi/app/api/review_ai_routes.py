@@ -411,7 +411,9 @@ def _variant_sync(body: Dict[str, Any]) -> Dict[str, Any]:
             base_block = (
                 f"## 자료: {material_title}\n## 문서 요약\n{document_context}\n"
                 f"## 기존 문제\n{original}\n## 정답\n{correct_answer}\n## 사용자 오답\n{user_wrong}\n"
-                f"## 개념\n{concepts}\n## 난이도\n{difficulty} — {_DIFFICULTY_GUIDE[difficulty]}\n\n"
+                f"## 개념\n{concepts}\n## 난이도\n{difficulty} — {_DIFFICULTY_GUIDE[difficulty]}\n"
+                f"## 변형 관점\n{body.get('_variant_focus', '기본 개념 적용')}\n"
+                f"## 중복 금지 문제\n{body.get('_variant_exclude', [])}\n위 문제와 다른 상황과 질문으로 출제한다.\n\n"
             )
             schema = (
                 '{ "question": "변형 문제", "choices": ["1","2","3","4"], "correct_answer": "정답", '
@@ -497,7 +499,39 @@ async def variant_question(body: Dict[str, Any] = Body(default_factory=dict)) ->
     if not isinstance(body, dict):
         body = {}
     try:
-        return await asyncio.wait_for(asyncio.to_thread(_variant_sync, body), timeout=VARIANT_TIMEOUT)
+        count = max(1, min(5, int(body.get("count") or 1)))
+        focuses = ["정의와 핵심 원리", "구체적인 사례 적용", "오류 원인 분석", "유사 개념 비교", "조건 변경과 결과 예측"]
+        async def generate_batch():
+            questions = []
+            seen = set()
+            first_result = {}
+            # Reuse the single-question generator; retry only missing distinct questions.
+            for attempt in range(3):
+                missing = count - len(questions)
+                if not missing:
+                    break
+                results = await asyncio.gather(*[
+                    asyncio.to_thread(_variant_sync, {
+                        **body,
+                        "_variant_focus": focuses[(len(questions) + i + attempt) % len(focuses)],
+                        "_variant_exclude": list(seen),
+                    }) for i in range(missing)
+                ])
+                if not first_result:
+                    first_result = results[0]
+                for item in results:
+                    for question in item.get("questions", []):
+                        key = question.get("question", "").strip()
+                        if key and key not in seen and len(questions) < count:
+                            seen.add(key)
+                            questions.append(question)
+            return {**first_result, "questions": questions, "requestedCount": count, "returnedCount": len(questions)}
+
+        result = await asyncio.wait_for(generate_batch(), timeout=VARIANT_TIMEOUT)
+        questions = result["questions"]
+        logger.info("variant count requested=%s returned=%s", count, len(questions))
+        # Spring's existing bounded top-up can recover a short AI batch.
+        return result
     except asyncio.TimeoutError:
         try:
             result = _variant_sync({**body, "_no_llm": True})

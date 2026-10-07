@@ -538,6 +538,13 @@ a {
   text-decoration: line-through;
 }
 
+/* 주간 일정: 할 일 입력 행([입력][추가]). 데스크톱 flex(기존 인라인 스타일과 동일) / ≤768px 는 grid 로 재배치 */
+.ws-add-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
 /* FullCalendar Custom Styles */
 .dashboard-page .fc-theme-standard .fc-scrollgrid { border-color: #E5E7EB; border-radius: 12px; overflow: hidden; }
 .dashboard-page .fc-theme-standard td, .dashboard-page .fc-theme-standard th { border-color: #E5E7EB; }
@@ -1978,8 +1985,6 @@ a {
   button, .btn-primary, .btn-outline, .archive-tab, .dashboard-tab { word-break: keep-all; overflow-wrap: anywhere; }
   /* 긴 이메일/URL 이 컨테이너를 밀어내지 않게 */
   a, p, li, td, th { overflow-wrap: anywhere; }
-  /* 학습메이트(질문형) textarea: w-full + padding(content-box) 으로 20px 넘치던 것 → 모바일에서만 border-box */
-  .lm-question-input { box-sizing: border-box; }
 
   /* 자료보관함 상단 탭: inline-flex 고정 라벨 폭 → 풀폭 균등 + 한 줄 유지 */
   .archive-tabs { display: flex; width: 100%; box-sizing: border-box; }
@@ -2271,4 +2276,103 @@ a {
 
   /* ---- 탭/칩 라벨은 항상 한 줄(본문 텍스트는 일반 줄바꿈 유지) ---- */
   [role="tab"], .archive-tab, .dashboard-tab, .gs-filter-chip, .gs-badge, .gs-form-label { white-space: nowrap; word-break: keep-all; }
+}
+
+/* =========================================
+   모바일 웹 ADDON-UI: 주간 일정(날짜 입력/캘린더 7열) + 학습일지 상세 1열 (≤768px)
+   ※ 데스크톱(>768px)은 이 블록 밖이라 불변. viewport 기반 규칙만 사용(UA/기기명 분기 없음).
+   ========================================= */
+@media (max-width: 768px) {
+  /* [WS-1] 종료 날짜 input[type=date]: iOS Safari 의 날짜 컨트롤은 고유(intrinsic) 폭을 가져 width:100% 를 무시하고
+     카드 밖으로 넘친다(그리드 1fr 아이템의 min-width:auto 가 고유 폭만큼 열을 넓힘). → 1열(minmax(0,1fr)) + 모든
+     래퍼/입력 min-width:0 + appearance 제거로 폭을 카드 안에 고정한다. */
+  .dashboard-page .main-grid { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-page .calendar-container,
+  .dashboard-page .todo-section { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+  .dashboard-page .todo-section { display: flex; flex-direction: column; }
+  .dashboard-page .todo-section > * { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+  .ws-todo-stats > * { min-width: 0; }
+  .ws-date-card, .ws-enddate { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+  .ws-enddate .input-field,
+  .ws-enddate input[type="date"] {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    -webkit-appearance: none;
+    appearance: none;
+    text-align: left;
+  }
+  .ws-enddate input[type="date"]::-webkit-date-and-time-value { text-align: left; min-height: 1.4em; }
+  .ws-add-row { display: grid; grid-template-columns: minmax(0, 1fr) 80px; gap: 8px; width: 100%; max-width: 100%; min-width: 0; }
+  .ws-add-row > .input-field { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+  .ws-add-row > .btn-primary { width: 100% !important; min-width: 0; }
+  .ws-todo-list { min-width: 0; }
+  .dashboard-page .todo-item { min-width: 0; }
+  .dashboard-page .todo-item .todo-text { min-width: 0; overflow-wrap: anywhere; }
+
+  /* [WS-2] FullCalendar dayGrid: 항상 정확히 7열(고정 셀 폭 없음, 테이블 100% + fixed 레이아웃), 페이지 가로 넘침 없음.
+     일정은 점(dot)만 가로로 나열(제목 텍스트는 셀 43~53px 에서 판독 불가 → 아래 날짜 상세 패널이 담당). */
+  .dashboard-page .calendar-container { padding: 12px 8px; overflow: hidden; }
+  .dashboard-page .fc { width: 100%; max-width: 100%; min-width: 0; }
+  .dashboard-page .fc .fc-view-harness { min-width: 0; }
+  .dashboard-page .fc .fc-scrollgrid,
+  .dashboard-page .fc .fc-scrollgrid-sync-table,
+  .dashboard-page .fc .fc-col-header,
+  .dashboard-page .fc .fc-daygrid-body { width: 100% !important; min-width: 0 !important; max-width: 100%; table-layout: fixed; }
+  .dashboard-page .fc .fc-scrollgrid-sync-table col,
+  .dashboard-page .fc .fc-col-header col,
+  .dashboard-page .fc .fc-daygrid-body col { width: auto !important; }
+  .dashboard-page .fc .fc-col-header-cell,
+  .dashboard-page .fc .fc-daygrid-day { width: calc(100% / 7); min-width: 0; max-width: calc(100% / 7); }
+  .dashboard-page .fc .fc-col-header-cell-cushion { font-size: 12px; padding: 6px 0 !important; white-space: nowrap; }
+  .dashboard-page .fc .fc-daygrid-day-top { flex-direction: row; justify-content: flex-start; }
+  .dashboard-page .fc .fc-daygrid-day-number { font-size: 13px; padding: 3px 4px; line-height: 1.2; min-width: 0; }
+  .dashboard-page .fc .fc-daygrid-day-frame { min-height: 44px; }
+  .dashboard-page .fc .fc-daygrid-day-events {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 3px;
+    margin: 0; padding: 0 3px 4px; min-height: 12px; min-width: 0;
+  }
+  .dashboard-page .fc .fc-daygrid-event-harness { margin: 0 !important; width: auto; }
+  .dashboard-page .fc .fc-daygrid-event-harness-abs { position: static !important; width: auto; }
+  .dashboard-page .fc .fc-daygrid-event { margin: 0 !important; padding: 0 !important; border: none !important; background: transparent !important; box-shadow: none !important; }
+  .dashboard-page .fc .fc-daygrid-event:hover { transform: none; }
+  .dashboard-page .fc .fc-daygrid-dot-event { padding: 0 !important; }
+  .dashboard-page .fc .fc-daygrid-event .fc-daygrid-event-dot,
+  .dashboard-page .fc .fc-daygrid-event .fc-event-time,
+  .dashboard-page .fc .fc-daygrid-event .fc-event-title { display: none !important; }
+  .ws-event-dot { display: inline-block; width: 7px; height: 7px; border-radius: 999px; flex-shrink: 0; }
+  .ws-event-dot.completed { opacity: 0.45; }
+  .dashboard-page .fc .fc-daygrid-more-link { font-size: 10px; line-height: 1; padding: 0 2px; margin: 0; white-space: nowrap; }
+  .dashboard-page .fc .fc-daygrid-day-bottom { margin: 0; padding: 0; font-size: 10px; min-width: 0; }
+  .dashboard-page .fc .fc-popover { max-width: calc(100vw - 24px); }
+  .dashboard-page .fc .fc-toolbar-chunk { min-width: 0; }
+  .dashboard-page .fc .fc-button { padding: 6px 10px; font-size: 13px; }
+
+  /* [JR-1] 학습일지 상세(/archive/journal/:id): 좌(본문 50%)/우(AI 요약·피드백 50%) 분할이 ≤440px 에서 둘 다 좁아
+     압축되던 문제 → 1열 세로 흐름 [제목/상단 정보] → [학습일지 상세: 핵심 키워드·학습 내용·다음 학습 계획(학습 기록)]
+     → [AI 요약/피드백]. 액션(목록/삭제)은 제목 아래 행으로. PDF 상세용 좌패널 고정 높이(58vh)는 학습일지에 적용하지 않는다. */
+  .archive-detail-container[data-detail-type="journal"] .archive-split-view {
+    display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; align-content: start;
+    overflow-y: auto; overflow-x: hidden;
+  }
+  .archive-detail-container[data-detail-type="journal"] .archive-left-panel,
+  .archive-detail-container[data-detail-type="journal"] .archive-right-panel {
+    width: 100% !important; max-width: 100%; min-width: 0; height: auto !important;
+    flex: none !important; overflow: visible !important; padding: 16px; box-sizing: border-box;
+  }
+  .archive-detail-container[data-detail-type="journal"] .archive-left-panel { border-right: none; border-bottom: 1px solid var(--color-border); }
+  .archive-detail-container[data-detail-type="journal"] .archive-right-panel { border-left: none !important; }
+  .archive-detail-container[data-detail-type="journal"] .archive-left-panel > .glass-panel,
+  .archive-detail-container[data-detail-type="journal"] .archive-right-panel .glass-panel {
+    width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; padding: 18px 16px !important;
+  }
+  .archive-detail-container[data-detail-type="journal"] .archive-left-panel p,
+  .archive-detail-container[data-detail-type="journal"] .archive-right-panel p { overflow-wrap: anywhere; min-width: 0; }
+  .archive-journal-head { flex-wrap: wrap; padding: 12px 16px !important; gap: 10px !important; }
+  .archive-journal-head .archive-journal-title { order: 1; width: 100%; min-width: 0; }
+  .archive-journal-head .archive-journal-title h2 { font-size: 17px; line-height: 1.3; overflow-wrap: anywhere; }
+  .archive-journal-head .archive-journal-actions { order: 2; width: 100%; min-width: 0; gap: 8px !important; }
+  .archive-journal-head .archive-journal-actions .btn-outline { padding: 8px 12px !important; }
 }

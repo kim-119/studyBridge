@@ -595,6 +595,25 @@ function AnalyzingProgress() {
 const CHAT_INTRO = '업로드한 자료를 바탕으로 궁금한 점을 질문해보세요.';
 const chatStorageKey = (mid) => `studybridge:material-chat:${mid}`;
 
+const LearningToolCard = ({ icon, title, right, children }) => (
+      <div className="glass-panel animate-fade-in" style={{ padding: '22px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', gap: '8px' }}>
+          <h3 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>{icon} {title}</h3>
+          {right}
+        </div>
+        {children}
+      </div>
+    );
+
+const PlannerFeedbackCard = ({ icon, title, children }) => (
+      <div className="glass-panel animate-fade-in" style={{ padding: '22px' }}>
+        <h3 style={{ margin: '0 0 14px', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>
+          {icon} {title}
+        </h3>
+        {children}
+      </div>
+    );
+
 export default function ArchiveDetail() {
   const { type, id } = useParams();
   const location = useLocation();
@@ -1893,15 +1912,7 @@ export default function ArchiveDetail() {
       ? (it.pageNumber ? `PDF p.${it.pageNumber}` : 'PDF')
       : it.sourceType === 'PLANNER' ? 'Planner' : (it.sourceType || '출처');
 
-    const Card = ({ icon, title, right, children }) => (
-      <div className="glass-panel animate-fade-in" style={{ padding: '22px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', gap: '8px' }}>
-          <h3 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>{icon} {title}</h3>
-          {right}
-        </div>
-        {children}
-      </div>
-    );
+
     const ProgressBar = ({ percent }) => (
       <div style={{ height: '12px', borderRadius: '999px', background: '#E5E7EB', overflow: 'hidden' }}>
         <div style={{ width: `${percent}%`, height: '100%', background: 'linear-gradient(90deg,#22C55E,#15803D)', transition: 'width 0.4s' }} />
@@ -1927,7 +1938,7 @@ export default function ArchiveDetail() {
             else if (next?.nextPlannerId != null) navigate('/planner', { state: { openPlannerId: next.nextPlannerId } });
           }}
         />
-        <Card icon={<ArrowRight size={17} color="#15803D" />} title="AI 계획 분석 기반 추천"
+        <LearningToolCard icon={<ArrowRight size={17} color="#15803D" />} title="AI 계획 분석 기반 추천"
           right={<button className="btn-outline" style={{ width: 'auto', padding: '6px 12px', fontSize: '12px' }} onClick={handleNextRecommend} disabled={planLoading}>새로 추천</button>}>
           {!pa ? (
             <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. ‘AI 계획 분석’을 먼저 실행하세요.</p>
@@ -1938,7 +1949,7 @@ export default function ArchiveDetail() {
               {recommendations.map((r, i) => <li key={i} style={{ fontSize: '14px', color: 'var(--color-text-main)', ...codeSafe }} title={r}>{r}</li>)}
             </ul>
           )}
-        </Card>
+        </LearningToolCard>
         </>
       );
     }
@@ -1946,14 +1957,14 @@ export default function ArchiveDetail() {
     // ── 메모 (materialId 기준 영속, 기존 /api/materials/{id}/memo 재사용) ──
     if (plannerDetailView === 'memo') {
       return wrap(
-        <Card icon={<Edit3 size={17} color="#15803D" />} title="메모">
+        <LearningToolCard icon={<Edit3 size={17} color="#15803D" />} title="메모">
           <textarea value={plannerMemoText} onChange={(e) => setPlannerMemoText(e.target.value)}
             placeholder="이 자료/플래너에 대한 메모를 남기세요. (자료별로 저장되어 새로고침 후에도 유지됩니다)"
             style={{ width: '100%', minHeight: '200px', boxSizing: 'border-box', borderRadius: '12px', border: '1px solid var(--color-border)', padding: '12px', fontSize: '14px', lineHeight: 1.6, resize: 'vertical' }} />
           <button className="btn-primary" style={{ marginTop: '12px', width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handleSavePlannerMemo} disabled={isSavingPlannerMemo}>
             {isSavingPlannerMemo ? '저장 중…' : '메모 저장'}
           </button>
-        </Card>
+        </LearningToolCard>
       );
     }
 
@@ -1964,7 +1975,7 @@ export default function ArchiveDetail() {
         <>
           <PlannerPlanAnalysisPanel plannerId={material.plannerId} />
           {pa && (
-            <Card icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
+            <LearningToolCard icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
               {visibleItems.length === 0 ? (
                 <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>표시할 항목이 없습니다. (모두 완료/숨김 처리됨)</p>
               ) : (
@@ -1985,53 +1996,53 @@ export default function ArchiveDetail() {
                   ))}
                 </div>
               )}
-            </Card>
+            </LearningToolCard>
           )}
         </>
       );
     }
     if (planLoading && !pa) {
       return wrap(
-        <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석 중…">
+        <LearningToolCard icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석 중…">
           <p style={{ margin: '0 0 12px', fontSize: '14px', color: 'var(--color-text-muted)' }}>PDF/플래너 문장을 분석 중입니다.</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {[0, 1, 2].map((i) => (<div key={i} style={{ height: '14px', borderRadius: '6px', background: 'linear-gradient(90deg,#F3F4F6,#E5E7EB,#F3F4F6)', backgroundSize: '200% 100%', animation: 'pulse 1.4s ease-in-out infinite' }} />))}
           </div>
-        </Card>
+        </LearningToolCard>
       );
     }
     if (planError) {
       return wrap(
-        <Card icon={<Sparkles size={17} color="#EF4444" />} title="AI 계획 분석">
+        <LearningToolCard icon={<Sparkles size={17} color="#EF4444" />} title="AI 계획 분석">
           <div style={{ borderRadius: '12px', border: '1px solid #FECACA', background: '#FEF2F2', padding: '14px', marginBottom: '14px' }}>
             <div style={{ fontWeight: 700, color: '#B91C1C', fontSize: '14px' }}>{planError.message}</div>
             <div style={{ fontSize: '12px', color: '#9CA3AF', marginTop: '4px' }}>{planError.errorCode}</div>
           </div>
           <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze}>다시 시도</button>
-        </Card>
+        </LearningToolCard>
       );
     }
     if (!pa) {
       return wrap(
-        <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석">
+        <LearningToolCard icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석">
           <p style={{ margin: '0 0 14px', fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. AI 계획 분석을 눌러 PDF/플래너 문장을 체크리스트로 만들어 보세요.</p>
           <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze} disabled={planLoading}>
             <Sparkles size={16} /> AI 계획 분석
           </button>
-        </Card>
+        </LearningToolCard>
       );
     }
     return wrap(
       <>
-        <Card icon={<AlignLeft size={17} color="var(--color-primary)" />} title="요약 / 핵심 학습 흐름" right={reanalyzeBtn}>
+        <LearningToolCard icon={<AlignLeft size={17} color="var(--color-primary)" />} title="요약 / 핵심 학습 흐름" right={reanalyzeBtn}>
           <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-main)', ...codeSafe }}>{pa.summary}</p>
           <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '13px' }}>
             <span style={{ color: 'var(--color-text-muted)' }}>진행률</span><b style={{ color: '#15803D' }}>{progress.percent}% ({progress.completedCount}/{progress.totalCount})</b>
           </div>
           <ProgressBar percent={progress.percent} />
-        </Card>
+        </LearningToolCard>
         {plannerData && (
-          <Card icon={<BarChart3 size={17} color="#0F766E" />} title="일정 분석 / 균형 진단">
+          <LearningToolCard icon={<BarChart3 size={17} color="#0F766E" />} title="일정 분석 / 균형 진단">
             {Array.isArray(plannerData.scheduleAnalysis) && plannerData.scheduleAnalysis.length > 0 && (
               <div style={{ marginBottom: '14px' }}>
                 <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: '6px' }}>일정 분석</div>
@@ -2062,9 +2073,9 @@ export default function ArchiveDetail() {
                 </ul>
               </div>
             )}
-          </Card>
+          </LearningToolCard>
         )}
-        <Card icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
+        <LearningToolCard icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
           {visibleItems.length === 0 ? (
             <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>표시할 항목이 없습니다. (모두 완료/숨김 처리됨)</p>
           ) : (
@@ -2085,7 +2096,7 @@ export default function ArchiveDetail() {
               ))}
             </div>
           )}
-        </Card>
+        </LearningToolCard>
       </>
     );
   };
@@ -2106,14 +2117,7 @@ export default function ArchiveDetail() {
     );
     const hasAnalysis = !!(overview || keywords.length || sections.length || goals.length || nextActions.length);
 
-    const Card = ({ icon, title, children }) => (
-      <div className="glass-panel animate-fade-in" style={{ padding: '22px' }}>
-        <h3 style={{ margin: '0 0 14px', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>
-          {icon} {title}
-        </h3>
-        {children}
-      </div>
-    );
+
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px' }}>
@@ -2136,12 +2140,12 @@ export default function ArchiveDetail() {
           // ── 체크리스트 보기 ──
           if (plannerDetailView === 'checklist') {
             if (allDays.length === 0) return (
-              <Card icon={<ListChecks size={17} color="var(--color-primary)" />} title="체크리스트">
+              <PlannerFeedbackCard icon={<ListChecks size={17} color="var(--color-primary)" />} title="체크리스트">
                 <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 체크리스트로 만들 일정/로드맵이 없습니다. ‘일정/로드맵 보기’에서 먼저 로드맵을 생성하세요.</p>
-              </Card>
+              </PlannerFeedbackCard>
             );
             return (
-              <Card icon={<ListChecks size={17} color="#15803D" />} title={`체크리스트 (${doneDays}/${allDays.length} 완료)`}>
+              <PlannerFeedbackCard icon={<ListChecks size={17} color="#15803D" />} title={`체크리스트 (${doneDays}/${allDays.length} 완료)`}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '60vh', overflowY: 'auto' }}>
                   {allDays.map((d, i) => (
                     <button key={i} onClick={() => handleToggleDay(d.week, d.dayIndex)}
@@ -2153,14 +2157,14 @@ export default function ArchiveDetail() {
                     </button>
                   ))}
                 </div>
-              </Card>
+              </PlannerFeedbackCard>
             );
           }
 
           // ── 진행률 보기 ──
           if (plannerDetailView === 'progress') {
             return (
-              <Card icon={<BarChart3 size={17} color="#15803D" />} title="진행률">
+              <PlannerFeedbackCard icon={<BarChart3 size={17} color="#15803D" />} title="진행률">
                 {allDays.length === 0 ? (
                   <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>진행률을 계산할 일정/로드맵이 없습니다.</p>
                 ) : (
@@ -2185,30 +2189,30 @@ export default function ArchiveDetail() {
                     </div>
                   </>
                 )}
-              </Card>
+              </PlannerFeedbackCard>
             );
           }
 
           // ── 다음 학습 추천 보기 ──
           if (plannerDetailView === 'next') {
             return nextActions.length > 0 ? (
-              <Card icon={<ArrowRight size={17} color="#15803D" />} title="다음 학습 추천">
+              <PlannerFeedbackCard icon={<ArrowRight size={17} color="#15803D" />} title="다음 학습 추천">
                 <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {nextActions.map((a, i) => <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{a}</li>)}
                 </ul>
-              </Card>
+              </PlannerFeedbackCard>
             ) : (
-              <Card icon={<ArrowRight size={17} color="var(--color-primary)" />} title="다음 학습 추천">
+              <PlannerFeedbackCard icon={<ArrowRight size={17} color="var(--color-primary)" />} title="다음 학습 추천">
                 <p style={{ margin: '0 0 14px', fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 추천이 없습니다. ‘AI 계획 분석’을 눌러 생성하세요.</p>
                 <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze}>AI 계획 분석</button>
-              </Card>
+              </PlannerFeedbackCard>
             );
           }
 
           // ── 일정/로드맵 보기 ──
           if (plannerDetailView === 'roadmap') {
             return (roadmapSteps && roadmapSteps.length > 0) ? (
-              <Card icon={<Map size={17} color="var(--color-primary)" />} title="일정 / 로드맵">
+              <PlannerFeedbackCard icon={<Map size={17} color="var(--color-primary)" />} title="일정 / 로드맵">
                 <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '60vh', overflowY: 'auto' }}>
                   {roadmapSteps.slice(0, 84).map((s, i) => (
                     <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>
@@ -2216,55 +2220,55 @@ export default function ArchiveDetail() {
                     </li>
                   ))}
                 </ul>
-              </Card>
+              </PlannerFeedbackCard>
             ) : (
-              <Card icon={<Map size={17} color="var(--color-primary)" />} title="일정 / 로드맵">
+              <PlannerFeedbackCard icon={<Map size={17} color="var(--color-primary)" />} title="일정 / 로드맵">
                 <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 등록된 일정/로드맵이 없습니다. 좌측 PDF 원문에서 계획을 확인하세요.</p>
-              </Card>
+              </PlannerFeedbackCard>
             );
           }
 
           // ── 학습계획 보기(기본 'plan') — AI 분석 결과 ──
           if (summaryLoading && !hasAnalysis) return (
-            <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석 중…">
+            <PlannerFeedbackCard icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석 중…">
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {[0, 1, 2].map((i) => (
                   <div key={i} style={{ height: '14px', borderRadius: '6px', background: 'linear-gradient(90deg,#F3F4F6,#E5E7EB,#F3F4F6)', backgroundSize: '200% 100%', animation: 'pulse 1.4s ease-in-out infinite' }} />
                 ))}
               </div>
-            </Card>
+            </PlannerFeedbackCard>
           );
           if (!hasAnalysis) return (
-            <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석">
+            <PlannerFeedbackCard icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석">
               <p style={{ margin: '0 0 14px', fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. AI 계획 분석을 눌러 생성하세요.</p>
               <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze}>AI 계획 분석</button>
-            </Card>
+            </PlannerFeedbackCard>
           );
           return (
             <>
               {overview && (
-                <Card icon={<AlignLeft size={17} color="var(--color-primary)" />} title="문서 개요 / 학습계획">
+                <PlannerFeedbackCard icon={<AlignLeft size={17} color="var(--color-primary)" />} title="문서 개요 / 학습계획">
                   <p style={{ margin: 0, fontSize: '14.5px', lineHeight: 1.7, color: 'var(--color-text-main)', whiteSpace: 'pre-wrap' }}>{overview}</p>
-                </Card>
+                </PlannerFeedbackCard>
               )}
               {keywords.length > 0 && (
-                <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="핵심 키워드">
+                <PlannerFeedbackCard icon={<Sparkles size={17} color="var(--color-primary)" />} title="핵심 키워드">
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                     {keywords.map((kw) => (
                       <span key={kw} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)' }}>#{String(kw).trim()}</span>
                     ))}
                   </div>
-                </Card>
+                </PlannerFeedbackCard>
               )}
               {goals.length > 0 && (
-                <Card icon={<CheckCircle2 size={17} color="#15803D" />} title="학습 목표">
+                <PlannerFeedbackCard icon={<CheckCircle2 size={17} color="#15803D" />} title="학습 목표">
                   <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {goals.map((g, i) => <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{g}</li>)}
                   </ul>
-                </Card>
+                </PlannerFeedbackCard>
               )}
               {sections.length > 0 && (
-                <Card icon={<ListChecks size={17} color="#15803D" />} title="AI 정리 계획 / 피드백">
+                <PlannerFeedbackCard icon={<ListChecks size={17} color="#15803D" />} title="AI 정리 계획 / 피드백">
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {sections.slice(0, 12).map((s, i) => (
                       <div key={i}>
@@ -2273,14 +2277,14 @@ export default function ArchiveDetail() {
                       </div>
                     ))}
                   </div>
-                </Card>
+                </PlannerFeedbackCard>
               )}
               {nextActions.length > 0 && (
-                <Card icon={<ArrowRight size={17} color="#15803D" />} title="다음 학습 추천">
+                <PlannerFeedbackCard icon={<ArrowRight size={17} color="#15803D" />} title="다음 학습 추천">
                   <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {nextActions.map((a, i) => <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{a}</li>)}
                   </ul>
-                </Card>
+                </PlannerFeedbackCard>
               )}
             </>
           );
@@ -3495,7 +3499,7 @@ export default function ArchiveDetail() {
   }
 
   return (
-      <div className="archive-detail-container animate-fade-in">
+      <div className="archive-detail-container animate-fade-in" data-detail-type={type}>
         <style dangerouslySetInnerHTML={{__html: `
         .archive-detail-container, .archive-detail-container * {
           box-sizing: border-box;
@@ -3561,14 +3565,17 @@ export default function ArchiveDetail() {
         )}
 
         {type === 'journal' && (
-            <div style={{ padding: '16px 24px', backgroundColor: 'white', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none' }} onClick={() => navigate('/archive')}>
-                <ArrowLeft size={18} /> 목록
-              </button>
-              <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none', color: '#EF4444' }} onClick={handleDeleteMaterial}>
-                <Trash2 size={18} /> 삭제
-              </button>
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
+            /* 학습일지 상단: 데스크톱은 [목록][삭제][제목] 한 줄, ≤768px 는 제목 행 위 / 액션 행 아래(index.css .archive-journal-head) */
+            <div className="archive-journal-head" style={{ padding: '16px 24px', backgroundColor: 'white', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <div className="archive-journal-actions" style={{ display: 'flex', alignItems: 'center', gap: '16px', flexShrink: 0 }}>
+                <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none' }} onClick={() => navigate('/archive')}>
+                  <ArrowLeft size={18} /> 목록
+                </button>
+                <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none', color: '#EF4444' }} onClick={handleDeleteMaterial}>
+                  <Trash2 size={18} /> 삭제
+                </button>
+              </div>
+              <div className="archive-journal-title" style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <h2 style={{ margin: 0, fontSize: '18px' }}>{material.title}</h2>
                 <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
                   {material.studyDate || (material.uploadedAt ? material.uploadedAt.split('T')[0] : '')} • 학습일지
