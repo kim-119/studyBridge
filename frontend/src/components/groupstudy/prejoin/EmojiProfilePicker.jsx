@@ -18,7 +18,7 @@ export default function EmojiProfilePicker({ value, onSelect, onClose }) {
       <div className="sb-emoji-picker glass-panel animate-fade-in" onClick={(e) => e.stopPropagation()}>
         <div className="sb-emoji-picker-header">
           <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: 'var(--color-text-main)' }}>프로필 아이콘 선택</h3>
-          <button type="button" aria-label="닫기" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px', display: 'flex', color: 'var(--color-text-muted)' }}>
+          <button type="button" className="sb-icon-btn" aria-label="닫기" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px', display: 'flex', color: 'var(--color-text-muted)' }}>
             <X size={20} />
           </button>
         </div>

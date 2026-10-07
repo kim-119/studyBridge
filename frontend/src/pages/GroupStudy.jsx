@@ -888,7 +888,7 @@ export default function GroupStudy() {
                 {/* 상단 이미지 및 제목 영역 */}
                 <div style={{ position: 'relative', height: '160px', backgroundColor: '#1F2937', color: 'white', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '20px' }}>
                   <GroupProfileImage imageUrl={selectedPost.hasCoverImage ? selectedPost.thumbnailUrl : null} studyType={selectedPost.studyType} iconSize={72} fill alt="Background" style={{ opacity: 0.3 }} />
-                  <button onClick={() => { setSelectedPost(null); setApplyMessage(''); setJoinAnswer(''); setJoinNickname(''); }} style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', color: 'white', cursor: 'pointer', padding: '4px', zIndex: 2 }}>
+                  <button className="sb-icon-btn" aria-label="상세 닫기" onClick={() => { setSelectedPost(null); setApplyMessage(''); setJoinAnswer(''); setJoinNickname(''); }} style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', color: 'white', cursor: 'pointer', padding: '4px', zIndex: 2 }}>
                     <X size={20} />
                   </button>
 
@@ -1236,7 +1236,7 @@ export default function GroupStudy() {
                   </div>
                   <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#111827' }}>{preJoinStudy.title} <span style={{ fontWeight: '500', color: '#6B7280', fontSize: '15px', marginLeft: '8px' }}>입장 준비</span></h2>
                 </div>
-                <button onClick={() => { releaseProfilePreview(); setPreJoinStudy(null); }} aria-label="입장 준비 닫기" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6B7280', padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', transition: 'background-color 0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#F3F4F6'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}>
+                <button className="sb-icon-btn" onClick={() => { releaseProfilePreview(); setPreJoinStudy(null); }} aria-label="입장 준비 닫기" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6B7280', padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', transition: 'background-color 0.2s' }} onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#F3F4F6'} onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}>
                   <X size={24} />
                 </button>
               </div>
@@ -1391,7 +1391,7 @@ export default function GroupStudy() {
                       <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#111827', display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <Settings size={20} color="#10B981" /> 방장 관리 콘솔
                       </h3>
-                      <button onClick={() => setShowLeaderConsole(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                      <button className="sb-icon-btn" aria-label="방장 관리 콘솔 닫기" onClick={() => setShowLeaderConsole(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                         <X size={24} color="#9CA3AF" />
                       </button>
                     </div>

@@ -2875,7 +2875,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
                           <div style={{ backgroundColor: 'rgba(30, 41, 59, 0.7)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '12px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
                               <div style={{ color: '#F3F4F6', fontSize: '13px', fontWeight: '800' }}>공유 PDF 자료</div>
-                              <button onClick={loadGroupMaterials} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', padding: 0 }} title="새로고침">
+                              <button className="sb-icon-btn" aria-label="자료 새로고침" onClick={loadGroupMaterials} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', padding: 0 }} title="새로고침">
                                 <RefreshCw size={14} />
                               </button>
                             </div>
@@ -2928,7 +2928,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
                           <div style={{ backgroundColor: 'rgba(30, 41, 59, 0.7)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '12px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
                               <div style={{ color: '#F3F4F6', fontSize: '13px', fontWeight: '800' }}>생성된 퀴즈</div>
-                              <button onClick={loadGroupQuizzes} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', padding: 0 }} title="새로고침">
+                              <button className="sb-icon-btn" aria-label="퀴즈 새로고침" onClick={loadGroupQuizzes} style={{ background: \'none\', border: \'none\', color: \'#93C5FD\', cursor: \'pointer\', display: \'flex\', padding: 0 }} title="새로고침">
                                 <RefreshCw size={14} />
                               </button>
                             </div>
@@ -3009,6 +3009,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
                         style={{ flex: 1, border: 'none', outline: 'none', fontSize: '13px', color: '#F3F4F6', backgroundColor: 'transparent', height: '20px', lineHeight: '20px', padding: 0, margin: 0 }}
                       />
                       <button
+                        className="sb-icon-btn-send"
+                        aria-label="메시지 전송"
                         onClick={handleSendChat}
                         style={{ background: 'linear-gradient(135deg, #22C55E, #16A34A)', border: 'none', width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginLeft: '8px', boxShadow: '0 2px 8px rgba(34, 197, 94, 0.3)' }}
                       >
