@@ -50,16 +50,22 @@ export default function ProfileParticipantTile({ avatar, fallbackUrl = null, dis
   // 1차 이미지 실패(presigned 만료 등) → fallbackUrl(계정 프로필) → 기본 아바타.
   const imageUrl = (avatar?.kind === 'image' && avatar.url && !imgFailed) ? avatar.url : ((fallbackUrl && !fallbackFailed) ? fallbackUrl : null);
   const showImage = Boolean(imageUrl);
+  const showEmoji = avatar?.kind === 'emoji' && avatar.value;
   const ring = isSpeaking ? '0 0 0 3px #22C55E, 0 0 20px rgba(34, 197, 94, 0.6)' : '0 8px 24px rgba(0,0,0,0.4)';
 
   return (
     <div
       data-testid="profile-participant-tile"
+      data-avatar-kind={showEmoji ? 'emoji' : (showImage ? 'image' : 'default')}
       data-mic-on={isMicOn ? 'true' : 'false'}
       style={{ position: 'relative', backgroundColor: '#1E293B', borderRadius: '16px', overflow: 'hidden', aspectRatio: '16/9', border: `1px solid ${isSpeaking ? '#22C55E' : 'rgba(255,255,255,0.05)'}`, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '10px', padding: '12px', boxSizing: 'border-box', transition: 'all 0.2s ease' }}
     >
       {!isLocal && streamManager && <RemoteAudioSink streamManager={streamManager} stream={stream} />}
-      {showImage ? (
+      {showEmoji ? (
+        <div data-testid="profile-participant-emoji" role="img" aria-label={`프로필 이모지 ${avatar.value}`} style={{ width: '72px', height: '72px', borderRadius: '50%', backgroundColor: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '38px', lineHeight: 1, boxShadow: ring, transition: 'box-shadow 0.15s ease' }}>
+          {avatar.value}
+        </div>
+      ) : showImage ? (
         <img
           src={imageUrl}
           alt={displayName}

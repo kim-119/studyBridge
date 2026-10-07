@@ -38,7 +38,7 @@ const micProps = { isMicOn: true, micStatus: 'available', micLevel: 0, onToggle:
 const navProps = { isLeader: true, showInfo: false, showSettings: true, showLeaderConsole: false, onInfo: noop, onLeaderConsole: noop, onSettings: noop };
 const generalProps = {
   avatar: { kind: 'default', url: null }, displayName: '김도현',
-  profile: { mode: 'default', profilePhotoUrl: null, uploadedFileName: null, onSelectMode: noop, onPickFile: noop, onError: noop },
+  profile: { mode: 'default', emoji: null, profilePhotoUrl: null, uploadedFileName: null, onSelectMode: noop, onSelectEmoji: noop, onPickFile: noop, onError: noop },
   mic: micProps, nav: navProps,
 };
 const camProps = {
@@ -142,4 +142,39 @@ test('source guard: GENERAL code paths never request video — prejoin camera ef
   assert.ok(studyRoom.includes("if (isCam && hasHandoff && hasAnyVideo && isVideoOn !== false) {"));
   assert.ok(studyRoom.includes(': [{ publishVideo: false, tag: \'audio-only\' }];'));
   assert.ok(studyRoom.includes('if (!isCam) {') && studyRoom.includes('<ProfileParticipantTile'));
+});
+
+test('GENERAL profile picker: 아이콘 선택/이미지 업로드 buttons, emoji preview replaces UserRound fallback, image preview, tile emoji', async () => {
+  const { default: GeneralPreJoinPanel } = await load('components/groupstudy/prejoin/GeneralPreJoinPanel.jsx');
+  let m = html(React.createElement(GeneralPreJoinPanel, generalProps));
+  assert.ok(has(m, 'prejoin-emoji-button') && m.includes('아이콘 선택'));
+  assert.ok(has(m, 'prejoin-upload-button') && m.includes('이미지 업로드'));
+  assert.equal(m.includes('기본 아이콘'), false);
+  assert.ok(has(m, 'default-avatar')); // 아무것도 선택 안 함 → UserRound fallback
+  assert.ok(m.includes('lucide-user-round') || m.includes('user-round'));
+  // 이모지 선택 → fallback 제거, 이모지 렌더
+  m = html(React.createElement(GeneralPreJoinPanel, { ...generalProps, avatar: { kind: 'emoji', value: '🐰', url: null }, profile: { ...generalProps.profile, mode: 'emoji', emoji: '🐰' } }));
+  assert.ok(has(m, 'prejoin-avatar-emoji') && m.includes('🐰'));
+  assert.equal(has(m, 'default-avatar'), false);
+  assert.ok(m.includes('data-avatar-kind="emoji"'));
+  // 이미지 선택 → 이미지 렌더
+  m = html(React.createElement(GeneralPreJoinPanel, { ...generalProps, avatar: { kind: 'image', url: 'https://s3/u.png' }, profile: { ...generalProps.profile, mode: 'upload', uploadedFileName: 'u.png' } }));
+  assert.ok(m.includes('src="https://s3/u.png"') && !has(m, 'prejoin-avatar-emoji'));
+  // 룸 참가자 타일도 동일 이모지
+  const { default: ProfileParticipantTile } = await load('components/groupstudy/ProfileParticipantTile.jsx');
+  m = html(React.createElement(ProfileParticipantTile, { avatar: { kind: 'emoji', value: '🐼', url: null }, displayName: '김도현', isLocal: false, isMicOn: true, stream: null, streamManager: null, speakerId: 1 }));
+  assert.ok(has(m, 'profile-participant-emoji') && m.includes('🐼') && m.includes('data-avatar-kind="emoji"'));
+  assert.equal(m.includes('<video'), false);
+});
+
+test('EmojiProfilePicker renders 30+ equal grid options with selected state (border/background/check)', async () => {
+  const { default: EmojiProfilePicker } = await load('components/groupstudy/prejoin/EmojiProfilePicker.jsx');
+  const m = html(React.createElement(EmojiProfilePicker, { value: '🐰', onSelect: noop, onClose: noop }));
+  const options = (m.match(/data-testid="emoji-option"/g) || []).length;
+  assert.ok(options >= 30, `options=${options}`);
+  assert.equal((m.match(/data-selected="true"/g) || []).length, 1);
+  assert.ok(/data-emoji="🐰"[^>]*data-selected="true"[^>]*class="sb-emoji-option is-selected"/.test(m));
+  assert.ok(m.includes('선택됨')); // Check 배지
+  assert.ok(m.includes('선택 완료') && m.includes('aria-label="닫기"'));
+  assert.ok(has(m, 'emoji-profile-picker'));
 });

@@ -87,8 +87,23 @@ export const micStateLabel = (isMicOn, micStatus) => {
 // ── GENERAL 참가자 visual identity 우선순위.
 //  1) 이번 입장 화면에서 지정한 이미지(upload) 2) 기존 계정 프로필 이미지 3) StudyBridge 기본 아바타(lucide User fallback).
 //  avatarMode: 'upload' | 'profile' | 'default' (connection metadata 로 전파). 모르면 프로필→기본 순.
-export const AVATAR_MODES = Object.freeze({ UPLOAD: 'upload', PROFILE: 'profile', DEFAULT: 'default' });
-export const resolveParticipantAvatar = ({ avatarMode, avatarUrl, profilePhotoUrl } = {}) => {
+//  PROFILE_TYPE(요구사항 DEFAULT/EMOJI/IMAGE)은 이 모드로 표현한다: default | emoji | upload·profile(=IMAGE).
+export const AVATAR_MODES = Object.freeze({ UPLOAD: 'upload', PROFILE: 'profile', DEFAULT: 'default', EMOJI: 'emoji' });
+
+// GENERAL 프로필용 Unicode 이모지 프리셋(외부 API/CDN 없음, PNG 변환 없음 — 문자열 그대로 metadata 로 전파).
+export const PROFILE_EMOJIS = Object.freeze([
+  '🙂', '😊', '😎', '🤓', '🥳', '😴',
+  '🐶', '🐱', '🐰', '🐻', '🐼', '🦊',
+  '🐯', '🐸', '🐧', '🐵', '🦁', '🐨',
+  '🌱', '⭐', '🔥', '🌙', '☀️', '☁️',
+  '📚', '💡', '🎯', '🚀', '🎧', '☕',
+  '💻', '🧠', '✏️', '📖', '🎓', '📝',
+]);
+export const isProfileEmoji = (value) => typeof value === 'string' && PROFILE_EMOJIS.includes(value);
+
+// 반환: { kind: 'emoji', value } | { kind: 'image', url } | { kind: 'default' }
+export const resolveParticipantAvatar = ({ avatarMode, avatarUrl, avatarValue, profilePhotoUrl } = {}) => {
+  if (avatarMode === AVATAR_MODES.EMOJI && isProfileEmoji(avatarValue)) return { kind: 'emoji', value: avatarValue, url: null };
   if (avatarMode === AVATAR_MODES.DEFAULT) return { kind: 'default', url: null };
   if (avatarMode === AVATAR_MODES.UPLOAD && avatarUrl) return { kind: 'image', url: avatarUrl };
   const url = profilePhotoUrl || avatarUrl || null;

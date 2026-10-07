@@ -122,6 +122,7 @@ export default function GroupStudy() {
   // GENERAL 입장 프로필(이번 입장 전용 visual identity): 'profile' | 'default' | 'upload'
   const [profileMode, setProfileMode] = useState(AVATAR_MODES.DEFAULT);
   const [profileFile, setProfileFile] = useState(null);
+  const [profileEmoji, setProfileEmoji] = useState(null); // 'emoji' 모드의 Unicode 이모지(이번 입장 전용)
   const [profilePreviewUrl, setProfilePreviewUrl] = useState(null); // objectURL(즉시 미리보기)
   const [uploadingProfile, setUploadingProfile] = useState(false);
   // StudyRoom 으로 넘기는 세션 아바타 { mode, url(presigned, 원격 전파용), localUrl(내 타일용) }
@@ -150,6 +151,7 @@ export default function GroupStudy() {
   useEffect(() => {
     if (!preJoinStudy) return;
     setProfileMode((user?.photoUrl || user?.photo_url) ? AVATAR_MODES.PROFILE : AVATAR_MODES.DEFAULT);
+    setProfileEmoji(null);
     setShowPreJoinSettings(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preJoinStudy?.id]);
@@ -157,6 +159,7 @@ export default function GroupStudy() {
   // 미리보기용 아바타(우선순위: 이번 업로드 > 계정 프로필 > 기본). resolveParticipantAvatar 와 같은 규칙.
   const preJoinAvatar = resolveParticipantAvatar({
     avatarMode: profileMode,
+    avatarValue: profileMode === AVATAR_MODES.EMOJI ? profileEmoji : null,
     avatarUrl: profileMode === AVATAR_MODES.UPLOAD ? profilePreviewUrl : null,
     profilePhotoUrl: profileMode === AVATAR_MODES.PROFILE ? (user?.photoUrl || user?.photo_url || null) : null,
   });
@@ -177,6 +180,10 @@ export default function GroupStudy() {
     let avatar = profileMode === AVATAR_MODES.DEFAULT
       ? { mode: AVATAR_MODES.DEFAULT, url: null, localUrl: null }
       : { mode: AVATAR_MODES.PROFILE, url: profileUrl, localUrl: profileUrl };
+    if (!cam && profileMode === AVATAR_MODES.EMOJI && profileEmoji) {
+      // 이모지는 Unicode 문자열 그대로 OpenVidu connection metadata(avatarValue)로 전파한다(PNG/base64 변환 없음).
+      avatar = { mode: AVATAR_MODES.EMOJI, value: profileEmoji, url: null, localUrl: null };
+    }
     if (!cam && profileMode === AVATAR_MODES.UPLOAD && profileFile) {
       setUploadingProfile(true);
       try {
@@ -1280,9 +1287,12 @@ export default function GroupStudy() {
                       displayName: myDisplayName,
                       profile: {
                         mode: profileMode,
+                        emoji: profileEmoji,
                         profilePhotoUrl: user?.photoUrl || user?.photo_url || null,
                         uploadedFileName: profileFile?.name || null,
                         onSelectMode: (mode) => setProfileMode(mode),
+                        // 이모지 클릭 즉시 preview 반영(IMAGE → EMOJI 전환 포함). 업로드 파일은 보존해 다시 이미지로 돌아갈 수 있다.
+                        onSelectEmoji: (value) => { setProfileEmoji(value); setProfileMode(AVATAR_MODES.EMOJI); },
                         onPickFile: handlePickProfileFile,
                         onError: (msg) => showAlert('이미지 형식 오류', msg),
                       },

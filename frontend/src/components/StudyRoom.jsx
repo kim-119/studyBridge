@@ -555,6 +555,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
       // GENERAL 참가자 visual identity(이번 입장 선택): 'upload' | 'profile' | 'default' + presigned url(업로드 시)
       avatarMode: typeof d.avatarMode === 'string' ? d.avatarMode : null,
       avatarUrl: typeof d.avatarUrl === 'string' ? d.avatarUrl : null,
+      avatarValue: typeof d.avatarValue === 'string' ? d.avatarValue : null, // emoji(Unicode)
     };
   };
 
@@ -1133,6 +1134,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
               cameraOn: meta.cameraOn ?? prev[connectionId]?.cameraOn ?? false,
               avatarMode: meta.avatarMode ?? prev[connectionId]?.avatarMode ?? null,
               avatarUrl: meta.avatarUrl ?? prev[connectionId]?.avatarUrl ?? null,
+              avatarValue: meta.avatarValue ?? prev[connectionId]?.avatarValue ?? null,
               connectedAt: prev[connectionId]?.connectedAt || Date.now(),
             },
           }));
@@ -1171,6 +1173,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
               cameraOn: true,
               avatarMode: meta.avatarMode ?? prev[connectionId]?.avatarMode ?? null,
               avatarUrl: meta.avatarUrl ?? prev[connectionId]?.avatarUrl ?? null,
+              avatarValue: meta.avatarValue ?? prev[connectionId]?.avatarValue ?? null,
               connectedAt: prev[connectionId]?.connectedAt || Date.now(),
             },
           }));
@@ -1251,6 +1254,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
           clientData: myDisplayName,
           ...(sessionAvatar?.mode ? { avatarMode: sessionAvatar.mode } : {}),
           ...(sessionAvatar?.mode === 'upload' && sessionAvatar.url ? { avatarUrl: sessionAvatar.url } : {}),
+          ...(sessionAvatar?.mode === 'emoji' && sessionAvatar.value ? { avatarValue: sessionAvatar.value } : {}),
         });
         console.info('[StudyRoomOV] listeners:registered-before-connect');
         await sessionInstance.connect(token, connectionData);
@@ -2556,8 +2560,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, selectedMic,
                 // GENERAL: 카메라 타일/video track 없이 [프로필 이미지] 닉네임 마이크 상태 로만 표현한다.
                 //  우선순위: 이번 입장 선택(upload/default) > 계정 프로필(members presigned) > 기본 아바타.
                 const avatar = isMe
-                  ? resolveParticipantAvatar({ avatarMode: sessionAvatar?.mode || null, avatarUrl: sessionAvatar?.localUrl || sessionAvatar?.url || null, profilePhotoUrl: user?.photoUrl || user?.photo_url || null })
-                  : resolveParticipantAvatar({ avatarMode: participant.avatarMode || null, avatarUrl: participant.avatarUrl || null, profilePhotoUrl: memberPhoto || participant.photoUrl || null });
+                  ? resolveParticipantAvatar({ avatarMode: sessionAvatar?.mode || null, avatarValue: sessionAvatar?.value || null, avatarUrl: sessionAvatar?.localUrl || sessionAvatar?.url || null, profilePhotoUrl: user?.photoUrl || user?.photo_url || null })
+                  : resolveParticipantAvatar({ avatarMode: participant.avatarMode || null, avatarValue: participant.avatarValue || null, avatarUrl: participant.avatarUrl || null, profilePhotoUrl: memberPhoto || participant.photoUrl || null });
                 // 업로드 presigned URL(1시간) 만료 등으로 이미지 로드가 실패하면 계정 프로필로 폴백한다.
                 const fallbackUrl = isMe ? (user?.photoUrl || user?.photo_url || null) : (memberPhoto || null);
                 return (

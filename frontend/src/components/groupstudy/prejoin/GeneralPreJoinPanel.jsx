@@ -16,9 +16,11 @@ export default function GeneralPreJoinPanel({
         <AvatarPreview avatar={avatar} displayName={displayName} />
         <ProfileSelector
           mode={profile.mode}
+          emoji={profile.emoji}
           profilePhotoUrl={profile.profilePhotoUrl}
           uploadedFileName={profile.uploadedFileName}
           onSelectMode={profile.onSelectMode}
+          onSelectEmoji={profile.onSelectEmoji}
           onPickFile={profile.onPickFile}
           onError={profile.onError}
         />

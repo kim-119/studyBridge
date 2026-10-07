@@ -207,3 +207,23 @@ test('leader console sections: pending list only when approval policy or real pe
   assert.equal(s.showInviteManagement, true);
   assert.equal(s.showPendingMembers, true);
 });
+
+// ── GENERAL 프로필 모델: DEFAULT / EMOJI / IMAGE(upload·profile) (2026-10-07)
+import { PROFILE_EMOJIS, isProfileEmoji } from '../groupStudy.js';
+
+test('profile emoji preset: 30+ unique Unicode emojis, validator rejects arbitrary strings', () => {
+  assert.ok(PROFILE_EMOJIS.length >= 30);
+  assert.equal(new Set(PROFILE_EMOJIS).size, PROFILE_EMOJIS.length);
+  for (const e of ['🐰', '🤓', '📚', '☀️']) assert.ok(isProfileEmoji(e), e);
+  assert.equal(isProfileEmoji('<img src=x>'), false);
+  assert.equal(isProfileEmoji(''), false);
+  assert.equal(isProfileEmoji(null), false);
+});
+
+test('participant avatar: EMOJI mode wins with valid value, invalid value falls back to image/default', () => {
+  assert.deepEqual(resolveParticipantAvatar({ avatarMode: AVATAR_MODES.EMOJI, avatarValue: '🐰', profilePhotoUrl: 'p.png' }), { kind: 'emoji', value: '🐰', url: null });
+  assert.deepEqual(resolveParticipantAvatar({ avatarMode: AVATAR_MODES.EMOJI, avatarValue: 'javascript:', profilePhotoUrl: 'p.png' }), { kind: 'image', url: 'p.png' });
+  assert.deepEqual(resolveParticipantAvatar({ avatarMode: AVATAR_MODES.EMOJI, avatarValue: null }), { kind: 'default', url: null });
+  // IMAGE(upload) 는 이모지 값이 남아 있어도 모드가 upload 면 이미지
+  assert.deepEqual(resolveParticipantAvatar({ avatarMode: AVATAR_MODES.UPLOAD, avatarValue: '🐰', avatarUrl: 'u.png' }), { kind: 'image', url: 'u.png' });
+});

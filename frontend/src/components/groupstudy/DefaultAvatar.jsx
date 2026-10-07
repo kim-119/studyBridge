@@ -1,8 +1,8 @@
 import React from 'react';
-import { User } from 'lucide-react';
+import { UserRound } from 'lucide-react';
 
-// StudyBridge 기본 프로필 아바타(사용자 이미지가 없을 때의 최종 fallback).
-//  · 별도 PNG 자산 없이 기존 색상 토큰(--color-secondary/--color-primary) 위에 lucide User 아이콘만 그린다.
+// StudyBridge 기본 프로필 아바타 — 아무 프로필(이모지/이미지)도 선택되지 않았을 때만 쓰는 fallback(lucide UserRound).
+//  · 별도 PNG 자산 없이 기존 색상 토큰(--color-secondary/--color-primary) 위에 lucide UserRound 아이콘만 그린다.
 //  · 프로필 "이미지" 가 있을 때는 이 컴포넌트를 쓰지 않는다(UI 아이콘과 실제 프로필 구분).
 export default function DefaultAvatar({ size = 80, iconSize, dark = false, alt = '기본 프로필', style, className }) {
   const icon = iconSize || Math.round(size / 2);
@@ -20,7 +20,7 @@ export default function DefaultAvatar({ size = 80, iconSize, dark = false, alt =
         ...style,
       }}
     >
-      <User size={icon} />
+      <UserRound size={icon} />
     </div>
   );
 }
