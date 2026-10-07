@@ -173,7 +173,7 @@ export default function ObsidianPage() {
             <select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="방 정렬" style={{ flex: 1, fontSize: 12, padding: '6px 8px', border: '1px solid #e5e7eb', borderRadius: 8 }}>
               {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
-            <button type="button" onClick={loadRooms} title="새로고침" style={{ padding: 7, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer' }}>
+            <button type="button" onClick={loadRooms} title="새로고침" aria-label="방 목록 새로고침" className="obsp-refresh" style={{ padding: 7, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer' }}>
               <RefreshCw size={14} color="#6b7280" />
             </button>
           </div>
