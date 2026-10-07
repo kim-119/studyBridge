@@ -160,8 +160,9 @@ export default function ObsidianPage() {
 
         <div style={{ padding: '0 16px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ position: 'relative' }}>
-            <Search size={15} color="#9ca3af" style={{ position: 'absolute', left: 10, top: 9 }} />
+            <Search size={15} color="#9ca3af" className="sb-search-icon sb-search-icon-abs" style={{ position: 'absolute', left: 10, top: 9 }} />
             <input
+              className="sb-search-field-abs"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="방 검색 (제목·교수·태그)"

@@ -19,7 +19,7 @@ export default function CtaSection() {
   };
 
   return (
-    <section className="mx-auto max-w-6xl px-6 pb-20">
+    <section className="mx-auto max-w-6xl px-4 pb-20 sm:px-6">
       <div className="rounded-2xl bg-gradient-to-b from-green-50 to-green-100 px-6 py-14 text-center">
         <h2 className="text-2xl font-bold text-gray-900 md:text-3xl">지금 바로 AI 학습 루틴을 만들어보세요</h2>
         <p className="mt-3 text-gray-500">StudyBridge와 함께라면 더 적은 시간으로 더 나은 결과를 얻을 수 있습니다.</p>

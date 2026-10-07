@@ -22,7 +22,7 @@ const FEATURES = [
 
 export default function FeatureSection() {
   return (
-    <section id="features" className="mx-auto max-w-6xl px-6 py-20">
+    <section id="features" className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
       <h2 className="text-center text-3xl font-bold text-gray-900">핵심 기능</h2>
       <p className="mt-3 text-center text-gray-500">효율적인 학습을 위한 모든 도구가 준비되어 있습니다.</p>
 
