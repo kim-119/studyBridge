@@ -771,6 +771,9 @@ public class ReviewNoteService {
         } catch (Exception e) {
             log.warn("[REVIEW_NOTE] variant ai07 unavailable id={} cause={} -> 폴백", id, e.getMessage());
         }
+        if (aiResp != null && aiResp.get("questions") instanceof List<?> firstRet) {
+            log.info("[REVIEW_NOTE] variant ai first return id={} requested={} returned={}", id, count, firstRet.size());
+        }
         // count 계약 top-up: AI 가 요청 수보다 적게 돌려주면(예: count=3 에 1개) 부족분만큼 최대 2회 더 요청해 채운다(문항 본문 기준 중복 제거).
         if (aiResp != null && aiResp.get("error_code") == null && aiResp.get("questions") instanceof List<?> firstList && firstList.size() < count) {
             List<Object> merged = new ArrayList<>(firstList);
