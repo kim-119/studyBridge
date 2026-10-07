@@ -7,6 +7,7 @@ import {
 import { useAuth } from '../hooks/useAuth';
 import { materialService, folderService } from '../services/api';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
+import { userFacingMessage } from '../utils/userFacingError';
 
 // 의미 없는 제목 차단 — 저장 요청을 보내기 전에 막는다.
 const BLOCKED_TITLES = ['', ' ', 'ㅇㅇ', 'ㅎㅎ', 'test', 'sample', 'planner', '플래너', '무제', '제목 없음'];
@@ -586,7 +587,7 @@ export default function Archive() {
       await fetchItems();
     } catch (error) {
       console.error('자료 업로드 실패:', error);
-      alert(error.response?.data?.message || '자료 업로드 중 오류가 발생했습니다.');
+      alert(userFacingMessage(error, '자료 업로드 중 오류가 발생했습니다.', { context: 'upload' }));
     } finally {
       setIsSubmitting(false);
     }

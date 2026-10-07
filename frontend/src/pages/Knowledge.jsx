@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Search, Plus, Heart, MessageSquare, Image as ImageIcon, FileText, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { knowledgeService } from '../services/api';
+import { userFacingMessage } from '../utils/userFacingError';
 
 export default function Knowledge() {
   const { user } = useAuth();
@@ -84,7 +85,7 @@ export default function Knowledge() {
       fetchPosts();
     } catch (error) {
       console.error("Failed to create post:", error);
-      alert("글 작성에 실패했습니다.");
+      alert(userFacingMessage(error, '글 작성에 실패했습니다.', { context: 'upload' }));
     }
   };
 
