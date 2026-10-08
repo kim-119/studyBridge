@@ -267,6 +267,8 @@ export default function MyPage() {
 
         await authService.updateProfile(userId, buildProfileUpdatePayload({
           displayName: finalName, major, email, uploadedS3Key: currentPhotoUrl,
+          // 기존 사진은 presigned URL 에서 복원한 S3 key 로 보낸다(구/신 백엔드 모두 사진 보존, 255자 이내).
+          currentPhotoUrl: user?.photoUrl || user?.photo_url || null,
         }));
         
         let refreshed = { displayName: finalName, major: finalMajor, email: email, photoUrl: profileImage };
