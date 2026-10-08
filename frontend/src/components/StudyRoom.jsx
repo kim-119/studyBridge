@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Users, User, X, MicOff, Video, VideoOff, Maximize, Minimize, Gift, UserPlus,
   Settings, MessageSquare, Calendar, ClipboardList, Mic,
@@ -420,6 +421,24 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
 
   // 채팅 전용 드로어(왼쪽 사이드바 말풍선 아이콘으로 열고 닫음). 닫아도 메시지 상태는 상위 컴포넌트에 보존된다.
   const [showChatDrawer, setShowChatDrawer] = useState(false);
+  // 채팅 드로어 포털 대상(룸 루트 고정 오버레이). callback ref 로 마운트 직후 렌더에 반영된다.
+  const [roomRootEl, setRoomRootEl] = useState(null);
+  // [iOS 키보드] iOS WebKit 은 키보드가 열려도 layout viewport(innerHeight)를 줄이지 않고 visual viewport 만 줄인다.
+  //  → bottom:0 고정 드로어의 입력창이 키보드 아래로 숨는다. 드로어가 열려 있을 때만 가려진 높이를 bottom 으로 보정한다.
+  //  데스크톱/Android(키보드 시 layout viewport 자체가 줄어듦)에서는 inset 이 0 이라 변화 없음.
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  useEffect(() => {
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (!showChatDrawer || !vv) { setKeyboardInset(0); return undefined; }
+    const update = () => {
+      const inset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      setKeyboardInset(inset > 80 ? inset : 0); // 주소창 높이 변화(수십 px)는 무시, 키보드만 반영
+    };
+    update();
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
+  }, [showChatDrawer]);
   // [표시 전용] 모바일 레이아웃 분기 플래그. OpenVidu 세션/퍼블리시/구독 로직과 무관하며
   // 화면 너비 변화에만 반응한다(리사이즈 외 어떤 미디어 동작도 트리거하지 않음).
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 768);
@@ -2411,7 +2430,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
   }, [aiMessages, aiChatStorageKey]);
 
   return (
-    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, backgroundColor: '#0B0F19', display: 'flex', flexDirection: 'column', color: 'white', fontFamily: "'Inter', sans-serif" }}>
+    <div ref={setRoomRootEl} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, backgroundColor: '#0B0F19', display: 'flex', flexDirection: 'column', color: 'white', fontFamily: "'Inter', sans-serif" }}>
       <style>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 6px;
@@ -2828,14 +2847,20 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
             </div>
 
             {/* === 채팅 드로어 (왼쪽 사이드바 말풍선으로 토글) === */}
+            {/* [iOS WebKit] 드로어는 룸 루트(고정 오버레이)로 포털 렌더링한다. 모바일에서 .room-body 가 overflow-y:auto 스크롤
+                컨테이너가 되는데, iOS Safari/Chrome(WebKit)은 그 안의 position:fixed 자손을 스크롤 레이어에 잘라/묶어
+                일반 채팅·AI 채팅 드로어가 보이지 않았다. 루트 직계 자식이면 스크롤러 밖이라 엔진과 무관하게 뷰포트 고정이다.
+                z-index 맥락(컨트롤바 96 > 드로어 95 > 백드롭 90)·상태·핸들러는 그대로다. */}
+            {roomRootEl && createPortal(<>
             {showChatDrawer && (
               <div
                 onClick={() => setShowChatDrawer(false)}
                 style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', zIndex: 90 }}
               />
             )}
-            <div className="room-chat-drawer" style={{
-              position: 'fixed', top: 0, right: 0, bottom: 0,
+            <div className="room-chat-drawer" data-testid="room-chat-drawer" data-open={showChatDrawer ? 'true' : 'false'} style={{
+              position: 'fixed', top: 0, right: 0, bottom: keyboardInset,
+              ...(keyboardInset > 0 ? { paddingBottom: 0 } : {}),
               width: 'min(100vw, 480px)',
               transform: showChatDrawer ? 'translateX(0)' : 'translateX(110%)',
               transition: 'transform 0.25s ease',
@@ -3222,6 +3247,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
                 </>
               )}
             </div>
+            </>, roomRootEl)}
           </div>
         )}
 
