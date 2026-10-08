@@ -2112,6 +2112,9 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
 
     const token = localStorage.getItem('token');
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    // 이번 요청에서 화면에 표시할 답변(에이전트/토론/라우팅 안내)을 하나라도 받았는지.
+    // 스트림이 답변 없이 끝나면(연결이 중간에 끊김 등) 말없이 끝내지 않고 아래에서 복구/안내한다.
+    let gotRenderableAnswer = false;
     try {
       const response = await fetch(`/api/groups/${study.id}/chats/stream`, {
         method: 'POST',
@@ -2193,6 +2196,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
               if (parsed.type === 'route_message' || parsed.type === 'route_notice') {
                 const msgText = parsed.message || '';
                 if (msgText) {
+                  gotRenderableAnswer = true;
                   setAiMessages(prev => {
                     if (!isActive()) return prev;
                     return [...prev, {
@@ -2213,6 +2217,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
               // 토론 모드: debate_section 이벤트는 일반 agent 메시지로 합치지 않고
               // requestId로 식별되는 단 하나의 debate 말풍선에 섹션별로 upsert한다.
               if (parsed.section || parsed.type === 'debate_section') {
+                gotRenderableAnswer = true;
                 const { section, items, content } = parsed;
                 if (import.meta.env.DEV) console.debug('[AI-SSE] debate_section', { requestId, section, count: items?.length });
                 setAiMessages(prev => {
@@ -2240,6 +2245,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
               }
 
               if (parsed.agentName && parsed.content) {
+                gotRenderableAnswer = true;
                 setAiMessages(prev => {
                   if (!isActive()) return prev;
                   // 이번 요청(requestId)·같은 에이전트(senderName)의 기존 말풍선을 "위치와 무관하게" 찾아 이어붙인다.
@@ -2273,6 +2279,41 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
               console.warn("JSON parsing chunk error:", jsonErr, "dataStr:", dataStr);
             }
           }
+        }
+      }
+      // 스트림이 답변 없이 끝났다 → 서버는 토론을 DB 에 저장하므로 이력을 다시 읽어 복원하고,
+      // 그래도 없으면 패널을 유지한 채 오류 안내를 남긴다(조용히 빈 화면으로 끝내지 않음).
+      if (!gotRenderableAnswer && isActive()) {
+        let restored = false;
+        // 서버는 스트림 완료 직후 저장하므로 첫 조회가 저장보다 빠를 수 있다 → 짧게 한 번 더 시도.
+        for (let attempt = 0; attempt < 2 && !restored && isActive(); attempt++) {
+          if (attempt > 0) await new Promise(r => setTimeout(r, 1500));
+          try {
+            const hres = await fetch(`/api/groups/${study.id}/chats/history`, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
+            if (hres.ok && isActive()) {
+              const data = await hres.json();
+              const aiHistory = (Array.isArray(data) ? data : []).filter(m => m.isAi || m.isAiQuery).map(m => ({
+                senderName: m.senderName,
+                content: m.content,
+                isUser: m.isAiQuery || (m.senderId && String(m.senderId) === String(userId)),
+              }));
+              // 이번 질문이 저장돼 있고 그 뒤에 답변이 있을 때만 복원(이전 턴의 답변으로 오판하지 않는다).
+              let qIdx = -1;
+              aiHistory.forEach((m, i) => { if (m.isUser && String(m.content || '').trim() === String(userMsg).trim()) qIdx = i; });
+              if (qIdx !== -1 && aiHistory.slice(qIdx + 1).some(m => !m.isUser && String(m.content || '').trim())) {
+                setAiMessages(aiHistory); restored = true;
+              }
+            }
+          } catch (e) { /* 아래 안내로 대체 */ }
+        }
+        if (!restored && isActive()) {
+          setAiMessages(prev => [...prev, {
+            id: `empty-${requestId}`,
+            senderName: 'System',
+            content: 'AI 응답을 받지 못했습니다. 잠시 후 다시 질문해 주세요.',
+            isUser: false,
+            isError: true,
+          }]);
         }
       }
     } catch (err) {
