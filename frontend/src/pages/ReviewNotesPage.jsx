@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ListChecks, RotateCcw, Shuffle, Sparkles, FileText, Download, StickyNote, Lightbulb, CalendarPlus, Trash2 } from 'lucide-react';
 import { reviewNoteService, learningLoopService } from '../services/api';
+import { draftOf, displayMemo, setDraft, settleAfterSave, isLatest } from '../utils/memoDraft';
 import {
   RetryPanel, VariantPanel, AiExplanationPanel,
   noteId, formatDate, DIFFICULTY_LABEL, btn, btnPrimary,
@@ -34,17 +35,31 @@ export default function ReviewNotesPage() {
 
   const [selected, setSelected] = useState(null); // 선택된 오답노트(다시풀기/유사문제/AI해설 대상)
 
-  const load = async () => {
-    setLoading(true);
+  // 메모 초안: 노트 id → 입력 중 텍스트. 페이지 수준에 두어 탭 전환(다시 풀기 등)·목록 갱신으로 카드가
+  // 다시 마운트돼도 유지되고, 노트별로 독립이다. 저장은 카드의 "메모 저장" 버튼에서만 한다.
+  const [memoDrafts, setMemoDrafts] = useState({});
+
+  // silent: 이미 목록이 떠 있을 때의 재조회. loading 을 켜지 않아 카드(메모 입력 등)가 언마운트되지 않는다.
+  const load = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     setError('');
     const { ok, items: list, error: err } = await reviewNoteService.listReviewNotes();
     if (!ok) {
-      setItems([]);
-      setError(err || '오답노트 목록을 불러오지 못했습니다. 다시 시도해주세요.');
+      if (!silent) {
+        setItems([]);
+        setError(err || '오답노트 목록을 불러오지 못했습니다. 다시 시도해주세요.');
+      }
     } else {
       setItems(Array.isArray(list) ? list : []);
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
+  };
+  const refresh = () => load({ silent: true });
+
+  // 저장 성공한 메모를 목록 항목에 바로 반영(재조회·리마운트 없이 서버 상태와 동기화).
+  const applySavedMemo = (id, memo) => {
+    setItems((prev) => prev.map((n) => (String(noteId(n)) === String(id) ? { ...n, memo } : n)));
+    setSelected((cur) => (cur && String(noteId(cur)) === String(id) ? { ...cur, memo } : cur));
   };
 
   useEffect(() => { load(); }, []);
@@ -125,14 +140,17 @@ export default function ReviewNotesPage() {
             loading={loading}
             error={error}
             items={items}
-            onRetry={load}
+            onRetry={() => load()}
             onOpen={openTab}
-            onMemoSaved={load}
+            onRefresh={refresh}
             onDeleted={handleDeleted}
+            memoDrafts={memoDrafts}
+            setMemoDrafts={setMemoDrafts}
+            onMemoSaved={applySavedMemo}
           />
         )}
-        {tab === 'retry' && <RetryPanel note={selected} items={items} onPick={(n) => openTab(n, 'retry')} />}
-        {tab === 'variant' && <VariantPanel note={selected} items={items} onPick={(n) => openTab(n, 'variant')} />}
+        {tab === 'retry' && <RetryPanel key={noteId(selected)} note={selected} items={items} onPick={(n) => openTab(n, 'retry')} />}
+        {tab === 'variant' && <VariantPanel key={noteId(selected)} note={selected} items={items} onPick={(n) => openTab(n, 'variant')} />}
         {tab === 'ai' && <AiExplanationPanel note={selected} items={items} onPick={(n) => openTab(n, 'ai')} />}
       </div>
     </div>
@@ -140,7 +158,7 @@ export default function ReviewNotesPage() {
 }
 
 /* ---------------- 오답노트 목록 (loading/error/empty/list 분리) ---------------- */
-function ReviewNoteList({ loading, error, items, onRetry, onOpen, onMemoSaved, onDeleted }) {
+function ReviewNoteList({ loading, error, items, onRetry, onOpen, onRefresh, onDeleted, memoDrafts, setMemoDrafts, onMemoSaved }) {
   if (loading) {
     return <p style={{ color: '#6B7280', fontSize: '14px', margin: 0 }}>오답노트를 불러오는 중입니다.</p>;
   }
@@ -166,16 +184,29 @@ function ReviewNoteList({ loading, error, items, onRetry, onOpen, onMemoSaved, o
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
       <h2 style={{ margin: 0, fontSize: '17px', fontWeight: 800, color: '#111827' }}>오답노트 목록</h2>
       {items.map((note) => (
-        <ReviewNoteCard key={noteId(note)} note={note} onOpen={onOpen} onMemoSaved={onMemoSaved} onDeleted={onDeleted} />
+        <ReviewNoteCard
+          key={noteId(note)}
+          note={note}
+          onOpen={onOpen}
+          onRefresh={onRefresh}
+          onDeleted={onDeleted}
+          memoDraft={draftOf(memoDrafts, noteId(note))}
+          onMemoDraft={(v) => setMemoDrafts((d) => setDraft(d, noteId(note), v))}
+          onMemoSettled={(sent) => setMemoDrafts((d) => settleAfterSave(d, noteId(note), sent))}
+          onMemoSaved={onMemoSaved}
+        />
       ))}
     </div>
   );
 }
 
-function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
+function ReviewNoteCard({ note, onOpen, onRefresh, onDeleted, memoDraft, onMemoDraft, onMemoSettled, onMemoSaved }) {
   const [showMemo, setShowMemo] = useState(false);
-  const [memo, setMemo] = useState(note.memo ?? '');
+  // 표시값 = 초안(입력 중) ?? 저장본. 초안은 페이지 수준(노트 id 별)이라 카드 리마운트/탭 전환에도 유지된다.
+  const memo = displayMemo({ [noteId(note)]: memoDraft }, noteId(note), note.memo);
   const [memoSaving, setMemoSaving] = useState(false);
+  const [memoStatus, setMemoStatus] = useState(''); // 인라인 저장 결과 문구(alert 로 포커스를 뺏지 않는다)
+  const memoSeqRef = useRef(0);                      // 요청 토큰: 마지막 저장 요청의 응답만 반영
 
   // 삭제: confirm 후 API 호출. 성공 시 부모가 목록에서 즉시 제거. 실패 시 원인 alert.
   const [deleting, setDeleting] = useState(false);
@@ -237,14 +268,23 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
       document.body.appendChild(a); a.click(); a.remove();
     } catch { alert('PDF 저장 중 문제가 발생했습니다.'); }
   };
+  // 저장은 이 버튼에서만. 저장 중에도 textarea 는 비활성화하지 않고, 목록을 재조회·리마운트하지 않는다.
   const saveMemo = async () => {
+    const sent = memo;
+    const mySeq = (memoSeqRef.current += 1);
     setMemoSaving(true);
+    setMemoStatus('');
     try {
-      await reviewNoteService.updateMemo(noteId(note), memo);
-      alert('메모가 저장되었습니다.');
-      onMemoSaved?.();
-    } catch { alert('메모 저장에 실패했습니다.'); }
-    finally { setMemoSaving(false); }
+      await reviewNoteService.updateMemo(noteId(note), sent);
+      if (!isLatest(memoSeqRef, mySeq)) return; // 더 최신 저장 요청이 있으면 이 응답은 무시
+      onMemoSaved?.(noteId(note), sent);        // 목록 항목의 저장본 갱신(리마운트 없음)
+      onMemoSettled?.(sent);                     // 그 사이 더 입력했으면 초안 유지, 아니면 초안 해제
+      setMemoStatus('메모가 저장되었습니다.');
+    } catch {
+      if (isLatest(memoSeqRef, mySeq)) setMemoStatus('메모 저장에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+    } finally {
+      if (isLatest(memoSeqRef, mySeq)) setMemoSaving(false);
+    }
   };
 
   // 복습 일정 등록: DB 저장 추천일(note.recommendedReviewDate)로 주간 일정(todos)에 등록. ai07 재호출 없음.
@@ -271,7 +311,7 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
       setSchedDone(res.alreadyRegistered
         ? `${res.scheduledDate} 주간 일정에 이미 등록되어 있습니다.`
         : `${res.scheduledDate} 주간 일정에 복습이 등록되었습니다.`);
-      onMemoSaved?.(); // 목록 재조회 → DB 기준 reviewScheduled/복습 필요 상태 갱신
+      onRefresh?.(); // 목록 조용히 재조회(loading 미표시) → DB 기준 reviewScheduled/복습 필요 상태 갱신, 카드 리마운트 없음
     } catch (e) {
       const msg = e?.response?.data?.message || e?.message || '';
       setSchedError(true);
@@ -282,7 +322,7 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
   };
 
   return (
-    <div style={{ border: '1px solid #E5E7EB', borderRadius: '10px', padding: '16px' }}>
+    <div data-testid="review-note-card" data-note-id={noteId(note)} style={{ border: '1px solid #E5E7EB', borderRadius: '10px', padding: '16px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
         <div>
           <h3 style={{ margin: '0 0 4px 0', fontSize: '15px', fontWeight: 700, color: '#111827' }}>
@@ -362,9 +402,11 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
 
       {showMemo && (
         <div style={{ marginTop: '12px' }}>
+          {/* 입력 중에는 로컬 초안만 갱신(서버 호출·목록 갱신 없음). 저장 중에도 disabled 하지 않는다. */}
           <textarea
+            data-testid="review-note-memo"
             value={memo}
-            onChange={(e) => setMemo(e.target.value)}
+            onChange={(e) => onMemoDraft?.(e.target.value)}
             placeholder="이 오답노트에 대한 메모를 입력하세요."
             rows={2}
             style={{
@@ -373,8 +415,13 @@ function ReviewNoteCard({ note, onOpen, onMemoSaved, onDeleted }) {
               fontSize: '13px', color: '#374151',
             }}
           />
-          <div style={{ marginTop: '8px', textAlign: 'right' }}>
-            <button style={{ ...btnPrimary, opacity: memoSaving ? 0.6 : 1 }} disabled={memoSaving} onClick={saveMemo}>
+          <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            {memoStatus && (
+              <span data-testid="review-note-memo-status" style={{ fontSize: '12.5px', color: memoStatus.includes('실패') ? '#B91C1C' : '#15803D', fontWeight: 600 }}>
+                {memoStatus}
+              </span>
+            )}
+            <button data-testid="review-note-memo-save" style={{ ...btnPrimary, opacity: memoSaving ? 0.6 : 1 }} disabled={memoSaving} onClick={saveMemo}>
               {memoSaving ? '저장 중…' : '메모 저장'}
             </button>
           </div>

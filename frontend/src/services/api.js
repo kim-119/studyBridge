@@ -602,7 +602,7 @@ export const authService = {
       const res = await api.get('/api/users/profile');
       return res.data;
     } catch (err) {
-      throw err.response?.data || { message: '프로필 조회 실패' };
+      throw err;
     }
   },
 
@@ -611,7 +611,7 @@ export const authService = {
       const res = await api.put('/api/users/profile', profileData);
       return res.data;
     } catch (err) {
-      throw err.response?.data || { message: '프로필 업데이트 실패' };
+      throw err;
     }
   },
 
@@ -1773,3 +1773,7 @@ export const learningMateService = {
 };
 
 export default api;
+
+export const myReportService = {
+  list: async (source, page = 0) => (await api.get('/api/reports/me', { params: { source, page, size: 20 } })).data,
+};

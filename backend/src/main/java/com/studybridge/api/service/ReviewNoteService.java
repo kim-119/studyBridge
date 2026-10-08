@@ -815,7 +815,10 @@ public class ReviewNoteService {
         out.put("reviewNoteId", id);
         out.put("difficulty", difficulty);
         if (aiResp != null && aiResp.get("error_code") == null && aiResp.get("questions") != null) {
-            out.put("success", true);
+            out.put("success", aiResp.get("questions") instanceof List<?> list && list.size() >= count);
+            out.put("requestedCount", count);
+            out.put("returnedCount", aiResp.get("questions") instanceof List<?> list ? Math.min(count, list.size()) : 0);
+            if (!Boolean.TRUE.equals(out.get("success"))) out.put("message", "요청한 문항 수를 모두 생성하지 못했습니다. 다시 시도해 주세요.");
             out.put("usedFallback", false);
             if (Boolean.TRUE.equals(aiResp.get("partialFallback"))) out.put("partialFallback", true);
             // 요청 문항 수(count) 계약: AI 가 더 많이 돌려줘도 count 만큼만 응답한다(프론트 3 선택 → 응답 3).
@@ -839,7 +842,10 @@ public class ReviewNoteService {
                         "AI 변형을 일시적으로 사용할 수 없어 원본 오답 문제를 다시 출제했습니다."));
             }
         }
-        out.put("success", true);
+        out.put("success", questions.size() == count);
+        out.put("requestedCount", count);
+        out.put("returnedCount", questions.size());
+        if (!Boolean.TRUE.equals(out.get("success"))) out.put("message", "요청한 문항 수를 모두 생성하지 못했습니다. 다시 시도해 주세요.");
         out.put("usedFallback", true);
         out.put("questions", questions);
         recordSimilarQuestion(userId, id, note.getSourceMaterialId(), difficulty, true);

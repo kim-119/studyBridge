@@ -169,6 +169,8 @@ public class BlogService {
             s3Service.deleteFile(blog.getPdfS3Key());
         }
 
+        for (BlogComment comment : blog.getComments()) reportRepository.detachComment(comment.getCommentId());
+        reportRepository.detachPost(blogId);
         blogRepository.delete(blog);
         log.info("[블로그 강제 삭제 완료] ID: {}", blogId);
     }
@@ -295,7 +297,7 @@ public class BlogService {
             throw new SecurityException("댓글 삭제 권한이 없습니다.");
         }
 
-        reportRepository.deleteByReportedComment_CommentId(commentId);
+        reportRepository.detachComment(commentId);
         blogCommentRepository.delete(comment);
         log.info("[댓글 삭제 완료] 댓글 ID: {}, 요청자 ID: {}", commentId, userId);
     }
@@ -306,7 +308,7 @@ public class BlogService {
         BlogComment comment = blogCommentRepository.findById(commentId)
                 .orElseThrow(() -> new IllegalArgumentException("댓글을 찾을 수 없습니다."));
 
-        reportRepository.deleteByReportedComment_CommentId(commentId);
+        reportRepository.detachComment(commentId);
         blogCommentRepository.delete(comment);
         log.info("[댓글 강제 삭제 완료] 댓글 ID: {}", commentId);
     }

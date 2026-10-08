@@ -1,6 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useReducer, useState } from 'react';
 import { reviewNoteService } from '../../services/api';
 import { sanitizeMarkdownText } from '../../utils/markdown';
+import {
+  attemptMapReducer, attemptOf, canPick, isGraded, isSubmittedOrGraded,
+} from '../../utils/questionAttempt';
 
 /**
  * 오답노트 복습 기능 패널(다시 풀기 / 유사문제 / AI 해설) — 재사용 단일 소스.
@@ -50,27 +53,25 @@ export function NotePicker({ items, onPick, label }) {
 }
 
 /* ---------------- 문제 풀이 러너(다시 풀기 / 유사문제 공통) ---------------- */
-// onAnswer: 제출 1회를 상위에 알린다(다시 풀기에서만 서버에 저장한다).
-// initialResults: 이미 제출된 재풀이 결과([{index,userAnswer,correct}]). 재풀이는 문제당 1회다.
+// onAnswer: "첫 번째" 제출을 상위에 알린다(다시 풀기에서만 서버에 저장한다. 서버 기록은 문제당 1회이며 삭제되지 않는다).
+// initialResults: 이미 제출된 재풀이 결과([{index,userAnswer,correct}]) — 처음 한 번만 채점 상태로 복원(SEED).
+// 문항별 상태는 utils/questionAttempt 상태 머신(READY→ANSWERING→SUBMITTED→GRADED→(다시 풀기)READY)으로 관리한다.
+//  · 다시 풀기는 로컬 새 시도(선택/채점/결과 초기화)이며 다른 문항 상태와 독립이다.
+//  · 서버 결과가 다시 내려와도(SEED) 로컬 상태가 있는 문항은 덮어쓰지 않는다 → 다시 풀기가 채점 상태로 되돌아가지 않는다.
 export function QuestionRunner({ questions, onAnswer, initialResults }) {
-  const [answers, setAnswers] = useState({});
-  const [submitted, setSubmitted] = useState({});
+  const [attempts, dispatch] = useReducer(attemptMapReducer, {});
 
-  // 서버에 기록된 재풀이 결과가 있으면 그 문제는 이미 푼 상태로 복원한다(중복 제출 방지).
   useEffect(() => {
     if (!Array.isArray(initialResults) || initialResults.length === 0) return;
-    const nextAnswers = {}; const nextSubmitted = {};
     initialResults.forEach((r) => {
       const qi = Number(r?.index) - 1;
       const q = questions?.[qi];
       if (!q) return;
       const choices = q.choices || q.options || [];
       const ci = choices.findIndex((c) => String(c) === String(r?.userAnswer));
-      if (ci >= 0) nextAnswers[qi] = ci;
-      nextSubmitted[qi] = true;
+      const correct = r?.correct != null ? Boolean(r.correct) : (ci >= 0 && String(choices[ci]) === String(q.correctAnswer ?? q.correct_answer));
+      dispatch({ type: 'SEED', id: qi, picked: ci >= 0 ? ci : null, correct });
     });
-    setAnswers((p) => ({ ...nextAnswers, ...p }));
-    setSubmitted((p) => ({ ...nextSubmitted, ...p }));
   }, [initialResults, questions]);
 
   if (!questions || questions.length === 0) {
@@ -81,23 +82,28 @@ export function QuestionRunner({ questions, onAnswer, initialResults }) {
       {questions.map((q, qi) => {
         const choices = q.choices || q.options || [];
         const correct = q.correctAnswer ?? q.correct_answer;
-        const picked = answers[qi];
-        const isSubmitted = submitted[qi];
+        const a = attemptOf(attempts, qi);
+        const picked = a.picked;
+        const graded = isSubmittedOrGraded(a);
+        const isRight = graded && String(choices[picked]) === String(correct);
         return (
-          <div key={qi} style={{ border: '1px solid #E5E7EB', borderRadius: '10px', padding: '14px' }}>
+          <div key={qi} data-testid="retry-question-item" data-attempt-status={a.status} style={{ border: '1px solid #E5E7EB', borderRadius: '10px', padding: '14px' }}>
             <p style={{ margin: '0 0 10px 0', fontWeight: 700, color: '#111827', whiteSpace: 'pre-wrap' }}>
               {qi + 1}. {clean(q.question)}
+              {a.attempt > 1 && <span style={{ ...attemptBadge, marginLeft: '8px' }}>{a.attempt}번째 시도</span>}
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               {choices.map((c, ci) => {
-                const isCorrect = isSubmitted && String(c) === String(correct);
-                const isWrongPick = isSubmitted && picked === ci && String(c) !== String(correct);
+                const isCorrect = graded && String(c) === String(correct);
+                const isWrongPick = graded && picked === ci && String(c) !== String(correct);
                 return (
                   <button
                     key={ci}
-                    onClick={() => !isSubmitted && setAnswers((p) => ({ ...p, [qi]: ci }))}
+                    data-testid="retry-question-choice"
+                    aria-pressed={picked === ci}
+                    onClick={() => canPick(a) && dispatch({ type: 'PICK', id: qi, choice: ci })}
                     style={{
-                      textAlign: 'left', padding: '8px 10px', borderRadius: '8px', fontSize: '13px', cursor: 'pointer',
+                      textAlign: 'left', padding: '8px 10px', borderRadius: '8px', fontSize: '13px', cursor: graded ? 'default' : 'pointer',
                       border: `1px solid ${isCorrect ? '#15803D' : isWrongPick ? '#DC2626' : picked === ci ? '#15803D' : '#D1D5DB'}`,
                       background: isCorrect ? '#ECFDF5' : isWrongPick ? '#FEF2F2' : picked === ci ? '#F0FDF4' : '#fff',
                       color: '#374151',
@@ -108,13 +114,17 @@ export function QuestionRunner({ questions, onAnswer, initialResults }) {
                 );
               })}
             </div>
-            {!isSubmitted ? (
+            {!graded ? (
               <button
+                data-testid="retry-question-submit"
                 style={{ ...btnPrimary, marginTop: '10px', opacity: picked == null ? 0.5 : 1 }}
                 disabled={picked == null}
                 onClick={() => {
-                  setSubmitted((p) => ({ ...p, [qi]: true }));
-                  if (typeof onAnswer === 'function') {
+                  const isFirstAttempt = a.attempt === 1 && !a.seeded;
+                  dispatch({ type: 'SUBMIT', id: qi });
+                  dispatch({ type: 'GRADE', id: qi, correct: String(choices[picked]) === String(correct) });
+                  // 서버 저장은 첫 시도만(문제당 1회 계약). 이후 시도는 로컬 연습이며 기존 기록을 지우지 않는다.
+                  if (isFirstAttempt && typeof onAnswer === 'function') {
                     onAnswer({
                       index: qi + 1,
                       userAnswer: picked == null ? '' : String(choices[picked] ?? ''),
@@ -127,13 +137,18 @@ export function QuestionRunner({ questions, onAnswer, initialResults }) {
               </button>
             ) : (
               <div style={{ marginTop: '10px', fontSize: '13px' }}>
-                <div style={{ fontWeight: 700, color: String(choices[picked]) === String(correct) ? '#15803D' : '#DC2626' }}>
-                  {String(choices[picked]) === String(correct) ? '정답입니다!' : `오답입니다. 정답: ${clean(correct)}`}
+                <div data-testid="retry-question-result" style={{ fontWeight: 700, color: isRight ? '#15803D' : '#DC2626' }}>
+                  {isRight ? '정답입니다!' : `오답입니다. 정답: ${clean(correct)}`}
                 </div>
                 {(q.explanation) && (
                   <p style={{ margin: '6px 0 0 0', color: '#374151', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
                     해설: {clean(q.explanation)}
                   </p>
+                )}
+                {isGraded(a) && (
+                  <button data-testid="retry-question-retry" style={{ ...btn, marginTop: '10px' }} onClick={() => dispatch({ type: 'RETRY', id: qi })}>
+                    다시 풀기
+                  </button>
                 )}
               </div>
             )}
@@ -238,15 +253,19 @@ function isCorrectChoice(choiceText, choiceIndex, answer) {
   return false;
 }
 
-/* 유사문제 1개 풀이 영역(활성 문제 전체: 본문/선택지/제출/결과/정답/해설/변형포인트) */
-function SimilarQuestionSolver({ q, picked, submitted, onPick, onSubmit }) {
+/* 유사문제 1개 풀이 영역(활성 문제 전체: 본문/선택지/제출/결과/정답/해설/변형포인트/다시 풀기)
+   attempt: utils/questionAttempt 의 문항 상태(READY/ANSWERING/SUBMITTED/GRADED). 채점 후 "다시 풀기"로 같은 문항을 새 시도로 되돌린다. */
+export function SimilarQuestionSolver({ q, attempt, onPick, onSubmit, onRetry }) {
+  const picked = attempt.picked;
+  const submitted = isSubmittedOrGraded(attempt);
   const correctText = q.choices.find((c, i) => isCorrectChoice(c, i, q.answer)) ?? q.answer;
   const isRight = submitted && q.choices[picked] != null && isCorrectChoice(q.choices[picked], picked, q.answer);
   return (
-    <div style={{ border: '1px solid #15803D', borderRadius: '12px', padding: '16px', background: '#fff', width: '100%', boxSizing: 'border-box' }}>
+    <div data-testid="similar-question-solver" data-attempt-status={attempt.status} style={{ border: '1px solid #15803D', borderRadius: '12px', padding: '16px', background: '#fff', width: '100%', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
         <span style={numBadge}>{q.number}번</span>
         {q.difficulty && <span style={diffBadge}>{DIFFICULTY_LABEL[q.difficulty] || q.difficulty}</span>}
+        {attempt.attempt > 1 && <span style={attemptBadge}>{attempt.attempt}번째 시도</span>}
       </div>
       <p style={{ margin: '0 0 12px 0', fontWeight: 700, color: '#111827', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
         {clean(q.question)}
@@ -260,7 +279,9 @@ function SimilarQuestionSolver({ q, picked, submitted, onPick, onSubmit }) {
           return (
             <button
               key={ci}
-              onClick={() => !submitted && onPick(ci)}
+              data-testid="similar-question-choice"
+              aria-pressed={picked === ci}
+              onClick={() => canPick(attempt) && onPick(ci)}
               style={{
                 textAlign: 'left', padding: '10px 12px', borderRadius: '8px', fontSize: '13.5px',
                 cursor: submitted ? 'default' : 'pointer', width: '100%', boxSizing: 'border-box',
@@ -276,12 +297,12 @@ function SimilarQuestionSolver({ q, picked, submitted, onPick, onSubmit }) {
         })}
       </div>
       {!submitted ? (
-        <button style={{ ...btnPrimary, marginTop: '12px', opacity: picked == null ? 0.5 : 1 }} disabled={picked == null} onClick={onSubmit}>
+        <button data-testid="similar-question-submit" style={{ ...btnPrimary, marginTop: '12px', opacity: picked == null ? 0.5 : 1 }} disabled={picked == null} onClick={onSubmit}>
           제출
         </button>
       ) : (
         <div style={{ marginTop: '12px', fontSize: '13.5px' }}>
-          <div style={{ fontWeight: 700, color: isRight ? '#15803D' : '#DC2626' }}>
+          <div data-testid="similar-question-result" style={{ fontWeight: 700, color: isRight ? '#15803D' : '#DC2626' }}>
             {isRight ? '정답입니다!' : '오답입니다.'}
           </div>
           <p style={{ margin: '8px 0 0 0', color: '#15803D', fontWeight: 600 }}>정답: {clean(correctText)}</p>
@@ -293,6 +314,11 @@ function SimilarQuestionSolver({ q, picked, submitted, onPick, onSubmit }) {
               <span style={{ fontWeight: 700, color: '#15803D' }}>변형 포인트 </span>
               <span style={{ color: '#374151', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{clean(q.variationPoint)}</span>
             </div>
+          )}
+          {isGraded(attempt) && (
+            <button data-testid="similar-question-retry" style={{ ...btn, marginTop: '12px' }} onClick={onRetry}>
+              다시 풀기
+            </button>
           )}
         </div>
       )}
@@ -306,8 +332,8 @@ export function VariantPanel({ note, items, onPick }) {
   const [count, setCount] = useState(3);
   const [questions, setQuestions] = useState([]);   // 정규화된 유사문제 배열(전체)
   const [activeId, setActiveId] = useState(null);    // 현재 풀이 중인 문제 id
-  const [answers, setAnswers] = useState({});        // id -> 선택 index
-  const [submitted, setSubmitted] = useState({});    // id -> bool
+  // id -> 문항 상태(READY/ANSWERING/SUBMITTED/GRADED, picked, attempt). 다시 풀기는 RETRY 전이로 같은 문항을 새 시도로 되돌린다.
+  const [attempts, dispatchAttempt] = useReducer(attemptMapReducer, {});
   const [usedFallback, setUsedFallback] = useState(false);
   const [generated, setGenerated] = useState(false); // 생성 시도 여부(빈 결과 안내 분기용)
   const [loading, setLoading] = useState(false);
@@ -328,10 +354,11 @@ export function VariantPanel({ note, items, onPick }) {
       } else {
         // 응답 전체를 배열로 정규화한 뒤 "요청한 문항 수" 계약으로 자른다(3 선택 → 정확히 3개 렌더).
         const qs = limitSimilarQuestions(normalizeSimilarQuestions(data), count);
+        if (qs.length !== Number(count)) throw new Error("QUESTION_COUNT_MISMATCH");
         setQuestions(qs);
-        setAnswers({}); setSubmitted({});
+        dispatchAttempt({ type: 'RESET_ALL' });
         setActiveId(qs.length ? qs[0].id : null);
-        setUsedFallback(Boolean(data?.usedFallback));
+        setUsedFallback(Boolean(data?.usedFallback || data?.partialFallback));
         setGenerated(true);
       }
     } catch (e) {
@@ -347,9 +374,11 @@ export function VariantPanel({ note, items, onPick }) {
   if (!note) return <NotePicker items={items} onPick={onPick} label="유사문제를 풀 오답노트를 선택하세요." />;
   const wrongCount = Math.max(1, note.wrongCount ?? 1);
   const activeQ = questions.find((q) => q.id === activeId) || null;
-  const statusOf = (q) => !submitted[q.id]
-    ? '풀이 전'
-    : (q.choices[answers[q.id]] != null && isCorrectChoice(q.choices[answers[q.id]], answers[q.id], q.answer) ? '정답' : '오답');
+  const statusOf = (q) => {
+    const a = attemptOf(attempts, q.id);
+    if (!isSubmittedOrGraded(a)) return '풀이 전';
+    return q.choices[a.picked] != null && isCorrectChoice(q.choices[a.picked], a.picked, q.answer) ? '정답' : '오답';
+  };
 
   return (
     <div style={{ width: '100%', boxSizing: 'border-box' }}>
@@ -452,11 +481,17 @@ export function VariantPanel({ note, items, onPick }) {
             <h3 style={listTitle}>유사문제 풀이</h3>
             {activeQ ? (
               <SimilarQuestionSolver
+                key={activeQ.id}
                 q={activeQ}
-                picked={answers[activeQ.id]}
-                submitted={Boolean(submitted[activeQ.id])}
-                onPick={(ci) => setAnswers((p) => ({ ...p, [activeQ.id]: ci }))}
-                onSubmit={() => setSubmitted((p) => ({ ...p, [activeQ.id]: true }))}
+                attempt={attemptOf(attempts, activeQ.id)}
+                onPick={(ci) => dispatchAttempt({ type: 'PICK', id: activeQ.id, choice: ci })}
+                onSubmit={() => {
+                  const a = attemptOf(attempts, activeQ.id);
+                  const correct = activeQ.choices[a.picked] != null && isCorrectChoice(activeQ.choices[a.picked], a.picked, activeQ.answer);
+                  dispatchAttempt({ type: 'SUBMIT', id: activeQ.id });
+                  dispatchAttempt({ type: 'GRADE', id: activeQ.id, correct });
+                }}
+                onRetry={() => dispatchAttempt({ type: 'RETRY', id: activeQ.id })}
               />
             ) : (
               <p style={muted}>위 목록에서 풀 문제를 선택하세요.</p>
@@ -549,6 +584,7 @@ const statusBadge = { fontSize: '12px', fontWeight: 700, borderRadius: '8px', pa
 const statusIdle = { color: '#6B7280', background: '#F3F4F6', borderColor: '#E5E7EB' };
 const statusOk = { color: '#15803D', background: '#ECFDF5', borderColor: '#BBF7D0' };
 const statusNo = { color: '#B91C1C', background: '#FEF2F2', borderColor: '#FECACA' };
+const attemptBadge = { fontSize: '12px', fontWeight: 700, color: '#1D4ED8', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '8px', padding: '2px 8px' };
 const miniLabel = { display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '6px' };
 const selectStyle = { padding: '8px 10px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '13px', color: '#374151' };
 const aiBox = { background: '#ECFDF5', border: '1px solid #BBF7D0', borderRadius: '10px', padding: '14px' };

@@ -20,7 +20,7 @@ const parseAny = (v) => (Array.isArray(v) && v.length >= 5
 
 // 세션 응답 → 앵커 { elapsedMs, anchoredAt(clientNow), sessionId }. 활성 세션이 아니면 null.
 export const anchorFromSession = (session, clientNowMs = Date.now()) => {
-  if (!session || !session.startTime) return null;
+  if (!session || !session.startTime || session.endTime) return null;
   if (session.status && String(session.status).toUpperCase() !== 'RUNNING' && String(session.status).toUpperCase() !== 'ACTIVE') {
     if (session.endTime) return null;
   }

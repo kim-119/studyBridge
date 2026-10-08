@@ -3,6 +3,9 @@ import { useAuth } from '../hooks/useAuth';
 import { authService, inquiryService } from '../services/api';
 import { ShieldAlert, MessageCircle, X, CheckCircle, AlertTriangle, Ban, User, Lock, Mail, BookOpen, Key, Camera } from 'lucide-react';
 
+import MyReports from '../components/MyReports';
+import { buildProfileUpdatePayload, validateProfileInput } from '../utils/profileUpdate';
+
 export default function MyPage() {
   const { userId, userEmail, user, updateUser } = useAuth();
   
@@ -188,6 +191,7 @@ export default function MyPage() {
 
   // 나의 1:1 문의 상태
   const [myInquiries, setMyInquiries] = useState([]);
+  const [activityTab, setActivityTab] = useState('inquiries');
 
   useEffect(() => {
     if (!userId) return;
@@ -241,12 +245,14 @@ export default function MyPage() {
   const [isVerified, setIsVerified] = useState(false);
 
   const handleSave = async () => {
-    const finalName = name.trim() || email.split('@')[0] || '';
+    const validation = validateProfileInput({ displayName: name, email });
+    if (validation) { alert(validation); return; }
+    const finalName = name.trim();
     const finalMajor = major.trim() || '전공 미설정';
 
     try {
       if (userId) {
-        let currentPhotoUrl = user?.photoUrl || user?.photo_url || '';
+        let currentPhotoUrl; // Send a photo key only after a new upload.
 
         if (selectedFile) {
           try {
@@ -259,13 +265,11 @@ export default function MyPage() {
           }
         }
 
-        await authService.updateProfile(userId, { 
-          displayName: finalName, 
-          major: finalMajor,
-          photoUrl: currentPhotoUrl
-        });
+        await authService.updateProfile(userId, buildProfileUpdatePayload({
+          displayName: finalName, major, email, uploadedS3Key: currentPhotoUrl,
+        }));
         
-        let refreshed = { displayName: finalName, major: finalMajor, email: email, photoUrl: currentPhotoUrl };
+        let refreshed = { displayName: finalName, major: finalMajor, email: email, photoUrl: profileImage };
         try {
           refreshed = await authService.getProfile(userId);
         } catch (e) {
@@ -284,7 +288,8 @@ export default function MyPage() {
       setIsEditing(false);
       alert('프로필이 성공적으로 업데이트되었습니다.');
     } catch (error) {
-      alert(error.message || '프로필 업데이트에 실패했습니다.');
+      const status = error?.response?.status;
+      alert(status === 400 ? '입력한 프로필 정보를 확인해 주세요.' : [401, 403].includes(status) ? '로그인 정보가 만료되었습니다. 다시 로그인해 주세요.' : '프로필을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.');
     }
   };
 
@@ -543,13 +548,18 @@ export default function MyPage() {
       <div className="glass-panel animate-fade-in" style={{ padding: '30px', marginTop: '24px' }}>
         <div className="mp-inquiry-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h3 style={{ margin: 0, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <MessageCircle size={20} /> 나의 1:1 문의 내역
+            <MessageCircle size={20} /> 내 활동 내역
           </h3>
           <button className="btn-primary" style={{ width: 'auto', padding: '8px 16px', borderRadius: '8px', fontSize: '14px' }} onClick={() => setShowInquiryModal(true)}>
             새 문의하기
           </button>
         </div>
 
+        <div role="tablist" aria-label="내 활동 내역" style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+          <button role="tab" aria-selected={activityTab === 'inquiries'} className="btn-outline" onClick={() => setActivityTab('inquiries')}>내 문의</button>
+          <button role="tab" aria-selected={activityTab === 'reports'} className="btn-outline" onClick={() => setActivityTab('reports')}>내 신고</button>
+        </div>
+        {activityTab === 'reports' ? <MyReports /> : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {myInquiries.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>등록된 문의 내역이 없습니다.</div>
@@ -586,6 +596,7 @@ export default function MyPage() {
             </div>
           ))}
         </div>
+        )}
       </div>
 
       {/* 새 문의 작성 모달 */}

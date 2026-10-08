@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { authService } from './services/api';
+import { isRejectedSession } from './utils/authSession';
 
 import Navbar from './components/Navbar';
 import Login from './pages/Login';
@@ -11,7 +12,6 @@ import Dashboard from './pages/Dashboard';
 import MyPage from './pages/MyPage';
 import AdminPage from './pages/AdminPage';
 import StudyMate from './pages/StudyMate';
-import LearningMate from './pages/LearningMate';
 import GroupStudy from './pages/GroupStudy';
 import GroupInvitePage from './pages/GroupInvitePage';
 import Archive from './pages/Archive';
@@ -44,8 +44,8 @@ function App() {
   const isAdminRoute = location.pathname.startsWith('/admin');
 
   useEffect(() => {
+    let active = true;
     const initAuth = async () => {
-      const storedUser = localStorage.getItem("user");
       const userId = localStorage.getItem("userId");
       const token = localStorage.getItem("token");
 
@@ -58,6 +58,7 @@ function App() {
       try {
         if (userId) {
           const profile = await authService.getProfile(userId);
+          if (!active) return;
           if (profile.status === 'BANNED' || profile.status === 'SUSPENDED' || (profile.suspensionEndDate && new Date(profile.suspensionEndDate) > new Date())) {
             console.warn('제재된 계정입니다. 자동 로그아웃됩니다.');
             logout();
@@ -66,17 +67,21 @@ function App() {
           }
           updateUser(profile);
         } else {
-          throw new Error('유효한 사용자 ID가 없습니다.');
+          logout();
         }
       } catch (e) {
-        console.warn('기존 로그인 세션이 유효하지 않습니다. 자동 로그아웃됩니다.');
-        logout();
+        if (active && isRejectedSession(e)) {
+          logout();
+        } else if (active) {
+          console.warn('프로필 조회 연결이 중단되었습니다. 기존 로그인 정보를 유지합니다.');
+        }
       } finally {
-        setIsAuthChecking(false);
+        if (active) setIsAuthChecking(false);
       }
     };
 
     initAuth();
+    return () => { active = false; };
   }, []);
 
   if (isAuthChecking) {
@@ -116,7 +121,8 @@ function App() {
 
           <Route path="/admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
           <Route path="/studymate" element={<PrivateRoute><StudyMate /></PrivateRoute>} />
-          <Route path="/learning-mate" element={<PrivateRoute><LearningMate /></PrivateRoute>} />
+          {/* 레거시 /learning-mate(질문형 학습메이트 중복 화면)는 canonical 학습메이트(/studymate)로 영구 이동 */}
+          <Route path="/learning-mate" element={<Navigate to="/studymate" replace />} />
           <Route path="/groupstudy" element={<PrivateRoute><GroupStudy /></PrivateRoute>} />
           {/* 비공개 그룹 초대 링크(데스크톱/모바일/앱 동일 경로). 비로그인은 PrivateRoute 가 state.from 으로 로그인 후 복귀 */}
           <Route path="/groups/invite/:token" element={<PrivateRoute><GroupInvitePage /></PrivateRoute>} />

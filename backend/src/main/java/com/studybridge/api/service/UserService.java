@@ -26,6 +26,9 @@ public class UserService {
     private final RefreshTokenRepository refreshTokenRepository;
     private final S3Service s3Service;
 
+    // users.photo_url 컬럼 길이(ddl-auto 기본 varchar(255)).
+    static final int PHOTO_KEY_MAX_LENGTH = 255;
+
     // 회원 가입
     @Transactional
     public UserDTO.Response register(UserDTO.RegisterRequest request) {
@@ -153,11 +156,38 @@ public class UserService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("사용자를 찾을 수 없습니다."));
 
-        user.setDisplayName(request.getDisplayName());
-        user.setMajor(request.getMajor());
-        user.setPhotoUrl(request.getPhotoUrl());
+        user.setDisplayName(request.getDisplayName().trim());
+        if (request.getMajor() != null) {
+            user.setMajor(request.getMajor().trim());
+        }
+        user.setPhotoUrl(resolvePhotoUrlForUpdate(user.getPhotoUrl(), request.getPhotoUrl()));
 
         return convertToResponse(user);
+    }
+
+    /**
+     * 프로필 수정 요청의 photoUrl 을 저장할 값(S3 key)으로 정규화한다.
+     *  - null/빈 문자열: 사진 미변경 → 기존 키 유지(사진이 없는 계정은 그대로 없음).
+     *  - http(s) 절대 URL: 조회 응답(presigned URL, 400자+)을 그대로 되돌려 보낸 경우 → 기존 키 유지.
+     *    photo_url 컬럼은 varchar(255) 라 presigned URL 저장 시도는 DataIntegrityViolation → 500 이었다.
+     *  - 그 외(업로드 응답의 s3Key): 길이 한도 안이면 새 키로 교체.
+     * 클라이언트 userId 는 받지 않으며, 이메일/역할/상태는 이 경로에서 건드리지 않는다.
+     */
+    static String resolvePhotoUrlForUpdate(String currentPhotoKey, String requestedPhotoUrl) {
+        if (requestedPhotoUrl == null) {
+            return currentPhotoKey;
+        }
+        String trimmed = requestedPhotoUrl.trim();
+        if (trimmed.isEmpty()) {
+            return currentPhotoKey;
+        }
+        if (trimmed.regionMatches(true, 0, "http://", 0, 7) || trimmed.regionMatches(true, 0, "https://", 0, 8)) {
+            return currentPhotoKey;
+        }
+        if (trimmed.length() > PHOTO_KEY_MAX_LENGTH) {
+            return currentPhotoKey;
+        }
+        return trimmed;
     }
 
     // 프로필 조회
