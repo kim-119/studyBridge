@@ -1603,6 +1603,30 @@ export const plannerService = {
 };
 
 // AI 계획 분석(PDF/플래너 문장 단위 학습 진행) 서비스. 모두 Spring(/api) 경유.
+// 학습 추천(사용자 플래너 Learning Task / 로드맵 Learning Node / 문서 기반) + 계획 진단(Optimization Strategy).
+//  - 생성(POST)은 EC2 규칙(+플래그 ON 시 AI07 후보 검증)으로 후보를 만들고, 승인해야만 플래너에 등록된다.
+//  - 오류 본문: { status, code, message, retryable, requestId } (409 *_IN_PROGRESS, 429 RATE_LIMITED 등)
+export const recommendationService = {
+  listForPlanner: async (plannerId) => (await api.get(`/api/planners/${plannerId}/recommendations`)).data,
+  generateForPlanner: async (plannerId) =>
+    (await api.post(`/api/planners/${plannerId}/recommendations`, {}, { timeout: AI_TIMEOUT_MS })).data,
+  listForMaterial: async (materialId) => (await api.get(`/api/materials/${materialId}/recommendations`)).data,
+  generateForMaterial: async (materialId) =>
+    (await api.post(`/api/materials/${materialId}/recommendations`, {}, { timeout: AI_TIMEOUT_MS })).data,
+  accept: async (id, { plannerDate = null, acknowledgeVerification = false } = {}) =>
+    (await api.post(`/api/recommendations/${id}/accept`, { plannerDate, acknowledgeVerification })).data,
+  reject: async (id) => (await api.post(`/api/recommendations/${id}/reject`, {})).data,
+  complete: async (id) => (await api.post(`/api/recommendations/${id}/complete`, {})).data,
+  metrics: async () => (await api.get('/api/recommendations/metrics')).data,
+  // A(가용)/W(작업량)/D(부족량) + 마감 창·과부하·선수관계·일정 중복. dailyAvailableMinutes 없으면 A·D 미계산.
+  diagnosis: async (plannerId, { dailyAvailableMinutes = null, deadline = null } = {}) => {
+    const params = {};
+    if (dailyAvailableMinutes != null && dailyAvailableMinutes !== '') params.dailyAvailableMinutes = dailyAvailableMinutes;
+    if (deadline) params.deadline = deadline;
+    return (await api.get(`/api/planners/${plannerId}/diagnosis`, { params })).data;
+  },
+};
+
 export const planAnalysisService = {
   // 분석 생성/재생성 (PDF/플래너 텍스트 → 문장/행동 단위 체크리스트)
   analyze: async (materialId) => {

@@ -7,7 +7,6 @@ import com.studybridge.api.dto.AiMaterialQuizDTO;
 import com.studybridge.api.dto.QuizDTO;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialQuiz;
-import com.studybridge.api.repository.MaterialFeedbackRepository;
 import com.studybridge.api.repository.MaterialMemoRepository;
 import com.studybridge.api.repository.MaterialQuestionRepository;
 import com.studybridge.api.repository.MaterialQuizRepository;
@@ -83,7 +82,7 @@ class MaterialQuizFailoverTest {
                     .questionCount(q.getQuestionCount()).pageRange(q.getPageRange()).quizData(q.getQuizData()).build();
         });
         AiUpstreams ups = new AiUpstreams(List.of(new AiUpstream("primary", primary.baseUrl(), p), new AiUpstream("secondary", secondary.baseUrl(), s)));
-        return new AiIntegrationService(materials, summaries, mock(MaterialFeedbackRepository.class), quizRepository,
+        return new AiIntegrationService(materials, summaries, quizRepository,
                 mock(MaterialMemoRepository.class), mock(MaterialQuestionRepository.class), mock(RoadmapRepository.class),
                 mock(RoadmapTaskRepository.class), p, mock(IntentRouterService.class), mock(LearningLoopService.class),
                 mock(MaterialQuizService.class), new AiFailoverExecutor(ups));

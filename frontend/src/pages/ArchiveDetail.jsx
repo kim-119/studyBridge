@@ -11,6 +11,8 @@ import ObsidianArchiveGraphViewer from '../components/graph/ObsidianArchiveGraph
 import ReviewNoteLearningEntry from '../components/review-note/ReviewNoteLearningEntry';
 import PlannerPlanAnalysisPanel from '../components/planner/PlannerPlanAnalysisPanel';
 import NextLearningCard from '../components/planner/NextLearningCard';
+import LearningRecommendationPanel from '../components/planner/LearningRecommendationPanel';
+import PlanDiagnosisCard from '../components/planner/PlanDiagnosisCard';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
 import { cleanLearningOrNull, filterLearningList } from '../utils/learningContent';
 
@@ -1881,29 +1883,12 @@ export default function ArchiveDetail() {
     patchPlanItem(item.id, { completed: true, hidden: true });
   };
 
-  // 다음 학습 추천 재생성 (미완료 항목 기반)
-  const handleNextRecommend = async () => {
-    const materialId = material?.materialId || id;
-    if (!materialId) return;
-    if (!planAnalysis) { await handlePlannerAnalyze(); return; }
-    try {
-      setPlanLoading(true);
-      const res = await planAnalysisService.recommend(materialId);
-      setPlanAnalysis((prev) => prev ? { ...prev, recommendations: res.recommendations } : prev);
-    } catch (e) {
-      console.warn('다음 학습 추천 실패:', e);
-    } finally {
-      setPlanLoading(false);
-    }
-  };
-
   // ===== 우측 학습 도구(3탭) — plan_analysis(서버 DB) 기반 렌더 =====
   const renderLearningToolPanel = () => {
     const pa = planAnalysis;
     const progress = pa?.progress || { totalCount: 0, completedCount: 0, hiddenCount: 0, visibleCount: 0, percent: 0 };
     const allItems = Array.isArray(pa?.items) ? pa.items : [];
     const visibleItems = allItems.filter((it) => !it.hidden);
-    const recommendations = Array.isArray(pa?.recommendations) ? pa.recommendations : [];
     const plannerData = pa?.plannerAnalysisData || null;
 
     // 코드/패키지명이 깨지지 않게: 단어 내부(특히 CJK) 분절 금지 + 넘칠 때만 줄바꿈 + 전체 tooltip
@@ -1926,30 +1911,25 @@ export default function ArchiveDetail() {
     const wrap = (children) => (<div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px' }}>{children}</div>);
 
     // ── 다음 학습 추천 ──
-    // 위: DB 기반 결정적 추천(같은 로드맵의 다음 week/day · 같은 과목의 다음 사용자 플래너, AI 호출 없음, 클릭 시에만 이동).
-    // 아래: 기존 AI 계획 분석에서 나온 추천 목록(유지).
+    // 위: 이미 있는 다음 계획으로 이동(DB 결정적, AI 없음).
+    // 아래: 새 학습 과제/로드맵 다음 단계/문서 기반 추천 — 제안 후 [플래너에 등록] 승인 시에만 등록.
+    //  (계획 최적화·시간 부족 진단은 'AI 계획 분석' 탭의 계획 진단으로 분리 — 예전 "AI 계획 분석 기반 추천" 목록은 여기서 제거)
     if (plannerDetailView === 'next') {
+      const openPlanner = (pid) => navigate('/planner', { state: { openPlannerId: pid } });
       return wrap(
         <>
         <NextLearningCard
           plannerId={material?.plannerId ?? null}
           onOpen={(next) => {
             if (next?.nextMaterialId != null) navigate(`/archive/pdf/${next.nextMaterialId}`);
-            else if (next?.nextPlannerId != null) navigate('/planner', { state: { openPlannerId: next.nextPlannerId } });
+            else if (next?.nextPlannerId != null) openPlanner(next.nextPlannerId);
           }}
         />
-        <LearningToolCard icon={<ArrowRight size={17} color="#15803D" />} title="AI 계획 분석 기반 추천"
-          right={<button className="btn-outline" style={{ width: 'auto', padding: '6px 12px', fontSize: '12px' }} onClick={handleNextRecommend} disabled={planLoading}>새로 추천</button>}>
-          {!pa ? (
-            <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. ‘AI 계획 분석’을 먼저 실행하세요.</p>
-          ) : recommendations.length === 0 ? (
-            <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>미완료 항목이 없습니다. 모든 학습을 완료했어요! 🎉</p>
-          ) : (
-            <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {recommendations.map((r, i) => <li key={i} style={{ fontSize: '14px', color: 'var(--color-text-main)', ...codeSafe }} title={r}>{r}</li>)}
-            </ul>
-          )}
-        </LearningToolCard>
+        <LearningRecommendationPanel
+          plannerId={material?.plannerId ?? null}
+          materialId={material?.plannerId == null ? (material?.materialId ?? (id ? Number(id) : null)) : null}
+          onOpenPlanner={openPlanner}
+        />
         </>
       );
     }
@@ -1974,6 +1954,7 @@ export default function ArchiveDetail() {
       return wrap(
         <>
           <PlannerPlanAnalysisPanel plannerId={material.plannerId} />
+          <PlanDiagnosisCard plannerId={material.plannerId} />
           {pa && (
             <LearningToolCard icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
               {visibleItems.length === 0 ? (
@@ -3425,6 +3406,14 @@ export default function ArchiveDetail() {
             </div>
         );
       }
+      // 문서 기반 다음 학습(원본 플래너 없는 PDF) — 개념 복습·실습·심화·오답 복습. 로드맵 단계로 표현하지 않는다.
+      case 'next':
+        return (
+          <div className="animate-fade-in" style={{ paddingBottom: '32px' }}>
+            <LearningRecommendationPanel materialId={material?.materialId ?? (id ? Number(id) : null)}
+              onOpenPlanner={(pid) => navigate('/planner', { state: { openPlannerId: pid } })} />
+          </div>
+        );
       default:
         return null;
     }
@@ -3554,6 +3543,7 @@ export default function ArchiveDetail() {
                     <button className={`archive-action-btn ${activePdfTool === 'roadmap' ? 'active' : ''}`} onClick={() => setActivePdfTool('roadmap')}><Map size={16} /> 주차별 로드맵</button>
                     <button className={`archive-action-btn ${activePdfTool === 'memo' ? 'active' : ''}`} onClick={() => setActivePdfTool('memo')}><Edit3 size={16} /> 메모</button>
                     <button className={`archive-action-btn ${activePdfTool === 'chat' ? 'active' : ''}`} onClick={() => setActivePdfTool('chat')}><MessageSquare size={16} /> AI 질문</button>
+                    <button className={`archive-action-btn ${activePdfTool === 'next' ? 'active' : ''}`} onClick={() => setActivePdfTool('next')}><ArrowRight size={16} /> 다음 학습</button>
                   </div>
                 )}
                 {/* 삭제 버튼 */}

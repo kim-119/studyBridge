@@ -10,6 +10,28 @@ import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
 import { userFacingMessage } from '../utils/userFacingError';
 
 // 의미 없는 제목 차단 — 저장 요청을 보내기 전에 막는다.
+// AI 피드백 concept_review_v1 섹션(AI_RECOMMENDATION_CONTRACT_V1 §feedback_regenerate). AI07 이 주면 레거시 장점/권장 위에 구분 표시.
+// 예: "ViewModel 은 Activity 간 자동 유지" → 오개념(ViewModelStoreOwner 범위) · 누락 지식(구성 변경 vs 프로세스 종료, SavedStateHandle).
+const CONCEPT_SECTIONS = [
+  { key: 'conceptAccuracy', label: '개념 정확성', color: '#0EA5E9', hint: '작성한 설명이 정확한지 문장 단위로 판정합니다.' },
+  { key: 'misconceptions', label: '오개념', color: '#EF4444', hint: '틀린 이해와 올바른 설명을 짝지어 보여줍니다.' },
+  { key: 'missingKnowledge', label: '누락된 지식', color: '#F59E0B', hint: '정확히 이해하려면 함께 알아야 하는 내용입니다.' },
+  { key: 'advancedConcepts', label: '심화 개념', color: '#8B5CF6', hint: '다음 단계로 확장할 개념입니다.' },
+  { key: 'verificationPractice', label: '검증 실습', color: '#10B981', hint: '직접 실행해 이해를 확인하는 실습입니다.' },
+];
+// 문자열 또는 {claim/statement/concept/task, correction/explanation/verdict/expected} 객체를 {head, detail} 로 정규화.
+function conceptItems(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((it) => {
+    if (it == null) return null;
+    if (typeof it !== 'object') return { head: sanitizeMarkdownText(String(it)), detail: '' };
+    const head = it.claim || it.statement || it.concept || it.task || it.title || '';
+    const verdict = it.verdict ? `[${it.verdict}] ` : '';
+    const detail = it.correction || it.explanation || it.reason || it.expected || it.expectedResult || it.description || '';
+    return { head: sanitizeMarkdownText(verdict + String(head)), detail: sanitizeMarkdownText(String(detail)) };
+  }).filter((x) => x && (x.head || x.detail));
+}
+
 const BLOCKED_TITLES = ['', ' ', 'ㅇㅇ', 'ㅎㅎ', 'test', 'sample', 'planner', '플래너', '무제', '제목 없음'];
 const TITLE_GUIDE = '제목은 핵심 키워드가 드러나게 입력해 주세요. 예: ViewModel·StateFlow 피드백 수렴 플래너';
 function isMeaninglessTitle(raw) {
@@ -252,6 +274,10 @@ export default function Archive() {
   const [journalFeedback, setJournalFeedback] = useState([]);
   const [journalFeedbackStruct, setJournalFeedbackStruct] = useState(null);
   const [regeneratingFeedback, setRegeneratingFeedback] = useState(false);
+  // 재생성 실패 상태 { code, message, retryable, requestId } — 기존 피드백은 화면에 그대로 둔다(alert 대신 인라인 안내 + 재시도).
+  const [feedbackRegenError, setFeedbackRegenError] = useState(null);
+  // 응답 역전 방지: 학습일지 열기/재생성마다 증가. 늦게 도착한 이전 요청 응답은 버린다.
+  const journalReqSeqRef = useRef(0);
 
   const checkAuth = () => {
     if (!userId) {
@@ -372,6 +398,8 @@ export default function Archive() {
       setEditContent(journal.content);
       setEditNextPlan(journal.nextPlan);
       setIsJournalEditMode(false);
+      setFeedbackRegenError(null);
+      setRegeneratingFeedback(false);
       fetchJournalAiData(journal.id);
       return;
     }
@@ -390,9 +418,11 @@ export default function Archive() {
     let obj = null;
     try { obj = JSON.parse(raw); } catch { obj = null; }
     if (obj && typeof obj === 'object' && !Array.isArray(obj) &&
-        (obj.strengths || obj.recommendations || obj.concerns || obj.summary || obj.feedback_balance)) {
+        (obj.strengths || obj.recommendations || obj.concerns || obj.summary || obj.feedback_balance
+          || CONCEPT_SECTIONS.some((sec) => Array.isArray(obj[sec.key]) && obj[sec.key].length))) {
       return {
         struct: {
+          concept: Object.fromEntries(CONCEPT_SECTIONS.map((sec) => [sec.key, conceptItems(obj[sec.key])])),
           title: sanitizeMarkdownText(obj.feedback_title || 'AI 학습 피드백'),
           summary: sanitizeMarkdownText(obj.summary || obj.feedbackData || ''),
           strengths: sanitizeList(obj.strengths),
@@ -411,12 +441,15 @@ export default function Archive() {
   };
 
   const fetchJournalAiData = async (materialId) => {
+    const seq = ++journalReqSeqRef.current;
+    const stale = () => seq !== journalReqSeqRef.current;
     try {
       setJournalSummary('AI가 학습일지를 분석 중입니다...');
       setJournalFeedback([]);
       setJournalFeedbackStruct(null);
 
       const summaryRes = await materialService.getSummary(materialId);
+      if (stale()) return;
       if (summaryRes && summaryRes.overview) {
         setJournalSummary(sanitizeMarkdownText(summaryRes.overview));
       } else {
@@ -424,10 +457,12 @@ export default function Archive() {
       }
 
       const feedbackRes = await materialService.getFeedback(materialId);
+      if (stale()) return;
       const norm = normalizeFeedback(feedbackRes?.feedbackData);
       setJournalFeedbackStruct(norm.struct);
       setJournalFeedback(norm.lines);
     } catch (error) {
+      if (stale()) return;
       console.error('AI 분석 정보 조회 실패:', error);
       setJournalSummary('AI 요약을 가져오는 도중 오류가 발생했습니다.');
       setJournalFeedbackStruct(null);
@@ -437,24 +472,65 @@ export default function Archive() {
 
   const handleRegenerateFeedback = async () => {
     if (regeneratingFeedback || !selectedJournal?.id) return;
+    const journalId = selectedJournal.id;
+    const seq = ++journalReqSeqRef.current;
     try {
       setRegeneratingFeedback(true);
-      const feedbackRes = await materialService.regenerateFeedback(selectedJournal.id);
+      setFeedbackRegenError(null);
+      const feedbackRes = await materialService.regenerateFeedback(journalId);
+      if (seq !== journalReqSeqRef.current) return; // 다른 일지로 이동/재요청됨 → 늦은 응답 무시
       const norm = normalizeFeedback(feedbackRes?.feedbackData);
       setJournalFeedbackStruct(norm.struct);
       setJournalFeedback(norm.lines);
     } catch (e) {
-      // 진단을 위해 status / 요청 URL / 응답 본문을 함께 남긴다(기존 피드백 화면은 유지).
+      if (seq !== journalReqSeqRef.current) return;
+      // 진단을 위해 status / 요청 URL / 응답 본문을 함께 남긴다. 기존 피드백 화면은 유지한다.
+      const data = e.response?.data || {};
       console.error('피드백 재생성 실패:', {
         status: e.response?.status,
         url: e.config?.url,
-        data: e.response?.data,
+        code: data.code,
+        requestId: data.requestId || e.response?.headers?.['x-request-id'],
         message: e.message,
       });
-      alert(e.response?.data?.message || '피드백 재생성 중 오류가 발생했습니다.');
+      const timeout = e.code === 'ECONNABORTED' || e.response?.status === 504;
+      setFeedbackRegenError({
+        code: data.code || (timeout ? 'AI_TIMEOUT' : 'UNKNOWN'),
+        message: data.message || (timeout
+          ? 'AI 응답 시간이 초과되었습니다. 기존 피드백은 유지됩니다.'
+          : '피드백 재생성 중 오류가 발생했습니다. 기존 피드백은 유지됩니다.'),
+        retryable: data.retryable !== false,
+        requestId: data.requestId || null,
+      });
     } finally {
-      setRegeneratingFeedback(false);
+      if (seq === journalReqSeqRef.current) setRegeneratingFeedback(false);
     }
+  };
+
+  const renderRegenError = () => {
+    const err = feedbackRegenError;
+    if (!err) return null;
+    const busy = err.code === 'FEEDBACK_GENERATION_IN_PROGRESS';
+    return (
+      <div role="alert" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px', padding: '12px 14px', marginBottom: '14px', borderRadius: '10px', backgroundColor: busy ? '#EFF6FF' : '#FEF2F2', border: `1px solid ${busy ? '#BFDBFE' : '#FECACA'}`, color: busy ? '#1E40AF' : '#991B1B', fontSize: '13.5px', lineHeight: 1.5 }}>
+        <span style={{ flex: '1 1 220px', minWidth: 0 }}>
+          {err.message}
+          {err.requestId && <span style={{ display: 'block', fontSize: '11.5px', opacity: 0.7, wordBreak: 'break-all' }}>요청 ID: {err.requestId}</span>}
+        </span>
+        <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+          {err.retryable && (
+            <button type="button" onClick={busy ? () => fetchJournalAiData(selectedJournal?.id) : handleRegenerateFeedback} disabled={regeneratingFeedback}
+              style={{ minHeight: '36px', padding: '6px 14px', borderRadius: '18px', border: '1px solid currentColor', background: 'white', color: 'inherit', fontSize: '13px', cursor: 'pointer' }}>
+              {busy ? '결과 새로고침' : '다시 시도'}
+            </button>
+          )}
+          <button type="button" onClick={() => setFeedbackRegenError(null)}
+            style={{ minHeight: '36px', padding: '6px 12px', borderRadius: '18px', border: 'none', background: 'transparent', color: 'inherit', fontSize: '13px', cursor: 'pointer' }}>
+            닫기
+          </button>
+        </div>
+      </div>
+    );
   };
 
   const FB_SECTIONS = [
@@ -469,8 +545,10 @@ export default function Archive() {
   const renderFeedbackBody = () => {
     const s = journalFeedbackStruct;
     if (s) {
-      const insufficient = s.strengths.length < 8 || s.recommendations.length < 8 || s.concerns.length < 8;
-      const strengthOnly = s.strengths.length > 0 && s.recommendations.length === 0 && s.concerns.length === 0;
+      // concept_review_v1 응답은 장점/권장/우려 개수 규칙(레거시 balanced)의 대상이 아니다.
+      const hasConcept = CONCEPT_SECTIONS.some((sec) => (s.concept?.[sec.key] || []).length > 0);
+      const insufficient = !hasConcept && (s.strengths.length < 8 || s.recommendations.length < 8 || s.concerns.length < 8);
+      const strengthOnly = !hasConcept && s.strengths.length > 0 && s.recommendations.length === 0 && s.concerns.length === 0;
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {strengthOnly && fbWarn('AI 피드백이 장점 위주로 생성되었습니다. 권장사항과 우려사항을 포함해 다시 생성해 주세요.')}
@@ -481,6 +559,26 @@ export default function Archive() {
               <p style={{ margin: 0, fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{s.summary}</p>
             </div>
           )}
+          {CONCEPT_SECTIONS.map((sec) => {
+            const list = s.concept?.[sec.key] || [];
+            if (!list.length) return null;
+            return (
+              <div key={sec.key}>
+                <h4 style={{ margin: '0 0 4px', fontSize: '14.5px', color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: sec.color }} /> {sec.label} <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', fontWeight: 400 }}>({list.length}개)</span>
+                </h4>
+                <p style={{ margin: '0 0 8px', fontSize: '12px', color: 'var(--color-text-muted)' }}>{sec.hint}</p>
+                <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px', borderLeft: `3px solid ${sec.color}22` }}>
+                  {list.map((it, i) => (
+                    <li key={i} style={{ fontSize: '13.5px', lineHeight: 1.6, color: 'var(--color-text-main)', overflowWrap: 'anywhere' }}>
+                      <span style={{ fontWeight: it.detail ? 600 : 400 }}>{it.head}</span>
+                      {it.detail && <span style={{ display: 'block', color: 'var(--color-text-muted)' }}>{it.detail}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
           {FB_SECTIONS.map((sec) => {
             const list = s[sec.key] || [];
             if (!list.length) return null;
@@ -1206,8 +1304,8 @@ export default function Archive() {
               <h3 style={{ margin: 0, fontSize: '22px' }}>{selectedJournal.title}</h3>
               <button className="btn-close" onClick={() => setSelectedJournal(null)}><X size={24} /></button>
             </div>
-            <div className="modal-body" style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: 0 }}>
-              <div style={{ flex: 1, padding: '32px', overflowY: 'auto', borderRight: '1px solid var(--color-border)' }}>
+            <div className="modal-body sb-journal-body" style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: 0 }}>
+              <div className="sb-journal-pane sb-journal-left" style={{ flex: 1, padding: '32px', overflowY: 'auto', borderRight: '1px solid var(--color-border)' }}>
                 {isJournalEditMode ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '20px' }}>
@@ -1260,7 +1358,7 @@ export default function Archive() {
                   </div>
                 )}
               </div>
-              <div style={{ flex: 1, padding: '32px', overflowY: 'auto', backgroundColor: 'var(--color-bg-base)' }}>
+              <div className="sb-journal-pane" style={{ flex: 1, padding: '32px', overflowY: 'auto', backgroundColor: 'var(--color-bg-base)' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                   <div className="glass-panel" style={{ padding: '24px' }}>
                     <h3 style={{ margin: '0 0 16px', fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1281,6 +1379,7 @@ export default function Archive() {
                         {regeneratingFeedback ? '재생성 중…' : '균형 잡힌 피드백 다시 생성'}
                       </button>
                     </div>
+                    {renderRegenError()}
                     {renderFeedbackBody()}
                   </div>
                 </div>

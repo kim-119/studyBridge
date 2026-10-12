@@ -104,6 +104,15 @@ ai:
     # ai07 라우터가 비활성/장애(미배포 404)일 때 EC2 로컬 결정적 분류기로 폴백:
     #   인사/자기소개/잡담→DIRECT_REPLY, 욕설/공격성→BLOCK, 그 외 학습질문→PROCEED.
     local-fallback-enabled: ${AI_INTENT_ROUTER_LOCAL_FALLBACK_ENABLED:true}
+  # 자료보관함 AI 피드백(MaterialFeedbackService). 재생성은 같은 행 갱신, 실패 시 기존 피드백 보존.
+  #  concept-review-enabled: AI07 concept_review_v1 섹션(개념 정확성/오개념/누락/심화/검증 실습) 요청 — AI07 준비 전 OFF.
+  feedback:
+    timeout-seconds: ${AI_FEEDBACK_TIMEOUT_SECONDS:125}
+    concept-review-enabled: ${AI_FEEDBACK_CONCEPT_REVIEW_ENABLED:false}
+  # 학습 추천 AI07 후보 생성(AI_RECOMMENDATION_CONTRACT_V1). OFF 면 EC2 규칙 추천만 사용. AI07 라우트 배포·계약 검증 후 ON.
+  recommendation:
+    enabled: ${AI_RECOMMENDATION_ENABLED:false}
+    timeout-seconds: ${AI_RECOMMENDATION_TIMEOUT_SECONDS:30}
 
 cloud:
   aws:

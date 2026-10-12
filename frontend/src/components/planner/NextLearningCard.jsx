@@ -34,7 +34,7 @@ export default function NextLearningCard({ plannerId, onOpen }) {
     <div className="glass-panel animate-fade-in" style={{ padding: '22px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', gap: '8px' }}>
         <h3 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>
-          <ArrowRight size={17} color="#15803D" /> 다음 학습 추천
+          <ArrowRight size={17} color="#15803D" /> 다음 예정 계획
         </h3>
         {right}
       </div>

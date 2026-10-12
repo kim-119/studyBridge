@@ -69,7 +69,8 @@ class QuizAndDeleteHttpContractTest {
         mvc = MockMvcBuilders.standaloneSetup(
                         new GroupStudyMaterialController(groupService),
                         new MaterialController(Mockito.mock(MaterialService.class), aiService,
-                                Mockito.mock(StudyNoteAnalysisService.class), quizService),
+                                Mockito.mock(StudyNoteAnalysisService.class), quizService,
+                                Mockito.mock(com.studybridge.api.service.MaterialFeedbackService.class)),
                         new MindmapSemanticGraphController(mindmapService))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .setCustomArgumentResolvers(new PrincipalResolver())

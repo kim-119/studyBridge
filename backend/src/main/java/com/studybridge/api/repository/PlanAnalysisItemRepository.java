@@ -10,6 +10,8 @@ public interface PlanAnalysisItemRepository extends JpaRepository<PlanAnalysisIt
     List<PlanAnalysisItem> findByAnalysisIdAndDeletedFalseOrderByOrderIndexAsc(Long analysisId);
     List<PlanAnalysisItem> findByAnalysisIdOrderByOrderIndexAsc(Long analysisId);
 
+    List<PlanAnalysisItem> findByAnalysisIdInAndDeletedFalse(java.util.Collection<Long> analysisIds);
+
     @Transactional
     void deleteByAnalysisId(Long analysisId);
 }

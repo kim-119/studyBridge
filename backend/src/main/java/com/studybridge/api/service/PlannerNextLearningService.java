@@ -131,7 +131,7 @@ public class PlannerNextLearningService {
      * 학습 순서 키: [0]=순서 종류(0=week/day, 1=날짜만), [1..]=값. week/day 가 있는 행끼리는 week/day 로,
      * 없으면 plannerDate 로 비교한다. 둘 다 없으면 null(순서를 알 수 없음).
      */
-    static long[] orderKey(Planner p) {
+    public static long[] orderKey(Planner p) {
         int[] wd = weekDay(p);
         if (wd != null) return new long[]{0, wd[0], wd[1]};
         if (p.getPlannerDate() != null) return new long[]{1, p.getPlannerDate().toEpochDay(), 0};
@@ -147,7 +147,7 @@ public class PlannerNextLearningService {
     }
 
     /** week/day: 컬럼 우선, 없으면 제목 "[로드맵 N주차 M일]" 에서 추출. */
-    static int[] weekDay(Planner p) {
+    public static int[] weekDay(Planner p) {
         if (p.getRoadmapWeek() != null && p.getRoadmapDay() != null) return new int[]{p.getRoadmapWeek(), p.getRoadmapDay()};
         if (p.getTitle() == null) return null;
         Matcher m = ROADMAP_WD.matcher(p.getTitle());
@@ -156,7 +156,7 @@ public class PlannerNextLearningService {
         catch (NumberFormatException e) { return null; }
     }
 
-    static boolean isRoadmapPlanner(Planner p) {
+    public static boolean isRoadmapPlanner(Planner p) {
         if (p.getPlannerType() != null) return p.getPlannerType() == PlannerType.ROADMAP;
         return p.getSourceType() != null || p.getSourceRoadmapId() != null;
     }
@@ -182,7 +182,7 @@ public class PlannerNextLearningService {
      * 우선하고 없으면 이 플래너의 보관 자료(PLANNER material)에 연결된 분석을 쓴다.
      * (로드맵 플래너의 materialId 는 출처 PDF 라 여러 플래너가 공유하므로 그 분석은 쓰지 않는다.)
      */
-    private Completion completion(Long userId, Planner current) {
+    public Completion completion(Long userId, Planner current) {
         Optional<PlanAnalysis> analysis = planAnalysisRepository.findTopByUserIdAndPlannerIdOrderByIdDesc(userId, current.getId());
         if (analysis.isEmpty() && current.getMaterialId() != null) {
             Material m = materialRepository.findById(current.getMaterialId()).orElse(null);
@@ -211,8 +211,9 @@ public class PlannerNextLearningService {
 
     private record Candidate(Planner planner, String type) {}
 
-    private record Completion(int total, int completed) {
-        boolean allComplete() { return total > 0 && completed == total; }
-        Double rate() { return total == 0 ? null : (double) completed / total; }
+    /** 체크리스트 이행도(계획 이행 기록). 숙련도가 아니다. 학습 추천(LearningRecommendationService)도 이 정의를 공유한다. */
+    public record Completion(int total, int completed) {
+        public boolean allComplete() { return total > 0 && completed == total; }
+        public Double rate() { return total == 0 ? null : (double) completed / total; }
     }
 }

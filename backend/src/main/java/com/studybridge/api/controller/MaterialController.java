@@ -25,6 +25,7 @@ public class MaterialController {
     private final com.studybridge.api.service.AiIntegrationService aiIntegrationService;
     private final com.studybridge.api.service.StudyNoteAnalysisService studyNoteAnalysisService;
     private final com.studybridge.api.service.MaterialQuizService materialQuizService;
+    private final com.studybridge.api.service.MaterialFeedbackService materialFeedbackService;
 
     // 학습일지 생성
     @PostMapping("/log")
@@ -180,7 +181,7 @@ public class MaterialController {
     public ResponseEntity<com.studybridge.api.dto.FeedbackDTO> getFeedback(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long materialId) {
-        return ResponseEntity.ok(aiIntegrationService.getFeedback(userDetails.getId(), materialId));
+        return ResponseEntity.ok(materialFeedbackService.get(userDetails.getId(), materialId));
     }
 
     // 균형 잡힌 피드백 다시 생성 (L)
@@ -188,7 +189,7 @@ public class MaterialController {
     public ResponseEntity<com.studybridge.api.dto.FeedbackDTO> regenerateFeedback(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long materialId) {
-        return ResponseEntity.ok(aiIntegrationService.regenerateFeedback(userDetails.getId(), materialId));
+        return ResponseEntity.ok(materialFeedbackService.regenerate(userDetails.getId(), materialId));
     }
 
     @GetMapping("/{materialId}/memo")

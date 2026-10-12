@@ -2376,3 +2376,11 @@ a {
   .archive-journal-head .archive-journal-actions { order: 2; width: 100%; min-width: 0; gap: 8px !important; }
   .archive-journal-head .archive-journal-actions .btn-outline { padding: 8px 12px !important; }
 }
+
+/* 학습일지 상세 모달(자료보관함): ≤768px 에서는 좌(내용)/우(AI 요약·피드백) 2단을 세로로 쌓는다.
+   2단 그대로면 390px 에서 우측 칼럼이 ~100px 로 좁아져 피드백·재생성 오류 안내가 한 글자씩 줄바꿈된다. */
+@media (max-width: 768px) {
+  .sb-journal-body { flex-direction: column !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }
+  .sb-journal-body > .sb-journal-pane { flex: none !important; padding: 16px !important; overflow: visible !important; }
+  .sb-journal-body > .sb-journal-left { border-right: none !important; border-bottom: 1px solid var(--color-border); }
+}
