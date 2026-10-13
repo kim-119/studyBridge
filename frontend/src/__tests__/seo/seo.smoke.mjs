@@ -47,6 +47,10 @@ function checkIndexHtml(html, label) {
   check(`${label} title 1개`, (html.match(/<title>/g) || []).length === 1);
   const desc = (html.match(/<meta name="description" content="([^"]+)"/) || [])[1] || '';
   check(`${label} meta description`, desc.length >= 40 && desc.includes('스터디브릿지'), desc);
+  const naver = html.match(/<meta name="naver-site-verification" content="([^"]*)"/g) || [];
+  check(`${label} 네이버 소유확인 태그 1개`, naver.length === 1
+    && naver[0].includes('content="9b5325517c9f2885f9bb29533ff15f0f26b66b86"'), `count=${naver.length}`);
+  check(`${label} 구글 TXT 값 HTML 미포함`, !html.includes('google-site-verification='));
   check(`${label} noindex meta 없음`, !/<meta[^>]+name="robots"[^>]+noindex/i.test(html));
   for (const p of ['og:title', 'og:description', 'og:site_name', 'og:url', 'og:type']) {
     check(`${label} ${p}`, new RegExp(`<meta property="${p}" content="[^"]+"`).test(html));
@@ -119,6 +123,7 @@ async function runHttp() {
     check(`m ${p} canonical=apex 같은 경로`, JSON.stringify(canonicalOf(mr.body)) === JSON.stringify([`https://${APEX}${p}`]), canonicalOf(mr.body).join(' '));
     check(`m ${p} alternate 없음`, !mr.body.includes('rel="alternate"'));
     check(`m ${p} X-Robots-Tag 없음`, !mr.headers['x-robots-tag']);
+    if (p === '/') checkIndexHtml(mr.body, 'm /');
   }
 
   const q = await get(APEX, '/?utm_source=x', doc(UA.desktop));
