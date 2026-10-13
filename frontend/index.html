@@ -3,10 +3,47 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>StudyBridge - 학습 지원 플랫폼</title>
+  <title>스터디브릿지(StudyBridge) | AI 기반 통합 학습 플랫폼</title>
+  <meta name="description" content="스터디브릿지(StudyBridge)는 AI 학습메이트, PDF 요약·퀴즈, 그룹스터디, 학습 플래너를 한곳에서 제공하는 AI 기반 통합 학습 플랫폼입니다." />
+  <meta name="application-name" content="스터디브릿지" />
+  <!-- canonical / 모바일 alternate 는 nginx(sub_filter)가 요청 경로별로 이 자리에 넣는다(공개 경로만). ops/nginx/studybridge-seo.conf -->
+  <!--sb:seo-links-->
+  <meta property="og:type" content="website" />
+  <meta property="og:locale" content="ko_KR" />
+  <meta property="og:site_name" content="스터디브릿지(StudyBridge)" />
+  <meta property="og:title" content="스터디브릿지(StudyBridge) | AI 기반 통합 학습 플랫폼" />
+  <meta property="og:description" content="AI 학습메이트, PDF 요약·퀴즈, 그룹스터디, 학습 플래너를 한곳에서 제공하는 AI 기반 통합 학습 플랫폼입니다." />
+  <meta property="og:url" content="https://studybridge.co.kr/" />
+  <meta property="og:image" content="https://studybridge.co.kr/studybridge-main-logo.png" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="스터디브릿지(StudyBridge) | AI 기반 통합 학습 플랫폼" />
+  <meta name="twitter:description" content="AI 학습메이트, PDF 요약·퀴즈, 그룹스터디, 학습 플래너를 한곳에서 제공하는 AI 기반 통합 학습 플랫폼입니다." />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "스터디브릿지",
+    "alternateName": ["StudyBridge", "Study Bridge", "스터디 브릿지"],
+    "url": "https://studybridge.co.kr/",
+    "inLanguage": "ko-KR"
+  }
+  </script>
 </head>
 <body>
-<div id="root"></div>
+<div id="root">
+  <!-- JavaScript 실행 전(검색로봇·저속 회선)에도 읽히는 서비스 소개. React 가 마운트되면 이 내용을 교체한다. -->
+  <div style="max-width:640px;margin:0 auto;padding:96px 24px;font-family:system-ui,-apple-system,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;color:#1f2937;line-height:1.7;">
+    <h1 style="margin:0 0 8px;font-size:28px;">스터디브릿지 (StudyBridge)</h1>
+    <p style="margin:0 0 20px;color:#4b5563;">AI 기반 통합 학습 플랫폼</p>
+    <ul style="margin:0 0 20px;padding-left:20px;color:#374151;">
+      <li>AI 학습메이트 — 학습 중 궁금한 점을 AI와 대화하며 해결</li>
+      <li>PDF 요약 및 퀴즈 — 학습 자료의 핵심 요약과 문제 생성</li>
+      <li>그룹스터디 — 함께 공부하는 스터디 그룹과 실시간 학습</li>
+      <li>학습 플래너 — 로드맵 기반 학습 계획과 일정 관리</li>
+    </ul>
+    <p style="margin:0;"><a href="/login">로그인</a> · <a href="/register">회원가입</a> · <a href="/app">Android 앱</a></p>
+  </div>
+</div>
 <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>

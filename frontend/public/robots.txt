@@ -1,0 +1,8 @@
+# 스터디브릿지(StudyBridge) — studybridge.co.kr / m.studybridge.co.kr 공용(같은 정적 릴리즈)
+# 비공개 화면(로그인 필요)은 서버 인증으로 보호되며, 검색 비노출은 nginx X-Robots-Tag: noindex 로 처리한다.
+# (robots.txt 로 막으면 로봇이 noindex 헤더를 읽지 못하므로 화면 경로는 막지 않는다.)
+User-agent: *
+Allow: /
+Disallow: /downloads/
+
+Sitemap: https://studybridge.co.kr/sitemap.xml

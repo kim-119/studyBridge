@@ -24,6 +24,14 @@ import Planner from './pages/Planner';
 import ReviewNotesPage from './pages/ReviewNotesPage';
 import ObsidianPage from './pages/ObsidianPage';
 import AppDownload from './pages/AppDownload';
+const DEFAULT_TITLE = '스터디브릿지(StudyBridge) | AI 기반 통합 학습 플랫폼';
+const PAGE_TITLES = {
+  '/login': '로그인 | 스터디브릿지(StudyBridge)',
+  '/register': '회원가입 | 스터디브릿지(StudyBridge)',
+  '/forgot-password': '비밀번호 찾기 | 스터디브릿지(StudyBridge)',
+  '/app': 'Android 앱 다운로드 | 스터디브릿지(StudyBridge)',
+};
+
 function PrivateRoute({ children }) {
   const { isLoggedIn } = useAuth();
   const location = useLocation();
@@ -42,6 +50,11 @@ function App() {
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const location = useLocation();
   const isAdminRoute = location.pathname.startsWith('/admin');
+
+  // 공개 경로별 문서 제목(검색 결과·탭 표시). canonical/noindex 는 nginx 가 서버 응답에서 처리한다(ops/nginx/studybridge-seo.conf).
+  useEffect(() => {
+    document.title = PAGE_TITLES[location.pathname.replace(/\/+$/, '') || '/'] || DEFAULT_TITLE;
+  }, [location.pathname]);
 
   useEffect(() => {
     let active = true;
