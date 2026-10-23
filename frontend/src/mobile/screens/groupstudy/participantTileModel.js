@@ -41,3 +41,12 @@ export function buildParticipantTiles({ localTile, remoteParticipants, memberPho
 
   return [localTile, ...remoteTiles];
 }
+
+export function countDistinctParticipants(participants) {
+  const identities = new Set();
+  (participants || []).forEach((participant) => {
+    const hasUserId = participant.userId !== undefined && participant.userId !== null;
+    identities.add(hasUserId ? `user:${participant.userId}` : `connection:${participant.connectionId}`);
+  });
+  return identities.size;
+}

@@ -5,7 +5,12 @@ import { describeApiError, useAsync } from '../../../data/useAsync';
 import { FACING_MODE } from '../cameraTrack';
 import { isGroupLeader } from '../groupStudyModel';
 import { MEDIA_PHASE, describeMediaStatus } from '../mediaJoinModel';
-import { buildLocalTile, buildParticipantTiles, indexMemberPhotos } from '../participantTileModel';
+import {
+  buildLocalTile,
+  buildParticipantTiles,
+  countDistinctParticipants,
+  indexMemberPhotos,
+} from '../participantTileModel';
 import { isQuizActive } from '../quizSessionModel';
 import { SOCKET_STATE, canRetryManually, describeSocketStatus } from '../socketConnectionModel';
 import { useGroupAiChat } from '../useGroupAiChat';
@@ -160,6 +165,12 @@ export default function StudyRoomView({
     (material) => String(material.id) === overlay.viewerMaterialId
   );
 
+  const isParticipantsOpen = overlay.panel === ROOM_PANEL.PARTICIPANTS;
+  useEffect(() => {
+    if (isParticipantsOpen) members.reload().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isParticipantsOpen]);
+
   const isChatOpen = overlay.panel === ROOM_PANEL.CHAT;
   const hasUnreadChat = useUnreadChat(room.chatMessages.length, room.history.isSuccess, isChatOpen);
   const isLeader = isGroupLeader(group.data, userId);
@@ -204,6 +215,7 @@ export default function StudyRoomView({
         return (
           <ParticipantsPanel
             groupId={groupId}
+            group={group.data}
             members={members}
             isLeader={isLeader}
             userId={userId}
@@ -236,7 +248,7 @@ export default function StudyRoomView({
       <RoomHeader
         title={group.data?.title || '그룹스터디'}
         enteredAt={enteredAt}
-        participantCount={participants.length}
+        participantCount={countDistinctParticipants(participants)}
         socketState={room.socketState}
         onOpenMenu={() => togglePanel(ROOM_PANEL.MENU)}
         onLeave={onLeave}
