@@ -1257,8 +1257,15 @@ export const groupService = {
     return res.data;
   },
 
-  getVideoToken: async (id) => {
-    const res = await api.post(`/api/groups/${id}/video/token`);
+  // PRIMARY(음성·카메라) 토큰. hint = { clientInstanceId, deviceType } — 서버가 serverData(검증된 userId/kind)에 기록한다.
+  getVideoToken: async (id, hint) => {
+    const res = await api.post(`/api/groups/${id}/video/token`, hint || undefined);
+    return res.data;
+  },
+
+  // 실시간 접속 Source of Truth(OpenVidu active Connection). ghost 정리·참여 인원 검증용.
+  getVideoConnections: async (id) => {
+    const res = await api.get(`/api/groups/${id}/video/connections`);
     return res.data;
   },
 
