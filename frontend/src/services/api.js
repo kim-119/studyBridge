@@ -1263,6 +1263,18 @@ export const groupService = {
     return res.data;
   },
 
+  // 화면공유(SCREEN) 전용 토큰. body = { primaryConnectionId, clientInstanceId, deviceType } — 내 active PRIMARY 에 귀속.
+  getScreenShareToken: async (id, body) => {
+    const res = await api.post(`/api/groups/${id}/video/screen-token`, body);
+    return res.data;
+  },
+
+  // 내 화면공유 Connection 서버측 종료(멱등). 클라이언트 disconnect 가 유실됐을 때의 안전망.
+  stopScreenShare: async (id, connectionId) => {
+    const res = await api.delete(`/api/groups/${id}/video/screen/${encodeURIComponent(connectionId)}`);
+    return res.data;
+  },
+
   // 실시간 접속 Source of Truth(OpenVidu active Connection). ghost 정리·참여 인원 검증용.
   getVideoConnections: async (id) => {
     const res = await api.get(`/api/groups/${id}/video/connections`);

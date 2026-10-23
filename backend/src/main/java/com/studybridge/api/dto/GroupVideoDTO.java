@@ -13,4 +13,10 @@ public class GroupVideoDTO {
      * @param deviceType       WEB | ANDROID | IOS (그 외 UNKNOWN)
      */
     public record TokenRequest(String clientInstanceId, String deviceType) {}
+
+    /**
+     * POST /api/groups/{id}/video/screen-token 본문.
+     * @param primaryConnectionId 화면공유를 귀속시킬 내 PRIMARY Connection(현재 active, serverData.userId == 나). 필수.
+     */
+    public record ScreenTokenRequest(String primaryConnectionId, String clientInstanceId, String deviceType) {}
 }

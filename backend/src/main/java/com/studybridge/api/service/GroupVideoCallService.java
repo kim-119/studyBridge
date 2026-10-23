@@ -12,11 +12,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 그룹스터디 화상통화 Connection 발급/조회.
@@ -32,15 +35,26 @@ public class GroupVideoCallService {
     private final GroupStudyMemberRepository memberRepository;
     private final ObjectMapper objectMapper;
     private final String sessionPrefix;
+    private final int primaryMaxRecvKbps;
+    private final int screenMaxSendKbps;
+    private final int screenMinSendKbps;
+    /** 같은 사용자의 화면공유 토큰 동시 발급 직렬화(단일 Spring 인스턴스 기준). */
+    private final Map<String, Object> screenLocks = new ConcurrentHashMap<>();
 
     public GroupVideoCallService(OpenViduService openVidu,
                                  GroupStudyMemberRepository memberRepository,
                                  ObjectMapper objectMapper,
-                                 @Value("${openvidu.session-prefix:group_study_}") String sessionPrefix) {
+                                 @Value("${openvidu.session-prefix:group_study_}") String sessionPrefix,
+                                 @Value("${openvidu.bandwidth.primary-max-recv-kbps:2500}") int primaryMaxRecvKbps,
+                                 @Value("${openvidu.bandwidth.screen-max-send-kbps:2500}") int screenMaxSendKbps,
+                                 @Value("${openvidu.bandwidth.screen-min-send-kbps:300}") int screenMinSendKbps) {
         this.openVidu = openVidu;
         this.memberRepository = memberRepository;
         this.objectMapper = objectMapper;
         this.sessionPrefix = sessionPrefix;
+        this.primaryMaxRecvKbps = primaryMaxRecvKbps;
+        this.screenMaxSendKbps = screenMaxSendKbps;
+        this.screenMinSendKbps = screenMinSendKbps;
     }
 
     public String sessionIdFor(long groupId) {
@@ -64,7 +78,7 @@ public class GroupVideoCallService {
         String device = VideoConnectionMetadata.sanitizeDeviceType(deviceType);
         String serverData = VideoConnectionMetadata.toServerData(objectMapper, groupId, userId, Kind.PRIMARY,
                 null, instanceId, device, System.currentTimeMillis());
-        ConnectionGrant grant = openVidu.createConnection(sessionId, serverData, "PUBLISHER", null);
+        ConnectionGrant grant = openVidu.createConnection(sessionId, serverData, "PUBLISHER", primaryKurentoOptions());
         log.info("[VIDEO] primary token issued userId={} groupId={} connectionId={} device={} instance={}",
                 userId, groupId, grant.connectionId(), device, instanceId == null ? "-" : "set");
 
@@ -74,6 +88,127 @@ public class GroupVideoCallService {
         body.put("sessionId", sessionId);
         body.put("kind", Kind.PRIMARY.name());
         body.put("contractVersion", VideoConnectionMetadata.VERSION);
+        return body;
+    }
+
+    /**
+     * 시청자(PRIMARY) 수신 상한. OpenVidu 는 송출자 상한과 모든 구독자 수신 상한 중 최솟값으로 스트림 전체를 묶는다
+     * (전역 기본 1000kbps). 카메라는 송출 상한(전역 1000)에 그대로 묶이고, 화면공유만 더 높은 비트레이트를 쓸 수 있게 된다.
+     */
+    private Map<String, Object> primaryKurentoOptions() {
+        if (primaryMaxRecvKbps <= 0) return null;
+        Map<String, Object> o = new HashMap<>();
+        o.put("videoMaxRecvBandwidth", primaryMaxRecvKbps);
+        return o;
+    }
+
+    private Map<String, Object> screenKurentoOptions() {
+        Map<String, Object> o = new HashMap<>();
+        if (screenMaxSendKbps > 0) o.put("videoMaxSendBandwidth", screenMaxSendKbps);
+        if (screenMinSendKbps > 0) o.put("videoMinSendBandwidth", screenMinSendKbps);
+        return o.isEmpty() ? null : o;
+    }
+
+    /**
+     * 화면공유(SCREEN) 전용 Connection 토큰. OpenVidu 2.x 는 Connection 당 Publisher 1개라 카메라·마이크(PRIMARY)를 유지한 채
+     * 화면을 보내려면 별도 Connection 이 필요하다. serverData.ownerConnectionId 로 같은 사용자에게 귀속돼 인원에 더해지지 않는다.
+     *
+     * <p>검증: JOINED 멤버 → primaryConnectionId 가 이 세션의 active Connection 이고 serverData(userId=나, kind=PRIMARY) →
+     * 사용자당 active 화면공유 1개. 기존 SCREEN 중 아직 안 쓴(pending) 토큰과 소유 PRIMARY 가 사라진(orphan) 연결은 정리한다.</p>
+     */
+    public Map<String, Object> issueScreenToken(long userId, long groupId, String primaryConnectionId,
+                                                String clientInstanceId, String deviceType) {
+        requireJoinedMember(userId, groupId);
+        if (!VideoConnectionMetadata.isValidConnectionId(primaryConnectionId)) {
+            throw new VideoCallException(HttpStatus.BAD_REQUEST, "INVALID_CONNECTION_ID", "primaryConnectionId 형식이 올바르지 않습니다.");
+        }
+        String sessionId = sessionIdFor(groupId);
+        Object lock = screenLocks.computeIfAbsent(groupId + ":" + userId, k -> new Object());
+        synchronized (lock) {
+            Map<String, Object> primary = openVidu.getConnection(sessionId, primaryConnectionId)
+                    .filter(c -> "active".equals(c.get("status")))
+                    .orElseThrow(() -> new VideoCallException(HttpStatus.CONFLICT, "PRIMARY_NOT_ACTIVE",
+                            "화상 연결이 활성화된 뒤에 화면을 공유할 수 있습니다."));
+            VideoConnectionMetadata owner = VideoConnectionMetadata.fromRest(objectMapper, primary.get("serverData"), primary.get("clientData"));
+            if (!owner.serverVerified() || owner.kind() != Kind.PRIMARY || owner.userId() == null || owner.userId() != userId) {
+                log.warn("[VIDEO] screen token owner mismatch userId={} groupId={} primary={} ownerUserId={} kind={} verified={}",
+                        userId, groupId, primaryConnectionId, owner.userId(), owner.kind(), owner.serverVerified());
+                throw new VideoCallException(HttpStatus.FORBIDDEN, "CONNECTION_OWNER_MISMATCH", "본인의 화상 연결에만 화면공유를 연결할 수 있습니다.");
+            }
+
+            List<Map<String, Object>> all = openVidu.listConnections(sessionId, true);
+            Set<String> activeIds = new LinkedHashSet<>();
+            for (Map<String, Object> c : all) {
+                if ("active".equals(c.get("status")) && c.get("connectionId") instanceof String id) activeIds.add(id);
+            }
+            for (Map<String, Object> c : all) {
+                VideoConnectionMetadata m = VideoConnectionMetadata.fromRest(objectMapper, c.get("serverData"), c.get("clientData"));
+                if (!m.serverVerified() || m.kind() != Kind.SCREEN || m.userId() == null || m.userId() != userId) continue;
+                String cid = (String) c.get("connectionId");
+                if (!"active".equals(c.get("status"))) {
+                    openVidu.deleteConnection(sessionId, cid); // 발급만 되고 접속하지 않은 이전 화면공유 토큰
+                    log.info("[VIDEO] stale pending screen token revoked userId={} groupId={} connectionId={}", userId, groupId, cid);
+                } else if (m.ownerConnectionId() != null && activeIds.contains(m.ownerConnectionId())) {
+                    Map<String, Object> details = new LinkedHashMap<>();
+                    details.put("connectionId", cid);
+                    details.put("ownerConnectionId", m.ownerConnectionId());
+                    throw new VideoCallException(HttpStatus.CONFLICT, "SCREEN_ALREADY_ACTIVE",
+                            m.ownerConnectionId().equals(primaryConnectionId)
+                                    ? "이미 화면을 공유하고 있습니다."
+                                    : "다른 기기에서 화면을 공유하고 있습니다. 그 기기에서 공유를 끝낸 뒤 다시 시도해주세요.",
+                            details);
+                } else {
+                    openVidu.deleteConnection(sessionId, cid); // 소유 PRIMARY 가 사라진 화면공유(새로고침·크래시 잔여)
+                    log.info("[VIDEO] orphan screen connection closed userId={} groupId={} connectionId={} owner={}",
+                            userId, groupId, cid, m.ownerConnectionId());
+                }
+            }
+
+            String instanceId = VideoConnectionMetadata.sanitizeInstanceId(clientInstanceId);
+            String device = VideoConnectionMetadata.sanitizeDeviceType(deviceType);
+            String serverData = VideoConnectionMetadata.toServerData(objectMapper, groupId, userId, Kind.SCREEN,
+                    primaryConnectionId, instanceId, device, System.currentTimeMillis());
+            ConnectionGrant grant = openVidu.createConnection(sessionId, serverData, "PUBLISHER", screenKurentoOptions());
+            log.info("[VIDEO] screen token issued userId={} groupId={} connectionId={} owner={} maxSendKbps={}",
+                    userId, groupId, grant.connectionId(), primaryConnectionId, screenMaxSendKbps);
+
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("token", grant.token());
+            body.put("connectionId", grant.connectionId());
+            body.put("sessionId", sessionId);
+            body.put("kind", Kind.SCREEN.name());
+            body.put("ownerConnectionId", primaryConnectionId);
+            body.put("maxSendKbps", screenMaxSendKbps);
+            body.put("contractVersion", VideoConnectionMetadata.VERSION);
+            return body;
+        }
+    }
+
+    /**
+     * 내 화면공유 Connection 을 서버에서 종료한다(클라이언트 disconnect 가 유실됐을 때의 안전망, Android 공유 중지 버튼 등).
+     * 이미 없으면 멱등하게 stopped=false. 다른 사람 것이거나 SCREEN 이 아니면 403.
+     */
+    public Map<String, Object> stopScreenShare(long userId, long groupId, String screenConnectionId) {
+        requireJoinedMember(userId, groupId);
+        if (!VideoConnectionMetadata.isValidConnectionId(screenConnectionId)) {
+            throw new VideoCallException(HttpStatus.BAD_REQUEST, "INVALID_CONNECTION_ID", "connectionId 형식이 올바르지 않습니다.");
+        }
+        String sessionId = sessionIdFor(groupId);
+        Optional<Map<String, Object>> found = openVidu.getConnection(sessionId, screenConnectionId);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("connectionId", screenConnectionId);
+        if (found.isEmpty()) {
+            body.put("stopped", false);
+            body.put("reason", "NOT_FOUND");
+            return body;
+        }
+        VideoConnectionMetadata m = VideoConnectionMetadata.fromRest(objectMapper, found.get().get("serverData"), found.get().get("clientData"));
+        if (!m.serverVerified() || m.kind() != Kind.SCREEN || m.userId() == null || m.userId() != userId) {
+            throw new VideoCallException(HttpStatus.FORBIDDEN, "CONNECTION_OWNER_MISMATCH", "본인의 화면공유만 종료할 수 있습니다.");
+        }
+        boolean stopped = openVidu.deleteConnection(sessionId, screenConnectionId);
+        log.info("[VIDEO] screen share stopped via API userId={} groupId={} connectionId={} stopped={}", userId, groupId, screenConnectionId, stopped);
+        body.put("stopped", stopped);
         return body;
     }
 

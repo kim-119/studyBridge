@@ -38,6 +38,29 @@ public class GroupVideoCallController {
                 request == null ? null : request.deviceType()));
     }
 
+    /**
+     * 화면공유(SCREEN) 전용 토큰. 내 active PRIMARY Connection 에 귀속된다(인원 증가 없음). 사용자당 동시 1개.
+     * 오류 code: NOT_GROUP_MEMBER(403) · CONNECTION_OWNER_MISMATCH(403) · INVALID_CONNECTION_ID(400)
+     *           · PRIMARY_NOT_ACTIVE(409) · SCREEN_ALREADY_ACTIVE(409, details.connectionId)
+     */
+    @PostMapping("/{id}/video/screen-token")
+    public ResponseEntity<Map<String, Object>> getScreenShareToken(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id,
+            @RequestBody GroupVideoDTO.ScreenTokenRequest request) {
+        return ResponseEntity.ok(videoCallService.issueScreenToken(userDetails.getId(), id,
+                request.primaryConnectionId(), request.clientInstanceId(), request.deviceType()));
+    }
+
+    /** 내 화면공유 Connection 서버측 종료(멱등). 클라이언트 disconnect 유실 시 안전망. */
+    @DeleteMapping("/{id}/video/screen/{connectionId}")
+    public ResponseEntity<Map<String, Object>> stopScreenShare(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long id,
+            @PathVariable String connectionId) {
+        return ResponseEntity.ok(videoCallService.stopScreenShare(userDetails.getId(), id, connectionId));
+    }
+
     /** 실시간 접속 Source of Truth(OpenVidu active Connection). 참여 인원·ghost 정리에 쓴다. */
     @GetMapping("/{id}/video/connections")
     public ResponseEntity<Map<String, Object>> getVideoConnections(
@@ -52,6 +75,7 @@ public class GroupVideoCallController {
         payload.put("status", ex.getStatus().value());
         payload.put("code", ex.getCode());
         payload.put("message", ex.getMessage());
+        if (!ex.getDetails().isEmpty()) payload.put("details", ex.getDetails());
         return ResponseEntity.status(ex.getStatus()).contentType(MediaType.APPLICATION_JSON).body(payload);
     }
 }

@@ -43,7 +43,7 @@ public record VideoConnectionMetadata(
     public static final String METADATA_SEPARATOR = "%/%";
 
     private static final Pattern INSTANCE_ID = Pattern.compile("^[A-Za-z0-9_-]{8,64}$");
-    private static final Pattern CONNECTION_ID = Pattern.compile("^con_[A-Za-z0-9]{4,64}$");
+    private static final Pattern CONNECTION_ID = Pattern.compile("^con_[A-Za-z0-9]{1,64}$");
     private static final Set<String> DEVICE_TYPES = Set.of("WEB", "ANDROID", "IOS");
 
     public static boolean isValidConnectionId(String connectionId) {

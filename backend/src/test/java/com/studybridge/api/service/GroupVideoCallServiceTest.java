@@ -22,6 +22,7 @@ import com.studybridge.api.service.OpenViduService.ConnectionGrant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -46,7 +47,7 @@ class GroupVideoCallServiceTest {
         openVidu = mock(OpenViduService.class);
         members = mock(GroupStudyMemberRepository.class);
         when(members.existsByGroupStudyIdAndUserIdAndStatus(GROUP, USER, GroupStudyMemberStatus.JOINED)).thenReturn(true);
-        service = new GroupVideoCallService(openVidu, members, om, "group_study_");
+        service = new GroupVideoCallService(openVidu, members, om, "group_study_", 2500, 2500, 300);
     }
 
     private static Map<String, Object> conn(String id, String status, String serverData, String clientData) {
@@ -150,6 +151,124 @@ class GroupVideoCallServiceTest {
             assertFalse(m.containsKey("token"));
             assertFalse(m.containsKey("ip"));
         }
+    }
+
+    // ── 화면공유(SCREEN) 계약 ──
+
+    private void primaryActive(String id, String serverData) {
+        when(openVidu.getConnection(SID, id)).thenReturn(Optional.of(conn(id, "active", serverData, "{}")));
+    }
+
+    @Test
+    void primaryToken_raisesViewerRecvCapSoScreenCanExceedGlobal1000() {
+        when(openVidu.createConnection(eq(SID), anyString(), any(), any())).thenReturn(new ConnectionGrant("con_P", "tok"));
+        service.issuePrimaryToken(USER, GROUP, null, null);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> ko = ArgumentCaptor.forClass(Map.class);
+        verify(openVidu).createConnection(eq(SID), anyString(), eq("PUBLISHER"), ko.capture());
+        assertEquals(2500, ko.getValue().get("videoMaxRecvBandwidth"));
+    }
+
+    @Test
+    void screenToken_ownedByVerifiedPrimary_isSeparateConnectionAttributedToSameUser() throws Exception {
+        primaryActive("con_PC", serverData(USER, "PRIMARY", null));
+        when(openVidu.listConnections(SID, true)).thenReturn(List.of(conn("con_PC", "active", serverData(USER, "PRIMARY", null), "{}")));
+        when(openVidu.createConnection(eq(SID), anyString(), eq("PUBLISHER"), any())).thenReturn(new ConnectionGrant("con_SCR", "tok_screen"));
+
+        Map<String, Object> res = service.issueScreenToken(USER, GROUP, "con_PC", "tab-abcdef12", "WEB");
+
+        assertEquals("tok_screen", res.get("token"));
+        assertEquals("SCREEN", res.get("kind"));
+        assertEquals("con_PC", res.get("ownerConnectionId"));
+        ArgumentCaptor<String> data = ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> ko = ArgumentCaptor.forClass(Map.class);
+        verify(openVidu).createConnection(eq(SID), data.capture(), eq("PUBLISHER"), ko.capture());
+        JsonNode sd = om.readTree(data.getValue());
+        assertEquals("SCREEN", sd.get("kind").asText());
+        assertEquals(USER, sd.get("userId").asLong());
+        assertEquals("con_PC", sd.get("ownerConnectionId").asText());
+        assertEquals(2500, ko.getValue().get("videoMaxSendBandwidth"));
+        assertEquals(300, ko.getValue().get("videoMinSendBandwidth"));
+    }
+
+    @Test
+    void screenToken_rejectsSomeoneElsesOrLegacyOrInactivePrimary() {
+        primaryActive("con_OTHER", serverData(55L, "PRIMARY", null));
+        VideoCallException other = assertThrows(VideoCallException.class, () -> service.issueScreenToken(USER, GROUP, "con_OTHER", null, null));
+        assertEquals("CONNECTION_OWNER_MISMATCH", other.getCode());
+        assertEquals(403, other.getStatus().value());
+
+        primaryActive("con_LEGACY", "");
+        when(openVidu.getConnection(SID, "con_LEGACY")).thenReturn(Optional.of(conn("con_LEGACY", "active", "", "{\"userId\":8}")));
+        assertEquals("CONNECTION_OWNER_MISMATCH",
+                assertThrows(VideoCallException.class, () -> service.issueScreenToken(USER, GROUP, "con_LEGACY", null, null)).getCode());
+
+        primaryActive("con_SCRN", serverData(USER, "SCREEN", "con_PC"));
+        assertEquals("CONNECTION_OWNER_MISMATCH",
+                assertThrows(VideoCallException.class, () -> service.issueScreenToken(USER, GROUP, "con_SCRN", null, null)).getCode());
+
+        when(openVidu.getConnection(SID, "con_GONE")).thenReturn(Optional.empty());
+        VideoCallException gone = assertThrows(VideoCallException.class, () -> service.issueScreenToken(USER, GROUP, "con_GONE", null, null));
+        assertEquals("PRIMARY_NOT_ACTIVE", gone.getCode());
+        assertEquals(409, gone.getStatus().value());
+
+        when(openVidu.getConnection(SID, "con_PEND")).thenReturn(Optional.of(conn("con_PEND", "pending", serverData(USER, "PRIMARY", null), "")));
+        assertEquals("PRIMARY_NOT_ACTIVE",
+                assertThrows(VideoCallException.class, () -> service.issueScreenToken(USER, GROUP, "con_PEND", null, null)).getCode());
+
+        assertEquals("INVALID_CONNECTION_ID",
+                assertThrows(VideoCallException.class, () -> service.issueScreenToken(USER, GROUP, "../../x", null, null)).getCode());
+        verify(openVidu, never()).createConnection(anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void screenToken_oneActivePerUser_conflictCarriesExistingConnection() {
+        primaryActive("con_PC", serverData(USER, "PRIMARY", null));
+        when(openVidu.listConnections(SID, true)).thenReturn(List.of(
+                conn("con_PC", "active", serverData(USER, "PRIMARY", null), "{}"),
+                conn("con_ANDROID", "active", serverData(USER, "PRIMARY", null), "{}"),
+                conn("con_SCR_ANDROID", "active", serverData(USER, "SCREEN", "con_ANDROID"), "{}")));
+        VideoCallException ex = assertThrows(VideoCallException.class, () -> service.issueScreenToken(USER, GROUP, "con_PC", null, null));
+        assertEquals("SCREEN_ALREADY_ACTIVE", ex.getCode());
+        assertEquals(409, ex.getStatus().value());
+        assertEquals("con_SCR_ANDROID", ex.getDetails().get("connectionId"));
+        verify(openVidu, never()).deleteConnection(anyString(), anyString());
+    }
+
+    @Test
+    void screenToken_revokesUnusedPendingAndClosesOrphanScreens_thenIssues() {
+        primaryActive("con_PC2", serverData(USER, "PRIMARY", null));
+        when(openVidu.listConnections(SID, true)).thenReturn(List.of(
+                conn("con_PC2", "active", serverData(USER, "PRIMARY", null), "{}"),
+                conn("con_SCR_PENDING", "pending", serverData(USER, "SCREEN", "con_PC2"), ""),
+                conn("con_SCR_ORPHAN", "active", serverData(USER, "SCREEN", "con_PC_BEFORE_REFRESH"), "{}"),
+                conn("con_SCR_OTHER_USER", "active", serverData(55L, "SCREEN", "con_X"), "{}")));
+        when(openVidu.createConnection(eq(SID), anyString(), any(), any())).thenReturn(new ConnectionGrant("con_SCR_NEW", "tok"));
+
+        assertEquals("con_SCR_NEW", service.issueScreenToken(USER, GROUP, "con_PC2", null, null).get("connectionId"));
+        verify(openVidu).deleteConnection(SID, "con_SCR_PENDING");
+        verify(openVidu).deleteConnection(SID, "con_SCR_ORPHAN");
+        verify(openVidu, never()).deleteConnection(SID, "con_SCR_OTHER_USER"); // 다른 사람 화면공유는 건드리지 않는다
+    }
+
+    @Test
+    void stopScreen_onlyOwnScreen_idempotent() {
+        when(openVidu.getConnection(SID, "con_MINE")).thenReturn(Optional.of(conn("con_MINE", "active", serverData(USER, "SCREEN", "con_PC"), "{}")));
+        when(openVidu.deleteConnection(SID, "con_MINE")).thenReturn(true);
+        assertEquals(true, service.stopScreenShare(USER, GROUP, "con_MINE").get("stopped"));
+
+        when(openVidu.getConnection(SID, "con_THEIRS")).thenReturn(Optional.of(conn("con_THEIRS", "active", serverData(55L, "SCREEN", "con_X"), "{}")));
+        assertEquals("CONNECTION_OWNER_MISMATCH", assertThrows(VideoCallException.class, () -> service.stopScreenShare(USER, GROUP, "con_THEIRS")).getCode());
+
+        when(openVidu.getConnection(SID, "con_MYPRIMARY")).thenReturn(Optional.of(conn("con_MYPRIMARY", "active", serverData(USER, "PRIMARY", null), "{}")));
+        assertEquals("CONNECTION_OWNER_MISMATCH", assertThrows(VideoCallException.class, () -> service.stopScreenShare(USER, GROUP, "con_MYPRIMARY")).getCode());
+
+        when(openVidu.getConnection(SID, "con_GONE")).thenReturn(Optional.empty());
+        Map<String, Object> gone = service.stopScreenShare(USER, GROUP, "con_GONE");
+        assertEquals(false, gone.get("stopped"));
+        verify(openVidu, never()).deleteConnection(SID, "con_THEIRS");
+        verify(openVidu, never()).deleteConnection(SID, "con_MYPRIMARY");
     }
 
     @Test

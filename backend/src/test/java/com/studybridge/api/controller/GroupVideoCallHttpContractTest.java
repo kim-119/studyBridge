@@ -88,6 +88,34 @@ class GroupVideoCallHttpContractTest {
     }
 
     @Test
+    void screenToken_conflict_409_withDetails_andOk() throws Exception {
+        Mockito.when(service.issueScreenToken(USER, 25L, "con_PC", null, null))
+                .thenThrow(new VideoCallException(HttpStatus.CONFLICT, "SCREEN_ALREADY_ACTIVE", "이미 화면을 공유하고 있습니다.",
+                        Map.of("connectionId", "con_SCR")));
+        mvc.perform(post("/api/groups/25/video/screen-token").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"primaryConnectionId\":\"con_PC\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SCREEN_ALREADY_ACTIVE"))
+                .andExpect(jsonPath("$.details.connectionId").value("con_SCR"));
+
+        Mockito.when(service.issueScreenToken(USER, 25L, "con_PC2", "tab-abcdef12", "WEB"))
+                .thenReturn(Map.of("token", "tok_s", "kind", "SCREEN", "ownerConnectionId", "con_PC2"));
+        mvc.perform(post("/api/groups/25/video/screen-token").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"primaryConnectionId\":\"con_PC2\",\"clientInstanceId\":\"tab-abcdef12\",\"deviceType\":\"WEB\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.kind").value("SCREEN"))
+                .andExpect(jsonPath("$.ownerConnectionId").value("con_PC2"));
+    }
+
+    @Test
+    void stopScreen_delete_idempotentBody() throws Exception {
+        Mockito.when(service.stopScreenShare(USER, 25L, "con_SCR")).thenReturn(Map.of("connectionId", "con_SCR", "stopped", false, "reason", "NOT_FOUND"));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/groups/25/video/screen/con_SCR"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stopped").value(false));
+    }
+
+    @Test
     void connections_returnsServerTruth() throws Exception {
         Mockito.when(service.listActiveConnections(USER, 25L)).thenReturn(Map.of(
                 "activeUserCount", 2,
