@@ -1,0 +1,62 @@
+package com.studybridge.api.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "users")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class User {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "user_id")
+    private Long id; // 사용자 고유 식별자 (PK)
+
+    @Column(name = "email", nullable = false, unique = true, length = 100)
+    private String email; // 사용자 이메일 (로그인 ID)
+
+    @Column(name = "password", nullable = false)
+    private String password; // 암호화된 비밀번호
+
+    @Column(name = "display_name", nullable = false, length = 50)
+    private String displayName; // 서비스 내 표시될 닉네임
+
+    @Column(name = "photo_url")
+    private String photoUrl; // 프로필 이미지 경로
+
+    @Column(name = "major", length = 50)
+    private String major; // 전공/학과 정보
+
+    @Builder.Default
+    @Column(name = "status", length = 20)
+    private String status = "ACTIVE"; // 사용자 상태 (예: ACTIVE, INACTIVE, BANNED)
+
+    @Builder.Default
+    @Column(name = "is_subscribed", nullable = false, columnDefinition = "boolean default false")
+    private Boolean isSubscribed = false; // 구독 여부
+
+    @Builder.Default
+    @Column(name = "role", length = 20)
+    private String role = "USER"; // USER, ADMIN
+
+    @Column(name = "suspension_end_date")
+    private LocalDateTime suspensionEndDate; // 일시정지 만료일
+
+    @Column(name = "suspension_reason")
+    private String suspensionReason; // 정지/제재 사유
+
+    @Column(name = "suspension_memo")
+    private String suspensionMemo; // 관리자 메모
+
+    @CreationTimestamp
+    @Column(name = "created_at", updatable = false)
+    private LocalDateTime createdAt; // 계정 생성 일시
+}

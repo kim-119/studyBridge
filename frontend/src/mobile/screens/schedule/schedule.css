@@ -1,0 +1,186 @@
+.mobile-calendar {
+  padding: var(--space-basic);
+  overflow: hidden;
+}
+
+.mobile-calendar__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.mobile-calendar__toolbar button {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.mobile-calendar__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-main);
+  font-size: 15px;
+  font-weight: 700;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-calendar__toolbar .mobile-calendar__today {
+  padding: 0 12px;
+  border: 1px solid var(--color-border-input);
+  border-radius: var(--radius-btn);
+  color: var(--color-text-main);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mobile-calendar .mobile-subtabs {
+  margin-bottom: var(--space-basic);
+}
+
+.mobile-calendar .fc {
+  width: 100%;
+  font-size: 12px;
+}
+
+.mobile-calendar .fc-theme-standard .fc-scrollgrid,
+.mobile-calendar .fc-theme-standard td,
+.mobile-calendar .fc-theme-standard th {
+  border-color: var(--color-border);
+}
+
+.mobile-calendar .fc-col-header-cell {
+  background-color: #F0FDF4;
+}
+
+.mobile-calendar .fc-col-header-cell-cushion {
+  padding: 6px 0;
+  color: #16A34A;
+  font-weight: 700;
+}
+
+.mobile-calendar .fc-daygrid-day-number {
+  padding: 2px 4px;
+  color: var(--color-text-main);
+  font-size: 11px;
+}
+
+.mobile-calendar .fc-dayGridMonth-view .fc-daygrid-day-frame {
+  min-height: 60px;
+}
+
+.mobile-calendar .fc-dayGridWeek-view .fc-daygrid-day-frame {
+  min-height: 160px;
+}
+
+.mobile-calendar .fc-day-today {
+  background-color: #ECFDF5;
+}
+
+.mobile-calendar .fc-daygrid-day.is-selected {
+  background-color: #ECFDF3;
+  box-shadow: inset 0 0 0 2px #BBF7D0;
+}
+
+.mobile-calendar .fc-daygrid-event {
+  margin-top: 1px;
+  padding: 0 2px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.mobile-calendar .fc-daygrid-more-link {
+  font-size: 10px;
+}
+
+.mobile-calendar__event {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-calendar__event.is-completed {
+  color: var(--color-text-placeholder);
+  text-decoration: line-through;
+}
+
+.mobile-schedule-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-md);
+}
+
+.mobile-schedule-summary .mobile-card__meta {
+  margin-bottom: 4px;
+}
+
+.mobile-todo__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mobile-todo__text {
+  word-break: break-word;
+}
+
+.mobile-todo__text.is-completed {
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+}
+
+.mobile-todo__period {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.mobile-todo-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.mobile-todo-badge--review {
+  background-color: #FEE2E2;
+  color: #B91C1C;
+}
+
+.mobile-todo-badge--planner {
+  background-color: #DCFCE7;
+  color: #15803D;
+}
+
+.mobile-schedule-dates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  column-gap: var(--space-basic);
+}
+
+.mobile-schedule-dates .mobile-field__input {
+  min-width: 0;
+}
+
+.mobile-schedule-sheet__actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-basic);
+}

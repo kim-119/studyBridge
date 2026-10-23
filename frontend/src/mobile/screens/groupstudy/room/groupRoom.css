@@ -1,0 +1,128 @@
+.mobile-room-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: var(--space-md);
+}
+
+.mobile-room-upload .mobile-button.is-disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.mobile-room-upload__result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-basic);
+}
+
+.mobile-room-upload__result .mobile-room-quiz-result {
+  flex: 1 1 180px;
+  margin: 0;
+}
+
+@media (max-width: 374px) {
+  .mobile-room-header .mobile-room-header__title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+  }
+
+  .mobile-room-header .mobile-room-header__title-row {
+    display: contents;
+  }
+
+  .mobile-room-header .mobile-room-header__title h1 {
+    flex-basis: 100%;
+  }
+
+  .mobile-room-header .mobile-room-header__title p {
+    order: 1;
+  }
+
+  .mobile-room-header .mobile-room-header__timer {
+    order: 2;
+    color: #9CA3AF;
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .mobile-room-header .mobile-room-header__timer::before {
+    content: ' · ';
+    white-space: pre;
+  }
+}
+
+.mobile-participant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-basic);
+  min-width: 0;
+}
+
+.mobile-participant__card {
+  min-width: 0;
+}
+
+.mobile-participant__name-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mobile-participant__name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.mobile-participant__me {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mobile-participant__name-line .mobile-group-badge {
+  flex: 0 0 auto;
+}
+
+.mobile-participant__stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mobile-participant__presence {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mobile-participant__presence::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #9CA3AF;
+}
+
+.mobile-participant__presence.is-online {
+  color: var(--color-primary-hover);
+}
+
+.mobile-participant__presence.is-online::before {
+  background-color: #22C55E;
+}
+
+.mobile-participant__actions {
+  display: flex;
+  justify-content: flex-end;
+}

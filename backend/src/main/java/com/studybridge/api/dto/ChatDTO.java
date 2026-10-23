@@ -1,0 +1,251 @@
+package com.studybridge.api.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
+
+public class ChatDTO {
+
+    @Getter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class MessageResponse {
+        private Long id;
+        private String content;
+        private String sender;
+        private String senderName;
+        private Long agentId;
+        private LocalDateTime createdAt;
+        // 영속화된 1차/2차/3차 생성 과정 (AI 메시지에만 존재, 없으면 null)
+        private Map<String, Object> processSteps;
+        // ── AI07 SSE 계약 metadata(없으면 null). authorKind: USER | AGENT | VIRTUAL(debate-consensus 등 실체 없는 작성자) ──
+        private String requestId;
+        private String turnId;
+        private String eventId;
+        private Integer agentIndex;
+        private String stage;
+        private String status;
+        private String mode;
+        private String personalityKey;
+        private String knowledgeLevelKey;
+        private String authorKind;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    @ToString
+    public static class MultiChatRequest {
+        // 빈 질문은 사용자 메시지로 저장되고 AI 호출까지 이어지므로 컨트롤러 @Valid 에서 400 으로 거절한다.
+        @jakarta.validation.constraints.NotBlank(message = "message 는 비어 있을 수 없습니다.")
+        @jakarta.validation.constraints.Size(max = 20000, message = "message 는 20000자를 넘을 수 없습니다.")
+        private String message;
+        private Long agentId;
+        private Long roomId;
+        private String mode;
+        private Integer rounds;
+        private Boolean showFinalSynthesis;
+        private List<RequestAgent> agents;
+        // 학습 진행 모드: basic / socratic / debate / simulation (미지정 시 FastAPI에서 basic으로 처리)
+        private String learningMode;
+        // 토론 모드 논제/구조 설정 (debate 모드에서만 사용, FastAPI로 그대로 패스스루)
+        private Map<String, Object> debateConfig;
+        // 소크라테스 모드 문답 설정 (socratic 모드에서만 사용, FastAPI로 그대로 패스스루)
+        private Map<String, Object> socraticConfig;
+        // 상황극 모드 설정 (simulation 모드에서만 사용, FastAPI로 그대로 패스스루)
+        private Map<String, Object> simulationConfig;
+        // 소크라테스 모드: 사용자가 방금 입력한 시도 답변 (오개념 분석용)
+        private String userAttempt;
+        // RAG 자료 ID (있으면 FastAPI가 PDF/RAG 검색을 수행)
+        private Long materialId;
+        private String personality;
+        // 정규 성격 key(default/professional/friendly/honest/unique/efficient/cynical) — 라벨보다 우선 사용.
+        private String personalityStyle;
+        // 성격 기본 또는 사용자 조절 temperature(0.0~1.2). 없으면 성격에서 유도.
+        private Double temperature;
+        private String personalityStrength;
+        private String personality_strength;
+        private String style;
+        private String tone;
+        private String knowledgeLevel;
+        private String knowledge_level;
+        private String customInstruction;
+        private String custom_instruction;
+        private String persona;
+        // 기본 질문 모드 단계 정책: 1차→2차 심화→3차 상호 피드백→환각 검증을 받을지 제어(FastAPI 패스스루).
+        private String stagePolicy;
+        private Boolean enableDeepening;
+        private Boolean enablePeerFeedback;
+        private Boolean enableHallucinationValidation;
+        // 특정 에이전트 지칭 (@에이전트이름 또는 N번만 답해줘)
+        private String targetAgentId;
+        // "이 교수에게 질문"(single target) 정합 필드 — ai07가 targetAgentId로 이미 1명 필터하지만,
+        //  agentId 식별이 불안정한 경우(이름 기반 멘션 등)를 위한 forward-compat 패스스루.
+        //  ai07는 미지원 필드를 무시하므로 추가만으로 기존 동작을 깨지 않는다(프론트는 이미 방어 필터링).
+        private String askScope;             // single | all
+        private String targetProfessorRole;  // theory | book | ai
+        private Integer targetAgentIndex;    // 0-based
+        private String targetAgentKey;       // agent1 | agent2 | agent3
+        private String targetAgentName;      // 멘션된 교수 이름
+        private String professorSelectedTarget; // = targetAgentKey (호환)
+        private String selectedProfessorRole;   // = targetProfessorRole (호환)
+        // 그룹스터디 AI 봇(요약/퀴즈/검색) 필드
+        private String rawMessage;      // 슬래시 명령어 포함 원본 메시지 (서버 2차 파싱용)
+        private String botType;         // summary_bot | quiz_bot | search_bot
+        private String agentName;       // SummaryAgent | QuizAgent | TavilyAgent
+        private String runMode;         // single | all_bots
+        private Long studyRoomId;
+        private String roomTitle;
+        private Boolean stream;
+        // 기본채팅 다시 생성 제어 — 이전 답변 재사용 방지(cache 우회 + 변형 유도)
+        private String messageId;          // 프론트가 부여한 이번 턴 고유 id
+        private Integer regenerateAttempt; // 다시 생성 횟수 (없으면 1)
+        private Boolean forceRegenerate;   // true면 cache 우회 + 변형 지시
+
+        // ── 멀티턴 대화 상태 echo (토론 논제/상황극 선택 진행 유지) ──
+        //  ai07가 응답에 실어 준 진행 상태를 프론트가 캡처해 다음 요청에 다시 싣는다.
+        //  Spring은 buildFastApiRequestBody에서 값이 있을 때만 그대로 ai07로 패스스루한다.
+        private String selectedTopic;                 // 토론: 선택된 논제
+        private Map<String, Object> debateState;      // 토론: 진행 상태(불투명 객체)
+        private String debateSessionId;               // 토론: 세션 id
+        private Map<String, Object> simulationState;  // 상황극: 진행 상태(불투명 객체)
+        private String scenarioId;                    // 상황극: 시나리오 id
+        private Object selectedChoice;                // 상황극: 이번 턴에 고른 선택지 — ai07 계약은 객체({choiceId,label}); 문자열이면 Spring이 감싼다
+        private List<Object> previousChoices;         // 상황극: 이전까지 고른 선택 이력
+        private Integer turnIndex;                     // 토론/상황극 공통: 턴 인덱스
+        // ── ai07 신계약(2026-09) 세션/상태 echo: 짧은 답변이 새 세션으로 가지 않도록 같은 sessionId 를 유지한다 ──
+        private String sessionId;                     // 소크라테스/상황극 세션 id (turn_start/all_complete 가 내려준 값 그대로)
+        private Map<String, Object> socraticState;    // 소크라테스 진행 상태(불투명 객체, all_complete.socraticState echo)
+        private Boolean topicSelected;                // 토론: 논제 확정 여부(레거시 echo)
+        private String debateStrength;                // 토론 강도 light | normal | deep (top-level; debateConfig.debateStrength 와 동일)
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    @ToString
+    public static class RequestAgent {
+        private String agentId;
+        private String id;
+        private String name;
+        private String role;
+        private String personality;
+        // 정규 성격 key + temperature(에이전트별). 라벨보다 우선 사용.
+        private String personalityStyle;
+        private Double temperature;
+        private String personalityStrength;
+        private String personality_strength;
+        private String style;
+        private String tone;
+        private String knowledgeLevel;
+        private String knowledge_level;
+        private String customInstruction;
+        private String custom_instruction;
+        private String persona;
+        // 그룹스터디 AI 봇 식별 필드
+        private String botType;
+        private String displayName;
+        private String modelProvider;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class MultiChatResponse {
+        private String mode;
+        private String learningMode;
+        private List<DiscussionMessage> messages;
+        private String finalSynthesis;
+        private List<AgentReply> replies;
+        private List<Object> initialAnswers;
+        private List<Object> peerFeedbacks;
+        private List<Object> revisedAnswers;
+        private String debateSummary;
+        // 구조화 토론 단계 (채팅/마인드맵/history 공통) + 사용된 논제 설정 — FastAPI 패스스루
+        private List<Map<String, Object>> debateStages;
+        private Map<String, Object> debateConfig;
+        // 구조화 소크라테스 단계 + 사용된 설정 — FastAPI 패스스루
+        private List<Map<String, Object>> socraticSteps;
+        private Map<String, Object> socraticConfig;
+        // 구조화 상황극 단계 + 사용된 설정 — FastAPI 패스스루
+        private List<Map<String, Object>> simulationStages;
+        private Map<String, Object> simulationConfig;
+        // 1차/2차/3차 생성 과정 (FastAPI processSteps를 그대로 패스스루, 없으면 null)
+        private Map<String, Object> processSteps;
+        // 단계별 구조 (provider/elapsedMs 포함) — FastAPI stages 패스스루, 없으면 null
+        private List<Object> stages;
+        // 성격 검증 요약 — FastAPI personalityValidationSummary 패스스루, 없으면 null
+        private List<Object> personalityValidationSummary;
+        // 에러/타임아웃 시 프론트에 메시지 전달 (500 대신 200+errorMessage 반환)
+        private String errorMessage;
+        private String errorCode;
+        private Boolean success;
+        // ── ai07 신계약 패스스루(non-stream 폴백도 stream 과 같은 세션/가드 정보를 준다) ──
+        private String sessionId;                     // 소크라테스/상황극 세션 id
+        private Map<String, Object> socraticState;
+        private Map<String, Object> simulationState;
+        private Map<String, Object> debateState;
+        private Integer turnIndex;
+        private String status;                        // COMPLETED | BLOCKED ...
+        private String code;                          // NON_LEARNING_INPUT 등 모드 가드/모드별 오류 코드
+        private Boolean blocked;                      // true 면 답변 카드가 아니라 모드 안내 상태로 렌더링
+        private String message;                       // 가드/안내 문구
+        private String topic;                         // 토론: 논제(= 사용자 메시지)
+        private String debateStrength;
+        private Map<String, Object> debateResult;
+        private List<Object> debatePositions;
+        private List<Object> answers;                 // ai07 answers 원본(stageType/speechType 포함)
+        private String questionIntensity;
+        private String hintPolicy;
+        private String scenarioType;
+        private String difficulty;
+        private Integer choiceCount;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class DiscussionMessage {
+        private String id;
+        private Integer round;
+        private String agentId;
+        private String agentName;
+        private String role;
+        private String personality;
+        private String personalityStrength;
+        private String knowledgeLevel;
+        private String speechType;
+        private String targetAgentId;
+        private String content;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class AgentReply {
+        private Long agentId;
+        private String agentName;
+        private String answer;
+        // ── ai07 응답 metadata 패스스루 (없으면 null) — 프론트 확인/표시용, answer는 항상 유지 ──
+        private String knowledgeLevel;       // INTRO|BACHELOR|MASTER|DOCTOR|EXPERT
+        private String knowledgeLevelLabel;  // 입문/학사/석사/박사/전문가 수준
+        private Integer minChars;
+        private Integer actualChars;
+        private Boolean lengthSatisfied;
+        private java.util.List<Object> toolsUsed;
+        private java.util.List<Object> toolsFailed;
+        private Boolean qualityChecked;
+    }
+}
