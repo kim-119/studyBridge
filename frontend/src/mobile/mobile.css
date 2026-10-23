@@ -1021,6 +1021,17 @@ textarea.mobile-field__input {
   font-weight: 600;
 }
 
+.mobile-group-settings__target {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.mobile-group-settings__toggle {
+  align-items: center;
+  margin: var(--space-md) 0 var(--space-basic);
+  color: var(--color-text-main);
+  font-size: 14px;
+}
+
 .mobile-video {
   display: flex;
   flex-direction: column;
@@ -2461,8 +2472,8 @@ textarea.mobile-field__input {
   align-items: center;
   justify-content: center;
   width: 100%;
-  aspect-ratio: 3 / 4;
-  max-height: 52vh;
+  aspect-ratio: 4 / 3;
+  max-height: 38vh;
   margin: var(--space-basic) 0 var(--space-md);
   overflow: hidden;
   border-radius: var(--radius-card);
@@ -2494,55 +2505,39 @@ textarea.mobile-field__input {
   opacity: 0.4;
 }
 
-.mobile-prejoin__devices {
+.mobile-prejoin__statuses {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: var(--space-basic);
-  margin: 0 0 var(--space-md);
+  margin: 0 0 var(--space-basic);
   padding: 0;
   list-style: none;
 }
 
-.mobile-prejoin__device {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-basic);
-  padding: 12px var(--space-md);
-  border-radius: var(--radius-card);
-  background-color: var(--color-bg-card);
-  box-shadow: var(--shadow-card);
-}
-
-.mobile-prejoin__device-icon {
-  display: flex;
-  color: var(--color-primary);
-}
-
-.mobile-prejoin__device-body {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.mobile-prejoin__device-name {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.mobile-prejoin__device-status {
+.mobile-prejoin__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background-color: var(--color-secondary);
   color: var(--color-text-muted);
   font-size: 13px;
-  overflow-wrap: anywhere;
 }
 
-.mobile-prejoin__device-status.is-ready {
+.mobile-prejoin__status.is-ready {
   color: var(--color-primary-hover);
 }
 
-.mobile-prejoin__device-status.is-error {
-  color: var(--color-danger);
+.mobile-prejoin__status.is-error {
+  color: var(--color-danger, #DC2626);
+}
+
+.mobile-prejoin__status .mobile-prejoin__meter {
+  width: 48px;
+  background-color: var(--color-bg-card);
 }
 
 .mobile-prejoin__meter {
@@ -2922,7 +2917,8 @@ textarea.mobile-field__input {
 .mobile-room-bar {
   display: grid;
   flex-shrink: 0;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
   min-height: var(--mobile-room-bar-height);
   padding-bottom: env(safe-area-inset-bottom);
   border-top: 1px solid #1F2937;

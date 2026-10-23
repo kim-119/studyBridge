@@ -24,7 +24,7 @@ const MENU_ITEMS = [
   { panel: ROOM_PANEL.QUIZ, label: '퀴즈', icon: <FileQuestion size={20} /> },
 ];
 
-export default function RoomMenu({ session, onOpenPanel, onClose }) {
+export default function RoomMenu({ session, allowsCamera = true, onOpenPanel, onClose }) {
   return (
     <RoomPanel title="스터디룸 메뉴" onClose={onClose}>
       <ul className="mobile-list">
@@ -37,15 +37,17 @@ export default function RoomMenu({ session, onOpenPanel, onClose }) {
 
       <h3 className="mobile-section__title mobile-room-panel__subtitle">장치</h3>
       <ul className="mobile-list">
-        <li>
-          <ListRow
-            icon={<SwitchCamera size={20} />}
+        {allowsCamera && (
+          <li>
+            <ListRow
+              icon={<SwitchCamera size={20} />}
             title="카메라 전환"
             subtitle={session.facingMode === FACING_MODE.FRONT ? '현재 전면 카메라' : '현재 후면 카메라'}
             trailing={session.isSwitchingCamera ? <span className="mobile-button__spinner" /> : null}
-            onClick={session.isCameraOn ? session.switchCamera : undefined}
-          />
-        </li>
+              onClick={session.isCameraOn ? session.switchCamera : undefined}
+            />
+          </li>
+        )}
         <li>
           <ListRow
             icon={session.isSpeakerphoneOn ? <Volume2 size={20} /> : <VolumeX size={20} />}
@@ -54,7 +56,7 @@ export default function RoomMenu({ session, onOpenPanel, onClose }) {
           />
         </li>
       </ul>
-      {!session.isCameraOn && <p className="mobile-field__hint">카메라를 켜면 전면·후면을 전환할 수 있습니다.</p>}
+      {allowsCamera && !session.isCameraOn && <p className="mobile-field__hint">카메라를 켜면 전면·후면을 전환할 수 있습니다.</p>}
     </RoomPanel>
   );
 }

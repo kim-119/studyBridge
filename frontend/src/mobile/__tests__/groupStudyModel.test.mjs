@@ -25,6 +25,12 @@ const VALID_FORM = {
   endDate: '2026-12-31',
   capacity: 10,
   isPublic: false,
+  studyType: 'GENERAL',
+  targetStudyMinutes: 240,
+  joinQuestionEnabled: false,
+  joinQuestion: '',
+  nicknameRuleEnabled: false,
+  nicknameRule: '',
 };
 
 test('백엔드 CreateRequest 제약과 같은 기준으로 생성 폼을 검증한다', () => {
@@ -100,7 +106,7 @@ test('커버 이미지가 없으면 웹 기본 이미지를 쓰고, 정원이 �
   const [full, mine] = selectVisibleGroups(GROUPS, { userId: 7, visibility: VISIBILITY.PUBLIC, keyword: '' });
   assert.equal(full.coverUrl, 'https://s3/cover.png');
   assert.equal(mine.coverUrl, DEFAULT_COVER_IMAGE_URL);
-  assert.deepEqual(describeCardAction(full), { label: '정원 마감', disabled: true });
+  assert.deepEqual(describeCardAction(full, 'guest'), { label: '정원 마감', disabled: true, target: 'detail' });
   assert.equal(describeCardAction(mine).label, '내 스터디');
 });
 

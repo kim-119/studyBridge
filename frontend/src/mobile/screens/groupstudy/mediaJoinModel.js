@@ -57,6 +57,10 @@ function isPermissionGranted(value, fallback) {
   return value === 'granted';
 }
 
+export function mediaPermissionRequest({ wantsCamera, wantsMicrophone }) {
+  return { camera: Boolean(wantsCamera), microphone: Boolean(wantsMicrophone) };
+}
+
 export function resolvePermissionGrants(result) {
   return {
     camera: isPermissionGranted(result?.camera, result?.granted),

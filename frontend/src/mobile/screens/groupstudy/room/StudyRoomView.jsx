@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { groupService, timerService } from '../../../../services/api';
 import { describeApiError, useAsync } from '../../../data/useAsync';
 import { FACING_MODE } from '../cameraTrack';
+import { isCamStudy } from '../../../../utils/groupStudy.js';
 import { isGroupLeader } from '../groupStudyModel';
 import { MEDIA_PHASE, describeMediaStatus } from '../mediaJoinModel';
 import {
@@ -174,6 +175,7 @@ export default function StudyRoomView({
   const isChatOpen = overlay.panel === ROOM_PANEL.CHAT;
   const hasUnreadChat = useUnreadChat(room.chatMessages.length, room.history.isSuccess, isChatOpen);
   const isLeader = isGroupLeader(group.data, userId);
+  const allowsCamera = isCamStudy(group.data?.studyType);
   const isMirrored = (participant) => participant.isMe && session.facingMode === FACING_MODE.FRONT;
   const showsQuizErrorNotice = Boolean(room.quizError) && !isQuizActive(room.quiz) && overlay.panel !== ROOM_PANEL.QUIZ;
 
@@ -188,7 +190,14 @@ export default function StudyRoomView({
   const renderPanel = () => {
     switch (overlay.panel) {
       case ROOM_PANEL.MENU:
-        return <RoomMenu session={session} onOpenPanel={overlay.openPanel} onClose={overlay.close} />;
+        return (
+          <RoomMenu
+            session={session}
+            allowsCamera={allowsCamera}
+            onOpenPanel={overlay.openPanel}
+            onClose={overlay.close}
+          />
+        );
       case ROOM_PANEL.SETTINGS:
         return (
           <SettingsPanel
@@ -284,6 +293,7 @@ export default function StudyRoomView({
 
       <RoomControlBar
         session={session}
+        allowsCamera={allowsCamera}
         activePanel={overlay.panel}
         hasUnreadChat={hasUnreadChat}
         onOpenPanel={togglePanel}

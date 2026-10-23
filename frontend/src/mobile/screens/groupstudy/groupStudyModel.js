@@ -1,3 +1,10 @@
+import {
+  buildSettingsPayload,
+  normalizeStudyType,
+  validateJoinInputs,
+  validateSettingsForm,
+} from '../../../utils/groupStudy.js';
+
 export const DEFAULT_COVER_IMAGE_URL =
   'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80';
 
@@ -57,6 +64,19 @@ export const MEMBERSHIP = {
   MEMBER: 'member',
   GUEST: 'guest',
 };
+
+export const CARD_TARGET = {
+  DETAIL: 'detail',
+  ROOM: 'room',
+};
+
+export const GUEST_JOIN_MODE = {
+  FULL: 'full',
+  INVITE_ONLY: 'inviteOnly',
+  OPEN: 'open',
+};
+
+const PUBLIC_JOIN_INTRODUCTION = '공개 스터디 바로 참가';
 
 export function validateCoverImageFile(file) {
   const name = (file?.name || '').toLowerCase();
@@ -133,6 +153,9 @@ export function validateCreateForm(form) {
     errors.capacity = `스터디 정원은 최대 ${CAPACITY_MAX}명까지 설정할 수 있습니다.`;
   }
 
+  const settingsError = validateSettingsForm(form);
+  if (settingsError) errors.settings = settingsError;
+
   return errors;
 }
 
@@ -145,6 +168,7 @@ export function toCreatePayload(form, image) {
     endDate: form.endDate,
     capacity: parseInt(form.capacity, 10),
     isPublic: form.isPublic,
+    ...buildSettingsPayload(form),
     image: image || null,
   };
 }
@@ -165,6 +189,7 @@ export function toGroupCard(group, userId) {
     isMine: userId != null && Number(group.leaderId) === Number(userId),
     leaderName: group.leaderName || '방장',
     status: group.status,
+    studyType: normalizeStudyType(group.studyType),
     coverUrl: group.coverImageUrl || DEFAULT_COVER_IMAGE_URL,
   };
 }
@@ -191,11 +216,39 @@ export function selectVisibleGroups(groups, { userId, visibility, keyword }) {
     .sort((first, second) => second.id - first.id);
 }
 
-export function describeCardAction(card) {
-  if (card.isMine) return { label: '내 스터디', disabled: false };
-  if (card.isFull) return { label: '정원 마감', disabled: true };
-  if (card.isPrivate) return { label: '참여 신청', disabled: false };
-  return { label: '참여하기', disabled: false };
+export function needsMembershipCheck(card) {
+  return card.isFull && !card.isMine;
+}
+
+export function describeCardAction(card, membership) {
+  if (card.isMine) return { label: '내 스터디', disabled: false, target: CARD_TARGET.DETAIL };
+  if (membership === MEMBERSHIP.MEMBER) return { label: '스터디룸 입장', disabled: false, target: CARD_TARGET.ROOM };
+  if (card.isFull && membership === MEMBERSHIP.GUEST) {
+    return { label: '정원 마감', disabled: true, target: CARD_TARGET.DETAIL };
+  }
+  if (card.isFull) return { label: '상세 보기', disabled: false, target: CARD_TARGET.DETAIL };
+  if (card.isPrivate) return { label: '초대 전용', disabled: false, target: CARD_TARGET.DETAIL };
+  return { label: '참여하기', disabled: false, target: CARD_TARGET.DETAIL };
+}
+
+export function describeGuestJoin(group) {
+  if (Number(group.currentCount) >= Number(group.capacity)) return { mode: GUEST_JOIN_MODE.FULL };
+  if (!group.isPublic) return { mode: GUEST_JOIN_MODE.INVITE_ONLY };
+  return {
+    mode: GUEST_JOIN_MODE.OPEN,
+    joinQuestion: group.joinQuestionEnabled ? group.joinQuestion || '' : null,
+    nicknameRule: group.nicknameRuleEnabled ? group.nicknameRule || '' : null,
+  };
+}
+
+export function buildJoinRequest(group, { joinAnswer, nickname }) {
+  const error = validateJoinInputs(group, { joinAnswer, nickname });
+  if (error) return { error };
+
+  const payload = { introduction: PUBLIC_JOIN_INTRODUCTION };
+  if (group.joinQuestionEnabled) payload.joinAnswer = joinAnswer.trim();
+  if (group.nicknameRuleEnabled) payload.nickname = nickname.trim();
+  return { payload };
 }
 
 export function isGroupLeader(group, userId) {
@@ -203,12 +256,15 @@ export function isGroupLeader(group, userId) {
   return Number(group.leaderId) === Number(userId);
 }
 
+export function isJoinedMember(members, userId) {
+  if (userId == null) return false;
+  return (members || []).some((member) => Number(member.userId) === Number(userId));
+}
+
 export function resolveMembership(group, members, userId) {
   if (userId == null || !group) return MEMBERSHIP.GUEST;
   if (isGroupLeader(group, userId)) return MEMBERSHIP.LEADER;
-
-  const isJoined = (members || []).some((member) => Number(member.userId) === Number(userId));
-  return isJoined ? MEMBERSHIP.MEMBER : MEMBERSHIP.GUEST;
+  return isJoinedMember(members, userId) ? MEMBERSHIP.MEMBER : MEMBERSHIP.GUEST;
 }
 
 export function resolveMyDisplayName(user, userId) {

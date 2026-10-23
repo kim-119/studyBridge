@@ -18,19 +18,21 @@ function ControlButton({ icon, label, isActive = false, isOff = false, hasBadge 
   );
 }
 
-export default function RoomControlBar({ session, activePanel, hasUnreadChat, onOpenPanel }) {
+export default function RoomControlBar({ session, allowsCamera = true, activePanel, hasUnreadChat, onOpenPanel }) {
   const isChatActive = activePanel === ROOM_PANEL.CHAT || activePanel === ROOM_PANEL.AI;
   const isMaterialsActive = activePanel === ROOM_PANEL.MATERIALS || activePanel === ROOM_PANEL.QUIZ;
 
   return (
     <nav className="mobile-room-bar" aria-label="스터디룸 제어">
-      <ControlButton
-        icon={session.isCameraOn ? <Video size={22} /> : <VideoOff size={22} />}
-        label="비디오"
-        isOff={!session.isCameraOn}
-        disabled={session.isUpdatingDevices}
-        onClick={session.toggleCamera}
-      />
+      {allowsCamera && (
+        <ControlButton
+          icon={session.isCameraOn ? <Video size={22} /> : <VideoOff size={22} />}
+          label="비디오"
+          isOff={!session.isCameraOn}
+          disabled={session.isUpdatingDevices}
+          onClick={session.toggleCamera}
+        />
+      )}
       <ControlButton
         icon={session.isMicrophoneOn ? <Mic size={22} /> : <MicOff size={22} />}
         label="마이크"

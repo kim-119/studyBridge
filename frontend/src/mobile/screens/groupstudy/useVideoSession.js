@@ -23,6 +23,7 @@ import {
   mediaSessionReducer,
   planDeviceToggle,
   planLocalMedia,
+  mediaPermissionRequest,
   publishAttempts,
   resolvePermissionGrants,
   withoutCamera,
@@ -60,11 +61,12 @@ async function resolveCameraTrack(handoffTrack, facingMode) {
   return acquireCameraTrack(facingMode);
 }
 
-async function requestGrants(wantsAnyDevice) {
-  if (!wantsAnyDevice) return { camera: false, microphone: false };
+async function requestGrants({ wantsCamera, wantsMicrophone }) {
+  if (!wantsCamera && !wantsMicrophone) return { camera: false, microphone: false };
 
   try {
-    return resolvePermissionGrants(await requestMediaPermissions());
+    const request = mediaPermissionRequest({ wantsCamera, wantsMicrophone });
+    return resolvePermissionGrants(await requestMediaPermissions(request));
   } catch (error) {
     console.warn('카메라·마이크 권한을 확인하지 못했습니다.', error);
     return { camera: false, microphone: false };
@@ -272,7 +274,7 @@ export function useVideoSession(groupId, { userId, displayName }) {
         return;
       }
 
-      const grants = await requestGrants(wantsCamera || wantsMicrophone);
+      const grants = await requestGrants({ wantsCamera, wantsMicrophone });
       let plan = planLocalMedia({ wantsCamera, wantsMicrophone, grants });
       let cameraTrack = null;
 
@@ -281,7 +283,7 @@ export function useVideoSession(groupId, { userId, displayName }) {
           cameraTrack = await resolveCameraTrack(handoffTrack, cameraFacing);
         } catch (error) {
           console.warn('카메라 트랙을 가져오지 못했습니다.', error);
-          plan = withoutCamera(plan, describeDeviceError(error) || CAMERA_OPEN_FAILED);
+          plan = withoutCamera(plan, describeDeviceError(error, 'camera') || CAMERA_OPEN_FAILED);
         }
       } else {
         stopTrack(handoffTrack);
@@ -455,7 +457,7 @@ export function useVideoSession(groupId, { userId, displayName }) {
       rememberDeviceState({ facingMode: nextFacing });
     } catch (error) {
       console.warn('카메라 전환에 실패했습니다.', error);
-      setNotice(describeDeviceError(error) || '카메라를 전환하지 못했습니다.');
+      setNotice(describeDeviceError(error, 'camera') || '카메라를 전환하지 못했습니다.');
     } finally {
       setSwitchingCamera(false);
     }

@@ -160,3 +160,22 @@ test('내 송출이 음성 전용이면 내 타일은 카메라 꺼짐, 마이�
   const tile = buildLocalTile({ userId: 7, displayName: '나', publisher, isCameraOn: false, isMicrophoneOn: true });
   assert.deepEqual([tile.cameraOn, tile.micOn, tile.streamManager], [false, true, publisher]);
 });
+
+test('권한 요청은 실제로 켜려는 장치만 담는다', async () => {
+  const { mediaPermissionRequest } = await import('../screens/groupstudy/mediaJoinModel.js');
+
+  assert.deepEqual(mediaPermissionRequest({ wantsCamera: false, wantsMicrophone: true }), { camera: false, microphone: true });
+  assert.deepEqual(mediaPermissionRequest({ wantsCamera: true, wantsMicrophone: true }), { camera: true, microphone: true });
+  assert.deepEqual(mediaPermissionRequest({ wantsCamera: true, wantsMicrophone: false }), { camera: true, microphone: false });
+});
+
+test('장치 오류 문구는 실패한 장치만 가리키고, 장치를 모르면 기존 공통 문구를 쓴다', async () => {
+  const { describeDeviceError } = await import('../screens/groupstudy/cameraTrack.js');
+
+  assert.equal(describeDeviceError({ name: 'NotAllowedError' }, 'camera'), '카메라 권한이 거부되었습니다. 설정에서 권한을 허용해주세요.');
+  assert.equal(describeDeviceError({ name: 'NotFoundError' }, 'microphone'), '사용할 수 있는 마이크를 찾지 못했습니다.');
+  assert.equal(describeDeviceError({ name: 'NotReadableError' }, 'camera'), '카메라를 다른 앱이 사용 중입니다.');
+  assert.equal(describeDeviceError({ name: 'OverconstrainedError' }, 'camera'), '이 기기에서 지원하지 않는 카메라 설정입니다.');
+  assert.equal(describeDeviceError({ name: 'NotAllowedError' }), '카메라 또는 마이크 권한이 거부되었습니다. 설정에서 권한을 허용해주세요.');
+  assert.equal(describeDeviceError({ name: 'AbortError' }, 'camera'), null);
+});
