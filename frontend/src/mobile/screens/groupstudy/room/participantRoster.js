@@ -17,6 +17,18 @@ function normalizePoints(points) {
   return Number.isFinite(value) ? value : 0;
 }
 
+function normalizeSeconds(seconds) {
+  const value = Number(seconds);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+export function formatStudyTime(seconds) {
+  const totalSeconds = normalizeSeconds(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  return `${hours}시간 ${minutes}분`;
+}
+
 function rosterOrder(entry) {
   if (entry.isLeader) return 0;
   if (entry.isOnline) return 1;
@@ -40,6 +52,8 @@ export function buildParticipantRoster({ members, leaderId, userId, onlineUserId
       isMe: memberKey === String(userId),
       isOnline: onlineUserIds.has(memberKey),
       points: normalizePoints(member.points),
+      recentStudySeconds: normalizeSeconds(member.recentStudyTimeSeconds),
+      cumulativeStudySeconds: normalizeSeconds(member.cumulativeStudyTimeSeconds),
     });
   });
 

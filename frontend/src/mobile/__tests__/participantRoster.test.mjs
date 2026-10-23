@@ -4,7 +4,7 @@ import { importMobileModule, registerComponentLoader } from './support/component
 
 registerComponentLoader();
 
-const { buildParticipantRoster } = await importMobileModule(
+const { buildParticipantRoster, formatStudyTime } = await importMobileModule(
   'screens/groupstudy/room/participantRoster.js'
 );
 const { countDistinctParticipants } = await importMobileModule('screens/groupstudy/participantTileModel.js');
@@ -136,4 +136,24 @@ test('참여 인원은 연결 수가 아니라 고유 회원 수로 센다', () 
   ];
 
   assert.equal(countDistinctParticipants(tiles), 3);
+});
+
+test('공부 시간은 웹 멤버 관리 화면과 같은 N시간 N분 형식으로 표시한다', () => {
+  assert.equal(formatStudyTime(0), '0시간 0분');
+  assert.equal(formatStudyTime(59), '0시간 0분');
+  assert.equal(formatStudyTime(6300), '1시간 45분');
+  assert.equal(formatStudyTime(38100), '10시간 35분');
+  assert.equal(formatStudyTime(null), '0시간 0분');
+  assert.equal(formatStudyTime(-5), '0시간 0분');
+  assert.equal(formatStudyTime('abc'), '0시간 0분');
+});
+
+test('최근·누적 공부 시간은 서버 초 단위 값을 그대로 담는다', () => {
+  const [entry] = rosterOf([
+    { userId: 1, displayName: '고병준', recentStudyTimeSeconds: 6300, cumulativeStudyTimeSeconds: 17100 },
+  ]);
+  const [emptyEntry] = rosterOf([{ userId: 7, displayName: '신규' }]);
+
+  assert.deepEqual([entry.recentStudySeconds, entry.cumulativeStudySeconds], [6300, 17100]);
+  assert.deepEqual([emptyEntry.recentStudySeconds, emptyEntry.cumulativeStudySeconds], [0, 0]);
 });

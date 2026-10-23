@@ -89,6 +89,13 @@
   flex: 0 0 auto;
 }
 
+.mobile-participant__stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .mobile-participant__presence {
   display: inline-flex;
   flex: 0 0 auto;

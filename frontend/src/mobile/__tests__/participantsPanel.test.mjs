@@ -20,8 +20,8 @@ const MEMBER_ID = 2;
 const OTHER_ID = 3;
 
 const SERVER_MEMBERS = [
-  { userId: LEADER_ID, displayName: '고병준', role: 'LEADER', points: 0 },
-  { userId: MEMBER_ID, displayName: '김도형', role: 'MEMBER', points: 30 },
+  { userId: LEADER_ID, displayName: '고병준', role: 'LEADER', points: 0, recentStudyTimeSeconds: 6300, cumulativeStudyTimeSeconds: 17100 },
+  { userId: MEMBER_ID, displayName: '김도형', role: 'MEMBER', points: 30, recentStudyTimeSeconds: 0, cumulativeStudyTimeSeconds: 38100 },
   { userId: OTHER_ID, displayName: '이서연', nickname: '서연', role: 'MEMBER', points: 5 },
 ];
 
@@ -70,15 +70,21 @@ test('멤버 카드에 역할 배지, 본인 표시, 획득 점수, 접속 상�
   assert.match(leaderRow, /방장/);
   assert.match(leaderRow, /획득 점수: 0점/);
   assert.match(leaderRow, /오프라인/);
+  assert.match(leaderRow, /최근 공부 시간: 1시간 45분/);
+  assert.match(leaderRow, /누적 공부 시간: 4시간 45분/);
 
   assert.match(myRow, /김도형/);
   assert.match(myRow, /\(나\)/);
   assert.match(myRow, /멤버/);
   assert.match(myRow, /획득 점수: 30점/);
   assert.match(myRow, /온라인/);
+  assert.match(myRow, /최근 공부 시간: 0시간 0분/);
+  assert.match(myRow, /누적 공부 시간: 10시간 35분/);
 
   assert.match(otherRow, /서연/);
   assert.match(otherRow, /획득 점수: 5점/);
+  assert.match(otherRow, /최근 공부 시간: 0시간 0분/);
+  assert.match(otherRow, /누적 공부 시간: 0시간 0분/);
 });
 
 test('일반 멤버에게는 점수 관리와 강제 퇴장 버튼이 보이지 않는다', async () => {

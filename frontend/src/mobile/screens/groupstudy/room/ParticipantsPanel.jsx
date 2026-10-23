@@ -5,7 +5,7 @@ import { groupService } from '../../../../services/api';
 import { useSubmit } from '../../../data/useAsync';
 import ConfirmAction from '../ConfirmAction';
 import RoomPanel from './RoomPanel';
-import { buildParticipantRoster } from './participantRoster';
+import { buildParticipantRoster, formatStudyTime } from './participantRoster';
 import './groupRoom.css';
 
 function ParticipantCard({ entry }) {
@@ -23,7 +23,11 @@ function ParticipantCard({ entry }) {
             {entry.isLeader ? '방장' : '멤버'}
           </span>
         </span>
-        <span className="mobile-row__subtitle">획득 점수: {entry.points.toLocaleString('ko-KR')}점</span>
+        <span className="mobile-participant__stats">
+          <span className="mobile-row__subtitle">획득 점수: {entry.points.toLocaleString('ko-KR')}점</span>
+          <span className="mobile-row__subtitle">최근 공부 시간: {formatStudyTime(entry.recentStudySeconds)}</span>
+          <span className="mobile-row__subtitle">누적 공부 시간: {formatStudyTime(entry.cumulativeStudySeconds)}</span>
+        </span>
       </span>
 
       <span className={entry.isOnline ? 'mobile-participant__presence is-online' : 'mobile-participant__presence'}>
