@@ -22,6 +22,8 @@ import {
 } from '../utils/videoConnection';
 import ProfileParticipantTile from './groupstudy/ProfileParticipantTile';
 import ScreenShareStage from './groupstudy/ScreenShareStage';
+import ScreenSharePrepDialog from './groupstudy/ScreenSharePrepDialog';
+import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface } from '../utils/screenShare';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
 
 // 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
@@ -557,6 +559,10 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
   const screenShareBusyRef = React.useRef(false);
   const [screenShareStatus, setScreenShareStatus] = useState('idle'); // idle | starting | live
   const [selectedScreenId, setSelectedScreenId] = useState(null);
+  // 공유 시작 전 안내(공유 대상·모드·소리). 실제 선택창은 안내의 [공유할 화면 선택] 클릭(사용자 제스처)으로만 연다.
+  const [showSharePrep, setShowSharePrep] = useState(false);
+  const [shareMode, setShareMode] = useState('document');
+  const [shareAudio, setShareAudio] = useState(true);
   // 송출은 getDisplayMedia 가 있는 브라우저(PC Chrome/Edge/Firefox/Safari)만. 모바일 브라우저·웹뷰는 대부분 없음 → 시청만.
   const screenShareSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
   // OpenVidu 인스턴스 ref — view-only/송출 실패 상태에서 사용자 제스처로 Publisher를 재생성할 때 재사용한다.
@@ -674,6 +680,9 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
         userId: c.userId,
         name: isMyOtherDevice ? `${baseName} (내 ${deviceLabel(owner?.deviceType)})` : baseName,
         isMine,
+        // 내 공유(이 탭) 또는 내 다른 기기의 공유: 라이브 화면 대신 상태 카드(이 화면이 공유 대상에 보이면 무한 거울이 생긴다).
+        isOwnUser: isMine || isMyOtherDevice,
+        surface: isMine ? (c.surface || null) : null,
         streamManager: sm,
         hasAudio: isMine ? !!c.hasAudio : !!sm?.stream?.hasAudio,
         connectedAt: c.connectedAt || 0,
@@ -1090,8 +1099,9 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
   teardownScreenShareRef.current = teardownScreenShare;
 
   // ── 화면공유 시작(Discord 스타일): 화면 선택 → SCREEN 토큰 → 별도 세션 connect → publish ──
-  const startScreenShare = async () => {
+  const startScreenShare = async ({ mode = 'document', withAudio = true } = {}) => {
     if (screenShareBusyRef.current || screenSessionRef.current) return;
+    const shareModeKey = resolveShareMode(mode);
     const primary = sessionRef.current;
     const primaryConnectionId = primary?.connection?.connectionId;
     if (!primaryConnectionId) { setOvNotice('화상 연결이 준비된 뒤 화면을 공유할 수 있습니다.'); return; }
@@ -1111,22 +1121,29 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       // 1) 브라우저 화면 선택창(브라우저 탭 / 애플리케이션 창 / 전체 화면 — 실제 범위는 OS·브라우저가 정함). 사용자가 고르기 전엔 토큰을 만들지 않는다.
       //    videoSource 'screen' → typeOfVideo=SCREEN, contentHint=detail(코드·PPT 글자 선명도 우선), getDisplayMedia 에 해상도 제약 없음(원본 해상도·비율, 잘림 없음).
       //    audioSource 'screen' = 공유 대상의 소리(탭/시스템 — 선택창에서 사용자가 체크). 마이크는 절대 섞지 않는다(마이크는 PRIMARY 가 송출 → 중복 없음).
-      const initPub = (withAudio) => OVs.initPublisherAsync(undefined, {
+      //    선택창 힌트(표준 getDisplayMedia 옵션)는 OpenVidu 호출 순간에만 더한다: 지금 탭(회의 화면) 제외, 공유 중 대상 전환 허용.
+      //    재귀 캡처는 힌트만으로 완전히 막을 수 없으므로(전체 화면·무시하는 브라우저) 내 공유는 라이브 미리보기 대신 상태 카드로 보여준다.
+      const initPub = (audio) => withDisplayMediaHints(navigator.mediaDevices, buildDisplayMediaHints({ withAudio: audio }), () => OVs.initPublisherAsync(undefined, {
         videoSource: 'screen',
-        audioSource: withAudio ? 'screen' : false,
+        audioSource: audio ? 'screen' : false,
         publishVideo: true,
-        publishAudio: withAudio,
+        publishAudio: audio,
         mirror: false,
         insertMode: 'APPEND',
-      });
+      }));
       try {
-        pub = await initPub(true);
+        pub = await initPub(withAudio);
       } catch (e) {
         // 사용자가 취소/거부(NotAllowedError) → 종료. 그 외(화면 소리 캡처를 지원하지 않는 브라우저의 TypeError 등) → 소리 없이 한 번 더.
         if (/NotAllowed|Permission denied|denied/i.test(String(e?.message || e))) throw fail('SCREEN_CAPTURE_DENIED');
+        if (!withAudio) throw e;
         pub = await initPub(false);
       }
       const ms = pub.stream?.getMediaStream?.();
+      const screenTrack = ms?.getVideoTracks?.()[0];
+      // 모드: 문서(detail=해상도 유지·프레임 먼저 감소, OpenVidu 기본) | 영상(motion=프레임 유지·해상도 먼저 감소). 표준 MediaStreamTrack.contentHint.
+      if (screenTrack) { try { screenTrack.contentHint = SCREEN_SHARE_MODES[shareModeKey].contentHint; } catch (e) { /* 미지원 브라우저 */ } }
+      const surfaceInfo = describeCaptureSurface(screenTrack?.getSettings?.());
       const hasAudio = !!ms && ms.getAudioTracks().length > 0;
       if (!hasAudio) {
         // 선택창에서 '오디오 공유'를 끈 경우: 오디오 없음으로 정정해야 서버/시청자가 빈 오디오 트랙을 기대하지 않는다.
@@ -1173,13 +1190,14 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
           verified: true,
           isMine: true,
           hasAudio,
+          surface: surfaceInfo,
           connectedAt: prev[cid]?.connectedAt || Date.now(),
         },
       }));
       setSelectedScreenId(cid);
       setScreenShareStatus('live');
       setOvNotice('');
-      console.info('[StudyRoomOV] screen:live', { connectionId: cid, hasAudio, typeOfVideo: pub.stream?.typeOfVideo || null });
+      console.info('[StudyRoomOV] screen:live', { connectionId: cid, hasAudio, typeOfVideo: pub.stream?.typeOfVideo || null, mode: shareModeKey, surface: surfaceInfo.surface, resolution: surfaceInfo.resolution, contentHint: screenTrack?.contentHint || null });
     } catch (e) {
       try { sess?.disconnect(); } catch (err) { /* ignore */ }
       try { pub?.stream?.getMediaStream?.()?.getTracks?.().forEach((t) => t.stop()); } catch (err) { /* ignore */ }
@@ -2814,7 +2832,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
                   aria-label={screenShareStatus === 'live' ? '화면 공유 중지' : '화면 공유'}
                   title={screenShareStatus === 'live' ? '화면 공유 중지' : (screenShareStatus === 'starting' ? '화면 공유 준비 중…' : '화면 공유')}
                   disabled={screenShareStatus === 'starting' || !session}
-                  onClick={() => (screenShareStatus === 'live' ? teardownScreenShare('user', { notifyServer: true }) : startScreenShare())}
+                  onClick={() => (screenShareStatus === 'live' ? teardownScreenShare('user', { notifyServer: true }) : setShowSharePrep(true))}
                   style={{ display: 'flex', alignItems: 'center', background: 'none', border: 'none', padding: 0, cursor: 'pointer', opacity: (screenShareStatus === 'starting' || !session) ? 0.45 : 1 }}
                 >
                   {screenShareStatus === 'live' ? <MonitorOff size={18} color="#60A5FA" /> : <MonitorUp size={18} color="#D1D5DB" />}
@@ -2855,7 +2873,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
             <button
               data-testid="screen-share-toggle-mobile"
               disabled={screenShareStatus === 'starting' || !session}
-              onClick={() => (screenShareStatus === 'live' ? teardownScreenShare('user', { notifyServer: true }) : startScreenShare())}
+              onClick={() => (screenShareStatus === 'live' ? teardownScreenShare('user', { notifyServer: true }) : setShowSharePrep(true))}
               aria-label={screenShareStatus === 'live' ? '화면 공유 중지' : '화면 공유'}
             >
               {screenShareStatus === 'live' ? <MonitorOff size={22} color="#60A5FA" /> : <MonitorUp size={22} color="#E5E7EB" />}
@@ -2939,6 +2957,21 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
               )}
             </div>
           )}
+
+          {/* 공유 안내는 채팅 드로어처럼 룸 루트에 포털(스크롤 컨테이너 안 fixed 는 iOS WebKit 이 잘라낸다). */}
+          {showSharePrep && (() => {
+            const dialog = (
+              <ScreenSharePrepDialog
+                mode={shareMode}
+                withAudio={shareAudio}
+                onModeChange={setShareMode}
+                onAudioChange={setShareAudio}
+                onCancel={() => setShowSharePrep(false)}
+                onConfirm={() => { setShowSharePrep(false); startScreenShare({ mode: shareMode, withAudio: shareAudio }); }}
+              />
+            );
+            return roomRootEl ? createPortal(dialog, roomRootEl) : dialog;
+          })()}
 
           {/* 화면공유 메인 스테이지: 공유가 있으면 크게, 참가자 타일은 아래 필름스트립으로 축소(마이크·채팅은 그대로). */}
           {screenShares.length > 0 && (

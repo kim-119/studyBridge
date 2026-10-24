@@ -35,9 +35,9 @@ public class GroupVideoCallService {
     private final GroupStudyMemberRepository memberRepository;
     private final ObjectMapper objectMapper;
     private final String sessionPrefix;
-    private final int primaryMaxRecvKbps;
-    private final int screenMaxSendKbps;
-    private final int screenMinSendKbps;
+    private final int viewerMaxDownloadKbps;
+    private final int screenMaxUploadKbps;
+    private final int screenMinUploadKbps;
     /** 같은 사용자의 화면공유 토큰 동시 발급 직렬화(단일 Spring 인스턴스 기준). */
     private final Map<String, Object> screenLocks = new ConcurrentHashMap<>();
 
@@ -45,16 +45,16 @@ public class GroupVideoCallService {
                                  GroupStudyMemberRepository memberRepository,
                                  ObjectMapper objectMapper,
                                  @Value("${openvidu.session-prefix:group_study_}") String sessionPrefix,
-                                 @Value("${openvidu.bandwidth.primary-max-recv-kbps:2500}") int primaryMaxRecvKbps,
-                                 @Value("${openvidu.bandwidth.screen-max-send-kbps:2500}") int screenMaxSendKbps,
-                                 @Value("${openvidu.bandwidth.screen-min-send-kbps:300}") int screenMinSendKbps) {
+                                 @Value("${openvidu.bandwidth.viewer-max-download-kbps:2500}") int viewerMaxDownloadKbps,
+                                 @Value("${openvidu.bandwidth.screen-max-upload-kbps:2500}") int screenMaxUploadKbps,
+                                 @Value("${openvidu.bandwidth.screen-min-upload-kbps:300}") int screenMinUploadKbps) {
         this.openVidu = openVidu;
         this.memberRepository = memberRepository;
         this.objectMapper = objectMapper;
         this.sessionPrefix = sessionPrefix;
-        this.primaryMaxRecvKbps = primaryMaxRecvKbps;
-        this.screenMaxSendKbps = screenMaxSendKbps;
-        this.screenMinSendKbps = screenMinSendKbps;
+        this.viewerMaxDownloadKbps = viewerMaxDownloadKbps;
+        this.screenMaxUploadKbps = screenMaxUploadKbps;
+        this.screenMinUploadKbps = screenMinUploadKbps;
     }
 
     public String sessionIdFor(long groupId) {
@@ -91,21 +91,28 @@ public class GroupVideoCallService {
         return body;
     }
 
-    /**
-     * 시청자(PRIMARY) 수신 상한. OpenVidu 는 송출자 상한과 모든 구독자 수신 상한 중 최솟값으로 스트림 전체를 묶는다
-     * (전역 기본 1000kbps). 카메라는 송출 상한(전역 1000)에 그대로 묶이고, 화면공유만 더 높은 비트레이트를 쓸 수 있게 된다.
+    /*
+     * kurentoOptions 의 Recv/Send 는 Kurento WebRtcEndpoint(서버) 기준이고, 그 Connection 이 소유한 endpoint 에 적용된다
+     * (openvidu-server 2.30 MediaEndpoint: owner 토큰의 값으로 setMax/MinVideoRecv/SendBandwidth). 송출 endpoint 는
+     * 송출자 소유, 구독 endpoint 는 시청자 소유다. 따라서
+     *   · videoMaxRecvBandwidth = 이 Connection 이 "올리는" 영상 상한(송출 endpoint)
+     *   · videoMaxSendBandwidth = 이 Connection 이 "받는" 영상 상한(구독 endpoint)
+     * 전역 기본은 둘 다 1000/300kbps. 카메라 송출(PRIMARY 의 Recv)은 전역값 그대로 둔다.
      */
+
+    /** 시청자(PRIMARY)가 받는 영상 상한. 카메라는 송출 측 전역 1000 에 묶여 변화가 없고, 화면공유만 이 상한까지 받을 수 있다. */
     private Map<String, Object> primaryKurentoOptions() {
-        if (primaryMaxRecvKbps <= 0) return null;
+        if (viewerMaxDownloadKbps <= 0) return null;
         Map<String, Object> o = new HashMap<>();
-        o.put("videoMaxRecvBandwidth", primaryMaxRecvKbps);
+        o.put("videoMaxSendBandwidth", viewerMaxDownloadKbps);
         return o;
     }
 
+    /** 화면공유(SCREEN) 송출 상한/하한. 하한은 전역과 같은 300 으로 두어 나쁜 네트워크에서도 아래로 적응할 수 있게 한다. */
     private Map<String, Object> screenKurentoOptions() {
         Map<String, Object> o = new HashMap<>();
-        if (screenMaxSendKbps > 0) o.put("videoMaxSendBandwidth", screenMaxSendKbps);
-        if (screenMinSendKbps > 0) o.put("videoMinSendBandwidth", screenMinSendKbps);
+        if (screenMaxUploadKbps > 0) o.put("videoMaxRecvBandwidth", screenMaxUploadKbps);
+        if (screenMinUploadKbps > 0) o.put("videoMinRecvBandwidth", screenMinUploadKbps);
         return o.isEmpty() ? null : o;
     }
 
@@ -170,7 +177,7 @@ public class GroupVideoCallService {
                     primaryConnectionId, instanceId, device, System.currentTimeMillis());
             ConnectionGrant grant = openVidu.createConnection(sessionId, serverData, "PUBLISHER", screenKurentoOptions());
             log.info("[VIDEO] screen token issued userId={} groupId={} connectionId={} owner={} maxSendKbps={}",
-                    userId, groupId, grant.connectionId(), primaryConnectionId, screenMaxSendKbps);
+                    userId, groupId, grant.connectionId(), primaryConnectionId, screenMaxUploadKbps);
 
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("token", grant.token());
@@ -178,7 +185,7 @@ public class GroupVideoCallService {
             body.put("sessionId", sessionId);
             body.put("kind", Kind.SCREEN.name());
             body.put("ownerConnectionId", primaryConnectionId);
-            body.put("maxSendKbps", screenMaxSendKbps);
+            body.put("maxSendKbps", screenMaxUploadKbps);
             body.put("contractVersion", VideoConnectionMetadata.VERSION);
             return body;
         }

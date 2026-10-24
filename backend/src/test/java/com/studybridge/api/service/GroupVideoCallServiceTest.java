@@ -160,13 +160,15 @@ class GroupVideoCallServiceTest {
     }
 
     @Test
-    void primaryToken_raisesViewerRecvCapSoScreenCanExceedGlobal1000() {
+    void primaryToken_raisesOnlyViewerDownloadCap_cameraUploadStaysGlobal() {
         when(openVidu.createConnection(eq(SID), anyString(), any(), any())).thenReturn(new ConnectionGrant("con_P", "tok"));
         service.issuePrimaryToken(USER, GROUP, null, null);
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> ko = ArgumentCaptor.forClass(Map.class);
         verify(openVidu).createConnection(eq(SID), anyString(), eq("PUBLISHER"), ko.capture());
-        assertEquals(2500, ko.getValue().get("videoMaxRecvBandwidth"));
+        // Kurento 기준 Send = 이 Connection 이 받는 방향(구독 endpoint). Recv(카메라 송출)는 건드리지 않는다.
+        assertEquals(2500, ko.getValue().get("videoMaxSendBandwidth"));
+        assertFalse(ko.getValue().containsKey("videoMaxRecvBandwidth"));
     }
 
     @Test
@@ -188,8 +190,10 @@ class GroupVideoCallServiceTest {
         assertEquals("SCREEN", sd.get("kind").asText());
         assertEquals(USER, sd.get("userId").asLong());
         assertEquals("con_PC", sd.get("ownerConnectionId").asText());
-        assertEquals(2500, ko.getValue().get("videoMaxSendBandwidth"));
-        assertEquals(300, ko.getValue().get("videoMinSendBandwidth"));
+        // Kurento 기준 Recv = 화면공유 송출 endpoint 가 받는(=공유자가 올리는) 방향
+        assertEquals(2500, ko.getValue().get("videoMaxRecvBandwidth"));
+        assertEquals(300, ko.getValue().get("videoMinRecvBandwidth"));
+        assertFalse(ko.getValue().containsKey("videoMaxSendBandwidth"));
     }
 
     @Test
