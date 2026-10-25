@@ -41,15 +41,28 @@ export async function withDisplayMediaHints(mediaDevices, hints, fn) {
   }
 }
 
-/** 캡처 트랙 설정 → 사용자 안내. 'monitor' 는 회의 창이 화면에 보이면 반복 화면 위험이 있다(브라우저 API 로 완전히 막을 수 없음). */
+/**
+ * 캡처 트랙 설정 → 사용자 안내 + 내 미리보기 정책.
+ *  · monitor: 회의 창이 화면에 보이면 미리보기가 다시 캡처돼 반복 화면이 생긴다(브라우저 API 로 완전히 막을 수 없음)
+ *    → 미리보기는 정지 화면(스냅샷)이 기본, 실시간은 사용자가 따로 켤 때만.
+ *  · window: 고른 창이 이 브라우저 창이면 같은 일이 생길 수 있다(어느 창인지 웹에서 알 수 없음) → 안내만.
+ *  · browser: selfBrowserSurface:'exclude' 로 이 탭은 고를 수 없다 → 실시간 미리보기.
+ * '전체 모니터'(송출자가 고른 공유 범위)는 시청자의 '전체화면 보기'와 다른 기능이라 용어를 분리한다.
+ */
 export function describeCaptureSurface(settings) {
   const s = settings || {};
-  const label = { browser: '브라우저 탭', window: '창', monitor: '전체 화면', application: '앱' }[s.displaySurface] || '화면';
-  const resolution = s.width && s.height ? `${s.width}×${s.height}` : null;
+  const label = { browser: '브라우저 탭', window: '창', monitor: '전체 모니터', application: '앱' }[s.displaySurface] || '화면';
+  const width = Number(s.width) || null;
+  const height = Number(s.height) || null;
   return {
     surface: s.displaySurface || null,
     label,
-    resolution,
+    width,
+    height,
+    resolution: width && height ? `${width}×${height}` : null,
+    frameRate: Number.isFinite(s.frameRate) ? Math.round(s.frameRate) : null,
     recursionRisk: s.displaySurface === 'monitor',
+    recursionPossible: s.displaySurface === 'monitor' || s.displaySurface === 'window',
+    previewPolicy: s.displaySurface === 'monitor' ? 'snapshot' : 'live',
   };
 }

@@ -33,9 +33,18 @@ test('getDisplayMedia 가 없는 브라우저(모바일)는 그대로 실행', a
 });
 
 test('캡처 표면 안내: 전체 화면만 반복 화면 위험', () => {
-  assert.deepEqual(describeCaptureSurface({ displaySurface: 'monitor', width: 1920, height: 1080 }), { surface: 'monitor', label: '전체 화면', resolution: '1920×1080', recursionRisk: true });
-  assert.equal(describeCaptureSurface({ displaySurface: 'browser' }).recursionRisk, false);
-  assert.equal(describeCaptureSurface({ displaySurface: 'window' }).label, '창');
+  assert.deepEqual(describeCaptureSurface({ displaySurface: 'monitor', width: 1920, height: 1080, frameRate: 30 }), {
+    surface: 'monitor', label: '전체 모니터', width: 1920, height: 1080, resolution: '1920×1080', frameRate: 30,
+    recursionRisk: true, recursionPossible: true, previewPolicy: 'snapshot',
+  });
+  const tab = describeCaptureSurface({ displaySurface: 'browser', width: 1440, height: 810 });
+  assert.equal(tab.recursionRisk, false);
+  assert.equal(tab.previewPolicy, 'live');
+  const win = describeCaptureSurface({ displaySurface: 'window' });
+  assert.equal(win.label, '창');
+  assert.equal(win.recursionPossible, true);
+  assert.equal(win.previewPolicy, 'live');
+  assert.equal(win.resolution, null);
   assert.equal(describeCaptureSurface(undefined).label, '화면');
 });
 

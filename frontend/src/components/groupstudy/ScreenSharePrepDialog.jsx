@@ -38,7 +38,7 @@ export default function ScreenSharePrepDialog({ mode, withAudio, onModeChange, o
         </div>
         <ul style={{ margin: '0 0 14px', paddingLeft: '18px', fontSize: '12.5px', lineHeight: 1.6, color: '#CBD5E1' }}>
           <li>PPT·PDF·IDE <b>창</b>이나 <b>다른 탭</b>을 고르면 가장 선명하게 공유됩니다.</li>
-          <li>이 회의 탭이나 회의 창이 보이는 <b>전체 화면</b>을 고르면 화면이 끝없이 반복돼 보일 수 있어요.</li>
+          <li>이 회의 탭이나 회의 창이 보이는 <b>전체 모니터</b>를 고르면 화면이 끝없이 반복돼 보일 수 있어요.</li>
         </ul>
         <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
           {option('document')}

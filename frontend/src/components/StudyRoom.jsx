@@ -21,9 +21,10 @@ import {
   installEarlyLeaveGuard, purgeTombstonedConnections, planReconcile, deriveRoomPresence,
 } from '../utils/videoConnection';
 import ProfileParticipantTile from './groupstudy/ProfileParticipantTile';
-import ScreenShareStage from './groupstudy/ScreenShareStage';
+import ScreenShareStage, { ScreenShareNotice } from './groupstudy/ScreenShareStage';
 import ScreenSharePrepDialog from './groupstudy/ScreenSharePrepDialog';
 import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface } from '../utils/screenShare';
+import { SCREEN_RECEIPT_SIGNAL, buildReceipt, parseReceipt, healthFromPeerState } from '../utils/screenReceipt';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
 
 // 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
@@ -558,6 +559,13 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
   const myScreenConnIdRef = React.useRef(null);
   const screenShareBusyRef = React.useRef(false);
   const [screenShareStatus, setScreenShareStatus] = useState('idle'); // idle | starting | live
+  // 송출 단계·건강 상태(UI 표시용). 수신 성공은 시청자 receipt(screenReceipts)로만 판단한다 — Publisher 생성·미리보기는 수신 증거가 아니다.
+  const [screenStartStep, setScreenStartStep] = useState('capture'); // capture(선택창) | connect(토큰·connect·publish)
+  const [screenHealth, setScreenHealth] = useState('connecting'); // connecting | ok | unstable | reconnecting | failed
+  const [screenLiveSince, setScreenLiveSince] = useState(null);
+  const [screenReceipts, setScreenReceipts] = useState({}); // 시청자 PRIMARY connectionId → { userKey, phase, hidden, stats, at }
+  const screenReceiptPhaseRef = React.useRef(new Map());
+  const [screenEnded, setScreenEnded] = useState(null); // { why, at } — 공유 종료 직후 잠깐 안내
   const [selectedScreenId, setSelectedScreenId] = useState(null);
   // 공유 시작 전 안내(공유 대상·모드·소리). 실제 선택창은 안내의 [공유할 화면 선택] 클릭(사용자 제스처)으로만 연다.
   const [showSharePrep, setShowSharePrep] = useState(false);
@@ -691,6 +699,43 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
     .filter(sh => sh.streamManager)
     .sort((a, b) => a.connectedAt - b.connectedAt), [roomPresence, activeConnections, mediaByConnectionId, userId]);
   const sharingUserKeys = React.useMemo(() => new Set(screenShares.map(sh => String(sh.userId))), [screenShares]);
+
+  // 내 화면공유의 시청 대상 = 다른 사용자의 PRIMARY 연결(고유 userId 단위). 나 자신·내 다른 기기는 수신 확인 대상이 아니다.
+  //  serverData 가 없는 레거시 연결은 확인 신호를 검증할 수 없으므로 연결 단위로 넣어 "확인 불가"로 보이게 한다(시청자 없음으로 숨기지 않음).
+  const screenViewers = React.useMemo(() => {
+    const byUser = new Map();
+    for (const [cid, c] of roomPresence.primary) {
+      if (c.isMe || (c.userId !== null && c.userId !== undefined && String(c.userId) === String(userId))) continue;
+      const key = c.userId === null || c.userId === undefined ? `conn:${cid}` : String(c.userId);
+      const v = byUser.get(key) || { userKey: key, name: c.name || '참여자', deviceType: c.deviceType || 'UNKNOWN', connectionIds: [], since: Infinity };
+      v.connectionIds.push(cid);
+      v.since = Math.min(v.since, Number(c.connectedAt) || 0);
+      byUser.set(key, v);
+    }
+    return [...byUser.values()];
+  }, [roomPresence, userId]);
+  const ownScreenShare = React.useMemo(
+    () => ({ status: screenShareStatus, step: screenStartStep, health: screenHealth, liveSince: screenLiveSince }),
+    [screenShareStatus, screenStartStep, screenHealth, screenLiveSince],
+  );
+  useEffect(() => {
+    if (screenShareStatus === 'idle') return;
+    console.info('[StudyRoomOV] screen:phase', { status: screenShareStatus, step: screenStartStep, health: screenHealth });
+  }, [screenShareStatus, screenStartStep, screenHealth]);
+  useEffect(() => {
+    if (!screenEnded) return undefined;
+    const t = setTimeout(() => setScreenEnded(null), 6000);
+    return () => clearTimeout(t);
+  }, [screenEnded]);
+
+  // 시청자 → 송출자 수신 확인: 기존 OpenVidu 세션 시그널로 그 화면공유 Connection 한 곳에만 보낸다(새 WebRTC 연결·서버 API·폴링 없음).
+  const sendScreenReceipt = useCallback((screenConnection, payload) => {
+    const s = sessionRef.current;
+    if (!s?.connection || !screenConnection?.connectionId) return;
+    s.signal({ type: SCREEN_RECEIPT_SIGNAL, to: [screenConnection], data: buildReceipt(payload) }).catch(() => { /* 공유가 막 끝났거나 세션이 바뀜 */ });
+  }, []);
+  const sendScreenReceiptRef = React.useRef(sendScreenReceipt);
+  sendScreenReceiptRef.current = sendScreenReceipt;
 
   // 새 화면공유가 시작되면 그 화면으로 포커스(스터디: 방금 공유한 화면을 바로 본다). 보던 공유가 끝나면 남은 최신 공유로.
   const seenScreenIdsRef = React.useRef(new Set());
@@ -1093,7 +1138,14 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       if (notifyServer && study?.id) groupService.stopScreenShare(study.id, cid).catch(() => { /* 이미 종료됨 */ });
     }
     setScreenShareStatus('idle');
-    if (sess || cid) console.info('[StudyRoomOV] screen:stopped', { why, connectionId: cid || null });
+    setScreenReceipts({});
+    screenReceiptPhaseRef.current = new Map();
+    setScreenLiveSince(null);
+    setScreenHealth('connecting');
+    if (sess || cid) {
+      console.info('[StudyRoomOV] screen:stopped', { why, connectionId: cid || null });
+      setScreenEnded({ why, at: Date.now() });
+    }
   };
   const teardownScreenShareRef = React.useRef(teardownScreenShare);
   teardownScreenShareRef.current = teardownScreenShare;
@@ -1111,8 +1163,12 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
     }
     screenShareBusyRef.current = true;
     setScreenShareStatus('starting');
+    setScreenStartStep('capture');
+    setScreenHealth('connecting');
+    setScreenEnded(null);
     let sess = null;
     let pub = null;
+    let screenPc = null;
     const fail = (code) => Object.assign(new Error(code), { code });
     try {
       const OVs = new OpenVidu();
@@ -1139,11 +1195,12 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
         if (!withAudio) throw e;
         pub = await initPub(false);
       }
+      setScreenStartStep('connect');
       const ms = pub.stream?.getMediaStream?.();
       const screenTrack = ms?.getVideoTracks?.()[0];
       // 모드: 문서(detail=해상도 유지·프레임 먼저 감소, OpenVidu 기본) | 영상(motion=프레임 유지·해상도 먼저 감소). 표준 MediaStreamTrack.contentHint.
       if (screenTrack) { try { screenTrack.contentHint = SCREEN_SHARE_MODES[shareModeKey].contentHint; } catch (e) { /* 미지원 브라우저 */ } }
-      const surfaceInfo = describeCaptureSurface(screenTrack?.getSettings?.());
+      const surfaceInfo = { ...describeCaptureSurface(screenTrack?.getSettings?.()), modeLabel: SCREEN_SHARE_MODES[shareModeKey].label };
       const hasAudio = !!ms && ms.getAudioTracks().length > 0;
       if (!hasAudio) {
         // 선택창에서 '오디오 공유'를 끈 경우: 오디오 없음으로 정정해야 서버/시청자가 빈 오디오 트랙을 기대하지 않는다.
@@ -1168,6 +1225,34 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       sess.on('sessionDisconnected', (ev) => {
         if (screenSessionRef.current === sess) teardownScreenShareRef.current?.(`disconnected:${ev?.reason || ''}`);
       });
+      // 송출 건강 상태: 미디어 서버와의 PeerConnection 상태 + 화면공유 세션 WS 재연결(openvidu-browser 표준 이벤트).
+      const peerState = (pc) => pc?.connectionState || ({ connected: 'connected', completed: 'connected', checking: 'connecting', disconnected: 'disconnected', failed: 'failed' }[pc?.iceConnectionState] || 'new');
+      const syncHealth = () => { if (screenSessionRef.current === sess) setScreenHealth(screenPc ? healthFromPeerState(peerState(screenPc)) : 'ok'); };
+      sess.on('reconnecting', () => { if (screenSessionRef.current === sess) setScreenHealth('reconnecting'); });
+      sess.on('reconnected', syncHealth);
+      // 수신 확인(receipt): 시청자가 이 SCREEN Connection 으로 보낸 시그널. event.from 은 OpenVidu 서버가 채운 보낸 사람이라
+      //  위조할 수 없고, 그 Connection 의 serverData(Spring 발급)로 "다른 사용자의 PRIMARY" 인지 확인한 것만 받는다.
+      const acceptingReceipts = () => screenSessionRef.current === sess || (screenShareBusyRef.current && !screenSessionRef.current);
+      sess.on(`signal:${SCREEN_RECEIPT_SIGNAL}`, (ev) => {
+        const fromId = ev?.from?.connectionId;
+        if (!fromId || !acceptingReceipts()) return;
+        const meta = parseConnectionMetadata(ev.from.data);
+        if (!meta.verified || meta.kind !== CONNECTION_KIND.PRIMARY || !meta.userKey || meta.userKey === String(userId)) return;
+        const r = parseReceipt(ev.data);
+        if (!r) return;
+        if (screenReceiptPhaseRef.current.get(fromId) !== r.phase) {
+          screenReceiptPhaseRef.current.set(fromId, r.phase);
+          console.info('[StudyRoomOV] screen:rx', { from: fromId, userId: meta.userId, phase: r.phase, w: r.stats?.w ?? null, h: r.stats?.h ?? null });
+        }
+        setScreenReceipts(prev => ({ ...prev, [fromId]: { userKey: meta.userKey, phase: r.phase, hidden: r.hidden, stats: r.stats, at: Date.now() } }));
+      });
+      // 시청자가 나가면 그 연결의 보고를 지운다(남은 보고로 "재생 중"이 남지 않게).
+      sess.on('connectionDestroyed', (ev) => {
+        const id = ev?.connection?.connectionId;
+        if (!id) return;
+        screenReceiptPhaseRef.current.delete(id);
+        setScreenReceipts(prev => { if (!prev[id]) return prev; const next = { ...prev }; delete next[id]; return next; });
+      });
       // 화면공유 세션은 송출 전용: streamCreated 를 구독하지 않는다(다른 사람 미디어를 두 번 받지 않음).
       await sess.connect(grant.token, JSON.stringify({ userId, clientData: myDisplayName, kind: CONNECTION_KIND.SCREEN }));
       if (sessionRef.current !== primary) throw fail('PRIMARY_CHANGED');
@@ -1177,6 +1262,13 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       screenSessionRef.current = sess;
       screenPublisherRef.current = pub;
       myScreenConnIdRef.current = cid;
+      try { screenPc = pub.stream?.getRTCPeerConnection?.() || null; } catch (err) { screenPc = null; }
+      screenPc?.addEventListener?.('connectionstatechange', syncHealth);
+      screenPc?.addEventListener?.('iceconnectionstatechange', syncHealth);
+      syncHealth();
+      setScreenReceipts({});
+      screenReceiptPhaseRef.current = new Map();
+      setScreenLiveSince(Date.now());
       setMediaByConnectionId(prev => ({ ...prev, [cid]: pub }));
       setActiveConnections(prev => ({
         ...prev,
@@ -1420,7 +1512,11 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
             console.info('[StudyRoomOV] streamCreated:own-screen-skip', { connectionId, streamId });
             return;
           }
-          const subscriber = sessionInstance.subscribe(event.stream, undefined);
+          // 다른 사람의 화면공유: 구독(WebRTC 협상) 완료를 송출자에게 알린다(phase=subscribed — 아직 '재생 중'이라는 뜻은 아님).
+          const isRemoteScreen = meta.kind === CONNECTION_KIND.SCREEN && meta.verified && meta.userKey !== String(userId);
+          const subscriber = sessionInstance.subscribe(event.stream, undefined, (err) => {
+            if (!err && isRemoteScreen && !isStale()) sendScreenReceiptRef.current?.(event.stream.connection, { phase: 'subscribed' });
+          });
           // 원격 미디어가 실제 재생을 시작하면(streamPlaying) mediaStream/track이 채워진다.
           // 저장된 subscriber 객체는 참조가 그대로라 React가 리렌더하지 않으므로, 여기서 새 참조로
           // state를 bump해 VideoFeed가 채워진 mediaStream(오디오 미터·연결중 해제)을 반영하게 한다.
@@ -1489,6 +1585,10 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
           if (isStale()) return;
           const connectionId = event.connection.connectionId;
           console.info('[StudyRoomOV] connectionDestroyed', { connectionId, reason: event.reason || null });
+          // 서버가 내 화면공유 Connection 을 없앴다(재연결 실패 후 축출 등) → 화면공유 세션도 정리해 "공유 중" 상태가 남지 않게 한다.
+          if (connectionId && connectionId === myScreenConnIdRef.current) {
+            teardownScreenShareRef.current?.(`server-evicted:${event.reason || ''}`);
+          }
           setMediaByConnectionId(prev => {
             if (!prev[connectionId]) return prev;
             const next = { ...prev };
@@ -2973,6 +3073,10 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
             return roomRootEl ? createPortal(dialog, roomRootEl) : dialog;
           })()}
 
+          {/* 화면공유 준비 단계(선택창·서버 연결)와 종료 직후 안내 — 스테이지가 아직/이미 없을 때. */}
+          {screenShareStatus === 'starting' && <ScreenShareNotice phase={screenStartStep === 'capture' ? 'capturing' : 'connecting'} />}
+          {screenShareStatus === 'idle' && screenEnded && <ScreenShareNotice phase="ended" why={screenEnded.why} onDismiss={() => setScreenEnded(null)} />}
+
           {/* 화면공유 메인 스테이지: 공유가 있으면 크게, 참가자 타일은 아래 필름스트립으로 축소(마이크·채팅은 그대로). */}
           {screenShares.length > 0 && (
             <ScreenShareStage
@@ -2981,6 +3085,10 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
               onSelect={setSelectedScreenId}
               onStopMine={() => teardownScreenShare('user', { notifyServer: true })}
               isMobile={isMobile}
+              ownShare={ownScreenShare}
+              viewers={screenViewers}
+              receipts={screenReceipts}
+              onReceipt={sendScreenReceipt}
             />
           )}
 
