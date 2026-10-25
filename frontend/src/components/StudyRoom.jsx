@@ -23,7 +23,7 @@ import {
 import ProfileParticipantTile from './groupstudy/ProfileParticipantTile';
 import ScreenShareStage, { ScreenShareNotice } from './groupstudy/ScreenShareStage';
 import ScreenSharePrepDialog from './groupstudy/ScreenSharePrepDialog';
-import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface } from '../utils/screenShare';
+import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, lockScreenResolution, findVideoSender } from '../utils/screenShare';
 import { SCREEN_RECEIPT_SIGNAL, buildReceipt, parseReceipt, healthFromPeerState } from '../utils/screenReceipt';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
 
@@ -556,6 +556,8 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
   // ── 화면공유: PRIMARY(음성·카메라)와 별도인 SCREEN Connection(OpenVidu 2.x 는 Connection 당 Publisher 1개) ──
   const screenSessionRef = React.useRef(null);
   const screenPublisherRef = React.useRef(null);
+  // 화면공유 해상도 고정 주기 확인 타이머(스트림 재연결로 PC 가 바뀌면 다시 건다). teardownScreenShare 가 정리한다.
+  const screenResolutionGuardRef = React.useRef(null);
   const myScreenConnIdRef = React.useRef(null);
   const screenShareBusyRef = React.useRef(false);
   const [screenShareStatus, setScreenShareStatus] = useState('idle'); // idle | starting | live
@@ -1126,6 +1128,8 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
     const sess = screenSessionRef.current;
     const pub = screenPublisherRef.current;
     const cid = myScreenConnIdRef.current;
+    clearInterval(screenResolutionGuardRef.current);
+    screenResolutionGuardRef.current = null;
     screenSessionRef.current = null;
     screenPublisherRef.current = null;
     myScreenConnIdRef.current = null;
@@ -1198,8 +1202,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       setScreenStartStep('connect');
       const ms = pub.stream?.getMediaStream?.();
       const screenTrack = ms?.getVideoTracks?.()[0];
-      // 모드: 문서(detail=해상도 유지·프레임 먼저 감소, OpenVidu 기본) | 영상(motion=프레임 유지·해상도 먼저 감소). 표준 MediaStreamTrack.contentHint.
-      if (screenTrack) { try { screenTrack.contentHint = SCREEN_SHARE_MODES[shareModeKey].contentHint; } catch (e) { /* 미지원 브라우저 */ } }
+      // 모드 contentHint(문서 detail | 영상 motion)는 publish·해상도 고정 뒤에 건다(아래). 여기서는 OpenVidu 가 넣은 detail 그대로 publish 한다.
       const surfaceInfo = { ...describeCaptureSurface(screenTrack?.getSettings?.()), modeLabel: SCREEN_SHARE_MODES[shareModeKey].label };
       const hasAudio = !!ms && ms.getAudioTracks().length > 0;
       if (!hasAudio) {
@@ -1263,6 +1266,20 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       screenPublisherRef.current = pub;
       myScreenConnIdRef.current = cid;
       try { screenPc = pub.stream?.getRTCPeerConnection?.() || null; } catch (err) { screenPc = null; }
+      // 해상도 고정(문서·영상 공통, utils/screenShare lockScreenResolution). openvidu-browser 는 createOffer 때 contentHint 가 detail 이
+      //  아니면 'balanced' 를 넣어 해상도를 줄이므로, 모드 contentHint 는 detail 로 publish 하고 고정한 뒤에 바꾼다.
+      const resolutionLock = await lockScreenResolution(findVideoSender(screenPc));
+      if (screenPublisherRef.current !== pub) return; // 고정하는 사이 공유가 끝났다(teardown 이 상태를 이미 정리했다)
+      if (screenTrack) { try { screenTrack.contentHint = SCREEN_SHARE_MODES[shareModeKey].contentHint; } catch (e) { /* 미지원 브라우저 */ } }
+      // ICE 실패 뒤 openvidu-browser 가 스트림을 재연결하면 새 PC 의 createOffer 가 다시 'balanced' 를 넣는다 → 주기적으로 다시 건다(맞으면 아무것도 안 함).
+      clearInterval(screenResolutionGuardRef.current);
+      screenResolutionGuardRef.current = setInterval(async () => {
+        if (screenPublisherRef.current !== pub) return;
+        let pc = null;
+        try { pc = pub.stream?.getRTCPeerConnection?.() || null; } catch (err) { pc = null; }
+        const r = await lockScreenResolution(findVideoSender(pc));
+        if (r.changed) console.info('[StudyRoomOV] screen:resolution-relocked', { connectionId: cid });
+      }, 3000);
       screenPc?.addEventListener?.('connectionstatechange', syncHealth);
       screenPc?.addEventListener?.('iceconnectionstatechange', syncHealth);
       syncHealth();
@@ -1289,8 +1306,10 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       setSelectedScreenId(cid);
       setScreenShareStatus('live');
       setOvNotice('');
-      console.info('[StudyRoomOV] screen:live', { connectionId: cid, hasAudio, typeOfVideo: pub.stream?.typeOfVideo || null, mode: shareModeKey, surface: surfaceInfo.surface, resolution: surfaceInfo.resolution, contentHint: screenTrack?.contentHint || null });
+      console.info('[StudyRoomOV] screen:live', { connectionId: cid, hasAudio, typeOfVideo: pub.stream?.typeOfVideo || null, mode: shareModeKey, surface: surfaceInfo.surface, resolution: surfaceInfo.resolution, contentHint: screenTrack?.contentHint || null, degradation: resolutionLock.applied });
     } catch (e) {
+      clearInterval(screenResolutionGuardRef.current);
+      screenResolutionGuardRef.current = null;
       try { sess?.disconnect(); } catch (err) { /* ignore */ }
       try { pub?.stream?.getMediaStream?.()?.getTracks?.().forEach((t) => t.stop()); } catch (err) { /* ignore */ }
       setScreenShareStatus('idle');

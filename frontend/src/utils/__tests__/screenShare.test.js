@@ -1,7 +1,7 @@
 // node --test frontend/src/utils/__tests__   (vitest/jest 미도입 — Node 내장 테스트 러너 사용)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, resolveShareMode, SCREEN_SHARE_MODES } from '../screenShare.js';
+import { buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, resolveShareMode, SCREEN_SHARE_MODES, lockScreenResolution, findVideoSender, SCREEN_DEGRADATION_PREFERENCE } from '../screenShare.js';
 
 test('선택창 힌트: 자기 탭 제외 + 소리 요청 시에만 systemAudio', () => {
   assert.deepEqual(buildDisplayMediaHints({ withAudio: false }), { selfBrowserSurface: 'exclude', surfaceSwitching: 'include', monitorTypeSurfaces: 'include' });
@@ -52,4 +52,44 @@ test('공유 모드: 문서=detail(기본), 영상=motion', () => {
   assert.equal(resolveShareMode('nope'), 'document');
   assert.equal(SCREEN_SHARE_MODES[resolveShareMode('motion')].contentHint, 'motion');
   assert.equal(SCREEN_SHARE_MODES.document.contentHint, 'detail');
+});
+
+// RTCRtpSender 모사: getParameters 는 매번 새 객체(브라우저와 같음), setParameters 는 받은 값을 저장.
+const fakeSender = (degradationPreference, { failSet = false } = {}) => {
+  const st = { degradationPreference, sets: 0 };
+  return {
+    st,
+    getParameters: () => ({ encodings: [{ active: true }], ...(st.degradationPreference ? { degradationPreference: st.degradationPreference } : {}) }),
+    setParameters: async (p) => { if (failSet) throw new Error('InvalidModificationError'); st.sets++; st.degradationPreference = p.degradationPreference; },
+  };
+};
+
+test('해상도 고정: 영상 모드에 openvidu 가 넣은 balanced 를 maintain-resolution 으로 덮는다', async () => {
+  assert.equal(SCREEN_DEGRADATION_PREFERENCE, 'maintain-resolution');
+  const s = fakeSender('balanced');
+  assert.deepEqual(await lockScreenResolution(s), { applied: 'maintain-resolution', changed: true });
+  assert.equal(s.st.sets, 1);
+  // 값이 없을 때(설정 전)도 건다
+  const none = fakeSender(undefined);
+  assert.deepEqual(await lockScreenResolution(none), { applied: 'maintain-resolution', changed: true });
+});
+
+test('해상도 고정: 이미 maintain-resolution 이면 setParameters 를 부르지 않는다(주기 확인이 재협상·부하를 만들지 않음)', async () => {
+  const s = fakeSender('maintain-resolution');
+  assert.deepEqual(await lockScreenResolution(s), { applied: 'maintain-resolution', changed: false });
+  assert.equal(s.st.sets, 0);
+});
+
+test('해상도 고정: 송신기 없음·미지원·실패는 예외 없이 applied=null', async () => {
+  assert.deepEqual(await lockScreenResolution(null), { applied: null, changed: false });
+  assert.deepEqual(await lockScreenResolution({}), { applied: null, changed: false });
+  assert.deepEqual(await lockScreenResolution(fakeSender('balanced', { failSet: true })), { applied: null, changed: false });
+});
+
+test('findVideoSender: 화면공유 PC 의 영상 송신기만 고른다', () => {
+  const v = { track: { kind: 'video' } }, a = { track: { kind: 'audio' } };
+  assert.equal(findVideoSender({ getSenders: () => [a, v] }), v);
+  assert.equal(findVideoSender({ getSenders: () => [a, { track: null }] }), null);
+  assert.equal(findVideoSender(null), null);
+  assert.equal(findVideoSender({ getSenders: () => { throw new Error('closed'); } }), null);
 });

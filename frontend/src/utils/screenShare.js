@@ -5,14 +5,47 @@
 // getDisplayMedia 를 감싸 선택창 힌트를 더한다 → typeOfVideo=SCREEN·contentHint=detail·serverData kind=SCREEN 계약은 그대로.
 // 힌트를 모르는 브라우저(Firefox·Safari)는 사전(dictionary)의 모르는 키를 무시한다.
 
+// 두 모드 모두 해상도는 줄이지 않는다(lockScreenResolution). 모드는 인코더가 화면을 압축하는 방식(contentHint)만 바꾼다.
 export const SCREEN_SHARE_MODES = Object.freeze({
-  // 문서·코드: 해상도 유지 우선(대역폭이 모자라면 프레임을 먼저 줄인다) — PPT·PDF·IDE 글자 선명도
+  // 문서·코드: 화면 콘텐츠 압축 — PPT·PDF·IDE 글자 선명도
   document: { contentHint: 'detail', label: '문서·코드', desc: '글자를 선명하게 (PPT·PDF·IDE)' },
-  // 영상·애니메이션: 프레임 유지 우선(대역폭이 모자라면 해상도를 먼저 줄인다)
-  motion: { contentHint: 'motion', label: '영상·애니메이션', desc: '움직임을 부드럽게' },
+  // 영상·애니메이션: 움직이는 장면용 압축. 대역폭이 모자라면 프레임 수가 줄어든다(해상도 유지).
+  motion: { contentHint: 'motion', label: '영상·애니메이션', desc: '움직이는 화면에 맞춘 압축' },
 });
 
 export const resolveShareMode = (mode) => (SCREEN_SHARE_MODES[mode] ? mode : 'document');
+
+/**
+ * 화면공유 송출은 해상도를 줄이지 않는다(문서·영상 모드 공통) — RTCRtpSender.degradationPreference = 'maintain-resolution'.
+ *  · openvidu-browser 2.30 은 createOffer(첫 publish, ICE 실패 뒤 스트림 재연결)마다 contentHint 가 detail/text 가 아니면 'balanced' 를 넣는다.
+ *  · balanced 면 WebRTC 가 더 적은 픽셀을 요청하고, Chrome 탭 캡처는 그 요청을 캡처 단계에서 (원본 높이 − 90·k) 크기로 반영한다
+ *    → 1895×848 탭이 284×128 까지 줄고, 프레임이 적은 화면 콘텐츠에서는 다시 올라오지 않는다(운영 "원본 크기 286×128").
+ *  · maintain-resolution 이면 대역·CPU 가 모자랄 때 프레임 수·압축률만 조정한다. 실행 중에 바꿔도 2~3초 안에 원래 해상도로 돌아온다.
+ * 이미 맞으면 setParameters 를 부르지 않는다. 반환 applied = 적용된 값(송신기 없음·미지원·실패 = null), changed = 이번에 바꿨는지.
+ */
+export const SCREEN_DEGRADATION_PREFERENCE = 'maintain-resolution';
+
+export async function lockScreenResolution(sender) {
+  if (!sender || typeof sender.getParameters !== 'function' || typeof sender.setParameters !== 'function') return { applied: null, changed: false };
+  try {
+    const params = sender.getParameters();
+    if (params.degradationPreference === SCREEN_DEGRADATION_PREFERENCE) return { applied: SCREEN_DEGRADATION_PREFERENCE, changed: false };
+    params.degradationPreference = SCREEN_DEGRADATION_PREFERENCE;
+    await sender.setParameters(params);
+    return { applied: sender.getParameters().degradationPreference || null, changed: true };
+  } catch (e) {
+    return { applied: null, changed: false };
+  }
+}
+
+/** PeerConnection 의 영상 송신기(화면공유 PC 는 영상 송신기가 하나). 닫힌 PC·미지원이면 null. */
+export function findVideoSender(pc) {
+  try {
+    return pc?.getSenders?.().find((s) => s.track?.kind === 'video') || null;
+  } catch (e) {
+    return null;
+  }
+}
 
 /** 선택창 힌트. selfBrowserSurface:'exclude' = 지금 탭(StudyBridge 회의)을 목록에서 뺀다(Chrome·Edge). */
 export function buildDisplayMediaHints({ withAudio } = {}) {
