@@ -26,6 +26,8 @@ import ScreenSharePrepDialog from './groupstudy/ScreenSharePrepDialog';
 import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, lockScreenResolution, findVideoSender } from '../utils/screenShare';
 import { SCREEN_RECEIPT_SIGNAL, buildReceipt, parseReceipt, healthFromPeerState } from '../utils/screenReceipt';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
+import { useVideoPlayback } from '../hooks/useVideoPlayback';
+import { VIDEO_PLAYBACK } from '../utils/videoPlayback';
 
 // 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
 // - 기존 렌더는 섹션 중심(한 카드에 모든 에이전트가 섞임)이라 에이전트별 사고가 구분되지 않았다.
@@ -175,8 +177,6 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
   const videoRef = React.useRef(null);
   const [isSpeaking, setIsSpeaking] = React.useState(false);
   const [micLevel, setMicLevel] = React.useState(0);
-  // 실제 비디오 element가 재생을 시작했는지. attach 직후 잠깐은 false → "카메라 연결 중…" 표시.
-  const [videoPlaying, setVideoPlaying] = React.useState(false);
 
   // 발화 상태 변화를 부모로 끌어올려 참여자 목록 등 다른 UI에서도 동일하게 표시한다.
   useEffect(() => {
@@ -190,11 +190,6 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
     };
   }, [speakerId, onSpeakingChange]);
 
-  // 스트림이 바뀌면 재생 준비 상태 초기화(새 트랙 attach 대기).
-  useEffect(() => {
-    setVideoPlaying(false);
-  }, [stream]);
-
   // 실제 살아있는 video track 유무를 직접 확인한다. isCamOn(켜짐 의도)만 보고 판단하지 않는다.
   //  - 트랙이 진짜 없을 때만 avatar로 떨어진다.
   //  - 트랙이 있는데 아직 재생 전이면 avatar 대신 "카메라 연결 중…"을 보여준다.
@@ -206,7 +201,6 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
   // 게이트하면 "리렌더 트리거 없음 → 영구 avatar" 교착이 생겨 상대 캠이 끝까지 안 보인다.
   const hasOpenViduManager = !!(streamManager && typeof streamManager.addVideoElement === 'function');
   const showVideo = !!(isCamOn && (hasOpenViduManager || (stream && hasLiveVideoTrack)));
-  const showConnecting = showVideo && !videoPlaying;
 
   // 렌더 후 ref가 생겼을 때 미디어를 video element에 연결한다(타일 remount/스트림 교체 대응).
   //  · OpenVidu streamManager(publisher/subscriber)가 있으면 addVideoElement로 attach해 attach 누락을 방지한다.
@@ -226,6 +220,14 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
       v.srcObject = stream;
     }
   }, [streamManager, stream, showVideo]);
+
+  // 오버레이는 <video> 의 실제 재생 상태로만 정한다(hooks/useVideoPlayback). 스트림 참조가 바뀌어도 초기화하지 않으므로
+  // 이미 재생 중인 요소(openvidu 재-attach 는 srcObject 가 같으면 아무것도 안 해 playing 이벤트가 다시 오지 않음)를 덮지 않는다.
+  const playback = useVideoPlayback(videoRef, showVideo, stream || streamManager);
+  const overlay = !showVideo || playback === VIDEO_PLAYBACK.PLAYING ? null
+    : playback === VIDEO_PLAYBACK.ENDED ? { text: isLocal ? '카메라 연결이 끊겼어요' : '영상 연결이 끊겼어요', bg: 'rgba(30,41,59,0.7)' }
+    : playback === VIDEO_PLAYBACK.STALLED ? { text: '영상이 멈췄어요 · 다시 받는 중…', bg: 'rgba(30,41,59,0.6)' }
+    : { text: '카메라 연결 중…', bg: 'rgba(30,41,59,0.85)' };
 
   // 로컬/원격 오디오 입력 레벨 측정 → 말하는 중 표시 + 입력 레벨 바(실제 입력 감지 여부 가시화).
   useEffect(() => {
@@ -348,14 +350,12 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
         autoPlay
         playsInline
         muted={isMuted}
-        onPlaying={() => setVideoPlaying(true)}
-        onLoadedData={() => setVideoPlaying(true)}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
       />
-      {showConnecting && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', backgroundColor: 'rgba(30,41,59,0.85)', color: '#CBD5E1', zIndex: 4 }}>
+      {overlay && (
+        <div data-testid="video-feed-overlay" data-playback={playback} style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', backgroundColor: overlay.bg, color: '#CBD5E1', zIndex: 4 }}>
           <Video size={28} color="#60A5FA" />
-          <span style={{ fontSize: '13px', fontWeight: 600 }}>카메라 연결 중…</span>
+          <span style={{ fontSize: '13px', fontWeight: 600 }}>{overlay.text}</span>
         </div>
       )}
       {!isMicOn && (

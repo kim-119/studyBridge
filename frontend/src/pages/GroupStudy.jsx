@@ -228,9 +228,13 @@ export default function GroupStudy() {
         setSelectedCamera('');
         return;
       }
-      // 선택 카메라가 없거나 고장난 카메라면, 정상으로 알려진 카메라를 자동 선택
-      if ((!selectedCamera || badCamerasRef.current.has(selectedCamera)) && videoInputs.length > 0) {
-        const good = videoInputs.find(v => v.deviceId && !badCamerasRef.current.has(v.deviceId));
+      // 선택 카메라가 고장난 카메라거나, 아직 선택 전인데 프리뷰가 이미 열려 있으면 목록에서 자동 선택한다.
+      //  지금 프리뷰가 쓰는 장치를 우선한다(기본 카메라로 연 장치와 목록 첫 장치가 다르면 다른 카메라로 다시 열게 된다).
+      //  프리뷰가 아직 없으면(마이크 쪽 목록 갱신이 카메라 획득보다 먼저 끝난 경우) 고르지 않는다 — 고르면 진행 중인 획득을 취소하고 다시 연다.
+      const liveId = previewStreamRef.current?.getVideoTracks?.()[0]?.getSettings?.().deviceId;
+      if (videoInputs.length > 0 && (badCamerasRef.current.has(selectedCamera) || (!selectedCamera && liveId))) {
+        const usable = (v) => v.deviceId && !badCamerasRef.current.has(v.deviceId);
+        const good = videoInputs.find(v => usable(v) && v.deviceId === liveId) || videoInputs.find(usable);
         if (good) setSelectedCamera(good.deviceId);
       }
     } catch (err) {
@@ -238,30 +242,50 @@ export default function GroupStudy() {
     }
   };
 
+  // 프리뷰 스트림은 previewStreamRef 가 소유한다. effect 는 "원하는 상태(켜짐·장치)"와 지금 트랙을 비교해 필요할 때만 교체하고,
+  // 새 스트림이 준비된 뒤에 이전 스트림을 끈다(전환 중에도 기존 영상 유지). 끄기·GENERAL·입장 준비 닫기·언마운트 때만 정지한다.
+  const stopPreviewStream = () => {
+    const s = previewStreamRef.current;
+    previewStreamRef.current = null;
+    if (s) s.getTracks().forEach((t) => { try { t.stop(); } catch (e) { /* ignore */ } });
+  };
+  useEffect(() => () => stopPreviewStream(), []);
+
   useEffect(() => {
-    let stream = null;
     let isMounted = true;
     let retryTimer = null;
 
     if (!preJoinStudy) {
+      stopPreviewStream();
       return undefined;
     }
     // GENERAL(일반 스터디): 카메라 preview/권한 요청 자체를 하지 않는다(video permission 요청은 버그).
     if (!isCamStudy(preJoinStudy.studyType)) {
       setCameraStatus('off');
       setCamError('');
-      previewStreamRef.current = null;
+      stopPreviewStream();
       return undefined;
     }
     if (!isVideoOn) {
       setCameraStatus('off');
       setCamError('');
+      stopPreviewStream();
       return undefined;
     }
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setCameraStatus('error');
       setCamError('브라우저가 카메라 API를 지원하지 않습니다 (HTTPS 또는 localhost 필요).');
+      return undefined;
+    }
+
+    // 지금 프리뷰가 이미 원하는 장치를 쓰고 있으면 다시 열지 않는다(첫 획득 뒤 장치 목록 자동 선택, 그룹 정보 갱신 등).
+    const live = previewStreamRef.current;
+    const liveTrack = live?.getVideoTracks?.()[0];
+    if (liveTrack && liveTrack.readyState === 'live' && (!selectedCamera || liveTrack.getSettings?.().deviceId === selectedCamera)) {
+      if (videoRef.current && videoRef.current.srcObject !== live) videoRef.current.srcObject = live;
+      setCamError('');
+      setCameraStatus('available');
       return undefined;
     }
 
@@ -279,11 +303,12 @@ export default function GroupStudy() {
           s.getTracks().forEach(t => t.stop());
           return;
         }
-        stream = s;
+        const prev = previewStreamRef.current;
         previewStreamRef.current = s; // 입장 시 이 스트림의 video track을 clone해 publisher로 넘긴다
         if (videoRef.current) {
           videoRef.current.srcObject = s;
         }
+        if (prev && prev !== s) prev.getTracks().forEach((t) => { try { t.stop(); } catch (e) { /* ignore */ } });
         setCamError('');
         setCameraStatus('available');
         // 스트림 획득(권한 허용) 성공 후 장치 목록 갱신 (label을 읽어오기 위함)
@@ -295,7 +320,7 @@ export default function GroupStudy() {
         // 선택한 카메라가 stale/제약 불일치면 해당 장치를 불량으로 표시하고 기본 카메라로 자동 재시도
         if ((err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') && selectedCamera) {
           badCamerasRef.current.add(selectedCamera);
-          setSelectedCamera(''); // effect 재실행 → video:true(기본 장치)로 재시도
+          setSelectedCamera(''); // effect 재실행 → 살아 있는 프리뷰가 있으면 그대로, 없으면 video:true(기본 장치)로 재시도
           return;
         }
 
@@ -310,12 +335,15 @@ export default function GroupStudy() {
         // 일시적으로 장치가 안 잡히는 경우 → backoff 재시도
         const retriable = ['NotReadableError', 'TrackStartError', 'NotFoundError', 'DevicesNotFoundError', 'AbortError'].includes(err.name);
         if (retriable && tryNo < 3) {
+          // 이전 프리뷰가 장치를 잡고 있어 못 여는 경우(카메라 동시 사용이 안 되는 OS·모바일) → 이전 프리뷰를 놓고 다시 시도
+          stopPreviewStream();
           setCameraStatus('checking');
           retryTimer = setTimeout(() => { if (isMounted) attempt(tryNo + 1); }, 700 * tryNo);
           return;
         }
 
         // 재시도까지 끝난 최종 실패
+        stopPreviewStream();
         setCameraStatus((err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') ? 'unavailable' : 'error');
         setCamError(friendlyDeviceMessage(err));
         // 권한은 있으나 비디오만 실패한 경우라도 마이크 목록은 보여줄 수 있게 시도
@@ -325,16 +353,15 @@ export default function GroupStudy() {
 
     attempt(1);
 
+    // 정지는 위 분기(끄기·GENERAL·닫기)와 교체 성공 시에만 한다. 여기서는 늦게 끝난 이전 시도만 무효화한다
+    // (그 결과 스트림은 위 !isMounted 분기에서 바로 정지 — 새 선택을 덮지 못한다). 입장 시 넘긴 clone 은 독립 생명주기.
     return () => {
       isMounted = false;
       if (retryTimer) clearTimeout(retryTimer);
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
-      // 원본 프리뷰 스트림 참조 해제(입장 시 넘긴 clone은 독립 생명주기라 영향 없음).
-      if (previewStreamRef.current === stream) previewStreamRef.current = null;
     };
-  }, [preJoinStudy, isVideoOn, selectedCamera]);
+    // preJoinStudy 객체 대신 id·유형만 본다(그룹 정보 수정으로 객체만 바뀌어도 카메라를 다시 열지 않는다).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preJoinStudy?.id, preJoinStudy?.studyType, isVideoOn, selectedCamera]);
 
   // 입장 전 마이크 입력 미터 — 마이크가 실제로 입력을 받는지(말하면 레벨이 오르는지) 보여준다.
   useEffect(() => {
