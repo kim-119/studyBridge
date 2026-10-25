@@ -47,7 +47,7 @@ class GroupVideoCallServiceTest {
         openVidu = mock(OpenViduService.class);
         members = mock(GroupStudyMemberRepository.class);
         when(members.existsByGroupStudyIdAndUserIdAndStatus(GROUP, USER, GroupStudyMemberStatus.JOINED)).thenReturn(true);
-        service = new GroupVideoCallService(openVidu, members, om, "group_study_", 2500, 2500, 300);
+        service = new GroupVideoCallService(openVidu, members, om, "group_study_", 2500, 2500, 1500);
     }
 
     private static Map<String, Object> conn(String id, String status, String serverData, String clientData) {
@@ -190,10 +190,26 @@ class GroupVideoCallServiceTest {
         assertEquals("SCREEN", sd.get("kind").asText());
         assertEquals(USER, sd.get("userId").asLong());
         assertEquals("con_PC", sd.get("ownerConnectionId").asText());
-        // Kurento 기준 Recv = 화면공유 송출 endpoint 가 받는(=공유자가 올리는) 방향
+        // Kurento 기준 Recv = 화면공유 송출 endpoint 가 받는(=공유자가 올리는) 방향. 하한 = KMS 가 공유자에게 보내는 REMB 바닥
         assertEquals(2500, ko.getValue().get("videoMaxRecvBandwidth"));
-        assertEquals(300, ko.getValue().get("videoMinRecvBandwidth"));
+        assertEquals(1500, ko.getValue().get("videoMinRecvBandwidth"));
         assertFalse(ko.getValue().containsKey("videoMaxSendBandwidth"));
+    }
+
+    @Test
+    void screenToken_minUploadAboveMax_isClampedToMax() {
+        service = new GroupVideoCallService(openVidu, members, om, "group_study_", 2500, 1200, 3000);
+        primaryActive("con_PC", serverData(USER, "PRIMARY", null));
+        when(openVidu.listConnections(SID, true)).thenReturn(List.of(conn("con_PC", "active", serverData(USER, "PRIMARY", null), "{}")));
+        when(openVidu.createConnection(eq(SID), anyString(), eq("PUBLISHER"), any())).thenReturn(new ConnectionGrant("con_SCR", "tok_screen"));
+
+        service.issueScreenToken(USER, GROUP, "con_PC", null, null);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> ko = ArgumentCaptor.forClass(Map.class);
+        verify(openVidu).createConnection(eq(SID), anyString(), eq("PUBLISHER"), ko.capture());
+        assertEquals(1200, ko.getValue().get("videoMaxRecvBandwidth"));
+        assertEquals(1200, ko.getValue().get("videoMinRecvBandwidth"));
     }
 
     @Test

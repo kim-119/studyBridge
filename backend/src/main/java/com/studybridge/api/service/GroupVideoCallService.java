@@ -47,14 +47,15 @@ public class GroupVideoCallService {
                                  @Value("${openvidu.session-prefix:group_study_}") String sessionPrefix,
                                  @Value("${openvidu.bandwidth.viewer-max-download-kbps:2500}") int viewerMaxDownloadKbps,
                                  @Value("${openvidu.bandwidth.screen-max-upload-kbps:2500}") int screenMaxUploadKbps,
-                                 @Value("${openvidu.bandwidth.screen-min-upload-kbps:300}") int screenMinUploadKbps) {
+                                 @Value("${openvidu.bandwidth.screen-min-upload-kbps:1500}") int screenMinUploadKbps) {
         this.openVidu = openVidu;
         this.memberRepository = memberRepository;
         this.objectMapper = objectMapper;
         this.sessionPrefix = sessionPrefix;
         this.viewerMaxDownloadKbps = viewerMaxDownloadKbps;
         this.screenMaxUploadKbps = screenMaxUploadKbps;
-        this.screenMinUploadKbps = screenMinUploadKbps;
+        // 하한이 상한보다 크면 KMS 가 상한을 넘는 REMB 를 보낸다(설정 실수) → 상한으로 맞춘다.
+        this.screenMinUploadKbps = screenMaxUploadKbps > 0 ? Math.min(screenMinUploadKbps, screenMaxUploadKbps) : screenMinUploadKbps;
     }
 
     public String sessionIdFor(long groupId) {
@@ -108,7 +109,15 @@ public class GroupVideoCallService {
         return o;
     }
 
-    /** 화면공유(SCREEN) 송출 상한/하한. 하한은 전역과 같은 300 으로 두어 나쁜 네트워크에서도 아래로 적응할 수 있게 한다. */
+    /**
+     * 화면공유(SCREEN) 송출 상한/하한. 하한(videoMinRecvBandwidth)은 KMS 가 공유자에게 보내는 REMB 의 바닥이다.
+     * KMS 7 kmsremb: REMB = max(하한, min(KMS 수신 추정, 시청자들 REMB)) 이고, 시청자 Chrome 의 REMB 는 처음 5초 동안 받은 양으로
+     * 초기화된 뒤 "받은 양의 1.5배"까지만 오른다. 정적인 문서 화면은 받는 양이 수십 kbps 라 REMB 가 하한에 붙고, 새 시청자가
+     * 들어올 때마다 다시 하한으로 떨어진다. 하한 300 에서는 공유자 Chrome 의 목표가 150~370kbps 에 묶여 1080p 글자가
+     * 뭉개졌다(E2E 1080p 문서: 슬라이드 QP 84~105/127, 텍스트 PSNR 25~31dB → 하한 1500: 목표 1.2~2.5Mbps, QP 15~47, 37~41dB).
+     * 하한은 KMS 의 요청 바닥일 뿐이라, 공유자 업링크가 모자라면 Chrome 의 손실 기반 대역 추정이 그 아래로 내려간다
+     * (E2E 업링크 1Mbps 제한: REMB 1500 유지, 실제 목표 95~904kbps).
+     */
     private Map<String, Object> screenKurentoOptions() {
         Map<String, Object> o = new HashMap<>();
         if (screenMaxUploadKbps > 0) o.put("videoMaxRecvBandwidth", screenMaxUploadKbps);
@@ -176,8 +185,8 @@ public class GroupVideoCallService {
             String serverData = VideoConnectionMetadata.toServerData(objectMapper, groupId, userId, Kind.SCREEN,
                     primaryConnectionId, instanceId, device, System.currentTimeMillis());
             ConnectionGrant grant = openVidu.createConnection(sessionId, serverData, "PUBLISHER", screenKurentoOptions());
-            log.info("[VIDEO] screen token issued userId={} groupId={} connectionId={} owner={} maxSendKbps={}",
-                    userId, groupId, grant.connectionId(), primaryConnectionId, screenMaxUploadKbps);
+            log.info("[VIDEO] screen token issued userId={} groupId={} connectionId={} owner={} maxSendKbps={} minSendKbps={}",
+                    userId, groupId, grant.connectionId(), primaryConnectionId, screenMaxUploadKbps, screenMinUploadKbps);
 
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("token", grant.token());

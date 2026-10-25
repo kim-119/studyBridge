@@ -80,7 +80,10 @@ export function summarizeInbound(prev, cur) {
   };
 }
 
-/** 송출자 outbound-rtp 두 표본 → 서버(미디어 서버)로 보내는 해상도·fps·kbps·화질 제한 사유. */
+/**
+ * 송출자 outbound-rtp 두 표본 → 서버(미디어 서버)로 보내는 해상도·fps·kbps·화질 제한 사유·허용 대역.
+ * targetKbps = 인코더에 허용된 비트레이트(대역 추정 결과). 정적인 문서는 실제 kbps 가 작아도 정상이고, 화질은 허용 대역이 좌우한다.
+ */
 export function summarizeOutbound(prev, cur) {
   if (!cur) return null;
   const dt = prev && cur.timestamp > prev.timestamp ? (cur.timestamp - prev.timestamp) / 1000 : 0;
@@ -91,6 +94,7 @@ export function summarizeOutbound(prev, cur) {
     fps: Number.isFinite(cur.framesPerSecond) ? round1(cur.framesPerSecond) : null,
     kbps: bytes !== null ? Math.round((bytes * 8) / dt / 1000) : null,
     limitation: typeof cur.qualityLimitationReason === 'string' ? cur.qualityLimitationReason : null,
+    targetKbps: Number.isFinite(cur.targetBitrate) && cur.targetBitrate > 0 ? Math.round(cur.targetBitrate / 1000) : null,
   };
 }
 

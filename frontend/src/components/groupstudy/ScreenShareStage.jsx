@@ -361,7 +361,7 @@ function OwnShareCard({ share, ownShare, viewers, receipts, isMobile, previewMod
             {surface?.modeLabel && <span style={{ color: '#94A3B8' }}>· {surface.modeLabel} 모드</span>}
           </div>
           <div data-testid="screen-own-send" style={{ color: '#94A3B8' }}>
-            서버로 송출 {sendText || '측정 중…'}{send?.limitation && send.limitation !== 'none' ? ` · 화질 제한: ${LIMITATION[send.limitation] || send.limitation}` : ''}
+            서버로 송출 {sendText || '측정 중…'}{fmtKbps(send?.targetKbps) ? ` · 허용 ${fmtKbps(send.targetKbps)}` : ''}{send?.limitation && send.limitation !== 'none' ? ` · 화질 제한: ${LIMITATION[send.limitation] || send.limitation}` : ''}
           </div>
         </div>
       )}

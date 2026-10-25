@@ -64,7 +64,15 @@ test('summarizeInbound: 구간 비트레이트·손실률·드롭, 첫 표본은
 test('summarizeOutbound: 송출 kbps·제한 사유', () => {
   const o = (x) => ({ type: 'outbound-rtp', kind: 'video', ...x });
   const s = summarizeOutbound(o({ timestamp: 0, bytesSent: 0 }), o({ timestamp: 4000, bytesSent: 500_000, frameWidth: 1440, frameHeight: 810, framesPerSecond: 5, qualityLimitationReason: 'cpu' }));
-  assert.deepEqual(s, { w: 1440, h: 810, fps: 5, kbps: 1000, limitation: 'cpu' });
+  assert.deepEqual(s, { w: 1440, h: 810, fps: 5, kbps: 1000, limitation: 'cpu', targetKbps: null });
+});
+
+test('summarizeOutbound: 허용 대역(targetBitrate)은 실제 송출량과 따로 보고한다', () => {
+  const o = (x) => ({ type: 'outbound-rtp', kind: 'video', ...x });
+  const s = summarizeOutbound(o({ timestamp: 0, bytesSent: 0 }), o({ timestamp: 5000, bytesSent: 50_000, targetBitrate: 2_083_000 }));
+  assert.equal(s.kbps, 80);
+  assert.equal(s.targetKbps, 2083);
+  assert.equal(summarizeOutbound(null, o({ timestamp: 1, targetBitrate: 0 })).targetKbps, null);
 });
 
 const LIVE = { status: 'live', health: 'ok', liveSince: 0 };
