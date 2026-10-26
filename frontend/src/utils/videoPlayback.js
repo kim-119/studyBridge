@@ -15,6 +15,27 @@ export const VIDEO_PLAYBACK = Object.freeze({
 // requestVideoFrameCallback 기준 이 시간 동안 새 프레임이 없으면 멈춘 것으로 본다(카메라는 정지 장면에서도 프레임을 계속 보낸다).
 export const VIDEO_STALL_MS = 4000;
 
+/**
+ * 끊김 판정용 프레임 시계. 탭이 숨겨진 동안은 프레임 콜백이 멈추므로 그 시간을 '프레임 없음'으로 세지 않는다.
+ *  · 숨김 → 표시: 마지막 프레임 시각을 숨겨진 시간만큼 뒤로 민다. 숨기기 직전까지 프레임이 오고 있었다면 복귀 직후
+ *    STALLED 가 되지 않고(오탐 제거), 복귀 뒤 VIDEO_STALL_MS 동안 새 프레임이 없으면 그때 STALLED(실제 정지는 그대로 드러남).
+ *    숨기기 전에 이미 끊겨 있었다면 밀어도 VIDEO_STALL_MS 를 넘으므로 복귀 직후에도 STALLED 로 남는다.
+ */
+export function createFrameClock() {
+  let lastFrameAt = null;
+  let hiddenAt = null;
+  return {
+    get lastFrameAt() { return lastFrameAt; },
+    frame(now) { lastFrameAt = now; },
+    reset() { lastFrameAt = null; hiddenAt = null; },
+    hide(now) { if (hiddenAt === null) hiddenAt = now; },
+    show(now) {
+      if (hiddenAt !== null && lastFrameAt !== null) lastFrameAt += Math.max(0, now - hiddenAt);
+      hiddenAt = null;
+    },
+  };
+}
+
 /** 요소에 연결된 MediaStream 의 첫 영상 트랙. 없거나 읽을 수 없으면 null. */
 export function currentVideoTrack(el) {
   try {

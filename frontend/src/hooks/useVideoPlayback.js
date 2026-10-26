@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { VIDEO_PLAYBACK, currentVideoTrack, evaluateVideoPlayback } from '../utils/videoPlayback';
+import { VIDEO_PLAYBACK, createFrameClock, currentVideoTrack, evaluateVideoPlayback } from '../utils/videoPlayback';
 
 // srcObject 교체(loadstart/emptied)부터 첫 프레임·일시정지·해상도 변경까지 — 요소 상태가 바뀔 수 있는 미디어 이벤트.
 const MEDIA_EVENTS = ['loadstart', 'emptied', 'loadedmetadata', 'loadeddata', 'canplay', 'playing', 'pause', 'waiting', 'ended', 'resize'];
@@ -11,6 +11,7 @@ const TRACK_EVENTS = ['mute', 'unmute', 'ended'];
  *    않으므로, 이미 재생 중이라 playing 이벤트가 다시 오지 않는 요소를 '연결 중'으로 되돌리지 않는다.
  *  · requestVideoFrameCallback 지원 시 새 프레임 도착을 직접 확인한다(이벤트를 놓쳐도 프레임이 오면 PLAYING, 끊기면 STALLED).
  *    끊김은 이벤트가 없어 1초마다 다시 판정한다 — 오버레이를 시간으로 지우는 타이머가 아니라 '프레임 없음'을 감지하는 용도.
+ *    탭이 숨겨진 시간은 끊김으로 세지 않는다(createFrameClock) — 탭 복귀 직후 첫 프레임 전의 STALLED 오탐 방지.
  *    미지원 브라우저는 timeupdate 로 재평가하고 멈춤은 트랙 mute 로만 판단한다.
  *  · 리스너는 이 effect 실행이 붙인 요소·트랙에만 걸고 cleanup 에서 뗀다 → 이전 요소·스트림의 늦은 이벤트가 새 상태를 덮지 못한다.
  */
@@ -26,7 +27,8 @@ export function useVideoPlayback(videoRef, active, mediaKey) {
     let disposed = false;
     let last = null;
     let track = null;
-    let lastFrameAt = null;
+    const clock = createFrameClock();
+    if (document.hidden) clock.hide(performance.now());
     let frameHandle = null;
     let stallTimer = null;
 
@@ -36,10 +38,11 @@ export function useVideoPlayback(videoRef, active, mediaKey) {
       if (t !== track) {
         if (track) TRACK_EVENTS.forEach((e) => track.removeEventListener(e, evaluate));
         track = t;
-        lastFrameAt = null;
+        clock.reset();
+        if (document.hidden) clock.hide(performance.now());
         if (track) TRACK_EVENTS.forEach((e) => track.addEventListener(e, evaluate));
       }
-      const next = evaluateVideoPlayback(v, { lastFrameAt, now: performance.now(), hidden: document.hidden });
+      const next = evaluateVideoPlayback(v, { lastFrameAt: clock.lastFrameAt, now: performance.now(), hidden: document.hidden });
       if (next !== last) {
         last = next;
         setState(next);
@@ -49,13 +52,18 @@ export function useVideoPlayback(videoRef, active, mediaKey) {
     const watchFrames = typeof v.requestVideoFrameCallback === 'function';
     const onFrame = () => {
       if (disposed) return;
-      lastFrameAt = performance.now();
+      clock.frame(performance.now());
       evaluate();
       frameHandle = v.requestVideoFrameCallback(onFrame);
     };
     const events = watchFrames ? MEDIA_EVENTS : [...MEDIA_EVENTS, 'timeupdate'];
+    const onVisibility = () => {
+      if (document.hidden) clock.hide(performance.now());
+      else clock.show(performance.now());
+      evaluate();
+    };
     events.forEach((e) => v.addEventListener(e, evaluate));
-    document.addEventListener('visibilitychange', evaluate);
+    document.addEventListener('visibilitychange', onVisibility);
     if (watchFrames) {
       frameHandle = v.requestVideoFrameCallback(onFrame);
       stallTimer = setInterval(evaluate, 1000);
@@ -65,7 +73,7 @@ export function useVideoPlayback(videoRef, active, mediaKey) {
     return () => {
       disposed = true;
       events.forEach((e) => v.removeEventListener(e, evaluate));
-      document.removeEventListener('visibilitychange', evaluate);
+      document.removeEventListener('visibilitychange', onVisibility);
       if (frameHandle != null) { try { v.cancelVideoFrameCallback(frameHandle); } catch (e) { /* ignore */ } }
       clearInterval(stallTimer);
       if (track) TRACK_EVENTS.forEach((e) => track.removeEventListener(e, evaluate));

@@ -1,7 +1,7 @@
 // node --test frontend/src/utils/__tests__   (vitest/jest 미도입 — Node 내장 테스트 러너 사용)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { VIDEO_PLAYBACK, VIDEO_STALL_MS, currentVideoTrack, evaluateVideoPlayback } from '../videoPlayback.js';
+import { VIDEO_PLAYBACK, VIDEO_STALL_MS, createFrameClock, currentVideoTrack, evaluateVideoPlayback } from '../videoPlayback.js';
 
 const track = (o = {}) => ({ kind: 'video', readyState: 'live', muted: false, ...o });
 const stream = (t) => ({ getVideoTracks: () => (t ? [t] : []) });
@@ -44,4 +44,48 @@ test('currentVideoTrack: srcObject 의 첫 영상 트랙, 없거나 예외면 nu
   assert.equal(currentVideoTrack({ srcObject: null }), null);
   assert.equal(currentVideoTrack({ srcObject: { getVideoTracks: () => { throw new Error('x'); } } }), null);
   assert.equal(currentVideoTrack(null), null);
+});
+
+// 탭 복귀: 숨겨진 동안 프레임 콜백이 멈춰 마지막 프레임 시각이 오래돼 보인다 → 숨겨진 시간을 끊김으로 세지 않는다.
+test('탭 복귀 직후: 숨기기 직전까지 재생 중이었으면 STALLED 오탐 없음, 복귀 뒤에도 프레임이 없으면 STALLED', () => {
+  const v = video();
+  // 수정 전 판정(숨김 시간을 그대로 셈): 10초 숨겼다 돌아오면 첫 프레임 전에 곧바로 STALLED
+  assert.equal(evaluateVideoPlayback(v, { lastFrameAt: 9990, now: 20001 }), VIDEO_PLAYBACK.STALLED);
+
+  const clock = createFrameClock();
+  clock.frame(9990);
+  clock.hide(10000);
+  clock.show(20000);
+  assert.equal(clock.lastFrameAt, 19990);
+  assert.equal(evaluateVideoPlayback(v, { lastFrameAt: clock.lastFrameAt, now: 20001 }), VIDEO_PLAYBACK.PLAYING);
+  // 복귀 뒤 새 프레임이 VIDEO_STALL_MS 넘게 없으면 실제 정지로 드러난다(숨기지 않음)
+  assert.equal(evaluateVideoPlayback(v, { lastFrameAt: clock.lastFrameAt, now: 19990 + VIDEO_STALL_MS + 1 }), VIDEO_PLAYBACK.STALLED);
+  // 새 프레임이 오면 그 시각 기준
+  clock.frame(20100);
+  assert.equal(evaluateVideoPlayback(v, { lastFrameAt: clock.lastFrameAt, now: 20100 + VIDEO_STALL_MS - 1 }), VIDEO_PLAYBACK.PLAYING);
+});
+
+test('숨기기 전에 이미 끊겨 있었으면 복귀 직후에도 STALLED 로 남는다(정지 상태를 가리지 않음)', () => {
+  const v = video();
+  const clock = createFrameClock();
+  clock.frame(1000);
+  clock.hide(10000); // 이미 9초째 프레임 없음
+  clock.show(20000);
+  assert.equal(evaluateVideoPlayback(v, { lastFrameAt: clock.lastFrameAt, now: 20001 }), VIDEO_PLAYBACK.STALLED);
+});
+
+test('프레임 시계: 숨김 중복 호출은 처음 시각 유지, 숨김 없이 표시는 변화 없음, 첫 프레임 전·reset 은 판정 보류', () => {
+  const clock = createFrameClock();
+  clock.hide(100);
+  clock.show(200);
+  assert.equal(clock.lastFrameAt, null); // 첫 프레임 전 — 요소 상태로만 판정
+  clock.frame(1000);
+  clock.hide(2000);
+  clock.hide(5000);
+  clock.show(6000);
+  assert.equal(clock.lastFrameAt, 5000); // 숨김 시작 2000 기준 4000ms 이동
+  clock.show(7000);
+  assert.equal(clock.lastFrameAt, 5000);
+  clock.reset();
+  assert.equal(clock.lastFrameAt, null);
 });
