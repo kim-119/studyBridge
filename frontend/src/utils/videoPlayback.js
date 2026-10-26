@@ -46,6 +46,20 @@ export function currentVideoTrack(el) {
   }
 }
 
+/** 로그용 요소·트랙 상태(개인정보 없음). */
+export function snapshotVideo(el) {
+  const t = currentVideoTrack(el);
+  return {
+    srcObject: !!el?.srcObject,
+    readyState: el?.readyState ?? null,
+    paused: el?.paused ?? null,
+    ended: el?.ended ?? null,
+    w: el?.videoWidth || 0,
+    h: el?.videoHeight || 0,
+    track: t ? { readyState: t.readyState, muted: !!t.muted, enabled: t.enabled !== false } : null,
+  };
+}
+
 /**
  * @param el HTMLVideoElement(readyState·paused·ended·videoWidth·srcObject)
  * @param lastFrameAt requestVideoFrameCallback 로 본 마지막 새 프레임 시각(ms). 미지원·첫 프레임 전이면 null(요소 상태로만 판정)

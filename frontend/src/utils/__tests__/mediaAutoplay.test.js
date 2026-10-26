@@ -85,8 +85,9 @@ test('소스 가드: 재생 버튼 → retryBlockedPlayback, 원격 소리를 �
   const studyRoom = fs.readFileSync(path.join(src, 'components/StudyRoom.jsx'), 'utf8');
   const sink = fs.readFileSync(path.join(src, 'components/groupstudy/RemoteAudioSink.jsx'), 'utf8');
   const hook = fs.readFileSync(path.join(src, 'hooks/useVideoPlayback.js'), 'utf8');
-  assert.match(studyRoom, /playback === VIDEO_PLAYBACK\.BLOCKED \? \{ text: '브라우저가 자동 재생을 막았어요'/);
-  assert.match(studyRoom, /data-testid="video-feed-play" onClick=\{\(\) => \{ retryBlockedPlayback\(\); \}\}/);
+  // 막힘 오버레이의 버튼 = video-feed-play → retryBlockedPlayback (오버레이 객체가 버튼 testid·핸들러를 정한다)
+  assert.match(studyRoom, /playback === VIDEO_PLAYBACK\.BLOCKED \? \{ text: '브라우저가 자동 재생을 막았어요', [^}]*onAction: \(\) => \{ retryBlockedPlayback\(\); \}, actionTestId: 'video-feed-play'/);
+  assert.match(studyRoom, /data-testid=\{overlay\.actionTestId\} onClick=\{overlay\.onAction\}/);
   assert.match(sink, /data-testid="remote-audio-play" onClick=\{\(\) => \{ retryBlockedPlayback\(\); \}\}/);
   assert.match(hook, /requestPlayback\(v\)/);
   for (const code of [studyRoom, sink, hook]) assert.doesNotMatch(code, /\.muted = true/);

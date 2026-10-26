@@ -28,7 +28,9 @@ import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDispl
 import { SCREEN_RECEIPT_SIGNAL, buildReceipt, parseReceipt, healthFromPeerState } from '../utils/screenReceipt';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
 import { useVideoPlayback } from '../hooks/useVideoPlayback';
+import { useMediaLinkHealth } from '../hooks/useMediaLinkHealth';
 import { VIDEO_PLAYBACK } from '../utils/videoPlayback';
+import { MEDIA_LINK, describeMediaIssue, recordSubscribeResult } from '../utils/mediaHealth';
 import { isTrackForSelectedCamera } from '../utils/cameraSelection';
 
 // 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
@@ -225,13 +227,35 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
 
   // 오버레이는 <video> 의 실제 재생 상태로만 정한다(hooks/useVideoPlayback). 스트림 참조가 바뀌어도 초기화하지 않으므로
   // 이미 재생 중인 요소(openvidu 재-attach 는 srcObject 가 같으면 아무것도 안 해 playing 이벤트가 다시 오지 않음)를 덮지 않는다.
-  const playback = useVideoPlayback(videoRef, showVideo, stream || streamManager);
+  const streamId = streamManager?.stream?.streamId || null;
+  const playback = useVideoPlayback(videoRef, showVideo, stream || streamManager, `${isLocal ? 'local' : 'remote'}:${streamId || '-'}`);
+  // 프레임이 없을 때 원인 구분(utils/mediaHealth): ICE 지연·실패·복구 중·패킷 없음(상대 송출 문제)·디코딩 없음.
+  //  · 원격은 재생 전이거나 멈춘 동안만 측정한다. 내 송출은 미리보기가 재생돼도 서버로 안 나갈 수 있어 카메라가 켜진 동안 계속 본다.
+  //  · '다시 연결' = 이 스트림의 PeerConnection 만 재협상(stream.reconnect) — 세션·다른 참여자 연결은 그대로.
+  const linkWatch = showVideo && hasOpenViduManager && (isLocal || playback !== VIDEO_PLAYBACK.PLAYING);
+  const media = useMediaLinkHealth(hasOpenViduManager ? streamManager : null, { enabled: linkWatch, direction: isLocal ? 'outbound' : 'inbound' });
+  const issue = linkWatch ? describeMediaIssue(media.link, { isLocal, autoAttempts: media.autoAttempts }) : null;
+  const reconnectAction = issue?.action === 'reconnect' && !media.busy ? { action: '다시 연결', onAction: () => { media.reconnect(); }, actionTestId: 'video-feed-reconnect' } : {};
   const overlay = !showVideo || playback === VIDEO_PLAYBACK.PLAYING ? null
-    : playback === VIDEO_PLAYBACK.ENDED ? { text: isLocal ? '카메라 연결이 끊겼어요' : '영상 연결이 끊겼어요', bg: 'rgba(30,41,59,0.7)' }
-    : playback === VIDEO_PLAYBACK.STALLED ? { text: '영상이 멈췄어요 · 다시 받는 중…', bg: 'rgba(30,41,59,0.6)' }
+    : playback === VIDEO_PLAYBACK.ENDED ? { text: isLocal ? '카메라 연결이 끊겼어요' : '영상 연결이 끊겼어요', short: '연결 끊김', bg: 'rgba(30,41,59,0.7)' }
     // 자동재생 차단: 눌러야 재생된다(소리를 끄고 몰래 재생하지 않는다). 한 번 누르면 막힌 영상·소리를 모두 다시 재생한다.
-    : playback === VIDEO_PLAYBACK.BLOCKED ? { text: '브라우저가 자동 재생을 막았어요', action: isLocal ? '영상 재생' : '영상·소리 재생', bg: 'rgba(30,41,59,0.85)' }
-    : { text: '카메라 연결 중…', bg: 'rgba(30,41,59,0.85)' };
+    : playback === VIDEO_PLAYBACK.BLOCKED ? { text: '브라우저가 자동 재생을 막았어요', short: '자동 재생 차단', action: isLocal ? '영상 재생' : '영상·소리 재생', onAction: () => { retryBlockedPlayback(); }, actionTestId: 'video-feed-play', bg: 'rgba(30,41,59,0.85)' }
+    // 전송 경로 문제가 확인되면 '연결 중'/'멈췄어요' 대신 원인을 보여준다(내 송출 문제는 미리보기를 가리지 않고 아래 배지로).
+    : !isLocal && issue ? { text: issue.text, short: issue.short, hint: issue.hint, ...reconnectAction, bg: 'rgba(30,41,59,0.85)' }
+    : playback === VIDEO_PLAYBACK.STALLED ? { text: '영상이 멈췄어요 · 다시 받는 중…', short: '멈춤 · 다시 받는 중', bg: 'rgba(30,41,59,0.6)' }
+    : { text: '카메라 연결 중…', short: '연결 중…', bg: 'rgba(30,41,59,0.85)' };
+  const sendBadge = isLocal && issue ? { text: issue.text, short: issue.short, ...reconnectAction } : null;
+
+  // 패킷이 디코딩되는데도 요소가 프레임을 못 받으면 요소의 srcObject 가 현재 스트림과 어긋난 것(재마운트·재연결 경합) → 다시 붙인다.
+  useEffect(() => {
+    if (isLocal || media.link !== MEDIA_LINK.FLOWING || playback !== VIDEO_PLAYBACK.WAITING) return;
+    const v = videoRef.current;
+    let current = null;
+    try { current = streamManager?.stream?.getMediaStream?.() || null; } catch (e) { current = null; }
+    if (!v || !current || v.srcObject === current) return;
+    console.warn('[StudyRoomOV] video:resync', { streamId, hadSrcObject: !!v.srcObject });
+    try { streamManager.addVideoElement(v); } catch (e) { v.srcObject = current; }
+  }, [isLocal, media.link, playback, streamManager, streamId]);
 
   // 로컬/원격 오디오 입력 레벨 측정 → 말하는 중 표시 + 입력 레벨 바(실제 입력 감지 여부 가시화).
   useEffect(() => {
@@ -356,15 +380,32 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
         muted={isMuted}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
       />
+      {/* 안내 레이어는 타일 크기 기준으로 축약된다(index.css .video-feed-overlay container query — 모바일 3열 썸네일 대응). */}
       {overlay && (
-        <div data-testid="video-feed-overlay" data-playback={playback} style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', backgroundColor: overlay.bg, color: '#CBD5E1', zIndex: 4 }}>
-          <Video size={28} color="#60A5FA" />
-          <span style={{ fontSize: '13px', fontWeight: 600 }}>{overlay.text}</span>
+        <div className="video-feed-overlay" data-testid="video-feed-overlay" data-playback={playback} data-link={media.link || ''} title={overlay.text} style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '0 12px', overflow: 'hidden', textAlign: 'center', backgroundColor: overlay.bg, color: '#CBD5E1', zIndex: 4 }}>
+          <Video className="video-feed-overlay__icon" size={28} color="#60A5FA" />
+          <span className="video-feed-overlay__text" style={{ fontSize: '13px', fontWeight: 600 }}>{overlay.text}</span>
+          {overlay.short && <span className="video-feed-overlay__short" style={{ display: 'none', fontSize: '11px', fontWeight: 600 }}>{overlay.short}</span>}
+          {overlay.hint && <span className="video-feed-overlay__hint" style={{ fontSize: '11px', color: '#94A3B8' }}>{overlay.hint}</span>}
           {overlay.action && (
-            <button type="button" data-testid="video-feed-play" onClick={() => { retryBlockedPlayback(); }} style={{ padding: '6px 14px', borderRadius: '999px', border: 'none', backgroundColor: '#3B82F6', color: '#FFFFFF', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>
+            <button type="button" className="video-feed-overlay__btn" data-testid={overlay.actionTestId} onClick={overlay.onAction} style={{ padding: '6px 14px', borderRadius: '999px', border: 'none', backgroundColor: '#3B82F6', color: '#FFFFFF', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>
               {overlay.action}
             </button>
           )}
+        </div>
+      )}
+      {sendBadge && (
+        <div className="video-feed-badge-layer" style={{ position: 'absolute', inset: 0, zIndex: 7, pointerEvents: 'none' }}>
+          <div className="video-feed-badge" data-testid="video-feed-send-badge" data-link={media.link || ''} title={sendBadge.text} style={{ position: 'absolute', left: '8px', right: '8px', bottom: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '5px 10px', borderRadius: '10px', backgroundColor: 'rgba(15, 23, 42, 0.78)', border: '1px solid rgba(248,113,113,0.45)', color: '#FECACA', fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap', pointerEvents: 'auto' }}>
+            <AlertTriangle size={13} color="#F87171" style={{ flexShrink: 0 }} />
+            <span className="video-feed-badge__text" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{sendBadge.text}</span>
+            {sendBadge.short && <span className="video-feed-badge__short" style={{ display: 'none', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sendBadge.short}</span>}
+            {sendBadge.action && (
+              <button type="button" className="video-feed-badge__btn" data-testid={sendBadge.actionTestId} onClick={sendBadge.onAction} style={{ flexShrink: 0, padding: '3px 10px', borderRadius: '999px', border: 'none', backgroundColor: '#3B82F6', color: '#FFFFFF', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>
+                {sendBadge.action}
+              </button>
+            )}
+          </div>
         </div>
       )}
       {!isMicOn && (
@@ -1542,7 +1583,13 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
           }
           // 다른 사람의 화면공유: 구독(WebRTC 협상) 완료를 송출자에게 알린다(phase=subscribed — 아직 '재생 중'이라는 뜻은 아님).
           const isRemoteScreen = meta.kind === CONNECTION_KIND.SCREEN && meta.verified && meta.userKey !== String(userId);
+          const subscribeStartedAt = performance.now();
+          // 구독 협상(receiveVideoFrom) 결과를 남긴다 — 실패를 버리면 타일이 원인 없이 '카메라 연결 중…' 으로 남는다(utils/mediaHealth 가 읽음).
           const subscriber = sessionInstance.subscribe(event.stream, undefined, (err) => {
+            const ms = Math.round(performance.now() - subscribeStartedAt);
+            if (err) console.warn('[StudyRoomOV] subscribe:failed', { connectionId, streamId, ms, name: err?.name, message: String(err?.message || err).slice(0, 200) });
+            else console.info('[StudyRoomOV] subscribe:ok', { connectionId, streamId, ms, hasVideo: event.stream.hasVideo, videoActive: event.stream.videoActive });
+            if (!isStale()) recordSubscribeResult(subscriber, err || null);
             if (!err && isRemoteScreen && !isStale()) sendScreenReceiptRef.current?.(event.stream.connection, { phase: 'subscribed' });
           });
           // 원격 미디어가 실제 재생을 시작하면(streamPlaying) mediaStream/track이 채워진다.
@@ -1646,8 +1693,16 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
           setSubscribers(prev => ({ ...prev }));
         });
 
+        // ICE_CONNECTION_FAILED/DISCONNECTED(origin=Stream), NO_STREAM_PLAYING_EVENT(origin=Subscriber) 등 — 어느 스트림인지 함께 남긴다.
         sessionInstance.on('exception', (exception) => {
-          console.warn('[StudyRoomOV] exception', { name: exception?.name, message: exception?.message });
+          const origin = exception?.origin;
+          const originStream = origin?.streamId ? origin : (origin?.stream || null);
+          console.warn('[StudyRoomOV] exception', {
+            name: exception?.name,
+            message: exception?.message,
+            streamId: originStream?.streamId || null,
+            connectionId: originStream?.connection?.connectionId || null,
+          });
         });
 
         // WS 일시 단절: openvidu-browser 가 같은 Connection 으로 자동 재연결(서버 유예 ~10초)한다. 성공하면 서버 기준으로 다시 맞춘다.

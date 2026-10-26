@@ -25,6 +25,7 @@ export default function RemoteAudioSink({ streamManager, stream }) {
     }
   }, [streamManager, stream]);
   // openvidu 는 autoplay 만 켜고 play() 를 부르지 않는다 → 직접 불러 자동재생 차단(NotAllowedError)을 감지한다.
+  // 모바일(Android WebView·iOS)이 백그라운드에서 요소를 멈춘 채 돌아오면 다시 재생한다(영상 타일의 useVideoPlayback 과 같은 규칙).
   useEffect(() => {
     const el = ref.current;
     if (!el) return undefined;
@@ -32,13 +33,16 @@ export default function RemoteAudioSink({ streamManager, stream }) {
     const tryPlay = () => {
       if (el.srcObject && el.paused && !el.ended && !isPlaybackBlocked(el)) requestPlayback(el);
     };
+    const onVisible = () => { if (!document.hidden) tryPlay(); };
     const unsubscribe = subscribePlaybackBlocked(sync);
     ['loadstart', 'loadedmetadata', 'canplay'].forEach((type) => el.addEventListener(type, tryPlay));
+    document.addEventListener('visibilitychange', onVisible);
     tryPlay();
     sync();
     return () => {
       unsubscribe();
       ['loadstart', 'loadedmetadata', 'canplay'].forEach((type) => el.removeEventListener(type, tryPlay));
+      document.removeEventListener('visibilitychange', onVisible);
       forgetPlayback(el);
     };
   }, [streamManager, stream]);

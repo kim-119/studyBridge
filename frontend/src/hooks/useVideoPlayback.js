@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { VIDEO_PLAYBACK, createFrameClock, currentVideoTrack, evaluateVideoPlayback } from '../utils/videoPlayback';
+import { VIDEO_PLAYBACK, createFrameClock, currentVideoTrack, evaluateVideoPlayback, snapshotVideo } from '../utils/videoPlayback';
 import { forgetPlayback, isPlaybackBlocked, requestPlayback, subscribePlaybackBlocked } from '../utils/mediaAutoplay';
+import { isVideoDebugEnabled } from '../utils/mediaHealth';
 
 // srcObject 교체(loadstart/emptied)부터 첫 프레임·일시정지·해상도 변경까지 — 요소 상태가 바뀔 수 있는 미디어 이벤트.
 const MEDIA_EVENTS = ['loadstart', 'emptied', 'loadedmetadata', 'loadeddata', 'canplay', 'playing', 'pause', 'waiting', 'ended', 'resize'];
@@ -17,8 +18,9 @@ const TRACK_EVENTS = ['mute', 'unmute', 'ended'];
  *  · 리스너는 이 effect 실행이 붙인 요소·트랙에만 걸고 cleanup 에서 뗀다 → 이전 요소·스트림의 늦은 이벤트가 새 상태를 덮지 못한다.
  *  · 멈춰 있는 요소는 직접 play() 를 불러 본다(openvidu 는 autoplay 만 켠다). 자동재생이 막히면 BLOCKED — 화면이 재생 버튼을 보여주고
  *    사용자가 누르면 retryBlockedPlayback 으로 다시 재생한다. 막힌 뒤에는 사용자 동작 전까지 다시 시도하지 않는다.
+ *  · logLabel 을 주면 첫 프레임(연결 후 걸린 ms)·자동재생 차단·트랙 종료를 요소 상태와 함께 로그로 남긴다(그 밖의 전이는 개발 로그 모드에서만).
  */
-export function useVideoPlayback(videoRef, active, mediaKey) {
+export function useVideoPlayback(videoRef, active, mediaKey, logLabel) {
   const [state, setState] = useState(VIDEO_PLAYBACK.WAITING);
 
   useEffect(() => {
@@ -35,6 +37,17 @@ export function useVideoPlayback(videoRef, active, mediaKey) {
     let frameHandle = null;
     let stallTimer = null;
     let playPending = false;
+    const startedAt = performance.now();
+    const debug = !!logLabel && isVideoDebugEnabled();
+    let firstFrameLogged = false;
+    const logTransition = (from, to) => {
+      if (!logLabel) return;
+      const milestone = (to === VIDEO_PLAYBACK.PLAYING && !firstFrameLogged) || to === VIDEO_PLAYBACK.BLOCKED || to === VIDEO_PLAYBACK.ENDED;
+      if (to === VIDEO_PLAYBACK.PLAYING) firstFrameLogged = true;
+      if (!milestone && !debug) return;
+      const fn = to === VIDEO_PLAYBACK.PLAYING || to === VIDEO_PLAYBACK.WAITING ? console.info : console.warn;
+      fn('[StudyRoomOV] video:playback', { label: logLabel, from, to, ms: Math.round(performance.now() - startedAt), ...snapshotVideo(v) });
+    };
 
     const maybePlay = () => {
       if (disposed || playPending || !v.srcObject || !v.paused || v.ended || isPlaybackBlocked(v)) return;
@@ -57,6 +70,7 @@ export function useVideoPlayback(videoRef, active, mediaKey) {
       }
       const next = evaluateVideoPlayback(v, { lastFrameAt: clock.lastFrameAt, now: performance.now(), hidden: document.hidden, blocked: isPlaybackBlocked(v) });
       if (next !== last) {
+        logTransition(last, next);
         last = next;
         setState(next);
       }
@@ -95,7 +109,7 @@ export function useVideoPlayback(videoRef, active, mediaKey) {
       unsubscribeBlocked();
       forgetPlayback(v);
     };
-  }, [videoRef, active, mediaKey]);
+  }, [videoRef, active, mediaKey, logLabel]);
 
   return state;
 }

@@ -1671,6 +1671,19 @@ a {
   .room-mobile-controlbar .room-mobile-leave { background: rgba(239,68,68,0.18); }
 }
 
+/* 영상 타일(StudyRoom VideoFeed) 안내 축약 — 기준은 화면 폭이 아니라 타일 크기(모바일 3열 썸네일 ≈117×66px).
+   오버레이·배지 레이어는 absolute inset:0 이라 container 지정이 타일 레이아웃에 영향을 주지 않는다.
+   container query 미지원 브라우저는 기본(전체 문구)을 그대로 보여준다(축약 문구는 inline display:none). */
+.video-feed-overlay, .video-feed-badge-layer { container-type: size; }
+@container (max-height: 150px) { .video-feed-overlay__icon { display: none; } }
+@container (max-height: 120px) { .video-feed-overlay__hint { display: none; } }
+@container (max-width: 220px) or (max-height: 90px) {
+  .video-feed-overlay__text, .video-feed-badge__text { display: none; }
+  .video-feed-overlay__short, .video-feed-badge__short { display: inline !important; }
+  .video-feed-overlay__btn, .video-feed-badge__btn { padding: 2px 8px !important; font-size: 11px !important; }
+  .video-feed-badge { top: 50% !important; bottom: auto !important; left: 4px !important; right: 4px !important; transform: translateY(-50%); flex-wrap: wrap; row-gap: 2px; white-space: normal !important; padding: 3px 6px !important; gap: 4px !important; font-size: 11px !important; }
+}
+
 .panel-resizer-bar:hover div div {
   background-color: var(--color-primary) !important;
 }
