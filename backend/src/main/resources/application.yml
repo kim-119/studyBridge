@@ -1,0 +1,156 @@
+server:
+  port: 8080
+  tomcat:
+    # 멀티에이전트 SSE 스트리밍은 agent별 생성으로 오래 걸린다 → 커넥션 idle 타임아웃을 길게 둔다.
+    connection-timeout: ${SERVER_TOMCAT_CONNECTION_TIMEOUT:600000}
+
+spring:
+  mvc:
+    async:
+      # SseEmitter/Flux 스트리밍이 전체 완료까지 끊기지 않도록 비동기 요청 타임아웃을 길게 둔다.
+      request-timeout: ${SPRING_MVC_ASYNC_REQUEST_TIMEOUT:1800000}
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:capstone}
+    username: ${DB_USER:capstone}
+    password: ${DB_PASSWORD:1234}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # 커넥션이 2분 넘게 반환되지 않으면 WARN + 스택(누수 조기 탐지). 운영 SSE 턴은 트랜잭션 단위로만 커넥션을 쓴다.
+      leak-detection-threshold: ${HIKARI_LEAK_DETECTION_MS:120000}
+
+  # ── 비밀번호 찾기 인증메일 SMTP (PasswordResetMailService) ─────────────────────────────
+  #  값은 전부 환경변수(.env → docker-compose spring.environment)로만 주입한다. 코드/yml 에 계정·비밀번호 하드코딩 금지.
+  #  SMTP_HOST 가 비어 있으면 발송 요청은 503(MAIL_NOT_CONFIGURED) 으로 실패한다(성공 위장 금지).
+  mail:
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    default-encoding: UTF-8
+    properties:
+      mail:
+        mime:
+          charset: UTF-8
+        smtp:
+          auth: ${SMTP_AUTH:true}
+          starttls:
+            enable: ${SMTP_STARTTLS:true}
+            required: ${SMTP_STARTTLS:true}
+          # 연결 / 읽기 / 쓰기 타임아웃(ms). SMTP 장애 시 요청 스레드가 무한 대기하지 않게 한다.
+          connectiontimeout: ${SMTP_CONNECT_TIMEOUT_MS:5000}
+          timeout: ${SMTP_READ_TIMEOUT_MS:10000}
+          writetimeout: ${SMTP_WRITE_TIMEOUT_MS:10000}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    # 운영 stdout 에 모든 SQL 이 pretty-print 로 찍히던 설정(로그 노이즈/IO). 필요 시 env 로만 켠다.
+    show-sql: ${SPRING_JPA_SHOW_SQL:false}
+    properties:
+      hibernate:
+        format_sql: ${SPRING_JPA_FORMAT_SQL:false}
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # 2026-09-22 학습메이트 SSE 취소 체인 도입 후 발견: OSIV(open-in-view) EntityManager 가 요청 트랜잭션 커밋 뒤에도
+        #  JDBC 커넥션을 쥔 채(기본 DELAYED_ACQUISITION_AND_HOLD) 비동기 SSE 요청이 끝날 때까지 유지했고, 클라이언트가 스트림을
+        #  끊으면(Stop/새 질문/새로고침) MVC 가 async 요청을 정상 dispatch 하지 않아 커넥션이 영구 누수 → Hikari 풀(10) 고갈로 전체 API 500.
+        #  트랜잭션 종료 시 커넥션을 풀에 반환하도록 바꾼다(EntityManager 는 열려 있어도 커넥션은 잡지 않는다).
+        connection:
+          handling_mode: DELAYED_ACQUISITION_AND_RELEASE_AFTER_TRANSACTION
+
+ai:
+  server:
+    fastapi:
+      # Source of Truth = docker-compose.yml spring.environment (FASTAPI_PRIMARY_BASE_URL / FASTAPI_SECONDARY_BASE_URL).
+      #  base-url 은 레거시 호환 키: 다른 서비스들이 쓰는 fastApiWebClient 는 항상 PRIMARY 를 가리킨다.
+      base-url: ${FASTAPI_PRIMARY_BASE_URL:${FASTAPI_BASE_URL:http://localhost:8000}}
+      # PRIMARY = ai07(reverse SSH 터널 :18000). SECONDARY = EC2 로컬 hot-standby FastAPI(:8000). 비우면 secondary 비활성.
+      primary-base-url: ${FASTAPI_PRIMARY_BASE_URL:${FASTAPI_BASE_URL:http://localhost:8000}}
+      secondary-base-url: ${FASTAPI_SECONDARY_BASE_URL:}
+      # 멀티에이전트 채팅 failover 정책 (AiMultiChatFailoverService). 하드코딩 금지 — env 제어.
+      failover:
+        # 동일 업스트림 최대 시도 횟수(첫 이벤트 수신 전 실패에만 적용). 무한 retry 금지.
+        attempts-per-upstream: ${AI_STREAM_ATTEMPTS_PER_UPSTREAM:2}
+        backoff-ms: ${AI_STREAM_BACKOFF_MS:400}
+        # 실패한 업스트림을 잠시 건너뛰는 냉각 시간. 만료 후 자동 재시도 → ai07 복구 시 수동 조치 없이 PRIMARY 복귀.
+        circuit-cooldown-seconds: ${AI_UPSTREAM_CIRCUIT_COOLDOWN_SECONDS:15}
+        # /openapi.json 라우트 표면 프로브 주기. stream 라우트 부재(=구버전 회귀)면 해당 업스트림 stream 을 건너뛴다.
+        probe-interval-seconds: ${AI_UPSTREAM_PROBE_INTERVAL_SECONDS:15}
+        # 이벤트 간 무응답 상한(ai07 heartbeat 10s) — 끊긴 터널을 감지해 failover.
+        stream-idle-timeout-seconds: ${AI_STREAM_IDLE_TIMEOUT_SECONDS:180}
+        # 사용자 응답 전체 상한. 초과 시 error+done 으로 정상 종료(500 금지).
+        total-timeout-seconds: ${AI_STREAM_TOTAL_TIMEOUT_SECONDS:900}
+      # FastAPI /api/ai/multi-chat/stream 은 agent별 순차 생성으로 오래 걸린다 → read 타임아웃을 길게 둔다.
+      read-timeout-seconds: ${AI_SERVER_FASTAPI_READ_TIMEOUT_SECONDS:1800}
+      # 키워드 정의 / 플래너 AI 확장 / 플래너 로드맵 호출 타임아웃 (초). 하드코딩 금지 — env 제어.
+      keyword-define-timeout-seconds: ${AI_KEYWORD_DEFINE_TIMEOUT_SECONDS:60}
+      planner-expand-timeout-seconds: ${AI_PLANNER_EXPAND_TIMEOUT_SECONDS:120}
+      roadmap-timeout-seconds: ${AI_ROADMAP_TIMEOUT_SECONDS:180}
+      # 학습일지(자료보관함 메모탭) 검증 호출. 장애/타임아웃 시 Spring 로컬 폴백(보수적: 꼬리개념 확장 자동 ACCEPT 금지).
+      study-journal:
+        validate-path: ${AI_STUDY_JOURNAL_VALIDATE_PATH:/api/ai/study-journal/validate}
+        timeout-seconds: ${AI_STUDY_JOURNAL_TIMEOUT_SECONDS:20}
+    # Spring → FastAPI 내부 인증키(설정 시 Authorization: Bearer 로 전달). 코드 하드코딩 금지.
+    api-key: ${AI_SERVER_API_KEY:}
+  # Intent Router: AI 채팅(자료보관함/그룹스터디/학습메이트) 앞단 분기. ai07 /api/ai/intent/route 호출.
+  # base-url 미지정 시 기존 FastAPI 베이스 사용(EC2=host.docker.internal:18000). 실패 시 PROCEED 폴백.
+  intent-router:
+    enabled: ${AI_INTENT_ROUTER_ENABLED:false}
+    base-url: ${AI_INTENT_ROUTER_BASE_URL:${FASTAPI_BASE_URL:http://localhost:8000}}
+    timeout-ms: ${AI_INTENT_ROUTER_TIMEOUT_MS:6000}
+    path: ${AI_INTENT_ROUTER_PATH:/api/ai/intent/route}
+    # ai07 라우터가 비활성/장애(미배포 404)일 때 EC2 로컬 결정적 분류기로 폴백:
+    #   인사/자기소개/잡담→DIRECT_REPLY, 욕설/공격성→BLOCK, 그 외 학습질문→PROCEED.
+    local-fallback-enabled: ${AI_INTENT_ROUTER_LOCAL_FALLBACK_ENABLED:true}
+
+cloud:
+  aws:
+    credentials:
+      access-key: ${AWS_ACCESS_KEY_ID:}
+      secret-key: ${AWS_SECRET_ACCESS_KEY:}
+    region:
+      static: ${AWS_REGION:eu-west-3}
+    s3:
+      bucket: ${AWS_S3_BUCKET:studybridge-materials}
+
+external-api:
+  fastapi:
+    url: ${FASTAPI_EXTRACTION_URL:http://localhost:8000/api/extract}
+    timeout: ${FASTAPI_TIMEOUT:30000}
+
+jwt:
+  secret: ${JWT_SECRET:studybridge_super_secret_key_for_jwt_token_generation_2026_spring_boot_3_security_6}
+  expiration-ms: ${JWT_EXPIRATION_MS:1800000}
+
+# 메인 배너 설정. 외부 이미지 원본 URL과 MCP 토큰은 서버 설정/환경변수로만 관리한다(프론트 노출 금지).
+banner:
+  main:
+    title: ${BANNER_MAIN_TITLE:학습의 흐름을 하나로 잇다}
+    subtitle: ${BANNER_MAIN_SUBTITLE:학습 리포트, 주간 일정, 플래너를 한 곳에서 관리하세요.}
+    primary-button-text: ${BANNER_MAIN_PRIMARY_TEXT:플래너 시작하기}
+    primary-button-path: ${BANNER_MAIN_PRIMARY_PATH:/planner}
+    secondary-button-text: ${BANNER_MAIN_SECONDARY_TEXT:주간일정 보기}
+    secondary-button-path: ${BANNER_MAIN_SECONDARY_PATH:/weekly-schedule}
+    tertiary-button-text: ${BANNER_MAIN_TERTIARY_TEXT:학습리포트 보기}
+    tertiary-button-path: ${BANNER_MAIN_TERTIARY_PATH:/study-report}
+    # 외부 원본 이미지 URL (서버에서만 사용, 프론트에 노출하지 않음)
+    source-url: ${BANNER_MAIN_SOURCE_URL:https://lh3.googleusercontent.com/aida-public/AB6AXuCeyyIGwQgQCJSpq8xgf6PTTLWQThFKVCMYlDiHDQ6u70X3y65IE6_HObw5pkMW4Fzk5YuYrSqe_DSvm0TEkkiBUhvbfCLS9el3RTK72_wXFRAHtvGqC9QPNO47Ciz8fmarYFHICu4nU4Ehu-JLYj_hJz8j4pKS0ZiGYddaNGRbcNvt13UJSKwxXY0P2r3HPXUYz7mna4fUaXwJMSY6XXjT0alSa1i1Wy8Sc4yA9KzotC6RQiI1OG4kPyUyY8_iDw1lwkUcz9RtCyo}
+    s3-key: ${BANNER_MAIN_S3_KEY:banners/main/studybridge-planner-banner.png}
+    # MCP 식별자: 서버 환경변수로만 관리(프론트 노출 금지). 이미지 다운로드 자체에는 불필요.
+    mcp-token: ${BANNER_MCP_TOKEN:}
+
+# 비밀번호 찾기(이메일 인증번호) 정책. 임시 데이터는 전부 Redis(TTL) — PostgreSQL 영구 저장 없음.
+password-reset:
+  # 발신자 표시 주소. 비우면 SMTP_USERNAME 을 사용한다.
+  from: ${SMTP_FROM:}
+  from-name: ${SMTP_FROM_NAME:StudyBridge}
+  code-ttl-seconds: ${PASSWORD_RESET_CODE_TTL_SECONDS:300}
+  verified-ttl-seconds: ${PASSWORD_RESET_VERIFIED_TTL_SECONDS:600}
+  resend-cooldown-seconds: ${PASSWORD_RESET_RESEND_COOLDOWN_SECONDS:60}
+  # 인증번호 오입력 허용 횟수. 초과 시 발급된 인증번호를 무효화한다(재발급 필요).
+  max-verify-attempts: ${PASSWORD_RESET_MAX_VERIFY_ATTEMPTS:5}
+  # 발송 요청 IP 단위 상한(윈도우 내 횟수). nginx X-Forwarded-For 기준.
+  ip-window-seconds: ${PASSWORD_RESET_IP_WINDOW_SECONDS:600}
+  ip-max-requests: ${PASSWORD_RESET_IP_MAX_REQUESTS:10}
