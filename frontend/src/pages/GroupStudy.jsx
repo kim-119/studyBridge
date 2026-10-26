@@ -11,6 +11,7 @@ import SettingRow from '../components/groupstudy/SettingRow';
 import { ToggleSwitch } from '../components/groupstudy/ToggleSwitch';
 import { validateCoverImageFile } from '../components/groupstudy/GroupProfileField';
 import GroupProfileImage from '../components/groupstudy/GroupProfileImage';
+import { GROUP_COVER_PRESETS, initialCoverForm } from '../components/groupstudy/groupCoverPresets';
 import GroupInvitePanel from '../components/groupstudy/GroupInvitePanel';
 import PendingMemberSection from '../components/groupstudy/PendingMemberSection';
 import PreJoinMediaPanel from '../components/groupstudy/prejoin/PreJoinMediaPanel';
@@ -22,6 +23,9 @@ import {
   AVATAR_MODES, resolveParticipantAvatar,
 } from '../utils/groupStudy';
 import { isTrackForSelectedCamera, waitForSelectedPreview } from '../utils/cameraSelection';
+import {
+  COVER_MODES, selectCoverPreset, selectCoverUpload, selectCoverNone, discardedCoverPreviewUrl, resolveCoverImageFile,
+} from '../utils/groupCover';
 
 // getUserMedia 장치 오류를 원인별로 구분해 사용자 메시지로 변환한다.
 const friendlyDeviceMessage = (err) => {
@@ -64,7 +68,8 @@ export default function GroupStudy() {
   const [createForm, setCreateForm] = useState({
     title: '',
     tags: '',
-    thumbnail: 'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
+    // 대표 이미지 선택 상태(coverMode/coverPresetId/imageFile/thumbnail) — utils/groupCover.js
+    ...initialCoverForm(),
     startDate: '2026-06-02',
     endDate: '2026-09-02',
     capacity: 10,
@@ -136,6 +141,13 @@ export default function GroupStudy() {
   // StudyRoom 으로 넘기는 세션 아바타 { mode, url(presigned, 원격 전파용), localUrl(내 타일용) }
   const [sessionAvatar, setSessionAvatar] = useState(null);
   const myDisplayName = user?.displayName || user?.nickname || (userId ? `User_${userId}` : '');
+
+  // 생성 폼 대표 이미지 전환(프리셋/업로드/없음). 버려지는 업로드 미리보기(objectURL)는 바로 해제한다.
+  const changeCover = (next) => {
+    const stale = discardedCoverPreviewUrl(createForm, next);
+    if (stale) URL.revokeObjectURL(stale);
+    setCreateForm(next);
+  };
 
   const releaseProfilePreview = () => {
     setProfilePreviewUrl(prev => {
@@ -774,7 +786,9 @@ export default function GroupStudy() {
 
           {/* 그룹 프로필(대표 이미지). 스터디콘 asset 은 추후 제공 예정 → 현재는 이미지 업로드/기본 프리셋만. */}
           <SettingRow label="프로필 이미지" hint="스터디콘(아이콘) 선택은 추후 제공됩니다.">
-              <div style={{ position: 'relative', width: '100%', maxWidth: '300px', aspectRatio: '3 / 2', borderRadius: '12px', overflow: 'hidden', backgroundImage: `url(${createForm.thumbnail})`, backgroundSize: 'cover', backgroundPosition: 'center' }}>
+              <div data-testid="create-cover-preview" data-cover-mode={createForm.coverMode} style={{ position: 'relative', width: '100%', maxWidth: '300px', aspectRatio: '3 / 2', borderRadius: '12px', overflow: 'hidden' }}>
+                {/* 목록 카드와 같은 렌더러: 이미지 없음이면 스터디 타입 기본 아이콘이 그대로 보인다 */}
+                <GroupProfileImage imageUrl={createForm.thumbnail} studyType={createForm.studyType} iconSize={48} fill alt="그룹 프로필 미리보기" />
                 <div
                   style={{ position: 'absolute', bottom: '12px', left: '12px', backgroundColor: 'rgba(0,0,0,0.6)', padding: '6px 12px', borderRadius: '6px', color: 'white', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: '600' }}
                   onClick={() => setShowImageSelectModal(true)}
@@ -816,6 +830,15 @@ export default function GroupStudy() {
                   showAlert('알림', settingsError);
                   return;
                 }
+                // 기본 이미지(프리셋)도 실제 이미지 파일로 보내 사용자 업로드와 같은 S3 저장 경로를 탄다.
+                let image;
+                try {
+                  image = await resolveCoverImageFile(createForm, GROUP_COVER_PRESETS);
+                } catch (coverErr) {
+                  console.warn('[GroupStudy] cover preset load failed', coverErr);
+                  showAlert('알림', '기본 이미지를 불러오지 못했습니다. 다시 시도하거나 다른 이미지를 선택해주세요.');
+                  return;
+                }
                 try {
                   const payload = {
                     title: createForm.title,
@@ -826,16 +849,17 @@ export default function GroupStudy() {
                     capacity: cap,
                     isPublic: createForm.isPublic,
                     ...buildSettingsPayload(createForm),
-                    image: createForm.imageFile || null
+                    image
                   };
                   await groupService.createGroup(payload);
                   showAlert('성공', '스터디가 성공적으로 개설되었습니다!', () => {
                     setIsCreateStudyMode(false);
+                    const stalePreview = discardedCoverPreviewUrl(createForm, null);
+                    if (stalePreview) URL.revokeObjectURL(stalePreview);
                     setCreateForm({
                       title: '',
                       tags: '',
-                      thumbnail: 'https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
-                      imageFile: null,
+                      ...initialCoverForm(),
                       startDate: '2026-06-02',
                       endDate: '2026-09-02',
                       capacity: 10,
@@ -1626,18 +1650,45 @@ export default function GroupStudy() {
             </div>
 
             <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              {/* Preview */}
-              <div style={{ width: '100%', height: '260px', borderRadius: '12px', backgroundImage: `url(${createForm.thumbnail})`, backgroundSize: 'cover', backgroundPosition: 'center', border: '1px solid #E5E7EB' }} />
+              {/* Preview — 목록 카드와 같은 렌더러(GroupProfileImage). 이미지 없음이면 스터디 타입 기본 아이콘. */}
+              <div data-testid="cover-modal-preview" style={{ position: 'relative', width: '100%', height: '260px', borderRadius: '12px', overflow: 'hidden', border: '1px solid #E5E7EB' }}>
+                <GroupProfileImage imageUrl={createForm.thumbnail} studyType={createForm.studyType} iconSize={72} fill alt="그룹 프로필 미리보기" />
+              </div>
+              <div data-testid="cover-mode-caption" style={{ marginTop: '-8px', fontSize: '13px', color: '#6B7280', textAlign: 'center', wordBreak: 'keep-all' }}>
+                {createForm.coverMode === COVER_MODES.UPLOAD && '내가 올린 이미지가 대표 이미지로 저장됩니다.'}
+                {createForm.coverMode === COVER_MODES.PRESET && `기본 이미지 '${GROUP_COVER_PRESETS.find((p) => p.id === createForm.coverPresetId)?.label || ''}'가 대표 이미지로 저장됩니다.`}
+                {createForm.coverMode === COVER_MODES.NONE && '이미지 없이 만들면 스터디 타입 기본 아이콘이 표시됩니다.'}
+              </div>
 
-              {/* Selectors */}
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'space-between' }}>
-                {['https://images.unsplash.com/photo-1517842645767-c639042777db?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80', 'https://images.unsplash.com/photo-1434030216411-0b793f4b4173?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80', 'https://images.unsplash.com/photo-1519389950473-47ba0277781c?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80'].map((url, idx) => (
+              {/* Selectors — 기본 이미지 3종 + 이미지 없음. 선택 시 이전에 올린 파일은 버린다(stale imageFile 방지). */}
+              <div role="radiogroup" aria-label="대표 이미지 선택" style={{ display: 'flex', gap: '8px', justifyContent: 'space-between' }}>
+                {[...GROUP_COVER_PRESETS.map((preset) => ({
+                  key: preset.id,
+                  label: `기본 이미지 ${preset.label}`,
+                  selected: createForm.coverMode === COVER_MODES.PRESET && createForm.coverPresetId === preset.id,
+                  imageUrl: preset.url,
+                  select: () => changeCover(selectCoverPreset(createForm, preset)),
+                })), {
+                  key: 'none',
+                  label: '이미지 없음(기본 아이콘)',
+                  selected: createForm.coverMode === COVER_MODES.NONE,
+                  imageUrl: null,
+                  select: () => changeCover(selectCoverNone(createForm)),
+                }].map((tile) => (
                   <div
-                    key={idx}
-                    style={{ flex: 1, height: '80px', borderRadius: '8px', backgroundImage: `url(${url})`, backgroundSize: 'cover', backgroundPosition: 'center', cursor: 'pointer', position: 'relative', border: createForm.thumbnail === url ? '2px solid #3B82F6' : '1px solid #E5E7EB', overflow: 'hidden' }}
-                    onClick={() => setCreateForm({ ...createForm, thumbnail: url })}
+                    key={tile.key}
+                    role="radio"
+                    tabIndex={0}
+                    aria-checked={tile.selected}
+                    aria-label={tile.label}
+                    title={tile.label}
+                    data-testid={`cover-option-${tile.key}`}
+                    style={{ flex: 1, minWidth: 0, height: '80px', borderRadius: '8px', cursor: 'pointer', position: 'relative', border: tile.selected ? '2px solid #3B82F6' : '1px solid #E5E7EB', overflow: 'hidden', boxSizing: 'border-box' }}
+                    onClick={tile.select}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tile.select(); } }}
                   >
-                    {createForm.thumbnail === url && (
+                    <GroupProfileImage imageUrl={tile.imageUrl} studyType={createForm.studyType} iconSize={24} fill alt={tile.label} />
+                    {tile.selected && (
                       <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(59,130,246,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <Check size={24} color="white" strokeWidth={3} />
                       </div>
@@ -1659,18 +1710,15 @@ export default function GroupStudy() {
                   accept="image/jpeg,image/png,image/webp"
                   onChange={(e) => {
                     const file = e.target.files[0];
+                    // 프리셋으로 바꾼 뒤 같은 파일을 다시 골라도 onChange 가 오도록 매번 초기화한다.
+                    e.target.value = '';
                     if (!file) return;
                     const imageError = validateCoverImageFile(file);
                     if (imageError) {
                       showAlert('알림', imageError);
-                      e.target.value = ''; // 동일 파일 재선택 가능하도록 input 초기화
                       return;
                     }
-                    setCreateForm(prev => ({
-                      ...prev,
-                      imageFile: file,
-                      thumbnail: URL.createObjectURL(file)
-                    }));
+                    changeCover(selectCoverUpload(createForm, file, URL.createObjectURL(file)));
                   }}
                   style={{ display: 'none' }}
                 />
