@@ -28,6 +28,7 @@ import { SCREEN_RECEIPT_SIGNAL, buildReceipt, parseReceipt, healthFromPeerState 
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
 import { useVideoPlayback } from '../hooks/useVideoPlayback';
 import { VIDEO_PLAYBACK } from '../utils/videoPlayback';
+import { isTrackForSelectedCamera } from '../utils/cameraSelection';
 
 // 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
 // - 기존 렌더는 섹션 중심(한 카드에 모든 에이전트가 섞임)이라 에이전트별 사고가 구분되지 않았다.
@@ -1710,7 +1711,8 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
 
         // 프리뷰 트랙을 그대로 넘겨받았으면(handoff) 카메라를 재획득하지 않으므로 릴리즈 대기가 불필요하다.
         // handoff가 없을 때만, 이전 프리뷰가 카메라를 완전히 릴리즈할 시간을 확보(800ms)해 NotReadableError를 예방한다.
-        const hasHandoff = !!(handoffVideoTrack && handoffVideoTrack.readyState === 'live');
+        // 고른 카메라(selectedCamera)의 트랙이 아니면 handoff 를 쓰지 않는다(아래에서 정지) — 이전 카메라로 송출되는 것 방지.
+        const hasHandoff = isTrackForSelectedCamera(handoffVideoTrack, selectedCamera);
         if (!hasHandoff) {
           await new Promise(resolve => setTimeout(resolve, 800));
           if (!isMounted) return;

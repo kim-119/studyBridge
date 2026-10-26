@@ -21,6 +21,7 @@ import {
   isCamStudy, resolveLeaderConsoleSections, buildMicConstraints, buildCameraPreviewConstraints,
   AVATAR_MODES, resolveParticipantAvatar,
 } from '../utils/groupStudy';
+import { isTrackForSelectedCamera, waitForSelectedPreview } from '../utils/cameraSelection';
 
 // getUserMedia 장치 오류를 원인별로 구분해 사용자 메시지로 변환한다.
 const friendlyDeviceMessage = (err) => {
@@ -80,6 +81,8 @@ export default function GroupStudy() {
 
   // 프리조인(입장 준비) 상태
   const [preJoinStudy, setPreJoinStudy] = useState(null);
+  const preJoinStudyRef = React.useRef(preJoinStudy);
+  preJoinStudyRef.current = preJoinStudy;
   const [activeStudyRoom, setActiveStudyRoom] = useState(null);
   // 입장 시 프리뷰에서 켜둔 카메라 트랙을 clone해 StudyRoom publisher로 그대로 넘긴다.
   //  · 프리뷰 stop → 같은 deviceId 재획득 과정에서 일부 장치가 "정지 프레임"을 돌려주는 freeze를 근절한다.
@@ -111,6 +114,9 @@ export default function GroupStudy() {
   //  cameraStatus: 'idle' | 'checking' | 'available' | 'unavailable' | 'error' | 'off'
   //  micStatus:    'idle' | 'checking' | 'available' | 'unavailable' | 'error' | 'off'
   const [cameraStatus, setCameraStatus] = useState('idle');
+  // 비동기 입장 처리에서 최신 값을 읽기 위한 ref(입장 확정 뒤 카메라 획득을 기다리는 동안 상태가 바뀐다)
+  const cameraStatusRef = React.useRef(cameraStatus);
+  cameraStatusRef.current = cameraStatus;
   const [micStatus, setMicStatus] = useState('idle');
   const [micLevel, setMicLevel] = useState(0);
 
@@ -125,6 +131,8 @@ export default function GroupStudy() {
   const [profileEmoji, setProfileEmoji] = useState(null); // 'emoji' 모드의 Unicode 이모지(이번 입장 전용)
   const [profilePreviewUrl, setProfilePreviewUrl] = useState(null); // objectURL(즉시 미리보기)
   const [uploadingProfile, setUploadingProfile] = useState(false);
+  // 입장 확정 뒤 새로 고른 카메라가 열리기를 기다리는 중(카메라 전환 직후 입장)
+  const [preparingCamera, setPreparingCamera] = useState(false);
   // StudyRoom 으로 넘기는 세션 아바타 { mode, url(presigned, 원격 전파용), localUrl(내 타일용) }
   const [sessionAvatar, setSessionAvatar] = useState(null);
   const myDisplayName = user?.displayName || user?.nickname || (userId ? `User_${userId}` : '');
@@ -171,9 +179,22 @@ export default function GroupStudy() {
     if (cam) {
       // 프리뷰 카메라 트랙을 clone해 StudyRoom으로 넘긴다(stop→재획득 freeze 제거).
       //  · clone은 원본과 독립 생명주기 → 곧 이어질 프리뷰 cleanup의 stop에 영향받지 않는다.
+      //  · 지금 고른 카메라의 트랙일 때만 넘긴다. 카메라를 바꾸고 새 장치를 여는 중이면 프리뷰는 아직 이전 카메라라
+      //    그 획득을 잠깐(최대 5초) 기다렸다가 새 카메라 트랙을 넘긴다. 끝내 못 열면 넘기지 않고 StudyRoom 이 selectedCamera 로 직접 연다.
+      let vTrack = previewStreamRef.current?.getVideoTracks?.()[0];
+      if (!isTrackForSelectedCamera(vTrack, selectedCamera) && cameraStatusRef.current === 'checking') {
+        setPreparingCamera(true);
+        vTrack = await waitForSelectedPreview({
+          getTrack: () => previewStreamRef.current?.getVideoTracks?.()[0],
+          selectedCamera,
+          isAcquiring: () => cameraStatusRef.current === 'checking',
+        });
+        setPreparingCamera(false);
+        if (preJoinStudyRef.current?.id !== target.id) return; // 기다리는 동안 입장 준비를 닫았다
+      }
       try {
-        const vTrack = previewStreamRef.current?.getVideoTracks?.()[0];
-        if (vTrack && vTrack.readyState === 'live') handoff = vTrack.clone();
+        if (isTrackForSelectedCamera(vTrack, selectedCamera)) handoff = vTrack.clone();
+        else if (vTrack) console.info('[GroupStudy] preview-handoff:skip (선택 카메라 트랙 아님)');
       } catch (e) { handoff = null; }
     }
     const profileUrl = user?.photoUrl || user?.photo_url || null;
@@ -1352,15 +1373,15 @@ export default function GroupStudy() {
 
                 <button
                   data-testid="prejoin-enter-button"
-                  disabled={uploadingProfile}
-                  style={{ padding: '16px 80px', borderRadius: '8px', backgroundColor: preJoinStudy.isPrivate ? '#8B5CF6' : '#3B82F6', color: 'white', fontSize: '18px', fontWeight: '700', border: 'none', cursor: uploadingProfile ? 'wait' : 'pointer', opacity: uploadingProfile ? 0.7 : 1, boxShadow: preJoinStudy.isPrivate ? '0 4px 12px rgba(139, 92, 246, 0.3)' : '0 4px 12px rgba(59, 130, 246, 0.3)', transition: 'background-color 0.2s', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  disabled={uploadingProfile || preparingCamera}
+                  style={{ padding: '16px 80px', borderRadius: '8px', backgroundColor: preJoinStudy.isPrivate ? '#8B5CF6' : '#3B82F6', color: 'white', fontSize: '18px', fontWeight: '700', border: 'none', cursor: (uploadingProfile || preparingCamera) ? 'wait' : 'pointer', opacity: (uploadingProfile || preparingCamera) ? 0.7 : 1, boxShadow: preJoinStudy.isPrivate ? '0 4px 12px rgba(139, 92, 246, 0.3)' : '0 4px 12px rgba(59, 130, 246, 0.3)', transition: 'background-color 0.2s', display: 'flex', alignItems: 'center', gap: '8px' }}
                   onMouseEnter={(e) => e.currentTarget.style.backgroundColor = preJoinStudy.isPrivate ? '#7C3AED' : '#2563EB'}
                   onMouseLeave={(e) => e.currentTarget.style.backgroundColor = preJoinStudy.isPrivate ? '#8B5CF6' : '#3B82F6'}
                   onClick={() => {
                     const isMember = preJoinMembers.some(m => Number(m.userId) === Number(userId)) || Number(preJoinStudy.leaderId) === Number(userId);
                     
                     if (isMember) {
-                      if (uploadingProfile) return;
+                      if (uploadingProfile || preparingCamera) return;
                       showAlert('입장', `[${preJoinStudy.title}] 스터디룸으로 입장합니다!`, () => { enterStudyRoom(preJoinStudy); });
                     } else {
                       if (!preJoinStudy.isPrivate && (preJoinStudy.joinQuestionEnabled || preJoinStudy.nicknameRuleEnabled)) {
@@ -1391,7 +1412,7 @@ export default function GroupStudy() {
                   }}
                 >
                   <LogIn size={20} />
-                  {uploadingProfile ? '프로필 업로드 중…' : '입장'}
+                  {uploadingProfile ? '프로필 업로드 중…' : preparingCamera ? '카메라 준비 중…' : '입장'}
                 </button>
               </div>
 
