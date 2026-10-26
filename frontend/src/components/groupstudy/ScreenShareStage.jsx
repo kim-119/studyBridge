@@ -7,6 +7,8 @@ import {
   deriveShareReceipt, pickRtp, summarizeInbound, summarizeOutbound, RECEIPT_INTERVAL_MS,
 } from '../../utils/screenReceipt';
 import { describeCaptureSurface } from '../../utils/screenShare';
+import { useFullscreenViewer } from '../../hooks/useFullscreenViewer';
+import FullscreenFrame from './FullscreenViewer';
 
 // 화면공유 메인 스테이지(Discord·Meet 유형). 화면공유가 하나라도 있으면 참가자 타일 위에 크게 표시된다.
 //  · 다른 사람의 공유: 원본 비율 유지(object-fit: contain, 잘림 없음) + [원본 크기]: 1 영상 픽셀 = 1 화면 픽셀로 스크롤해서 본다
@@ -16,6 +18,11 @@ import { describeCaptureSurface } from '../../utils/screenShare';
 //  · 내 미리보기: 꺼짐이 기본. 전체 모니터 공유는 미리보기가 다시 캡처돼 반복 화면이 생기므로 정지 화면(스냅샷)이 기본이고
 //    실시간은 사용자가 따로 켤 때만, 작게. Esc 또는 [미리보기 끄기]로 즉시 끈다.
 //  · 공유가 여러 개면 칩으로 골라 본다. 선택하지 않은 공유는 렌더하지 않는다(그 소리도 재생하지 않음).
+//  · 전체화면 보기(FullscreenViewer): 다른 사람의 공유를 볼 때 PC·모바일 모두 '전체화면 보기' 버튼. Fullscreen API 우선,
+//    앱 WebView·iPhone·거부 시 CSS 전체화면 레이어. 스테이지 DOM 을 통째로 옮길 뿐이라 같은 Subscriber·<video> 를 그대로 쓰고,
+//    전체화면 안에서도 공유 선택·소리·원본 크기·수신 정보가 그대로 동작한다. 내 공유(송출자)는 상태 카드·미리보기만 —
+//    송출 화면을 전체화면으로 띄우면 공유 대상에 다시 찍혀 반복 화면이 생기므로 전체화면 진입 버튼을 두지 않는다
+//    (전체화면 중 '내 화면' 칩을 고른 경우에도 종료 버튼은 남는다).
 // shares: [{ connectionId, name, isMine, isOwnUser, surface, streamManager, hasAudio }]
 // ownShare: { status, step, health, liveSince } · viewers: 송출자 기준 시청 대상(고유 userId) · receipts: 시청자 보고
 
@@ -423,7 +430,8 @@ function RemoteShareView({ share, isMobile, isFullscreen, actualSize, dims, onDi
           <span style={{ color: '#94A3B8' }}>전체화면·원본 크기는 내 화면의 표시 방식이라 송출 해상도나 화질을 바꾸지 않아요.</span>
         </div>
       )}
-      <div style={{ flex: 1, minHeight: 0, position: 'relative', aspectRatio: isMobile && !isFullscreen && !actualSize ? '16 / 9' : undefined, maxHeight: isMobile && actualSize ? '70vh' : undefined, overflow: actualSize ? 'auto' : 'hidden' }}>
+      {/* 맞춤 = object-fit:contain(원본 비율·잘림 없음). 원본 크기 = 1 영상 픽셀 : 1 화면 픽셀 스크롤(전체화면에서는 남은 높이 전체). */}
+      <div data-testid="screen-stage-viewport" style={{ flex: 1, minHeight: 0, position: 'relative', aspectRatio: isMobile && !isFullscreen && !actualSize ? '16 / 9' : undefined, maxHeight: isMobile && actualSize && !isFullscreen ? '70vh' : undefined, overflow: actualSize ? 'auto' : 'hidden', overscrollBehavior: 'contain' }}>
         <ScreenVideo key={share.connectionId} streamManager={share.streamManager} muted={remoteMuted} actualSize={actualSize} dims={dims} onDims={onDims} videoRef={videoRef} />
       </div>
     </>
@@ -453,9 +461,9 @@ export function ScreenShareNotice({ phase, why, onDismiss }) {
   );
 }
 
-export default function ScreenShareStage({ shares, selectedId, onSelect, onStopMine, isMobile, ownShare, viewers, receipts, onReceipt }) {
-  const stageRef = useRef(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+export default function ScreenShareStage({ shares, selectedId, onSelect, onStopMine, isMobile, ownShare, viewers, receipts, onReceipt, portalTarget }) {
+  const viewer = useFullscreenViewer({ label: '화면공유 전체화면' });
+  const isFullscreen = viewer.isFullscreen;
   const [remoteMuted, setRemoteMuted] = useState(false);
   const [actualSize, setActualSize] = useState(false);
   const [previewMode, setPreviewMode] = useState('off'); // off | live | snapshot (내 공유 미리보기)
@@ -463,24 +471,10 @@ export default function ScreenShareStage({ shares, selectedId, onSelect, onStopM
   const [dims, setDims] = useState(null);
   const active = shares.find(s => s.connectionId === selectedId) || shares[shares.length - 1] || null;
 
-  useEffect(() => {
-    const onChange = () => setIsFullscreen(document.fullscreenElement === stageRef.current);
-    document.addEventListener('fullscreenchange', onChange);
-    return () => document.removeEventListener('fullscreenchange', onChange);
-  }, []);
+  // 공유를 바꾸면 표시 방식만 초기화한다(전체화면은 유지 — 전체화면 안에서 다른 공유로 전환).
   useEffect(() => { setDims(null); setActualSize(false); setPreviewMode('off'); }, [active?.connectionId]);
 
   if (!active) return null;
-
-  const toggleFullscreen = async () => {
-    const el = stageRef.current;
-    try {
-      if (document.fullscreenElement) { await document.exitFullscreen(); return; }
-      if (el?.requestFullscreen) { await el.requestFullscreen(); return; }
-      const video = el?.querySelector('video');
-      if (video?.webkitEnterFullscreen) video.webkitEnterFullscreen();
-    } catch (e) { /* 브라우저가 거부하면 무시 */ }
-  };
 
   const own = !!active.isOwnUser;
   const title = active.isMine ? '내 화면을 공유하고 있습니다' : own ? `${active.name}에서 화면을 공유하고 있습니다` : `${active.name || '참여자'}님의 화면`;
@@ -489,15 +483,24 @@ export default function ScreenShareStage({ shares, selectedId, onSelect, onStopM
   const openPreview = () => setPreviewMode(active.isMine && currentSurface(active)?.previewPolicy === 'snapshot' ? 'snapshot' : 'live');
   const failed = active.isMine && (ownShare?.health === 'failed' || ownShare?.health === 'reconnecting' || ownShare?.health === 'unstable');
 
+  const fullscreenButton = (
+    <button type="button" style={{ ...btn, ...(isFullscreen ? { backgroundColor: 'rgba(59,130,246,0.35)' } : null) }} onClick={() => viewer.toggle()} data-testid="screen-stage-fullscreen" aria-pressed={isFullscreen}
+      title={isFullscreen ? '전체화면 종료(Esc·뒤로가기)' : '내 화면에서 크게 보기(송출 화질·해상도는 그대로)'}>
+      {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
+      {isFullscreen ? '전체화면 종료' : '전체화면 보기'}
+    </button>
+  );
+
   return (
+    <FullscreenFrame viewer={viewer} portalTarget={portalTarget} label={`${title} 전체화면`} testId="screen-stage-fullscreen-layer">
     <div
-      ref={stageRef}
       className="room-screen-stage"
       data-testid="screen-stage"
       data-connection-id={active.connectionId}
       data-mine={active.isMine ? 'true' : 'false'}
       data-own={own ? 'true' : 'false'}
-      style={{ display: 'flex', flexDirection: 'column', backgroundColor: '#000', borderRadius: isFullscreen ? 0 : '16px', overflow: 'hidden', border: isFullscreen ? 'none' : '1px solid rgba(255,255,255,0.08)', marginBottom: isFullscreen ? 0 : '16px', height: isFullscreen ? '100%' : (own || isMobile ? 'auto' : 'min(68vh, calc(100vh - 320px))'), minHeight: isMobile || own ? 0 : '260px' }}
+      data-fullscreen={viewer.mode || 'off'}
+      style={{ display: 'flex', flexDirection: 'column', backgroundColor: '#000', borderRadius: isFullscreen ? 0 : '16px', overflow: 'hidden', border: isFullscreen ? 'none' : '1px solid rgba(255,255,255,0.08)', marginBottom: isFullscreen ? 0 : '16px', ...(isFullscreen ? { flex: 1, minHeight: 0, height: '100%' } : { height: own || isMobile ? 'auto' : 'min(68vh, calc(100vh - 320px))', minHeight: isMobile || own ? 0 : '260px' }) }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', backgroundColor: 'rgba(15,23,42,0.92)', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.5px', color: '#fff', backgroundColor: failed ? '#D97706' : '#EF4444', padding: '2px 6px', borderRadius: '4px' }}>{failed ? '장애' : 'LIVE'}</span>
@@ -514,27 +517,27 @@ export default function ScreenShareStage({ shares, selectedId, onSelect, onStopM
           </div>
         )}
         {own ? (
+          <>
           <button type="button" style={btn} data-testid="screen-stage-own-preview" aria-pressed={previewMode !== 'off'} onClick={() => (previewMode === 'off' ? openPreview() : setPreviewMode('off'))} title={previewMode !== 'off' ? '미리보기 끄기(Esc)' : '내가 보내는 화면 미리보기'}>
             {previewMode !== 'off' ? <EyeOff size={14} /> : <Eye size={14} />}{!isMobile && (previewMode !== 'off' ? '미리보기 끄기' : '미리보기')}
           </button>
+          {isFullscreen && fullscreenButton}
+          </>
         ) : (
           <>
             {active.hasAudio && (
-              <button type="button" style={btn} onClick={() => setRemoteMuted(m => !m)} title={remoteMuted ? '공유 소리 켜기' : '공유 소리 끄기'}>
+              <button type="button" style={btn} onClick={() => setRemoteMuted(m => !m)} title={remoteMuted ? '공유 소리 켜기' : '공유 소리 끄기'} aria-label={remoteMuted ? '공유 소리 켜기' : '공유 소리 끄기'}>
                 {remoteMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
               </button>
             )}
-            <button type="button" style={{ ...btn, backgroundColor: showRx ? 'rgba(59,130,246,0.35)' : btn.backgroundColor }} data-testid="screen-stage-rx-toggle" aria-pressed={showRx} onClick={() => setShowRx(v => !v)} title="내가 실제로 받고 있는 해상도·fps·비트레이트">
+            <button type="button" style={{ ...btn, backgroundColor: showRx ? 'rgba(59,130,246,0.35)' : btn.backgroundColor }} data-testid="screen-stage-rx-toggle" aria-pressed={showRx} onClick={() => setShowRx(v => !v)} title="내가 실제로 받고 있는 해상도·fps·비트레이트" aria-label="수신 정보">
               <Activity size={14} />{!isMobile && '수신 정보'}
             </button>
             <button type="button" style={{ ...btn, backgroundColor: actualSize ? 'rgba(59,130,246,0.35)' : btn.backgroundColor }} data-testid="screen-stage-actual-size" aria-pressed={actualSize}
-              onClick={() => setActualSize(v => !v)} title={actualSize ? '화면에 맞추기' : '원본 크기로 보기(작은 글자 읽기)'}>
+              onClick={() => setActualSize(v => !v)} title={actualSize ? '화면에 맞추기' : '원본 크기로 보기(작은 글자 읽기)'} aria-label={actualSize ? '화면에 맞추기' : '원본 크기로 보기'}>
               <Scan size={14} />{!isMobile && (actualSize ? '화면 맞춤' : `원본 크기${dims ? ` ${dims.w}×${dims.h}` : ''}`)}
             </button>
-            <button type="button" style={btn} onClick={toggleFullscreen} data-testid="screen-stage-fullscreen" title={isFullscreen ? '전체화면 종료' : '내 화면에서 크게 보기(송출 화질·해상도는 그대로)'}>
-              {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
-              {!isMobile && (isFullscreen ? '전체화면 종료' : '전체화면 보기')}
-            </button>
+            {fullscreenButton}
           </>
         )}
         {active.isMine && (
@@ -550,5 +553,6 @@ export default function ScreenShareStage({ shares, selectedId, onSelect, onStopM
         <RemoteShareView share={active} isMobile={isMobile} isFullscreen={isFullscreen} actualSize={actualSize} dims={dims} onDims={setDims} remoteMuted={remoteMuted} onReceipt={onReceipt} showRx={showRx} />
       )}
     </div>
+    </FullscreenFrame>
   );
 }

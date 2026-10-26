@@ -3173,6 +3173,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
               viewers={screenViewers}
               receipts={screenReceipts}
               onReceipt={sendScreenReceipt}
+              portalTarget={roomRootEl}
             />
           )}
 
