@@ -16,6 +16,7 @@ import GroupQuizRankingTable from './groupstudy/GroupQuizRankingTable';
 import { studyTypeLabel, formatTargetMinutes, isCamStudy, resolveParticipantAvatar, resolveLeaderConsoleSections } from '../utils/groupStudy';
 import { anchorFromSession, elapsedSecondsFrom, formatHMS } from '../utils/studyTimer';
 import { toUserFacingError, userFacingMessage } from '../utils/userFacingError';
+import { retryBlockedPlayback } from '../utils/mediaAutoplay';
 import {
   CONNECTION_KIND, parseConnectionMetadata, getClientInstanceId, detectDeviceType, deviceLabel,
   installEarlyLeaveGuard, purgeTombstonedConnections, planReconcile, deriveRoomPresence,
@@ -228,6 +229,8 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
   const overlay = !showVideo || playback === VIDEO_PLAYBACK.PLAYING ? null
     : playback === VIDEO_PLAYBACK.ENDED ? { text: isLocal ? '카메라 연결이 끊겼어요' : '영상 연결이 끊겼어요', bg: 'rgba(30,41,59,0.7)' }
     : playback === VIDEO_PLAYBACK.STALLED ? { text: '영상이 멈췄어요 · 다시 받는 중…', bg: 'rgba(30,41,59,0.6)' }
+    // 자동재생 차단: 눌러야 재생된다(소리를 끄고 몰래 재생하지 않는다). 한 번 누르면 막힌 영상·소리를 모두 다시 재생한다.
+    : playback === VIDEO_PLAYBACK.BLOCKED ? { text: '브라우저가 자동 재생을 막았어요', action: isLocal ? '영상 재생' : '영상·소리 재생', bg: 'rgba(30,41,59,0.85)' }
     : { text: '카메라 연결 중…', bg: 'rgba(30,41,59,0.85)' };
 
   // 로컬/원격 오디오 입력 레벨 측정 → 말하는 중 표시 + 입력 레벨 바(실제 입력 감지 여부 가시화).
@@ -357,6 +360,11 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
         <div data-testid="video-feed-overlay" data-playback={playback} style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', backgroundColor: overlay.bg, color: '#CBD5E1', zIndex: 4 }}>
           <Video size={28} color="#60A5FA" />
           <span style={{ fontSize: '13px', fontWeight: 600 }}>{overlay.text}</span>
+          {overlay.action && (
+            <button type="button" data-testid="video-feed-play" onClick={() => { retryBlockedPlayback(); }} style={{ padding: '6px 14px', borderRadius: '999px', border: 'none', backgroundColor: '#3B82F6', color: '#FFFFFF', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>
+              {overlay.action}
+            </button>
+          )}
         </div>
       )}
       {!isMicOn && (
