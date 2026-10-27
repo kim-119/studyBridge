@@ -1065,6 +1065,22 @@ textarea.mobile-field__input {
   object-fit: cover;
 }
 
+/* 화면공유 타일: 공유 화면 전체가 잘리지 않도록 contain + 검은 배경, 카메라와 시각적으로 구분한다. */
+.mobile-video__tile[data-kind='screen'] {
+  aspect-ratio: 16 / 9;
+  background-color: #000;
+}
+
+.mobile-video__tile[data-kind='screen'] video {
+  object-fit: contain;
+  background-color: #000;
+}
+
+.mobile-video-fullscreen[data-kind='screen'] video {
+  object-fit: contain;
+  background-color: #000;
+}
+
 .mobile-video__placeholder {
   display: flex;
   align-items: center;

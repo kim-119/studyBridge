@@ -111,15 +111,21 @@ test('화상 연결 상태 리듀서는 실패해도 안내만 바꾸고 방 상
 });
 
 test('원격 스트림의 hasAudio/hasVideo와 active 값으로 카메라·마이크 상태를 정한다', () => {
-  assert.deepEqual(describeStreamMedia(null), { cameraOn: false, micOn: false });
-  assert.deepEqual(describeStreamMedia({ hasVideo: true, videoActive: true, hasAudio: true, audioActive: false }), {
-    cameraOn: true,
-    micOn: false,
-  });
-  assert.deepEqual(describeStreamMedia({ hasVideo: false, videoActive: true, hasAudio: true, audioActive: true }), {
+  assert.deepEqual(describeStreamMedia(null), {
     cameraOn: false,
-    micOn: true,
+    micOn: false,
+    screenOn: false,
+    videoKind: 'CAMERA',
+    streamId: null,
   });
+  assert.deepEqual(
+    describeStreamMedia({ streamId: 's1', hasVideo: true, videoActive: true, hasAudio: true, audioActive: false }),
+    { cameraOn: true, micOn: false, screenOn: false, videoKind: 'CAMERA', streamId: 's1' }
+  );
+  assert.deepEqual(
+    describeStreamMedia({ streamId: 's2', hasVideo: false, videoActive: true, hasAudio: true, audioActive: true }),
+    { cameraOn: false, micOn: true, screenOn: false, videoKind: 'CAMERA', streamId: 's2' }
+  );
 });
 
 test('타일은 내 타일을 먼저 두고, 멤버 사진을 userId로 붙이며, 스트림이 없으면 꺼짐으로 표시한다', () => {

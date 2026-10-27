@@ -212,7 +212,13 @@ export function useVideoSession(groupId, { userId, displayName }) {
       session.on('connectionCreated', (event) => {
         const connectionId = event.connection?.connectionId;
         if (!connectionId || isOwnConnection(connectionId)) return;
-        upsertRemote(connectionId, { ...remoteIdentity(event.connection), streamManager: null, cameraOn: false, micOn: false });
+        upsertRemote(connectionId, {
+          ...remoteIdentity(event.connection),
+          streamManager: null,
+          cameraOn: false,
+          micOn: false,
+          screenOn: false,
+        });
       });
 
       session.on('streamCreated', (event) => {
@@ -231,7 +237,12 @@ export function useVideoSession(groupId, { userId, displayName }) {
       });
 
       session.on('streamDestroyed', (event) => {
-        upsertRemote(event.stream.connection.connectionId, { streamManager: null, cameraOn: false, micOn: false });
+        upsertRemote(event.stream.connection.connectionId, {
+          streamManager: null,
+          cameraOn: false,
+          micOn: false,
+          screenOn: false,
+        });
       });
 
       session.on('connectionDestroyed', (event) => {
