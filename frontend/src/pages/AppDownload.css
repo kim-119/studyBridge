@@ -12,13 +12,13 @@
 
 .app-dl-card {
   width: 100%;
-  max-width: 440px;
+  max-width: 480px;
   box-sizing: border-box;
   padding: var(--space-xl) var(--space-lg);
   border-radius: var(--radius-card);
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: var(--space-lg);
   min-width: 0;
 }
 
@@ -44,12 +44,11 @@
 .app-dl-subtitle {
   margin: 0;
   color: var(--color-text-muted);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
   font-size: 14px;
+  word-break: keep-all;
 }
 
+/* ── 버전 카드 ─────────────────────────────── */
 .app-dl-version {
   display: flex;
   flex-direction: column;
@@ -58,6 +57,12 @@
   padding: var(--space-md);
   background-color: var(--color-secondary);
   border-radius: var(--radius-card);
+  text-align: center;
+}
+
+.app-dl-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
 .app-dl-version-value {
@@ -65,60 +70,109 @@
   font-weight: 700;
   color: var(--color-primary-hover);
   line-height: 1.1;
+  overflow-wrap: anywhere;
 }
 
-.app-dl-label {
-  font-size: 12px;
+.app-dl-meta {
+  font-size: 13px;
   color: var(--color-text-muted);
+}
+
+.app-dl-meta--date {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
 
-.app-dl-meta {
-  font-size: 12px;
-  color: var(--color-text-placeholder);
-}
-
-.app-dl-row {
+/* ── 섹션 공통 ─────────────────────────────── */
+.app-dl-section {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-basic);
-  padding-bottom: var(--space-basic);
-  border-bottom: 1px solid var(--color-border);
+  flex-direction: column;
+  gap: 12px;
   min-width: 0;
 }
 
-.app-dl-row--notes {
-  flex-direction: column;
-  align-items: flex-start;
+.app-dl-section-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-main);
 }
 
-.app-dl-value {
+.app-dl-section-title svg {
+  color: var(--color-primary-hover);
+  flex-shrink: 0;
+}
+
+.app-dl-muted {
+  margin: 0;
   font-size: 14px;
-  font-weight: 600;
-  text-align: right;
-  overflow-wrap: anywhere;
-}
-
-.app-dl-value--muted {
-  font-weight: 400;
   color: var(--color-text-muted);
 }
 
+/* ── 업데이트 내역 ─────────────────────────── */
 .app-dl-notes {
+  list-style: none;
   margin: 0;
-  padding-left: 18px;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 14px;
-  overflow-wrap: anywhere;
+  gap: 12px;
 }
 
-.app-dl-button {
-  height: 48px;
+.app-dl-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.app-dl-note-num {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background-color: var(--color-primary);
+  color: #FFFFFF;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.app-dl-note-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+
+.app-dl-note-title {
+  font-weight: 700;
+  color: var(--color-text-main);
+}
+
+.app-dl-note-body {
+  color: var(--color-text-muted);
+}
+
+.app-dl-note-text > .app-dl-note-body:only-child {
+  color: var(--color-text-main);
+}
+
+/* ── 다운로드 + 설치 안내 ───────────────────── */
+/* 공통 .btn-primary/.btn-outline(height 40px)보다 뒤에 로드될 수 있어 카드 범위로 우선순위를 올린다. */
+.app-dl-card .app-dl-button {
+  height: 52px;
   font-size: 16px;
   text-decoration: none;
 }
@@ -127,36 +181,134 @@
   color: #FFFFFF;
 }
 
-.app-dl-hint {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-text-muted);
-  line-height: 1.6;
-  overflow-wrap: anywhere;
+/* 전역 .lucide(muted 색) 대신 부모 글자색을 따른다 — 녹색 버튼 위 흰 아이콘, 오류 문구의 빨간 아이콘 */
+.app-dl-card .app-dl-button .lucide,
+.app-dl-card .app-dl-tech-toggle .lucide,
+.app-dl-card .app-dl-status--error .lucide {
+  color: inherit;
 }
 
-.app-dl-hint code,
-.app-dl-sha code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
+.app-dl-button:focus-visible,
+.app-dl-tech-toggle:focus-visible {
+  outline: 2px solid var(--color-primary-hover);
+  outline-offset: 2px;
+}
+
+.app-dl-guide {
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background-color: var(--color-bg-card);
+}
+
+.app-dl-guide-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text-main);
+}
+
+.app-dl-guide-steps {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+
+.app-dl-guide-steps strong {
+  color: var(--color-text-main);
+}
+
+/* ── 기술 정보(기본 접힘) ───────────────────── */
+.app-dl-tech {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-basic);
+  min-width: 0;
+}
+
+.app-dl-tech-toggle {
+  min-height: 44px;
+  padding: 0 12px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-btn);
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.app-dl-tech-toggle:hover {
+  color: var(--color-text-main);
   background-color: var(--color-secondary);
-  padding: 1px 4px;
-  border-radius: 4px;
+}
+
+.app-dl-tech-chevron {
+  transition: transform 0.2s ease;
+}
+
+.app-dl-tech-toggle[aria-expanded="true"] .app-dl-tech-chevron {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-dl-tech-chevron { transition: none; }
+}
+
+.app-dl-tech-list {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-card);
+  background-color: var(--color-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-basic);
+}
+
+.app-dl-tech-list[hidden] {
+  display: none;
+}
+
+.app-dl-tech-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.app-dl-tech-row dt {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.app-dl-tech-row dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.app-dl-tech-row code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--color-text-main);
   word-break: break-all;
 }
 
-.app-dl-sha {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-text-muted);
-  display: flex;
-  align-items: flex-start;
-  gap: 4px;
-  flex-wrap: wrap;
-  overflow-wrap: anywhere;
-}
-
+/* ── 상태(로딩/오류/준비 중) ───────────────── */
 .app-dl-status {
+  margin: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -165,6 +317,7 @@
   color: var(--color-text-muted);
   font-size: 14px;
   padding: var(--space-md) 0;
+  word-break: keep-all;
 }
 
 .app-dl-status p { margin: 0; }
@@ -179,9 +332,9 @@
   color: var(--color-danger);
 }
 
-.app-dl-retry {
+.app-dl-card .app-dl-retry {
   width: auto;
-  height: 36px;
+  height: 44px;
   padding: 0 var(--space-md);
   display: inline-flex;
   align-items: center;
@@ -196,10 +349,11 @@
 .app-dl-footer a {
   color: var(--color-primary-hover);
   font-weight: 600;
+  display: inline-block;
+  padding: 8px 4px;
 }
 
 @media (max-width: 400px) {
-  .app-dl-card { padding: var(--space-lg) var(--space-md); }
-  .app-dl-row { flex-direction: column; align-items: flex-start; }
-  .app-dl-value { text-align: left; }
+  .app-dl-page { padding: var(--space-md) 12px; }
+  .app-dl-card { padding: var(--space-lg) var(--space-md); gap: 20px; }
 }
