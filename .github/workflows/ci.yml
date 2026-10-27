@@ -39,6 +39,39 @@ jobs:
 
           echo "PASS: full-stack 브랜치 (${HEAD_REF:-$GITHUB_REF_NAME})"
 
+  detect:
+    name: Detect Components
+    runs-on: ubuntu-latest
+    needs: branch-scope
+    outputs:
+      has_fastapi: ${{ steps.detect.outputs.has_fastapi }}
+      has_guard_dashboard: ${{ steps.detect.outputs.has_guard_dashboard }}
+
+    steps:
+      - name: 소스코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 브랜치 구성 요소 감지
+        id: detect
+        run: |
+          # 브랜치마다 포함 컴포넌트가 다르다(예: android 라인에는 fastapi/scripts 없음).
+          # fastapi 는 '디렉터리 존재'로 판단한다. 디렉터리가 있으면 requirements.txt 유무와
+          # 무관하게 fastapi-ci 를 실행해, requirements.txt 누락 시 skip 하지 않고 실패시킨다.
+          if [ -d "fastapi" ]; then
+            echo "has_fastapi=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_fastapi=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -f "scripts/guard-dashboard.sh" ]; then
+            echo "has_guard_dashboard=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_guard_dashboard=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "----- detected components -----"
+          cat "$GITHUB_OUTPUT"
+
   backend-ci:
     name: Backend Spring Boot Gradle Build
     runs-on: ubuntu-latest
@@ -142,18 +175,19 @@ jobs:
   fastapi-ci:
     name: FastAPI Python 3.12 Check
     runs-on: ubuntu-latest
-    needs: branch-scope
+    needs: [branch-scope, detect]
+    # fastapi/requirements.txt 가 있는 브랜치(LLM-clean 등)에서만 실행한다.
+    # android 라인(main/android-features)처럼 fastapi 가 없는 브랜치에서는 skip 되어
+    # setup-python 의 cache:pip 가 의존성 파일을 못 찾는 실패가 발생하지 않는다.
+    if: ${{ needs.detect.outputs.has_fastapi == 'true' }}
 
     steps:
       - name: 소스코드 체크아웃
         uses: actions/checkout@v4
 
-      - name: Python 3.12 설정
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
+      # setup-python(cache:pip) 보다 먼저 검사한다.
+      # fastapi/ 가 있는데 requirements.txt 가 없으면 캐시 단계의 모호한 실패 대신
+      # 여기서 명확히 실패시킨다(검사 누락 방지).
       - name: FastAPI 폴더 및 requirements.txt 확인
         run: |
           if [ ! -d "fastapi" ]; then
@@ -162,9 +196,16 @@ jobs:
           fi
 
           if [ ! -f "fastapi/requirements.txt" ]; then
-            echo "fastapi/requirements.txt 파일이 없습니다."
+            echo "FAIL: fastapi/ 는 있으나 requirements.txt 가 없습니다. 의존성 파일을 추가하세요."
             exit 1
           fi
+
+      - name: Python 3.12 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: fastapi/requirements.txt
 
       - name: Python 및 pip 버전 확인
         run: |
@@ -189,6 +230,10 @@ jobs:
       - backend-ci
       - frontend-ci
       - fastapi-ci
+      - detect
+    # fastapi-ci 가 skip(해당 브랜치에 fastapi 없음)이어도 docker-ci 는 실행한다.
+    # backend/frontend 가 성공했고 fastapi-ci 가 success 또는 skipped 일 때만 진행.
+    if: ${{ always() && needs.backend-ci.result == 'success' && needs.frontend-ci.result == 'success' && (needs.fastapi-ci.result == 'success' || needs.fastapi-ci.result == 'skipped') }}
 
     steps:
       - name: 소스코드 체크아웃
@@ -219,6 +264,7 @@ jobs:
           grep -i "^FROM" frontend/Dockerfile
 
       - name: FastAPI Dockerfile 확인
+        if: ${{ needs.detect.outputs.has_fastapi == 'true' }}
         run: |
           if [ ! -f "fastapi/Dockerfile" ]; then
             echo "fastapi/Dockerfile 파일이 없습니다."
@@ -233,6 +279,7 @@ jobs:
           docker build -t studybridge-backend:ci ./backend
 
       - name: Guard dashboard route
+        if: ${{ needs.detect.outputs.has_guard_dashboard == 'true' }}
         run: bash scripts/guard-dashboard.sh
 
       - name: Frontend Docker 이미지 빌드
@@ -240,6 +287,7 @@ jobs:
           docker build -t studybridge-frontend:ci ./frontend
 
       - name: FastAPI Docker 이미지 빌드
+        if: ${{ needs.detect.outputs.has_fastapi == 'true' }}
         run: |
           docker build -t studybridge-fastapi:ci ./fastapi
 
@@ -261,6 +309,7 @@ jobs:
           '
 
       - name: FastAPI Docker Python 버전 확인
+        if: ${{ needs.detect.outputs.has_fastapi == 'true' }}
         run: |
           docker run --rm --entrypoint sh studybridge-fastapi:ci -c "python --version && pip --version"
 
@@ -273,6 +322,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - branch-scope
+      - detect
       - backend-ci
       - frontend-ci
       - fastapi-ci
@@ -283,6 +333,7 @@ jobs:
       - name: 전체 CI 결과 확인
         run: |
           echo "branch-scope result: ${{ needs.branch-scope.result }}"
+          echo "detect result: ${{ needs.detect.result }} (has_fastapi=${{ needs.detect.outputs.has_fastapi }})"
           echo "backend-ci result: ${{ needs.backend-ci.result }}"
           echo "frontend-ci result: ${{ needs.frontend-ci.result }}"
           echo "fastapi-ci result: ${{ needs.fastapi-ci.result }}"
@@ -290,6 +341,11 @@ jobs:
 
           if [ "${{ needs.branch-scope.result }}" != "success" ]; then
             echo "branch-scope 실패: Android 전용 브랜치는 이 파이프라인 대상이 아닙니다"
+            exit 1
+          fi
+
+          if [ "${{ needs.detect.result }}" != "success" ]; then
+            echo "detect 실패"
             exit 1
           fi
 
@@ -303,7 +359,10 @@ jobs:
             exit 1
           fi
 
-          if [ "${{ needs.fastapi-ci.result }}" != "success" ]; then
+          # fastapi-ci 는 fastapi 가 없는 브랜치에서 skip 되며, skip 은 정상으로 인정한다.
+          if [ "${{ needs.fastapi-ci.result }}" = "skipped" ]; then
+            echo "fastapi-ci 건너뜀: 이 브랜치에 fastapi/ 없음 (정상)"
+          elif [ "${{ needs.fastapi-ci.result }}" != "success" ]; then
             echo "fastapi-ci 실패"
             exit 1
           fi
