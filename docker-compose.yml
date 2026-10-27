@@ -26,6 +26,11 @@ services:
       context: ./backend
     ports:
       - "127.0.0.1:8080:8080"
+    # JWT_SECRET 은 저장소 밖 운영 비밀 파일(ubuntu 소유, 600)에서만 주입한다. 파일이 없으면 Spring 이
+    #  기동을 거부하고(application.yml 기본값 없음) CD 는 :prev 로 롤백한다. 값은 커밋·로그 금지.
+    env_file:
+      - path: /home/ubuntu/.studybridge-secrets/spring.env
+        required: false
     environment:
       DB_HOST: ${DB_HOST:-db}
       DB_PORT: ${DB_PORT:-5432}

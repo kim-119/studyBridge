@@ -31,9 +31,18 @@ public class JwtTokenProvider {
         this.userDetailsService = userDetailsService;
     }
 
+    // 서명키는 환경변수 JWT_SECRET 으로만 주입한다(application.yml 기본값 없음).
+    // 없거나 HS256 최소 길이(32바이트)보다 짧으면 기동을 실패시킨다 — 약한/공개 키로 뜨는 것보다 안전하다.
     @PostConstruct
     protected void init() {
-        this.key = Keys.hmacShaKeyFor(secretKeyString.getBytes(StandardCharsets.UTF_8));
+        if (secretKeyString == null || secretKeyString.isBlank()) {
+            throw new IllegalStateException("JWT_SECRET 이 설정되지 않았습니다. 운영 비밀 파일로 주입해야 합니다.");
+        }
+        byte[] secretBytes = secretKeyString.getBytes(StandardCharsets.UTF_8);
+        if (secretBytes.length < 32) {
+            throw new IllegalStateException("JWT_SECRET 은 HS256 요구사항상 32바이트 이상이어야 합니다.");
+        }
+        this.key = Keys.hmacShaKeyFor(secretBytes);
     }
 
     // JWT 토큰 생성

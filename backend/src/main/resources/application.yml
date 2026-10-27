@@ -130,7 +130,7 @@ external-api:
     timeout: ${FASTAPI_TIMEOUT:30000}
 
 jwt:
-  secret: ${JWT_SECRET:studybridge_super_secret_key_for_jwt_token_generation_2026_spring_boot_3_security_6}
+  secret: ${JWT_SECRET}
   expiration-ms: ${JWT_EXPIRATION_MS:1800000}
 
 # Android 앱 자체 배포(APK). 원천은 S3 {s3-prefix}latest/version.json — 서버 재배포 없이 릴리즈 스크립트가 갱신한다.
