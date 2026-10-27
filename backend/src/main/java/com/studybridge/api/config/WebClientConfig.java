@@ -118,6 +118,33 @@ public class WebClientConfig {
                 .build();
     }
 
+    // 화면공유 AI 분석(ai07 Vision) 전용 타임아웃. ai07 최악 대기(VisionGate 120s + GPU 슬롯 30s) + 추론 90s = 240s 보다 길게.
+    //  공용 FASTAPI_TIMEOUT(180s, PDF 추출)·read-timeout-seconds(1800s, 멀티챗 스트림)와 분리해 서로 영향을 주지 않는다.
+    @Value("${ai.vision.timeout-seconds:260}")
+    private int visionTimeoutSeconds;
+
+    /**
+     * ai07 Vision 전용 WebClient = PRIMARY(ai07 터널) 고정. secondary(EC2 :8000)는 키가 다르고 비전 데몬이 없어 failover 하지 않는다.
+     * 응답은 JSON 한 건(답변 최대 6000자)이라 코덱 버퍼는 1MB 면 충분하다.
+     */
+    @Bean
+    public WebClient visionWebClient(WebClient.Builder builder) {
+        int timeout = Math.max(30, visionTimeoutSeconds);
+        HttpClient httpClient = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, CONNECT_TIMEOUT_MS)
+                .responseTimeout(Duration.ofSeconds(timeout))
+                .doOnConnected(conn -> conn
+                        .addHandlerLast(new ReadTimeoutHandler(timeout, TimeUnit.SECONDS))
+                        .addHandlerLast(new WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)));
+        return builder.clone()
+                .baseUrl(fastApiBaseUrl)
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .exchangeStrategies(ExchangeStrategies.builder()
+                        .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(1024 * 1024))
+                        .build())
+                .build();
+    }
+
     /**
      * Intent Router 전용 WebClient. 짧은 connect/response 타임아웃(분기 판단용).
      * 실제 요청별 상한은 IntentRouterService의 block(timeoutMs)로 한 번 더 제어한다.

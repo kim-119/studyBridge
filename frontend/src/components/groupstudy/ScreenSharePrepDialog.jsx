@@ -3,7 +3,7 @@ import { MonitorUp, X } from 'lucide-react';
 import { SCREEN_SHARE_MODES } from '../../utils/screenShare';
 
 // 화면공유 시작 전 짧은 안내. [공유할 화면 선택] 클릭(사용자 제스처)에서만 브라우저 선택창을 연다 — 자동 캡처 없음.
-export default function ScreenSharePrepDialog({ mode, withAudio, onModeChange, onAudioChange, onCancel, onConfirm }) {
+export default function ScreenSharePrepDialog({ mode, withAudio, onModeChange, onAudioChange, aiConsent, onAiConsentChange, onCancel, onConfirm }) {
   const option = (key) => {
     const m = SCREEN_SHARE_MODES[key];
     const on = mode === key;
@@ -48,6 +48,12 @@ export default function ScreenSharePrepDialog({ mode, withAudio, onModeChange, o
           <input type="checkbox" data-testid="screen-share-audio" checked={!!withAudio} onChange={(e) => onAudioChange?.(e.target.checked)} />
           공유 대상의 소리도 함께 보내기(선택창에서 다시 확인)
         </label>
+        {onAiConsentChange && (
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '12.5px', color: '#CBD5E1', marginTop: '-6px', marginBottom: '16px', cursor: 'pointer', lineHeight: 1.5 }}>
+            <input type="checkbox" data-testid="screen-share-ai-consent" checked={!!aiConsent} onChange={(e) => onAiConsentChange(e.target.checked)} style={{ marginTop: '3px' }} />
+            <span>다른 참여자가 <b>AI 화면 분석</b>으로 내 공유 화면을 질문할 수 있게 허용(질문 순간의 화면 한 장만 분석, 저장 안 함 · 공유 중에도 바꿀 수 있어요)</span>
+          </label>
+        )}
         <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
           <button type="button" onClick={onCancel} style={{ padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.04)', color: '#E5E7EB', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>취소</button>
           <button type="button" data-testid="screen-share-confirm" onClick={onConfirm} style={{ padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(96,165,250,0.7)', background: 'rgba(59,130,246,0.35)', color: '#fff', fontSize: '13px', fontWeight: 800, cursor: 'pointer' }}>공유할 화면 선택</button>

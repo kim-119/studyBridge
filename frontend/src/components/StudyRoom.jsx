@@ -24,6 +24,8 @@ import {
 import ProfileParticipantTile from './groupstudy/ProfileParticipantTile';
 import ScreenShareStage, { ScreenShareNotice } from './groupstudy/ScreenShareStage';
 import ScreenSharePrepDialog from './groupstudy/ScreenSharePrepDialog';
+import ScreenAiPanel from './groupstudy/ScreenAiPanel';
+import { SCREEN_AI_CONSENT_SIGNAL } from '../utils/screenAi';
 import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, lockScreenResolution, findVideoSender, SCREEN_SHARE_LIMIT, screenShareLimitMessage, screenShareAvailability } from '../utils/screenShare';
 import { SCREEN_RECEIPT_SIGNAL, buildReceipt, parseReceipt, healthFromPeerState } from '../utils/screenReceipt';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
@@ -625,6 +627,11 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
   const [screenShareLimit, setScreenShareLimit] = useState(SCREEN_SHARE_LIMIT);
   const [shareMode, setShareMode] = useState('document');
   const [shareAudio, setShareAudio] = useState(true);
+  // AI 화면 분석: 공유 시작 전 '다른 참여자의 AI 분석 허용'(기본 꺼짐, opt-in) · 이 탭 공유의 서버 동의 상태 · 다른 사람 동의 변경 신호.
+  //  동의의 Source of Truth 는 서버(PUT /screen-ai/shares/{cid}/consent). OpenVidu 시그널은 다시 읽으라는 알림일 뿐이다.
+  const [shareAiConsent, setShareAiConsent] = useState(false);
+  const [myScreenAiConsent, setMyScreenAiConsent] = useState({ connectionId: null, allowed: false, busy: false });
+  const [screenAiConsentNonce, setScreenAiConsentNonce] = useState(0);
   // 송출은 getDisplayMedia 가 있는 브라우저(PC Chrome/Edge/Firefox/Safari)만. 모바일 브라우저·웹뷰는 대부분 없음 → 시청만.
   const screenShareSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
   // OpenVidu 인스턴스 ref — view-only/송출 실패 상태에서 사용자 제스처로 Publisher를 재생성할 때 재사용한다.
@@ -1197,6 +1204,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
     setScreenReceipts({});
     screenReceiptPhaseRef.current = new Map();
     setScreenLiveSince(null);
+    setMyScreenAiConsent({ connectionId: null, allowed: false, busy: false }); // 동의는 그 SCREEN Connection 에만 묶여 함께 사라진다
     setScreenHealth('connecting');
     if (sess || cid) {
       console.info('[StudyRoomOV] screen:stopped', { why, connectionId: cid || null });
@@ -1206,6 +1214,26 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
   const teardownScreenShareRef = React.useRef(teardownScreenShare);
   teardownScreenShareRef.current = teardownScreenShare;
 
+  // 내 화면공유의 AI 분석 허용/철회 → 서버 저장 후 방 전체에 '동의 바뀜' 시그널(받은 쪽은 서버 목록을 다시 읽는다).
+  const toggleMyScreenAiConsent = async (allowed) => {
+    const cid = myScreenConnIdRef.current;
+    if (!cid || !study?.id) return;
+    setMyScreenAiConsent(prev => ({ connectionId: cid, allowed: prev.connectionId === cid ? prev.allowed : false, busy: true }));
+    try {
+      const res = await groupService.setScreenAiConsent(study.id, cid, allowed);
+      if (myScreenConnIdRef.current !== cid) return;
+      const next = !!res?.aiConsent;
+      setMyScreenAiConsent({ connectionId: cid, allowed: next, busy: false });
+      sessionRef.current?.signal({ type: SCREEN_AI_CONSENT_SIGNAL, data: JSON.stringify({ connectionId: cid, allowed: next }) }).catch(() => { /* 세션 교체 중 */ });
+      console.info('[StudyRoomOV] screen:ai-consent', { connectionId: cid, allowed: next });
+    } catch (e) {
+      if (myScreenConnIdRef.current === cid) setMyScreenAiConsent(prev => ({ ...prev, busy: false }));
+      setOvNotice(e?.response?.data?.message || 'AI 분석 허용 설정을 바꾸지 못했습니다. 잠시 후 다시 시도해주세요.');
+    }
+  };
+  const toggleMyScreenAiConsentRef = React.useRef(toggleMyScreenAiConsent);
+  toggleMyScreenAiConsentRef.current = toggleMyScreenAiConsent;
+
   // 공유 버튼: 이미 다른 사람이 상한만큼 공유 중이면 선택창을 열지 않고 안내한다(서버가 최종 판정 — 경쟁 시 서버 409 로 같은 안내).
   const screenSlots = screenShareAvailability(roomPresence.screens, userId, screenShareLimit);
   const requestScreenShare = () => {
@@ -1214,7 +1242,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
   };
 
   // ── 화면공유 시작(Discord 스타일): 화면 선택 → SCREEN 토큰 → 별도 세션 connect → publish ──
-  const startScreenShare = async ({ mode = 'document', withAudio = true } = {}) => {
+  const startScreenShare = async ({ mode = 'document', withAudio = true, aiConsent = false } = {}) => {
     if (screenShareBusyRef.current || screenSessionRef.current) return;
     const shareModeKey = resolveShareMode(mode);
     const primary = sessionRef.current;
@@ -1367,6 +1395,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       setSelectedScreenId(cid);
       setScreenShareStatus('live');
       setOvNotice('');
+      if (aiConsent) toggleMyScreenAiConsentRef.current?.(true); // 공유 안내에서 'AI 분석 허용'을 켠 경우
       console.info('[StudyRoomOV] screen:live', { connectionId: cid, hasAudio, typeOfVideo: pub.stream?.typeOfVideo || null, mode: shareModeKey, surface: surfaceInfo.surface, resolution: surfaceInfo.resolution, contentHint: screenTrack?.contentHint || null, degradation: resolutionLock.applied });
     } catch (e) {
       clearInterval(screenResolutionGuardRef.current);
@@ -1541,6 +1570,9 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
 
         // 새 연결 생성(미디어 publish 여부와 무관) → presence 갱신.
         //   카메라/마이크가 둘 다 꺼져 streamCreated가 없는 참가자도 members 재조회로 타일에 보이게 한다.
+        // 다른 참여자가 자기 화면의 AI 분석 허용을 바꿨다 → AI 화면 분석 탭이 서버 목록을 다시 읽는다(내용은 신뢰하지 않음).
+        sessionInstance.on(`signal:${SCREEN_AI_CONSENT_SIGNAL}`, () => { if (!isStale()) setScreenAiConsentNonce(n => n + 1); });
+
         sessionInstance.on('connectionCreated', (event) => {
           if (isStale()) return;
           const connection = event.connection;
@@ -3171,8 +3203,10 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
                 withAudio={shareAudio}
                 onModeChange={setShareMode}
                 onAudioChange={setShareAudio}
+                aiConsent={shareAiConsent}
+                onAiConsentChange={setShareAiConsent}
                 onCancel={() => setShowSharePrep(false)}
-                onConfirm={() => { setShowSharePrep(false); startScreenShare({ mode: shareMode, withAudio: shareAudio }); }}
+                onConfirm={() => { setShowSharePrep(false); startScreenShare({ mode: shareMode, withAudio: shareAudio, aiConsent: shareAiConsent }); }}
               />
             );
             return roomRootEl ? createPortal(dialog, roomRootEl) : dialog;
@@ -3195,6 +3229,8 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
               receipts={screenReceipts}
               onReceipt={sendScreenReceipt}
               portalTarget={roomRootEl}
+              aiConsent={myScreenAiConsent}
+              onToggleAiConsent={toggleMyScreenAiConsent}
             />
           )}
 
@@ -3514,9 +3550,32 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
                 >
                   AI 질문
                 </button>
+                <button
+                  data-testid="chat-tab-screen-ai"
+                  onClick={() => setChatTab('screen-ai')}
+                  style={{
+                    padding: '14px 0',
+                    border: 'none',
+                    background: 'none',
+                    color: chatTab === 'screen-ai' ? '#3B82F6' : '#9CA3AF',
+                    borderBottom: chatTab === 'screen-ai' ? '2px solid #3B82F6' : '2px solid transparent',
+                    fontSize: '14px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    outline: 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px'
+                  }}
+                >
+                  AI 화면 분석
+                  {screenShares.length > 0 && (
+                    <span style={{ backgroundColor: 'rgba(59,130,246,0.25)', color: '#BFDBFE', borderRadius: '10px', fontSize: '11px', fontWeight: 800, padding: '0 6px' }}>{screenShares.length}</span>
+                  )}
+                </button>
               </div>
 
-              {chatTab === 'normal' ? (
+              {chatTab === 'screen-ai' ? null : chatTab === 'normal' ? (
                 <>
                   <div className="custom-scrollbar" style={{ flex: 1, minHeight: 0, padding: '20px', overflowY: 'auto', overscrollBehavior: 'contain', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {/* Notice Box */}
@@ -3845,6 +3904,19 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
                   </div>
                 </>
               )}
+              {/* AI 화면 분석: 탭을 바꿔도 진행 중인 분석·답변이 유지되도록 숨김 상태로 계속 마운트한다(방을 나가면 사라짐). */}
+              <div style={{ display: chatTab === 'screen-ai' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
+                <ScreenAiPanel
+                  groupId={study?.id}
+                  shares={screenShares}
+                  stageSelectedId={selectedScreenId}
+                  onFocusShare={setSelectedScreenId}
+                  visible={showChatDrawer && chatTab === 'screen-ai'}
+                  consentNonce={screenAiConsentNonce}
+                  myConsent={myScreenAiConsent}
+                  onToggleMyConsent={toggleMyScreenAiConsent}
+                />
+              </div>
             </div>
             </>, roomRootEl)}
           </div>

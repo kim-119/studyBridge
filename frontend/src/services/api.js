@@ -17,6 +17,9 @@ export const MATERIAL_UPLOAD_TIMEOUT_MS = Number(
   import.meta.env.VITE_MATERIAL_UPLOAD_TIMEOUT_MS || 60000
 );
 
+// AI 화면 분석 전용 timeout. 서버(ai.vision.timeout-seconds 260s)가 구조화된 타임아웃 오류를 먼저 돌려주도록 그보다 조금 길게 둔다.
+export const SCREEN_AI_TIMEOUT_MS = Number(import.meta.env.VITE_SCREEN_AI_TIMEOUT_MS || 280000);
+
 // 퀴즈/로드맵 생성 전용 timeout(90초). 초과 시 axios가 ECONNABORTED 로 끊고,
 //  화면은 catch → deterministic fallback 으로 전환한다(무한 "생성 중" 방지, 90초 UX 보장).
 export const AI_FALLBACK_TIMEOUT_MS = Number(
@@ -1278,6 +1281,31 @@ export const groupService = {
   // 실시간 접속 Source of Truth(OpenVidu active Connection). ghost 정리·참여 인원 검증용.
   getVideoConnections: async (id) => {
     const res = await api.get(`/api/groups/${id}/video/connections`);
+    return res.data;
+  },
+
+  // ── AI 화면 분석(화면공유 프레임 1장 + 질문 → Spring → ai07 Vision) ──
+  // 지금 분석할 수 있는 화면공유 목록 + 공유자 동의(aiConsent)·분석 가능(analyzable) 여부.
+  getScreenAiShares: async (id) => {
+    const res = await api.get(`/api/groups/${id}/screen-ai/shares`);
+    return res.data;
+  },
+
+  // 내 화면공유의 AI 분석 허용/철회(공유자 본인만).
+  setScreenAiConsent: async (id, connectionId, allowed) => {
+    const res = await api.put(`/api/groups/${id}/screen-ai/shares/${encodeURIComponent(connectionId)}/consent`, { allowed: !!allowed });
+    return res.data;
+  },
+
+  // body = { connectionId, streamId, question, image(Base64 JPEG), mime, clientRequestId }. 서버 상한(기본 260s)보다 조금 길게 기다린다.
+  analyzeScreen: async (id, body, { signal } = {}) => {
+    const res = await api.post(`/api/groups/${id}/screen-ai/analyze`, body, { signal, timeout: SCREEN_AI_TIMEOUT_MS });
+    return res.data;
+  },
+
+  // 진행 중인 내 분석 취소(멱등) — 서버가 ai07 연결을 끊어 추론도 멈춘다.
+  cancelScreenAnalysis: async (id, clientRequestId) => {
+    const res = await api.delete(`/api/groups/${id}/screen-ai/analyze/${encodeURIComponent(clientRequestId)}`);
     return res.data;
   },
 

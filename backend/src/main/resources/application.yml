@@ -113,6 +113,21 @@ ai:
   recommendation:
     enabled: ${AI_RECOMMENDATION_ENABLED:false}
     timeout-seconds: ${AI_RECOMMENDATION_TIMEOUT_SECONDS:30}
+  # 그룹스터디 화면공유 AI 분석(GroupScreenAiService → ai07 POST /api/ai/vision/analyze, PRIMARY 전용·failover 없음).
+  #  timeout-seconds: ai07 최악 대기 120+30s + 추론 90s 보다 길게(≥250). 공용 FASTAPI_TIMEOUT(180s)과 별개.
+  vision:
+    enabled: ${AI_VISION_ENABLED:true}
+    path: ${AI_VISION_PATH:/api/ai/vision/analyze}
+    timeout-seconds: ${AI_VISION_TIMEOUT_SECONDS:260}
+    max-body-bytes: ${AI_VISION_MAX_BODY_BYTES:2097152}
+    max-image-bytes: ${AI_VISION_MAX_IMAGE_BYTES:1048576}
+    max-long-side: ${AI_VISION_MAX_LONG_SIDE:1280}
+    min-side: ${AI_VISION_MIN_SIDE:32}
+    max-question-chars: ${AI_VISION_MAX_QUESTION_CHARS:1000}
+    consent-ttl-hours: ${AI_VISION_CONSENT_TTL_HOURS:12}
+    rate-limit:
+      per-user-per-minute: ${AI_VISION_RATE_PER_USER_PER_MINUTE:6}
+      per-group-per-minute: ${AI_VISION_RATE_PER_GROUP_PER_MINUTE:30}
 
 cloud:
   aws:

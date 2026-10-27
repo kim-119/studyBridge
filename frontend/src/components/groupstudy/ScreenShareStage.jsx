@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Monitor, Maximize, Minimize, MonitorOff, Volume2, VolumeX, Eye, EyeOff, Scan, Info, AppWindow, Globe,
-  Camera, RefreshCw, Radio, ZoomIn, ZoomOut, Activity, CheckCircle2, Circle, Loader2, X,
+  Camera, RefreshCw, Radio, ZoomIn, ZoomOut, Activity, CheckCircle2, Circle, Loader2, X, ScanSearch,
 } from 'lucide-react';
 import {
   deriveShareReceipt, pickRtp, summarizeInbound, summarizeOutbound, RECEIPT_INTERVAL_MS,
@@ -9,6 +9,7 @@ import {
 import { describeCaptureSurface } from '../../utils/screenShare';
 import { useFullscreenViewer } from '../../hooks/useFullscreenViewer';
 import FullscreenFrame from './FullscreenViewer';
+import { ToggleSwitch } from './ToggleSwitch';
 
 // 화면공유 메인 스테이지(Discord·Meet 유형). 화면공유가 하나라도 있으면 참가자 타일 위에 크게 표시된다.
 //  · 다른 사람의 공유: 원본 비율 유지(object-fit: contain, 잘림 없음) + [원본 크기]: 1 영상 픽셀 = 1 화면 픽셀로 스크롤해서 본다
@@ -25,6 +26,7 @@ import FullscreenFrame from './FullscreenViewer';
 //    (전체화면 중 '내 화면' 칩을 고른 경우에도 종료 버튼은 남는다).
 // shares: [{ connectionId, name, isMine, isOwnUser, surface, streamManager, hasAudio }]
 // ownShare: { status, step, health, liveSince } · viewers: 송출자 기준 시청 대상(고유 userId) · receipts: 시청자 보고
+// aiConsent: { connectionId, allowed, busy } — 내 공유(이 탭)의 AI 화면 분석 허용(서버 SoT) · onToggleAiConsent(allowed)
 
 const PHASE_VIEW = {
   capturing: { label: '화면 선택 중', tone: '#93C5FD' },
@@ -321,7 +323,7 @@ function StepChip({ ok, label, testid }) {
   );
 }
 
-function OwnShareCard({ share, ownShare, viewers, receipts, isMobile, previewMode, setPreviewMode }) {
+function OwnShareCard({ share, ownShare, viewers, receipts, isMobile, previewMode, setPreviewMode, aiConsent, onToggleAiConsent }) {
   const mine = share.isMine;
   const now = useNow(mine && !!ownShare);
   const summary = mine ? deriveShareReceipt({ share: ownShare, viewers, receipts, now }) : null;
@@ -396,6 +398,13 @@ function OwnShareCard({ share, ownShare, viewers, receipts, isMobile, previewMod
           })}
         </div>
       )}
+      {mine && onToggleAiConsent && (
+        <div data-testid="screen-own-ai-consent" data-allowed={aiConsent?.allowed ? 'true' : 'false'} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12.5px', color: '#CBD5E1' }}>
+          <ScanSearch size={13} color={aiConsent?.allowed ? '#34D399' : '#94A3B8'} style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1 }}>{aiConsent?.allowed ? '다른 참여자가 이 화면을 AI로 분석할 수 있어요' : '다른 참여자의 AI 화면 분석 허용'}</span>
+          <ToggleSwitch checked={!!aiConsent?.allowed} disabled={!!aiConsent?.busy} onChange={(v) => onToggleAiConsent(v)} label="다른 참여자의 AI 화면 분석 허용" />
+        </div>
+      )}
       {mine && surface?.recursionPossible && (
         <div data-testid="screen-stage-recursion-hint" style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', color: '#94A3B8' }}>
           <Info size={12} style={{ flexShrink: 0 }} />
@@ -461,7 +470,7 @@ export function ScreenShareNotice({ phase, why, onDismiss }) {
   );
 }
 
-export default function ScreenShareStage({ shares, selectedId, onSelect, onStopMine, isMobile, ownShare, viewers, receipts, onReceipt, portalTarget }) {
+export default function ScreenShareStage({ shares, selectedId, onSelect, onStopMine, isMobile, ownShare, viewers, receipts, onReceipt, portalTarget, aiConsent, onToggleAiConsent }) {
   const viewer = useFullscreenViewer({ label: '화면공유 전체화면' });
   const isFullscreen = viewer.isFullscreen;
   const [remoteMuted, setRemoteMuted] = useState(false);
@@ -548,7 +557,7 @@ export default function ScreenShareStage({ shares, selectedId, onSelect, onStopM
       </div>
 
       {own ? (
-        <OwnShareCard share={active} ownShare={ownShare} viewers={viewers} receipts={receipts} isMobile={isMobile} previewMode={previewMode} setPreviewMode={setPreviewMode} />
+        <OwnShareCard share={active} ownShare={ownShare} viewers={viewers} receipts={receipts} isMobile={isMobile} previewMode={previewMode} setPreviewMode={setPreviewMode} aiConsent={aiConsent} onToggleAiConsent={onToggleAiConsent} />
       ) : (
         <RemoteShareView share={active} isMobile={isMobile} isFullscreen={isFullscreen} actualSize={actualSize} dims={dims} onDims={setDims} remoteMuted={remoteMuted} onReceipt={onReceipt} showRx={showRx} />
       )}
