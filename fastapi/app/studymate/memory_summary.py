@@ -13,14 +13,17 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from app.ai_gateway.context import ContextThreadPoolExecutor
+from app.ai_gateway.policy import WorkloadClass
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("studybridge.studymate.summary")
 
 SUMMARY_VERSION = 1
 SUMMARY_EVERY = int(os.getenv("STUDYMATE_SUMMARY_EVERY_TURNS", "6"))
-_EXEC = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sm-summary")
+# 롤링 요약은 응답 이후의 배경 작업 → AI Gateway 에서 BACKGROUND_AI_JOB 으로 분류(게이트웨이 off 면 동작 동일).
+_EXEC = ContextThreadPoolExecutor(max_workers=1, thread_name_prefix="sm-summary",
+                                  wclass=WorkloadClass.BACKGROUND_AI_JOB)
 _RUNNING: set = set()
 _LOCK = threading.Lock()
 

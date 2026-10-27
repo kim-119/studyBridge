@@ -3,6 +3,7 @@
 
 endpoint는 요청 검증 → service 호출 → 응답 변환만 담당한다(정책/프롬프트 로직 없음).
 """
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -23,7 +24,8 @@ async def learning_mate_chat(request: LearningMateChatRequest) -> LearningMateCh
         raise HTTPException(status_code=422, detail="question 또는 previousQuestion 중 하나는 필요합니다.")
 
     try:
-        return generate_chat(request)
+        # generate_chat → 동기 ask_ollama(requests). 이벤트 루프에서 직접 부르면 생성 시간 동안 서버 전체가 멈춘다.
+        return await asyncio.to_thread(generate_chat, request)
     except LearningMateLLMError as e:
         # 가짜 답변 금지 — 명확한 실패로 전달(Spring/React가 '답변 생성 실패' 표시).
         raise HTTPException(status_code=502, detail=str(e))

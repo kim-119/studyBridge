@@ -16,6 +16,7 @@ fallback 순서:
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any, Optional
@@ -47,7 +48,7 @@ def _load_model() -> bool:
             return False
         try:
             from sentence_transformers import CrossEncoder
-            _MODEL = CrossEncoder(RAG_RERANK_MODEL)
+            _MODEL = CrossEncoder(RAG_RERANK_MODEL, device=(os.getenv("RAG_RERANK_DEVICE") or os.getenv("EMBEDDING_DEVICE") or None))
             _STATE = "ready"
             logger.info("[rag_rerank] CrossEncoder 로드 완료: %s", RAG_RERANK_MODEL)
             return True

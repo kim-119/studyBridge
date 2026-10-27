@@ -127,27 +127,52 @@ def stream_ollama(
         "options": {"temperature": _temp, "num_predict": _max, "num_ctx": _shared_num_ctx()},
     }
 
+    import app.ai_gateway as _gw
     started = time.perf_counter()
-    # (connect timeout, read timeout). read timeout=첫 토큰/토큰간 최대 대기.
-    resp = requests.post(
-        f"{OLLAMA_BASE_URL}/api/chat", json=payload, stream=True, timeout=(5, _ftt)
-    )
-    resp.raise_for_status()
-    for raw in resp.iter_lines(decode_unicode=False):
-        if not raw:
-            continue
-        if (time.perf_counter() - started) > _total:
-            resp.close()
-            raise TimeoutError(f"total stream timeout {_total}s")
+    # AI Gateway(기본 off): 슬롯 대기는 첫 토큰 예산(_ftt) 안에서만. 거부 시 TimeoutError/ConnectionError 로
+    # 던져 호출부의 기존 error 라인 변환을 그대로 탄다. 슬롯은 스트림이 끝나거나 닫힐 때(finally) 반환.
+    try:
+        slot = _gw.llm_slot(url=OLLAMA_BASE_URL, timeout=_ftt)
+        lease = slot.__enter__()
+    except _gw.GatewayRejected as e:
+        # 호출부(_simple_llm_stream 등)의 기존 requests 예외 분기로 같은 사용자 문구가 나가게 requests 예외로 던진다.
+        if e.code == "CIRCUIT_OPEN":
+            raise requests.ConnectionError(f"ai gateway: {e.code}") from None
+        raise requests.Timeout(f"ai gateway: {e.code}") from None
+    resp = None
+    try:
+        _gw.normalize_ollama_payload(payload, url=OLLAMA_BASE_URL)
+        # (connect timeout, read timeout). read timeout=첫 토큰/토큰간 최대 대기.
         try:
-            obj = orjson.loads(raw) if _NATIVE_JSON == "orjson" else __import__("json").loads(raw)
-        except Exception:
-            continue
-        piece = (obj.get("message") or {}).get("content") or ""
-        if piece:
-            yield piece
-        if obj.get("done"):
-            break
+            resp = requests.post(
+                f"{OLLAMA_BASE_URL}/api/chat", json=payload, stream=True, timeout=(5, _ftt)
+            )
+        except requests.ConnectionError:
+            if lease:
+                lease.backend_fail()
+            raise
+        if lease:
+            lease.backend_fail() if resp.status_code >= 500 else lease.backend_ok()
+        resp.raise_for_status()
+        for raw in resp.iter_lines(decode_unicode=False):
+            if not raw:
+                continue
+            if (time.perf_counter() - started) > _total:
+                resp.close()
+                raise TimeoutError(f"total stream timeout {_total}s")
+            try:
+                obj = orjson.loads(raw) if _NATIVE_JSON == "orjson" else __import__("json").loads(raw)
+            except Exception:
+                continue
+            piece = (obj.get("message") or {}).get("content") or ""
+            if piece:
+                yield piece
+            if obj.get("done"):
+                break
+    finally:
+        if resp is not None:
+            resp.close()   # 클라이언트 이탈(GeneratorExit) 시에도 연결을 닫아 Ollama 생성을 멈춘다.
+        slot.__exit__(None, None, None)
 
 
 # ── 공통: persona/level 해석 (코드 내 고정 하드코딩 금지) ──────────────────────

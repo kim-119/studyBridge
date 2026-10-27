@@ -18,7 +18,9 @@ import os
 import re
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
+from concurrent.futures import TimeoutError as FutureTimeoutError, as_completed
+# 에이전트 병렬 단계가 요청의 AI Gateway 컨텍스트(MULTI_AGENT/사용자 키)를 잃지 않게 한다(게이트웨이 off 면 동작 동일).
+from app.ai_gateway.context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.schemas.multi_chat_schema import (

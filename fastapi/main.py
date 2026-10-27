@@ -23,7 +23,9 @@ import os
 import re
 import time
 from urllib.parse import unquote, urlparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
+# 병렬 에이전트 실행이 요청의 AI Gateway 컨텍스트를 잃지 않게 한다(게이트웨이 off 면 동작 동일).
+from app.ai_gateway.context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -538,7 +540,17 @@ def _call_ollama(
         "options": {"temperature": temperature, "top_p": top_p if top_p is not None else env_float("AI_DEFAULT_TOP_P", 0.9), "num_predict": max_tokens, "num_ctx": _shared_num_ctx()},
     }
     try:
-        resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
+        import app.ai_gateway as _gw
+        with _gw.llm_slot(url=OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT) as _lease:
+            _gw.normalize_ollama_payload(payload, url=OLLAMA_BASE_URL)
+            try:
+                resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
+            except requests.ConnectionError:
+                if _lease:
+                    _lease.backend_fail()
+                raise
+            if _lease:
+                _lease.backend_fail() if resp.status_code >= 500 else _lease.backend_ok()
         resp.raise_for_status()
         return resp.json().get("message", {}).get("content", "")
     except Exception as e:
@@ -552,6 +564,10 @@ def _call_openai(
     """OpenAI Chat Completions API 호출. 실패 시 None 반환."""
     if not openai_client:
         return None
+    import app.ai_gateway as _gw
+    if not _gw.openai_allowed(max_tokens or 0):
+        logger.warning("OpenAI 호출 차단(게이트웨이 예산/브레이커)")
+        return None
     try:
         resp = openai_client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -563,8 +579,10 @@ def _call_openai(
             temperature=temperature,
             top_p=top_p,
         )
+        _gw.record_openai_usage(OPENAI_MODEL, getattr(resp, "usage", None), ok=True)
         return resp.choices[0].message.content or ""
     except Exception as e:
+        _gw.record_openai_usage(OPENAI_MODEL, None, ok=False)
         logger.warning("OpenAI 호출 실패: %s", e)
         return None
 

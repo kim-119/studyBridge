@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
+import app.ai_gateway as gw
 from app.studymate.cancellation import CancelToken, CancelledByClient
 
 logger = logging.getLogger("studybridge.studymate.llm")
@@ -225,6 +226,30 @@ def generate(
         raise LLMModelNotFound("fault injection: model missing")
 
     body = _payload(req)
+    # AI Gateway(기본 off): 슬롯 대기는 이 호출의 남은 예산(hard_deadline) 안에서, 취소 토큰을 존중한다.
+    # 멀티에이전트의 에이전트별 순차 호출도 각각 슬롯을 받으므로 동시성 한도를 우회하지 못한다.
+    slot = gw.llm_slot(url=_base_url(), timeout=max(0.05, hard_deadline - time.time() - 1.0),
+                       cancel_check=(lambda: bool(cancel is not None and cancel.cancelled)))
+    try:
+        lease = slot.__enter__()
+    except gw.GatewayRejected as e:
+        el = int((time.time() - t0) * 1000)
+        if e.code == "CANCELLED":
+            raise CancelledByClient((cancel.reason if cancel is not None else "") or "cancelled")
+        if e.code == "QUEUE_TIMEOUT":
+            raise LLMTimeout(f"gateway queue timeout: {e.message}", elapsed_ms=el)
+        raise LLMUnavailable(f"gateway {e.code}", elapsed_ms=el)
+    gw.normalize_ollama_payload(body, url=_base_url())
+    try:
+        return _generate_locked(req, body, t0, hard_deadline, fault, lease, cancel=cancel,
+                                prefix_guard=prefix_guard, prefix_check_chars=prefix_check_chars)
+    finally:
+        slot.__exit__(None, None, None)
+
+
+def _generate_locked(req: LLMRequest, body: Dict[str, Any], t0: float, hard_deadline: float, fault: str,
+                     lease, *, cancel: Optional[CancelToken], prefix_guard: Optional[PrefixGuard],
+                     prefix_check_chars: int) -> LLMResult:
     content_parts: List[str] = []
     thinking_parts: List[str] = []
     final: Dict[str, Any] = {}
@@ -241,9 +266,13 @@ def generate(
                     timeout=(3.0, max(1.0, min(60.0, hard_deadline - time.time()))),
                 )
             except requests.ConnectionError as e:
+                if lease:
+                    lease.backend_fail()
                 raise LLMUnavailable(f"connect: {type(e).__name__}", elapsed_ms=int((time.time() - t0) * 1000))
             except requests.Timeout as e:
                 raise LLMTimeout(f"connect timeout: {type(e).__name__}", elapsed_ms=int((time.time() - t0) * 1000))
+            if lease:
+                lease.backend_fail() if resp.status_code >= 500 else lease.backend_ok()
             if resp.status_code == 404:
                 txt = ""
                 try:

@@ -30,6 +30,7 @@ _locks: Dict[str, asyncio.Lock] = {}
 
 _redis_client = None
 _redis_tried = False
+_redis_retry_at = 0.0
 
 
 def get_extracted_text_hash(text: str) -> str:
@@ -42,11 +43,14 @@ def get_chunk_cache_key(material_id: Optional[int], extracted_text_hash: str) ->
 
 def _get_redis():
     """sync redis 클라이언트 (없으면 None). import/연결 실패해도 서버는 죽지 않는다."""
-    global _redis_client, _redis_tried
+    global _redis_client, _redis_tried, _redis_retry_at
     if CACHE_BACKEND != "redis":
         return None
-    if _redis_tried:
+    if _redis_client is not None:
         return _redis_client
+    # 실패 후 영구 비활성화하지 않고 REDIS_RETRY_SECONDS 뒤 다시 시도한다(그동안은 in-memory fallback).
+    if _redis_tried and time.monotonic() < _redis_retry_at:
+        return None
     _redis_tried = True
     try:
         import redis  # type: ignore
@@ -57,6 +61,7 @@ def _get_redis():
     except Exception as e:
         logger.warning("chunk_cache: Redis 사용 불가 → in-memory fallback (%s)", e)
         _redis_client = None
+        _redis_retry_at = time.monotonic() + float(os.getenv("REDIS_RETRY_SECONDS", "30"))
     return _redis_client
 
 

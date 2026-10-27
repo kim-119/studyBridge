@@ -184,13 +184,28 @@ def _call_router_ollama(system_prompt: str, user_prompt: str) -> Optional[str]:
         "think": False,  # qwen3 thinking 비활성 — Router는 추론 불필요, 속도/예산 확보
         "options": {"temperature": 0.0, "num_predict": 300, "num_ctx": _shared_num_ctx()},
     }
+    import app.ai_gateway as _gw
     try:
-        resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=INTENT_ROUTER_TIMEOUT_SEC
-        )
+        # Router 는 5초 예산이라 슬롯 대기도 그 안에서만 한다(초과 시 None → deterministic fallback).
+        with _gw.llm_slot(url=OLLAMA_BASE_URL, timeout=INTENT_ROUTER_TIMEOUT_SEC,
+                          wclass=_gw.WorkloadClass.INTERACTIVE_CHAT) as _lease:
+            _gw.normalize_ollama_payload(payload, url=OLLAMA_BASE_URL)
+            try:
+                resp = requests.post(
+                    f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=INTENT_ROUTER_TIMEOUT_SEC
+                )
+            except requests.ConnectionError:
+                if _lease:
+                    _lease.backend_fail()
+                raise
+            if _lease:
+                _lease.backend_fail() if resp.status_code >= 500 else _lease.backend_ok()
         resp.raise_for_status()
         content = resp.json().get("message", {}).get("content", "")
         return content.strip() or None
+    except _gw.GatewayRejected as e:
+        logger.warning("intent/route 게이트웨이 거부 code=%s", e.code)
+        return None
     except requests.Timeout:
         logger.warning("intent/route Ollama timeout(%ss)", INTENT_ROUTER_TIMEOUT_SEC)
         return None

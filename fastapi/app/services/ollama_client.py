@@ -17,6 +17,7 @@ from typing import Optional
 
 import requests
 
+import app.ai_gateway as gw
 from app.core.config import (
     OLLAMA_BASE_URL,
     OLLAMA_MODEL,
@@ -135,7 +136,17 @@ def ask_ollama(
         payload["think"] = think
 
     try:
-        resp = requests.post(url, json=payload, timeout=_timeout)
+        # AI Gateway(기본 off): GPU 슬롯 대기/공정성/backpressure. 거부는 기존 timeout/연결실패 문구로 매핑.
+        with gw.llm_slot(url=OLLAMA_BASE_URL, timeout=_timeout) as lease:
+            gw.normalize_ollama_payload(payload, url=OLLAMA_BASE_URL)
+            try:
+                resp = requests.post(url, json=payload, timeout=_timeout)
+            except requests.ConnectionError:
+                if lease:
+                    lease.backend_fail()
+                raise
+            if lease:
+                lease.backend_fail() if resp.status_code >= 500 else lease.backend_ok()
         resp.raise_for_status()
         data = resp.json()
         content = data.get("message", {}).get("content", "")
@@ -143,6 +154,11 @@ def ask_ollama(
             logger.warning("Ollama 응답이 비어 있습니다. model=%s", _model)
             return _empty_response_fallback(_model)
         return content.strip()
+    except gw.GatewayRejected as e:
+        logger.warning("Ollama 게이트웨이 거부 code=%s class=%s", e.code, getattr(e.wclass, "value", None))
+        if e.code == "CIRCUIT_OPEN":
+            return _connection_fallback(_model)
+        return _timeout_fallback(_timeout)
     except requests.ConnectionError:
         logger.warning("Ollama 서버 연결 실패. URL=%s", OLLAMA_BASE_URL)
         return _connection_fallback(_model)

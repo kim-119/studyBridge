@@ -59,6 +59,10 @@ def chat_sync(
     """
     if not is_enabled():
         return "[GPT 비활성화] OPENAI_API_KEY를 설정하면 GPT 기능이 활성화됩니다."
+    import app.ai_gateway as _gw
+    if not _gw.openai_allowed(max_tokens or 0):
+        # 일 토큰 예산/브레이커 차단 → 기존 오류 문자열 경로(호출부 fallback)로 보낸다.
+        return "[GPT 오류] BudgetExceeded: OpenAI 사용 한도 또는 장애 차단 상태입니다."
     try:
         client = get_sync_client()
         # 선택적 파라미터는 전달된 경우에만 추가 (OpenAI는 top_k 미지원이라 받지 않는다)
@@ -83,8 +87,10 @@ def chat_sync(
             max_tokens=max_tokens,
             **extra,
         )
+        _gw.record_openai_usage(model or OPENAI_MODEL, getattr(resp, "usage", None), ok=True)
         return resp.choices[0].message.content or ""
     except Exception as e:
+        _gw.record_openai_usage(model or OPENAI_MODEL, None, ok=False)
         logger.error("GPT 동기 호출 실패: %s", e)
         return f"[GPT 오류] {type(e).__name__}: {e}"
 
@@ -99,6 +105,9 @@ async def chat_async(
     """GPT 비동기 호출. API Key 미설정 시 안내 문자열 반환."""
     if not is_enabled():
         return "[GPT 비활성화] OPENAI_API_KEY를 설정하면 GPT 기능이 활성화됩니다."
+    import app.ai_gateway as _gw
+    if not _gw.openai_allowed(max_tokens or 0):
+        return "[GPT 오류] BudgetExceeded: OpenAI 사용 한도 또는 장애 차단 상태입니다."
     try:
         client = get_async_client()
         resp = await client.chat.completions.create(
@@ -110,8 +119,10 @@ async def chat_async(
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        _gw.record_openai_usage(model or OPENAI_MODEL, getattr(resp, "usage", None), ok=True)
         return resp.choices[0].message.content or ""
     except Exception as e:
+        _gw.record_openai_usage(model or OPENAI_MODEL, None, ok=False)
         logger.error("GPT 비동기 호출 실패: %s", e)
         return f"[GPT 오류] {type(e).__name__}: {e}"
 

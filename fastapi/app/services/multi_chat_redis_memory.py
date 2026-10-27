@@ -20,6 +20,8 @@ MAX_CONTEXT_CHARS = int(os.getenv("MULTI_CHAT_MEMORY_MAX_CONTEXT_CHARS", "3600")
 
 _redis = None
 _redis_tried = False
+_redis_retry_at = 0.0
+_RETRY_SECONDS = float(os.getenv("REDIS_RETRY_SECONDS", "30"))
 
 
 @dataclass
@@ -71,14 +73,16 @@ def _memory_key(scope: str, scope_id: str) -> str:
 
 
 async def _get_redis():
-    global _redis, _redis_tried
+    global _redis, _redis_tried, _redis_retry_at
 
     if not MEMORY_ENABLED:
         return None
     if _redis is not None:
         return _redis
-    if _redis_tried:
-        return _redis
+    # 실패 후 영구 비활성화하지 않고 REDIS_RETRY_SECONDS 뒤 다시 연결한다. 예전에는 기동 시 1회 실패하면
+    # 프로세스가 끝날 때까지 기억이 꺼졌다(2026-10-28: 터널 고장 20일 → 터널 복구 후에도 재시작 전까지 비활성).
+    if _redis_tried and time.monotonic() < _redis_retry_at:
+        return None
 
     _redis_tried = True
 
@@ -97,7 +101,8 @@ async def _get_redis():
         logger.info("multi-chat Redis memory connected url=%s", REDIS_URL)
         return _redis
     except Exception as e:
-        logger.warning("multi-chat Redis memory disabled: %s", type(e).__name__)
+        _redis_retry_at = time.monotonic() + _RETRY_SECONDS
+        logger.warning("multi-chat Redis memory unavailable (retry in %ss): %s", _RETRY_SECONDS, type(e).__name__)
         _redis = None
         return None
 

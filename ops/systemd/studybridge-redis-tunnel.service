@@ -6,6 +6,7 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
+# 2026-10-28: 키 경로를 studybridge2026.pem(9/26 교체로 삭제됨) → studybridge-2026b 로 수정. 다른 ai07 터널과 같은 키.
 User=ai07
 Restart=always
 RestartSec=5
@@ -16,7 +17,7 @@ ExecStart=/usr/bin/autossh -M 0 -N \
   -o ExitOnForwardFailure=yes \
   -o IdentitiesOnly=yes \
   -o StrictHostKeyChecking=accept-new \
-  -i /home/ai07/.ssh/studybridge2026.pem \
+  -i /home/ai07/.ssh/studybridge-2026b \
   -L 127.0.0.1:16379:127.0.0.1:6379 \
   ubuntu@43.202.211.123
 

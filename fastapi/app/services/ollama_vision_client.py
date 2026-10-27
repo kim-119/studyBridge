@@ -22,7 +22,9 @@ logger = logging.getLogger("studybridge.ollama_vision_client")
 
 
 def _base_url() -> str:
-    return os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+    # 시스템 Ollama(0.24.0)는 qwen3-vl 을 받을 수 없다(registry 412) → 운영에서는 PDF_VL_BASE_URL 로
+    # 비전 데몬(:11435, qwen3-vl:4b-instruct)을 지정한다. 미설정 시 기존 동작(OLLAMA_BASE_URL) 유지.
+    return (os.getenv("PDF_VL_BASE_URL") or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
 
 
 def _model() -> str:
@@ -61,6 +63,11 @@ def _default_max_retries() -> int:
         return 2
 
 
+# 게이트웨이가 비전 슬롯을 거부하면(대기 초과/포화/회로 열림) 잠시 동안 다음 페이지도 즉시 실패시킨다.
+# 정규화기는 페이지마다 예외를 잡고 다음 페이지로 가므로, 이게 없으면 페이지마다 대기 한도를 다시 기다린다.
+_GW_BACKOFF_UNTIL = 0.0
+
+
 def caption_page_image(png_bytes: bytes, page_number: int, *, max_retries: int | None = None) -> str:
     """Extract visible text/structure from a page image.
 
@@ -73,6 +80,10 @@ def caption_page_image(png_bytes: bytes, page_number: int, *, max_retries: int |
     treated as a retryable condition — not just HTTP exceptions. The final empty
     is returned as-is (the normalizer records it as ``failed`` and moves on).
     """
+    import app.ai_gateway as _gw
+    global _GW_BACKOFF_UNTIL
+    if _gw.enabled() and time.monotonic() < _GW_BACKOFF_UNTIL:
+        raise _gw.GatewayRejected("QUEUE_TIMEOUT", "vision backend busy (backoff)")
     image_b64 = base64.b64encode(png_bytes).decode("ascii")
     payload = {
         "model": _model(),
@@ -95,7 +106,15 @@ def caption_page_image(png_bytes: bytes, page_number: int, *, max_retries: int |
     for attempt in range(attempts):
         try:
             t0 = time.time()
-            resp = requests.post(url, json=payload, timeout=_timeout())
+            with _gw.llm_slot(url=url, timeout=_timeout()) as _lease:
+                try:
+                    resp = requests.post(url, json=payload, timeout=_timeout())
+                except requests.ConnectionError:
+                    if _lease:
+                        _lease.backend_fail()
+                    raise
+                if _lease:
+                    _lease.backend_fail() if resp.status_code >= 500 else _lease.backend_ok()
             resp.raise_for_status()
             data = resp.json()
             text = (data.get("response") or "").strip()
@@ -112,6 +131,10 @@ def caption_page_image(png_bytes: bytes, page_number: int, *, max_retries: int |
                 )
                 continue
             return text
+        except _gw.GatewayRejected:
+            # 대기열 포화/타임아웃은 재시도하지 않고(재시도가 대기열을 더 키운다) 다음 페이지도 잠시 건너뛴다.
+            _GW_BACKOFF_UNTIL = time.monotonic() + float(os.getenv("PDF_VL_GATEWAY_BACKOFF_S", "30"))
+            raise
         except Exception as e:  # noqa: BLE001 — retry transient failures
             last_exc = e
             logger.warning(

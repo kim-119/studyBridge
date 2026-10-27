@@ -185,3 +185,44 @@ try:
 except Exception as e:
     import logging
     logging.getLogger(__name__).warning("mindmap 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge 화면공유 비전 API (POST /api/ai/vision/analyze, GET /api/ai/vision/health)
+# VISION_API_ENABLED=false(기본)면 503 VISION_DISABLED 만 반환한다. 연동 계약: docs/vision/화면공유_비전API_연동계약.md
+try:
+    from app.vision.router import router as vision_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/vision/analyze" not in paths:
+        app.include_router(vision_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("vision 라우터 로드 실패 (계속 기동): %s", e)
+
+# StudyBridge AI Gateway — 로컬 GPU 추론 공통 스케줄러(가중 공정 큐/backpressure/GPU 상주 조정).
+# AI_GATEWAY_ENABLED=false(기본)면 상태 조회 라우트만 추가되고 추론 경로는 기존과 동일하다.
+try:
+    import app.ai_gateway as _ai_gw
+    from app.ai_gateway.routes import router as ai_gateway_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/gateway/status" not in paths:
+        app.include_router(ai_gateway_router)
+    if _ai_gw.enabled():
+        from app.ai_gateway.middleware import AIGatewayContextMiddleware
+        app.add_middleware(AIGatewayContextMiddleware)
+
+        @app.on_event("shutdown")
+        def _ai_gateway_drain() -> None:
+            # 대기 중인 요청을 SHUTTING_DOWN 으로 돌려보낸다(실행 중 요청은 끝까지 진행).
+            _ai_gw.get_scheduler().start_draining()
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("ai_gateway 로드 실패 (계속 기동): %s", e)
+
+# 출발지 네트워크 가드 — 반드시 마지막에 등록(가장 바깥 미들웨어 = 모든 처리보다 먼저 실행).
+# loopback/사설망(SSH 터널, Spring 컨테이너, ops 헬스체크)은 그대로 통과, 그 외 출발지는 Bearer AI_SERVER_API_KEY 필수.
+# 롤백: AI_NETWORK_GUARD=log(통과+경고) 또는 off. 실패 시에도 기동은 계속하되 오류를 남긴다.
+try:
+    from app.core.network_guard import NetworkGuardMiddleware
+    app.add_middleware(NetworkGuardMiddleware)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).error("network_guard 로드 실패 (계속 기동): %s", e)

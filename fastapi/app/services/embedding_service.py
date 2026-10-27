@@ -8,6 +8,8 @@ multilingual-e5 계열 모델은 입력 앞에 접두사가 필요하다.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
@@ -21,7 +23,9 @@ def _get_model() -> SentenceTransformer:
     """임베딩 모델을 로드하고 캐싱한다."""
     global _model
     if _model is None:
-        _model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        # EMBEDDING_DEVICE=cpu 면 GPU 를 쓰지 않는다(기본: 자동=cuda). 실측(2026-10-27, e5-base):
+        # GPU 상주 ~1.5GB / 쿼리 2.8ms, CPU 쿼리 12ms·패시지 32개 2.9s — VRAM 을 Ollama 두 모델에 양보할 때 사용.
+        _model = SentenceTransformer(EMBEDDING_MODEL_NAME, device=(os.getenv("EMBEDDING_DEVICE") or None))
     return _model
 
 

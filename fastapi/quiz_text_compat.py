@@ -265,11 +265,21 @@ def _call_quiz_llm(system: str, user: str, request_id: str) -> str:
                     "num_ctx": _shared_num_ctx(),
                 },
             }
-            resp = requests.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json=payload,
-                timeout=QUIZ_TIMEOUT_SECONDS,
-            )
+            import app.ai_gateway as _gw
+            with _gw.llm_slot(url=OLLAMA_BASE_URL, timeout=QUIZ_TIMEOUT_SECONDS) as _lease:
+                _gw.normalize_ollama_payload(payload, url=OLLAMA_BASE_URL)
+                try:
+                    resp = requests.post(
+                        f"{OLLAMA_BASE_URL}/api/chat",
+                        json=payload,
+                        timeout=QUIZ_TIMEOUT_SECONDS,
+                    )
+                except requests.ConnectionError:
+                    if _lease:
+                        _lease.backend_fail()
+                    raise
+                if _lease:
+                    _lease.backend_fail() if resp.status_code >= 500 else _lease.backend_ok()
             resp.raise_for_status()
             content = resp.json().get("message", {}).get("content", "") or ""
             if content.strip():

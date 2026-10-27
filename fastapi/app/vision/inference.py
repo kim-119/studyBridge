@@ -66,9 +66,25 @@ async def _ollama_chat(jpeg: bytes, question: str, s: VisionSettings) -> str:
     if s.keep_alive:
         body["keep_alive"] = s.keep_alive
     timeout = httpx.Timeout(s.inference_timeout_s + 5, connect=5.0)
+    import app.ai_gateway as gw
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(f"{s.ollama_base_url}/api/chat", json=body)
+        # AI Gateway(기본 off): VisionGate(그룹/중복/대기열) 통과 후 GPU 상주 조정 — qwen3:14b 와 동시 적재로
+        # 부분 CPU offload 가 생길 VRAM 이면 텍스트 쪽을 drain→언로드한 뒤 보낸다.
+        async with gw.async_llm_slot(url=s.ollama_base_url, timeout=s.queue_timeout_s) as lease:
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.post(f"{s.ollama_base_url}/api/chat", json=body)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                if lease:
+                    lease.backend_fail()
+                raise
+            if lease:
+                lease.backend_fail() if resp.status_code >= 500 else lease.backend_ok()
+    except gw.GatewayRejected as e:
+        code = {"QUEUE_FULL": "VISION_QUEUE_FULL", "USER_LIMIT": "VISION_QUEUE_FULL",
+                "QUEUE_TIMEOUT": "VISION_QUEUE_TIMEOUT",
+                "SHUTTING_DOWN": "VISION_SHUTTING_DOWN"}.get(e.code, "VISION_BACKEND_UNAVAILABLE")
+        raise vision_error(code, "AI 분석 대기열을 처리할 수 없습니다.", retry_after=e.retry_after) from None
     except (httpx.ConnectError, httpx.ConnectTimeout):
         raise vision_error("VISION_BACKEND_UNAVAILABLE", "추론 서버에 연결할 수 없습니다.", retry_after=10) from None
     except httpx.TimeoutException:
