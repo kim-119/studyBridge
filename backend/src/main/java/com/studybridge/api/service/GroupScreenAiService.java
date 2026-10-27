@@ -9,12 +9,15 @@ import com.studybridge.api.repository.GroupStudyMemberRepository;
 import com.studybridge.api.repository.UserRepository;
 import com.studybridge.api.service.VideoConnectionMetadata.Kind;
 import com.studybridge.api.service.VisionUpstreamClient.VisionCall;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -27,6 +30,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
@@ -75,6 +80,12 @@ public class GroupScreenAiService {
 
     /** userId:clientRequestId → 취소 신호. 같은 JVM 에서만 취소할 수 있다(운영 단일 인스턴스). */
     private final Map<String, Sinks.One<Boolean>> inflight = new ConcurrentHashMap<>();
+
+    /**
+     * 이벤트 루프에서 끝난 요청의 Redis 잠금 해제 전용. 공용 boundedElastic(ChatService JDBC 영속화 등)과 분리해 Redis 지연이 다른 AI 기능으로
+     * 번지지 않게 한다. 동시 해제 수는 진행 중인 비전 요청 수(전용 연결 풀 + 대기열)를 넘지 않는다.
+     */
+    private final Scheduler cleanupScheduler = Schedulers.newBoundedElastic(4, 1000, "screen-ai-cleanup", 60, true);
 
     public GroupScreenAiService(GroupVideoCallService videoCallService,
                                 OpenViduService openVidu,
@@ -203,7 +214,9 @@ public class GroupScreenAiService {
             throw new ScreenAiException(HttpStatus.TOO_MANY_REQUESTS, "SCREEN_AI_IN_PROGRESS",
                     "이전 화면 분석이 아직 진행 중입니다. 끝난 뒤 다시 질문해 주세요.", true, 3);
         }
+        AtomicBoolean lockReleased = new AtomicBoolean(false);
         Share share;
+        String sharerName;
         try {
             if (!guard.allow(AiRequestGuard.rateKey(FEATURE, userId), perUserPerMinute, Duration.ofMinutes(1))) {
                 throw new ScreenAiException(HttpStatus.TOO_MANY_REQUESTS, "SCREEN_AI_RATE_LIMITED",
@@ -214,8 +227,10 @@ public class GroupScreenAiService {
                         "이 스터디방의 화면 분석 요청이 많습니다. 잠시 후 다시 시도해 주세요.", true, 30);
             }
             share = authorize(userId, groupId, req.connectionId(), req.streamId());
+            // 공유자 이름(RDS)은 여기(요청 스레드)서 미리 읽는다 — ai07 응답 콜백(reactor-netty 이벤트 루프)에서 DB 를 부르지 않는다.
+            sharerName = displayName(share.sharerUserId());
         } catch (RuntimeException e) {
-            guard.release(lock);
+            releaseLockOnce(lock, lockReleased, null);
             throw e;
         }
 
@@ -239,7 +254,7 @@ public class GroupScreenAiService {
             body.put("streamId", share.streamId());
             Map<String, Object> sharer = new LinkedHashMap<>();
             sharer.put("userId", share.sharerUserId());
-            sharer.put("name", displayName(share.sharerUserId()));
+            sharer.put("name", sharerName);
             sharer.put("isMine", share.sharerUserId() == userId);
             body.put("sharer", sharer);
             Map<String, Object> img = new LinkedHashMap<>();
@@ -261,11 +276,38 @@ public class GroupScreenAiService {
                 .doOnSuccess(b -> outcome.set("OK"))
                 .doOnError(e -> outcome.set(e instanceof ScreenAiException se ? se.getCode() : e.getClass().getSimpleName()))
                 .doFinally(sig -> {
-                    guard.release(lock);
+                    // 취소 핸들을 먼저 지운다 — 잠금이 풀린 뒤 같은 사용자의 다음 요청이 옛 핸들과 섞이지 않게.
                     if (cancelKey != null) inflight.remove(cancelKey, cancel);
                     log.info("[SCREEN-AI] analyze end requestId={} groupId={} askerId={} outcome={} signal={} latencyMs={}",
                             requestId, groupId, userId, outcome.get(), sig, clock.millis() - startedAt);
+                    releaseLockOnce(lock, lockReleased, requestId);
                 });
+    }
+
+    /**
+     * 요청당 잠금을 정확히 한 번 해제한다(토큰 일치 시에만 지우는 {@link AiRequestGuard#release}).
+     *
+     * <p>ai07 응답·오류·응답 타임아웃은 reactor-netty 이벤트 루프나 Reactor 타이머(parallel) 스레드에서 끝난다. 그 스레드에서 Redis 를 부르면
+     * Redis 지연(Lettuce 명령 타임아웃 60s) 동안 같은 루프의 다른 AI 호출(학습메이트 SSE·그룹 AI 등)이 멈추므로 전용 스케줄러로 넘긴다.
+     * 요청 스레드(Tomcat — 검증 실패, DELETE 취소)에서는 지금처럼 바로 해제해, 취소 응답 시점에 잠금이 이미 풀려 있게 한다.</p>
+     */
+    private void releaseLockOnce(AiRequestGuard.Lock lock, AtomicBoolean released, String requestId) {
+        if (!released.compareAndSet(false, true)) return;
+        if (!Schedulers.isInNonBlockingThread()) {
+            guard.release(lock);
+            return;
+        }
+        try {
+            cleanupScheduler.schedule(() -> guard.release(lock));
+        } catch (RejectedExecutionException e) {
+            // 정리 대기열이 가득 찼거나 종료 중 — 이벤트 루프에서 Redis 를 부르지 않고 잠금 TTL(응답 제한 + 30s) 만료에 맡긴다.
+            log.warn("[SCREEN-AI] lock release deferred to TTL requestId={} ({})", requestId, e.getClass().getSimpleName());
+        }
+    }
+
+    @PreDestroy
+    void shutdown() {
+        cleanupScheduler.dispose();
     }
 
     /** 진행 중인 내 분석 요청을 취소한다(멱등). ai07 연결을 끊어 추론도 멈춘다. */

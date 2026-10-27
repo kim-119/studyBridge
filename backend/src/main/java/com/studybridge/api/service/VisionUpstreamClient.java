@@ -194,6 +194,18 @@ public class VisionUpstreamClient {
     static ScreenAiException mapTransportError(String requestId, Throwable e) {
         Throwable root = e;
         while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+        // 비전 전용 연결 풀(WebClientConfig) 포화 — ai07 에 보내기 전 단계. 획득 타임아웃도 TimeoutException 이라 응답 타임아웃보다 먼저 본다.
+        String rootType = root.getClass().getSimpleName();
+        if ("PoolAcquirePendingLimitException".equals(rootType)) {
+            log.warn("[SCREEN-AI] vision pool queue full requestId={}", requestId);
+            return new ScreenAiException(HttpStatus.TOO_MANY_REQUESTS, "SCREEN_AI_BUSY",
+                    "지금 AI 화면 분석 요청이 많습니다. 잠시 후 다시 시도해 주세요.", true, 5);
+        }
+        if ("PoolAcquireTimeoutException".equals(rootType)) {
+            log.warn("[SCREEN-AI] vision pool acquire timeout requestId={}", requestId);
+            return new ScreenAiException(HttpStatus.SERVICE_UNAVAILABLE, "SCREEN_AI_OVERLOADED",
+                    "AI 서버가 혼잡해 분석을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.", true, 10);
+        }
         if (e instanceof TimeoutException || root instanceof TimeoutException || root instanceof ReadTimeoutException) {
             log.warn("[SCREEN-AI] upstream timeout requestId={}", requestId);
             return new ScreenAiException(HttpStatus.GATEWAY_TIMEOUT, "SCREEN_AI_TIMEOUT",

@@ -128,6 +128,13 @@ ai:
     rate-limit:
       per-user-per-minute: ${AI_VISION_RATE_PER_USER_PER_MINUTE:6}
       per-group-per-minute: ${AI_VISION_RATE_PER_GROUP_PER_MINUTE:30}
+    # 비전 전용 HTTP 연결 풀(다른 AI 호출의 reactor-netty 전역 풀과 분리). 산정 근거는 WebClientConfig 주석.
+    #  acquire-timeout-seconds(연결 획득 대기) 와 timeout-seconds(AI 응답) 는 별개다.
+    pool:
+      max-connections: ${AI_VISION_POOL_MAX_CONNECTIONS:2}
+      pending-acquire-max: ${AI_VISION_POOL_PENDING_ACQUIRE_MAX:8}
+      acquire-timeout-seconds: ${AI_VISION_POOL_ACQUIRE_TIMEOUT_SECONDS:45}
+      max-idle-seconds: ${AI_VISION_POOL_MAX_IDLE_SECONDS:4}
 
 cloud:
   aws:

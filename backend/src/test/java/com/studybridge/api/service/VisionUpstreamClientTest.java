@@ -19,6 +19,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
 
 /**
  * ai07 Vision 클라이언트: 실제 HTTP(로컬 서버)로 요청 형식·인증·공정성 헤더와 오류/Retry-After 매핑을 검증한다.
@@ -159,6 +160,30 @@ class VisionUpstreamClientTest {
         ScreenAiException ex = assertThrows(ScreenAiException.class, () -> c.analyze(call()).block());
         assertEquals("SCREEN_AI_UNAVAILABLE", ex.getCode());
         assertTrue(ex.isRetryable());
+    }
+
+    @Test
+    void poolSaturation_isDistinguishedFromResponseTimeout() {
+        org.springframework.http.HttpHeaders none = new org.springframework.http.HttpHeaders();
+        java.net.URI uri = java.net.URI.create("http://ai07/api/ai/vision/analyze");
+        // WebClient 는 연결 획득 실패를 WebClientRequestException 으로 감싼다
+        ScreenAiException full = VisionUpstreamClient.mapTransportError("r", new WebClientRequestException(
+                new reactor.netty.internal.shaded.reactor.pool.PoolAcquirePendingLimitException(8), org.springframework.http.HttpMethod.POST, uri, none));
+        assertEquals("SCREEN_AI_BUSY", full.getCode());
+        assertEquals(429, full.getStatus().value());
+        assertEquals(5, full.getRetryAfterSeconds());
+
+        ScreenAiException waited = VisionUpstreamClient.mapTransportError("r", new WebClientRequestException(
+                new reactor.netty.internal.shaded.reactor.pool.PoolAcquireTimeoutException(java.time.Duration.ofSeconds(45)),
+                org.springframework.http.HttpMethod.POST, uri, none));
+        assertEquals("SCREEN_AI_OVERLOADED", waited.getCode());
+        assertEquals(503, waited.getStatus().value());
+        assertTrue(waited.isRetryable());
+
+        // ai07 응답 타임아웃(전체 상한·읽기 타임아웃)은 그대로 504 SCREEN_AI_TIMEOUT
+        assertEquals("SCREEN_AI_TIMEOUT", VisionUpstreamClient.mapTransportError("r", new java.util.concurrent.TimeoutException()).getCode());
+        assertEquals(504, VisionUpstreamClient.mapTransportError("r", new WebClientRequestException(
+                io.netty.handler.timeout.ReadTimeoutException.INSTANCE, org.springframework.http.HttpMethod.POST, uri, none)).getStatus().value());
     }
 
     @Test

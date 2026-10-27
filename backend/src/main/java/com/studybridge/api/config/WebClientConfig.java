@@ -15,6 +15,7 @@ import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.netty.http.client.HttpClient;
+import reactor.netty.resources.ConnectionProvider;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -123,22 +124,56 @@ public class WebClientConfig {
     @Value("${ai.vision.timeout-seconds:260}")
     private int visionTimeoutSeconds;
 
-    /**
-     * ai07 Vision 전용 WebClient = PRIMARY(ai07 터널) 고정. secondary(EC2 :8000)는 키가 다르고 비전 데몬이 없어 failover 하지 않는다.
-     * 응답은 JSON 한 건(답변 최대 6000자)이라 코덱 버퍼는 1MB 면 충분하다.
-     */
-    @Bean
-    public WebClient visionWebClient(WebClient.Builder builder) {
-        int timeout = Math.max(30, visionTimeoutSeconds);
-        HttpClient httpClient = HttpClient.create()
+    // 화면공유 AI 전용 연결 풀(ai.vision.pool.*). 다른 클라이언트는 HttpClient.create() = reactor-netty 전역 풀(주소당 16연결)을
+    //  ai07 :18000 에 함께 쓰므로, 비전이 그 풀을 점유하지 않도록 따로 둔다.
+    //  max-connections 2 = ai07 GPU 동시 추론 1(VISION_MAX_CONCURRENCY·비전 Ollama NUM_PARALLEL) + 다음 1건 대기. 그룹당 한도(2)도 같다.
+    //  pending-acquire-max 8 = ai07 VISION_MAX_QUEUE 와 같은 대기 규모. 넘치면 즉시 429(SCREEN_AI_BUSY).
+    //  acquire-timeout 45s = 연결 획득(대기열) 제한. 응답 제한(timeout-seconds)과 별개이며, 45 + 앞선 1건 90 + GPU 슬롯 30 + 추론 90 < 260.
+    //  max-idle 4s = ai07 uvicorn keep-alive(기본 5s)보다 먼저 유휴 연결을 버려, 서버가 닫는 중인 연결에 요청을 싣지 않는다.
+    @Value("${ai.vision.pool.max-connections:2}")
+    private int visionMaxConnections;
+    @Value("${ai.vision.pool.pending-acquire-max:8}")
+    private int visionPendingAcquireMax;
+    @Value("${ai.vision.pool.acquire-timeout-seconds:45}")
+    private int visionAcquireTimeoutSeconds;
+    @Value("${ai.vision.pool.max-idle-seconds:4}")
+    private int visionMaxIdleSeconds;
+
+    @Bean(destroyMethod = "dispose")
+    public ConnectionProvider visionConnectionProvider() {
+        return visionConnectionProviderBuilder(visionMaxConnections, visionPendingAcquireMax,
+                Duration.ofSeconds(Math.max(1, visionAcquireTimeoutSeconds)), Duration.ofSeconds(Math.max(1, visionMaxIdleSeconds)))
+                .build();
+    }
+
+    static ConnectionProvider.Builder visionConnectionProviderBuilder(int maxConnections, int pendingAcquireMax,
+                                                                      Duration acquireTimeout, Duration maxIdleTime) {
+        return ConnectionProvider.builder("screen-ai-vision")
+                .maxConnections(Math.max(1, maxConnections))
+                .pendingAcquireMaxCount(Math.max(1, pendingAcquireMax))
+                .pendingAcquireTimeout(acquireTimeout)
+                .maxIdleTime(maxIdleTime);
+    }
+
+    static HttpClient visionHttpClient(ConnectionProvider provider, int timeoutSeconds) {
+        int timeout = Math.max(30, timeoutSeconds);
+        return HttpClient.create(provider)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, CONNECT_TIMEOUT_MS)
                 .responseTimeout(Duration.ofSeconds(timeout))
                 .doOnConnected(conn -> conn
                         .addHandlerLast(new ReadTimeoutHandler(timeout, TimeUnit.SECONDS))
                         .addHandlerLast(new WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)));
+    }
+
+    /**
+     * ai07 Vision 전용 WebClient = PRIMARY(ai07 터널) 고정. secondary(EC2 :8000)는 키가 다르고 비전 데몬이 없어 failover 하지 않는다.
+     * 응답은 JSON 한 건(답변 최대 6000자)이라 코덱 버퍼는 1MB 면 충분하다.
+     */
+    @Bean
+    public WebClient visionWebClient(WebClient.Builder builder, ConnectionProvider visionConnectionProvider) {
         return builder.clone()
                 .baseUrl(fastApiBaseUrl)
-                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .clientConnector(new ReactorClientHttpConnector(visionHttpClient(visionConnectionProvider, visionTimeoutSeconds)))
                 .exchangeStrategies(ExchangeStrategies.builder()
                         .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(1024 * 1024))
                         .build())
