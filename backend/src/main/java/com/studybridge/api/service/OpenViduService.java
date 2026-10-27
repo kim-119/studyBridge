@@ -12,6 +12,7 @@ import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import reactor.netty.http.client.HttpClient;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -29,7 +30,8 @@ public class OpenViduService {
 
     public OpenViduService(
             @Value("${openvidu.url:https://localhost:4443}") String openviduUrl,
-            @Value("${openvidu.secret:MY_SECRET}") String openviduSecret) {
+            @Value("${openvidu.secret:MY_SECRET}") String openviduSecret,
+            @Value("${openvidu.http.response-timeout-ms:10000}") long responseTimeoutMs) {
 
         SslContext sslContext;
         try {
@@ -40,7 +42,9 @@ public class OpenViduService {
             throw new RuntimeException("Failed to create SSL context for OpenVidu", e);
         }
 
-        HttpClient httpClient = HttpClient.create().secure(t -> t.sslContext(sslContext));
+        // 응답 상한: 화면공유 승인이 방 잠금 안에서 OpenVidu 를 호출하므로 멈춘 호출이 잠금을 무한정 쥐지 않게 한다.
+        HttpClient httpClient = HttpClient.create().secure(t -> t.sslContext(sslContext))
+                .responseTimeout(Duration.ofMillis(Math.max(1000, responseTimeoutMs)));
 
         this.webClient = WebClient.builder()
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
@@ -158,6 +162,58 @@ public class OpenViduService {
         } catch (Exception e) {
             log.error("Failed to get OpenVidu connection. sessionId={} connectionId={} Error: {}", sessionId, connectionId, e.toString());
             throw new RuntimeException("OpenVidu 연결 조회에 실패했습니다.", e);
+        }
+    }
+
+    /**
+     * 모든 세션(pending Connection 포함). 화면공유 주기 정리가 세션마다 따로 조회하지 않도록 한 번에 읽는다.
+     * 반환: sessionId → connections.content
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, List<Map<String, Object>>> listSessionConnections() {
+        try {
+            Map<String, Object> body = webClient.get()
+                    .uri(uri -> uri.path("/openvidu/api/sessions").queryParam("pendingConnections", true).build())
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+            Map<String, List<Map<String, Object>>> result = new HashMap<>();
+            if (body != null && body.get("content") instanceof List<?> sessions) {
+                for (Object o : sessions) {
+                    if (!(o instanceof Map<?, ?> session) || !(session.get("sessionId") instanceof String sid)) continue;
+                    List<Map<String, Object>> conns = new ArrayList<>();
+                    if (session.get("connections") instanceof Map<?, ?> cm && cm.get("content") instanceof List<?> list) {
+                        for (Object c : list) {
+                            if (c instanceof Map<?, ?> m) conns.add((Map<String, Object>) m);
+                        }
+                    }
+                    result.put(sid, conns);
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            log.error("Failed to list OpenVidu sessions. Error: {}", e.toString());
+            throw new RuntimeException("OpenVidu 세션 목록 조회에 실패했습니다.", e);
+        }
+    }
+
+    /**
+     * 스트림 강제 게시 해제(Connection 은 유지). 호출자는 정책 위반으로 판정한 스트림에만 사용해야 한다. 이미 없으면 false.
+     */
+    public boolean forceUnpublish(String sessionId, String streamId) {
+        try {
+            webClient.delete()
+                    .uri("/openvidu/api/sessions/{sessionId}/stream/{streamId}", sessionId, streamId)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .block();
+            log.info("OpenVidu stream force-unpublished. sessionId={} streamId={}", sessionId, streamId);
+            return true;
+        } catch (WebClientResponseException.NotFound | WebClientResponseException.BadRequest missing) {
+            return false;
+        } catch (Exception e) {
+            log.error("Failed to force-unpublish OpenVidu stream. sessionId={} streamId={} Error: {}", sessionId, streamId, e.toString());
+            throw new RuntimeException("OpenVidu 스트림 게시 해제에 실패했습니다.", e);
         }
     }
 

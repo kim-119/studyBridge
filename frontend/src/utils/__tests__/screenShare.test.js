@@ -1,7 +1,7 @@
 // node --test frontend/src/utils/__tests__   (vitest/jest 미도입 — Node 내장 테스트 러너 사용)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, resolveShareMode, SCREEN_SHARE_MODES, lockScreenResolution, findVideoSender, SCREEN_DEGRADATION_PREFERENCE } from '../screenShare.js';
+import { buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, resolveShareMode, SCREEN_SHARE_MODES, lockScreenResolution, findVideoSender, SCREEN_DEGRADATION_PREFERENCE, SCREEN_SHARE_LIMIT, screenShareLimitMessage, screenShareAvailability } from '../screenShare.js';
 
 test('선택창 힌트: 자기 탭 제외 + 소리 요청 시에만 systemAudio', () => {
   assert.deepEqual(buildDisplayMediaHints({ withAudio: false }), { selfBrowserSurface: 'exclude', surfaceSwitching: 'include', monitorTypeSurfaces: 'include' });
@@ -92,4 +92,19 @@ test('findVideoSender: 화면공유 PC 의 영상 송신기만 고른다', () =>
   assert.equal(findVideoSender({ getSenders: () => [a, { track: null }] }), null);
   assert.equal(findVideoSender(null), null);
   assert.equal(findVideoSender({ getSenders: () => { throw new Error('closed'); } }), null);
+});
+
+test('화면공유 슬롯(안내용): 다른 사람 공유만 세고 2개면 가득 참, 서버 limit 우선', () => {
+  const scr = (cid, userId) => [cid, { connectionId: cid, userId, kind: 'SCREEN' }];
+  assert.equal(SCREEN_SHARE_LIMIT, 2);
+  assert.deepEqual(screenShareAvailability([], 7), { used: 0, limit: 2, full: false });
+  assert.deepEqual(screenShareAvailability([scr('con_a', 1)], 7), { used: 1, limit: 2, full: false });
+  assert.deepEqual(screenShareAvailability([scr('con_a', 1), scr('con_b', 2)], 7), { used: 2, limit: 2, full: true });
+  // 내 공유(이 탭·다른 기기)는 세지 않는다 — 사용자당 1개는 서버가 따로 판정
+  assert.deepEqual(screenShareAvailability([scr('con_a', 1), scr('con_me', 7)], '7'), { used: 1, limit: 2, full: false });
+  // 서버가 알려 준 한도 우선, 이상한 값이면 기본값
+  assert.equal(screenShareAvailability([scr('con_a', 1), scr('con_b', 2)], 7, 3).full, false);
+  assert.equal(screenShareAvailability([scr('con_a', 1), scr('con_b', 2)], 7, 0).limit, 2);
+  assert.equal(screenShareAvailability(undefined, 7).used, 0);
+  assert.equal(screenShareLimitMessage(), '현재 화면공유 가능 인원(최대 2명)이 모두 사용 중입니다.');
 });

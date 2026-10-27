@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -19,13 +20,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 그룹스터디 화상통화 Connection 발급/조회.
  *
  * <p>모델: Group Member(DB JOINED) ≠ Active User(OpenVidu 에 실제 접속한 고유 userId) ≠ Connection(기기·탭마다 1개 PRIMARY).
  * 참여 인원은 active PRIMARY Connection 의 고유 userId 수다. 신원은 {@link VideoConnectionMetadata}(serverData) 로만 판단한다.</p>
+ *
+ * <p>화면공유는 방마다 동시에 {@code openvidu.screen-share.max-per-group}(기본 2)명까지다. 참여 인원(카메라·마이크) 제한과는 별개다.
+ * 슬롯 판정은 {@link ScreenSharePolicy}, 동시 요청 직렬화는 {@link ScreenShareAdmissionLock} 이 맡는다.</p>
  */
 @Service
 @Slf4j
@@ -38,19 +41,29 @@ public class GroupVideoCallService {
     private final int viewerMaxDownloadKbps;
     private final int screenMaxUploadKbps;
     private final int screenMinUploadKbps;
-    /** 같은 사용자의 화면공유 토큰 동시 발급 직렬화(단일 Spring 인스턴스 기준). */
-    private final Map<String, Object> screenLocks = new ConcurrentHashMap<>();
+    private final ScreenShareAdmissionLock admissionLock;
+    private final Clock clock;
+    private final int maxScreenSharesPerGroup;
+    private final long screenPendingTtlMs;
 
     public GroupVideoCallService(OpenViduService openVidu,
                                  GroupStudyMemberRepository memberRepository,
                                  ObjectMapper objectMapper,
+                                 ScreenShareAdmissionLock admissionLock,
+                                 Clock clock,
                                  @Value("${openvidu.session-prefix:group_study_}") String sessionPrefix,
                                  @Value("${openvidu.bandwidth.viewer-max-download-kbps:2500}") int viewerMaxDownloadKbps,
                                  @Value("${openvidu.bandwidth.screen-max-upload-kbps:2500}") int screenMaxUploadKbps,
-                                 @Value("${openvidu.bandwidth.screen-min-upload-kbps:1500}") int screenMinUploadKbps) {
+                                 @Value("${openvidu.bandwidth.screen-min-upload-kbps:1500}") int screenMinUploadKbps,
+                                 @Value("${openvidu.screen-share.max-per-group:2}") int maxScreenSharesPerGroup,
+                                 @Value("${openvidu.screen-share.pending-ttl-ms:30000}") long screenPendingTtlMs) {
         this.openVidu = openVidu;
         this.memberRepository = memberRepository;
         this.objectMapper = objectMapper;
+        this.admissionLock = admissionLock;
+        this.clock = clock;
+        this.maxScreenSharesPerGroup = Math.max(1, maxScreenSharesPerGroup);
+        this.screenPendingTtlMs = Math.max(1000, screenPendingTtlMs);
         this.sessionPrefix = sessionPrefix;
         this.viewerMaxDownloadKbps = viewerMaxDownloadKbps;
         this.screenMaxUploadKbps = screenMaxUploadKbps;
@@ -60,6 +73,21 @@ public class GroupVideoCallService {
 
     public String sessionIdFor(long groupId) {
         return sessionPrefix + groupId;
+    }
+
+    /** 이 서비스가 관리하는 세션이면 groupId, 아니면 null(다른 접두어의 세션은 건드리지 않는다). */
+    public Long groupIdOf(String sessionId) {
+        if (sessionId == null || !sessionId.startsWith(sessionPrefix)) return null;
+        try {
+            long id = Long.parseLong(sessionId.substring(sessionPrefix.length()));
+            return id > 0 ? id : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    public int maxScreenSharesPerGroup() {
+        return maxScreenSharesPerGroup;
     }
 
     private void requireJoinedMember(long userId, long groupId) {
@@ -129,8 +157,13 @@ public class GroupVideoCallService {
      * 화면공유(SCREEN) 전용 Connection 토큰. OpenVidu 2.x 는 Connection 당 Publisher 1개라 카메라·마이크(PRIMARY)를 유지한 채
      * 화면을 보내려면 별도 Connection 이 필요하다. serverData.ownerConnectionId 로 같은 사용자에게 귀속돼 인원에 더해지지 않는다.
      *
-     * <p>검증: JOINED 멤버 → primaryConnectionId 가 이 세션의 active Connection 이고 serverData(userId=나, kind=PRIMARY) →
-     * 사용자당 active 화면공유 1개. 기존 SCREEN 중 아직 안 쓴(pending) 토큰과 소유 PRIMARY 가 사라진(orphan) 연결은 정리한다.</p>
+     * <p>검증: JOINED 멤버 → primaryConnectionId 가 이 세션의 active Connection 이고 serverData(userId=나, kind=PRIMARY).
+     * 그다음 방 단위 임계구역({@link ScreenShareAdmissionLock}) 안에서 OpenVidu 의 실제 SCREEN Connection(pending 포함)을 다시 읽어
+     * 사용자당 1개 · 방당 {@code maxScreenSharesPerGroup} 개를 판정하고, 통과할 때만 Connection 을 만든다(조회-판정-생성 원자화).
+     * 발급된 토큰은 접속 전까지 pending 으로 슬롯을 예약하고, pendingTtl 안에 접속하지 않으면 예약으로 보지 않는다.</p>
+     *
+     * <p>정리: 만료된 예약과 소유 PRIMARY 가 사라진(orphan) 화면공유는 누구 것이든 승인 전에 닫는다. 같은 탭(같은 PRIMARY)의 이전 예약은
+     * 재시도로 보고 닫고, 같은 사용자의 다른 탭·기기 예약은 진행 중으로 보고 거절한다(그 기기의 시작을 끊지 않는다).</p>
      */
     public Map<String, Object> issueScreenToken(long userId, long groupId, String primaryConnectionId,
                                                 String clientInstanceId, String deviceType) {
@@ -139,8 +172,7 @@ public class GroupVideoCallService {
             throw new VideoCallException(HttpStatus.BAD_REQUEST, "INVALID_CONNECTION_ID", "primaryConnectionId 형식이 올바르지 않습니다.");
         }
         String sessionId = sessionIdFor(groupId);
-        Object lock = screenLocks.computeIfAbsent(groupId + ":" + userId, k -> new Object());
-        synchronized (lock) {
+        return admissionLock.runExclusive(groupId, () -> {
             Map<String, Object> primary = openVidu.getConnection(sessionId, primaryConnectionId)
                     .filter(c -> "active".equals(c.get("status")))
                     .orElseThrow(() -> new VideoCallException(HttpStatus.CONFLICT, "PRIMARY_NOT_ACTIVE",
@@ -152,41 +184,51 @@ public class GroupVideoCallService {
                 throw new VideoCallException(HttpStatus.FORBIDDEN, "CONNECTION_OWNER_MISMATCH", "본인의 화상 연결에만 화면공유를 연결할 수 있습니다.");
             }
 
-            List<Map<String, Object>> all = openVidu.listConnections(sessionId, true);
-            Set<String> activeIds = new LinkedHashSet<>();
-            for (Map<String, Object> c : all) {
-                if ("active".equals(c.get("status")) && c.get("connectionId") instanceof String id) activeIds.add(id);
-            }
-            for (Map<String, Object> c : all) {
-                VideoConnectionMetadata m = VideoConnectionMetadata.fromRest(objectMapper, c.get("serverData"), c.get("clientData"));
-                if (!m.serverVerified() || m.kind() != Kind.SCREEN || m.userId() == null || m.userId() != userId) continue;
-                String cid = (String) c.get("connectionId");
-                if (!"active".equals(c.get("status"))) {
-                    openVidu.deleteConnection(sessionId, cid); // 발급만 되고 접속하지 않은 이전 화면공유 토큰
-                    log.info("[VIDEO] stale pending screen token revoked userId={} groupId={} connectionId={}", userId, groupId, cid);
-                } else if (m.ownerConnectionId() != null && activeIds.contains(m.ownerConnectionId())) {
+            ScreenSharePolicy.Snapshot snap = ScreenSharePolicy.inspect(objectMapper,
+                    openVidu.listConnections(sessionId, true), clock.millis(), screenPendingTtlMs);
+            int occupiedByOthers = 0;
+            for (ScreenSharePolicy.ScreenSlot slot : snap.screens()) {
+                boolean mine = slot.userId() != null && slot.userId() == userId;
+                if (!slot.occupying()) {
+                    closeStaleScreen(sessionId, groupId, slot); // 만료된 예약·orphan 은 누구 것이든 슬롯을 돌려준다
+                } else if (!mine) {
+                    occupiedByOthers++;
+                } else if (slot.state() == ScreenSharePolicy.SlotState.ACTIVE) {
                     Map<String, Object> details = new LinkedHashMap<>();
-                    details.put("connectionId", cid);
-                    details.put("ownerConnectionId", m.ownerConnectionId());
+                    details.put("connectionId", slot.connectionId());
+                    details.put("ownerConnectionId", slot.ownerConnectionId());
                     throw new VideoCallException(HttpStatus.CONFLICT, "SCREEN_ALREADY_ACTIVE",
-                            m.ownerConnectionId().equals(primaryConnectionId)
+                            primaryConnectionId.equals(slot.ownerConnectionId())
                                     ? "이미 화면을 공유하고 있습니다."
                                     : "다른 기기에서 화면을 공유하고 있습니다. 그 기기에서 공유를 끝낸 뒤 다시 시도해주세요.",
                             details);
+                } else if (primaryConnectionId.equals(slot.ownerConnectionId())) {
+                    // 같은 탭의 이전 시작 시도가 접속 전에 끝났다(클라이언트는 탭당 한 번만 시작한다) → 재시도로 보고 예약을 넘겨받는다.
+                    openVidu.deleteConnection(sessionId, slot.connectionId());
+                    log.info("[VIDEO] previous pending screen token replaced userId={} groupId={} connectionId={}", userId, groupId, slot.connectionId());
                 } else {
-                    openVidu.deleteConnection(sessionId, cid); // 소유 PRIMARY 가 사라진 화면공유(새로고침·크래시 잔여)
-                    log.info("[VIDEO] orphan screen connection closed userId={} groupId={} connectionId={} owner={}",
-                            userId, groupId, cid, m.ownerConnectionId());
+                    throw new VideoCallException(HttpStatus.CONFLICT, "SCREEN_START_IN_PROGRESS",
+                            "다른 기기(탭)에서 화면공유를 시작하고 있습니다. 잠시 후 다시 시도해주세요.");
                 }
+            }
+            if (occupiedByOthers >= maxScreenSharesPerGroup) {
+                log.info("[VIDEO] screen share limit reached userId={} groupId={} occupied={} limit={}",
+                        userId, groupId, occupiedByOthers, maxScreenSharesPerGroup);
+                Map<String, Object> details = new LinkedHashMap<>();
+                details.put("limit", maxScreenSharesPerGroup);
+                details.put("activeCount", occupiedByOthers);
+                throw new VideoCallException(HttpStatus.CONFLICT, "SCREEN_SHARE_LIMIT_REACHED",
+                        screenLimitMessage(), details);
             }
 
             String instanceId = VideoConnectionMetadata.sanitizeInstanceId(clientInstanceId);
             String device = VideoConnectionMetadata.sanitizeDeviceType(deviceType);
             String serverData = VideoConnectionMetadata.toServerData(objectMapper, groupId, userId, Kind.SCREEN,
-                    primaryConnectionId, instanceId, device, System.currentTimeMillis());
+                    primaryConnectionId, instanceId, device, clock.millis());
             ConnectionGrant grant = openVidu.createConnection(sessionId, serverData, "PUBLISHER", screenKurentoOptions());
-            log.info("[VIDEO] screen token issued userId={} groupId={} connectionId={} owner={} maxSendKbps={} minSendKbps={}",
-                    userId, groupId, grant.connectionId(), primaryConnectionId, screenMaxUploadKbps, screenMinUploadKbps);
+            log.info("[VIDEO] screen token issued userId={} groupId={} connectionId={} owner={} slot={}/{} maxSendKbps={} minSendKbps={}",
+                    userId, groupId, grant.connectionId(), primaryConnectionId, occupiedByOthers + 1, maxScreenSharesPerGroup,
+                    screenMaxUploadKbps, screenMinUploadKbps);
 
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("token", grant.token());
@@ -195,9 +237,72 @@ public class GroupVideoCallService {
             body.put("kind", Kind.SCREEN.name());
             body.put("ownerConnectionId", primaryConnectionId);
             body.put("maxSendKbps", screenMaxUploadKbps);
+            body.put("screenShareLimit", maxScreenSharesPerGroup);
             body.put("contractVersion", VideoConnectionMetadata.VERSION);
             return body;
+        });
+    }
+
+    private String screenLimitMessage() {
+        return "현재 화면공유 가능 인원(최대 " + maxScreenSharesPerGroup + "명)이 모두 사용 중입니다.";
+    }
+
+    private void closeStaleScreen(String sessionId, long groupId, ScreenSharePolicy.ScreenSlot slot) {
+        boolean closed = openVidu.deleteConnection(sessionId, slot.connectionId());
+        log.info("[VIDEO] stale screen slot released groupId={} userId={} connectionId={} state={} owner={} closed={}",
+                groupId, slot.userId(), slot.connectionId(), slot.state(), slot.ownerConnectionId(), closed);
+    }
+
+    /** 정리할 것이 있는 세션인지(전체 세션 목록으로 먼저 거른 뒤 해당 방만 잠금을 잡는다). */
+    public boolean needsScreenEnforcement(List<Map<String, Object>> connections) {
+        ScreenSharePolicy.Snapshot snap = ScreenSharePolicy.inspect(objectMapper, connections, clock.millis(), screenPendingTtlMs);
+        return !snap.stale().isEmpty() || !snap.overLimit(maxScreenSharesPerGroup).isEmpty() || !snap.screenStreamsOnPrimary().isEmpty();
+    }
+
+    /** 주기 정리 결과(로그·테스트용). */
+    public record ScreenEnforcement(int staleClosed, int overLimitClosed, int bypassUnpublished) {
+        public boolean changed() {
+            return staleClosed + overLimitClosed + bypassUnpublished > 0;
         }
+    }
+
+    /**
+     * 승인 경로 밖에서 생긴 상태를 OpenVidu 쪽에서 바로잡는다({@link ScreenSharePolicyEnforcer} 가 주기적으로 호출).
+     * <ul>
+     *   <li>만료된 예약·orphan 화면공유 → Connection 종료(유령 슬롯 반환)</li>
+     *   <li>한도 초과 점유(배포 이전 발급분·다중 인스턴스 이상) → 늦게 들어온 것부터 Connection 종료</li>
+     *   <li>PRIMARY(카메라·마이크) Connection 의 SCREEN 타입 스트림(승인 우회 게시) → 그 스트림만 강제 게시 해제</li>
+     * </ul>
+     * 승인과 같은 방 잠금을 기다리지 않고 시도하며, 처리 중인 승인이 있으면 이번 주기는 건너뛴다(empty).
+     */
+    public Optional<ScreenEnforcement> enforceScreenSharePolicy(String sessionId) {
+        Long groupId = groupIdOf(sessionId);
+        if (groupId == null) return Optional.of(new ScreenEnforcement(0, 0, 0));
+        return admissionLock.tryRun(groupId, () -> {
+            // 잠금 안에서 다시 읽는다(전체 세션 목록을 읽은 뒤 잠금을 얻기 전까지 승인이 끝났을 수 있다).
+            ScreenSharePolicy.Snapshot snap = ScreenSharePolicy.inspect(objectMapper,
+                    openVidu.listConnections(sessionId, true), clock.millis(), screenPendingTtlMs);
+            int stale = 0;
+            for (ScreenSharePolicy.ScreenSlot slot : snap.stale()) {
+                closeStaleScreen(sessionId, groupId, slot);
+                stale++;
+            }
+            int over = 0;
+            for (ScreenSharePolicy.ScreenSlot slot : snap.overLimit(maxScreenSharesPerGroup)) {
+                boolean closed = openVidu.deleteConnection(sessionId, slot.connectionId());
+                log.warn("[VIDEO] screen share over limit closed groupId={} userId={} connectionId={} state={} limit={} closed={}",
+                        groupId, slot.userId(), slot.connectionId(), slot.state(), maxScreenSharesPerGroup, closed);
+                over++;
+            }
+            int bypass = 0;
+            for (ScreenSharePolicy.ScreenStreamOnPrimary s : snap.screenStreamsOnPrimary()) {
+                boolean done = openVidu.forceUnpublish(sessionId, s.streamId());
+                log.warn("[VIDEO] SCREEN stream on PRIMARY connection unpublished (bypassed admission) groupId={} userId={} connectionId={} streamId={} done={}",
+                        groupId, s.userId(), s.connectionId(), s.streamId(), done);
+                bypass++;
+            }
+            return new ScreenEnforcement(stale, over, bypass);
+        });
     }
 
     /**
@@ -238,6 +343,10 @@ public class GroupVideoCallService {
         requireJoinedMember(userId, groupId);
         String sessionId = sessionIdFor(groupId);
         List<Map<String, Object>> raw = openVidu.listConnections(sessionId, false);
+        Set<String> sharingIds = new LinkedHashSet<>();
+        for (ScreenSharePolicy.ScreenSlot slot : ScreenSharePolicy.inspect(objectMapper, raw, clock.millis(), screenPendingTtlMs).occupying()) {
+            sharingIds.add(slot.connectionId());
+        }
 
         List<Map<String, Object>> connections = new ArrayList<>();
         Set<Long> activeUserIds = new LinkedHashSet<>();
@@ -272,7 +381,9 @@ public class GroupVideoCallService {
             item.put("streams", streams);
             connections.add(item);
 
-            if (meta.kind() == Kind.SCREEN) screenCount++;
+            if (meta.kind() == Kind.SCREEN) {
+                if (sharingIds.contains(String.valueOf(c.get("connectionId")))) screenCount++; // orphan 은 세지 않는다
+            }
             else if (meta.userId() != null) activeUserIds.add(meta.userId());
         }
 
@@ -282,6 +393,7 @@ public class GroupVideoCallService {
         body.put("activeUserCount", activeUserIds.size());
         body.put("activeUserIds", new ArrayList<>(activeUserIds));
         body.put("screenShareCount", screenCount);
+        body.put("screenShareLimit", maxScreenSharesPerGroup);
         body.put("connections", connections);
         body.put("fetchedAt", System.currentTimeMillis());
         return body;

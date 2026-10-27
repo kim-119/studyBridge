@@ -19,6 +19,9 @@ import com.studybridge.api.entity.GroupStudyMemberStatus;
 import com.studybridge.api.exception.VideoCallException;
 import com.studybridge.api.repository.GroupStudyMemberRepository;
 import com.studybridge.api.service.OpenViduService.ConnectionGrant;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,13 +44,26 @@ class GroupVideoCallServiceTest {
     private OpenViduService openVidu;
     private GroupStudyMemberRepository members;
     private GroupVideoCallService service;
+    static final Clock CLOCK = Clock.fixed(Instant.ofEpochMilli(1_000_000L), ZoneOffset.UTC);
+
+    /** Redis 잠금은 항상 획득(단위 테스트는 JVM 잠금 경로만 검증, Redis 경로는 ScreenShareAdmissionLockRedisTest). */
+    static ScreenShareAdmissionLock jvmOnlyLock() {
+        AiRequestGuard guard = mock(AiRequestGuard.class);
+        when(guard.tryLock(anyString(), any())).thenAnswer(inv -> new AiRequestGuard.Lock(inv.getArgument(0), "t", true));
+        return new ScreenShareAdmissionLock(guard, 5000, 60000);
+    }
+
+    static GroupVideoCallService newService(OpenViduService openVidu, GroupStudyMemberRepository members, ObjectMapper om,
+                                            int screenMax, int screenMin) {
+        return new GroupVideoCallService(openVidu, members, om, jvmOnlyLock(), CLOCK, "group_study_", 2500, screenMax, screenMin, 2, 30_000);
+    }
 
     @BeforeEach
     void setUp() {
         openVidu = mock(OpenViduService.class);
         members = mock(GroupStudyMemberRepository.class);
         when(members.existsByGroupStudyIdAndUserIdAndStatus(GROUP, USER, GroupStudyMemberStatus.JOINED)).thenReturn(true);
-        service = new GroupVideoCallService(openVidu, members, om, "group_study_", 2500, 2500, 1500);
+        service = newService(openVidu, members, om, 2500, 1500);
     }
 
     private static Map<String, Object> conn(String id, String status, String serverData, String clientData) {
@@ -198,7 +214,7 @@ class GroupVideoCallServiceTest {
 
     @Test
     void screenToken_minUploadAboveMax_isClampedToMax() {
-        service = new GroupVideoCallService(openVidu, members, om, "group_study_", 2500, 1200, 3000);
+        service = newService(openVidu, members, om, 1200, 3000);
         primaryActive("con_PC", serverData(USER, "PRIMARY", null));
         when(openVidu.listConnections(SID, true)).thenReturn(List.of(conn("con_PC", "active", serverData(USER, "PRIMARY", null), "{}")));
         when(openVidu.createConnection(eq(SID), anyString(), eq("PUBLISHER"), any())).thenReturn(new ConnectionGrant("con_SCR", "tok_screen"));
@@ -263,13 +279,14 @@ class GroupVideoCallServiceTest {
                 conn("con_PC2", "active", serverData(USER, "PRIMARY", null), "{}"),
                 conn("con_SCR_PENDING", "pending", serverData(USER, "SCREEN", "con_PC2"), ""),
                 conn("con_SCR_ORPHAN", "active", serverData(USER, "SCREEN", "con_PC_BEFORE_REFRESH"), "{}"),
+                conn("con_X", "active", serverData(55L, "PRIMARY", null), "{}"),
                 conn("con_SCR_OTHER_USER", "active", serverData(55L, "SCREEN", "con_X"), "{}")));
         when(openVidu.createConnection(eq(SID), anyString(), any(), any())).thenReturn(new ConnectionGrant("con_SCR_NEW", "tok"));
 
         assertEquals("con_SCR_NEW", service.issueScreenToken(USER, GROUP, "con_PC2", null, null).get("connectionId"));
         verify(openVidu).deleteConnection(SID, "con_SCR_PENDING");
         verify(openVidu).deleteConnection(SID, "con_SCR_ORPHAN");
-        verify(openVidu, never()).deleteConnection(SID, "con_SCR_OTHER_USER"); // 다른 사람 화면공유는 건드리지 않는다
+        verify(openVidu, never()).deleteConnection(SID, "con_SCR_OTHER_USER"); // 살아 있는 다른 사람 화면공유는 건드리지 않는다
     }
 
     @Test

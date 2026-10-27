@@ -24,7 +24,7 @@ import {
 import ProfileParticipantTile from './groupstudy/ProfileParticipantTile';
 import ScreenShareStage, { ScreenShareNotice } from './groupstudy/ScreenShareStage';
 import ScreenSharePrepDialog from './groupstudy/ScreenSharePrepDialog';
-import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, lockScreenResolution, findVideoSender } from '../utils/screenShare';
+import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, lockScreenResolution, findVideoSender, SCREEN_SHARE_LIMIT, screenShareLimitMessage, screenShareAvailability } from '../utils/screenShare';
 import { SCREEN_RECEIPT_SIGNAL, buildReceipt, parseReceipt, healthFromPeerState } from '../utils/screenReceipt';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
 import { useVideoPlayback } from '../hooks/useVideoPlayback';
@@ -621,6 +621,8 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
   const [selectedScreenId, setSelectedScreenId] = useState(null);
   // 공유 시작 전 안내(공유 대상·모드·소리). 실제 선택창은 안내의 [공유할 화면 선택] 클릭(사용자 제스처)으로만 연다.
   const [showSharePrep, setShowSharePrep] = useState(false);
+  // 방별 동시 화면공유 상한(서버 값이 오면 갱신). 최종 판정은 서버 — 이 값은 선택창을 열기 전 안내용.
+  const [screenShareLimit, setScreenShareLimit] = useState(SCREEN_SHARE_LIMIT);
   const [shareMode, setShareMode] = useState('document');
   const [shareAudio, setShareAudio] = useState(true);
   // 송출은 getDisplayMedia 가 있는 브라우저(PC Chrome/Edge/Firefox/Safari)만. 모바일 브라우저·웹뷰는 대부분 없음 → 시청만.
@@ -1204,6 +1206,13 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
   const teardownScreenShareRef = React.useRef(teardownScreenShare);
   teardownScreenShareRef.current = teardownScreenShare;
 
+  // 공유 버튼: 이미 다른 사람이 상한만큼 공유 중이면 선택창을 열지 않고 안내한다(서버가 최종 판정 — 경쟁 시 서버 409 로 같은 안내).
+  const screenSlots = screenShareAvailability(roomPresence.screens, userId, screenShareLimit);
+  const requestScreenShare = () => {
+    if (screenSlots.full) { setOvNotice(screenShareLimitMessage(screenSlots.limit)); return; }
+    setShowSharePrep(true);
+  };
+
   // ── 화면공유 시작(Discord 스타일): 화면 선택 → SCREEN 토큰 → 별도 세션 connect → publish ──
   const startScreenShare = async ({ mode = 'document', withAudio = true } = {}) => {
     if (screenShareBusyRef.current || screenSessionRef.current) return;
@@ -1223,6 +1232,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
     let sess = null;
     let pub = null;
     let screenPc = null;
+    let grant = null;
     const fail = (code) => Object.assign(new Error(code), { code });
     try {
       const OVs = new OpenVidu();
@@ -1269,11 +1279,12 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       if (sessionRef.current !== primary || !primary.connection) throw fail('PRIMARY_CHANGED');
 
       // 2) 서버가 내 PRIMARY 소유를 검증하고 SCREEN 토큰 발급(serverData kind=SCREEN, ownerConnectionId=내 PRIMARY).
-      const grant = await groupService.getScreenShareToken(study.id, {
+      grant = await groupService.getScreenShareToken(study.id, {
         primaryConnectionId,
         clientInstanceId: clientInstanceIdRef.current,
         deviceType: detectDeviceType(),
       });
+      if (Number.isInteger(grant?.screenShareLimit)) setScreenShareLimit(grant.screenShareLimit);
       sess = OVs.initSession();
       sess.on('sessionDisconnected', (ev) => {
         if (screenSessionRef.current === sess) teardownScreenShareRef.current?.(`disconnected:${ev?.reason || ''}`);
@@ -1362,10 +1373,17 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       screenResolutionGuardRef.current = null;
       try { sess?.disconnect(); } catch (err) { /* ignore */ }
       try { pub?.stream?.getMediaStream?.()?.getTracks?.().forEach((t) => t.stop()); } catch (err) { /* ignore */ }
+      // 승인은 받았지만 공유를 시작하지 못했다 → 서버의 슬롯 예약(pending SCREEN Connection)을 바로 돌려준다(서버 TTL 은 안전망).
+      if (grant?.connectionId && study?.id) groupService.stopScreenShare(study.id, grant.connectionId).catch(() => { /* 이미 정리됨 */ });
       setScreenShareStatus('idle');
       const code = e?.code || e?.response?.data?.code || e?.name;
+      const serverLimit = e?.response?.data?.details?.limit;
+      if (code === 'SCREEN_SHARE_LIMIT_REACHED' && Number.isInteger(serverLimit)) setScreenShareLimit(serverLimit);
       const notice = {
         SCREEN_CAPTURE_DENIED: '화면 공유가 취소되었거나 권한이 허용되지 않았습니다.',
+        SCREEN_SHARE_LIMIT_REACHED: e?.response?.data?.message || screenShareLimitMessage(Number.isInteger(serverLimit) ? serverLimit : screenShareLimit),
+        SCREEN_START_IN_PROGRESS: e?.response?.data?.message || '다른 기기(탭)에서 화면공유를 시작하고 있습니다. 잠시 후 다시 시도해주세요.',
+        SCREEN_ADMISSION_BUSY: e?.response?.data?.message || '화면공유 요청이 몰려 처리하지 못했습니다. 잠시 후 다시 시도해주세요.',
         SCREEN_ALREADY_ACTIVE: e?.response?.data?.message || '이미 화면을 공유하고 있습니다.',
         PRIMARY_NOT_ACTIVE: '화상 연결이 준비된 뒤 다시 시도해주세요.',
         PRIMARY_CHANGED: '화상 연결이 다시 연결되어 화면 공유를 취소했습니다. 다시 시도해주세요.',
@@ -1412,6 +1430,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       try {
         const data = await groupService.getVideoConnections(study.id);
         if (isStale() || !Array.isArray(data?.connections)) return;
+        if (Number.isInteger(data.screenShareLimit) && data.screenShareLimit > 0) setScreenShareLimit(data.screenShareLimit);
         const serverIds = data.connections.map(c => c.connectionId);
         const myConnId = sessionInstance.connection?.connectionId;
         if (myConnId && !serverIds.includes(myConnId)) {
@@ -3014,9 +3033,10 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
                   data-testid="screen-share-toggle"
                   data-status={screenShareStatus}
                   aria-label={screenShareStatus === 'live' ? '화면 공유 중지' : '화면 공유'}
-                  title={screenShareStatus === 'live' ? '화면 공유 중지' : (screenShareStatus === 'starting' ? '화면 공유 준비 중…' : '화면 공유')}
+                  data-slots-full={screenShareStatus !== 'live' && screenSlots.full ? 'true' : 'false'}
+                  title={screenShareStatus === 'live' ? '화면 공유 중지' : (screenShareStatus === 'starting' ? '화면 공유 준비 중…' : (screenSlots.full ? screenShareLimitMessage(screenSlots.limit) : '화면 공유'))}
                   disabled={screenShareStatus === 'starting' || !session}
-                  onClick={() => (screenShareStatus === 'live' ? teardownScreenShare('user', { notifyServer: true }) : setShowSharePrep(true))}
+                  onClick={() => (screenShareStatus === 'live' ? teardownScreenShare('user', { notifyServer: true }) : requestScreenShare())}
                   style={{ display: 'flex', alignItems: 'center', background: 'none', border: 'none', padding: 0, cursor: 'pointer', opacity: (screenShareStatus === 'starting' || !session) ? 0.45 : 1 }}
                 >
                   {screenShareStatus === 'live' ? <MonitorOff size={18} color="#60A5FA" /> : <MonitorUp size={18} color="#D1D5DB" />}
@@ -3056,8 +3076,9 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
           {screenShareSupported && (
             <button
               data-testid="screen-share-toggle-mobile"
+              data-slots-full={screenShareStatus !== 'live' && screenSlots.full ? 'true' : 'false'}
               disabled={screenShareStatus === 'starting' || !session}
-              onClick={() => (screenShareStatus === 'live' ? teardownScreenShare('user', { notifyServer: true }) : setShowSharePrep(true))}
+              onClick={() => (screenShareStatus === 'live' ? teardownScreenShare('user', { notifyServer: true }) : requestScreenShare())}
               aria-label={screenShareStatus === 'live' ? '화면 공유 중지' : '화면 공유'}
             >
               {screenShareStatus === 'live' ? <MonitorOff size={22} color="#60A5FA" /> : <MonitorUp size={22} color="#E5E7EB" />}

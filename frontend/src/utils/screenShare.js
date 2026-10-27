@@ -15,6 +15,21 @@ export const SCREEN_SHARE_MODES = Object.freeze({
 
 export const resolveShareMode = (mode) => (SCREEN_SHARE_MODES[mode] ? mode : 'document');
 
+// 방별 동시 화면공유 상한. 최종 판정은 서버(POST /video/screen-token → 409 SCREEN_SHARE_LIMIT_REACHED, details.limit)가 하고,
+// 클라이언트 값은 선택창을 열기 전 안내용이다(서버가 알려 준 limit 이 있으면 그 값을 쓴다).
+export const SCREEN_SHARE_LIMIT = 2;
+export const screenShareLimitMessage = (limit = SCREEN_SHARE_LIMIT) => `현재 화면공유 가능 인원(최대 ${limit}명)이 모두 사용 중입니다.`;
+
+/**
+ * 지금 방에서 다른 사람이 쓰는 화면공유 슬롯 수. screens = deriveRoomPresence().screens([connectionId, connection][]).
+ * 내 화면공유(이 탭·내 다른 기기)는 세지 않는다 — 사용자당 1개는 서버가 따로 판정한다(SCREEN_ALREADY_ACTIVE).
+ */
+export function screenShareAvailability(screens, myUserId, limit = SCREEN_SHARE_LIMIT) {
+  const cap = Number.isInteger(limit) && limit > 0 ? limit : SCREEN_SHARE_LIMIT;
+  const used = (screens || []).filter(([, c]) => c && (c.userId === null || c.userId === undefined || String(c.userId) !== String(myUserId))).length;
+  return { used, limit: cap, full: used >= cap };
+}
+
 /**
  * 화면공유 송출은 해상도를 줄이지 않는다(문서·영상 모드 공통) — RTCRtpSender.degradationPreference = 'maintain-resolution'.
  *  · openvidu-browser 2.30 은 createOffer(첫 publish, ICE 실패 뒤 스트림 재연결)마다 contentHint 가 detail/text 가 아니면 'balanced' 를 넣는다.
