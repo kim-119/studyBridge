@@ -42,6 +42,14 @@ export function mergeScreenAiShares(clientShares, serverShares) {
   });
 }
 
+/** 화면 제목: 이 탭의 공유 = 내 화면, 내 다른 기기(같은 계정)의 공유 = 내 다른 기기의 화면, 그 외 = ○○님의 화면. */
+export function shareTitle(share) {
+  if (!share) return '화면';
+  if (share.isMine) return '내 화면';
+  if (share.isOwnUser) return '내 다른 기기의 화면';
+  return `${share.name || '참여자'}님의 화면`;
+}
+
 /** 기본 선택: 지금 선택이 유효하면 유지 → 스테이지에서 보고 있는 화면 → 분석 가능한 남의 화면 → 분석 가능한 화면 → 첫 화면. */
 export function pickDefaultShare(shares, currentId, stageSelectedId) {
   const list = shares || [];

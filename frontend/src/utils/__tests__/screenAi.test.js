@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mergeScreenAiShares, pickDefaultShare, validateQuestion, describeScreenAiError, pendingHint, streamIdOf, formatBytes,
+  mergeScreenAiShares, pickDefaultShare, validateQuestion, describeScreenAiError, pendingHint, streamIdOf, formatBytes, shareTitle,
 } from '../screenAi.js';
 import { fitWithin, encodeWithinBudget, pickRenderedVideo, liveVideoTrack, newClientRequestId, ScreenCaptureError, SCREEN_AI_CAPTURE } from '../screenAiCapture.js';
 
@@ -126,4 +126,10 @@ test('요청 id 는 서버 패턴 [A-Za-z0-9_-]{8,64} 를 만족하고 매번 �
   assert.notEqual(a, b);
   assert.equal(streamIdOf(sm('x')), 'x');
   assert.equal(formatBytes(84 * 1024), '84KB');
+});
+
+test('화면 제목: 이 탭=내 화면, 내 다른 기기=내 다른 기기의 화면, 그 외=○○님의 화면', () => {
+  assert.equal(shareTitle({ isMine: true, isOwnUser: true, name: '나 (내 PC)' }), '내 화면');
+  assert.equal(shareTitle({ isMine: false, isOwnUser: true, name: 'SRE (내 PC)' }), '내 다른 기기의 화면');
+  assert.equal(shareTitle({ isMine: false, isOwnUser: false, name: '서준' }), '서준님의 화면');
 });

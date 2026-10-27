@@ -6,7 +6,7 @@ import { ToggleSwitch } from './ToggleSwitch';
 import { captureShareFrame, newClientRequestId, ScreenCaptureError } from '../../utils/screenAiCapture';
 import {
   describeScreenAiError, formatBytes, mergeScreenAiShares, pendingHint, pickDefaultShare, SCREEN_AI_EXAMPLES,
-  SCREEN_AI_MAX_QUESTION, streamIdOf, validateQuestion,
+  SCREEN_AI_MAX_QUESTION, shareTitle, streamIdOf, validateQuestion,
 } from '../../utils/screenAi';
 
 // 채팅 드로어의 "AI 화면 분석" 탭.
@@ -44,7 +44,7 @@ function ShareOption({ share, selected, onSelect, disabled }) {
       <span style={{ flex: 1, minWidth: 0 }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 800 }}>
           <span style={{ fontSize: '11px', fontWeight: 800, color: '#93C5FD', backgroundColor: 'rgba(59,130,246,0.18)', borderRadius: 6, padding: '1px 6px', flexShrink: 0 }}>화면 {share.index}</span>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{share.isMine ? '내 화면' : `${share.name}님의 화면`}</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shareTitle(share)}</span>
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: '5px', marginTop: '3px', fontSize: '11.5px', color: tone }}>
           {share.analyzable ? <ShieldCheck size={12} /> : <ShieldOff size={12} />}
@@ -184,7 +184,7 @@ export default function ScreenAiPanel({ groupId, shares, stageSelectedId, onFocu
     const controller = new AbortController();
     const inflight = { controller, clientRequestId, connectionId: share.connectionId, reason: null };
     inflightRef.current = inflight;
-    const base = { id: clientRequestId, connectionId: share.connectionId, shareName: share.isMine ? '내 화면' : share.name, shareIndex: share.index, question: q, startedAt: Date.now() };
+    const base = { id: clientRequestId, connectionId: share.connectionId, shareName: shareTitle(share), shareIndex: share.index, question: q, startedAt: Date.now() };
     setNotice(null);
     setPending({ ...base, phase: 'capturing' });
     try {
@@ -202,7 +202,7 @@ export default function ScreenAiPanel({ groupId, shares, stageSelectedId, onFocu
       if (!mountedRef.current) return;
       setHistory((h) => [...h, {
         ...base,
-        shareName: res?.sharer?.isMine ? '내 화면' : (res?.sharer?.name || base.shareName),
+        shareName: base.shareName,
         answer: res?.answer || '',
         latencyMs: Number(res?.latencyMs),
         image: res?.image || { width: frame.width, height: frame.height, bytes: frame.bytes },
@@ -327,7 +327,7 @@ export default function ScreenAiPanel({ groupId, shares, stageSelectedId, onFocu
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (canAsk) ask(); }
             }}
-            placeholder={merged.length === 0 ? '공유 중인 화면이 없어요' : selected ? `${selected.isMine ? '내 화면' : `${selected.name}님의 화면`}에 대해 질문하기` : '분석할 화면을 선택하세요'}
+            placeholder={merged.length === 0 ? '공유 중인 화면이 없어요' : selected ? `${shareTitle(selected)}에 대해 질문하기` : '분석할 화면을 선택하세요'}
             style={{ flex: 1, minWidth: 0, resize: 'none', backgroundColor: '#1F2937', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '9px 11px', color: '#F3F4F6', fontSize: '14px', lineHeight: 1.45, outline: 'none', fontFamily: 'inherit' }}
           />
           <button
