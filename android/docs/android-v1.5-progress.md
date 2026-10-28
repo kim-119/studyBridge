@@ -32,8 +32,8 @@ React(WebView, frontend/src/mobile) ──axios(JWT)──▶ EC2 Spring(/api/**
 | STEP 2 PDF별 퀴즈 랭킹 | 완료(앱), 운영 서버 배포 여부 미확인 | `ce901079` |
 | STEP 3 플래너 → 자료보관함 저장 | 완료 | `91b2e101` |
 | STEP 4 자료보관함 레거시 정리 | 완료(보수적) | `b0946257` |
-| STEP 5 Android 네이티브 화면공유 송출 | **미구현** — SCREEN 판정 규칙 통일만 완료 | `25ee0f67` |
-| STEP 6 VLM 화면 분석 연동 | 완료(수신 화면 분석, Android 송출 화면은 STEP 5 이후) | `bb3970ce` |
+| STEP 5 Android 네이티브 화면공유 송출 | 구현·CI 빌드/단위 테스트 PASS, **실기기 NOT RUN → v1.6 이관(v1.5 빌드 미포함)** — `android/docs/android-screen-share.md` | `25ee0f67`, `861a96cc`, `80ce4718` |
+| STEP 6 VLM 화면 분석 연동 | 완료(수신 화면 분석) + 내 공유 화면 AI 분석 허용 토글 | `bb3970ce`, `80ce4718` |
 | STEP 7 릴리스 후보 | 릴리스 노트 작성·검증, CI/APK 미확인 | 이 문서 커밋 |
 
 ### STEP 1 — 학습리포트 자동 실행
@@ -72,7 +72,11 @@ React(WebView, frontend/src/mobile) ──axios(JWT)──▶ EC2 Spring(/api/**
 - 삭제: `quizModel.js` 의 클라이언트 채점 함수 7개(운영 참조 0건, 서버 채점 `materialQuizModel.js` 로 대체됨)와 그 테스트.
 - 유지(판단 보류): `utils/webrtc/iceServers.js#parseConnectionMetadata` — STEP 5 이후 참조 0건이나 공용 utils 라 이번에는 남김.
 
-### STEP 5 — Android 네이티브 화면공유 송출 (미구현)
+### STEP 5 — Android 네이티브 화면공유 송출
+
+> 2026-10-28 후속: 네이티브 송출을 `:screenshare` 모듈로 구현(`861a96cc`, `80ce4718`). 구조·계약·종료 처리·실기기 체크리스트는
+> `android/docs/android-screen-share.md`. 실기기 검증 전이라 기본·릴리스 빌드에서 제외(`-PsbScreenShare=true` 일 때만 포함).
+> 아래는 첫 세션 당시 기록이다.
 
 **완료한 부분:** SCREEN 인식 규칙 통일(`screens/groupstudy/connectionIdentity.js`).
 - 기존 충돌: Android 는 `connection.data` 의 첫 번째 파싱 가능 세그먼트(clientData, 위조 가능)로 userId 를 읽고 SCREEN 은 `typeOfVideo` 만 봄.
@@ -108,7 +112,7 @@ React(WebView, frontend/src/mobile) ──axios(JWT)──▶ EC2 Spring(/api/**
 - Android(수신자): 그룹방 채팅/AI 패널 '화면 분석' 탭. 원격 SCREEN `<video>` 의 현재 프레임 1장을 canvas → JPEG(긴 변 1280, 1MB 한도) 로 보내고 보관하지 않음.
   선택 영역은 고정 스냅샷 위 드래그 → 정규화 좌표 → 원본 해상도로 잘라 전송(프레임 동기화).
 - WebView 캡처 가능성: 원격 WebRTC MediaStream 은 교차 출처 리소스가 아니라 canvas 가 오염되지 않는다(Chromium 동작). **실기기 미검증.**
-- Android 를 공유자로 하는 동의 UI(`PUT consent`)는 STEP 5(Android 송출) 이후 필요.
+- Android 공유자용 AI 분석 허용 토글(`PUT consent`) 추가(`80ce4718`).
 
 ## 테스트 기록
 

@@ -81,7 +81,7 @@ class ScreenSharePlugin : Plugin() {
     private fun onConsentResult(call: PluginCall?, result: ActivityResult) {
         val data = result.data
         val granted = result.resultCode == Activity.RESULT_OK && data != null
-        if (granted && data != null) ScreenShareRuntime.storeConsent(result.resultCode, data)
+        if (data != null && granted) ScreenShareRuntime.storeConsent(result.resultCode, data)
         call?.resolve(JSObject().put("granted", granted))
     }
 
