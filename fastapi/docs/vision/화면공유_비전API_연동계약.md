@@ -1,6 +1,21 @@
 StudyBridge 화면공유 비전 API 연동 계약 (ai07)
+2026-10-28 2단계 구조 변경: qwen3-vl 은 화면 판독(JSON)만 하고, 최종 답변은 OpenAI 가 만든다. 경로·요청·인증은 그대로이고, 응답에 진단 필드가 추가됐다. 바뀐 내용은 0절에 모았다.
 작성 2026-10-27, 최종 갱신 2026-10-28(운영 반영 준비: 출발지 네트워크 가드, AI Gateway, 실모델 검증 반영), 대상: Spring Boot·React 연동 담당
 요약은 14절(최종 운영 계약), Spring·React 구현 순서는 15절에 있다.
+
+
+0. 2단계 구조 (2026-10-28 변경)
+
+처리 흐름: Spring → ai07 입장(중복·그룹 2건 한도) → GPU 슬롯에서 qwen3-vl:4b-instruct 가 화면을 JSON 으로 판독 → GPU 슬롯 반환 → 개인정보·비밀값 마스킹 → OpenAI 슬롯에서 최종 답변(기본 gpt-4o-mini) → Spring.
+qwen3-vl 의 역할: 화면 유형, 판독 텍스트, 코드·오류 메시지, 수식, 도표, 주요 시각 요소, 질문 관련 근거, 판독 불확실 부분, 화면 속 지시문을 JSON 으로 뽑는다(Ollama 구조화 출력 + 서버 검증). 답변은 만들지 않는다.
+OpenAI 의 역할: 판독 JSON 과 질문만 받아 한국어 최종 답변을 만든다. 원본 이미지는 OpenAI 로 보내지 않는다.
+qwen3:14b 는 이 경로에서 호출하지 않는다. llm_engine_router 의 Ollama 우선·OpenAI 폴백도 쓰지 않는다.
+OpenAI 가 실패하면 판독 결과를 답변으로 대신 내지 않고 VISION_ANSWER_* 오류를 낸다(6절).
+GPU 슬롯은 판독 동안만 잡는다. OpenAI 호출은 별도 슬롯(동시 4건, 대기 15초)에서 돈다. 그룹당 2건 한도와 중복 requestId 판정은 요청 전체(판독+답변)에 걸린다.
+외부 전송 최소화: 판독 JSON 은 8000자로 자르고, 이메일·전화번호·주민등록번호·카드번호·API 키·토큰·JWT·비밀번호 대입값·URL 토큰 쿼리를 [이메일] 같은 표시로 가린 뒤 보낸다. 질문도 같은 규칙으로 가린다. 사람 이름은 가리지 않는다.
+동의: 공유자의 AI 분석 동의는 Spring(ScreenAiConsentStore, opt-in)이 확인한다. 이 동의에는 판독 텍스트가 외부 AI(OpenAI)로 전송된다는 내용이 포함돼야 한다(React 동의 문구 보완 필요). ai07 의 VISION_EXTERNAL_LLM_ENABLED=false 는 전체 외부 전송을 끄는 스위치이며, 이때는 503 VISION_ANSWER_DISABLED 를 낸다.
+비용 상한: 비전 답변 전용 일 토큰 상한 VISION_ANSWER_DAILY_TOKEN_CAP=600000(KST 자정 초기화, 0 으로 무제한 설정 불가). 요청당 출력 900토큰. 전역 AI Gateway 차단기·예산도 함께 확인한다. 실측 요청당 약 800~1000토큰(gpt-4o-mini 기준 약 0.0002달러).
+새 설정(기본값): VISION_ANSWER_PROVIDER=openai, VISION_ANSWER_MODEL=OPENAI_MODEL(gpt-4o-mini), VISION_ANSWER_MAX_TOKENS=900, VISION_ANSWER_TIMEOUT_SECONDS=40, VISION_ANSWER_MAX_CONCURRENCY=4, VISION_ANSWER_QUEUE_TIMEOUT_SECONDS=15, VISION_EXTRACT_NUM_PREDICT=1024, VISION_EXTRACT_MAX_CHARS=8000, VISION_TOTAL_TIMEOUT_SECONDS=240(요청 전체 상한, Spring 260초보다 짧음).
 
 
 1. 개요
@@ -8,7 +23,7 @@ StudyBridge 화면공유 비전 API 연동 계약 (ai07)
 엔드포인트: POST /api/ai/vision/analyze
 상태 확인: GET /api/ai/vision/health
 경로 규칙: 기존 Spring → ai07 호출이 모두 /api/ai/* 를 쓰므로 그 규칙을 따랐다(지시서의 /internal/vision/analyze 대신).
-모델: qwen3-vl:4b-instruct (Apache-2.0, Q4_K_M, 약 3.3GB). 비전 전용 Ollama 0.40.11 이 127.0.0.1:11435 에서 서비스한다.
+모델: 화면 판독 qwen3-vl:4b-instruct (Apache-2.0, Q4_K_M, 약 3.3GB, 비전 전용 Ollama 0.40.11 이 127.0.0.1:11435 에서 서비스), 최종 답변 OpenAI(VISION_ANSWER_MODEL, 기본 gpt-4o-mini).
 기능 플래그: VISION_API_ENABLED=true 일 때만 동작한다. 기본값 false 이고, 이때는 503 VISION_DISABLED 를 반환한다.
 분석 단위: 브라우저가 캡처한 화면공유 프레임 1장과 질문 1개. 스트림은 받지 않는다.
 
@@ -50,7 +65,11 @@ ai07 은 사용자 권한(JWT, 그룹 JOINED, SCREEN 연결 활성, 공유자 �
 
 5. 성공 응답 (200)
 
-{"requestId":"6f1c...","answer":"화면에 보이는 내용: ... 분석: ...","model":"qwen3-vl:4b-instruct","latencyMs":1536,"queueWaitMs":0,"inferenceMs":1468}
+{"requestId":"6f1c...","answer":"화면에 보이는 내용: ... 분석: ...","model":"gpt-4o-mini-2024-07-18","latencyMs":4520,"queueWaitMs":0,"inferenceMs":4505,"visionModel":"qwen3-vl:4b-instruct","answerModel":"gpt-4o-mini-2024-07-18","answerProvider":"openai","visionLatencyMs":1269,"answerLatencyMs":3236}
+
+model: 최종 답변을 만든 모델(OpenAI 가 돌려준 실제 모델 id). 2026-10-28 이전에는 qwen3-vl 이었다. Spring 은 이 값을 그대로 기록하면 된다.
+visionModel, answerModel, answerProvider, visionLatencyMs, answerLatencyMs: 진단용 추가 필드(Spring 은 무시해도 된다).
+queueWaitMs 는 GPU 슬롯 대기와 답변 슬롯 대기의 합, inferenceMs 는 판독 시간과 답변 시간의 합이다.
 
 latencyMs: ai07 이 요청을 받은 시점부터 응답을 만들 때까지의 서버 측 시간(대기열 대기 포함).
 queueWaitMs: 추론 슬롯을 얻을 때까지 기다린 시간.
@@ -94,6 +113,18 @@ VISION_EMPTY_RESPONSE 502 예 — 1회 재시도 후에도 빈 답
 VISION_BACKEND_ERROR 502 예
 VISION_CLIENT_CANCELLED 499 아니오 — Spring 이 연결을 끊음(로그 전용, 실제로 응답이 전달되지는 않음)
 VISION_INTERNAL_ERROR 500 예
+VISION_EXTRACTION_INVALID 502 예 — 판독 결과가 JSON 계약을 지키지 않음(1회 재시도 후). stage=vision
+답변 단계(stage=answer). 어느 경우에도 판독 결과를 답변으로 대신 내지 않는다.
+VISION_ANSWER_DISABLED 503 아니오 — OpenAI 키 없음 또는 VISION_EXTERNAL_LLM_ENABLED=false
+VISION_ANSWER_CONFIG_ERROR 503 아니오 — OpenAI 인증 실패·모델 없음
+VISION_ANSWER_BUDGET_EXCEEDED 503 아니오 — 비전 답변 일 토큰 상한·전역 예산·OpenAI 쿼터 소진
+VISION_ANSWER_RATE_LIMITED 429 예 — OpenAI 429(Retry-After 전달)
+VISION_ANSWER_QUEUE_TIMEOUT 503 예 — 답변 슬롯 대기 초과
+VISION_ANSWER_TIMEOUT 504 예 — OpenAI 응답 시간 초과 또는 요청 전체 상한 도달
+VISION_ANSWER_UNAVAILABLE 503 예 — 연결 실패·OpenAI 5xx·차단기 열림
+VISION_ANSWER_REJECTED 502 아니오 — OpenAI 가 요청을 거부(400 계열)
+VISION_ANSWER_EMPTY 502 예 — 빈 답변
+오류 본문에 stage(vision|answer)가 붙을 수 있다(추가 필드). 현재 Spring 은 모르는 코드를 SCREEN_AI_UPSTREAM_ERROR(retryable 은 그대로 전달)로 바꾸므로 동작에 문제는 없다. 사용자 안내를 세분하려면 VISION_ANSWER_RATE_LIMITED·VISION_ANSWER_QUEUE_TIMEOUT 은 BUSY/OVERLOADED, VISION_ANSWER_TIMEOUT 은 SCREEN_AI_TIMEOUT 으로 묶으면 된다.
 
 
 7. 중복 requestId 정책
@@ -136,7 +167,7 @@ GPU 텔레메트리(nvidia-smi)를 10초 넘게 읽지 못하면 비전 모델 �
 이미지와 질문 원문은 디스크, DB, 로그에 쓰지 않는다. 임시 파일도 만들지 않는다(BytesIO 만 사용하며, 테스트로 확인했다).
 로그에는 requestId, groupId, HTTP 상태, 오류 코드, 처리 시간, 이미지 가로·세로·바이트 수, 모델 id 만 남긴다.
 예외를 로그에 남길 때는 예외 타입 이름만 쓰고, 메시지와 스택은 남기지 않는다.
-이미지는 127.0.0.1:11435 의 로컬 Ollama 로만 전달하며 외부 서비스로는 보내지 않는다. Ollama 서버 로그에는 접근 줄([GIN])만 남고 프롬프트는 남지 않는다(OLLAMA_DEBUG 를 끈 상태 기준).
+이미지는 127.0.0.1:11435 의 로컬 Ollama 로만 전달하며 외부 서비스로는 보내지 않는다. OpenAI 로는 마스킹한 판독 JSON 과 질문만 간다(0절). Ollama 서버 로그에는 접근 줄([GIN])만 남고 프롬프트는 남지 않는다(OLLAMA_DEBUG 를 끈 상태 기준).
 한계: Python 과 Ollama 의 메모리는 참조를 해제해도 즉시 지워진다는 보장이 없다. 이미지 텐서와 KV 캐시는 Ollama 프로세스 메모리에 keep_alive(2분) 동안 남을 수 있다.
 
 
@@ -184,8 +215,8 @@ VRAM: 16GB 한 장을 세 프로세스가 나눠 쓴다. 기존 uvicorn 이 1.5G
 출발지 제한: ai07 은 loopback·사설망 출발지(SSH 역터널, 도커 브리지)만 받는다. 그 밖의 출발지는 내부 키가 있을 때만 통과하고, 없으면 403 AI_NETWORK_FORBIDDEN.
 요청: requestId(문자열 UUID 권장, 재시도는 새 id), groupId(Long), streamId(화면공유 connection id), sharerUserId(Long), askerUserId(Long), question(1~1000자), image(Base64, data URI 접두사 허용), mime("image/jpeg").
 이미지 제한: 디코딩 1MB 이하, 요청 바디 2MB 이하, 긴 변 1280px 이하, 짧은 변 32px 이상, 단일 프레임 JPEG. 서버는 축소하지 않고 거부한다. 권장 업로드: 긴 변 1280px, JPEG quality 0.7~0.8, 약 300KB 이하(실측 화면 27~53KB).
-응답 200: requestId, answer(한국어 Markdown, 최대 6000자, '화면에 보이는 내용:'과 '분석:' 구분), model, latencyMs, queueWaitMs, inferenceMs.
-시간 예산(서버 설정 기본값): VisionGate 대기 120초, AI Gateway 비전 슬롯 대기 30초(게이트웨이 켜짐 시), 추론 90초. Spring read timeout 은 250초 이상(최악 120+30+90초). 실측: 비전 모델이 전부 GPU 에 있을 때 단건 0.8~3.2초, 다른 화면 2건 동시 1.3초/2.6초, 10건 동시 p50 7.5초(1건 429), 채팅·멀티에이전트가 동시에 돌 때 12~25초.
+응답 200: requestId, answer(한국어 Markdown, 최대 6000자, '화면에 보이는 내용:'과 '분석:' 구분, OpenAI 생성), model(최종 답변 모델), latencyMs, queueWaitMs, inferenceMs + 진단 필드 visionModel, answerModel, answerProvider, visionLatencyMs, answerLatencyMs.
+시간 예산(서버 설정 기본값): VisionGate 대기 120초, AI Gateway 비전 슬롯 대기 30초(게이트웨이 켜짐 시), 판독 90초, 답변 슬롯 대기 15초, OpenAI 40초, 요청 전체 상한 240초. Spring read timeout 260초(현재 ai.vision.timeout-seconds 기본값)면 충분하다. 2단계 실측(10-28, 실제 OpenAI): 단건 판독 0.5~1.9초 + 답변 1.0~5.6초, 서로 다른 화면 2건 동시 4.5초/5.0초. 실측: 비전 모델이 전부 GPU 에 있을 때 단건 0.8~3.2초, 다른 화면 2건 동시 1.3초/2.6초, 10건 동시 p50 7.5초(1건 429), 채팅·멀티에이전트가 동시에 돌 때 12~25초.
 재시도: retryable=true(429/503/502/504/500) 이면 Retry-After 초를 지켜 1회 재시도 또는 사용자에게 잠시 후 안내. retryable=false(4xx) 는 재시도하지 않는다. 409 는 같은 requestId 로 보낸 중복이다.
 동시성 한도: 전체 대기 8건(초과 429 VISION_QUEUE_FULL), 그룹당 처리 중 2건(초과 429 VISION_GROUP_LIMIT). 그룹당 화면공유 최대 2명과 ai07 전체 동시 요청 수는 별개다 — ai07 은 여러 그룹의 요청을 한 대기열에서 직렬 처리한다.
 개인정보: ai07 은 이미지·질문을 저장하거나 로그에 남기지 않는다. Spring 도 이미지를 저장하지 않는 것을 권장한다.

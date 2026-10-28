@@ -53,6 +53,20 @@ class VisionSettings:
     duplicate_ttl_s: float
     allow_unauthenticated: bool
     mock_delay_s: float
+    # VLM(화면 판독) → OpenAI(최종 답변) 2단계. VLM 은 JSON 판독만, 답변은 OpenAI 만 만든다.
+    extract_num_predict: int
+    extract_max_chars: int
+    answer_provider: str          # "openai" | "mock"(테스트 전용)
+    answer_model: str
+    answer_max_tokens: int
+    answer_temperature: float
+    answer_timeout_s: float
+    answer_max_concurrency: int
+    answer_queue_timeout_s: float
+    answer_daily_token_cap: int   # 비전 답변 전용 일 토큰 상한(KST). 0 은 허용하지 않고 기본값으로 돌린다.
+    external_llm_enabled: bool    # 외부 전송 kill switch. false 면 VLM 단독 답변 없이 503 VISION_ANSWER_DISABLED.
+    total_timeout_s: float        # 요청 전체 상한(Spring ai.vision.timeout-seconds 260초보다 짧게)
+    answer_mock_delay_s: float
 
 
 def get_settings() -> VisionSettings:
@@ -88,4 +102,17 @@ def get_settings() -> VisionSettings:
         duplicate_ttl_s=_float("VISION_DUPLICATE_TTL_SECONDS", 600.0, 0.0),
         allow_unauthenticated=_bool("VISION_ALLOW_UNAUTHENTICATED", False),
         mock_delay_s=_float("VISION_MOCK_DELAY_SECONDS", 0.05),
+        extract_num_predict=_int("VISION_EXTRACT_NUM_PREDICT", 1024, 64),
+        extract_max_chars=_int("VISION_EXTRACT_MAX_CHARS", 8000, 500),
+        answer_provider=os.getenv("VISION_ANSWER_PROVIDER", "openai").strip().lower(),
+        answer_model=(os.getenv("VISION_ANSWER_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip(),
+        answer_max_tokens=_int("VISION_ANSWER_MAX_TOKENS", 900, 64),
+        answer_temperature=_float("VISION_ANSWER_TEMPERATURE", 0.2),
+        answer_timeout_s=_float("VISION_ANSWER_TIMEOUT_SECONDS", 40.0, 0.1),
+        answer_max_concurrency=_int("VISION_ANSWER_MAX_CONCURRENCY", 4, 1),
+        answer_queue_timeout_s=_float("VISION_ANSWER_QUEUE_TIMEOUT_SECONDS", 15.0, 0.1),
+        answer_daily_token_cap=_int("VISION_ANSWER_DAILY_TOKEN_CAP", 600_000, 0) or 600_000,
+        external_llm_enabled=_bool("VISION_EXTERNAL_LLM_ENABLED", True),
+        total_timeout_s=_float("VISION_TOTAL_TIMEOUT_SECONDS", 240.0, 1.0),
+        answer_mock_delay_s=_float("VISION_ANSWER_MOCK_DELAY_SECONDS", 0.02),
     )

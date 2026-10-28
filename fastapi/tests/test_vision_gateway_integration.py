@@ -79,6 +79,11 @@ class _Fake:
                 if imgs:
                     digest = hashlib.sha256(base64.b64decode(imgs[0][0])).hexdigest()[:12]
                     content = f"화면에 보이는 내용: img={digest}"
+                    if req.get("format"):          # VLM 화면 판독(JSON schema 구조화 출력)
+                        content = json.dumps({
+                            "screenType": "error", "legible": True, "readableText": f"img={digest}", "code": [],
+                            "errors": [], "math": [], "charts": [], "visualElements": [], "questionEvidence": [],
+                            "uncertain": [], "embeddedInstructions": []})
                 else:
                     content = "텍스트 응답"
                 if req.get("stream"):
@@ -118,6 +123,8 @@ def env(monkeypatch):
         "VISION_MODEL": "qwen3-vl:4b-instruct", "OLLAMA_BASE_URL": text.url, "STUDYMATE_OLLAMA_BASE_URL": text.url,
         "OLLAMA_MODEL": "qwen3:14b", "VISION_INFERENCE_TIMEOUT_SECONDS": "5", "VISION_QUEUE_TIMEOUT_SECONDS": "20",
         "VISION_MAX_QUEUE": "8", "VISION_MAX_PER_GROUP": "2", "VISION_DUPLICATE_TTL_SECONDS": "600",
+        # 최종 답변은 테스트 전용 mock(실제 OpenAI 미호출) — 판독 결과를 그대로 반영해 요청 간 혼합을 검출한다.
+        "VISION_ANSWER_PROVIDER": "mock",
     }.items():
         monkeypatch.setenv(k, v)
     # import 시점에 고정되는 모듈 상수도 가짜 서버로 돌린다(실제 :11434 로 새지 않게).
@@ -176,11 +183,13 @@ def test_single_request_contract(env):
             assert r.status_code == 200, r.text
             j = r.json()
             assert set(j) >= {"answer", "model", "latencyMs", "requestId", "queueWaitMs", "inferenceMs"}
-            assert j["model"] == "qwen3-vl:4b-instruct" and j["requestId"] == "r-1"
+            assert j["model"] == "mock-answer" and j["visionModel"] == "qwen3-vl:4b-instruct"
+            assert j["requestId"] == "r-1"
             assert isinstance(j["latencyMs"], int) and j["latencyMs"] >= 0
     asyncio.run(main())
     snap = env["gw"].status()["scheduler"]
     assert snap["classes"]["VISION"]["completed"] == 1           # 게이트웨이를 실제로 거쳤다
+    assert env["text"].calls == 0                                # 화면 답변 경로는 qwen3:14b 를 부르지 않는다
 
 
 # 2. 서로 다른 공유 화면 2개 동시 — 둘 다 성공, 답변이 각자 이미지에 대응(혼합 없음), GPU 는 직렬
