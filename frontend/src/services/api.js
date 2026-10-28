@@ -1017,6 +1017,13 @@ export const materialService = {
     return res.data;
   },
 
+  // 퀴즈별 랭킹(서버 검증 점수 기준). 제안 계약 — frontend/docs/material-quiz-ranking-contract.md.
+  // EC2 최종 구현이 경로·필드를 바꾸면 여기와 materialRankingModel.normalizeRanking 만 맞춘다.
+  getQuizRanking: async (materialId, quizId, { limit = 50 } = {}) => {
+    const res = await api.get(`/api/materials/${materialId}/quiz/${quizId}/ranking`, { params: { limit } });
+    return res.data;
+  },
+
   deleteQuiz: async (materialId, quizId) => {
     const res = await api.delete(`/api/materials/${materialId}/quiz/${quizId}`);
     return res.data;

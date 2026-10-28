@@ -3864,3 +3864,121 @@ textarea.mobile-field__input {
   font-weight: 700;
   overflow-wrap: anywhere;
 }
+
+/* ── 자료 퀴즈 랭킹(PDF별 · 퀴즈별) ───────────────────────────────────────── */
+.mobile-ranking__title {
+  overflow-wrap: anywhere;
+}
+
+.mobile-ranking__hint {
+  margin: 0 0 var(--space-md);
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.mobile-ranking__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-basic);
+  margin-bottom: var(--space-basic);
+}
+
+.mobile-ranking__count {
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.mobile-ranking__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-basic);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mobile-ranking__list--me {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px dashed var(--color-border);
+}
+
+.mobile-ranking__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-height: 56px;
+  padding: 10px var(--space-md);
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  background-color: var(--color-bg-card);
+  box-shadow: var(--shadow-card);
+  color: var(--color-text-main);
+}
+
+.mobile-ranking__row.is-me {
+  border-color: var(--color-primary);
+}
+
+.mobile-ranking__rank {
+  display: flex;
+  flex: 0 0 40px;
+  flex-direction: column;
+  align-items: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-text-muted);
+}
+
+.mobile-ranking__rank.is-medal-1 { color: #c99400; }
+.mobile-ranking__rank.is-medal-2 { color: #8a94a3; }
+.mobile-ranking__rank.is-medal-3 { color: #b0683a; }
+
+.mobile-ranking__tie {
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.mobile-ranking__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.mobile-ranking__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.mobile-ranking__nickname {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mobile-ranking__me {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background-color: var(--color-primary);
+  color: #ffffff;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.mobile-ranking__meta {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.mobile-ranking__score {
+  flex: 0 0 auto;
+  font-size: 16px;
+  font-weight: 700;
+}

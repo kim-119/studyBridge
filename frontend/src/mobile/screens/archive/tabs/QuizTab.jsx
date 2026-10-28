@@ -51,7 +51,7 @@ function serverMessageOf(submitState) {
   return submitState.error?.response?.data?.message || submitState.errorMessage;
 }
 
-function quizLabel(quiz, index) {
+export function quizLabel(quiz, index) {
   const count = toPublicQuestions(quiz).length;
   const lastScore = typeof quiz.lastResult?.score === 'number' ? `최근 ${quiz.lastResult.score}점` : null;
   const parts = [formatDate(quiz.createdAt), quiz.difficulty, count ? `${count}문항` : null, lastScore].filter(Boolean);
