@@ -4,23 +4,14 @@ import { useNavigate, useParams } from 'react-router-dom';
 import BottomSheet from '../../components/BottomSheet';
 import Button from '../../components/Button';
 import ScreenState from '../../components/ScreenState';
-import SubTabs from '../../components/SubTabs';
 import MobileScreen from '../../shell/MobileScreen';
 import { plannerService, todoService } from '../../../services/api';
 import { useAuth } from '../../../hooks/useAuth';
 import { useAsync, useSubmit } from '../../data/useAsync';
 import { extractDownloadUrl } from '../../platform/downloadUrl';
 import { openExternalUrl } from '../../platform/externalLink';
-import PlannerNextLearningCard from './PlannerNextLearningCard';
-import PlannerPlanAnalysisSection from './PlannerPlanAnalysisSection';
 import TimeTableGrid from './TimeTableGrid';
 import { findLinkedSchedule, formatMinutes, formatPlannerDate, toPlannerDetail } from './plannerAdapter';
-
-const DETAIL_TABS = [
-  { key: 'planner', label: '플래너' },
-  { key: 'analysis', label: 'AI 계획 분석' },
-  { key: 'next', label: '다음 학습' },
-];
 
 function PlannerFields({ planner }) {
   const fields = [
@@ -83,7 +74,6 @@ export default function PlannerDetailScreen() {
   const { plannerId } = useParams();
   const navigate = useNavigate();
   const { userId } = useAuth();
-  const [activeTab, setActiveTab] = useState(DETAIL_TABS[0].key);
   const [isDeleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   const planner = useAsync(
@@ -123,7 +113,7 @@ export default function PlannerDetailScreen() {
     downloadPdf.errorMessage ||
     removePlanner.errorMessage;
 
-  const renderPlannerTab = () => (
+  const renderPlannerContent = () => (
     <>
       <section className="mobile-card mobile-section">
         {data.roadmapLabel && <p className="mobile-card__meta">{data.roadmapLabel}</p>}
@@ -179,21 +169,10 @@ export default function PlannerDetailScreen() {
     </>
   );
 
-  const renderActiveTab = () => {
-    if (activeTab === 'analysis') return <PlannerPlanAnalysisSection plannerId={plannerId} />;
-    if (activeTab === 'next') return <PlannerNextLearningCard plannerId={plannerId} />;
-    return renderPlannerTab();
-  };
-
   return (
     <MobileScreen title={data?.title || '플래너'} showBackButton>
       <ScreenState query={planner} loadingLabel="플래너를 불러오는 중입니다">
-        {data && (
-          <>
-            <SubTabs tabs={DETAIL_TABS} activeKey={activeTab} onChange={setActiveTab} />
-            {renderActiveTab()}
-          </>
-        )}
+        {data && renderPlannerContent()}
       </ScreenState>
 
       <BottomSheet
