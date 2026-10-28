@@ -22,16 +22,23 @@ import {
   serverReasonOf,
 } from '../quizGenerationModel';
 import { DELETE_CONFIRM_MESSAGE, RESOURCE_KIND } from '../resourceDeleteModel';
+import { MATERIAL_RANKING_ENABLED } from '../../archive/materialRankingModel';
 import MaterialUploadControl from './MaterialUploadControl';
 import RoomPanel from './RoomPanel';
+import SharedMaterialRanking from './SharedMaterialRanking';
 import { ROOM_PANEL } from './useRoomOverlay';
 import { useMaterialUpload } from './useMaterialUpload';
 import { useResourceDeletion } from './useResourceDeletion';
 
-const RESOURCE_TABS = [
+const BASE_RESOURCE_TABS = [
   { key: ROOM_PANEL.MATERIALS, label: '학습자료' },
   { key: ROOM_PANEL.QUIZ, label: '퀴즈' },
 ];
+
+// PDF 랭킹 탭은 서버 랭킹 API 가 켜진 빌드(VITE_FEATURE_MATERIAL_RANKING=true)에서만 보인다.
+export function resourceTabs({ rankingEnabled = MATERIAL_RANKING_ENABLED } = {}) {
+  return rankingEnabled ? [...BASE_RESOURCE_TABS, { key: ROOM_PANEL.RANKING, label: 'PDF 랭킹' }] : BASE_RESOURCE_TABS;
+}
 
 function formatQuizMeta(quiz) {
   return [quiz.creatorName, quiz.questionCount ? `${quiz.questionCount}문항` : null].filter(Boolean).join(' · ');
@@ -269,9 +276,11 @@ export default function StudyResourcesPanel({
     <RoomPanel
       title="자료 / 퀴즈"
       onClose={onClose}
-      tabs={<SubTabs tabs={RESOURCE_TABS} activeKey={activeTab} onChange={onChangeTab} />}
+      tabs={<SubTabs tabs={resourceTabs()} activeKey={activeTab} onChange={onChangeTab} />}
     >
-      {activeTab === ROOM_PANEL.QUIZ ? (
+      {activeTab === ROOM_PANEL.RANKING && MATERIAL_RANKING_ENABLED ? (
+        <SharedMaterialRanking groupId={groupId} />
+      ) : activeTab === ROOM_PANEL.QUIZ ? (
         <QuizList groupId={groupId} isLeader={isLeader} room={room} quizzes={quizzes} />
       ) : (
         <MaterialsList

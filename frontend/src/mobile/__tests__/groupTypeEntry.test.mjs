@@ -27,6 +27,7 @@ const { default: VideoSessionScreen } = await importMobileModule('screens/groups
 const GROUP_ID = '51';
 const MY_ID = 2;
 const mountedRenderers = [];
+const timerCalls = [];
 
 function signIn() {
   localStorage.setItem('userId', String(MY_ID));
@@ -42,7 +43,13 @@ function stubServer(group) {
     getGroupMaterials: async () => [],
     getGroupQuizzes: async () => [],
   });
-  api.timerService.syncTimer = async () => ({});
+  timerCalls.length = 0;
+  for (const name of ['startTimer', 'heartbeat', 'endTimer', 'getCurrentSession', 'syncTimer']) {
+    api.timerService[name] = async (...args) => {
+      timerCalls.push({ name, args });
+      return null;
+    };
+  }
 }
 
 async function openRoom(group) {
@@ -138,4 +145,11 @@ test('캠스터디는 입장 준비 화면을 거쳐 비디오 버튼이 있는 
 
   assert.equal(videoSessionCalls.join.length, 1);
   assert.equal(buttonsLabelled(renderer, '비디오').length, 1);
+});
+
+test('그룹스터디 입장만으로 개인 학습 세션을 만들거나 동기화하지 않는다', async () => {
+  for (const group of [GENERAL_GROUP, CAM_GROUP]) {
+    await openRoom(group);
+    assert.deepEqual(timerCalls, [], group.studyType);
+  }
 });

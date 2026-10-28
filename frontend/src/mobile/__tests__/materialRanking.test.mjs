@@ -146,12 +146,12 @@ test('R13 오류 분류: 미배포·삭제·권한 없음·네트워크', () => 
   assert.equal(classifyRankingError(httpError(501)), RANKING_STATE.UNAVAILABLE);
   // 존재하지 않거나 삭제된 PDF·퀴즈
   assert.equal(classifyRankingError(httpError(404, { code: 'MATERIAL_NOT_FOUND' })), RANKING_STATE.NOT_FOUND);
-  assert.equal(classifyRankingError(httpError(404, { code: 'QUIZ_NOT_FOUND' })), RANKING_STATE.NOT_FOUND);
+  assert.equal(classifyRankingError(httpError(404, { code: 'QUIZ_NOT_FOUND' })), RANKING_STATE.QUIZ_NOT_FOUND);
   // 다른 사용자의 비공개 자료
   assert.equal(classifyRankingError(httpError(403)), RANKING_STATE.FORBIDDEN);
   // 네트워크 오류·서버 오류는 재시도 가능
   assert.equal(classifyRankingError({ message: 'Network Error' }), RANKING_STATE.ERROR);
-  assert.equal(classifyRankingError(httpError(500)), RANKING_STATE.ERROR);
+  assert.equal(classifyRankingError(httpError(500)), RANKING_STATE.SERVER_ERROR);
 });
 
 test('R13b 존재하지 않는·삭제된 PDF 의 퀴즈 목록 404 는 미배포가 아니라 자료 없음', () => {

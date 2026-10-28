@@ -1,0 +1,33 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+// 네이티브 화면공유 송출(MediaProjection + libwebrtc + OpenVidu SCREEN). 앱은 -PsbScreenShare=true 일 때만 이 모듈을 포함한다.
+android {
+    namespace = "kr.co.studybridge.screenshare"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        minSdkVersion rootProject.ext.minSdkVersion
+    }
+    lint {
+        abortOnError true
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    kotlinOptions {
+        jvmTarget = '21'
+    }
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation "androidx.core:core:$androidxCoreVersion"
+    implementation "androidx.activity:activity:$androidxActivityVersion"
+    implementation "io.github.webrtc-sdk:android:137.7151.05"
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+    testImplementation "junit:junit:$junitVersion"
+    testImplementation "org.jetbrains.kotlin:kotlin-test-junit:$kotlinVersion"
+    // JVM 단위 테스트의 android.jar 는 org.json 이 비어 있는 스텁이다.
+    testImplementation "org.json:json:20240303"
+}

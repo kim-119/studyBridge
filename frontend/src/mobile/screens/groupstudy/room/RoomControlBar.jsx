@@ -19,8 +19,8 @@ function ControlButton({ icon, label, isActive = false, isOff = false, hasBadge 
 }
 
 export default function RoomControlBar({ session, allowsCamera = true, activePanel, hasUnreadChat, onOpenPanel }) {
-  const isChatActive = activePanel === ROOM_PANEL.CHAT || activePanel === ROOM_PANEL.AI;
-  const isMaterialsActive = activePanel === ROOM_PANEL.MATERIALS || activePanel === ROOM_PANEL.QUIZ;
+  const isChatActive = [ROOM_PANEL.CHAT, ROOM_PANEL.AI, ROOM_PANEL.SCREEN_AI].includes(activePanel);
+  const isMaterialsActive = [ROOM_PANEL.MATERIALS, ROOM_PANEL.QUIZ, ROOM_PANEL.RANKING].includes(activePanel);
 
   return (
     <nav className="mobile-room-bar" aria-label="스터디룸 제어">

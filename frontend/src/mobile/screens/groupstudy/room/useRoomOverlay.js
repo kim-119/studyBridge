@@ -6,9 +6,11 @@ export const ROOM_PANEL = {
   SETTINGS: 'settings',
   CHAT: 'chat',
   AI: 'ai',
+  SCREEN_AI: 'screen-ai',
   PARTICIPANTS: 'participants',
   MATERIALS: 'materials',
   QUIZ: 'quiz',
+  RANKING: 'ranking',
 };
 
 const OVERLAY_STATE = { overlay: true };

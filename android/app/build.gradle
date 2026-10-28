@@ -7,6 +7,8 @@ if (signingPropertiesFile.exists()) {
     signingPropertiesFile.withInputStream { signingProperties.load(it) }
 }
 
+def screenShareEnabled = (project.findProperty('sbScreenShare') ?: 'false').toString() == 'true'
+
 android {
     namespace = "kr.co.studybridge.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -19,6 +21,7 @@ android {
         versionCode project.hasProperty('sbVersionCode') ? project.property('sbVersionCode').toString().toInteger() : 1
         versionName project.hasProperty('sbVersionName') ? project.property('sbVersionName').toString() : "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField "boolean", "SCREEN_SHARE_ENABLED", screenShareEnabled.toString()
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
@@ -34,6 +37,9 @@ android {
                 keyPassword signingProperties['keyPassword']
             }
         }
+    }
+    buildFeatures {
+        buildConfig = true
     }
     lint {
         // PropertyEscape 는 local.properties 만 건드린다. 이 파일은 gitignore 대상이라
@@ -76,6 +82,11 @@ dependencies {
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
+    // 네이티브 화면공유(MediaProjection + libwebrtc). 실기기 검증 전에는 기본 빌드(v1.5 릴리스)에 넣지 않는다.
+    // 포함: ./gradlew assembleDebug -PsbScreenShare=true
+    if (screenShareEnabled) {
+        implementation project(':screenshare')
+    }
 }
 
 apply from: 'capacitor.build.gradle'

@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { groupService } from '../../../services/api';
-import {
-  forceSecureWebSocketTransport,
-  parseConnectionMetadata,
-  resolveIceServers,
-} from '../../../utils/webrtc/iceServers';
+import { forceSecureWebSocketTransport, resolveIceServers } from '../../../utils/webrtc/iceServers';
 import { describeApiError } from '../../data/useAsync';
 import { registerAppStateChange } from '../../platform/nativeShell';
 import {
@@ -14,7 +10,9 @@ import {
   stopVoiceSession,
 } from '../../platform/mediaSession';
 import { FACING_MODE, acquireCameraTrack, describeDeviceError, oppositeFacingMode } from './cameraTrack';
-import { buildConnectionData, describeConnection } from './groupStudyModel';
+import { parseConnectionIdentity } from './connectionIdentity';
+import { isOwnScreenConnection } from './screenShareModel';
+import { buildConnectionData } from './groupStudyModel';
 import {
   DEVICE_TOGGLE,
   INITIAL_MEDIA_STATE,
@@ -74,8 +72,8 @@ async function requestGrants({ wantsCamera, wantsMicrophone }) {
 }
 
 function remoteIdentity(connection) {
-  const identity = describeConnection(parseConnectionMetadata(connection));
-  return { userId: identity.userId, name: identity.name || '참여자' };
+  const identity = parseConnectionIdentity(connection);
+  return { userId: identity.userId, name: identity.name || '참여자', connectionKind: identity.kind };
 }
 
 async function initPublisher(openVidu, attempt, cameraTrack) {
@@ -157,6 +155,7 @@ export function useVideoSession(groupId, { userId, displayName }) {
   const joinRef = useRef(null);
   const joinOptionsRef = useRef({ cameraOn: false, micOn: false, facingMode: FACING_MODE.FRONT });
   const cameraBeforeBackgroundRef = useRef(false);
+  const iceServersRef = useRef([]);
 
   const setNotice = useCallback((message) => dispatch({ type: MEDIA_ACTION.NOTICE_CHANGED, message }), []);
 
@@ -208,10 +207,13 @@ export function useVideoSession(groupId, { userId, displayName }) {
   const registerSessionEvents = useCallback(
     (session) => {
       const isOwnConnection = (connectionId) => connectionId === session.connection?.connectionId;
+      // 내 화면공유(SCREEN, 내 PRIMARY 소유)는 네이티브가 송출한다 → 다시 받아 보지 않는다(대역폭·중복 타일 방지).
+      const isOwnScreen = (connection) =>
+        isOwnScreenConnection(parseConnectionIdentity(connection), session.connection?.connectionId);
 
       session.on('connectionCreated', (event) => {
         const connectionId = event.connection?.connectionId;
-        if (!connectionId || isOwnConnection(connectionId)) return;
+        if (!connectionId || isOwnConnection(connectionId) || isOwnScreen(event.connection)) return;
         upsertRemote(connectionId, {
           ...remoteIdentity(event.connection),
           streamManager: null,
@@ -222,21 +224,23 @@ export function useVideoSession(groupId, { userId, displayName }) {
       });
 
       session.on('streamCreated', (event) => {
+        if (isOwnScreen(event.stream.connection)) return;
         const subscriber = session.subscribe(event.stream, undefined);
         upsertRemote(event.stream.connection.connectionId, {
           ...remoteIdentity(event.stream.connection),
-          ...describeStreamMedia(event.stream),
+          ...describeStreamMedia(event.stream, parseConnectionIdentity(event.stream.connection)),
           streamManager: subscriber,
         });
       });
 
       session.on('streamPropertyChanged', (event) => {
         const connectionId = event.stream?.connection?.connectionId;
-        if (!connectionId || isOwnConnection(connectionId)) return;
-        upsertRemote(connectionId, describeStreamMedia(event.stream));
+        if (!connectionId || isOwnConnection(connectionId) || isOwnScreen(event.stream.connection)) return;
+        upsertRemote(connectionId, describeStreamMedia(event.stream, parseConnectionIdentity(event.stream.connection)));
       });
 
       session.on('streamDestroyed', (event) => {
+        if (isOwnScreen(event.stream.connection)) return;
         upsertRemote(event.stream.connection.connectionId, {
           streamManager: null,
           cameraOn: false,
@@ -333,7 +337,8 @@ export function useVideoSession(groupId, { userId, displayName }) {
 
     const openVidu = new OpenVidu();
     forceSecureWebSocketTransport(openVidu);
-    openVidu.setAdvancedConfiguration({ iceServers: resolveIceServers(tokenResponse) });
+    iceServersRef.current = resolveIceServers(tokenResponse);
+    openVidu.setAdvancedConfiguration({ iceServers: iceServersRef.current });
 
     const session = openVidu.initSession();
     openViduRef.current = openVidu;
@@ -525,5 +530,8 @@ export function useVideoSession(groupId, { userId, displayName }) {
     toggleSpeakerphone,
     switchCamera,
     removeParticipantsByUserId: removeRemotesByUserId,
+    // 네이티브 화면공유(SCREEN)를 이 PRIMARY 연결에 귀속시키고 같은 ICE(TURN) 설정을 쓰기 위한 조회용.
+    getPrimaryConnectionId: () => sessionRef.current?.connection?.connectionId || null,
+    getIceServers: () => iceServersRef.current,
   };
 }

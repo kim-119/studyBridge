@@ -275,14 +275,6 @@ export function buildConnectionData(userId, displayName) {
   return JSON.stringify({ userId, clientData: displayName });
 }
 
-export function describeConnection(metadata) {
-  const source = metadata || {};
-  return {
-    userId: source.userId ?? null,
-    name: source.clientData || source.name || source.nickname || null,
-  };
-}
-
 export function splitChatHistory(entries, userId) {
   const list = Array.isArray(entries) ? entries : [];
 

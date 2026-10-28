@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ScreenState from '../../components/ScreenState';
 import MobileScreen from '../../shell/MobileScreen';
 import { materialService } from '../../../services/api';
@@ -71,6 +71,7 @@ export default function MaterialDetailScreen() {
   const { materialId } = useParams();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const notice = useLocation().state?.notice || null;
   const context = detailContextFrom(searchParams);
 
   const detail = useAsync(() => materialService.getMaterialDetail(materialId, context), [materialId, context]);
@@ -106,6 +107,11 @@ export default function MaterialDetailScreen() {
       <ScreenState query={detail} loadingLabel="자료를 불러오는 중입니다">
         {material && (
           <>
+            {notice && (
+              <p className="mobile-field__hint" role="status">
+                {notice}
+              </p>
+            )}
             <MaterialHeader
               material={material}
               kind={kind}
