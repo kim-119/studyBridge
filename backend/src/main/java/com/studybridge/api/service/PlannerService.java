@@ -255,6 +255,34 @@ public class PlannerService {
         return toResponse(plannerRepository.save(planner), false);
     }
 
+    /**
+     * 예정일만 옮긴다(AI 학습 내비게이터의 승인된 지연 복구). 기존 수정 경로 {@link #update} 를 그대로 타도록 현재 값으로 요청을 채우고
+     * 날짜(year/month/day/요일/planner_date)만 바꾼다 — 소유권·원천(plannerType) 불변 규칙이 같게 적용된다.
+     */
+    @Transactional
+    public PlannerDTO.Response reschedule(Long userId, Long plannerId, java.time.LocalDate date) {
+        Planner p = getOwned(userId, plannerId);
+        PlannerDTO.Request req = new PlannerDTO.Request();
+        req.setTitle(p.getTitle());
+        req.setYear(date.getYear());
+        req.setMonth(date.getMonthValue());
+        req.setDay(date.getDayOfMonth());
+        req.setDayOfWeek(new String[]{"월", "화", "수", "목", "금", "토", "일"}[date.getDayOfWeek().getValue() - 1]);
+        req.setPlannerDate(date);
+        req.setGoalTime(p.getGoalTime());
+        req.setNetStudyTime(p.getNetStudyTime());
+        req.setWakeUpTime(p.getWakeUpTime());
+        req.setDDay(p.getDDay());
+        req.setStudyType(p.getStudyType());
+        req.setPriority(p.getPriority());
+        req.setTerm(p.getTerm());
+        req.setSubject(p.getSubject());
+        req.setContent(p.getContent());
+        req.setTmi(p.getTmi());
+        req.setTimeTableJson(p.getTimeTableJson());
+        return update(userId, plannerId, req);
+    }
+
     public List<PlannerDTO.Response> getMyPlanners(Long userId) {
         return getMyPlanners(userId, null);
     }

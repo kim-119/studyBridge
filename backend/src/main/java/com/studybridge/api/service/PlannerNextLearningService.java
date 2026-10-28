@@ -183,6 +183,13 @@ public class PlannerNextLearningService {
      * (로드맵 플래너의 materialId 는 출처 PDF 라 여러 플래너가 공유하므로 그 분석은 쓰지 않는다.)
      */
     public Completion completion(Long userId, Planner current) {
+        List<PlanAnalysisItem> items = checklistItems(userId, current);
+        int done = (int) items.stream().filter(PlanAnalysisItem::isCompleted).count();
+        return new Completion(items.size(), done);
+    }
+
+    /** {@link #completion} 과 같은 분석 연결 규칙의 체크리스트 항목(삭제 제외, orderIndex 순). 분석이 없으면 빈 목록. */
+    public List<PlanAnalysisItem> checklistItems(Long userId, Planner current) {
         Optional<PlanAnalysis> analysis = planAnalysisRepository.findTopByUserIdAndPlannerIdOrderByIdDesc(userId, current.getId());
         if (analysis.isEmpty() && current.getMaterialId() != null) {
             Material m = materialRepository.findById(current.getMaterialId()).orElse(null);
@@ -190,10 +197,8 @@ public class PlannerNextLearningService {
                 analysis = planAnalysisRepository.findTopByUserIdAndMaterialIdOrderByIdDesc(userId, m.getMaterialId());
             }
         }
-        if (analysis.isEmpty()) return new Completion(0, 0);
-        List<PlanAnalysisItem> items = planAnalysisItemRepository.findByAnalysisIdAndDeletedFalseOrderByOrderIndexAsc(analysis.get().getId());
-        int done = (int) items.stream().filter(PlanAnalysisItem::isCompleted).count();
-        return new Completion(items.size(), done);
+        if (analysis.isEmpty()) return List.of();
+        return planAnalysisItemRepository.findByAnalysisIdAndDeletedFalseOrderByOrderIndexAsc(analysis.get().getId());
     }
 
     /** 다음 플래너의 자료보관함 보관 항목 id(있으면 기존 Archive 라우팅으로 이동). */

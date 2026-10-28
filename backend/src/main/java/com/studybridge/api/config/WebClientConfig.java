@@ -180,6 +180,49 @@ public class WebClientConfig {
                 .build();
     }
 
+    // AI 학습 내비게이터(ai07 적응형 학습 엔진 /api/ai/planner/adaptive) 전용 응답 상한. ai07 요청 예산 30초(LLM 이 늦으면 규칙 결과로 200)
+    //  + 여유 → 45초. 공용 fastApiWebClient(1800s)·비전(260s)·FASTAPI_TIMEOUT 과 분리해 서로 영향을 주지 않는다.
+    @Value("${ai.planner.adaptive.timeout-seconds:45}")
+    private int adaptiveTimeoutSeconds;
+    // 전용 연결 풀: max-connections 8 = ai07 전체 동시 처리 한도(ADAPTIVE_MAX_INFLIGHT). 넘치는 요청은 짧게 기다린 뒤 429.
+    //  max-idle 4s = ai07 uvicorn keep-alive(5s)보다 먼저 유휴 연결을 버려, 서버가 닫는 중인 연결에 요청을 싣지 않는다.
+    @Value("${ai.planner.adaptive.pool.max-connections:8}")
+    private int adaptiveMaxConnections;
+    @Value("${ai.planner.adaptive.pool.pending-acquire-max:16}")
+    private int adaptivePendingAcquireMax;
+    @Value("${ai.planner.adaptive.pool.acquire-timeout-seconds:5}")
+    private int adaptiveAcquireTimeoutSeconds;
+    @Value("${ai.planner.adaptive.pool.max-idle-seconds:4}")
+    private int adaptiveMaxIdleSeconds;
+
+    /**
+     * 적응형 학습 엔진 WebClient = PRIMARY(ai07 터널) 고정. secondary(EC2 :8000)는 키가 달라 failover 하지 않는다.
+     * 연결 풀은 빈으로 등록하지 않는다(비전 풀 주입이 이름으로 해석되는 기존 구성을 건드리지 않기 위해).
+     */
+    @Bean
+    public WebClient adaptivePlannerWebClient(WebClient.Builder builder) {
+        ConnectionProvider provider = ConnectionProvider.builder("adaptive-planner")
+                .maxConnections(Math.max(1, adaptiveMaxConnections))
+                .pendingAcquireMaxCount(Math.max(1, adaptivePendingAcquireMax))
+                .pendingAcquireTimeout(Duration.ofSeconds(Math.max(1, adaptiveAcquireTimeoutSeconds)))
+                .maxIdleTime(Duration.ofSeconds(Math.max(1, adaptiveMaxIdleSeconds)))
+                .build();
+        int timeout = Math.max(40, adaptiveTimeoutSeconds);
+        HttpClient httpClient = HttpClient.create(provider)
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, CONNECT_TIMEOUT_MS)
+                .responseTimeout(Duration.ofSeconds(timeout))
+                .doOnConnected(conn -> conn
+                        .addHandlerLast(new ReadTimeoutHandler(timeout, TimeUnit.SECONDS))
+                        .addHandlerLast(new WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)));
+        return builder.clone()
+                .baseUrl(fastApiBaseUrl)
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .exchangeStrategies(ExchangeStrategies.builder()
+                        .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(2 * 1024 * 1024))
+                        .build())
+                .build();
+    }
+
     /**
      * Intent Router 전용 WebClient. 짧은 connect/response 타임아웃(분기 판단용).
      * 실제 요청별 상한은 IntentRouterService의 block(timeoutMs)로 한 번 더 제어한다.

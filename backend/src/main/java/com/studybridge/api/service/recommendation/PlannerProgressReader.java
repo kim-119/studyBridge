@@ -113,6 +113,41 @@ public class PlannerProgressReader {
         return out;
     }
 
+    /**
+     * {@link #completions} 와 같은 분석 연결 규칙으로 플래너별 체크리스트 항목(삭제 제외, orderIndex 순)을 일괄 조회한다.
+     * plannerId 로 연결된 최신 분석을 우선하고, 없으면 USER 플래너만 단건 규칙(보관 자료 연결)으로 보충한다.
+     */
+    public Map<Long, List<PlanAnalysisItem>> checklists(Long userId, List<Planner> planners) {
+        Map<Long, List<PlanAnalysisItem>> out = new HashMap<>();
+        if (planners.isEmpty()) return out;
+        List<Long> ids = planners.stream().map(Planner::getId).toList();
+        Map<Long, PlanAnalysis> latest = new HashMap<>();
+        for (PlanAnalysis a : planAnalysisRepository.findByUserIdAndPlannerIdIn(userId, ids)) {
+            PlanAnalysis prev = latest.get(a.getPlannerId());
+            if (prev == null || a.getId() > prev.getId()) latest.put(a.getPlannerId(), a);
+        }
+        if (!latest.isEmpty()) {
+            Map<Long, Long> analysisToPlanner = new HashMap<>();
+            latest.forEach((pid, a) -> analysisToPlanner.put(a.getId(), pid));
+            for (PlanAnalysisItem it : planAnalysisItemRepository.findByAnalysisIdInAndDeletedFalse(analysisToPlanner.keySet())) {
+                out.computeIfAbsent(analysisToPlanner.get(it.getAnalysisId()), k -> new ArrayList<>()).add(it);
+            }
+            out.values().forEach(list -> list.sort(java.util.Comparator
+                    .comparing((PlanAnalysisItem i) -> i.getOrderIndex() == null ? Integer.MAX_VALUE : i.getOrderIndex())
+                    .thenComparing(PlanAnalysisItem::getId, java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder()))));
+        }
+        for (Planner p : planners) {
+            if (latest.containsKey(p.getId())) {
+                out.putIfAbsent(p.getId(), List.of());
+            } else if (!PlannerNextLearningService.isRoadmapPlanner(p) && p.getMaterialId() != null) {
+                out.put(p.getId(), nextLearningService.checklistItems(userId, p));
+            } else {
+                out.put(p.getId(), List.of());
+            }
+        }
+        return out;
+    }
+
     /** 10분 집중 체크표(timeTableJson {"hour":[bool x6]})의 체크 칸 × 10분 = 실제 학습 기록 분. 기록 없으면 null. */
     public static Integer focusMinutes(String timeTableJson) {
         if (timeTableJson == null || timeTableJson.isBlank() || timeTableJson.trim().equals("{}")) return null;

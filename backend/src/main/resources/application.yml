@@ -113,6 +113,22 @@ ai:
   recommendation:
     enabled: ${AI_RECOMMENDATION_ENABLED:false}
     timeout-seconds: ${AI_RECOMMENDATION_TIMEOUT_SECONDS:30}
+  # AI 학습 내비게이터(AdaptivePlannerService → ai07 POST /api/ai/planner/adaptive, PRIMARY 전용·failover 없음).
+  #  계약 fastapi/docs/planner/적응형_학습엔진_API_연동계약.md. timeout-seconds 는 ai07 요청 예산 30s + 여유(≥40, 다른 AI 타임아웃과 별개).
+  #  proposal-secret 이 비면 기동마다 무작위 키 — 재기동 전 받은 일정 제안은 만료(다시 계산)된다.
+  planner:
+    adaptive:
+      path: ${AI_ADAPTIVE_PLANNER_PATH:/api/ai/planner/adaptive}
+      timeout-seconds: ${AI_ADAPTIVE_PLANNER_TIMEOUT_SECONDS:45}
+      retry-max-wait-seconds: ${AI_ADAPTIVE_PLANNER_RETRY_MAX_WAIT_SECONDS:3}
+      timezone: ${AI_ADAPTIVE_PLANNER_TIMEZONE:Asia/Seoul}
+      proposal-ttl-minutes: ${AI_ADAPTIVE_PLANNER_PROPOSAL_TTL_MINUTES:30}
+      proposal-secret: ${AI_ADAPTIVE_PLANNER_PROPOSAL_SECRET:}
+      pool:
+        max-connections: ${AI_ADAPTIVE_PLANNER_POOL_MAX_CONNECTIONS:8}
+        pending-acquire-max: ${AI_ADAPTIVE_PLANNER_POOL_PENDING_ACQUIRE_MAX:16}
+        acquire-timeout-seconds: ${AI_ADAPTIVE_PLANNER_POOL_ACQUIRE_TIMEOUT_SECONDS:5}
+        max-idle-seconds: ${AI_ADAPTIVE_PLANNER_POOL_MAX_IDLE_SECONDS:4}
   # 그룹스터디 화면공유 AI 분석(GroupScreenAiService → ai07 POST /api/ai/vision/analyze, PRIMARY 전용·failover 없음).
   #  timeout-seconds: ai07 최악 대기 120+30s + 추론 90s 보다 길게(≥250). 공용 FASTAPI_TIMEOUT(180s)과 별개.
   vision:

@@ -47,6 +47,11 @@ public class ScheduleRegistrationService {
 
     public static final String SOURCE_REVIEW_NOTE = "REVIEW_NOTE";
     public static final String SOURCE_PLANNER = "PLANNER";
+    /** AI 학습 내비게이터가 제안하고 사용자가 승인한 학습 세션(source_id = plannerId, 같은 플래너·날짜는 1건). */
+    public static final String SOURCE_ADAPTIVE_SESSION = "ADAPTIVE_SESSION";
+
+    /** 학습 세션 등록 결과. state = CREATED | UPDATED(분 변경) | UNCHANGED(이미 같은 내용). */
+    public record SessionResult(Long todoId, String title, LocalDate scheduleDate, String state) {}
 
     private final TodoRepository todoRepository;
     private final UserRepository userRepository;
@@ -280,6 +285,64 @@ public class ScheduleRegistrationService {
         m.put("hasTimeTable", planner.getTimeTableJson() != null && !planner.getTimeTableJson().isBlank());
         m.put("timeTableJson", planner.getTimeTableJson());
         return m;
+    }
+
+    // ------------------------------------------------------------------
+    // AI 학습 내비게이터 학습 세션 → todos
+    // ------------------------------------------------------------------
+
+    /**
+     * 승인된 학습 세션 1건을 주간 일정에 기록한다. 호출자 트랜잭션 안에서만 실행한다(MANDATORY) — 여러 세션·플래너 변경을
+     * 하나의 트랜잭션으로 묶어 일부만 저장되는 일이 없게 한다. (user, ADAPTIVE_SESSION, plannerId, date) 는 RDS 부분 unique index
+     * uk_todos_source_schedule 로 중복이 막히며, 동시 경합은 호출자가 DataIntegrityViolation 을 받아 다시 시도한다.
+     */
+    @org.springframework.transaction.annotation.Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public SessionResult upsertStudySession(Long userId, Planner planner, LocalDate date, int minutes) {
+        if (planner == null || !userId.equals(planner.getUserId())) {
+            throw new SecurityException("해당 플래너에 대한 권한이 없습니다.");
+        }
+        if (date == null || minutes < 1 || minutes > 240) {
+            throw new IllegalArgumentException("학습 세션 날짜·시간이 올바르지 않습니다.");
+        }
+        String text = studySessionTitle(planner, minutes);
+        Optional<Todo> existing = findExisting(userId, SOURCE_ADAPTIVE_SESSION, planner.getId(), date);
+        if (existing.isPresent()) {
+            Todo t = existing.get();
+            if (text.equals(t.getText())) return new SessionResult(t.getId(), t.getText(), date, "UNCHANGED");
+            t.setText(text);
+            Todo saved = todoRepository.saveAndFlush(t);
+            log.info("[SCHEDULE] adaptive session 갱신 userId={} plannerId={} todoId={} date={} minutes={}",
+                    userId, planner.getId(), saved.getId(), date, minutes);
+            return new SessionResult(saved.getId(), saved.getText(), date, "UPDATED");
+        }
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new NoSuchElementException("사용자를 찾을 수 없습니다."));
+        Todo todo = todoRepository.saveAndFlush(Todo.builder()
+                .user(user)
+                .text(text)
+                .completed(false)
+                .startDate(LocalDateTime.of(date, LocalTime.MIDNIGHT))
+                .endDate(LocalDateTime.of(date, LocalTime.of(23, 59, 59)))
+                .sourceType(SOURCE_ADAPTIVE_SESSION)
+                .sourceId(planner.getId())
+                .scheduleDate(date)
+                .build());
+        log.info("[SCHEDULE] adaptive session 등록 userId={} plannerId={} todoId={} date={} minutes={}",
+                userId, planner.getId(), todo.getId(), date, minutes);
+        return new SessionResult(todo.getId(), todo.getText(), date, "CREATED");
+    }
+
+    /** 이미 같은 내용으로 등록돼 있는지(재반영 판정용, 쓰기 없음). */
+    public boolean hasStudySession(Long userId, Planner planner, LocalDate date, int minutes) {
+        return findExisting(userId, SOURCE_ADAPTIVE_SESSION, planner.getId(), date)
+                .map(t -> studySessionTitle(planner, minutes).equals(t.getText()))
+                .orElse(false);
+    }
+
+    /** "[AI 학습 30분] 플래너 제목". 제목은 planners.title 그대로(AI 가 만든 학습명을 쓰지 않는다). */
+    public static String studySessionTitle(Planner planner, int minutes) {
+        String t = planner.getTitle() == null || planner.getTitle().isBlank() ? "플래너 " + planner.getId() : planner.getTitle().trim();
+        return clip("[AI 학습 " + minutes + "분] " + t);
     }
 
     // ------------------------------------------------------------------
