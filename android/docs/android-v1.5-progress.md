@@ -142,3 +142,24 @@ cd frontend && timeout 300 node --test src/mobile/__tests__/<이름>.test.mjs > 
 # push(배포 트리거 없음): git push -u origin feature/android-v1.5
 # PR: gh auth login 후 gh pr create --base android-features --head feature/android-v1.5
 ```
+
+## 릴리스 후보 검증 (2026-10-29, 배포 없음)
+
+| 항목 | 근거 | 결과 |
+|---|---|---|
+| Android CI | run 40784785320(`bc4bdeea`): 모바일 단위 테스트 526/526, lint, 번들 가드, Gradle 단위 테스트·lint(app + :screenshare), Debug APK 2종 | PASS |
+| 서명 Release APK·AAB 빌드 | Release 워크플로 수동 실행 run 40785452360(`feature/android-v1.5`, publish_to_server=false) | PASS |
+| 버전 | 공개 1.4/5 → 매니페스트 1.5 / versionCode 6 | PASS |
+| 서명 인증서 | V2 signer SHA-256 `7fbb86a7…6891e` = 1.4 배포 run 40625056366 과 동일(업데이트 설치 가능) | PASS |
+| 릴리스 APK 화면공유 미포함 | 가드 통과, 크기 18.03MB(1.4: 18.02MB) | PASS |
+| 릴리스 노트 | 다운로드 페이지 필터 통과 6항목 | PASS |
+| 배포 차단 | gate `publish=false (ref=refs/heads/feature/android-v1.5)`, EC2 전송·배포 단계 skipped, 공개 버전 1.4/5 유지 확인 | 배포 안 됨(의도) |
+| 실기기(v1.5 기능·화면공유 A~P) | 기기 없음 | NOT RUN |
+| 동시성(A~E 사용자) | 운영 부하 테스트 금지, 격리 환경 없음 | NOT RUN |
+
+참고: `android-features` 최신 Release run 40625442747(`d6858bb5`)은 `1.5.txt` 가 없어 릴리스 노트 게이트에서 중단됨(설계대로, 배포 없음).
+
+### v1.4 복구 경로
+- 배포 실패 시: EC2 스크립트가 version.json 을 마지막에 갱신하므로 중간 실패는 1.4 를 유지한다.
+- 배포 후 문제 시: 설치된 앱은 versionCode 를 낮출 수 없다(1.5→1.4 다운그레이드 불가). 복구는 1.4 코드(`d6858bb5`) 또는 수정본을
+  다음 versionCode(1.6/7)로 다시 배포하는 전진 복구다. 1.4 APK 는 `releases/StudyBridge-1.4.apk` 에 그대로 남아 신규 설치용 수동 전환이 가능하다(EC2/S3 권한 필요).
