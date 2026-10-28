@@ -240,6 +240,27 @@ public class MaterialController {
         return ResponseEntity.ok(materialQuizService.latestResult(userDetails.getId(), materialId, quizId));
     }
 
+    /**
+     * 퀴즈별 랭킹(최고점·경쟁 순위). 권한 = 응시 권한(소유자 또는 공유 그룹 멤버). limit 1~100(기본 50).
+     * 오류 {status, code, message}: 404 QUIZ_NOT_FOUND/MATERIAL_NOT_FOUND, 403 FORBIDDEN, 400 INVALID_LIMIT, 503 RANKING_UNAVAILABLE.
+     */
+    @GetMapping("/{materialId}/quiz/{quizId}/ranking")
+    public ResponseEntity<com.studybridge.api.dto.QuizDTO.RankingResponse> getQuizRanking(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @PathVariable Long quizId,
+            @RequestParam(required = false) Integer limit) {
+        return ResponseEntity.ok(materialQuizService.ranking(userDetails.getId(), materialId, quizId, limit));
+    }
+
+    /** 그룹에 공유된 자료의 퀴즈 목록(공유 그룹 멤버·소유자). 정답 키 없는 공개 문항 + 요청자의 최근 결과. */
+    @GetMapping("/{materialId}/shared-quizzes")
+    public ResponseEntity<List<com.studybridge.api.dto.QuizDTO.SharedQuiz>> getSharedQuizzes(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId) {
+        return ResponseEntity.ok(materialQuizService.sharedQuizzes(userDetails.getId(), materialId));
+    }
+
     @DeleteMapping("/{materialId}/quiz/{quizId}")
     public ResponseEntity<Void> deleteQuiz(
             @AuthenticationPrincipal CustomUserDetails userDetails,

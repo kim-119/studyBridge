@@ -9,8 +9,6 @@ import com.studybridge.api.repository.MaterialRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-import org.springframework.data.redis.core.HashOperations;
-import org.springframework.data.redis.core.RedisTemplate;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,28 +51,64 @@ class MaterialQuizServiceTest {
     private MaterialQuizScoreService scoreService;
     private MaterialQuiz quiz;
 
-    @SuppressWarnings("unchecked")
+    /**
+     * 점수 저장소 인메모리 대역. 실제 저장(Lua 원자 기록·ZSET 랭킹)은 MaterialQuizRankingRedisIT 가 실제 Redis 로 검증한다.
+     * 여기서는 서비스 계약(RecordOutcome: 응시 횟수·최고점·같은 답안의 짧은 시간 내 재전송 무시)만 같은 규칙으로 흉내 낸다.
+     */
+    final class InMemoryScores extends MaterialQuizScoreService {
+        final ObjectMapper om = new ObjectMapper().findAndRegisterModules();
+
+        InMemoryScores() {
+            super(null, null, new ObjectMapper().findAndRegisterModules(), 180, 3000);
+        }
+
+        @Override
+        public RecordOutcome record(StoredScore s, java.time.Instant now) {
+            Map<Object, Object> h = hashStore.computeIfAbsent(scoreKey(s.getQuizId()), k -> new LinkedHashMap<>());
+            StoredScore prev = find(s.getQuizId(), s.getUserId());
+            String fp = fingerprint(s.getSelected());
+            if (prev != null && fp.equals(prev.getAnswerFingerprint()) && prev.getSubmittedAtEpochMs() != null
+                    && now.toEpochMilli() - prev.getSubmittedAtEpochMs() < 3000) {
+                return new RecordOutcome(true, prev.getAttempt(), false, prev.effectiveBestScore(), true);
+            }
+            int attempt = prev == null || prev.getAttempt() == null ? 1 : prev.getAttempt() + 1;
+            int best = prev == null ? -1 : prev.effectiveBestScore();
+            boolean improved = s.getScore() > best;
+            s.setAttempt(attempt);
+            s.setBestScore(improved ? s.getScore() : best);
+            s.setBestCorrectCount(improved ? s.getCorrectCount() : prev.effectiveBestCorrect());
+            s.setBestAt(improved ? s.getSubmittedAt() : prev.effectiveBestAt());
+            s.setAnswerFingerprint(fp);
+            s.setSubmittedAtEpochMs(now.toEpochMilli());
+            try {
+                h.put(String.valueOf(s.getUserId()), om.writeValueAsString(s));
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+            return new RecordOutcome(true, attempt, improved, s.getBestScore(), false);
+        }
+
+        @Override
+        public StoredScore find(Long quizId, Long userId) {
+            Map<Object, Object> h = hashStore.get(scoreKey(quizId));
+            Object v = h == null ? null : h.get(String.valueOf(userId));
+            try {
+                return v == null ? null : om.readValue((String) v, StoredScore.class);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        @Override
+        public void deleteForQuiz(Long quizId) {
+            hashStore.remove(scoreKey(quizId));
+        }
+    }
+
     @BeforeEach
     void setUp() {
         hashStore.clear();
-        HashOperations<String, Object, Object> hash = mock(HashOperations.class, inv -> {
-            String m = inv.getMethod().getName();
-            Object[] a = inv.getArguments();
-            switch (m) {
-                case "put": hashStore.computeIfAbsent((String) a[0], k -> new LinkedHashMap<>()).put(a[1], a[2]); return null;
-                case "get": { Map<Object, Object> h = hashStore.get((String) a[0]); return h == null ? null : h.get(a[1]); }
-                default: return null;
-            }
-        });
-        RedisTemplate<String, Object> redis = mock(RedisTemplate.class, inv -> {
-            switch (inv.getMethod().getName()) {
-                case "opsForHash": return hash;
-                case "delete": return hashStore.remove(inv.getArguments()[0]) != null;
-                case "expire": return Boolean.TRUE;
-                default: return null;
-            }
-        });
-        scoreService = new MaterialQuizScoreService(redis, new ObjectMapper().findAndRegisterModules(), 180);
+        scoreService = new InMemoryScores();
 
         Material material = new Material();
         material.setMaterialId(MATERIAL);
@@ -94,7 +128,11 @@ class MaterialQuizServiceTest {
         Mockito.when(quizzes.findById(OTHER_QUIZ)).thenReturn(Optional.of(otherQuiz));
         Mockito.when(quizzes.findById(404L)).thenReturn(Optional.empty());
 
-        service = new MaterialQuizService(materials, quizzes, scoreService);
+        // 공유 관계 없음 → 기존처럼 소유자 전용
+        com.studybridge.api.repository.MaterialGroupShareRepository shares = mock(com.studybridge.api.repository.MaterialGroupShareRepository.class);
+        Mockito.when(shares.findByMaterialId(Mockito.anyLong())).thenReturn(List.of());
+        service = new MaterialQuizService(materials, quizzes, scoreService, shares,
+                mock(com.studybridge.api.repository.GroupStudyMemberRepository.class), mock(com.studybridge.api.repository.UserRepository.class));
     }
 
     private static QuizDTO.SubmitRequest submit(String... pairs) {
@@ -199,11 +237,19 @@ class MaterialQuizServiceTest {
         QuizDTO.ResultResponse b = service.submit(OWNER, MATERIAL, QUIZ, submit("q72-1", "o2"));
         assertEquals(a.getScore(), b.getScore());
         assertEquals(1, a.getAttempt());
-        assertEquals(2, b.getAttempt());
+        // 2026-10-28 정책: 같은 답안을 3초 안에 다시 보내면(중복 클릭·재전송) 응시 횟수에 넣지 않는다(랭킹 attemptCount 보호).
+        assertEquals(1, b.getAttempt());
+        assertTrue(b.getDuplicate());
+        // 창이 지난 뒤 같은 답안은 새 응시로 센다(저장소 계약 직접 확인)
+        MaterialQuizScoreService.StoredScore later = MaterialQuizScoreService.StoredScore.builder().quizId(QUIZ).userId(OWNER)
+                .score(a.getScore()).correctCount(a.getCorrectCount()).selected(Map.of("q72-1", "o2")).build();
+        assertEquals(2, scoreService.record(later, java.time.Instant.now().plusSeconds(10)).attempt());
         assertEquals(1, hashStore.get("studybridge:quiz:72:scores").size(), "덮어쓰기 — 이력 행이 늘지 않는다");
         // 재응시(다른 답) 는 최신이 반영된다
         QuizDTO.ResultResponse c = service.submit(OWNER, MATERIAL, QUIZ, submit("q72-1", "o1"));
         assertEquals(0, c.getScore());
+        assertEquals(3, c.getAttempt());
+        assertEquals(20, c.getBestScore(), "낮은 점수 재응시는 최고점을 바꾸지 않는다");
         assertEquals(0, service.latestResult(OWNER, MATERIAL, QUIZ).getScore());
     }
 
