@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
-import { groupService, timerService } from '../../../../services/api';
-import { describeApiError, useAsync } from '../../../data/useAsync';
+import { groupService } from '../../../../services/api';
+import { useAsync } from '../../../data/useAsync';
 import { FACING_MODE } from '../cameraTrack';
 import { isCamStudy } from '../../../../utils/groupStudy.js';
 import { isGroupLeader } from '../groupStudyModel';
@@ -48,18 +48,6 @@ function useUnreadChat(chatCount, isHistoryLoaded, isChatOpen) {
   }, [chatCount, isChatOpen, isHistoryLoaded, seenCount]);
 
   return seenCount !== null && chatCount > seenCount;
-}
-
-function useGroupTimerSync(groupId) {
-  const [errorMessage, setErrorMessage] = useState(null);
-
-  useEffect(() => {
-    timerService.syncTimer(groupId).catch((error) => {
-      setErrorMessage(`그룹 타이머 동기화에 실패했습니다. ${describeApiError(error)}`);
-    });
-  }, [groupId]);
-
-  return { errorMessage, dismiss: () => setErrorMessage(null) };
 }
 
 function useParticipantTiles({ session, members, userId, displayName, myPhotoUrl }) {
@@ -139,7 +127,6 @@ export default function StudyRoomView({
   onDisbanded,
 }) {
   const overlay = useRoomOverlay();
-  const timerSync = useGroupTimerSync(groupId);
 
   const members = useAsync(() => groupService.getMembers(groupId), [groupId]);
   const materials = useAsync(() => groupService.getGroupMaterials(groupId), [groupId]);
@@ -271,7 +258,6 @@ export default function StudyRoomView({
         onDismiss={session.dismissNotice}
       />
       <RoomNotice message={room.chatRecoveryError} tone="error" />
-      <RoomNotice message={timerSync.errorMessage} onDismiss={timerSync.dismiss} />
       {showsQuizErrorNotice && <RoomNotice message={room.quizError} onDismiss={room.clearQuizError} />}
 
       <RoomSectionBoundary sectionName="화상 화면">

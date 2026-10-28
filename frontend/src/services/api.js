@@ -783,13 +783,22 @@ export const roomService = {
 };
 
 export const timerService = {
-  startTimer: async (userId, startTime) => {
-    const res = await api.post('/api/timers/start', { startTime });
+  // supportsHeartbeat=true 는 호출자가 30초 heartbeat 를 보낼 때만 켠다(서버는 heartbeat 가 끊기면 마지막 heartbeat 시각으로 자동 종료).
+  startTimer: async (userId, startTime, { supportsHeartbeat = false } = {}) => {
+    const body = supportsHeartbeat ? { startTime, supportsHeartbeat: true } : { startTime };
+    const res = await api.post('/api/timers/start', body);
     return res.data;
   },
 
-  endTimer: async (userId, endTime, durationSeconds) => {
-    const res = await api.post('/api/timers/end', { endTime, durationSeconds });
+  // 활성 세션 없음 → 204(빈 응답)
+  heartbeat: async () => {
+    const res = await api.post('/api/timers/heartbeat');
+    return res.data || null;
+  },
+
+  endTimer: async (userId, endTime, durationSeconds, reason) => {
+    const body = reason ? { endTime, durationSeconds, reason } : { endTime, durationSeconds };
+    const res = await api.post('/api/timers/end', body);
     return res.data;
   },
 
