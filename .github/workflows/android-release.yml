@@ -194,7 +194,10 @@ jobs:
 
       # v1.6: 릴리스 APK 에 네이티브 전체 화면공유가 반드시 들어가야 한다(빠지면 배포 중단).
       - name: 릴리스 APK 화면공유 포함 검증
-        run: bash .github/scripts/verify-screenshare-apk.sh android/app/build/outputs/apk/release/app-release.apk
+        run: |
+          MERGED=$(find android/app/build/intermediates -type f -name AndroidManifest.xml -path "*merged_manifest*" -path "*release*" | head -n 1)
+          test -n "$MERGED" || { echo "FAIL: Gradle 병합 매니페스트를 찾지 못했습니다"; find android/app/build/intermediates -name AndroidManifest.xml; exit 1; }
+          bash .github/scripts/verify-screenshare-apk.sh android/app/build/outputs/apk/release/app-release.apk "$MERGED"
 
       - name: 서명 검증
         run: |

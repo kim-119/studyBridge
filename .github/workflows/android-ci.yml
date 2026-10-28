@@ -14,6 +14,8 @@ on:
       - ".github/workflows/android-ci.yml"
       - ".github/scripts/mobile-bundle-guard.sh"
       - ".github/scripts/verify-screenshare-apk.sh"
+      - ".github/scripts/__tests__/verify-screenshare-apk.test.mjs"
+      - ".github/scripts/__tests__/fixtures/**"
   pull_request:
     branches:
       - android-features
@@ -27,6 +29,8 @@ on:
       - ".github/workflows/android-ci.yml"
       - ".github/scripts/mobile-bundle-guard.sh"
       - ".github/scripts/verify-screenshare-apk.sh"
+      - ".github/scripts/__tests__/verify-screenshare-apk.test.mjs"
+      - ".github/scripts/__tests__/fixtures/**"
 
 concurrency:
   group: android-ci-${{ github.ref }}
@@ -122,5 +126,12 @@ jobs:
           retention-days: 14
 
       # v1.6: 네이티브 전체 화면공유가 APK 에 실제로 들어갔는지(라이브러리·서비스·권한·클래스) 확인한다.
+      - name: 화면공유 APK 검증 스크립트 회귀 테스트
+        run: node --test .github/scripts/__tests__/verify-screenshare-apk.test.mjs
+
       - name: Debug APK 화면공유 포함 검증
-        run: bash .github/scripts/verify-screenshare-apk.sh android/app/build/outputs/apk/debug/app-debug.apk
+        run: |
+          # Gradle 병합 매니페스트(텍스트)와 최종 APK binary 매니페스트(aapt2)를 둘 다 확인한다.
+          MERGED=$(find android/app/build/intermediates -type f -name AndroidManifest.xml -path "*merged_manifest*" -path "*debug*" | head -n 1)
+          test -n "$MERGED" || { echo "FAIL: Gradle 병합 매니페스트를 찾지 못했습니다"; find android/app/build/intermediates -name AndroidManifest.xml; exit 1; }
+          bash .github/scripts/verify-screenshare-apk.sh android/app/build/outputs/apk/debug/app-debug.apk "$MERGED"
