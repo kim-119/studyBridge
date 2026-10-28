@@ -90,6 +90,26 @@ function RegionSelector({ snapshot, limits, onConfirm, onCancel }) {
   );
 }
 
+function OwnShareConsent({ shares, onChange, errorMessage }) {
+  if (shares.length === 0) return null;
+  return (
+    <section className="mobile-card mobile-section" data-screen-ai-own-share>
+      {shares.map((share) => (
+        <label key={share.connectionId} className="mobile-checkbox">
+          <input
+            type="checkbox"
+            checked={share.hasConsent}
+            onChange={(event) => onChange(share.connectionId, event.target.checked)}
+          />
+          <span>내 공유 화면을 다른 참여자가 AI로 분석하도록 허용</span>
+        </label>
+      ))}
+      <p className="mobile-field__hint">허용하지 않으면 다른 참여자는 내 화면을 AI로 분석할 수 없습니다. 언제든 끌 수 있습니다.</p>
+      {errorMessage && <p className="mobile-auth__error">{errorMessage}</p>}
+    </section>
+  );
+}
+
 function AnalysisEntry({ entry, onCancel }) {
   return (
     <>
@@ -169,6 +189,8 @@ export default function ScreenAiPanel({ groupId, remoteParticipants }) {
         {analysis.isEnabled && !analysis.viewerConnected && (
           <p className="mobile-chat__status">영상 연결이 준비되면 화면을 분석할 수 있습니다.</p>
         )}
+
+        <OwnShareConsent shares={analysis.ownShares} onChange={analysis.setConsent} errorMessage={analysis.consentError} />
 
         {analysis.isEnabled && shares.length === 0 && (
           <p className="mobile-chat__empty">

@@ -159,3 +159,29 @@ test('화면을 떠나면 진행 중 분석을 취소한다', async () => {
   await act(async () => renderer.unmount());
   assert.equal(calls.cancel.length, 1);
 });
+
+test('내 화면공유(Android 송출)는 분석 대상이 아니라 AI 분석 허용 토글로 보이고, 바꾸면 서버에 반영한다', async () => {
+  const calls = stubServer();
+  const consents = [];
+  api.groupService.getScreenAiShares = async () => {
+    calls.shares += 1;
+    return {
+      enabled: true,
+      viewerConnected: true,
+      shares: [{ connectionId: 'con_mine', streamId: 'str_m', sharerName: '나', isMine: true, aiConsent: consents.at(-1) ?? false }],
+    };
+  };
+  api.groupService.setScreenAiConsent = async (groupId, connectionId, allowed) => {
+    consents.push(allowed);
+    return { connectionId, aiConsent: allowed };
+  };
+  await mount([], calls);
+
+  assert.deepEqual(latest.shares, [], '내 공유는 분석 대상 목록에 없다');
+  assert.deepEqual(latest.ownShares, [{ connectionId: 'con_mine', hasConsent: false, deviceType: null }]);
+
+  await act(async () => latest.setConsent('con_mine', true));
+  await flushEffects();
+  assert.deepEqual(consents, [true]);
+  assert.equal(latest.ownShares[0].hasConsent, true);
+});

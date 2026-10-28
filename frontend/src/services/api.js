@@ -1295,6 +1295,30 @@ export const groupService = {
     return res.data;
   },
 
+  // 화면공유(SCREEN) 토큰. 내 active PRIMARY Connection 에 귀속, 사용자당 1개·그룹당 서버 한도(기본 2).
+  // 오류 code: NOT_GROUP_MEMBER · CONNECTION_OWNER_MISMATCH · INVALID_CONNECTION_ID · PRIMARY_NOT_ACTIVE
+  //           · SCREEN_ALREADY_ACTIVE · SCREEN_START_IN_PROGRESS · SCREEN_SHARE_LIMIT_REACHED
+  getScreenShareToken: async (groupId, { primaryConnectionId, clientInstanceId, deviceType }) => {
+    const res = await api.post(`/api/groups/${groupId}/video/screen-token`, {
+      primaryConnectionId,
+      clientInstanceId,
+      deviceType,
+    });
+    return res.data;
+  },
+
+  // 내 화면공유 Connection 서버측 종료(멱등) — 연결이 이미 끊겼어도 슬롯을 확실히 돌려준다.
+  stopScreenShare: async (groupId, connectionId) => {
+    const res = await api.delete(`/api/groups/${groupId}/video/screen/${connectionId}`);
+    return res.data;
+  },
+
+  // 실시간 접속 Source of Truth: { screenShareCount, screenShareLimit, connections[{ kind, userId, ... }] }
+  getVideoConnections: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/video/connections`);
+    return res.data;
+  },
+
   uploadQuizMaterial: async (groupId, title, file, options = {}) => {
     const formData = new FormData();
     formData.append('title', title);

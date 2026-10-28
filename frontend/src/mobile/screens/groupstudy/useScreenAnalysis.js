@@ -7,6 +7,7 @@ import {
   buildAnalyzeRequest,
   describeScreenAiError,
   limitsFrom,
+  myShares,
   newClientRequestId,
   validateQuestion,
 } from './screenAiModel';
@@ -29,6 +30,22 @@ export function useScreenAnalysis(groupId, remoteParticipants, { capture = captu
   const shares = useMemo(
     () => analyzableShares(sharesQuery.data, remoteParticipants),
     [sharesQuery.data, remoteParticipants]
+  );
+
+  const ownShares = useMemo(() => myShares(sharesQuery.data), [sharesQuery.data]);
+  const [consentError, setConsentError] = useState(null);
+
+  const setConsent = useCallback(
+    async (connectionId, allowed) => {
+      setConsentError(null);
+      try {
+        await groupService.setScreenAiConsent(groupId, connectionId, allowed);
+      } catch (error) {
+        setConsentError(describeScreenAiError(error).message);
+      }
+      await sharesQuery.reload().catch(() => {});
+    },
+    [groupId, sharesQuery]
   );
 
   const [entries, setEntries] = useState([]);
@@ -111,6 +128,9 @@ export function useScreenAnalysis(groupId, remoteParticipants, { capture = captu
     isEnabled: sharesQuery.data?.enabled !== false,
     viewerConnected: sharesQuery.data?.viewerConnected !== false,
     shares,
+    ownShares,
+    setConsent,
+    consentError,
     limits,
     entries,
     isPending: pending !== null,

@@ -16,6 +16,8 @@ import { isQuizActive } from '../quizSessionModel';
 import { SOCKET_STATE, canRetryManually, describeSocketStatus } from '../socketConnectionModel';
 import { useGroupAiChat } from '../useGroupAiChat';
 import { useGroupRoom } from '../useGroupRoom';
+import { canStopShare, describeSharePhase } from '../screenShareModel';
+import { useNativeScreenShare } from '../useNativeScreenShare';
 import ChatPanel from './ChatPanel';
 import FullscreenParticipant from './FullscreenParticipant';
 import MaterialViewer from './MaterialViewer';
@@ -143,6 +145,7 @@ export default function StudyRoomView({
   });
 
   const ai = useGroupAiChat(groupId, { displayName, historyMessages: room.aiHistory });
+  const screenShare = useNativeScreenShare({ groupId, userId, displayName, session });
 
   const participants = useParticipantTiles({ session, members, userId, displayName, myPhotoUrl });
   const onlineUserIds = new Set(participants.map((participant) => String(participant.userId)));
@@ -180,6 +183,7 @@ export default function StudyRoomView({
         return (
           <RoomMenu
             session={session}
+            screenShare={screenShare}
             allowsCamera={allowsCamera}
             onOpenPanel={overlay.openPanel}
             onClose={overlay.close}
@@ -262,6 +266,13 @@ export default function StudyRoomView({
         onDismiss={session.dismissNotice}
       />
       <RoomNotice message={room.chatRecoveryError} tone="error" />
+      <RoomNotice
+        message={describeSharePhase(screenShare.phase)}
+        dataAttributes={{ 'data-room-notice': 'screen-share', 'data-share-phase': screenShare.phase }}
+        actionLabel={canStopShare(screenShare.phase) ? '공유 중지' : null}
+        onAction={screenShare.stop}
+      />
+      <RoomNotice message={screenShare.notice} tone="error" onDismiss={screenShare.dismissNotice} />
       {showsQuizErrorNotice && <RoomNotice message={room.quizError} onDismiss={room.clearQuizError} />}
 
       <RoomSectionBoundary sectionName="화상 화면">

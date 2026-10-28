@@ -174,3 +174,10 @@ export function describeScreenAiError(error) {
   const retryable = typeof body.retryable === 'boolean' ? body.retryable : status === 429 || status >= 500 || !error?.response;
   return { message, retryable, code: code || null, shareEnded: code === 'SCREEN_NOT_FOUND' };
 }
+
+// 내 화면공유(Android 네이티브·다른 기기 포함). 공유자 본인만 AI 분석 허용 여부를 바꿀 수 있다(PUT consent).
+export function myShares(response) {
+  return (Array.isArray(response?.shares) ? response.shares : [])
+    .filter((share) => share.isMine)
+    .map((share) => ({ connectionId: share.connectionId, hasConsent: share.aiConsent === true, deviceType: share.deviceType || null }));
+}
