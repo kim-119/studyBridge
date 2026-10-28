@@ -56,6 +56,7 @@ jobs:
             exit 1
           }
           echo "현재 공개 버전 응답: $RESP"
+          printf '%s' "$RESP" > "$RUNNER_TEMP/current-version.json"
           CUR_CODE=$(printf '%s' "$RESP" | jq -r '.versionCode')
           CUR_NAME=$(printf '%s' "$RESP" | jq -r '.versionName')
           echo "$CUR_CODE" | grep -Eq '^[0-9]+$' || { echo "FAIL: 기존 versionCode 를 정수로 읽지 못했습니다: '$CUR_CODE'"; exit 1; }
@@ -100,6 +101,20 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             frontend/package-lock.json
+
+      - name: 사용자용 릴리스 노트 검증 (빌드 전 차단)
+        env:
+          NEXT_NAME: ${{ steps.version.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          # 다운로드 페이지(/app)가 실제로 쓰는 필터(LLM-clean frontend/src/utils/appRelease.js)를 그대로 받아 같은 함수로 검사한다.
+          # 커밋 제목으로 대신 채우지 않는다 — android/release-notes/<다음 versionName>.txt 가 없거나 화면에서 숨겨질 문장이 있으면 중단.
+          git fetch --no-tags --depth=1 origin LLM-clean
+          git show FETCH_HEAD:frontend/src/utils/appRelease.js > "$RUNNER_TEMP/appRelease.mjs"
+          APP_RELEASE_JS="$RUNNER_TEMP/appRelease.mjs" node --test .github/scripts/__tests__/validate-release-notes.test.mjs
+          node .github/scripts/validate-release-notes.mjs --version "$NEXT_NAME" --dir android/release-notes \
+            --filter "$RUNNER_TEMP/appRelease.mjs" --previous "$RUNNER_TEMP/current-version.json" \
+            --out "$RUNNER_TEMP/release-notes.json"
 
       - name: Capacitor 의존성 설치
         run: npm ci
@@ -210,12 +225,12 @@ jobs:
           SHA=$(sha256sum "$APK" | cut -d' ' -f1)
           SIZE=$(stat -c%s "$APK")
           RELEASE_DATE=$(TZ=Asia/Seoul date +%Y-%m-%dT%H:%M:%S+09:00)
-          # 변경사항: android/release-notes.txt(한 줄당 한 항목, 선택) → 없으면 커밋 제목 한 줄
-          if [ -s android/release-notes.txt ]; then
-            NOTES=$(grep -v '^\s*#' android/release-notes.txt | sed 's/^[-•[:space:]]*//' | grep -v '^$' | jq -R . | jq -s .)
-          else
-            NOTES=$(git log -1 --pretty=%s | jq -R . | jq -s .)
-          fi
+          # 변경사항: 빌드 전 검증을 통과한 android/release-notes/<versionName>.txt 만 쓴다(커밋 제목 폴백 없음).
+          NOTES=$(cat "$RUNNER_TEMP/release-notes.json")
+          printf '%s' "$NOTES" | jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and length > 0)' > /dev/null \
+            || { echo "FAIL: 검증된 릴리스 노트가 없습니다. 배포를 중단합니다."; exit 1; }
+          [ "$VN" = "${{ steps.version.outputs.version_name }}" ] \
+            || { echo "FAIL: APK versionName=$VN 이 검증한 노트 버전(${{ steps.version.outputs.version_name }})과 다릅니다."; exit 1; }
           mkdir -p release
           cp "$APK" release/app-release.apk
           jq -n --arg pkg "$PKG" --argjson vc "$VC" --arg vn "$VN" --arg sha "$SHA" --argjson size "$SIZE" \
