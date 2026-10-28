@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.handler.timeout.ReadTimeoutException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -55,6 +56,7 @@ public class AdaptivePlannerClient {
     private final Duration timeout;
     private final int retryMaxWaitSeconds;
 
+    @Autowired
     public AdaptivePlannerClient(@Qualifier("adaptivePlannerWebClient") WebClient webClient,
                                  ObjectMapper objectMapper,
                                  @Value("${ai.planner.adaptive.path:/api/ai/planner/adaptive}") String path,
