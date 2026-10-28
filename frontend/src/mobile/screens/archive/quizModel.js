@@ -69,59 +69,6 @@ export function toQuizQuestions(quiz) {
   });
 }
 
-export function gradeQuiz(questions, selections) {
-  const answered = questions.filter((_, index) => selections[index] != null).length;
-  const correct = questions.filter((question, index) => selections[index] === question.answerIndex).length;
-
-  return { correct, answered, total: questions.length };
-}
-
-export function toRetryResults(questions, selections) {
-  return questions.map((question, index) => ({
-    questionIndex: index,
-    question: question.stem,
-    selectedIndex: selections[index] ?? null,
-    answerIndex: question.answerIndex,
-    correct: selections[index] === question.answerIndex,
-  }));
-}
-
-export const QUESTION_OUTCOME = {
-  CORRECT: 'correct',
-  WRONG: 'wrong',
-  UNANSWERED: 'unanswered',
-};
-
-export function questionOutcome(question, selectedIndex) {
-  if (selectedIndex == null) return QUESTION_OUTCOME.UNANSWERED;
-  if (selectedIndex === question.answerIndex) return QUESTION_OUTCOME.CORRECT;
-  return QUESTION_OUTCOME.WRONG;
-}
-
-export function summarizeSubmission(questions, selections) {
-  const outcomes = questions.map((question, index) => questionOutcome(question, selections[index]));
-  const countOf = (outcome) => outcomes.filter((value) => value === outcome).length;
-
-  return {
-    total: questions.length,
-    correct: countOf(QUESTION_OUTCOME.CORRECT),
-    wrong: countOf(QUESTION_OUTCOME.WRONG),
-    unanswered: countOf(QUESTION_OUTCOME.UNANSWERED),
-  };
-}
-
-export function needsReviewNote(submission) {
-  return submission.wrong + submission.unanswered > 0;
-}
-
-export function toReviewNoteAnswers(selections) {
-  return Object.fromEntries(
-    Object.entries(selections)
-      .filter(([, optionIndex]) => Number.isInteger(optionIndex))
-      .map(([questionIndex, optionIndex]) => [String(questionIndex), optionIndex])
-  );
-}
-
 function createdTime(quiz) {
   const time = quiz?.createdAt ? new Date(quiz.createdAt).getTime() : 0;
   return Number.isNaN(time) ? 0 : time;
