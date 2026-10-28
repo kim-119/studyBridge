@@ -31,7 +31,7 @@ import StudyResourcesPanel from './StudyResourcesPanel';
 import { ROOM_PANEL, useRoomOverlay } from './useRoomOverlay';
 
 const PANEL_GROUPS = [
-  [ROOM_PANEL.CHAT, ROOM_PANEL.AI],
+  [ROOM_PANEL.CHAT, ROOM_PANEL.AI, ROOM_PANEL.SCREEN_AI],
   [ROOM_PANEL.MATERIALS, ROOM_PANEL.QUIZ, ROOM_PANEL.RANKING],
 ];
 
@@ -197,9 +197,12 @@ export default function StudyRoomView({
         );
       case ROOM_PANEL.CHAT:
       case ROOM_PANEL.AI:
+      case ROOM_PANEL.SCREEN_AI:
         return (
           <ChatPanel
             activeTab={overlay.panel}
+            groupId={groupId}
+            remoteParticipants={session.remoteParticipants}
             room={room}
             ai={ai}
             userId={userId}

@@ -5,11 +5,13 @@ import { ErrorState, LoadingState } from '../../../components/ScreenState';
 import SubTabs from '../../../components/SubTabs';
 import { canRetryManually, describeSocketStatus } from '../socketConnectionModel';
 import RoomPanel from './RoomPanel';
+import ScreenAiPanel from './ScreenAiPanel';
 import { ROOM_PANEL } from './useRoomOverlay';
 
 const CHAT_TABS = [
   { key: ROOM_PANEL.CHAT, label: '채팅' },
   { key: ROOM_PANEL.AI, label: 'AI 질문' },
+  { key: ROOM_PANEL.SCREEN_AI, label: '화면 분석' },
 ];
 
 function useScrollToLatest(count) {
@@ -141,14 +143,20 @@ function AiChat({ ai, history }) {
   );
 }
 
-export default function ChatPanel({ activeTab, room, ai, userId, onChangeTab, onClose }) {
+function renderTab({ activeTab, room, ai, userId, groupId, remoteParticipants }) {
+  if (activeTab === ROOM_PANEL.SCREEN_AI) return <ScreenAiPanel groupId={groupId} remoteParticipants={remoteParticipants} />;
+  if (activeTab === ROOM_PANEL.AI) return <AiChat ai={ai} history={room.history} />;
+  return <GroupChat room={room} userId={userId} />;
+}
+
+export default function ChatPanel({ activeTab, room, ai, userId, groupId, remoteParticipants, onChangeTab, onClose }) {
   return (
     <RoomPanel
       title="채팅 / AI"
       onClose={onClose}
       tabs={<SubTabs tabs={CHAT_TABS} activeKey={activeTab} onChange={onChangeTab} />}
     >
-      {activeTab === ROOM_PANEL.AI ? <AiChat ai={ai} history={room.history} /> : <GroupChat room={room} userId={userId} />}
+      {renderTab({ activeTab, room, ai, userId, groupId, remoteParticipants })}
     </RoomPanel>
   );
 }

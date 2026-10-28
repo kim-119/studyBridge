@@ -1152,6 +1152,27 @@ export const folderService = {
 };
 
 export const groupService = {
+  // 화면공유 AI 분석(EC2 → ai07 VLM). 오류 본문 {status, code, message, retryable[, retryAfterSeconds]}.
+  getScreenAiShares: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/screen-ai/shares`);
+    return res.data;
+  },
+
+  setScreenAiConsent: async (groupId, connectionId, allowed) => {
+    const res = await api.put(`/api/groups/${groupId}/screen-ai/shares/${connectionId}/consent`, { allowed });
+    return res.data;
+  },
+
+  analyzeScreen: async (groupId, body, { signal, timeoutMs } = {}) => {
+    const res = await api.post(`/api/groups/${groupId}/screen-ai/analyze`, body, { signal, timeout: timeoutMs });
+    return res.data;
+  },
+
+  cancelScreenAnalysis: async (groupId, clientRequestId) => {
+    const res = await api.delete(`/api/groups/${groupId}/screen-ai/analyze/${clientRequestId}`);
+    return res.data;
+  },
+
   // 이 그룹에 공유된 PDF 자료(그룹 멤버만). [{ materialId, title, ownerNickname, quizCount, sharedAt, mine }]
   getSharedMaterials: async (groupId) => {
     const res = await api.get(`/api/groups/${groupId}/shared-materials`);
