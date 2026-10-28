@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { CONNECTION_KIND, parseConnectionIdentity } from '../screens/groupstudy/connectionIdentity.js';
 import { importMobileModule, registerComponentLoader } from './support/componentHarness.mjs';
 
 registerComponentLoader();
@@ -96,4 +97,47 @@ test('화면공유 타일도 streamManager 가 없으면 영상 꺼짐으로 처
   const screen = tiles.find((t) => t.connectionId === 'c9-screen');
   assert.equal(screen.isScreenShare, true);
   assert.equal(screen.screenOn, false);
+});
+
+const serverData = (overrides = {}) =>
+  JSON.stringify({ v: 1, app: 'studybridge', groupId: 51, userId: 7, kind: 'PRIMARY', ...overrides });
+const clientData = (overrides = {}) => JSON.stringify({ userId: '7', clientData: '김민서', ...overrides });
+
+test('연결 신원은 서버 serverData(마지막 세그먼트)를 신뢰하고 clientData 위조를 무시한다', () => {
+  const forged = `${clientData({ userId: '999' })}%/%${serverData({ userId: 7 })}`;
+  const identity = parseConnectionIdentity({ data: forged });
+  assert.equal(identity.verified, true);
+  assert.equal(identity.userId, '7');
+  assert.equal(identity.name, '김민서');
+  assert.equal(identity.kind, CONNECTION_KIND.PRIMARY);
+});
+
+test('serverData 가 없는 레거시 연결은 clientData 로 표시만 하고 PRIMARY 로 본다', () => {
+  const identity = parseConnectionIdentity({ data: clientData({ kind: 'SCREEN' }) });
+  assert.equal(identity.verified, false);
+  assert.equal(identity.userId, '7');
+  assert.equal(identity.kind, CONNECTION_KIND.PRIMARY, 'clientData 의 kind 는 신뢰하지 않는다');
+  assert.equal(parseConnectionIdentity(null).userId, null);
+  assert.equal(parseConnectionIdentity({ data: 'not json' }).verified, false);
+});
+
+test('단일 SCREEN 판정: 서버 SCREEN 연결은 typeOfVideo 가 CUSTOM 이어도 화면공유다(네이티브 송출)', () => {
+  const screen = parseConnectionIdentity({
+    data: `${clientData()}%/%${serverData({ kind: 'SCREEN', ownerConnectionId: 'con_primary' })}`,
+  });
+  assert.equal(screen.ownerConnectionId, 'con_primary');
+  assert.equal(resolveVideoKind({ typeOfVideo: 'CUSTOM' }, screen), VIDEO_KIND.SCREEN);
+  assert.equal(resolveVideoKind({ typeOfVideo: 'SCREEN' }, screen), VIDEO_KIND.SCREEN);
+
+  const media = describeStreamMedia({ typeOfVideo: 'CUSTOM', hasVideo: true, videoActive: true }, screen);
+  assert.equal(media.screenOn, true);
+  assert.equal(media.cameraOn, false);
+});
+
+test('단일 SCREEN 판정: PRIMARY·레거시는 typeOfVideo=SCREEN 일 때만 화면공유, CUSTOM/IPCAM 은 카메라', () => {
+  const primary = parseConnectionIdentity({ data: `${clientData()}%/%${serverData()}` });
+  assert.equal(resolveVideoKind({ typeOfVideo: 'CAMERA' }, primary), VIDEO_KIND.CAMERA);
+  assert.equal(resolveVideoKind({ typeOfVideo: 'CUSTOM' }, primary), VIDEO_KIND.CAMERA);
+  assert.equal(resolveVideoKind({ typeOfVideo: 'IPCAM' }, primary), VIDEO_KIND.CAMERA);
+  assert.equal(resolveVideoKind({ typeOfVideo: 'SCREEN' }, null), VIDEO_KIND.SCREEN, '레거시 PC 화면공유 수신 유지');
 });

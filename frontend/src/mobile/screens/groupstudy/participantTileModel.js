@@ -1,21 +1,21 @@
+import { isScreenConnection } from './connectionIdentity.js';
+
 export const LOCAL_TILE_ID = 'local';
 
 // OpenVidu 구독 스트림은 typeOfVideo('CAMERA'|'SCREEN'|'CUSTOM'|'IPCAM')를 전파한다(openvidu-browser 2.30).
-// PC 화면공유는 getDisplayMedia 로 송출되어 typeOfVideo='SCREEN' 으로 수신된다.
+// 판정은 connectionIdentity.isScreenConnection 하나로 한다: 서버 serverData.kind=SCREEN 우선, 없으면 typeOfVideo.
 export const VIDEO_KIND = Object.freeze({ CAMERA: 'CAMERA', SCREEN: 'SCREEN' });
 
-export function resolveVideoKind(stream) {
-  return String(stream?.typeOfVideo || '').toUpperCase() === VIDEO_KIND.SCREEN
-    ? VIDEO_KIND.SCREEN
-    : VIDEO_KIND.CAMERA;
+export function resolveVideoKind(stream, identity = null) {
+  return isScreenConnection(identity, stream) ? VIDEO_KIND.SCREEN : VIDEO_KIND.CAMERA;
 }
 
-export function describeStreamMedia(stream) {
+export function describeStreamMedia(stream, identity = null) {
   if (!stream) {
     return { cameraOn: false, micOn: false, screenOn: false, videoKind: VIDEO_KIND.CAMERA, streamId: null };
   }
 
-  const videoKind = resolveVideoKind(stream);
+  const videoKind = resolveVideoKind(stream, identity);
   const videoActive = Boolean(stream.hasVideo !== false && stream.videoActive);
   const isScreen = videoKind === VIDEO_KIND.SCREEN;
 

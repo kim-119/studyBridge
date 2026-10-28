@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { groupService } from '../../../services/api';
-import {
-  forceSecureWebSocketTransport,
-  parseConnectionMetadata,
-  resolveIceServers,
-} from '../../../utils/webrtc/iceServers';
+import { forceSecureWebSocketTransport, resolveIceServers } from '../../../utils/webrtc/iceServers';
 import { describeApiError } from '../../data/useAsync';
 import { registerAppStateChange } from '../../platform/nativeShell';
 import {
@@ -14,7 +10,8 @@ import {
   stopVoiceSession,
 } from '../../platform/mediaSession';
 import { FACING_MODE, acquireCameraTrack, describeDeviceError, oppositeFacingMode } from './cameraTrack';
-import { buildConnectionData, describeConnection } from './groupStudyModel';
+import { parseConnectionIdentity } from './connectionIdentity';
+import { buildConnectionData } from './groupStudyModel';
 import {
   DEVICE_TOGGLE,
   INITIAL_MEDIA_STATE,
@@ -74,8 +71,8 @@ async function requestGrants({ wantsCamera, wantsMicrophone }) {
 }
 
 function remoteIdentity(connection) {
-  const identity = describeConnection(parseConnectionMetadata(connection));
-  return { userId: identity.userId, name: identity.name || '참여자' };
+  const identity = parseConnectionIdentity(connection);
+  return { userId: identity.userId, name: identity.name || '참여자', connectionKind: identity.kind };
 }
 
 async function initPublisher(openVidu, attempt, cameraTrack) {
@@ -225,7 +222,7 @@ export function useVideoSession(groupId, { userId, displayName }) {
         const subscriber = session.subscribe(event.stream, undefined);
         upsertRemote(event.stream.connection.connectionId, {
           ...remoteIdentity(event.stream.connection),
-          ...describeStreamMedia(event.stream),
+          ...describeStreamMedia(event.stream, parseConnectionIdentity(event.stream.connection)),
           streamManager: subscriber,
         });
       });
@@ -233,7 +230,7 @@ export function useVideoSession(groupId, { userId, displayName }) {
       session.on('streamPropertyChanged', (event) => {
         const connectionId = event.stream?.connection?.connectionId;
         if (!connectionId || isOwnConnection(connectionId)) return;
-        upsertRemote(connectionId, describeStreamMedia(event.stream));
+        upsertRemote(connectionId, describeStreamMedia(event.stream, parseConnectionIdentity(event.stream.connection)));
       });
 
       session.on('streamDestroyed', (event) => {
