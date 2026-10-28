@@ -36,7 +36,7 @@ public class UserDTO {
     @Setter
     public static class LoginRequest {
         @NotBlank(message = "이메일을 입력해주세요.")
-        @Email(message = "올바른 이메일 형식이 아닙니다.")
+        @LoginId
         private String email;
 
         @NotBlank(message = "비밀번호를 입력해주세요.")
@@ -93,5 +93,7 @@ public class UserDTO {
         private String suspensionMemo;
         private String accessToken;
         private String refreshToken;
+        // 전시 방문객용 체험 계정(test1~test4) 여부 — 프론트가 세션 유지 ping·로그아웃 슬롯 반환·비밀번호 변경 차단에 쓴다.
+        private Boolean exhibitAccount;
     }
 }

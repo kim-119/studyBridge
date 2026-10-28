@@ -3,6 +3,9 @@ package com.studybridge.api.controller;
 import com.studybridge.api.dto.UserDTO;
 import com.studybridge.api.service.UserService;
 import com.studybridge.api.security.domain.CustomUserDetails;
+import com.studybridge.api.security.exhibit.ExhibitSessionException;
+import com.studybridge.api.security.exhibit.ExhibitSessionService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -38,6 +41,9 @@ public class UserController {
             return ResponseEntity.ok(response);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(401).body(e.getMessage());
+        } catch (ExhibitSessionException e) {
+            // 체험 계정 동시 접속 한도(409) — 이미 접속한 기기는 그대로 유지된다.
+            return ResponseEntity.status(e.getStatus()).body(e.getMessage());
         }
     }
 
@@ -60,21 +66,34 @@ public class UserController {
             return ResponseEntity.ok(response);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(401).body(e.getMessage());
+        } catch (ExhibitSessionException e) {
+            return ResponseEntity.status(e.getStatus()).body(e.getMessage());
         }
     }
 
     // 로그아웃
     @PostMapping("/logout")
-    public ResponseEntity<?> logout(java.security.Principal principal) {
+    public ResponseEntity<?> logout(java.security.Principal principal, HttpServletRequest request) {
         if (principal == null) {
             return ResponseEntity.status(401).body("로그인이 필요한 서비스입니다.");
         }
         try {
-            userService.logout(principal.getName());
+            // 체험 계정 토큰이면 JwtAuthenticationFilter 가 넣어 둔 이 기기 세션 id — 그 슬롯만 반환한다.
+            Object sessionId = request.getAttribute(ExhibitSessionService.SESSION_ID_ATTRIBUTE);
+            userService.logout(principal.getName(), sessionId instanceof String sid ? sid : null);
             return ResponseEntity.ok("성공적으로 로그아웃되었습니다.");
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
+    }
+
+    // 세션 유지 확인(체험 계정 웹 클라이언트가 주기적으로 호출). 인증 필터가 이 기기 슬롯의 마지막 사용 시각을 갱신한다.
+    @PostMapping("/session/keepalive")
+    public ResponseEntity<?> keepalive(java.security.Principal principal) {
+        if (principal == null) {
+            return ResponseEntity.status(401).body("로그인이 필요한 서비스입니다.");
+        }
+        return ResponseEntity.noContent().build();
     }
 
     // 비밀번호 변경

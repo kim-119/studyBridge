@@ -646,6 +646,25 @@ export const authService = {
     }
   },
 
+  // 체험 계정(test1~test4) 로그아웃: 이 기기의 서버 세션 슬롯만 반환한다(같은 계정으로 접속한 다른 기기는 유지).
+  //  토큰을 지우기 직전에 부르고 결과를 기다리지 않는다. 실패해도 서버가 유휴 만료로 슬롯을 반환한다.
+  releaseExhibitSession: () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      fetch(`${API_BASE_URL}/api/users/logout`, {
+        method: 'POST',
+        keepalive: true,
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    } catch (e) { /* best-effort */ }
+  },
+
+  // 체험 계정 세션 유지 ping. 슬롯이 반환된 기기면 401 → 공통 인터셉터가 갱신 실패 → 로그아웃 처리한다.
+  exhibitKeepalive: async () => {
+    await api.post('/api/users/session/keepalive');
+  },
+
   verifyPassword: async (credentials) => {
     try {
       const res = await api.post('/api/users/login', credentials);

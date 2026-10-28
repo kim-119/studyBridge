@@ -255,12 +255,17 @@ export default function Login() {
                 }}
               />
 
+              {/* 체험 계정 ID(test1 등)도 받도록 type=text — 이메일 형식 검증은 서버(@LoginId)가 한다. */}
               <input
-                type="email"
+                type="text"
+                inputMode="email"
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
                 name="email"
                 value={formData.email}
                 onChange={handleChange}
-                placeholder="이메일을 입력하세요"
+                placeholder="이메일 또는 체험 계정 ID를 입력하세요"
                 style={{
                   width: '100%',
                   boxSizing: 'border-box',

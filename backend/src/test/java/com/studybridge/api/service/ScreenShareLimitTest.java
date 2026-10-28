@@ -388,4 +388,61 @@ class ScreenShareLimitTest {
 
         new ScreenSharePolicyEnforcer(openVidu, service, false).enforce();
     }
+
+    // ── 전시 체험 계정: 기기(PRIMARY)당 1개 ──
+
+    @Test
+    void perDevice_sameAccountOtherDevice_canShare_andCountsTowardRoomLimit() {
+        myPrimaryActive("con_B1", 1L);
+        when(openVidu.listConnections(SID, true)).thenReturn(List.of(
+                primary("con_A1", 1L), primary("con_B1", 1L),
+                screen("con_SA1", "active", 1L, "con_A1", NOW - 20_000)));
+        when(openVidu.createConnection(eq(SID), anyString(), eq("PUBLISHER"), any())).thenReturn(new ConnectionGrant("con_SB1", "tok"));
+
+        Map<String, Object> res = service.issueScreenToken(1L, GROUP, "con_B1", null, null, true);
+
+        assertEquals("con_SB1", res.get("connectionId"));
+        assertEquals("con_B1", res.get("ownerConnectionId"), "B 기기 PRIMARY 에 귀속(A 의 공유와 별개 Connection)");
+        verify(openVidu, never()).deleteConnection(anyString(), anyString()); // A 기기 공유를 끊지 않는다
+    }
+
+    @Test
+    void perUserDefault_unchanged_otherDeviceShareBlocks() {
+        myPrimaryActive("con_B1", 1L);
+        when(openVidu.listConnections(SID, true)).thenReturn(List.of(
+                primary("con_A1", 1L), primary("con_B1", 1L),
+                screen("con_SA1", "active", 1L, "con_A1", NOW - 20_000)));
+
+        VideoCallException ex = assertThrows(VideoCallException.class, () -> service.issueScreenToken(1L, GROUP, "con_B1", null, null, false));
+
+        assertEquals("SCREEN_ALREADY_ACTIVE", ex.getCode(), "일반 사용자는 기존대로 사용자당 1개");
+        verify(openVidu, never()).createConnection(anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void perDevice_roomLimitStillTwo_includingSameAccountShares() {
+        myPrimaryActive("con_C1", 1L);
+        when(openVidu.listConnections(SID, true)).thenReturn(List.of(
+                primary("con_A1", 1L), primary("con_B1", 1L), primary("con_C1", 1L),
+                screen("con_SA1", "active", 1L, "con_A1", NOW - 20_000),
+                screen("con_SB1", "active", 1L, "con_B1", NOW - 10_000)));
+
+        VideoCallException ex = assertThrows(VideoCallException.class, () -> service.issueScreenToken(1L, GROUP, "con_C1", null, null, true));
+
+        assertEquals("SCREEN_SHARE_LIMIT_REACHED", ex.getCode());
+        assertEquals(2, ex.getDetails().get("activeCount"));
+        verify(openVidu, never()).createConnection(anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void perDevice_sameDeviceSecondShare_stillRejected() {
+        myPrimaryActive("con_A1", 1L);
+        when(openVidu.listConnections(SID, true)).thenReturn(List.of(
+                primary("con_A1", 1L), screen("con_SA1", "active", 1L, "con_A1", NOW - 20_000)));
+
+        VideoCallException ex = assertThrows(VideoCallException.class, () -> service.issueScreenToken(1L, GROUP, "con_A1", null, null, true));
+
+        assertEquals("SCREEN_ALREADY_ACTIVE", ex.getCode());
+        assertEquals("이미 화면을 공유하고 있습니다.", ex.getMessage());
+    }
 }

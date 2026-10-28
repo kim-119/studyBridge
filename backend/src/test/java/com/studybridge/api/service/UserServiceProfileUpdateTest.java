@@ -7,6 +7,7 @@ import com.studybridge.api.dto.UserDTO;
 import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.RefreshTokenRepository;
 import com.studybridge.api.repository.UserRepository;
+import com.studybridge.api.security.exhibit.ExhibitSessionService;
 import com.studybridge.api.security.jwt.JwtTokenProvider;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,7 +34,7 @@ class UserServiceProfileUpdateTest {
         userRepository = Mockito.mock(UserRepository.class);
         s3Service = Mockito.mock(S3Service.class);
         service = new UserService(userRepository, Mockito.mock(PasswordEncoder.class), Mockito.mock(JwtTokenProvider.class),
-                Mockito.mock(RefreshTokenRepository.class), s3Service);
+                Mockito.mock(RefreshTokenRepository.class), s3Service, Mockito.mock(ExhibitSessionService.class));
         Mockito.when(s3Service.getPresignedUrl(KEY)).thenReturn(PRESIGNED);
     }
 

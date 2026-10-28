@@ -167,6 +167,15 @@ public class GroupVideoCallService {
      */
     public Map<String, Object> issueScreenToken(long userId, long groupId, String primaryConnectionId,
                                                 String clientInstanceId, String deviceType) {
+        return issueScreenToken(userId, groupId, primaryConnectionId, clientInstanceId, deviceType, false);
+    }
+
+    /**
+     * @param perDevice true 면 "사용자당 1개" 대신 "기기(PRIMARY Connection)당 1개"로 판정한다 — 전시 체험 계정처럼 한 계정을 여러 사람이
+     *                  기기별로 쓰는 경우. 같은 계정의 다른 기기 공유는 다른 사람 공유처럼 방 한도({@code maxScreenSharesPerGroup})에 센다.
+     */
+    public Map<String, Object> issueScreenToken(long userId, long groupId, String primaryConnectionId,
+                                                String clientInstanceId, String deviceType, boolean perDevice) {
         requireJoinedMember(userId, groupId);
         if (!VideoConnectionMetadata.isValidConnectionId(primaryConnectionId)) {
             throw new VideoCallException(HttpStatus.BAD_REQUEST, "INVALID_CONNECTION_ID", "primaryConnectionId 형식이 올바르지 않습니다.");
@@ -188,7 +197,8 @@ public class GroupVideoCallService {
                     openVidu.listConnections(sessionId, true), clock.millis(), screenPendingTtlMs);
             int occupiedByOthers = 0;
             for (ScreenSharePolicy.ScreenSlot slot : snap.screens()) {
-                boolean mine = slot.userId() != null && slot.userId() == userId;
+                boolean sameUser = slot.userId() != null && slot.userId() == userId;
+                boolean mine = sameUser && (!perDevice || primaryConnectionId.equals(slot.ownerConnectionId()));
                 if (!slot.occupying()) {
                     closeStaleScreen(sessionId, groupId, slot); // 만료된 예약·orphan 은 누구 것이든 슬롯을 돌려준다
                 } else if (!mine) {

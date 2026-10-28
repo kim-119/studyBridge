@@ -312,6 +312,12 @@ export default function MyPage() {
       return;
     }
 
+    // 체험 계정은 여러 방문객이 함께 써서 비밀번호를 바꿀 수 없다(본인 확인 로그인이 세션 슬롯을 하나 더 차지하지 않게 여기서 멈춘다).
+    if (user?.exhibitAccount) {
+      setPasswordError('체험 계정은 비밀번호를 변경할 수 없습니다.');
+      return;
+    }
+
     try {
       const res = await authService.verifyPassword({ 
         email: verifyEmail, 

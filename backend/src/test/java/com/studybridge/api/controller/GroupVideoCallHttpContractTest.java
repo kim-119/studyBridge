@@ -1,5 +1,8 @@
 package com.studybridge.api.controller;
 
+import com.studybridge.api.security.exhibit.ExhibitAccountProperties;
+import com.studybridge.api.security.exhibit.ExhibitSessionService;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -51,7 +54,8 @@ class GroupVideoCallHttpContractTest {
     @BeforeEach
     void setUp() {
         service = Mockito.mock(GroupVideoCallService.class);
-        mvc = MockMvcBuilders.standaloneSetup(new GroupVideoCallController(service))
+        mvc = MockMvcBuilders.standaloneSetup(new GroupVideoCallController(service,
+                        new ExhibitSessionService(Mockito.mock(StringRedisTemplate.class), new ExhibitAccountProperties(), java.time.Clock.systemUTC())))
                 .setCustomArgumentResolvers(new PrincipalResolver())
                 .build();
     }
@@ -89,7 +93,7 @@ class GroupVideoCallHttpContractTest {
 
     @Test
     void screenToken_conflict_409_withDetails_andOk() throws Exception {
-        Mockito.when(service.issueScreenToken(USER, 25L, "con_PC", null, null))
+        Mockito.when(service.issueScreenToken(USER, 25L, "con_PC", null, null, false))
                 .thenThrow(new VideoCallException(HttpStatus.CONFLICT, "SCREEN_ALREADY_ACTIVE", "이미 화면을 공유하고 있습니다.",
                         Map.of("connectionId", "con_SCR")));
         mvc.perform(post("/api/groups/25/video/screen-token").contentType(MediaType.APPLICATION_JSON)
@@ -98,7 +102,7 @@ class GroupVideoCallHttpContractTest {
                 .andExpect(jsonPath("$.code").value("SCREEN_ALREADY_ACTIVE"))
                 .andExpect(jsonPath("$.details.connectionId").value("con_SCR"));
 
-        Mockito.when(service.issueScreenToken(USER, 25L, "con_PC2", "tab-abcdef12", "WEB"))
+        Mockito.when(service.issueScreenToken(USER, 25L, "con_PC2", "tab-abcdef12", "WEB", false))
                 .thenReturn(Map.of("token", "tok_s", "kind", "SCREEN", "ownerConnectionId", "con_PC2"));
         mvc.perform(post("/api/groups/25/video/screen-token").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"primaryConnectionId\":\"con_PC2\",\"clientInstanceId\":\"tab-abcdef12\",\"deviceType\":\"WEB\"}"))

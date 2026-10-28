@@ -3,6 +3,7 @@ package com.studybridge.api.controller;
 import com.studybridge.api.dto.GroupVideoDTO;
 import com.studybridge.api.exception.VideoCallException;
 import com.studybridge.api.security.domain.CustomUserDetails;
+import com.studybridge.api.security.exhibit.ExhibitSessionService;
 import com.studybridge.api.service.GroupVideoCallService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,6 +26,7 @@ import java.util.Map;
 public class GroupVideoCallController {
 
     private final GroupVideoCallService videoCallService;
+    private final ExhibitSessionService exhibitSessionService;
 
     /** PRIMARY(음성·카메라) 토큰. 본문 없이 호출해도 된다(하위 호환): 응답의 token 필드는 기존과 동일. */
     @PostMapping("/{id}/video/token")
@@ -39,7 +41,8 @@ public class GroupVideoCallController {
     }
 
     /**
-     * 화면공유(SCREEN) 전용 토큰. 내 active PRIMARY Connection 에 귀속된다(인원 증가 없음). 사용자당 동시 1개.
+     * 화면공유(SCREEN) 전용 토큰. 내 active PRIMARY Connection 에 귀속된다(인원 증가 없음). 사용자당 동시 1개
+     * (전시 체험 계정은 여러 방문객이 기기별로 쓰므로 기기당 1개 — 방 한도는 같다).
      * 오류 code: NOT_GROUP_MEMBER(403) · CONNECTION_OWNER_MISMATCH(403) · INVALID_CONNECTION_ID(400)
      *           · PRIMARY_NOT_ACTIVE(409) · SCREEN_ALREADY_ACTIVE(409, details.connectionId)
      */
@@ -49,7 +52,8 @@ public class GroupVideoCallController {
             @PathVariable Long id,
             @RequestBody GroupVideoDTO.ScreenTokenRequest request) {
         return ResponseEntity.ok(videoCallService.issueScreenToken(userDetails.getId(), id,
-                request.primaryConnectionId(), request.clientInstanceId(), request.deviceType()));
+                request.primaryConnectionId(), request.clientInstanceId(), request.deviceType(),
+                exhibitSessionService.isExhibitEmail(userDetails.getEmail())));
     }
 
     /** 내 화면공유 Connection 서버측 종료(멱등). 클라이언트 disconnect 유실 시 안전망. */

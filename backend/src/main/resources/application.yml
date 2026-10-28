@@ -171,6 +171,19 @@ jwt:
   secret: ${JWT_SECRET}
   expiration-ms: ${JWT_EXPIRATION_MS:1800000}
 
+# 전시 방문객용 체험 계정(ExhibitAccountProperties). 로그인 ID = 별칭(test1) 또는 별칭@email-domain.
+#  · 계정당 동시 접속 max-sessions-per-account 대(기기별 Redis 세션 슬롯). 일반 사용자 인증 정책과 무관.
+#  · 요청이 session-idle-minutes 동안 없으면 슬롯 반환, session-max-hours 후 재로그인.
+#  · 기동 시 없는 계정만 생성(있으면 변경하지 않음). 전시 종료 후 비활성화는 관리자 정지(ban) — 재기동해도 되살아나지 않는다.
+exhibit:
+  accounts: ${EXHIBIT_ACCOUNTS:test1,test2,test3,test4}
+  email-domain: ${EXHIBIT_EMAIL_DOMAIN:studybridge.co.kr}
+  provision-on-startup: ${EXHIBIT_PROVISION_ON_STARTUP:true}
+  initial-password: ${EXHIBIT_INITIAL_PASSWORD:1234}
+  max-sessions-per-account: ${EXHIBIT_MAX_SESSIONS_PER_ACCOUNT:2}
+  session-idle-minutes: ${EXHIBIT_SESSION_IDLE_MINUTES:30}
+  session-max-hours: ${EXHIBIT_SESSION_MAX_HOURS:12}
+
 # Android 앱 자체 배포(APK). 원천은 S3 {s3-prefix}latest/version.json — 서버 재배포 없이 릴리즈 스크립트가 갱신한다.
 #  · 버킷은 cloud.aws.s3.bucket(비공개) 공유. 다운로드는 /downloads/android/* → Spring 302 presigned(presign-minutes).
 #  · public-base-url 은 응답 downloadUrl 의 단일 출처(메타데이터 값보다 우선).

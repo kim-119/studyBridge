@@ -25,6 +25,7 @@ import ReviewNotesPage from './pages/ReviewNotesPage';
 import ObsidianPage from './pages/ObsidianPage';
 import AppDownload from './pages/AppDownload';
 const DEFAULT_TITLE = '스터디브릿지(StudyBridge) | AI 기반 통합 학습 플랫폼';
+const EXHIBIT_KEEPALIVE_MS = 60_000;
 const PAGE_TITLES = {
   '/login': '로그인 | 스터디브릿지(StudyBridge)',
   '/register': '회원가입 | 스터디브릿지(StudyBridge)',
@@ -46,7 +47,7 @@ function AdminRoute({ children }) {
 }
 
 function App() {
-  const { logout, updateUser } = useAuth();
+  const { user, logout, updateUser } = useAuth();
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const location = useLocation();
   const isAdminRoute = location.pathname.startsWith('/admin');
@@ -55,6 +56,13 @@ function App() {
   useEffect(() => {
     document.title = PAGE_TITLES[location.pathname.replace(/\/+$/, '') || '/'] || DEFAULT_TITLE;
   }, [location.pathname]);
+
+  // 체험 계정: 화면을 열어 둔 동안 1분마다 세션 유지 ping — 서버는 요청이 30분 없으면 그 기기 슬롯을 반환한다(창을 닫고 떠난 기기).
+  useEffect(() => {
+    if (!user?.exhibitAccount) return undefined;
+    const timer = setInterval(() => { authService.exhibitKeepalive().catch(() => {}); }, EXHIBIT_KEEPALIVE_MS);
+    return () => clearInterval(timer);
+  }, [user?.exhibitAccount]);
 
   useEffect(() => {
     let active = true;

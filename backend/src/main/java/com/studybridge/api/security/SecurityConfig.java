@@ -1,6 +1,7 @@
 package com.studybridge.api.security;
 
 import jakarta.servlet.DispatcherType;
+import com.studybridge.api.security.exhibit.ExhibitSessionService;
 import com.studybridge.api.security.jwt.JwtAuthenticationFilter;
 import com.studybridge.api.security.jwt.JwtTokenProvider;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +30,7 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtTokenProvider jwtTokenProvider;
+    private final ExhibitSessionService exhibitSessionService;
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -54,7 +56,7 @@ public class SecurityConfig {
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
                 .formLogin(AbstractHttpConfigurer::disable)
                 .httpBasic(AbstractHttpConfigurer::disable)
-                .addFilterBefore(new JwtAuthenticationFilter(jwtTokenProvider),
+                .addFilterBefore(new JwtAuthenticationFilter(jwtTokenProvider, exhibitSessionService),
                         UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }
