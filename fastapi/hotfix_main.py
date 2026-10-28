@@ -197,6 +197,17 @@ except Exception as e:
     import logging
     logging.getLogger(__name__).warning("vision 라우터 로드 실패 (계속 기동): %s", e)
 
+# StudyBridge 적응형 학습 엔진 (POST /api/ai/planner/adaptive, GET /api/ai/planner/adaptive/health)
+# ROADMAP_COACH(현재 단계 코칭) / MANUAL_NEXT(수기 플래너 다음 학습). 연동 계약: docs/planner/적응형_학습엔진_API_연동계약.md
+try:
+    from app.adaptive_planner.router import router as adaptive_planner_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/planner/adaptive" not in paths:
+        app.include_router(adaptive_planner_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("adaptive_planner 라우터 로드 실패 (계속 기동): %s", e)
+
 # StudyBridge AI Gateway — 로컬 GPU 추론 공통 스케줄러(가중 공정 큐/backpressure/GPU 상주 조정).
 # AI_GATEWAY_ENABLED=false(기본)면 상태 조회 라우트만 추가되고 추론 경로는 기존과 동일하다.
 try:

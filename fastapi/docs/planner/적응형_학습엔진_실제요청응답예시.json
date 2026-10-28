@@ -1,0 +1,597 @@
+{
+  "설명": "2026-10-28 ai07 실제 qwen3:14b 응답 원본(합성 학습 데이터, referenceDate 2026-10-28). EC2 연동 개발·테스트 픽스처용.",
+  "contractVersion": "adaptive-planner.v1",
+  "roadmap30": {
+    "request": {
+      "requestId": "ex-rc-30",
+      "userId": 55,
+      "plannerId": 123,
+      "roadmapId": 9,
+      "mode": "ROADMAP_COACH",
+      "availableMinutes": 30,
+      "timezone": "Asia/Seoul",
+      "currentStepId": "cnn-3",
+      "items": [
+        {
+          "id": "cnn-1",
+          "title": "신경망 기초",
+          "status": "COMPLETED",
+          "orderIndex": 1
+        },
+        {
+          "id": "cnn-2",
+          "title": "활성화 함수",
+          "status": "COMPLETED",
+          "orderIndex": 2
+        },
+        {
+          "id": "cnn-3",
+          "title": "합성곱 연산",
+          "status": "IN_PROGRESS",
+          "orderIndex": 3,
+          "description": "필터가 입력 위를 이동하며 특징맵을 만드는 과정을 이해한다.",
+          "tasks": [
+            {
+              "id": 31,
+              "text": "3x3 커널 손계산"
+            },
+            {
+              "id": 32,
+              "text": "PyTorch Conv2d 실습"
+            },
+            {
+              "id": 33,
+              "text": "패딩과 스트라이드 비교"
+            }
+          ]
+        },
+        {
+          "id": "cnn-4",
+          "title": "풀링 계층",
+          "status": "PENDING",
+          "orderIndex": 4
+        }
+      ],
+      "quizResults": [],
+      "referenceDate": "2026-10-28"
+    },
+    "httpStatus": 200,
+    "response": {
+      "contractVersion": "adaptive-planner.v1",
+      "requestId": "ex-rc-30",
+      "mode": "ROADMAP_COACH",
+      "status": "READY",
+      "statusReason": null,
+      "source": "AI_ASSISTED",
+      "message": null,
+      "availableMinutes": 30,
+      "referenceDate": "2026-10-28",
+      "timezone": "Asia/Seoul",
+      "recommendation": {
+        "itemId": "cnn-3",
+        "title": "합성곱 연산 학습 코칭",
+        "reason": "현재 진행 중인 '합성곱 연산' 단계(3/4단계)를 30분 안에 학습하도록 구성했습니다. 미완료 과제 3개 중 2개를 이번 세션에서 다룹니다. 이전에 완료한 '활성화 함수' 단계와 이어서 학습합니다.",
+        "coachingMessage": "합성곱 연산을 이해하고, 3x3 커널과 PyTorch Conv2d를 실습해보세요.",
+        "estimatedMinutes": 30,
+        "timeEstimate": {
+          "isEstimate": true,
+          "basis": "ALLOCATED_FROM_AVAILABLE_TIME",
+          "stepRemainingMinutes": null
+        },
+        "evidenceItemIds": [
+          "cnn-3",
+          "cnn-2"
+        ],
+        "coveredTaskIds": [
+          31,
+          32
+        ],
+        "quizInsight": {
+          "available": false,
+          "attempted": 0,
+          "wrong": 0,
+          "weakConcepts": [],
+          "untaggedWrongQuestionIds": []
+        },
+        "nextAction": {
+          "type": "START_STEP_SESSION",
+          "itemId": "cnn-3",
+          "minutes": 30,
+          "label": "30분 학습 시작"
+        },
+        "checkQuestions": [
+          "3x3 커널을 사용해 특징맵을 계산할 때 어떤 점에 주의해야 하나요?",
+          "PyTorch Conv2d를 사용할 때 입력 데이터의 형태는 어떻게 되어야 하나요?"
+        ],
+        "activities": [
+          {
+            "order": 1,
+            "type": "CONCEPT",
+            "title": "3x3 커널 손계산",
+            "description": "3x3 필터를 사용해 입력 이미지 위를 이동시키며 특징맵을 손으로 계산해보는 연습을 한다.",
+            "minutes": 10,
+            "sourceTaskIds": [
+              31
+            ]
+          },
+          {
+            "order": 2,
+            "type": "EXAMPLE",
+            "title": "PyTorch Conv2d 실습",
+            "description": "PyTorch의 Conv2d 레이어를 사용해 합성곱 연산을 직접 실행하고 결과를 확인해보는 실습을 한다.",
+            "minutes": 15,
+            "sourceTaskIds": [
+              32
+            ]
+          },
+          {
+            "order": 3,
+            "type": "REVIEW",
+            "title": "합성곱 연산 정리",
+            "description": "3x3 커널과 PyTorch Conv2d를 통해 학습한 합성곱 연산의 개념과 실습 내용을 정리한다.",
+            "minutes": 5,
+            "sourceTaskIds": []
+          }
+        ]
+      },
+      "alternatives": [],
+      "recoveryPlan": {
+        "type": "SPLIT_CURRENT_STEP",
+        "itemId": "cnn-3",
+        "triggers": [
+          "EXCEEDS_AVAILABLE_TIME"
+        ],
+        "delayDays": null,
+        "remainingMinutes": null,
+        "remainingEstimateAvailable": false,
+        "sessions": [
+          {
+            "order": 1,
+            "action": "SCHEDULE_SESSION",
+            "itemId": "cnn-3",
+            "date": "2026-10-28",
+            "minutes": 30,
+            "taskIds": [
+              31,
+              32
+            ]
+          },
+          {
+            "order": 2,
+            "action": "SCHEDULE_SESSION",
+            "itemId": "cnn-3",
+            "date": "2026-10-29",
+            "minutes": 30,
+            "taskIds": [
+              33
+            ]
+          }
+        ],
+        "truncated": false,
+        "message": "'합성곱 연산' 단계는 한 번에 끝내기 어려운 분량입니다. 오늘부터 30분 이내 세션 2회로 나눠 진행하는 계획을 제안합니다.",
+        "requiresUserApproval": true,
+        "constraints": {
+          "keepsRoadmapOrder": true,
+          "autoCompletesStep": false
+        }
+      },
+      "warnings": [],
+      "meta": {
+        "engine": "roadmap_coach.v1",
+        "llmUsed": true,
+        "llmCalls": 1,
+        "fallbackReason": null,
+        "llmRejectReasons": [],
+        "latencyMs": 5314,
+        "llmLatencyMs": 5305,
+        "model": "qwen3:14b",
+        "itemCount": 4
+      }
+    }
+  },
+  "roadmap60": {
+    "request": {
+      "requestId": "ex-rc-60",
+      "userId": 55,
+      "plannerId": 123,
+      "roadmapId": 9,
+      "mode": "ROADMAP_COACH",
+      "availableMinutes": 60,
+      "timezone": "Asia/Seoul",
+      "currentStepId": "cnn-3",
+      "items": [
+        {
+          "id": "cnn-1",
+          "title": "신경망 기초",
+          "status": "COMPLETED",
+          "orderIndex": 1
+        },
+        {
+          "id": "cnn-2",
+          "title": "활성화 함수",
+          "status": "COMPLETED",
+          "orderIndex": 2
+        },
+        {
+          "id": "cnn-3",
+          "title": "합성곱 연산",
+          "status": "IN_PROGRESS",
+          "orderIndex": 3,
+          "description": "필터가 입력 위를 이동하며 특징맵을 만드는 과정을 이해한다.",
+          "tasks": [
+            {
+              "id": 31,
+              "text": "3x3 커널 손계산"
+            },
+            {
+              "id": 32,
+              "text": "PyTorch Conv2d 실습"
+            },
+            {
+              "id": 33,
+              "text": "패딩과 스트라이드 비교"
+            }
+          ]
+        },
+        {
+          "id": "cnn-4",
+          "title": "풀링 계층",
+          "status": "PENDING",
+          "orderIndex": 4
+        }
+      ],
+      "quizResults": [],
+      "referenceDate": "2026-10-28"
+    },
+    "httpStatus": 200,
+    "response": {
+      "contractVersion": "adaptive-planner.v1",
+      "requestId": "ex-rc-60",
+      "mode": "ROADMAP_COACH",
+      "status": "READY",
+      "statusReason": null,
+      "source": "AI_ASSISTED",
+      "message": null,
+      "availableMinutes": 60,
+      "referenceDate": "2026-10-28",
+      "timezone": "Asia/Seoul",
+      "recommendation": {
+        "itemId": "cnn-3",
+        "title": "합성곱 연산 학습 코칭",
+        "reason": "현재 진행 중인 '합성곱 연산' 단계(3/4단계)를 60분 안에 학습하도록 구성했습니다. 미완료 과제 3개 중 3개를 이번 세션에서 다룹니다. 이전에 완료한 '활성화 함수' 단계와 이어서 학습합니다.",
+        "coachingMessage": "합성곱 연산을 통해 필터가 입력 위를 이동하며 특징맵을 만드는 과정을 이해해보세요.",
+        "estimatedMinutes": 60,
+        "timeEstimate": {
+          "isEstimate": true,
+          "basis": "ALLOCATED_FROM_AVAILABLE_TIME",
+          "stepRemainingMinutes": null
+        },
+        "evidenceItemIds": [
+          "cnn-3",
+          "cnn-2"
+        ],
+        "coveredTaskIds": [
+          31,
+          32,
+          33
+        ],
+        "quizInsight": {
+          "available": false,
+          "attempted": 0,
+          "wrong": 0,
+          "weakConcepts": [],
+          "untaggedWrongQuestionIds": []
+        },
+        "nextAction": {
+          "type": "START_STEP_SESSION",
+          "itemId": "cnn-3",
+          "minutes": 60,
+          "label": "60분 학습 시작"
+        },
+        "checkQuestions": [
+          "3x3 커널을 사용할 때 입력 데이터의 크기와 결과 특징맵의 크기는 어떻게 결정되나요?",
+          "PyTorch에서 Conv2d 레이어를 사용할 때 주의할 점은 무엇인가요?",
+          "패딩과 스트라이드의 차이점은 무엇인가요?"
+        ],
+        "activities": [
+          {
+            "order": 1,
+            "type": "CONCEPT",
+            "title": "3x3 커널 손계산",
+            "description": "3x3 크기의 커널을 사용해 입력 데이터에 적용하는 과정을 손으로 계산해보며 합성곱의 기본 원리를 학습합니다.",
+            "minutes": 15,
+            "sourceTaskIds": [
+              31
+            ]
+          },
+          {
+            "order": 2,
+            "type": "EXAMPLE",
+            "title": "PyTorch Conv2d 실습",
+            "description": "PyTorch의 Conv2d 레이어를 사용해 합성곱 연산을 직접 실행하며 실제 코드를 통해 개념을 익힙니다.",
+            "minutes": 20,
+            "sourceTaskIds": [
+              32
+            ]
+          },
+          {
+            "order": 3,
+            "type": "PRACTICE",
+            "title": "패딩과 스트라이드 비교",
+            "description": "패딩과 스트라이드가 특징맵의 크기에 미치는 영향을 비교하며 각각의 역할을 이해합니다.",
+            "minutes": 20,
+            "sourceTaskIds": [
+              33
+            ]
+          },
+          {
+            "order": 4,
+            "type": "REVIEW",
+            "title": "학습 내용 정리",
+            "description": "이전에 학습한 내용을 간단히 정리하며 합성곱 연산에 대한 전체적인 이해를 확인합니다.",
+            "minutes": 5,
+            "sourceTaskIds": []
+          }
+        ]
+      },
+      "alternatives": [],
+      "recoveryPlan": null,
+      "warnings": [],
+      "meta": {
+        "engine": "roadmap_coach.v1",
+        "llmUsed": true,
+        "llmCalls": 1,
+        "fallbackReason": null,
+        "llmRejectReasons": [],
+        "latencyMs": 5028,
+        "llmLatencyMs": 5027,
+        "model": "qwen3:14b",
+        "itemCount": 4
+      }
+    }
+  },
+  "manual30": {
+    "request": {
+      "requestId": "ex-mn-30",
+      "userId": 55,
+      "plannerId": 456,
+      "mode": "MANUAL_NEXT",
+      "availableMinutes": 30,
+      "timezone": "Asia/Seoul",
+      "items": [
+        {
+          "id": 9001,
+          "title": "Java 예외 처리 복습",
+          "subject": "Java",
+          "status": "PENDING",
+          "priority": "보통",
+          "dueDate": "2026-10-31",
+          "estimatedMinutes": 40
+        },
+        {
+          "id": 9002,
+          "title": "SQLD 기출문제 풀이",
+          "subject": "SQLD",
+          "status": "PENDING",
+          "priority": "높음",
+          "dueDate": "2026-10-29",
+          "estimatedMinutes": 50
+        },
+        {
+          "id": 9003,
+          "title": "네트워크 OSI 7계층",
+          "subject": "네트워크",
+          "status": "COMPLETED"
+        },
+        {
+          "id": 9004,
+          "title": "미적분 문제 풀이",
+          "subject": "수학",
+          "status": "PENDING",
+          "dueDate": "2026-10-27",
+          "estimatedMinutes": 60,
+          "tasks": [
+            {
+              "id": "c1",
+              "text": "치환적분 5문제"
+            },
+            {
+              "id": "c2",
+              "text": "부분적분 5문제"
+            },
+            {
+              "id": "c3",
+              "text": "오답 정리"
+            }
+          ]
+        }
+      ],
+      "referenceDate": "2026-10-28"
+    },
+    "httpStatus": 200,
+    "response": {
+      "contractVersion": "adaptive-planner.v1",
+      "requestId": "ex-mn-30",
+      "mode": "MANUAL_NEXT",
+      "status": "READY",
+      "statusReason": null,
+      "source": "AI_ASSISTED",
+      "message": null,
+      "availableMinutes": 30,
+      "referenceDate": "2026-10-28",
+      "timezone": "Asia/Seoul",
+      "recommendation": {
+        "itemId": 9002,
+        "title": "SQLD 기출문제 풀이",
+        "rank": 1,
+        "score": 65,
+        "scoreBreakdown": [
+          {
+            "factor": "PRIORITY",
+            "points": 30,
+            "detail": "사용자 우선순위 높음"
+          },
+          {
+            "factor": "DUE_SOON",
+            "points": 35,
+            "detail": "내일 마감"
+          }
+        ],
+        "reason": "'SQLD 기출문제 풀이'을(를) 가장 먼저 추천합니다(근거: 내일 마감 · 사용자 우선순위 높음). 다음 후보 '미적분 문제 풀이'(마감이 어제였던 미완료 항목)보다 우선순위 점수가 3점 높습니다. 남은 예상 50분은 30분 안에 끝나지 않아 이번에는 일부만 진행합니다.",
+        "coachingMessage": "SQLD 기출문제 풀이에 집중하세요. 30분 이내에 학습을 마무리하고, 스스로 점검해보세요.",
+        "estimatedMinutes": 30,
+        "timeEstimate": {
+          "isEstimate": true,
+          "basis": "ITEM_ESTIMATE",
+          "itemRemainingMinutes": 50
+        },
+        "evidenceItemIds": [
+          9002,
+          9004
+        ],
+        "coveredTaskIds": [],
+        "partialPlan": {
+          "isPartial": true,
+          "thisSessionMinutes": 30,
+          "remainingMinutes": 50,
+          "remainingAfterSession": 20,
+          "sessionsNeeded": 2,
+          "sessions": [
+            {
+              "order": 1,
+              "action": "SCHEDULE_PARTIAL_SESSION",
+              "itemId": 9002,
+              "date": "2026-10-28",
+              "minutes": 30,
+              "taskIds": []
+            },
+            {
+              "order": 2,
+              "action": "SCHEDULE_PARTIAL_SESSION",
+              "itemId": 9002,
+              "date": "2026-10-29",
+              "minutes": 20,
+              "taskIds": []
+            }
+          ],
+          "truncated": false,
+          "requiresUserApproval": true
+        },
+        "nextAction": {
+          "type": "START_FOCUS_SESSION",
+          "itemId": 9002,
+          "minutes": 30,
+          "label": "30분 학습 시작"
+        },
+        "checkQuestions": [
+          "어떤 유형의 문제를 주로 풀었나요?",
+          "어떤 개념이 가장 중요하게 느껴졌나요?",
+          "다시 풀면 더 잘할 수 있을 것 같나요?"
+        ],
+        "activities": [
+          {
+            "order": 1,
+            "type": "PREP",
+            "title": "문제 분석",
+            "description": "기출문제의 유형과 주요 개념을 파악하여 학습 방향을 설정합니다.",
+            "minutes": 3,
+            "sourceTaskIds": []
+          },
+          {
+            "order": 2,
+            "type": "WORK",
+            "title": "문제 풀이",
+            "description": "기출문제를 직접 풀며 SQLD의 핵심 내용을 이해하고 실전 감각을 익힙니다.",
+            "minutes": 22,
+            "sourceTaskIds": []
+          },
+          {
+            "order": 3,
+            "type": "WRAP",
+            "title": "정리 및 피드백",
+            "description": "풀이한 문제를 정리하고, 학습 내용을 점검하여 이해도를 높입니다.",
+            "minutes": 5,
+            "sourceTaskIds": []
+          }
+        ]
+      },
+      "alternatives": [
+        {
+          "itemId": 9004,
+          "title": "미적분 문제 풀이",
+          "rank": 2,
+          "score": 62,
+          "reason": "마감이 어제였던 미완료 항목",
+          "scoreBreakdown": [
+            {
+              "factor": "PRIORITY_UNSET",
+              "points": 15,
+              "detail": "우선순위 미지정(중립값)"
+            },
+            {
+              "factor": "OVERDUE",
+              "points": 47,
+              "detail": "마감이 어제였던 미완료 항목"
+            }
+          ]
+        },
+        {
+          "itemId": 9001,
+          "title": "Java 예외 처리 복습",
+          "rank": 3,
+          "score": 40,
+          "reason": "마감 3일 전, 사용자 우선순위 보통",
+          "scoreBreakdown": [
+            {
+              "factor": "PRIORITY",
+              "points": 15,
+              "detail": "사용자 우선순위 보통"
+            },
+            {
+              "factor": "DUE_SOON",
+              "points": 25,
+              "detail": "마감 3일 전"
+            }
+          ]
+        }
+      ],
+      "recoveryPlan": {
+        "type": "CATCH_UP_DELAYED_ITEMS",
+        "items": [
+          {
+            "itemId": 9004,
+            "title": "미적분 문제 풀이",
+            "delayType": "OVERDUE",
+            "delayDays": 1,
+            "remainingMinutes": 60,
+            "proposal": {
+              "action": "SCHEDULE_PARTIAL_SESSION",
+              "itemId": 9004,
+              "date": "2026-10-29",
+              "minutes": 10
+            }
+          }
+        ],
+        "message": "어제 마감이었던 '미적분 문제 풀이'이(가) 완료되지 않았습니다. 내일 10분 동안 일부를 먼저 처리하는 것을 권장합니다.",
+        "requiresUserApproval": true,
+        "constraints": {
+          "modifiesPlanner": false,
+          "autoCompletesItem": false
+        }
+      },
+      "warnings": [],
+      "meta": {
+        "engine": "manual_next.v1",
+        "llmUsed": true,
+        "llmCalls": 1,
+        "fallbackReason": null,
+        "llmRejectReasons": [],
+        "latencyMs": 3551,
+        "llmLatencyMs": 3550,
+        "model": "qwen3:14b",
+        "itemCount": 4,
+        "candidateCount": 3
+      }
+    }
+  }
+}
