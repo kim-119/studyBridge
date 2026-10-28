@@ -44,3 +44,11 @@ export const formatHMS = (totalSeconds) => {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
   return [h, m, sec].map((n) => String(n).padStart(2, '0')).join(':');
 };
+
+// 학습리포트 타이머(components/StudyTimer)의 30초 주기 확인. 개인 세션(groupId null)만 이 화면이 heartbeat 한다.
+// 그룹 세션은 스터디룸이 heartbeat 의 주인 — 여기서 heartbeat 하면 방을 떠난 뒤에도 그룹 출석 시간이 쌓이므로 서버 상태만 다시 읽는다.
+// 반환: true = 같은 세션이 아직 진행 중, false = 종료·자동 종료·다른 컨텍스트로 바뀜(화면을 서버 상태로 다시 불러와야 함).
+export const checkRunningSession = async (sessionGroupId, { heartbeat, getCurrentSession }) => {
+  const alive = sessionGroupId == null ? await heartbeat() : await getCurrentSession();
+  return !!(alive && alive.startTime && !alive.endTime && (alive.groupStudyId ?? null) === (sessionGroupId ?? null));
+};

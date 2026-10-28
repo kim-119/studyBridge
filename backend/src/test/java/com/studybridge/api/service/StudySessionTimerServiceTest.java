@@ -110,7 +110,8 @@ class StudySessionTimerServiceTest {
         when(repo.findByUserIdAndStatusForUpdate(eq(USER), eq(TimerStatus.STARTED))).thenAnswer(inv -> active());
         when(repo.findByUserIdAndStatus(eq(USER), eq(TimerStatus.STARTED))).thenAnswer(inv -> active());
         when(repo.findByIdForUpdate(anyLong())).thenAnswer(inv -> Optional.ofNullable(timers.get((Long) inv.getArgument(0))));
-        when(repo.findFirstByUserIdOrderByStartTimeDesc(USER)).thenAnswer(inv -> timers.values().stream().max(Comparator.comparing(Timer::getStartTime)));
+        when(repo.findFirstByUserIdOrderByStartTimeDescIdDesc(USER)).thenAnswer(inv -> timers.values().stream()
+                .max(Comparator.comparing(Timer::getStartTime).thenComparing(Timer::getId)));
         when(repo.findHeartbeatTimedOutIds(any())).thenAnswer(inv -> timers.values().stream()
                 .filter(t -> t.getStatus() == TimerStatus.STARTED && t.getLastHeartbeatAt() != null && t.getLastHeartbeatAt().isBefore(inv.getArgument(0)))
                 .map(Timer::getId).toList());
@@ -295,6 +296,84 @@ class StudySessionTimerServiceTest {
         service.heartbeat(USER);
         service.endTimer(USER, null);
         assertTrue(attendance.isEmpty());
+    }
+
+    // ── 그룹 입장 sync: heartbeat 미지원(구 Android) 클라이언트는 연결만, 세션을 만들지 않는다 ──
+
+    // Android ≤1.4 는 방 입장마다 heartbeat 없이 sync 만 부르고 종료도 안 보낸다 → 세션 생성 금지(24h 좀비·학습리포트 '진행중' 방지)
+    @Test
+    void legacySync_withoutActiveSession_createsNothing() {
+        assertNull(service.syncGroupStudyTimer(USER, GROUP, false));
+        clock.advanceSeconds(600);
+        assertNull(service.syncGroupStudyTimer(USER, GROUP, false)); // 재입장·재시도도 동일
+        assertTrue(timers.isEmpty());
+        assertTrue(attendance.isEmpty());
+        assertNull(service.getCurrentTimer(USER));
+    }
+
+    // 개인 타이머 실행 중 구 클라이언트가 방에 들어와도 개인 세션을 끝내거나 그룹으로 다시 연결하지 않는다
+    @Test
+    void legacySync_keepsRunningPersonalTimer_untouched() {
+        TimerDTO.Response personal = service.startTimer(USER, TimerDTO.StartRequest.builder().build());
+        clock.advanceSeconds(120);
+        assertNull(service.syncGroupStudyTimer(USER, GROUP, false));
+        Timer t = timers.get(personal.getId());
+        assertEquals(TimerStatus.STARTED, t.getStatus());
+        assertNull(t.getGroupStudyId());
+        assertEquals(1, activeCount());
+        assertTrue(attendance.isEmpty());
+    }
+
+    // 같은 그룹의 활성 세션(웹 등에서 시작)이 있으면 그대로 돌려주고 크레딧·heartbeat 는 건드리지 않는다
+    @Test
+    void legacySync_returnsSameGroupSession_withoutCrediting() {
+        TimerDTO.Response started = service.syncGroupStudyTimer(USER, GROUP, true);
+        clock.advanceSeconds(45);
+        TimerDTO.Response linked = service.syncGroupStudyTimer(USER, GROUP, false);
+        assertEquals(started.getId(), linked.getId());
+        assertTrue(linked.getResumed());
+        assertEquals(LocalDateTime.of(2026, 9, 30, 10, 0), timers.get(started.getId()).getLastHeartbeatAt());
+        assertEquals(0L, attendanceSeconds(LocalDate.of(2026, 9, 30)));
+        // 다른 그룹 세션만 있으면 연결하지 않는다(교체도 안 함)
+        assertNull(service.syncGroupStudyTimer(USER, OTHER_GROUP, false));
+        assertEquals(TimerStatus.STARTED, timers.get(started.getId()).getStatus());
+    }
+
+    // heartbeat 지원(웹) sync 는 기존 동작 그대로: 없으면 시작, 같은 그룹이면 멱등, 다른 그룹이면 교체
+    @Test
+    void heartbeatSync_ensuresGroupSession_asBefore() {
+        TimerDTO.Response first = service.syncGroupStudyTimer(USER, GROUP, true);
+        assertFalse(first.getResumed());
+        assertNotNull(timers.get(first.getId()).getLastHeartbeatAt());
+        clock.advanceSeconds(30);
+        TimerDTO.Response again = service.syncGroupStudyTimer(USER, GROUP, true);
+        assertEquals(first.getId(), again.getId());
+        assertTrue(again.getResumed());
+        assertEquals(30L, attendanceSeconds(LocalDate.of(2026, 9, 30)));
+        TimerDTO.Response other = service.syncGroupStudyTimer(USER, OTHER_GROUP, true);
+        assertNotEquals(first.getId(), other.getId());
+        assertEquals(TimerEndReason.NEW_SESSION, timers.get(first.getId()).getEndReason());
+        assertEquals(1, activeCount());
+    }
+
+    // 같은 초에 시작한 세션이 둘이어도 두 번째 STOP 은 마지막으로 끝낸 세션을 돌려준다(startTime 은 초 단위 → id 로 가름)
+    @Test
+    void doubleStop_afterTwoSessionsInSameSecond_returnsLatest() {
+        service.startTimer(USER, TimerDTO.StartRequest.builder().build());
+        service.endTimer(USER, null);
+        TimerDTO.Response group = service.syncGroupStudyTimer(USER, GROUP, true); // 같은 초
+        TimerDTO.Response first = service.endTimer(USER, null);
+        TimerDTO.Response second = service.endTimer(USER, null);
+        assertEquals(group.getId(), first.getId());
+        assertEquals(group.getId(), second.getId());
+        assertEquals(TimerStatus.COMPLETED, second.getStatus());
+    }
+
+    // 비멤버는 구 클라이언트 sync 도 403
+    @Test
+    void legacySync_nonMember_forbidden() {
+        assertThrows(SecurityException.class, () -> service.syncGroupStudyTimer(USER, 99L, false));
+        assertTrue(timers.isEmpty());
     }
 
     @Test

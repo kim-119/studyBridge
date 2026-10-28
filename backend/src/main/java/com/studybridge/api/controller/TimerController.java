@@ -80,13 +80,14 @@ public class TimerController {
         return ResponseEntity.ok(response);
     }
 
-    // 그룹스터디 입장 시: 이 그룹의 공부 세션을 보장(없으면 시작, 다른 컨텍스트면 교체). 비멤버 → 403
+    // 그룹스터디 입장 시. ?heartbeat=true(웹): 이 그룹의 공부 세션을 보장(없으면 시작, 다른 컨텍스트면 교체).
+    // heartbeat 미지원(구 Android): 연결만 — 이 그룹의 활성 세션이 있으면 200, 없으면 204(세션을 만들지 않음). 비멤버 → 403
     @PostMapping("/timers/sync/{groupStudyId}")
     public ResponseEntity<TimerDTO.Response> syncTimer(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long groupStudyId,
             @RequestParam(value = "heartbeat", required = false, defaultValue = "false") boolean supportsHeartbeat) {
         TimerDTO.Response response = timerService.syncGroupStudyTimer(userDetails.getId(), groupStudyId, supportsHeartbeat);
-        return ResponseEntity.ok(response);
+        return response != null ? ResponseEntity.ok(response) : ResponseEntity.noContent().build();
     }
 }

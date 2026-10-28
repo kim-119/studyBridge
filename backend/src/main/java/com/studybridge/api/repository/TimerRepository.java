@@ -30,8 +30,8 @@ public interface TimerRepository extends JpaRepository<Timer, Long> {
 
     List<Timer> findByUserIdOrderByStartTimeDesc(Long userId);
 
-    /** 사용자의 가장 최근 세션(멱등 STOP 재호출 시 기존 결과 반환용). */
-    Optional<Timer> findFirstByUserIdOrderByStartTimeDesc(Long userId);
+    /** 사용자의 가장 최근 세션(멱등 STOP 재호출 시 기존 결과 반환용). startTime 은 초 단위라 같은 초에 시작한 세션은 id 로 가른다. */
+    Optional<Timer> findFirstByUserIdOrderByStartTimeDescIdDesc(Long userId);
 
     // --- 추가된 메서드 ---
     // 특정 사용자, 특정 상태, 특정 시간 범위 내의 타이머들을 조회

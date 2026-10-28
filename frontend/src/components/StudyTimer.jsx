@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { timerService, STUDY_HEARTBEAT_INTERVAL_MS } from '../services/api';
+import { checkRunningSession } from '../utils/studyTimer';
 
 export default function StudyTimer({ onTimeUpdate }) {
   const { userId } = useAuth();
@@ -9,6 +10,8 @@ export default function StudyTimer({ onTimeUpdate }) {
   const [sessionSeconds, setSessionSeconds] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [sessionStartTime, setSessionStartTime] = useState(null);
+  // 진행 중 세션의 그룹 id(null = 개인 타이머). 그룹 세션은 스터디룸이 heartbeat 를 맡는다.
+  const [sessionGroupId, setSessionGroupId] = useState(null);
 
   useEffect(() => {
     if (userId) {
@@ -18,6 +21,7 @@ export default function StudyTimer({ onTimeUpdate }) {
       setSessionSeconds(0);
       setIsRunning(false);
       setSessionStartTime(null);
+      setSessionGroupId(null);
     }
   }, [userId]);
 
@@ -57,10 +61,12 @@ export default function StudyTimer({ onTimeUpdate }) {
         const parsedTime = new Date(serverTimeStr).getTime();
         setSessionStartTime(parsedTime);
         setSessionSeconds(Math.floor((Date.now() - parsedTime) / 1000));
+        setSessionGroupId(current.groupStudyId ?? null);
       } else {
         setIsRunning(false);
         setSessionStartTime(null);
         setSessionSeconds(0);
+        setSessionGroupId(null);
       }
     } catch (err) {
       console.error('타이머 데이터 로드 실패:', err);
@@ -77,12 +83,23 @@ export default function StudyTimer({ onTimeUpdate }) {
     return () => clearInterval(timer);
   }, [isRunning, sessionStartTime]);
 
-  // 실행 중 30초 heartbeat — 브라우저 종료 등 비정상 종료 시 서버가 마지막 heartbeat 시각으로 세션을 닫는다(공부시간 0초 방지).
+  // 실행 중 30초 주기. 개인 세션만 이 화면이 heartbeat 한다 — 브라우저 종료 등 비정상 종료 시 서버가 마지막 heartbeat 시각으로 세션을 닫는다(공부시간 0초 방지).
+  // 그룹 세션은 heartbeat 하지 않고 서버 상태만 다시 읽는다: 여기서 heartbeat 하면 방을 떠난 뒤에도 그룹 출석 시간이 계속 쌓인다.
+  // 어느 쪽이든 세션이 다른 곳에서 종료·자동 종료됐으면 화면도 멈춘다.
   useEffect(() => {
     if (!isRunning) return undefined;
-    const hb = setInterval(() => { timerService.heartbeat().catch(() => {}); }, STUDY_HEARTBEAT_INTERVAL_MS);
+    const tick = async () => {
+      try {
+        const same = await checkRunningSession(sessionGroupId, {
+          heartbeat: () => timerService.heartbeat(),
+          getCurrentSession: () => timerService.getCurrentSession(userId),
+        });
+        if (!same) loadTimerData();
+      } catch (e) { /* 네트워크 오류는 다음 주기에 재시도 */ }
+    };
+    const hb = setInterval(tick, STUDY_HEARTBEAT_INTERVAL_MS);
     return () => clearInterval(hb);
-  }, [isRunning]);
+  }, [isRunning, sessionGroupId, userId]);
 
   const formatTime = (seconds) => {
     const totalSeconds = Math.max(0, Math.round(seconds || 0));
@@ -107,6 +124,7 @@ export default function StudyTimer({ onTimeUpdate }) {
       setIsRunning(true);
       setSessionStartTime(Date.now());
       setSessionSeconds(0);
+      setSessionGroupId(null);
     } catch (err) {
       alert('타이머 시작에 실패했습니다.');
     }
@@ -151,7 +169,9 @@ export default function StudyTimer({ onTimeUpdate }) {
       </div>
 
       <div style={{ marginTop: '6px', fontSize: '13px', color: '#6B7280' }}>
-        종료를 누르면 오늘의 학습 시간에 누적됩니다.
+        {isRunning && sessionGroupId != null
+          ? '그룹 스터디룸에서 진행 중인 공부 세션입니다.'
+          : '종료를 누르면 오늘의 학습 시간에 누적됩니다.'}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '18px' }}>

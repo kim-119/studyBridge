@@ -83,11 +83,30 @@ public class TimerService {
                 return startInternal(userId, groupStudyId, heartbeat);
         }
 
-        /** 그룹스터디 입장 시: 이 그룹의 활성 세션을 보장한다(없으면 시작, 다른 컨텍스트면 교체). */
+        /**
+         * 그룹스터디 입장 시 동기화.
+         * <ul>
+         *   <li>heartbeat 지원 클라이언트(웹, {@code ?heartbeat=true}): 이 그룹의 활성 세션을 보장한다(없으면 시작, 다른 컨텍스트면 교체).</li>
+         *   <li>heartbeat 미지원 클라이언트(Android ≤ 1.4 등): 연결만 한다 — 세션을 만들거나 교체하지 않고, 이 그룹의 활성 세션이 있을 때만 돌려준다(없으면 null → 204).
+         *       이 클라이언트는 heartbeat·종료를 보내지 않아, 여기서 세션을 만들면 24시간 STARTED 로 남아 학습리포트에 '진행중'으로 보였다.
+         *       실행 중인 개인 세션을 그룹에 다시 연결하지도 않는다(입장 전 시간까지 그룹 출석으로 크레딧되므로).</li>
+         * </ul>
+         */
         @Transactional
         public TimerDTO.Response syncGroupStudyTimer(Long userId, Long groupStudyId, boolean supportsHeartbeat) {
-                log.info("Ensuring group study session. userId={}, groupStudyId={}", userId, groupStudyId);
-                return startInternal(userId, Objects.requireNonNull(groupStudyId), supportsHeartbeat);
+                Objects.requireNonNull(groupStudyId);
+                if (supportsHeartbeat) {
+                        log.info("Ensuring group study session. userId={}, groupStudyId={}", userId, groupStudyId);
+                        return startInternal(userId, groupStudyId, true);
+                }
+                if (!attendanceLedger.isGroupMember(groupStudyId, userId)) {
+                        throw new SecurityException("해당 스터디그룹의 멤버만 그룹 공부 세션을 동기화할 수 있습니다.");
+                }
+                Optional<Timer> active = timerRepository.findByUserIdAndStatus(userId, TimerStatus.STARTED)
+                                .filter(t -> Objects.equals(t.getGroupStudyId(), groupStudyId));
+                log.info("Legacy group sync (no heartbeat): link-only, no session created. userId={}, groupStudyId={}, activeTimerId={}",
+                                userId, groupStudyId, active.map(Timer::getId).orElse(null));
+                return active.map(t -> toResponseDTO(t, true)).orElse(null);
         }
 
         private TimerDTO.Response startInternal(Long userId, Long groupStudyId, boolean supportsHeartbeat) {
@@ -170,7 +189,7 @@ public class TimerService {
         public TimerDTO.Response endTimer(Long userId, TimerDTO.EndRequest request) {
                 Optional<Timer> activeOpt = timerRepository.findByUserIdAndStatusForUpdate(userId, TimerStatus.STARTED);
                 if (activeOpt.isEmpty()) {
-                        return timerRepository.findFirstByUserIdOrderByStartTimeDesc(userId)
+                        return timerRepository.findFirstByUserIdOrderByStartTimeDescIdDesc(userId)
                                         .map(t -> toResponseDTO(t, false))
                                         .orElse(null);
                 }

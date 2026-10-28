@@ -1019,11 +1019,6 @@ export const materialService = {
     return res.data;
   },
 
-  getQuizScore: async (materialId, quizId) => {
-    const res = await api.get(`/api/materials/${materialId}/quiz/${quizId}/score`);
-    return res.data;
-  },
-
   deleteQuiz: async (materialId, quizId) => {
     const res = await api.delete(`/api/materials/${materialId}/quiz/${quizId}`);
     return res.data;
