@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="screen_share_channel_name">화면공유</string>
+    <string name="screen_share_channel_description">그룹스터디 화면공유 중임을 알려줍니다.</string>
+    <string name="screen_share_notification_title">StudyBridge 화면공유 중</string>
+    <string name="screen_share_notification_connecting">화면공유 서버에 연결하고 있습니다.</string>
+    <string name="screen_share_notification_publishing">그룹스터디 참여자에게 내 화면을 보여주고 있습니다.</string>
+    <string name="screen_share_notification_stop">공유 중지</string>
+</resources>
