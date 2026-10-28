@@ -88,6 +88,18 @@ class ScreenShareModelTest {
     }
 
     @Test
+    fun `송출 통계는 송출 중에만 반영한다`() {
+        val machine = ScreenShareStateMachine()
+        machine.begin()
+        machine.connecting(576, 1280)
+        assertFalse("연결 중에는 통계를 반영하지 않는다", machine.measured(1, 1, 1.0))
+        machine.publishing("con", "str")
+        assertTrue(machine.measured(150, 400_000, 15.0))
+        assertEquals(150L, machine.current.framesEncoded)
+        assertEquals(400_000L, machine.current.toJson().getLong("bytesSent"))
+    }
+
+    @Test
     fun `건너뛴 전이는 거부한다`() {
         val machine = ScreenShareStateMachine()
         assertFalse(machine.connecting(1, 1))

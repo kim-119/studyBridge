@@ -26,6 +26,21 @@ class OpenViduProtocolTest {
     }
 
     @Test
+    fun `평문 ws 는 로컬 E2E 에서 명시적으로 요청할 때만 유지한다`() {
+        val token = "ws://localhost:4443?sessionId=e2e_screen&token=tok_x"
+        assertEquals("wss://localhost:4443/openvidu?sessionId=e2e_screen", OpenViduProtocol.endpointFromToken(token).webSocketUrl)
+        assertEquals(
+            "ws://localhost:4443/openvidu?sessionId=e2e_screen",
+            OpenViduProtocol.endpointFromToken(token, keepInsecureWebSocket = true).webSocketUrl,
+        )
+        assertEquals(
+            "wss 토큰은 낮추지 않는다",
+            "wss://h/openvidu?sessionId=s",
+            OpenViduProtocol.endpointFromToken("wss://h?sessionId=s&token=t", keepInsecureWebSocket = true).webSocketUrl,
+        )
+    }
+
+    @Test
     fun `OpenVidu 토큰이 아니면 거부한다`() {
         assertFailsWith<IllegalArgumentException> { OpenViduProtocol.endpointFromToken("tok_only") }
         assertFailsWith<IllegalArgumentException> { OpenViduProtocol.endpointFromToken("wss://host?token=tok_x") }

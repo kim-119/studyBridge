@@ -1,5 +1,5 @@
 include ':app'
-// 네이티브 화면공유 송출 모듈(앱 포함 여부는 app/build.gradle 의 sbScreenShare 로 결정)
+// 네이티브 화면공유 송출 모듈
 include ':screenshare'
 include ':capacitor-cordova-android-plugins'
 project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')

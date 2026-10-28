@@ -31,14 +31,17 @@ internal object OpenViduProtocol {
     private val TOKEN_URL = Regex("^(wss?|https?)://([^/?#]+)[^?#]*\\?([^#]*)", RegexOption.IGNORE_CASE)
     private val SAFE_SESSION_ID = Regex("^[A-Za-z0-9_-]+$")
 
-    fun endpointFromToken(token: String): OpenViduEndpoint {
+    /** [keepInsecureWebSocket] 는 디버그 빌드의 로컬 E2E(openvidu-dev, 평문 ws)에서만 true 가 된다. */
+    fun endpointFromToken(token: String, keepInsecureWebSocket: Boolean = false): OpenViduEndpoint {
         val match = TOKEN_URL.find(token.trim()) ?: throw IllegalArgumentException("OpenVidu 토큰 형식이 아닙니다.")
+        val scheme = match.groupValues[1].lowercase()
         val host = match.groupValues[2]
         val query = queryParams(match.groupValues[3])
         val sessionId = query["sessionId"]?.takeIf { it.isNotBlank() }
             ?: throw IllegalArgumentException("토큰에 sessionId 가 없습니다.")
         val encodedSession = if (SAFE_SESSION_ID.matches(sessionId)) sessionId else URLEncoder.encode(sessionId, "UTF-8")
-        return OpenViduEndpoint("wss://$host/openvidu?sessionId=$encodedSession", sessionId)
+        val wsScheme = if (keepInsecureWebSocket && (scheme == "ws" || scheme == "http")) "ws" else "wss"
+        return OpenViduEndpoint("$wsScheme://$host/openvidu?sessionId=$encodedSession", sessionId)
     }
 
     private fun queryParams(query: String): Map<String, String> =

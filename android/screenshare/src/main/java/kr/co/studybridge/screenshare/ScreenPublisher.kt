@@ -13,6 +13,7 @@ import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.RTCStatsReport
 import org.webrtc.RtpParameters
 import org.webrtc.RtpReceiver
 import org.webrtc.RtpTransceiver
@@ -70,6 +71,7 @@ internal class ScreenPublisher(
     private var connectTimeout: ScheduledFuture<*>? = null
     private var disconnectTimeout: ScheduledFuture<*>? = null
     private var frameRefresh: ScheduledFuture<*>? = null
+    private var statsPoll: ScheduledFuture<*>? = null
 
     fun start() = post {
         if (!machine.begin()) return@post
@@ -250,7 +252,10 @@ internal class ScreenPublisher(
                 disconnectTimeout = null
                 connectTimeout?.cancel(false)
                 connectTimeout = null
-                if (machine.publishing(connectionId, streamId)) emit()
+                if (machine.publishing(connectionId, streamId)) {
+                    emit()
+                    startStatsPolling()
+                }
             }
             // 잠깐의 네트워크 전환은 ICE 가 스스로 회복할 수 있다 → 유예 후에도 끊겨 있으면 안전하게 종료.
             PeerConnection.PeerConnectionState.DISCONNECTED -> if (disconnectTimeout == null) {
@@ -265,11 +270,28 @@ internal class ScreenPublisher(
         }
     }
 
+    /** 송출 중 [STATS_INTERVAL_SEC] 마다 outbound-rtp 통계를 상태에 반영한다(화면이 실제로 나가는지 확인용). */
+    private fun startStatsPolling() {
+        if (statsPoll != null) return
+        statsPoll = worker.scheduleWithFixedDelay({
+            peer?.getStats { report -> post { applyStats(report) } }
+        }, STATS_INTERVAL_SEC, STATS_INTERVAL_SEC, TimeUnit.SECONDS)
+    }
+
+    private fun applyStats(report: RTCStatsReport) {
+        val outbound = report.statsMap.values.firstOrNull { it.type == "outbound-rtp" && it.members["kind"] == "video" }
+            ?: return
+        val frames = (outbound.members["framesEncoded"] as? Number)?.toLong() ?: 0L
+        val bytes = (outbound.members["bytesSent"] as? Number)?.toLong() ?: 0L
+        val fps = (outbound.members["framesPerSecond"] as? Number)?.toDouble() ?: 0.0
+        if (machine.measured(frames, bytes, fps)) emit()
+    }
+
     /** 한 번만 실행된다. 정리 순서: 신호 → PeerConnection → 트랙 → 캡처 → 소스 → 버퍼 → 팩토리 → EGL → MediaProjection. */
     private fun finish(reason: StopReason, message: String?) {
         if (!machine.stopping()) return
         emit()
-        listOf(connectTimeout, disconnectTimeout, frameRefresh).forEach { it?.cancel(false) }
+        listOf(connectTimeout, disconnectTimeout, frameRefresh, statsPoll).forEach { it?.cancel(false) }
         signaling?.close(finalMethod = if (connectionId != null) "leaveRoom" else null)
         signaling = null
         safely("peer") { peer?.dispose() }
@@ -367,6 +389,7 @@ internal class ScreenPublisher(
         private const val DISCONNECT_GRACE_SEC = 15L
         private const val PUBLISH_TIMEOUT_MS = 15_000L
         private const val FRAME_REFRESH_IDLE_MS = 1_000L
+        private const val STATS_INTERVAL_SEC = 3L
 
         @Volatile
         private var webRtcInitialized = false

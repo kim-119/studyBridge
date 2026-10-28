@@ -13,6 +13,7 @@ on:
       - "package-lock.json"
       - ".github/workflows/android-ci.yml"
       - ".github/scripts/mobile-bundle-guard.sh"
+      - ".github/scripts/verify-screenshare-apk.sh"
   pull_request:
     branches:
       - android-features
@@ -25,6 +26,7 @@ on:
       - "package-lock.json"
       - ".github/workflows/android-ci.yml"
       - ".github/scripts/mobile-bundle-guard.sh"
+      - ".github/scripts/verify-screenshare-apk.sh"
 
 concurrency:
   group: android-ci-${{ github.ref }}
@@ -119,28 +121,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # 기본 빌드(v1.5 릴리스와 같은 구성)에는 네이티브 화면공유가 들어가지 않아야 한다.
-      - name: 기본 APK 화면공유 미포함 확인
-        run: |
-          if unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep "libjingle_peerconnection_so.so" > /dev/null; then
-            echo "FAIL: 기본 APK 에 libwebrtc 가 포함됐습니다(-PsbScreenShare 없이 빌드해야 합니다)."
-            exit 1
-          fi
-          echo "PASS: 기본 APK 에 네이티브 화면공유가 없습니다."
-
-      # 실기기 검증용: 네이티브 화면공유(MediaProjection + libwebrtc) 포함 Debug APK
-      - name: 화면공유 포함 Debug APK 빌드
-        run: |
-          cd android
-          ./gradlew assembleDebug -PsbScreenShare=true
-          APK=app/build/outputs/apk/debug/app-debug.apk
-          unzip -l "$APK" | grep "libjingle_peerconnection_so.so" > /dev/null || { echo "FAIL: libwebrtc 가 없습니다."; exit 1; }
-          ls -l "$APK"
-
-      - name: 화면공유 포함 Debug APK 업로드
-        uses: actions/upload-artifact@v4
-        with:
-          name: studybridge-app-debug-screenshare
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 14
+      # v1.6: 네이티브 전체 화면공유가 APK 에 실제로 들어갔는지(라이브러리·서비스·권한·클래스) 확인한다.
+      - name: Debug APK 화면공유 포함 검증
+        run: bash .github/scripts/verify-screenshare-apk.sh android/app/build/outputs/apk/debug/app-debug.apk

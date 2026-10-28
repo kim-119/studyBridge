@@ -22,6 +22,9 @@ internal data class ScreenShareConfig(
         const val DEFAULT_MAX_SEND_KBPS = 2500
         private const val MAX_METADATA_CHARS = 1000
 
+        /** 평문 ws 허용(로컬 OpenVidu E2E 전용). 릴리스 빌드에서는 요청이 와도 무시한다. */
+        private val INSECURE_TRANSPORT_SUPPORTED = BuildConfig.DEBUG
+
         fun parse(json: String?): ScreenShareConfig {
             val source = try {
                 JSONObject(json ?: "")
@@ -34,7 +37,10 @@ internal data class ScreenShareConfig(
 
             return ScreenShareConfig(
                 token = token,
-                endpoint = OpenViduProtocol.endpointFromToken(token),
+                endpoint = OpenViduProtocol.endpointFromToken(
+                    token,
+                    keepInsecureWebSocket = INSECURE_TRANSPORT_SUPPORTED && source.optBoolean("insecureTransportForTesting", false),
+                ),
                 expectedConnectionId = source.optStringOrNull("connectionId"),
                 metadata = metadata,
                 iceServers = OpenViduProtocol.iceServersFromJson(source.optJSONArray("iceServers")),
