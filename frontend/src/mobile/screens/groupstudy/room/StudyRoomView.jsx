@@ -32,7 +32,7 @@ import { ROOM_PANEL, useRoomOverlay } from './useRoomOverlay';
 
 const PANEL_GROUPS = [
   [ROOM_PANEL.CHAT, ROOM_PANEL.AI],
-  [ROOM_PANEL.MATERIALS, ROOM_PANEL.QUIZ],
+  [ROOM_PANEL.MATERIALS, ROOM_PANEL.QUIZ, ROOM_PANEL.RANKING],
 ];
 
 function isSamePanelGroup(currentPanel, requestedPanel) {
@@ -221,6 +221,7 @@ export default function StudyRoomView({
         );
       case ROOM_PANEL.MATERIALS:
       case ROOM_PANEL.QUIZ:
+      case ROOM_PANEL.RANKING:
         return (
           <StudyResourcesPanel
             groupId={groupId}

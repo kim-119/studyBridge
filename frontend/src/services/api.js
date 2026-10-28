@@ -1026,10 +1026,15 @@ export const materialService = {
     return res.data;
   },
 
-  // 퀴즈별 랭킹(서버 검증 점수 기준). 제안 계약 — frontend/docs/material-quiz-ranking-contract.md.
-  // EC2 최종 구현이 경로·필드를 바꾸면 여기와 materialRankingModel.normalizeRanking 만 맞춘다.
+  // 퀴즈별 랭킹(서버가 최고점·경쟁 순위를 계산). 오류 본문 {status, code, message}.
   getQuizRanking: async (materialId, quizId, { limit = 50 } = {}) => {
     const res = await api.get(`/api/materials/${materialId}/quiz/${quizId}/ranking`, { params: { limit } });
+    return res.data;
+  },
+
+  // 그룹에 공유된 자료의 퀴즈 목록(공유 그룹 멤버·소유자). 정답 키 없는 공개 문항 + 내 최근 결과.
+  getSharedQuizzes: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/shared-quizzes`);
     return res.data;
   },
 
@@ -1147,6 +1152,12 @@ export const folderService = {
 };
 
 export const groupService = {
+  // 이 그룹에 공유된 PDF 자료(그룹 멤버만). [{ materialId, title, ownerNickname, quizCount, sharedAt, mine }]
+  getSharedMaterials: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/shared-materials`);
+    return res.data;
+  },
+
   getGroups: async () => {
     const res = await api.get('/api/groups');
     return res.data;

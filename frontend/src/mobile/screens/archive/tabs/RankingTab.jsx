@@ -7,8 +7,10 @@ import { isQuizFailed } from '../materialQuizModel';
 import {
   RANKING_STATE,
   RANKING_STATE_MESSAGE,
+  RETRYABLE_RANKING_STATES,
   classifyQuizListError,
   classifyRankingError,
+  describeAccuracy,
   describeCorrect,
   medalOf,
   normalizeRanking,
@@ -20,7 +22,11 @@ import { quizLabel } from './QuizTab';
 function RankingRow({ entry, isTied }) {
   const medal = medalOf(entry.rank);
   const correct = describeCorrect(entry);
-  const meta = [correct, entry.attemptCount !== null ? `응시 ${entry.attemptCount}회` : null].filter(Boolean);
+  const meta = [
+    describeAccuracy(entry),
+    correct,
+    entry.attemptCount !== null ? `응시 ${entry.attemptCount}회` : null,
+  ].filter(Boolean);
 
   return (
     <li className={entry.isMe ? 'mobile-ranking__row is-me' : 'mobile-ranking__row'} aria-current={entry.isMe || undefined}>
@@ -52,8 +58,8 @@ function QuizRanking({ materialId, quizId }) {
 
   if (ranking.isError) {
     const state = classifyRankingError(ranking.error);
-    if (state === RANKING_STATE.ERROR) {
-      return <ErrorState message={ranking.errorMessage} onRetry={ranking.reload} />;
+    if (RETRYABLE_RANKING_STATES.has(state)) {
+      return <ErrorState message={RANKING_STATE_MESSAGE[state] || ranking.errorMessage} onRetry={ranking.reload} />;
     }
     return <EmptyState message={RANKING_STATE_MESSAGE[state]} />;
   }
@@ -95,9 +101,10 @@ function QuizRanking({ materialId, quizId }) {
   );
 }
 
-export default function RankingTab({ material }) {
+// loadQuizzes: 자료보관함(소유자)은 기존 GET /quiz, 그룹스터디(공유 자료)는 GET /shared-quizzes.
+export default function RankingTab({ material, loadQuizzes = materialService.getQuizzes, emptyQuizMessage }) {
   const materialId = material.materialId;
-  const quizzes = useAsync(() => materialService.getQuizzes(materialId), [materialId]);
+  const quizzes = useAsync(() => loadQuizzes(materialId), [materialId, loadQuizzes]);
   const [selectedQuizId, setSelectedQuizId] = useState(null);
 
   const orderedQuizzes = useMemo(
@@ -126,7 +133,9 @@ export default function RankingTab({ material }) {
       ) : (
         <ScreenState query={quizzes} loadingLabel="퀴즈 목록을 불러오는 중입니다">
           {orderedQuizzes.length === 0 ? (
-            <EmptyState message="아직 생성된 퀴즈가 없어 랭킹이 없습니다. 퀴즈 탭에서 퀴즈를 만들어보세요." />
+            <EmptyState
+              message={emptyQuizMessage || '아직 생성된 퀴즈가 없어 랭킹이 없습니다. 퀴즈 탭에서 퀴즈를 만들어보세요.'}
+            />
           ) : (
             <>
               {orderedQuizzes.length > 1 && (

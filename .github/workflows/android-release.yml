@@ -131,6 +131,8 @@ jobs:
       - name: 모바일 번들 빌드
         env:
           VITE_API_BASE_URL: ${{ env.MOBILE_API_BASE_URL }}
+          # PDF별 퀴즈 랭킹(서버 GET /api/materials/{id}/quiz/{quizId}/ranking 운영 배포됨)
+          VITE_FEATURE_MATERIAL_RANKING: "true"
         run: |
           npm run build:mobile
           test -f frontend/dist-mobile/index.html

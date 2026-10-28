@@ -9,6 +9,7 @@ export const ROOM_PANEL = {
   PARTICIPANTS: 'participants',
   MATERIALS: 'materials',
   QUIZ: 'quiz',
+  RANKING: 'ranking',
 };
 
 const OVERLAY_STATE = { overlay: true };
