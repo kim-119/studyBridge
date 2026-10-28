@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CalendarPlus, CheckCircle2, Circle, Download, PencilLine, Trash2 } from 'lucide-react';
+import { Archive, CalendarPlus, CheckCircle2, Circle, Download, PencilLine, Trash2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import BottomSheet from '../../components/BottomSheet';
 import Button from '../../components/Button';
@@ -11,7 +11,16 @@ import { useAsync, useSubmit } from '../../data/useAsync';
 import { extractDownloadUrl } from '../../platform/downloadUrl';
 import { openExternalUrl } from '../../platform/externalLink';
 import TimeTableGrid from './TimeTableGrid';
-import { findLinkedSchedule, formatMinutes, formatPlannerDate, toPlannerDetail } from './plannerAdapter';
+import { materialDetailPath } from '../archive/archiveNavigation';
+import {
+  ARCHIVE_ERROR_MESSAGES,
+  archiveActionLabel,
+  archivedMaterialIdOf,
+  findLinkedSchedule,
+  formatMinutes,
+  formatPlannerDate,
+  toPlannerDetail,
+} from './plannerAdapter';
 
 function PlannerFields({ planner }) {
   const fields = [
@@ -101,6 +110,15 @@ export default function PlannerDetailScreen() {
     await openExternalUrl(url);
   });
 
+  // 기존 서버 보관 API 재사용: 소유권 검증·중복 저장 시 같은 항목 갱신·미리보기 PDF 생성은 서버가 맡는다.
+  const archivePlanner = useSubmit(
+    async () => {
+      const materialId = archivedMaterialIdOf(await plannerService.archive(plannerId));
+      navigate(materialDetailPath(materialId), { state: { notice: '자료보관함에 저장했습니다.' } });
+    },
+    { errorMessages: ARCHIVE_ERROR_MESSAGES }
+  );
+
   const removePlanner = useSubmit(async () => {
     await plannerService.deletePlanner(plannerId);
     navigate('/planner', { replace: true });
@@ -111,6 +129,7 @@ export default function PlannerDetailScreen() {
     registerSchedule.errorMessage ||
     toggleCompletion.errorMessage ||
     downloadPdf.errorMessage ||
+    archivePlanner.errorMessage ||
     removePlanner.errorMessage;
 
   const renderPlannerContent = () => (
@@ -157,6 +176,15 @@ export default function PlannerDetailScreen() {
         >
           <Download size={16} />
           PDF
+        </Button>
+
+        <Button
+          variant="secondary"
+          isLoading={archivePlanner.isSubmitting}
+          onClick={() => archivePlanner.submit().catch(() => {})}
+        >
+          <Archive size={16} />
+          {archiveActionLabel(data)}
         </Button>
 
         <Button variant="ghost" onClick={() => setDeleteConfirmOpen(true)}>
