@@ -19,6 +19,8 @@ const eventColors = ['#DDF5E3', '#D9F0FF', '#FDF0D5', '#EEE3FF', '#E6FFF4'];
 const PLANNER_PREFIX = '[플래너]';
 const isPlannerTodo = (t) => t?.sourceType === 'PLANNER' || (typeof t?.text === 'string' && t.text.startsWith(PLANNER_PREFIX));
 const isReviewTodo = (t) => t?.sourceType === 'REVIEW_NOTE';
+// AI 학습 내비게이터에서 사용자가 승인해 반영한 학습 세션(source_id = 플래너 id).
+const isAdaptiveTodo = (t) => t?.sourceType === 'ADAPTIVE_SESSION';
 const displayTodoText = (text) =>
   (typeof text === 'string' && text.startsWith(PLANNER_PREFIX)) ? text.slice(PLANNER_PREFIX.length).trim() : text;
 
@@ -212,6 +214,9 @@ export default function WeeklySchedule() {
                   <span className="todo-text">
                     {isReviewTodo(todo) && (
                       <span style={{ display: 'inline-block', marginRight: '6px', padding: '1px 7px', borderRadius: '999px', backgroundColor: '#FEE2E2', color: '#B91C1C', fontSize: '11px', fontWeight: 700, verticalAlign: 'middle' }}>복습</span>
+                    )}
+                    {isAdaptiveTodo(todo) && (
+                      <span style={{ display: 'inline-block', marginRight: '6px', padding: '1px 7px', borderRadius: '999px', backgroundColor: '#EDE9FE', color: '#6D28D9', fontSize: '11px', fontWeight: 700, verticalAlign: 'middle' }}>AI 학습</span>
                     )}
                     {isPlannerTodo(todo) && (
                       <span style={{ display: 'inline-block', marginRight: '6px', padding: '1px 7px', borderRadius: '999px', backgroundColor: '#DCFCE7', color: '#15803D', fontSize: '11px', fontWeight: 700, verticalAlign: 'middle' }}>플래너</span>

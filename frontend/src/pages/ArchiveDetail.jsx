@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, XCircle, Circle, Settings, ChevronRight, ChevronLeft, X, Trash2, Sparkles, ListChecks, ArrowRight, FileText, BarChart3, Brain, CalendarPlus, Award, RotateCcw, Copy } from 'lucide-react';
+import { ArrowLeft, AlignLeft, Compass, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, XCircle, Circle, Settings, ChevronRight, ChevronLeft, X, Trash2, Sparkles, ListChecks, ArrowRight, FileText, BarChart3, Brain, CalendarPlus, Award, RotateCcw, Copy } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService, planAnalysisService } from '../services/api';
 import SummarySectionCard from '../components/SummarySectionCard';
@@ -10,7 +10,7 @@ import MaterialPdfViewer from '../components/archive/MaterialPdfViewer';
 import ObsidianArchiveGraphViewer from '../components/graph/ObsidianArchiveGraphViewer';
 import ReviewNoteLearningEntry from '../components/review-note/ReviewNoteLearningEntry';
 import PlannerPlanAnalysisPanel from '../components/planner/PlannerPlanAnalysisPanel';
-import NextLearningCard from '../components/planner/NextLearningCard';
+import AiLearningNavigator from '../components/planner/AiLearningNavigator';
 import LearningRecommendationPanel from '../components/planner/LearningRecommendationPanel';
 import PlanDiagnosisCard from '../components/planner/PlanDiagnosisCard';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
@@ -1910,27 +1910,17 @@ export default function ArchiveDetail() {
     );
     const wrap = (children) => (<div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px' }}>{children}</div>);
 
-    // ── 다음 학습 추천 ──
-    // 위: 이미 있는 다음 계획으로 이동(DB 결정적, AI 없음).
-    // 아래: 새 학습 과제/로드맵 다음 단계/문서 기반 추천 — 제안 후 [플래너에 등록] 승인 시에만 등록.
-    //  (계획 최적화·시간 부족 진단은 'AI 계획 분석' 탭의 계획 진단으로 분리 — 예전 "AI 계획 분석 기반 추천" 목록은 여기서 제거)
+    // ── AI 학습 내비게이터(ai07 적응형 학습 엔진) ──
+    // 로드맵 플래너 = 현재 단계 코칭(15·30·60분), 수기 플래너 = AI 다음 학습. 예전 "다음 예정 계획 / 학습 추천" 화면을 대체한다.
+    //  일정 복구·나눠 하기는 제안이며 [일정에 반영] 확인 후에만 저장된다. (계획 진단·체크리스트는 'AI 계획 분석' 탭 그대로)
     if (plannerDetailView === 'next') {
-      const openPlanner = (pid) => navigate('/planner', { state: { openPlannerId: pid } });
       return wrap(
-        <>
-        <NextLearningCard
+        <AiLearningNavigator
           plannerId={material?.plannerId ?? null}
-          onOpen={(next) => {
-            if (next?.nextMaterialId != null) navigate(`/archive/pdf/${next.nextMaterialId}`);
-            else if (next?.nextPlannerId != null) openPlanner(next.nextPlannerId);
-          }}
+          onOpenPlanner={(pid) => navigate('/planner', pid != null ? { state: { openPlannerId: pid } } : undefined)}
+          onOpenChecklist={() => setPlannerDetailView('analysis')}
+          onOpenSchedule={() => navigate('/weekly-schedule')}
         />
-        <LearningRecommendationPanel
-          plannerId={material?.plannerId ?? null}
-          materialId={material?.plannerId == null ? (material?.materialId ?? (id ? Number(id) : null)) : null}
-          onOpenPlanner={openPlanner}
-        />
-        </>
       );
     }
 
@@ -3533,7 +3523,7 @@ export default function ArchiveDetail() {
                   /* 우측 학습 도구: AI 계획 분석 / 다음 학습 추천 / 메모 (보조 버튼·중복 진행률 제거) */
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     <button className={`archive-action-btn ${plannerDetailView === 'analysis' ? 'active' : ''}`} onClick={() => setPlannerDetailView('analysis')}><Sparkles size={16} /> AI 계획 분석</button>
-                    <button className={`archive-action-btn ${plannerDetailView === 'next' ? 'active' : ''}`} onClick={() => setPlannerDetailView('next')}><ArrowRight size={16} /> 다음 학습 추천</button>
+                    <button className={`archive-action-btn ${plannerDetailView === 'next' ? 'active' : ''}`} onClick={() => setPlannerDetailView('next')}><Compass size={16} /> AI 학습 내비게이터</button>
                     <button className={`archive-action-btn ${plannerDetailView === 'memo' ? 'active' : ''}`} onClick={() => setPlannerDetailView('memo')}><Edit3 size={16} /> 메모</button>
                   </div>
                 ) : (

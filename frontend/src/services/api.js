@@ -20,6 +20,9 @@ export const MATERIAL_UPLOAD_TIMEOUT_MS = Number(
 // AI 화면 분석 전용 timeout. 서버(ai.vision.timeout-seconds 260s)가 구조화된 타임아웃 오류를 먼저 돌려주도록 그보다 조금 길게 둔다.
 export const SCREEN_AI_TIMEOUT_MS = Number(import.meta.env.VITE_SCREEN_AI_TIMEOUT_MS || 280000);
 
+// AI 학습 내비게이터 전용 timeout. Spring 응답 상한(ai.planner.adaptive.timeout-seconds 45s) + 429/503 1회 재시도 여유.
+export const ADAPTIVE_TIMEOUT_MS = Number(import.meta.env.VITE_ADAPTIVE_TIMEOUT_MS || 60000);
+
 // 퀴즈/로드맵 생성 전용 timeout(90초). 초과 시 axios가 ECONNABORTED 로 끊고,
 //  화면은 catch → deterministic fallback 으로 전환한다(무한 "생성 중" 방지, 90초 UX 보장).
 export const AI_FALLBACK_TIMEOUT_MS = Number(
@@ -1600,6 +1603,18 @@ export const plannerService = {
   },
   getDownloadUrl: async (id) => {
     const res = await api.get(`/api/planners/${id}/download-url`);
+    return res.data;
+  },
+  // AI 학습 내비게이터(ai07 적응형 학습 엔진). 로드맵 → 현재 단계 코칭, 수기 → 다음 학습. 저장 없음.
+  //  body: { availableMinutes: 15|30|60, useLlm?, currentStepId? }  → { mode, plannerType, result, items, changes, proposalToken, ... }
+  //  서버 응답 상한 45초 + 재시도 여유 → 60초. signal 로 이전 요청을 취소한다.
+  getAdaptiveNavigator: async (plannerId, body, { signal } = {}) => {
+    const res = await api.post(`/api/planners/${plannerId}/adaptive`, body, { signal, timeout: ADAPTIVE_TIMEOUT_MS });
+    return res.data;
+  },
+  // 승인한 일정 제안만 반영(주간 일정 세션 추가 / 수기 플래너 예정일 변경). body: { proposalToken, changeIds: [...] }
+  applyAdaptiveProposal: async (plannerId, body) => {
+    const res = await api.post(`/api/planners/${plannerId}/adaptive/apply`, body, { timeout: 30000 });
     return res.data;
   },
   deletePlanner: async (id) => {
