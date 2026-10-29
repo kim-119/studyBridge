@@ -23,6 +23,9 @@ export const AI_FALLBACK_TIMEOUT_MS = Number(
   import.meta.env.VITE_AI_FALLBACK_TIMEOUT_MS || 90000
 );
 
+// AI 학습 내비게이터 전용 timeout. Spring 응답 상한(ai.planner.adaptive.timeout-seconds 45s) + 429/503 1회 재시도 여유.
+export const ADAPTIVE_TIMEOUT_MS = Number(import.meta.env.VITE_ADAPTIVE_TIMEOUT_MS || 60000);
+
 const hostname =
   typeof window !== 'undefined'
     ? window.location.hostname === 'localhost'
@@ -1621,6 +1624,18 @@ export const plannerService = {
   //     nextPlannerId, nextMaterialId, title, subject, plannerDate, roadmapWeek, roadmapDay, reason }
   getNextLearning: async (plannerId) => {
     const res = await api.get(`/api/planners/${plannerId}/next-learning`);
+    return res.data;
+  },
+  // AI 학습 내비게이터(ai07 적응형 학습 엔진). 로드맵 → 현재 단계 코칭, 수기 → 다음 학습. 저장 없음.
+  //  body: { availableMinutes: 15|30|60, useLlm?, currentStepId? }  → { mode, plannerType, result, items, changes, proposalToken, ... }
+  //  서버 응답 상한 45초 + 재시도 여유 → 60초. signal 로 이전 요청을 취소한다.
+  getAdaptiveNavigator: async (plannerId, body, { signal } = {}) => {
+    const res = await api.post(`/api/planners/${plannerId}/adaptive`, body, { signal, timeout: ADAPTIVE_TIMEOUT_MS });
+    return res.data;
+  },
+  // 승인한 일정 제안만 반영(주간 일정 세션 추가 / 수기 플래너 예정일 변경). body: { proposalToken, changeIds: [...] }
+  applyAdaptiveProposal: async (plannerId, body) => {
+    const res = await api.post(`/api/planners/${plannerId}/adaptive/apply`, body, { timeout: 30000 });
     return res.data;
   },
   getDownloadUrl: async (id) => {

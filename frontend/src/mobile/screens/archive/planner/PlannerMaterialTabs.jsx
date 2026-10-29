@@ -2,15 +2,16 @@ import React, { useState } from 'react';
 import { CalendarDays } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import SubTabs from '../../../components/SubTabs';
-import PlannerNextLearningCard from '../../planner/PlannerNextLearningCard';
 import PlannerPlanAnalysisSection from '../../planner/PlannerPlanAnalysisSection';
+import LearningNavigatorCard from './LearningNavigatorCard';
 import MaterialChecklistCard from './MaterialChecklistCard';
-import PlanRecommendationsCard from './PlanRecommendationsCard';
 import PlannerMemoCard from './PlannerMemoCard';
 
-const PLANNER_TABS = [
-  { key: 'analysis', label: '계획 분석' },
-  { key: 'next', label: '다음 학습' },
+// 웹(ArchiveDetail 플래너 학습 도구)과 같은 3탭: AI 계획 분석 / AI 학습 내비게이터 / 메모.
+// 예전 "다음 학습"(next-learning·recommendations) 화면은 웹과 같이 AI 학습 내비게이터로 대체한다.
+export const PLANNER_TABS = [
+  { key: 'analysis', label: 'AI 계획 분석' },
+  { key: 'next', label: 'AI 학습 내비게이터' },
   { key: 'memo', label: '메모' },
 ];
 
@@ -21,21 +22,6 @@ function AnalysisTab({ material }) {
     <>
       <PlannerPlanAnalysisSection plannerId={material.plannerId} />
       <MaterialChecklistCard materialId={material.materialId} hideWhenEmpty />
-    </>
-  );
-}
-
-function NextTab({ material }) {
-  return (
-    <>
-      {material.plannerId == null ? (
-        <p className="mobile-notice mobile-section">
-          원본 플래너가 없는 보관 항목이라 다음 학습 순서를 확인할 수 없습니다.
-        </p>
-      ) : (
-        <PlannerNextLearningCard plannerId={material.plannerId} />
-      )}
-      <PlanRecommendationsCard materialId={material.materialId} />
     </>
   );
 }
@@ -60,7 +46,14 @@ export default function PlannerMaterialTabs({ material }) {
       <SubTabs tabs={PLANNER_TABS} activeKey={activeTab} onChange={setActiveTab} />
 
       {activeTab === 'analysis' && <AnalysisTab material={material} />}
-      {activeTab === 'next' && <NextTab material={material} />}
+      {activeTab === 'next' && (
+        <LearningNavigatorCard
+          plannerId={material.plannerId ?? null}
+          onOpenPlanner={(plannerId) => navigate(plannerId != null ? `/planner/${plannerId}` : '/planner/new')}
+          onOpenChecklist={() => setActiveTab('analysis')}
+          onOpenSchedule={() => navigate('/weekly-schedule')}
+        />
+      )}
       {activeTab === 'memo' && <PlannerMemoCard materialId={material.materialId} />}
     </>
   );
