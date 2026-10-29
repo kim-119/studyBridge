@@ -1,6 +1,8 @@
 package kr.co.studybridge.screenshare
 
 import android.app.Activity
+import android.app.ActivityManager
+import android.content.Intent
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
@@ -15,10 +17,13 @@ import androidx.test.uiautomator.Until
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.FixMethodOrder
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.runners.MethodSorters
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.CompletableFuture
@@ -26,46 +31,134 @@ import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
 /**
- * 에뮬레이터 E2E: 실제 MediaProjection 전체 디스플레이 캡처 → libwebrtc → 로컬 OpenVidu 2.30(openvidu-dev, Kurento) SCREEN 송출.
- * CI 가 세션·SCREEN 토큰을 만들어 계측 인자(ovToken/ovApi/ovSecret/ovSession)로 넘긴다. 인자가 없으면 건너뛴다.
- * 실기기 검증을 대신하지 않는다(브라우저·게임 등 실제 앱, 실제 네트워크·PC/Android 수신 화면은 기기에서 확인).
+ * 에뮬레이터 E2E: 실제 MediaProjection 전체 디스플레이 캡처 → libwebrtc → 로컬 OpenVidu 2.30(openvidu-dev, Kurento) SCREEN 송출
+ * → 다른 참가자(테스트 시청자)가 구독해 실제로 디코딩. CI 가 세션과 토큰을 만들어 계측 인자로 넘긴다(없으면 건너뜀).
+ * 실기기 검증을 대신하지 않는다(실제 브라우저·게임 앱, 실제 모바일 네트워크, PC 웹/Android 앱 수신 화면은 기기에서 확인).
  */
 @RunWith(AndroidJUnit4::class)
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class ScreenShareEmulatorE2ETest {
 
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
     private val device = UiDevice.getInstance(instrumentation)
     private val args = InstrumentationRegistry.getArguments()
+    private var viewer: OpenViduTestViewer? = null
+
+    private val api get() = requireNotNull(args.getString("ovApi"))
+    private val secret get() = requireNotNull(args.getString("ovSecret"))
+    private val sessionId get() = requireNotNull(args.getString("ovSession"))
 
     @After
     fun tearDown() {
+        viewer?.close()
         if (ScreenShareRuntime.status.state.isActive) runCatching { ScreenShareService.stop(context) }
+        shell("cmd connectivity airplane-mode disable")
         runCatching { device.setOrientationNatural() }
         runCatching { device.unfreezeRotation() }
     }
 
     @Test
-    fun capturesWholeDisplayPublishesScreenAndKeepsSharingAcrossApps() {
-        val encodedToken = args.getString("ovTokenB64")
-        assumeTrue("OpenVidu 토큰이 없으면(로컬 실행) E2E 를 건너뛴다", !encodedToken.isNullOrBlank())
-        val token = String(Base64.decode(encodedToken, Base64.DEFAULT))
-        val api = requireNotNull(args.getString("ovApi"))
-        val secret = requireNotNull(args.getString("ovSecret"))
-        val sessionId = requireNotNull(args.getString("ovSession"))
+    fun t1_capturesPublishesAndIsReceivedAcrossAppsAndRotation() {
+        val token = tokenArg("ovPublishTokenB64")
+        val publishing = startSharing(token)
+        val connectionId = requireNotNull(publishing.connectionId)
 
+        // 실제 인코딩·전송(outbound-rtp)과 서버(OpenVidu) 측 SCREEN 게시
+        val first = waitForStatus(20_000) { it.framesEncoded > 0 && it.bytesSent > 0 }
+        log("publisher stats frames=${first.framesEncoded} bytes=${first.bytesSent}")
+        val publisher = waitForServerPublisher(connectionId)
+        assertEquals("SCREEN", publisher.getJSONObject("mediaOptions").getString("typeOfVideo"))
+        assertTrue("OS 에 MediaProjection 이 활성이어야 한다", mediaProjectionActive())
+
+        // 상대방 수신: 다른 참가자가 SCREEN 스트림을 구독해 실제로 디코딩한다
+        val receiver = OpenViduTestViewer(context, tokenArg("ovViewerTokenB64")).also { viewer = it }
+        val screen = receiver.joinAndFindScreen()
+        assertEquals(connectionId, screen.connectionId)
+        assertEquals("SCREEN", screen.typeOfVideo)
+        receiver.subscribe(screen)
+        waitFor("시청자 디코딩", 30_000) { receiver.decodedFrames.get() >= 5 }
+        log("viewer decoded=${receiver.decodedFrames.get()} size=${receiver.lastFrameSize.get()}")
+
+        // 홈 화면 → 다른 앱(설정)으로 이동해도 송출·수신 유지
+        device.pressHome()
+        assertStillSendingAndReceived("home", receiver)
+        shell("am start -W -a android.settings.SETTINGS")
+        assertStillSendingAndReceived("settings", receiver)
+
+        // 회전 → 같은 캡처 세션에서 가로로 바뀌고, 시청자도 가로 프레임을 받는다
+        device.setOrientationLeft()
+        val rotated = waitForStatus(20_000) { it.width > it.height }
+        log("publisher rotated ${rotated.width}x${rotated.height}")
+        waitFor("시청자 가로 프레임", 30_000) {
+            val (width, height) = receiver.lastFrameSize.get().split('x').map(String::toInt)
+            width > height
+        }
+        log("viewer rotated size=${receiver.lastFrameSize.get()}")
+        assertStillSendingAndReceived("rotated", receiver)
+        device.setOrientationNatural()
+
+        // 사용자 종료 → 앱·OS·서버 모두 정리
+        ScreenShareService.stop(context)
+        val stopped = waitForStatus(20_000, allowStop = true) { it.state == ScreenShareState.IDLE }
+        assertEquals(StopReason.USER_STOPPED, stopped.reason)
+        assertCleanedUp("user-stop")
+        waitForServerRemoval(connectionId, 20_000)
+        log("t1 stopped, OS projection released, server connection removed")
+    }
+
+    @Test
+    fun t2_networkLossStopsSafelyAndReleasesResources() {
+        val publishing = startSharing(tokenArg("ovNetworkTokenB64"))
+        waitForStatus(20_000) { it.bytesSent > 0 }
+        val connectionId = requireNotNull(publishing.connectionId)
+
+        shell("cmd connectivity airplane-mode enable")
+        val stopped = waitForStatus(60_000, allowStop = true) { it.state == ScreenShareState.IDLE }
+        log("network loss -> reason=${stopped.reason} message=${stopped.message}")
+        assertEquals(StopReason.NETWORK_LOST, stopped.reason)
+        assertCleanedUp("network-loss")
+
+        shell("cmd connectivity airplane-mode disable")
+        SystemClock.sleep(5_000)
+        // 끊긴 쪽은 서버에 알릴 수 없다. 서버가 죽은 연결을 언제 정리하는지 관찰만 남긴다(운영은 앱 복귀 시 DELETE video/screen 으로 반환).
+        val removed = runCatching { waitForServerRemoval(connectionId, 60_000) }.isSuccess
+        log("network loss: server connection removed within 60s after reconnect = $removed")
+    }
+
+    @Test
+    fun t3_serviceDestroyedByAppCloseReleasesResources() {
+        val publishing = startSharing(tokenArg("ovAppCloseTokenB64"))
+        waitForStatus(20_000) { it.bytesSent > 0 }
+        val connectionId = requireNotNull(publishing.connectionId)
+
+        // 앱 작업 종료(stopWithTask)·시스템 종료와 같은 경로: Service.onDestroy
+        context.stopService(Intent(context, ScreenShareService::class.java))
+        val stopped = waitForStatus(20_000, allowStop = true) { it.state == ScreenShareState.IDLE }
+        assertEquals(StopReason.APP_CLOSED, stopped.reason)
+        assertCleanedUp("app-close")
+        waitForServerRemoval(connectionId, 20_000)
+        log("t3 service destroyed, OS projection released, server connection removed")
+    }
+
+    // ── 공통 ───────────────────────────────────────────────────────────────
+
+    private fun tokenArg(name: String): String {
+        val encoded = args.getString(name)
+        assumeTrue("$name 이 없으면(로컬 실행) E2E 를 건너뛴다", !encoded.isNullOrBlank())
+        return String(Base64.decode(encoded, Base64.DEFAULT))
+    }
+
+    /** 시스템 동의 → 앱과 같은 경로로 Foreground Service 시작 → PUBLISHING 까지. */
+    private fun startSharing(token: String): ScreenShareStatus {
         shell("appops set ${context.packageName} PROJECT_MEDIA allow")
         if (Build.VERSION.SDK_INT >= 33) shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
-
-        // 1) 시스템 화면 녹화 동의(전체 화면)
         ConsentActivity.result = CompletableFuture()
         val scenario = ActivityScenario.launch(ConsentActivity::class.java)
         val (resultCode, data) = awaitConsent()
         assertEquals("화면 녹화 동의가 승인되어야 한다", Activity.RESULT_OK, resultCode)
         ScreenShareRuntime.storeConsent(resultCode, requireNotNull(data))
         val consent = requireNotNull(ScreenShareRuntime.takeConsent())
-
-        // 2) 앱과 같은 경로로 Foreground Service 시작(동의 → startForeground(mediaProjection) → getMediaProjection)
         val config = JSONObject()
             .put("token", token)
             .put("metadata", """{"userId":"e2e","clientData":"E2E Android","kind":"SCREEN"}""")
@@ -73,49 +166,15 @@ class ScreenShareEmulatorE2ETest {
             .put("maxLongSide", 1280)
             .put("frameRate", 15)
         ScreenShareService.start(context, consent, config.toString())
-
         val publishing = waitForStatus(60_000) { it.state == ScreenShareState.PUBLISHING }
         log("publishing connection=${publishing.connectionId} stream=${publishing.streamId} size=${publishing.width}x${publishing.height}")
-        val connectionId = requireNotNull(publishing.connectionId)
-
-        // 3) 실제로 인코딩·전송되는지(outbound-rtp)
-        val first = waitForStatus(20_000) { it.framesEncoded > 0 && it.bytesSent > 0 }
-        log("first stats frames=${first.framesEncoded} bytes=${first.bytesSent}")
-
-        // 4) 서버(OpenVidu)가 이 연결의 SCREEN 영상 게시를 알고 있는지
-        val publisher = waitForServer(api, secret, sessionId, connectionId)
-        assertEquals("SCREEN", publisher.getJSONObject("mediaOptions").getString("typeOfVideo"))
-        assertTrue(publisher.getJSONObject("mediaOptions").getBoolean("hasVideo"))
-
         scenario.close()
-
-        // 5) 홈 화면으로 나가도 송출 유지
-        device.pressHome()
-        assertStillSending("home", first.bytesSent)
-
-        // 6) 다른 앱(설정)으로 이동해도 송출 유지
-        shell("am start -W -a android.settings.SETTINGS")
-        val afterHome = ScreenShareRuntime.status.bytesSent
-        assertStillSending("settings", afterHome)
-
-        // 7) 화면 회전 → 같은 캡처 세션에서 가로 크기로 바뀌고 송출 유지
-        device.setOrientationLeft()
-        val rotated = waitForStatus(20_000) { it.width > it.height && it.state == ScreenShareState.PUBLISHING }
-        log("rotated ${rotated.width}x${rotated.height}")
-        assertStillSending("rotated", rotated.bytesSent)
-        device.setOrientationNatural()
-
-        // 8) 사용자 종료 → 리소스 정리 + 서버 연결 제거(슬롯 반환)
-        ScreenShareService.stop(context)
-        val stopped = waitForStatus(20_000) { it.state == ScreenShareState.IDLE }
-        assertEquals(StopReason.USER_STOPPED, stopped.reason)
-        waitForServerRemoval(api, secret, sessionId, connectionId)
-        log("stopped and removed from server")
+        return publishing
     }
 
-    private fun awaitConsent(): Pair<Int, android.content.Intent?> {
+    private fun awaitConsent(): Pair<Int, Intent?> {
         val future = ConsentActivity.result
-        // PROJECT_MEDIA appop 이 허용되면 동의창 없이 승인된다. 동의창이 뜨는 OS 버전이면 '전체 화면' → '시작'을 누른다.
+        // PROJECT_MEDIA appop 이 허용되면 동의창 없이 승인된다. 동의창이 뜨면 '전체 화면' → '시작'을 누른다.
         if (runCatching { future.get(5, TimeUnit.SECONDS) }.isSuccess) return future.get()
         device.wait(Until.findObject(By.text(Pattern.compile("(?i)(a single app|single app|앱 하나)"))), 3_000)?.let { spinner ->
             spinner.click()
@@ -125,18 +184,36 @@ class ScreenShareEmulatorE2ETest {
         return future.get(20, TimeUnit.SECONDS)
     }
 
-    private fun assertStillSending(step: String, previousBytes: Long) {
-        val next = waitForStatus(20_000) { it.bytesSent > previousBytes }
+    private fun assertStillSendingAndReceived(step: String, receiver: OpenViduTestViewer) {
+        val bytes = ScreenShareRuntime.status.bytesSent
+        val frames = receiver.decodedFrames.get()
+        val next = waitForStatus(20_000) { it.bytesSent > bytes }
+        waitFor("$step 시청자 프레임 증가", 20_000) { receiver.decodedFrames.get() > frames }
         assertEquals("$step: 송출이 유지되어야 한다", ScreenShareState.PUBLISHING, next.state)
-        log("$step bytes ${previousBytes} -> ${next.bytesSent} frames=${next.framesEncoded} fps=${next.framesPerSecond}")
+        log("$step publisher bytes $bytes -> ${next.bytesSent}, viewer frames $frames -> ${receiver.decodedFrames.get()}")
     }
 
-    private fun waitForStatus(timeoutMs: Long, condition: (ScreenShareStatus) -> Boolean): ScreenShareStatus {
+    /** 앱 상태뿐 아니라 OS 에서도 정리됐는지: 서비스 종료, MediaProjection 해제. */
+    private fun assertCleanedUp(step: String) {
+        waitFor("$step 서비스 종료", 10_000) { !serviceRunning() }
+        waitFor("$step MediaProjection 해제", 10_000) { !mediaProjectionActive() }
+        assertFalse(ScreenShareRuntime.status.state.isActive)
+        log("$step cleaned: service stopped, media projection released")
+    }
+
+    @Suppress("DEPRECATION")
+    private fun serviceRunning(): Boolean =
+        context.getSystemService(ActivityManager::class.java).getRunningServices(Int.MAX_VALUE)
+            .any { it.service.className == ScreenShareService::class.java.name }
+
+    private fun mediaProjectionActive(): Boolean = shell("dumpsys media_projection").contains(context.packageName)
+
+    private fun waitForStatus(timeoutMs: Long, allowStop: Boolean = false, condition: (ScreenShareStatus) -> Boolean): ScreenShareStatus {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         while (SystemClock.elapsedRealtime() < deadline) {
             val status = ScreenShareRuntime.status
             if (condition(status)) return status
-            if (status.state == ScreenShareState.IDLE && status.reason != null && status.reason != StopReason.USER_STOPPED) {
+            if (!allowStop && status.state == ScreenShareState.IDLE && status.reason != null) {
                 throw AssertionError("화면공유가 예기치 않게 종료됨: ${status.reason} ${status.message}")
             }
             SystemClock.sleep(250)
@@ -144,10 +221,19 @@ class ScreenShareEmulatorE2ETest {
         throw AssertionError("시간 안에 조건을 만족하지 못함. 마지막 상태=${ScreenShareRuntime.status}")
     }
 
-    private fun waitForServer(api: String, secret: String, sessionId: String, connectionId: String): JSONObject {
+    private fun waitFor(what: String, timeoutMs: Long, condition: () -> Boolean) {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (condition()) return
+            SystemClock.sleep(250)
+        }
+        throw AssertionError("시간 안에 확인하지 못함: $what")
+    }
+
+    private fun waitForServerPublisher(connectionId: String): JSONObject {
         val deadline = SystemClock.elapsedRealtime() + 20_000
         while (SystemClock.elapsedRealtime() < deadline) {
-            val connection = serverConnections(api, secret, sessionId).firstOrNull { it.optString("connectionId") == connectionId }
+            val connection = serverConnections().firstOrNull { it.optString("connectionId") == connectionId }
             val publisher = connection?.optJSONArray("publishers")?.optJSONObject(0)
             if (publisher != null) {
                 log("server publisher ${publisher.optString("streamId")} ${publisher.optJSONObject("mediaOptions")}")
@@ -158,19 +244,13 @@ class ScreenShareEmulatorE2ETest {
         throw AssertionError("OpenVidu 가 SCREEN 게시를 보고하지 않음")
     }
 
-    private fun waitForServerRemoval(api: String, secret: String, sessionId: String, connectionId: String) {
-        val deadline = SystemClock.elapsedRealtime() + 20_000
-        while (SystemClock.elapsedRealtime() < deadline) {
-            val active = serverConnections(api, secret, sessionId).any {
-                it.optString("connectionId") == connectionId && it.optString("status") == "active"
-            }
-            if (!active) return
-            SystemClock.sleep(500)
+    private fun waitForServerRemoval(connectionId: String, timeoutMs: Long) {
+        waitFor("서버 연결 제거 $connectionId", timeoutMs) {
+            serverConnections().none { it.optString("connectionId") == connectionId && it.optString("status") == "active" }
         }
-        throw AssertionError("종료 후에도 서버에 SCREEN 연결이 남아 있음")
     }
 
-    private fun serverConnections(api: String, secret: String, sessionId: String): List<JSONObject> {
+    private fun serverConnections(): List<JSONObject> {
         val connection = URL("$api/openvidu/api/sessions/$sessionId").openConnection() as HttpURLConnection
         val credentials = Base64.encodeToString("OPENVIDUAPP:$secret".toByteArray(), Base64.NO_WRAP)
         connection.setRequestProperty("Authorization", "Basic $credentials")
@@ -181,14 +261,16 @@ class ScreenShareEmulatorE2ETest {
             val body = JSONObject(connection.inputStream.bufferedReader().readText())
             val content = body.getJSONObject("connections").getJSONArray("content")
             (0 until content.length()).map { content.getJSONObject(it) }
+        } catch (_: java.io.IOException) {
+            emptyList()
         } finally {
             connection.disconnect()
         }
     }
 
-    private fun shell(command: String) {
+    private fun shell(command: String): String {
         val descriptor = instrumentation.uiAutomation.executeShellCommand(command)
-        ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { it.readBytes() }
+        return ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { String(it.readBytes()) }
     }
 
     private fun log(message: String) {

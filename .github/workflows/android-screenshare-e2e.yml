@@ -91,20 +91,27 @@ jobs:
           docker logs openvidu | tail -n 80
           echo "FAIL: OpenVidu 가 준비되지 않았습니다"; exit 1
 
-      - name: SCREEN 세션·토큰 발급 (운영 serverData 형식)
+      - name: 세션·토큰 발급 (운영 serverData 형식 — SCREEN 송출 3개, 시청자 1개)
         run: |
           set -euo pipefail
           API="http://$HOST_IP:4443/openvidu/api"
           curl -sf -u "OPENVIDUAPP:$OPENVIDU_SECRET" -H 'Content-Type: application/json' \
             -d "{\"customSessionId\":\"$OV_SESSION\"}" "$API/sessions" > /dev/null
-          SERVER_DATA='{"v":1,"app":"studybridge","groupId":0,"userId":1,"kind":"SCREEN","ownerConnectionId":"con_e2e_primary","deviceType":"ANDROID"}'
-          BODY=$(jq -n --arg data "$SERVER_DATA" '{type:"WEBRTC", role:"PUBLISHER", data:$data}')
-          RESP=$(curl -sf -u "OPENVIDUAPP:$OPENVIDU_SECRET" -H 'Content-Type: application/json' -d "$BODY" "$API/sessions/$OV_SESSION/connection")
-          TOKEN=$(echo "$RESP" | jq -r '.token')
-          echo "$RESP" | jq '{connectionId, status, tokenHost: (.token | capture("^(?<h>[a-z]+://[^?]+)").h)}'
-          test -n "$TOKEN" && test "$TOKEN" != "null"
-          # am instrument 인자는 기기 셸을 거치므로 ?·& 가 있는 토큰은 Base64 로 넘긴다.
-          echo "OV_TOKEN_B64=$(printf %s "$TOKEN" | base64 -w0)" >> "$GITHUB_ENV"
+          issue() { # <role> <kind> <ENV 이름>
+            local data body resp token
+            data=$(jq -cn --arg kind "$2" '{v:1, app:"studybridge", groupId:0, userId:(if $kind=="SCREEN" then 1 else 2 end), kind:$kind, ownerConnectionId:(if $kind=="SCREEN" then "con_e2e_primary" else null end), deviceType:"ANDROID"}')
+            body=$(jq -n --arg data "$data" --arg role "$1" '{type:"WEBRTC", role:$role, data:$data}')
+            resp=$(curl -sf -u "OPENVIDUAPP:$OPENVIDU_SECRET" -H 'Content-Type: application/json' -d "$body" "$API/sessions/$OV_SESSION/connection")
+            token=$(echo "$resp" | jq -r '.token')
+            test -n "$token" && test "$token" != "null"
+            echo "$3: $(echo "$resp" | jq -c '{connectionId, role, tokenHost: (.token | capture("^(?<h>[a-z]+://[^?]+)").h)}')"
+            # am instrument 인자는 기기 셸을 거치므로 ?·& 가 있는 토큰은 Base64 로 넘긴다.
+            echo "$3=$(printf %s "$token" | base64 -w0)" >> "$GITHUB_ENV"
+          }
+          issue PUBLISHER SCREEN OV_PUBLISH_TOKEN_B64
+          issue SUBSCRIBER PRIMARY OV_VIEWER_TOKEN_B64
+          issue PUBLISHER SCREEN OV_NETWORK_TOKEN_B64
+          issue PUBLISHER SCREEN OV_APPCLOSE_TOKEN_B64
 
       - name: 에뮬레이터(Android 14)에서 화면공유 E2E 실행
         uses: reactivecircus/android-emulator-runner@v2
@@ -116,7 +123,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: |
             adb logcat -c
-            cd android && ./gradlew :screenshare:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.ovTokenB64="$OV_TOKEN_B64" -Pandroid.testInstrumentationRunnerArguments.ovApi="http://$HOST_IP:4443" -Pandroid.testInstrumentationRunnerArguments.ovSecret="$OPENVIDU_SECRET" -Pandroid.testInstrumentationRunnerArguments.ovSession="$OV_SESSION" || (adb logcat -d > ../e2e-logcat.txt; exit 1)
+            cd android && ./gradlew :screenshare:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.ovPublishTokenB64="$OV_PUBLISH_TOKEN_B64" -Pandroid.testInstrumentationRunnerArguments.ovViewerTokenB64="$OV_VIEWER_TOKEN_B64" -Pandroid.testInstrumentationRunnerArguments.ovNetworkTokenB64="$OV_NETWORK_TOKEN_B64" -Pandroid.testInstrumentationRunnerArguments.ovAppCloseTokenB64="$OV_APPCLOSE_TOKEN_B64" -Pandroid.testInstrumentationRunnerArguments.ovApi="http://$HOST_IP:4443" -Pandroid.testInstrumentationRunnerArguments.ovSecret="$OPENVIDU_SECRET" -Pandroid.testInstrumentationRunnerArguments.ovSession="$OV_SESSION" || (adb logcat -d > ../e2e-logcat.txt; exit 1)
             adb logcat -d > e2e-logcat.txt
 
       - name: E2E 로그·리포트 업로드
