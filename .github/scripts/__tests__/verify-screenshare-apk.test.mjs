@@ -85,6 +85,12 @@ test('필수 권한이 빠지면 실패한다', () => {
   assert.match(result.output, /FOREGROUND_SERVICE_MEDIA_PROJECTION/);
 });
 
+test('libwebrtc 가 요구하는 ACCESS_NETWORK_STATE 가 빠지면 실패한다(없으면 네이티브 SIGABRT)', () => {
+  const result = check(REAL_DUMP.replaceAll('android.permission.ACCESS_NETWORK_STATE', 'android.permission.X'));
+  assert.equal(result.code, 1);
+  assert.match(result.output, /ACCESS_NETWORK_STATE/);
+});
+
 test('Gradle 병합 매니페스트(텍스트)에서도 서비스와 mediaProjection 을 확인한다', () => {
   const merged = `<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="kr.co.studybridge.app">
     <application>

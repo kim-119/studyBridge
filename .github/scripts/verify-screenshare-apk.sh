@@ -38,10 +38,11 @@ check_manifest_dump() {
   (( (value & 0x20) != 0 )) || fail "ScreenShareService 의 foregroundServiceType 에 mediaProjection(0x20)이 없습니다: $value"
   printf '%s\n' "$attrs" | grep -E ':exported\(0x[0-9a-fA-F]+\)=false' > /dev/null \
     || fail "ScreenShareService 는 exported=false 여야 합니다"
-  for permission in FOREGROUND_SERVICE FOREGROUND_SERVICE_MEDIA_PROJECTION POST_NOTIFICATIONS INTERNET; do
+  # ACCESS_NETWORK_STATE: libwebrtc NetworkMonitor 필수(없으면 네이티브 SIGABRT).
+  for permission in FOREGROUND_SERVICE FOREGROUND_SERVICE_MEDIA_PROJECTION POST_NOTIFICATIONS INTERNET ACCESS_NETWORK_STATE; do
     grep -F "\"android.permission.$permission\"" "$dump" > /dev/null || fail "권한 선언이 없습니다: $permission"
   done
-  echo "OK manifest(aapt2): ScreenShareService foregroundServiceType=$value(mediaProjection) exported=false + FOREGROUND_SERVICE(_MEDIA_PROJECTION), POST_NOTIFICATIONS, INTERNET"
+  echo "OK manifest(aapt2): ScreenShareService foregroundServiceType=$value(mediaProjection) exported=false + FOREGROUND_SERVICE(_MEDIA_PROJECTION), POST_NOTIFICATIONS, INTERNET, ACCESS_NETWORK_STATE"
 }
 
 # Gradle 병합 매니페스트(텍스트 XML) — 라이브러리 매니페스트가 앱에 병합됐는지 빌드 산출물에서도 확인한다.
