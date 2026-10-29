@@ -58,6 +58,23 @@ class ScreenShareModelTest {
     }
 
     @Test
+    fun `회전 값으로 방향을 정하고 늦게 갱신된 크기를 바로잡는다`() {
+        // 세로가 자연 방향인 폰(320x640): 90° 회전인데 metrics 가 아직 세로면 가로로 바꾼다.
+        assertEquals(640 to 320, orientDisplaySize(320, 640, 320, 640, 1))
+        assertEquals(640 to 320, orientDisplaySize(640, 320, 320, 640, 3))
+        assertEquals(320 to 640, orientDisplaySize(640, 320, 320, 640, 0))
+        assertEquals(320 to 640, orientDisplaySize(320, 640, 320, 640, 2))
+        // 가로가 자연 방향인 태블릿(2560x1600): 90° 회전이면 세로
+        assertEquals(1600 to 2560, orientDisplaySize(2560, 1600, 2560, 1600, 1))
+        assertEquals(2560 to 1600, orientDisplaySize(2560, 1600, 2560, 1600, 0))
+        // 해상도 배율로 physical 과 logical 이 달라도 방향만 본다
+        assertEquals(720 to 1600, orientDisplaySize(720, 1600, 1080, 2400, 0))
+        assertEquals(1600 to 720, orientDisplaySize(720, 1600, 1080, 2400, 1))
+        // 정보가 없으면 그대로
+        assertEquals(500 to 900, orientDisplaySize(500, 900, 0, 0, 1))
+    }
+
+    @Test
     fun `정상 흐름 IDLE → STARTING → CONNECTING → PUBLISHING → STOPPING → IDLE`() {
         val machine = ScreenShareStateMachine()
         assertTrue(machine.begin())

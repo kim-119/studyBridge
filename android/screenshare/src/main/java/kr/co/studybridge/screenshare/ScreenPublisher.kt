@@ -86,6 +86,7 @@ internal class ScreenPublisher(
         val info = displaySize()
         val next = CaptureSize.fit(info.width, info.height, config.maxLongSide)
         if (next == size) return@post
+        Log.i(TAG, "display changed: capture ${size.width}x${size.height} -> ${next.width}x${next.height}")
         size = next
         current.changeCaptureFormat(next.width, next.height, config.frameRate)
         videoSource?.adaptOutputFormat(next.width, next.height, config.frameRate)

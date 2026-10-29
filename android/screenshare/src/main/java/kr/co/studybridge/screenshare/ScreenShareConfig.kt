@@ -54,6 +54,17 @@ internal data class ScreenShareConfig(
     }
 }
 
+/**
+ * 지금 화면 방향에 맞는 디스플레이 크기. 서비스(비시각 컨텍스트)에서 읽은 DisplayMetrics 는 회전 직후 이전 방향일 수 있어,
+ * Display.getRotation()(0/1/2/3 = 0°/90°/180°/270°)과 패널의 자연 방향(Display.Mode)으로 가로/세로를 정하고 크기를 맞춘다.
+ */
+internal fun orientDisplaySize(width: Int, height: Int, naturalWidth: Int, naturalHeight: Int, rotation: Int): Pair<Int, Int> {
+    if (naturalWidth <= 0 || naturalHeight <= 0 || width == height) return width to height
+    val quarterTurn = rotation == 1 || rotation == 3
+    val shouldBeLandscape = (naturalWidth > naturalHeight) != quarterTurn
+    return if ((width > height) == shouldBeLandscape) width to height else height to width
+}
+
 /** 실제 디스플레이 크기 → 송출 크기. 방향(가로/세로)은 유지하고 긴 변만 줄이며, 하드웨어 인코더를 위해 16 배수로 맞춘다. */
 internal data class CaptureSize(val width: Int, val height: Int) {
     companion object {
