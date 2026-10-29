@@ -88,6 +88,25 @@ class OpenViduProtocolTest {
     }
 
     @Test
+    fun `서버 ICE 후보는 senderConnectionId 로 고른다(endpointName 은 스트림 id)`() {
+        // openvidu-server 2.30 이 송출 엔드포인트에 보내는 형태(E2E 로그: endpoint str_SCR_WvGe_con_HNgDu68HZV)
+        val forMe = JSONObject(
+            """{"senderConnectionId":"con_HNgDu68HZV","endpointName":"str_SCR_WvGe_con_HNgDu68HZV",
+               "candidate":"candidate:1 1 UDP 2015363327 10.1.0.195 40009 typ host","sdpMid":"0","sdpMLineIndex":0}""",
+        )
+        assertTrue(OpenViduProtocol.isIceCandidateFor(forMe, "con_HNgDu68HZV"))
+        assertFalse("다른 연결의 후보는 받지 않는다", OpenViduProtocol.isIceCandidateFor(forMe, "con_other"))
+        assertFalse(
+            "endpointName 만으로 내 연결이라고 보지 않는다",
+            OpenViduProtocol.isIceCandidateFor(JSONObject().put("senderConnectionId", "con_x").put("endpointName", "con_me"), "con_me"),
+        )
+        assertTrue(
+            "senderConnectionId 가 없는 구버전 형식은 endpointName 으로 본다",
+            OpenViduProtocol.isIceCandidateFor(JSONObject().put("endpointName", "con_me"), "con_me"),
+        )
+    }
+
+    @Test
     fun `회전 시 videoDimensions 변경을 알린다`() {
         val params = OpenViduProtocol.videoDimensionsChangedParams("str_1", 1600, 720)
         assertEquals("videoDimensions", params.getString("property"))

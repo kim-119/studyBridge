@@ -225,8 +225,7 @@ internal class ScreenPublisher(
         val mine = connectionId ?: return
         when (method) {
             "iceCandidate" -> {
-                val target = params.optStringOrNull("endpointName") ?: params.optStringOrNull("senderConnectionId")
-                if (target != mine) return
+                if (!OpenViduProtocol.isIceCandidateFor(params, mine)) return
                 val sdp = params.optStringOrNull("candidate") ?: return
                 val candidate = IceCandidate(params.optStringOrNull("sdpMid"), params.optInt("sdpMLineIndex", 0), sdp)
                 if (remoteDescriptionSet) peer?.addIceCandidate(candidate) else pendingRemoteCandidates.add(candidate)

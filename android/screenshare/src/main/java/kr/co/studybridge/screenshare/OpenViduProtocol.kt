@@ -102,6 +102,16 @@ internal object OpenViduProtocol {
             .put("newValue", dimensionsJson(width, height))
             .put("reason", "screenResized")
 
+    /**
+     * 서버 iceCandidate 알림이 [ownerConnectionId] 의 엔드포인트 것인지. openvidu-browser(Session.recvIceCandidate)처럼
+     * senderConnectionId(엔드포인트 소유 연결)로 고른다. endpointName 은 스트림 id(str_…)라 연결 id 와 다르다.
+     * 송출자는 내 연결 id, 시청자는 구독 대상(송출자) 연결 id 를 넘긴다.
+     */
+    fun isIceCandidateFor(params: JSONObject, ownerConnectionId: String): Boolean {
+        val sender = params.optStringOrNull("senderConnectionId")
+        return if (sender != null) sender == ownerConnectionId else params.optStringOrNull("endpointName") == ownerConnectionId
+    }
+
     fun pingParams(first: Boolean): JSONObject? = if (first) JSONObject().put("interval", PING_INTERVAL_MS) else null
 
     private fun dimensionsJson(width: Int, height: Int): String =
