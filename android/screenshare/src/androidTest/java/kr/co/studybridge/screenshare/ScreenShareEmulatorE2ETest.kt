@@ -47,7 +47,11 @@ class ScreenShareEmulatorE2ETest {
 
     private val api get() = requireNotNull(args.getString("ovApi"))
     private val secret get() = requireNotNull(args.getString("ovSecret"))
-    private val sessionId get() = requireNotNull(args.getString("ovSession"))
+    /** 시나리오마다 다른 OpenVidu 세션(토큰에 들어 있다). 마지막 참가자가 나가면 서버가 세션을 지우기 때문이다. */
+    private var sessionId = ""
+
+    /** 이번 공유를 시작한 시각. 이전 시나리오의 마지막 상태(IDLE)를 이번 결과로 오인하지 않는다. */
+    private var startedAt = 0L
 
     @After
     fun tearDown() {
@@ -151,6 +155,8 @@ class ScreenShareEmulatorE2ETest {
 
     /** 시스템 동의 → 앱과 같은 경로로 Foreground Service 시작 → PUBLISHING 까지. */
     private fun startSharing(token: String): ScreenShareStatus {
+        sessionId = OpenViduProtocol.endpointFromToken(token, keepInsecureWebSocket = true).sessionId
+        startedAt = System.currentTimeMillis()
         shell("appops set ${context.packageName} PROJECT_MEDIA allow")
         if (Build.VERSION.SDK_INT >= 33) shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
         ConsentActivity.result = CompletableFuture()
@@ -212,6 +218,10 @@ class ScreenShareEmulatorE2ETest {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         while (SystemClock.elapsedRealtime() < deadline) {
             val status = ScreenShareRuntime.status
+            if (status.updatedAt < startedAt) {
+                SystemClock.sleep(250)
+                continue
+            }
             if (condition(status)) return status
             if (!allowStop && status.state == ScreenShareState.IDLE && status.reason != null) {
                 throw AssertionError("화면공유가 예기치 않게 종료됨: ${status.reason} ${status.message}")

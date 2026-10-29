@@ -64,7 +64,8 @@ internal class OpenViduTestViewer(context: Context, token: String) {
 
             override fun onNotification(method: String, params: JSONObject) {
                 if (method != "iceCandidate") return
-                if (params.optStringOrNull("endpointName") != publisherConnectionId) return
+                val owner = publisherConnectionId ?: return
+                if (!OpenViduProtocol.isIceCandidateFor(params, owner)) return
                 val candidate = IceCandidate(params.optStringOrNull("sdpMid"), params.optInt("sdpMLineIndex", 0), params.optString("candidate"))
                 if (remoteSet) peer?.addIceCandidate(candidate) else pendingCandidates.add(candidate)
             }
