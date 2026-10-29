@@ -118,8 +118,8 @@ test('정확한 신규 버전 파일만 읽는다 (1.4 → 1.4.txt, 다른 파�
   assert.equal(readNotesDir(dir, '1.5').lines, null);
 });
 
-test('저장소의 1.2·1.3 노트 = 공개 메타데이터, 화면 필터 전부 통과', () => {
-  for (const v of ['1.2', '1.3']) {
+test('저장소의 1.2·1.3·1.4 노트 = 공개 메타데이터, 화면 필터 전부 통과', () => {
+  for (const v of ['1.2', '1.3', '1.4']) {
     const { lines, otherVersions } = readNotesDir(DIR, v);
     const r = validateReleaseNotes({ version: v, lines, previous: null, otherVersions, toUserReleaseNotes });
     assert.equal(r.ok, true, `${v}: ${JSON.stringify(r.errors)}`);
