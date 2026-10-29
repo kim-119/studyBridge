@@ -81,14 +81,23 @@ class ScreenShareService : Service() {
             return
         }
 
-        val next = ScreenPublisher(
-            context = applicationContext,
-            projection = projection,
-            config = config,
-            displaySize = ::currentDisplay,
-            onStatus = ::onPublisherStatus,
-            onFinished = { mainHandler.post { shutDown() } },
-        )
+        // 송출 준비 중 예외가 나도 앱(WebView 포함) 프로세스를 죽이지 않고 화면공유만 정리한다.
+        val next = try {
+            ScreenPublisher(
+                context = applicationContext,
+                projection = projection,
+                config = config,
+                displaySize = ::currentDisplay,
+                onStatus = ::onPublisherStatus,
+                onFinished = { mainHandler.post { shutDown() } },
+            )
+        } catch (error: RuntimeException) {
+            Log.e(TAG, "screen publisher init failed", error)
+            runCatching { projection.stop() }
+            report(StopReason.ERROR, null)
+            shutDown()
+            return
+        }
         publisher = next
         // 시스템 '공유 중지'(상태 표시줄 칩·잠금 등)·권한 회수 → 정상 종료.
         projection.registerCallback(object : MediaProjection.Callback() {

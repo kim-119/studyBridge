@@ -24,10 +24,8 @@ import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.audio.AudioDeviceModule
 import org.webrtc.audio.JavaAudioDeviceModule
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /**
@@ -44,12 +42,7 @@ internal class ScreenPublisher(
 ) {
     data class DisplayInfo(val width: Int, val height: Int, val densityDpi: Int)
 
-    private val worker = (Executors.newSingleThreadScheduledExecutor { runnable ->
-        Thread(runnable, "sb-screen-publisher")
-    } as ScheduledThreadPoolExecutor).apply {
-        executeExistingDelayedTasksAfterShutdownPolicy = false
-        continueExistingPeriodicTasksAfterShutdownPolicy = false
-    }
+    private val worker = WebRtcRuntime.serialScheduler("sb-screen-publisher")
     private val machine = ScreenShareStateMachine()
 
     private var eglBase: EglBase? = null
@@ -105,7 +98,7 @@ internal class ScreenPublisher(
     }
 
     private fun startCapture() {
-        ensureWebRtcInitialized(context)
+        WebRtcRuntime.ensureInitialized(context)
         val egl = EglBase.create().also { eglBase = it }
         val adm = JavaAudioDeviceModule.builder(context).createAudioDeviceModule().also { audioModule = it }
         val peerFactory = PeerConnectionFactory.builder()
@@ -390,17 +383,5 @@ internal class ScreenPublisher(
         private const val PUBLISH_TIMEOUT_MS = 15_000L
         private const val FRAME_REFRESH_IDLE_MS = 1_000L
         private const val STATS_INTERVAL_SEC = 3L
-
-        @Volatile
-        private var webRtcInitialized = false
-
-        @Synchronized
-        private fun ensureWebRtcInitialized(context: Context) {
-            if (webRtcInitialized) return
-            PeerConnectionFactory.initialize(
-                PeerConnectionFactory.InitializationOptions.builder(context.applicationContext).createInitializationOptions(),
-            )
-            webRtcInitialized = true
-        }
     }
 }
