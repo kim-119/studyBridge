@@ -192,14 +192,12 @@ jobs:
           test -f app/build/outputs/apk/release/app-release.apk
           test -f app/build/outputs/bundle/release/app-release.aab
 
-      # v1.5: 실기기 검증 전인 네이티브 화면공유(:screenshare)는 릴리스 APK 에 넣지 않는다.
-      - name: 릴리스 APK 화면공유 미포함 확인
+      # v1.6: 릴리스 APK 에 네이티브 전체 화면공유가 반드시 들어가야 한다(빠지면 배포 중단).
+      - name: 릴리스 APK 화면공유 포함 검증
         run: |
-          if unzip -l android/app/build/outputs/apk/release/app-release.apk | grep "libjingle_peerconnection_so.so" > /dev/null; then
-            echo "FAIL: 릴리스 APK 에 네이티브 화면공유(libwebrtc)가 포함됐습니다."
-            exit 1
-          fi
-          echo "PASS: 릴리스 APK 에 네이티브 화면공유가 없습니다."
+          MERGED=$(find android/app/build/intermediates -type f -name AndroidManifest.xml -path "*merged_manifest*" -path "*release*" | head -n 1)
+          test -n "$MERGED" || { echo "FAIL: Gradle 병합 매니페스트를 찾지 못했습니다"; find android/app/build/intermediates -name AndroidManifest.xml; exit 1; }
+          bash .github/scripts/verify-screenshare-apk.sh android/app/build/outputs/apk/release/app-release.apk "$MERGED"
 
       - name: 서명 검증
         run: |

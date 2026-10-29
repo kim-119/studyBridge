@@ -1,12 +1,17 @@
 apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
-// 네이티브 화면공유 송출(MediaProjection + libwebrtc + OpenVidu SCREEN). 앱은 -PsbScreenShare=true 일 때만 이 모듈을 포함한다.
+// 네이티브 화면공유 송출(MediaProjection + libwebrtc + OpenVidu SCREEN). v1.6 부터 앱에 항상 포함된다.
 android {
     namespace = "kr.co.studybridge.screenshare"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
         minSdkVersion rootProject.ext.minSdkVersion
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+    buildFeatures {
+        // BuildConfig.DEBUG: 로컬 E2E 전용 평문 ws 허용을 디버그 빌드로 한정한다.
+        buildConfig = true
     }
     lint {
         abortOnError true
@@ -30,4 +35,9 @@ dependencies {
     testImplementation "org.jetbrains.kotlin:kotlin-test-junit:$kotlinVersion"
     // JVM 단위 테스트의 android.jar 는 org.json 이 비어 있는 스텁이다.
     testImplementation "org.json:json:20240303"
+    // 에뮬레이터 E2E(실제 MediaProjection 캡처 → 로컬 OpenVidu 송출)
+    androidTestImplementation "androidx.test:runner:1.6.2"
+    androidTestImplementation "androidx.test:core:1.6.1"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.uiautomator:uiautomator:2.3.0"
 }

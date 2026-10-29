@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.webkit.WebView
 import androidx.activity.result.ActivityResult
 import com.getcapacitor.JSObject
 import com.getcapacitor.PermissionState
@@ -29,11 +30,32 @@ private const val NOTIFICATIONS_ALIAS = "notifications"
 class ScreenSharePlugin : Plugin() {
 
     private val statusListener: (ScreenShareStatus) -> Unit = { status ->
+        keepWebViewAliveWhileSharing(status.state.isActive)
         notifyListeners(STATE_EVENT, JSObject.fromJSONObject(status.toJson()), true)
     }
 
+    @Volatile
+    private var rendererPinned = false
+
     override fun load() {
         ScreenShareRuntime.addListener(statusListener)
+        keepWebViewAliveWhileSharing(ScreenShareRuntime.status.state.isActive)
+    }
+
+    /**
+     * 다른 앱으로 이동하면 WebView 렌더러 우선순위가 기본으로 낮춰져(waivedWhenNotVisible) 시스템이 렌더러를 얼리거나 끝낼 수 있다.
+     * 그러면 PRIMARY(카메라·마이크) 연결이 끊기고, 서버는 주인 없는 SCREEN 을 정리해 화면공유도 끝난다.
+     * 공유하는 동안만 렌더러를 앱(Foreground Service) 우선순위에 묶어 두고, 끝나면 기본값으로 돌린다.
+     */
+    private fun keepWebViewAliveWhileSharing(sharing: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || rendererPinned == sharing) return
+        rendererPinned = sharing
+        val view = bridge?.webView ?: return
+        view.post {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                runCatching { view.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, !sharing) }
+            }
+        }
     }
 
     override fun handleOnDestroy() {

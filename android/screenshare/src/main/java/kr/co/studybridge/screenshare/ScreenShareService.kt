@@ -6,6 +6,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -81,14 +82,23 @@ class ScreenShareService : Service() {
             return
         }
 
-        val next = ScreenPublisher(
-            context = applicationContext,
-            projection = projection,
-            config = config,
-            displaySize = ::currentDisplay,
-            onStatus = ::onPublisherStatus,
-            onFinished = { mainHandler.post { shutDown() } },
-        )
+        // 송출 준비 중 예외가 나도 앱(WebView 포함) 프로세스를 죽이지 않고 화면공유만 정리한다.
+        val next = try {
+            ScreenPublisher(
+                context = applicationContext,
+                projection = projection,
+                config = config,
+                displaySize = ::currentDisplay,
+                onStatus = ::onPublisherStatus,
+                onFinished = { mainHandler.post { shutDown() } },
+            )
+        } catch (error: RuntimeException) {
+            Log.e(TAG, "screen publisher init failed", error)
+            runCatching { projection.stop() }
+            report(StopReason.ERROR, null)
+            shutDown()
+            return
+        }
         publisher = next
         // 시스템 '공유 중지'(상태 표시줄 칩·잠금 등)·권한 회수 → 정상 종료.
         projection.registerCallback(object : MediaProjection.Callback() {
@@ -140,7 +150,9 @@ class ScreenShareService : Service() {
             override fun onDisplayAdded(displayId: Int) = Unit
             override fun onDisplayRemoved(displayId: Int) = Unit
             override fun onDisplayChanged(displayId: Int) {
-                if (displayId == Display.DEFAULT_DISPLAY) target.onDisplayChanged()
+                if (displayId != Display.DEFAULT_DISPLAY) return
+                Log.i(TAG, "default display changed")
+                target.onDisplayChanged()
             }
         }
         manager.registerDisplayListener(listener, mainHandler)
@@ -150,13 +162,33 @@ class ScreenShareService : Service() {
     private fun currentDisplay(): ScreenPublisher.DisplayInfo {
         val display = getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY)
         val metrics = DisplayMetrics()
-        if (display != null) {
-            @Suppress("DEPRECATION")
-            display.getRealMetrics(metrics)
-        } else {
+        if (display == null) {
             metrics.setTo(resources.displayMetrics)
+            return ScreenPublisher.DisplayInfo(metrics.widthPixels, metrics.heightPixels, metrics.densityDpi)
         }
-        return ScreenPublisher.DisplayInfo(metrics.widthPixels, metrics.heightPixels, metrics.densityDpi)
+        @Suppress("DEPRECATION")
+        display.getRealMetrics(metrics)
+        val mode = display.mode
+        val (width, height) = orientDisplaySize(
+            metrics.widthPixels,
+            metrics.heightPixels,
+            mode.physicalWidth,
+            mode.physicalHeight,
+            display.rotation,
+        )
+        Log.i(
+            TAG,
+            "display metrics=${metrics.widthPixels}x${metrics.heightPixels} natural=${mode.physicalWidth}x${mode.physicalHeight} " +
+                "rotation=${display.rotation} -> ${width}x${height}",
+        )
+        return ScreenPublisher.DisplayInfo(width, height, metrics.densityDpi)
+    }
+
+    /** 회전·화면 크기 변경은 구성 변경으로도 온다(DisplayListener 가 늦거나 빠지는 기기 대비). */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        Log.i(TAG, "configuration changed orientation=${newConfig.orientation}")
+        publisher?.onDisplayChanged()
     }
 
     private fun report(reason: StopReason, message: String?) {

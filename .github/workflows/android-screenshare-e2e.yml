@@ -1,0 +1,149 @@
+name: StudyBridge Android ScreenShare E2E
+
+# 에뮬레이터 E2E: 실제 MediaProjection 전체 디스플레이 캡처 → libwebrtc → 로컬 OpenVidu 2.30(openvidu-dev, Kurento) SCREEN 송출.
+# 운영 EC2/OpenVidu 는 쓰지 않는다(러너 안의 컨테이너만 사용). 실기기 검증을 대신하지 않는다.
+on:
+  pull_request:
+    branches:
+      - android-features
+    paths:
+      - "android/**"
+      - ".github/workflows/android-screenshare-e2e.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: android-screenshare-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MOBILE_API_BASE_URL: https://studybridge.co.kr
+  OPENVIDU_SECRET: e2e-local-only
+  OV_SESSION: e2e_screen_share
+
+jobs:
+  emulator-e2e:
+    name: MediaProjection → OpenVidu SCREEN (Android 14 emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: 소스코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 22 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Capacitor 의존성 설치
+        run: npm ci
+
+      - name: 프론트엔드 의존성 설치
+        run: npm --prefix frontend ci
+
+      - name: 모바일 번들 빌드
+        env:
+          VITE_API_BASE_URL: ${{ env.MOBILE_API_BASE_URL }}
+        run: npm run build:mobile
+
+      - name: Capacitor Android 동기화
+        run: npx cap sync android
+
+      - name: JDK 21 설정
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Gradle 설정
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: 계측 테스트 APK 빌드
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew :screenshare:assembleDebug :screenshare:assembleDebugAndroidTest
+
+      - name: KVM 활성화
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: 로컬 OpenVidu 2.30 (openvidu-dev) 시작
+        run: |
+          set -euo pipefail
+          HOST_IP=$(hostname -I | awk '{print $1}')
+          echo "HOST_IP=$HOST_IP" >> "$GITHUB_ENV"
+          docker run -d --name openvidu --network host \
+            -e OPENVIDU_SECRET="$OPENVIDU_SECRET" -e DOMAIN_OR_PUBLIC_IP="$HOST_IP" \
+            openvidu/openvidu-dev:2.30.0
+          for i in $(seq 1 60); do
+            if curl -sf -u "OPENVIDUAPP:$OPENVIDU_SECRET" "http://$HOST_IP:4443/openvidu/api/config" > /dev/null; then
+              echo "OpenVidu ready at http://$HOST_IP:4443"; exit 0
+            fi
+            sleep 3
+          done
+          docker logs openvidu | tail -n 80
+          echo "FAIL: OpenVidu 가 준비되지 않았습니다"; exit 1
+
+      - name: 세션·토큰 발급 (운영 serverData 형식 — SCREEN 송출 3개, 시청자 1개)
+        run: |
+          set -euo pipefail
+          API="http://$HOST_IP:4443/openvidu/api"
+          # 시나리오마다 다른 세션: 마지막 참가자가 나가면 OpenVidu 가 세션을 지운다.
+          for session in "${OV_SESSION}_t1" "${OV_SESSION}_t2" "${OV_SESSION}_t3"; do
+            curl -sf -u "OPENVIDUAPP:$OPENVIDU_SECRET" -H 'Content-Type: application/json' \
+              -d "{\"customSessionId\":\"$session\"}" "$API/sessions" > /dev/null
+          done
+          issue() { # <session> <role> <kind> <ENV 이름>
+            local session="$1"; shift
+            local data body resp token
+            data=$(jq -cn --arg kind "$2" '{v:1, app:"studybridge", groupId:0, userId:(if $kind=="SCREEN" then 1 else 2 end), kind:$kind, ownerConnectionId:(if $kind=="SCREEN" then "con_e2e_primary" else null end), deviceType:"ANDROID"}')
+            body=$(jq -n --arg data "$data" --arg role "$1" '{type:"WEBRTC", role:$role, data:$data}')
+            resp=$(curl -sf -u "OPENVIDUAPP:$OPENVIDU_SECRET" -H 'Content-Type: application/json' -d "$body" "$API/sessions/$session/connection")
+            token=$(echo "$resp" | jq -r '.token')
+            test -n "$token" && test "$token" != "null"
+            echo "$3: $(echo "$resp" | jq -c '{connectionId, role, tokenHost: (.token | capture("^(?<h>[a-z]+://[^?]+)").h)}')"
+            # am instrument 인자는 기기 셸을 거치므로 ?·& 가 있는 토큰은 Base64 로 넘긴다.
+            echo "$3=$(printf %s "$token" | base64 -w0)" >> "$GITHUB_ENV"
+          }
+          issue "${OV_SESSION}_t1" PUBLISHER SCREEN OV_PUBLISH_TOKEN_B64
+          issue "${OV_SESSION}_t1" SUBSCRIBER PRIMARY OV_VIEWER_TOKEN_B64
+          issue "${OV_SESSION}_t2" PUBLISHER SCREEN OV_NETWORK_TOKEN_B64
+          issue "${OV_SESSION}_t3" PUBLISHER SCREEN OV_APPCLOSE_TOKEN_B64
+
+      - name: 에뮬레이터(Android 14)에서 화면공유 E2E 실행
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: |
+            adb logcat -c
+            cd android && ./gradlew :screenshare:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.ovPublishTokenB64="$OV_PUBLISH_TOKEN_B64" -Pandroid.testInstrumentationRunnerArguments.ovViewerTokenB64="$OV_VIEWER_TOKEN_B64" -Pandroid.testInstrumentationRunnerArguments.ovNetworkTokenB64="$OV_NETWORK_TOKEN_B64" -Pandroid.testInstrumentationRunnerArguments.ovAppCloseTokenB64="$OV_APPCLOSE_TOKEN_B64" -Pandroid.testInstrumentationRunnerArguments.ovApi="http://$HOST_IP:4443" -Pandroid.testInstrumentationRunnerArguments.ovSecret="$OPENVIDU_SECRET" || (adb logcat -d > ../e2e-logcat.txt; exit 1)
+            adb logcat -d > e2e-logcat.txt
+
+      - name: E2E 로그·리포트 업로드
+        if: always()
+        run: |
+          mkdir -p e2e-artifacts
+          cp -f e2e-logcat.txt e2e-artifacts/ 2>/dev/null || true
+          cp -rf android/screenshare/build/reports/androidTests e2e-artifacts/ 2>/dev/null || true
+          cp -rf android/screenshare/build/outputs/androidTest-results e2e-artifacts/ 2>/dev/null || true
+          docker logs openvidu > e2e-artifacts/openvidu.log 2>&1 || true
+
+      - name: E2E 산출물 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studybridge-screenshare-e2e
+          path: e2e-artifacts
+          if-no-files-found: warn
+          retention-days: 14
