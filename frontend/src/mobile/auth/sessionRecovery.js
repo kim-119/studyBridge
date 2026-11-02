@@ -37,3 +37,15 @@ export function stripTokensFromProfile(key, value) {
     return null;
   }
 }
+
+export const NATIVE_STUDY_SYNC = Object.freeze({
+  SHARE: 'share',
+  SIGN_OUT: 'sign-out',
+  WAIT: 'wait',
+});
+
+export function planNativeStudySync({ token, refreshToken, isAuthChange }) {
+  if (token) return NATIVE_STUDY_SYNC.SHARE;
+  if (refreshToken) return NATIVE_STUDY_SYNC.WAIT;
+  return isAuthChange ? NATIVE_STUDY_SYNC.SIGN_OUT : NATIVE_STUDY_SYNC.WAIT;
+}

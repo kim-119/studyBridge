@@ -57,6 +57,7 @@ export function sessionFromServer(session, clientNowMs = Date.now()) {
     sessionId: session.id ?? null,
     kind: groupStudyId == null ? SESSION_KIND.PERSONAL : SESSION_KIND.GROUP,
     groupStudyId,
+    heartbeatTracked: heartbeatAt != null,
     elapsedMs: Math.max(0, elapsedMs),
     anchoredAt: clientNowMs,
   };
@@ -76,10 +77,11 @@ export function isSameRunningSession(running, serverSession) {
   return true;
 }
 
-// 실행 중 30초 주기 확인. 개인 세션은 heartbeat(진행분 크레딧 + 무응답 자동 종료 기준 갱신), 그룹 세션은 조회만 한다.
+// 실행 중 30초 주기 확인. heartbeat 로 시작한 개인 세션만 heartbeat 하고, 그룹 세션·heartbeat 없는 세션은 조회만 한다.
 export async function checkRunningSession(running, { heartbeat, getCurrentSession }) {
   if (!running) return false;
-  const serverSession = running.kind === SESSION_KIND.PERSONAL ? await heartbeat() : await getCurrentSession();
+  const ownsHeartbeat = running.kind === SESSION_KIND.PERSONAL && running.heartbeatTracked;
+  const serverSession = ownsHeartbeat ? await heartbeat() : await getCurrentSession();
   return isSameRunningSession(running, serverSession);
 }
 
