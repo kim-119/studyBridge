@@ -79,7 +79,7 @@ test('개인 세션만 heartbeat 하고 그룹 세션은 조회만 한다', asyn
   const deps = {
     heartbeat: async () => {
       calls.push('heartbeat');
-      return { id: 7, startTime: '2026-10-28T11:00:00' };
+      return { id: 7, startTime: '2026-10-28T11:00:00', lastHeartbeatAt: '2026-10-28T11:59:30' };
     },
     getCurrentSession: async () => {
       calls.push('current');
@@ -87,11 +87,36 @@ test('개인 세션만 heartbeat 하고 그룹 세션은 조회만 한다', asyn
     },
   };
 
-  const personal = sessionFromServer({ id: 7, startTime: '2026-10-28T11:00:00' }, NOW);
+  const personal = sessionFromServer(
+    { id: 7, startTime: '2026-10-28T11:00:00', lastHeartbeatAt: '2026-10-28T11:59:00' },
+    NOW
+  );
   const group = sessionFromServer({ id: 3, startTime: '2026-10-28T11:00:00', groupStudyId: 51 }, NOW);
 
   assert.equal(await checkRunningSession(personal, deps), true);
   assert.equal(await checkRunningSession(group, deps), true);
   assert.equal(await checkRunningSession(null, deps), false);
   assert.deepEqual(calls, ['heartbeat', 'current']);
+});
+
+test('heartbeat 없이 시작한 개인 세션(Android 네이티브 시작)은 heartbeat 하지 않고 조회만 한다', async () => {
+  const calls = [];
+  const nativeSession = { id: 12, startTime: '2026-10-28T11:30:00', lastHeartbeatAt: null, groupStudyId: null };
+  const deps = {
+    heartbeat: async () => {
+      calls.push('heartbeat');
+      return nativeSession;
+    },
+    getCurrentSession: async () => {
+      calls.push('current');
+      return nativeSession;
+    },
+  };
+
+  const running = sessionFromServer(nativeSession, NOW);
+  assert.equal(running.kind, SESSION_KIND.PERSONAL);
+  assert.equal(running.heartbeatTracked, false);
+  assert.equal(elapsedSecondsOf(running, NOW), 1800);
+  assert.equal(await checkRunningSession(running, deps), true);
+  assert.deepEqual(calls, ['current']);
 });

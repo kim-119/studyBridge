@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/reminder_edit_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?android:attr/colorBackground"
+    android:orientation="vertical">
+
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/reminder_toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        android:background="?attr/colorPrimary"
+        android:theme="@style/ThemeOverlay.AppCompat.Dark.ActionBar" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/reminder_title_label"
+                android:textStyle="bold" />
+
+            <EditText
+                android:id="@+id/reminder_title_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:autofillHints=""
+                android:hint="@string/reminder_title_hint"
+                android:inputType="text"
+                android:maxLength="40"
+                android:minHeight="48dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/reminder_time_label"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/reminder_time_text"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_vertical"
+                    android:minHeight="48dp"
+                    android:textSize="32sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/reminder_pick_time_button"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/reminder_pick_time" />
+            </LinearLayout>
+
+            <CheckBox
+                android:id="@+id/reminder_use_24_hour"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:text="@string/reminder_use_24_hour" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/reminder_repeat_label"
+                android:textStyle="bold" />
+
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <CheckBox
+                        android:id="@+id/reminder_day_monday"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:minWidth="48dp"
+                        android:text="@string/reminder_day_monday" />
+
+                    <CheckBox
+                        android:id="@+id/reminder_day_tuesday"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:minWidth="48dp"
+                        android:text="@string/reminder_day_tuesday" />
+
+                    <CheckBox
+                        android:id="@+id/reminder_day_wednesday"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:minWidth="48dp"
+                        android:text="@string/reminder_day_wednesday" />
+
+                    <CheckBox
+                        android:id="@+id/reminder_day_thursday"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:minWidth="48dp"
+                        android:text="@string/reminder_day_thursday" />
+
+                    <CheckBox
+                        android:id="@+id/reminder_day_friday"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:minWidth="48dp"
+                        android:text="@string/reminder_day_friday" />
+
+                    <CheckBox
+                        android:id="@+id/reminder_day_saturday"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:minWidth="48dp"
+                        android:text="@string/reminder_day_saturday" />
+
+                    <CheckBox
+                        android:id="@+id/reminder_day_sunday"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:minWidth="48dp"
+                        android:text="@string/reminder_day_sunday" />
+                </LinearLayout>
+            </HorizontalScrollView>
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/reminder_enabled_switch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:minHeight="48dp"
+                android:text="@string/reminder_enabled_label"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/reminder_alert_label"
+                android:textStyle="bold" />
+
+            <RadioGroup
+                android:id="@+id/reminder_alert_style_group"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <RadioButton
+                    android:id="@+id/reminder_alert_sound_vibration"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="@string/reminder_alert_sound_vibration" />
+
+                <RadioButton
+                    android:id="@+id/reminder_alert_sound"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="@string/reminder_alert_sound" />
+
+                <RadioButton
+                    android:id="@+id/reminder_alert_vibration"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="@string/reminder_alert_vibration" />
+
+                <RadioButton
+                    android:id="@+id/reminder_alert_silent"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:text="@string/reminder_alert_silent" />
+            </RadioGroup>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/reminder_alert_hint"
+                android:textColor="#757575" />
+
+            <Button
+                android:id="@+id/reminder_channel_settings_button"
+                style="?android:attr/buttonBarButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/reminder_channel_settings" />
+
+            <LinearLayout
+                style="?android:attr/buttonBarStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:gravity="end"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/reminder_cancel_button"
+                    style="?android:attr/buttonBarButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/reminder_cancel" />
+
+                <Button
+                    android:id="@+id/reminder_save_button"
+                    style="?android:attr/buttonBarButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/reminder_save" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>
