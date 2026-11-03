@@ -217,7 +217,9 @@ def test_collection_hook_persists_async_and_failures_are_isolated(monkeypatch):
 def test_live_entrypoint_registers_routes_and_enforces_auth(monkeypatch):
     monkeypatch.setenv("AI_SERVER_API_KEY", INTERNAL_KEY)
     import hotfix_main
-    paths = {getattr(r, "path", None) for r in hotfix_main.app.routes}
+    # FastAPI 0.16x 부터 include_router 가 _IncludedRouter 로 지연 포함되어 app.routes 에 path 가 안 보인다
+    # → 버전 무관하게 OpenAPI 스키마(실제 라우팅 표면)로 확인한다.
+    paths = set(hotfix_main.app.openapi()["paths"])
     for p in ("/api/ai/quality/evaluate", "/api/ai/learning-loop", "/api/ai/rag/grounded-query",
               "/api/training-candidates/collect-v1", "/api/training-candidates/feedback", "/api/training-candidates/stats"):
         assert p in paths, p

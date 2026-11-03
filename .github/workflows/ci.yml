@@ -199,7 +199,9 @@ jobs:
           cd fastapi
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          # requirements.txt 가 버전을 고정하지 않아 CI 가 운영(ai07 venv)보다 새 FastAPI 를 설치한다.
+          # 운영과 같은 웹 프레임워크 버전으로 고정해 '운영에서 도는 코드'를 검증한다(2026-11-04 ai07 pip freeze).
+          pip install "fastapi==0.136.3" "starlette==1.2.1" "pydantic==2.13.4" "pydantic-settings==2.14.1" pytest
 
       - name: pytest 실행
         run: |
