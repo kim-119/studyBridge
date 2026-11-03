@@ -1,70 +1,40 @@
 """
-JSONL 내보내기 서비스.
-ai.training_candidate에서 auto_approved 샘플만 messages 구조로 내보낸다.
+[레거시 호환] JSONL 내보내기 서비스.
+
+예전 구현은 API 가 준 output_path 에 그대로 썼다(임의 경로 쓰기/상위 경로/symlink/덮어쓰기/크기 무제한/동시 경합)
+그리고 auto_approved(휴리스틱 90점) 행을 학습 데이터로 내보냈다. 이제는:
+  - output_path 지정 불가(기본값/None 만 허용) → app.training_pipeline.export_service 의 고정 비공개 디렉터리.
+  - TRAIN_ELIGIBLE(동의·권리·PII·사실 검증 통과) 후보만, 사용자/문서 그룹 분할 + 누출 검사 + manifest.
 """
-import json
 import logging
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+LEGACY_DEFAULT_OUTPUT_PATH = "exported_training_data.jsonl"
+
+
+class OutputPathNotAllowed(ValueError):
+    pass
+
 
 async def export_approved_candidates(
-    output_path: str = "exported_training_data.jsonl",
+    output_path: str | None = None,
     min_score: int = 90,
+    *,
+    actor: str = "legacy-caller",
+    request_id: str = "legacy-export",
 ) -> dict:
     """
-    quality_status='auto_approved' AND quality_score >= min_score인 샘플을
-    messages 구조 JSONL로 저장한다.
-
     Returns:
-        {"output_path": str, "exported_count": int, "status": str}
+        {"output_path": str|None(데이터셋 루트 기준 상대 경로), "exported_count": int,
+         "status": "completed"|"empty"|"busy"|"failed", "dataset_id": str|None, "error_code": str|None}
     """
-    rows = await _fetch_approved(min_score)
-    if not rows:
-        return {"output_path": output_path, "exported_count": 0, "status": "empty"}
+    if output_path not in (None, "", LEGACY_DEFAULT_OUTPUT_PATH):
+        raise OutputPathNotAllowed("output_path 는 지정할 수 없습니다(고정 비공개 디렉터리만 사용).")
+    from app.training_pipeline.export_service import export_dataset
+    from app.training_pipeline.repository import get_repository
 
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    count = 0
-    with out.open("w", encoding="utf-8") as f:
-        for row in rows:
-            messages = []
-            if row.get("system_prompt"):
-                messages.append({"role": "system", "content": row["system_prompt"]})
-            messages.append({"role": "user",      "content": row["question"]})
-            messages.append({"role": "assistant", "content": row["answer"]})
-
-            # 구조 검증
-            if not all(m.get("content","").strip() for m in messages):
-                continue
-
-            f.write(json.dumps({"messages": messages}, ensure_ascii=False) + "\n")
-            count += 1
-
-    logger.info("JSONL 내보내기 완료: %d개 → %s", count, output_path)
-    return {"output_path": output_path, "exported_count": count, "status": "completed"}
-
-
-async def _fetch_approved(min_score: int) -> list[dict]:
-    """ai-db에서 auto_approved 학습 후보를 조회한다."""
-    from app.db.postgres import get_conn
-    try:
-        async with get_conn() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT question, answer, system_prompt, knowledge_level, personality
-                FROM ai.training_candidate
-                WHERE quality_status = 'auto_approved'
-                  AND quality_score >= $1
-                  AND is_duplicate = FALSE
-                  AND is_unsafe = FALSE
-                ORDER BY quality_score DESC, created_at ASC
-                """,
-                min_score,
-            )
-        return [dict(r) for r in rows]
-    except Exception as e:
-        logger.error("학습 후보 조회 실패: %s", e)
-        return []
+    res = await export_dataset(get_repository(), actor=actor, request_id=request_id)
+    logger.info("JSONL 내보내기: status=%s count=%d dataset=%s", res.status, res.total, res.dataset_id)
+    return {"output_path": res.relative_path, "exported_count": res.total, "status": res.status,
+            "dataset_id": res.dataset_id, "error_code": res.error_code}

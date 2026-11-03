@@ -160,6 +160,62 @@ jobs:
           cd fastapi
           python -m compileall .
 
+  fastapi-tests:
+    name: FastAPI pytest (quality gate / training pipeline / contracts)
+    runs-on: ubuntu-latest
+    # compileall 만으로는 동작 검증이 안 된다. 외부 AI/DB 에 닿지 않는 hermetic 테스트만 실행한다.
+    # (기존 전체 스위트에는 이 브랜치 이전부터 실패하던 테스트 6개 + import 오류 4파일이 있어 대상 목록을 명시한다)
+    services:
+      pgtest:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: lq
+          POSTGRES_PASSWORD: lqtest
+          POSTGRES_DB: lq
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U lq" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      OLLAMA_BASE_URL: http://127.0.0.1:9
+      VISION_OLLAMA_BASE_URL: http://127.0.0.1:9
+      AI_OLLAMA_BASE_URL: http://127.0.0.1:9
+      AI_TEST_PG_DSN: postgresql://lq:lqtest@127.0.0.1:55432/lq
+
+    steps:
+      - name: 소스코드 체크아웃(재현 테스트용 전체 히스토리)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Python 3.12 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 의존성 설치
+        run: |
+          cd fastapi
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: pytest 실행
+        run: |
+          cd fastapi
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_lq_security_fail_closed.py tests/test_lq_pii_dup.py tests/test_lq_training_pipeline.py \
+            tests/test_lq_export_dataset.py tests/test_lq_legacy_scoring_repro.py tests/test_lq_quality_gate.py \
+            tests/test_lq_stream_gate_api.py tests/test_lq_contracts_v1.py tests/test_lq_learning_loop_gate.py \
+            tests/test_lq_postgres_repository.py tests/test_learning_loop.py tests/test_mindmap_semantic_graph.py
+
+      - name: 품질 게이트 합성 캘리브레이션(FAR/FRR)
+        run: |
+          cd fastapi
+          python -m scripts.quality_gate_calibration --out /tmp/calibration.json
+          python -c "import json,sys; d=json.load(open('/tmp/calibration.json')); sys.exit(0 if d['falseAcceptRate']==0 else 1)"
+
   docker-ci:
     name: Dockerfile Build And Version Check
     runs-on: ubuntu-latest

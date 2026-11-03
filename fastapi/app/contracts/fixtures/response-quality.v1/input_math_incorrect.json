@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "response-quality.v1",
+  "requestId": "req-rq-0004",
+  "taskType": "MATH_SOLUTION",
+  "outputKind": "text",
+  "modelDigest": "bdbd181c33f2",
+  "originalRequest": "7 × 8 은?",
+  "groundingEvidence": [],
+  "constraints": {
+    "expectedAnswer": "56"
+  },
+  "attemptIndex": 0,
+  "evaluationProfile": null,
+  "proposedOutput": "7 × 8 = 54 이다. 따라서 답은 54"
+}

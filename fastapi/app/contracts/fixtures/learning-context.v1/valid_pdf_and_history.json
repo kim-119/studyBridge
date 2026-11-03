@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "learning-context.v1",
+  "requestId": "req-lc-0001",
+  "pseudonymousUserKey": "pk_7f3a9c2e1b4d6a8f",
+  "materialId": 42,
+  "documentId": "doc-a1",
+  "currentQuestion": "3-way handshake 단계는?",
+  "contextItems": [
+    {
+      "id": "ctx-001",
+      "kind": "pdf_chunk",
+      "content": "TCP 3-way handshake 는 SYN, SYN-ACK, ACK 세 단계로 연결을 수립한다.",
+      "sourceType": "PDF_ORIGINAL",
+      "sourceId": "material:42",
+      "sourceRevisionHash": "rev-9b1c",
+      "page": 12,
+      "chunkId": "m42-c7",
+      "createdAt": "2026-11-01T09:00:00Z",
+      "qualityStatus": "SOURCE",
+      "provenance": {
+        "origin": "pgvector",
+        "retrievalScore": 0.81,
+        "documentRevision": "rev-9b1c"
+      },
+      "trustLevel": "SOURCE_PRIMARY"
+    },
+    {
+      "id": "ctx-002",
+      "kind": "summary",
+      "content": "AI 요약: TCP 는 연결 지향 프로토콜이다.",
+      "sourceType": "AI_SUMMARY",
+      "sourceId": "summary:5",
+      "createdAt": "2026-11-01T09:01:00Z",
+      "qualityStatus": "UNVERIFIED",
+      "provenance": {
+        "origin": "spring-db"
+      },
+      "trustLevel": "SOURCE_PRIMARY"
+    },
+    {
+      "id": "ctx-003",
+      "kind": "chat_turn",
+      "role": "user",
+      "content": "핸드셰이크가 왜 3번이야?",
+      "sourceType": "CHAT_MESSAGE",
+      "sourceId": "chat:88",
+      "createdAt": "2026-11-01T09:02:00Z",
+      "qualityStatus": "UNVERIFIED",
+      "provenance": {
+        "origin": "spring-db"
+      },
+      "trustLevel": "USER_ASSERTED"
+    }
+  ],
+  "tokenBudget": 4096,
+  "usedSources": [
+    "ctx-001"
+  ]
+}

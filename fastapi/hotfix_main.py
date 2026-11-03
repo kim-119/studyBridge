@@ -228,6 +228,17 @@ except Exception as e:
     import logging
     logging.getLogger(__name__).warning("ai_gateway 로드 실패 (계속 기동): %s", e)
 
+# Global Response Quality Gate 평가 API (POST /api/ai/quality/evaluate, response-quality.v1, 내부 Bearer 전용).
+# AI_QUALITY_EVALUATE_API_ENABLED=false(기본)면 라우트만 있고 503 FEATURE_DISABLED 를 반환한다.
+try:
+    from app.quality_gate.routes import router as quality_gate_router
+    paths = {getattr(route, "path", None) for route in app.routes}
+    if "/api/ai/quality/evaluate" not in paths:
+        app.include_router(quality_gate_router)
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning("quality_gate 라우터 로드 실패 (계속 기동): %s", e)
+
 # 출발지 네트워크 가드 — 반드시 마지막에 등록(가장 바깥 미들웨어 = 모든 처리보다 먼저 실행).
 # loopback/사설망(SSH 터널, Spring 컨테이너, ops 헬스체크)은 그대로 통과, 그 외 출발지는 Bearer AI_SERVER_API_KEY 필수.
 # 롤백: AI_NETWORK_GUARD=log(통과+경고) 또는 off. 실패 시에도 기동은 계속하되 오류를 남긴다.

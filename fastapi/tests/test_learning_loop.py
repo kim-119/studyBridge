@@ -12,11 +12,14 @@ from app.services import learning_loop_service as svc
 
 # ── resolve_material_id ───────────────────────────────────────────────────────
 def test_resolve_material_id():
+    # 2026-11-04 계약 변경: documentId 는 materialId 와 다른 식별자다. "doc_7"/"12" 를 materialId 로 바꿔 쓰면
+    # 다른 자료(다른 사용자 자료 포함)를 검색할 수 있으므로 더 이상 변환하지 않는다.
     assert svc.resolve_material_id(10, None) == 10
-    assert svc.resolve_material_id(None, "doc_7") == 7
-    assert svc.resolve_material_id(None, "12") == 12
+    assert svc.resolve_material_id(None, "doc_7") is None
+    assert svc.resolve_material_id(None, "12") is None
     assert svc.resolve_material_id(None, None) is None
     assert svc.resolve_material_id(None, "folder-abc") is None
+    assert svc.resolve_material_id(0, None) is None
 
 
 # ── 컨텍스트 결합 + usedContext 플래그 (RAG/DB 미사용 경로) ──────────────────────
@@ -43,10 +46,14 @@ def test_assemble_context_flags():
 
 
 def test_assemble_context_sourcetext_sets_grounding():
+    # 2026-11-04 계약 변경: sourceText 는 검색된 원문(RAG)이 아니다 → ragUsed=False, sourceTextProvided=True.
     req = LearningLoopRequest(taskType="SUMMARY_WITH_LEARNING_LOOP",
                               sourceText="Retrofit2는 REST API 호출을 인터페이스로 정의한다.")
     text, used, _ = svc.assemble_context(req)
-    assert used["ragUsed"] is True
+    assert used["ragUsed"] is False
+    assert used["sourceTextProvided"] is True
+    assert used["retrievedEvidenceVerified"] is False
+    assert svc._has_material_evidence(used)
     assert "sourceText" in text
 
 

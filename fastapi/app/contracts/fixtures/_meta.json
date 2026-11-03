@@ -1,0 +1,11 @@
+{
+  "status": "PROPOSED_BY_AI07_PENDING_EC2_CANONICAL",
+  "owner": "EC2 (Spring)",
+  "note": "EC2 가 canonical fixture 를 확정하면 이 디렉터리를 EC2 파일로 교체하고 tests/test_contracts_v1.py 를 그대로 재실행한다.",
+  "contracts": [
+    "learning-context.v1",
+    "response-quality.v1",
+    "training-sample.v1"
+  ],
+  "createdAt": "2026-11-04"
+}

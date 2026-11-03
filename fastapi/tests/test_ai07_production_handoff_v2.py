@@ -24,7 +24,9 @@ from app.mindmap import graph_builder as gb
 from app.services import quiz_contract as qc
 
 APP = hotfix_main.app
-CLIENT = TestClient(APP)
+# 내부 인증은 fail-closed(키 미설정 = 503)이므로 서버간 호출처럼 Bearer 를 붙인다(2026-11-04).
+_TEST_KEY = "handoff-test-key-" + "x" * 24
+CLIENT = TestClient(APP, headers={"Authorization": f"Bearer {_TEST_KEY}"})
 MINDMAP = "/api/ai/mindmap/semantic-graph"
 QUIZ = "/api/ai/quiz"
 
@@ -42,6 +44,11 @@ JDBC_ANSWERS = [
         "JDBC는 자바 플랫폼에서의 데이터베이스 연결 통로예요. 먼저 DriverManager로 Connection을 얻고, "
         "다음으로 Statement로 SQL 실행을 요청합니다. JDBC에 드라이버가 필요합니다."},
 ]
+
+
+@pytest.fixture(autouse=True)
+def _internal_key(monkeypatch):
+    monkeypatch.setenv("AI_SERVER_API_KEY", _TEST_KEY)
 
 
 @pytest.fixture(autouse=True)
