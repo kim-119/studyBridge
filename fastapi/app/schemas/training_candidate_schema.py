@@ -86,7 +86,8 @@ class ReviewCandidateRequest(BaseModel):
     use: str = Field("candidate", pattern="^(candidate|correction|reviewer)$",
                      description="정답으로 확인할 대상: 원 답변 | 사용자 수정 답변 | 검수자 작성 답변")
     reviewerAnswer: Optional[str] = Field(None, max_length=12000)
-    method: str = Field("HUMAN_REVIEW", pattern="^(HUMAN_REVIEW|MATH_CHECK|CODE_TESTS|EXACT_MATCH_GOLD|PDF_SPAN_MATCH)$")
+    # 결정적 gold 검증(MATH_CHECK 등)은 실제 검증기를 실행하는 내부 경로가 생기기 전까지 API 로 주장할 수 없다.
+    method: str = Field("HUMAN_REVIEW", pattern="^HUMAN_REVIEW$")
     goldReference: Optional[str] = Field(None, max_length=256)
 
 

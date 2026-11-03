@@ -52,6 +52,8 @@ class ResponseCollectionEvent:
     model_digest: Optional[str] = None
     prompt_template_version: Optional[str] = None
     source_revision_hash: Optional[str] = None
+    # 요약/오답/메모/대화/붙여넣은 본문 등 다른 자료에서 파생된 컨텍스트를 썼는가(권리 미확인 → 비PDF 도 수집 안 함)
+    derived_context_used: bool = False
 
 
 class _Stats:
@@ -94,7 +96,8 @@ def _pdf_evidence_ok(ev: List[Dict[str, Any]]) -> bool:
 
 def _rights_for(event: ResponseCollectionEvent) -> Optional[str]:
     if event.task_type not in _PDF_TASKS:
-        return RightsStatus.NO_THIRD_PARTY_CONTENT.value if not event.evidence else None
+        clean = not event.evidence and not event.derived_context_used
+        return RightsStatus.NO_THIRD_PARTY_CONTENT.value if clean else None
     statuses = set()
     for e in event.evidence:
         if str(e.get("sourceType")).upper() != "PDF_ORIGINAL":

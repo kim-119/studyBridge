@@ -146,15 +146,17 @@ async def _export_locked(repo, root: Path, *, actor: str, request_id: str, froze
     if len(records) > max_samples:
         return ExportResult(status="failed", error_code="EXPORT_TOO_MANY_SAMPLES")
     try:
-        build = build_dataset(records, frozen_test_hashes=frozen_test_hashes)
+        # 전체 PII 재스캔/그룹 분할은 CPU 작업 → 이벤트 루프를 막지 않게 스레드에서 실행
+        build = await asyncio.to_thread(build_dataset, records, frozen_test_hashes=frozen_test_hashes)
     except LeakageError:
         return ExportResult(status="failed", error_code="SPLIT_LEAKAGE_DETECTED")
     if build.total == 0:
         return ExportResult(status="empty", excluded=build.excluded)
 
     ds_id, d = _new_dataset_dir(root)
+    registered = False
     try:
-        files, split_meta, written = {}, {}, 0
+        blobs, files, split_meta, written = {}, {}, {}, 0
         for split in SPLITS:
             items = build.splits[split]
             data = "".join(json.dumps({"messages": s.messages}, ensure_ascii=False) + "\n" for s in items).encode("utf-8")
@@ -162,63 +164,89 @@ async def _export_locked(repo, root: Path, *, actor: str, request_id: str, froze
             if written > max_bytes:
                 raise OverflowError("EXPORT_TOO_LARGE")
             name = f"{split}.jsonl"
-            files[name] = _write_no_clobber(d, name, data)
+            blobs[name] = data
+            files[name] = hashlib.sha256(data).hexdigest()
             split_meta[split] = {"count": len(items), "file": name, "sha256": files[name],
                                  "memberSetSha256": split_hash(items)}
         all_items = [s for split in SPLITS for s in build.splits[split]]
         recs = [s.record for s in all_items]
-        manifest = {
-            "schemaVersion": "dataset-manifest.v1",
-            "datasetId": ds_id,
-            "status": "ACTIVE",
-            "createdAt": datetime.now(timezone.utc).isoformat(),
-            "createdBy": actor,
-            "requestId": request_id,
-            "codeRevision": code_revision(),
-            "templateVersion": TEMPLATE_VERSION,
-            "trainingSystemPromptSha256": hashlib.sha256(TRAINING_SYSTEM_PROMPT_V1.encode()).hexdigest(),
-            "eligibilityPolicyVersion": ELIGIBILITY_POLICY_VERSION,
-            "baseModelReference": {"id": os.getenv("AI_QLORA_BASE_MODEL", "Qwen/Qwen3-14B"),
-                                   "revision": os.getenv("AI_QLORA_BASE_REVISION", "40c069824f4251a91eefaf281ebe4c544efd3e18"),
-                                   "license": os.getenv("AI_QLORA_BASE_LICENSE", "apache-2.0")},
-            "productionBaseline": {"ollamaTag": os.getenv("OLLAMA_MODEL", "qwen3:14b"),
-                                   "digest": os.getenv("AI_PRODUCTION_MODEL_DIGEST")},
-            "splits": split_meta,
-            "files": files,
-            "groups": build.groups,
-            # 그룹 수가 적으면 해시 분할로 split 이 비어 early stopping/독립 평가가 불가능하다 → 학습 전 확인 필요.
-            "splitWarnings": [f"{k.upper()}_SPLIT_EMPTY" for k in SPLITS if not build.splits[k]]
-                             + (["TOO_FEW_GROUPS_FOR_RELIABLE_SPLIT"] if build.groups < 30 else []),
-            "excluded": build.excluded,
-            "consentVersions": dict(Counter(r.consent_version for r in recs)),
-            "rightsStatus": dict(Counter(r.rights_status for r in recs)),
-            "sourceKinds": dict(Counter(r.source_kind for r in recs)),
-            "modelDigests": dict(Counter(r.model_digest or "unknown" for r in recs)),
-            "evaluatorVersions": sorted({r.quality_evaluator_version or "unknown" for r in recs}),
-            "verificationMethods": dict(Counter(str((r.verification or {}).get("method")) for r in recs)),
-            "deletionLineage": sorted({r.deletion_tracking_id for r in recs}),
-            "memberContentHashes": sorted(s.content_hash for s in all_items),
-            "deidentification": "pii_filter v2 rescan at export; CLEAN required; masked/quarantined excluded",
-            "license": "internal research use only; derived from consented, rights-verified samples; no redistribution",
-            "weightsErasureNote": "학습된 어댑터에서 개별 샘플을 지울 수 없다. 철회 시 이 manifest 는 INVALIDATED 되고 "
-                                  "이를 사용한 어댑터는 RETIREMENT_REQUIRED(퇴역 또는 재학습) 대상이 된다.",
-        }
+        manifest = _manifest(ds_id, actor, request_id, build, split_meta, files, recs, all_items)
         mbytes = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
-        manifest_sha = _write_no_clobber(d, "manifest.json", mbytes)
-        _fsync_dir(d)
-        await repo.save_manifest(ManifestRecord(dataset_id=ds_id, status="ACTIVE", manifest_sha256=manifest_sha,
+        manifest_sha = hashlib.sha256(mbytes).hexdigest()
+        # 1) 파일을 쓰기 전에 lineage 를 PENDING 으로 먼저 등록 → 그 사이 철회돼도 이 manifest 가 무효화 대상이 된다.
+        await repo.save_manifest(ManifestRecord(dataset_id=ds_id, status="PENDING", manifest_sha256=manifest_sha,
                                                 member_hashes=manifest["memberContentHashes"],
                                                 created_at=datetime.now(timezone.utc)))
+        registered = True
+        # 2) 파일 기록(no-clobber, 0400)
+        for name, data in blobs.items():
+            _write_no_clobber(d, name, data)
+        _write_no_clobber(d, "manifest.json", mbytes)
+        _fsync_dir(d)
+        # 3) 멤버가 아직 전부 TRAIN_ELIGIBLE 인지 재확인 후 CAS 활성화(PENDING 이 아니면 실패)
+        still = {r.content_hash for r in await repo.list_by(states=[CandidateState.TRAIN_ELIGIBLE], limit=max_samples + 1)}
+        if not set(manifest["memberContentHashes"]) <= still:
+            await repo.invalidate_manifest(ds_id, "MEMBER_REVOKED_DURING_EXPORT")
+            _force_rmtree(d)
+            return ExportResult(status="failed", dataset_id=ds_id, error_code="MEMBER_REVOKED_DURING_EXPORT")
+        if not await repo.activate_manifest(ds_id):
+            _force_rmtree(d)
+            return ExportResult(status="failed", dataset_id=ds_id, error_code="MANIFEST_INVALIDATED_DURING_EXPORT")
     except OverflowError:
         shutil.rmtree(d, ignore_errors=True)
         return ExportResult(status="failed", error_code="EXPORT_TOO_LARGE")
     except Exception as e:  # noqa: BLE001
+        if registered:
+            try:
+                await repo.invalidate_manifest(ds_id, "EXPORT_FAILED")
+            except Exception:  # noqa: BLE001
+                pass
         _force_rmtree(d)
         return ExportResult(status="failed", error_code=f"EXPORT_FAILED_{type(e).__name__}"[:64])
     return ExportResult(status="completed", dataset_id=ds_id,
                         sample_counts={k: len(build.splits[k]) for k in SPLITS}, excluded=build.excluded,
                         manifest_sha256=manifest_sha, relative_path=f"{ds_id}/",
                         split_warnings=manifest["splitWarnings"])
+
+
+def _manifest(ds_id, actor, request_id, build, split_meta, files, recs, all_items) -> dict:
+    return {
+        "schemaVersion": "dataset-manifest.v1",
+        "datasetId": ds_id,
+        # 상태(ACTIVE/INVALIDATED)는 변할 수 있으므로 불변 파일에 쓰지 않는다 — DB 가 단일 소스.
+        "statusSource": "ai.training_dataset_manifest.status",
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "createdBy": actor,
+        "requestId": request_id,
+        "codeRevision": code_revision(),
+        "templateVersion": TEMPLATE_VERSION,
+        "trainingSystemPromptSha256": hashlib.sha256(TRAINING_SYSTEM_PROMPT_V1.encode()).hexdigest(),
+        "eligibilityPolicyVersion": ELIGIBILITY_POLICY_VERSION,
+        "baseModelReference": {"id": os.getenv("AI_QLORA_BASE_MODEL", "Qwen/Qwen3-14B"),
+                               "revision": os.getenv("AI_QLORA_BASE_REVISION", "40c069824f4251a91eefaf281ebe4c544efd3e18"),
+                               "license": os.getenv("AI_QLORA_BASE_LICENSE", "apache-2.0")},
+        "productionBaseline": {"ollamaTag": os.getenv("OLLAMA_MODEL", "qwen3:14b"),
+                               "digest": os.getenv("AI_PRODUCTION_MODEL_DIGEST")},
+        "splits": split_meta,
+        "files": files,
+        "groups": build.groups,
+        # 그룹 수가 적으면 해시 분할로 split 이 비어 early stopping/독립 평가가 불가능하다 → 학습 전 확인 필요.
+        "splitWarnings": [f"{k.upper()}_SPLIT_EMPTY" for k in SPLITS if not build.splits[k]]
+                         + (["TOO_FEW_GROUPS_FOR_RELIABLE_SPLIT"] if build.groups < 30 else []),
+        "excluded": build.excluded,
+        "consentVersions": dict(Counter(r.consent_version for r in recs)),
+        "rightsStatus": dict(Counter(r.rights_status for r in recs)),
+        "sourceKinds": dict(Counter(r.source_kind for r in recs)),
+        "modelDigests": dict(Counter(r.model_digest or "unknown" for r in recs)),
+        "evaluatorVersions": sorted({r.quality_evaluator_version or "unknown" for r in recs}),
+        "verificationMethods": dict(Counter(str((r.verification or {}).get("method")) for r in recs)),
+        "deletionLineage": sorted({r.deletion_tracking_id for r in recs}),
+        "memberContentHashes": sorted(s.content_hash for s in all_items),
+        "deidentification": "pii_filter v2 rescan at export; CLEAN required; masked/quarantined excluded",
+        "license": "internal research use only; derived from consented, rights-verified samples; no redistribution",
+        "weightsErasureNote": "학습된 어댑터에서 개별 샘플을 지울 수 없다. 철회 시 이 manifest 는 INVALIDATED 되고 "
+                              "이를 사용한 어댑터는 RETIREMENT_REQUIRED(퇴역 또는 재학습) 대상이 된다.",
+    }
 
 
 def _force_rmtree(d: Path) -> None:

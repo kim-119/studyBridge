@@ -50,7 +50,7 @@ CREATE TRIGGER training_sample_event_no_update BEFORE UPDATE OR DELETE ON ai.tra
 
 CREATE TABLE IF NOT EXISTS ai.training_dataset_manifest (
     dataset_id          text PRIMARY KEY CHECK (dataset_id ~ '^train_v[0-9]{8}_[0-9]{3}_[0-9a-f]{8}$'),
-    status              text NOT NULL CHECK (status IN ('ACTIVE','INVALIDATED')),
+    status              text NOT NULL CHECK (status IN ('PENDING','ACTIVE','INVALIDATED')),  -- PENDING: 파일 기록 중
     manifest_sha256     char(64) NOT NULL,
     created_at          timestamptz NOT NULL,
     invalidated_reasons text[] NOT NULL DEFAULT '{}'

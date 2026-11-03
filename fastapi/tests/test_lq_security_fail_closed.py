@@ -3,13 +3,14 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from tests.lq_helpers import ADMIN_TOKEN, INTERNAL_KEY, admin_headers, service_headers
+from tests.lq_helpers import ADMIN_TOKEN, INTERNAL_KEY, REVIEWER_TOKEN, admin_headers, service_headers
 
 
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     monkeypatch.setenv("AI_SERVER_API_KEY", INTERNAL_KEY)
     monkeypatch.setenv("TRAINING_ADMIN_TOKEN", ADMIN_TOKEN)
+    monkeypatch.setenv("TRAINING_REVIEWER_TOKEN", REVIEWER_TOKEN)
     monkeypatch.setenv("AI_AUDIT_LOG_PATH", str(tmp_path / "audit.jsonl"))
     monkeypatch.setenv("AI_TRAINING_DATASET_DIR", str(tmp_path / "datasets"))
     from app.training_pipeline.repository import InMemoryTrainingRepository, set_repository
@@ -104,6 +105,15 @@ def test_export_requires_admin_role_not_reviewer(env):
     r = c.post("/api/training-candidates/export-jsonl", json={}, headers=admin_headers(role="training_reviewer"))
     assert r.status_code == 403
     assert r.json()["detail"]["errorCode"] == "ACTOR_ROLE_INSUFFICIENT"
+    # 리뷰어 토큰으로 admin 역할을 '주장'해도 역할은 토큰이 정한다(자기 선언 역할 차단)
+    forged = admin_headers(role="training_admin", token=REVIEWER_TOKEN)
+    r = c.post("/api/training-candidates/export-jsonl", json={}, headers=forged)
+    assert r.status_code == 403 and r.json()["detail"]["errorCode"] == "ACTOR_ROLE_INVALID"
+
+
+def test_reviewer_token_must_differ_from_admin(env, monkeypatch):
+    monkeypatch.setenv("TRAINING_REVIEWER_TOKEN", ADMIN_TOKEN)
+    assert _training_client().get("/api/training-candidates/stats", headers=admin_headers()).status_code == 503
 
 
 def test_stats_does_not_disguise_repository_failure(env):

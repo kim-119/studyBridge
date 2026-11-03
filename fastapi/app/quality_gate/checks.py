@@ -57,9 +57,18 @@ def jaccard(a: Set[str], b: Set[str]) -> float:
 _NUM_RE = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s?(%|퍼센트|년|월|일|명|개|배|원|km|kg|m|cm|mm|ms|초|분|시간)?")
 
 
+_KNUM = {"한": 1, "하나": 1, "두": 2, "둘": 2, "세": 3, "셋": 3, "네": 4, "넷": 4, "다섯": 5, "여섯": 6, "일곱": 7,
+         "여덟": 8, "아홉": 9, "열": 10}
+_KNUM_RE = re.compile(r"(?<![가-힣])(한|하나|두|둘|세|셋|네|넷|다섯|여섯|일곱|여덟|아홉|열)\s?"
+                      r"(단계|개|가지|번|명|종류|차례|회|층|장|권|자|줄|문장|요소|부분|과정|번째)")
+
+
 def numbers_in(text: str) -> Set[str]:
-    """검증 대상 수치(2자리 이상 정수, 소수, 단위가 붙은 수). 서수/한 자리 나열 번호는 제외."""
+    """검증 대상 수치(2자리 이상 정수, 소수, 단위가 붙은 수, 한국어 수사+단위). 서수/한 자리 나열 번호는 제외.
+    '세 단계' 와 '3단계' 는 같은 값으로 정규화된다(예: 원문 '세 단계' vs 답변 '두 단계' 모순 탐지)."""
     out = set()
+    for m in _KNUM_RE.finditer(text or ""):
+        out.add(f"{float(_KNUM[m.group(1)]):g}")
     for m in _NUM_RE.finditer(text or ""):
         raw, unit = m.group(1).replace(",", ""), m.group(2)
         if "." not in raw and len(raw) < 2 and not unit:
@@ -260,9 +269,11 @@ def claim_support_ratio(output: str, evidence_texts: Sequence[str]) -> Tuple[flo
     ev = set()
     for t in evidence_texts:
         ev |= stems(t)
-    claims = [s for s in sentences(output) if len(stems(s)) >= 3]
+    # 의문문(후속 질문 등)은 사실 단정이 아니므로 주장에서 뺀다.
+    claims = [s for s in sentences(output) if len(stems(s)) >= 2 and not s.rstrip().endswith(("?", "？"))]
     if not claims:
-        return 1.0, 0
+        # 검증할 주장이 없으면 '지지됨(1.0)'이 아니라 판단 불가 — 호출자가 unverified 로 처리한다.
+        return 0.0, 0
     supported = sum(1 for s in claims if len(stems(s) & ev) / max(1, len(stems(s))) >= 0.35)
     return supported / len(claims), len(claims)
 
@@ -270,9 +281,20 @@ def claim_support_ratio(output: str, evidence_texts: Sequence[str]) -> Tuple[flo
 _DISCLOSURE_RE = re.compile(r"확인되지\s*않|근거(?:를|가)?\s*(?:찾지\s*못|없)|알\s*수\s*없|확실하지\s*않|모르|자료에\s*(?:없|나와\s*있지\s*않)|판단(?:하기)?\s*어렵")
 
 
+_GUIDANCE_RE = re.compile(r"(?:선택|확인|업로드|첨부|입력|질문)해\s*주세요|알려\s*주세요|다시\s*시도|주시면")
+_CONTRAST_RE = re.compile(r"지만|하지만|그러나|다만|는데|그런데|그렇지만|but\b|however", re.IGNORECASE)
+
+
 def is_no_claim_disclosure(text: str) -> bool:
-    t = text or ""
-    return bool(_DISCLOSURE_RE.search(t)) and not numbers_in(t) and len(sentences(t)) <= 4
+    """'근거가 없어 답할 수 없다' 류의 정직한 고지인가. 고지 문구가 섞인 단정문('모르는 사실이지만 X 는 Y 다')은 아니다.
+    모든 문장이 고지 또는 안내여야 하고, 대조 접속(지만/그러나…)·수치가 없으며 짧아야 한다."""
+    t = (text or "").strip()
+    sents = sentences(t) or ([t] if t else [])
+    if not sents or len(t) > 240 or numbers_in(t) or _CONTRAST_RE.search(t):
+        return False
+    if not any(_DISCLOSURE_RE.search(x) for x in sents):
+        return False
+    return all(_DISCLOSURE_RE.search(x) or _GUIDANCE_RE.search(x) for x in sents)
 
 
 def internal_contradictions(text: str) -> int:

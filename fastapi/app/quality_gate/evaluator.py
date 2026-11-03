@@ -195,8 +195,10 @@ async def _evaluate(inp: QualityInput, judge, started: float) -> QualityOutput:
     def evidence_frac() -> Optional[float]:
         if not ev_texts:
             return None
-        if codes & {"SOURCE_CONTRADICTION"}:
+        if codes & {"SOURCE_CONTRADICTION", "NUMERIC_UNSUPPORTED_BY_SOURCE"}:
             return 0.0
+        if not n_claims:
+            return None        # 대조할 주장이 없으면 근거 일치를 '증명'한 것이 아니다
         return min(1.0, (support or 0.0) / 0.6)
 
     # 1차: 판정 가능한 사실 차원을 결정적/근거로 채운다.
@@ -207,16 +209,19 @@ async def _evaluate(inp: QualityInput, judge, started: float) -> QualityOutput:
                 dims[name] = (1.0 if final_ok else 0.0, "deterministic:gold")
             elif "MATH_INCORRECT" in codes:
                 dims[name] = (0.0, "deterministic:arithmetic")
-            elif ev_texts:
-                dims[name] = (evidence_frac(), "evidence")
             elif disclosure:
                 dims[name] = (1.0, "deterministic:no_claims")
+            elif ev_texts and evidence_frac() is not None:
+                dims[name] = (evidence_frac(), "evidence")
             else:
                 dims[name] = (None, "unverified")
                 judge_needed = True
         elif name == "grounding":
-            if ev_texts:
-                dims[name] = (evidence_frac(), "evidence")
+            if disclosure:
+                dims[name] = (1.0, "deterministic:no_claims")
+            elif ev_texts:
+                f = evidence_frac()
+                dims[name] = (f, "evidence" if f is not None else "unverified")
             elif prof.requires_evidence:
                 dims[name] = (None, "unverified")
             else:

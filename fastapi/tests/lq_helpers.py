@@ -7,6 +7,7 @@ from app.contracts.training_sample_v1 import TrainingSampleV1, compute_content_h
 
 INTERNAL_KEY = "k" * 40
 ADMIN_TOKEN = "a" * 48
+REVIEWER_TOKEN = "r" * 48
 PK = "pk_7f3a9c2e1b4d6a8f"
 FIXTURES = Path(__file__).resolve().parents[1] / "app" / "contracts" / "fixtures"
 
@@ -15,8 +16,9 @@ def fixture(sub: str, name: str) -> dict:
     return json.loads((FIXTURES / sub / name).read_text(encoding="utf-8"))
 
 
-def admin_headers(role="training_admin", actor="reviewer-01", rid="req-admin-0001"):
-    return {"Authorization": f"Bearer {INTERNAL_KEY}", "X-Training-Admin-Token": ADMIN_TOKEN,
+def admin_headers(role="training_admin", actor="reviewer-01", rid="req-admin-0001", token=None):
+    tok = token or (REVIEWER_TOKEN if role == "training_reviewer" else ADMIN_TOKEN)
+    return {"Authorization": f"Bearer {INTERNAL_KEY}", "X-Training-Admin-Token": tok,
             "X-Actor-Id": actor, "X-Actor-Role": role, "X-Request-Id": rid}
 
 

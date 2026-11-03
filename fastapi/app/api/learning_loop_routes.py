@@ -23,11 +23,13 @@ from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from app.core.request_guards import limited_route_class
 from app.core.security import verify_internal_token
 
 logger = logging.getLogger(__name__)
 # 내부 인증 필수(fail-closed). Spring 호출자는 아직 없다(2026-11-04 backend 코드 grep 기준) → 회귀 없음.
-router = APIRouter(tags=["Learning Loop"], dependencies=[Depends(verify_internal_token)])
+router = APIRouter(tags=["Learning Loop"], dependencies=[Depends(verify_internal_token)],
+                   route_class=limited_route_class(256 * 1024))
 
 LEARNING_LOOP_TIMEOUT = int(os.getenv("AI_LEARNING_LOOP_TIMEOUT_SECONDS", "120"))
 
@@ -71,11 +73,11 @@ async def learning_loop(req: LearningLoopRequest,
 
     started = time.time()
     request_id = x_request_id if (x_request_id and _RID_RE.match(x_request_id)) else f"ll-{uuid.uuid4().hex}"
-    scope, scope_warning = _verify_scope(x_ai_scope, request_id, req)
+    scope, scope_warning, scope_sub = _verify_scope(x_ai_scope, request_id, req, bool(x_request_id))
     token = RAG_SCOPE.set(scope)
     try:
         if _gate_enabled():
-            return await _run_gated(req, request_id, x_consent, scope, scope_warning, started)
+            return await _run_gated(req, request_id, x_consent, scope, scope_warning, started, scope_sub)
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(run_learning_loop, req), timeout=LEARNING_LOOP_TIMEOUT)
@@ -126,55 +128,78 @@ def _fallback_used(result: Dict[str, Any]) -> bool:
     return any("fallback" in str(w).lower() for w in (result.get("warnings") or []))
 
 
-def _verify_scope(token: Optional[str], request_id: str, req: "LearningLoopRequest") -> Tuple[Optional[frozenset], Optional[str]]:
-    """서명된 scope 토큰 → 허용 materialId 집합. 실패/누락 → None(pgvector 검색 안 함) + 경고 코드."""
+def _verify_scope(token: Optional[str], request_id: str, req: "LearningLoopRequest",
+                  request_id_from_caller: bool) -> Tuple[Optional[frozenset], Optional[str], Optional[str]]:
+    """서명된 scope 토큰 → (허용 materialId 집합, 경고, 사용자 가명키). 실패/누락 → 검색 안 함(fail-closed).
+    토큰은 반드시 이 요청의 X-Request-Id(rid)에 묶여 있어야 한다(rid 없는 토큰·다른 요청 토큰 재사용 거부)."""
     if req.materialId is None:
-        return None, None
+        return None, None, None
     from app.contracts.signing import SignatureError, verify_scope_token
     try:
         sc = verify_scope_token(token)
     except SignatureError as e:
-        return None, f"SCOPE_UNVERIFIED:{e.code}"
-    if sc.request_id and sc.request_id != request_id:
-        return None, "SCOPE_UNVERIFIED:SCOPE_REQUEST_MISMATCH"
+        return None, f"SCOPE_UNVERIFIED:{e.code}", None
+    if not request_id_from_caller or not sc.request_id or sc.request_id != request_id:
+        return None, "SCOPE_UNVERIFIED:SCOPE_REQUEST_MISMATCH", None
     try:
         mid = int(req.materialId)
     except (TypeError, ValueError):
-        return None, "SCOPE_UNVERIFIED:MATERIAL_ID_INVALID"
+        return None, "SCOPE_UNVERIFIED:MATERIAL_ID_INVALID", None
     if not sc.allows_material(mid):
-        return None, "SCOPE_MISMATCH"
-    return sc.material_ids, None
+        return None, "SCOPE_MISMATCH", None
+    return sc.material_ids, None, sc.sub
 
 
 # taskType → (품질 프로파일, 출력 종류, 평가 대상 추출기). 매핑 없는 taskType 은 게이트 on 일 때 노출 불가.
-def _text(*keys):
-    def f(r):
-        return "\n".join(str(r.get(k) or "") for k in keys if r.get(k)).strip()
-    return f
+# 승인된 응답의 '사용자에게 보이는 모든 문자열'이 평가 대상에 들어가야 한다(평가 안 된 LLM 필드 노출 금지).
+_SYSTEM_KEYS = {"success", "taskType", "usedContext", "warnings", "qualityStatus", "quality", "fallbackUsed",
+                "recommendedReviewDate", "recommendReviewInDays", "recommendedReviewInDays", "answerIndex",
+                "difficulty", "_evidence", "trainingCandidateRef"}
 
 
-def _summary(r):
-    return ((r.get("summary") or "") + "\n" + "\n".join(str(x) for x in r.get("keyPoints") or [])).strip()
+def _visible_strings(obj, out: List[str]) -> List[str]:
+    if isinstance(obj, str):
+        if obj.strip():
+            out.append(obj.strip())
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            if k not in _SYSTEM_KEYS:
+                _visible_strings(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _visible_strings(v, out)
+    return out
+
+
+def _text_all(r):
+    return "\n".join(_visible_strings(r, []))
 
 
 def _quiz(r):
-    return {"questions": [{"question": it.get("question"), "options": it.get("choices"),
-                           "answerIndex": it.get("answerIndex"), "explanation": it.get("explanation")}
-                          for it in r.get("items") or []]}
+    items = r.get("items") or []
+    meta = _visible_strings({k: v for k, v in r.items() if k != "items"}, [])
+    q = [{"question": it.get("question"), "options": it.get("choices"), "answerIndex": it.get("answerIndex"),
+          "explanation": it.get("explanation"),
+          # 문항의 나머지 노출 필드(sourceHint/concept/variationType 등)도 누출/주입 검사 대상에 포함
+          "extra": _visible_strings({k: v for k, v in it.items()
+                                     if k not in ("question", "choices", "answerIndex", "explanation", "answer")}, [])}
+         for it in items]
+    return {"questions": q, "meta": meta}
 
 
 _GATE_MAP = {
-    "AI_CHAT_WITH_LEARNING_LOOP": ("CHAT", "text", _text("answer")),
-    "AGENT_CHAT_WITH_FEEDBACK": ("STUDYMATE_BASIC", "agent_message", _text("answer")),
-    "SUMMARY_WITH_LEARNING_LOOP": ("PDF_SUMMARY", "text", _summary),
+    "AI_CHAT_WITH_LEARNING_LOOP": ("CHAT", "text", _text_all),
+    "AGENT_CHAT_WITH_FEEDBACK": ("STUDYMATE_BASIC", "agent_message", _text_all),
+    "SUMMARY_WITH_LEARNING_LOOP": ("PDF_SUMMARY", "text", _text_all),
     "QUIZ_WITH_LEARNING_LOOP": ("PDF_QUIZ", "quiz_json", _quiz),
-    "WRONG_NOTE_EXPLANATION": ("WRONG_NOTE_EXPLANATION", "text", _text("answer", "whyWrong", "correctConcept")),
+    "WRONG_NOTE_EXPLANATION": ("WRONG_NOTE_EXPLANATION", "text", _text_all),
     "SIMILAR_QUESTION_FROM_WRONG_NOTE": ("SIMILAR_QUESTION", "quiz_json", _quiz),
 }
 
 
 async def _run_gated(req: "LearningLoopRequest", request_id: str, consent_token: Optional[str],
-                     scope: Optional[frozenset], scope_warning: Optional[str], started: float) -> JSONResponse:
+                     scope: Optional[frozenset], scope_warning: Optional[str], started: float,
+                     scope_sub: Optional[str] = None) -> JSONResponse:
     from app.contracts.response_quality_v1 import (SCHEMA_VERSION, GroundingEvidence, OutputKind, QualityConstraints,
                                                    QualityInput, TaskType)
     from app.quality_gate.judge import get_judge
@@ -251,23 +276,40 @@ async def _run_gated(req: "LearningLoopRequest", request_id: str, consent_token:
     result["fallbackUsed"] = _fallback_used(result)
     if scope_warning:
         result.setdefault("warnings", []).append(scope_warning)
-    _submit_for_training(req, request_id, consent_token, q, outcome.output, _evidence())
+    ref = _submit_for_training(req, request_id, consent_token, q, outcome.output, _evidence(), scope_sub,
+                               result.get("usedContext") or {})
+    if ref:
+        # 사용자 피드백/수정 답변을 이 후보에 연결하기 위한 참조(내용 원문 아님)
+        result["trainingCandidateRef"] = ref
     return JSONResponse(status_code=200, content=result)
 
 
-def _submit_for_training(req, request_id, consent_token, quality, output, evidence) -> None:
-    """승인된 응답을 학습 후보 큐에 넣는다(논블로킹, 어떤 실패도 응답에 영향 없음)."""
+def _submit_for_training(req, request_id, consent_token, quality, output, evidence, scope_sub, used) -> Optional[dict]:
+    """승인된 응답을 학습 후보 큐에 넣는다(논블로킹, 어떤 실패도 응답에 영향 없음). 큐에 들어가면 참조를 반환."""
     try:
+        import json as _json
+
         from app.contracts.signing import SignatureError, verify_consent_token
+        from app.contracts.training_sample_v1 import compute_content_hash
         from app.training_pipeline.collection_hook import ResponseCollectionEvent, submit
         try:
             consent = verify_consent_token(consent_token, expected_request_id=request_id) if consent_token else None
         except SignatureError:
             consent = None
-        submit(ResponseCollectionEvent(request_id=request_id, task_type=quality.taskType,
-                                       question=(req.userQuestion or req.title or "")[:4000], output=output,
-                                       evidence=[e.model_dump(mode="json") for e in evidence],
-                                       quality=quality, consent=consent,
-                                       model_digest=os.getenv("AI_PRODUCTION_MODEL_DIGEST")))
+        if consent is not None and scope_sub is not None and consent.sub != scope_sub:
+            consent = None          # 다른 사용자의 동의로 이 사용자 응답을 수집하지 않는다
+        question = (req.userQuestion or req.title or "")[:4000]
+        derived = any(used.get(k) for k in ("summaryUsed", "wrongNotesUsed", "quizResultsUsed", "userMemosUsed",
+                                            "recentChatUsed", "plannerReviewsUsed", "sourceTextProvided"))
+        code = submit(ResponseCollectionEvent(request_id=request_id, task_type=quality.taskType, question=question,
+                                              output=output, evidence=[e.model_dump(mode="json") for e in evidence],
+                                              quality=quality, consent=consent, derived_context_used=derived,
+                                              model_digest=os.getenv("AI_PRODUCTION_MODEL_DIGEST")))
+        if code != "ENQUEUED":
+            return None
+        answer = output if isinstance(output, str) else _json.dumps(output, ensure_ascii=False, sort_keys=True)
+        ch = compute_content_hash(question, answer)
+        return {"contentHash": ch, "eventId": f"resp-{request_id[:80]}-{ch[:12]}"}
     except Exception as e:  # noqa: BLE001
         logger.warning("[learning-loop] training submit skipped: %s", type(e).__name__)
+        return None

@@ -50,7 +50,8 @@ def _err(status: int, code: str, **extra) -> JSONResponse:
 async def evaluate_endpoint(body: dict, x_caller_id: str | None = Header(default=None, alias="X-Caller-Id")):
     if not api_enabled():
         return _err(503, "FEATURE_DISABLED")
-    RATE.check(f"caller:{(x_caller_id or 'spring')[:64]}")
+    # 호출자는 모두 같은 내부 키를 쓰므로 X-Caller-Id(자기 주장)로 버킷을 나누지 않는다 → 전역 버킷.
+    RATE.check("evaluate")
     try:
         inp = QualityInput.model_validate(body)
     except ValidationError as e:
@@ -66,11 +67,15 @@ async def evaluate_endpoint(body: dict, x_caller_id: str | None = Header(default
     try:
         await asyncio.wait_for(sem.acquire(), timeout=float(os.getenv("AI_QUALITY_EVAL_QUEUE_WAIT_SECONDS", "2")))
     except asyncio.TimeoutError:
+        IDEMPOTENCY.release(inp.requestId)
         return _err(429, "EVALUATOR_BUSY")
     try:
         from app.quality_gate.evaluator import evaluate
         from app.quality_gate.judge import get_judge
         out = await evaluate(inp, judge=get_judge())
+    except BaseException:
+        IDEMPOTENCY.release(inp.requestId)
+        raise
     finally:
         sem.release()
     payload = output_to_dict(out)

@@ -9,8 +9,12 @@ Spring Boot가 FastAPI를 호출할 때 Authorization: Bearer {AI_SERVER_API_KEY
   EC2 docker bridge socat 경유 요청도 ai07 에서는 127.0.0.1 로 보이기 때문이다.
 
 학습 후보 관리(승인/거절/내보내기/통계)는 일반 내부 키만으로 수행할 수 없다:
-verify_training_admin = 내부 Bearer + X-Training-Admin-Token(TRAINING_ADMIN_TOKEN, 내부 키와 달라야 함)
-                        + X-Actor-Id + X-Actor-Role(training_reviewer|training_admin) + X-Request-Id.
+verify_training_admin = 내부 Bearer + X-Training-Admin-Token + X-Actor-Id + X-Request-Id (+ 선택 X-Actor-Role).
+  역할은 '어떤 토큰이 일치했는가'로 서버가 정한다(헤더로 주장한 역할은 일치 여부 확인용):
+    TRAINING_ADMIN_TOKEN    → training_admin    (export 포함)
+    TRAINING_REVIEWER_TOKEN → training_reviewer (검수/통계, 선택)
+  두 토큰은 서로·내부 키와 달라야 한다. X-Actor-Id 는 토큰 보유자의 '주장'이다 → 개인 단위 식별은
+  EC2 가 서명한 principal(OIDC/JWT) 연동 전까지 감사 로그용 참고값이다(잔여 위험, 인계 항목).
 """
 from __future__ import annotations
 
@@ -82,19 +86,29 @@ async def verify_training_admin(
 ) -> AdminPrincipal:
     check_bearer(authorization)
     admin = (os.getenv("TRAINING_ADMIN_TOKEN") or "").strip()
-    if len(admin) < MIN_ADMIN_TOKEN_LEN or hmac.compare_digest(admin.encode(), internal_key().encode()):
-        # 관리자 토큰이 없거나 일반 내부 키와 같으면 권한 분리가 성립하지 않는다 → 관리 API 전체 차단.
+    reviewer = (os.getenv("TRAINING_REVIEWER_TOKEN") or "").strip()
+    key = internal_key().encode()
+    if len(admin) < MIN_ADMIN_TOKEN_LEN or hmac.compare_digest(admin.encode(), key) or (
+            reviewer and (len(reviewer) < MIN_ADMIN_TOKEN_LEN or hmac.compare_digest(reviewer.encode(), key)
+                          or hmac.compare_digest(reviewer.encode(), admin.encode()))):
+        # 관리자 토큰이 없거나 다른 자격증명과 같으면 권한 분리가 성립하지 않는다 → 관리 API 전체 차단.
         raise _deny(status.HTTP_503_SERVICE_UNAVAILABLE, "ADMIN_AUTH_NOT_CONFIGURED",
                     "학습 후보 관리 권한이 구성되지 않았습니다.")
-    if not x_training_admin_token or not hmac.compare_digest(x_training_admin_token.strip().encode(), admin.encode()):
+    presented = (x_training_admin_token or "").strip().encode()
+    if presented and hmac.compare_digest(presented, admin.encode()):
+        role = "training_admin"
+    elif presented and reviewer and hmac.compare_digest(presented, reviewer.encode()):
+        role = "training_reviewer"
+    else:
         raise _deny(status.HTTP_403_FORBIDDEN, "ADMIN_TOKEN_INVALID", "학습 후보 관리 권한이 없습니다.")
     if not x_actor_id or not _ACTOR_RE.match(x_actor_id):
         raise _deny(status.HTTP_400_BAD_REQUEST, "ACTOR_ID_INVALID", "X-Actor-Id 가 필요합니다.")
-    if x_actor_role not in ADMIN_ROLES:
-        raise _deny(status.HTTP_403_FORBIDDEN, "ACTOR_ROLE_INVALID", "허용되지 않은 역할입니다.")
+    if x_actor_role is not None and x_actor_role != role:
+        # 리뷰어 토큰으로 admin 역할을 주장하는 등 토큰과 다른 역할 주장은 거부
+        raise _deny(status.HTTP_403_FORBIDDEN, "ACTOR_ROLE_INVALID", "토큰과 역할이 일치하지 않습니다.")
     if not x_request_id or not _REQUEST_ID_RE.match(x_request_id):
         raise _deny(status.HTTP_400_BAD_REQUEST, "REQUEST_ID_INVALID", "X-Request-Id 가 필요합니다.")
-    return AdminPrincipal(actor_id=x_actor_id, role=x_actor_role, request_id=x_request_id)
+    return AdminPrincipal(actor_id=x_actor_id, role=role, request_id=x_request_id)
 
 
 def require_role(principal: AdminPrincipal, *roles: str) -> None:

@@ -203,6 +203,12 @@ async def record_feedback(repo, candidate_id: str, score: int, *, actor: Actor,
     rec.feedback_history = (rec.feedback_history or []) + [int(score)]
     rec.feedback_score = int(score)
     res = ServiceResult(status="FEEDBACK_RECORDED", candidate_id=candidate_id)
+    if rec.state in (S.REVOKED, S.DELETED) and score < 0:
+        # 이미 철회된 후보: 이전 시도가 lineage 무효화 중 실패했을 수 있으므로 무효화를 다시 수행(멱등).
+        saved = await repo.update(rec, rec.version)
+        await _invalidate_lineage(repo, rec.content_hash, "NEGATIVE_FEEDBACK", res)
+        res.state = saved.state.value
+        return res
     if score >= 0 or rec.state in (S.REVOKED, S.DELETED):
         saved = await repo.update(rec, rec.version)
         await _event(repo, candidate_id, "FEEDBACK", saved.state.value, saved.state.value, actor,
@@ -275,7 +281,7 @@ async def review(repo, candidate_id: str, *, decision: str, actor: Actor, use: s
     if rec.state not in (S.NEEDS_REVIEW, S.VERIFIED):
         return ServiceResult(status="NOT_ALLOWED", state=rec.state.value, reasons=[f"STATE_{rec.state.value}"])
     rec.verified_answer = answer
-    rec.verification = {"method": method, "reviewerId": actor.actor_id if method == "HUMAN_REVIEW" else None,
+    rec.verification = {"method": method, "reviewerId": actor.actor_id,   # 누가 확인했는지 항상 기록
                         "goldReference": gold_reference, "basis": use}
     rec.quality_label = "REVIEWER_VERIFIED" if method == "HUMAN_REVIEW" else "DETERMINISTIC_GOLD"
     saved = await _transition(repo, rec, S.VERIFIED, actor, "REVIEW_VERIFY", [f"BASIS_{use.upper()}"])
@@ -303,6 +309,7 @@ async def withdraw_consent(repo, pseudonymous_user_key: str, *, actor: Actor) ->
     res = ServiceResult(status="CONSENT_WITHDRAWN")
     for rec in await repo.list_by(pseudonymous_user_key=pseudonymous_user_key):
         if rec.state in (S.REVOKED, S.DELETED):
+            await _invalidate_lineage(repo, rec.content_hash, "CONSENT_WITHDRAWN", res)   # 재시도 멱등
             continue
         rec.consent_withdrawn = True
         await _transition(repo, rec, S.REVOKED, actor, "CONSENT_WITHDRAWN", ["CONSENT_WITHDRAWN"])
@@ -315,6 +322,7 @@ async def delete_by_tracking_id(repo, deletion_tracking_id: str, *, actor: Actor
     res = ServiceResult(status="DELETED")
     for rec in await repo.list_by(deletion_tracking_id=deletion_tracking_id):
         if rec.state == S.DELETED:
+            await _invalidate_lineage(repo, rec.content_hash, "SOURCE_DELETED", res)      # 재시도 멱등
             continue
         rec.question = rec.candidate_answer = ""
         rec.verified_answer = rec.user_correction = None

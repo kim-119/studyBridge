@@ -95,7 +95,7 @@ class CandidateEvent:
 @dataclass
 class ManifestRecord:
     dataset_id: str
-    status: str                       # ACTIVE | INVALIDATED
+    status: str                       # PENDING | ACTIVE | INVALIDATED
     manifest_sha256: str
     member_hashes: List[str]
     created_at: datetime

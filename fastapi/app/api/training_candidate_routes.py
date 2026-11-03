@@ -44,6 +44,9 @@ router = APIRouter(
 )
 
 SERVICE_RATE = RateLimiter(capacity=120, refill_per_sec=10)
+# 철회(부정 피드백/동의 철회/삭제)는 '줄이는 방향'이라 수집보다 넉넉한 별도 버킷. 429 시 Spring 은 재시도해야 한다.
+REVOCATION_RATE = RateLimiter(capacity=1000, refill_per_sec=100)
+# actor id 는 자기 주장이므로 버킷은 서버가 정한 역할 단위로 나눈다.
 ADMIN_RATE = RateLimiter(capacity=30, refill_per_sec=0.5)
 
 
@@ -72,7 +75,7 @@ def _collection_enabled() -> bool:
 
 @router.get("/stats", response_model=TrainingPipelineStatsResponse, summary="학습 후보 상태별 통계(관리자)")
 async def get_stats(principal: AdminPrincipal = Depends(verify_training_admin)) -> TrainingPipelineStatsResponse:
-    ADMIN_RATE.check(f"stats:{principal.actor_id}")
+    ADMIN_RATE.check(f"stats:{principal.role}")
     from app.training_pipeline.collection_hook import STATS
     from app.training_pipeline.repository import RepositoryUnavailable
     repo = _repo()
@@ -91,7 +94,7 @@ async def get_stats(principal: AdminPrincipal = Depends(verify_training_admin)) 
 async def export_jsonl(request: ExportJsonlRequest,
                        principal: AdminPrincipal = Depends(verify_training_admin)) -> JSONResponse:
     require_role(principal, "training_admin")
-    ADMIN_RATE.check(f"export:{principal.actor_id}")
+    ADMIN_RATE.check(f"export:{principal.role}")
     if request.output_path not in (None, "", LEGACY_DEFAULT_OUTPUT_PATH):
         audit_event("training.export", actor=principal.actor_id, role=principal.role,
                     request_id=principal.request_id, outcome="DENIED", extra={"errorCode": "OUTPUT_PATH_NOT_ALLOWED"})
@@ -170,7 +173,7 @@ async def _resolve_candidate_id(repo, candidate_id, content_hash):
 
 @router.post("/feedback", response_model=LineageResponse, summary="사용자 피드백 반영(부정 → 철회 + manifest 무효화)")
 async def feedback(req: FeedbackRequest, x_request_id: str | None = Header(default=None, alias="X-Request-Id")):
-    SERVICE_RATE.check("feedback")
+    REVOCATION_RATE.check("feedback")
     from app.training_pipeline.candidate_service import record_feedback
     repo = _repo()
     cid = await _resolve_candidate_id(repo, req.candidateId, req.contentHash)
@@ -196,7 +199,7 @@ async def correction(req: CorrectionRequest, x_request_id: str | None = Header(d
 @router.post("/consent-withdrawal", response_model=LineageResponse, summary="학습 동의 철회(사용자 전체 후보 REVOKED)")
 async def consent_withdrawal(req: ConsentWithdrawalRequest,
                              x_request_id: str | None = Header(default=None, alias="X-Request-Id")):
-    SERVICE_RATE.check("consent")
+    REVOCATION_RATE.check("consent")
     from app.training_pipeline.candidate_service import withdraw_consent
     res = await withdraw_consent(_repo(), req.pseudonymousUserKey, actor=_service_actor(x_request_id))
     audit_event("training.consent_withdrawal", actor="service:spring", role="service", request_id=x_request_id,
@@ -207,7 +210,7 @@ async def consent_withdrawal(req: ConsentWithdrawalRequest,
 
 @router.post("/deletion", response_model=LineageResponse, summary="자료 삭제 반영(내용 파기 + lineage 무효화)")
 async def deletion(req: DeletionRequest, x_request_id: str | None = Header(default=None, alias="X-Request-Id")):
-    SERVICE_RATE.check("deletion")
+    REVOCATION_RATE.check("deletion")
     from app.training_pipeline.candidate_service import delete_by_tracking_id
     res = await delete_by_tracking_id(_repo(), req.deletionTrackingId, actor=_service_actor(x_request_id))
     audit_event("training.deletion", actor="service:spring", role="service", request_id=x_request_id,
@@ -218,7 +221,7 @@ async def deletion(req: DeletionRequest, x_request_id: str | None = Header(defau
 
 async def _review(request: ReviewCandidateRequest, principal: AdminPrincipal, decision: str) -> ReviewCandidateResponse:
     require_role(principal, "training_reviewer", "training_admin")
-    ADMIN_RATE.check(f"review:{principal.actor_id}")
+    ADMIN_RATE.check(f"review:{principal.role}")
     from app.training_pipeline.candidate_service import review
     res = await review(_repo(), request.candidate_uuid, decision=decision, actor=_actor(principal), use=request.use,
                        reviewer_answer=request.reviewerAnswer, method=request.method,

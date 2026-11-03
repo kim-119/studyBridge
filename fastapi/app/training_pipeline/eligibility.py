@@ -66,12 +66,11 @@ def evaluate_eligibility(rec: CandidateRecord) -> EligibilityResult:
     method = str(v.get("method") or "NONE")
     if not target or not target.strip():
         r.append("VERIFIED_ANSWER_MISSING")
-    if method == VerificationMethod.HUMAN_REVIEW.value:
+    if method in DETERMINISTIC_METHODS and not v.get("goldReference"):
+        r.append("GOLD_REFERENCE_MISSING")
+    if method == VerificationMethod.HUMAN_REVIEW.value or method in DETERMINISTIC_METHODS:
         if not v.get("reviewerId"):
-            r.append("REVIEWER_ID_MISSING")
-    elif method in DETERMINISTIC_METHODS:
-        if not v.get("goldReference"):
-            r.append("GOLD_REFERENCE_MISSING")
+            r.append("REVIEWER_ID_MISSING")      # 결정적 검증이어도 책임 검수자 기록 필수
     else:
         # NONE / LLM_JUDGE: 모델 출력을 (같은 계열) 모델이 맞다고 한 것만으로는 학습 정답이 될 수 없다.
         r.append("VERIFICATION_INSUFFICIENT")

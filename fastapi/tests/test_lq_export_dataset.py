@@ -52,7 +52,7 @@ def test_export_completed_with_manifest_and_permissions(droot):
         assert hashlib.sha256((d / name).read_bytes()).hexdigest() == sha
         assert stat.S_IMODE(os.stat(d / name).st_mode) == 0o400
     assert hashlib.sha256((d / "manifest.json").read_bytes()).hexdigest() == res.manifest_sha256
-    assert manifest["codeRevision"] == "test-rev-abc" and manifest["status"] == "ACTIVE"
+    assert manifest["codeRevision"] == "test-rev-abc" and "status" not in manifest and manifest["statusSource"]
     assert sum(v["count"] for v in manifest["splits"].values()) == res.total == 12
     assert manifest["baseModelReference"]["id"] == "Qwen/Qwen3-14B"
     assert not [p for p in d.iterdir() if p.name.startswith(".")]   # 임시파일 잔여 없음

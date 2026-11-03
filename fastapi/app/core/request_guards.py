@@ -19,8 +19,11 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 
-class _BodyTooLarge(Exception):
-    pass
+class _BodyTooLarge(HTTPException):
+    """HTTPException 이어야 FastAPI 본문 파싱 단계가 400 으로 감싸지 않고 413 을 그대로 돌려준다."""
+
+    def __init__(self, max_bytes: int):
+        super().__init__(status_code=413, detail={"errorCode": "PAYLOAD_TOO_LARGE", "maxBytes": max_bytes})
 
 
 def limited_route_class(max_bytes: int):
@@ -44,7 +47,7 @@ def limited_route_class(max_bytes: int):
                         if msg.get("type") == "http.request":
                             seen["n"] += len(msg.get("body") or b"")
                             if seen["n"] > max_bytes:
-                                raise _BodyTooLarge()
+                                raise _BodyTooLarge(max_bytes)
                         return msg
 
                     request._receive = limited_receive
@@ -98,7 +101,7 @@ class IdempotencyCache:
     def __init__(self, max_items: int = 2048, ttl_seconds: float = 600) -> None:
         self.max_items, self.ttl = max_items, ttl_seconds
         self._d: "OrderedDict[str, Tuple[float, str, Any]]" = OrderedDict()
-        self._inflight: Dict[str, asyncio.Event] = {}
+        self._inflight: Dict[str, str] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -106,18 +109,30 @@ class IdempotencyCache:
         return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
     def lookup(self, request_id: str, body_hash: str) -> Optional[Any]:
+        """캐시 적중이면 응답을, 아니면 None 을 돌려주고 이 requestId 를 '처리 중'으로 예약한다(원자적).
+        같은 requestId 가 처리 중이면 409 IN_PROGRESS — 동시 중복 실행/본문 바꿔치기 방지."""
         now = time.time()
         with self._lock:
             hit = self._d.get(request_id)
-            if hit is None or now - hit[0] > self.ttl:
+            if hit is not None and now - hit[0] > self.ttl:
                 self._d.pop(request_id, None)
-                return None
-            if hit[1] != body_hash:
-                raise HTTPException(status_code=409, detail={"errorCode": "IDEMPOTENCY_CONFLICT"})
-            return hit[2]
+                hit = None
+            if hit is not None:
+                if hit[1] != body_hash:
+                    raise HTTPException(status_code=409, detail={"errorCode": "IDEMPOTENCY_CONFLICT"})
+                return hit[2]
+            if request_id in self._inflight:
+                raise HTTPException(status_code=409, detail={"errorCode": "IDEMPOTENCY_IN_PROGRESS"})
+            self._inflight[request_id] = body_hash
+            return None
+
+    def release(self, request_id: str) -> None:
+        with self._lock:
+            self._inflight.pop(request_id, None)
 
     def store(self, request_id: str, body_hash: str, response: Any) -> None:
         with self._lock:
+            self._inflight.pop(request_id, None)
             self._d[request_id] = (time.time(), body_hash, response)
             self._d.move_to_end(request_id)
             while len(self._d) > self.max_items:
@@ -126,3 +141,4 @@ class IdempotencyCache:
     def reset(self) -> None:
         with self._lock:
             self._d.clear()
+            self._inflight.clear()

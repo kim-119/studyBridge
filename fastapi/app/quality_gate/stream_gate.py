@@ -32,13 +32,23 @@ def _content(ev: Dict[str, Any]) -> str:
     return ""
 
 
-def _strip_content(ev: Dict[str, Any]) -> Dict[str, Any]:
-    """종료 이벤트에 실린 본문 묶음(messages/answers 등)을 제거해 미승인 본문이 새지 않게 한다."""
-    out = {k: v for k, v in ev.items() if k not in ("data",)}
-    d = ev.get("data")
-    if isinstance(d, dict):
-        out["data"] = {k: v for k, v in d.items() if k not in ("messages", "answers", "content", "text", "answer")}
+# 출력 이벤트는 원본을 복사하지 않고 allowlist 로 '새로' 만든다(원본의 다른 필드에 실린 미승인 본문 차단).
+_ID_KEYS = ("turnId", "turn_id", "agentId", "agent_id", "agentName", "stage", "stageName", "status", "index",
+            "total", "round", "mode", "messageId", "timestamp", "seq")
+
+
+def _ids_only(ev: Dict[str, Any]) -> Dict[str, Any]:
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else ev
+    out = {}
+    for k in _ID_KEYS:
+        v = d.get(k)
+        if isinstance(v, (int, float, bool)) or (isinstance(v, str) and len(v) <= 64):
+            out[k] = v
     return out
+
+
+def _safe_event(ev: Dict[str, Any], et: str) -> Dict[str, Any]:
+    return {"event": et, "data": _ids_only(ev)}
 
 
 async def gate_event_stream(
@@ -68,8 +78,9 @@ async def gate_event_stream(
                     await on_approved(key, text, q)
                 except Exception:  # noqa: BLE001 — 수집 실패가 응답을 막지 않는다
                     pass
-            yield {"event": (msg or {}).get("event", "agent_answer"),
-                   "data": {**((msg or {}).get("data") or {}), "content": text,
+            et = str((msg or {}).get("event") or "agent_answer").lower()
+            yield {"event": et if et in MESSAGE_EVENTS else "agent_answer",
+                   "data": {**_ids_only(msg or {}), "content": text,
                             "quality": {"qualityStatus": q.qualityStatus.value, "score": q.score,
                                         "evaluatorVersion": q.evaluatorVersion}}}
         else:
@@ -80,7 +91,7 @@ async def gate_event_stream(
     async for ev in source:
         et = str(ev.get("event") or ev.get("type") or "").lower()
         if et in PROGRESS_EVENTS:
-            yield ev
+            yield _safe_event(ev, et)          # 진행 상태만(식별자/단계), 텍스트 필드는 버림
             continue
         key = _key(ev)
         if et in DELTA_EVENTS:
@@ -99,7 +110,7 @@ async def gate_event_stream(
             for k in list(order):
                 async for out in _flush(k):
                     yield out
-            yield _strip_content(ev)
+            yield _safe_event(ev, et)
             continue
         # 알 수 없는 타입: 본문일 수 있으므로 내용만 버퍼링하고 원 이벤트는 내보내지 않는다.
         c = _content(ev)

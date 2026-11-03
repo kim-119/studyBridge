@@ -106,7 +106,7 @@ def verify_scope_token(token: Optional[str], *, expected_sub: Optional[str] = No
         raise SignatureError("SCOPE_TOKEN_MALFORMED")
     t = now or time.time()
     exp, iat = int(payload.get("exp", 0)), int(payload.get("iat", 0))
-    if payload.get("v") != 1 or exp < t or iat > t + 30 or exp - iat > MAX_SCOPE_TTL_SECONDS:
+    if payload.get("v") != 1 or exp < t or iat > t + 30 or iat > exp or exp - iat > MAX_SCOPE_TTL_SECONDS:
         raise SignatureError("SCOPE_TOKEN_EXPIRED")
     if expected_sub is not None and payload.get("sub") != expected_sub:
         raise SignatureError("SCOPE_SUBJECT_MISMATCH")
@@ -153,9 +153,13 @@ def verify_consent_token(token: Optional[str], *, expected_request_id: Optional[
     except (ValueError, json.JSONDecodeError):
         raise SignatureError("CONSENT_TOKEN_MALFORMED")
     t = now or time.time()
-    if d.get("v") != 1 or d.get("typ") != "training-consent" or int(d.get("exp", 0)) < t \
-            or int(d.get("exp", 0)) - int(d.get("iat", 0)) > MAX_SCOPE_TTL_SECONDS:
+    exp, iat = int(d.get("exp", 0)), int(d.get("iat", 0))
+    if d.get("v") != 1 or d.get("typ") != "training-consent" or exp < t or iat > t + 30 or iat > exp \
+            or exp - iat > MAX_SCOPE_TTL_SECONDS:
+        # iat 가 미래(ms 단위 실수 등)이면 TTL 검사가 무력화되므로 거부한다.
         raise SignatureError("CONSENT_TOKEN_EXPIRED")
+    if not d.get("rid"):
+        raise SignatureError("CONSENT_REQUEST_MISSING")
     if expected_request_id is not None and d.get("rid") != expected_request_id:
         raise SignatureError("CONSENT_REQUEST_MISMATCH")
     return ConsentClaim(sub=str(d["sub"]), consent_version=str(d["cv"]), consent_timestamp=str(d["ct"]),

@@ -139,6 +139,15 @@ class InMemoryTrainingRepository:
         m = self._manifests.get(dataset_id)
         return copy.deepcopy(m) if m else None
 
+    async def activate_manifest(self, dataset_id: str) -> bool:
+        """PENDING → ACTIVE (CAS). 그 사이 무효화됐으면 False."""
+        async with self._lock:
+            m = self._manifests.get(dataset_id)
+            if m is None or m.status != "PENDING":
+                return False
+            m.status = "ACTIVE"
+            return True
+
     async def register_model_candidate(self, m: ModelCandidateRecord) -> None:
         async with self._lock:
             self._models[m.adapter_id] = copy.deepcopy(m)
@@ -329,6 +338,11 @@ class PostgresTrainingRepository:
         r = rows[0]
         return ManifestRecord(dataset_id=r[0], status=r[1], manifest_sha256=r[2], member_hashes=[x[0] for x in members],
                               created_at=r[3], invalidated_reasons=list(r[4] or []))
+
+    async def activate_manifest(self, dataset_id: str) -> bool:
+        rows = await self._fetch("UPDATE ai.training_dataset_manifest SET status='ACTIVE' "
+                                 "WHERE dataset_id=%s AND status='PENDING' RETURNING dataset_id", (dataset_id,))
+        return bool(rows)
 
     async def register_model_candidate(self, m: ModelCandidateRecord) -> None:
         await self._fetch(
