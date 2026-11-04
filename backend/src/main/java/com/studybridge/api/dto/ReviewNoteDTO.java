@@ -41,4 +41,8 @@ public class ReviewNoteDTO {
     private java.time.LocalDate reviewScheduledDate; // 등록된 주간 일정 날짜
     private Boolean reviewCompleted;               // 등록된 주간 일정 완료 여부
     private LocalDateTime createdAt;
+    // ── 품질 게이트(게이트 OFF 면 전부 null — 기존 응답과 동일) ──
+    private String qualityStatus;                  // 오답노트 본문 승인 여부(APPROVED | null)
+    private Boolean qualityRedacted;               // 미승인 AI 필드(해설·개념·PDF·복습 필요 분석)를 가렸는가
+    private String qualityNotice;                  // 가림 고정 문구
 }

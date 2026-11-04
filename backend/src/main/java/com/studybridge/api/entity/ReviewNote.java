@@ -89,6 +89,16 @@ public class ReviewNote {
     @Column(name = "ai_status", length = 20)
     private String aiStatus;
 
+    // ── 품질 게이트(response-quality.v1, AI_RESPONSE_QUALITY_GATE_ENABLED) — APPROVED 만 기록(ddl-auto=update 로 nullable 추가) ──
+    //  · quality_status              : 오답노트 본문(문항 해설·다시 볼 개념·전체 피드백·PDF·자료보관함 평문)이 승인됐는가.
+    //  · review_needed_quality_status: reviewNeededText("복습 필요" 분석)가 승인됐는가.
+    //  게이트 ON 에서 APPROVED 가 아니면 해당 AI 필드만 가린다(문항·보기·정답·내 답·메모는 사용자 데이터라 유지).
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
+    @Column(name = "review_needed_quality_status", length = 24)
+    private String reviewNeededQualityStatus;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 }

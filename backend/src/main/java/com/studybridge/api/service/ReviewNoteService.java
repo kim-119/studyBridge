@@ -3,6 +3,9 @@ package com.studybridge.api.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
+import com.studybridge.api.ai.quality.GateDecision;
 import com.studybridge.api.dto.ReviewNoteDTO;
 import com.studybridge.api.entity.ExtractionStatus;
 import com.studybridge.api.entity.LearningEventType;
@@ -23,6 +26,7 @@ import com.lowagie.text.pdf.BaseFont;
 import com.lowagie.text.pdf.PdfWriter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -95,7 +99,34 @@ public class ReviewNoteService {
         }
     });
 
+    // 품질 게이트 백그라운드 보강 전용 풀(재생성 시 ai07 재호출 + 평가가 길어도 최초 ai07 호출 풀을 막지 않게 분리).
+    private final ExecutorService aiGateExecutor = Executors.newFixedThreadPool(2, new java.util.concurrent.ThreadFactory() {
+        private final AtomicInteger seq = new AtomicInteger();
+        @Override public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "review-note-gate-" + seq.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        }
+    });
+
     private byte[] cachedFont;
+
+    // ── 품질 게이트(response-quality.v1, 기본 OFF). 생성자 시그니처를 바꾸지 않도록 setter 주입(null 이면 OFF) ──
+    //  · 오답노트 본문(문항 해설·다시 볼 개념·전체 피드백·PDF) = WRONG_NOTE_EXPLANATION, 백그라운드 보강을 평가 → 승인분만 반영.
+    //  · 복습 필요 분석 = WRONG_NOTE_EXPLANATION(text), 유사문제 = SIMILAR_QUESTION(quiz_json).
+    //  · 게이트 ON 조회(목록/상세/retry/다운로드/메모 응답): APPROVED 가 아닌 AI 필드만 가린다. 문항·보기·정답·내 답·재풀이 기록·메모는 유지.
+    private AiResponseQualityGate qualityGate;
+    static final String QUALITY_APPROVED = "APPROVED";
+    static final String QUALITY_NOTICE = "AI 해설·다시 볼 개념·PDF·복습 필요 분석은 품질 검증을 통과한 뒤에만 표시됩니다. 문제·정답·내 답·메모는 그대로 볼 수 있습니다.";
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    private boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
 
     // ---------------------------------------------------------------------
     // 생성: POST /api/review-notes/from-quiz/{quizId}
@@ -162,8 +193,10 @@ public class ReviewNoteService {
         CompletableFuture<Map> aiFuture = CompletableFuture.supplyAsync(
                 () -> callWrongNoteFeedback(requestBody, quizIdF), aiEnrichExecutor);
 
+        // 게이트 ON: 평가 전 AI 응답은 쓰지 않는다 — 항상 AI 없는 퀴즈 기반본으로 저장하고, 보강은 백그라운드 게이트를 거친다.
+        final boolean gated = gateOn();
         Map response = null;
-        if (reviewSyncBudgetSeconds > 0) {
+        if (reviewSyncBudgetSeconds > 0 && !gated) {
             try {
                 response = aiFuture.get(reviewSyncBudgetSeconds, TimeUnit.SECONDS);
             } catch (TimeoutException te) {
@@ -173,8 +206,8 @@ public class ReviewNoteService {
             }
         }
 
-        boolean aiEnriched = isAiOk(response);
-        boolean aiSettled = aiFuture.isDone();   // 이미 결론(성공/실패)이 났으면 백그라운드 보강 불필요
+        boolean aiEnriched = !gated && isAiOk(response);
+        boolean aiSettled = !gated && aiFuture.isDone();   // 이미 결론(성공/실패)이 났으면 백그라운드 보강 불필요
 
         String defaultFeedback = defaultOverallFeedback(unansweredOnly);
         String overallFeedback = aiEnriched ? overallFeedbackOf(response, defaultFeedback) : defaultFeedback;
@@ -246,7 +279,15 @@ public class ReviewNoteService {
             final String srcTitle = source.getTitle();
             final List<WrongItem> itemsF = reviewItems;
             final int wrongF = wrongOnly, unansweredF = unansweredOnly;
-            Runnable hook = () -> aiFuture.whenComplete((resp, err) -> {
+            final EnrichJob job = new EnrichJob(noteId, archiveId, s3Key, itemsF, noteTitle, srcTitle, diffKo, createdDate,
+                    wrongF, unansweredF, defaultFeedback, t0, requestBody, quizIdF, source.getMaterialId(), source.getExtractedText());
+            Runnable hook = gated
+                    // 게이트: 평가·재생성이 길어질 수 있으므로 요청 스레드(이미 완료된 future 의 동기 콜백)에서 돌리지 않는다.
+                    ? () -> aiFuture.whenCompleteAsync((resp, err) -> {
+                        if (err != null) log.warn("[REVIEW_NOTE] ai07 background 실패 reviewNoteId={} cause={}", noteId, err.toString());
+                        applyAiEnrichmentGated(job, err == null ? resp : null);
+                    }, aiGateExecutor)
+                    : () -> aiFuture.whenComplete((resp, err) -> {
                 if (err != null) log.warn("[REVIEW_NOTE] ai07 background 실패 reviewNoteId={} cause={}", noteId, err.toString());
                 applyAiEnrichment(noteId, archiveId, s3Key, err == null ? resp : null, itemsF,
                         noteTitle, srcTitle, diffKo, createdDate, wrongF, unansweredF, defaultFeedback, t0);
@@ -378,6 +419,124 @@ public class ReviewNoteService {
         }
     }
 
+    /** 백그라운드 게이트 보강 작업 단위(요청 트랜잭션 밖에서 실행). sourceText = 소유권 확인을 마친 원본 자료 원문(평가 근거). */
+    record EnrichJob(Long noteId, Long archiveId, String s3Key, List<WrongItem> items, String noteTitle, String sourceTitle,
+                     String diffKo, String createdDate, int wrongOnly, int unansweredOnly, String defaultFeedback, long t0,
+                     Map<String, Object> requestBody, Long quizId, Long sourceMaterialId, String sourceText) { }
+
+    /** 한 시도의 AI 보강 결과(사용자에게 보일 본문 전체 = plainText). */
+    record Enriched(List<WrongItem> items, String overallFeedback, String plainText) { }
+
+    /**
+     * 게이트 ON 백그라운드 보강: ai07 응답으로 만든 오답노트 본문 전체(문항·정답·내 답·해설·다시 볼 개념·전체 피드백)를
+     * WRONG_NOTE_EXPLANATION 으로 평가 → 거절 시 ai07 재호출로 최대 2회 재생성 → 승인분만 PDF/자료보관함 평문/retryJson 에 반영하고
+     * quality_status=APPROVED 를 기록한다. 거절/평가 불가/ai07 실패는 아무것도 반영하지 않고 aiStatus=FALLBACK(퀴즈 기반본 유지)으로 끝난다.
+     */
+    void applyAiEnrichmentGated(EnrichJob job, Map firstResponse) {
+        Long noteId = job.noteId();
+        try {
+            String rid = "wn-" + noteId + "-" + UUID.randomUUID().toString().substring(0, 8);
+            AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(rid, ResponseQualityV1.TaskType.WRONG_NOTE_EXPLANATION,
+                    ResponseQualityV1.OutputKind.TEXT, wrongNoteRequest(job), sourceEvidence(job.sourceMaterialId(), job.sourceText()),
+                    materialConstraints(job.sourceMaterialId()), null);
+            AiResponseQualityGate.Outcome<Enriched> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> {
+                Map resp = attempt == 0 ? firstResponse : callWrongNoteFeedback(job.requestBody(), job.quizId());
+                if (!isAiOk(resp)) {
+                    throw new AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                }
+                List<WrongItem> copy = new ArrayList<>();
+                for (WrongItem w : job.items()) copy.add(w.copy());
+                enrichFromAi(copy, resp);
+                String overall = overallFeedbackOf(resp, job.defaultFeedback());
+                return new Enriched(copy, overall, buildFallbackPlainText(job.noteTitle(), job.sourceTitle(), job.diffKo(),
+                        job.createdDate(), job.wrongOnly(), job.unansweredOnly(), overall, copy));
+            }, e -> AiResponseQualityGate.text(e.plainText()));
+            if (!outcome.approved()) {
+                markAiStatus(noteId, AI_STATUS_FALLBACK);
+                log.info("[REVIEW_NOTE] gated enrich 미승인(퀴즈 기반본 유지) reviewNoteId={} status={} codes={} attempts={} totalMs={}",
+                        noteId, outcome.decision().qualityStatus(), outcome.decision().reasonCodes(), outcome.decision().attempts(),
+                        System.currentTimeMillis() - job.t0());
+                return;
+            }
+            Enriched e = outcome.value();
+            ReviewNote existing = reviewNoteRepository.findById(noteId).orElse(null);
+            if (existing == null) {
+                log.warn("[REVIEW_NOTE] gated enrich: note 없음(삭제됨?) reviewNoteId={}", noteId);
+                return;
+            }
+            byte[] pdf = buildPdf(job.noteTitle(), job.sourceTitle(), job.diffKo(), job.createdDate(),
+                    job.wrongOnly(), job.unansweredOnly(), e.overallFeedback(), e.items());
+            s3Service.uploadBytes(pdf, job.s3Key(), "application/pdf");
+            materialRepository.findById(job.archiveId()).ifPresent(m -> {
+                m.setExtractedText(e.plainText());
+                m.setFileSize((long) pdf.length);
+                materialRepository.save(m);
+            });
+            existing.setRetryJson(buildRetryJsonFromWrong(e.items()));
+            existing.setAiStatus(AI_STATUS_DONE);
+            existing.setQualityStatus(QUALITY_APPROVED);
+            reviewNoteRepository.save(existing);
+            log.info("[REVIEW_NOTE] gated enrich APPROVED reviewNoteId={} score={} attempts={} totalMs={}",
+                    noteId, outcome.decision().score(), outcome.decision().attempts(), System.currentTimeMillis() - job.t0());
+        } catch (Exception ex) {
+            log.warn("[REVIEW_NOTE] gated enrich 실패(퀴즈 기반본 유지) reviewNoteId={} cause={}", noteId, ex.toString());
+            markAiStatus(noteId, AI_STATUS_FALLBACK);
+        }
+    }
+
+    /** 평가 요청 문장: 무엇을 만들었어야 하는지 + 문항/정답/내 답(관련성 판정용). 평가기에만 간다(로그 미기록). */
+    private String wrongNoteRequest(EnrichJob job) {
+        StringBuilder b = new StringBuilder("다음 오답 문제들에 대해 정답 근거 해설, 다시 봐야 할 개념, 전체 복습 피드백을 작성해 주세요. 자료: ")
+                .append(nz(job.sourceTitle())).append('\n');
+        int i = 1;
+        for (WrongItem w : job.items()) {
+            b.append(i++).append(". 문제: ").append(clip(w.question, 300))
+                    .append(" / 정답: ").append(clip(optionAt(w.options, w.correctIndex), 120))
+                    .append(" / 내 답: ").append(w.unanswered ? "미응답" : clip(optionAt(w.options, w.selectedIndex), 120)).append('\n');
+        }
+        return b.toString();
+    }
+
+    /** 평가 근거 = 원본 자료(PDF) 원문. 호출자가 소유권을 확인한 자료만 넘긴다. */
+    private static List<ResponseQualityV1.GroundingEvidence> sourceEvidence(Long materialId, String text) {
+        return materialId == null ? List.of() : AiResponseQualityGate.pdfEvidence(materialId, text, 4000, 48000);
+    }
+
+    private static ResponseQualityV1.Constraints materialConstraints(Long materialId) {
+        return new ResponseQualityV1.Constraints(materialId == null ? null : List.of(materialId), null, null, null, null, null, null,
+                false, false, null, null, null, null, null, null);
+    }
+
+    /** 게이트 경로 근거용: 오답노트 원본 자료 원문(같은 사용자 소유일 때만 — 다른 사용자 자료를 근거로 쓰지 않는다). */
+    private String ownedSourceText(Long userId, Long materialId) {
+        if (materialId == null) return null;
+        try {
+            return materialRepository.findById(materialId)
+                    .filter(m -> userId != null && userId.equals(m.getUserId()))
+                    .map(Material::getExtractedText).orElse(null);
+        } catch (Exception e) {
+            log.warn("[REVIEW_NOTE] 근거 원문 조회 실패 materialId={} cause={}", materialId, e.toString());
+            return null;
+        }
+    }
+
+    private boolean noteApproved(ReviewNote n) {
+        return QUALITY_APPROVED.equals(n.getQualityStatus());
+    }
+
+    /** 게이트 ON + 본문 미승인: retryJson 문항에서 AI 필드(해설·다시 볼 개념)만 뺀다. 문항·보기·정답·내 답·상태·페이지는 유지. */
+    private static List<Map<String, Object>> redactRetryItems(List<Map<String, Object>> items) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> q : items) {
+            Map<String, Object> m = new LinkedHashMap<>(q);
+            m.remove("explanation");
+            m.remove("concept");
+            m.put("qualityRedacted", true);
+            out.add(m);
+        }
+        return out;
+    }
+
     private void markAiStatus(Long noteId, String status) {
         try {
             reviewNoteRepository.findById(noteId).ifPresent(n -> { n.setAiStatus(status); reviewNoteRepository.save(n); });
@@ -421,8 +580,15 @@ public class ReviewNoteService {
     public Map<String, Object> getDownloadUrl(Long userId, Long id) {
         ReviewNote note = loadOwned(userId, id);
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("url", presign(note));
+        // 게이트 ON: PDF 에는 해설·개념·전체 피드백이 실린다 → 본문 승인 전에는 URL 을 발급하지 않는다(가림 표식만).
+        boolean redact = gateOn() && !noteApproved(note);
+        out.put("url", redact ? null : presign(note));
         out.put("fileName", note.getTitle() + ".pdf");
+        if (redact) {
+            out.put("qualityStatus", note.getQualityStatus());
+            out.put("qualityRedacted", true);
+            out.put("qualityNotice", QUALITY_NOTICE);
+        }
         return out;
     }
 
@@ -440,11 +606,28 @@ public class ReviewNoteService {
         } catch (Exception e) {
             log.warn("[REVIEW_NOTE] retry parse fail id={} msg={}", id, e.getMessage());
         }
+        boolean redact = gateOn() && !noteApproved(note);
+        if (redact) {
+            List<Map<String, Object>> typed = new ArrayList<>();
+            for (Object q : questions) {
+                if (q instanceof Map<?, ?> m) {
+                    Map<String, Object> copy = new LinkedHashMap<>();
+                    m.forEach((k, v) -> copy.put(String.valueOf(k), v));
+                    typed.add(copy);
+                }
+            }
+            questions = new ArrayList<>(redactRetryItems(typed));
+        }
         out.put("reviewNoteId", id);
         out.put("sourceMaterialId", note.getSourceMaterialId());
         out.put("questions", questions);
         // 다시 풀기는 문제당 1회다. 이미 기록된 결과를 함께 내려 중복 제출을 막는다.
         out.put("retryResults", parseRetryResults(note.getRetryResultJson()));
+        if (gateOn()) {
+            out.put("qualityStatus", note.getQualityStatus());
+            out.put("qualityRedacted", redact);
+            if (redact) out.put("qualityNotice", QUALITY_NOTICE);
+        }
         return out;
     }
 
@@ -491,8 +674,11 @@ public class ReviewNoteService {
     @Transactional
     public Map<String, Object> generateReviewNeeded(Long userId, Long id) {
         ReviewNote note = loadOwnedStrict(userId, id);
+        boolean gated = gateOn();
         // 이미 저장된 분석이 있으면 ai07 재호출 없이 DB 값을 돌려준다(새로고침/재클릭 idempotent).
-        if (note.getReviewNeededText() != null && !note.getReviewNeededText().isBlank()) {
+        // 게이트 ON: 승인 기록이 없는 저장본(레거시/게이트 OFF 시기/결정론 폴백)은 재노출하지 않고 게이트를 거쳐 다시 만든다.
+        if (note.getReviewNeededText() != null && !note.getReviewNeededText().isBlank()
+                && (!gated || QUALITY_APPROVED.equals(note.getReviewNeededQualityStatus()))) {
             ensureRecommendation(note);
             Map<String, Object> cached = new LinkedHashMap<>();
             cached.put("reviewNoteId", id);
@@ -500,7 +686,14 @@ public class ReviewNoteService {
             cached.put("recommendedReviewDate", note.getRecommendedReviewDate() != null ? note.getRecommendedReviewDate().toString() : null);
             cached.put("recommendReviewInDays", note.getRecommendReviewInDays());
             cached.put("cached", true);
+            if (gated) {
+                cached.put("qualityStatus", QUALITY_APPROVED);
+                cached.put("verified", true);
+            }
             return cached;
+        }
+        if (gated) {
+            return generateReviewNeededGated(userId, note);
         }
 
         List<Map<String, Object>> items = parseRetryQuestions(note.getRetryJson());
@@ -546,6 +739,90 @@ public class ReviewNoteService {
         out.put("recommendReviewInDays", note.getRecommendReviewInDays());
         out.put("cached", false);
         return out;
+    }
+
+    /**
+     * 게이트 ON 복습 필요 분석: /api/ai/review-needed 생성 → 후처리(첫 문장 계약·600자) 후 사용자에게 보일 최종 문장을
+     * WRONG_NOTE_EXPLANATION(text, 원본 자료 원문 근거)으로 평가 → 거절 시 최대 2회 재생성 → 승인분만 저장
+     * (review_needed_quality_status=APPROVED)·응답. 거절/평가 불가는 저장하지 않고(기존 저장본도 덮어쓰지 않음)
+     * success=false + errorCode(AI_QUALITY_REJECTED/AI_QUALITY_UNAVAILABLE) + retryable 로 끝난다.
+     * ai07 자체 실패(응답 없음)는 기존 계약대로 오답노트 데이터 기반 결정론 문장을 돌려주되 AI 결과가 아님을 표시하고 저장하지 않는다.
+     */
+    private Map<String, Object> generateReviewNeededGated(Long userId, ReviewNote note) {
+        Long id = note.getReviewNoteId();
+        List<Map<String, Object>> items = parseRetryQuestions(note.getRetryJson());
+        List<Map<String, Object>> merged = mergeRetryResults(items, note.getRetryResultJson());
+        String sourceTitle = (note.getSourceTitle() == null || note.getSourceTitle().isBlank()) ? "학습자료" : note.getSourceTitle();
+        String difficultyKo = difficultyLabel(note.getDifficulty());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("reviewNoteId", id);
+        if (items.isEmpty()) {
+            // AI 를 부르지 않는 고정 안내(문항 데이터가 없는 레거시) — 저장하지 않는다(게이트 ON 에서 미승인 저장본은 가려지므로).
+            out.put("reviewNeededText", "문제의 핵심 개념을 정확히 식별하기 어려워 기본 개념 복습이 필요합니다. "
+                    + "원본 자료와 기존 해설을 다시 확인한 뒤, 오답 선택지가 왜 틀렸는지 비교하며 복습해 주세요.");
+            out.put("cached", false);
+            out.put("generatedBy", "rule");
+            out.put("verified", false);
+            return out;
+        }
+        String rid = "rn-" + id + "-" + UUID.randomUUID().toString().substring(0, 8);
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(rid, ResponseQualityV1.TaskType.WRONG_NOTE_EXPLANATION,
+                ResponseQualityV1.OutputKind.TEXT, buildReviewNeededPrompt(sourceTitle, difficultyKo, merged),
+                sourceEvidence(note.getSourceMaterialId(), ownedSourceText(userId, note.getSourceMaterialId())),
+                materialConstraints(note.getSourceMaterialId()), null);
+        final boolean[] upstreamFailed = new boolean[1];
+        AiResponseQualityGate.Outcome<String> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> {
+            String aiText = callReviewNeededAi(id, sourceTitle, difficultyKo, merged);
+            if (aiText == null || aiText.isBlank()) {
+                upstreamFailed[0] = true;
+                throw new AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+            }
+            return ensureLeadSentence(trimToLength(aiText.trim(), 600), items);
+        }, AiResponseQualityGate::text);
+        if (outcome.approved()) {
+            String text = outcome.value();
+            learningLoopService.recordSafe(LearningLoopEvent.builder()
+                    .userId(userId)
+                    .eventType(LearningEventType.AI_EXPLANATION_GENERATED)
+                    .sourceType(LearningSourceType.WRONG_NOTE)
+                    .sourceId(id)
+                    .materialId(note.getSourceMaterialId())
+                    .wrongNoteId(id)
+                    .difficulty(note.getDifficulty())
+                    .aiOutputSummary(text)
+                    .userAction("REVIEW_NEEDED")
+                    .build());
+            note.setReviewNeededText(text);
+            note.setReviewNeededQualityStatus(QUALITY_APPROVED);
+            note.setReviewNeededAt(java.time.LocalDateTime.now());
+            ensureRecommendation(note);
+            reviewNoteRepository.save(note);
+            out.put("reviewNeededText", text);
+            out.put("recommendedReviewDate", note.getRecommendedReviewDate() != null ? note.getRecommendedReviewDate().toString() : null);
+            out.put("recommendReviewInDays", note.getRecommendReviewInDays());
+            out.put("cached", false);
+            out.put("qualityStatus", QUALITY_APPROVED);
+            out.put("qualityScore", outcome.decision().score());
+            out.put("verified", true);
+            return out;
+        }
+        if (upstreamFailed[0] && outcome.decision().attempts() <= 1) {
+            // 기존 계약: AI 실패 시 데이터 기반 결정론 문장(AI 생성 아님). 게이트 ON 에서는 저장하지 않는다.
+            out.put("reviewNeededText", buildReviewNeededFallback(sourceTitle, merged));
+            out.put("cached", false);
+            out.put("usedFallback", true);
+            out.put("generatedBy", "rule");
+            out.put("verified", false);
+            return out;
+        }
+        GateDecision d = outcome.decision();
+        log.info("[REVIEW_NOTE] review-needed 미승인 reviewNoteId={} status={} codes={} — 저장 안 함(기존 저장본 유지)",
+                id, d.qualityStatus(), d.reasonCodes());
+        Map<String, Object> fail = new LinkedHashMap<>(out);
+        fail.putAll(d.failureBody(rid));
+        fail.put("reviewNeededText", null);
+        fail.put("cached", false);
+        return fail;
     }
 
     /** 추천 복습일이 비어 있는 레거시 row 에 결정적 추천을 채운다(생성일 기준). 호출자가 save 한다. */
@@ -763,6 +1040,9 @@ public class ReviewNoteService {
             req.put("correct_answer", base.get("correct_answer"));
             req.put("explanation", base.get("explanation"));
         }
+        if (gateOn()) {
+            return variantQuestionGated(userId, note, id, wrongQuestionId, difficulty, count, retry, base, req);
+        }
         Map aiResp = null;
         try {
             aiResp = fastApiWebClient.post().uri("/api/ai/review/variant-question")
@@ -850,6 +1130,136 @@ public class ReviewNoteService {
         out.put("questions", questions);
         recordSimilarQuestion(userId, id, note.getSourceMaterialId(), difficulty, true);
         return out;
+    }
+
+    /**
+     * 게이트 ON 유사문제: 한 시도 = ai07 호출 + 부족분 top-up(최대 2회)으로 모은 AI 문항(요청 수 이내).
+     * 그 문항 전부(문제·보기·정답·해설·개념)를 SIMILAR_QUESTION(quiz_json, 원본 자료 원문 근거)으로 평가 → 거절 시 최대 2회 재생성
+     * → 승인 문항만 응답. 부족분은 기존 계약대로 원본 오답 재출제(partialFallback)로 채운다(비AI, 해설은 본문 승인 시에만).
+     * 거절/평가 불가는 success=false + errorCode + retryable, questions=[](초안 0). ai07 실패는 기존 원본 재출제 폴백.
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private Map<String, Object> variantQuestionGated(Long userId, ReviewNote note, Long id, int wrongQuestionId, String difficulty,
+                                                     int count, List<Map<String, Object>> retry, Map<String, Object> base,
+                                                     Map<String, Object> req) {
+        List<Map<String, Object>> visibleRetry = noteApproved(note) ? retry : redactRetryItems(retry);
+        String rid = "vq-" + id + "-" + UUID.randomUUID().toString().substring(0, 8);
+        StringBuilder ask = new StringBuilder("다음 오답 문제와 같은 개념을 묻는 난이도 ").append(difficulty).append(" 유사 4지선다 문제 ")
+                .append(count).append("개를 만들어 주세요.");
+        if (base != null) {
+            ask.append("\n기존 문제: ").append(clip(asStr(base.get("question")), 600))
+                    .append("\n보기: ").append(clip(joinChoices(base.get("choices")), 600))
+                    .append("\n정답: ").append(clip(asStr(base.get("correct_answer")), 200));
+        }
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(rid, ResponseQualityV1.TaskType.SIMILAR_QUESTION,
+                ResponseQualityV1.OutputKind.QUIZ_JSON, ask.toString(),
+                sourceEvidence(note.getSourceMaterialId(), ownedSourceText(userId, note.getSourceMaterialId())),
+                materialConstraints(note.getSourceMaterialId()), null);
+        final boolean[] upstreamFailed = new boolean[1];
+        AiResponseQualityGate.Outcome<List<Object>> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> {
+            List<Object> qs = fetchVariantQuestions(id, req, count);
+            if (qs == null || qs.isEmpty()) {
+                upstreamFailed[0] = true;
+                throw new AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+            }
+            return qs;
+        }, qs -> {
+            com.fasterxml.jackson.databind.node.ObjectNode root = MAPPER.createObjectNode();
+            root.set("questions", MAPPER.valueToTree(qs));
+            return root;
+        });
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("reviewNoteId", id);
+        out.put("difficulty", difficulty);
+        if (outcome.approved()) {
+            List<Object> merged = new ArrayList<>(outcome.value());
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (Object q : merged) seen.add(variantKey(q));
+            boolean filledAny = false;
+            for (int i = 0; i < visibleRetry.size() && merged.size() < count; i++) {
+                int idx = ((wrongQuestionId - 1 + i) % visibleRetry.size() + visibleRetry.size()) % visibleRetry.size();
+                Map<String, Object> fq = fallbackQuestion(id, visibleRetry.get(idx), idx, difficulty,
+                        "AI 가 요청한 문항 수만큼 변형하지 못해 원본 오답 문제로 채웠습니다.");
+                if (seen.add(variantKey(fq))) { merged.add(fq); filledAny = true; }
+            }
+            out.put("success", merged.size() >= count);
+            out.put("requestedCount", count);
+            out.put("returnedCount", Math.min(count, merged.size()));
+            if (merged.size() < count) out.put("message", "요청한 문항 수를 모두 생성하지 못했습니다. 다시 시도해 주세요.");
+            out.put("usedFallback", false);
+            if (filledAny) out.put("partialFallback", true);
+            out.put("questions", merged.size() > count ? new ArrayList<>(merged.subList(0, count)) : merged);
+            out.put("qualityStatus", QUALITY_APPROVED);
+            out.put("qualityScore", outcome.decision().score());
+            out.put("verified", true);
+            recordSimilarQuestion(userId, id, note.getSourceMaterialId(), difficulty, false);
+            return out;
+        }
+        if (upstreamFailed[0] && outcome.decision().attempts() <= 1) {
+            // 기존 계약: AI 변형 불가 → 이 오답노트의 원본 오답 재출제(AI 생성 아님). 해설은 본문 승인 시에만 실린다.
+            List<Map<String, Object>> questions = new ArrayList<>();
+            int n = Math.min(count, visibleRetry.size());
+            for (int i = 0; i < n; i++) {
+                int idx = ((wrongQuestionId - 1 + i) % visibleRetry.size() + visibleRetry.size()) % visibleRetry.size();
+                questions.add(fallbackQuestion(id, visibleRetry.get(idx), idx, difficulty,
+                        "AI 변형을 일시적으로 사용할 수 없어 원본 오답 문제를 다시 출제했습니다."));
+            }
+            out.put("success", questions.size() == count);
+            out.put("requestedCount", count);
+            out.put("returnedCount", questions.size());
+            if (questions.size() != count) out.put("message", "요청한 문항 수를 모두 생성하지 못했습니다. 다시 시도해 주세요.");
+            out.put("usedFallback", true);
+            out.put("questions", questions);
+            recordSimilarQuestion(userId, id, note.getSourceMaterialId(), difficulty, true);
+            return out;
+        }
+        GateDecision d = outcome.decision();
+        log.info("[REVIEW_NOTE] variant 미승인 id={} status={} codes={} attempts={} — 문항 미노출", id, d.qualityStatus(), d.reasonCodes(),
+                d.attempts());
+        out.putAll(d.failureBody(rid));
+        out.put("requestedCount", count);
+        out.put("returnedCount", 0);
+        out.put("usedFallback", false);
+        out.put("questions", List.of());
+        return out;
+    }
+
+    /** 게이트 시도 1회분 AI 유사문제: 최초 호출 + 부족분 top-up(최대 2회, 본문 중복 제거). ai07 실패/빈 결과면 null. */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private List<Object> fetchVariantQuestions(Long id, Map<String, Object> req, int count) {
+        Map aiResp;
+        try {
+            aiResp = fastApiWebClient.post().uri("/api/ai/review/variant-question")
+                    .bodyValue(req).retrieve().bodyToMono(Map.class)
+                    .block(Duration.ofSeconds(reviewTimeoutSeconds));
+        } catch (Exception e) {
+            log.warn("[REVIEW_NOTE] variant(gated) ai07 unavailable id={} cause={}", id, e.getMessage());
+            return null;
+        }
+        if (aiResp == null || aiResp.get("error_code") != null || !(aiResp.get("questions") instanceof List<?> first)) {
+            return null;
+        }
+        List<Object> merged = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Object q : first) { if (merged.size() >= count) break; if (seen.add(variantKey(q))) merged.add(q); }
+        for (int attempt = 0; attempt < 2 && merged.size() < count; attempt++) {
+            Map<String, Object> topReq = new LinkedHashMap<>(req);
+            topReq.put("count", count - merged.size());
+            try {
+                Map more = fastApiWebClient.post().uri("/api/ai/review/variant-question")
+                        .bodyValue(topReq).retrieve().bodyToMono(Map.class)
+                        .block(Duration.ofSeconds(reviewTimeoutSeconds));
+                if (more == null || more.get("error_code") != null || !(more.get("questions") instanceof List<?> moreList)) break;
+                int before = merged.size();
+                for (Object q : moreList) { if (merged.size() >= count) break; if (seen.add(variantKey(q))) merged.add(q); }
+                if (merged.size() == before) break;
+            } catch (Exception e) {
+                log.warn("[REVIEW_NOTE] variant(gated) top-up failed id={} attempt={} cause={}", id, attempt, e.getMessage());
+                break;
+            }
+        }
+        return merged;
     }
 
     // 학습 왕복 루프: 유사문제 생성 이벤트(원본 오답노트와 연결)
@@ -1038,11 +1448,19 @@ public class ReviewNoteService {
         boolean scheduled = latest != null;
         boolean completed = latest != null && Boolean.TRUE.equals(latest.getCompleted());
         boolean needed = !recDate.isAfter(java.time.LocalDate.now()) && !completed;
+        // 게이트 ON: 미승인 AI 필드만 가린다 — PDF(해설·개념 포함)는 본문 승인, reviewNeededText 는 분석 승인 기준.
+        boolean gated = gateOn();
+        boolean bodyRedacted = gated && !noteApproved(n);
+        boolean rnRedacted = gated && n.getReviewNeededText() != null && !n.getReviewNeededText().isBlank()
+                && !QUALITY_APPROVED.equals(n.getReviewNeededQualityStatus());
         return ReviewNoteDTO.builder()
+                .qualityStatus(gated ? n.getQualityStatus() : null)
+                .qualityRedacted(gated ? (bodyRedacted || rnRedacted) : null)
+                .qualityNotice(gated && (bodyRedacted || rnRedacted) ? QUALITY_NOTICE : null)
                 .recommendReviewInDays(recDays)
                 .recommendedReviewDate(recDate)
                 .reviewReason(recReason)
-                .reviewNeededText(n.getReviewNeededText())
+                .reviewNeededText(rnRedacted ? null : n.getReviewNeededText())
                 .reviewNeeded(needed)
                 .reviewScheduled(scheduled)
                 .reviewTodoId(latest != null ? latest.getId() : null)
@@ -1061,7 +1479,7 @@ public class ReviewNoteService {
                 .difficulty(n.getDifficulty())
                 .memo(n.getMemo())
                 .aiStatus(n.getAiStatus())
-                .pdfUrl(withPresign ? presign(n) : null)
+                .pdfUrl(withPresign && !bodyRedacted ? presign(n) : null)
                 .downloadUrl("/api/review-notes/" + n.getReviewNoteId() + "/download")
                 .createdAt(n.getCreatedAt())
                 .build();
@@ -1531,6 +1949,12 @@ public class ReviewNoteService {
             this.explanation = explanation;
             this.unanswered = unanswered;
             this.page = page;
+        }
+        /** 게이트 재생성 시도마다 독립 사본(거절된 시도의 보강이 다음 시도·저장본에 섞이지 않게). */
+        WrongItem copy() {
+            WrongItem c = new WrongItem(question, options, correctIndex, selectedIndex, explanation, unanswered, page);
+            c.concept = concept;
+            return c;
         }
     }
 
