@@ -125,4 +125,50 @@ class AiQualityGateCoverageTest {
                 assertFalse(cov.preHandle(resolved, r2, new Object()), "MVC 가 고른 핸들러 패턴 기준");
                 assertEquals(503, r2.getStatus());
         }
+
+        // ── Phase D2: 허위 GATED 방지 — 모든 GATED 경로는 실제 차단을 실행으로 보이는 @GateEvidence 테스트를 가진다 ──
+
+        static java.util.Map<String, List<String>> gateEvidence() throws Exception {
+                var resolver = new org.springframework.core.io.support.PathMatchingResourcePatternResolver();
+                var readers = new org.springframework.core.type.classreading.CachingMetadataReaderFactory(resolver);
+                java.util.Map<String, List<String>> out = new java.util.TreeMap<>();
+                for (var res : resolver.getResources("classpath*:com/studybridge/api/**/*Test.class")) {
+                        String cn = readers.getMetadataReader(res).getClassMetadata().getClassName();
+                        Class<?> c;
+                        try {
+                                c = Class.forName(cn, false, AiQualityGateCoverageTest.class.getClassLoader());
+                        } catch (Throwable t) {
+                                continue;
+                        }
+                        for (Method m : c.getDeclaredMethods()) {
+                                GateEvidence ev = m.getAnnotation(GateEvidence.class);
+                                if (ev == null) {
+                                        continue;
+                                }
+                                assertTrue(m.isAnnotationPresent(Test.class), "@GateEvidence 는 @Test 메서드에만: " + cn + "#" + m.getName());
+                                for (String route : ev.value()) {
+                                        out.computeIfAbsent(route, k -> new ArrayList<>()).add(c.getSimpleName() + "#" + m.getName());
+                                }
+                        }
+                }
+                return out;
+        }
+
+        @Test
+        void everyGatedRouteHasExecutableEvidenceAndEvidenceTargetsGatedRoutes() throws Exception {
+                java.util.Map<String, List<String>> ev = gateEvidence();
+                List<String> missing = new ArrayList<>();
+                for (AiQualityGateCoverage.Route r : AiQualityGateCoverage.ROUTES) {
+                        if (r.status() == AiQualityGateCoverage.Status.GATED && !ev.containsKey(r.method() + " " + r.pattern())) {
+                                missing.add(r.method() + " " + r.pattern());
+                        }
+                }
+                assertEquals(List.of(), missing, "GATED 라벨만 있고 증거 테스트가 없는 경로(허위 연결)");
+                Set<String> gated = new HashSet<>();
+                AiQualityGateCoverage.ROUTES.stream().filter(r -> r.status() == AiQualityGateCoverage.Status.GATED)
+                                .forEach(r -> gated.add(r.method() + " " + r.pattern()));
+                List<String> dangling = ev.keySet().stream().filter(k -> !gated.contains(k)).toList();
+                assertEquals(List.of(), dangling, "GATED 가 아닌 경로를 가리키는 증거 표식");
+        }
 }
+

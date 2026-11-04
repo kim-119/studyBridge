@@ -138,6 +138,7 @@ class MaterialFeedbackQualityGateTest {
                 assertTrue(ev.get("groundingEvidence").size() > 0, "자료 원문 근거 동봉");
         }
 
+        @com.studybridge.api.ai.quality.GateEvidence({"GET /api/materials/{materialId}/feedback", "POST /api/materials/{materialId}/feedback/regenerate"})
         @Test
         void threeRejectionsSaveNothingAndKeepExisting() {
                 evaluatorPolicy = n -> out(70, "REJECTED");
@@ -159,6 +160,7 @@ class MaterialFeedbackQualityGateTest {
                 verify(feedbacks, never()).saveAndFlush(any());
         }
 
+        @com.studybridge.api.ai.quality.GateEvidence({"GET /api/materials/{materialId}/feedback"})
         @Test
         void unapprovedLegacyCacheIsNotReexposedAndApprovedCacheNeedsNoAi() {
                 FeedbackDTO fresh = service(true, legacy(null)).get(USER, MATERIAL);

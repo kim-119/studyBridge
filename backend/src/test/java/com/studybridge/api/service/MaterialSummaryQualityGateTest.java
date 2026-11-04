@@ -143,6 +143,7 @@ class MaterialSummaryQualityGateTest {
                 assertEquals(List.of(0, 1), evaluations.stream().map(e -> e.get("attemptIndex").asInt()).toList());
         }
 
+        @com.studybridge.api.ai.quality.GateEvidence({"GET /api/materials/{materialId}/summary"})
         @Test
         void allRejectedSavesNothingAndKeepsExistingSummary() {
                 evaluatorPolicy = n -> out(60, "REJECTED");
@@ -157,6 +158,7 @@ class MaterialSummaryQualityGateTest {
                 assertEquals("기존 요약", legacy.getOverview(), "기존 정상 요약을 덮어쓰지 않는다");
         }
 
+        @com.studybridge.api.ai.quality.GateEvidence({"GET /api/materials/{materialId}/summary"})
         @Test
         void unapprovedCachedSummaryIsNotServedWhenGateOn() {
                 evaluatorPolicy = n -> out(90, "APPROVED");

@@ -66,6 +66,7 @@ class ChatServiceQualityGateTest {
                                 Agent.builder().id(2L).name("에이전트 2").build(), Agent.builder().id(3L).name("에이전트 3").build()), gate);
         }
 
+        @com.studybridge.api.ai.quality.GateEvidence({"POST /api/agent-rooms/{roomId}/chat/stream"})
         @Test
         void denyAllPersistsNothingAndLeaksNothing() throws Exception {
                 try (var stub = com.studybridge.api.ai.quality.QualityStreamGateTestSupport.stub(false)) {
@@ -79,6 +80,7 @@ class ChatServiceQualityGateTest {
                 }
         }
 
+        @com.studybridge.api.ai.quality.GateEvidence({"POST /api/agent-rooms/{roomId}/chat/stream"})
         @Test
         void approveAllPersistsApprovedWithStatus() throws Exception {
                 try (var stub = com.studybridge.api.ai.quality.QualityStreamGateTestSupport.stub(true)) {
@@ -101,6 +103,7 @@ class ChatServiceQualityGateTest {
                 assertTrue(ai.stream().allMatch(m -> m.getQualityStatus() == null), "게이트 OFF 에선 승인 표시를 붙이지 않는다");
         }
 
+        @com.studybridge.api.ai.quality.GateEvidence({"GET /api/agent-rooms/{roomId}/history"})
         @Test
         void historyRedactsUnverifiedAiRowsOnlyWhenGateOn() throws Exception {
                 try (var stub = com.studybridge.api.ai.quality.QualityStreamGateTestSupport.stub(true)) {
