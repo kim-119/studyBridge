@@ -10,7 +10,8 @@ import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { OpenVidu } from 'openvidu-browser';
 import { useAuth } from '../hooks/useAuth';
-import { groupService, timerService, inquiryService, STUDY_HEARTBEAT_INTERVAL_MS } from '../services/api';
+import { groupService, timerService, inquiryService, STUDY_HEARTBEAT_INTERVAL_MS, refreshAccessToken } from '../services/api';
+import { createStompAuthPolicy, resolveStompAccessToken, buildStompConnectHeaders, isOwnQuizAck } from '../utils/stompAuth';
 import GroupInvitePanel from './groupstudy/GroupInvitePanel';
 import GroupQuizRankingTable from './groupstudy/GroupQuizRankingTable';
 import { studyTypeLabel, formatTargetMinutes, isCamStudy, resolveParticipantAvatar, resolveLeaderConsoleSections } from '../utils/groupStudy';
@@ -577,6 +578,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
 
   const [session, setSession] = useState(null);
   const sessionRef = React.useRef(null); // 강퇴 이벤트 수신 시 최신 세션에 즉시 접근하기 위한 ref
+  const stompSelfRemovedRef = React.useRef(false); // 강퇴/탈퇴 이벤트로 방을 닫는 중이면 뒤따르는 서버 ERROR(FORBIDDEN) 안내를 생략
   const [publisher, setPublisher] = useState(null);
   // 원격 subscriber는 connectionId 기준 Object로 관리한다(재접속 시 덮어쓰기/중복/stale 방지).
   // key: connection.connectionId, value: OpenVidu Subscriber(streamManager)
@@ -2161,12 +2163,22 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       import.meta.env.VITE_BACKEND_URL ||
       (isLocalDev ? `${protocol}://${hostname}:8080` : window.location.origin);
 
-    const token = localStorage.getItem('token');
+    // CONNECT 인증: 서버는 Authorization: Bearer <JWT> 가 없거나 위조·만료면 ERROR(UNAUTHORIZED) 후 연결을 닫는다.
+    //  재연결(5초 주기)마다 beforeConnect 에서 최신 토큰을 다시 읽고, 곧 만료되거나 직전에 UNAUTHORIZED 였으면 먼저 갱신한다.
+    //  (이전 코드는 effect 시작 시 토큰을 한 번만 읽었다 — 인증을 강제하면 30분 뒤 끊겼을 때 만료 토큰으로 재연결을 반복하게 된다.)
+    const authPolicy = createStompAuthPolicy();
+    stompSelfRemovedRef.current = false;
 
     const client = new Client({
       webSocketFactory: () => new SockJS(`${window.location.origin}/ws-group`, null, { credentials: false }),
-      connectHeaders: {
-        Authorization: token ? `Bearer ${token}` : ''
+      connectHeaders: {},
+      beforeConnect: async () => {
+        const token = await resolveStompAccessToken({
+          getStoredToken: () => localStorage.getItem('token'),
+          refresh: refreshAccessToken,
+          forceRefresh: authPolicy.consumeForceRefresh(),
+        });
+        client.connectHeaders = buildStompConnectHeaders(token);
       },
       reconnectDelay: 5000,
       heartbeatIncoming: 4000,
@@ -2175,6 +2187,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
 
     client.onConnect = (frame) => {
       console.log('Connected to group study socket: ' + frame);
+      authPolicy.onConnected();
 
       const shouldAcceptSession = (payload) => {
         if (!payload?.sessionId || !quizSessionIdRef.current) return true;
@@ -2207,6 +2220,7 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
         // 1) 대상이 본인이면 즉시 세션 종료 후 방에서 나간다.
         if (String(event.targetUserId) === String(userId)) {
           console.log('[video:self-kicked] userId=', userId);
+          stompSelfRemovedRef.current = true;
           try {
             sessionRef.current?.disconnect();
           } catch (e) {
@@ -2257,6 +2271,8 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
       client.subscribe(`/topic/group/${study.id}/quiz/submitted`, (message) => {
         const payload = JSON.parse(message.body);
         if (!shouldAcceptSession(payload)) return;
+        // ack 는 그룹 전체에 방송된다 — 다른 멤버의 제출이 내 답안 버튼을 잠그거나 선택을 지우지 않게 내 것만 반영.
+        if (!isOwnQuizAck(payload, userId)) return;
         if (payload.questionId && quizQuestionIdRef.current && Number(payload.questionId) !== Number(quizQuestionIdRef.current)) return;
         setQuizSubmissionAck(payload);
         setQuizHasSubmitted(Boolean(payload.accepted));
@@ -2324,7 +2340,14 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
     };
 
     client.onStompError = (frame) => {
-      console.error('STOMP error', frame);
+      const decision = authPolicy.onError(frame);
+      console.error('STOMP error', frame?.headers?.message, frame?.headers?.['sb-reason'] || '');
+      if (decision.action !== 'stop') return; // UNAUTHORIZED 는 다음 연결 전에 토큰 갱신 후 기존 주기로 재연결
+      // FORBIDDEN(멤버 아님·강퇴·정지) 또는 갱신해도 계속 UNAUTHORIZED: 같은 거부를 5초마다 반복하지 않게 멈춘다.
+      client.deactivate();
+      if (!stompSelfRemovedRef.current && decision.message) {
+        showAlert('알림', decision.message);
+      }
     };
 
     client.activate();
