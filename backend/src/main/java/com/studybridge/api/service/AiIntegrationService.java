@@ -48,6 +48,8 @@ public class AiIntegrationService {
         private final MaterialQuizService materialQuizService;
         // PRIMARY(ai07) → SECONDARY(EC2 hot-standby) 공통 failover. 현재는 /api/ai/quiz 에만 적용.
         private final AiFailoverExecutor aiFailoverExecutor;
+        // Global Response Quality Gate(기본 OFF). null(테스트) 이면 OFF.
+        private final com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate;
 
         // 키워드 정의 호출 타임아웃 (env 제어, 하드코딩 금지)
         @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.keyword-define-timeout-seconds:60}")
@@ -205,9 +207,23 @@ public class AiIntegrationService {
         public SummaryDTO getSummary(Long userId, Long materialId) {
                 Material material = getMaterialSafely(userId, materialId);
                 assertPdfAnalyzable(material, "요약");
+                // 게이트 ON: 승인 기록이 없는 저장 요약(레거시/게이트 OFF 시기)은 재노출하지 않고 게이트를 거쳐 다시 만든다.
                 return summaryRepository.findByMaterial_MaterialId(materialId)
-                                .map(summary -> isSummaryUsable(summary) ? summaryDtoFromEntity(material, summary) : generateSummary(material))
+                                .map(summary -> isSummaryUsable(summary) && (!qualityGateOn() || "APPROVED".equals(summary.getQualityStatus()))
+                                                ? withQuality(summaryDtoFromEntity(material, summary), summary)
+                                                : generateSummary(material))
                                 .orElseGet(() -> generateSummary(material));
+        }
+
+        private boolean qualityGateOn() {
+                return qualityGate != null && qualityGate.enabled();
+        }
+
+        private SummaryDTO withQuality(SummaryDTO dto, MaterialSummary summary) {
+                if (!qualityGateOn()) {
+                        return dto;
+                }
+                return dto.toBuilder().qualityStatus(summary.getQualityStatus()).qualityScore(summary.getQualityScore()).verified(true).build();
         }
 
         /** FastAPI 호출 예외를 사용자 친화 메시지로 변환한다 (timeout 구분). */
@@ -605,16 +621,12 @@ public class AiIntegrationService {
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
                         return summaryFailure(material, "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
                 }
-
-                Map<String, Object> requestBody = Map.of(
-                                "material_id", material.getMaterialId(),
-                                "document_title", material.getTitle(),
-                                "text", textToAnalyze,
-                                "s3_file_url", material.getS3FileUrl() != null ? material.getS3FileUrl() : "");
+                if (qualityGateOn()) {
+                        return generateSummaryGated(material, textToAnalyze);
+                }
                 Map response;
                 try {
-                        response = fastApiWebClient.post().uri("/api/ai/summary")
-                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block(Duration.ofSeconds(125));
+                        response = callSummaryAi(material, textToAnalyze, 0, null);
                 } catch (Exception e) {
                         return summaryFailure(material, isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
                 }
@@ -622,7 +634,101 @@ public class AiIntegrationService {
                 if (isAiFailure(response)) {
                         return summaryFailure(material, aiStr(response, "errorCode"), aiStr(response, "message"), aiBool(response, "retryable", true), response);
                 }
+                return persistSummary(material, response, null);
+        }
 
+        /** ai07 /api/ai/summary 1회 호출. regenerationAttempt/regenerationHints 는 현재 ai07 SummaryReq 가 무시하는 선택 필드(인계 C-RQ-3). */
+        private Map callSummaryAi(Material material, String textToAnalyze, int attempt,
+                        com.studybridge.api.ai.quality.GateDecision previous) {
+                Map<String, Object> requestBody = new LinkedHashMap<>();
+                requestBody.put("material_id", material.getMaterialId());
+                requestBody.put("document_title", material.getTitle());
+                requestBody.put("text", textToAnalyze);
+                requestBody.put("s3_file_url", material.getS3FileUrl() != null ? material.getS3FileUrl() : "");
+                if (attempt > 0) {
+                        requestBody.put("regenerationAttempt", attempt);
+                        requestBody.put("regenerationHints", previous != null ? previous.reasonCodes() : List.of());
+                }
+                return fastApiWebClient.post().uri("/api/ai/summary")
+                                .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block(Duration.ofSeconds(125));
+        }
+
+        /**
+         * 게이트 경로: 생성 → response-quality.v1(PDF_SUMMARY, PDF 원문 근거) → 거절 시 최대 2회 재생성 → 승인분만 저장.
+         * 거절/평가 불가면 기존 요약을 덮어쓰지 않고 실패 DTO(qualityStatus/errorCode/retryable)만 돌려준다.
+         * ai07 생성 자체가 실패(타임아웃/success=false)하면 재생성하지 않고 기존 실패 계약 그대로 돌려준다(부하 3배 방지).
+         */
+        private SummaryDTO generateSummaryGated(Material material, String textToAnalyze) {
+                Long mid = material.getMaterialId();
+                String rid = "sum-" + mid + "-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+                com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints constraints =
+                                new com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints(List.of(mid), null, null, null, null,
+                                                null, null, false, false, null, null, null, null, null, null);
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Spec spec = new com.studybridge.api.ai.quality.AiResponseQualityGate.Spec(
+                                rid, com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.PDF_SUMMARY,
+                                com.studybridge.api.ai.contract.v1.ResponseQualityV1.OutputKind.TEXT,
+                                "다음 학습 자료를 요약해 주세요: " + (material.getTitle() != null ? material.getTitle() : ""),
+                                com.studybridge.api.ai.quality.AiResponseQualityGate.pdfEvidence(mid, textToAnalyze, 4000, 48000), constraints, null);
+                final SummaryDTO[] upstreamFailure = new SummaryDTO[1];
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Outcome<Map> outcome = qualityGate.generateApproved(spec,
+                                (attempt, previous) -> {
+                                        Map response;
+                                        try {
+                                                response = callSummaryAi(material, textToAnalyze, attempt, previous);
+                                        } catch (Exception e) {
+                                                upstreamFailure[0] = summaryFailure(material, isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        if (isAiFailure(response)) {
+                                                upstreamFailure[0] = summaryFailure(material, aiStr(response, "errorCode"), aiStr(response, "message"),
+                                                                aiBool(response, "retryable", true), response);
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        return response;
+                                }, r -> com.studybridge.api.ai.quality.AiResponseQualityGate.text(summaryVisibleText(r)));
+                if (outcome.approved()) {
+                        return persistSummary(material, outcome.value(), outcome.decision());
+                }
+                if (upstreamFailure[0] != null && outcome.decision().attempts() <= 1) {
+                        return upstreamFailure[0];
+                }
+                com.studybridge.api.ai.quality.GateDecision d = outcome.decision();
+                log.info("[QUALITY-GATE] summary materialId={} 미승인 status={} codes={} — 기존 요약 유지", mid, d.qualityStatus(), d.reasonCodes());
+                return summaryFailure(material, d.errorCode(), com.studybridge.api.ai.quality.GateDecision.userMessage(d.errorCode()), true, null)
+                                .toBuilder().qualityStatus(d.qualityStatus().name()).verified(false).build();
+        }
+
+        /** 사용자에게 보이는 요약 본문 전부(평가 대상). 화면에 나가는 필드를 빠짐없이 모은다. */
+        @SuppressWarnings("unchecked")
+        String summaryVisibleText(Map response) {
+                if (response == null) {
+                        return null;
+                }
+                StringBuilder sb = new StringBuilder();
+                for (String k : List.of("overview", "summary", "key_points", "keywords", "sections", "learningPoints", "practicePoints",
+                                "studyQuestions")) {
+                        appendStrings(sb, response.get(k), 0);
+                }
+                String t = sb.toString().strip();
+                return t.isEmpty() ? null : t;
+        }
+
+        private void appendStrings(StringBuilder sb, Object v, int depth) {
+                if (v == null || depth > 5) {
+                        return;
+                }
+                if (v instanceof String str) {
+                        if (!str.isBlank()) {
+                                sb.append(str.strip()).append('\n');
+                        }
+                } else if (v instanceof Map<?, ?> m) {
+                        m.values().forEach(x -> appendStrings(sb, x, depth + 1));
+                } else if (v instanceof java.util.Collection<?> c) {
+                        c.forEach(x -> appendStrings(sb, x, depth + 1));
+                }
+        }
+
+        private SummaryDTO persistSummary(Material material, Map response, com.studybridge.api.ai.quality.GateDecision approval) {
                 String overview = response != null && response.get("overview") != null && !response.get("overview").toString().isBlank()
                                 ? response.get("overview").toString()
                                 : (aiStr(response, "summary") != null ? aiStr(response, "summary") : "");
@@ -631,6 +737,8 @@ public class AiIntegrationService {
                                 .orElseGet(() -> MaterialSummary.builder().material(material).build());
                 summary.setOverview(overview);
                 summary.setCoreContents(coreContents);
+                summary.setQualityStatus(approval != null ? "APPROVED" : null);
+                summary.setQualityScore(approval != null ? approval.score() : null);
                 summary = summaryRepository.save(summary);
 
                 // 학습 왕복 루프: 요약 생성 기록(다음 AI 질문의 컨텍스트 후보)
@@ -669,6 +777,9 @@ public class AiIntegrationService {
                                 .elapsedMs(aiMetaLong(response, "elapsedMs"))
                                 .usedFallback(aiMetaBool(response, "usedFallback"))
                                 .cacheHit(aiMetaBool(response, "cacheHit"))
+                                .qualityStatus(approval != null ? "APPROVED" : null)
+                                .qualityScore(approval != null ? approval.score() : null)
+                                .verified(approval != null ? Boolean.TRUE : null)
                                 .build();
         }
 

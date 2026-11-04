@@ -36,6 +36,9 @@ public class ChatDTO {
         private String personalityKey;
         private String knowledgeLevelKey;
         private String authorKind;
+        // 품질 게이트 ON 에서 미검증(레거시) AI 답변은 본문을 가리고 true 로 표시한다.
+        private String qualityStatus;
+        private Boolean qualityRedacted;
     }
 
     @Getter

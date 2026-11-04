@@ -1,6 +1,7 @@
 package com.studybridge.api.service.support;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.quality.QualityStreamGate;
 import com.studybridge.api.entity.Agent;
 import com.studybridge.api.entity.AgentChatRoom;
 import com.studybridge.api.entity.ChatMessage;
@@ -35,8 +36,15 @@ public final class ChatServiceTestFactory {
     public final ChatService service;
     public final AgentChatRoom room;
 
-    @SuppressWarnings("unchecked")
+    public final AiMultiChatFailoverService failover = Mockito.mock(AiMultiChatFailoverService.class);
+
     public ChatServiceTestFactory(long roomId, List<Agent> agents) {
+        this(roomId, agents, null);
+    }
+
+    /** qualityStreamGate 가 null 이면 품질 게이트 OFF(기존 동작). */
+    @SuppressWarnings("unchecked")
+    public ChatServiceTestFactory(long roomId, List<Agent> agents, QualityStreamGate qualityStreamGate) {
         room = new AgentChatRoom();
         room.setId(roomId);
         room.setAgents(agents);
@@ -52,6 +60,6 @@ public final class ChatServiceTestFactory {
         Mockito.when(tt.execute(any())).thenAnswer(inv -> ((TransactionCallback<Object>) inv.getArgument(0)).doInTransaction(null));
         service = new ChatService(rooms, messages, Mockito.mock(WebClient.class), tt, new ObjectMapper(),
                 Mockito.mock(IntentRouterService.class), Mockito.mock(AiIntegrationService.class), redis,
-                Mockito.mock(AiMultiChatFailoverService.class));
+                failover, qualityStreamGate);
     }
 }

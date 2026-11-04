@@ -61,6 +61,10 @@ public class WebClientConfig {
     @Value("${ai.server.fastapi.read-timeout-seconds:1800}")
     private int readTimeoutSeconds;
 
+    // Spring → FastAPI 내부 인증키(application.yml ai.server.api-key ← AI_SERVER_API_KEY).
+    @Value("${ai.server.api-key:}")
+    private String internalApiKey;
+
     private static final int WRITE_TIMEOUT_SECONDS = 30;
 
     // 긴 답변 허용을 위한 코덱 인메모리 버퍼 상한 (기본 256KB → 16MB).
@@ -111,12 +115,18 @@ public class WebClientConfig {
                 .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(MAX_IN_MEMORY_BYTES))
                 .build();
 
-        return builder
+        builder = builder
                 .baseUrl(baseUrl)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
-                .exchangeStrategies(exchangeStrategies)
-                .build();
+                .exchangeStrategies(exchangeStrategies);
+        // 내부 인증: 모든 Spring→ai07 호출에 Bearer(AI_SERVER_API_KEY)를 기본으로 싣는다. 인증 의존성이 없는 라우트는 무시하고,
+        //  ai07 이 라우트에 인증을 추가(fail-closed)해도 회귀하지 않게 한다. 호출별 .header(AUTHORIZATION) 가 있으면 그 값이 우선.
+        //  키가 비어 있으면 헤더를 싣지 않는다(기존 동작). 값은 로그에 남기지 않는다.
+        if (internalApiKey != null && !internalApiKey.isBlank()) {
+            builder = builder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + internalApiKey.strip());
+        }
+        return builder.build();
     }
 
     // 화면공유 AI 분석(ai07 Vision) 전용 타임아웃. ai07 최악 대기(VisionGate 120s + GPU 슬롯 30s) + 추론 90s = 240s 보다 길게.

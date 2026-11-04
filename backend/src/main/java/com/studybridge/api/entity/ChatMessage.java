@@ -74,6 +74,10 @@ public class ChatMessage {
     @Column(name = "knowledge_level_key", length = 20)
     private String knowledgeLevelKey;
 
+    // Spring 품질 게이트 판정(APPROVED 만 기록). null = 게이트 OFF 시기/레거시 행 → 게이트 ON 에서는 미검증으로 취급.
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
