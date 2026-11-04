@@ -1,4 +1,11 @@
-import { SOCKET_STATE, isConnectionStale, planReconnect } from './socketConnectionModel.js';
+import {
+  MAX_UNAUTHORIZED_RECONNECTS,
+  SOCKET_FAILURE_REASON,
+  SOCKET_STATE,
+  classifyStompError,
+  isConnectionStale,
+  planReconnect,
+} from './socketConnectionModel.js';
 import { SockJsWebSocket, sockJsWebSocketUrl } from './sockJsWebSocket.js';
 
 export const STOMP_HEARTBEAT_MS = 10000;
@@ -34,9 +41,12 @@ export function createGroupSocketController({
   let hasConnectedBefore = false;
   let isStopped = false;
   let isOffline = false;
+  let failureReason = null;
+  let unauthorizedStreak = 0;
+  let forceRefreshNext = false;
 
   const report = (state) => {
-    if (!isStopped) onStatusChange({ state, reconnectAttempt: attempt });
+    if (!isStopped) onStatusChange({ state, reconnectAttempt: attempt, reason: failureReason });
   };
 
   const markActivity = () => {
@@ -87,6 +97,32 @@ export function createGroupSocketController({
     scheduleReconnect();
   };
 
+  // 서버가 인증·권한으로 거부한 연결은 같은 조건으로 계속 재시도하지 않는다.
+  const stopWithFailure = (reason) => {
+    failureReason = reason;
+    clearRetry();
+    discardClient();
+    report(SOCKET_STATE.FAILED);
+  };
+
+  const handleStompError = (connectionGeneration, frame) => {
+    if (isStopped || connectionGeneration !== generation) return;
+    const kind = classifyStompError(frame);
+    if (kind === SOCKET_FAILURE_REASON.FORBIDDEN) {
+      stopWithFailure(SOCKET_FAILURE_REASON.FORBIDDEN);
+      return;
+    }
+    if (kind === SOCKET_FAILURE_REASON.UNAUTHORIZED) {
+      unauthorizedStreak += 1;
+      if (unauthorizedStreak > MAX_UNAUTHORIZED_RECONNECTS) {
+        stopWithFailure(SOCKET_FAILURE_REASON.UNAUTHORIZED);
+        return;
+      }
+      forceRefreshNext = true; // 다음 연결 전에 액세스 토큰을 강제로 갱신한다
+    }
+    handleConnectionLost(connectionGeneration);
+  };
+
   const handleConnected = (connectionGeneration, activeClient) => {
     if (isStopped || connectionGeneration !== generation) return;
 
@@ -95,6 +131,8 @@ export function createGroupSocketController({
     const isRecovery = hasConnectedBefore;
     hasConnectedBefore = true;
     attempt = 0;
+    unauthorizedStreak = 0;
+    failureReason = null;
     report(SOCKET_STATE.CONNECTED);
     if (isRecovery) onReconnected();
   };
@@ -109,8 +147,8 @@ export function createGroupSocketController({
       onConnect: () => handleConnected(connectionGeneration, nextClient),
       onWebSocketClose: () => handleConnectionLost(connectionGeneration),
       onStompError: (frame) => {
-        console.warn('그룹 소켓 STOMP 오류', frame?.headers?.message);
-        handleConnectionLost(connectionGeneration);
+        console.warn('그룹 소켓 STOMP 오류', frame?.headers?.message, frame?.headers?.['sb-reason'] || '');
+        handleStompError(connectionGeneration, frame);
       },
     });
     return nextClient;
@@ -125,7 +163,9 @@ export function createGroupSocketController({
     report(attempt > 0 ? SOCKET_STATE.RECONNECTING : SOCKET_STATE.CONNECTING);
 
     try {
-      const [libraries, token] = await Promise.all([loadLibraries(), getToken()]);
+      const forceRefresh = forceRefreshNext;
+      forceRefreshNext = false;
+      const [libraries, token] = await Promise.all([loadLibraries(), getToken({ forceRefresh })]);
       if (isStopped || connectionGeneration !== generation) return;
 
       client = createClient(libraries, token, connectionGeneration);
@@ -158,6 +198,8 @@ export function createGroupSocketController({
     if (isStopped) return;
     if (isOffline) leaveOfflineState();
     attempt = 0;
+    unauthorizedStreak = 0;
+    failureReason = null;
     connect();
   };
 
@@ -194,7 +236,7 @@ export function createGroupSocketController({
     reconnectNow,
 
     handleResume() {
-      if (isStopped) return;
+      if (isStopped || failureReason === SOCKET_FAILURE_REASON.FORBIDDEN) return;
       if (isOffline) {
         recheckNetwork();
         return;

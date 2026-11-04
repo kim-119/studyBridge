@@ -93,9 +93,11 @@ function SocketStatusNotice({ room }) {
   return (
     <RoomNotice
       tone={room.socketState === SOCKET_STATE.FAILED ? 'error' : 'info'}
-      message={`${describeSocketStatus(room.socketState, room.socketReconnectAttempt)}. 채팅과 퀴즈는 연결되면 다시 동작합니다.`}
+      message={room.socketFailureReason
+        ? `${describeSocketStatus(room.socketState, room.socketReconnectAttempt, room.socketFailureReason)}.`
+        : `${describeSocketStatus(room.socketState, room.socketReconnectAttempt)}. 채팅과 퀴즈는 연결되면 다시 동작합니다.`}
       dataAttributes={{ 'data-room-notice': 'socket' }}
-      actionLabel={canRetryManually(room.socketState) ? '재연결' : null}
+      actionLabel={canRetryManually(room.socketState, room.socketFailureReason) ? '재연결' : null}
       onAction={room.reconnectSocket}
     />
   );
