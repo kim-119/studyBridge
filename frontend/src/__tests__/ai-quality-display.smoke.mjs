@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import {
   isGatedFrame, isDisplayableStreamBody, toQualityError, filterAllComplete, isDisplayableAiPayload, QUALITY_GATE_MODE,
+  isQualityFailureFrame, qualityFailureMessage, QUALITY_BLOCKED_MESSAGE,
 } from '../utils/aiQualityDisplay.js';
 
 let n = 0;
@@ -46,5 +47,13 @@ t('JSON 응답: success/verified/qualityStatus 규칙', () => {
   assert.equal(isDisplayableAiPayload({ overview: 'x', verified: false }), false);
   assert.equal(isDisplayableAiPayload({ success: false, errorCode: 'AI_QUALITY_REJECTED' }), false);
   assert.equal(isDisplayableAiPayload(null), false);
+});
+t('그룹 SSE 품질 실패 프레임 인식·안내 문구(Phase D)', () => {
+  assert.equal(isQualityFailureFrame({ type: 'agent_error', code: 'QUALITY_REJECTED', message: '고정 문구' }), true);
+  assert.equal(isQualityFailureFrame({ type: 'agent_error', failureCode: 'QUALITY_UNAVAILABLE' }), true);
+  assert.equal(isQualityFailureFrame({ type: 'agent_error', code: 'AGENT_TIMEOUT' }), false, '일반 에이전트 오류는 기존 처리');
+  assert.equal(isQualityFailureFrame({ type: 'agent_answer', code: 'QUALITY_REJECTED' }), false);
+  assert.equal(qualityFailureMessage({ message: '  서버 고정 문구 ' }), '서버 고정 문구');
+  assert.equal(qualityFailureMessage({}), QUALITY_BLOCKED_MESSAGE);
 });
 console.log(`ai-quality-display smoke: ${n} passed`);

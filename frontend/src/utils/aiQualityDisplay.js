@@ -53,3 +53,20 @@ export function isDisplayableAiPayload(payload) {
   if (payload.qualityStatus != null && payload.qualityStatus !== 'APPROVED') return false;
   return true;
 }
+
+/**
+ * Spring 게이트가 만든 품질 실패 프레임인가(agent_error + QUALITY_REJECTED|QUALITY_UNAVAILABLE).
+ * message 는 Spring 고정 문구(AI 본문 아님)라 그대로 보여 줘도 된다.
+ */
+export function isQualityFailureFrame(data) {
+  if (!data || typeof data !== 'object') return false;
+  const code = data.code || data.failureCode;
+  return data.type === 'agent_error' && (code === 'QUALITY_REJECTED' || code === 'QUALITY_UNAVAILABLE');
+}
+
+/** 품질 실패 프레임의 사용자 안내 문구(서버 고정 문구가 없으면 기본 문구). */
+export function qualityFailureMessage(data) {
+  const m = data && typeof data.message === 'string' ? data.message.trim() : '';
+  return m || QUALITY_BLOCKED_MESSAGE;
+}
+
