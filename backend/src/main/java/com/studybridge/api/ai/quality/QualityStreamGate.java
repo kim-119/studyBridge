@@ -65,7 +65,7 @@ public class QualityStreamGate {
             "isFinal", "degraded", "actType", "replyTo", "learningMode", "sessionId", "socraticRole", "stageType", "personality",
             "personalityKey", "knowledgeLevel", "knowledgeLevelKey", "personalityResolved", "knowledgeLevelResolved", "code",
             "failureCode", "errorCode", "expectedAgentCount", "rebuttalRounds", "debateStrength", "failedAgentId", "failedStage",
-            "turnIndex", "pipeline", "suppressAgentFill", "displayDelayMs");
+            "turnIndex", "pipeline", "suppressAgentFill", "displayDelayMs", "section");
     /** 이름 필드는 Context.allowedNames 에 있는 값만 통과(모델이 쓴 짧은 문장이 이름 칸으로 새지 않게). */
     static final List<String> NAME_KEYS = List.of("agentName", "personalityLabel", "knowledgeLevelLabel", "failedAgentName");
     /** 본문 메시지에서 평가하고 승인되면 그대로 싣는 필드(모델이 쓰는 제목/역할 라벨도 본문으로 평가). */
@@ -474,7 +474,9 @@ public class QualityStreamGate {
             }
         }
         for (String k : NAME_KEYS) {
-            if (data.get(k) instanceof String s && SAFE_NAME.matcher(s).matches() && st.allowedNames.contains(s)) {
+            // 허용 목록(서버가 DB·고정 라벨에서 만든 이름)과 정확히 같으면 문자 종류와 무관하게 통과("정의·원리 토론자", 이모지 등).
+            //  모델이 쓴 문장이 이름 칸으로 새는 것은 허용 목록 일치로 막는다. 길이·제어문자만 추가로 제한.
+            if (data.get(k) instanceof String s && st.allowedNames.contains(s) && s.length() <= 64 && s.chars().noneMatch(Character::isISOControl)) {
                 out.put(k, s);
             }
         }
