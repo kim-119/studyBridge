@@ -224,10 +224,11 @@ public class LearningRecommendationService {
             payload.put("requestId", requestId);
             payload.put("feature", "task_recommendation");
             payload.put("locale", "ko-KR");
-            payload.put("plan", Map.of("title", nz(p.getTitle()), "subject", nz(p.getSubject()), "content", cap(p.getContent(), 1000)));
+            // Map.of 는 null 값을 받지 않는다 — 내용 없는 플래너(content=null)에서 AI 추천이 NPE(500)로 실패하던 기존 결함.
+            payload.put("plan", Map.of("title", nz(p.getTitle()), "subject", nz(p.getSubject()), "content", nz(cap(p.getContent(), 1000))));
             payload.put("progress", Map.of("checklistTotal", comp.total(), "checklistCompleted", comp.completed(), "completed", comp.allComplete()));
             payload.put("textbook", toc == null ? null : Map.of("tocVerified", toc.verified(), "toc", tocPayload(toc)));
-            payload.put("quiz", quiz == null ? null : Map.of("latestScore", quiz.score));
+            payload.put("quiz", quiz == null || quiz.score == null ? null : Map.of("latestScore", quiz.score));
             payload.put("upcomingPlans", upcoming.stream().map(t -> cap(t, 120)).toList());
             payload.put("evidence", evidencePayload(index));
             payload.put("allowedTypes", RecommendationCandidate.TASK_TYPES);
@@ -350,7 +351,7 @@ public class LearningRecommendationService {
             doc.put("keywords", DocumentRecommender.concepts(ctx));
             doc.put("studyPoints", note == null || note.studyPoints() == null ? List.of() : note.studyPoints().stream().limit(5).toList());
             payload.put("document", doc);
-            payload.put("quiz", quiz == null ? null : Map.of("latestScore", quiz.score, "count", quizCount));
+            payload.put("quiz", quiz == null || quiz.score == null ? null : Map.of("latestScore", quiz.score, "count", quizCount));
             payload.put("evidence", evidencePayload(index));
             payload.put("allowedTypes", RecommendationCandidate.DOCUMENT_TYPES);
             payload.put("maxCandidates", MAX_AI_CANDIDATES);

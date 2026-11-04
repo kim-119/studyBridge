@@ -279,4 +279,16 @@ class LearningRecommendationQualityGateTest {
         assertFalse(json.contains("qualityRedacted") || json.contains("qualityStatus"), "게이트 OFF 응답 형태 동일");
         assertTrue(json.contains(store.get(0).getTitle()));
     }
+
+    @Test
+    void plannerWithoutContentDoesNotCrashAiRecommendation() {
+        // 기존 결함: planner.content=null 이면 Map.of(..., null) 로 NPE → 500. 게이트 OFF·AI ON 에서도 발생했다.
+        Planner empty = Planner.builder().id(PLANNER).userId(USER).plannerType(PlannerType.USER).title("내용 없는 플래너")
+                .subject("선형대수").content(null).plannerDate(LocalDate.of(2026, 10, 13)).build();
+        when(planners.findById(PLANNER)).thenReturn(Optional.of(empty));
+        when(ai.enabled()).thenReturn(true);
+        when(ai.request(anyString(), any(), anyString())).thenReturn(Optional.empty());
+        assertFalse(svc(false).generateForPlanner(USER, PLANNER).getItems().isEmpty(), "NPE 없이 규칙 추천으로 응답");
+    }
 }
+
