@@ -247,10 +247,14 @@ public class WebClientConfig {
                         .addHandlerLast(new ReadTimeoutHandler(responseTimeoutMs, TimeUnit.MILLISECONDS))
                         .addHandlerLast(new WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)));
 
-        return builder
+        WebClient.Builder b = builder
                 .baseUrl(intentRouterBaseUrl)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                .clientConnector(new ReactorClientHttpConnector(httpClient))
-                .build();
+                .clientConnector(new ReactorClientHttpConnector(httpClient));
+        // POST /api/ai/intent/route 도 내부 Bearer 필수 대상(ai07 SPRING_COMPAT → enforce 전환 시 401). 키가 비면 헤더 없음(기존 동작).
+        if (internalApiKey != null && !internalApiKey.isBlank()) {
+            b = b.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + internalApiKey.strip());
+        }
+        return b.build();
     }
 }

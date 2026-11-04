@@ -37,7 +37,7 @@ public class PdfExtractionService {
                                 RestTemplateBuilder restTemplateBuilder,
                                 @Value("${external-api.fastapi.url}") String fastApiUrl,
                                 @Value("${external-api.fastapi.timeout}") int timeout,
-                                @Value("${AI_SERVER_API_KEY:}") String aiServerApiKey) {
+                                @Value("${ai.server.api-key:${AI_SERVER_API_KEY:}}") String aiServerApiKey) {
         this.materialRepository = materialRepository;
         this.studyNoteAnalysisService = studyNoteAnalysisService;
         this.fastApiUrl = fastApiUrl;
@@ -69,6 +69,8 @@ public class PdfExtractionService {
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+            // POST /api/extract(및 비전 폴백)도 내부 Bearer 를 싣는다 — 빠지면 ai07 enforce 전환 시 업로드 텍스트 추출이 전부 401.
+            applyInternalAuth(headers);
 
             MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
             body.add("file", filePart);
@@ -165,15 +167,20 @@ public class PdfExtractionService {
         return MediaType.APPLICATION_OCTET_STREAM;
     }
 
+    /** 서버 측 내부 키만 사용(브라우저·로그에 노출 금지). 키가 비면 헤더 없음(기존 동작). */
+    void applyInternalAuth(HttpHeaders headers) {
+        if (aiServerApiKey != null && !aiServerApiKey.isBlank()) {
+            headers.setBearerAuth(aiServerApiKey.strip());
+        }
+    }
+
     private void ingestMaterial(Long materialId, String originalFilename, String extractedText) {
         String ragUrl = fastApiUrl.replace("/api/extract", "") + "/api/rag/ingest";
         try {
             log.info("[RAG INGEST START] materialId={}", materialId);
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
-            if (aiServerApiKey != null && !aiServerApiKey.isBlank()) {
-                headers.setBearerAuth(aiServerApiKey);
-            }
+            applyInternalAuth(headers);
             Map<String, Object> body = Map.of(
                     "material_id", materialId,
                     "document_title", originalFilename != null && !originalFilename.isBlank() ? originalFilename : "material-" + materialId,
