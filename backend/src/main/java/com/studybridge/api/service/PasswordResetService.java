@@ -61,8 +61,11 @@ public class PasswordResetService {
     static final String KEY_IP = KEY_PREFIX + "ip:";
     /** 이메일 단위 발송 진행 중 잠금(SET NX EX). 동시 재전송 역전 방지. */
     static final String KEY_SENDING = KEY_PREFIX + "sending:";
-    /** SMTP connect(5s)+read(10s)+write(10s) 타임아웃 합보다 길게 잡아 잠금이 먼저 풀리지 않게 한다. */
-    static final long SENDING_LOCK_SECONDS = 30;
+    /**
+     * SMTP 한 번의 발송은 connect(5s) + 명령별 read(각 10s, 최대 ~9회) + write(10s) 까지 걸릴 수 있고 연결 단계 재시도 1회가 더해진다.
+     * 예전 30초는 이보다 짧아, 느린 SMTP 에서 잠금이 먼저 풀려 같은 이메일로 동시 발송이 가능했다(2026-11-04).
+     */
+    static final long SENDING_LOCK_SECONDS = 120;
 
     /**
      * SMTP 성공 후 authoritative 상태 원자 교체:
@@ -141,9 +144,14 @@ public class PasswordResetService {
         }
 
         String code = generateCode();
+        boolean acceptanceUnconfirmed = false;
         try {
             // 1) 외부 side effect 먼저. 실패하면 Redis 는 아무것도 바뀌지 않는다(기존 코드·attempts·TTL 보존).
             mailService.sendVerificationCode(user.get().getEmail(), code, properties.getCodeTtlSeconds());
+        } catch (PasswordResetMailService.AcceptanceUnconfirmed e) {
+            // 본문까지 보냈지만 SMTP 수락 응답을 못 받음 — 메일이 도착했을 수 있다. 저장하지 않으면 도착한 번호가 영원히 검증되지 않는다
+            // (2026-11-04 장애). 저장 + cooldown 으로 진행하고, 못 받은 사용자는 cooldown 뒤 재요청한다.
+            acceptanceUnconfirmed = true;
         } catch (RuntimeException e) {
             releaseSendingLock(sendingKey, email);
             throw e;
@@ -162,7 +170,8 @@ public class PasswordResetService {
             throw new PasswordResetException(HttpStatus.SERVICE_UNAVAILABLE, Reason.STORE_UNAVAILABLE,
                     "인증번호 저장에 실패했습니다. 인증번호를 다시 요청해 주세요.");
         }
-        log.info("[password-reset] 인증번호 발급 to={} ttl={}s", PasswordResetMailService.mask(email), properties.getCodeTtlSeconds());
+        log.info("[password-reset] 인증번호 발급 to={} ttl={}s{}", PasswordResetMailService.mask(email), properties.getCodeTtlSeconds(),
+                acceptanceUnconfirmed ? " (SMTP 수락 미확인)" : "");
 
         return PasswordResetDTO.Response.builder()
                 .message(GENERIC_SEND_MESSAGE)
