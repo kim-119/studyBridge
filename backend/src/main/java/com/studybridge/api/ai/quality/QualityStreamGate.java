@@ -182,6 +182,7 @@ public class QualityStreamGate {
         return verdict(proposed, hash, st).map(d -> {
             if (d.approved()) {
                 st.approved++;
+                rememberApprovedFields(data, st);
                 return sse(et, approvedCopy(data, st));
             }
             st.rejected++;
@@ -197,8 +198,10 @@ public class QualityStreamGate {
                 out.put(k, v);
             }
         }
-        Mono<List<Map<String, Object>>> answers = rebuildList(data.get("answers"), st);
-        Mono<List<Map<String, Object>>> messages = rebuildList(data.get("messages"), st);
+        Mono<List<Map<String, Object>>> answers = rebuildList(data.get("answers"), st, null);
+        // messages[i] 는 식별자 없이 answers[i] 의 본문 일부(content)만 싣는다 → 같은 프레임·같은 위치의 승인된 answers[i] 와
+        //  모든 본문 필드가 정확히 같을 때만 그 승인을 재사용(위치 = 이 프레임 안의 식별자). 다르면 평가.
+        Mono<List<Map<String, Object>>> messages = rebuildList(data.get("messages"), st, data.get("answers"));
         Map<String, Object> extras = new LinkedHashMap<>();
         for (Map.Entry<String, Object> e : data.entrySet()) {
             String k = e.getKey();
@@ -242,20 +245,24 @@ public class QualityStreamGate {
             qg.put("applied", true);
             qg.put("approved", st.approved);
             qg.put("rejected", st.rejected);
+            qg.put("reused", st.reused);
             out.put("qualityGate", qg);
             return sse("all_complete", out);
         });
     }
 
-    private Mono<List<Map<String, Object>>> rebuildList(Object raw, State st) {
+    private Mono<List<Map<String, Object>>> rebuildList(Object raw, State st, Object pairedRaw) {
         if (!(raw instanceof List<?> list) || list.isEmpty()) {
             return Mono.just(List.of());
         }
+        List<?> paired = pairedRaw instanceof List<?> pl ? pl : null;
         List<Mono<Map<String, Object>>> items = new ArrayList<>();
-        for (Object o : list) {
+        for (int idx = 0; idx < list.size(); idx++) {
+            Object o = list.get(idx);
             if (!(o instanceof Map<?, ?> m)) {
                 continue;
             }
+            final int position = idx;
             @SuppressWarnings("unchecked")
             Map<String, Object> entry = (Map<String, Object>) m;
             JsonNode proposed = proposed(entry);
@@ -263,9 +270,20 @@ public class QualityStreamGate {
                 continue;
             }
             String hash = AiResponseQualityGate.sha256(proposed.toString());
-            // 지연 평가: 앞 항목(또는 answers)에서 같은 본문 판정이 끝났으면 재사용한다.
-            items.add(Mono.defer(() -> verdict(proposed, hash, st)).flatMap(d -> {
+            // 판정 재사용(Phase D6): 같은 스트림에서 같은 에이전트 식별자로 이미 승인된 필드 값과 모든 본문 필드가 정확히 같으면
+            //  다시 평가하지 않는다(스트림 메시지는 content+question, 집계는 content 만이라 해시가 달라 2중 평가되던 문제).
+            //  식별자(agentIndex/agentId/agentName)나 본문이 하나라도 다르면 재사용하지 않고 평가한다.
+            items.add(Mono.defer(() -> {
+                if (reusableApproval(entry, st) || (paired != null && pairedApproval(entry, paired, position, st))) {
+                    st.reused++;
+                    return Mono.just(GateDecision.reused());
+                }
+                return verdict(proposed, hash, st);
+            }).flatMap(d -> {
                 if (d.approved()) {
+                    if (paired == null) {
+                        st.approvedPositions.add(position);
+                    }
                     return Mono.just(approvedCopy(entry, st));
                 }
                 st.agentErrors.add(rejectedEvent(entry, d, st));
@@ -295,6 +313,89 @@ public class QualityStreamGate {
                 .onErrorResume(e -> Mono.just(GateDecision.unavailable("EVALUATOR_EXCEPTION", 1, 0)))
                 .defaultIfEmpty(GateDecision.unavailable("EVALUATOR_NO_RESULT", 1, 0))
                 .map(d -> remember(st, hash, d));
+    }
+
+    static String agentIdentity(Map<String, Object> d) {
+        return "i=" + d.get("agentIndex") + "|id=" + d.get("agentId") + "|n=" + d.get("agentName");
+    }
+
+    private String fieldKey(String identity, String field, Object value) {
+        String v = value instanceof String s ? s : mapper.valueToTree(value).toString();
+        return identity + "|" + field + "|" + AiResponseQualityGate.sha256(v);
+    }
+
+    private void rememberApprovedFields(Map<String, Object> data, State st) {
+        String id = agentIdentity(data);
+        for (String f : TEXT_FIELDS) {
+            if (data.get(f) instanceof String s && !s.isBlank()) {
+                st.approvedFields.add(fieldKey(id, f, s));
+            }
+        }
+        for (String f : STRUCT_FIELDS) {
+            Object v = data.get(f);
+            if (v != null && !(v instanceof String s && s.isBlank()) && !(v instanceof List<?> l && l.isEmpty())) {
+                st.approvedFields.add(fieldKey(id, f, v));
+            }
+        }
+    }
+
+    /** 집계 항목의 모든 본문 필드가 같은 에이전트의 승인 필드와 정확히 같을 때만 true. 본문 필드가 하나도 없으면 false. */
+    boolean reusableApproval(Map<String, Object> entry, State st) {
+        if (st.approvedFields.isEmpty()) {
+            return false;
+        }
+        String id = agentIdentity(entry);
+        int fields = 0;
+        for (String f : TEXT_FIELDS) {
+            if (entry.get(f) instanceof String s && !s.isBlank()) {
+                fields++;
+                if (!st.approvedFields.contains(fieldKey(id, f, s))) {
+                    return false;
+                }
+            }
+        }
+        for (String f : STRUCT_FIELDS) {
+            Object v = entry.get(f);
+            if (v != null && !(v instanceof String s && s.isBlank()) && !(v instanceof List<?> l && l.isEmpty())) {
+                fields++;
+                if (!st.approvedFields.contains(fieldKey(id, f, v))) {
+                    return false;
+                }
+            }
+        }
+        return fields > 0;
+    }
+
+    /** messages[i] ↔ 승인된 answers[i]: 본문 필드가 하나 이상이고 전부 answers[i] 의 같은 필드와 같으며, 식별자가 있으면 그것도 같아야 한다. */
+    boolean pairedApproval(Map<String, Object> entry, List<?> paired, int position, State st) {
+        if (position >= paired.size() || !st.approvedPositions.contains(position) || !(paired.get(position) instanceof Map<?, ?> pm)) {
+            return false;
+        }
+        for (String idKey : List.of("agentIndex", "agentId", "agentName", "eventId")) {
+            Object mine = entry.get(idKey);
+            if (mine != null && !mine.equals(pm.get(idKey))) {
+                return false;
+            }
+        }
+        int fields = 0;
+        for (String f : TEXT_FIELDS) {
+            if (entry.get(f) instanceof String s && !s.isBlank()) {
+                fields++;
+                if (!s.equals(pm.get(f))) {
+                    return false;
+                }
+            }
+        }
+        for (String f : STRUCT_FIELDS) {
+            Object v = entry.get(f);
+            if (v != null && !(v instanceof String s && s.isBlank()) && !(v instanceof List<?> l && l.isEmpty())) {
+                fields++;
+                if (!mapper.valueToTree(v).equals(mapper.valueToTree(pm.get(f)))) {
+                    return false;
+                }
+            }
+        }
+        return fields > 0;
     }
 
     private static GateDecision remember(State st, String hash, GateDecision d) {
@@ -444,6 +545,9 @@ public class QualityStreamGate {
         final Map<String, GateDecision> verdictByHash = new HashMap<>();
         final Set<String> emitted = new HashSet<>();
         final List<Object> agentErrors = new ArrayList<>();
+        final Set<String> approvedFields = new HashSet<>();
+        final Set<Integer> approvedPositions = new HashSet<>();
+        int reused;
         int totalChars;
         int seq;
         int approved;

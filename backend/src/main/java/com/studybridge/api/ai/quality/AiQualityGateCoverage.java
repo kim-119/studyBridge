@@ -125,8 +125,23 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
     private final AiQualityGateSettings settings;
     private final ObjectMapper mapper = new ObjectMapper();
 
+    private AiQualityUserRateLimiter rateLimiter;
+
     public AiQualityGateCoverage(AiQualityGateSettings settings) {
         this.settings = settings;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setRateLimiter(AiQualityUserRateLimiter rateLimiter) {
+        this.rateLimiter = rateLimiter;
+    }
+
+    static String userKey(HttpServletRequest request) {
+        var auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.isAuthenticated() && auth.getName() != null && !"anonymousUser".equals(auth.getName())) {
+            return "u:" + auth.getName();
+        }
+        return request.getUserPrincipal() != null ? "u:" + request.getUserPrincipal().getName() : null;
     }
 
     /**
@@ -167,6 +182,20 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
             return true;
         }
         Route r = match(request);
+        if (r != null && r.status() == Status.GATED && rateLimiter != null) {
+            long wait = rateLimiter.tryAcquire(userKey(request));
+            if (wait > 0) {
+                log.warn("[QUALITY-GATE] 사용자별 평가 한도 초과 {} {} retryAfter={}s", request.getMethod(), r.pattern(), wait);
+                response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
+                response.setHeader("Retry-After", Long.toString(wait));
+                response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+                response.getWriter().write(mapper.writeValueAsString(Map.of(
+                        "success", false, "errorCode", "AI_QUALITY_RATE_LIMITED", "retryable", true, "retryAfterSeconds", wait,
+                        "message", "AI 요청이 많습니다. 잠시 후 다시 시도해 주세요.")));
+                return false;
+            }
+        }
         if (r == null || r.status() != Status.BLOCKED_WHEN_GATE_ON) {
             return true;
         }

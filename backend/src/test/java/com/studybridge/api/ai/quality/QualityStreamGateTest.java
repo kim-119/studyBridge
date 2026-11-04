@@ -154,7 +154,8 @@ class QualityStreamGateTest {
                                 assertEquals(upAnswers.get(i).get("answer"), answers.get(i).get("answer"));
                                 assertEquals("APPROVED", answers.get(i).get("qualityStatus"));
                         }
-                        assertEquals(Map.of("applied", true, "approved", 3, "rejected", 0), all.get("qualityGate"));
+                        assertEquals(Map.of("applied", true, "approved", 3, "rejected", 0, "reused", 6), all.get("qualityGate"),
+                                        "all_complete answers 3 + messages 3 은 재평가 없이 재사용(Phase D6)");
                 }
         }
 
@@ -303,4 +304,93 @@ class QualityStreamGateTest {
                         assertTrue(out.stream().noneMatch(e -> e.data() != null && e.data().contains(CANARY)));
                 }
         }
+
+        // ── Phase D6: all_complete 이중 평가 제거(같은 에이전트·같은 본문 필드만 판정 재사용) ──
+
+        @Test
+        void allCompleteReusesStreamApprovalOnlyForSameAgentAndExactFields() throws Exception {
+                String a = "{\"type\":\"agent_answer\",\"eventId\":\"e1\",\"agentIndex\":1,\"agentName\":\"김교수\",\"content\":\"본문 A\",\"question\":\"질문 A\"}";
+                String all = "{\"type\":\"all_complete\",\"messages\":["
+                                + "{\"eventId\":\"e1\",\"agentIndex\":1,\"agentName\":\"김교수\",\"content\":\"본문 A\"},"   // 같은 에이전트·같은 필드 값 → 재사용
+                                + "{\"eventId\":\"e1\",\"agentIndex\":2,\"agentName\":\"김교수\",\"content\":\"본문 A\"},"   // 다른 agentIndex → 평가
+                                + "{\"eventId\":\"e1\",\"agentIndex\":1,\"agentName\":\"김교수\",\"content\":\"본문 A 변조\"}]}"; // 본문 다름 → 평가
+                try (StubEvaluator stub = new StubEvaluator(r -> new Reply(200, Reply.output(r.requestId(), 90, false, "APPROVED").body(), 0))) {
+                        List<ServerSentEvent<String>> out = gate(stub).gate(Flux.just(
+                                        ServerSentEvent.<String>builder(a).event("agent_answer").build(),
+                                        ServerSentEvent.<String>builder(all).event("all_complete").build()),
+                                        ctx(ResponseQualityV1.TaskType.STUDYMATE_SOCRATIC)).collectList().block(Duration.ofSeconds(10));
+                        assertEquals(3, stub.requests.size(), "스트림 1 + 재사용 불가 2(다른 에이전트, 변조 본문) — 재사용 1건은 평가 0");
+                        Map<String, Object> m = json(out.get(out.size() - 1));
+                        assertEquals(3, ((List<?>) m.get("messages")).size());
+                        assertEquals(1, ((Map<?, ?>) m.get("qualityGate")).get("reused"));
+                }
+        }
+
+        @Test
+        void messagesReuseOnlyPairedApprovedAnswerWithIdenticalBody() throws Exception {
+                String all = "{\"type\":\"all_complete\",\"answers\":[{\"agentIndex\":1,\"content\":\"답 1\"},{\"agentIndex\":2,\"content\":\"답 2\"}],"
+                                + "\"messages\":[{\"content\":\"답 1\"},{\"content\":\"답 2 변조\"},{\"content\":\"답 1\",\"agentIndex\":9}]}";
+                try (StubEvaluator stub = new StubEvaluator(r -> new Reply(200, Reply.output(r.requestId(), 90, false, "APPROVED").body(), 0))) {
+                        gate(stub).gate(Flux.just(ServerSentEvent.<String>builder(all).event("all_complete").build()),
+                                        ctx(ResponseQualityV1.TaskType.STUDYMATE_SOCRATIC)).collectList().block(Duration.ofSeconds(10));
+                        // answers 2 + messages[1](본문 다름) + messages[2](위치 짝 없음·식별자 다름 — 해시는 messages[0] 과 같아 캐시) = 3
+                        assertEquals(3, stub.requests.size(), "같은 위치·같은 본문(messages[0])만 재사용");
+                }
+        }
+
+        @Test
+        void rejectedStreamMessageIsNeverReusedAsApproval() throws Exception {
+                String a = "{\"type\":\"agent_answer\",\"eventId\":\"e1\",\"agentIndex\":1,\"content\":\"CANARY7F3A 거절될 답\"}";
+                String all = "{\"type\":\"all_complete\",\"messages\":[{\"eventId\":\"e1\",\"agentIndex\":1,\"content\":\"CANARY7F3A 거절될 답\"}]}";
+                try (StubEvaluator stub = new StubEvaluator(r -> new Reply(200, Reply.output(r.requestId(), 79, false, "REJECTED").body(), 0))) {
+                        List<ServerSentEvent<String>> out = gate(stub).gate(Flux.just(
+                                        ServerSentEvent.<String>builder(a).event("agent_answer").build(),
+                                        ServerSentEvent.<String>builder(all).event("all_complete").build()),
+                                        ctx(ResponseQualityV1.TaskType.STUDYMATE_SOCRATIC)).collectList().block(Duration.ofSeconds(10));
+                        assertTrue(out.stream().noneMatch(e -> e.data() != null && e.data().contains("CANARY7F3A")), "79 거절 본문 0자");
+                        Map<String, Object> m = json(out.get(out.size() - 1));
+                        assertEquals(0, ((List<?>) m.get("messages")).size());
+                        assertEquals(0, ((Map<?, ?>) m.get("qualityGate")).get("reused"));
+                }
+        }
+
+        @Test
+        void socraticCaptureEvaluationCountDropsWithReuse() throws Exception {
+                List<ServerSentEvent<String>> in = capture("studymate_multichat_socratic");
+                try (StubEvaluator stub = new StubEvaluator(r -> new Reply(200, Reply.output(r.requestId(), 90, false, "APPROVED").body(), 0))) {
+                        List<ServerSentEvent<String>> out = gate(stub).gate(Flux.fromIterable(in), ctx(ResponseQualityV1.TaskType.STUDYMATE_SOCRATIC))
+                                        .collectList().block(Duration.ofSeconds(20));
+                        Map<String, Object> m = out.stream().filter(e -> "all_complete".equals(e.event())).map(e -> {
+                                try {
+                                        return json(e);
+                                } catch (Exception ex) {
+                                        throw new IllegalStateException(ex);
+                                }
+                        }).findFirst().orElseThrow();
+                        int reused = ((Number) ((Map<?, ?>) m.get("qualityGate")).get("reused")).intValue();
+                        int withReuse = stub.requests.size();
+                        assertTrue(reused >= 1, "실캡처에서 all_complete 재사용이 일어나야 한다");
+                        try (StubEvaluator stub2 = new StubEvaluator(r -> new Reply(200, Reply.output(r.requestId(), 90, false, "APPROVED").body(), 0))) {
+                                AiQualityGateSettings s2 = AiQualityGateSettings.forTest(true);
+                                QualityStreamGate noReuse = new QualityStreamGate(new AiResponseQualityGate(s2, stub2.evaluatorClient(s2))) {
+                                        @Override
+                                        boolean reusableApproval(Map<String, Object> entry, State st) {
+                                                return false;
+                                        }
+
+                                        @Override
+                                        boolean pairedApproval(Map<String, Object> entry, List<?> paired, int position, State st) {
+                                                return false;
+                                        }
+                                };
+                                noReuse.gate(Flux.fromIterable(in), ctx(ResponseQualityV1.TaskType.STUDYMATE_SOCRATIC)).collectList()
+                                                .block(Duration.ofSeconds(20));
+                                System.out.println("[D6] socratic capture evaluations before=" + stub2.requests.size() + " after=" + withReuse
+                                                + " reused=" + reused);
+                                assertTrue(withReuse < stub2.requests.size(), "재사용으로 평가 호출이 줄어야 한다");
+                                assertEquals(4, withReuse, "3 에이전트 메시지 + 부가 필드 1 (messages[] 3건 재평가 제거)");
+                        }
+                }
+        }
 }
+

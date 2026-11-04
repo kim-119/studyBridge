@@ -40,6 +40,15 @@ public record GateDecision(boolean approved, ResponseQualityV1.QualityStatus qua
                 List.of(evaluatorErrorCode), null, null, attempts, latencyMs);
     }
 
+    /**
+     * 같은 스트림에서 같은 에이전트의 같은 본문이 이미 승인됨 → 그 승인의 재사용(QualityStreamGate 전용, 새 평가 없음).
+     * 호출자는 식별자·본문 필드가 정확히 일치함을 확인한 뒤에만 쓴다.
+     */
+    public static GateDecision reused() {
+        return new GateDecision(true, ResponseQualityV1.QualityStatus.APPROVED, null, null, List.of("REUSED_SAME_STREAM_APPROVAL"), null,
+                null, 0, 0);
+    }
+
     /** 생성 단계 실패/빈 초안 등 평가할 본문이 없음. */
     public static GateDecision noDraft(String code, int attempts) {
         return new GateDecision(false, ResponseQualityV1.QualityStatus.REJECTED, null, REJECTED, List.of(code), null, null,
