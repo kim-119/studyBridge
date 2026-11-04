@@ -220,7 +220,10 @@ jobs:
             tests/test_lq_phase_b_contract_binding.py tests/test_lq_phase_b_internal_auth.py \
             tests/test_lq_phase_b_training_control.py tests/test_lq_phase_b_quality_perf.py \
             tests/test_lq_phase_b_legacy_db_repro.py tests/test_lq_phase_b_egress_policy.py \
-            tests/test_network_guard.py
+            tests/test_network_guard.py \
+            tests/test_lq_phase_d_roadmap_segments.py tests/test_lq_phase_d_quality_boundaries.py \
+            tests/test_lq_phase_d_vision_observations.py tests/test_lq_phase_d_grounding.py \
+            tests/test_lq_phase_d_learning_context.py tests/test_lq_phase_d_contention_probe.py
 
       - name: EC2 canonical fixture 교차 점검(EC2 제공 도구 그대로, 불일치 0 이어야 통과)
         run: |
