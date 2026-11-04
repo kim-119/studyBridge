@@ -243,6 +243,13 @@ class AiRouteClassifierTest {
                         RequestMapping base = AnnotatedElementUtils.findMergedAnnotation(c, RequestMapping.class);
                         String[] bases = base == null || base.path().length == 0 ? new String[]{""} : base.path();
                         for (Method m : c.getDeclaredMethods()) {
+                                var mm = AnnotatedElementUtils.findMergedAnnotation(m, org.springframework.messaging.handler.annotation.MessageMapping.class);
+                                if (mm != null) {
+                                        // STOMP 핸들러(WebSocket) — HTTP 레지스트리 대신 AiRouteExposurePolicy.STOMP_REVIEWED 로 관리
+                                        for (String dest : mm.value()) {
+                                                out.put("STOMP " + dest, c.getName().replace('.', '/') + "." + m.getName() + Type.getMethodDescriptor(m));
+                                        }
+                                }
                                 RequestMapping rm = AnnotatedElementUtils.findMergedAnnotation(m, RequestMapping.class);
                                 if (rm == null) {
                                         continue;
@@ -279,7 +286,8 @@ class AiRouteClassifierTest {
                 AiQualityGateCoverage.ROUTES.forEach(r -> registered.add(r.method() + " " + r.pattern()));
                 List<String> unregistered = new ArrayList<>();
                 all.forEach((route, r) -> {
-                        if ((r.gen() || r.read()) && !registered.contains(route) && !AiRouteExposurePolicy.NOT_USER_EXPOSED.containsKey(route)) {
+                        if ((r.gen() || r.read()) && !registered.contains(route) && !AiRouteExposurePolicy.NOT_USER_EXPOSED.containsKey(route)
+                                        && !AiRouteExposurePolicy.STOMP_REVIEWED.containsKey(route)) {
                                 unregistered.add(route + "  [" + (r.gen() ? "GEN" : "") + (r.read() ? " READ" : "") + "] via " + r.why());
                         }
                 });
@@ -308,6 +316,11 @@ class AiRouteClassifierTest {
         void notExposedEntriesExistAndHaveReasons() throws Exception {
                 Map<String, Reach> all = classify();
                 List<String> bad = new ArrayList<>();
+                AiRouteExposurePolicy.STOMP_REVIEWED.forEach((route, why) -> {
+                        if (!all.containsKey(route) || why == null || why.isBlank()) {
+                                bad.add(route);
+                        }
+                });
                 AiRouteExposurePolicy.NOT_USER_EXPOSED.forEach((route, why) -> {
                         if (!all.containsKey(route) || why == null || why.isBlank()) {
                                 bad.add(route);
@@ -322,6 +335,7 @@ class AiRouteClassifierTest {
                 assertTrue(all.get("POST /api/materials/{materialId}/question").gen(), "자료 질문 = ai07 생성");
                 assertTrue(all.get("POST /api/agent-rooms/{roomId}/chat/stream").gen(), "학습메이트 SSE = ai07 생성");
                 assertTrue(all.get("GET /api/review-notes").read(), "오답노트 목록 = AI 저장본");
+                assertTrue(all.get("STOMP /group/{groupId}/quiz/start").read(), "실시간 퀴즈 시작(STOMP)도 분류된다");
                 Reach login = all.get("POST /api/users/login");
                 assertTrue(login != null && !login.gen() && !login.read(), "로그인은 AI 경로가 아니다(무차별 차단 금지)");
                 Reach timer = all.entrySet().stream().filter(e -> e.getKey().contains("/api/timers")).map(Map.Entry::getValue).findFirst().orElse(null);

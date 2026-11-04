@@ -64,4 +64,13 @@ public final class AiRouteExposurePolicy {
             Map.entry("PATCH /api/materials/{materialId}/move", "폴더 이동 결과 — 공용 convertToDTO 가림"),
             Map.entry("POST /api/materials/log", "학습일지 생성(사용자 작성) — REVIEW_NOTE 생성 금지 + 공용 convertToDTO 가림"),
             Map.entry("POST /api/materials/mindmap", "마인드맵 자료 생성(사용자 구조) — 공용 convertToDTO 가림"));
+
+    /**
+     * AI 저장본에 닿는 STOMP(WebSocket) 핸들러와 게이트 적용 방식. HTTP 인터셉터(AiQualityGateCoverage)가 STOMP 프레임을 보지 못하므로
+     * 서비스 안에서 막는다 — 여기 없는 AI 도달 STOMP 핸들러는 AiRouteClassifierTest 가 실패시킨다.
+     */
+    public static final Map<String, String> STOMP_REVIEWED = Map.ofEntries(
+            Map.entry("STOMP /group/{groupId}/quiz/start", "게이트 ON + 미승인 퀴즈 시작 거부(QUIZ_NOT_VERIFIED), 모든 퀴즈 방송 payload redactUnverified"
+                    + "(GroupStudyQuizQualityGateTest#liveQuiz*)"),
+            Map.entry("STOMP /group/{groupId}/quiz/submit", "답안 제출 ack·점수만(문항·정답 본문 없음). 이어지는 방송은 redactUnverified 를 거친다"));
 }
