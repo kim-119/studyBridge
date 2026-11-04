@@ -1,6 +1,7 @@
 package com.studybridge.api.ai.training;
 
 import com.studybridge.api.ai.contract.v1.PseudonymousUserKeys;
+import com.studybridge.api.ai.contract.v1.TrainingControlV1;
 import com.studybridge.api.entity.AiTrainingConsent;
 import com.studybridge.api.repository.AiTrainingConsentRepository;
 import com.studybridge.api.repository.AiTrainingOutboxRepository;
@@ -10,16 +11,23 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.time.ZoneOffset;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
-import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * MODEL_TRAINING 동의(기본 OFF). 사용자 노출 승인(품질 80점)과 학습 데이터 권한은 별개 — 동의가 있어야만 학습 후보가 생긴다.
  *  · grant: 현재 버전 고지문 + 만 14세 이상 확인 필수(14세 미만 법정대리인 동의 흐름은 미구현 → 동의 불가).
- *  · withdraw: 새 WITHDRAWN 행 + 미전송 샘플 즉시 취소(원문 삭제) + ai07 철회 요청(outbox REVOCATION). 과거 동의를 소급 확장하지 않는다.
+ *  · withdraw: 새 WITHDRAWN 행 + 미전송 샘플 즉시 취소(원문 삭제) + ai07 철회 요청(training-control.v1 CONSENT_WITHDRAWAL,
+ *    issuedAt = 철회 행 시각). 과거 동의를 소급 확장하지 않는다.
+ *  · 시각: 모든 동의/철회 행 시각은 실제 UTC 순간이며 사용자 단위로 단조 증가(동의 < 철회 < 재동의, 마이크로초). ai07 은 철회 issuedAt
+ *    이전 동의(consentTimestamp)로 만든 후보만 철회하므로 이 순서가 곧 "재동의 이후 후보는 유지" 의 근거다(C-TIME-3).
  *  · 신원은 항상 인증 principal 의 userId — 요청 본문의 userId/actorId 는 받지 않는다.
  */
 @Slf4j
@@ -64,14 +72,33 @@ public class TrainingConsentService {
     private final AiTrainingSettings settings;
     private final TrainingOutboxWriter writer;
     private final PseudonymousUserKeys pseudonyms;
+    private final Clock clock;
 
     public TrainingConsentService(AiTrainingConsentRepository consents, AiTrainingOutboxRepository outbox, AiTrainingSettings settings,
-                                  TrainingOutboxWriter writer, PseudonymousUserKeys pseudonyms) {
+                                  TrainingOutboxWriter writer, PseudonymousUserKeys pseudonyms, Clock clock) {
         this.consents = consents;
         this.outbox = outbox;
         this.settings = settings;
         this.writer = writer;
         this.pseudonyms = pseudonyms;
+        this.clock = clock;
+    }
+
+    /** 동의 상태 변경 전: 사용자 단위 잠금 + 직전 행보다 반드시 늦은 시각(같은 마이크로초·시계 역행 방지). */
+    private Instant lockAndNextInstant(Long userId, Optional<AiTrainingConsent> last) {
+        Instant now = Instant.now(clock).truncatedTo(ChronoUnit.MICROS);
+        Instant prev = last.map(AiTrainingConsent::getCreatedAt).orElse(null);
+        return prev != null && !now.isAfter(prev) ? prev.plus(1, ChronoUnit.MICROS) : now;
+    }
+
+    private Optional<AiTrainingConsent> lockedLatest(Long userId) {
+        consents.lockUserConsent("ai_training_consent:" + userId);
+        return consents.findTopByUserIdAndPurposeOrderByCreatedAtDescIdDesc(userId, PURPOSE);
+    }
+
+    /** 제어 메시지 eventId: 전역 유일(환경 간 충돌 없음). 재시도는 같은 행·같은 id 로만 한다. */
+    static String controlEventId(String prefix) {
+        return prefix + "-" + UUID.randomUUID().toString().replace("-", "");
     }
 
     /** 현재 유효한 동의(최신 행이 GRANTED 이고 현재 버전). 없으면 empty = 학습 후보 수집 금지. */
@@ -90,7 +117,7 @@ public class TrainingConsentService {
         boolean granted = last.map(c -> GRANTED.equals(c.getStatus())).orElse(false);
         boolean current = last.map(c -> settings.consentVersion().equals(c.getConsentVersion())).orElse(false);
         return new Status(granted && current, last.map(AiTrainingConsent::getConsentVersion).orElse(null), settings.consentVersion(),
-                last.map(c -> c.getCreatedAt() != null ? c.getCreatedAt().atOffset(ZoneOffset.UTC).toString() : null).orElse(null),
+                last.map(c -> c.getCreatedAt() != null ? TrainingControlV1.utc(c.getCreatedAt()).toString() : null).orElse(null),
                 granted && !current);
     }
 
@@ -109,8 +136,12 @@ public class TrainingConsentService {
         if (!Boolean.TRUE.equals(ageConfirmed14Plus)) {
             throw new ConsentRejected(400, "AGE_CONFIRMATION_REQUIRED", "만 14세 이상만 학습 데이터 활용에 동의할 수 있습니다.");
         }
+        Optional<AiTrainingConsent> last = lockedLatest(userId);
+        if (last.isPresent() && GRANTED.equals(last.get().getStatus()) && version.equals(last.get().getConsentVersion())) {
+            return status(userId); // 이미 같은 버전 동의 — 새 행을 만들면 동의 시각이 바뀌어 기존 후보의 consent 바인딩이 끊긴다(멱등)
+        }
         consents.save(AiTrainingConsent.builder().userId(userId).purpose(PURPOSE).status(GRANTED).consentVersion(version)
-                .consentTextSha256(sha256(NOTICE.get(version))).ageConfirmed14Plus(true)
+                .consentTextSha256(sha256(NOTICE.get(version))).ageConfirmed14Plus(true).createdAt(lockAndNextInstant(userId, last))
                 .source(source == null ? "WEB" : source.length() > 16 ? source.substring(0, 16) : source).build());
         log.info("[TRAINING-CONSENT] granted userId={} version={}", userId, version);
         return status(userId);
@@ -122,20 +153,58 @@ public class TrainingConsentService {
         if (userId == null) {
             throw new ConsentRejected(401, "AUTH_REQUIRED", "로그인이 필요합니다.");
         }
-        Optional<AiTrainingConsent> last = consents.findTopByUserIdAndPurposeOrderByCreatedAtDescIdDesc(userId, PURPOSE);
+        Optional<AiTrainingConsent> last = lockedLatest(userId);
         if (last.isEmpty() || WITHDRAWN.equals(last.get().getStatus())) {
             return status(userId); // 동의한 적 없음/이미 철회 — 멱등
         }
-        consents.save(AiTrainingConsent.builder().userId(userId).purpose(PURPOSE).status(WITHDRAWN)
-                .consentVersion(last.get().getConsentVersion()).source(source == null ? "WEB" : source).build());
+        Instant at = lockAndNextInstant(userId, last);
+        consents.save(AiTrainingConsent.builder().userId(userId).purpose(PURPOSE).status(WITHDRAWN).createdAt(at)
+                .consentVersion(last.get().getConsentVersion()).source(source == null ? "WEB" : source.length() > 16 ? source.substring(0, 16) : source)
+                .build());
         int cancelled = outbox.cancelPendingSamplesForUser(userId, "CONSENT_WITHDRAWN");
-        String pk = pseudonyms.of(userId);
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("pseudonymousUserKey", pk);
-        writer.enqueueControl("REVOCATION", "rv-" + sha256("revoke:" + pk + ":" + System.nanoTime()).substring(0, 32), userId, null,
-                body, null);
+        requireEnqueued(writer.enqueueControl(TrainingControlV1.withdrawal(controlEventId("cw"), at, pseudonyms.of(userId)), userId, null));
         log.info("[TRAINING-CONSENT] withdrawn userId={} cancelledPending={}", userId, cancelled);
         return status(userId);
+    }
+
+    /**
+     * 회원 탈퇴(계정 삭제) 시 호출: 미전송 샘플·피드백 취소 + (동의 이력이 있으면) 철회 + 사용자 단위·자료 단위 삭제 요청.
+     * 호출자(탈퇴 트랜잭션)와 함께 커밋/롤백된다. 현재 Spring 에 탈퇴 흐름이 없어 호출처는 없다(인계 B-ACCOUNT) — 탈퇴 구현 시 반드시 호출.
+     * 반환 = 적재한 삭제 요청 수.
+     */
+    @Transactional
+    public int onAccountDeleted(Long userId) {
+        if (userId == null) {
+            return 0;
+        }
+        Optional<AiTrainingConsent> last = lockedLatest(userId);
+        outbox.cancelPendingSamplesForUser(userId, "ACCOUNT_DELETED");
+        outbox.cancelPendingFeedbackForUser(userId, "ACCOUNT_DELETED");
+        if (last.isEmpty()) {
+            return 0; // 동의한 적이 없으면 ai07 에 후보가 있을 수 없다
+        }
+        Instant at = lockAndNextInstant(userId, last);
+        if (GRANTED.equals(last.get().getStatus())) {
+            consents.save(AiTrainingConsent.builder().userId(userId).purpose(PURPOSE).status(WITHDRAWN).createdAt(at)
+                    .consentVersion(last.get().getConsentVersion()).source("ACCOUNT_DELETE").build());
+        }
+        // 이미 철회했어도 다시 보낸다(늦게 도착한 옛 철회보다 확실히 뒤 — ai07 tombstone 은 멱등).
+        requireEnqueued(writer.enqueueControl(TrainingControlV1.withdrawal(controlEventId("cw"), at, pseudonyms.of(userId)), userId, null));
+        Set<String> trackingIds = new LinkedHashSet<>();
+        trackingIds.add(deletionTrackingIdForUser(userId));
+        trackingIds.addAll(outbox.attemptedSampleTrackingIds(userId));
+        for (String dtid : trackingIds) {
+            requireEnqueued(writer.enqueueControl(TrainingControlV1.deletion(controlEventId("dl"), at, dtid), userId, null));
+        }
+        log.info("[TRAINING-CONSENT] account deleted userId={} deletionRequests={}", userId, trackingIds.size());
+        return trackingIds.size();
+    }
+
+    /** 철회·삭제 요청을 적재하지 못하면 철회 자체를 롤백한다(요청 없이 '철회됨' 으로 보이는 상태 금지). */
+    private static void requireEnqueued(TrainingOutboxWriter.Result r) {
+        if (r == TrainingOutboxWriter.Result.FAILED) {
+            throw new ConsentRejected(503, "TRAINING_CONTROL_ENQUEUE_FAILED", "잠시 후 다시 시도해 주세요.");
+        }
     }
 
     static String sha256(String s) {

@@ -3,6 +3,7 @@ package com.studybridge.api.ai.training;
 import com.studybridge.api.ai.contract.v1.ContractJson;
 import com.studybridge.api.ai.contract.v1.PseudonymousUserKeys;
 import com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType;
+import com.studybridge.api.ai.contract.v1.TrainingControlV1;
 import com.studybridge.api.ai.contract.v1.TrainingSampleV1;
 import com.studybridge.api.ai.quality.GateDecision;
 import com.studybridge.api.entity.AiTrainingConsent;
@@ -17,8 +18,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.EnumMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -41,7 +43,7 @@ public class TrainingCandidateCollector {
 
     public enum Status {
         ENQUEUED, DEFERRED_AFTER_COMMIT, DUPLICATE, SKIPPED_DISABLED, SKIPPED_NOT_APPROVED, SKIPPED_NO_CONSENT,
-        SKIPPED_TASK_NOT_COLLECTED, SKIPPED_TOO_LARGE, SKIPPED_CONTRACT_INVALID, FAILED
+        SKIPPED_TASK_NOT_COLLECTED, SKIPPED_TOO_LARGE, SKIPPED_CONTRACT_INVALID, SKIPPED_NO_CANDIDATE, CANCELLED_PENDING, FAILED
     }
 
     public record Candidate(Long userId, TaskType taskType, String requestId, String question, String answer, Long materialId,
@@ -68,17 +70,24 @@ public class TrainingCandidateCollector {
     private final PseudonymousUserKeys pseudonyms;
     private final AiTrainingOutboxRepository outbox;
     private final AiTrainingConsentRepository consents;
+    private final Clock clock;
     private final Map<Status, AtomicLong> counters = new ConcurrentHashMap<>();
 
     public TrainingCandidateCollector(AiTrainingSettings settings, TrainingConsentService consentService, TrainingOutboxWriter writer,
                                       PseudonymousUserKeys pseudonyms, AiTrainingOutboxRepository outbox,
-                                      AiTrainingConsentRepository consents) {
+                                      AiTrainingConsentRepository consents, Clock clock) {
         this.settings = settings;
         this.consentService = consentService;
         this.writer = writer;
         this.pseudonyms = pseudonyms;
         this.outbox = outbox;
         this.consents = consents;
+        this.clock = clock;
+    }
+
+    /** 샘플 eventId: (가명 키, 작업, 내용 해시) 결정적 → 같은 답변은 한 번만 적재, 피드백이 같은 후보를 가리킬 수 있다. */
+    String sampleEventId(Long userId, TaskType taskType, String question, String answer) {
+        return "ts-" + sha256(pseudonyms.of(userId) + "|" + taskType + "|" + TrainingSampleV1.contentHash(question, answer)).substring(0, 40);
     }
 
     public Status onApproved(Candidate c) {
@@ -102,7 +111,7 @@ public class TrainingCandidateCollector {
             return Status.SKIPPED_TASK_NOT_COLLECTED;
         }
         AiTrainingConsent consent = consentService.active(c.userId()).orElse(null);
-        if (consent == null) {
+        if (consent == null || consent.getCreatedAt() == null || consent.getId() == null) {
             return Status.SKIPPED_NO_CONSENT;
         }
         if (c.question() == null || c.answer() == null || c.question().isBlank() || c.answer().isBlank()
@@ -113,18 +122,18 @@ public class TrainingCandidateCollector {
                 || kind == TrainingSampleV1.SourceKind.PDF_QUIZ;
         String pk = pseudonyms.of(c.userId());
         String contentHash = TrainingSampleV1.contentHash(c.question(), c.answer());
-        String eventId = "ts-" + sha256(pk + "|" + c.taskType() + "|" + contentHash).substring(0, 40);
+        String eventId = sampleEventId(c.userId(), c.taskType(), c.question(), c.answer());
         String dtid = pdf && c.materialId() != null ? consentService.deletionTrackingIdForMaterial(c.materialId())
                 : consentService.deletionTrackingIdForUser(c.userId());
-        OffsetDateTime granted = consent.getCreatedAt() != null ? consent.getCreatedAt().atOffset(ZoneOffset.UTC)
-                : OffsetDateTime.now(ZoneOffset.UTC);
+        // 동의 시각 = 동의 행의 실제 UTC 순간(C-TIME-3: 예전엔 KST 벽시계에 UTC 를 붙여 9시간 미래였다). 토큰 ct 와 같은 값.
+        OffsetDateTime granted = TrainingControlV1.utc(consent.getCreatedAt());
         TrainingSampleV1 sample = new TrainingSampleV1(TrainingSampleV1.SCHEMA_VERSION, eventId, pk, consent.getConsentVersion(), granted,
                 kind, null, pdf ? TrainingSampleV1.RightsStatus.THIRD_PARTY_UNVERIFIED : TrainingSampleV1.RightsStatus.UNKNOWN,
                 c.question(), c.answer(), null, null, c.evidence() == null ? List.of() : c.evidence().stream().limit(16).toList(), null,
                 TrainingSampleV1.QualityLabel.UNLABELED, clip(c.approval().evaluatorVersion(), 64),
                 clip(c.modelName() == null || c.modelName().isBlank() ? "unknown" : c.modelName(), 64),
                 clip(c.approval().modelDigest(), 128), clip(c.promptTemplateVersion(), 64), contentHash,
-                OffsetDateTime.now(ZoneOffset.UTC), dtid, "TRAINING_CANDIDATE_365D",
+                TrainingControlV1.utc(Instant.now(clock)), dtid, "TRAINING_CANDIDATE_365D",
                 new TrainingSampleV1.Eligibility(true, List.of(TrainingConsentService.PURPOSE), false, granted));
         if (!TrainingSampleV1.validate(sample).ok()) {
             log.warn("[TRAINING-COLLECT] 계약 위반 샘플 생략 violations={}", TrainingSampleV1.validate(sample).list());
@@ -139,12 +148,13 @@ public class TrainingCandidateCollector {
         Long userId = c.userId();
         Long materialId = c.materialId();
         String version = consent.getConsentVersion();
+        Long consentId = consent.getId();
         if (TransactionSynchronizationManager.isActualTransactionActive() && TransactionSynchronizationManager.isSynchronizationActive()) {
             java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean();
             Runnable enqueue = () -> {
                 if (done.compareAndSet(false, true)) {
                     try {
-                        count(enqueueIfStillConsented(eventId, userId, materialId, json, contentHash, version, dtid));
+                        count(enqueueIfStillConsented(eventId, userId, materialId, json, contentHash, version, dtid, consentId));
                     } catch (RuntimeException e) {
                         count(Status.FAILED);
                     }
@@ -166,16 +176,17 @@ public class TrainingCandidateCollector {
             });
             return Status.DEFERRED_AFTER_COMMIT;
         }
-        return enqueueIfStillConsented(eventId, userId, materialId, json, contentHash, version, dtid);
+        return enqueueIfStillConsented(eventId, userId, materialId, json, contentHash, version, dtid, consentId);
     }
 
     /** 적재 직전 동의 재확인(동의 확인~커밋 후 적재 사이 철회 경합 축소). 디스패처도 전송 직전에 다시 확인한다. */
     private Status enqueueIfStillConsented(String eventId, Long userId, Long materialId, String json, String contentHash,
-                                           String version, String dtid) {
-        if (consentService.active(userId).filter(c -> version.equals(c.getConsentVersion())).isEmpty()) {
+                                           String version, String dtid, Long consentId) {
+        // 같은 동의 행이어야 한다(그 사이 철회→재동의면 이 샘플의 consentTimestamp 는 철회된 동의다).
+        if (consentService.active(userId).filter(c -> version.equals(c.getConsentVersion()) && consentId.equals(c.getId())).isEmpty()) {
             return Status.SKIPPED_NO_CONSENT;
         }
-        return map(writer.enqueueSample(eventId, userId, materialId, json, contentHash, version, dtid));
+        return map(writer.enqueueSample(eventId, userId, materialId, json, contentHash, version, dtid, consentId));
     }
 
     /** 자료 삭제: 미전송 샘플 취소 + (동의 이력이 있으면) ai07 에 해당 자료 파생 후보 파기 요청. */
@@ -190,11 +201,49 @@ public class TrainingCandidateCollector {
                 return; // 동의한 적이 없으면 ai07 에 후보가 있을 수 없다
             }
             String dtid = consentService.deletionTrackingIdForMaterial(materialId);
-            writer.enqueueControl("DELETION", "dl-" + sha256(dtid + ":" + System.nanoTime()).substring(0, 32), userId, materialId,
-                    Map.of("deletionTrackingId", dtid), dtid);
+            writer.enqueueControl(TrainingControlV1.deletion(TrainingConsentService.controlEventId("dl"), Instant.now(clock), dtid), userId,
+                    materialId);
         } catch (RuntimeException e) {
             // 자료 삭제 자체는 막지 않는다. 키 미구성 등으로 파기 요청 적재 실패 → 로그로 추적(인계: 수동 재처리).
             log.warn("[TRAINING-COLLECT] 자료 삭제 후속 처리 실패 materialId={} cause={}", materialId, e.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * 사용자 피드백(-1/0/1)을 ai07 학습 후보에 반영(training-control.v1 FEEDBACK). 응답 경로에 영향 없음.
+     *  · 대상 = 같은 (사용자, 작업, 질문, 답변) 의 샘플 행. 없으면(동의 전 답변·미승인·미수집) 보내지 않는다.
+     *  · 아직 안 보낸 샘플에 부정 피드백 → 보내지 않고 취소(학습 후보가 되지 않음). 그 밖에는 FEEDBACK 적재 —
+     *    디스패처는 대상 샘플이 전송 완료될 때까지 FEEDBACK 을 미룬다(ai07 이 NOT_FOUND 로 끝내지 않게).
+     *  · 피드백만으로 학습 자격(TRAIN_ELIGIBLE)이 생기지 않는다(ai07 검수 단계).
+     * 현재 Spring 에 AI 답변 평가(좋아요/싫어요) 엔드포인트가 없어 호출처는 없다 — UI 추가 시 이 메서드만 부른다.
+     */
+    @Transactional(propagation = Propagation.REQUIRED)
+    public Status onAnswerFeedback(Long userId, TaskType taskType, String question, String answer, int score, String reasonCode) {
+        try {
+            if (userId == null || taskType == null || question == null || answer == null || score < -1 || score > 1) {
+                return count(Status.SKIPPED_CONTRACT_INVALID);
+            }
+            if (!consents.existsByUserIdAndPurpose(userId, TrainingConsentService.PURPOSE)) {
+                return count(Status.SKIPPED_NO_CONSENT);
+            }
+            String eventId = sampleEventId(userId, taskType, question, answer);
+            var sample = outbox.findByEventId(eventId).filter(r -> "SAMPLE".equals(r.getKind()) && userId.equals(r.getUserId()));
+            if (sample.isEmpty() || "CANCELLED".equals(sample.get().getStatus()) || "DEAD".equals(sample.get().getStatus())) {
+                return count(Status.SKIPPED_NO_CANDIDATE);
+            }
+            if (score < 0 && "PENDING".equals(sample.get().getStatus()) && sample.get().getAttempts() == 0) {
+                sample.get().setStatus("CANCELLED");
+                sample.get().setPayloadJson(null);
+                sample.get().setLastErrorCode("NEGATIVE_FEEDBACK");
+                outbox.save(sample.get());
+                return count(Status.CANCELLED_PENDING);
+            }
+            TrainingControlV1 msg = TrainingControlV1.feedback(TrainingConsentService.controlEventId("fb"), Instant.now(clock),
+                    pseudonyms.of(userId), eventId, null, score, clip(reasonCode, 64));
+            return count(map(writer.enqueueControl(msg, userId, sample.get().getMaterialId())));
+        } catch (RuntimeException e) {
+            log.warn("[TRAINING-COLLECT] 피드백 반영 실패(응답 영향 없음) cause={}", e.getClass().getSimpleName());
+            return count(Status.FAILED);
         }
     }
 

@@ -18,6 +18,7 @@ public class AiTrainingSettings {
     private final String collectPath;
     private final String withdrawalPath;
     private final String deletionPath;
+    private final String feedbackPath;
     private final int maxAttempts;
     private final int batchSize;
     private final long sendTimeoutMs;
@@ -29,6 +30,7 @@ public class AiTrainingSettings {
             @Value("${ai.training.collect-path:/api/training-candidates/collect-v1}") String collectPath,
             @Value("${ai.training.withdrawal-path:/api/training-candidates/consent-withdrawal}") String withdrawalPath,
             @Value("${ai.training.deletion-path:/api/training-candidates/deletion}") String deletionPath,
+            @Value("${ai.training.feedback-path:/api/training-candidates/feedback}") String feedbackPath,
             @Value("${ai.training.max-attempts:8}") int maxAttempts,
             @Value("${ai.training.batch-size:20}") int batchSize,
             @Value("${ai.training.send-timeout-ms:10000}") long sendTimeoutMs) {
@@ -38,6 +40,7 @@ public class AiTrainingSettings {
         this.collectPath = collectPath;
         this.withdrawalPath = withdrawalPath;
         this.deletionPath = deletionPath;
+        this.feedbackPath = feedbackPath;
         this.maxAttempts = Math.max(1, maxAttempts);
         this.batchSize = Math.max(1, Math.min(100, batchSize));
         this.sendTimeoutMs = Math.max(1000, sendTimeoutMs);
@@ -45,7 +48,8 @@ public class AiTrainingSettings {
 
     public static AiTrainingSettings forTest(boolean collection, boolean dispatch) {
         return new AiTrainingSettings(collection, dispatch, "tc-2026-11", "/api/training-candidates/collect-v1",
-                "/api/training-candidates/consent-withdrawal", "/api/training-candidates/deletion", 3, 20, 3000);
+                "/api/training-candidates/consent-withdrawal", "/api/training-candidates/deletion", "/api/training-candidates/feedback", 3, 20,
+                3000);
     }
 
     public boolean collectionEnabled() { return collectionEnabled; }
@@ -59,6 +63,8 @@ public class AiTrainingSettings {
     public String withdrawalPath() { return withdrawalPath; }
 
     public String deletionPath() { return deletionPath; }
+
+    public String feedbackPath() { return feedbackPath; }
 
     public int maxAttempts() { return maxAttempts; }
 

@@ -2,15 +2,18 @@ package com.studybridge.api.entity;
 
 import jakarta.persistence.*;
 import lombok.*;
-import org.hibernate.annotations.CreationTimestamp;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 
 /**
  * 모델 학습 데이터 활용 동의(MODEL_TRAINING) 이력 — append-only. 최신 행이 현재 상태다(GRANTED/WITHDRAWN).
  *  · 일반 서비스 이용·AI 기능 사용 동의와 별개이며 기본은 미동의(행 없음 = OFF).
  *  · 동의 증명: 버전 + 그 버전 고지문 SHA-256 + 시각 + 만 14세 이상 확인 여부를 서버에 남긴다(문구 원문은 코드 버전 관리).
  *  · 철회는 새 행(WITHDRAWN)으로 남기고 지우지 않는다(감사·소급 적용 금지 판단 근거).
+ *  · created_at 은 실제 UTC 순간(Instant → timestamptz). 서비스가 명시적으로 넣는다(사용자 단위 단조 증가, 마이크로초).
+ *    이 값이 ai07 에 가는 consentTimestamp·동의 토큰 ct·철회 issuedAt 의 원본이다 — LocalDateTime(컨테이너 TZ=Asia/Seoul 벽시계)에
+ *    UTC 오프셋을 붙여 9시간 미래로 보내던 결함(C-TIME-3)의 수정.
  */
 @Entity
 @Table(name = "ai_training_consents", indexes = {
@@ -48,7 +51,13 @@ public class AiTrainingConsent {
     @Column(name = "source", length = 16)
     private String source;
 
-    @CreationTimestamp
-    @Column(name = "created_at", updatable = false)
-    private LocalDateTime createdAt;
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @PrePersist
+    void defaultCreatedAt() {
+        if (createdAt == null) {
+            createdAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        }
+    }
 }

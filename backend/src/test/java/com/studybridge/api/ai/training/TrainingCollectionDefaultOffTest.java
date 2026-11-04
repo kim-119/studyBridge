@@ -17,12 +17,12 @@ class TrainingCollectionDefaultOffTest {
 
         @Test
         void defaultSettingsAreOff() {
-                AiTrainingSettings s = new AiTrainingSettings(false, false, "tc-2026-11", "/c", "/w", "/d", 8, 20, 10000);
+                AiTrainingSettings s = new AiTrainingSettings(false, false, "tc-2026-11", "/c", "/w", "/d", "/f", 8, 20, 10000);
                 TrainingConsentService consents = mock(TrainingConsentService.class);
                 TrainingOutboxWriter writer = mock(TrainingOutboxWriter.class);
                 AiTrainingOutboxRepository outbox = mock(AiTrainingOutboxRepository.class);
                 TrainingCandidateCollector c = new TrainingCandidateCollector(s, consents, writer, mock(PseudonymousUserKeys.class), outbox,
-                                mock(AiTrainingConsentRepository.class));
+                                mock(AiTrainingConsentRepository.class), java.time.Clock.systemUTC());
                 GateDecision ok = new GateDecision(true, ResponseQualityV1.QualityStatus.APPROVED, 90.0, null, List.of(), "v", null, 1, 0);
                 assertEquals(TrainingCandidateCollector.Status.SKIPPED_DISABLED, c.onApproved(new TrainingCandidateCollector.Candidate(1L,
                                 ResponseQualityV1.TaskType.STUDYMATE_BASIC, "r", "q", "a", null, List.of(), ok, null, null)));
