@@ -291,4 +291,3 @@ class LearningRecommendationQualityGateTest {
         assertFalse(svc(false).generateForPlanner(USER, PLANNER).getItems().isEmpty(), "NPE 없이 규칙 추천으로 응답");
     }
 }
-
