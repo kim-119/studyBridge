@@ -30,6 +30,18 @@ public class LearningMateService {
     @Value("${ai.server.fastapi.read-timeout-seconds:1800}")
     private long aiTimeoutSeconds;
 
+    /** 품질 게이트(response-quality.v1). 생성자 시그니처 보존을 위해 setter 주입 — null 이면 게이트 OFF. */
+    private com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setQualityGate(com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    private boolean qualityGateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
+
     private static final List<String> MODES = List.of("explain", "socratic", "debate", "roleplay");
     private static final List<String> QUICK_ACTIONS =
             List.of("easier", "deeper", "add_example", "code_example", "short_summary");
@@ -187,6 +199,10 @@ public class LearningMateService {
             body.put("advancedOptions", req.getAdvancedOptions());
         }
 
+        if (qualityGateOn()) {
+            return chatGated(question, mode, tone, learnerLevel, quickAction, learningMode, body, requestId);
+        }
+
         String answer;
         try {
             @SuppressWarnings("rawtypes")
@@ -218,6 +234,88 @@ public class LearningMateService {
         log.info("[AI_PERF] feature=learning_mate mode={} tone={} learnerLevel={} quickAction={} qLen={}",
                 mode, tone, learnerLevel, quickAction, question.length());
         return labeled(question, answer, mode, tone, learnerLevel, quickAction, true, null, null);
+    }
+
+    /**
+     * 게이트 ON: 생성 → 화면에 보일 평탄화 답변 전체(flattenAnswer 결과 = 응답 answer)를 평가 → 거절 시 재생성(최대 2, 생성 실패 시 중단)
+     * → 승인된 답변만 응답한다(이 경로는 DB/Redis 에 저장하지 않는다). taskType = 모드별 STUDYMATE_*(QualityStreamGate 와 같은 매핑),
+     * outputKind = agent_message(학습메이트 스트림과 같은 단위). 근거 없음(일반 질문 — Spring 이 가진 원문 없음).
+     * 첫 생성부터 실패하면 기존 실패 계약(AI_ERROR/EMPTY_ANSWER) 그대로, 거절/평가 불가는 AI_QUALITY_REJECTED/UNAVAILABLE(retryable).
+     */
+    private LearningMateDTO.Response chatGated(String question, String mode, String tone, String learnerLevel, String quickAction,
+                                               String learningMode, Map<String, Object> body, String requestId) {
+        final LearningMateDTO.Response[] firstFailure = new LearningMateDTO.Response[1];
+        com.studybridge.api.ai.quality.AiResponseQualityGate.Spec spec = new com.studybridge.api.ai.quality.AiResponseQualityGate.Spec(
+                requestId, com.studybridge.api.ai.quality.QualityStreamGate.taskTypeForLearningMode(learningMode),
+                com.studybridge.api.ai.contract.v1.ResponseQualityV1.OutputKind.AGENT_MESSAGE, String.valueOf(body.get("message")),
+                List.of(), com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints.empty(), null);
+        com.studybridge.api.ai.quality.AiResponseQualityGate.Outcome<String> outcome = qualityGate.generateApproved(spec,
+                (attempt, previous) -> {
+                    Map<String, Object> b = body;
+                    String rid = requestId;
+                    if (attempt > 0) {
+                        // ai07 MultiChatRequest 는 extra="ignore" — 모르는 필드는 무시된다. 같은 초안 캐시 재사용 방지(forceRegenerate).
+                        b = new LinkedHashMap<>(body);
+                        rid = requestId + "-r" + attempt;
+                        b.put("requestId", rid);
+                        b.put("forceRegenerate", true);
+                        b.put("regenerationAttempt", attempt);
+                        b.put("regenerationHints", previous != null ? previous.reasonCodes() : List.of());
+                    }
+                    @SuppressWarnings("rawtypes")
+                    Map resp;
+                    try {
+                        resp = fastApiWebClient.post()
+                                .uri("/api/ai/multi-chat")
+                                .header(AiMultiChatFailoverService.REQUEST_ID_HEADER, rid)
+                                .bodyValue(b)
+                                .retrieve()
+                                .bodyToMono(Map.class)
+                                .block(Duration.ofSeconds(aiTimeoutSeconds));
+                    } catch (Exception e) {
+                        log.warn("[learning-mate] FastAPI 호출 실패 attempt={}: {}", attempt, e.toString());
+                        if (attempt == 0) {
+                            firstFailure[0] = labeled(question, null, mode, tone, learnerLevel, quickAction, false,
+                                    "AI_ERROR", "답변 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+                        }
+                        throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                    }
+                    if (resp != null && AgentProfileContract.isFailedAnswer(resp)) {
+                        log.warn("[learning-mate] AI07 status=FAILED requestId={} code={}", rid, resp.get("code"));
+                        if (attempt == 0) {
+                            firstFailure[0] = labeled(question, null, mode, tone, learnerLevel, quickAction, false,
+                                    "AI_ERROR", "답변 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+                        }
+                        throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                    }
+                    String a = flattenAnswer(resp);
+                    if (a == null || a.isBlank()) {
+                        if (attempt == 0) {
+                            firstFailure[0] = labeled(question, "답변을 생성하지 못했습니다. 다른 모드나 빠른 조정으로 다시 시도해 주세요.",
+                                    mode, tone, learnerLevel, quickAction, false, "EMPTY_ANSWER",
+                                    "답변 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+                        }
+                        throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("EMPTY_ANSWER");
+                    }
+                    return a;
+                }, com.studybridge.api.ai.quality.AiResponseQualityGate::text);
+        com.studybridge.api.ai.quality.GateDecision d = outcome.decision();
+        if (outcome.approved()) {
+            log.info("[AI_PERF] feature=learning_mate mode={} tone={} learnerLevel={} quickAction={} qLen={} quality=APPROVED attempts={}",
+                    mode, tone, learnerLevel, quickAction, question.length(), d.attempts());
+            return labeledBuilder(question, outcome.value(), mode, tone, learnerLevel, quickAction, true, null, null)
+                    .qualityStatus("APPROVED").qualityScore(d.score()).verified(Boolean.TRUE).build();
+        }
+        if (firstFailure[0] != null && d.attempts() <= 1) {
+            return firstFailure[0]; // 첫 생성부터 실패 — 평가할 초안이 없었다(기존 실패 계약 그대로)
+        }
+        String code = com.studybridge.api.ai.quality.GateDecision.UNAVAILABLE.equals(d.errorCode())
+                ? com.studybridge.api.ai.quality.GateDecision.UNAVAILABLE : com.studybridge.api.ai.quality.GateDecision.REJECTED;
+        log.info("[QUALITY-GATE] learning-mate rid={} 미승인 status={} codes={} attempts={} — 답변 미노출",
+                requestId, d.qualityStatus(), d.reasonCodes(), d.attempts());
+        return labeledBuilder(question, null, mode, tone, learnerLevel, quickAction, false, code,
+                com.studybridge.api.ai.quality.GateDecision.userMessage(code))
+                .qualityStatus(d.qualityStatus().name()).qualityScore(d.score()).verified(Boolean.FALSE).retryable(Boolean.TRUE).build();
     }
 
     // ── FastAPI 응답에서 답변 텍스트 평탄화(모드 무관, 방어적) ────────────────────────
@@ -278,6 +376,12 @@ public class LearningMateService {
     private LearningMateDTO.Response labeled(String question, String answer, String mode, String tone,
                                              String learnerLevel, String quickAction, boolean success,
                                              String errorCode, String message) {
+        return labeledBuilder(question, answer, mode, tone, learnerLevel, quickAction, success, errorCode, message).build();
+    }
+
+    private LearningMateDTO.Response.ResponseBuilder labeledBuilder(String question, String answer, String mode, String tone,
+                                                                    String learnerLevel, String quickAction, boolean success,
+                                                                    String errorCode, String message) {
         String modeLabel = MODE_LABEL.get(mode);
         String toneLabel = TONE_LABEL.get(tone);
         String levelLabel = LEVEL_LABEL.get(learnerLevel);
@@ -291,8 +395,7 @@ public class LearningMateService {
                 .availableModes(MODES)
                 .availableQuickActions(QUICK_ACTIONS)
                 .quickActionApplied(quickAction)
-                .success(success).errorCode(errorCode).message(message)
-                .build();
+                .success(success).errorCode(errorCode).message(message);
     }
 
     private LearningMateDTO.Response error(String code, String message) {
