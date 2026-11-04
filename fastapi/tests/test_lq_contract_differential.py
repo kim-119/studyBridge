@@ -99,11 +99,13 @@ def test_no_python_exception_leaks_from_signing_paths():
 
 
 def _java_available():
-    jdk = shutil.which("javac") or any(pathlib.Path.home().glob(".local/jdk-*/bin/javac"))
-    jars = os.getenv("JACKSON_CP") or any((pathlib.Path.home() / ".gradle/caches/modules-2/files-2.1/com.fasterxml.jackson.core"
-                                           / "jackson-databind").glob("2.15.*"))
-    ref = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--verify", "-q", "origin/feature/learning-loop-ec2"],
-                         capture_output=True).returncode == 0
+    jdk = shutil.which("javac") or any(pathlib.Path.home().glob(".local/jdk-*/bin/javac")) or (
+        os.getenv("JAVA_HOME") and (pathlib.Path(os.environ["JAVA_HOME"]) / "bin" / "javac").exists())
+    jars = os.getenv("JACKSON_CP") or os.getenv("AI_CONTRACT_FETCH_JARS") == "1" or any(
+        (pathlib.Path.home() / ".gradle/caches/modules-2/files-2.1/com.fasterxml.jackson.core" / "jackson-databind").glob("2.15.*"))
+    in_tree = (ROOT.parent / "backend/src/main/java/com/studybridge/api/ai/contract/v1/ContractJson.java").exists()
+    ref = in_tree or subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--verify", "-q", "origin/feature/learning-loop-ec2"],
+                                    capture_output=True).returncode == 0
     return bool(jdk and jars and ref)
 
 
