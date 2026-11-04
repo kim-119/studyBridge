@@ -92,6 +92,9 @@ def provider_id(s: VisionSettings) -> str:
     return "mock" if s.answer_provider == "mock" else "openai"
 
 
+VISION_EGRESS_FEATURE = "vision_answer"
+
+
 def _estimate_tokens(system: str, user: str, max_tokens: int) -> int:
     # 한국어·JSON 혼합 기준 보수적 추정(문자 2개당 1토큰) + 출력 상한
     return (len(system) + len(user)) // 2 + max_tokens
@@ -148,9 +151,9 @@ async def _mock_answer(extraction: dict[str, Any], question: str, s: VisionSetti
 async def _openai_answer(system: str, user: str, s: VisionSettings, timeout: float) -> tuple[str, str, Any]:
     from app.services import openai_client
 
-    if not openai_client.is_enabled():
+    if not openai_client.is_enabled(VISION_EGRESS_FEATURE):
         raise vision_error("VISION_ANSWER_DISABLED", "AI 답변 서비스가 설정되지 않았습니다.")
-    client = openai_client.get_async_client().with_options(timeout=timeout, max_retries=1)
+    client = openai_client.get_async_client(VISION_EGRESS_FEATURE).with_options(timeout=timeout, max_retries=1)
     resp = await client.chat.completions.create(
         model=s.answer_model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -176,6 +179,13 @@ async def generate_answer(extraction: dict[str, Any], question: str, s: VisionSe
 
     if not s.external_llm_enabled:
         raise vision_error("VISION_ANSWER_DISABLED", "AI 답변 외부 처리가 비활성화되어 있습니다.")
+    mock = s.answer_provider == "mock"
+    # 중앙 외부 전송 정책(app.core.egress_policy): VISION_EXTERNAL_LLM_ENABLED 와 AND. mock 은 외부 전송이 아니다.
+    # 허용 시에는 기존 마스킹 경로(router 의 mask_obj/mask_text → 이 함수, 이미지 미전송)가 그대로 쓰인다.
+    if not mock:
+        from app.core.egress_policy import egress_allowed
+        if not egress_allowed("openai", VISION_EGRESS_FEATURE):
+            raise vision_error("VISION_ANSWER_DISABLED", "AI 답변 외부 처리가 비활성화되어 있습니다.")
     timeout = min(timeout, s.answer_timeout_s)
     if timeout <= 0.2:
         raise vision_error("VISION_ANSWER_TIMEOUT", "AI 답변을 생성할 시간이 남지 않았습니다.", retry_after=5)
@@ -183,7 +193,6 @@ async def generate_answer(extraction: dict[str, Any], question: str, s: VisionSe
     est = _estimate_tokens(system, user, s.answer_max_tokens)
     if not budget.allow(est, s.answer_daily_token_cap):
         raise vision_error("VISION_ANSWER_BUDGET_EXCEEDED", "오늘의 AI 화면 분석 답변 한도를 초과했습니다.")
-    mock = s.answer_provider == "mock"
     if not mock and not gw.openai_allowed(est):
         from app.ai_gateway.budget import budget as gw_budget
         if gw_budget.daily_cap > 0:

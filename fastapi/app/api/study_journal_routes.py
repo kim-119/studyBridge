@@ -21,6 +21,18 @@ PDF 기반 + 개념 확장 학습일지 검증 API (4단계 파이프라인).
     보수적으로 REQUEST_REVISION을 반환한다.
   - 단, 1단계에서 BLOCK이면 4단계로 넘기지 않는다.
 
+[2026-11-04 외부 전송 정책 — 위 "OpenAI 단독 최종 판정 / Qwen3 금지" 규칙을 대체(정책 확정 대기)]
+  외부 전송 기본 차단(app.core.egress_policy)으로 OpenAI 가 막히면 4단계가 항상 REQUEST_REVISION 이 되어
+  ACCEPT 가 영원히 나오지 않는다. 그래서 4단계에 로컬 판정 경로를 추가한다.
+  - OpenAI 판정 허용 = AI_EXTERNAL_EGRESS_ENABLED=true AND AI_EGRESS_ALLOW 에 openai:study_journal_judge(또는 openai:*)
+    AND OPENAI_API_KEY. 허용이면 기존과 같이 OpenAI 가 최종 판정자다.
+  - STUDY_JOURNAL_LOCAL_JUDGE_ENABLED (미설정 시: OpenAI 판정이 허용되지 않으면 true, 허용이면 false)
+      true  → OpenAI 불가(차단/장애/형식오류)일 때 로컬 Ollama(qwen3, think:false, JSON Schema format, temperature 0)
+              가 같은 프롬프트·같은 Pydantic 스키마·같은 후처리 가드(BLOCK 은 TOXIC_OR_ABUSIVE/ADVERTISEMENT 만,
+              ACCEPT 강등 규칙)로 판정한다. 로컬도 실패하면 기존처럼 보수적 REQUEST_REVISION.
+      false → 기존 동작(OpenAI 불가 시 보수적 REQUEST_REVISION).
+  - 응답 계약은 변경하지 않는다(메타데이터 필드가 없으므로 판정 출처는 로그 judge=OPENAI|LOCAL|NONE 으로만 남긴다).
+
 로그 정책:
   - memoText 원문, PDF 청크 원문, 욕설 원문, API Key 등 비밀값을 로그에 남기지 않는다.
   - 길이/판정/관계유형/유사도/소요시간/에러코드만 기록한다.
@@ -53,6 +65,11 @@ STUDY_JOURNAL_RAG_TOP_K = int(os.getenv("STUDY_JOURNAL_RAG_TOP_K", "5"))
 STUDY_JOURNAL_MIN_LEN = int(os.getenv("STUDY_JOURNAL_MIN_LEN", "6"))
 # OpenAI에 보낼 청크 요약 1개당 최대 길이.
 STUDY_JOURNAL_CHUNK_PREVIEW = int(os.getenv("STUDY_JOURNAL_CHUNK_PREVIEW", "300"))
+# 로컬 판정(Ollama) timeout(초) / 출력 토큰 상한.
+STUDY_JOURNAL_LOCAL_JUDGE_TIMEOUT = float(os.getenv("STUDY_JOURNAL_LOCAL_JUDGE_TIMEOUT", "25"))
+STUDY_JOURNAL_LOCAL_JUDGE_MAX_TOKENS = int(os.getenv("STUDY_JOURNAL_LOCAL_JUDGE_MAX_TOKENS", "400"))
+_OPENAI_FEATURE = "study_journal_judge"
+_TRUE_VALUES = ("1", "true", "yes", "on", "y")
 
 # ── enum 정의 ─────────────────────────────────────────────────────────────────
 DECISIONS = {"ACCEPT", "REQUEST_REVISION", "BLOCK"}
@@ -344,11 +361,11 @@ def _call_openai_validator(system: str, user: str) -> Optional[str]:
     chain-of-thought를 요구하지 않으며 응답 본문(JSON)만 반환한다.
     """
     from app.services.openai_client import is_enabled, get_sync_client
-    if not is_enabled():
-        logger.info("study-journal: OPENAI_API_KEY 미설정 → 개념 확장 검증 불가")
+    if not is_enabled(_OPENAI_FEATURE):
+        logger.info("study-journal: OpenAI 미설정/외부 전송 정책 차단 → OpenAI 판정 생략")
         return None
 
-    client = get_sync_client()
+    client = get_sync_client(_OPENAI_FEATURE)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -387,24 +404,96 @@ def _call_openai_validator(system: str, user: str) -> Optional[str]:
     return None
 
 
-def _stage4_openai(req: StudyJournalValidateRequest, ctx: Dict[str, Any],
-                   sim_candidate: bool) -> StudyJournalValidateResponse:
-    """OpenAI 최종 판정. 장애/스키마 실패 시 보수적 REQUEST_REVISION."""
-    from app.utils.json_parser import extract_json
+def openai_judge_allowed() -> bool:
+    """OpenAI 판정 경로 사용 가능 여부(키 + 외부 전송 정책). 판정 카운터를 남기지 않는 사전 조회."""
+    from app.core.config import OPENAI_API_KEY
+    if not OPENAI_API_KEY:
+        return False
+    from app.core.egress_policy import would_allow
+    return would_allow("openai", _OPENAI_FEATURE)
 
-    raw = _call_openai_validator(_openai_system_prompt(),
-                                 _openai_user_prompt(req, ctx, sim_candidate))
+
+def local_judge_enabled() -> bool:
+    """STUDY_JOURNAL_LOCAL_JUDGE_ENABLED. 미설정이면 'OpenAI 판정이 허용되지 않을 때 true'."""
+    raw = os.getenv("STUDY_JOURNAL_LOCAL_JUDGE_ENABLED")
+    if raw is None or not raw.strip():
+        return not openai_judge_allowed()
+    return raw.strip().lower() in _TRUE_VALUES
+
+
+# 로컬 판정용 JSON Schema: OpenAI 와 같은 필드/enum. 근거 필드(관계·이유)를 decision 앞에 두어
+# 문법 제약 디코딩에서 모델이 관계를 먼저 서술한 뒤 판정하도록 한다(검증 스키마·후처리는 동일).
+_LOCAL_SCHEMA_ORDER = ("category", "relationType", "relationPath", "studyRelated", "pdfGrounded",
+                       "conceptExpanded", "reason", "decision", "confidence", "suggestion")
+_LOCAL_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {k: _OPENAI_JSON_SCHEMA["schema"]["properties"][k] for k in _LOCAL_SCHEMA_ORDER},
+    "required": list(_LOCAL_SCHEMA_ORDER),
+}
+
+
+def _call_local_validator(system: str, user: str) -> Optional[str]:
+    """로컬 Ollama(qwen3) 판정. think=False(qwen3 thinking 이 num_predict 를 소진해 빈 응답이 되는 것 방지),
+    JSON Schema format, temperature 0. 실패/폴백 문구면 None."""
+    try:
+        from app.services.ollama_client import ask_ollama, is_fallback_text
+        out = ask_ollama(
+            system_prompt=system, user_prompt=user, temperature=0.0,
+            max_tokens=STUDY_JOURNAL_LOCAL_JUDGE_MAX_TOKENS,
+            timeout=int(STUDY_JOURNAL_LOCAL_JUDGE_TIMEOUT), think=False, format=_LOCAL_JSON_SCHEMA,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("study-journal 로컬 판정 호출 실패: %s", type(e).__name__)
+        return None
+    if not out or is_fallback_text(out):
+        logger.info("study-journal 로컬 판정 응답 없음/폴백")
+        return None
+    return out
+
+
+def _stage4_openai(req: StudyJournalValidateRequest, ctx: Dict[str, Any],
+                   sim_candidate: bool, judge_out: Optional[Dict[str, str]] = None
+                   ) -> StudyJournalValidateResponse:
+    """4단계 최종 판정. OpenAI(허용 시) → 로컬 Ollama(허용 시) → 둘 다 불가면 보수적 REQUEST_REVISION.
+    judge_out(선택): {"judge": "OPENAI"|"LOCAL"|"NONE"} 를 기록한다(로그 전용, 응답 계약 불변)."""
+    system = _openai_system_prompt()
+    user = _openai_user_prompt(req, ctx, sim_candidate)
+    raw = _call_openai_validator(system, user)
+    judge = "OPENAI" if raw else "NONE"
+    if raw:
+        verdict = _verdict_from_raw(raw)
+        if verdict is not None or not local_judge_enabled():
+            if judge_out is not None:
+                judge_out["judge"] = judge
+            return verdict if verdict is not None else _invalid_verdict_resp()
+    if local_judge_enabled():
+        raw = _call_local_validator(system, user)
+        judge = "LOCAL" if raw else "NONE"
+    if judge_out is not None:
+        judge_out["judge"] = judge
     if not raw:
-        # OpenAI 장애/timeout/미설정 → Qwen3로 대체하지 않고 보수적 REQUEST_REVISION.
+        # 판정자 없음(OpenAI 차단/장애 + 로컬 비활성/실패) → 보수적 REQUEST_REVISION.
         return _resp("REQUEST_REVISION", "OFF_TOPIC", confidence=0.3,
                      reason="개념 확장 검증을 완료할 수 없어 저장을 보류합니다. 잠시 후 다시 시도해 주세요.",
                      suggestion="학습한 개념을 조금 더 구체적으로 작성해 주세요.")
+    verdict = _verdict_from_raw(raw)
+    return verdict if verdict is not None else _invalid_verdict_resp()
+
+
+def _invalid_verdict_resp() -> StudyJournalValidateResponse:
+    return _resp("REQUEST_REVISION", "OFF_TOPIC", confidence=0.3,
+                 reason="검증 응답 형식이 올바르지 않아 저장을 보류합니다.",
+                 suggestion="학습한 개념을 조금 더 구체적으로 작성해 주세요.")
+
+
+def _verdict_from_raw(raw: str) -> Optional[StudyJournalValidateResponse]:
+    """판정 JSON → 응답. JSON 이 아니면 None(호출부가 다른 판정자/보수적 응답 선택).
+    스키마 위반은 기존과 같이 REQUEST_REVISION 응답. 후처리 가드는 판정자(OpenAI/로컬)와 무관하게 동일."""
+    from app.utils.json_parser import extract_json
 
     parsed = extract_json(raw)
     if not isinstance(parsed, dict):
-        return _resp("REQUEST_REVISION", "OFF_TOPIC", confidence=0.3,
-                     reason="검증 응답 형식이 올바르지 않아 저장을 보류합니다.",
-                     suggestion="학습한 개념을 조금 더 구체적으로 작성해 주세요.")
+        return None
 
     # Pydantic 스키마 검증 — 실패 시 REQUEST_REVISION.
     try:
@@ -464,7 +553,8 @@ def _stage4_openai(req: StudyJournalValidateRequest, ctx: Dict[str, Any],
 
 
 # ── 동기 파이프라인 (to_thread에서 실행) ──────────────────────────────────────
-def _validate_sync(req: StudyJournalValidateRequest) -> StudyJournalValidateResponse:
+def _validate_sync(req: StudyJournalValidateRequest,
+                   judge_out: Optional[Dict[str, str]] = None) -> StudyJournalValidateResponse:
     # [1단계] Deterministic Safety Filter
     blocked = _stage1_safety(req.memoText)
     if blocked is not None:
@@ -475,8 +565,16 @@ def _validate_sync(req: StudyJournalValidateRequest) -> StudyJournalValidateResp
     ctx = _gather_pdf_context(material_id, req.memoText)
     sim_candidate = ctx.get("max_similarity", 0.0) >= STUDY_JOURNAL_DIRECT_SIM_THRESHOLD
 
-    # [4단계] OpenAI Concept Expansion Validator (최종 판정자)
-    return _stage4_openai(req, ctx, sim_candidate)
+    # [4단계] Concept Expansion Validator (OpenAI 허용 시 OpenAI, 아니면 로컬 판정)
+    return _stage4_openai(req, ctx, sim_candidate, judge_out)
+
+
+def _overall_timeout() -> float:
+    """엔드포인트 안전벽: 사용할 판정자 timeout 중 큰 값 + 8초."""
+    t = STUDY_JOURNAL_OPENAI_TIMEOUT
+    if local_judge_enabled():
+        t = max(t, STUDY_JOURNAL_LOCAL_JUDGE_TIMEOUT)
+    return t + 8
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────────────────
@@ -487,10 +585,11 @@ async def validate_study_journal(req: StudyJournalValidateRequest) -> StudyJourn
     started = time.time()
     memo_len = len((req.memoText or "").strip())
     title_len = len((req.title or "").strip())
+    judge_out: Dict[str, str] = {"judge": "NONE"}
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(_validate_sync, req),
-            timeout=STUDY_JOURNAL_OPENAI_TIMEOUT + 8,  # OpenAI 자체 timeout 바깥 안전벽
+            asyncio.to_thread(_validate_sync, req, judge_out),
+            timeout=_overall_timeout(),  # 판정자 자체 timeout 바깥 안전벽
         )
     except asyncio.TimeoutError:
         # 전체 타임아웃도 OpenAI 장애에 준해 보수적 REQUEST_REVISION (Qwen3 대체 금지).
@@ -507,9 +606,9 @@ async def validate_study_journal(req: StudyJournalValidateRequest) -> StudyJourn
     # 로그: 원문/욕설/PDF 본문 금지 — 길이/판정/관계/소요시간만 기록.
     logger.info(
         "[study-journal] materialId=%s titleLen=%d memoLen=%d decision=%s "
-        "relationType=%s pdfGrounded=%s conceptExpanded=%s confidence=%.2f elapsedMs=%d",
+        "relationType=%s pdfGrounded=%s conceptExpanded=%s confidence=%.2f judge=%s elapsedMs=%d",
         req.materialId, title_len, memo_len, result.decision, result.relationType,
-        result.pdfGrounded, result.conceptExpanded, result.confidence,
+        result.pdfGrounded, result.conceptExpanded, result.confidence, judge_out.get("judge", "NONE"),
         int((time.time() - started) * 1000),
     )
     return result

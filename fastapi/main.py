@@ -177,7 +177,21 @@ _FALLBACK_QUIZ_TITLE = "자료 기반 학습 퀴즈 (기본 안내형)"
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. LLM 클라이언트 초기화
 # ─────────────────────────────────────────────────────────────────────────────
-openai_client: Optional[OpenAI] = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+# 외부 전송 정책(2026-11-04): 모듈 로드 시 OpenAI 클라이언트를 만들지 않는다. 모든 사용 지점은
+# _openai_client_for(feature) 로 app.services.openai_client 에 위임해 egress 정책을 통과해야 한다.
+openai_client: Optional[OpenAI] = None  # 하위호환용 이름(더 이상 채우지 않음)
+
+
+def _openai_client_for(feature: str) -> Optional[OpenAI]:
+    """정책·키를 통과하면 공용 OpenAI 동기 클라이언트, 아니면 None(호출부의 기존 'OpenAI 없음' 분기)."""
+    from app.services import openai_client as _oc
+    if not _oc.is_enabled(feature):
+        return None
+    try:
+        return _oc._raw_sync_client()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("OpenAI 클라이언트 생성 실패(%s): %s", feature, type(e).__name__)
+        return None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. 공통 유틸 함수
@@ -559,9 +573,11 @@ def _call_ollama(
 
 
 def _call_openai(
-    system: str, user: str, max_tokens: int = 800, temperature: float = 0.5, top_p: Optional[float] = None
+    system: str, user: str, max_tokens: int = 800, temperature: float = 0.5, top_p: Optional[float] = None,
+    *, feature: str = "chat_fallback",
 ) -> Optional[str]:
-    """OpenAI Chat Completions API 호출. 실패 시 None 반환."""
+    """OpenAI Chat Completions API 호출. 정책 차단/키 없음/실패 시 None 반환."""
+    openai_client = _openai_client_for(feature)
     if not openai_client:
         return None
     import app.ai_gateway as _gw
@@ -1177,7 +1193,7 @@ def validate_grounded_quiz_questions(
 
 def _call_quiz_llm(system: str, user: str, count: int) -> str:
     max_tokens = max(1800, count * 520)
-    llm_output = _call_openai(system, user, max_tokens=max_tokens, temperature=0.2)
+    llm_output = _call_openai(system, user, max_tokens=max_tokens, temperature=0.2, feature="quiz_generate")
     if not llm_output:
         llm_output = _call_ollama(system, user, max_tokens=max_tokens, temperature=0.2)
     logger.info("[quiz:llm] rawLength=%s", len(llm_output or ""))
@@ -1752,7 +1768,7 @@ def validate_and_revise_agent_answer(
             agent_config=agent_config,
             validation_result=validation,
             user_message=user_message,
-            openai_client=openai_client,
+            openai_client=_openai_client_for("answer_quality_revise"),
             model=OPENAI_MODEL,
         )
         cleaned_revised = clean_ai_answer(revised) if revised else ""

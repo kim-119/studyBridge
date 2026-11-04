@@ -479,8 +479,9 @@ async def ai_question(req: QuestionReq) -> Dict[str, Any]:
         # GPT fallback
         try:
             from app.services.openai_client import chat_sync, is_enabled
-            if is_enabled():
-                return chat_sync(system=system, user=user, temperature=0.3, max_tokens=1200)
+            if is_enabled("material_question"):
+                return chat_sync(system=system, user=user, temperature=0.3, max_tokens=1200,
+                                 feature="material_question")
         except Exception as e:
             logger.warning("question GPT 실패: %s", e)
         return ""
@@ -603,9 +604,9 @@ async def ai_roadmap(req: RoadmapReq) -> Dict[str, Any]:
 
 
 # ── POST /api/ai/feedback ─────────────────────────────────────────────────────
-@router.post("/feedback", summary="자료 학습 피드백 (GPT)")
+@router.post("/feedback", summary="자료 학습 피드백 (외부 전송 허용 시 GPT, 아니면 로컬 Ollama)")
 async def ai_feedback(req: FeedbackReq) -> Dict[str, Any]:
-    from app.services.material_ai_manager import validate_extracted_text, build_summary_context, _call_gpt
+    from app.services.material_ai_manager import validate_extracted_text, build_summary_context, _gpt_or_local
     from app.services.chunk_cache import get_or_build_chunks
     started = time.time()
     ts = validate_extracted_text(req.content)
@@ -617,18 +618,25 @@ async def ai_feedback(req: FeedbackReq) -> Dict[str, Any]:
     system = "너는 학습 코치다. 제공된 학습 내용에 근거해 한국어로 간결한 학습 피드백을 제공한다."
     user = f"## 학습 내용\n{context[:5000]}\n\n학습자에게 도움이 되는 피드백을 작성하라."
     try:
-        feedback = await asyncio.wait_for(asyncio.to_thread(_call_gpt, system, user), timeout=_t(SUMMARY_TIMEOUT))
+        # 외부 전송 정책(openai:material_feedback) 허용이면 GPT, 차단/실패면 같은 프롬프트로 로컬 Ollama.
+        feedback, provider = await asyncio.wait_for(
+            asyncio.to_thread(_gpt_or_local, system, user, 1200, feature="material_feedback"),
+            timeout=_t(SUMMARY_TIMEOUT))
     except asyncio.TimeoutError:
         return _fail("AI_TIMEOUT", "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
                      text_status=_text_status(ts, len(chunks)))
     except Exception as e:
         logger.error("feedback 실패: %s", e)
         return _fail("UNKNOWN_ERROR", "피드백 생성에 실패했습니다.", text_status=_text_status(ts, len(chunks)))
+    if not feedback or feedback.strip().startswith("["):
+        # 이전엔 "[GPT 미설정]..." 안내문을 success:true 피드백으로 내보냈다 → 실패 계약으로 돌려준다.
+        return _fail("AI_UNAVAILABLE", "피드백 생성에 실패했습니다. 잠시 후 다시 시도해주세요.",
+                     text_status=_text_status(ts, len(chunks)))
     return {
         "success": True,
         "feedbackData": feedback,
         "feedback": feedback,
         "warnings": [],
         "textStatus": _text_status(ts, len(chunks)),
-        "metadata": {"provider": "openai_gpt", "elapsedMs": int((time.time() - started) * 1000)},
+        "metadata": {"provider": provider, "elapsedMs": int((time.time() - started) * 1000)},
     }

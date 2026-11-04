@@ -32,18 +32,32 @@ AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.35"))
 AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "8192"))
 
 
-def qwen_draft(system: str, user: str, max_tokens: Optional[int] = None) -> Optional[str]:
-    """1단계 — Qwen(Ollama) 초안. 실패/미응답 시 None."""
+def qwen_draft(system: str, user: str, max_tokens: Optional[int] = None, *,
+               think: Optional[bool] = None, json_mode: bool = False,
+               timeout: Optional[int] = None, temperature: Optional[float] = None) -> Optional[str]:
+    """1단계 — Qwen(Ollama) 초안. 실패/미응답 시 None.
+
+    think/json_mode/timeout/temperature 는 선택(기본값이면 기존 호출과 동일한 payload).
+    qwen3 는 JSON 이 필요한 경로에서 think=False 를 줘야 thinking 이 num_predict 를 소진하지 않는다."""
     try:
-        from app.services.ollama_client import ask_ollama, is_ollama_available
+        from app.services.ollama_client import ask_ollama, is_fallback_text, is_ollama_available
         if not is_ollama_available():
             logger.info("[ai_pipeline] Ollama 미응답 → Qwen 초안 생략")
             return None
+        extra: Dict[str, Any] = {}
+        if think is not None:
+            extra["think"] = think
+        if json_mode:
+            extra["format"] = "json"
+        if timeout is not None:
+            extra["timeout"] = timeout
         out = ask_ollama(
             system_prompt=system, user_prompt=user,
-            max_tokens=max_tokens or AI_MAX_TOKENS, temperature=AI_TEMPERATURE,
+            max_tokens=max_tokens or AI_MAX_TOKENS,
+            temperature=AI_TEMPERATURE if temperature is None else temperature,
+            **extra,
         )
-        if out and not out.strip().startswith("["):
+        if out and not out.strip().startswith("[") and not is_fallback_text(out):
             return out
     except Exception as e:  # noqa: BLE001
         logger.info("[ai_pipeline] qwen_draft 실패: %s", e)
@@ -51,19 +65,20 @@ def qwen_draft(system: str, user: str, max_tokens: Optional[int] = None) -> Opti
 
 
 def openai_refine(system: str, user: str, max_tokens: Optional[int] = None,
-                  json_mode: bool = False) -> Optional[str]:
-    """2단계 — OpenAI 보강/구조화/repair. 비활성/실패 시 None.
+                  json_mode: bool = False, *, feature: str = "ai_pipeline_refine") -> Optional[str]:
+    """2단계 — OpenAI 보강/구조화/repair. 비활성/정책 차단/실패 시 None.
 
     json_mode=True 면 OpenAI JSON 모드로 호출해 유효한 JSON 객체를 강제한다
-    (마크다운/산문 래핑으로 파싱 실패하던 케이스 방지)."""
+    (마크다운/산문 래핑으로 파싱 실패하던 케이스 방지).
+    feature: 외부 전송 정책(app.core.egress_policy) 판정용 기능 이름."""
     if not ENABLE_OPENAI_REFINER:
         return None
     try:
         from app.services.openai_client import chat_sync, is_enabled
-        if not is_enabled():
-            logger.info("[ai_pipeline] OpenAI 비활성 → 보강 생략")
+        if not is_enabled(feature):
+            logger.info("[ai_pipeline] OpenAI 비활성/정책 차단 → 보강 생략 feature=%s", feature)
             return None
-        kwargs = {"max_tokens": max_tokens or AI_MAX_TOKENS, "temperature": 0.2}
+        kwargs = {"max_tokens": max_tokens or AI_MAX_TOKENS, "temperature": 0.2, "feature": feature}
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         out = chat_sync(system=system, user=user, **kwargs)
@@ -92,6 +107,7 @@ def generate_structured(
     validator: Callable[[Dict[str, Any]], bool],
     max_tokens: Optional[int] = None,
     stage1_enabled: bool = True,
+    feature: str = "ai_pipeline_refine",
 ) -> Optional[Dict[str, Any]]:
     """
     Qwen 1차 → OpenAI 보강 → 검증 순으로 구조화 JSON을 만든다.
@@ -105,7 +121,7 @@ def generate_structured(
 
     # OpenAI 보강은 초안(있으면)을 입력으로 받아 다듬는다.
     refine_user = refine_user_builder(draft_json or {})
-    refined_json = parse_json(openai_refine(refine_system, refine_user, max_tokens))
+    refined_json = parse_json(openai_refine(refine_system, refine_user, max_tokens, feature=feature))
 
     # 우선순위: 검증 통과한 보강본 > 검증 통과한 초안 > 보강본 > 초안
     if refined_json and validator(refined_json):
@@ -122,9 +138,10 @@ def repair_to_valid(
     repair_user: str,
     validator: Callable[[Dict[str, Any]], bool],
     max_tokens: Optional[int] = None,
+    feature: str = "ai_pipeline_refine",
 ) -> Optional[Dict[str, Any]]:
     """검증 실패 시 복구: OpenAI repair → Qwen repair 순. 둘 다 실패 시 None."""
-    fixed = parse_json(openai_refine(repair_system, repair_user, max_tokens))
+    fixed = parse_json(openai_refine(repair_system, repair_user, max_tokens, feature=feature))
     if fixed and validator(fixed):
         return fixed
     if ENABLE_OLLAMA_FALLBACK:

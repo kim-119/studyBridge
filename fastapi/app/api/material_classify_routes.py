@@ -264,7 +264,8 @@ def _openai_refine(req: ClassifyRequest, candidate: Dict[str, Any]) -> Optional[
         '"confidence": 0.0~1.0, "reason": "정리된 한국어 근거 1~2문장" }'
     )
     try:
-        raw = call_verifier_llm(system_prompt=system, user_prompt=user, max_tokens=400)
+        raw = call_verifier_llm(system_prompt=system, user_prompt=user, max_tokens=400,
+                                feature="material_classify_verifier")
     except Exception as e:
         logger.info("OpenAI 보강 실패: %s", e)
         return None

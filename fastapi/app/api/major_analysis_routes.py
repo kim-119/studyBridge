@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Body
@@ -273,7 +274,7 @@ def _fetch_wiki(queries: List[str], max_results: int) -> List[Dict[str, Any]]:
         if len(out) >= max_results:
             break
         try:
-            hits = search_wikipedia(q, limit=2)
+            hits = search_wikipedia(q, limit=2, feature="major_analysis_wiki")
         except Exception as e:  # noqa: BLE001
             logger.info("Wikipedia 조회 실패(%s): %s — 보조 정보 없이 계속", q, e)
             continue
@@ -360,8 +361,11 @@ def _required_pages(pages: List[Dict[str, Any]]) -> str:
     return "[" + ", ".join(nums) + "]" if nums else "(해당 없음)"
 
 
-def _summarize_single_page(domain: Dict[str, Any], page: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """배치에서 누락된 '실제 텍스트가 있는' 페이지를 개별 요약(거짓 생성 방지·커버리지 보장)."""
+def _summarize_single_page(domain: Dict[str, Any], page: Dict[str, Any], *,
+                           deadline: Optional[float] = None,
+                           use_openai: bool = True) -> Optional[Dict[str, Any]]:
+    """배치에서 누락된 '실제 텍스트가 있는' 페이지를 개별 요약(거짓 생성 방지·커버리지 보장).
+    로컬 호출은 think=False·JSON 모드·남은 시간 안 timeout. OpenAI 보강은 use_openai(정책 허용)일 때만."""
     from app.services.ai_pipeline import openai_refine, parse_json, qwen_draft
     pno = page["page"]
     prompt = (
@@ -380,10 +384,13 @@ def _summarize_single_page(domain: Dict[str, Any], page: Dict[str, Any]) -> Opti
         '"summaryBullets": ["핵심 요약 2~5개"], '
         '"studyFocus": "학습자가 이해해야 할 것 1~2문장" }'
     )
-    raw = qwen_draft(_SYSTEM, prompt, max_tokens=1400)
+    timeout = None
+    if deadline is not None:
+        timeout = int(max(5.0, deadline - time.monotonic() - 2.0))
+    raw = qwen_draft(_SYSTEM, prompt, max_tokens=1400, think=False, json_mode=True, timeout=timeout)
     parsed = parse_json(raw)
-    if not isinstance(parsed, dict):
-        raw = openai_refine(_SYSTEM, prompt, max_tokens=1400, json_mode=True)
+    if not isinstance(parsed, dict) and use_openai:
+        raw = openai_refine(_SYSTEM, prompt, max_tokens=1400, json_mode=True, feature="major_analysis_note")
         parsed = parse_json(raw)
     if isinstance(parsed, dict):
         parsed["page"] = pno
@@ -593,65 +600,212 @@ def _fallback(req: MajorAnalysisRequest, domain: Optional[Dict[str, Any]],
     }
 
 
-def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
-    from app.services.ai_pipeline import openai_refine, parse_json, qwen_draft
+# ── 외부 전송 정책 대응(2026-11-04): 로컬 OCR / 로컬 노트 / 본문 발췌 노트 ─────────────────
+# OpenAI(major_analysis_ocr / major_analysis_note)가 정책으로 막히면:
+#   OCR  → pdf_text_normalizer.normalize_pdf (native → tesseract → 로컬 qwen3-vl), 시간 예산 내에서만.
+#   노트 → ai_pipeline.qwen_draft(think=False, JSON 모드), 페이지 본문 총량·페이지 수·출력 토큰 상한으로
+#          qwen3:14b 컨텍스트(num_ctx 8192)와 90초 timeout 을 넘지 않게 한다. 같은 _normalize_page_summaries 사용.
+#   실패/시간초과 → 본문이 있으면 '본문 발췌 노트'(_extractive_note). 일반 안내 fallback 은 본문이 없을 때만.
+_LOCAL_MAX_INPUT_CHARS = int(os.getenv("MAJOR_ANALYSIS_LOCAL_MAX_INPUT_CHARS", "3000"))
+_LOCAL_MAX_PAGES = int(os.getenv("MAJOR_ANALYSIS_LOCAL_MAX_PAGES", "6"))
+_LOCAL_PAGE_CHARS = int(os.getenv("MAJOR_ANALYSIS_LOCAL_PAGE_CHARS", "700"))
+_LOCAL_MAX_TOKENS = int(os.getenv("MAJOR_ANALYSIS_LOCAL_MAX_TOKENS", "2200"))
+_LOCAL_OCR_BUDGET_S = float(os.getenv("MAJOR_ANALYSIS_LOCAL_OCR_BUDGET_SECONDS", "30"))
+_LOCAL_VL_MAX_PAGES = int(os.getenv("MAJOR_ANALYSIS_LOCAL_VL_MAX_PAGES", "4"))
+_LOCAL_PAGE_RETRY = int(os.getenv("MAJOR_ANALYSIS_LOCAL_PAGE_RETRY", "2"))
+_DEADLINE_MARGIN_S = 6.0
+_MIN_LLM_SECONDS = 15.0
+
+_NORM_SOURCE_MAP = {"native_text": "TEXT", "ocr_text": "OCR", "vl_caption": "IMAGE_DESCRIPTION",
+                    "mixed": "MIXED", "failed": "INSUFFICIENT"}
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?。])\s+|\n+")
+_PAGE_MARK_RE = re.compile(r"\[(?:Page|페이지)\s*\d+\]")
+
+
+def _openai_ok(feature: str) -> bool:
+    try:
+        from app.core.config import OPENAI_API_KEY
+        from app.core.egress_policy import would_allow
+        return bool(OPENAI_API_KEY) and would_allow("openai", feature)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _remaining(deadline: Optional[float]) -> float:
+    return float("inf") if deadline is None else deadline - time.monotonic()
+
+
+def _local_ocr_pages(pdf_bytes: bytes, ocr_deadline: float) -> List[Dict[str, Any]]:
+    """로컬 정규화(native → tesseract → qwen3-vl)로 페이지 텍스트를 만든다. 예산을 넘기면 OCR/VL 을 건너뛴다."""
+    from app.services.pdf_text_normalizer import _default_ocr_fn, normalize_pdf
+
+    base_ocr = _default_ocr_fn()
+
+    def ocr_fn(image, page_number):
+        if base_ocr is None or time.monotonic() > ocr_deadline:
+            return ""
+        return base_ocr(image, page_number)
+
+    def vl_fn(png, page_number):
+        if time.monotonic() > ocr_deadline:
+            return ""
+        from app.services.ollama_vision_client import caption_page_image
+        return caption_page_image(png, page_number)
+
+    norm = normalize_pdf(pdf_bytes, ocr_fn=ocr_fn, vl_fn=vl_fn, vl_max_pages=_LOCAL_VL_MAX_PAGES)
+    pages: List[Dict[str, Any]] = []
+    for pm in norm.pages[:_MAX_PAGES]:
+        txt = (pm.text or "").strip()[:_MAX_PAGE_CHARS]
+        src = _NORM_SOURCE_MAP.get(pm.source_method, "TEXT")
+        if len(re.sub(r"\s+", "", txt)) < _MIN_PAGE_MEANINGFUL:
+            src = "INSUFFICIENT"
+        pages.append({"page": pm.page_number, "text": txt, "source": src})
+    logger.info("[MajorAnalysis] 로컬 정규화 OCR 완료: pages=%d vl=%d ocr=%d failed=%d",
+                len(pages), norm.vl_pages, norm.ocr_pages, len(norm.failed_pages))
+    return pages
+
+
+def _local_prompt_pages(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """로컬 LLM 프롬프트용 페이지 목록: 본문 있는 페이지만, 페이지 수·페이지당·총량 상한."""
+    out: List[Dict[str, Any]] = []
+    used = 0
+    for p in pages:
+        if p["source"] == "INSUFFICIENT":
+            continue
+        if len(out) >= _LOCAL_MAX_PAGES or used >= _LOCAL_MAX_INPUT_CHARS:
+            break
+        room = min(_LOCAL_PAGE_CHARS, _LOCAL_MAX_INPUT_CHARS - used)
+        txt = p["text"][:room]
+        used += len(txt)
+        out.append({**p, "text": txt})
+    return out
+
+
+def _local_note_json(req: MajorAnalysisRequest, domain: Dict[str, Any], candidates: List[str],
+                     pages: List[Dict[str, Any]], deadline: Optional[float]) -> Optional[Dict[str, Any]]:
+    """로컬 qwen3 로 노트 JSON 1회 생성(시간 예산 안에서만). 실패 시 None."""
+    from app.services.ai_pipeline import parse_json, qwen_draft
+    remaining = _remaining(deadline)
+    if remaining < _MIN_LLM_SECONDS:
+        logger.info("[MajorAnalysis] 로컬 노트 생략(남은 시간 %.1fs)", remaining)
+        return None
+    prompt_pages = _local_prompt_pages(pages)
+    if not prompt_pages:
+        return None
+    prompt = _build_prompt(req, domain, [], candidates, prompt_pages)
+    timeout = int(max(5.0, min(remaining - 2.0, 600.0))) if remaining != float("inf") else None
+    raw = qwen_draft(_SYSTEM, prompt, max_tokens=_LOCAL_MAX_TOKENS, think=False, json_mode=True,
+                     timeout=timeout, temperature=0.3)
+    parsed = parse_json(raw)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _sentences(text: str, limit: int, min_chars: int = 8) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for raw in _SENT_SPLIT_RE.split(_PAGE_MARK_RE.sub(" ", text or "")):
+        s = re.sub(r"\s+", " ", raw).strip(" -•·*\t")
+        if len(re.sub(r"\s+", "", s)) < min_chars or s in seen:
+            continue
+        seen.add(s)
+        out.append(s[:200])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _extractive_page(p: Dict[str, Any]) -> Dict[str, Any]:
+    """LLM 없이 페이지 본문에서 발췌한 페이지 요약(사실만, 지어내지 않음)."""
+    sents = _sentences(p["text"], 5, min_chars=4)
+    first_line = next((ln.strip() for ln in p["text"].splitlines() if ln.strip()), "")
+    concepts = _concept_candidates(p["text"], 4)
+    return {
+        "page": p["page"],
+        "title": (first_line[:40] or "핵심 내용"),
+        "pageOverview": sents[0] if sents else first_line[:160],
+        "keyConcepts": concepts,
+        "conceptExplanations": [],
+        "examples": [],
+        "summaryBullets": sents[1:5] if len(sents) > 1 else sents,
+        "studyFocus": (f"{', '.join(concepts[:2])}의 의미와 관계를 본문에서 확인하세요." if concepts
+                       else "이 페이지의 핵심 문장을 중심으로 복습하세요."),
+    }
+
+
+def _extractive_note(req: MajorAnalysisRequest, domain: Optional[Dict[str, Any]],
+                     pages: List[Dict[str, Any]], reason: str) -> Dict[str, Any]:
+    """본문이 있을 때의 최후 폴백: 페이지 본문 발췌로 계약 필드를 모두 채운다('텍스트 부족' 안내 금지)."""
+    real = [p for p in pages if p["source"] != "INSUFFICIENT"]
+    text = "\n".join(p["text"] for p in real)[:_MAX_TOTAL_CHARS]
+    if domain is None:
+        domain, _ = _classify_domain(text)
+    keywords = _concept_candidates(text, 8)
+    sents = _sentences(text, 6)
+    page_summaries = _normalize_page_summaries([_extractive_page(p) for p in real], pages)
+    core = keywords[0] if keywords else "문서의 핵심 전공 개념"
+    logger.info("[MajorAnalysis] 본문 발췌 노트 사용 material=%s reason=%s pages=%d",
+                req.materialId, reason, len(real))
+    return {
+        "materialId": req.materialId,
+        "mode": MODE,
+        "domain": domain["enum"],
+        "domainLabel": domain["label"],
+        "coreObject": core,
+        "coreObjectLabel": core,
+        "disclaimer": DISCLAIMER,
+        "documentOverview": " ".join(sents[:2]) or (text[:200].strip()),
+        "keywords": keywords,
+        "coreContents": sents[:4] or [text[:200].strip()],
+        "detailedCoreContents": _detailed_from_pages(page_summaries),
+        "pageSummaries": page_summaries,
+        "studyPoints": [f"'{k}'의 정의와 자료 속 역할을 확인하세요." for k in keywords[:3]]
+                       or ["본문의 핵심 문장을 중심으로 복습하세요."],
+        "aiStudyQuestions": [f"{k}은(는) 무엇이며 이 자료에서 어떤 맥락으로 등장하는가?" for k in keywords[:3]]
+                            or ["이 자료의 핵심 문장은 무엇을 설명하는가?"],
+        "wikiSummaries": [],
+        "limitations": _limitations(req, domain)
+                       + ["AI 요약 생성이 지연되거나 실패해 본문 발췌 기반으로 정리했습니다(내용 검토 필요)."],
+    }
+
+
+def _has_real_text(pages: List[Dict[str, Any]]) -> bool:
+    return any(p["source"] != "INSUFFICIENT" and len(re.sub(r"\s+", "", p["text"])) >= _MIN_PAGE_MEANINGFUL
+               for p in pages)
+
+
+def _generate_sync(req: MajorAnalysisRequest, state: Optional[Dict[str, Any]] = None,
+                   deadline: Optional[float] = None) -> Dict[str, Any]:
+    """state(선택): 엔드포인트 timeout 시에도 추출된 페이지로 발췌 노트를 만들 수 있게 중간 결과를 남긴다.
+    deadline(선택, time.monotonic 기준): 로컬 LLM/OCR 예산 계산용."""
+    from app.services.ai_pipeline import ENABLE_OPENAI_REFINER, openai_refine, parse_json
+
+    state = state if state is not None else {}
+    use_openai_ocr = _openai_ok("major_analysis_ocr")
+    use_openai_note = ENABLE_OPENAI_REFINER and _openai_ok("major_analysis_note")
 
     pages = []
-    # s3Key가 있으면 S3에서 직접 다운로드하여 멀티모달(GPT-4o Vision)로 분석
+    # s3Key가 있으면 S3에서 직접 다운로드. OCR 은 외부 전송 허용 시 GPT-4o Vision, 아니면 로컬 정규화.
     if req.s3Key:
         try:
             from app.services.s3_pdf_loader import load_pdf_bytes_from_s3
-            from app.services.pdf_page_extractor import extract_pdf_pages
-            import base64
-            from io import BytesIO
-
-            def gpt4o_vision_ocr(image) -> str:
-                from app.services.openai_client import get_sync_client
-                try:
-                    client = get_sync_client()
-                    buffer = BytesIO()
-                    image.save(buffer, format="JPEG")
-                    b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-                    resp = client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": "이 이미지에 포함된 모든 텍스트, 수식, 표, 다이어그램의 내용을 빠짐없이 정확히 추출해줘. 마크다운 기호 없이 텍스트만 출력하고, 표나 그림은 그 내용을 요약해서 텍스트로 적어줘."},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-                                ]
-                            }
-                        ],
-                        max_tokens=1500,
-                        temperature=0.0
-                    )
-                    return resp.choices[0].message.content or ""
-                except Exception as e:
-                    logger.warning("GPT Vision OCR failed: %s", e)
-                    return ""
-
             pdf_bytes = load_pdf_bytes_from_s3(req.s3Key)
-            pdf_result = extract_pdf_pages(
-                pdf_bytes,
-                ocr_enabled=True,
-                ocr_fn=gpt4o_vision_ocr,
-                ocr_max_pages=40, # 전체 페이지 OCR 허용
-                min_text_chars=12
-            )
-            # pdf_result.pages를 기반으로 pages 배열 구성
-            for p in pdf_result.pages:
-                source = "MIXED" if p["hasImage"] else "TEXT"
-                merged = (p["text"] + "\n" + p["ocrText"]).strip()
-                if not merged:
-                    source = "INSUFFICIENT"
-                pages.append({"page": p["page"], "text": merged, "source": source})
-            logger.info("GPT-4o 멀티모달 분석 완료: 총 %d 페이지 추출", len(pages))
+            if use_openai_ocr:
+                pages = _openai_ocr_pages(pdf_bytes)
+            else:
+                ocr_deadline = time.monotonic() + _LOCAL_OCR_BUDGET_S
+                if deadline is not None:
+                    ocr_deadline = min(ocr_deadline, deadline - _MIN_LLM_SECONDS)
+                pages = _local_ocr_pages(pdf_bytes, ocr_deadline)
         except Exception as e:
-            logger.warning("S3 멀티모달 분석 실패, 기존 텍스트로 폴백: %s", e)
+            logger.warning("S3 PDF 분석 실패, 기존 텍스트로 폴백: %s", type(e).__name__)
             pages = _collect_pages(req)
+        if not _has_real_text(pages):
+            req_pages = _collect_pages(req)
+            if _has_real_text(req_pages):
+                pages = req_pages
     else:
         pages = _collect_pages(req)
+    state["pages"] = pages
 
     # 실제로 추출된 본문(INSUFFICIENT 아닌 페이지)만 근거로 삼는다.
     real_text = "\n".join([p["text"] for p in pages if p["source"] != "INSUFFICIENT"])[:_MAX_TOTAL_CHARS]
@@ -663,6 +817,7 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
 
     domain, _score = _classify_domain(text)
     candidates = _concept_candidates(text)
+    state["domain"] = domain
 
     logger.info("[MajorAnalysis] material=%s pages=%d real_chars=%d meaningful=%d domain=%s score=%.1f cand=%s",
                 req.materialId, len(pages), len(grounded), len(meaningful), domain["enum"], _score, candidates[:3])
@@ -675,16 +830,23 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
     # 검색 호출도 생략(불필요한 외부 호출/노이즈 제거). 필요 시 _fetch_wiki(candidates, max_wiki)로 복구.
     wiki: List[Dict[str, Any]] = []
 
-    prompt = _build_prompt(req, domain, wiki, candidates, pages)
-    # 페이지별 요약 JSON은 다페이지×다필드라 커서 2200토큰에선 잘려(truncated) 파싱 실패→폴백했다.
-    # 토큰을 충분히 주고 JSON 모드로 호출해 유효 JSON을 강제한다(+파서에 truncation 복구 보강).
-    raw = openai_refine(_SYSTEM, prompt, max_tokens=8192, json_mode=True)
-    parsed = parse_json(raw)
-    if not parsed:
-        raw = openai_refine(_SYSTEM, prompt, max_tokens=8192, json_mode=True)
+    parsed = None
+    if use_openai_note:
+        prompt = _build_prompt(req, domain, wiki, candidates, pages)
+        # 페이지별 요약 JSON은 다페이지×다필드라 커서 2200토큰에선 잘려(truncated) 파싱 실패→폴백했다.
+        # 토큰을 충분히 주고 JSON 모드로 호출해 유효 JSON을 강제한다(+파서에 truncation 복구 보강).
+        raw = openai_refine(_SYSTEM, prompt, max_tokens=8192, json_mode=True, feature="major_analysis_note")
         parsed = parse_json(raw)
+        if not parsed:
+            raw = openai_refine(_SYSTEM, prompt, max_tokens=8192, json_mode=True, feature="major_analysis_note")
+            parsed = parse_json(raw)
     if not isinstance(parsed, dict):
-        # LLM 실패 → 도메인/페이지는 유지한 fallback(업로드 실패 방지)
+        # OpenAI 차단/실패 → 로컬 qwen3(상한이 걸린 프롬프트, 남은 시간 안에서만)
+        parsed = _local_note_json(req, domain, candidates, pages, deadline)
+    if not isinstance(parsed, dict):
+        # LLM 실패 → 본문이 있으면 발췌 노트, 없으면 도메인/페이지는 유지한 fallback(업로드 실패 방지)
+        if _has_real_text(pages):
+            return _extractive_note(req, domain, pages, "llm_unavailable")
         return _fallback(req, domain, wiki, pages)
 
     core_obj = _clean(parsed.get("coreObject")) or (candidates[0] if candidates else "문서의 핵심 전공 개념")
@@ -696,6 +858,7 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
     questions = _str_list(parsed.get("aiStudyQuestions"), 5)
 
     # 배치에서 누락된 '실제 텍스트가 있는' 페이지는 개별 재생성으로 커버리지 보장(거짓 생성 금지).
+    # 로컬 모드는 남은 시간·재시도 수 상한 안에서만 개별 재생성하고, 그 밖은 본문 발췌 요약으로 채운다.
     llm_pages = parsed.get("pageSummaries")
     llm_pages = list(llm_pages) if isinstance(llm_pages, list) else []
     covered = {
@@ -703,14 +866,17 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
         if isinstance(item, dict) and (item.get("pageOverview") or item.get("summaryBullets"))
     }
     retried = 0
+    max_retry = _MAX_PAGE_RETRY if use_openai_note else _LOCAL_PAGE_RETRY
     for p in pages:
-        if retried >= _MAX_PAGE_RETRY:
-            break
-        if p["source"] != "INSUFFICIENT" and p["page"] not in covered:
-            single = _summarize_single_page(domain, p)
-            if single:
-                llm_pages.append(single)
-                retried += 1
+        if p["source"] == "INSUFFICIENT" or p["page"] in covered:
+            continue
+        single = None
+        if retried < max_retry and _remaining(deadline) >= _MIN_LLM_SECONDS:
+            single = _summarize_single_page(domain, p, deadline=deadline, use_openai=use_openai_note)
+            retried += 1
+        if not single:
+            single = _extractive_page(p)
+        llm_pages.append(single)
 
     # 페이지별 요약(결정론적 page/source 기준으로 정규화 + 누락/불충분 페이지 보강)
     page_summaries = _normalize_page_summaries(llm_pages, pages)
@@ -721,8 +887,10 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
     else:
         detailed = _detail_list(parsed.get("detailedCoreContents"), 6)
 
-    # 핵심 섹션이 비면 fallback(추상/빈 응답을 성공으로 내보내지 않음)
+    # 핵심 섹션이 비면 fallback(추상/빈 응답을 성공으로 내보내지 않음) — 본문이 있으면 발췌 노트.
     if not overview or not core_contents:
+        if _has_real_text(pages):
+            return _extractive_note(req, domain, pages, "llm_incomplete")
         return _fallback(req, domain, wiki, pages)
 
     return {
@@ -745,19 +913,78 @@ def _generate_sync(req: MajorAnalysisRequest) -> Dict[str, Any]:
     }
 
 
+def _openai_ocr_pages(pdf_bytes: bytes) -> List[Dict[str, Any]]:
+    """외부 전송 허용(openai:major_analysis_ocr) 시의 기존 GPT-4o Vision OCR 경로(동작 동일)."""
+    from app.services.pdf_page_extractor import extract_pdf_pages
+    import base64
+    from io import BytesIO
+
+    def gpt4o_vision_ocr(image) -> str:
+        from app.services.openai_client import get_sync_client
+        try:
+            client = get_sync_client("major_analysis_ocr")
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG")
+            b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            resp = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "이 이미지에 포함된 모든 텍스트, 수식, 표, 다이어그램의 내용을 빠짐없이 정확히 추출해줘. 마크다운 기호 없이 텍스트만 출력하고, 표나 그림은 그 내용을 요약해서 텍스트로 적어줘."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                        ]
+                    }
+                ],
+                max_tokens=1500,
+                temperature=0.0
+            )
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            logger.warning("GPT Vision OCR failed: %s", type(e).__name__)
+            return ""
+
+    pdf_result = extract_pdf_pages(
+        pdf_bytes,
+        ocr_enabled=True,
+        ocr_fn=gpt4o_vision_ocr,
+        ocr_max_pages=40,  # 전체 페이지 OCR 허용
+        min_text_chars=12
+    )
+    pages: List[Dict[str, Any]] = []
+    for p in pdf_result.pages:
+        source = "MIXED" if p["hasImage"] else "TEXT"
+        merged = (p["text"] + "\n" + p["ocrText"]).strip()
+        if not merged:
+            source = "INSUFFICIENT"
+        pages.append({"page": p["page"], "text": merged, "source": source})
+    logger.info("GPT-4o 멀티모달 분석 완료: 총 %d 페이지 추출", len(pages))
+    return pages
+
+
 @router.post("/api/ai/major-analysis/note", summary="전공 분야+핵심 객체 중심 AI 요약 노트")
 async def major_analysis_note(req: MajorAnalysisRequest = Body(...)):
     # 분석 실패가 업로드 실패가 되면 안 되므로 어떤 경우에도 200 + 구조화 JSON 반환.
+    state: Dict[str, Any] = {}
+    deadline = time.monotonic() + MAJOR_ANALYSIS_TIMEOUT - _DEADLINE_MARGIN_S
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(_generate_sync, req), timeout=MAJOR_ANALYSIS_TIMEOUT)
+            asyncio.to_thread(_generate_sync, req, state, deadline), timeout=MAJOR_ANALYSIS_TIMEOUT)
         return result
     except asyncio.TimeoutError:
         logger.info("major-analysis timeout materialId=%s → fallback", req.materialId)
     except Exception as e:  # noqa: BLE001
-        logger.warning("major-analysis 실패 materialId=%s: %s → fallback", req.materialId, e)
-    try:
-        pages = _collect_pages(req)
-    except Exception:  # noqa: BLE001
-        pages = []
-    return _fallback(req, None, [], pages)
+        logger.warning("major-analysis 실패 materialId=%s: %s → fallback", req.materialId, type(e).__name__)
+    pages = state.get("pages")
+    if pages is None:
+        try:
+            pages = _collect_pages(req)
+        except Exception:  # noqa: BLE001
+            pages = []
+    if pages and _has_real_text(pages):
+        try:
+            return _extractive_note(req, state.get("domain"), pages, "timeout_or_error")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("major-analysis 발췌 노트 실패: %s", type(e).__name__)
+    return _fallback(req, None, [], pages or [])

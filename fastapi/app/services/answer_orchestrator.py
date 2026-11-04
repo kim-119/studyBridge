@@ -103,7 +103,7 @@ def run_deep_search_pipeline(
     # ── 3. Tavily 웹 검색 ─────────────────────────────────────────────
     if route["use_tavily"]:
         try:
-            tavily_results = search_web(question)
+            tavily_results = search_web(question, feature="answer_orchestrator")
             sources["tavily"] = tavily_results
             logs.append(
                 f"Tavily로 최신 웹 자료를 검색했습니다. ({len(tavily_results)}개 결과)"
@@ -117,7 +117,7 @@ def run_deep_search_pipeline(
     # ── 4. Wikipedia 검색 ─────────────────────────────────────────────
     if route["use_wikipedia"]:
         try:
-            wiki_results = search_wikipedia(question)
+            wiki_results = search_wikipedia(question, feature="answer_orchestrator")
             sources["wikipedia"] = wiki_results
             logs.append(
                 f"Wikipedia에서 기본 개념 자료를 검색했습니다. ({len(wiki_results)}개 결과)"

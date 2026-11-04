@@ -63,8 +63,9 @@ def _call_llm(system: str, user: str) -> str:
         logger.warning("Qwen 호출 실패: %s", e)
     try:
         from app.services.openai_client import chat_sync
-        result = chat_sync(system, user, max_tokens=500)
-        if result:
+        result = chat_sync(system, user, max_tokens=500, feature="debate_mode")
+        # 키 없음/정책 차단/실패 시 chat_sync 는 '[GPT ...' 문자열을 돌려준다 → 사용자에게 노출하지 않는다.
+        if result and not result.strip().startswith("[GPT"):
             return result.strip()
     except Exception as e:
         logger.warning("OpenAI 호출 실패: %s", e)

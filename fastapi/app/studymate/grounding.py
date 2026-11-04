@@ -68,12 +68,12 @@ def search_query(current_message: str) -> str:
 def _fetch(src: str, query: str) -> str:
     if src == "wiki":
         from app.services.knowledge_enrichment import _fetch_wiki, _DEFAULT_TIMEOUT
-        return _fetch_wiki(query, _DEFAULT_TIMEOUT) or ""
+        return _fetch_wiki(query, _DEFAULT_TIMEOUT, feature="studymate_grounding") or ""
     if src == "tavily":
         from app.services.knowledge_enrichment import _fetch_tavily, _tavily_enabled, _DEFAULT_TIMEOUT
-        if not _tavily_enabled():
+        if not _tavily_enabled("studymate_grounding"):
             return ""
-        return _fetch_tavily(query, _DEFAULT_TIMEOUT) or ""
+        return _fetch_tavily(query, _DEFAULT_TIMEOUT, feature="studymate_grounding") or ""
     if src == "gpt":
         from app.services.orchestrator_service import _build_gpt_brief
         return _build_gpt_brief(query) or ""

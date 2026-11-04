@@ -287,7 +287,7 @@ def fetch_wikipedia_context(concepts: List[str]) -> Tuple[str, bool]:
         return "", False
     for c in concepts[:3]:
         try:
-            hits = search_wikipedia(c, limit=1)
+            hits = search_wikipedia(c, limit=1, feature="pdf_quiz_enrichment")
         except Exception as e:  # noqa: BLE001
             logger.info("Wikipedia 조회 실패(%s): %s", c, e)
             continue

@@ -7,7 +7,7 @@ import requests
 from app.core.config import WIKI_LANGUAGE, WIKI_USER_AGENT
 
 
-def search_wikipedia(query: str, limit: int = 3) -> list[dict]:
+def search_wikipedia(query: str, limit: int = 3, *, feature: str = "wikipedia_search") -> list[dict]:
     """
     Wikipedia API를 호출하여 개념 설명 후보를 검색한다.
 
@@ -18,6 +18,11 @@ def search_wikipedia(query: str, limit: int = 3) -> list[dict]:
     Returns:
         [{"title": str, "snippet": str, "pageid": int, "url": str}, ...]
     """
+    # 외부 전송 정책(app.core.egress_policy): 불허면 네트워크 호출 없이 빈 결과.
+    from app.core.egress_policy import egress_allowed
+    if not egress_allowed("wikipedia", feature):
+        return []
+
     api_url = f"https://{WIKI_LANGUAGE}.wikipedia.org/w/api.php"
 
     params = {

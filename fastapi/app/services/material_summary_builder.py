@@ -437,8 +437,14 @@ def _llm_attempt(document_title: str, text: str, use_gpt: bool) -> tuple[Optiona
             logger.warning("구조화 요약 primary LLM 실패: %s", e)
             raw = ""
     if not raw and (use_gpt or AI_ENABLE_GPT_FALLBACK):
-        raw = _call_gpt(system, user, max_tokens=4096)
+        raw = _call_gpt(system, user, max_tokens=4096, feature="material_structured_summary")
         provider = "openai_gpt"
+        if use_gpt and (not raw or raw.strip().startswith("[")):
+            # GPT 우선 경로가 외부 전송 정책으로 차단/실패 → 같은 프롬프트로 로컬 Ollama(외부 fallback 금지).
+            from app.services.material_ai_manager import _local_llm
+            local = _local_llm(system, user, 4096, temperature=0.35)
+            if local:
+                raw, provider = local, "ollama_qwen"
     if raw and raw.strip().startswith("["):
         raw = ""
     return _parse_llm_json(raw), provider

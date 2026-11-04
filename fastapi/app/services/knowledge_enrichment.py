@@ -9,6 +9,8 @@
 - 턴당 1회 fetch + 메모리 캐시(같은 질문 재호출 비용 0).
 - 외부 호출 timeout 짧게(기본 3s).
 - content-free: 특정 도메인 주제어를 로직/폴백에 하드코딩하지 않는다(반복 유발 회피).
+- 외부 전송 정책(app.core.egress_policy): _fetch_wiki/_fetch_tavily 는 feature 별 허용이 없으면 네트워크 호출 없이
+  빈 문자열을 반환한다(기본 차단). 호출자는 feature 이름을 넘긴다(기본 "knowledge_enrichment").
 """
 from __future__ import annotations
 
@@ -34,12 +36,21 @@ def clear_cache() -> None:
     _cache.clear()
 
 
-def _tavily_enabled() -> bool:
-    return bool((os.getenv("TAVILY_API_KEY") or "").strip())
+_FEATURE = "knowledge_enrichment"
 
 
-def _fetch_wiki(query: str, timeout: float) -> str:
-    """한국어 위키 다중 문서 인트로를 합산 상한 내로 반환한다(실패/없음→빈문자열)."""
+def _tavily_enabled(feature: str = _FEATURE) -> bool:
+    if not (os.getenv("TAVILY_API_KEY") or "").strip():
+        return False
+    from app.core.egress_policy import egress_allowed
+    return egress_allowed("tavily", feature)
+
+
+def _fetch_wiki(query: str, timeout: float, *, feature: str = _FEATURE) -> str:
+    """한국어 위키 다중 문서 인트로를 합산 상한 내로 반환한다(실패/없음/정책 차단→빈문자열)."""
+    from app.core.egress_policy import egress_allowed
+    if not egress_allowed("wikipedia", feature):
+        return ""
     encoded = urllib.parse.quote(query)
     search_url = (
         "https://ko.wikipedia.org/w/api.php?action=query&list=search"
@@ -78,10 +89,13 @@ def _fetch_wiki(query: str, timeout: float) -> str:
     return "\n".join(parts).strip()
 
 
-def _fetch_tavily(query: str, timeout: float) -> str:
-    """Tavily 웹검색 요약(키 있을 때만 호출됨). 실패→예외(호출측에서 graceful 처리)."""
+def _fetch_tavily(query: str, timeout: float, *, feature: str = _FEATURE) -> str:
+    """Tavily 웹검색 요약(키 있을 때만 호출됨). 실패→예외(호출측에서 graceful 처리). 정책 차단→빈문자열."""
     api_key = (os.getenv("TAVILY_API_KEY") or "").strip()
     if not api_key:
+        return ""
+    from app.core.egress_policy import egress_allowed
+    if not egress_allowed("tavily", feature):
         return ""
     payload = json.dumps({
         "api_key": api_key,

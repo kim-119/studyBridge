@@ -293,7 +293,8 @@ def _call_quiz_llm(system: str, user: str, request_id: str) -> str:
         from main import _call_openai
 
         content = _call_openai(
-            system, user, max_tokens=QUIZ_MAX_TOKENS, temperature=QUIZ_TEMPERATURE
+            system, user, max_tokens=QUIZ_MAX_TOKENS, temperature=QUIZ_TEMPERATURE,
+            feature="quiz_text_fallback",
         )
         if content and content.strip():
             return content

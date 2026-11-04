@@ -151,12 +151,14 @@ def _llm_struct(*, draft_system: str, draft_user: str, validator: Callable[[Dict
         draft_system=draft_system, draft_user=draft_user,
         refine_system=refine_system, refine_user_builder=_refine_user,
         validator=validator, max_tokens=max_tokens,
+        feature="learning_loop",
     )
     if isinstance(parsed, dict) and validator(parsed):
         return parsed
     repaired = repair_to_valid(
         repair_system=refine_system, repair_user=_refine_user(parsed or {}),
         validator=validator, max_tokens=max_tokens,
+        feature="learning_loop",
     )
     if isinstance(repaired, dict) and validator(repaired):
         return repaired

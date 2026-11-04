@@ -93,8 +93,12 @@ def report_profile() -> OpenAlexProfile:
     )
 
 
-def is_enabled() -> bool:
-    return os.getenv("OPENALEX_ENABLED", "false").strip().lower() == "true"
+def is_enabled(feature: str = "openalex_live") -> bool:
+    """OPENALEX_ENABLED AND 외부 전송 정책(app.core.egress_policy) 허용."""
+    if os.getenv("OPENALEX_ENABLED", "false").strip().lower() != "true":
+        return False
+    from app.core.egress_policy import egress_allowed
+    return egress_allowed("openalex", feature)
 
 
 def _base_url() -> str:
@@ -224,12 +228,14 @@ _cache = OpenAlexCache()
 
 # ── OpenAlex 클라이언트 (단일 list 호출 + 방어적 파싱) ─────────────────────────
 class _OpenAlexClient:
-    def search(self, query: str, profile: OpenAlexProfile) -> List[Dict[str, Any]]:
+    def search(self, query: str, profile: OpenAlexProfile, feature: str = "openalex_live") -> List[Dict[str, Any]]:
         """
         works list 1회 호출. query는 정제된 키워드 질의(search_terms 결과).
         select로 최소 필드만 받고, schema가 바뀌어도 죽지 않게 방어적으로 파싱한다.
         예외는 호출자가 분류하도록 그대로 올린다(타입만 보존).
         """
+        from app.core.egress_policy import require_egress
+        require_egress("openalex", feature)  # 방어선: enrich 를 거치지 않은 직접 호출도 차단
         import httpx
 
         params = {
@@ -304,8 +310,10 @@ def enrich(question: str, profile_name: str = "live") -> OpenAlexOutcome:
     호출 조건(연구성 질문)은 여기서 판단한다. 수준 게이팅(DOCTOR/EXPERT)은 호출자가 한다.
     """
     profile = report_profile() if profile_name == "report" else live_profile()
+    feature = "openalex_report" if profile_name == "report" else "openalex_live"
+    enabled = is_enabled(feature)
     base_status: Dict[str, Any] = {
-        "enabled": is_enabled(),
+        "enabled": enabled,
         "needed": None,
         "cacheHit": False,
         "timeoutSeconds": profile.timeout,
@@ -316,7 +324,7 @@ def enrich(question: str, profile_name: str = "live") -> OpenAlexOutcome:
         "status": "skipped",
     }
 
-    if not is_enabled():
+    if not enabled:
         base_status.update({"status": "disabled"})
         return OpenAlexOutcome("skipped", [], base_status)
 
@@ -342,7 +350,7 @@ def enrich(question: str, profile_name: str = "live") -> OpenAlexOutcome:
 
     t0 = time.time()
     try:
-        works = _client.search(terms, profile)
+        works = _client.search(terms, profile, feature)
     except Exception as e:  # noqa: BLE001  (timeout/network/4xx/5xx/parse 모두 흡수)
         elapsed = int((time.time() - t0) * 1000)
         status = _classify_error(e)

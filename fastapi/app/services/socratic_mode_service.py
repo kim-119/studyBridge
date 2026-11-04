@@ -49,8 +49,8 @@ def _call_llm(system: str, user: str) -> str:
         logger.warning("Qwen 호출 실패: %s", e)
     try:
         from app.services.openai_client import chat_sync
-        result = chat_sync(system, user, max_tokens=400)
-        if result:
+        result = chat_sync(system, user, max_tokens=400, feature="socratic_mode")
+        if result and not result.strip().startswith("[GPT"):
             return result.strip()
     except Exception as e:
         logger.warning("OpenAI 호출 실패: %s", e)

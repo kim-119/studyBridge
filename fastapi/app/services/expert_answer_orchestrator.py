@@ -472,7 +472,7 @@ def _gather_evidence(plan: ExpertAnswerPlan, material_id: Optional[int], rag_con
 def _fetch_wikipedia(query: str) -> List[Evidence]:
     from app.services.wikipedia_service import search_wikipedia
     res = []
-    for r in (search_wikipedia(query, limit=3) or []):
+    for r in (search_wikipedia(query, limit=3, feature="expert_answer_evidence") or []):
         snippet = (r.get("snippet", "") or "").strip()
         if not snippet:
             continue
@@ -484,7 +484,7 @@ def _fetch_wikipedia(query: str) -> List[Evidence]:
 def _fetch_tavily(query: str) -> List[Evidence]:
     from app.services.tavily_service import search_web
     res = []
-    for r in (search_web(query, max_results=4) or []):
+    for r in (search_web(query, max_results=4, feature="expert_answer_evidence") or []):
         content = (r.get("content", "") or "").strip()
         if not content:
             continue
@@ -896,9 +896,10 @@ def _generate(system_prompt: str, user_prompt: str, max_tokens: int, temperature
     # OpenAI fallback
     try:
         from app.services.openai_client import chat_sync, is_enabled
-        if is_enabled():
+        if is_enabled("expert_answer"):
             txt = chat_sync(system=system_prompt, user=user_prompt,
-                            temperature=temperature, max_tokens=min(max_tokens, 4000))
+                            temperature=temperature, max_tokens=min(max_tokens, 4000),
+                            feature="expert_answer")
             if not _looks_failed(txt):
                 return txt
     except Exception as e:  # noqa: BLE001
@@ -910,8 +911,9 @@ def _openai_json(system_prompt: str, user_prompt: str) -> str:
     """질문 분석/설계용 JSON 호출. OpenAI 우선, 미설정 시 Ollama think=False."""
     try:
         from app.services.openai_client import chat_sync, is_enabled
-        if is_enabled():
-            txt = chat_sync(system=system_prompt, user=user_prompt, temperature=0.0, max_tokens=600)
+        if is_enabled("expert_answer_plan"):
+            txt = chat_sync(system=system_prompt, user=user_prompt, temperature=0.0, max_tokens=600,
+                            feature="expert_answer_plan")
             if not _looks_failed(txt):
                 return txt
     except Exception as e:  # noqa: BLE001

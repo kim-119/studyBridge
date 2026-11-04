@@ -69,6 +69,8 @@ def search(
     question: str,
     knowledge_level: str,
     domain: Optional[str] = None,
+    *,
+    feature: str = "openalex_search",
 ) -> "OpenAlexSearchResult":  # noqa: F821
     """
     OpenAlex에서 논문을 검색하여 내부 컨텍스트용 결과를 반환한다.
@@ -84,6 +86,12 @@ def search(
     if not _is_enabled():
         return OpenAlexSearchResult(
             query=question, skipped=True, skip_reason="openalex_disabled",
+        )
+
+    from app.core.egress_policy import egress_allowed
+    if not egress_allowed("openalex", feature):
+        return OpenAlexSearchResult(
+            query=question, skipped=True, skip_reason="egress_policy_blocked",
         )
 
     api_key = _get_api_key()

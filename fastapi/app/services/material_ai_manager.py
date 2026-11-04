@@ -347,35 +347,50 @@ def sanitize_keywords(keywords: List[str], limit: int = 8) -> List[str]:
     return cleaned
 
 
-def _get_gpt_client():
-    global _sync_client
-    if _sync_client is None:
-        if not OPENAI_API_KEY:
-            raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다.")
-        from openai import OpenAI
-        _sync_client = OpenAI(api_key=OPENAI_API_KEY)
-    return _sync_client
+def _get_gpt_client(feature: Optional[str] = None):
+    """공용 openai_client 로 위임(전용 클라이언트 생성 금지 — 외부 전송 정책 관문 통과)."""
+    from app.services.openai_client import get_sync_client
+    return get_sync_client(feature)
 
 
-def _call_gpt(system: str, user: str, max_tokens: int = 1200) -> str:
-    """GPT-4o-mini 동기 호출 (자료보관함 메인 처리)."""
+def _call_gpt(system: str, user: str, max_tokens: int = 1200, *, feature: str = "material_gpt") -> str:
+    """GPT-4o-mini 동기 호출 (자료보관함 메인 처리).
+
+    openai_client.chat_sync 로 위임한다 → 외부 전송 정책 + AI Gateway 예산/브레이커를 함께 통과.
+    키 없음/정책 차단/실패는 기존과 같이 '[GPT ...' 로 시작하는 문자열을 반환한다(호출부 fallback 규약).
+    """
     if not OPENAI_API_KEY:
         return "[GPT 미설정] OPENAI_API_KEY를 .env에 추가하세요."
+    from app.services.openai_client import chat_sync
+    return chat_sync(system=system, user=user, model="gpt-4o-mini", temperature=0.2,
+                     max_tokens=max_tokens, feature=feature)
+
+
+def _local_llm(system: str, user: str, max_tokens: int, temperature: float = 0.3) -> str:
+    """로컬 Ollama 전용 호출(외부 fallback 금지). 실패/폴백 문구면 빈 문자열."""
     try:
-        client = _get_gpt_client()
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user",   "content": user},
-            ],
-            temperature=0.2,
-            max_tokens=max_tokens,
-        )
-        return resp.choices[0].message.content or ""
-    except Exception as e:
-        logger.error("GPT 호출 실패: %s", e)
-        return f"[GPT 오류] {type(e).__name__}: {e}"
+        from app.services.llm_engine_router import call_primary_llm
+        from app.services.ollama_client import is_fallback_text
+        out = call_primary_llm(system_prompt=system, user_prompt=user, max_tokens=max_tokens,
+                               temperature=temperature, allow_external=False)
+        if out and not out.strip().startswith("[") and not is_fallback_text(out):
+            return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning("로컬 LLM 대체 실패: %s", type(e).__name__)
+    return ""
+
+
+def _gpt_or_local(system: str, user: str, max_tokens: int, *, feature: str,
+                  temperature: float = 0.3) -> tuple[str, str]:
+    """'GPT 전담' 경로의 정책 대응: 외부 전송 허용이면 GPT, 차단/실패면 같은 프롬프트로 로컬 Ollama.
+    반환 (text, provider). 둘 다 실패면 GPT 실패 문자열('[GPT ...')을 그대로 돌려 기존 호출부 규약 유지."""
+    out = _call_gpt(system, user, max_tokens=max_tokens, feature=feature)
+    if out and not out.strip().startswith("["):
+        return out, "openai_gpt"
+    local = _local_llm(system, user, max_tokens, temperature)
+    if local:
+        return local, "ollama_qwen"
+    return out, "openai_gpt"
 
 
 def _apply_qwen_tone(
@@ -442,7 +457,8 @@ def answer_from_pdf(
         f"## 질문\n{question}\n\n"
         "위 자료를 근거로 정확하고 구조적으로 답변하라."
     )
-    gpt_raw = _call_gpt(gpt_system, gpt_user)
+    # 외부 전송 차단/실패 → 로컬 Ollama 로 같은 프롬프트 처리(말투 보정 단계는 그대로).
+    gpt_raw, _prov = _gpt_or_local(gpt_system, gpt_user, 1200, feature="material_qa")
     final_answer = _apply_qwen_tone(gpt_raw, personality, agent_name)
     return {
         "answer":  final_answer,
@@ -571,7 +587,12 @@ def summarize_document(
     raw = ""
 
     images = []
-    if s3_file_url:
+    # PDF 페이지 이미지를 GPT-4o 로 보내는 경로는 외부 전송 정책이 허용할 때만 쓴다.
+    # (차단이면 이미지 추출 자체를 생략 → 아래 로컬 텍스트 경로. 이전엔 키 없음/차단 시 chat_sync 가 예외 없이
+    #  "[GPT ..." 를 돌려 빈 요약이 나가던 버그가 있었다.)
+    from app.services.openai_client import is_enabled as _openai_enabled
+    vision_allowed = bool(s3_file_url) and _openai_enabled("material_summary_vision")
+    if vision_allowed:
         try:
             from app.services.s3_pdf_loader import load_pdf_images_from_s3
             images = load_pdf_images_from_s3(s3_file_url)
@@ -587,11 +608,18 @@ def summarize_document(
         try:
             from app.services.openai_client import chat_sync
             # 이미지와 텍스트를 함께 GPT-4o에 전송 (출력이 잘리지 않도록 토큰 대폭 상향)
-            raw = chat_sync(system=system, user=user_content, model="gpt-4o", max_tokens=4096, temperature=0.35)
+            raw = chat_sync(system=system, user=user_content, model="gpt-4o", max_tokens=4096, temperature=0.35,
+                            feature="material_summary_vision")
             provider = "openai_gpt_vision"
         except Exception as e:
             logger.warning("Vision 모델 요약 실패, 텍스트 전용 모드로 Fallback: %s", e)
-            images = []  # 실패 시 아래의 텍스트 전용 파이프라인으로 넘김
+            raw = ""
+        if not raw or raw.strip().startswith("["):
+            # chat_sync 는 예외 대신 '[GPT ...' 를 돌려준다 → 빈 요약 대신 로컬 텍스트 경로로 넘긴다.
+            logger.warning("Vision 요약 실패/차단 → 텍스트 전용 모드로 Fallback")
+            raw = ""
+            provider = "ollama_qwen"
+            images = []
 
     if not images:
         # 기존 텍스트 전용 파이프라인 (Ollama 우선, GPT Fallback)
@@ -603,7 +631,7 @@ def summarize_document(
         except Exception as e:
             logger.warning("요약 Ollama/Qwen 실패: %s", e)
             if AI_ENABLE_GPT_FALLBACK:
-                raw = _call_gpt(system, user, max_tokens=2200)
+                raw = _call_gpt(system, user, max_tokens=2200, feature="material_summary")
                 provider = "openai_gpt"
                 used_fallback = True
             else:
@@ -666,7 +694,7 @@ def generate_quiz(
         f"위 내용을 바탕으로 {num_questions}개 사지선다 문제를 출제하라.\n"
         "형식:\nQ1. [문제]\n① ... ② ... ③ ... ④ ...\n정답: ③\n해설: ..."
     )
-    quiz_text = _call_gpt(gpt_system, gpt_user, max_tokens=1500)
+    quiz_text, _prov = _gpt_or_local(gpt_system, gpt_user, 1500, feature="material_quiz")
     actual_count = quiz_text.count("Q") if quiz_text else 0
     return {
         "quiz":           quiz_text,
@@ -704,7 +732,7 @@ def generate_roadmap(
         "이 문서를 효과적으로 학습하기 위한 단계별 로드맵을 설계하라.\n"
         "형식:\n## 학습 목표\n## 선수 지식\n## 단계별 학습 계획 (1주차~)\n## 심화 학습 방향"
     )
-    roadmap_text = _call_gpt(gpt_system, gpt_user, max_tokens=1200)
+    roadmap_text, _prov = _gpt_or_local(gpt_system, gpt_user, 1200, feature="material_roadmap")
     return {"roadmap": roadmap_text}
 
 
@@ -878,7 +906,7 @@ def generate_quiz_json(context: str, difficulty: str = "보통", num_questions: 
             raise RuntimeError("primary LLM unavailable")
     except Exception as e:
         logger.warning("퀴즈 Ollama/Qwen 실패: %s", e)
-        raw = _call_gpt(system, user, max_tokens=max(2000, num_questions * 420))
+        raw = _call_gpt(system, user, max_tokens=max(2000, num_questions * 420), feature="material_quiz")
         provider = "openai_gpt"
     parsed = _extract_json(raw)
     questions: List[Dict[str, Any]] = []
@@ -926,7 +954,7 @@ def generate_roadmap_json(context: str, user_goal: str = "학습 목표 달성",
         "문서 개요부터 실습/복습까지 이어지는 주차별 학습 로드맵을 JSON으로만 출력하라. "
         "각 주차에는 주차 번호, 제목, 학습 목표, 핵심 개념, 학습 태스크 목록, 산출물/자기점검, 예상 학습 시간을 포함하라."
     )
-    raw = _call_gpt(system, user, max_tokens=3200)
+    raw, _prov = _gpt_or_local(system, user, 3200, feature="material_roadmap", temperature=0.35)
     parsed = _extract_json(raw)
     title = "AI 생성 학습 로드맵"
     weeks: List[Dict[str, Any]] = []

@@ -294,11 +294,13 @@ def _wrong_note_sync(body: Dict[str, Any]) -> Dict[str, Any]:
                 draft_system=draft_system, draft_user=draft_user,
                 refine_system=refine_system, refine_user_builder=_wn_refine_user,
                 validator=_wn_valid, max_tokens=2600,
+                feature="review_feedback",
             )
             if parsed is not None and not _wn_valid(parsed):
                 repaired = repair_to_valid(
                     repair_system=refine_system, repair_user=_wn_refine_user(parsed or {}),
                     validator=_wn_valid, max_tokens=2600,
+                    feature="review_feedback",
                 )
                 if repaired:
                     parsed = repaired
@@ -446,6 +448,7 @@ def _variant_sync(body: Dict[str, Any]) -> Dict[str, Any]:
                 draft_system=draft_system, draft_user=draft_user,
                 refine_system=refine_system, refine_user_builder=_v_refine_user,
                 validator=_v_valid, max_tokens=900,
+                feature="review_feedback",
             )
             if isinstance(parsed, dict):
                 question = sanitize_markdown_text(parsed.get("question"))

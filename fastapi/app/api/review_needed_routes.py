@@ -234,7 +234,7 @@ def _generate_sync(req: ReviewNeededRequest) -> dict:
             "재풀이 결과를 문장 안에 명시하고, 부족한 개념과 복습 순서를 반드시 포함하라.")
         raw = qwen_draft(RA.SYSTEM, ask, max_tokens=700)
         if not (raw and raw.strip()):
-            raw = openai_refine(RA.SYSTEM, ask, max_tokens=700)
+            raw = openai_refine(RA.SYSTEM, ask, max_tokens=700, feature="review_needed")
 
         cleaned = _strip_markdown(raw or "")
         if not cleaned:
