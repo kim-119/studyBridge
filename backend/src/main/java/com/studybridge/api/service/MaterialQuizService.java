@@ -53,6 +53,20 @@ public class MaterialQuizService {
     private final GroupStudyMemberRepository memberRepository;
     private final UserRepository userRepository;
 
+    // Global Response Quality Gate(기본 OFF). 생성자 시그니처를 바꾸지 않도록 선택 주입(null = OFF).
+    private com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setQualityGate(com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    /** 게이트 ON 에서 미검증(quality_status≠APPROVED) 저장 퀴즈의 AI 생성 필드 대신 내보내는 고정 문구. */
+    public static final String REDACTED_QUESTION = "AI 품질 검증을 통과하지 않은 문항이라 내용을 표시하지 않습니다. 퀴즈를 새로 생성해 주세요.";
+    public static final String REDACTED_OPTION = "(검증 전 보기 비공개)";
+    public static final String REDACTED_EXPLANATION = "AI 품질 검증을 통과하지 않은 퀴즈라 해설을 표시하지 않습니다.";
+    public static final String APPROVED = "APPROVED";
+
     public static final String RANKING_POLICY = "BEST_SCORE";
     static final int DEFAULT_RANKING_LIMIT = 50;
     static final int MAX_RANKING_LIMIT = 100;
@@ -83,6 +97,38 @@ public class MaterialQuizService {
                     .build());
         }
         return out;
+    }
+
+    /**
+     * 공개 문항의 AI 생성 필드(문항·보기 본문·문항 난이도 라벨)를 고정 문구로 바꾼다. 식별자(questionId/optionId/index)·
+     * questionType/answerType·gradable 은 그대로 둔다(사용자의 기존 답안·점수 기록과 연결되는 키).
+     */
+    public static List<QuizDTO.PublicQuestion> redactPublicQuestions(List<QuizDTO.PublicQuestion> questions) {
+        List<QuizDTO.PublicQuestion> out = new ArrayList<>();
+        if (questions == null) return out;
+        for (QuizDTO.PublicQuestion q : questions) {
+            List<QuizDTO.PublicOption> options = new ArrayList<>();
+            if (q.getOptions() != null) {
+                for (QuizDTO.PublicOption o : q.getOptions()) {
+                    options.add(QuizDTO.PublicOption.builder().optionId(o.getOptionId()).text(REDACTED_OPTION).build());
+                }
+            }
+            out.add(QuizDTO.PublicQuestion.builder()
+                    .questionId(q.getQuestionId()).index(q.getIndex()).question(REDACTED_QUESTION)
+                    .questionType(q.getQuestionType()).answerType(q.getAnswerType()).options(options)
+                    .difficulty(null).gradable(q.getGradable())
+                    .build());
+        }
+        return out;
+    }
+
+    private boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
+
+    /** 게이트 ON 이고 승인 기록이 없는 퀴즈(레거시/게이트 OFF 시기 생성) → AI 생성 필드를 가려야 한다. 게이트 OFF 면 항상 false. */
+    public boolean redacted(MaterialQuiz quiz) {
+        return gateOn() && (quiz == null || !APPROVED.equals(quiz.getQualityStatus()));
     }
 
     // ── 채점 ────────────────────────────────────────────────────────────────
@@ -235,11 +281,17 @@ public class MaterialQuizService {
         }
         List<QuizDTO.SharedQuiz> out = new ArrayList<>();
         for (MaterialQuiz q : quizRepository.findByMaterial_MaterialIdOrderByCreatedAtDesc(materialId)) {
+            boolean hide = redacted(q);
+            List<QuizDTO.PublicQuestion> questions = toPublicQuestions(q.getQuizId(), q.getQuizData());
             out.add(QuizDTO.SharedQuiz.builder()
                     .quizId(q.getQuizId()).materialId(materialId).difficulty(q.getDifficulty())
                     .questionCount(q.getQuestionCount()).createdAt(q.getCreatedAt())
-                    .questions(toPublicQuestions(q.getQuizId(), q.getQuizData()))
+                    .questions(hide ? redactPublicQuestions(questions) : questions)
                     .lastResult(latestResultOrNull(q, userId))
+                    // 게이트 OFF: 전부 null(기존 응답과 동일). ON: 승인본은 APPROVED/verified, 미승인은 가림 표식.
+                    .qualityStatus(gateOn() ? q.getQualityStatus() : null)
+                    .verified(gateOn() ? !hide : null)
+                    .qualityRedacted(hide ? Boolean.TRUE : null)
                     .build());
         }
         return out;
@@ -256,6 +308,8 @@ public class MaterialQuizService {
         int total = 0;
         int correct = 0;
         int answered = 0;
+        // 채점(정답 보기 id 비교)은 결정적 로직이라 그대로 하고, 해설(AI 생성 문장)만 게이트 ON + 미검증이면 가린다.
+        boolean hideExplanation = redacted(quiz);
         List<QuizDTO.QuestionResult> results = new ArrayList<>();
         for (InternalQuestion q : questions) {
             String sel = selected.get(q.getQuestionId());
@@ -280,7 +334,7 @@ public class MaterialQuizService {
                     .gradable(gradable)
                     .selectedOptionIds(sel == null ? new ArrayList<>() : new ArrayList<>(List.of(sel)))
                     .correctOptionIds(gradable ? new ArrayList<>(List.of(q.getCorrectOptionId())) : new ArrayList<>())
-                    .explanation(q.getExplanation())
+                    .explanation(hideExplanation ? REDACTED_EXPLANATION : q.getExplanation())
                     .build());
         }
         return QuizDTO.ResultResponse.builder()
@@ -294,6 +348,7 @@ public class MaterialQuizService {
                 .attempt(attempt)
                 .submittedAt(submittedAt)
                 .results(results)
+                .qualityRedacted(hideExplanation ? Boolean.TRUE : null)
                 .build();
     }
 

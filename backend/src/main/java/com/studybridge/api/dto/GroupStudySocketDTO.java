@@ -103,6 +103,10 @@ public class GroupStudySocketDTO {
         private LocalDateTime completedAt;
         private List<ScoreboardEntry> scoreboard;
         private String message;
+        // 품질 게이트(GET /api/groups/{groupId}/quiz/session 스냅샷 전용). 게이트 OFF·승인 퀴즈면 null → JSON 미출력(기존 payload 와 동일).
+        // true = 미검증 저장 퀴즈라 AI 생성 필드(퀴즈 제목·문항·보기)를 고정 문구로 가렸다(정답 번호·점수·제출 기록은 유지).
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean qualityRedacted;
     }
 
     @Data
