@@ -137,8 +137,14 @@ def test_api_rejects_contradiction_unknown_fields_and_malformed(client):
 
 
 def test_api_payload_limit(client):
+    # Phase D R5-9: 바이트 상한은 계약 최대치(문자 기준)에서 유도한 값이다. 그 안에 들지만 계약(6만 자)을 넘는 본문은
+    # 계약 위반 422, 바이트 상한 자체를 넘는 본문은 413(파싱 전 차단).
+    from app.quality_gate.routes import MAX_BODY_BYTES
     body = fixture("response-quality.v1", "input_pdf_summary_faithful.json")
     body["proposedOutput"] = "가" * 300000
+    r = client.post("/api/ai/quality/evaluate", json=body, headers=H)
+    assert r.status_code == 422 and r.json()["errorCode"] == "CONTRACT_VALIDATION_FAILED"
+    body["proposedOutput"] = "가" * (MAX_BODY_BYTES // 3 + 10)
     assert client.post("/api/ai/quality/evaluate", json=body, headers=H).status_code == 413
 
 

@@ -156,7 +156,7 @@ def test_evaluate_api_busy_disabled_and_timeout_never_return_unverified_approval
     R, c = _api()
     monkeypatch.delenv("AI_QUALITY_EVALUATE_API_ENABLED", raising=False)
     r = c.post("/api/ai/quality/evaluate", json=_body(), headers=H)
-    assert r.status_code == 503 and r.json() == {"success": False, "errorCode": "FEATURE_DISABLED"}
+    assert r.status_code == 503 and r.json() == {"success": False, "errorCode": "FEATURE_DISABLED", "retryable": False}
     monkeypatch.setenv("AI_QUALITY_EVALUATE_API_ENABLED", "true")
     monkeypatch.setenv("AI_QUALITY_EVAL_MAX_CONCURRENCY", "1")
     monkeypatch.setenv("AI_QUALITY_EVAL_QUEUE_WAIT_SECONDS", "0.05")
