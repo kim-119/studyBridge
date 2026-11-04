@@ -4029,7 +4029,8 @@ def _quiz_bot_answer(message: str, context: str, agent: Optional[AgentProfile] =
     text = chat_sync(system=system, user=user, temperature=0.4, max_tokens=_MAX_TOKENS_PER_ANSWER)
     if text and not text.startswith("[GPT"):
         return text
-    logger.warning("퀴즈봇 GPT 응답 실패 → Qwen 폴백: %s", text[:80] if text else "")
+    from app.utils.log_safety import fp as _log_fp
+    logger.warning("퀴즈봇 GPT 응답 실패 → Qwen 폴백: %s", _log_fp(text))
     return _call_llm(system, user)
 
 

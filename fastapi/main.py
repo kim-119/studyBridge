@@ -2635,7 +2635,8 @@ async def build_rag_context_for_multi_chat(request: MultiChatRequest) -> str:
 
     chunks = data.get("chunks") or []
     if not chunks:
-        logger.info("[RAG MULTI-CHAT EMPTY] materialId=%s question=%s", material_id, message[:80])
+        from app.utils.log_safety import fp as _log_fp
+        logger.info("[RAG MULTI-CHAT EMPTY] materialId=%s question=%s", material_id, _log_fp(message))
         return ""
 
     parts = [

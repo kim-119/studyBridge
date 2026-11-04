@@ -138,5 +138,7 @@ def gather(current_message: str, levels: Iterable[str], *, cancel: Optional[Canc
         pool.shutdown(wait=False, cancel_futures=True)   # 느린 소스가 턴을 붙잡지 못하게 한다
     bundle.elapsed_ms = int((time.time() - t0) * 1000)
     if bundle.failures:
-        logger.warning("[GROUNDING] degraded failures=%s query=%r elapsed=%dms", bundle.failures, query[:60], bundle.elapsed_ms)
+        from app.utils.log_safety import fp as _log_fp
+        logger.warning("[GROUNDING] degraded failures=%s query=%s elapsed=%dms", bundle.failures, _log_fp(query),
+                       bundle.elapsed_ms)
     return bundle

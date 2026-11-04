@@ -15,6 +15,7 @@ import time
 import urllib.request
 import urllib.parse
 from typing import Any, Dict, Generator, List, Optional
+from app.utils.log_safety import fp as _log_fp
 
 from app.schemas.multi_chat_schema import (
     AgentAnswer,
@@ -1363,7 +1364,7 @@ def build_orchestrator_stream(
         logger.info(
             "[MODE-TRACE] roomId=%s userId=%s rawMode=%s learningMode=%s finalMode=%s "
             "socraticApplied=%s diagnosisPrefix=%s previousAnswers=%d agents=%d "
-            "agent0.personality=%s agent0.level=%s msg=%r",
+            "agent0.personality=%s agent0.level=%s msg=%s",
             getattr(request, "roomId", None) or getattr(request, "room_id", None),
             getattr(request, "userId", None) or getattr(request, "user_id", None),
             getattr(request, "mode", None),
@@ -1375,7 +1376,7 @@ def build_orchestrator_stream(
             len(agents),
             getattr(_ag0, "personality", None) if _ag0 else None,
             (getattr(_ag0, "knowledgeLevel", None) or getattr(_ag0, "knowledgeLevelLabel", None)) if _ag0 else None,
-            (request.message or "")[:80],
+            _log_fp(request.message),   # 원문 대신 길이+해시(예전: 사용자 메시지 앞 80자를 운영 로그에 기록)
         )
     except Exception as _e:  # pragma: no cover - 계측은 본 흐름을 막지 않는다
         logger.warning("[MODE-TRACE] 계측 실패: %s", _e)
@@ -1392,12 +1393,12 @@ def build_orchestrator_stream(
         _bypass = _mem.is_recall_intent(_intent) and bool(_turns)
         logger.info(
             "[MEMORY-TRACE] roomId=%s userId=%s rawMode=%s rawLearningMode=%s finalMode=%s "
-            "memoryIntent=%s previousAnswerCount=%d normalizedTurnCount=%d memoryBypassLLM=%s msg=%r",
+            "memoryIntent=%s previousAnswerCount=%d normalizedTurnCount=%d memoryBypassLLM=%s msg=%s",
             getattr(request, "roomId", None) or getattr(request, "room_id", None),
             getattr(request, "userId", None) or getattr(request, "user_id", None),
             getattr(request, "mode", None), getattr(request, "learningMode", None),
             effective_mode, _intent.value, len(request.previousAnswers or []),
-            len(_turns), _bypass, (request.message or "")[:80],
+            len(_turns), _bypass, _log_fp(request.message),
         )
         if _bypass:
             yield from _run_memory_recall(

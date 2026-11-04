@@ -316,17 +316,14 @@ def _normalize_question(item: Dict[str, Any], idx: int, difficulty: str, fallbac
     answer = str(item.get("answer") or item.get("correctAnswer") or item.get("correct_answer") or fallback.get("answer") or "").strip()
 
     if qtype == "multiple_choice":
+        raw_index = item.get("answer_index", item.get("answerIndex", item.get("correctAnswer")))
         if len(choices) < 4:
             base_answer = answer or str(fallback.get("answer") or "핵심 개념")
             choices = _fallback_choices(base_answer, keywords)
-        if answer not in choices:
-            answer = choices[0]
-        try:
-            answer_index = int(item.get("answer_index", item.get("correctAnswer", choices.index(answer))))
-        except Exception:
-            answer_index = choices.index(answer)
-        if answer_index < 0 or answer_index >= len(choices) or choices[answer_index] != answer:
-            answer_index = choices.index(answer)
+            raw_index = None            # 보기를 다시 만들었으므로 LLM 의 index 는 새 보기와 무관하다
+        # 예전: 정답 텍스트가 보기와 '정확히' 같지 않으면 choices[0] 으로 덮어써, 해설은 실제 정답(D)을 설명하는데
+        # 정답 표시는 A 가 되는 불일치가 학습자에게 노출됐다(bcd5fe94 에서 resolver 만 추가되고 연결이 빠졌음).
+        answer, answer_index = _resolve_mc_answer(answer, choices, raw_index)
     elif qtype == "true_false":
         choices = choices if len(choices) >= 2 else ["True", "False"]
         normalized = str(answer).strip().lower()

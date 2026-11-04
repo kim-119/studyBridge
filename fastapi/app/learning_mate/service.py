@@ -62,7 +62,8 @@ def generate_chat(request: LearningMateChatRequest) -> LearningMateChatResponse:
     latency_ms = round((time.perf_counter() - t0) * 1000, 1)
 
     if _is_llm_failure(raw):
-        logger.warning("learning_mate LLM 실패: latency=%sms head=%r", latency_ms, (raw or "")[:80])
+        from app.utils.log_safety import fp as _log_fp
+        logger.warning("learning_mate LLM 실패: latency=%sms head=%s", latency_ms, _log_fp(raw))
         raise LearningMateLLMError("LLM 답변 생성에 실패했습니다.")
 
     answer = clean_llm_response(raw)

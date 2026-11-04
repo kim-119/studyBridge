@@ -15,6 +15,7 @@ Spring이 PDF/자료 본문을 추출해 그대로 넘겨주는 케이스를 안
 하드코딩 금지: 모델/온도/토큰/타임아웃/기본개수는 .env에서 읽는다.
 """
 from __future__ import annotations
+from app.utils.log_safety import fp as _log_fp
 
 from app.services.ollama_client import _shared_num_ctx
 
@@ -353,8 +354,8 @@ def generate_quiz_from_text(
     items = parse_quiz_payload(raw)
     if items is None:
         logger.warning(
-            "quiz.generate.parse_failed %s raw_prefix=%s elapsed_ms=%s",
-            request_id, repr(raw[:300]), elapsed_ms,
+            "quiz.generate.parse_failed %s raw=%s elapsed_ms=%s",
+            request_id, _log_fp(raw), elapsed_ms,
         )
         return _fail(material_id, "QUIZ_PARSE_FAILED", "LLM 응답을 JSON으로 파싱하지 못했습니다.")
 
@@ -368,8 +369,8 @@ def generate_quiz_from_text(
 
     if not quiz:
         logger.warning(
-            "quiz.generate.parse_failed %s raw_prefix=%s elapsed_ms=%s reason=no_valid_items",
-            request_id, repr(raw[:300]), elapsed_ms,
+            "quiz.generate.parse_failed %s raw=%s elapsed_ms=%s reason=no_valid_items",
+            request_id, _log_fp(raw), elapsed_ms,
         )
         return _fail(material_id, "QUIZ_NO_VALID_ITEMS", "생성된 문항 중 유효한 문항이 없습니다.")
 
