@@ -97,7 +97,7 @@ public class AiResponseQualityGate {
             log.info("[QUALITY-GATE] task={} rid={} attempt={} approved={} status={} score={} codes={} latencyMs={}",
                     spec.taskType(), rid, attemptIndex, d.approved(), d.qualityStatus(), d.score(), d.reasonCodes(), d.latencyMs());
             return d;
-        });
+        }).defaultIfEmpty(GateDecision.unavailable("EVALUATOR_NO_RESULT", attemptIndex + 1, 0));
     }
 
     /**
@@ -105,6 +105,12 @@ public class AiResponseQualityGate {
      * 거절/평가 불가면 value 는 null 이고 decision 에 사유가 담긴다. 생성기 예외는 그 시도의 실패로 기록하고 다음 시도로 넘어간다.
      */
     public <T> Outcome<T> generateApproved(Spec spec, Generator<T> generator, Function<T, JsonNode> render) {
+        if (!evaluator.acceptingRequests()) {
+            // 서킷 열림: 생성(GPU) 자체를 하지 않는다 — 어차피 노출할 수 없고 재생성 폭주만 만든다.
+            GateDecision d = GateDecision.unavailable("EVALUATOR_CIRCUIT_OPEN", 0, 0);
+            count(d);
+            return new Outcome<>(null, d);
+        }
         GateDecision last = null;
         Set<String> seenDrafts = new HashSet<>();
         int maxAttempts = 1 + settings.maxRegenerations();

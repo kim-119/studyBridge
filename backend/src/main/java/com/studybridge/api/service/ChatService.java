@@ -752,7 +752,7 @@ public class ChatService {
                         handleLearningMateRouted((event, json) -> routed.add(sse(event, json)), route, userId, request);
                         return Flux.fromIterable(routed);
                 }
-                final String routeWarning = route.isWarn() ? route.userMessage() : null;
+                final String routeWarning = route.isWarn() ? routeUserMessage(route) : null;
 
                 // FastAPI 요청 바디 (블로킹과 동일 로직 재사용; room.getAgents() lazy 접근은 현재 트랜잭션 내)
                 Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request, userId, requestId);
@@ -1145,6 +1145,27 @@ public class ChatService {
                 }
         }
 
+        /**
+         * 라우팅 안내 문구. ai07 라우터의 directReply/clarify/warning 은 LLM 이 쓴 문장일 수 있으므로
+         * 품질 게이트 ON 이면 노출하지 않고 Spring 고정 문구로 바꾼다(게이트 OFF 면 기존 그대로).
+         */
+        private String routeUserMessage(IntentDTO.RouteResult route) {
+                if (!qualityGateOn()) {
+                        return route.userMessage();
+                }
+                IntentDTO.RouteAction a = route.getAction();
+                if (a == IntentDTO.RouteAction.BLOCK) {
+                        return "처리할 수 없는 요청입니다. 학습과 관련된 질문을 입력해 주세요.";
+                }
+                if (a == IntentDTO.RouteAction.CLARIFY) {
+                        return "질문을 조금 더 구체적으로 알려 주세요.";
+                }
+                if (a == IntentDTO.RouteAction.DIRECT_REPLY) {
+                        return "안녕하세요! 공부하면서 궁금한 점을 질문해 주세요.";
+                }
+                return "질문 의도를 확인하며 답변을 준비합니다.";
+        }
+
         // ── Intent Router: 학습메이트 라우팅 ──────────────────────────────────────────
         private Map<String, Object> learningMateContext(Long roomId, ChatDTO.MultiChatRequest request) {
                 Map<String, Object> ctx = new LinkedHashMap<>();
@@ -1190,7 +1211,7 @@ public class ChatService {
                                                         payload = aiIntegrationService.getRoadmap(userId, materialId);
                                                         msg = "학습 로드맵을 불러왔습니다."; break;
                                                 default:
-                                                        msg = route.userMessage();
+                                                        msg = routeUserMessage(route);
                                         }
                                         Map<String, Object> data = new LinkedHashMap<>();
                                         data.put("type", "route_pipeline");
@@ -1201,7 +1222,7 @@ public class ChatService {
                                 }
                         } else { // terminal: DIRECT_REPLY/BLOCK/CLARIFY
                                 safeSend(out, "route_message", Map.of("type", "route_message",
-                                                "routeAction", route.actionName(), "message", route.userMessage()));
+                                                "routeAction", route.actionName(), "message", routeUserMessage(route)));
                         }
                         safeSend(out, "all_complete", Map.of("type", "all_complete", "routed", true));
                 } catch (Exception e) {
@@ -1236,10 +1257,14 @@ public class ChatService {
                                 .streamMultiChat(roomId, requestId, requestBody, Duration.ofSeconds(nonStreamTimeout));
                 if (qualityGateOn()) {
                         // 단일 경계: 영속화/캐시(doOnNext) 보다 앞에서 게이트를 건다 → 거절·미평가 본문은 화면·DB·Redis 어디에도 가지 않는다.
+                        // 표시 이름 허용 목록 = 이 방 에이전트 이름(모델이 쓴 문장이 이름 칸으로 새지 않게).
+                        java.util.Set<String> names = room.getAgents() == null ? java.util.Set.of()
+                                        : room.getAgents().stream().filter(java.util.Objects::nonNull).map(Agent::getName)
+                                                        .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
                         upstream = qualityStreamGate.gate(upstream, new com.studybridge.api.ai.quality.QualityStreamGate.Context(requestId,
                                         com.studybridge.api.ai.quality.QualityStreamGate.taskTypeForLearningMode(
                                                         firstNonBlank(request.getLearningMode(), room.getLearningMode(), "basic")),
-                                        request.getMessage(), com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints.empty()));
+                                        request.getMessage(), com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints.empty(), names));
                 }
                 return upstream
                                 .publishOn(Schedulers.boundedElastic())

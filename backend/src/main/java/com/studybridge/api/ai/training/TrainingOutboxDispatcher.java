@@ -102,6 +102,11 @@ public class TrainingOutboxDispatcher {
                 if (consent.isEmpty() || !consent.get().getConsentVersion().equals(row.getConsentVersion())) {
                     return "CANCELLED:CONSENT_NOT_ACTIVE"; // 철회·버전 변경 후 재전송 차단
                 }
+                // 지금 유효한 동의가 이 샘플을 만든 뒤에 새로 받은 것이면(그 사이 철회→재동의) 이 샘플은 철회된 동의로 수집된 것이다.
+                if (consent.get().getCreatedAt() != null && row.getCreatedAt() != null
+                        && consent.get().getCreatedAt().isAfter(row.getCreatedAt())) {
+                    return "CANCELLED:CONSENT_RENEWED_AFTER_COLLECTION";
+                }
                 long ts = System.currentTimeMillis() / 1000;
                 String sig = AiContractSigning.signBody(keys.key(AiSigningKeys.Purpose.TRAINING_SAMPLE), ts, body);
                 String consentToken = AiContractSigning.issueConsentToken(keys.key(AiSigningKeys.Purpose.TRAINING_CONSENT),
@@ -147,8 +152,20 @@ public class TrainingOutboxDispatcher {
 
     void apply(AiTrainingOutbox r, String outcome) {
         String code = outcome.contains(":") ? outcome.substring(outcome.indexOf(':') + 1) : null;
+        boolean control = !"SAMPLE".equals(r.getKind());
         r.setLeaseUntil(null);
+        if ("CANCELLED".equals(r.getStatus()) && !outcome.equals("SENT")) {
+            return; // 전송 중 철회·삭제로 취소된 행은 재시도 대상으로 되살리지 않는다(실제로 전송됐다면 SENT 가 사실)
+        }
         r.setLastErrorCode(code);
+        if (code != null && code.startsWith("SIGNING_KEY")) {
+            // 키 미구성은 행의 실패가 아니다 — 시도 횟수를 쓰지 않고 5분 뒤 다시(키를 넣으면 재개, 원문 보존)
+            r.setAttempts(Math.max(0, r.getAttempts() - 1));
+            r.setStatus("PENDING");
+            r.setNextAttemptAt(LocalDateTime.now().plusMinutes(5));
+            log.warn("[TRAINING-OUTBOX] eventId={} 서명 키 미구성({}) — 전송 보류", r.getEventId(), code);
+            return;
+        }
         if (outcome.equals("SENT")) {
             r.setStatus("SENT");
             r.setSentAt(LocalDateTime.now());
@@ -156,12 +173,15 @@ public class TrainingOutboxDispatcher {
         } else if (outcome.startsWith("CANCELLED")) {
             r.setStatus("CANCELLED");
             r.setPayloadJson(null);
-        } else if (outcome.startsWith("DEAD") || r.getAttempts() >= settings.maxAttempts()) {
+        } else if (!control && (outcome.startsWith("DEAD") || r.getAttempts() >= settings.maxAttempts())) {
             r.setStatus("DEAD");
-            if ("SAMPLE".equals(r.getKind())) {
-                r.setPayloadJson(null);
-            }
+            r.setPayloadJson(null);
         } else {
+            // 철회·삭제 요청(control)은 절대 포기하지 않는다(이미 전송된 후보가 학습 풀에 남지 않게) — 상한 1시간 백오프로 계속, 경보 로그.
+            if (control && (outcome.startsWith("DEAD") || r.getAttempts() >= settings.maxAttempts())) {
+                log.error("[TRAINING-OUTBOX] 철회/삭제 요청 전달 지연 eventId={} kind={} attempts={} code={} — 계속 재시도(수동 확인 필요)",
+                        r.getEventId(), r.getKind(), r.getAttempts(), code);
+            }
             r.setStatus("PENDING");
             long base = Math.min(3600, (long) Math.pow(2, Math.min(12, r.getAttempts())) * 5);
             r.setNextAttemptAt(LocalDateTime.now().plusSeconds(base + ThreadLocalRandom.current().nextLong(0, Math.max(1, base / 2))));

@@ -39,8 +39,14 @@ import java.util.regex.Pattern;
 @Component
 public class QualityStreamGate {
 
+    /** allowedNames: 표시 이름 허용 목록(방 에이전트 이름 + 성격/수준 고정 라벨). 그 밖의 이름 필드 값은 내보내지 않는다. */
     public record Context(String requestId, ResponseQualityV1.TaskType taskType, String originalRequest,
-                          ResponseQualityV1.Constraints constraints) { }
+                          ResponseQualityV1.Constraints constraints, Set<String> allowedNames) {
+        public Context(String requestId, ResponseQualityV1.TaskType taskType, String originalRequest,
+                       ResponseQualityV1.Constraints constraints) {
+            this(requestId, taskType, originalRequest, constraints, Set.of());
+        }
+    }
 
     static final Set<String> PROGRESS = Set.of("stage_start", "stage_complete", "progress", "heartbeat", "ping", "turn_start",
             "agent_start", "thinking", "status", "queue", "meta", "start", "context_ready", "generation_started", "validating",
@@ -60,10 +66,11 @@ public class QualityStreamGate {
             "personalityKey", "knowledgeLevel", "knowledgeLevelKey", "personalityResolved", "knowledgeLevelResolved", "code",
             "failureCode", "errorCode", "expectedAgentCount", "rebuttalRounds", "debateStrength", "failedAgentId", "failedStage",
             "turnIndex", "pipeline", "suppressAgentFill", "displayDelayMs");
-    static final List<String> NAME_KEYS = List.of("agentName", "personalityLabel", "knowledgeLevelLabel", "roleLabel", "stageTitle",
-            "failedAgentName");
-    /** 본문 메시지에서 평가하고 승인되면 그대로 싣는 필드. */
-    static final List<String> TEXT_FIELDS = List.of("content", "answer", "question", "hint", "feedback", "assessment");
+    /** 이름 필드는 Context.allowedNames 에 있는 값만 통과(모델이 쓴 짧은 문장이 이름 칸으로 새지 않게). */
+    static final List<String> NAME_KEYS = List.of("agentName", "personalityLabel", "knowledgeLevelLabel", "failedAgentName");
+    /** 본문 메시지에서 평가하고 승인되면 그대로 싣는 필드(모델이 쓰는 제목/역할 라벨도 본문으로 평가). */
+    static final List<String> TEXT_FIELDS = List.of("content", "answer", "question", "hint", "feedback", "assessment", "stageTitle",
+            "roleLabel");
     static final List<String> STRUCT_FIELDS = List.of("suggestions", "questions", "items", "steps", "result");
     /** all_complete 에서 식별자 외에 의미 있는 메타(문자열은 안전 식별자만 남김). */
     static final List<String> META_STRUCT_KEYS = List.of("agentCoverage", "responderAgentIds", "socraticRoles", "budget");
@@ -99,6 +106,11 @@ public class QualityStreamGate {
 
     public Flux<ServerSentEvent<String>> gate(Flux<ServerSentEvent<String>> upstream, Context ctx) {
         State st = new State(ctx);
+        st.allowedNames.addAll(com.studybridge.api.ai.contract.AgentProfileContract.PERSONALITY_LABELS.values());
+        st.allowedNames.addAll(com.studybridge.api.ai.contract.AgentProfileContract.KNOWLEDGE_LABELS.values());
+        if (ctx.allowedNames() != null) {
+            st.allowedNames.addAll(ctx.allowedNames());
+        }
         return upstream.concatMap(ev -> handle(ev, st), 32)
                 .doOnCancel(() -> log.info("[QUALITY-GATE] stream rid={} 취소 — 진행 중 평가 취소", ctx.requestId()))
                 .doOnComplete(() -> log.info("[QUALITY-GATE] stream rid={} approved={} rejected={} droppedDelta={} droppedUnknown={}",
@@ -108,8 +120,16 @@ public class QualityStreamGate {
     // ── 이벤트 처리 ────────────────────────────────────────────────────────────────
     private Flux<ServerSentEvent<String>> handle(ServerSentEvent<String> ev, State st) {
         if (ev.data() == null || ev.data().isBlank()) {
-            // 주석(heartbeat ':hb')/빈 이벤트: 본문 없음 → 그대로
-            return ev.event() == null || PROGRESS.contains(ev.event()) ? Flux.just(ev) : Flux.empty();
+            // 주석(heartbeat ':hb')/빈 이벤트: 원본(id/comment 문자열 포함)을 그대로 넘기지 않고 안전한 새 프레임으로 만든다.
+            if (ev.comment() != null && ev.event() == null) {
+                return Flux.just(ServerSentEvent.<String>builder().comment(SAFE_ID.matcher(ev.comment().strip()).matches()
+                        && ev.comment().strip().length() <= 16 ? ev.comment().strip() : "hb").build());
+            }
+            if (ev.event() != null && PROGRESS.contains(ev.event())) {
+                return Flux.just(sse(ev.event(), new LinkedHashMap<>()));
+            }
+            st.droppedUnknown++;
+            return Flux.empty();
         }
         Map<String, Object> data;
         try {
@@ -118,9 +138,13 @@ public class QualityStreamGate {
             st.droppedUnknown++;
             return Flux.empty();
         }
+        if (data == null) {
+            st.droppedUnknown++; // 리터럴 "null" 프레임
+            return Flux.empty();
+        }
         String et = (ev.event() != null ? ev.event() : String.valueOf(data.getOrDefault("type", "message"))).toLowerCase();
         if (PROGRESS.contains(et)) {
-            return Flux.just(sse(et, idsOnly(data)));
+            return Flux.just(sse(et, idsOnly(data, st)));
         }
         if (DELTA.contains(et)) {
             st.droppedDelta++;
@@ -133,10 +157,10 @@ public class QualityStreamGate {
             return allComplete(data, st).flux();
         }
         if (TERMINAL.contains(et)) {
-            return Flux.just(sse(et, idsOnly(data)));
+            return Flux.just(sse(et, idsOnly(data, st)));
         }
         if (ERROR.contains(et)) {
-            Map<String, Object> out = idsOnly(data);
+            Map<String, Object> out = idsOnly(data, st);
             out.put("message", "AI 응답 처리 중 오류가 발생했습니다.");
             return Flux.just(sse(et, out));
         }
@@ -158,17 +182,15 @@ public class QualityStreamGate {
         return verdict(proposed, hash, st).map(d -> {
             if (d.approved()) {
                 st.approved++;
-                Map<String, Object> out = approvedCopy(data);
-                st.approvedByHash.put(hash, out);
-                return sse(et, out);
+                return sse(et, approvedCopy(data, st));
             }
             st.rejected++;
-            return sse("agent_error", rejectedEvent(data, d));
+            return sse("agent_error", rejectedEvent(data, d, st));
         });
     }
 
     private Mono<ServerSentEvent<String>> allComplete(Map<String, Object> data, State st) {
-        Map<String, Object> out = idsOnly(data);
+        Map<String, Object> out = idsOnly(data, st);
         for (String k : META_STRUCT_KEYS) {
             Object v = sanitizeMeta(data.get(k), 0);
             if (v != null) {
@@ -187,12 +209,19 @@ public class QualityStreamGate {
             }
         }
         Mono<Map<String, Object>> extrasApproved = extras.isEmpty() ? Mono.just(Map.of())
-                : verdict(mapper.valueToTree(extras), AiResponseQualityGate.sha256(mapper.valueToTree(extras).toString()), st)
+                : Mono.defer(() -> verdict(mapper.valueToTree(extras), AiResponseQualityGate.sha256(mapper.valueToTree(extras).toString()), st))
                         .map(d -> d.approved() ? extras : Map.<String, Object>of("__redacted__", List.copyOf(extras.keySet())));
-        return Mono.zip(answers, messages, extrasApproved).map(t -> {
-            out.put("answers", t.getT1());
-            out.put("messages", t.getT2());
-            Map<String, Object> ex = t.getT3();
+        // 순차 평가(answers → messages → extras): 상태(판정 캐시·agentErrors)를 한 번에 한 콜백만 만지고,
+        //  answers 에서 승인된 같은 본문은 messages 에서 다시 평가하지 않는다(판정 재사용).
+        return answers.flatMap(a -> messages.flatMap(m -> extrasApproved.map(ex -> new Object[]{a, m, ex}))).map(t -> {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> answersOut = (List<Map<String, Object>>) t[0];
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> messagesOut = (List<Map<String, Object>>) t[1];
+            @SuppressWarnings("unchecked")
+            Map<String, Object> ex = (Map<String, Object>) t[2];
+            out.put("answers", answersOut);
+            out.put("messages", messagesOut);
             if (ex.containsKey("__redacted__")) {
                 out.put("qualityRedactedFields", ex.get("__redacted__"));
             } else {
@@ -204,7 +233,7 @@ public class QualityStreamGate {
                     if (o instanceof Map<?, ?> m) {
                         @SuppressWarnings("unchecked")
                         Map<String, Object> mm = (Map<String, Object>) m;
-                        agentErrors.add(idsOnly(mm));
+                        agentErrors.add(idsOnly(mm, st));
                     }
                 }
             }
@@ -234,17 +263,13 @@ public class QualityStreamGate {
                 continue;
             }
             String hash = AiResponseQualityGate.sha256(proposed.toString());
-            Map<String, Object> already = st.approvedByHash.get(hash);
-            if (already != null) {
-                items.add(Mono.just(approvedCopy(entry)));
-                continue;
-            }
-            items.add(verdict(proposed, hash, st).flatMap(d -> {
+            // 지연 평가: 앞 항목(또는 answers)에서 같은 본문 판정이 끝났으면 재사용한다.
+            items.add(Mono.defer(() -> verdict(proposed, hash, st)).flatMap(d -> {
                 if (d.approved()) {
-                    return Mono.just(approvedCopy(entry));
+                    return Mono.just(approvedCopy(entry, st));
                 }
-                st.agentErrors.add(rejectedEvent(entry, d));
-                return Mono.empty();
+                st.agentErrors.add(rejectedEvent(entry, d, st));
+                return Mono.<Map<String, Object>>empty();
             }));
         }
         return Flux.concat(items).collectList();
@@ -268,6 +293,7 @@ public class QualityStreamGate {
                 ResponseQualityV1.OutputKind.AGENT_MESSAGE, c.originalRequest(), List.of(), c.constraints(), null);
         return gate.evaluateOnce(spec, c.requestId() + ".q" + (st.seq++), 0, proposed)
                 .onErrorResume(e -> Mono.just(GateDecision.unavailable("EVALUATOR_EXCEPTION", 1, 0)))
+                .defaultIfEmpty(GateDecision.unavailable("EVALUATOR_NO_RESULT", 1, 0))
                 .map(d -> remember(st, hash, d));
     }
 
@@ -305,8 +331,8 @@ public class QualityStreamGate {
         return n;
     }
 
-    Map<String, Object> approvedCopy(Map<String, Object> data) {
-        Map<String, Object> out = idsOnly(data);
+    Map<String, Object> approvedCopy(Map<String, Object> data, State st) {
+        Map<String, Object> out = idsOnly(data, st);
         for (String f : TEXT_FIELDS) {
             if (data.get(f) instanceof String s) {
                 out.put(f, s);
@@ -321,8 +347,8 @@ public class QualityStreamGate {
         return out;
     }
 
-    Map<String, Object> rejectedEvent(Map<String, Object> src, GateDecision d) {
-        Map<String, Object> out = idsOnly(src);
+    Map<String, Object> rejectedEvent(Map<String, Object> src, GateDecision d, State st) {
+        Map<String, Object> out = idsOnly(src, st);
         String code = GateDecision.UNAVAILABLE.equals(d.errorCode()) ? "QUALITY_UNAVAILABLE" : "QUALITY_REJECTED";
         out.put("type", "agent_error");
         out.put("eventType", "agent_error");
@@ -336,7 +362,7 @@ public class QualityStreamGate {
         return out;
     }
 
-    Map<String, Object> idsOnly(Map<String, Object> data) {
+    Map<String, Object> idsOnly(Map<String, Object> data, State st) {
         Map<String, Object> out = new LinkedHashMap<>();
         for (String k : ID_KEYS) {
             Object v = data.get(k);
@@ -347,7 +373,7 @@ public class QualityStreamGate {
             }
         }
         for (String k : NAME_KEYS) {
-            if (data.get(k) instanceof String s && SAFE_NAME.matcher(s).matches()) {
+            if (data.get(k) instanceof String s && SAFE_NAME.matcher(s).matches() && st.allowedNames.contains(s)) {
                 out.put(k, s);
             }
         }
@@ -412,10 +438,10 @@ public class QualityStreamGate {
         }
     }
 
-    private static final class State {
+    static final class State {
         final Context ctx;
+        final Set<String> allowedNames = new HashSet<>();
         final Map<String, GateDecision> verdictByHash = new HashMap<>();
-        final Map<String, Map<String, Object>> approvedByHash = new HashMap<>();
         final Set<String> emitted = new HashSet<>();
         final List<Object> agentErrors = new ArrayList<>();
         int totalChars;

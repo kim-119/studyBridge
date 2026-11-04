@@ -45,7 +45,7 @@ public class QualityEvaluatorClient {
     private final Semaphore permits;
     private final AtomicInteger consecutiveFailures = new AtomicInteger();
     private final AtomicLong openUntil = new AtomicLong();
-    private final AtomicInteger halfOpenTrials = new AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicBoolean halfOpenInFlight = new java.util.concurrent.atomic.AtomicBoolean();
 
     @Autowired
     public QualityEvaluatorClient(@Qualifier("fastApiWebClient") WebClient webClient, AiQualityGateSettings settings,
@@ -57,6 +57,17 @@ public class QualityEvaluatorClient {
     }
 
     public Mono<Result> evaluate(ResponseQualityV1.Input input) {
+        // 모든 판단(서킷·bulkhead)은 구독 시점에 한다(조립 시점 판단은 구독되지 않은 Mono 가 반개방 슬롯을 영구 점유).
+        return Mono.defer(() -> evaluateNow(input));
+    }
+
+    /** 평가기가 요청을 받을 수 있는 상태인가(서킷 열림이면 false) — 생성 전에 확인해 불필요한 재생성을 막는다. */
+    public boolean acceptingRequests() {
+        long until = openUntil.get();
+        return until == 0 || System.currentTimeMillis() >= until && !halfOpenInFlight.get();
+    }
+
+    private Mono<Result> evaluateNow(ResponseQualityV1.Input input) {
         long started = System.currentTimeMillis();
         ContractJson.Violations v = ResponseQualityV1.validate(input);
         if (!v.ok()) {
@@ -67,13 +78,27 @@ public class QualityEvaluatorClient {
         if (apiKey.length() < 24) {
             return Mono.just(Result.error("EVALUATOR_AUTH_NOT_CONFIGURED", 0));
         }
-        if (circuitOpen()) {
+        boolean trial;
+        long until = openUntil.get();
+        if (until != 0 && System.currentTimeMillis() < until) {
             return Mono.just(Result.error("EVALUATOR_CIRCUIT_OPEN", 0));
+        }
+        if (until != 0) {
+            // 반개방: 한 건만 시험. 시험이 어떤 식으로 끝나든(성공·실패·취소·빈 응답) doFinally 에서 슬롯을 돌려준다.
+            if (!halfOpenInFlight.compareAndSet(false, true)) {
+                return Mono.just(Result.error("EVALUATOR_CIRCUIT_OPEN", 0));
+            }
+            trial = true;
+        } else {
+            trial = false;
         }
         byte[] body;
         try {
             body = ContractJson.STRICT.writeValueAsBytes(input);
         } catch (Exception e) {
+            if (trial) {
+                halfOpenInFlight.set(false);
+            }
             return Mono.just(Result.error("EVALUATOR_INPUT_CONTRACT_INVALID", 0));
         }
         Mono<Result> call = webClient.post()
@@ -85,6 +110,7 @@ public class QualityEvaluatorClient {
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(byte[].class)
+                .defaultIfEmpty(new byte[0]) // 200/204 빈 본문도 결과를 남긴다(→ 출력 계약 위반 = 미노출)
                 .timeout(Duration.ofMillis(settings.evaluateTimeoutMs()))
                 .map(bytes -> parse(bytes, input.requestId(), started))
                 .onErrorResume(e -> Mono.just(Result.error(classify(e), System.currentTimeMillis() - started)));
@@ -94,7 +120,12 @@ public class QualityEvaluatorClient {
                         : Mono.<Result>error(new BusyException()))
                 .retryWhen(Retry.fixedDelay(waitSteps, Duration.ofMillis(50)).filter(BusyException.class::isInstance))
                 .onErrorResume(e -> Mono.just(Result.error("EVALUATOR_BUSY", System.currentTimeMillis() - started)))
-                .doOnNext(this::record);
+                .doOnNext(this::record)
+                .doFinally(sig -> {
+                    if (trial) {
+                        halfOpenInFlight.set(false);
+                    }
+                });
     }
 
     private Result parse(byte[] bytes, String requestId, long started) {
@@ -146,34 +177,23 @@ public class QualityEvaluatorClient {
     }
 
     // ── circuit breaker ────────────────────────────────────────────────────────────
-    private boolean circuitOpen() {
-        long until = openUntil.get();
-        if (until == 0) {
-            return false;
-        }
-        if (System.currentTimeMillis() < until) {
-            return true;
-        }
-        // 반개방: 한 건만 시험 통과
-        return halfOpenTrials.getAndIncrement() > 0;
-    }
-
     private void record(Result r) {
-        boolean infraFailure = r.errorCode() != null && (r.errorCode().equals("EVALUATOR_TIMEOUT")
-                || r.errorCode().equals("EVALUATOR_UNREACHABLE") || r.errorCode().equals("EVALUATOR_UNAVAILABLE")
-                || r.errorCode().equals("EVALUATOR_ROUTE_NOT_DEPLOYED") || r.errorCode().startsWith("EVALUATOR_HTTP_5"));
+        String c = r.errorCode();
+        if (c != null && (c.equals("EVALUATOR_BUSY") || c.equals("EVALUATOR_CIRCUIT_OPEN"))) {
+            return; // 중립: 로컬 대기 초과/429 는 평가기 건강 신호가 아니다(서킷을 닫거나 열지 않는다)
+        }
+        boolean infraFailure = c != null && (c.equals("EVALUATOR_TIMEOUT") || c.equals("EVALUATOR_UNREACHABLE")
+                || c.equals("EVALUATOR_UNAVAILABLE") || c.equals("EVALUATOR_ROUTE_NOT_DEPLOYED") || c.startsWith("EVALUATOR_HTTP_5"));
         if (infraFailure) {
             int n = consecutiveFailures.incrementAndGet();
             if (n >= settings.circuitFailureThreshold()) {
                 openUntil.set(System.currentTimeMillis() + settings.circuitOpenMs());
-                halfOpenTrials.set(0);
-                log.warn("[QUALITY-GATE] 평가기 서킷 오픈 {}ms (연속 실패 {}회, 마지막 {})", settings.circuitOpenMs(), n, r.errorCode());
+                log.warn("[QUALITY-GATE] 평가기 서킷 오픈 {}ms (연속 실패 {}회, 마지막 {})", settings.circuitOpenMs(), n, c);
             }
-        } else if (r.errorCode() == null || !r.errorCode().equals("EVALUATOR_CIRCUIT_OPEN")) {
+        } else {
             // 평가기가 응답했다(승인/거절/계약 오류 무관) → 인프라는 정상: 서킷 닫음
             consecutiveFailures.set(0);
             openUntil.set(0);
-            halfOpenTrials.set(0);
         }
     }
 

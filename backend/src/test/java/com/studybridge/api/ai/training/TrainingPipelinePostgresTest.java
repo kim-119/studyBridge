@@ -345,6 +345,83 @@ class TrainingPipelinePostgresTest {
                 assertEquals(10, hits.stream().map(m -> m.get("rid")).distinct().count());
         }
 
+        // ── 독립 리뷰 회귀(2026-11-04) ──────────────────────────────────────────────
+
+        @Test
+        void revocationIsNeverDeadLettered() {
+                grant(13L);
+                consents.withdraw(13L, "WEB");
+                status.set(422);
+                for (int i = 0; i < 5; i++) {
+                        tx.executeWithoutResult(st -> outbox.findAll().forEach(x -> x.setNextAttemptAt(LocalDateTime.now().minusSeconds(1))));
+                        dispatcher.dispatchOnce();
+                }
+                AiTrainingOutbox rv = outbox.findAll().stream().filter(r -> "REVOCATION".equals(r.getKind())).findFirst().orElseThrow();
+                assertEquals("PENDING", rv.getStatus(), "철회 요청은 max-attempts 를 넘어도 포기하지 않는다");
+                assertNotNull(rv.getPayloadJson());
+                status.set(200);
+                tx.executeWithoutResult(st -> outbox.findAll().forEach(x -> x.setNextAttemptAt(LocalDateTime.now().minusSeconds(1))));
+                dispatcher.dispatchOnce();
+                assertEquals("SENT", outbox.findById(rv.getId()).orElseThrow().getStatus());
+        }
+
+        @Test
+        void missingSigningKeyDoesNotBurnAttemptsOrPayload() {
+                grant(14L);
+                collector.onApproved(candidate(14L, "SYN-ACK"));
+                AiSigningKeys noKeys = new AiSigningKeys("", "", "", "pseudonym-secret-for-tests-0123456789", "");
+                TrainingOutboxDispatcher d = new TrainingOutboxDispatcher(outbox, tx, WebClient.create("http://127.0.0.1:9"),
+                                AiTrainingSettings.forTest(true, true), noKeys, consents, pseudonyms);
+                for (int i = 0; i < 5; i++) {
+                        tx.executeWithoutResult(st -> outbox.findAll().forEach(x -> x.setNextAttemptAt(LocalDateTime.now().minusSeconds(1))));
+                        d.dispatchOnce();
+                }
+                AiTrainingOutbox r = outbox.findAll().get(0);
+                assertEquals("PENDING", r.getStatus());
+                assertEquals(0, r.getAttempts(), "키 미구성은 시도 횟수를 쓰지 않는다");
+                assertNotNull(r.getPayloadJson(), "키를 넣으면 재개할 수 있게 원문 보존");
+                assertEquals(0, hits.size());
+        }
+
+        @Test
+        void sampleCollectedBeforeWithdrawalIsNotSentAfterReconsent() {
+                grant(15L);
+                collector.onApproved(candidate(15L, "철회 전 답"));
+                // 철회 취소 UPDATE 를 놓친 경합을 가정: WITHDRAWN 행만 추가 후 재동의
+                consentRepo.save(com.studybridge.api.entity.AiTrainingConsent.builder().userId(15L).purpose("MODEL_TRAINING")
+                                .status("WITHDRAWN").consentVersion("tc-2026-11").build());
+                grant(15L);
+                dispatcher.dispatchOnce();
+                assertEquals(0, hits.size(), "재동의는 철회 전 수집분을 되살리지 않는다");
+                AiTrainingOutbox r = outbox.findAll().get(0);
+                assertEquals("CANCELLED", r.getStatus());
+                assertEquals("CONSENT_RENEWED_AFTER_COLLECTION", r.getLastErrorCode());
+        }
+
+        @Test
+        void cancelledInFlightRowIsNotResurrected() {
+                grant(16L);
+                collector.onApproved(candidate(16L, "답"));
+                AiTrainingOutbox r = outbox.findAll().get(0);
+                r.setStatus("CANCELLED");
+                r.setPayloadJson(null);
+                dispatcher.apply(r, "RETRY:HTTP_503");
+                assertEquals("CANCELLED", r.getStatus());
+        }
+
+        @Test
+        void enqueueInsideAnotherAfterCommitCallbackIsNotLost() {
+                grant(17L);
+                tx.executeWithoutResult(st -> org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                                new org.springframework.transaction.support.TransactionSynchronization() {
+                                        @Override
+                                        public void afterCommit() {
+                                                collector.onApproved(candidate(17L, "afterCommit 안에서 수집"));
+                                        }
+                                }));
+                assertEquals(1, outbox.count(), "afterCommit 안에서 등록돼도 afterCompletion 으로 한 번 적재");
+        }
+
         static TrainingSampleV1 readSample(AiTrainingOutbox r) {
                 try {
                         return ContractJson.STRICT.readValue(r.getPayloadJson(), TrainingSampleV1.class);

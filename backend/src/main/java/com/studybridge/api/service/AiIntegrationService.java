@@ -51,6 +51,9 @@ public class AiIntegrationService {
         // Global Response Quality Gate(기본 OFF). null(테스트) 이면 OFF.
         private final com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate;
         private final com.studybridge.api.ai.training.TrainingCandidateCollector trainingCollector;
+        /** 게이트 거절 직후 같은 자료 요약을 반복 GET 마다 재생성(GPU 3회)하지 않도록 잠시 실패 결과를 돌려준다. */
+        private final java.util.Map<Long, Long> summaryGateCooldownUntil = new java.util.concurrent.ConcurrentHashMap<>();
+        private static final long SUMMARY_GATE_COOLDOWN_MS = 120_000;
 
         // 키워드 정의 호출 타임아웃 (env 제어, 하드코딩 금지)
         @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.keyword-define-timeout-seconds:60}")
@@ -661,6 +664,12 @@ public class AiIntegrationService {
          */
         private SummaryDTO generateSummaryGated(Material material, String textToAnalyze) {
                 Long mid = material.getMaterialId();
+                Long until = summaryGateCooldownUntil.get(mid);
+                if (until != null && until > System.currentTimeMillis()) {
+                        return summaryFailure(material, com.studybridge.api.ai.quality.GateDecision.REJECTED,
+                                        com.studybridge.api.ai.quality.GateDecision.userMessage(com.studybridge.api.ai.quality.GateDecision.REJECTED),
+                                        true, null).toBuilder().qualityStatus("REJECTED").verified(false).build();
+                }
                 String rid = "sum-" + mid + "-" + java.util.UUID.randomUUID().toString().substring(0, 8);
                 com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints constraints =
                                 new com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints(List.of(mid), null, null, null, null,
@@ -688,6 +697,7 @@ public class AiIntegrationService {
                                         return response;
                                 }, r -> com.studybridge.api.ai.quality.AiResponseQualityGate.text(summaryVisibleText(r)));
                 if (outcome.approved()) {
+                        summaryGateCooldownUntil.remove(mid);
                         SummaryDTO saved = persistSummary(material, outcome.value(), outcome.decision());
                         if (trainingCollector != null) {
                                 // 학습 후보(동의·플래그·권리 판단은 수집기). 근거 = 평가에 쓴 PDF 원문 앞부분 인용(최대 3개).
@@ -707,6 +717,9 @@ public class AiIntegrationService {
                         return upstreamFailure[0];
                 }
                 com.studybridge.api.ai.quality.GateDecision d = outcome.decision();
+                if (d.qualityStatus() == com.studybridge.api.ai.contract.v1.ResponseQualityV1.QualityStatus.REJECTED) {
+                        summaryGateCooldownUntil.put(mid, System.currentTimeMillis() + SUMMARY_GATE_COOLDOWN_MS);
+                }
                 log.info("[QUALITY-GATE] summary materialId={} 미승인 status={} codes={} — 기존 요약 유지", mid, d.qualityStatus(), d.reasonCodes());
                 return summaryFailure(material, d.errorCode(), com.studybridge.api.ai.quality.GateDecision.userMessage(d.errorCode()), true, null)
                                 .toBuilder().qualityStatus(d.qualityStatus().name()).verified(false).build();
@@ -719,8 +732,9 @@ public class AiIntegrationService {
                         return null;
                 }
                 StringBuilder sb = new StringBuilder();
-                for (String k : List.of("overview", "summary", "key_points", "keywords", "sections", "learningPoints", "practicePoints",
-                                "studyQuestions")) {
+                // 저장(coreContents envelope)·응답 DTO 에 실리는 본문 필드 전부 — 하나라도 빠지면 미평가 텍스트가 APPROVED 로 저장된다.
+                for (String k : List.of("overview", "summary", "key_points", "keywords", "sections", "coreContents", "gpt_raw", "message",
+                                "learningPoints", "practicePoints", "studyQuestions")) {
                         appendStrings(sb, response.get(k), 0);
                 }
                 String t = sb.toString().strip();

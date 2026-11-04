@@ -140,17 +140,40 @@ public class TrainingCandidateCollector {
         Long materialId = c.materialId();
         String version = consent.getConsentVersion();
         if (TransactionSynchronizationManager.isActualTransactionActive() && TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
+            java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean();
+            Runnable enqueue = () -> {
+                if (done.compareAndSet(false, true)) {
                     try {
-                        count(map(writer.enqueueSample(eventId, userId, materialId, json, contentHash, version, dtid)));
+                        count(enqueueIfStillConsented(eventId, userId, materialId, json, contentHash, version, dtid));
                     } catch (RuntimeException e) {
                         count(Status.FAILED);
                     }
                 }
+            };
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    enqueue.run();
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    // afterCommit 단계에서 등록되면 afterCommit 이 다시 호출되지 않는다 → 커밋 완료 시 한 번 보장.
+                    if (status == STATUS_COMMITTED) {
+                        enqueue.run();
+                    }
+                }
             });
             return Status.DEFERRED_AFTER_COMMIT;
+        }
+        return enqueueIfStillConsented(eventId, userId, materialId, json, contentHash, version, dtid);
+    }
+
+    /** 적재 직전 동의 재확인(동의 확인~커밋 후 적재 사이 철회 경합 축소). 디스패처도 전송 직전에 다시 확인한다. */
+    private Status enqueueIfStillConsented(String eventId, Long userId, Long materialId, String json, String contentHash,
+                                           String version, String dtid) {
+        if (consentService.active(userId).filter(c -> version.equals(c.getConsentVersion())).isEmpty()) {
+            return Status.SKIPPED_NO_CONSENT;
         }
         return map(writer.enqueueSample(eventId, userId, materialId, json, contentHash, version, dtid));
     }

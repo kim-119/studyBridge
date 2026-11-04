@@ -122,4 +122,16 @@ class LearningLoopRecordPostgresTest {
                 LearningLoopEvent bad = LearningLoopEvent.builder().eventType(LearningEventType.QUIZ_SUBMITTED).build();
                 org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () -> service.record(bad));
         }
+
+        @Test
+        void recordSafeCalledFromAnotherAfterCommitCallbackIsNotDropped() {
+                tx.executeWithoutResult(s -> org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                                new org.springframework.transaction.support.TransactionSynchronization() {
+                                        @Override
+                                        public void afterCommit() {
+                                                service.recordSafe(event(505L, "NESTED_AFTER_COMMIT"));
+                                        }
+                                }));
+                assertEquals(1, countFor(505L), "다른 afterCommit 콜백 안에서 호출돼도 유실되지 않는다");
+        }
 }

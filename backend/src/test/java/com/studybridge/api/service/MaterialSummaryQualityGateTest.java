@@ -59,6 +59,7 @@ class MaterialSummaryQualityGateTest {
         final List<JsonNode> evaluations = new CopyOnWriteArrayList<>();
         volatile IntFunction<String> evaluatorPolicy; // 평가 순번 → 응답 JSON(null 이면 503)
         volatile boolean summaryFails;
+        volatile String gptRaw;
         MaterialSummaryRepository summaries;
         final com.studybridge.api.ai.training.TrainingCandidateCollector collector =
                         org.mockito.Mockito.mock(com.studybridge.api.ai.training.TrainingCandidateCollector.class);
@@ -71,7 +72,8 @@ class MaterialSummaryQualityGateTest {
                         ex.getRequestBody().readAllBytes();
                         String body = summaryFails ? "{\"success\":false,\"errorCode\":\"AI_TIMEOUT\",\"message\":\"m\",\"retryable\":true}"
                                         : "{\"success\":true,\"overview\":\"요약 " + n + ": TCP 는 3-way handshake 로 연결한다.\",\"summary\":\"s" + n
-                                                        + "\",\"key_points\":[\"SYN\"],\"sections\":[{\"title\":\"연결\",\"content\":\"SYN, SYN-ACK, ACK\"}]}";
+                                                        + "\",\"key_points\":[\"SYN\"],\"sections\":[{\"title\":\"연결\",\"content\":\"SYN, SYN-ACK, ACK\"}]"
+                                                        + (gptRaw != null ? ",\"gpt_raw\":\"" + gptRaw + "\"" : "") + "}";
                         byte[] b = body.getBytes(StandardCharsets.UTF_8);
                         ex.getResponseHeaders().add("Content-Type", "application/json");
                         ex.sendResponseHeaders(200, b.length);
@@ -205,5 +207,25 @@ class MaterialSummaryQualityGateTest {
                 assertEquals(0, evaluations.size(), "게이트 OFF 는 평가기를 부르지 않는다");
                 verify(summaries, times(1)).save(any());
                 assertNull(saved().getQualityStatus());
+        }
+
+        @Test
+        void everyStoredFieldIsEvaluatedIncludingGptRaw() {
+                gptRaw = "RAW_ONLY_TEXT 원문과 다른 서술";
+                evaluatorPolicy = n -> out(90, "APPROVED");
+                service(true, null).getSummary(USER, MATERIAL);
+                assertTrue(evaluations.get(0).get("proposedOutput").asText().contains("RAW_ONLY_TEXT"),
+                                "저장·표시되는 gpt_raw 도 평가 대상");
+        }
+
+        @Test
+        void rejectionCooldownAvoidsRegenerationStorm() {
+                evaluatorPolicy = n -> out(60, "REJECTED");
+                AiIntegrationService svc = service(true, null);
+                svc.getSummary(USER, MATERIAL);
+                assertEquals(3, summaryCalls.get());
+                SummaryDTO again = svc.getSummary(USER, MATERIAL);
+                assertEquals(3, summaryCalls.get(), "거절 직후 재요청은 재생성하지 않는다(쿨다운)");
+                assertEquals("AI_QUALITY_REJECTED", again.getErrorCode());
         }
 }

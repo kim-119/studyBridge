@@ -248,4 +248,59 @@ class QualityStreamGateTest {
                         assertTrue(both.getT2().stream().allMatch(e -> "agent_error".equals(e.event()) && !e.data().contains(CANARY)));
                 }
         }
+
+        // ── 독립 리뷰 회귀(2026-11-04) ──────────────────────────────────────────────
+
+        @Test
+        void nullFramesCommentsAndNameSideChannelsAreSanitized() throws Exception {
+                List<ServerSentEvent<String>> in = List.of(
+                                ServerSentEvent.<String>builder("null").event("agent_answer").build(),
+                                ServerSentEvent.<String>builder().comment("CANARY7F3A 주석으로 새는 본문").build(),
+                                ServerSentEvent.<String>builder("{\"type\":\"agent_start\",\"agentIndex\":1,\"agentName\":\"정답은 3번입니다\","
+                                                + "\"stageTitle\":\"정답은 3번\",\"personalityLabel\":\"친근함\"}").event("agent_start").build(),
+                                ServerSentEvent.<String>builder("{\"type\":\"agent_start\",\"agentIndex\":2,\"agentName\":\"김교수\"}").event("agent_start").build());
+                try (StubEvaluator stub = new StubEvaluator(r -> Reply.output(r.requestId(), 99, false, "APPROVED"))) {
+                        List<ServerSentEvent<String>> out = gate(stub).gate(Flux.fromIterable(in), new QualityStreamGate.Context("req-sanitize-0001",
+                                        ResponseQualityV1.TaskType.STUDYMATE_BASIC, "q", ResponseQualityV1.Constraints.empty(), java.util.Set.of("김교수")))
+                                        .collectList().block(Duration.ofSeconds(10));
+                        assertEquals(3, out.size(), "null 프레임은 버리고 스트림은 계속");
+                        assertEquals("hb", out.get(0).comment(), "문장형 주석은 고정 heartbeat 로");
+                        Map<String, Object> a1 = json(out.get(1));
+                        assertFalse(a1.containsKey("agentName"), "허용 목록 밖 이름 제거");
+                        assertFalse(a1.containsKey("stageTitle"), "진행 이벤트의 모델 작성 제목 제거");
+                        assertEquals("친근함", a1.get("personalityLabel"), "고정 라벨은 유지");
+                        assertEquals("김교수", json(out.get(2)).get("agentName"));
+                }
+        }
+
+        @Test
+        void allCompleteEvaluatesSequentiallyAndReusesVerdicts() throws Exception {
+                String all = "{\"type\":\"all_complete\",\"answers\":[{\"eventId\":\"e1\",\"answer\":\"같은 답\"},{\"eventId\":\"e2\",\"answer\":\"다른 답\"}],"
+                                + "\"messages\":[{\"eventId\":\"m1\",\"answer\":\"같은 답\"}],\"socraticSteps\":[{\"q\":\"단계\"}]}";
+                try (StubEvaluator stub = new StubEvaluator(r -> new Reply(200, Reply.output(r.requestId(), 90, false, "APPROVED").body(), 30))) {
+                        List<ServerSentEvent<String>> out = gate(stub).gate(Flux.just(ServerSentEvent.<String>builder(all).event("all_complete").build()),
+                                        ctx(ResponseQualityV1.TaskType.STUDYMATE_SOCRATIC)).collectList().block(Duration.ofSeconds(10));
+                        assertEquals(3, stub.requests.size(), "같은 답(answers·messages)은 한 번만 평가 + 다른 답 + extras");
+                        assertEquals(1, stub.maxInFlight.get(), "all_complete 평가는 순차(상태 경합 없음)");
+                        Map<String, Object> m = json(out.get(0));
+                        assertEquals(2, ((List<?>) m.get("answers")).size());
+                        assertEquals(1, ((List<?>) m.get("messages")).size());
+                        assertTrue(m.containsKey("socraticSteps"));
+                }
+        }
+
+        @Test
+        void emptyEvaluatorResponseStillTerminatesTurnSafely() throws Exception {
+                String a = "{\"type\":\"agent_answer\",\"eventId\":\"e1\",\"agentIndex\":1,\"answer\":\"CANARY7F3A 답\"}";
+                String all = "{\"type\":\"all_complete\",\"answers\":[{\"eventId\":\"e1\",\"answer\":\"CANARY7F3A 답\"}],\"plan\":\"CANARY7F3A 계획\"}";
+                try (StubEvaluator stub = new StubEvaluator(r -> new Reply(200, "", 0))) {
+                        List<ServerSentEvent<String>> out = gate(stub).gate(Flux.just(
+                                        ServerSentEvent.<String>builder(a).event("agent_answer").build(),
+                                        ServerSentEvent.<String>builder(all).event("all_complete").build(),
+                                        ServerSentEvent.<String>builder("{\"type\":\"done\"}").event("done").build()),
+                                        ctx(ResponseQualityV1.TaskType.STUDYMATE_BASIC)).collectList().block(Duration.ofSeconds(10));
+                        assertEquals(List.of("agent_error", "all_complete", "done"), out.stream().map(ServerSentEvent::event).toList());
+                        assertTrue(out.stream().noneMatch(e -> e.data() != null && e.data().contains(CANARY)));
+                }
+        }
 }

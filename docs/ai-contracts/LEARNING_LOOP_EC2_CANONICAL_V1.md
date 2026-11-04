@@ -136,10 +136,14 @@ ai07 79/53/22/0 은 FastAPI OpenAPI path 단위, 여기는 Spring 엔드포인�
 - SSE: ai07 실캡처 3종 deny-all 본문 0자(canary·문장 전수 검사), approve-all 이벤트 순서·answers·eventId·agentIndex 보존, 델타/미지/오류 문구 차단, 중복 1회, timeout→QUALITY_UNAVAILABLE, 초과 크기 미평가 거절, 취소 상류 전파, 동시 2 스트림 판정 비혼입. ChatService 실체인: 거절 시 DB/Redis AI 행 0, 승인 시 APPROVED 저장, OFF 회귀 없음, 이력 가림, Learning Memory 미승인 제외.
 - 요약: 재생성 승인 저장, 전부 거절 시 저장 0·기존 요약 보존, 미승인 캐시 재생성, 승인 캐시 AI 호출 0, 평가기 다운 재생성 0, 생성 실패 기존 계약, OFF 평가기 호출 0.
 - 학습 후보(PG): 동의 없음 0건, 미승인 0건, 버전/나이 검증, 1회 적재·중복 0, 롤백 0건, 철회 → 취소·차단·재동의 시 신규만, 서명·consent 토큰 검증, 백오프→DEAD, 422 DEAD, 철회 경합 미전송, 자료 삭제 → 취소+deletion, 동시 디스패처 중복 0.
-- 전체 백엔드: **765 tests / 0 failures / 0 errors / 12 skipped**(MaterialQuizRankingRedisIT — 별도 env) — 일회용 PG(postgres:16, tmpfs)·Redis 로 PG/Redis 통합 포함. 기준선(LLM-clean 13dae5e4) 679/0/0/24.
+- 전체 백엔드: **783 tests / 0 failures / 0 errors / 12 skipped**(MaterialQuizRankingRedisIT — 별도 env) — 일회용 PG(postgres:16, tmpfs)·Redis 로 PG/Redis 통합 포함. 기준선(LLM-clean 13dae5e4) 679/0/0/24.
 - 로컬 부팅(일회용 DB·Redis, ai07 대신 127.0.0.1:9, 게이트 ON, 서명 키 4종): `Started ApiApplication` 25.8s, 신규 테이블/컬럼 6개 ddl-auto 생성 확인. 인증 E2E: 미연결 AI 경로 503 `AI_QUALITY_GATE_NOT_WIRED`, 위조 `AI_CHAT_ANSWERED` 403, aiOutputSummary/score 400, 동의(14세 미확인) 400 → 동의/철회 → REVOCATION outbox 1행. 부팅 중 기존 ScreenSharePolicyEnforcer 가 로컬 OpenVidu(localhost:4443) 세션 목록 GET 을 시도해 TLS 단계에서 실패(상태 변경 없음).
 - 프런트: vite build PASS(출력은 scratchpad, 추적 dist 미변경), smoke 6 PASS, ESLint 는 저장소에 설정 파일이 없어 SKIP.
 - 합성 지연(스텁 평가기, 운영 수치 아님, socratic 3답변 캡처): 게이트 OFF 첫 본문 ~0ms / ON(평가 0ms) 첫 본문 p50 45ms·턴 p50 197ms / ON(평가 600ms) 첫 본문 p50 605ms·턴 p50 3.68s — 메시지·all_complete 부가 필드를 순차 평가하므로 턴 지연 ≈ Σ평가 지연. 운영 판단 전 ai07 실평가기로 측정 필요(병렬 평가·messages[] 중복 평가 제거는 개선 과제).
+- 독립 코드 리뷰(별도 리뷰어, 2026-11-04) 13건 + 1 PLAUSIBLE 을 재현 테스트로 고정·수정: 라우터 LLM 문구 게이트 우회, 반개방 서킷 영구 고착(취소/미구독/빈 응답),
+  BUSY 가 서킷 카운터 초기화, 평가기 빈 200 본문 → 무응답, all_complete 동시 평가 경합·중복 평가, 이름/제목/주석 부채널, 리터럴 null 프레임,
+  철회·삭제 요청 DEAD 처리, 서명 키 미구성 시 백로그 소실, 철회→재동의 후 구 샘플 전송, 요약 gpt_raw 미평가·반복 재생성, afterCommit 중첩 유실,
+  인코딩 경로(%69)로 커버리지 인터셉터 우회. 잔여: 식별자 필드(≤64 ASCII, 공백 불가)는 짧은 무공백 문자열을 실을 수 있음, 요약 생성 중 DB 커넥션 점유(기존 동작, 게이트 ON 시 최대 3배).
 - 품질 수치: 사람 검수 gold benchmark 미측정(ai07 seed 32건은 AI 초안 smoke, 서비스 품질 수치 아님). FAR/FRR·95% CI 는 측정 불가 — 주장하지 않는다.
 
 ## 11. ai07 Phase B 작업(순서)

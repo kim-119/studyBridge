@@ -207,4 +207,73 @@ class AiResponseQualityGateTest {
                         assertTrue(ds.stream().filter(GateDecision::approved).count() >= 1);
                 }
         }
+
+        // ── 독립 리뷰 회귀(2026-11-04) ──────────────────────────────────────────────
+
+        @Test
+        void halfOpenSlotIsReleasedWhenTrialIsCancelledOrNeverSubscribed() throws Exception {
+                try (StubEvaluator stub = new StubEvaluator(in -> new Reply(503, "{}", 0))) {
+                        AiQualityGateSettings s = AiQualityGateSettings.forTest(true); // threshold 3, open 1000ms
+                        QualityEvaluatorClient c = stub.evaluatorClient(s);
+                        AiResponseQualityGate g = new AiResponseQualityGate(s, c);
+                        for (int i = 0; i < 3; i++) {
+                                g.evaluateOnce(spec(), "req-circuit-" + i, 0, AiResponseQualityGate.text("x" + i)).block();
+                        }
+                        Thread.sleep(1100);
+                        // 조립만 하고 구독하지 않은 Mono 는 반개방 슬롯을 잡지 않는다
+                        g.evaluateOnce(spec(), "req-never-subscribed", 0, AiResponseQualityGate.text("n"));
+                        // 반개방 시험을 시작했다가 취소
+                        stub.policy = in -> new Reply(200, Reply.output(in.requestId(), 90, false, "APPROVED").body(), 800);
+                        g.evaluateOnce(spec(), "req-trial-cancel", 0, AiResponseQualityGate.text("t")).timeout(java.time.Duration.ofMillis(100))
+                                        .onErrorResume(e -> reactor.core.publisher.Mono.empty()).block();
+                        Thread.sleep(50);
+                        stub.policy = in -> Reply.output(in.requestId(), 90, false, "APPROVED");
+                        GateDecision d = g.evaluateOnce(spec(), "req-after-cancel", 0, AiResponseQualityGate.text("a")).block();
+                        assertTrue(d.approved(), "취소된 시험 뒤에도 서킷이 영구히 막히지 않는다: " + d.reasonCodes());
+                }
+        }
+
+        @Test
+        void busyResultsDoNotResetFailureCounter() throws Exception {
+                try (StubEvaluator stub = new StubEvaluator(in -> new Reply(503, "{}", 0))) {
+                        AiQualityGateSettings s = AiQualityGateSettings.forTest(true);
+                        AiResponseQualityGate g = new AiResponseQualityGate(s, stub.evaluatorClient(s));
+                        g.evaluateOnce(spec(), "req-busy-1", 0, AiResponseQualityGate.text("1")).block();
+                        g.evaluateOnce(spec(), "req-busy-2", 0, AiResponseQualityGate.text("2")).block();
+                        stub.policy = in -> new Reply(429, "{\"errorCode\":\"EVALUATOR_BUSY\"}", 0);
+                        g.evaluateOnce(spec(), "req-busy-3", 0, AiResponseQualityGate.text("3")).block();
+                        stub.policy = in -> new Reply(503, "{}", 0);
+                        g.evaluateOnce(spec(), "req-busy-4", 0, AiResponseQualityGate.text("4")).block();
+                        int before = stub.requests.size();
+                        GateDecision d = g.evaluateOnce(spec(), "req-busy-5", 0, AiResponseQualityGate.text("5")).block();
+                        assertEquals(List.of("EVALUATOR_CIRCUIT_OPEN"), d.reasonCodes(), "429 는 중립 — 503 3회 누적으로 열린다");
+                        assertEquals(before, stub.requests.size());
+                }
+        }
+
+        @Test
+        void emptyEvaluatorBodyIsAResultNotSilence() throws Exception {
+                try (StubEvaluator stub = new StubEvaluator(in -> new Reply(200, "", 0))) {
+                        GateDecision d = gate(stub, AiQualityGateSettings.forTest(true))
+                                        .evaluateOnce(spec(), "req-empty-body", 0, AiResponseQualityGate.text("x")).block();
+                        assertFalse(d.approved());
+                        assertEquals(List.of("EVALUATOR_OUTPUT_CONTRACT_INVALID"), d.reasonCodes());
+                }
+        }
+
+        @Test
+        void openCircuitSkipsGenerationEntirely() throws Exception {
+                try (StubEvaluator stub = new StubEvaluator(in -> new Reply(503, "{}", 0))) {
+                        AiQualityGateSettings s = AiQualityGateSettings.forTest(true);
+                        AiResponseQualityGate g = new AiResponseQualityGate(s, stub.evaluatorClient(s));
+                        for (int i = 0; i < 3; i++) {
+                                g.evaluateOnce(spec(), "req-open-" + i, 0, AiResponseQualityGate.text("x" + i)).block();
+                        }
+                        AtomicInteger generated = new AtomicInteger();
+                        AiResponseQualityGate.Outcome<String> o = g.generateApproved(spec(), (a, p) -> "초안 " + generated.incrementAndGet(),
+                                        AiResponseQualityGate::text);
+                        assertEquals(0, generated.get(), "서킷이 열려 있으면 GPU 생성을 하지 않는다");
+                        assertEquals(List.of("EVALUATOR_CIRCUIT_OPEN"), o.decision().reasonCodes());
+                }
+        }
 }

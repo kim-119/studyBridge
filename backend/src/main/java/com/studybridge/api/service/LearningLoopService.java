@@ -66,6 +66,9 @@ public class LearningLoopService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public LearningLoopEvent record(LearningLoopEvent event) {
         validateServerEvent(event);
+        if (event.getOrigin() == null) {
+            event.setOrigin(LearningEventOrigin.SERVER);
+        }
         return eventWriter.write(event);
     }
 
@@ -89,10 +92,21 @@ public class LearningLoopService {
         }
         if (TransactionSynchronizationManager.isActualTransactionActive()
                 && TransactionSynchronizationManager.isSynchronizationActive()) {
+            java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean();
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    writeSafely(event);
+                    if (done.compareAndSet(false, true)) {
+                        writeSafely(event);
+                    }
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    // 다른 afterCommit 콜백 안에서 등록되면 afterCommit 은 호출되지 않는다 → 커밋 완료 시점에 한 번 보장.
+                    if (status == STATUS_COMMITTED && done.compareAndSet(false, true)) {
+                        writeSafely(event);
+                    }
                 }
             });
             return null;

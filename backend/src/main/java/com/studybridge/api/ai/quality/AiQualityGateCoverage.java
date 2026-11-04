@@ -94,6 +94,25 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
         this.settings = settings;
     }
 
+    /**
+     * 요청이 어떤 레지스트리 항목에 해당하는가. 우선 MVC 가 실제로 고른 핸들러 패턴(BEST_MATCHING_PATTERN — 인코딩·정규화 후)으로
+     * 비교하고, 없으면 디코딩된 lookup path 로 비교한다. 원시 URI(getRequestURI) 비교는 %69 같은 인코딩으로 우회될 수 있다.
+     */
+    public static Route match(HttpServletRequest request) {
+        Object best = request.getAttribute(org.springframework.web.servlet.HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+        if (best instanceof String pattern) {
+            for (Route r : ROUTES) {
+                if (r.method().equalsIgnoreCase(request.getMethod()) && r.pattern().equals(pattern)) {
+                    return r;
+                }
+            }
+            return null;
+        }
+        return match(request.getMethod(), LOOKUP.getLookupPathForRequest(request));
+    }
+
+    private static final org.springframework.web.util.UrlPathHelper LOOKUP = new org.springframework.web.util.UrlPathHelper();
+
     public static Route match(String method, String path) {
         for (Route r : ROUTES) {
             if (r.method().equalsIgnoreCase(method) && MATCHER.match(r.pattern(), path)) {
@@ -112,7 +131,7 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
         if (!settings.enabled()) {
             return true;
         }
-        Route r = match(request.getMethod(), request.getRequestURI());
+        Route r = match(request);
         if (r == null || r.status() != Status.BLOCKED_WHEN_GATE_ON) {
             return true;
         }

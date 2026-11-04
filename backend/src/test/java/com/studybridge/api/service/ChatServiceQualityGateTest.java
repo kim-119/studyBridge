@@ -136,4 +136,17 @@ class ChatServiceQualityGateTest {
                 assertEquals(3, off.size());
                 assertNull(off.get(2).get("qualityStatus"));
         }
+
+        @Test
+        void intentRouterTextIsReplacedByFixedMessageWhenGateOn() throws Exception {
+                com.studybridge.api.dto.IntentDTO.RouteResult route = Mockito.mock(com.studybridge.api.dto.IntentDTO.RouteResult.class);
+                when(route.getAction()).thenReturn(com.studybridge.api.dto.IntentDTO.RouteAction.DIRECT_REPLY);
+                when(route.userMessage()).thenReturn("CANARY7F3A LLM 이 쓴 직답");
+                try (var stub = com.studybridge.api.ai.quality.QualityStreamGateTestSupport.stub(true)) {
+                        String on = ReflectionTestUtils.invokeMethod(factory(gateWith(stub)).service, "routeUserMessage", route);
+                        assertFalse(on.contains(CANARY), "게이트 ON: 라우터 LLM 문장 미노출");
+                }
+                String off = ReflectionTestUtils.invokeMethod(factory(null).service, "routeUserMessage", route);
+                assertTrue(off.contains(CANARY), "게이트 OFF: 기존 동작");
+        }
 }

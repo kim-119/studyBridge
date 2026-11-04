@@ -110,4 +110,19 @@ class AiQualityGateCoverageTest {
                 assertTrue(gated >= 2);
                 assertEquals(AiQualityGateCoverage.ROUTES.size(), gated + blocked + exempt);
         }
+
+        @Test
+        void encodedPathCannotBypassBlockAndResolvedPatternIsUsed() throws Exception {
+                AiQualityGateCoverage cov = new AiQualityGateCoverage(AiQualityGateSettings.forTest(true));
+                MockHttpServletRequest encoded = new MockHttpServletRequest("POST", "/api/materials/1/qu%69z");
+                MockHttpServletResponse r1 = new MockHttpServletResponse();
+                assertFalse(cov.preHandle(encoded, r1, new Object()), "디코딩된 경로로 매칭(인코딩 우회 차단)");
+                assertEquals(503, r1.getStatus());
+                MockHttpServletRequest resolved = new MockHttpServletRequest("POST", "/whatever");
+                resolved.setAttribute(org.springframework.web.servlet.HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
+                                "/api/materials/{materialId}/quiz");
+                MockHttpServletResponse r2 = new MockHttpServletResponse();
+                assertFalse(cov.preHandle(resolved, r2, new Object()), "MVC 가 고른 핸들러 패턴 기준");
+                assertEquals(503, r2.getStatus());
+        }
 }
