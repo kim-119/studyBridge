@@ -44,11 +44,26 @@ public class GroupStudyStreamController {
     private final ObjectMapper objectMapper;
     private final IntentRouterService intentRouterService;
 
+    /** 품질 게이트(그룹 AI 봇 SSE). 생성자 시그니처를 바꾸지 않도록 setter 주입 — null 이면 게이트 OFF. */
+    private com.studybridge.api.ai.quality.QualityStreamGate qualityStreamGate;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setQualityStreamGate(com.studybridge.api.ai.quality.QualityStreamGate qualityStreamGate) {
+        this.qualityStreamGate = qualityStreamGate;
+    }
+
+    private boolean qualityGateOn() {
+        return qualityStreamGate != null && qualityStreamGate.enabled();
+    }
+
+    static final String QUALITY_REDACTED_TEXT = "(품질 검증 이전에 생성된 AI 답변이라 표시하지 않습니다.)";
+    static final String QUALITY_APPROVED = "APPROVED";
+
     @GetMapping(value = "/{groupId}/chats/history", produces = MediaType.APPLICATION_JSON_VALUE)
     public org.springframework.http.ResponseEntity<List<Map<String, Object>>> getChatHistory(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long groupId) {
-        
+
         boolean isMember = groupStudyMemberRepository.existsByGroupStudyIdAndUserIdAndStatus(
                 groupId, userDetails.getId(), GroupStudyMemberStatus.JOINED);
         if (!isMember) {
@@ -57,18 +72,29 @@ public class GroupStudyStreamController {
 
         List<GroupChatMessage> historyList = groupChatMessageRepository.findTop100ByGroupStudyIdOrderByCreatedAtDesc(groupId);
         java.util.Collections.reverse(historyList);
-        
+        // 게이트 ON: 승인 표시(quality_status=APPROVED)가 없는 AI 답변 행은 본문을 가린다(사용자 메시지·식별자는 그대로).
+        //  게이트 OFF: 기존 응답 형태 그대로(qualityStatus/qualityRedacted 키를 싣지 않는다).
+        final boolean gateOn = qualityGateOn();
+
         List<Map<String, Object>> response = historyList.stream().map(h -> {
+            boolean ai = "ASSISTANT".equals(h.getRole());
+            boolean redact = gateOn && ai && !QUALITY_APPROVED.equals(h.getQualityStatus());
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("id", h.getId());
             map.put("senderName", h.getSenderName());
             map.put("senderId", h.getSenderId());
-            map.put("content", h.getContent());
-            map.put("isAi", "ASSISTANT".equals(h.getRole()));
+            map.put("content", redact ? QUALITY_REDACTED_TEXT : h.getContent());
+            map.put("isAi", ai);
             map.put("isAiQuery", "USER_AI".equals(h.getRole()));
+            if (gateOn) {
+                map.put("qualityStatus", ai ? h.getQualityStatus() : null);
+                if (redact) {
+                    map.put("qualityRedacted", Boolean.TRUE);
+                }
+            }
             return map;
         }).toList();
-        
+
         return org.springframework.http.ResponseEntity.ok(response);
     }
 
@@ -99,9 +125,12 @@ public class GroupStudyStreamController {
         String displayName = user.getDisplayName() != null ? user.getDisplayName() : "사용자";
 
         // 3. DB에서 최근 100개 대화 내역 조회 (시간순 정렬)
+        final boolean gateOn = qualityGateOn();
         List<GroupChatMessage> historyList = groupChatMessageRepository.findTop100ByGroupStudyIdOrderByCreatedAtDesc(groupId);
         java.util.Collections.reverse(historyList);
         List<Map<String, Object>> previousAnswers = historyList.stream()
+                // Learning Memory 신뢰 규칙(게이트 ON): 승인되지 않은(레거시/미검증) AI 답변은 다음 추론의 대화 맥락으로 넣지 않는다.
+                .filter(h -> !gateOn || !"ASSISTANT".equals(h.getRole()) || QUALITY_APPROVED.equals(h.getQualityStatus()))
                 .map(h -> {
                     Map<String, Object> map = new LinkedHashMap<>();
                     map.put("agentName", h.getSenderName());
@@ -154,14 +183,14 @@ public class GroupStudyStreamController {
         IntentDTO.RouteResult route = intentRouterService.route(
                 message, "group_study_chat", Map.of("groupId", groupId));
         if (route.isTerminal()) {
-            return Flux.just(routeEvent(route.actionName(), route.userMessage()));
+            return Flux.just(routeEvent(route.actionName(), routeUserMessage(route)));
         }
         if (route.isPipeline()) {
             // 그룹 채팅엔 자료(materialId) 컨텍스트가 없어 기준이 모호 → 되묻기로 안전 처리.
             return Flux.just(routeEvent("CLARIFY", "어떤 자료를 기준으로 만들까요? 자료를 먼저 선택해 주세요."));
         }
         final ServerSentEvent<String> warnNotice = route.isWarn()
-                ? routeEvent("WARN", route.userMessage()) : null;
+                ? routeEvent("WARN", routeUserMessage(route)) : null;
 
         // 4-4. 실행 모드 분기
         //  - 슬래시 명령어(/요약봇·/퀴즈봇·/검색봇)가 매칭되면 무조건 group_study_ai 봇 모드.
@@ -287,6 +316,17 @@ public class GroupStudyStreamController {
         // 스트림 누적 상태 저장 객체
         Map<String, StringBuilder> agentReplies = new ConcurrentHashMap<>();
 
+        // 5-G. 품질 게이트 ON: QualityStreamGate 를 누적·DB 영속화 "앞"에 둔다 → 거절·미평가 초안은 화면·DB 어디에도 가지 않는다.
+        //  (그룹 AI 답변은 Redis 캐시·STOMP 브로드캐스트를 쓰지 않는다 — 다른 그룹원은 이력(GET history)으로만 본다.)
+        if (gateOn) {
+            Flux<ServerSentEvent<String>> gated = gatedGroupUpstream(groupId, fastApiPayload, effectiveMessage, agentsList,
+                    agentReplies, displayName, String.valueOf(userDetails.getId()), request.getMessageId()).cache();
+            Flux<ServerSentEvent<String>> hb = Flux.interval(Duration.ofSeconds(heartbeatSeconds()))
+                    .map(i -> ServerSentEvent.<String>builder().comment("hb").build());
+            Flux<ServerSentEvent<String>> gatedStream = gated.mergeWith(hb).takeUntilOther(gated.then());
+            return warnNotice != null ? Flux.concat(Flux.just(warnNotice), gatedStream) : gatedStream;
+        }
+
         // 5. FastAPI SSE를 그대로 중계한다. agent_answer/debate_section/... 이벤트가 도착하는 즉시 프론트로 전달된다.
         Flux<ServerSentEvent<String>> upstream = fastApiWebClient.post()
                 .uri("/api/ai/multi-chat/stream")
@@ -355,10 +395,146 @@ public class GroupStudyStreamController {
         return 12L;
     }
 
+    // ── 품질 게이트 ON 경로(그룹 AI 봇) ─────────────────────────────────────────────
+
+    private static final java.util.regex.Pattern REQUEST_ID = java.util.regex.Pattern.compile("^[A-Za-z0-9._:-]{4,64}$");
+
+    static String groupRequestId(String clientMessageId) {
+        if (clientMessageId != null && REQUEST_ID.matcher(clientMessageId.trim()).matches()) {
+            return clientMessageId.trim();
+        }
+        return "grp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+    }
+
+    /**
+     * 게이트 ON 상류: FastAPI SSE(실패 시 non-stream 폴백을 all_complete 1건으로 변환) → QualityStreamGate(GROUP_STUDY_MESSAGE)
+     * → 승인 본문만 누적 → 완료 시 승인 답변만 quality_status=APPROVED 로 영속. 폴백 응답도 게이트를 거친다(우회 없음).
+     */
+    Flux<ServerSentEvent<String>> gatedGroupUpstream(Long groupId, Map<String, Object> fastApiPayload, String effectiveMessage,
+                                                     List<Map<String, Object>> agentsList, Map<String, StringBuilder> agentReplies,
+                                                     String displayName, String userId, String clientMessageId) {
+        final String requestId = groupRequestId(clientMessageId);
+        Flux<ServerSentEvent<String>> raw = fastApiWebClient.post()
+                .uri("/api/ai/multi-chat/stream")
+                .bodyValue(fastApiPayload)
+                .retrieve()
+                .bodyToFlux(new org.springframework.core.ParameterizedTypeReference<ServerSentEvent<String>>() {})
+                .onErrorResume(err -> {
+                    log.error("Error during FastAPI chat streaming for groupId={} rid={} ({}) — non-stream 폴백(게이트 경유)",
+                            groupId, requestId, err.getClass().getSimpleName());
+                    return fastApiWebClient.post()
+                            .uri("/api/ai/multi-chat")
+                            .bodyValue(fastApiPayload)
+                            .retrieve()
+                            .bodyToMono(String.class)
+                            .map(data -> ServerSentEvent.<String>builder().event("all_complete").data(data != null ? data : "{}").build())
+                            .flux()
+                            .onErrorResume(fallbackErr -> Flux.just(errorEvent("AI 스트리밍 대화 중 오류가 발생했습니다. 다시 시도해 주세요.")));
+                });
+        Set<String> names = new HashSet<>();
+        for (Map<String, Object> a : agentsList) {
+            for (String k : List.of("name", "displayName")) {
+                if (a.get(k) instanceof String s && !s.isBlank()) {
+                    names.add(s);
+                }
+            }
+        }
+        com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints constraints =
+                new com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints(null, null, null, null, null, null, null, null,
+                        null, null, null, null, groupParticipants(groupId, agentsList), null, null);
+        com.studybridge.api.ai.quality.QualityStreamGate.Context ctx = new com.studybridge.api.ai.quality.QualityStreamGate.Context(
+                requestId, com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.GROUP_STUDY_MESSAGE, effectiveMessage,
+                constraints, names);
+        return qualityStreamGate.gate(raw, ctx)
+                // 누적·영속화(JDBC)는 이벤트 루프 밖에서(평가기/상류 WebClient 스레드를 DB 로 막지 않는다).
+                .publishOn(reactor.core.scheduler.Schedulers.boundedElastic())
+                .doOnNext(ev -> accumulateGated(ev.event() != null ? ev.event() : "message", ev.data(), agentReplies))
+                .doOnComplete(() -> {
+                    log.info("SSE Stream completed for groupId={} rid={} (quality gate). Persisting approved replies={}.",
+                            groupId, requestId, agentReplies.size());
+                    persistGroupStreamMessages(groupId, displayName, effectiveMessage, agentsList, agentReplies, userId, QUALITY_APPROVED);
+                })
+                .onErrorResume(err -> {
+                    log.error("[QUALITY-GATE] group stream rid={} groupId={} 실패: {}", requestId, groupId, err.getClass().getSimpleName());
+                    return Flux.just(errorEvent("AI 스트리밍 대화 중 오류가 발생했습니다. 다시 시도해 주세요."));
+                });
+    }
+
+    /** 게이트를 거친 이벤트 중 승인 표시(qualityStatus=APPROVED)가 있는 본문만 누적한다(이중 방어). */
+    void accumulateGated(String event, String data, Map<String, StringBuilder> agentReplies) {
+        if (data == null || data.isBlank()) return;
+        try {
+            JsonNode node = objectMapper.readTree(data);
+            if (node == null || !node.isObject()) return;
+            if ("all_complete".equals(event)) {
+                if (!agentReplies.isEmpty() || !node.path("answers").isArray()) return;
+                com.fasterxml.jackson.databind.node.ArrayNode approved = objectMapper.createArrayNode();
+                for (JsonNode a : node.get("answers")) {
+                    if (QUALITY_APPROVED.equals(a.path("qualityStatus").asText(null))) approved.add(a);
+                }
+                com.fasterxml.jackson.databind.node.ObjectNode only = objectMapper.createObjectNode();
+                only.set("answers", approved);
+                accumulateFastApiStreamEvent(event, objectMapper.writeValueAsString(only), agentReplies);
+                return;
+            }
+            if (QUALITY_APPROVED.equals(node.path("qualityStatus").asText(null))) {
+                accumulateFastApiStreamEvent(event, data, agentReplies);
+            }
+        } catch (Exception e) {
+            log.debug("게이트 이벤트 누적 생략 event={}: {}", event, e.getClass().getSimpleName());
+        }
+    }
+
+    /** GROUP_STUDY_MESSAGE 평가 제약: 참여자(@멘션 범위) = JOINED 멤버 닉네임/표시명 + 이 요청의 봇 이름. */
+    private List<String> groupParticipants(Long groupId, List<Map<String, Object>> agentsList) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        try {
+            for (com.studybridge.api.entity.GroupStudyMember m
+                    : groupStudyMemberRepository.findWithUserByGroupStudyIdAndStatus(groupId, GroupStudyMemberStatus.JOINED)) {
+                String n = m.getNickname() != null && !m.getNickname().isBlank() ? m.getNickname()
+                        : (m.getUser() != null ? m.getUser().getDisplayName() : null);
+                if (n != null && !n.isBlank()) out.add(n.strip());
+            }
+        } catch (RuntimeException e) {
+            log.debug("[QUALITY-GATE] 그룹 참여자 조회 생략 groupId={}: {}", groupId, e.getClass().getSimpleName());
+        }
+        for (Map<String, Object> a : agentsList) {
+            if (a.get("name") instanceof String s && !s.isBlank()) out.add(s.strip());
+        }
+        return out.stream().limit(100).toList();
+    }
+
+    /**
+     * 라우팅 안내 문구. ai07 라우터의 directReply/clarify/warning 은 LLM 이 쓴 문장일 수 있으므로 게이트 ON 이면
+     * Spring 고정 문구로 바꾼다(게이트 OFF 면 기존 그대로) — ChatService.routeUserMessage 와 같은 규칙.
+     */
+    String routeUserMessage(IntentDTO.RouteResult route) {
+        if (!qualityGateOn()) {
+            return route.userMessage();
+        }
+        IntentDTO.RouteAction a = route.getAction();
+        if (a == IntentDTO.RouteAction.BLOCK) {
+            return "처리할 수 없는 요청입니다. 학습과 관련된 질문을 입력해 주세요.";
+        }
+        if (a == IntentDTO.RouteAction.CLARIFY) {
+            return "질문을 조금 더 구체적으로 알려 주세요.";
+        }
+        if (a == IntentDTO.RouteAction.DIRECT_REPLY) {
+            return "안녕하세요! 공부하면서 궁금한 점을 질문해 주세요.";
+        }
+        return "질문 의도를 확인하며 답변을 준비합니다.";
+    }
 
     private void persistGroupStreamMessages(Long groupId, String displayName, String effectiveMessage,
                                             List<Map<String, Object>> agentsList,
                                             Map<String, StringBuilder> agentReplies, String userId) {
+        persistGroupStreamMessages(groupId, displayName, effectiveMessage, agentsList, agentReplies, userId, null);
+    }
+
+    /** aiQualityStatus: AI 행에 기록할 게이트 판정(게이트 ON 경로 = APPROVED, OFF = null). 사용자 행은 항상 null. */
+    private void persistGroupStreamMessages(Long groupId, String displayName, String effectiveMessage,
+                                            List<Map<String, Object>> agentsList,
+                                            Map<String, StringBuilder> agentReplies, String userId, String aiQualityStatus) {
         GroupStudy groupStudy = groupStudyRepository.findById(groupId).orElse(null);
         if (groupStudy == null) return;
 
@@ -389,6 +565,7 @@ public class GroupStudyStreamController {
                         .senderId(matchedAgentId != null ? String.valueOf(matchedAgentId) : "AI_SYSTEM")
                         .content(fullReply)
                         .role("ASSISTANT")
+                        .qualityStatus(aiQualityStatus)
                         .build());
             }
         });

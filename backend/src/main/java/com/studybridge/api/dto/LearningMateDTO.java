@@ -66,5 +66,10 @@ public class LearningMateDTO {
         private String errorCode;
         private String message;
         private String quickActionApplied;
+        // 품질 게이트(ON 일 때만 값이 있다 — NON_NULL 이라 게이트 OFF 응답 형태는 그대로)
+        private String qualityStatus;        // APPROVED | REJECTED | VALIDATION_ERROR
+        private Double qualityScore;
+        private Boolean verified;
+        private Boolean retryable;
     }
 }
