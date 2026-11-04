@@ -2,6 +2,7 @@ import axios from 'axios';
 
 // AI 요청 timeout. 중복 export 금지.
 import { createSseParser } from '../utils/sse/sseParser';
+import { isGatedFrame, isDisplayableStreamBody, toQualityError, filterAllComplete } from '../utils/aiQualityDisplay';
 export const AI_TIMEOUT_MS = Number(
   import.meta.env.VITE_AI_TIMEOUT_MS ||
   import.meta.env.VITE_FRONTEND_AI_TIMEOUT_MS ||
@@ -387,6 +388,8 @@ export const agentService = {
     // done(프로토콜 종결) 뒤 서버가 소켓을 닫지 않아도 로딩이 고착되지 않도록 짧은 유예 후 reader 를 닫는다(§12 loading stuck 방지).
     const DONE_GRACE_MS = typeof opts.doneGraceMs === 'number' ? opts.doneGraceMs : 2500;
     let doneGraceTimer = null;
+    // 이 스트림(턴)이 Spring 품질 게이트를 거쳤는가 — 첫 게이트 표식 프레임 이후 true.
+    let qualityGated = false;
     let readerClosedByGrace = false;
 
     const dispatch = (frame) => {
@@ -408,6 +411,14 @@ export const agentService = {
         handlers.onParseError?.(event, frame.data, parseErr);
         return;
       }
+
+      // 품질 게이트 표시 경계(2차 점검): 게이트 모드 턴이면 미승인 본문은 그리지 않고 agent_error 로 바꾼다(서버가 권위).
+      if (isGatedFrame(data)) qualityGated = true;
+      if (!isDisplayableStreamBody(event, data, qualityGated)) {
+        handlers.onAgentError?.(toQualityError(data));
+        return;
+      }
+      if (event === 'all_complete') data = filterAllComplete(data, qualityGated);
 
       // 진단/성능 측정 + stale/중복 판정의 단일 훅. false 를 돌려주면(다른 턴의 늦은 이벤트, 중복 eventId) 이하 핸들러를 건너뛴다.
       if (handlers.onAnyEvent?.(event, data) === false) return;

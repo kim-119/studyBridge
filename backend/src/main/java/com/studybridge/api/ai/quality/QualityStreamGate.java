@@ -400,7 +400,11 @@ public class QualityStreamGate {
         return String.valueOf(k);
     }
 
+    /** 게이트를 거친 모든 프레임 표식 — 프런트 표시 경계(utils/aiQualityDisplay.js)가 이 턴을 게이트 모드로 인식한다. */
+    public static final String MODE_MARKER = "spring-v1";
+
     private ServerSentEvent<String> sse(String event, Map<String, Object> data) {
+        data.put("qualityGateMode", MODE_MARKER);
         try {
             return ServerSentEvent.<String>builder(mapper.writeValueAsString(data)).event(event).build();
         } catch (Exception e) {
