@@ -239,6 +239,18 @@ except Exception as e:
     import logging
     logging.getLogger(__name__).warning("quality_gate 라우터 로드 실패 (계속 기동): %s", e)
 
+# 경로 단위 내부 인증(deny-by-default, Phase B2). IP 는 인증을 대체하지 않는다. 기본 AI_INTERNAL_AUTH_MODE=report:
+# Spring 이 아직 Bearer 없이 부르는 21개 경로(+/openapi.json)만 기록 후 통과, 그 밖의 비공개 경로는 항상 Bearer 필수.
+# 보안 통제이므로 import 실패를 삼키지 않는다(기동 실패 = fail-closed, CI 가 잡는다).
+from app.core.internal_auth import InternalAuthMiddleware  # noqa: E402
+
+if not any(getattr(m, "cls", None) is InternalAuthMiddleware for m in app.user_middleware):
+    if getattr(app, "middleware_stack", None) is not None:
+        # main.app 이 이미 한 번 요청을 처리한 뒤(테스트 순서 등) import 된 경우: Starlette 는 스택을 첫 요청 때 만들고
+        # 이후 add_middleware 를 거부한다. 조용히 건너뛰면 인증 없이 도는 것이므로 스택을 비워 다음 요청에 재구성한다.
+        app.middleware_stack = None
+    app.add_middleware(InternalAuthMiddleware)
+
 # 출발지 네트워크 가드 — 반드시 마지막에 등록(가장 바깥 미들웨어 = 모든 처리보다 먼저 실행).
 # loopback/사설망(SSH 터널, Spring 컨테이너, ops 헬스체크)은 그대로 통과, 그 외 출발지는 Bearer AI_SERVER_API_KEY 필수.
 # 롤백: AI_NETWORK_GUARD=log(통과+경고) 또는 off. 실패 시에도 기동은 계속하되 오류를 남긴다.

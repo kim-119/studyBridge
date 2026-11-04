@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from app.core import network_guard as ng
 from app.core.network_guard import NetworkGuardMiddleware, is_trusted_host
 
-KEY = "k-guard-test"
+KEY = "k-guard-test-internal-key-0123456789"
 NETS = ng._parse_networks(ng._DEFAULT_TRUSTED)
 
 
@@ -153,7 +153,10 @@ def test_live_app_external_blocked_internal_ok(live):
     assert r.status_code == 403
     r = _req(app, "GET", "/api/ai/gateway/status")
     assert r.status_code == 403                                   # 내부 상태도 외부 비공개
+    # Phase B2: 내부 IP(Spring 컨테이너 대역)라도 Bearer 없이는 내부 상태를 볼 수 없다(IP 는 인증을 대체하지 않음).
     r = _req(app, "GET", "/api/ai/gateway/status", client=("172.18.0.2", 5))
+    assert r.status_code == 401 and r.json()["detail"]["errorCode"] == "AUTH_HEADER_MISSING"
+    r = _req(app, "GET", "/api/ai/gateway/status", client=("172.18.0.2", 5), headers={"Authorization": f"Bearer {KEY}"})
     assert r.status_code == 200
     assert _req(app, "GET", "/health").status_code == 200
 
@@ -167,7 +170,8 @@ def test_gateway_fail_open_does_not_bypass_auth(live, monkeypatch):
     ext = _req(app, "POST", "/api/ai/vision/analyze", json=body)
     assert ext.status_code == 403 and ext.json()["error"]["code"] == "AI_NETWORK_FORBIDDEN"
     internal_noauth = _req(app, "POST", "/api/ai/vision/analyze", client=("127.0.0.1", 1), json=body)
-    assert internal_noauth.status_code == 401 and internal_noauth.json()["error"]["code"] == "VISION_UNAUTHORIZED"
+    # Phase B2: 라우트 앞 내부 인증 미들웨어가 먼저 거부한다(핸들러·스케줄러 미도달). 상태 코드는 기존과 같은 401.
+    assert internal_noauth.status_code == 401 and internal_noauth.json()["detail"]["errorCode"] == "AUTH_HEADER_MISSING"
     internal_badauth = _req(app, "POST", "/api/ai/vision/analyze", client=("127.0.0.1", 1), json=body,
                             headers={"Authorization": "Bearer wrong"})
     assert internal_badauth.status_code == 401

@@ -20,7 +20,7 @@ import httpx
 import pytest
 from PIL import Image, ImageDraw
 
-KEY = "k-vision-test"
+KEY = "k-vision-test-internal-key-0123456789"
 
 
 def _jpeg(text: str, size=(640, 360)) -> str:
