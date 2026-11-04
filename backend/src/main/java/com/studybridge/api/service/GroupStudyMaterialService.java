@@ -12,12 +12,25 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 import com.studybridge.api.ai.AiFailoverExecutor;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
+import com.studybridge.api.ai.quality.GateDecision;
+import com.studybridge.api.exception.AiUpstreamException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.UUID;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 @Service
@@ -38,6 +51,24 @@ public class GroupStudyMaterialService {
     // PRIMARY(ai07) → SECONDARY(EC2 hot-standby) 공통 failover(/api/ai/quiz/generate). 기존 fastApiWebClient 는 executor 의 primary 와 동일.
     private final AiFailoverExecutor aiFailoverExecutor;
     private final ObjectMapper objectMapper;
+
+    // Global Response Quality Gate(기본 OFF). 생성자 시그니처를 바꾸지 않도록 선택 주입(null = OFF).
+    private AiResponseQualityGate qualityGate;
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    private boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
+
+    /** 게이트 ON 에서 미검증(quality_status≠APPROVED) 저장 그룹 퀴즈의 AI 생성 제목 대신 내보내는 고정 문구. */
+    public static final String REDACTED_QUIZ_TITLE = "AI 품질 검증 전 퀴즈(내용 비공개)";
+    static final String APPROVED = "APPROVED";
+    static final int EVIDENCE_CHUNK_CHARS = 4000;
+    static final int EVIDENCE_MAX_CHARS = 48000;
 
     // 생성 옵션 기본값/보정 상수 (문제 수 1~20, 문제당 시간 5~120초)
     private static final int DEFAULT_QUESTION_COUNT = 5;
@@ -89,8 +120,21 @@ public class GroupStudyMaterialService {
         log.info("Group study material saved in DB. materialId={}, s3Key={}", savedMaterial.getId(), s3Key);
 
         // 4. FastAPI AI 연동 자동 퀴즈 생성
-        generateAIQuiz(groupStudy, uploader, savedMaterial, s3Key, file.getOriginalFilename(),
-                clampQuestionCount(questionCount), clampQuestionSeconds(perQuestionSeconds));
+        try {
+            generateAIQuiz(groupStudy, uploader, savedMaterial, s3Key, file.getOriginalFilename(),
+                    clampQuestionCount(questionCount), clampQuestionSeconds(perQuestionSeconds), () -> bytesOf(file));
+        } catch (AiUpstreamException qualityFailure) {
+            // 게이트 ON 품질 거절/평가 불가: "자료 등록 + 퀴즈 생성" 을 성공으로 위장하지 않는다. 자료 행은 롤백되고
+            // 방금 올린 S3 객체는 롤백 뒤 best-effort 삭제(고아 방지). 사용자는 같은 파일로 다시 시도할 수 있다(retryable).
+            runAfterRollback(() -> {
+                try {
+                    s3Service.deleteFile(s3Key);
+                } catch (Exception e) {
+                    log.error("[GROUP_QUIZ_GATE] 롤백 후 S3 삭제 실패(고아 객체) groupId={} key={}", groupId, s3Key, e);
+                }
+            });
+            throw qualityFailure;
+        }
 
         return toDTO(savedMaterial);
     }
@@ -114,17 +158,27 @@ public class GroupStudyMaterialService {
             throw new SecurityException("그룹 멤버만 퀴즈 목록을 조회할 수 있습니다.");
         }
 
+        boolean gate = gateOn();
         return groupStudyQuizRepository.findByGroupStudyIdOrderByCreatedAtDesc(groupId).stream()
-                .map(quiz -> GroupStudyQuizDTO.QuizResponse.builder()
-                        .id(quiz.getId())
-                        .groupStudyId(quiz.getGroupStudy().getId())
-                        .title(quiz.getTitle())
-                        .rewardPoints(quiz.getRewardPoints())
-                        .creatorId(quiz.getCreator().getId())
-                        .creatorName(quiz.getCreator().getDisplayName())
-                        .createdAt(quiz.getCreatedAt())
-                        .questionCount(quiz.getQuestions() != null ? quiz.getQuestions().size() : 0)
-                        .build())
+                .map(quiz -> {
+                    // 게이트 ON: 승인 기록이 없는 저장 퀴즈(레거시/게이트 OFF 시기)는 AI 생성 제목을 가린다. id·생성자·개수는 유지.
+                    boolean hide = gate && !APPROVED.equals(quiz.getQualityStatus());
+                    return GroupStudyQuizDTO.QuizResponse.builder()
+                            .id(quiz.getId())
+                            .groupStudyId(quiz.getGroupStudy().getId())
+                            .title(hide ? REDACTED_QUIZ_TITLE : quiz.getTitle())
+                            .rewardPoints(quiz.getRewardPoints())
+                            .creatorId(quiz.getCreator().getId())
+                            .creatorName(quiz.getCreator().getDisplayName())
+                            .createdAt(quiz.getCreatedAt())
+                            .questionCount(quiz.getQuestions() != null ? quiz.getQuestions().size() : 0)
+                            // 게이트 OFF: 전부 null(기존 응답과 동일)
+                            .qualityStatus(gate ? quiz.getQualityStatus() : null)
+                            .qualityScore(gate && !hide ? quiz.getQualityScore() : null)
+                            .verified(gate ? !hide : null)
+                            .qualityRedacted(hide ? Boolean.TRUE : null)
+                            .build();
+                })
                 .collect(Collectors.toList());
     }
 
@@ -166,10 +220,12 @@ public class GroupStudyMaterialService {
         // 3. 기존 자료 기반 퀴즈 생성 (업로드 경로와 동일 로직 재사용)
         GroupStudyQuiz quiz = generateAIQuiz(material.getGroupStudy(), creator, material,
                 material.getS3Key(), material.getOriginalFileName(),
-                clampQuestionCount(questionCount), clampQuestionSeconds(perQuestionSeconds));
+                clampQuestionCount(questionCount), clampQuestionSeconds(perQuestionSeconds),
+                () -> s3Service.downloadBytes(material.getS3Key()));
         if (quiz == null) {
             throw new IllegalStateException("퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.");
         }
+        boolean approved = gateOn() && APPROVED.equals(quiz.getQualityStatus());
 
         return GroupStudyQuizDTO.QuizResponse.builder()
                 .id(quiz.getId())
@@ -180,12 +236,17 @@ public class GroupStudyMaterialService {
                 .creatorName(quiz.getCreator().getDisplayName())
                 .createdAt(quiz.getCreatedAt())
                 .questionCount(quiz.getQuestions() != null ? quiz.getQuestions().size() : 0)
+                // 게이트 OFF: null(기존 응답과 동일). ON: 여기까지 왔으면 승인본만 저장됐다.
+                .qualityStatus(approved ? APPROVED : null)
+                .qualityScore(approved ? quiz.getQualityScore() : null)
+                .verified(approved ? Boolean.TRUE : null)
                 .build();
     }
 
     // FastAPI AI 연동을 이용해 퀴즈 세트를 생성하는 메서드 (실패 시 Fallback 제공). 저장된 퀴즈를 반환.
+    // sourceBytes = 품질 게이트 근거용 원본 파일(게이트 ON 일 때만 읽는다).
     private GroupStudyQuiz generateAIQuiz(GroupStudy groupStudy, User creator, GroupStudyMaterial material, String s3Key,
-            String fileName, int questionCount, int perQuestionSeconds) {
+            String fileName, int questionCount, int perQuestionSeconds, Supplier<byte[]> sourceBytes) {
         log.info("Requesting AI quiz generation from FastAPI. materialId={}, questionCount={}, perQuestionSeconds={}",
                 material.getId(), questionCount, perQuestionSeconds);
 
@@ -195,6 +256,10 @@ public class GroupStudyMaterialService {
                 .fileName(fileName)
                 .numQuestions(questionCount)
                 .build();
+
+        if (gateOn()) {
+            return generateAIQuizGated(groupStudy, creator, material, requestPayload, questionCount, perQuestionSeconds, sourceBytes);
+        }
 
         GroupStudyQuizDTO.AIQuizResponse aiResponse = requestAiQuiz(requestPayload, material.getId());
 
@@ -261,6 +326,154 @@ public class GroupStudyMaterialService {
         } catch (Exception e) {
             log.error("Failed to persist generated quiz in Database: ", e);
             return null;
+        }
+    }
+
+    /** 저장할 수 있는(정답 키가 보기 안에 있는) 문항 + 0-based 정답. */
+    record GradableQuestion(GroupStudyQuizDTO.AIQuestion q, int correct) { }
+
+    record GroupQuizDraft(String title, List<GradableQuestion> questions) { }
+
+    /**
+     * 게이트 경로(PDF_QUIZ / quiz_json): 생성 → 저장·노출될 제목·문항·보기·정답·해설 전부를 평가 → 거절 시 최대 2회 재생성 → 승인분만 저장
+     * (quality_status=APPROVED). 근거 = Spring 이 가진 원본 파일에서 결정적으로 뽑은 원문(GroupStudyQuizSourceText, documentId 범위).
+     * 생성 자체가 처음부터 실패하면 재생성하지 않고 기존 계약(null = 퀴즈 미저장)을 따른다. 거절/평가 불가는 AiUpstreamException
+     * (422 AI_QUALITY_REJECTED / 503 AI_QUALITY_UNAVAILABLE, retryable)로 명시 실패 — 저장 0, 기존 퀴즈는 그대로. failover 는 매 시도 동일.
+     */
+    private GroupStudyQuiz generateAIQuizGated(GroupStudy groupStudy, User creator, GroupStudyMaterial material,
+            GroupStudyQuizDTO.AIQuizRequest basePayload, int questionCount, int perQuestionSeconds, Supplier<byte[]> sourceBytes) {
+        Long gmId = material.getId();
+        String docId = GroupStudyQuizSourceText.documentId(gmId);
+        String rid = "gquiz-" + gmId + "-" + UUID.randomUUID().toString().substring(0, 8);
+        byte[] bytes = null;
+        try {
+            bytes = sourceBytes != null ? sourceBytes.get() : null;
+        } catch (Exception e) {
+            log.warn("[GROUP_QUIZ_GATE] 근거 원본 읽기 실패 materialId={} rid={} error={} → 근거 없이 평가", gmId, rid, e.getClass().getSimpleName());
+        }
+        String text = GroupStudyQuizSourceText.extract(bytes, material.getContentType(), material.getOriginalFileName(), EVIDENCE_MAX_CHARS);
+        ResponseQualityV1.Constraints constraints = new ResponseQualityV1.Constraints(null, List.of(docId), questionCount, null, null,
+                null, null, false, false, null, null, null, null, null, null);
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(rid, ResponseQualityV1.TaskType.PDF_QUIZ,
+                ResponseQualityV1.OutputKind.QUIZ_JSON,
+                "다음 그룹 스터디 자료 원문에 근거한 객관식 퀴즈 " + questionCount + "문항(제목·정답 포함)을 만들어 주세요: "
+                        + (material.getTitle() != null ? material.getTitle() : ""),
+                GroupStudyQuizSourceText.evidence(docId, text, EVIDENCE_CHUNK_CHARS, EVIDENCE_MAX_CHARS), constraints, null);
+        final boolean[] upstreamFailed = {false};
+        AiResponseQualityGate.Outcome<GroupQuizDraft> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> {
+            GroupStudyQuizDTO.AIQuizRequest payload = attempt == 0 ? basePayload : GroupStudyQuizDTO.AIQuizRequest.builder()
+                    .materialId(basePayload.getMaterialId()).s3Key(basePayload.getS3Key()).fileName(basePayload.getFileName())
+                    .numQuestions(basePayload.getNumQuestions()).strictGrounding(basePayload.getStrictGrounding())
+                    .regenerationAttempt(attempt).regenerationHints(previous != null ? previous.reasonCodes() : List.of())
+                    .build();
+            GroupStudyQuizDTO.AIQuizResponse ai = requestAiQuiz(payload, gmId);
+            String unusable = ai == null || ai.getQuestions() == null || ai.getQuestions().isEmpty() ? "EMPTY" : unusableAiQuizReason(ai);
+            List<GradableQuestion> gradable = unusable == null ? gradableQuestions(ai, gmId) : List.of();
+            if (unusable != null || gradable.isEmpty()) {
+                log.error("[GROUP_QUIZ_GATE] AI quiz unusable(reason={}) materialId={} rid={} attempt={} → 재생성하지 않음",
+                        unusable != null ? unusable : "NO_GRADABLE_QUESTION", gmId, rid, attempt);
+                upstreamFailed[0] = true;
+                throw new AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+            }
+            return new GroupQuizDraft(ai.getQuizTitle(), gradable);
+        }, GroupStudyMaterialService::proposedOutput);
+
+        if (outcome.approved()) {
+            return persistApprovedQuiz(groupStudy, creator, outcome.value(), perQuestionSeconds, outcome.decision(), gmId);
+        }
+        GateDecision d = outcome.decision();
+        if (upstreamFailed[0] && d.attempts() <= 1) {
+            return null; // 첫 생성부터 실패 — 평가할 초안이 없었다(기존 계약: 퀴즈 미저장)
+        }
+        log.warn("[GROUP_QUIZ_GATE] quality gate not approved materialId={} rid={} status={} codes={} attempts={} evidenceChunks={} → 저장하지 않음",
+                gmId, rid, d.qualityStatus(), d.reasonCodes(), d.attempts(), spec.evidence().size());
+        boolean rejected = GateDecision.REJECTED.equals(d.errorCode());
+        throw new AiUpstreamException(rejected ? HttpStatus.UNPROCESSABLE_ENTITY : HttpStatus.SERVICE_UNAVAILABLE,
+                rejected ? GateDecision.REJECTED : GateDecision.UNAVAILABLE, GateDecision.userMessage(d.errorCode()), rid, true, null, null);
+    }
+
+    /** 평가 대상(quiz_json) = 저장·노출될 AI 생성 문자열 전부: 퀴즈 제목, 문항, 보기, 정답(0-based answerIndex), 해설(정답키 교차검증용). */
+    static JsonNode proposedOutput(GroupQuizDraft draft) {
+        ObjectNode root = JsonNodeFactory.instance.objectNode();
+        root.put("title", draft.title() != null ? draft.title() : "");
+        ArrayNode qs = root.putArray("questions");
+        for (GradableQuestion g : draft.questions()) {
+            ObjectNode n = qs.addObject();
+            n.put("question", g.q().getQuestion());
+            ArrayNode opts = n.putArray("options");
+            g.q().getOptions().forEach(opts::add);
+            n.put("answerIndex", g.correct());
+            n.put("explanation", g.q().getExplanation() != null ? g.q().getExplanation() : "");
+        }
+        return root;
+    }
+
+    private List<GradableQuestion> gradableQuestions(GroupStudyQuizDTO.AIQuizResponse ai, Long materialId) {
+        List<GradableQuestion> out = new ArrayList<>();
+        for (GroupStudyQuizDTO.AIQuestion aiQ : ai.getQuestions()) {
+            Integer correct = resolveCorrectAnswer(aiQ);
+            if (aiQ.getQuestion() == null || aiQ.getQuestion().isBlank() || aiQ.getOptions() == null
+                    || aiQ.getOptions().size() < 2 || correct == null) {
+                log.warn("Skipping ungradable AI question. materialId={} questionId={} correctAnswer={} correctOptionIds={}",
+                        materialId, aiQ.getQuestionId(), aiQ.getCorrectAnswer(), aiQ.getCorrectOptionIds());
+                continue;
+            }
+            out.add(new GradableQuestion(aiQ, correct));
+        }
+        return out;
+    }
+
+    /** 승인된 초안만 저장(평가한 문항 그대로 — 저장 단계에서 문항을 더하거나 바꾸지 않는다). 저장 실패는 기존 계약대로 null. */
+    private GroupStudyQuiz persistApprovedQuiz(GroupStudy groupStudy, User creator, GroupQuizDraft draft, int perQuestionSeconds,
+            GateDecision approval, Long materialId) {
+        try {
+            GroupStudyQuiz savedQuiz = groupStudyQuizRepository.save(GroupStudyQuiz.builder()
+                    .groupStudy(groupStudy)
+                    .creator(creator)
+                    .title(draft.title())
+                    .rewardPoints(10)
+                    .qualityStatus(APPROVED)
+                    .qualityScore(approval.score())
+                    .build());
+            for (GradableQuestion g : draft.questions()) {
+                groupStudyQuizQuestionRepository.save(GroupStudyQuizQuestion.builder()
+                        .quiz(savedQuiz)
+                        .question(g.q().getQuestion())
+                        .optionsJson(objectMapper.writeValueAsString(g.q().getOptions()))
+                        .correctAnswer(g.correct())
+                        .timeLimitSeconds(perQuestionSeconds)
+                        .build());
+            }
+            log.info("Successfully persisted AI Quiz(gated). quizId={}, questionsCount={}, score={} attempts={}",
+                    savedQuiz.getId(), draft.questions().size(), approval.score(), approval.attempts());
+            return savedQuiz;
+        } catch (Exception e) {
+            log.error("Failed to persist gated quiz in Database. materialId={}", materialId, e);
+            return null;
+        }
+    }
+
+    private static byte[] bytesOf(MultipartFile file) {
+        try {
+            return file.getBytes();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static void runAfterRollback(Runnable task) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCompletion(int status) {
+                            if (status == STATUS_ROLLED_BACK) {
+                                task.run();
+                            }
+                        }
+                    });
+        } else {
+            task.run();
         }
     }
 

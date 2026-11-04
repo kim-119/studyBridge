@@ -114,13 +114,19 @@ class AiQualityGateCoverageTest {
         @Test
         void encodedPathCannotBypassBlockAndResolvedPatternIsUsed() throws Exception {
                 AiQualityGateCoverage cov = new AiQualityGateCoverage(AiQualityGateSettings.forTest(true));
-                MockHttpServletRequest encoded = new MockHttpServletRequest("POST", "/api/materials/1/qu%69z");
+                // 예시 경로는 아직 BLOCKED 인 항목에서 고른다(특정 경로를 고정하면 그 경로가 GATED 로 바뀔 때 이 검사가 깨진다).
+                AiQualityGateCoverage.Route blocked = AiQualityGateCoverage.ROUTES.stream()
+                                .filter(r -> r.status() == AiQualityGateCoverage.Status.BLOCKED_WHEN_GATE_ON && r.pattern().matches(".*[a-z]$"))
+                                .findFirst().orElse(null);
+                org.junit.jupiter.api.Assumptions.assumeTrue(blocked != null, "BLOCKED 경로 없음(전부 연결됨)");
+                String plain = blocked.pattern().replaceAll("\\{[^}]+}", "1");
+                String encodedPath = plain.substring(0, plain.length() - 1) + String.format("%%%02x", (int) plain.charAt(plain.length() - 1));
+                MockHttpServletRequest encoded = new MockHttpServletRequest(blocked.method(), encodedPath);
                 MockHttpServletResponse r1 = new MockHttpServletResponse();
-                assertFalse(cov.preHandle(encoded, r1, new Object()), "디코딩된 경로로 매칭(인코딩 우회 차단)");
+                assertFalse(cov.preHandle(encoded, r1, new Object()), "디코딩된 경로로 매칭(인코딩 우회 차단): " + encodedPath);
                 assertEquals(503, r1.getStatus());
-                MockHttpServletRequest resolved = new MockHttpServletRequest("POST", "/whatever");
-                resolved.setAttribute(org.springframework.web.servlet.HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
-                                "/api/materials/{materialId}/quiz");
+                MockHttpServletRequest resolved = new MockHttpServletRequest(blocked.method(), "/whatever");
+                resolved.setAttribute(org.springframework.web.servlet.HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE, blocked.pattern());
                 MockHttpServletResponse r2 = new MockHttpServletResponse();
                 assertFalse(cov.preHandle(resolved, r2, new Object()), "MVC 가 고른 핸들러 패턴 기준");
                 assertEquals(503, r2.getStatus());

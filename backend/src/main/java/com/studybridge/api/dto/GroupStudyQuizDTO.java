@@ -25,6 +25,16 @@ public class GroupStudyQuizDTO {
         private LocalDateTime createdAt;
         private Integer questionCount;
         private List<QuestionResponse> questions;
+        // 품질 게이트(response-quality.v1, PDF_QUIZ). 게이트 OFF 면 null → JSON 미출력(기존 응답과 동일).
+        // qualityRedacted=true: 미검증 저장 퀴즈라 AI 생성 제목을 고정 문구로 가렸다.
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private String qualityStatus;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Double qualityScore;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean verified;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean qualityRedacted;
     }
 
     @Data
@@ -61,6 +71,12 @@ public class GroupStudyQuizDTO {
         // PDF 근거 강제: true 면 AI07 은 S3/PDF/검증 실패 시 일반 공부법 placeholder 대신 success=false 로 응답한다.
         @Builder.Default
         private Boolean strictGrounding = Boolean.TRUE;
+        // 품질 게이트 재생성 시도(1..2)와 직전 거절 사유 코드. 게이트 OFF·최초 시도는 null → JSON 미출력(기존 payload 와 동일).
+        // AI07 QuizGenerateRequest 는 extra="ignore" 라 모르는 필드는 무시한다(인계 C-RQ-3: 재생성 힌트 수용 요청).
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Integer regenerationAttempt;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private List<String> regenerationHints;
     }
 
     @Data

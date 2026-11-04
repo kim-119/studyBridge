@@ -69,6 +69,18 @@ public class GroupStudyQuizSessionService {
 
     private TransactionTemplate transactionTemplate;
 
+    // Global Response Quality Gate(기본 OFF). 생성자 시그니처를 바꾸지 않도록 선택 주입(null = OFF).
+    private com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setQualityGate(com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    static final String REDACTED_QUIZ_TITLE = GroupStudyMaterialService.REDACTED_QUIZ_TITLE;
+    static final String REDACTED_QUESTION = "AI 품질 검증을 통과하지 않은 문항이라 내용을 표시하지 않습니다.";
+    static final String REDACTED_OPTION = "(검증 전 보기 비공개)";
+
     private final Map<Long, Object> sessionLocks = new ConcurrentHashMap<>();
     private final Map<Long, ScheduledFuture<?>> timerTasks = new ConcurrentHashMap<>();
     private final Map<Long, ScheduledFuture<?>> transitionTasks = new ConcurrentHashMap<>();
@@ -274,7 +286,7 @@ public class GroupStudyQuizSessionService {
             if (isStaleSession(active.get())) {
                 abortSession(active.get());
             } else {
-                return buildSnapshot(active.get(), userId, null);
+                return redactUnverified(active.get(), buildSnapshot(active.get(), userId, null));
             }
         }
 
@@ -282,8 +294,33 @@ public class GroupStudyQuizSessionService {
                 .filter(session -> session.getStatus() == GroupStudyQuizSessionStatus.COMPLETED
                         && session.getCompletedAt() != null
                         && session.getCompletedAt().isAfter(LocalDateTime.now().minusMinutes(30)))
-                .map(session -> buildSnapshot(session, userId, null))
+                .map(session -> redactUnverified(session, buildSnapshot(session, userId, null)))
                 .orElse(null);
+    }
+
+    /**
+     * 게이트 ON + 세션의 퀴즈가 승인 기록(quality_status=APPROVED) 없음(레거시/게이트 OFF 시기 생성) → 이 REST 스냅샷에서
+     * AI 생성 필드(퀴즈 제목 스냅샷·문항·보기 본문)를 고정 문구로 가린다. 세션/문항 id·진행 상태·정답 번호(결정적 채점 키)·
+     * 점수판·제출 기록은 그대로다. 게이트 OFF 면 스냅샷을 그대로 돌려준다(기존 응답과 동일).
+     * STOMP 브로드캐스트(publishQuestion/reveal)는 이 경로 범위가 아니다(실시간 세션 시작 게이트는 별도 작업).
+     */
+    GroupStudySocketDTO.QuizSessionPayload redactUnverified(GroupStudyQuizSession session, GroupStudySocketDTO.QuizSessionPayload p) {
+        if (p == null || qualityGate == null || !qualityGate.enabled()) {
+            return p;
+        }
+        GroupStudyQuiz quiz = session.getQuiz();
+        if (quiz != null && "APPROVED".equals(quiz.getQualityStatus())) {
+            return p;
+        }
+        p.setQuizTitle(REDACTED_QUIZ_TITLE);
+        if (p.getQuestionText() != null) {
+            p.setQuestionText(REDACTED_QUESTION);
+        }
+        if (p.getOptions() != null) {
+            p.setOptions(p.getOptions().stream().map(o -> REDACTED_OPTION).collect(Collectors.toList()));
+        }
+        p.setQualityRedacted(Boolean.TRUE);
+        return p;
     }
 
     private Optional<GroupStudyQuizSession> findActiveSession(Long groupId) {

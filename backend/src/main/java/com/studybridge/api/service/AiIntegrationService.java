@@ -817,21 +817,33 @@ public class AiIntegrationService {
         public List<QuizDTO.Response> getQuizzes(Long userId, Long materialId) {
                 Material material = getMaterialSafely(userId, materialId);
                 assertPdfAnalyzable(material, "퀴즈/문제 생성");
+                boolean gate = qualityGateOn();
                 return quizRepository.findByMaterial_MaterialIdOrderByCreatedAtDesc(materialId)
                                 .stream()
-                                .map(quiz -> QuizDTO.Response.builder()
+                                .map(quiz -> {
+                                        // 게이트 ON: 승인 기록(quality_status=APPROVED)이 없는 저장 퀴즈는 문항·보기(AI 생성 필드)를 가린다.
+                                        // 식별자·점수 기록(lastResult 의 점수/선택 답안)은 유지하고, lastResult 의 해설은 MaterialQuizService 가 가린다.
+                                        boolean hide = gate && !"APPROVED".equals(quiz.getQualityStatus());
+                                        List<QuizDTO.PublicQuestion> questions = MaterialQuizService.toPublicQuestions(quiz.getQuizId(), quiz.getQuizData());
+                                        return QuizDTO.Response.builder()
                                                 .quizId(quiz.getQuizId())
                                                 .materialId(materialId)
                                                 .difficulty(quiz.getDifficulty())
                                                 .questionCount(quiz.getQuestionCount())
                                                 .pageRange(quiz.getPageRange())
                                                 // 공개 DTO: 정답 키/원문 quizData 는 브라우저로 내보내지 않는다(MaterialQuizService 가 서버 채점).
-                                                .questions(MaterialQuizService.toPublicQuestions(quiz.getQuizId(), quiz.getQuizData()))
+                                                .questions(hide ? MaterialQuizService.redactPublicQuestions(questions) : questions)
                                                 .lastResult(materialQuizService.latestResultOrNull(quiz, userId))
                                                 .createdAt(quiz.getCreatedAt())
                                                 .success(true)
                                                 .textStatus(textStatusFor(material, getTextToAnalyze(material)))
-                                                .build())
+                                                // 게이트 OFF: 전부 null(기존 응답과 동일)
+                                                .qualityStatus(gate ? quiz.getQualityStatus() : null)
+                                                .qualityScore(gate && !hide ? quiz.getQualityScore() : null)
+                                                .verified(gate ? !hide : null)
+                                                .qualityRedacted(hide ? Boolean.TRUE : null)
+                                                .build();
+                                })
                                 .collect(Collectors.toList());
         }
 
@@ -892,6 +904,27 @@ public class AiIntegrationService {
                 log.info("[AI_QUIZ_PDF_BASED] materialId={} difficulty={} sourceMode=PDF_BASED hasDocumentText={} hasSummary={} hasCoreContentText={} hasDetailedContentText={} count={}",
                                 material.getMaterialId(), quizDifficulty, isNotBlank(documentText), isNotBlank(summaryText), isNotBlank(coreContentText), isNotBlank(detailedContentText), request.getQuestionCount());
 
+                if (qualityGateOn()) {
+                        return generateQuizGated(material, request, requestBody, documentText, requestedCount, appliedCount, quizDifficulty, quizT0);
+                }
+                QuizDraft draft = callQuizAi(material, request, requestBody, quizDifficulty, quizT0);
+                if (draft.failure() != null) {
+                        return draft.failure();
+                }
+                return persistQuiz(material, request, draft, requestedCount, appliedCount, quizDifficulty, quizT0, null);
+        }
+
+        /** ai07 /api/ai/quiz 1회 호출 결과. failure != null 이면 기존 실패 DTO(저장하지 않음), 아니면 계약 검증을 통과한 초안. */
+        private record QuizDraft(AiMaterialQuizDTO.Response ai, AiMaterialQuizContract.Result contract, String upstream,
+                        QuizDTO.Response failure) {
+                static QuizDraft failed(QuizDTO.Response failure) {
+                        return new QuizDraft(null, null, null, failure);
+                }
+        }
+
+        /** ai07 호출(PRIMARY → SECONDARY failover) + Spring 계약 검증. 게이트 OFF/ON 이 같은 생성 경로를 쓴다. */
+        private QuizDraft callQuizAi(Material material, QuizDTO.Request request, Map<String, Object> requestBody,
+                        String quizDifficulty, long quizT0) {
                 // AI07 FINAL CONTRACT(quiz.v2): HTTP 는 항상 200, 성공 여부는 success. Map 대신 typed DTO 로 받는다.
                 // PRIMARY → SECONDARY failover: 전송 실패/timeout/404/5xx 와 "200 + success=false + retryable 일시 실패(AI_TIMEOUT 등)" 만
                 // 다음 업스트림으로 넘기고, PDF_TEXT_INSUFFICIENT 같은 domain 실패는 그대로 반환한다(AiMaterialQuizContract.transientFailureCode).
@@ -912,7 +945,7 @@ public class AiIntegrationService {
                         String __code = isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR";
                         log.warn("[AI_QUIZ_PDF_BASED] result=FAIL materialId={} difficulty={} sourceMode=PDF_BASED error_code={} elapsedMs={}",
                                         material.getMaterialId(), quizDifficulty, __code, System.currentTimeMillis() - quizT0);
-                        return quizFailure(material, request, __code, null, true, null);
+                        return QuizDraft.failed(quizFailure(material, request, __code, null, true, null));
                 }
 
                 // 구조화 실패 판정: success=false / status=FAILED 는 HTTP 200 이어도 실패다.
@@ -920,7 +953,7 @@ public class AiIntegrationService {
                 if (failureCode != null) {
                         log.warn("[AI_QUIZ_PDF_BASED] result=AI_FAIL materialId={} difficulty={} sourceMode=PDF_BASED statusCode=200 error_code={} status={} elapsedMs={}",
                                         material.getMaterialId(), quizDifficulty, failureCode, ai != null ? ai.getStatus() : null, System.currentTimeMillis() - quizT0);
-                        return quizFailureTyped(material, request, failureCode, ai);
+                        return QuizDraft.failed(quizFailureTyped(material, request, failureCode, ai));
                 }
 
                 // Spring 측 방어 검증(외부 boundary): 불일치 문항은 거절, 통과 문항만 저장/노출.
@@ -932,13 +965,111 @@ public class AiIntegrationService {
                 if (contract.getAccepted().isEmpty()) {
                         log.warn("[AI_QUIZ_PDF_BASED] result=AI_FAIL materialId={} error_code=QUIZ_CONTRACT_INVALID accepted=0 elapsedMs={}",
                                         material.getMaterialId(), System.currentTimeMillis() - quizT0);
-                        return quizFailureTyped(material, request, "QUIZ_CONTRACT_INVALID", ai);
+                        return QuizDraft.failed(quizFailureTyped(material, request, "QUIZ_CONTRACT_INVALID", ai));
                 }
+                return new QuizDraft(ai, contract, aiUpstream, null);
+        }
+
+        /**
+         * 게이트 경로(PDF_QUIZ / quiz_json): 생성 → 사용자에게 보일 문항·보기·정답·해설 전부를 평가 → 거절 시 최대 2회 재생성 → 승인분만 저장.
+         * 근거 = 자료 원문(getTextToAnalyze) 청크(PDF_ORIGINAL, allowedMaterialIds=[이 자료]). 거절/평가 불가면 저장하지 않고
+         * 실패 DTO(success=false, errorCode AI_QUALITY_REJECTED/UNAVAILABLE, retryable=true)만 돌려준다 — 기존 퀴즈는 그대로.
+         * 생성 자체가 실패하면(ai07 실패·계약 위반) 재생성하지 않고 기존 실패 DTO 를 그대로 돌려준다(부하 3배 방지). failover 는 매 시도 동일.
+         */
+        private QuizDTO.Response generateQuizGated(Material material, QuizDTO.Request request, Map<String, Object> requestBody,
+                        String documentText, Integer requestedCount, int appliedCount, String quizDifficulty, long quizT0) {
+                Long mid = material.getMaterialId();
+                String rid = "quiz-" + mid + "-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+                com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints constraints =
+                                new com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints(List.of(mid), null, appliedCount,
+                                                AiMaterialQuizContract.OPTION_COUNT, null, null, null, false, false, null, null, null, null, null, null);
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Spec spec = new com.studybridge.api.ai.quality.AiResponseQualityGate.Spec(
+                                rid, com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.PDF_QUIZ,
+                                com.studybridge.api.ai.contract.v1.ResponseQualityV1.OutputKind.QUIZ_JSON,
+                                "다음 학습 자료 원문에 근거한 " + quizDifficulty + " 난이도 4지선다 객관식 퀴즈 " + appliedCount
+                                                + "문항(정답·해설 포함)을 만들어 주세요: " + (material.getTitle() != null ? material.getTitle() : ""),
+                                com.studybridge.api.ai.quality.AiResponseQualityGate.pdfEvidence(mid, documentText, 4000, 48000), constraints, null);
+                final QuizDTO.Response[] upstreamFailure = new QuizDTO.Response[1];
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Outcome<QuizDraft> outcome = qualityGate.generateApproved(spec,
+                                (attempt, previous) -> {
+                                        Map<String, Object> body = requestBody;
+                                        if (attempt > 0) {
+                                                // ai07 QuizReq 는 extra="ignore" — 모르는 필드는 무시된다(재생성 힌트 수용은 인계 C-RQ-3).
+                                                body = new LinkedHashMap<>(requestBody);
+                                                body.put("regenerationAttempt", attempt);
+                                                body.put("regenerationHints", previous != null ? previous.reasonCodes() : List.of());
+                                        }
+                                        QuizDraft d = callQuizAi(material, request, body, quizDifficulty, quizT0);
+                                        if (d.failure() != null) {
+                                                upstreamFailure[0] = d.failure();
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        return d;
+                                }, d -> quizProposedOutput(d.contract().getAccepted()));
+                if (outcome.approved()) {
+                        return persistQuiz(material, request, outcome.value(), requestedCount, appliedCount, quizDifficulty, quizT0, outcome.decision());
+                }
+                com.studybridge.api.ai.quality.GateDecision d = outcome.decision();
+                if (upstreamFailure[0] != null && d.attempts() <= 1) {
+                        return upstreamFailure[0]; // 첫 생성부터 실패 — 평가할 초안이 없었다(기존 실패 계약 그대로)
+                }
+                log.info("[QUALITY-GATE] quiz materialId={} rid={} 미승인 status={} codes={} attempts={} — 저장하지 않음(기존 퀴즈 유지)",
+                                mid, rid, d.qualityStatus(), d.reasonCodes(), d.attempts());
+                return QuizDTO.Response.builder()
+                                .materialId(mid)
+                                .difficulty(request != null ? request.getDifficulty() : null)
+                                .questionCount(request != null ? request.getQuestionCount() : null)
+                                .requestedCount(requestedCount)
+                                .appliedCount(appliedCount)
+                                .pageRange(request != null ? request.getPageRange() : null)
+                                .questions(java.util.Collections.emptyList())
+                                .success(false)
+                                .status(AiMaterialQuizDTO.STATUS_FAILED)
+                                .errorCode(d.errorCode())
+                                .message(com.studybridge.api.ai.quality.GateDecision.userMessage(d.errorCode()))
+                                .retryable(true)
+                                .textStatus(textStatusFor(material, documentText))
+                                .qualityStatus(d.qualityStatus().name())
+                                .qualityScore(d.score())
+                                .verified(false)
+                                .build();
+        }
+
+        /**
+         * 평가 대상(quiz_json) = 저장·노출될 모든 AI 생성 문자열: 문항, 보기 4개, 정답(0-based answerIndex), 해설, 오답 해설, 문항 난이도 라벨.
+         * ai07 check_quiz 계약({"questions":[{question, options, answerIndex, explanation}]}) 그대로 — answerIndex 는 0-based int 로만 보낸다.
+         * sourceTrace 는 화면에 나가지 않는 출제 근거 메타데이터라 넣지 않는다.
+         */
+        com.fasterxml.jackson.databind.JsonNode quizProposedOutput(List<AiMaterialQuizDTO.Question> accepted) {
+                com.fasterxml.jackson.databind.node.ObjectNode root = AI_OBJECT_MAPPER.createObjectNode();
+                com.fasterxml.jackson.databind.node.ArrayNode qs = root.putArray("questions");
+                for (AiMaterialQuizDTO.Question q : accepted) {
+                        com.fasterxml.jackson.databind.node.ObjectNode n = qs.addObject();
+                        n.put("question", q.getQuestion());
+                        com.fasterxml.jackson.databind.node.ArrayNode opts = n.putArray("options");
+                        if (q.getOptions() != null) q.getOptions().forEach(opts::add);
+                        if (q.getCorrectAnswer() != null) n.put("answerIndex", q.getCorrectAnswer().intValue());
+                        n.put("explanation", q.getExplanation() != null ? q.getExplanation() : "");
+                        if (q.getWrongExplanations() != null && !q.getWrongExplanations().isEmpty()) {
+                                com.fasterxml.jackson.databind.node.ArrayNode w = n.putArray("wrongExplanations");
+                                q.getWrongExplanations().forEach(w::add);
+                        }
+                        if (q.getDifficulty() != null) n.put("difficulty", q.getDifficulty());
+                }
+                return root;
+        }
+
+        /** 계약 검증 통과 초안 저장 + 공개 DTO. approval != null 이면 게이트 승인본(quality_status=APPROVED). */
+        private QuizDTO.Response persistQuiz(Material material, QuizDTO.Request request, QuizDraft draft, Integer requestedCount,
+                        int appliedCount, String quizDifficulty, long quizT0, com.studybridge.api.ai.quality.GateDecision approval) {
+                Long materialId = material.getMaterialId();
+                AiMaterialQuizDTO.Response ai = draft.ai();
+                AiMaterialQuizContract.Result contract = draft.contract();
                 boolean degradedFallback = AiMaterialQuizContract.isDegradedFallback(ai);
                 boolean partial = AiMaterialQuizContract.isPartial(ai) || contract.rejectedCount() > 0;
 
                 log.info("[AI_QUIZ_PDF_BASED] result=OK materialId={} difficulty={} sourceMode=PDF_BASED upstream={} applied={} status={} schema={} generated={} accepted={} degradedFallback={} partial={} elapsedMs={}",
-                                material.getMaterialId(), quizDifficulty, aiUpstream, ai.getDifficultyApplied(), ai.getStatus(), ai.getSchemaVersion(),
+                                material.getMaterialId(), quizDifficulty, draft.upstream(), ai.getDifficultyApplied(), ai.getStatus(), ai.getSchemaVersion(),
                                 ai.getGeneratedCount(), contract.getAccepted().size(), degradedFallback, partial, System.currentTimeMillis() - quizT0);
 
                 // 내부 저장: 검증 통과 문항(정답 포함)만 quiz_data 에 보관한다. 원문 quizData 문자열은 그대로 쓰지 않는다(거절 문항 제외).
@@ -955,6 +1086,9 @@ public class AiIntegrationService {
                                 .questionCount(contract.getAccepted().size())
                                 .pageRange(request.getPageRange())
                                 .quizData(generatedQuizJson)
+                                // 게이트 OFF 저장은 판정 없음(null) — 나중에 게이트를 켜면 미검증으로 취급돼 AI 생성 필드가 가려진다.
+                                .qualityStatus(approval != null && approval.approved() ? "APPROVED" : null)
+                                .qualityScore(approval != null && approval.approved() ? approval.score() : null)
                                 .build();
                 quiz = quizRepository.save(quiz);
 
@@ -1009,6 +1143,9 @@ public class AiIntegrationService {
                                 .elapsedMs(metaLong(ai.getMetadata(), "elapsedMs"))
                                 .usedFallback(degradedFallback)
                                 .cacheHit(metaBool(ai.getMetadata(), "cacheHit"))
+                                .qualityStatus(approval != null ? "APPROVED" : null)
+                                .qualityScore(approval != null ? approval.score() : null)
+                                .verified(approval != null ? Boolean.TRUE : null)
                                 .build();
         }
 

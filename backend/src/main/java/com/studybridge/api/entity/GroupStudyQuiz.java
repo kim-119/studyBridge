@@ -39,6 +39,14 @@ public class GroupStudyQuiz {
     @OneToMany(mappedBy = "quiz", cascade = CascadeType.ALL, orphanRemoval = true)
     private java.util.List<GroupStudyQuizQuestion> questions = new java.util.ArrayList<>();
 
+    // Spring 품질 게이트(response-quality.v1, PDF_QUIZ) 판정. APPROVED 만 기록(null = 게이트 OFF 시기/레거시).
+    // 게이트 ON 에서 APPROVED 가 아닌 퀴즈는 목록에서 AI 생성 제목을 가린다.
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
+    @Column(name = "quality_score")
+    private Double qualityScore;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
