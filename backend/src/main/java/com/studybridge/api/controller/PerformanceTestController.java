@@ -14,6 +14,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 @RestController
+// 보안(Phase D2 발견): 예전엔 /api/test/** 가 permitAll 이라 인증 없이 GET /seed 로 DB·Redis 에 1만 건씩 쓸 수 있었다.
+//  → 기본 비활성(빈 미등록 = 404). 발표·부하 실험 때만 studybridge.perf-test.enabled=true, 그때도 인증 필요(permitAll 제거).
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(prefix = "studybridge.perf-test", name = "enabled", havingValue = "true")
 @RequestMapping("/api/test/performance")
 @RequiredArgsConstructor
 public class PerformanceTestController {

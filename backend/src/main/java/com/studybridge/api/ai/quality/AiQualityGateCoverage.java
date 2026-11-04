@@ -97,7 +97,29 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
                     "저장된 AI 추천 재노출(Phase C 추가)"),
             // 생성형 텍스트 아님
             new Route("GET", "/api/study-time/predict", Status.EXEMPT, "/api/ai/predict-study-time",
-                    "숫자 예측(로컬 폴백 있음) — response-quality.v1 프로파일 없음"));
+                    "숫자 예측(로컬 폴백 있음) — response-quality.v1 프로파일 없음"),
+            // ── Phase D2: 바이트코드 호출 그래프 분류기(AiRouteClassifierTest)가 찾은 AI 저장본 재노출 경로 ──
+            new Route("GET", "/api/materials/{materialId}/quiz/{quizId}/score", Status.BLOCKED_WHEN_GATE_ON, "(DB/Redis)",
+                    "채점 결과 results[].explanation = AI 해설"),
+            new Route("GET", "/api/groups/{groupId}/quiz/session", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "현재 문항 = 저장된 AI 퀴즈 문항·보기"),
+            new Route("GET", "/api/review-notes/{id}/download", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "AI 해설 포함 다운로드"),
+            new Route("PATCH", "/api/review-notes/{id}/memo", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "응답 ReviewNoteDTO 에 AI 해설"),
+            new Route("POST", "/api/review-notes/{id}/retry/submit", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "재풀이 채점 응답에 AI 보강"),
+            new Route("PUT", "/api/materials/{materialId}/roadmap/days/toggle", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "응답 = AI 로드맵 전체"),
+            new Route("PUT", "/api/materials/{materialId}/roadmap/tasks/{taskId}/toggle", Status.BLOCKED_WHEN_GATE_ON, "(DB)",
+                    "응답 = AI 로드맵 과제"),
+            new Route("PATCH", "/api/plan-analysis/items/{itemId}", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "응답 = AI 계획 분석"),
+            new Route("GET", "/api/planners/{plannerId}/next-learning", Status.BLOCKED_WHEN_GATE_ON, "(DB)",
+                    "결정적 규칙이나 항목명 = AI 계획 분석 결과"),
+            new Route("GET", "/api/planners/{plannerId}/diagnosis", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "AI 계획 분석 기반 진단"),
+            new Route("POST", "/api/planners/{plannerId}/adaptive/apply", Status.BLOCKED_WHEN_GATE_ON, "(서명 제안 토큰)",
+                    "AI 적응형 제안 적용 — 응답·생성 todo 제목이 AI 제안"),
+            new Route("POST", "/api/recommendations/{id}/accept", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "응답 = AI 추천 항목"),
+            new Route("POST", "/api/recommendations/{id}/reject", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "응답 = AI 추천 항목"),
+            new Route("POST", "/api/recommendations/{id}/complete", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "응답 = AI 추천 항목"),
+            new Route("GET", "/api/materials/{materialId}/study-journals", Status.BLOCKED_WHEN_GATE_ON, "(DB)",
+                    "AI 판정 라벨(validationDecision/category/relationPath) — 사용자 메모 본문과 분리 필요"),
+            new Route("GET", "/api/materials/{materialId}/study-journals/{journalId}", Status.BLOCKED_WHEN_GATE_ON, "(DB/S3)", "위와 같음"));
 
     private static final AntPathMatcher MATCHER = new AntPathMatcher();
     private final AiQualityGateSettings settings;
