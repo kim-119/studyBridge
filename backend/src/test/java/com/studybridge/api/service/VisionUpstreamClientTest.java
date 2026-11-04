@@ -131,6 +131,12 @@ class VisionUpstreamClientTest {
         assertEquals("SCREEN_AI_DISABLED", disabled.getCode());
         assertFalse(disabled.isRetryable());
 
+        status = 503; // ai07 PR #116 외부 전송 차단(기본) 시 답변 단계
+        response = "{\"error\":{\"code\":\"VISION_ANSWER_DISABLED\",\"message\":\"AI 답변 외부 처리가 비활성화되어 있습니다.\",\"retryable\":false}}";
+        ScreenAiException answerOff = assertThrows(ScreenAiException.class, () -> client("k").analyze(call()).block());
+        assertEquals("SCREEN_AI_DISABLED", answerOff.getCode());
+        assertFalse(answerOff.isRetryable(), "정책 차단은 재시도로 풀리지 않는다");
+
         status = 401;
         response = "{\"error\":{\"code\":\"VISION_UNAUTHORIZED\",\"retryable\":false}}";
         ScreenAiException authErr = assertThrows(ScreenAiException.class, () -> client("wrong").analyze(call()).block());

@@ -148,7 +148,9 @@ public class VisionUpstreamClient {
             return new ScreenAiException(HttpStatus.BAD_GATEWAY, "SCREEN_AI_UPSTREAM_CONFIG",
                     "AI 서버 연동 설정에 문제가 있습니다. 관리자에게 문의해 주세요.", false, null, details);
         }
-        if ("VISION_DISABLED".equals(code)) {
+        // VISION_ANSWER_DISABLED: ai07 외부 전송 정책(AI_EXTERNAL_EGRESS_ENABLED=false, PR #116 B6)으로 답변 단계가 꺼짐 — 503·재시도 불가.
+        //  재시도를 권하는 SCREEN_AI_UPSTREAM_ERROR 로 보내지 않고 '기능 꺼짐' 으로 명시한다(성공 위장·무한 재시도 금지).
+        if ("VISION_DISABLED".equals(code) || "VISION_ANSWER_DISABLED".equals(code)) {
             return new ScreenAiException(HttpStatus.SERVICE_UNAVAILABLE, "SCREEN_AI_DISABLED",
                     "AI 화면 분석 기능이 지금은 꺼져 있습니다.", false, null, details);
         }

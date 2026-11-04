@@ -23,6 +23,8 @@ import java.util.Map;
  *  · EXEMPT              : 생성형 텍스트가 아님(숫자 예측 등) — 사유를 남긴다.
  * 게이트 ON 운영 전환 조건 = BLOCKED_WHEN_GATE_ON 0건(인계 문서 Go/No-Go). 이 목록과 실제 컨트롤러 매핑의 일치는
  * AiQualityGateCoverageTest 가 리플렉션으로 검증한다.
+ * 등록하지 않은 것(사유): POST /api/materials/upload — 응답에 AI 텍스트가 없다. 업로드 후 백그라운드로 만드는 학습노트는
+ *  GET /api/materials/{materialId}/study-note(BLOCKED)로만 노출된다.
  */
 @Slf4j
 @Component
@@ -45,6 +47,8 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
             new Route("GET", "/api/groups/{groupId}/chats/history", Status.BLOCKED_WHEN_GATE_ON, "(DB/Redis)", "그룹 AI 답변 이력"),
             new Route("POST", "/api/groups/{groupId}/materials/{materialId}/quiz", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/quiz/generate", ""),
             new Route("GET", "/api/groups/{groupId}/quizzes", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "저장된 AI 퀴즈"),
+            new Route("POST", "/api/groups/{groupId}/materials/upload-quiz", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/quiz/generate",
+                    "그룹 자료 업로드+퀴즈 생성(Phase C 추가, ai07 인계 5.4)"),
             new Route("POST", "/api/groups/{id}/screen-ai/analyze", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/vision/analyze", "VLM"),
             // 자료보관함(PDF)
             new Route("GET", "/api/materials/{materialId}/summary", Status.GATED, "/api/ai/summary",
@@ -58,13 +62,20 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
             new Route("GET", "/api/materials/{materialId}/roadmap", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/roadmap/generate", "캐시+생성"),
             new Route("POST", "/api/materials/{materialId}/roadmap/regenerate", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/roadmap/generate", ""),
             new Route("POST", "/api/materials/{materialId}/keywords/define", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/keyword/define", ""),
-            new Route("GET", "/api/materials/{materialId}/feedback", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/feedback", "캐시+생성"),
-            new Route("POST", "/api/materials/{materialId}/feedback/regenerate", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/feedback", ""),
+            new Route("GET", "/api/materials/{materialId}/feedback", Status.GATED, "/api/ai/feedback",
+                    "GENERAL_EXPLANATION(자료 원문 근거), 재생성 ≤2, 승인분만 저장(quality_status), 미승인 저장본 미노출, 거절 쿨다운 120s"),
+            new Route("POST", "/api/materials/{materialId}/feedback/regenerate", Status.GATED, "/api/ai/feedback", "위와 같은 게이트"),
             new Route("GET", "/api/materials/{materialId}/study-note", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/major-analysis/note",
                     "업로드 후 자동 생성(외부 OpenAI 전송 경로 포함)"),
             new Route("POST", "/api/materials/{materialId}/plan-analysis", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/planner/analyze", ""),
             new Route("GET", "/api/materials/{materialId}/plan-analysis", Status.BLOCKED_WHEN_GATE_ON, "(DB)", ""),
             new Route("POST", "/api/materials/{materialId}/recommendations", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/recommendation/*", ""),
+            new Route("GET", "/api/materials/{materialId}/recommendations", Status.BLOCKED_WHEN_GATE_ON, "(DB)",
+                    "저장된 AI 추천 재노출(Phase C 추가)"),
+            new Route("POST", "/api/materials/{materialId}/plan-recommendation", Status.BLOCKED_WHEN_GATE_ON, "(DB plan_analysis)",
+                    "저장된 AI 계획 분석 기반 추천 재노출(Phase C 추가)"),
+            new Route("POST", "/api/materials/{materialId}/study-journals", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/study-journal/validate",
+                    "저장 거절 시 AI 판정 사유(reason/suggestion)를 사용자에게 보여 준다(Phase C 추가). 외부 OpenAI 전송 경로"),
             // 오답노트
             new Route("POST", "/api/review-notes/from-quiz/{quizSessionId}", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/review/wrong-note-feedback", ""),
             new Route("GET", "/api/review-notes", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "AI 해설 저장본"),
@@ -82,6 +93,8 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
             new Route("POST", "/api/planners/{plannerId}/schedule/pdf", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/planner/analyze-semantic", "ensure()"),
             new Route("POST", "/api/planners/{plannerId}/adaptive", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/planner/adaptive", ""),
             new Route("POST", "/api/planners/{plannerId}/recommendations", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/recommendation/*", ""),
+            new Route("GET", "/api/planners/{plannerId}/recommendations", Status.BLOCKED_WHEN_GATE_ON, "(DB)",
+                    "저장된 AI 추천 재노출(Phase C 추가)"),
             // 생성형 텍스트 아님
             new Route("GET", "/api/study-time/predict", Status.EXEMPT, "/api/ai/predict-study-time",
                     "숫자 예측(로컬 폴백 있음) — response-quality.v1 프로파일 없음"));
