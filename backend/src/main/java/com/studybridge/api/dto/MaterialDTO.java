@@ -77,4 +77,7 @@ public class MaterialDTO {
     private LocalDateTime uploadedAt;
     private String extractedText;
     private LocalDateTime updatedAt;
+
+    /** 게이트 ON 에서 미승인 AI 산출물(오답노트 자료 등)의 본문·PDF 를 가렸으면 true. 게이트 OFF·일반 자료는 null(기존 응답과 동일). */
+    private Boolean qualityRedacted;
 }

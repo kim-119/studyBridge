@@ -129,7 +129,10 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
             new Route("POST", "/api/recommendations/{id}/complete", Status.BLOCKED_WHEN_GATE_ON, "(DB)", "응답 = AI 추천 항목"),
             new Route("GET", "/api/materials/{materialId}/study-journals", Status.BLOCKED_WHEN_GATE_ON, "(DB)",
                     "AI 판정 라벨(validationDecision/category/relationPath) — 사용자 메모 본문과 분리 필요"),
-            new Route("GET", "/api/materials/{materialId}/study-journals/{journalId}", Status.BLOCKED_WHEN_GATE_ON, "(DB/S3)", "위와 같음"));
+            new Route("GET", "/api/materials/{materialId}/study-journals/{journalId}", Status.BLOCKED_WHEN_GATE_ON, "(DB/S3)", "위와 같음"),
+            new Route("GET", "/api/materials/{materialId}", Status.GATED, "(DB/S3)",
+                    "context=review-note 로 오답노트 자료 상세를 열 때 AI 해설 PDF URL·본문 사본 노출 → 게이트 ON + 원 노트 미승인이면 가림"
+                            + "(qualityRedacted). 일반 자료는 AI 필드 없음(ai07 리뷰가 찾은 우회 경로)"));
 
     private static final AntPathMatcher MATCHER = new AntPathMatcher();
     private final AiQualityGateSettings settings;
