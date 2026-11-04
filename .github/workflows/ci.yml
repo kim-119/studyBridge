@@ -208,7 +208,7 @@ jobs:
       - name: pytest 실행
         run: |
           cd fastapi
-          python -m pytest -q -p no:cacheprovider \
+          python -m pytest -q -rs -p no:cacheprovider \
             tests/test_lq_security_fail_closed.py tests/test_lq_pii_dup.py tests/test_lq_training_pipeline.py \
             tests/test_lq_export_dataset.py tests/test_lq_legacy_scoring_repro.py tests/test_lq_quality_gate.py \
             tests/test_lq_stream_gate_api.py tests/test_lq_contracts_v1.py tests/test_lq_learning_loop_gate.py \

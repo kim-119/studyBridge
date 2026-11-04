@@ -293,6 +293,43 @@ def test_feedback_is_bound_to_candidate_owner():
     assert run(repo.find_by_event_id(s.eventId)).feedback_history == [-1]          # 재전송으로 두 번 적용되지 않음
 
 
+def test_collect_when_withdrawal_lands_between_insert_and_triage_is_final_rejection():
+    """CI 에서 재현된 경합: 저장 직후 동시 철회가 먼저 REVOKED 로 바꾸면 예전에는 전이 예외(500)였다."""
+    from app.training_pipeline import candidate_service as cs
+    repo = _mem()
+    orig = repo.insert_candidate
+
+    async def hooked(rec):
+        ok = await orig(rec)
+        await cs.withdraw_consent(repo, rec.pseudonymous_user_key, actor=cs.SYSTEM_ACTOR,
+                                  withdrawn_at=CT + timedelta(days=1), event_id="rv-hook-000001")
+        return ok
+    repo.insert_candidate = hooked
+    s = make_sample(70)
+    res = run(cs.collect_sample(repo, s))
+    assert res.status == "REJECTED_CONSENT_WITHDRAWN" and "CONCURRENT_TOMBSTONE" in res.reasons
+    assert run(repo.find_by_event_id(s.eventId)).state.value == "REVOKED"
+
+
+def test_withdrawal_retries_cas_conflicts_and_never_skips_rows(monkeypatch):
+    from app.training_pipeline import candidate_service as cs
+    from app.training_pipeline.repository import ConcurrentModification
+    repo = _mem()
+    for i in range(3):
+        run(cs.collect_sample(repo, make_sample(80 + i)))
+    orig = repo.update
+    seen = set()
+
+    async def flaky(rec, expected_version):
+        if rec.candidate_id not in seen:                     # 행마다 첫 갱신은 다른 워커가 앞질렀다고 가정
+            seen.add(rec.candidate_id)
+            raise ConcurrentModification(rec.candidate_id)
+        return await orig(rec, expected_version)
+    monkeypatch.setattr(repo, "update", flaky)
+    run(cs.withdraw_consent(repo, PK, actor=cs.SYSTEM_ACTOR, withdrawn_at=CT + timedelta(days=1), event_id="rv-cas-0001"))
+    assert run(repo.counts_by_state())["REVOKED"] == 3
+
+
 # ── Postgres: 동시 워커 ─────────────────────────────────────────────────────────────
 DSN = os.getenv("AI_TEST_PG_DSN", "")
 _u = urlparse(DSN) if DSN else None
@@ -384,17 +421,31 @@ def test_pg_withdrawal_racing_collection_never_leaves_prior_consent_candidate(pg
     from app.training_pipeline import candidate_service as cs
     from app.training_pipeline.repository import PostgresTrainingRepository
 
+    import random
+    rnd = random.Random(7)
+
     async def go(k):
         user = f"pk_race_user_{k:06d}"
         a, b = PostgresTrainingRepository(DSN), PostgresTrainingRepository(DSN)
-        await asyncio.gather(
-            cs.collect_sample(a, make_sample(100 + k, user=user)),
-            cs.withdraw_consent(b, user, actor=cs.SYSTEM_ACTOR, withdrawn_at=CT + timedelta(days=1),
-                                event_id=f"rv-race-{k:06d}"))
+        d1, d2 = rnd.random() / 50, rnd.random() / 50
+
+        async def collect():
+            await asyncio.sleep(d1)
+            return await cs.collect_sample(a, make_sample(100 + k, user=user))
+
+        async def withdraw():
+            await asyncio.sleep(d2)
+            return await cs.withdraw_consent(b, user, actor=cs.SYSTEM_ACTOR, withdrawn_at=CT + timedelta(days=1),
+                                             event_id=f"rv-race-{k:06d}")
+        r1, _ = await asyncio.gather(collect(), withdraw())       # 어느 쪽도 예외로 끝나면 안 된다
+        assert r1.status in ("STORED", "REJECTED_CONSENT_WITHDRAWN"), r1
         return [r.state.value for r in await a.list_by(pseudonymous_user_key=user)]
 
     async def all_():
-        return [await go(k) for k in range(20)]
+        out = []
+        for base in range(0, 60, 10):                             # 10쌍씩 동시에(총 60쌍)
+            out += await asyncio.gather(*(go(k) for k in range(base, base + 10)))
+        return out
     for states in run(all_()):
         assert all(st == "REVOKED" for st in states), states
 

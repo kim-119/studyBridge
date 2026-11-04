@@ -133,6 +133,10 @@
   ai.training_processed_event(eventId PK)로 1회 처리한다. 같은 본문 재전송은 이전 결과를 돌려주고, 처리 중이면 503(재시도) — 409 를 주면
   EC2 가 SENT 로 끝내 미완료 처리가 유실되므로 쓰지 않는다. 실패한 선점은 해제하고, 오래된 선점은 lease 후 인수한다.
   프로세스 메모리 재전송 캐시는 제거했다. 검증: PG 에서 같은 eventId 동시 12개 → 처리 1회, 별도 OS 프로세스 4개 → 적용 1회.
+  CI 러너에서 실제로 잡힌 경합 결함(수정함): 수집이 행을 저장한 직후 동시 철회가 먼저 REVOKED 로 바꾸면 수집의 분류 전이가
+  InvalidTransition 예외(500)로 끝났다. 또 철회·삭제 루프가 행 갱신 CAS 충돌을 만나면 나머지 행을 건너뛴 채 409 를 반환할 수 있었다
+  (EC2 는 409 를 SENT 로 끝낸다). 지금은 수집은 최종 REJECTED_CONSENT_WITHDRAWN 으로 응답하고, 철회·삭제는 행 단위로 다시 읽어
+  재시도하며, 충돌이 남으면 503(재시도)을 준다. 결정적 재현 테스트 2개 + PG 경합 60쌍(10쌍 동시) 반복.
 
 3.5 C-TIME-3 (EC2 실제 버그, 확인됨)
   EC2 Spring 컨테이너 TZ=Asia/Seoul(docker inspect·date 확인). TrainingCandidateCollector 가 consent.getCreatedAt()(LocalDateTime, KST 벽시계)에
@@ -240,9 +244,9 @@
 
 8. 테스트 결과(2026-11-04, ai07 격리 venv + 일회용 pgvector PG)
 
-  CI fastapi-tests 목록 + Phase B 신규: 618 통과(통합 트리 기준). 한 번 큰 묶음 실행에서 라이브 Java 차등 테스트가 1회 실패했고 같은 조건 재실행 2회는
+  CI fastapi-tests 목록 + Phase B 신규: 로컬 620 통과(경합 수정 후). 첫 GitHub CI 는 615 통과 1 실패(위 경합 결함 — 수정 후 재실행). 한 번 큰 묶음 실행에서 라이브 Java 차등 테스트가 1회 실패했고 같은 조건 재실행 2회는
     통과(동시 Gradle 의존성 다운로드와 겹친 시점, 원인 미확정).
-  전체 fastapi/tests: 1951 통과, 실패 3, 수집 오류 4. 실패·오류 7건은 기준선(a4bd8fac)에도 있던 것과 동일(mode_contract 2, vision payload 1,
+  전체 fastapi/tests: 1953 통과, 실패 3, 수집 오류 4. 실패·오류 7건은 기준선(a4bd8fac)에도 있던 것과 동일(mode_contract 2, vision payload 1,
     major_analysis import 4). 새 회귀 0.
   EC2 crosscheck_pydantic.py: fixtures=30 mismatches=0. 차등 605 중 598 일치 + 허용된 엄격 방향 7.
   서명 교차: EC2 Java 하네스로 scope 32·consent 19·body 14 케이스 판정 일치, 기존 벡터(본문 5·scope 6·consent 4·TSV 4) 일치.

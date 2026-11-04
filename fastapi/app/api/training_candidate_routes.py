@@ -252,11 +252,15 @@ async def collect_v1(request: Request,
 
     async def work():
         return await collect_sample(repo, sample)
+    from app.training_pipeline.repository import ConcurrentModification
     try:
         disp, res = await run_once(repo, event_id=sample.eventId, message_type="SAMPLE", body_sha256=body_sha256(raw),
                                    work=work)
     except RepositoryUnavailable:
         return JSONResponse(status_code=503, content={"success": False, "errorCode": "TRAINING_REPOSITORY_UNAVAILABLE"})
+    except ConcurrentModification:
+        return JSONResponse(status_code=503, headers={"Retry-After": "2"},
+                            content={"success": False, "errorCode": "CONCURRENT_MODIFICATION_RETRY"})
     code = _disposition_status(disp, res)
     if res.status == "DEFERRED":
         code = 503
@@ -276,11 +280,16 @@ async def _control(request: Request, expected, x_sig, x_ts, x_request_id, handle
                     request_id=x_request_id, outcome=e.code)
         return JSONResponse(status_code=e.status, content={"success": False, "errorCode": e.code})
     repo = _repo()
+    from app.training_pipeline.repository import ConcurrentModification
     try:
         disp, res = await run_once(repo, event_id=msg.eventId, message_type=expected.value,
                                    body_sha256=body_sha256(raw), work=lambda: handle(repo, msg))
     except RepositoryUnavailable:
         return JSONResponse(status_code=503, content={"success": False, "errorCode": "TRAINING_REPOSITORY_UNAVAILABLE"})
+    except ConcurrentModification:
+        # 409 를 주면 EC2 가 SENT 로 끝내 철회/삭제가 일부만 적용된 채 멈춘다 → 재시도 가능한 503.
+        return JSONResponse(status_code=503, headers={"Retry-After": "2"},
+                            content={"success": False, "errorCode": "CONCURRENT_MODIFICATION_RETRY"})
     audit_event(f"training.control.{expected.value.lower()}", actor="service:spring", role="service",
                 request_id=x_request_id, outcome=f"{disp}:{res.status}",
                 extra={"datasets": len(res.invalidated_datasets), "adapters": len(res.retirement_required_adapters)})

@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from app.contracts.training_sample_v1 import TrainingSampleV1, VerificationMethod
 from app.training_pipeline import eligibility as elig
 from app.training_pipeline.records import CandidateEvent, CandidateRecord, utcnow
+from app.training_pipeline.repository import ConcurrentModification
 from app.training_pipeline.states import CandidateState, check_transition
 from app.utils import duplicate_checker as dup
 from app.utils.pii_filter import mask_pii, scan_pii
@@ -263,20 +264,35 @@ async def _collect_sample(repo, sample: TrainingSampleV1, *, actor: Actor, task_
         # 동시 수집 race: 유니크 제약이 막았다 → 중복으로 처리
         return ServiceResult(status="DUPLICATE", reasons=["CONCURRENT_DUPLICATE"])
     await _event(repo, rec.candidate_id, "COLLECTED", None, S.COLLECTED.value, actor, [])
-    saved = await repo.get(rec.candidate_id)
     if negative and not rec.user_correction:
         reasons.append("NEGATIVE_FEEDBACK_AT_COLLECTION")
-    saved = await _transition(repo, saved, target_state, actor, "TRIAGED", reasons or ["AWAITING_VERIFICATION"])
+    saved = None
+    for _ in range(_CAS_RETRIES):
+        cur = await repo.get(rec.candidate_id)
+        if cur is None or cur.state in (S.REVOKED, S.DELETED):
+            # 저장 직후 동시 철회/삭제가 이 행을 먼저 처리했다 → 저장 거부와 같은 최종 결과(예전: 전이 예외 → 500).
+            late = "CONSENT_WITHDRAWN" if cur is not None and cur.state == S.REVOKED else "SOURCE_DELETED"
+            return ServiceResult(status="REJECTED_" + late, candidate_id=rec.candidate_id,
+                                 state=cur.state.value if cur else S.DELETED.value, reasons=[late, "CONCURRENT_TOMBSTONE"])
+        if cur.state != S.COLLECTED:
+            saved = cur
+            break
+        try:
+            saved = await _transition(repo, cur, target_state, actor, "TRIAGED", reasons or ["AWAITING_VERIFICATION"])
+            break
+        except ConcurrentModification:
+            continue
+    if saved is None:
+        raise ConcurrentModification(rec.candidate_id)
     # 저장 뒤 재확인: 저장과 동시에 철회/삭제가 처리됐다면(철회 쪽 스캔이 이 행을 못 봤을 수 있음) 여기서 정리한다.
     late = await _tombstone_reason(repo, sample)
     if late is not None:
         res = ServiceResult(status="REJECTED_" + late, candidate_id=saved.candidate_id, reasons=[late, "LATE_TOMBSTONE"])
         if late == "SOURCE_DELETED":
-            await _destroy(repo, saved, actor, res)
+            await _with_cas_retry(repo, saved, lambda r: _destroy(repo, r, actor, res))
         else:
-            saved.consent_withdrawn = True
-            saved = await _transition(repo, saved, S.REVOKED, actor, "CONSENT_WITHDRAWN", ["CONSENT_WITHDRAWN"])
-            res.state = saved.state.value
+            await _with_cas_retry(repo, saved, lambda r: _revoke_for_consent(repo, r, actor, res))
+            res.state = S.REVOKED.value
         return res
     return ServiceResult(status="QUARANTINED" if target_state == S.QUARANTINED else "STORED",
                          candidate_id=saved.candidate_id, state=saved.state.value, reasons=reasons)
@@ -397,6 +413,29 @@ async def promote_if_eligible(repo, candidate_id: str, *, actor: Actor) -> Servi
                          candidate_id=candidate_id, state=saved.state.value, reasons=result.reasons)
 
 
+_CAS_RETRIES = 5
+
+
+async def _with_cas_retry(repo, rec: CandidateRecord, fn) -> None:
+    """행 단위 처리를 CAS 충돌 시 다시 읽어 재시도한다. 철회/삭제는 중간 충돌로 나머지 행을 건너뛰면 안 된다."""
+    for _ in range(_CAS_RETRIES):
+        try:
+            await fn(rec)
+            return
+        except ConcurrentModification:
+            rec = await repo.get(rec.candidate_id)
+            if rec is None:
+                return
+    raise ConcurrentModification(rec.candidate_id)
+
+
+async def _revoke_for_consent(repo, rec: CandidateRecord, actor: Actor, res: ServiceResult) -> None:
+    if rec.state not in (S.REVOKED, S.DELETED):
+        rec.consent_withdrawn = True
+        await _transition(repo, rec, S.REVOKED, actor, "CONSENT_WITHDRAWN", ["CONSENT_WITHDRAWN"])
+    await _invalidate_lineage(repo, rec.content_hash, "CONSENT_WITHDRAWN", res)   # 재시도 멱등
+
+
 async def withdraw_consent(repo, pseudonymous_user_key: str, *, actor: Actor,
                            withdrawn_at: Optional[datetime] = None, event_id: Optional[str] = None) -> ServiceResult:
     """tombstone(철회 시각) 먼저 → 그 시각 이전 동의로 만든 후보 전부 REVOKED + lineage 무효화.
@@ -407,12 +446,7 @@ async def withdraw_consent(repo, pseudonymous_user_key: str, *, actor: Actor,
     for rec in await repo.list_by(pseudonymous_user_key=pseudonymous_user_key):
         if rec.consent_timestamp is not None and rec.consent_timestamp > effective:
             continue
-        if rec.state in (S.REVOKED, S.DELETED):
-            await _invalidate_lineage(repo, rec.content_hash, "CONSENT_WITHDRAWN", res)   # 재시도 멱등
-            continue
-        rec.consent_withdrawn = True
-        await _transition(repo, rec, S.REVOKED, actor, "CONSENT_WITHDRAWN", ["CONSENT_WITHDRAWN"])
-        await _invalidate_lineage(repo, rec.content_hash, "CONSENT_WITHDRAWN", res)
+        await _with_cas_retry(repo, rec, lambda r: _revoke_for_consent(repo, r, actor, res))
     return res
 
 
@@ -436,6 +470,6 @@ async def delete_by_tracking_id(repo, deletion_tracking_id: str, *, actor: Actor
     await repo.put_deletion_tombstone(deletion_tracking_id, deleted_at or utcnow(),
                                       event_id or (actor.request_id or "direct"))
     for rec in await repo.list_by(deletion_tracking_id=deletion_tracking_id):
-        await _destroy(repo, rec, actor, res)
+        await _with_cas_retry(repo, rec, lambda r: _destroy(repo, r, actor, res))
     res.state = None
     return res
