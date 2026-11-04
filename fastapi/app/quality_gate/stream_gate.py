@@ -84,6 +84,11 @@ class StreamGatePolicy:
     max_total_chars: int = 200_000
     max_open_messages: int = 32
     evaluate_timeout_s: float = 30.0
+    # (Phase B4) all_complete 모아 보내기 항목 중 재사용할 수 없는 것만 병렬 평가(상한). 평가 API 의 동시성 상한
+    # (AI_QUALITY_EVAL_MAX_CONCURRENCY=2)과 같게 둬 GPU judge 동시 점유를 늘리지 않는다.
+    max_parallel_evaluations: int = 2
+    # 평가 중에도 상류 생성기를 계속 읽어 다음 에이전트 생성이 멈추지 않게 하는 선읽기 버퍼(이벤트 수). 0 = 끔.
+    prefetch_events: int = 128
 
 
 DEFAULT_POLICY = StreamGatePolicy()
@@ -211,6 +216,46 @@ def _rid_scope(request_id: Optional[str]) -> str:
     return "sg-" + secrets.token_hex(8)
 
 
+class _Prefetch:
+    """상류 async 이터레이터를 별도 작업에서 제한된 큐로 미리 읽는다(순서 보존, 상류 예외는 소비 시점에 재발생).
+    평가를 기다리는 동안에도 상류(LLM 생성)가 진행된다 — 본문은 여전히 승인 후에만 방출된다."""
+
+    _END = object()
+
+    def __init__(self, source, maxsize: int) -> None:
+        self._q: asyncio.Queue = asyncio.Queue(maxsize=max(1, maxsize))
+        self._task = asyncio.ensure_future(self._run(source))
+
+    async def _run(self, source) -> None:
+        try:
+            async for ev in source:
+                await self._q.put(("ev", ev))
+            await self._q.put(("end", None))
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:  # noqa: BLE001 — 소비자에게 그대로 전달
+            await self._q.put(("err", e))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        kind, val = await self._q.get()
+        if kind == "ev":
+            return val
+        if kind == "err":
+            raise val
+        raise StopAsyncIteration
+
+    async def stop(self) -> None:
+        if not self._task.done():
+            self._task.cancel()
+        try:
+            await self._task
+        except BaseException:  # noqa: BLE001
+            pass
+
+
 async def gate_event_stream(
     source: AsyncIterator[Dict[str, Any]],
     evaluate_message: Callable[[str, str, Dict[str, Any], str], Awaitable[QualityOutput]],
@@ -249,8 +294,9 @@ async def _gate_core(source, evaluate_message, on_approved, policy: StreamGatePo
     order: List[str] = []
     emitted: set = set()
     verdicts: Dict[str, tuple] = {}          # 본문 해시 → (QualityOutput, 평가 requestId) — 요청(스트림) 범위 재사용
+    approved_fields: Dict[str, List[tuple]] = {}   # 에이전트 식별 → [(승인된 노출 필드 값들, (q, rid))]
     seq = {"n": 0}
-    stats = {"evaluations": 0, "reused": 0}
+    stats = {"evaluations": 0, "reused": 0, "aggregateReused": 0}
     total = {"chars": 0}
 
     def _drop(key: str) -> Optional[_Msg]:
@@ -320,30 +366,55 @@ async def _gate_core(source, evaluate_message, on_approved, policy: StreamGatePo
         verdicts[h] = (q, rid)
         return verdicts[h], None
 
+    def _agent_ident(d: Dict[str, Any]) -> str:
+        a = d.get("agentId") or d.get("agent_id")
+        if a in (None, ""):
+            a = d.get("agentIndex")
+        return _safe_part(a, "main")
+
+    def _remember_approved(d: Dict[str, Any], texts: Dict[str, str], qr: tuple) -> None:
+        if texts:
+            approved_fields.setdefault(_agent_ident(d), []).append((dict(texts), qr))
+
+    def _reusable(item: Dict[str, Any], texts: Dict[str, str]) -> Optional[tuple]:
+        """같은 스트림에서 같은 에이전트가 이미 승인받은 필드 값과 '완전히 같은' 필드만 싣는 항목이면 그 판정을 쓴다
+        (all_complete.messages[] 가 스트림 메시지를 다시 싣는 경우 — 실캡처 소크라테스 3건 중복 평가 제거)."""
+        for prev, qr in approved_fields.get(_agent_ident(item), ()):
+            if texts and all(prev.get(k) == v for k, v in texts.items()):
+                return qr
+        return None
+
     async def _aggregate(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """all_complete.answers[]/messages[] 를 '승인된 항목만'으로 다시 만든다(없으면 None).
-        예전: 종료 이벤트에서 목록을 통째로 지워 Spring 의 답변 영속화(answers[] 기반)가 끊겼다."""
+        예전: 종료 이벤트에서 목록을 통째로 지워 Spring 의 답변 영속화(answers[] 기반)가 끊겼다.
+        재사용 불가 항목은 상한(max_parallel_evaluations) 안에서 병렬 평가하고, 결과는 원래 순서로 싣는다."""
         d = _data(ev)
         present = [f for f in policy.aggregate_fields if isinstance(d.get(f), list)]
         if not present:
             return None
+        sem = asyncio.Semaphore(max(1, policy.max_parallel_evaluations))
+
+        async def judge_item(f: str, item: Dict[str, Any]):
+            texts = _message_texts(item, policy)
+            text = _joined(texts)
+            if not text.strip() or len(text) > policy.max_message_chars:
+                return None
+            qr = _reusable(item, texts)
+            if qr is not None:
+                stats["aggregateReused"] += 1
+            else:
+                async with sem:
+                    qr, _rej = await _verdict(f"{_key({'data': item})}#{f}", text, {"data": item})
+            if qr is None or not is_displayable(*qr):
+                return None
+            q = qr[0]
+            return {**_ids_only(item), **texts, "quality": {"qualityStatus": q.qualityStatus.value, "score": q.score,
+                                                           "evaluatorVersion": q.evaluatorVersion}}
         rebuilt: Dict[str, Any] = {}
         for f in present:
-            keep = []
-            for item in d[f][:64]:
-                if not isinstance(item, dict):
-                    continue
-                texts = _message_texts(item, policy)
-                text = _joined(texts)
-                if not text.strip() or len(text) > policy.max_message_chars:
-                    continue
-                qr, _rej = await _verdict(f"{_key({'data': item})}#{f}", text, {"data": item})
-                q = qr[0] if qr else None
-                if qr is not None and is_displayable(*qr):
-                    keep.append({**_ids_only(item), **texts,
-                                 "quality": {"qualityStatus": q.qualityStatus.value, "score": q.score,
-                                             "evaluatorVersion": q.evaluatorVersion}})
-            rebuilt[f] = keep
+            items = [it for it in d[f][:64] if isinstance(it, dict)]
+            results = await asyncio.gather(*(judge_item(f, it) for it in items))
+            rebuilt[f] = [r for r in results if r is not None]
         return rebuilt
 
     async def _flush(key: str, emit_as: Optional[str] = None) -> AsyncIterator[Dict[str, Any]]:
@@ -381,6 +452,9 @@ async def _gate_core(source, evaluate_message, on_approved, policy: StreamGatePo
         if not is_displayable(*qr):
             yield _reject(key, src, q.qualityStatus.value, [v.code for v in q.violations], q.score, q.hardFail)
             return
+        if struct is None:
+            _remember_approved(_data(final) if final else _data(m.last_delta or {}),
+                               texts if texts else {m.delta_field if not final else "content": text}, qr)
         if on_approved is not None:
             try:
                 await on_approved(key, text, q)
@@ -397,9 +471,10 @@ async def _gate_core(source, evaluate_message, on_approved, policy: StreamGatePo
         name = emit_as or (et if et in policy.message_events else "agent_answer")
         yield _out(final or {}, name, {**body, "quality": quality})
 
+    pump = _Prefetch(source, policy.prefetch_events) if policy.prefetch_events > 0 else None
     try:
         try:
-            async for ev in source:
+            async for ev in (pump if pump is not None else source):
                 et = str(ev.get("event") or ev.get("type") or "").lower()
                 if et in policy.progress_events:
                     yield _out(ev, et)
@@ -469,6 +544,8 @@ async def _gate_core(source, evaluate_message, on_approved, policy: StreamGatePo
             async for out in _flush(k):
                 yield out
     finally:
+        if pump is not None:
+            await pump.stop()                    # 선읽기 작업을 먼저 끝내야 상류 aclose 가 '실행 중' 오류 없이 닫힌다
         for closer in (getattr(source, "aclose", None), close_upstream):
             if closer is not None:
                 try:

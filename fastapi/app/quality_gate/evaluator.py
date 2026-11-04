@@ -78,6 +78,20 @@ _cache: "OrderedDict[str, QualityOutput]" = OrderedDict()
 _CACHE_MAX = 512
 
 
+def _offload_min_chars() -> int:
+    try:
+        return max(0, int(os.getenv("AI_QUALITY_EVAL_OFFLOAD_MIN_CHARS", "8000")))
+    except ValueError:
+        return 8000
+
+
+def _input_chars(inp: QualityInput) -> int:
+    po = inp.proposedOutput
+    if po is None:
+        return 0
+    return len(po) if isinstance(po, str) else len(json.dumps(po, ensure_ascii=False, separators=(",", ":"), default=str))
+
+
 def _latency_ms(started: float) -> int:
     # Java Integer 범위로 고정(EC2 는 범위 밖 latencyMs 를 EVALUATOR_OUTPUT_CONTRACT_INVALID 로 거부한다).
     return max(0, min(2 ** 31 - 1, int((time.time() - started) * 1000)))
@@ -110,7 +124,13 @@ async def evaluate(inp: QualityInput, *, judge=None, timeout_s: Optional[float] 
         _cache.move_to_end(key)
         return hit.model_copy(update={"requestId": inp.requestId, "latencyMs": _latency_ms(started)})
     try:
-        out = await asyncio.wait_for(_evaluate(inp, judge, started), timeout=timeout_s)
+        if judge is None and _input_chars(inp) >= _offload_min_chars():
+            # judge 없는 평가는 순수 CPU(정규식/토큰 비교) — 큰 본문은 워커 스레드에서 돌려 이벤트 루프(다른 사용자 SSE)를
+            # 막지 않는다(실측: 60k자 27ms 점유 → 스레드 전환 간격 수준). judge 가 있으면 GPU 슬롯/httpx 가 루프에 묶여 있어 제외.
+            out = await asyncio.wait_for(asyncio.to_thread(lambda: asyncio.run(_evaluate(inp, None, started))),
+                                         timeout=timeout_s)
+        else:
+            out = await asyncio.wait_for(_evaluate(inp, judge, started), timeout=timeout_s)
     except asyncio.TimeoutError:
         out = _error_output(inp, "EVALUATION_TIMEOUT", started)
     except JudgeUnavailable:

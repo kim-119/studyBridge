@@ -606,13 +606,21 @@ def check_graph(obj: Any) -> List[V]:
         if not isinstance(e, dict):
             out.append(v("JSON_SCHEMA_INVALID", HARD, "엣지가 객체가 아님"))
             continue
-        s, t = str(e.get("source")), str(e.get("target"))
+        # ai07 그래프 생성기(graph_builder)는 from/to, 일반 그래프 JSON 은 source/target — 둘 다 같은 의미로 읽는다
+        # (예전: from/to 엣지가 전부 GRAPH_DANGLING_EDGE HARD → /api/mindmap/semantic-graph 는 승인 불가였다).
+        if ("source" in e or "target" in e) and ("from" in e or "to" in e) and \
+                (e.get("source"), e.get("target")) != (e.get("from"), e.get("to")):
+            out.append(v("JSON_SCHEMA_INVALID", HARD, "엣지 끝점 키(source/target 과 from/to)가 서로 다름"))
+            continue
+        s = str(e.get("source") if "source" in e else e.get("from"))
+        t = str(e.get("target") if "target" in e else e.get("to"))
+        k_type = e.get("type") or e.get("relation") or e.get("kind")
         if s not in idset or t not in idset:
             out.append(v("GRAPH_DANGLING_EDGE", HARD, "존재하지 않는 노드를 가리키는 엣지"))
             continue
         if s == t:
             out.append(v("GRAPH_SELF_LOOP", MAJOR, "자기 자신을 가리키는 엣지"))
-        k = (s, t, str(e.get("type") or e.get("relation") or ""))
+        k = (s, t, str(k_type or ""))
         if k in seen:
             out.append(v("GRAPH_DUPLICATE_EDGE", MAJOR, "중복 엣지"))
         seen.add(k)
