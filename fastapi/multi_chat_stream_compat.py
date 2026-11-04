@@ -245,6 +245,7 @@ async def multi_chat_stream_compat(request: Request):
     request_id = (request.headers.get("x-request-id") or (payload.get("requestId") if isinstance(payload, dict) else None)
                   or f"req_{uuid.uuid4().hex[:12]}")
     rt = SR.new_runtime_for(chat_request, str(request_id)[:64])
+    chat_request = SR.attach_learning_context(chat_request, rt, request.headers)  # Phase D R3(기본 OFF)
     logger.info("[SSE-OPEN] request=%s turn=%s mode=%s agents=%d target=%s budget=%s",
                 rt.request_id, rt.turn_id, SR.resolved_mode(chat_request), len(chat_request.agents or []),
                 chat_request.targetAgentId, rt.budget.snapshot() if rt.budget else None)

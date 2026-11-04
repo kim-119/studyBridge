@@ -5,7 +5,7 @@ Tavily Search API 서비스.
 from app.core.config import TAVILY_API_KEY, DEFAULT_SEARCH_DEPTH, DEFAULT_MAX_RESULTS
 
 
-def search_web(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> list[dict]:
+def search_web(query: str, max_results: int = DEFAULT_MAX_RESULTS, *, feature: str = "web_search") -> list[dict]:
     """
     Tavily Search API를 호출하여 최신 웹 검색 결과를 반환한다.
 
@@ -19,6 +19,11 @@ def search_web(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> list[dict]
     Raises:
         RuntimeError: TAVILY_API_KEY가 없거나 API 호출 실패 시
     """
+    # 외부 전송 정책(app.core.egress_policy): 불허면 네트워크 호출 없이 빈 결과(검색 생략과 동일한 의미).
+    from app.core.egress_policy import egress_allowed
+    if not egress_allowed("tavily", feature):
+        return []
+
     if not TAVILY_API_KEY:
         raise RuntimeError(
             "TAVILY_API_KEY 환경변수가 설정되지 않았습니다. "

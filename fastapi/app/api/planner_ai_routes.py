@@ -77,12 +77,13 @@ def _llm(system: str, user: str, max_tokens: int) -> str:
     from app.services.material_ai_manager import _call_gpt
     try:
         from app.services.llm_engine_router import call_primary_llm
-        out = call_primary_llm(system_prompt=system, user_prompt=user, max_tokens=max_tokens, temperature=0.3)
+        out = call_primary_llm(system_prompt=system, user_prompt=user, max_tokens=max_tokens, temperature=0.3,
+                               feature="planner_assist")
         if out and not out.strip().startswith("["):
             return out
     except Exception as e:
         logger.info("primary LLM 실패, GPT 시도: %s", e)
-    return _call_gpt(system, user, max_tokens=max_tokens)
+    return _call_gpt(system, user, max_tokens=max_tokens, feature="planner_assist")
 
 
 # ── 플래너 AI 확장 ───────────────────────────────────────────────────────────

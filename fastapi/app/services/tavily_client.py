@@ -6,7 +6,7 @@ TAVILY_API_KEY 미설정 시 RuntimeError. 멀티 에이전트에서 최신 정�
 from app.services.tavily_service import search_web
 
 
-def search(query: str, max_results: int = 5) -> list[dict]:
+def search(query: str, max_results: int = 5, *, feature: str = "web_search") -> list[dict]:
     """
     Tavily로 웹 검색을 수행한다.
 
@@ -16,10 +16,11 @@ def search(query: str, max_results: int = 5) -> list[dict]:
     Raises:
         RuntimeError: TAVILY_API_KEY 미설정 또는 API 호출 실패
     """
-    return search_web(query, max_results=max_results)
+    return search_web(query, max_results=max_results, feature=feature)
 
 
-def is_available() -> bool:
-    """TAVILY_API_KEY 설정 여부를 반환한다."""
+def is_available(feature: str = "web_search") -> bool:
+    """TAVILY_API_KEY 설정 AND 외부 전송 정책 허용 여부를 반환한다."""
     from app.core.config import TAVILY_API_KEY
-    return bool(TAVILY_API_KEY)
+    from app.core.egress_policy import egress_allowed
+    return bool(TAVILY_API_KEY) and egress_allowed("tavily", feature)

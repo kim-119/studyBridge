@@ -100,7 +100,8 @@ def refiner_llm(system: str, user: str, max_tokens: Optional[int] = None) -> str
         return primary_llm(system, user, max_tokens)
     from app.services.llm_engine_router import call_verifier_llm
     try:
-        out = call_verifier_llm(system_prompt=system, user_prompt=user, max_tokens=max_tokens or c["max_tokens"])
+        out = call_verifier_llm(system_prompt=system, user_prompt=user, max_tokens=max_tokens or c["max_tokens"],
+                                feature="study_action_refine")
         if out and not out.strip().startswith(("[GPT", "[Ollama", "[")):
             return out
     except Exception as e:  # noqa: BLE001

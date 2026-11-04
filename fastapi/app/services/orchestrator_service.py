@@ -15,6 +15,7 @@ import time
 import urllib.request
 import urllib.parse
 from typing import Any, Dict, Generator, List, Optional
+from app.utils.log_safety import fp as _log_fp
 
 from app.schemas.multi_chat_schema import (
     AgentAnswer,
@@ -304,7 +305,10 @@ def _build_conversation_context(previous_answers: Optional[List[PreviousAnswer]]
 
 
 def _fetch_wikipedia_context(query: str) -> str:
-    """사용자 질문을 기반으로 한국어 위키백과에서 관련 문서를 검색하여 요약을 반환한다."""
+    """사용자 질문을 기반으로 한국어 위키백과에서 관련 문서를 검색하여 요약을 반환한다(정책 차단 시 빈 문자열)."""
+    from app.core.egress_policy import egress_allowed
+    if not egress_allowed("wikipedia", "multichat_wiki_context"):
+        return ""
     try:
         # 1. 문서 제목 검색
         # 검색어 처리를 위해 간단히 쪼개서 가장 긴 단어들을 위주로 검색하거나 원문 전체를 던짐
@@ -375,7 +379,7 @@ def _build_gpt_brief(query: str) -> str:
     OPENAI_API_KEY 미설정 시 빈문자열(→ 다른 근거/Ollama로 진행)."""
     try:
         from app.services.openai_client import chat_sync, is_enabled
-        if not is_enabled():
+        if not is_enabled("multichat_grounding_brief"):
             return ""
         sys = (
             "너는 학술 자료 조사 보조자다. 주어진 주제의 정확한 핵심 사실·심화 포인트·전문 용어를 "
@@ -383,7 +387,8 @@ def _build_gpt_brief(query: str) -> str:
             "이 내용은 다른 답변자의 '참고 근거'로 쓰인다(최종 답변이 아님)."
         )
         out = chat_sync(system=sys, user=f"주제: {query}", temperature=0.2,
-                        max_tokens=int(os.getenv("AI_GPT_BRIEF_MAX_TOKENS", "600")))
+                        max_tokens=int(os.getenv("AI_GPT_BRIEF_MAX_TOKENS", "600")),
+                        feature="multichat_grounding_brief")
         out = (out or "").strip()
         if not out or out.startswith("[GPT"):
             return ""
@@ -398,12 +403,12 @@ def _fetch_grounding_source(src: str, query: str) -> str:
     try:
         if src == "wiki":
             from app.services.knowledge_enrichment import _fetch_wiki, _DEFAULT_TIMEOUT
-            return _fetch_wiki(query, _DEFAULT_TIMEOUT) or ""
+            return _fetch_wiki(query, _DEFAULT_TIMEOUT, feature="multichat_grounding") or ""
         if src == "tavily":
             from app.services.knowledge_enrichment import _fetch_tavily, _tavily_enabled, _DEFAULT_TIMEOUT
-            if not _tavily_enabled():
+            if not _tavily_enabled("multichat_grounding"):
                 return ""
-            return _fetch_tavily(query, _DEFAULT_TIMEOUT) or ""
+            return _fetch_tavily(query, _DEFAULT_TIMEOUT, feature="multichat_grounding") or ""
         if src == "gpt":
             return _build_gpt_brief(query)
     except Exception as e:
@@ -1363,7 +1368,7 @@ def build_orchestrator_stream(
         logger.info(
             "[MODE-TRACE] roomId=%s userId=%s rawMode=%s learningMode=%s finalMode=%s "
             "socraticApplied=%s diagnosisPrefix=%s previousAnswers=%d agents=%d "
-            "agent0.personality=%s agent0.level=%s msg=%r",
+            "agent0.personality=%s agent0.level=%s msg=%s",
             getattr(request, "roomId", None) or getattr(request, "room_id", None),
             getattr(request, "userId", None) or getattr(request, "user_id", None),
             getattr(request, "mode", None),
@@ -1375,7 +1380,7 @@ def build_orchestrator_stream(
             len(agents),
             getattr(_ag0, "personality", None) if _ag0 else None,
             (getattr(_ag0, "knowledgeLevel", None) or getattr(_ag0, "knowledgeLevelLabel", None)) if _ag0 else None,
-            (request.message or "")[:80],
+            _log_fp(request.message),   # 원문 대신 길이+해시(예전: 사용자 메시지 앞 80자를 운영 로그에 기록)
         )
     except Exception as _e:  # pragma: no cover - 계측은 본 흐름을 막지 않는다
         logger.warning("[MODE-TRACE] 계측 실패: %s", _e)
@@ -1392,12 +1397,12 @@ def build_orchestrator_stream(
         _bypass = _mem.is_recall_intent(_intent) and bool(_turns)
         logger.info(
             "[MEMORY-TRACE] roomId=%s userId=%s rawMode=%s rawLearningMode=%s finalMode=%s "
-            "memoryIntent=%s previousAnswerCount=%d normalizedTurnCount=%d memoryBypassLLM=%s msg=%r",
+            "memoryIntent=%s previousAnswerCount=%d normalizedTurnCount=%d memoryBypassLLM=%s msg=%s",
             getattr(request, "roomId", None) or getattr(request, "room_id", None),
             getattr(request, "userId", None) or getattr(request, "user_id", None),
             getattr(request, "mode", None), getattr(request, "learningMode", None),
             effective_mode, _intent.value, len(request.previousAnswers or []),
-            len(_turns), _bypass, (request.message or "")[:80],
+            len(_turns), _bypass, _log_fp(request.message),
         )
         if _bypass:
             yield from _run_memory_recall(

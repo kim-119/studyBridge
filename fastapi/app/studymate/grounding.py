@@ -68,12 +68,12 @@ def search_query(current_message: str) -> str:
 def _fetch(src: str, query: str) -> str:
     if src == "wiki":
         from app.services.knowledge_enrichment import _fetch_wiki, _DEFAULT_TIMEOUT
-        return _fetch_wiki(query, _DEFAULT_TIMEOUT) or ""
+        return _fetch_wiki(query, _DEFAULT_TIMEOUT, feature="studymate_grounding") or ""
     if src == "tavily":
         from app.services.knowledge_enrichment import _fetch_tavily, _tavily_enabled, _DEFAULT_TIMEOUT
-        if not _tavily_enabled():
+        if not _tavily_enabled("studymate_grounding"):
             return ""
-        return _fetch_tavily(query, _DEFAULT_TIMEOUT) or ""
+        return _fetch_tavily(query, _DEFAULT_TIMEOUT, feature="studymate_grounding") or ""
     if src == "gpt":
         from app.services.orchestrator_service import _build_gpt_brief
         return _build_gpt_brief(query) or ""
@@ -138,5 +138,7 @@ def gather(current_message: str, levels: Iterable[str], *, cancel: Optional[Canc
         pool.shutdown(wait=False, cancel_futures=True)   # 느린 소스가 턴을 붙잡지 못하게 한다
     bundle.elapsed_ms = int((time.time() - t0) * 1000)
     if bundle.failures:
-        logger.warning("[GROUNDING] degraded failures=%s query=%r elapsed=%dms", bundle.failures, query[:60], bundle.elapsed_ms)
+        from app.utils.log_safety import fp as _log_fp
+        logger.warning("[GROUNDING] degraded failures=%s query=%s elapsed=%dms", bundle.failures, _log_fp(query),
+                       bundle.elapsed_ms)
     return bundle

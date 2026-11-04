@@ -1,0 +1,12 @@
+{
+  "status": "CANONICAL_EC2_V1",
+  "owner": "EC2 (Spring)",
+  "note": "EC2 canonical. 기대 결과는 expectations.json(canonical) — ai07 관측값과 다른 항목은 openIssue 로 추적한다. ai07 test_meta_marks_ec2_as_owner 의 PROPOSED 단정은 갱신 필요.",
+  "contracts": [
+    "learning-context.v1",
+    "response-quality.v1",
+    "training-sample.v1"
+  ],
+  "createdAt": "2026-11-04",
+  "canonicalizedAt": "2026-11-04"
+}

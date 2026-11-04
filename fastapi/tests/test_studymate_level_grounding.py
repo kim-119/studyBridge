@@ -65,5 +65,5 @@ def test_build_level_grounding_caches_per_source(monkeypatch):
 def test_gpt_brief_returns_empty_when_disabled(monkeypatch):
     # OPENAI 키 없으면 GPT 브리핑은 빈 문자열(다른 근거/Ollama로 진행)
     import app.services.openai_client as oc
-    monkeypatch.setattr(oc, "is_enabled", lambda: False)
+    monkeypatch.setattr(oc, "is_enabled", lambda *a, **k: False)
     assert orch._build_gpt_brief("아무 주제") == ""

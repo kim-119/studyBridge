@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "response-quality.v1",
+  "requestId": "req-rq-0001",
+  "taskType": "PDF_SUMMARY",
+  "outputKind": "text",
+  "modelDigest": "bdbd181c33f2",
+  "originalRequest": "TCP 연결 수립 과정을 요약해줘",
+  "groundingEvidence": [
+    {
+      "sourceType": "PDF_ORIGINAL",
+      "materialId": 42,
+      "sourceRevisionHash": "rev-9b1c",
+      "page": 12,
+      "chunkId": "m42-c7",
+      "text": "TCP 연결은 1981년 RFC 793 에서 정의되었다. 3-way handshake 는 SYN, SYN-ACK, ACK 세 단계로 연결을 수립한다. 연결 해제에는 4단계가 필요하다."
+    }
+  ],
+  "constraints": {
+    "allowedMaterialIds": [
+      42
+    ]
+  },
+  "attemptIndex": 0,
+  "evaluationProfile": null,
+  "proposedOutput": "TCP 연결은 1981년 RFC 793 에서 정의되었다. 3-way handshake 는 SYN, SYN-ACK, ACK 세 단계로 연결을 수립한다. 연결 해제에는 4단계가 필요하다 [근거:m42-c7]."
+}

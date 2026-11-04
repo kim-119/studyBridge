@@ -10,9 +10,15 @@ GATE="/home/ubuntu/studyBridge/scripts/ai-route-gate.sh"
 STATUS_DIR="/run/studybridge"
 mkdir -p "$STATUS_DIR" 2>/dev/null || true
 
+# 내부 Bearer(선택, Phase B2): AI_ROUTE_GATE_AUTH_HEADER_FILE 이 있으면 readiness 조회와 게이트에 같이 쓴다.
+AUTH_ARGS=()
+if [ -n "${AI_ROUTE_GATE_AUTH_HEADER_FILE:-}" ] && [ -r "${AI_ROUTE_GATE_AUTH_HEADER_FILE}" ]; then
+  AUTH_ARGS=(-H "@${AI_ROUTE_GATE_AUTH_HEADER_FILE}")
+fi
+
 # 최대 90초 동안 openapi 가 열릴 때까지 대기
 for i in $(seq 1 45); do
-  if curl -fsS -m 3 "$BASE/openapi.json" -o /dev/null 2>/dev/null; then break; fi
+  if curl -fsS -m 3 "${AUTH_ARGS[@]}" "$BASE/openapi.json" -o /dev/null 2>/dev/null; then break; fi
   sleep 2
 done
 

@@ -651,8 +651,11 @@ def _use_fake_openai(monkeypatch, fake):
     from app.services import openai_client
     monkeypatch.setenv("VISION_ANSWER_PROVIDER", "openai")
     monkeypatch.setenv("VISION_ANSWER_MODEL", "gpt-4o-mini")
-    monkeypatch.setattr(openai_client, "is_enabled", lambda: True)
-    monkeypatch.setattr(openai_client, "get_async_client", lambda: fake)
+    # 외부 전송 정책(2026-11-04): 기본 차단 → 이 테스트는 비전 답변 기능만 명시적으로 허용한다.
+    monkeypatch.setenv("AI_EXTERNAL_EGRESS_ENABLED", "true")
+    monkeypatch.setenv("AI_EGRESS_ALLOW", "openai:vision_answer")
+    monkeypatch.setattr(openai_client, "is_enabled", lambda *a, **k: True)
+    monkeypatch.setattr(openai_client, "get_async_client", lambda *a, **k: fake)
     return fake
 
 
@@ -710,7 +713,9 @@ async def test_openai_sdk_errors_are_structured(monkeypatch, idx):
 async def test_openai_disabled_without_key(monkeypatch):
     from app.services import openai_client
     monkeypatch.setenv("VISION_ANSWER_PROVIDER", "openai")
-    monkeypatch.setattr(openai_client, "is_enabled", lambda: False)
+    monkeypatch.setenv("AI_EXTERNAL_EGRESS_ENABLED", "true")
+    monkeypatch.setenv("AI_EGRESS_ALLOW", "openai:vision_answer")
+    monkeypatch.setattr(openai_client, "is_enabled", lambda *a, **k: False)
     async with _client() as c:
         r = await post(c, body())
     assert (r.status_code, code_of(r)) == (503, "VISION_ANSWER_DISABLED")

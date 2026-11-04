@@ -82,7 +82,25 @@ async def _generate_roadmap_standard(body: Dict[str, Any]) -> Dict[str, Any]:
             _log(fail, provider)
             return fail
     _log(final, provider)
-    return final
+    return _with_integrity(final, provider)
+
+
+def _with_integrity(final: Dict[str, Any], provider: str) -> Dict[str, Any]:
+    """Phase D R2: 성공 응답에 origin(LLM/결정적 대체)·generationId·content-integrity.v1 을 붙인다(추가 필드만, 기존 키 불변).
+
+    generationId 는 본문 체크섬에서 나온다 → 같은 초안이면 같은 ID(Spring 의 동일 초안 반복 차단과 충돌하지 않음).
+    받는 쪽은 integrity·generationId 를 뺀 본문을 Jackson JsonNode.toString() 규칙으로 직렬화해 체크섬·개수를 대조한다.
+    실패하면 기존 응답을 그대로 돌려준다(무결성 블록은 부가 정보 — 생성 성공을 막지 않는다).
+    """
+    try:
+        from app.quality_gate.segments import attach_integrity
+        final["origin"] = "DETERMINISTIC_FALLBACK" if (final.get("fallback_used") or provider != "llm") else "LLM"
+        return attach_integrity(final)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("roadmap integrity 생략: %s", type(e).__name__)
+        final.pop("generationId", None)
+        final.pop("integrity", None)
+        return final
 
 
 @router.post("/roadmap/generate", summary="문서 기반 12주 × 7일 로드맵 (총 84일)")

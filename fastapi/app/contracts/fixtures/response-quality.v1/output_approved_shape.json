@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "response-quality.v1",
+  "requestId": "req-rq-0001",
+  "taskType": "PDF_SUMMARY",
+  "success": true,
+  "verified": true,
+  "qualityStatus": "APPROVED",
+  "score": 92.0,
+  "minimumScore": 80,
+  "hardFail": false,
+  "violations": [],
+  "dimensions": [
+    {
+      "name": "source_fidelity",
+      "score": 35.0,
+      "maxScore": 35.0,
+      "method": "evidence"
+    }
+  ],
+  "regenerationHints": null,
+  "evaluatorVersion": "rqg-1.0.0",
+  "modelDigest": "bdbd181c33f2",
+  "latencyMs": 3
+}

@@ -300,6 +300,10 @@ class MultiChatRequest(BaseModel):
     # 직전 선택지 컨텍스트(서버 무상태 → 클라이언트가 echo). "A"만 입력해도 직전 후보를 복원해
     # 확정할 수 있게 한다(없으면 새 후보를 만들지 않고 안내). additive — 기존 계약 불변.
     pendingChoiceContext: Optional[Dict[str, Any]] = Field(None, validation_alias=AliasChoices("pendingChoiceContext", "pending_choice_context"), description="직전 선택지 컨텍스트(turnId/mode/options 등)")
+    # Phase D R3: Spring LearningMemoryAssembler 가 보내는 learning-context.v1(+ 헤더 X-AI-Scope). 기본 OFF(AI_LEARNING_CONTEXT_ENABLED).
+    # 느슨한 타입(원시 JSON): 잘못된 컨텍스트가 422 를 만들지 않는다 — 검증은 app/studymate/learning_context_intake 가 한다.
+    # 원문은 dump/repr 에 싣지 않고(exclude/repr=False), 라우트가 수신 직후 비운다(stream_runtime.attach_learning_context).
+    learningContext: Optional[Any] = Field(None, exclude=True, repr=False, description="learning-context.v1 (Spring Learning Memory, 추론 시점 전용)")
 
 
 class GenerationConfigMetadata(BaseModel):

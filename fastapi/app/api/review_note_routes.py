@@ -458,6 +458,7 @@ def _gen_similar(req: SimilarQuestionRequest) -> Tuple[Optional[Dict[str, Any]],
         draft_system=draft_system, draft_user=draft_user,
         refine_system=refine_system, refine_user_builder=_refine_user,
         validator=_pass, max_tokens=1100,
+        feature="review_note",
     )
     norm = _normalize(parsed)
     if norm and validate_similar_question(norm, req) is None:
@@ -467,6 +468,7 @@ def _gen_similar(req: SimilarQuestionRequest) -> Tuple[Optional[Dict[str, Any]],
     repaired = repair_to_valid(
         repair_system=refine_system, repair_user=_refine_user(parsed or {}),
         validator=_pass, max_tokens=1100,
+        feature="review_note",
     )
     rnorm = _normalize(repaired)
     if rnorm and validate_similar_question(rnorm, req) is None:
@@ -479,6 +481,7 @@ def _gen_similar(req: SimilarQuestionRequest) -> Tuple[Optional[Dict[str, Any]],
                                 "원본 문제 복붙 금지, PDF 근거 핵심어 포함.",
         refine_system=refine_system, refine_user_builder=_refine_user,
         validator=_pass, max_tokens=1100,
+        feature="review_note",
     )
     tnorm = _normalize(retry)
     if tnorm and validate_similar_question(tnorm, req) is None:
@@ -631,6 +634,7 @@ def _gen_explanation(req: ExplanationRequest) -> Tuple[Optional[Dict[str, Any]],
         draft_system=draft_system, draft_user=draft_user,
         refine_system=refine_system, refine_user_builder=_refine_user,
         validator=_pass, max_tokens=1300,
+        feature="review_note",
     )
     norm = _normalize(parsed)
     if norm and validate_explanation(norm, req) is None:
@@ -639,6 +643,7 @@ def _gen_explanation(req: ExplanationRequest) -> Tuple[Optional[Dict[str, Any]],
     repaired = repair_to_valid(
         repair_system=refine_system, repair_user=_refine_user(parsed or {}),
         validator=_pass, max_tokens=1300,
+        feature="review_note",
     )
     rnorm = _normalize(repaired)
     if rnorm and validate_explanation(rnorm, req) is None:
@@ -650,6 +655,7 @@ def _gen_explanation(req: ExplanationRequest) -> Tuple[Optional[Dict[str, Any]],
                                 "PDF sourceText 개념을 반드시 연결하라.",
         refine_system=refine_system, refine_user_builder=_refine_user,
         validator=_pass, max_tokens=1300,
+        feature="review_note",
     )
     tnorm = _normalize(retry)
     if tnorm and validate_explanation(tnorm, req) is None:

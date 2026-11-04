@@ -175,7 +175,7 @@ def load_pdf_images_from_s3(s3_key: str, bucket: Optional[str] = None, max_pages
                 img_data = pix.tobytes("jpeg")
                 b64 = base64.b64encode(img_data).decode("utf-8")
                 images.append(f"data:image/jpeg;base64,{b64}")
-        logger.info("S3 PDF 이미지 변환 완료: s3_key=%s, pages=%d", s3_key, len(images))
+        logger.info("S3 PDF 이미지 변환 완료: key=...%s, pages=%d", s3_key[-20:], len(images))  # 사용자 경로(user_N) 미기록
     except ImportError:
         logger.warning("PyMuPDF(fitz) 라이브러리가 설치되지 않아 이미지 변환이 불가능합니다.")
     except Exception as e:

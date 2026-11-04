@@ -177,13 +177,14 @@ def _build_quiz_user_prompt(file_name: str, text: str) -> str:
 
 def _generate_with_openai(system_prompt: str, file_name: str, text: str, max_tokens: int) -> str:
     from app.services.openai_client import chat_sync, is_enabled
-    if not is_enabled():
-        raise RuntimeError("OpenAI API Key가 설정되지 않았습니다.")
+    if not is_enabled("quiz_generate"):
+        raise RuntimeError("OpenAI API Key 미설정 또는 외부 전송 정책 차단")
     return chat_sync(
         system=system_prompt,
         user=_build_quiz_user_prompt(file_name, text),
         max_tokens=max_tokens,
         temperature=0.3,
+        feature="quiz_generate",
     )
 
 

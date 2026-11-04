@@ -230,7 +230,8 @@ def to_public_quiz(quiz: Dict[str, Any]) -> Dict[str, Any]:
     """User-facing view: same quiz without the answer key (what Spring should send to browsers).
 
     Strips quiz["answerKeyFields"] (or ANSWER_KEY_FIELDS) from every question in `questions`
-    and `quizzes`, from the JSON string `quizData`, and the top-level `source_trace` copy.
+    and `quizzes`, from the JSON string `quizData`, and the top-level `source_trace` copy and
+    `grounding` (grounding.v1 quotes are the source sentences that support the correct answer).
     """
     public = copy.deepcopy(quiz)
     fields = tuple(public.get("answerKeyFields") or ANSWER_KEY_FIELDS)
@@ -252,5 +253,6 @@ def to_public_quiz(quiz: Dict[str, Any]) -> Dict[str, Any]:
             _strip(parsed)
             public["quizData"] = json.dumps(parsed, ensure_ascii=False)
     public.pop("source_trace", None)
+    public.pop("grounding", None)
     public.pop("answerKeyFields", None)
     return public

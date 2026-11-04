@@ -16,14 +16,18 @@ logger = logging.getLogger(__name__)
 _async_client = None
 
 
+_FEATURE = "answer_verifier"
+
+
 def _get_client():
-    global _async_client
-    if _async_client is None:
-        if not OPENAI_API_KEY:
-            raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다.")
-        from openai import AsyncOpenAI
-        _async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return _async_client
+    """공용 openai_client 로 위임(전용 클라이언트 금지). 정책 불허 시 EgressBlocked."""
+    from app.services.openai_client import get_async_client
+    return get_async_client(_FEATURE)
+
+
+def _allowed() -> bool:
+    from app.services.openai_client import is_enabled
+    return is_enabled(_FEATURE)
 
 
 _VERIFY_SYSTEM = """\
@@ -68,6 +72,9 @@ async def verify_answer_async(
 
     if not OPENAI_API_KEY:
         _fallback["issues"] = ["OPENAI_API_KEY 미설정 — 검증 건너뜀"]
+        return _fallback
+    if not _allowed():
+        _fallback["issues"] = ["외부 전송 정책으로 GPT 검증 건너뜀"]
         return _fallback
 
     user_prompt = (
@@ -118,7 +125,7 @@ async def generate_corrected_answer_async(
     GPT 검증 제안을 바탕으로 보정된 답변을 생성한다.
     GPT 호출 실패 시 원본 답변을 그대로 반환한다.
     """
-    if not OPENAI_API_KEY or not suggestion:
+    if not OPENAI_API_KEY or not suggestion or not _allowed():
         return original_answer
 
     prompt = (

@@ -49,12 +49,13 @@ def _llm(system: str, user: str, max_tokens: int) -> str:
     from app.services.material_ai_manager import _call_gpt
     try:
         from app.services.llm_engine_router import call_primary_llm
-        out = call_primary_llm(system_prompt=system, user_prompt=user, max_tokens=max_tokens, temperature=0.3)
+        out = call_primary_llm(system_prompt=system, user_prompt=user, max_tokens=max_tokens, temperature=0.3,
+                               feature="keyword_define")
         if out and not out.strip().startswith("["):
             return out
     except Exception as e:
         logger.info("primary LLM 실패, GPT 시도: %s", e)
-    return _call_gpt(system, user, max_tokens=max_tokens)
+    return _call_gpt(system, user, max_tokens=max_tokens, feature="keyword_define")
 
 
 def _gpt_define(keyword: str, level: str, context: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -97,7 +98,10 @@ def _gpt_define(keyword: str, level: str, context: Optional[str]) -> Optional[Di
 
 
 async def _wikipedia_define(keyword: str) -> Optional[Dict[str, Any]]:
-    """Wikipedia(ko) REST summary 조회. 없으면 None."""
+    """Wikipedia(ko) REST summary 조회. 없으면 None. 외부 전송 정책 불허 시 호출 없이 None."""
+    from app.core.egress_policy import egress_allowed
+    if not egress_allowed("wikipedia", "keyword_define"):
+        return None
     from urllib.parse import quote
     url = f"{WIKIPEDIA_API_BASE}/{quote(keyword, safe='')}"
     try:
@@ -133,6 +137,11 @@ async def keyword_define(req: KeywordDefineReq) -> Dict[str, Any]:
     source = (req.source or "auto").lower()
     want_gpt = source in ("auto", "gpt")
     want_wiki = source in ("auto", "wikipedia")
+    # 외부 전송 정책이 Wikipedia 를 막으면 위키 단계를 건너뛰고, 위키 전용 요청이었다면 로컬 LLM 정의로 대체한다.
+    from app.core.egress_policy import egress_allowed
+    if want_wiki and not egress_allowed("wikipedia", "keyword_define"):
+        want_wiki = False
+        want_gpt = True
 
     gpt_task = asyncio.to_thread(_gpt_define, keyword, req.level, req.context) if want_gpt else None
     wiki_task = _wikipedia_define(keyword) if want_wiki else None

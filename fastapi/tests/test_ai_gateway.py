@@ -544,6 +544,7 @@ def test_middleware_context_and_body_replay():
     assert r.json() == {"cls": "DOCUMENT_QUIZ", "key": "cg:r9", "n": 3}
     # 헤더 식별자는 내부 인증이 맞을 때만 검증값(u:)
     import os
+    prev_key = os.environ.get("AI_SERVER_API_KEY")       # 다른 테스트가 쓰는 기본 키를 지우지 않도록 복원한다
     os.environ["AI_SERVER_API_KEY"] = "k-test"
     try:
         r = c.post("/api/ai/quiz/generate", json={"n": 1, "userId": 99},
@@ -555,7 +556,10 @@ def test_middleware_context_and_body_replay():
         r = c.post("/api/ai/quiz/generate", json={"n": 1, "userId": "1; DROP"})
         assert r.json()["key"] == "anon"          # 형식 밖 값은 버린다
     finally:
-        os.environ.pop("AI_SERVER_API_KEY", None)
+        if prev_key is None:
+            os.environ.pop("AI_SERVER_API_KEY", None)
+        else:
+            os.environ["AI_SERVER_API_KEY"] = prev_key
 
 
 def test_group_round_robin_before_users():

@@ -543,7 +543,7 @@ def _gather_web_evidence(question: str, knowledge_level: Optional[str]) -> Tuple
     def _tavily():
         from app.services.tavily_service import search_web
         out = []
-        for r in (search_web(search_query, max_results=3) or []):
+        for r in (search_web(search_query, max_results=3, feature="multi_agent_web_verify") or []):
             out.append({"title": r.get("title", ""), "url": r.get("url", ""),
                         "snippet": (r.get("content", "") or "")[:400], "source": "Tavily"})
         return out
@@ -551,14 +551,14 @@ def _gather_web_evidence(question: str, knowledge_level: Optional[str]) -> Tuple
     def _wiki():
         from app.services.wikipedia_service import search_wikipedia
         out = []
-        for r in (search_wikipedia(search_query, limit=3) or []):
+        for r in (search_wikipedia(search_query, limit=3, feature="multi_agent_web_verify") or []):
             out.append({"title": r.get("title", ""), "url": r.get("url", ""),
                         "snippet": (r.get("snippet", "") or "")[:400], "source": "Wikipedia"})
         return out
 
     def _openalex():
         from app.services import openalex_service
-        res = openalex_service.search(search_query, knowledge_level or "학사")
+        res = openalex_service.search(search_query, knowledge_level or "학사", feature="multi_agent_web_verify")
         out = []
         for w in (getattr(res, "works", None) or []):
             title = getattr(w, "display_name", "") or ""
@@ -790,9 +790,9 @@ def _call_llm_with_params(
     prov = (provider or "ollama").strip().lower()
     if prov == "openai":
         from app.services.openai_client import chat_sync, is_enabled
-        if is_enabled():
+        if is_enabled("multi_agent_provider"):
             text = chat_sync(
-                system=system, user=user,
+                system=system, user=user, feature="multi_agent_provider",
                 temperature=params.get("temperature", 0.4),
                 max_tokens=params.get("max_tokens", 1200),
                 top_p=params.get("top_p"),
@@ -3492,6 +3492,7 @@ def _run_multi_pass_pipeline(
                 question=request.message,
                 knowledge_level=knowledge_level,
                 domain=domain,
+                feature="multi_agent_openalex",
             )
             if not oa_result.skipped and oa_result.works:
                 openalex_context = oa_result.to_context_text()
@@ -4022,14 +4023,16 @@ def _quiz_bot_answer(message: str, context: str, agent: Optional[AgentProfile] =
         user_parts.append(context)
     user_parts.append(f"[퀴즈 요청]\n{message}")
     user = "\n\n".join(user_parts)
-    if not is_enabled():
-        # GPT 미설정 시 Qwen으로 폴백
+    if not is_enabled("group_quiz_bot"):
+        # GPT 미설정/외부 전송 정책 차단 시 Qwen으로 폴백
         logger.info("퀴즈봇: OpenAI 비활성 → Qwen 폴백")
         return _call_llm(system, user)
-    text = chat_sync(system=system, user=user, temperature=0.4, max_tokens=_MAX_TOKENS_PER_ANSWER)
+    text = chat_sync(system=system, user=user, temperature=0.4, max_tokens=_MAX_TOKENS_PER_ANSWER,
+                     feature="group_quiz_bot")
     if text and not text.startswith("[GPT"):
         return text
-    logger.warning("퀴즈봇 GPT 응답 실패 → Qwen 폴백: %s", text[:80] if text else "")
+    from app.utils.log_safety import fp as _log_fp
+    logger.warning("퀴즈봇 GPT 응답 실패 → Qwen 폴백: %s", _log_fp(text))
     return _call_llm(system, user)
 
 
@@ -4038,7 +4041,7 @@ def _search_bot_answer(message: str, context: str, agent: Optional[AgentProfile]
     search_block = ""
     try:
         from app.services.tavily_service import search_web
-        results = search_web(message, max_results=5)
+        results = search_web(message, max_results=5, feature="group_search_bot")
         if results:
             lines = []
             for i, r in enumerate(results, start=1):
@@ -4067,8 +4070,9 @@ def _search_bot_answer(message: str, context: str, agent: Optional[AgentProfile]
     user = "\n\n".join(user_parts)
 
     from app.services.openai_client import chat_sync, is_enabled
-    if is_enabled():
-        text = chat_sync(system=system, user=user, temperature=0.3, max_tokens=_MAX_TOKENS_PER_ANSWER)
+    if is_enabled("group_search_bot"):
+        text = chat_sync(system=system, user=user, temperature=0.3, max_tokens=_MAX_TOKENS_PER_ANSWER,
+                         feature="group_search_bot")
         if text and not text.startswith("[GPT"):
             return text
         logger.warning("검색봇 GPT 응답 실패 → Qwen 폴백")

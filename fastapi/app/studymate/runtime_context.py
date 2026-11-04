@@ -26,6 +26,8 @@ class RequestRuntime:
     llm_calls: List[Dict[str, Any]] = field(default_factory=list)
     traces: List[Dict[str, Any]] = field(default_factory=list)
     degraded_notes: List[str] = field(default_factory=list)
+    # Phase D R3 learning-context 수신 결과(learning_context_intake.Receipt). None = 미수신/플래그 OFF(기존과 동일).
+    learning_context: Optional[Any] = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def record_llm(self, task: str, res: Any) -> None:

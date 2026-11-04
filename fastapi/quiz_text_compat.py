@@ -15,6 +15,7 @@ Spring이 PDF/자료 본문을 추출해 그대로 넘겨주는 케이스를 안
 하드코딩 금지: 모델/온도/토큰/타임아웃/기본개수는 .env에서 읽는다.
 """
 from __future__ import annotations
+from app.utils.log_safety import fp as _log_fp
 
 from app.services.ollama_client import _shared_num_ctx
 
@@ -292,7 +293,8 @@ def _call_quiz_llm(system: str, user: str, request_id: str) -> str:
         from main import _call_openai
 
         content = _call_openai(
-            system, user, max_tokens=QUIZ_MAX_TOKENS, temperature=QUIZ_TEMPERATURE
+            system, user, max_tokens=QUIZ_MAX_TOKENS, temperature=QUIZ_TEMPERATURE,
+            feature="quiz_text_fallback",
         )
         if content and content.strip():
             return content
@@ -313,8 +315,10 @@ def generate_quiz_from_text(
     question_type: str = DEFAULT_QUESTION_TYPE,
     material_id: Optional[int] = None,
     request_id: Optional[str] = None,
+    regeneration_block: str = "",
 ) -> Dict[str, Any]:
-    """텍스트 본문 기반 퀴즈 생성. 항상 계약 dict 반환(예외를 던지지 않음)."""
+    """텍스트 본문 기반 퀴즈 생성. 항상 계약 dict 반환(예외를 던지지 않음).
+    regeneration_block: 품질 게이트 재생성 지침(app.quality_gate.hints) — 빈 문자열이면 프롬프트 불변."""
     request_id = request_id or uuid.uuid4().hex[:8]
     text = (text or "").strip()
     difficulty = (difficulty or DEFAULT_DIFFICULTY).strip() or DEFAULT_DIFFICULTY
@@ -337,6 +341,7 @@ def generate_quiz_from_text(
 
     context = text[:QUIZ_MAX_CONTEXT_CHARS]
     system, user = _build_messages(context, title or "", count, difficulty, question_type)
+    user += regeneration_block or ""
 
     started = time.monotonic()
     try:
@@ -353,8 +358,8 @@ def generate_quiz_from_text(
     items = parse_quiz_payload(raw)
     if items is None:
         logger.warning(
-            "quiz.generate.parse_failed %s raw_prefix=%s elapsed_ms=%s",
-            request_id, repr(raw[:300]), elapsed_ms,
+            "quiz.generate.parse_failed %s raw=%s elapsed_ms=%s",
+            request_id, _log_fp(raw), elapsed_ms,
         )
         return _fail(material_id, "QUIZ_PARSE_FAILED", "LLM 응답을 JSON으로 파싱하지 못했습니다.")
 
@@ -368,8 +373,8 @@ def generate_quiz_from_text(
 
     if not quiz:
         logger.warning(
-            "quiz.generate.parse_failed %s raw_prefix=%s elapsed_ms=%s reason=no_valid_items",
-            request_id, repr(raw[:300]), elapsed_ms,
+            "quiz.generate.parse_failed %s raw=%s elapsed_ms=%s reason=no_valid_items",
+            request_id, _log_fp(raw), elapsed_ms,
         )
         return _fail(material_id, "QUIZ_NO_VALID_ITEMS", "생성된 문항 중 유효한 문항이 없습니다.")
 

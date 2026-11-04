@@ -325,11 +325,14 @@ def test_graph_validator_catches_structural_defects():
 
 
 # ── HTTP contract ───────────────────────────────────────────────────────────
-def test_endpoint_contract():
+def test_endpoint_contract(monkeypatch):
     from app.api.mindmap_routes import router
+    # 내부 인증 fail-closed(2026-11-04) → 서버간 호출처럼 Bearer 를 붙인다.
+    monkeypatch.setenv("AI_SERVER_API_KEY", "mindmap-test-key-" + "x" * 24)
+    hdr = {"Authorization": "Bearer mindmap-test-key-" + "x" * 24}
     app = FastAPI()
     app.include_router(router)
-    r = TestClient(app).post("/api/ai/mindmap/semantic-graph", json={
+    r = TestClient(app, headers=hdr).post("/api/ai/mindmap/semantic-graph", json={
         "question": JDBC_Q, "useLlm": False,
         "answers": [{"agentId": 1, "agentName": AGENTS[0], "content": JDBC_A[0]["content"]}],
     })
@@ -342,7 +345,7 @@ def test_endpoint_contract():
     node = next(n for n in body["nodes"] if n["type"] == "concept")
     for key in ("id", "label", "canonicalLabel", "aliases", "surfaceForms", "level", "visible", "sources"):
         assert key in node
-    r2 = TestClient(app).post("/api/ai/mindmap/semantic-graph",
+    r2 = TestClient(app, headers=hdr).post("/api/ai/mindmap/semantic-graph",
                               json={"question": "x", "answers": [{"content": "   "}], "useLlm": False})
     assert r2.status_code == 422 and r2.json()["status"] == "FAILED"
     assert r2.json()["degradedReason"] == "EMPTY_ANSWER" and r2.json()["nodes"] == []

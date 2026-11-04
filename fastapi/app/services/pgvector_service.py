@@ -8,10 +8,14 @@ PostgreSQL + pgvector 연결 및 벡터 검색 서비스.
 """
 from __future__ import annotations
 
+import logging
+
 import psycopg
 from pgvector.psycopg import register_vector
 
 from app.core.config import VECTOR_DATABASE_URL, RAG_TOP_K
+
+logger = logging.getLogger(__name__)
 
 # 테이블 이름 상수 — 스키마 포함 (변경 시 이 곳만 수정)
 _TABLE = "rag.document_chunk"
@@ -144,7 +148,11 @@ def search_candidate_chunks(
     cross-encoder rerank 후보 검색용. page_start/page_end/metadata 등 reranker/citation 에
     필요한 컬럼까지 함께 반환한다. 선택 컬럼은 스키마에 있을 때만 SELECT 한다.
     (기존 search_similar_chunks 는 변경하지 않는다 — 후방 호환.)
+    material_id 가 None 이면 검색하지 않는다(사용자 구분 컬럼이 없어 None = 전 사용자 자료 검색이 되기 때문).
     """
+    if material_id is None:
+        logger.warning("[pgvector] material_id 없는 검색 거부(전 사용자 범위 검색 차단)")
+        return []
     with _get_connection() as conn:
         cols_present = _existing_columns(conn)
         select_cols = ["id", "material_id", "document_title", "chunk_index", "content"]
@@ -202,13 +210,17 @@ def search_similar_chunks(
 
     Args:
         query_embedding: 질문 임베딩 벡터 (list[float])
-        material_id:     특정 PDF만 검색할 경우 지정 (None이면 전체 검색)
+        material_id:     검색할 PDF. None 이면 검색하지 않고 [] 를 반환한다(fail-closed).
+                         예전: None 이면 전체 검색 → deep-search 처럼 가드 없는 호출이 다른 사용자 자료를 근거로 썼다.
         top_k:           반환할 최대 청크 수
 
     Returns:
         [{"id": int, "material_id": int, "document_title": str,
           "chunk_index": int, "content": str, "similarity": float}, ...]
     """
+    if material_id is None:
+        logger.warning("[pgvector] material_id 없는 검색 거부(전 사용자 범위 검색 차단)")
+        return []
     sql = f"""
         SELECT
             id,

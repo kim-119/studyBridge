@@ -75,6 +75,24 @@ def validate_before_open(payload: Any) -> Tuple[Optional[Any], Optional[JSONResp
     return req, None
 
 
+def attach_learning_context(req: Any, rt: RC.RequestRuntime, headers: Any) -> Any:
+    """Phase D R3: 본문 learningContext + X-AI-Scope 수신(기본 OFF). 결과 영수증은 rt.learning_context 에 두고
+    (llm_gateway 가 에이전트 프롬프트에 주입, finalize_all_complete 가 learningContextReceipt 로 노출),
+    원문은 요청 객체에서 비운다. 필드가 없으면 req 를 그대로 돌려준다(기존과 동일)."""
+    raw = getattr(req, "learningContext", None)
+    if raw is None:
+        return req
+    try:
+        from app.studymate import learning_context_intake as LCI
+        rt.learning_context = LCI.intake(raw, scope_token=headers.get("x-ai-scope"),
+                                         header_request_id=headers.get("x-request-id"),
+                                         body_request_id=getattr(req, "requestId", None))
+    except Exception as e:  # 메모리 수신 실패가 채팅을 막지 않는다(컨텍스트 없이 진행)
+        rt.learning_context = None
+        logger.warning("[LEARNING-CONTEXT] attach failed request=%s: %s", rt.request_id, type(e).__name__)
+    return req.model_copy(update={"learningContext": None})
+
+
 def resolved_mode(req: Any) -> str:
     from app.services import mode_router
     try:
@@ -201,6 +219,9 @@ def finalize_all_complete(data: Dict[str, Any], seq: SC.Sequencer, req: Any, rt:
         # 사용자 노출은 카테고리만(원인 상세는 서버 로그)
         notes = set(data.get("degradedNotes") or []) | set(rt.degraded_notes)
         data["degradedNotes"] = sorted({n.split(":", 1)[0] for n in notes})
+    if rt.learning_context is not None:
+        # Phase D R3 수신 영수증(개수·코드만). 미수신/플래그 OFF 면 키 자체가 없다(응답 바이트 동일).
+        data["learningContextReceipt"] = rt.learning_context.to_metadata()
     if cov.get("unexpectedGap"):
         logger.error("[AGENT-COVERAGE] request=%s mode=%s unexpected gap=%s", rt.request_id, mode, cov["unexpectedGap"])
     logging.getLogger("studybridge.multi_chat_stream_compat").info(

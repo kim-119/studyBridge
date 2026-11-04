@@ -26,6 +26,9 @@ def test_wiki_only_when_no_tavily_key(monkeypatch):
 
 def test_combines_wiki_and_tavily_when_key_present(monkeypatch):
     monkeypatch.setenv("TAVILY_API_KEY", "k")
+    # 외부 전송 정책(2026-11-04): Tavily 는 명시 허용이 있어야 쓰인다.
+    monkeypatch.setenv("AI_EXTERNAL_EGRESS_ENABLED", "true")
+    monkeypatch.setenv("AI_EGRESS_ALLOW", "tavily:knowledge_enrichment")
     monkeypatch.setattr(ke, "_fetch_wiki", lambda q, timeout: "위키부분")
     monkeypatch.setattr(ke, "_fetch_tavily", lambda q, timeout: "웹부분")
     out = ke.build_knowledge_context("질문")

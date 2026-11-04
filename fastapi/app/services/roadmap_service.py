@@ -96,8 +96,9 @@ def generate_roadmap_with_gpt(
     GPT로 구조화된 로드맵 JSON을 생성한다.
     성공 시 dict 반환, 실패 시 None.
     """
-    if not OPENAI_API_KEY:
-        logger.info("OPENAI_API_KEY 미설정 — GPT 로드맵 생성 건너뜀")
+    from app.services import openai_client as _oc
+    if not OPENAI_API_KEY or not _oc.is_enabled("roadmap_generate"):
+        logger.info("OpenAI 미설정/외부 전송 정책 차단 — GPT 로드맵 생성 건너뜀(로컬 경로 사용)")
         return None
 
     system, user = build_roadmap_prompt(
@@ -105,8 +106,7 @@ def generate_roadmap_with_gpt(
     )
 
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = _oc._raw_sync_client()  # 공용 클라이언트(정책 판정은 위 is_enabled 에서 완료)
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[

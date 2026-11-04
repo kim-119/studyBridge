@@ -160,6 +160,88 @@ jobs:
           cd fastapi
           python -m compileall .
 
+  fastapi-tests:
+    name: FastAPI pytest (quality gate / training pipeline / contracts)
+    runs-on: ubuntu-latest
+    # compileall 만으로는 동작 검증이 안 된다. 외부 AI/DB 에 닿지 않는 hermetic 테스트만 실행한다.
+    # (기존 전체 스위트에는 이 브랜치 이전부터 실패하던 테스트 6개 + import 오류 4파일이 있어 대상 목록을 명시한다)
+    services:
+      pgtest:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: lq
+          POSTGRES_PASSWORD: lqtest
+          POSTGRES_DB: lq
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U lq" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      OLLAMA_BASE_URL: http://127.0.0.1:9
+      VISION_OLLAMA_BASE_URL: http://127.0.0.1:9
+      AI_OLLAMA_BASE_URL: http://127.0.0.1:9
+      AI_TEST_PG_DSN: postgresql://lq:lqtest@127.0.0.1:55432/lq
+      # Phase B: EC2 Java 계약 클래스와의 차등 판정을 CI 에서도 실제 실행(Jackson 2.15.4 는 SHA-256 고정 다운로드)
+      AI_CONTRACT_FETCH_JARS: "1"
+
+    steps:
+      - name: 소스코드 체크아웃(재현 테스트용 전체 히스토리)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Python 3.12 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 의존성 설치
+        run: |
+          cd fastapi
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # requirements.txt 가 버전을 고정하지 않아 CI 가 운영(ai07 venv)보다 새 FastAPI 를 설치한다.
+          # 운영과 같은 웹 프레임워크 버전으로 고정해 '운영에서 도는 코드'를 검증한다(2026-11-04 ai07 pip freeze).
+          pip install "fastapi==0.136.3" "starlette==1.2.1" "pydantic==2.13.4" "pydantic-settings==2.14.1" pytest
+
+      - name: pytest 실행
+        run: |
+          cd fastapi
+          python -m pytest -q -rs -p no:cacheprovider \
+            tests/test_lq_security_fail_closed.py tests/test_lq_pii_dup.py tests/test_lq_training_pipeline.py \
+            tests/test_lq_export_dataset.py tests/test_lq_legacy_scoring_repro.py tests/test_lq_quality_gate.py \
+            tests/test_lq_stream_gate_api.py tests/test_lq_contracts_v1.py tests/test_lq_learning_loop_gate.py \
+            tests/test_lq_postgres_repository.py tests/test_learning_loop.py tests/test_mindmap_semantic_graph.py \
+            tests/test_lq_stream_gate_hardening.py tests/test_lq_stream_gate_live_captures.py tests/test_lq_phase_a_regressions.py \
+            tests/test_lq_gold_benchmark.py tests/test_lq_signing_vectors.py tests/test_lq_postgres_legacy_coexistence.py \
+            tests/test_realtime_quiz_answer_consistency.py tests/test_fetch_stream.py tests/test_lq_log_privacy.py \
+            tests/test_lq_review_regressions.py tests/test_lq_contract_differential.py \
+            tests/test_lq_phase_b_contract_binding.py tests/test_lq_phase_b_internal_auth.py \
+            tests/test_lq_phase_b_training_control.py tests/test_lq_phase_b_quality_perf.py \
+            tests/test_lq_phase_b_legacy_db_repro.py tests/test_lq_phase_b_egress_policy.py \
+            tests/test_network_guard.py \
+            tests/test_lq_phase_d_roadmap_segments.py tests/test_lq_phase_d_quality_boundaries.py \
+            tests/test_lq_phase_d_vision_observations.py tests/test_lq_phase_d_grounding.py \
+            tests/test_lq_phase_d_learning_context.py tests/test_lq_phase_d_contention_probe.py
+
+      - name: EC2 canonical fixture 교차 점검(EC2 제공 도구 그대로, 불일치 0 이어야 통과)
+        run: |
+          cd fastapi
+          python -I app/contracts/fixtures/tools/crosscheck_pydantic.py "$PWD" "$PWD/app/contracts/fixtures"
+
+      - name: 품질 게이트 합성 캘리브레이션(FAR/FRR)
+        run: |
+          cd fastapi
+          python -m scripts.quality_gate_calibration --out /tmp/calibration.json
+          python -c "import json,sys; d=json.load(open('/tmp/calibration.json')); sys.exit(0 if d['falseAcceptRate']==0 else 1)"
+
+      - name: gold 벤치마크 하네스(시드=AI 초안 → 측정 아님을 확인)
+        run: |
+          cd fastapi
+          python -m scripts.quality_gold_benchmark --items tests/fixtures/quality_gold/seed_v0_ai_draft.jsonl --out /tmp/gold.json
+          python -c "import json,sys; d=json.load(open('/tmp/gold.json')); sys.exit(0 if d['measurementStatus']=='PREPARED_NOT_MEASURED' and not d['falseApprovals'] else 1)"
+
   docker-ci:
     name: Dockerfile Build And Version Check
     runs-on: ubuntu-latest

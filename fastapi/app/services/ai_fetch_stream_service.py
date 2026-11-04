@@ -574,7 +574,7 @@ def tasks_stream(payload: Dict[str, Any]) -> Iterator[bytes]:
         return
     level = _resolve_level(payload)
     system = f"너는 학습 도우미다. {_level_instruction(level)} 한국어로 정확히 답하라."
-    yield ev_status("task", "draft_start", "답변 생성 중입니다.", feature=feature_req or "generic")
+    yield ev_status("task", "draft_start", "답변 생성 중입니다.", requestedFeature=feature_req or "generic")
     for b in _simple_llm_stream("task", perf, system, text):
         yield b
     yield ev_done("task")

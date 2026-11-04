@@ -31,6 +31,10 @@ from app.vision.redaction import mask_obj, mask_text
 logger = logging.getLogger("studybridge.vision")
 
 
+def _return_observations() -> bool:
+    return (os.getenv("VISION_RETURN_OBSERVATIONS") or "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _begin_drain() -> None:
     gate.draining = True
 
@@ -148,6 +152,17 @@ async def analyze(request: Request) -> JSONResponse:
                         completionTokens=ameta["completionTokens"], answerModel=ameta["answerModel"])
         gate.mark_completed(req.request_id, s)
         latency = int((time.monotonic() - t0) * 1000)
+        extra = {}
+        if _return_observations():
+            # Phase D R1·R5-2: 마스킹된 판독 관측 + 답변이 참조한 관측 id(Spring 품질 평가 근거). 기본 꺼짐.
+            try:
+                from app.vision.observations import observation_payload
+                extra = observation_payload(masked, answer)
+                meta["observations"] = len(extra.get("observations") or [])
+            except Exception as e:  # noqa: BLE001 — 근거 생성 실패가 답변을 막지 않는다(평가기가 근거 부재로 거절)
+                logger.warning("[VISION] observations 생략 type=%s requestId=%s", type(e).__name__, request_id)
+                extra = {}
+        del masked
         return JSONResponse({
             "requestId": req.request_id,
             "answer": answer,
@@ -160,6 +175,7 @@ async def analyze(request: Request) -> JSONResponse:
             "answerProvider": ameta["answerProvider"],
             "visionLatencyMs": meta["visionMs"],
             "answerLatencyMs": meta["answerMs"],
+            **extra,
         })
     except VisionError as e:
         code, status = e.code, e.status

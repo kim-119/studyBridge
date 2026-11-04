@@ -1,0 +1,77 @@
+package x;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * EC2 MaterialRoadmapQualityGate.segmenter + SegmentedQualityGate(content/checksum/manifest) 를 그대로 실행해
+ * ai07 Python 이식(app/quality_gate/segments.py)과 분할·체크섬·manifestId 가 같은지 확인한다(읽기 전용 추출).
+ * 입력(stdin JSONL): {"id":..., "budget":20000, "doc":{...}}  출력: {"id","fullChecksum","manifestId","segments":[{id,pointers,checksum}]}
+ * segmenter 본문은 run_segment_crosscheck.sh 가 EC2 소스에서 잘라 아래 표식 자리에 넣는다.
+ */
+public class SegmentChecksumHarness {
+    public record SegmentPlan(String segmentId, List<String> pointers) { }
+
+    public interface Segmenter { List<SegmentPlan> plan(JsonNode full); }
+
+    static final ObjectMapper M = new ObjectMapper();
+
+    static String ptr(String key) {
+        return "/" + key.replace("~", "~0").replace("/", "~1");
+    }
+
+    static String sha(String s) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    static ObjectNode content(JsonNode full, SegmentPlan p) {
+        ObjectNode n = M.createObjectNode();
+        for (String q : p.pointers()) {
+            n.set(q, full.at(q).deepCopy());
+        }
+        return n;
+    }
+
+//@@SEGMENTER@@
+
+    public static void main(String[] a) throws Exception {
+        BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+        for (String line; (line = in.readLine()) != null; ) {
+            if (line.isBlank()) {
+                continue;
+            }
+            JsonNode c = M.readTree(line);
+            JsonNode full = c.get("doc");
+            String fullCs = sha(full.toString());
+            StringBuilder mb = new StringBuilder(fullCs);
+            ArrayNode segs = M.createArrayNode();
+            for (SegmentPlan p : segmenter(c.get("budget").asInt()).plan(full)) {
+                String cs = sha(content(full, p).toString());
+                mb.append('|').append(p.segmentId()).append(':').append(cs);
+                ObjectNode o = M.createObjectNode();
+                o.put("id", p.segmentId());
+                o.set("pointers", M.valueToTree(p.pointers()));
+                o.put("checksum", cs);
+                segs.add(o);
+            }
+            ObjectNode r = M.createObjectNode();
+            r.put("id", c.get("id").asText());
+            r.put("fullChecksum", fullCs);
+            r.put("manifestId", sha(mb.toString()).substring(0, 24));
+            r.set("segments", segs);
+            System.out.println(r.toString());
+        }
+    }
+}

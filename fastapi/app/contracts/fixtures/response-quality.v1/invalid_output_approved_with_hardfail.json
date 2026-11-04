@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "response-quality.v1",
+  "requestId": "req-rq-0002",
+  "taskType": "PDF_SUMMARY",
+  "success": true,
+  "verified": true,
+  "qualityStatus": "APPROVED",
+  "score": 95.0,
+  "minimumScore": 80,
+  "hardFail": true,
+  "violations": [
+    {
+      "code": "SOURCE_CONTRADICTION",
+      "severity": "HARD",
+      "reason": "x"
+    }
+  ],
+  "dimensions": [],
+  "evaluatorVersion": "rqg-1.0.0",
+  "latencyMs": 1
+}

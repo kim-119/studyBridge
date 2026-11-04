@@ -56,6 +56,7 @@ def ask_ollama(
     repeat_penalty: Optional[float] = None,
     timeout: Optional[int] = None,
     think: Optional[bool] = None,
+    format: Optional[object] = None,  # noqa: A002 — Ollama API 필드명 그대로("json" 또는 JSON Schema dict)
 ) -> str:
     """
     Ollama /api/chat 엔드포인트를 호출한다.
@@ -134,6 +135,9 @@ def ask_ollama(
     # None이면 미전송(기존 동작 유지). False면 thinking 비활성 → 답변 토큰 확보 + 지연 감소.
     if think is not None:
         payload["think"] = think
+    # format: 구조화 출력(JSON 모드/JSON Schema). None 이면 미전송(기존 동작 유지).
+    if format is not None:
+        payload["format"] = format
 
     try:
         # AI Gateway(기본 off): GPU 슬롯 대기/공정성/backpressure. 거부는 기존 timeout/연결실패 문구로 매핑.
@@ -203,6 +207,16 @@ def get_loaded_model_name() -> Optional[str]:
 
 
 # ── 내부 fallback 메시지 ────────────────────────────────────────────────────
+
+def is_fallback_text(text: Optional[str]) -> bool:
+    """ask_ollama 가 실패 시 돌려주는 안내 문구인지(정상 답변처럼 쓰지 않기 위함)."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    return (t.startswith("[Ollama") or t.startswith("현재 Ollama 서버(")
+            or (t.startswith("AI 응답이 ") and "초를 초과했습니다" in t[:40])
+            or ("모델이 빈 응답을 반환했습니다" in t[:120]))
+
 
 def _connection_fallback(model: str) -> str:
     return (

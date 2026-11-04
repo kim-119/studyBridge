@@ -72,6 +72,8 @@ EXPERT_PROVIDER = _str("AI_EXPERT_PROVIDER", "openai")
 EXPERT_MODEL = _str("AI_EXPERT_MODEL", "gpt-4o-mini")
 
 OLLAMA_ENABLED = _flag("AI_OLLAMA_ENABLED", True)
+# 주의(2026-11-04): 아래 OPENAI/TAVILY/WIKIPEDIA 플래그는 읽는 곳이 없다(죽은 설정). 실제 외부 전송 허용/차단은
+# app.core.egress_policy(AI_EXTERNAL_EGRESS_ENABLED + AI_EGRESS_ALLOW)가 결정한다.
 OPENAI_ENABLED = _flag("AI_OPENAI_ENABLED", True)
 TAVILY_ENABLED = _flag("AI_TAVILY_ENABLED", True)
 WIKIPEDIA_ENABLED = _flag("AI_WIKIPEDIA_ENABLED", True)

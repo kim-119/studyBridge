@@ -26,6 +26,8 @@ def call_primary_llm(
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     knowledge_level: Optional[str] = None,
+    allow_external: bool = True,
+    feature: str = "llm_router_fallback",
 ) -> str:
     """
     주력 LLM을 호출한다. Ollama(qwen2.5:14b) → OpenAI fallback 순서.
@@ -55,21 +57,25 @@ def call_primary_llm(
     if result and not result.startswith("[Ollama"):
         return result
 
-    # 3. OpenAI fallback
+    # 3. OpenAI fallback (호출자가 외부 전송을 금지하면 로컬 실패로 끝낸다 — 기본값 True 는 기존 동작 그대로)
+    if not allow_external:
+        logger.info("Ollama 실패 → 외부 LLM 금지(allow_external=False) → 실패 반환")
+        return "[Ollama 실패: 외부 LLM 비활성]"
     logger.info("Ollama 실패 → OpenAI fallback 시도")
-    return _try_openai(system_prompt, user_prompt, max_tokens, temperature)
+    return _try_openai(system_prompt, user_prompt, max_tokens, temperature, feature=feature)
 
 
 def call_verifier_llm(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int = 400,
+    feature: str = "llm_verifier",
 ) -> str:
     """
     검증/보정 전용 LLM 호출 (GPT 우선).
-    GPT는 검증·보정·요약 용도로만 사용한다.
+    GPT는 검증·보정·요약 용도로만 사용한다. 외부 전송 정책이 막으면 바로 Ollama 로 검증한다.
     """
-    result = _try_openai(system_prompt, user_prompt, max_tokens, temperature=0.1)
+    result = _try_openai(system_prompt, user_prompt, max_tokens, temperature=0.1, feature=feature)
     if not result.startswith("[GPT"):
         return result
     # GPT 실패 시 Ollama로 대체 검증
@@ -116,16 +122,18 @@ def _try_openai(
     user_prompt: str,
     max_tokens: Optional[int],
     temperature: Optional[float],
+    feature: str = "llm_router_fallback",
 ) -> str:
     try:
         from app.services.openai_client import chat_sync, is_enabled
-        if not is_enabled():
-            return "[GPT 비활성화] OPENAI_API_KEY 미설정"
+        if not is_enabled(feature):
+            return "[GPT 비활성화] OPENAI_API_KEY 미설정 또는 외부 전송 정책 차단"
         return chat_sync(
             system=system_prompt,
             user=user_prompt,
             max_tokens=max_tokens or 1024,
             temperature=temperature or 0.4,
+            feature=feature,
         )
     except Exception as e:
         logger.error("OpenAI fallback 호출 예외: %s", e)

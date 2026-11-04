@@ -74,14 +74,27 @@ emit_status() {
 }
 
 TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
+HF=""
+trap 'rm -f "$TMP" ${HF:+"$HF"}' EXIT
+
+# 내부 Bearer(선택, Phase B2): FastAPI AI_INTERNAL_AUTH_MODE=enforce 에서는 /openapi.json 도 Bearer 필요.
+# AI_ROUTE_GATE_AUTH_HEADER_FILE('Authorization: Bearer …' 한 줄, 0600) 또는 AI_SERVER_API_KEY env 를 쓴다.
+# 키 값은 curl 인자로 넘기지 않는다(-H @file).
+AUTH_ARGS=()
+if [ -n "${AI_ROUTE_GATE_AUTH_HEADER_FILE:-}" ] && [ -r "${AI_ROUTE_GATE_AUTH_HEADER_FILE}" ]; then
+  AUTH_ARGS=(-H "@${AI_ROUTE_GATE_AUTH_HEADER_FILE}")
+elif [ -n "${AI_SERVER_API_KEY:-}" ]; then
+  HF="$(umask 077; mktemp)"
+  printf 'Authorization: Bearer %s\n' "$AI_SERVER_API_KEY" > "$HF"
+  AUTH_ARGS=(-H "@$HF")
+fi
 
 if [ -n "$OPENAPI_FILE" ]; then
   cp "$OPENAPI_FILE" "$TMP" || { echo "[ai-route-gate] $LABEL: fixture 읽기 실패: $OPENAPI_FILE"; emit_status "UNREACHABLE fixture"; exit 3; }
 else
   HEALTH_CODE="$(curl -s -o /dev/null -m "$CURL_TIMEOUT" -w '%{http_code}' "$BASE_URL/health" 2>/dev/null || true)"
   [ -n "$HEALTH_CODE" ] || HEALTH_CODE=000
-  if ! curl -fsS -m "$CURL_TIMEOUT" "$BASE_URL/openapi.json" -o "$TMP" 2>/dev/null; then
+  if ! curl -fsS -m "$CURL_TIMEOUT" "${AUTH_ARGS[@]}" "$BASE_URL/openapi.json" -o "$TMP" 2>/dev/null; then
     echo "[ai-route-gate] $LABEL: UNREACHABLE (health=$HEALTH_CODE, openapi 조회 실패)"
     emit_status "UNREACHABLE health=$HEALTH_CODE"
     exit 3
