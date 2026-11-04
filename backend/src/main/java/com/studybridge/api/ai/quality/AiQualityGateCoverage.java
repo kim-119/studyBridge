@@ -72,10 +72,10 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
             new Route("POST", "/api/materials/{materialId}/question", Status.GATED, "/api/ai/question",
                     "PDF_QA(질문 관련 자료 원문 근거), 재생성 ≤2, 승인 답변만 저장(quality_status), 라우터 LLM 문구→고정 문구, BLOCKED 파이프라인 미실행"),
             new Route("GET", "/api/materials/{materialId}/roadmap", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/roadmap/generate",
-                    "캐시+생성. Spring 분할 게이트 연결 완료(PLANNER_COACHING/plan_json 주차 세그먼트, 진행 상태 제외 체크섬) — ai07 rqg-1.0.0 check_plan 이"
+                    "BLOCKED_BY_AI07(계약 요청 R2·R5-1: 로드맵 세그먼트 평가 프로파일) — 캐시+생성. Spring 분할 게이트 연결 완료(PLANNER_COACHING/plan_json 주차 세그먼트, 진행 상태 제외 체크섬) — ai07 rqg-1.0.0 check_plan 이"
                             + " 세그먼트 객체를 PLAN_EMPTY(HARD)로 항상 거절해 승인 불가 → ai07 계약 변경 후 GATED"),
             new Route("POST", "/api/materials/{materialId}/roadmap/regenerate", Status.BLOCKED_WHEN_GATE_ON, "/api/ai/roadmap/generate",
-                    "위와 같음(Spring 연결 완료, ai07 계약 대기)"),
+                    "BLOCKED_BY_AI07(계약 요청 R2·R5-1: 로드맵 세그먼트 평가 프로파일) — 위와 같음(Spring 연결 완료, ai07 계약 대기)"),
             new Route("POST", "/api/materials/{materialId}/keywords/define", Status.GATED, "/api/ai/keyword/define",
                     "GENERAL_EXPLANATION/text(정의·중요성·예시·관련 개념·출처·링크 전부), 근거=자료 원문(클라이언트 context 아님), 재생성 ≤2,"
                             + " 승인분만 응답(저장 없음), 거절=success:false+errorCode+retryable"),
@@ -148,9 +148,9 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
             new Route("POST", "/api/review-notes/{id}/retry/submit", Status.EXEMPT, "(DB)",
                     "응답 = 사용자 재풀이 기록(index/userAnswer/correct/answeredAt)·개수뿐, AI 생성 문자열 없음(정답 대조는 원래 문제의 정답)"),
             new Route("PUT", "/api/materials/{materialId}/roadmap/days/toggle", Status.BLOCKED_WHEN_GATE_ON, "(DB)",
-                    "응답 = AI 로드맵 전체. 게이트 ON 가림(미승인·체크섬 불일치, 진행 상태 유지) 연결 완료 — 승인 로드맵이 생길 수 없는 동안 GET 과 함께 BLOCKED"),
+                    "BLOCKED_BY_AI07(계약 요청 R2·R5-1: 로드맵 세그먼트 평가 프로파일) — 응답 = AI 로드맵 전체. 게이트 ON 가림(미승인·체크섬 불일치, 진행 상태 유지) 연결 완료 — 승인 로드맵이 생길 수 없는 동안 GET 과 함께 BLOCKED"),
             new Route("PUT", "/api/materials/{materialId}/roadmap/tasks/{taskId}/toggle", Status.BLOCKED_WHEN_GATE_ON, "(DB)",
-                    "응답 = AI 로드맵 과제(레거시 steps/tasks). 게이트 ON 이면 과제 문구 가림 연결 완료 — 위와 같은 이유로 BLOCKED"),
+                    "BLOCKED_BY_AI07(계약 요청 R2·R5-1: 로드맵 세그먼트 평가 프로파일) — 응답 = AI 로드맵 과제(레거시 steps/tasks). 게이트 ON 이면 과제 문구 가림 연결 완료 — 위와 같은 이유로 BLOCKED"),
             new Route("PATCH", "/api/plan-analysis/items/{itemId}", Status.GATED, "(DB)",
                     "완료/숨김 변경은 사용자 기록. 응답 분석은 GET 과 같은 가림(미승인 AI 분석 문구 → qualityRedacted)"),
             new Route("GET", "/api/planners/{plannerId}/next-learning", Status.EXEMPT, "(DB)",

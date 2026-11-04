@@ -1,7 +1,7 @@
 # Phase D 사용자 노출 AI 경로 매트릭스(코드에서 생성 — `AiQualityGateCoverage.ROUTES`, `AiRouteExposurePolicy`)
 
 생성 기준: feature/learning-loop-ec2. 단위 = Spring 공개 엔드포인트(ai07 OpenAPI 수와 다름).
-**합계 63 — GATED 55 / BLOCKED_WHEN_GATE_ON 4 / EXEMPT 4**. AI 도달인데 사용자에게 AI 본문을 돌려주지 않는 엔드포인트(NOT_USER_EXPOSED) 21개, STOMP 검토 2개.
+**합계 63 — GATED 55 / BLOCKED_WHEN_GATE_ON 4(전부 BLOCKED_BY_AI07 — 로드맵) / EXEMPT 4**. AI 도달인데 사용자에게 AI 본문을 돌려주지 않는 엔드포인트(NOT_USER_EXPOSED) 21개, STOMP 검토 2개.
 
 검증 장치: `AiRouteClassifierTest`(바이트코드 호출 그래프 — AI 생성·AI 저장본 조회에 닿는 모든 HTTP·STOMP 핸들러는 아래 어딘가에 있어야 CI 통과), `AiQualityGateCoverageTest`(모든 GATED 경로에 실행 증거 `@GateEvidence` 테스트 1개 이상, 게이트 ON 시 BLOCKED = 503), `RealAi07EvaluatorE2ETest`(ai07 실제 평가기 코드 격리 실행).
 
@@ -24,8 +24,8 @@
 | 15 | GET | `/api/materials/{materialId}/shared-quizzes` | GATED | (DB) | 위와 같은 가림 |
 | 16 | POST | `/api/materials/{materialId}/quiz/{quizId}/submit` | GATED | (DB) | 채점은 결정적(보기 id 비교). 게이트 ON + 미승인 퀴즈면 AI 해설만 가림, 점수·답안 기록 유지 |
 | 17 | POST | `/api/materials/{materialId}/question` | GATED | /api/ai/question | PDF_QA(질문 관련 자료 원문 근거), 재생성 ≤2, 승인 답변만 저장(quality_status), 라우터 LLM 문구→고정 문구, BLOCKED 파이프라인 미실행 |
-| 18 | GET | `/api/materials/{materialId}/roadmap` | BLOCKED_WHEN_GATE_ON | /api/ai/roadmap/generate | 캐시+생성. Spring 분할 게이트 연결 완료(PLANNER_COACHING/plan_json 주차 세그먼트, 진행 상태 제외 체크섬) — ai07 rqg-1.0.0 check_plan 이 세그먼트 객체를 PLAN_EMPTY(HARD)로 항상 거절해 승인 불가 → ai07 계약 변경 후 GATED |
-| 19 | POST | `/api/materials/{materialId}/roadmap/regenerate` | BLOCKED_WHEN_GATE_ON | /api/ai/roadmap/generate | 위와 같음(Spring 연결 완료, ai07 계약 대기) |
+| 18 | GET | `/api/materials/{materialId}/roadmap` | BLOCKED_WHEN_GATE_ON | /api/ai/roadmap/generate | BLOCKED_BY_AI07(계약 요청 R2·R5-1: 로드맵 세그먼트 평가 프로파일) — 캐시+생성. Spring 분할 게이트 연결 완료(PLANNER_COACHING/plan_json 주차 세그먼트, 진행 상태 제외 체크섬) — ai07 rqg-1.0.0 check_plan 이 세그먼트 객체를 PLAN_EMPTY(HARD)로 항상 거절해 승인 불가 → ai07 계약 변경 후 GATED |
+| 19 | POST | `/api/materials/{materialId}/roadmap/regenerate` | BLOCKED_WHEN_GATE_ON | /api/ai/roadmap/generate | BLOCKED_BY_AI07(계약 요청 R2·R5-1: 로드맵 세그먼트 평가 프로파일) — 위와 같음(Spring 연결 완료, ai07 계약 대기) |
 | 20 | POST | `/api/materials/{materialId}/keywords/define` | GATED | /api/ai/keyword/define | GENERAL_EXPLANATION/text(정의·중요성·예시·관련 개념·출처·링크 전부), 근거=자료 원문(클라이언트 context 아님), 재생성 ≤2, 승인분만 응답(저장 없음), 거절=success:false+errorCode+retryable |
 | 21 | GET | `/api/materials/{materialId}/feedback` | GATED | /api/ai/feedback | GENERAL_EXPLANATION(자료 원문 근거), 재생성 ≤2, 승인분만 저장(quality_status), 미승인 저장본 미노출, 거절 쿨다운 120s |
 | 22 | POST | `/api/materials/{materialId}/feedback/regenerate` | GATED | /api/ai/feedback | 위와 같은 게이트 |
@@ -58,8 +58,8 @@
 | 49 | GET | `/api/review-notes/{id}/download` | GATED | (DB) | 게이트 ON: 오답노트 본문 미승인이면 PDF URL 미발급(가림 표식) |
 | 50 | PATCH | `/api/review-notes/{id}/memo` | GATED | (DB) | 응답 ReviewNoteDTO 는 목록·상세와 같은 가림(메모는 사용자 데이터) |
 | 51 | POST | `/api/review-notes/{id}/retry/submit` | EXEMPT | (DB) | 응답 = 사용자 재풀이 기록(index/userAnswer/correct/answeredAt)·개수뿐, AI 생성 문자열 없음(정답 대조는 원래 문제의 정답) |
-| 52 | PUT | `/api/materials/{materialId}/roadmap/days/toggle` | BLOCKED_WHEN_GATE_ON | (DB) | 응답 = AI 로드맵 전체. 게이트 ON 가림(미승인·체크섬 불일치, 진행 상태 유지) 연결 완료 — 승인 로드맵이 생길 수 없는 동안 GET 과 함께 BLOCKED |
-| 53 | PUT | `/api/materials/{materialId}/roadmap/tasks/{taskId}/toggle` | BLOCKED_WHEN_GATE_ON | (DB) | 응답 = AI 로드맵 과제(레거시 steps/tasks). 게이트 ON 이면 과제 문구 가림 연결 완료 — 위와 같은 이유로 BLOCKED |
+| 52 | PUT | `/api/materials/{materialId}/roadmap/days/toggle` | BLOCKED_WHEN_GATE_ON | (DB) | BLOCKED_BY_AI07(계약 요청 R2·R5-1: 로드맵 세그먼트 평가 프로파일) — 응답 = AI 로드맵 전체. 게이트 ON 가림(미승인·체크섬 불일치, 진행 상태 유지) 연결 완료 — 승인 로드맵이 생길 수 없는 동안 GET 과 함께 BLOCKED |
+| 53 | PUT | `/api/materials/{materialId}/roadmap/tasks/{taskId}/toggle` | BLOCKED_WHEN_GATE_ON | (DB) | BLOCKED_BY_AI07(계약 요청 R2·R5-1: 로드맵 세그먼트 평가 프로파일) — 응답 = AI 로드맵 과제(레거시 steps/tasks). 게이트 ON 이면 과제 문구 가림 연결 완료 — 위와 같은 이유로 BLOCKED |
 | 54 | PATCH | `/api/plan-analysis/items/{itemId}` | GATED | (DB) | 완료/숨김 변경은 사용자 기록. 응답 분석은 GET 과 같은 가림(미승인 AI 분석 문구 → qualityRedacted) |
 | 55 | GET | `/api/planners/{plannerId}/next-learning` | EXEMPT | (DB) | PlannerNextLearningService 확인: 응답 = 기존 플래너 id·제목·과목·날짜(planners 행)·week/day·고정 사유 문구·체크 완료 개수뿐. plan_analysis_item 은 완료 개수 집계에만 쓰고 항목 문구는 응답에 없음, AI 호출 없음 |
 | 56 | GET | `/api/planners/{plannerId}/diagnosis` | EXEMPT | (DB) | PlanDiagnosisService 확인: A/W/D·마감 창·과부하·선수관계·일정 중복 = 결정적 계산, 문자열 = 플래너 제목·할 일(todos) 문구·고정 안내문. plan_analysis_item 은 완료 여부 집계에만 사용, AI 호출·AI 문구 없음 |
