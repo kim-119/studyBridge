@@ -404,4 +404,41 @@ class GroupStudyQuizQualityGateTest {
                 assertNull(off.getQualityRedacted());
                 assertFalse(M.writeValueAsString(off).contains("qualityRedacted"));
         }
+
+        // ── 실시간 그룹 퀴즈(STOMP) 방송 — 퀴즈 영역 보고의 잔여 위험 처리(메인) ──
+
+        @Test
+        void liveQuizStartIsRefusedForUnverifiedQuizWhenGateOn() {
+                GroupStudyQuiz legacy = legacyQuiz();
+                GroupStudyMemberRepository members = mock(GroupStudyMemberRepository.class);
+                when(members.existsByGroupStudyIdAndUserIdAndStatus(GROUP, USER, GroupStudyMemberStatus.JOINED)).thenReturn(true);
+                GroupStudyQuizRepository quizzes = mock(GroupStudyQuizRepository.class);
+                when(quizzes.findById(700L)).thenReturn(Optional.of(legacy));
+                SimpMessagingTemplate messaging = mock(SimpMessagingTemplate.class);
+                GroupStudyQuizSessionService svc = new GroupStudyQuizSessionService(members, quizzes, mock(GroupStudyQuizQuestionRepository.class),
+                                mock(GroupStudyQuizSessionRepository.class), mock(GroupStudyQuizSessionAnswerRepository.class), mock(GroupRankingService.class),
+                                messaging, mock(ThreadPoolTaskScheduler.class), new ObjectMapper(), mock(PlatformTransactionManager.class));
+                svc.setQualityGate(gate(true));
+                IllegalStateException e = assertThrows(IllegalStateException.class, () -> svc.startQuiz(GROUP, 700L, USER));
+                assertEquals(GroupStudyQuizSessionService.QUIZ_NOT_VERIFIED, e.getMessage());
+                org.mockito.Mockito.verifyNoInteractions(messaging);
+        }
+
+        @Test
+        void liveBroadcastPayloadHidesQuestionOptionsAndAnswerOfUnverifiedQuiz() throws Exception {
+                GroupStudyQuizSessionService svc = sessionService(true, legacyQuiz());
+                GroupStudyQuizSession session = GroupStudyQuizSession.builder().id(62L).groupStudy(group).quiz(legacyQuiz()).build();
+                GroupStudySocketDTO.QuizSessionPayload p = GroupStudySocketDTO.QuizSessionPayload.builder().quizTitle("레거시 제목")
+                                .questionText("레거시 문항").options(List.of("보기 가", "보기 나")).correctAnswer(1).build();
+                GroupStudySocketDTO.QuizSessionPayload out = svc.redactUnverified(session, p);
+                assertNull(out.getCorrectAnswer(), "정답 공개(REVEAL) 번호도 미검증 산출물");
+                assertFalse(M.writeValueAsString(out).contains("레거시") || M.writeValueAsString(out).contains("보기 가"));
+                GroupStudyQuiz ok = legacyQuiz();
+                ok.setQualityStatus("APPROVED");
+                GroupStudySocketDTO.QuizSessionPayload shown = sessionService(true, ok).redactUnverified(
+                                GroupStudyQuizSession.builder().id(63L).groupStudy(group).quiz(ok).build(),
+                                GroupStudySocketDTO.QuizSessionPayload.builder().questionText("승인 문항").correctAnswer(1).build());
+                assertEquals(1, shown.getCorrectAnswer());
+        }
 }
+

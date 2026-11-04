@@ -70,6 +70,8 @@ public class GroupStudyQuizSessionService {
     private TransactionTemplate transactionTemplate;
 
     // Global Response Quality Gate(기본 OFF). 생성자 시그니처를 바꾸지 않도록 선택 주입(null = OFF).
+    static final String QUIZ_NOT_VERIFIED = "품질 검증을 통과하지 않은 퀴즈는 실시간으로 시작할 수 없습니다. 퀴즈를 다시 생성해 주세요.";
+
     private com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -143,6 +145,10 @@ public class GroupStudyQuizSessionService {
 
             if (!quiz.getGroupStudy().getId().equals(groupId)) {
                 throw new IllegalArgumentException("해당 그룹의 퀴즈가 아닙니다.");
+            }
+            // Phase D: 게이트 ON 에서 품질 검증을 통과하지 않은 퀴즈(레거시 포함)는 실시간 방송(문항·보기·정답)을 시작하지 않는다.
+            if (qualityGate != null && qualityGate.enabled() && !"APPROVED".equals(quiz.getQualityStatus())) {
+                throw new IllegalStateException(QUIZ_NOT_VERIFIED);
             }
 
             List<GroupStudyQuizSessionStatus> activeStatuses = List.of(
@@ -319,6 +325,8 @@ public class GroupStudyQuizSessionService {
         if (p.getOptions() != null) {
             p.setOptions(p.getOptions().stream().map(o -> REDACTED_OPTION).collect(Collectors.toList()));
         }
+        p.setCorrectAnswer(null); // 정답 번호도 미검증 AI 산출물
+
         p.setQualityRedacted(Boolean.TRUE);
         return p;
     }
@@ -509,8 +517,8 @@ public class GroupStudyQuizSessionService {
                 .scoreboard(buildScoreboard(groupId))
                 .build();
 
-        messagingTemplate.convertAndSend("/topic/group/" + groupId + "/quiz/" + ("QUESTION".equals(phase) ? "question" : "next"), payload);
-        messagingTemplate.convertAndSend("/topic/group/" + groupId + "/quiz/session", payload);
+        messagingTemplate.convertAndSend("/topic/group/" + groupId + "/quiz/" + ("QUESTION".equals(phase) ? "question" : "next"), redactUnverified(session, payload));
+        messagingTemplate.convertAndSend("/topic/group/" + groupId + "/quiz/session", redactUnverified(session, payload));
     }
 
     private List<String> parseOptions(GroupStudyQuizQuestion question) {
@@ -642,8 +650,8 @@ public class GroupStudyQuizSessionService {
                     .message("정답이 공개되었습니다.")
                     .build();
 
-            messagingTemplate.convertAndSend("/topic/group/" + session.getGroupStudy().getId() + "/quiz/reveal", revealPayload);
-            messagingTemplate.convertAndSend("/topic/group/" + session.getGroupStudy().getId() + "/quiz/scoreboard", revealPayload);
+            messagingTemplate.convertAndSend("/topic/group/" + session.getGroupStudy().getId() + "/quiz/reveal", redactUnverified(session, revealPayload));
+            messagingTemplate.convertAndSend("/topic/group/" + session.getGroupStudy().getId() + "/quiz/scoreboard", redactUnverified(session, revealPayload));
 
             cancelTimerTask(sessionId);
             scheduleNextTransition(sessionId);
@@ -735,7 +743,7 @@ public class GroupStudyQuizSessionService {
     }
 
     private void publishSessionSnapshot(GroupStudyQuizSession session, GroupStudySocketDTO.QuizSessionPayload payload, String destination) {
-        messagingTemplate.convertAndSend(destination, payload);
+        messagingTemplate.convertAndSend(destination, redactUnverified(session, payload));
     }
 
     private void cancelScheduledTasks(Long sessionId) {

@@ -77,6 +77,9 @@ public class GroupStudySocketController {
         if (e instanceof IllegalStateException && msg != null && msg.contains("문제가 없")) {
             return "이 퀴즈에는 문제가 없습니다. PDF 자료 기반 퀴즈를 다시 생성한 뒤 시작해주세요.";
         }
+        if (e instanceof IllegalStateException && msg != null && msg.startsWith("품질 검증")) {
+            return msg; // 게이트 ON + 미승인 퀴즈(Phase D) — 고정 안내 문구
+        }
         if (e instanceof SecurityException) {
             return "그룹 멤버만 퀴즈를 시작할 수 있습니다.";
         }
