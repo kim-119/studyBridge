@@ -79,7 +79,11 @@ def evaluate_eligibility(rec: CandidateRecord) -> EligibilityResult:
 
     # 4. 피드백: 학습 타깃이 '원래 AI 답변'일 때 부정 피드백이 있으면 금지.
     #    (사용자가 틀렸다고 하고 검증된 수정 답변이 타깃이면 부정 피드백은 원 답변에 대한 것)
-    if rec.feedback_score is not None and rec.feedback_score < 0:
+    #    부정 피드백은 '한 번이라도 있으면' 유지한다: 늦게/재전송으로 도착한 예전 +1 이 최신 -1 을 덮어 차단을
+    #    풀던 결함(2026-11-04 재현) 때문에 마지막 점수가 아니라 이력 전체를 본다.
+    negative_seen = (rec.feedback_score is not None and rec.feedback_score < 0) or \
+        any(isinstance(x, int) and x < 0 for x in (rec.feedback_history or []))
+    if negative_seen:
         if not target or target.strip() == (rec.candidate_answer or "").strip():
             r.append("NEGATIVE_FEEDBACK")
 

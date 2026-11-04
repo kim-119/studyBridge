@@ -95,11 +95,13 @@ async def learning_loop(req: LearningLoopRequest,
             })
         except Exception as e:  # noqa: BLE001
             logger.error("[learning-loop] 실패 taskType=%s: %s", req.taskType, type(e).__name__)
+            # 사용자 응답에는 내부 예외 클래스명을 싣지 않는다(안정된 errorCode 만).
             return JSONResponse(status_code=200, content={
                 "success": False,
                 "taskType": (req.taskType or "").strip().upper() or "UNKNOWN",
                 "errorCode": "LEARNING_LOOP_FAILED",
-                "warnings": [f"처리 중 오류가 발생했습니다: {type(e).__name__}"],
+                "qualityStatus": "VALIDATION_ERROR",
+                "warnings": ["처리 중 오류가 발생했습니다."],
             })
     finally:
         RAG_SCOPE.reset(token)
@@ -134,13 +136,11 @@ def _verify_scope(token: Optional[str], request_id: str, req: "LearningLoopReque
     토큰은 반드시 이 요청의 X-Request-Id(rid)에 묶여 있어야 한다(rid 없는 토큰·다른 요청 토큰 재사용 거부)."""
     if req.materialId is None:
         return None, None, None
-    from app.contracts.signing import SignatureError, verify_scope_token
+    from app.contracts.signing import SignatureError, verify_request_scope
     try:
-        sc = verify_scope_token(token)
+        sc = verify_request_scope(token, request_id if request_id_from_caller else None)
     except SignatureError as e:
         return None, f"SCOPE_UNVERIFIED:{e.code}", None
-    if not request_id_from_caller or not sc.request_id or sc.request_id != request_id:
-        return None, "SCOPE_UNVERIFIED:SCOPE_REQUEST_MISMATCH", None
     try:
         mid = int(req.materialId)
     except (TypeError, ValueError):
@@ -157,13 +157,27 @@ _SYSTEM_KEYS = {"success", "taskType", "usedContext", "warnings", "qualityStatus
                 "difficulty", "_evidence", "trainingCandidateRef"}
 
 
+# 시스템 키라도 '스칼라 값'은 형식이 맞을 때만 평가에서 뺀다. 예전: difficulty 에 LLM 이 쓴 비밀키/이메일이
+# 평가 없이 노출됐다(2026-11-04 재현). 우리 코드가 만드는 구조(usedContext/quality/warnings 등)는 그대로 제외.
+_SYSTEM_STRUCT_KEYS = {"usedContext", "warnings", "quality", "_evidence", "trainingCandidateRef"}
+_SYSTEM_SCALAR_RE = re.compile(r"^(?:[A-Za-z_]{1,32}|\d{4}-\d{2}-\d{2}(?:[T ][\d:.+\-Z]{0,20})?)$")
+
+
+def _system_value_ok(k: str, v) -> bool:
+    if k in _SYSTEM_STRUCT_KEYS:
+        return True
+    if v is None or isinstance(v, (bool, int, float)):
+        return True
+    return isinstance(v, str) and bool(_SYSTEM_SCALAR_RE.match(v.strip()))
+
+
 def _visible_strings(obj, out: List[str]) -> List[str]:
     if isinstance(obj, str):
         if obj.strip():
             out.append(obj.strip())
     elif isinstance(obj, dict):
         for k, v in obj.items():
-            if k not in _SYSTEM_KEYS:
+            if k not in _SYSTEM_KEYS or not _system_value_ok(k, v):
                 _visible_strings(v, out)
     elif isinstance(obj, list):
         for v in obj:
@@ -182,7 +196,7 @@ def _quiz(r):
           "explanation": it.get("explanation"),
           # 문항의 나머지 노출 필드(sourceHint/concept/variationType 등)도 누출/주입 검사 대상에 포함
           "extra": _visible_strings({k: v for k, v in it.items()
-                                     if k not in ("question", "choices", "answerIndex", "explanation", "answer")}, [])}
+                                     if k not in ("question", "choices", "answerIndex", "explanation")}, [])}
          for it in items]
     return {"questions": q, "meta": meta}
 

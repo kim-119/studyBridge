@@ -54,14 +54,16 @@ def test_progress_passes_content_buffered_until_approved():
         approved.append(k)
     out = run(_collect(gate_event_stream(_source(events), _eval_factory(), on_approved=on_ok)))
     kinds = [e["event"] for e in out]
-    # 진행 이벤트는 즉시, 토큰 원본은 한 번도 그대로 나가지 않는다.
-    assert kinds[:2] == ["turn_start", "progress"] and "token" not in kinds
-    ok = [e for e in out if e["event"] == "agent_answer"]
+    # 진행 이벤트는 즉시. 토큰 '조각'은 한 번도 그대로 나가지 않고, 승인된 메시지만 같은 token 계약으로 전문 1회 나간다.
+    assert kinds[:2] == ["turn_start", "progress"]
+    ok = [e for e in out if e["event"] == "token"]
+    assert [e["data"]["delta"] for e in ok] == ["3-way handshake 는 SYN, SYN-ACK, ACK 세 단계로 연결을 수립한다."]
     rej = [e for e in out if e["event"] == "quality_rejected"]
     assert len(ok) == 1 and ok[0]["data"]["quality"]["qualityStatus"] == "APPROVED"
     assert len(rej) == 1 and "content" not in rej[0]["data"] and "1999" not in str(rej[0])
     final = out[-1]
-    assert final["event"] == "all_complete" and "messages" not in final["data"]
+    # all_complete.messages[] 는 '승인된 항목만'으로 다시 만든다(미검증 묶음은 빠진다)
+    assert final["event"] == "all_complete" and final["data"]["messages"] == []
     assert approved == ["t1:a1"]
 
 

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from app.core.audit import audit_event
+from app.core.audit import AuditWriteFailed, audit_event
 from app.core.request_guards import RateLimiter, limited_route_class
 from app.core.security import AdminPrincipal, require_role, verify_internal_token, verify_training_admin
 from app.schemas.training_candidate_schema import (
@@ -36,11 +36,31 @@ from app.schemas.training_candidate_schema import (
 )
 
 logger = logging.getLogger(__name__)
+class _TrainingRoute(limited_route_class(128 * 1024)):
+    """도메인 예외를 안정된 오류 계약으로 바꾼다(예전: InvalidTransition/DB 오류가 500 + 스택)."""
+
+    def get_route_handler(self):
+        inner = super().get_route_handler()
+
+        async def handler(request: Request):
+            from app.training_pipeline.repository import ConcurrentModification, RepositoryUnavailable
+            from app.training_pipeline.states import InvalidTransition
+            try:
+                return await inner(request)
+            except InvalidTransition:
+                return JSONResponse(status_code=409, content={"errorCode": "INVALID_STATE_TRANSITION"})
+            except ConcurrentModification:
+                return JSONResponse(status_code=409, content={"errorCode": "CONCURRENT_MODIFICATION"})
+            except RepositoryUnavailable:
+                return JSONResponse(status_code=503, content={"errorCode": "TRAINING_REPOSITORY_UNAVAILABLE"})
+        return handler
+
+
 router = APIRouter(
     prefix="/api/training-candidates",
     tags=["Training Candidates"],
     dependencies=[Depends(verify_internal_token)],
-    route_class=limited_route_class(128 * 1024),
+    route_class=_TrainingRoute,
 )
 
 SERVICE_RATE = RateLimiter(capacity=120, refill_per_sec=10)
@@ -66,6 +86,15 @@ def _actor(p: AdminPrincipal):
 def _service_actor(request_id: str | None):
     from app.training_pipeline.candidate_service import Actor
     return Actor("service:spring", "service", (request_id or "")[:128] or None)
+
+
+def _require_audit(event_type: str, principal: AdminPrincipal, targets=None) -> None:
+    """관리 작업(내보내기/검수)은 감사 기록을 먼저 남기고, 남길 수 없으면 실행하지 않는다."""
+    try:
+        audit_event(event_type, actor=principal.actor_id, role=principal.role, request_id=principal.request_id,
+                    outcome="REQUESTED", target_ids=targets, required=True)
+    except AuditWriteFailed:
+        raise HTTPException(status_code=503, detail={"errorCode": "AUDIT_UNAVAILABLE"})
 
 
 def _collection_enabled() -> bool:
@@ -100,6 +129,7 @@ async def export_jsonl(request: ExportJsonlRequest,
                     request_id=principal.request_id, outcome="DENIED", extra={"errorCode": "OUTPUT_PATH_NOT_ALLOWED"})
         raise HTTPException(status_code=400, detail={"errorCode": "OUTPUT_PATH_NOT_ALLOWED"})
     from app.training_pipeline.export_service import export_dataset
+    _require_audit("training.export.requested", principal)
     res = await export_dataset(_repo(), actor=principal.actor_id, request_id=principal.request_id)
     audit_event("training.export", actor=principal.actor_id, role=principal.role, request_id=principal.request_id,
                 outcome=res.status.upper(), target_ids=[res.dataset_id] if res.dataset_id else [],
@@ -182,7 +212,8 @@ async def feedback(req: FeedbackRequest, x_request_id: str | None = Header(defau
     res = await record_feedback(repo, cid, req.score, actor=_service_actor(x_request_id), reason_code=req.reasonCode)
     return LineageResponse(status=res.status, candidate_uuid=cid, state=res.state, reasons=res.reasons,
                            invalidated_datasets=res.invalidated_datasets,
-                           retirement_required_adapters=res.retirement_required_adapters)
+                           retirement_required_adapters=res.retirement_required_adapters,
+                           purged_datasets=res.purged_datasets)
 
 
 @router.post("/correction", response_model=LineageResponse, summary="사용자 수정 답변 등록(검수 대기)")
@@ -205,7 +236,8 @@ async def consent_withdrawal(req: ConsentWithdrawalRequest,
     audit_event("training.consent_withdrawal", actor="service:spring", role="service", request_id=x_request_id,
                 outcome=res.status, extra={"count": len(res.invalidated_datasets)})
     return LineageResponse(status=res.status, invalidated_datasets=res.invalidated_datasets,
-                           retirement_required_adapters=res.retirement_required_adapters)
+                           retirement_required_adapters=res.retirement_required_adapters,
+                           purged_datasets=res.purged_datasets)
 
 
 @router.post("/deletion", response_model=LineageResponse, summary="자료 삭제 반영(내용 파기 + lineage 무효화)")
@@ -216,13 +248,15 @@ async def deletion(req: DeletionRequest, x_request_id: str | None = Header(defau
     audit_event("training.deletion", actor="service:spring", role="service", request_id=x_request_id,
                 outcome=res.status, extra={"count": len(res.invalidated_datasets)})
     return LineageResponse(status=res.status, invalidated_datasets=res.invalidated_datasets,
-                           retirement_required_adapters=res.retirement_required_adapters)
+                           retirement_required_adapters=res.retirement_required_adapters,
+                           purged_datasets=res.purged_datasets)
 
 
 async def _review(request: ReviewCandidateRequest, principal: AdminPrincipal, decision: str) -> ReviewCandidateResponse:
     require_role(principal, "training_reviewer", "training_admin")
     ADMIN_RATE.check(f"review:{principal.role}")
     from app.training_pipeline.candidate_service import review
+    _require_audit(f"training.review.{decision.lower()}.requested", principal, [request.candidate_uuid])
     res = await review(_repo(), request.candidate_uuid, decision=decision, actor=_actor(principal), use=request.use,
                        reviewer_answer=request.reviewerAnswer, method=request.method,
                        gold_reference=request.goldReference)

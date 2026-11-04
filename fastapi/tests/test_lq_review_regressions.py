@@ -58,10 +58,13 @@ def test_answer_with_no_checkable_claim_is_not_auto_supported():
 
 def test_sse_gate_never_forwards_unapproved_sidecar_text():
     async def src():
-        yield {"event": "stage_complete", "data": {"stage": 1, "content": "SECRET-progress"}}
+        yield {"event": "stage_complete", "data": {"stage": 1, "content": "XLEAK-progress"}}
+        # 노출 텍스트 필드(answer)는 본문과 함께 평가된다 → 비밀값이 섞이면 메시지 전체가 거절. 목록 사이드카는 버린다.
         yield {"event": "agent_answer", "data": {"agentId": "a1", "content": "3-way handshake 는 SYN, SYN-ACK, ACK 세 단계로 연결을 수립한다.",
-                                                 "answer": "SECRET-sidecar", "followUps": ["SECRET-list"]}}
-        yield {"event": "all_complete", "answer": "SECRET-top", "data": {"finalAnswer": "SECRET-final", "turnId": "t1"}}
+                                                 "answer": "XLEAK-sidecar sk-proj-ABCDEFGHIJKLMNOPQRSTUVWX123", "followUps": ["XLEAK-list"]}}
+        yield {"event": "agent_answer", "data": {"agentId": "a2", "content": "3-way handshake 는 SYN, SYN-ACK, ACK 세 단계로 연결을 수립한다.",
+                                                 "followUps": ["XLEAK-list"]}}
+        yield {"event": "all_complete", "answer": "XLEAK-top", "data": {"finalAnswer": "XLEAK-final", "turnId": "t1"}}
 
     async def ev(key, text, msg):
         return await E.evaluate(QualityInput.model_validate({
@@ -72,9 +75,10 @@ def test_sse_gate_never_forwards_unapproved_sidecar_text():
     async def collect():
         return [e async for e in gate_event_stream(src(), ev)]
     out = run(collect())
-    assert "SECRET" not in str(out)
+    assert "XLEAK" not in str(out) and "sk-proj" not in str(out)
     assert out[0] == {"event": "stage_complete", "data": {"stage": 1}}
     assert any(e["event"] == "agent_answer" and e["data"]["content"].startswith("3-way") for e in out)
+    assert any(e["event"] == "quality_rejected" and e["data"].get("agentId") == "a1" for e in out)
 
 
 def test_revocation_during_export_invalidates_and_fails(tmp_path, monkeypatch):

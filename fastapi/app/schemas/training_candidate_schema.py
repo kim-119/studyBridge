@@ -126,3 +126,4 @@ class LineageResponse(BaseModel):
     reasons: List[str] = Field(default_factory=list)
     invalidated_datasets: List[str] = Field(default_factory=list)
     retirement_required_adapters: List[str] = Field(default_factory=list)
+    purged_datasets: List[str] = Field(default_factory=list)   # 원문 export 파일을 파기한 데이터셋

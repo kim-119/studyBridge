@@ -1,0 +1,156 @@
+{
+ "status": "PROPOSED_BY_AI07_PENDING_EC2_CANONICAL",
+ "algorithm": "HMAC-SHA256",
+ "keys": {
+  "AI_SCOPE_SIGNING_KEY": "TEST-ONLY-scope-key-0123456789abcdefABCDEF",
+  "AI_TRAINING_CONSENT_SIGNING_KEY": "TEST-ONLY-consent-key-0123456789abcdefABCDEF",
+  "AI_TRAINING_SAMPLE_SIGNING_KEY": "TEST-ONLY-sample-key-0123456789abcdefABCDEF"
+ },
+ "note": "TEST-ONLY keys. raw-bytes signing; verifier must not re-serialize JSON.",
+ "bodySignature": [
+  {
+   "name": "utf8_korean_newline",
+   "timestamp": 1793750400,
+   "bodyBase64": "eyJzY2hlbWFWZXJzaW9uIjogInRyYWluaW5nLXNhbXBsZS52MSIsICJldmVudElkIjogImV2dC12ZWMtMDAwMDAxIiwgInF1ZXN0aW9uIjogIlRDUCAzLXdheSBoYW5kc2hha2Ug656AP1xu7KSE67CU6r+IIO2PrO2VqCJ9",
+   "signature": "v1=4f7404267c74342b87def5f3db09c00c6c3dea3a1c215ba7f08f60350626b57e",
+   "verifyAt": 1793750410,
+   "expect": "VALID"
+  },
+  {
+   "name": "ascii",
+   "timestamp": 1793750400,
+   "bodyBase64": "eyJhIjoxLCJiIjoieCJ9",
+   "signature": "v1=082f8c9d06c23bca0b0d04bac3509a8653346d5dd73fb394d6d9ea452fa8d551",
+   "verifyAt": 1793750400,
+   "expect": "VALID"
+  },
+  {
+   "name": "reserialized_body_rejected",
+   "timestamp": 1793750400,
+   "bodyBase64": "eyJzY2hlbWFWZXJzaW9uIjogInRyYWluaW5nLXNhbXBsZS52MSIsICJldmVudElkIjogImV2dC12ZWMtMDAwMDAxIiwgInF1ZXN0aW9uIjogIlRDUCAzLXdheSBoYW5kc2hha2UgXHViNzgwP1xuXHVjOTA0XHViYzE0XHVhZmM4IFx1ZDNlY1x1ZDU2OCJ9",
+   "signature": "v1=4f7404267c74342b87def5f3db09c00c6c3dea3a1c215ba7f08f60350626b57e",
+   "verifyAt": 1793750400,
+   "expect": "SIGNATURE_INVALID"
+  },
+  {
+   "name": "stale_timestamp",
+   "timestamp": 1793750400,
+   "bodyBase64": "eyJhIjoxLCJiIjoieCJ9",
+   "signature": "v1=082f8c9d06c23bca0b0d04bac3509a8653346d5dd73fb394d6d9ea452fa8d551",
+   "verifyAt": 1793750701,
+   "expect": "SIGNATURE_EXPIRED"
+  },
+  {
+   "name": "huge_timestamp",
+   "timestamp": "9999999999999999999999999999999999999999",
+   "bodyBase64": "eyJhIjoxLCJiIjoieCJ9",
+   "signature": "v1=00",
+   "verifyAt": 1793750400,
+   "expect": "SIGNATURE_TIMESTAMP_INVALID"
+  }
+ ],
+ "scopeToken": [
+  {
+   "name": "valid",
+   "token": "eyJkb2N1bWVudElkcyI6W10sImV4cCI6MTc5Mzc1MDUyMCwiaWF0IjoxNzkzNzUwNDAwLCJtYXRlcmlhbElkcyI6WzcsNDJdLCJyaWQiOiJyZXEtdmVjdG9yLTAwMDAwMSIsInN1YiI6InBrX3ZlY3Rvcl91c2VyXzAwMDAwMSIsInR5cCI6ImFpLXNjb3BlIiwidiI6MX0.7sBzIA4S0xmaawqZWAmu3jwnfutSoouVnQoXTbpTLzM",
+   "requestId": "req-vector-000001",
+   "verifyAt": 1793750405,
+   "expect": "VALID",
+   "payload": {
+    "v": 1,
+    "typ": "ai-scope",
+    "sub": "pk_vector_user_000001",
+    "materialIds": [
+     7,
+     42
+    ],
+    "documentIds": [],
+    "iat": 1793750400,
+    "exp": 1793750520,
+    "rid": "req-vector-000001"
+   }
+  },
+  {
+   "name": "rid_mismatch",
+   "token": "eyJkb2N1bWVudElkcyI6W10sImV4cCI6MTc5Mzc1MDUyMCwiaWF0IjoxNzkzNzUwNDAwLCJtYXRlcmlhbElkcyI6WzcsNDJdLCJyaWQiOiJyZXEtdmVjdG9yLTAwMDAwMSIsInN1YiI6InBrX3ZlY3Rvcl91c2VyXzAwMDAwMSIsInR5cCI6ImFpLXNjb3BlIiwidiI6MX0.7sBzIA4S0xmaawqZWAmu3jwnfutSoouVnQoXTbpTLzM",
+   "requestId": "req-vector-000002",
+   "verifyAt": 1793750405,
+   "expect": "SCOPE_REQUEST_MISMATCH"
+  },
+  {
+   "name": "expired",
+   "token": "eyJkb2N1bWVudElkcyI6W10sImV4cCI6MTc5Mzc1MDUyMCwiaWF0IjoxNzkzNzUwNDAwLCJtYXRlcmlhbElkcyI6WzcsNDJdLCJyaWQiOiJyZXEtdmVjdG9yLTAwMDAwMSIsInN1YiI6InBrX3ZlY3Rvcl91c2VyXzAwMDAwMSIsInR5cCI6ImFpLXNjb3BlIiwidiI6MX0.7sBzIA4S0xmaawqZWAmu3jwnfutSoouVnQoXTbpTLzM",
+   "requestId": "req-vector-000001",
+   "verifyAt": 1793750521,
+   "expect": "SCOPE_TOKEN_EXPIRED"
+  },
+  {
+   "name": "tampered_payload",
+   "token": "eyJkb2N1bWVudElkcyI6W10sImV4cCI6MTc5Mzc1MDUyMCwiaWF0IjoxNzkzNzUwNDAwLCJtYXRlcmlhbElkcyI6WzcsNDIsOTk5XSwicmlkIjoicmVxLXZlY3Rvci0wMDAwMDEiLCJzdWIiOiJwa192ZWN0b3JfdXNlcl8wMDAwMDEiLCJ0eXAiOiJhaS1zY29wZSIsInYiOjF9.7sBzIA4S0xmaawqZWAmu3jwnfutSoouVnQoXTbpTLzM",
+   "requestId": "req-vector-000001",
+   "verifyAt": 1793750405,
+   "expect": "SCOPE_TOKEN_INVALID"
+  },
+  {
+   "name": "consent_token_as_scope",
+   "token": "eyJjdCI6IjIwMjYtMTAtMzBUMDA6MDA6MDBaIiwiY3YiOiJ0Yy0yMDI2LTEwIiwiZHRpZCI6ImRlbC12ZWN0b3ItMDAwMDAxIiwiZXhwIjoxNzkzNzUwNTIwLCJpYXQiOjE3OTM3NTA0MDAsInJpZCI6InJlcS12ZWN0b3ItMDAwMDAxIiwicmlnaHRzIjp7IjQyIjoiVVNFUl9PV05FRF9WRVJJRklFRCJ9LCJzY29wZSI6WyJNT0RFTF9UUkFJTklORyJdLCJzdWIiOiJwa192ZWN0b3JfdXNlcl8wMDAwMDEiLCJ0eXAiOiJ0cmFpbmluZy1jb25zZW50IiwidiI6MX0.e_SvrHxHXxlzIsajCPPNDSk7Dltxav9ZLUv_tcUx_lk",
+   "requestId": "req-vector-000001",
+   "verifyAt": 1793750405,
+   "expect": "SCOPE_TOKEN_TYPE_INVALID"
+  },
+  {
+   "name": "future_iat",
+   "token": "eyJkb2N1bWVudElkcyI6W10sImV4cCI6MTc5Mzc1NDEwMCwiaWF0IjoxNzkzNzU0MDAwLCJtYXRlcmlhbElkcyI6WzcsNDJdLCJyaWQiOiJyZXEtdmVjdG9yLTAwMDAwMSIsInN1YiI6InBrX3ZlY3Rvcl91c2VyXzAwMDAwMSIsInR5cCI6ImFpLXNjb3BlIiwidiI6MX0.YtVKnEfnBtxfG1rod8em8ewjk8QxaRClPLd-t3dCKwk",
+   "requestId": "req-vector-000001",
+   "verifyAt": 1793750400,
+   "expect": "SCOPE_TOKEN_EXPIRED"
+  }
+ ],
+ "consentToken": [
+  {
+   "name": "valid",
+   "token": "eyJjdCI6IjIwMjYtMTAtMzBUMDA6MDA6MDBaIiwiY3YiOiJ0Yy0yMDI2LTEwIiwiZHRpZCI6ImRlbC12ZWN0b3ItMDAwMDAxIiwiZXhwIjoxNzkzNzUwNTIwLCJpYXQiOjE3OTM3NTA0MDAsInJpZCI6InJlcS12ZWN0b3ItMDAwMDAxIiwicmlnaHRzIjp7IjQyIjoiVVNFUl9PV05FRF9WRVJJRklFRCJ9LCJzY29wZSI6WyJNT0RFTF9UUkFJTklORyJdLCJzdWIiOiJwa192ZWN0b3JfdXNlcl8wMDAwMDEiLCJ0eXAiOiJ0cmFpbmluZy1jb25zZW50IiwidiI6MX0.frjYUS0_ysSaf13eNMRlxkuiHuty3ZNmmU4WmtsnxoY",
+   "requestId": "req-vector-000001",
+   "verifyAt": 1793750405,
+   "expect": "VALID",
+   "payload": {
+    "v": 1,
+    "typ": "training-consent",
+    "sub": "pk_vector_user_000001",
+    "cv": "tc-2026-10",
+    "ct": "2026-10-30T00:00:00Z",
+    "scope": [
+     "MODEL_TRAINING"
+    ],
+    "rights": {
+     "42": "USER_OWNED_VERIFIED"
+    },
+    "dtid": "del-vector-000001",
+    "rid": "req-vector-000001",
+    "iat": 1793750400,
+    "exp": 1793750520
+   }
+  },
+  {
+   "name": "rid_mismatch",
+   "token": "eyJjdCI6IjIwMjYtMTAtMzBUMDA6MDA6MDBaIiwiY3YiOiJ0Yy0yMDI2LTEwIiwiZHRpZCI6ImRlbC12ZWN0b3ItMDAwMDAxIiwiZXhwIjoxNzkzNzUwNTIwLCJpYXQiOjE3OTM3NTA0MDAsInJpZCI6InJlcS12ZWN0b3ItMDAwMDAxIiwicmlnaHRzIjp7IjQyIjoiVVNFUl9PV05FRF9WRVJJRklFRCJ9LCJzY29wZSI6WyJNT0RFTF9UUkFJTklORyJdLCJzdWIiOiJwa192ZWN0b3JfdXNlcl8wMDAwMDEiLCJ0eXAiOiJ0cmFpbmluZy1jb25zZW50IiwidiI6MX0.frjYUS0_ysSaf13eNMRlxkuiHuty3ZNmmU4WmtsnxoY",
+   "requestId": "req-vector-000009",
+   "verifyAt": 1793750405,
+   "expect": "CONSENT_REQUEST_MISMATCH"
+  },
+  {
+   "name": "scope_token_as_consent",
+   "token": "eyJkb2N1bWVudElkcyI6W10sImV4cCI6MTc5Mzc1MDUyMCwiaWF0IjoxNzkzNzUwNDAwLCJtYXRlcmlhbElkcyI6WzcsNDJdLCJyaWQiOiJyZXEtdmVjdG9yLTAwMDAwMSIsInN1YiI6InBrX3ZlY3Rvcl91c2VyXzAwMDAwMSIsInR5cCI6ImFpLXNjb3BlIiwidiI6MX0.io492gP-DDzX7cvglFFVnqG3Va-zYx9ZCbjSwmXpOXA",
+   "requestId": "req-vector-000001",
+   "verifyAt": 1793750405,
+   "expect": "CONSENT_TOKEN_EXPIRED"
+  },
+  {
+   "name": "signed_with_scope_key",
+   "token": "eyJjdCI6IjIwMjYtMTAtMzBUMDA6MDA6MDBaIiwiY3YiOiJ0Yy0yMDI2LTEwIiwiZHRpZCI6ImRlbC12ZWN0b3ItMDAwMDAxIiwiZXhwIjoxNzkzNzUwNTIwLCJpYXQiOjE3OTM3NTA0MDAsInJpZCI6InJlcS12ZWN0b3ItMDAwMDAxIiwicmlnaHRzIjp7IjQyIjoiVVNFUl9PV05FRF9WRVJJRklFRCJ9LCJzY29wZSI6WyJNT0RFTF9UUkFJTklORyJdLCJzdWIiOiJwa192ZWN0b3JfdXNlcl8wMDAwMDEiLCJ0eXAiOiJ0cmFpbmluZy1jb25zZW50IiwidiI6MX0.e_SvrHxHXxlzIsajCPPNDSk7Dltxav9ZLUv_tcUx_lk",
+   "requestId": "req-vector-000001",
+   "verifyAt": 1793750405,
+   "expect": "CONSENT_TOKEN_INVALID"
+  }
+ ]
+}

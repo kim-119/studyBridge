@@ -17,9 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 SCHEMA_VERSION = "training-sample.v1"
 
-_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{8,128}$")
-_PSEUDO_KEY_RE = re.compile(r"^[A-Za-z0-9_\-]{16,128}$")
-_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{8,128}\Z")
+_PSEUDO_KEY_RE = re.compile(r"^[A-Za-z0-9_\-]{16,128}\Z")
+_HEX64 = re.compile(r"^[0-9a-f]{64}\Z")  # \Z: 끝 개행 불허(예전 $ 는 허용)
 
 
 class SourceKind(str, Enum):

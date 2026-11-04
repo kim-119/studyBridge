@@ -20,9 +20,11 @@ BLOCK = "BLOCK"
 QUARANTINE = "QUARANTINE"
 
 # 이메일
-_EMAIL = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+# 토큰 경계 lookbehind + 길이 상한 → 선형 시간. 예전 '[...]+@' 는 '@' 없는 긴 문자열에서 O(n²)(120KB 에 5초, 2026-11-04 측정).
+_EMAIL = re.compile(r"(?<![a-zA-Z0-9._%+\-])[a-zA-Z0-9._%+\-]{1,64}@[a-zA-Z0-9\-]{1,63}(?:\.[a-zA-Z0-9\-]{1,63}){0,8}\.[a-zA-Z]{2,24}(?![a-zA-Z])")
 # 한국 전화번호(휴대폰 + 지역번호 유선 + 대표번호)
-_KR_PHONE = re.compile(r"(?<!\d)(01[016789][-\s.]?\d{3,4}[-\s.]?\d{4}|0(?:2|[3-6][1-5])[-\s.)]\s?\d{3,4}[-\s.]?\d{4}|1[5-9]\d{2}-\d{4})(?!\d)")
+_KR_PHONE = re.compile(r"(?<!\d)(01[016789][-\s.]?\d{3,4}[-\s.]?\d{4}|0(?:2|[3-6][1-5])[-\s.)]\s?\d{3,4}[-\s.]?\d{4}|1[5-9]\d{2}-\d{4}"
+                       r"|\+82[-\s.]?(?:0?1[016789]|0?(?:2|[3-6][1-5]))[-\s.]?\d{3,4}[-\s.]?\d{4})(?!\d)")   # +82 국제표기
 # 주민등록번호/외국인등록번호 (구분자 없는 13자리 포함)
 _KR_RRNO = re.compile(r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[-\s]?[1-8]\d{6}(?!\d)")
 # 카드 번호 후보(13~19자리) — Luhn 검증 통과분만 BLOCK
@@ -32,9 +34,11 @@ _DRIVER = re.compile(r"(?<!\d)\d{2}-\d{2}-\d{6}-\d{2}(?!\d)")
 # 여권
 _PASSPORT = re.compile(r"(?:여권|passport)\s*(?:번호|no\.?|number)?\s*[:：]?\s*[A-Z][A-Z0-9]\d{7}", re.IGNORECASE)
 # 계좌(라벨 기반)
-_BANK = re.compile(r"(?:계좌|account)\s*(?:번호|no\.?)?\s*[:：]?\s*\d{2,6}[-\s]?\d{2,6}[-\s]?\d{2,8}", re.IGNORECASE)
+_BANK = re.compile(r"(?:(?:계좌|account)\s*(?:번호|no\.?)?\s*[:：]?\s*\d{2,6}[-\s]?\d{2,6}[-\s]?\d{2,8}"
+                   r"|(?:국민|신한|우리|하나|농협|기업|카카오|토스|케이|SC제일|씨티|새마을|우체국|수협|부산|대구|경남|광주|전북|제주|KB|NH|IBK)"
+                   r"(?:은행|뱅크|금고)?\s*[:：]?\s*\d{2,6}-\d{2,6}-\d{2,8})", re.IGNORECASE)   # 은행명 + 하이픈 계좌
 # 학번(라벨 기반)
-_STUDENT_ID = re.compile(r"(?:학번|student\s*id|수험번호|사번)\s*[:：은는이가]?\s*[A-Za-z]?\d{6,12}", re.IGNORECASE)
+_STUDENT_ID = re.compile(r"(?:학번|student\s*id|수험번호|사번)\s*[:：은는이가]?\s*[A-Za-z]?(?:\d{4}-\d{4,8}|\d{6,12})", re.IGNORECASE)
 # 이름: 라벨(이름/성명) 또는 성씨+이름+호칭
 _NAME_LABEL = re.compile(r"(?:이름|성명|name)\s*[:：]\s*[가-힣]{2,4}(?![가-힣])", re.IGNORECASE)
 _SURNAMES = "김이박최정강조윤장임한오서신권황안송류전홍고문양손배백허유남심노하곽성차주우구민진지엄채원천방공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은편용예봉경사부"
@@ -69,16 +73,17 @@ class _FilteredPattern:
 _NAME_HONORIFIC = _FilteredPattern(_NAME_HONORIFIC_RAW, _NAME_STOP)
 # 주소: 시/도 + 시/군/구 + 로/길/동 + 번지
 _ADDRESS = re.compile(
-    r"(?:서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)[가-힣]*\s+"
-    r"[가-힣]+(?:시|군|구)\s+[가-힣0-9]+(?:로|길|동|읍|면)\s*\d+(?:-\d+)?(?:번지)?"
+    r"(?:서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)[가-힣]{0,6}\s{1,3}"
+    r"[가-힣]{1,12}(?:시|군|구)(?:\s{1,3}[가-힣]{1,12}(?:구|군))?\s{1,3}[가-힣0-9]{1,20}(?:로|길|동|읍|면)\s{0,3}\d{1,5}(?:-\d{1,5})?(?:번지)?"
 )
 _ADDRESS_LABEL = re.compile(r"(?:주소|address)\s*[:：]\s*\S{2,}", re.IGNORECASE)
 # IP (사설망 포함 — 운영 토폴로지 노출 방지)
 _IPV4 = re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?![\d.])")
 # URL: 자격증명 포함 / 토큰 쿼리 / presigned / 내부 주소
-_URL_CRED = re.compile(r"[a-z][a-z0-9+.\-]*://[^\s/:@]+:[^\s/@]+@", re.IGNORECASE)
+_URL_CRED = re.compile(r"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,31}://[^\s/:@]{1,256}:[^\s/@]{1,256}@", re.IGNORECASE)  # 경계+상한=선형
 _URL_TOKEN = re.compile(r"[?&](?:token|access_token|api_key|apikey|key|secret|password|sig|signature|X-Amz-Signature|X-Amz-Credential)=[^&\s]{6,}", re.IGNORECASE)
-_URL_INTERNAL = re.compile(r"https?://(?:localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|[a-z0-9\-]+\.internal)(?::\d+)?", re.IGNORECASE)
+# 루프백(localhost/127.x)은 교육 자료의 흔한 예시라 제외한다(게이트 HARD 오거절 원인, 2026-11-04 사례 검증).
+_URL_INTERNAL = re.compile(r"https?://(?:10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|[a-z0-9\-]+\.internal)(?::\d+)?", re.IGNORECASE)
 # 비밀키/토큰
 _SECRETS = re.compile(
     r"sk-(?:proj-)?[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|"
@@ -86,7 +91,7 @@ _SECRETS = re.compile(
     r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"
 )
 _BEARER = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/\-]{20,}=*", re.IGNORECASE)
-_JWT = re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")
+_JWT = re.compile(r"(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{8,4096}\.eyJ[A-Za-z0-9_\-]{8,4096}\.[A-Za-z0-9_\-]{8,4096}")
 _ASSIGNED_SECRET = re.compile(r"(?:api[_\-]?key|secret|password|passwd|비밀번호|token|AI_SERVER_API_KEY|OPENAI_API_KEY)\s*[:=]\s*['\"]?[^\s'\"]{8,}", re.IGNORECASE)
 # 시스템 프롬프트/내부 지시 흔적
 _SYSTEM_PROMPT = re.compile(r"<\|im_start\|>\s*system|\[SYSTEM\]|시스템\s*프롬프트\s*[:：]|system\s*prompt\s*[:：]|너는 StudyBridge [^\n]{0,40}(?:도우미|교수)다", re.IGNORECASE)
@@ -181,11 +186,22 @@ def _entropy_spans(text: str) -> List[Tuple[int, int]]:
     return spans
 
 
+# 전각/호환 문자(＠, ０-９)와 보이지 않는 문자(ZWSP/ZWJ/ZWNJ/soft hyphen/BOM/word joiner)로 탐지를 피하지 못하게
+# 스캔 전에 NFKC + 제거한다(예전: '홍길동＠example.com', '010\u200b1234\u200b5678' 이 CLEAN — 2026-11-04 재현).
+_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff\u00ad\u180e"), None)
+
+
+def _scan_view(text: str) -> str:
+    import unicodedata
+    return unicodedata.normalize("NFKC", text).translate(_INVISIBLE)
+
+
 def scan_pii(text: str) -> PiiScanResult:
     """민감정보 스캔. 매칭 원문은 반환하지 않는다."""
     try:
         if not text:
             return PiiScanResult(status="CLEAN")
+        text = _scan_view(text)
         cats: List[str] = []
         sev = ""
         n = 0
@@ -218,9 +234,11 @@ def has_pii(text: str) -> bool:
 
 
 def mask_pii(text: str) -> str:
-    """개인정보/비밀정보를 범주 라벨로 마스킹한 텍스트를 반환한다."""
+    """개인정보/비밀정보를 범주 라벨로 마스킹한 텍스트를 반환한다(탐지와 같은 정규화 뷰 위에서 — 보이지 않는 문자로
+    끊어 둔 값이 마스킹을 빠져나가지 않게)."""
     if not text:
         return text
+    text = _scan_view(text)
     for start, end in sorted(_card_spans(text), reverse=True):
         text = text[:start] + _MASK_LABEL["CARD"] + text[end:]
     for name, pat, _sev in _RULES:

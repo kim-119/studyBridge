@@ -21,7 +21,10 @@ from app.core.security import verify_internal_token
 
 logger = logging.getLogger(__name__)
 # 내부 인증 필수(fail-closed). Spring 호출자는 아직 없다(2026-11-04 backend grep 기준).
-router = APIRouter(tags=["RAG Grounded"], dependencies=[Depends(verify_internal_token)])
+from app.core.request_guards import limited_route_class
+
+router = APIRouter(tags=["RAG Grounded"], dependencies=[Depends(verify_internal_token)],
+                   route_class=limited_route_class(64 * 1024))   # 예전: 본문 크기 제한 없음(2.1MB 수용)
 
 GROUNDED_TIMEOUT = int(os.getenv("AI_RAG_GROUNDED_TIMEOUT_SECONDS", "60"))
 
@@ -39,7 +42,8 @@ class GroundedQueryRequest(BaseModel):
 
 @router.post("/api/ai/rag/grounded-query", summary="Grounded RAG (vector 후보 → rerank → top-3 근거 답변)")
 async def grounded_query(req: GroundedQueryRequest,
-                         x_ai_scope: Optional[str] = Header(default=None, alias="X-AI-Scope")):
+                         x_ai_scope: Optional[str] = Header(default=None, alias="X-AI-Scope"),
+                         x_request_id: Optional[str] = Header(default=None, alias="X-Request-Id")):
     if not (req.question or "").strip():
         return JSONResponse(status_code=422, content={
             "success": False, "errorCode": "EMPTY_QUESTION",
@@ -47,10 +51,11 @@ async def grounded_query(req: GroundedQueryRequest,
         })
     # 사용자 자료 범위 밖 pgvector 검색 금지: materialId 필수 + 서명된 scope 안에 있어야 한다.
     # (예전: materialId 가 없으면 전체 검색, documentId 를 materialId 로 간주)
-    from app.contracts.signing import SignatureError, verify_scope_token
+    # scope 토큰은 이 요청의 X-Request-Id 에 묶여 있어야 한다(예전: rid 미검사 → TTL 600s 안 재사용 가능).
+    from app.contracts.signing import SignatureError, verify_request_scope
     try:
         mid = int(req.materialId) if req.materialId is not None else None
-        scope = verify_scope_token(x_ai_scope)
+        scope = verify_request_scope(x_ai_scope, x_request_id)
     except (TypeError, ValueError):
         return JSONResponse(status_code=422, content={"success": False, "errorCode": "MATERIAL_ID_INVALID"})
     except SignatureError as e:
@@ -87,10 +92,11 @@ async def grounded_query(req: GroundedQueryRequest,
             "warnings": ["RAG 처리 timeout 으로 답변을 생성하지 못했습니다."],
         })
     except Exception as e:  # noqa: BLE001
-        logger.error("[rag-grounded] 실패 materialId=%s: %s", req.materialId, e, exc_info=True)
+        # 예외 문자열/트레이스백에는 질문·청크 원문이 섞일 수 있어 클래스명만 남긴다.
+        logger.error("[rag-grounded] 실패 materialId=%s: %s", req.materialId, type(e).__name__)
         return JSONResponse(status_code=200, content={
-            "success": False, "errorCode": "RAG_GROUNDED_FAILED",
-            "warnings": [f"처리 중 오류가 발생했습니다: {type(e).__name__}"],
+            "success": False, "errorCode": "RAG_GROUNDED_FAILED", "qualityStatus": "VALIDATION_ERROR",
+            "warnings": ["처리 중 오류가 발생했습니다."],
         })
 
     elapsed = int((time.time() - started) * 1000)

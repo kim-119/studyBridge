@@ -98,6 +98,10 @@ def _rights_for(event: ResponseCollectionEvent) -> Optional[str]:
     if event.task_type not in _PDF_TASKS:
         clean = not event.evidence and not event.derived_context_used
         return RightsStatus.NO_THIRD_PARTY_CONTENT.value if clean else None
+    # PDF 작업이라도 PDF 원문 밖의 컨텍스트(사용자 붙여넣기 텍스트/파생 요약·메모 등)가 섞였으면 그 부분의 권리는
+    # EC2 가 확인한 자료 권리로 덮을 수 없다 → 미확인(예전: 붙여넣은 제3자 텍스트가 USER_OWNED_VERIFIED 로 저장 — 2026-11-04 재현).
+    if event.derived_context_used or any(str(e.get("sourceType")).upper() != "PDF_ORIGINAL" for e in event.evidence):
+        return None
     statuses = set()
     for e in event.evidence:
         if str(e.get("sourceType")).upper() != "PDF_ORIGINAL":

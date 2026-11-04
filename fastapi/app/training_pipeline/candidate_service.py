@@ -33,6 +33,7 @@ class ServiceResult:
     reasons: List[str] = field(default_factory=list)
     invalidated_datasets: List[str] = field(default_factory=list)
     retirement_required_adapters: List[str] = field(default_factory=list)
+    purged_datasets: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -66,10 +67,24 @@ async def _event(repo, candidate_id: str, event_type: str, src: Optional[str], d
     await repo.append_event(ev)
 
 
+# 원문 자체를 더 이상 보관하면 안 되는 사유 → 이미 export 된 JSONL 파일도 파기한다.
+# (예전: DB 내용만 지우고 0400 train.jsonl 에는 원문이 남았다 — 2026-11-04 재현)
+_PURGE_REASONS = frozenset({"SOURCE_DELETED", "CONSENT_WITHDRAWN"})
+
+
 async def _invalidate_lineage(repo, content_hash: str, reason: str, result: ServiceResult) -> None:
     for m in await repo.manifests_containing(content_hash):
         await repo.invalidate_manifest(m.dataset_id, reason)
         result.invalidated_datasets.append(m.dataset_id)
+        if reason in _PURGE_REASONS:
+            from app.training_pipeline.export_service import purge_dataset_files
+            try:
+                if purge_dataset_files(m.dataset_id):
+                    result.purged_datasets.append(m.dataset_id)
+                    await repo.invalidate_manifest(m.dataset_id, "FILES_PURGED")
+            except (OSError, ValueError) as e:
+                # 파기 실패는 숨기지 않는다: 호출자가 재시도하도록 예외를 올린다(멱등).
+                raise RuntimeError(f"DATASET_PURGE_FAILED:{type(e).__name__}") from e
         for model in await repo.models_for_dataset(m.dataset_id):
             if model.status != "RETIREMENT_REQUIRED":
                 await repo.set_model_status(model.adapter_id, "RETIREMENT_REQUIRED",
@@ -129,12 +144,41 @@ async def collect_sample(repo, sample: TrainingSampleV1, *, actor: Actor = SYSTE
         return ServiceResult(status="DEFERRED", reasons=["TRAINING_REPOSITORY_UNAVAILABLE"])
 
 
+# 중복(EXACT_DUPLICATE)으로 처리된 eventId 는 행이 새로 생기지 않아 find_by_event_id 로 잡히지 않는다.
+# 서명 본문의 재전송 창(±300s)보다 넉넉한 시간 동안 처리 결과를 기억해 같은 이벤트가 피드백을 반복 적용하지 못하게 한다.
+# (프로세스 로컬 — 운영 FastAPI 는 단일 워커. 다중 워커로 바꾸면 DB 기반 처리 이력으로 옮겨야 한다.)
+_REPLAY_TTL_SECONDS = 900
+_recent_events: Dict[str, tuple] = {}
+
+
+def _remember_event(event_id: str, res: ServiceResult) -> None:
+    import time as _t
+    now = _t.monotonic()
+    if len(_recent_events) > 50_000:
+        for k in [k for k, (exp, _) in _recent_events.items() if exp < now]:
+            _recent_events.pop(k, None)
+    _recent_events[event_id] = (now + _REPLAY_TTL_SECONDS, res)
+
+
+def _recalled_event(event_id: str) -> Optional[ServiceResult]:
+    import time as _t
+    hit = _recent_events.get(event_id)
+    if hit is None or hit[0] < _t.monotonic():
+        return None
+    r = hit[1]
+    return ServiceResult(status="IDEMPOTENT_REPLAY", candidate_id=r.candidate_id, state=r.state,
+                         reasons=list(r.reasons))
+
+
 async def _collect_sample(repo, sample: TrainingSampleV1, *, actor: Actor, task_type: Optional[str],
                           display_quality: Optional[Dict[str, Any]]) -> ServiceResult:
     # 멱등: 같은 eventId 재전송은 기존 결과를 돌려준다.
     prior = await repo.find_by_event_id(sample.eventId)
     if prior is not None:
         return ServiceResult(status="IDEMPOTENT_REPLAY", candidate_id=prior.candidate_id, state=prior.state.value)
+    recalled = _recalled_event(sample.eventId)
+    if recalled is not None:
+        return recalled
 
     # 1) 중복 검사 — 실패하면 저장 보류(fail-closed)
     d = await dup.check_duplicate(sample.contentHash, sample.question + "\n" + sample.candidateAnswer, repo)
@@ -149,6 +193,7 @@ async def _collect_sample(repo, sample: TrainingSampleV1, *, actor: Actor, task_
                                        reason_code=sample.feedback.reasonCode)
             res.state, res.reasons = fb.state, res.reasons + fb.reasons
             res.invalidated_datasets, res.retirement_required_adapters = fb.invalidated_datasets, fb.retirement_required_adapters
+        _remember_event(sample.eventId, res)
         return res
     if d.status == dup.NEAR_DUPLICATE:
         res = ServiceResult(status="NEAR_DUPLICATE", candidate_id=d.matched_id, reasons=["NEAR_DUPLICATE"])
@@ -263,6 +308,10 @@ async def review(repo, candidate_id: str, *, decision: str, actor: Actor, use: s
     if rec is None:
         return ServiceResult(status="NOT_FOUND")
     if decision == "REJECT":
+        if rec.state in (S.REVOKED, S.DELETED):
+            return ServiceResult(status="NOT_ALLOWED", state=rec.state.value, reasons=[f"STATE_{rec.state.value}"])
+        if rec.state == S.REJECTED:                       # 재시도 멱등(예전: REJECTED→REJECTED 전이 예외 → 500)
+            return ServiceResult(status="REJECTED", candidate_id=candidate_id, state=rec.state.value)
         saved = await _transition(repo, rec, S.REJECTED, actor, "REVIEW_REJECT", ["REVIEWER_REJECTED"])
         res = ServiceResult(status="REJECTED", candidate_id=candidate_id, state=saved.state.value)
         await _invalidate_lineage(repo, rec.content_hash, "REVIEWER_REJECTED", res)

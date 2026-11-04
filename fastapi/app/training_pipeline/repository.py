@@ -201,11 +201,15 @@ class PostgresTrainingRepository:
             raise RepositoryUnavailable(type(e).__name__) from e
 
     async def _fetch(self, sql: str, args: tuple = ()) -> list:
+        import psycopg
         conn = await self._conn()
         try:
             async with conn.cursor() as cur:
                 await cur.execute(sql, args)
                 return await cur.fetchall() if cur.description else []
+        except psycopg.Error as e:
+            # 예전: 접속 오류만 감싸 마이그레이션 누락/스키마 오류가 500 으로 새어 나갔다. SQL/값은 메시지에 싣지 않는다.
+            raise RepositoryUnavailable(f"DB_ERROR:{type(e).__name__}") from e
         finally:
             await conn.close()
 
@@ -229,6 +233,11 @@ class PostgresTrainingRepository:
         return rec
 
     async def get(self, candidate_id: str):
+        import uuid as _uuid
+        try:
+            _uuid.UUID(str(candidate_id))
+        except (ValueError, TypeError, AttributeError):
+            return None                                   # InMemory 와 같은 계약: 없는 후보(예전: DB 오류 500)
         return await self._one("candidate_id", candidate_id)
 
     async def find_by_content_hash(self, content_hash: str):
@@ -364,14 +373,30 @@ class PostgresTrainingRepository:
 _repo = None
 
 
+def resolve_training_dsn() -> str:
+    """학습 저장소 DSN 은 '명시적으로'만 정한다(stage/production 분리).
+    - AI_TRAINING_DATABASE_URL 필수: 예전처럼 AI_DATABASE_URL(운영 AI DB)로 조용히 대체하지 않는다.
+    - AI_TRAINING_ENV 필수(stage|production). stage 인데 DSN 이 운영 AI_DATABASE_URL 과 같으면 거부."""
+    dsn = (os.getenv("AI_TRAINING_DATABASE_URL") or "").strip()
+    env = (os.getenv("AI_TRAINING_ENV") or "").strip().lower()
+    if not dsn:
+        raise RepositoryUnavailable("AI_TRAINING_DATABASE_URL not configured")
+    if env not in ("stage", "production"):
+        raise RepositoryUnavailable("AI_TRAINING_ENV must be stage or production")
+    prod = (os.getenv("AI_DATABASE_URL") or "").strip()
+    if env == "stage" and prod and dsn == prod:
+        raise RepositoryUnavailable("stage training repository must not use the production AI database")
+    return dsn
+
+
 def get_repository():
-    """AI_TRAINING_REPOSITORY=postgres 이고 DSN 이 있을 때만 Postgres. 그 외엔 사용 불가(fail-closed)."""
+    """AI_TRAINING_REPOSITORY=postgres 이고 DSN/환경이 명시됐을 때만 Postgres. 그 외엔 사용 불가(fail-closed)."""
     global _repo
     if _repo is not None:
         return _repo
     kind = (os.getenv("AI_TRAINING_REPOSITORY") or "").strip().lower()
     if kind == "postgres":
-        _repo = PostgresTrainingRepository(os.getenv("AI_TRAINING_DATABASE_URL") or os.getenv("AI_DATABASE_URL") or "")
+        _repo = PostgresTrainingRepository(resolve_training_dsn())
         return _repo
     raise RepositoryUnavailable("AI_TRAINING_REPOSITORY not configured")
 

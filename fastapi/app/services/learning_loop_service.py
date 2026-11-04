@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import os
 import re
 import threading
 from datetime import date, timedelta
@@ -99,13 +100,20 @@ def resolve_material_id(material_id: Optional[Any], document_id: Optional[Any]) 
 
 
 # ── LLM 호출(Ollama 우선) ─────────────────────────────────────────────────────
+def external_llm_enabled() -> bool:
+    """learning-loop 프롬프트에는 RAG 청크·오답노트(userAnswer)·메모·대화기록이 마스킹 없이 들어간다.
+    외부(OpenAI) 보강/폴백은 명시적으로 켰을 때만 쓴다(기본 OFF — 로컬 Ollama 만, 2026-11-04)."""
+    return (os.getenv("AI_LEARNING_LOOP_EXTERNAL_LLM_ENABLED") or "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _llm_text(system: str, user: str, *, max_tokens: int = 900,
               temperature: float = 0.4) -> Optional[str]:
-    """자유형 텍스트 응답(채팅 등). Ollama → OpenAI fallback. 실패 시 None."""
+    """자유형 텍스트 응답(채팅 등). Ollama → (허용 시에만) OpenAI fallback. 실패 시 None."""
     try:
         from app.services.llm_engine_router import call_primary_llm
         raw = call_primary_llm(system + _UNTRUSTED_POLICY, user + QUALITY_FEEDBACK.get(),
-                               max_tokens=max_tokens, temperature=temperature)
+                               max_tokens=max_tokens, temperature=temperature,
+                               allow_external=external_llm_enabled())
     except Exception as e:  # noqa: BLE001
         logger.info("[learning_loop] _llm_text 실패: %s", e)
         return None
@@ -117,8 +125,9 @@ def _llm_text(system: str, user: str, *, max_tokens: int = 900,
 
 def _llm_struct(*, draft_system: str, draft_user: str, validator: Callable[[Dict[str, Any]], bool],
                 max_tokens: int = 1100) -> Optional[Dict[str, Any]]:
-    """구조화 JSON 생성: ai_pipeline(Ollama 초안 → OpenAI 보강 → repair) 재사용."""
-    from app.services.ai_pipeline import generate_structured, repair_to_valid
+    """구조화 JSON 생성: ai_pipeline(Ollama 초안 → OpenAI 보강 → repair) 재사용.
+    외부 LLM 이 꺼져 있으면(기본) Ollama 초안 → Ollama repair 만 쓴다."""
+    from app.services.ai_pipeline import generate_structured, parse_json, qwen_draft, repair_to_valid
 
     draft_system = draft_system + _UNTRUSTED_POLICY
     draft_user = draft_user + QUALITY_FEEDBACK.get()
@@ -128,6 +137,15 @@ def _llm_struct(*, draft_system: str, draft_user: str, validator: Callable[[Dict
         import json as _json
         txt = _json.dumps(draft, ensure_ascii=False) if draft else "(초안 없음 — 직접 생성)"
         return draft_user + f"\n\n## 1차 초안\n{txt}\n위 초안을 보강해 같은 JSON 으로만 응답하라."
+
+    if not external_llm_enabled():
+        draft = parse_json(qwen_draft(draft_system, draft_user, max_tokens))
+        if isinstance(draft, dict) and validator(draft):
+            return draft
+        fixed = parse_json(qwen_draft(refine_system, _refine_user(draft or {}), max_tokens))
+        if isinstance(fixed, dict) and validator(fixed):
+            return fixed
+        return draft if isinstance(draft, dict) else None
 
     parsed = generate_structured(
         draft_system=draft_system, draft_user=draft_user,

@@ -29,7 +29,8 @@ _PARTICLES = ("으로써", "으로서", "에서는", "에게서", "이었다", "
               "한다", "된다", "이다", "에서", "에게", "까지", "부터", "으로", "처럼", "보다", "라는", "이라는", "하는",
               "하고", "하며", "되는", "이며", "에는", "은", "는", "이", "가", "을", "를", "에", "의", "로", "과", "와", "도", "만", "다")
 _STOP = {"그리고", "그러나", "하지만", "또한", "있다", "없다", "것", "수", "등", "및", "the", "a", "an", "is", "are", "of", "to", "and"}
-_NEG_RE = re.compile(r"(않|아니|없|못|불가|never|\bnot\b|\bno\b)", re.IGNORECASE)
+# "아닙니다/아닌/아님/아냐" 는 "아니" 를 포함하지 않는다(아+닙) — 예전: "TCP 는 연결 지향 프로토콜이 아닙니다" 가 원문과 모순인데 승인(94점).
+_NEG_RE = re.compile(r"(않|아니|아닙|아닌|아님|아냐|없|못|불가|never|\bnot\b|\bno\b)", re.IGNORECASE)
 _ANTONYMS = [("증가", "감소"), ("상승", "하락"), ("높", "낮"), ("많", "적"), ("크", "작"), ("이전", "이후"),
              ("가능", "불가능"), ("포함", "제외"), ("허용", "금지"), ("참", "거짓"), ("빠르", "느리")]
 
@@ -141,6 +142,13 @@ def check_secret_pii(text: str, request_text: str, *, allow_echo: bool) -> List[
         elif res.max_severity == BLOCK and cat in {"EMAIL", "PHONE", "RRN", "CARD", "DRIVER_LICENSE", "PASSPORT", "BANK_ACCOUNT"}:
             if cat not in req:
                 out.append(v("PII_LEAK", HARD, f"개인정보 범주 {cat}"))
+        elif cat in {"STUDENT_ID", "ADDRESS"}:
+            # 학번/주소는 '격리' 등급이어도 사용자 화면 노출은 막는다(예전: MINOR 로 APPROVED 91점 — 2026-11-04 재현).
+            if cat not in req:
+                out.append(v("PII_LEAK", HARD, f"개인정보 범주 {cat}"))
+        elif cat == "PERSON_NAME":
+            if cat not in req:
+                out.append(v("PII_POSSIBLE", MAJOR, "이름으로 보이는 표현"))
         elif cat == "HIGH_ENTROPY_SECRET":
             out.append(v("POSSIBLE_SECRET", MAJOR, "고엔트로피 문자열"))
         else:
@@ -227,17 +235,34 @@ def check_scope(evidence: Sequence[Dict[str, Any]], allowed_materials: Optional[
 
 
 # ── 원문 충실도(요약/QA/퀴즈/학습 자격 공용) ───────────────────────────────────────
+_MAX_EV_SENTENCES = 3000
+_MAX_CONTRA_SENTENCES = 300
+
+
 def negation_contradictions(output: str, evidence_texts: Sequence[str]) -> int:
-    ev_sents = [(s, stems(s)) for t in evidence_texts for s in sentences(t)]
+    # stem 역색인으로 겹치는 근거 문장만 후보로 본다(예전: 출력×근거 전수 jaccard → 48K×190K자 4.9초).
+    ev_sents = [(s, stems(s)) for t in evidence_texts for s in sentences(t)][:_MAX_EV_SENTENCES]
+    ev_neg = [bool(_NEG_RE.search(e)) for e, _ in ev_sents]
+    index: Dict[str, List[int]] = {}
+    for i, (_, es) in enumerate(ev_sents):
+        for st in es:
+            index.setdefault(st, []).append(i)
     n = 0
-    for s in sentences(output):
+    for s in sentences(output)[:_MAX_CONTRA_SENTENCES * 2]:
         ss = stems(s)
         if len(ss) < 3:
             continue
-        for e, es in ev_sents:
-            if jaccard(ss, es) < 0.45:
+        shared: Dict[int, int] = {}
+        for st in ss:
+            for i in index.get(st, ()):
+                shared[i] = shared.get(i, 0) + 1
+        s_neg = bool(_NEG_RE.search(s))
+        for i in sorted(shared):
+            e, es = ev_sents[i]
+            k = shared[i]
+            if k / (len(ss) + len(es) - k) < 0.45:
                 continue
-            if bool(_NEG_RE.search(s)) != bool(_NEG_RE.search(e)):
+            if s_neg != ev_neg[i]:
                 n += 1
                 break
             flipped = False
@@ -285,6 +310,22 @@ _GUIDANCE_RE = re.compile(r"(?:선택|확인|업로드|첨부|입력|질문)해\
 _CONTRAST_RE = re.compile(r"지만|하지만|그러나|다만|는데|그런데|그렇지만|but\b|however", re.IGNORECASE)
 
 
+# 고지 술어가 '문장 끝의 주 술어'일 때만 고지로 본다(뒤에는 존대/종결 어미만). 예전: 토큰 포함만 보아
+# "태양이 지구 주위를 돈다는 사실을 모르는 사람은 없습니다" 같은 단정문이 고지로 판정돼 승인됐다(2026-11-04 재현).
+_DISCLOSURE_END_RE = re.compile(
+    r"(?:확인되지\s*않|확인(?:할|하기)\s*(?:수\s*없|어렵)|찾(?:을\s*수\s*없|지\s*못)|나와\s*있지\s*않|포함되어\s*있지\s*않|"
+    r"알\s*수\s*없|모르겠|확실하지\s*않|(?:답|답변|판단|설명)(?:을|를)?\s*(?:하기|할\s*수|드리기|드릴\s*수)\s*(?:어렵|없)|"
+    r"근거(?:가|를)?\s*(?:없|찾지\s*못))"
+    r"[가-힣\s]{0,12}[.!?。]?$")
+# 명제를 품은 절(…다는 사실을/…것을/…점은)이 있으면 고지가 아니라 주장이다.
+_EMBEDDED_CLAIM_RE = re.compile(r"(?:다는|라는|는다는|ㄴ다는|된다는|이라는)\s*(?:사실|것|점|내용)|(?:는|은|ㄴ)\s*것(?:을|이|은)")
+
+
+def _is_disclosure_sentence(x: str) -> bool:
+    x = x.strip()
+    return len(x) <= 120 and bool(_DISCLOSURE_END_RE.search(x)) and not _EMBEDDED_CLAIM_RE.search(x)
+
+
 def is_no_claim_disclosure(text: str) -> bool:
     """'근거가 없어 답할 수 없다' 류의 정직한 고지인가. 고지 문구가 섞인 단정문('모르는 사실이지만 X 는 Y 다')은 아니다.
     모든 문장이 고지 또는 안내여야 하고, 대조 접속(지만/그러나…)·수치가 없으며 짧아야 한다."""
@@ -292,19 +333,22 @@ def is_no_claim_disclosure(text: str) -> bool:
     sents = sentences(t) or ([t] if t else [])
     if not sents or len(t) > 240 or numbers_in(t) or _CONTRAST_RE.search(t):
         return False
-    if not any(_DISCLOSURE_RE.search(x) for x in sents):
+    if not any(_is_disclosure_sentence(x) for x in sents):
         return False
-    return all(_DISCLOSURE_RE.search(x) or _GUIDANCE_RE.search(x) for x in sents)
+    return all(_is_disclosure_sentence(x) or (_GUIDANCE_RE.search(x) and not _EMBEDDED_CLAIM_RE.search(x))
+               for x in sents)
 
 
 def internal_contradictions(text: str) -> int:
-    sents = sentences(text)
+    # 문장별 stem/부정 여부를 한 번만 계산(예전: 쌍마다 재계산 → 60K자 26초). 문장 수도 상한.
+    sents = sentences(text)[:_MAX_CONTRA_SENTENCES]
+    feats = [(stems(s), bool(_NEG_RE.search(s))) for s in sents]
     n = 0
-    for i, a in enumerate(sents):
-        sa = stems(a)
-        for b in sents[i + 1:]:
-            sb = stems(b)
-            if len(sa) >= 3 and jaccard(sa, sb) >= 0.6 and bool(_NEG_RE.search(a)) != bool(_NEG_RE.search(b)):
+    for i, (sa, na) in enumerate(feats):
+        if len(sa) < 3:
+            continue
+        for sb, nb in feats[i + 1:]:
+            if na != nb and jaccard(sa, sb) >= 0.6:
                 n += 1
     return n
 
@@ -327,7 +371,9 @@ def relevance(question: str, output: str) -> float:
 # ── 수학 ───────────────────────────────────────────────────────────────────────
 _OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
         ast.Pow: operator.pow, ast.Mod: operator.mod, ast.FloorDiv: operator.floordiv}
-_EQ_RE = re.compile(r"((?:\d[\d.,]*|[()+\-*/^×÷·\s])+?)\s*=\s*(-?\d[\d,]*(?:\.\d+)?)(?![\d.])")
+# 예전 '((?:\d[\d.,]*|[...])+?)' 는 중첩 수량자라 '=' 없는 숫자열에서 지수 백트래킹(원주율 28자 → 20초, 2026-11-04 재현).
+# 단일 문자 클래스 + 길이 상한 + 식 경계 lookbehind 로 선형 시간.
+_EQ_RE = re.compile(r"(?<![\d.,()+\-*/^×÷·])(-?[\d(][\d.,()+\-*/^×÷·\s]{0,200}?)\s*=\s*(-?\d[\d,]{0,30}(?:\.\d{1,30})?)(?![\d.])")
 
 
 def safe_eval(expr: str) -> Optional[float]:
@@ -513,13 +559,23 @@ def check_quiz(obj: Any, *, expected_count: Optional[int], expected_options: Opt
         if any(re.search(rf"정답\S*\s*(?:은|는)?\s*['\"“]?{re.escape(o)}", expl.lower()) for o in others):
             out.append(v("QUIZ_ANSWER_EXPLANATION_MISMATCH", HARD, f"{n}번 해설이 다른 선택지를 정답으로 서술"))
             continue
+        # 해설이 '정답키가 아닌' 선택지만 서술하면 정답키와 해설이 어긋난 것이다(예전: 해설이 근거를 되풀이하기만 하면
+        # 어떤 키든 근거 있음으로 통과 — 2026-11-04 재현).
+        expl_flat = re.sub(r"\s+", "", expl.lower())
+        flat = [re.sub(r"\s+", "", o) for o in normed]
+        if expl_flat and len(flat[idx]) >= 2 and flat[idx] not in expl_flat and \
+                any(i != idx and len(flat[i]) >= 2 and flat[i] in expl_flat for i in range(len(flat))):
+            out.append(v("QUIZ_ANSWER_EXPLANATION_MISMATCH", HARD, f"{n}번 해설이 정답이 아닌 선택지를 서술"))
+            continue
         if _INJECTION_RE.search(qtext + " " + " ".join(options)):
             out.append(v("PROMPT_INJECTION_SUCCESS", HARD, f"{n}번 문항에 주입 지시 포함"))
             continue
         stats["valid"] += 1
         if evidence_texts:
-            correct_stems = stems(options[idx] + " " + expl)
-            if correct_stems and len(correct_stems & ev_stems) / len(correct_stems) >= 0.3:
+            # 근거 여부는 '정답 선택지 자체'로 본다(해설이 근거 문장을 되풀이해 정답키를 대신 정당화하지 못하게).
+            opt_stems = stems(options[idx])
+            correct_stems = opt_stems or stems(options[idx] + " " + expl)
+            if correct_stems and len(correct_stems & ev_stems) / len(correct_stems) >= (0.5 if opt_stems else 0.3):
                 stats["grounded"] += 1
             if pdf_task:
                 missing = numbers_in(options[idx] + " " + expl) - set().union(*[numbers_in(t) for t in evidence_texts])

@@ -26,15 +26,19 @@ def _path() -> Path:
     return Path(p)
 
 
+class AuditWriteFailed(Exception):
+    """감사 기록을 남길 수 없음 — required=True 인 관리 작업은 실행하지 않는다(fail-closed)."""
+
+
 def audit_event(event_type: str, *, actor: str, role: str, request_id: Optional[str], outcome: str,
-                target_ids: Optional[List[str]] = None, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                target_ids: Optional[List[str]] = None, extra: Optional[Dict[str, Any]] = None,
+                required: bool = False) -> Dict[str, Any]:
     safe_extra = {k: v for k, v in (extra or {}).items() if k in _ALLOWED_EXTRA}
     with _lock:
         rec = {"at": datetime.now(timezone.utc).isoformat(), "type": event_type, "actor": actor, "role": role,
                "requestId": request_id, "outcome": outcome, "targets": (target_ids or [])[:50],
                "extra": safe_extra, "prevHash": _prev["hash"]}
         rec["hash"] = hashlib.sha256(json.dumps(rec, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        _prev["hash"] = rec["hash"]
         line = json.dumps(rec, ensure_ascii=False)
         try:
             path = _path()
@@ -44,8 +48,11 @@ def audit_event(event_type: str, *, actor: str, role: str, request_id: Optional[
                 os.write(fd, (line + "\n").encode("utf-8"))
             finally:
                 os.close(fd)
+            _prev["hash"] = rec["hash"]              # 실제로 기록된 경우에만 체인을 잇는다
         except OSError as e:
-            # 감사 파일 실패는 로거로만 남긴다(원문 없음). 관리 작업 자체는 호출자가 판단한다.
             logger.error("[AUDIT] file write failed: %s", type(e).__name__)
+            if required:
+                # 예전: 감사 기록이 실패해도 export 가 200 completed 로 진행됐다(2026-11-04 재현).
+                raise AuditWriteFailed(type(e).__name__) from e
         logger.info("[AUDIT] %s", line)
     return rec

@@ -38,6 +38,10 @@ def search_pdf_context(
         ]
         RAG_MIN_SCORE 미만 결과는 제외됨.
     """
+    # 0. 자료 범위가 없으면 검색하지 않는다(전 사용자 범위 검색 차단, pgvector_service 와 이중 방어)
+    if material_id is None:
+        return []
+
     # 1. 질문 임베딩
     try:
         query_vec = embed_query(question)

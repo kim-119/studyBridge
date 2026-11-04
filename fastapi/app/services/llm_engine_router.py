@@ -26,6 +26,7 @@ def call_primary_llm(
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     knowledge_level: Optional[str] = None,
+    allow_external: bool = True,
 ) -> str:
     """
     주력 LLM을 호출한다. Ollama(qwen2.5:14b) → OpenAI fallback 순서.
@@ -55,7 +56,10 @@ def call_primary_llm(
     if result and not result.startswith("[Ollama"):
         return result
 
-    # 3. OpenAI fallback
+    # 3. OpenAI fallback (호출자가 외부 전송을 금지하면 로컬 실패로 끝낸다 — 기본값 True 는 기존 동작 그대로)
+    if not allow_external:
+        logger.info("Ollama 실패 → 외부 LLM 금지(allow_external=False) → 실패 반환")
+        return "[Ollama 실패: 외부 LLM 비활성]"
     logger.info("Ollama 실패 → OpenAI fallback 시도")
     return _try_openai(system_prompt, user_prompt, max_tokens, temperature)
 

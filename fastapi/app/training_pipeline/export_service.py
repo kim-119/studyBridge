@@ -249,6 +249,22 @@ def _manifest(ds_id, actor, request_id, build, split_meta, files, recs, all_item
     }
 
 
+_DATASET_ID_RE = __import__("re").compile(r"^train_v\d{8}_\d{3}_[0-9a-f]{8}$")
+
+
+def purge_dataset_files(dataset_id: str) -> bool:
+    """삭제/동의 철회된 원문이 담긴 export 파일을 파기한다(manifest 레코드와 해시 lineage 는 DB 에 남는다).
+    고정 비공개 루트 아래의 정해진 형식 디렉터리만 지운다(경로 주입/심볼릭 링크 불가). 이미 없으면 False."""
+    if not _DATASET_ID_RE.match(dataset_id or ""):
+        return False
+    root = datasets_root()
+    d = root / dataset_id
+    if d.is_symlink() or not d.is_dir() or d.resolve().parent != root:
+        return False
+    _force_rmtree(d)
+    return not d.exists()
+
+
 def _force_rmtree(d: Path) -> None:
     for p in d.glob("*"):
         try:
