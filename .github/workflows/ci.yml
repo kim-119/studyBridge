@@ -210,13 +210,22 @@ jobs:
             tests/test_lq_security_fail_closed.py tests/test_lq_pii_dup.py tests/test_lq_training_pipeline.py \
             tests/test_lq_export_dataset.py tests/test_lq_legacy_scoring_repro.py tests/test_lq_quality_gate.py \
             tests/test_lq_stream_gate_api.py tests/test_lq_contracts_v1.py tests/test_lq_learning_loop_gate.py \
-            tests/test_lq_postgres_repository.py tests/test_learning_loop.py tests/test_mindmap_semantic_graph.py
+            tests/test_lq_postgres_repository.py tests/test_learning_loop.py tests/test_mindmap_semantic_graph.py \
+            tests/test_lq_stream_gate_hardening.py tests/test_lq_stream_gate_live_captures.py tests/test_lq_phase_a_regressions.py \
+            tests/test_lq_gold_benchmark.py tests/test_lq_signing_vectors.py tests/test_lq_postgres_legacy_coexistence.py \
+            tests/test_realtime_quiz_answer_consistency.py tests/test_fetch_stream.py tests/test_lq_log_privacy.py
 
       - name: 품질 게이트 합성 캘리브레이션(FAR/FRR)
         run: |
           cd fastapi
           python -m scripts.quality_gate_calibration --out /tmp/calibration.json
           python -c "import json,sys; d=json.load(open('/tmp/calibration.json')); sys.exit(0 if d['falseAcceptRate']==0 else 1)"
+
+      - name: gold 벤치마크 하네스(시드=AI 초안 → 측정 아님을 확인)
+        run: |
+          cd fastapi
+          python -m scripts.quality_gold_benchmark --items tests/fixtures/quality_gold/seed_v0_ai_draft.jsonl --out /tmp/gold.json
+          python -c "import json,sys; d=json.load(open('/tmp/gold.json')); sys.exit(0 if d['measurementStatus']=='PREPARED_NOT_MEASURED' and not d['falseApprovals'] else 1)"
 
   docker-ci:
     name: Dockerfile Build And Version Check
