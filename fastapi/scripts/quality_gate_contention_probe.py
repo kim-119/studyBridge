@@ -121,8 +121,11 @@ async def _burst(inputs: List[QualityInput], concurrency: int, sem_n: int, queue
             busy += 1
             return
         try:
-            E.clear_cache() if k == 0 else None
-            await E.evaluate(inp.model_copy(update={"requestId": f"{inp.requestId[:100]}.c{k}"}))
+            # 요청마다 originalRequest 를 다르게 해 평가 캐시 적중을 없앤다(분할 표식은 끝에 그대로 둔다).
+            req = inp.originalRequest
+            uniq = f" (probe {k})"
+            req = req.replace("\n[분할 평가", uniq + "\n[분할 평가", 1) if "\n[분할 평가" in req else req + uniq
+            await E.evaluate(inp.model_copy(update={"requestId": f"{inp.requestId[:100]}.c{k}", "originalRequest": req}))
         finally:
             sem.release()
         lat.append((time.perf_counter() - t) * 1000)
