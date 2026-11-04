@@ -25,6 +25,37 @@ SB_OLLAMA="${SB_OLLAMA:-http://127.0.0.1:11434}"
 SB_STATE_DIR="${SB_STATE_DIR:-/var/lib/studybridge}"
 SB_OVERRIDE_ENV="${SB_OVERRIDE_ENV:-/etc/studybridge/ai-overrides.env}"
 SB_VENV_PY="${SB_VENV_PY:-/home/ai07/capstoneLLM/fastapi/.venv/bin/python}"
+SB_APP_ENV_FILE="${SB_APP_ENV_FILE:-/home/ai07/capstoneLLM/fastapi/.env}"
+
+# ---------------------------------------------------------------- 내부 Bearer (Phase B2)
+# FastAPI 는 AI_INTERNAL_AUTH_MODE=enforce 에서 /openapi.json·/api/ai/multi-chat 도 Bearer 를 요구한다.
+# 키는 서비스와 같은 순서(앱 .env → override env, 나중 값 우선)로 읽고, 값은 curl 인자/로그에 남기지 않도록
+# 0600 임시 헤더 파일(-H @file)로만 전달한다. 키가 없으면 헤더 없이 호출한다(report 모드 호환).
+sb_auth_header_file() {
+  local key="" f v
+  for f in "$SB_APP_ENV_FILE" "$SB_OVERRIDE_ENV"; do
+    [ -r "$f" ] || continue
+    v="$(sed -n 's/^[[:space:]]*AI_SERVER_API_KEY[[:space:]]*=[[:space:]]*//p' "$f" | tail -1 | tr -d '\r')"
+    v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+    [ -n "$v" ] && key="$v"
+  done
+  [ -n "${AI_SERVER_API_KEY:-}" ] && key="$AI_SERVER_API_KEY"
+  [ -n "$key" ] || return 1
+  f="$(umask 077; mktemp)" || return 1
+  printf 'Authorization: Bearer %s\n' "$key" > "$f"
+  printf '%s' "$f"
+}
+
+# 사용: sb_curl_auth <curl 인자...>  (내부 Bearer 를 붙인 curl)
+sb_curl_auth() {
+  local hf rc
+  if hf="$(sb_auth_header_file)"; then
+    curl -H "@$hf" "$@"; rc=$?
+    rm -f "$hf"
+    return $rc
+  fi
+  curl "$@"
+}
 
 # P3 MANDATORY_ROUTE_SET
 # 라우트 개수(73)를 믿지 않는다. 이름 자체를 비교한다.
@@ -99,7 +130,7 @@ sb_check_routes() {
   local base="${1:-$SB_BASE}" body
   SB_ROUTE_COUNT=0
   SB_MISSING_ROUTES=""
-  body="$(curl -fsS --max-time 15 "${base}/openapi.json" 2>/dev/null)" || return 2
+  body="$(sb_curl_auth -fsS --max-time 15 "${base}/openapi.json" 2>/dev/null)" || return 2
   local out
   out="$(printf '%s' "$body" | SB_WANT="${SB_MANDATORY_ROUTES[*]}" python3 -c '
 import os, sys, json
@@ -184,7 +215,7 @@ PY
 # 배포 검증(autodeploy)과 명시적 READY 점검에서만 사용한다.
 sb_functional_canary() {
   local base="${1:-$SB_BASE}" code
-  code="$(curl -s -o /tmp/sb_canary.$$ -w '%{http_code}' --max-time 90 \
+  code="$(sb_curl_auth -s -o /tmp/sb_canary.$$ -w '%{http_code}' --max-time 90 \
     -X POST "${base}/api/ai/multi-chat" \
     -H 'Content-Type: application/json' \
     -d '{"message":"1+1은?","roomId":990001,"learningMode":"basic"}' 2>/dev/null)" || code=000
