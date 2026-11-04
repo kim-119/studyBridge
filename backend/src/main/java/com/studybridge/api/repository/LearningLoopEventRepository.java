@@ -19,6 +19,10 @@ public interface LearningLoopEventRepository extends JpaRepository<LearningLoopE
     List<LearningLoopEvent> findByUserIdAndSourceTypeAndSourceIdOrderByCreatedAtDesc(
             Long userId, LearningSourceType sourceType, Long sourceId, Pageable pageable);
 
+    /** Learning Memory: 사용자 전체 범위의 특정 이벤트(예: QUIZ_SUBMITTED) 최근순. */
+    List<LearningLoopEvent> findByUserIdAndEventTypeOrderByCreatedAtDesc(Long userId, LearningEventType eventType,
+            Pageable pageable);
+
     List<LearningLoopEvent> findByUserIdAndMaterialIdAndEventTypeOrderByCreatedAtDesc(
             Long userId, Long materialId, LearningEventType eventType, Pageable pageable);
 }

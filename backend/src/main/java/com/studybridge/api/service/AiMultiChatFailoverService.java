@@ -28,6 +28,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -260,10 +261,37 @@ public class AiMultiChatFailoverService {
         final Map<String, AtomicInteger> answeredByAgent = new ConcurrentHashMap<>();
         final Map<String, AtomicInteger> erroredByAgent = new ConcurrentHashMap<>();
         final AtomicReference<String> result = new AtomicReference<>("pending");
+        /** 업스트림 시도마다 덧붙일 헤더(예: Learning Memory 의 X-AI-Scope). null = 없음(기존 요청과 바이트 동일). */
+        final Supplier<Map<String, String>> extraHeaders;
 
         Ctx(Long roomId, String requestId) {
+            this(roomId, requestId, null);
+        }
+
+        Ctx(Long roomId, String requestId, Supplier<Map<String, String>> extraHeaders) {
             this.roomId = roomId;
             this.requestId = requestId;
+            this.extraHeaders = extraHeaders;
+        }
+
+        /** 시도 시점에 헤더를 새로 만든다(서명 토큰 TTL 이 짧아 failover·재시도 지연 뒤에도 유효하게). 실패하면 헤더 없이 진행. */
+        void applyExtraHeaders(org.springframework.http.HttpHeaders h) {
+            if (extraHeaders == null) {
+                return;
+            }
+            try {
+                Map<String, String> m = extraHeaders.get();
+                if (m != null) {
+                    m.forEach((k, v) -> {
+                        if (k != null && v != null && !REQUEST_ID_HEADER.equalsIgnoreCase(k)) {
+                            h.set(k, v);
+                        }
+                    });
+                }
+            } catch (RuntimeException e) {
+                log.warn("[AI-UPSTREAM] roomId={} requestId={} 추가 헤더 생성 실패 — 헤더 없이 진행: {}", roomId, requestId,
+                        e.getClass().getSimpleName());
+            }
         }
 
         long elapsedMs() {
@@ -299,7 +327,17 @@ public class AiMultiChatFailoverService {
      */
     public Flux<ServerSentEvent<String>> streamMultiChat(Long roomId, String requestId,
                                                         Map<String, Object> requestBody, Duration nonStreamTimeout) {
-        final Ctx ctx = new Ctx(roomId, requestId);
+        return streamMultiChat(roomId, requestId, requestBody, nonStreamTimeout, null);
+    }
+
+    /**
+     * {@link #streamMultiChat(Long, String, Map, Duration)} + 업스트림 시도마다 덧붙일 헤더 공급자(stream·non-stream 폴백 모두 적용).
+     * extraHeaders 가 null 이면 기존 메서드와 요청 바이트·헤더가 같다.
+     */
+    public Flux<ServerSentEvent<String>> streamMultiChat(Long roomId, String requestId,
+                                                        Map<String, Object> requestBody, Duration nonStreamTimeout,
+                                                        Supplier<Map<String, String>> extraHeaders) {
+        final Ctx ctx = new Ctx(roomId, requestId, extraHeaders);
         final List<AiUpstream> order = streamCandidates();
 
         Flux<ServerSentEvent<String>> body = streamTier(order, 0, ctx, requestBody)
@@ -378,7 +416,14 @@ public class AiMultiChatFailoverService {
      */
     public Mono<Map<String, Object>> callMultiChat(Long roomId, String requestId,
                                                    Map<String, Object> requestBody, Duration perCallTimeout) {
-        final Ctx ctx = new Ctx(roomId, requestId);
+        return callMultiChat(roomId, requestId, requestBody, perCallTimeout, null);
+    }
+
+    /** {@link #callMultiChat(Long, String, Map, Duration)} + 시도마다 덧붙일 헤더 공급자(null 이면 기존과 동일). */
+    public Mono<Map<String, Object>> callMultiChat(Long roomId, String requestId,
+                                                   Map<String, Object> requestBody, Duration perCallTimeout,
+                                                   Supplier<Map<String, String>> extraHeaders) {
+        final Ctx ctx = new Ctx(roomId, requestId, extraHeaders);
         return nonStreamTier(nonStreamCandidates(), 0, ctx, requestBody, perCallTimeout, 1)
                 .doOnSuccess(m -> {
                     ctx.result.set("ok");
@@ -422,6 +467,7 @@ public class AiMultiChatFailoverService {
                 .uri(STREAM_PATH)
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .header(REQUEST_ID_HEADER, ctx.requestId)
+                .headers(ctx::applyExtraHeaders)
                 .bodyValue(body)
                 .retrieve()
                 .bodyToFlux(SSE_TYPE)
@@ -591,6 +637,7 @@ public class AiMultiChatFailoverService {
                 .uri(NON_STREAM_PATH)
                 .accept(MediaType.APPLICATION_JSON)
                 .header(REQUEST_ID_HEADER, ctx.requestId)
+                .headers(ctx::applyExtraHeaders)
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(MAP_TYPE)
