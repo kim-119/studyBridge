@@ -1,4 +1,4 @@
-# Learning Loop / Quality Gate / Training — EC2 canonical v1 + Phase C 통합 인계
+# Learning Loop / Quality Gate / Training — EC2 canonical v1 + Phase C·D 통합 인계
 
 - 작성: 2026-11-04, EC2 세션(브랜치 `feature/learning-loop-ec2`, 격리 worktree). Phase C(ai07 Phase B 결과 반영) 갱신 포함.
 - 기준: `origin/LLM-clean` = `13dae5e4ddf76d040e978c1a4fc29e6ece53f0e2` (Phase C 시작 시 재확인)
@@ -22,6 +22,24 @@
 | isDisplayable 방어선 | 내부에서 `validate(output)` 재실행(계약 위반 APPROVED 6건이 true 를 내던 결함) | `ResponseQualityV1` |
 | 노출 경로 | 누락 5개 등록 + 자료 피드백 2개 게이트 연결 → **GATED 5 / BLOCKED 40 / EXEMPT 1 (46)** | `AiQualityGateCoverage` |
 | 외부 전송 차단 시 Spring 처리 | 비전 `VISION_ANSWER_DISABLED` → 재시도 불가 `SCREEN_AI_DISABLED`, 피드백 `success:false AI_UNAVAILABLE` → 기존 보존 실패 | `VisionUpstreamClient`, `MaterialFeedbackService` |
+
+## 0-D. Phase D(게이트 전면 연결·통합 안정화) 요약 — 2026-11-04
+
+상세: 경로 매트릭스 `PHASE_D_ROUTE_MATRIX.md`(코드에서 생성), ai07 계약 요청 `PHASE_D_AI07_CONTRACT_REQUESTS.md`(R1~R5).
+
+| 항목 | 결과 |
+|---|---|
+| 사용자 노출 AI 경로 | **63 — GATED 55 / BLOCKED_WHEN_GATE_ON 4 / EXEMPT 4**(Phase C 46: 5/40/1). 남은 BLOCKED 4 = 로드맵(조회·재생성·토글 2) — Spring 분할 평가 연결은 끝났으나 ai07 `check_plan` 이 로드맵 스키마·세그먼트를 인식하지 못해 승인 0%(R5-1) |
+| 미등록 AI 경로 방지(D2) | `AiRouteClassifierTest`: 컴파일된 바이트코드 호출 그래프(람다·구현 포함)로 HTTP·STOMP 핸들러를 분류 — HTTP 클라이언트 필드 도달 = AI 생성, AI 산출물 저장소 조회 = 재노출. 미등록이면 CI 실패, 역으로 등록 항목이 AI 코드에 닿지 않아도 실패. @Conditional 로 꺼진 컨트롤러도 분류. 사유 필수 비노출 21 + STOMP 2 |
+| 허위 GATED 방지 | 모든 GATED 경로에 실행 증거 테스트(`@GateEvidence`: 게이트 ON 거절 시 응답·저장·캐시 초안 0, 승인 시 평가기 실제 호출) 1개 이상 — 없으면 CI 실패 |
+| 우회 차단(분류기·영역 보고로 발견) | 퀴즈 점수 해설·그룹 퀴즈 세션·오답노트 다운로드/메모·로드맵 토글·계획 분석 항목·adaptive apply·추천 상태 전이·학습일지 조회 등 재노출 15개 등록, 오답노트 자료 상세(`?context=review-note`) PDF·본문 우회 노출 차단, 실시간 그룹 퀴즈(STOMP) 미승인 퀴즈 시작 거부 + 방송 가림 |
+| 보안 | `/api/test/**` permitAll 제거 + 성능 테스트 컨트롤러 기본 비활성(인증 없이 `/seed` 로 DB·Redis 1만 건 쓰기 가능했음) |
+| 분할 평가(D4) | `SegmentedQualityGate`: 결정적 전체 검증 → JSON Pointer 세그먼트(원본 발췌) → 커버리지 정확히 1회·겹침·상한 → 세그먼트별 고유 requestId·체크섬 → 전부 승인일 때만 승인, 매니페스트 체크섬으로 표시본 결속(진행 상태 필드 제외) |
+| SSE(D6) | all_complete 판정 재사용(같은 에이전트 식별자·본문 정확 일치, messages[i]↔승인 answers[i]) — 소크라테스 실캡처 평가 7→4회. 토론 section 유지·허용 이름 기호 허용. 사용자별 평가 한도(분당 30·버스트 10, 생성 유발 경로만), 평가 본문 256KiB 사전 차단 |
+| Learning Memory(D5) | `LearningMemoryAssembler` → learning-context.v1 + `X-AI-Scope`(rid 바인딩) — 승인 AI 답변·승인 요약·승인 오답 개념·소유 자료 원문·메모·정답률·일정, 소유권·예산·역할 유지. 기본 OFF, OFF 시 요청 바이트 동일. **ai07 이 필드를 무시(R3) → 켜도 효과 없음** |
+| 실제 ai07 평가기 E2E | ai07 PR #116 평가기 코드(judge OFF)를 격리 실행해 Spring 게이트와 HTTP 왕복: 계약 fixture 실판정 일치, 재생성 승인, 학습메이트 실캡처 미승인 본문 0자 — 단 **judge OFF 에서는 학습메이트·소크라테스 답변이 전부 거절**(R5-3) |
+| 신규 컬럼(전부 nullable) | 승인 요청서 `V20261104_2__ai_quality_training_schema.sql` — Phase D 병합 후 스냅샷 dry-run 재추출: ADD COLUMN 23(품질 판정 22 + origin) + 신규 테이블 2. 2회 적용 멱등·적용 후 잔여 0(스냅샷에 없는 기존 운영 테이블 learning_recommendations 제외)·롤백 검증 |
+| 테스트 | 백엔드 전체 **1001 / 0 실패 / 0 오류 / 14 skip**(PG16·Redis·ai07 실평가기 E2E·학습 요청 교차 검증 포함), 프런트 vite build PASS·smoke 7 |
 
 ## 1. canonical 3계약(EC2 owner)
 
