@@ -65,6 +65,13 @@ public class StudyJournal {
     @Column(name = "relation_path", length = 300)
     private String relationPath;
 
+    /**
+     * 품질 게이트(Phase D): AI 판정 문구(relationPath — 자유 텍스트) 평가 승인 시에만 APPROVED. 게이트 OFF 저장분·레거시는 null
+     * (게이트 ON 이면 relationPath 를 가린다). 사용자 메모 본문(S3)은 사용자 데이터라 이 판정과 무관하다.
+     */
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
     private Double confidence;
 
     @Enumerated(EnumType.STRING)

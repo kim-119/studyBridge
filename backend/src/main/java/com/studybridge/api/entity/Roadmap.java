@@ -50,6 +50,14 @@ public class Roadmap {
     @Column(name = "roadmap_json", columnDefinition = "TEXT")
     private String roadmapJson;
 
+    // 품질 게이트(Phase D): 분할 평가 전 세그먼트 승인 시에만 APPROVED. 게이트 OFF 저장본·레거시는 null(= 미검증).
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
+    // 승인 당시 매니페스트 fullChecksum(SHA-256 hex) — 진행 상태(days[].completed)를 뺀 AI 본문 기준. 표시 직전 재계산해 일치할 때만 노출.
+    @Column(name = "quality_checksum", length = 64)
+    private String qualityChecksum;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

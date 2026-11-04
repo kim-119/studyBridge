@@ -33,4 +33,9 @@ public class StudyNoteAnalysisDTO {
     private List<Map<String, Object>> wikiSummaries;        // [{title, summary}]
     private List<String> limitations;
     private String errorMessage;
+    // 품질 게이트(Phase D, 게이트 ON 에서만 채움 — OFF 응답 형태 불변). qualityRedacted=true: 미검증 저장본이라 AI 필드를 가림.
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    private String qualityStatus;
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    private Boolean qualityRedacted;
 }

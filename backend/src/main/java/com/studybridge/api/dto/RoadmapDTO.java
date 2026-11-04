@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 @Getter
-@Builder
+@Builder(toBuilder = true)
 @NoArgsConstructor
 @AllArgsConstructor
 public class RoadmapDTO {
@@ -35,6 +35,16 @@ public class RoadmapDTO {
     private Boolean usedFallback;
     private Boolean cacheHit;
 
+    // 품질 게이트(Phase D, 게이트 ON 에서만 채움 — OFF 응답 형태 불변). qualityRedacted=true: 미검증 저장본이라 AI 본문을 가림.
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    private String qualityStatus;
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    private Double qualityScore;
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    private Boolean verified;
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    private Boolean qualityRedacted;
+
     @Getter
     @Builder
     @NoArgsConstructor
@@ -56,5 +66,8 @@ public class RoadmapDTO {
         private Integer taskOrder;
         private String content; // 학습 목표, 학습 활동 등
         private Boolean isCompleted; // 완료 여부 체크
+        // 게이트 ON: 레거시(steps/tasks) 로드맵 과제 문구는 검증 기록이 없어 가린다(진행 상태는 유지).
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean qualityRedacted;
     }
 }
