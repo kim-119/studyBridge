@@ -1,7 +1,7 @@
 {
  "status": "CANONICAL_EC2_V1",
  "owner": "EC2 (Spring)",
- "source": "ai07 PR #116 feature/learning-loop-ai07 @ a4bd8fac69884405555ab839e8e1d547ac5d7672 (fixtures copied verbatim) + ec2_* edge cases",
+ "source": "ai07 PR #116 feature/learning-loop-ai07 @ a4bd8fac69884405555ab839e8e1d547ac5d7672 (fixtures copied verbatim) + ec2_* edge cases; ai07Observed re-verified @ d7346fc6434cae30af9c1ee68762cb70935f6d86 (2026-11-04, crosscheck_pydantic.py fixtures=30 mismatches=0)",
  "canonicalizedAt": "2026-11-04",
  "rules": {
   "jsonTypes": "strict: no string->number coercion, unknown fields rejected (C-TYPE-1)",
@@ -9,18 +9,22 @@
   "score": "0 <= score <= 100; APPROVED requires 80 <= score <= 100 (C-RQ-2)",
   "datetimes": "ISO-8601 with offset (Z) required (C-TIME-1)",
   "lengths": "code points (Python len)",
-  "mandatoryValidatorsPassed": "optional bool in response-quality.v1 output; false => not displayable (C-RQ-1)"
+  "mandatoryValidatorsPassed": "optional bool in response-quality.v1 output; false => not displayable (C-RQ-1)",
+  "duplicateKeys": "rejected (C-JSON-1, Jackson STRICT_DUPLICATE_DETECTION)",
+  "loneSurrogates": "rejected (C-JSON-2)",
+  "datetimeYear": "0001..9999 of the value as written (offset preserved); epoch -> UTC year (C-TIME-2)",
+  "minimumScore": "null or 80 accepted; approval threshold is always the receiver's constant 80"
  },
  "fixtures": {
   "learning-context.v1/ec2_invalid_request_id_trailing_newline.json": {
    "canonical": "INVALID",
-   "ai07Observed": "VALID",
-   "openIssue": "C-ID-1"
+   "ai07Observed": "INVALID",
+   "resolvedIssue": "C-ID-1 (ai07 d7346fc6)"
   },
   "learning-context.v1/ec2_invalid_string_material_id.json": {
    "canonical": "INVALID",
-   "ai07Observed": "VALID",
-   "openIssue": "C-TYPE-1"
+   "ai07Observed": "INVALID",
+   "resolvedIssue": "C-TYPE-1 (ai07 d7346fc6)"
   },
   "learning-context.v1/ec2_valid_trust_overclaim_is_capped.json": {
    "canonical": "VALID",
@@ -65,9 +69,9 @@
   },
   "response-quality.v1/ec2_invalid_output_score_above_100.json": {
    "canonical": "INVALID",
-   "ai07Observed": "VALID",
+   "ai07Observed": "INVALID",
    "model": "output",
-   "openIssue": "C-RQ-2"
+   "resolvedIssue": "C-RQ-2 (ai07 d7346fc6)"
   },
   "response-quality.v1/ec2_valid_output_approved_80.json": {
    "canonical": "VALID",
@@ -116,8 +120,8 @@
   },
   "training-sample.v1/ec2_invalid_naive_datetime.json": {
    "canonical": "INVALID",
-   "ai07Observed": "VALID",
-   "openIssue": "C-TIME-1"
+   "ai07Observed": "INVALID",
+   "resolvedIssue": "C-TIME-1 (ai07 d7346fc6)"
   },
   "training-sample.v1/ec2_invalid_numeric_event_id.json": {
    "canonical": "INVALID",
@@ -149,12 +153,12 @@
   }
  },
  "signing": {
-  "vectors": "signing-vectors.v1.json (ai07 PROPOSED, verbatim)",
-  "canonicalOverrides": {
+  "vectors": "signing-vectors.v1.json (CANONICAL_EC2_V1, ai07 d7346fc6 copy)",
+  "resolved": {
    "consentToken/scope_token_as_consent": {
-    "ai07Observed": "CONSENT_TOKEN_EXPIRED",
     "canonical": "CONSENT_TOKEN_TYPE_INVALID",
-    "openIssue": "C-SIG-1"
+    "ai07Observed": "CONSENT_TOKEN_TYPE_INVALID",
+    "resolvedIssue": "C-SIG-1 (ai07 d7346fc6)"
    }
   }
  },

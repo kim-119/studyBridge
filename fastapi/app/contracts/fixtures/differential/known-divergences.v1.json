@@ -1,17 +1,46 @@
 {
-  "note": "EC2 Java(ContractJson.STRICT) 와 ai07 Python 판정이 다른 케이스 전부. 규칙: 모든 항목은 Java=VALID, Python=INVALID(Python 이 더 엄격)여야 한다. Python 이 더 느슨한 불일치는 0건이어야 하며 테스트가 강제한다. 해소는 EC2 측 1줄 설정/검증 추가로 가능(인계 문서 참조).",
-  "divergences": {
-    "lc.contextItems.0.createdAt.year5": "C-TIME-2",
-    "ts.createdAt.year5": "C-TIME-2",
-    "lc.contextItems.0.createdAt.year0000": "C-TIME-2",
-    "lc.contextItems.0.createdAt.epoch_year10000": "C-TIME-2",
-    "lc.raw.duplicate_key_both_valid": "C-JSON-1",
-    "lc.raw.duplicate_key_nested_both_valid": "C-JSON-1",
-    "lc.raw.lone_surrogate": "C-JSON-2"
-  },
+  "note": "EC2 Java(ContractJson.STRICT) 와 ai07 Python 판정이 다른 케이스 전부. 2026-11-05 EC2 f9c878f5 기준 605/605 일치 → 비어 있음. 규칙: 새 불일치가 생기면 Java=VALID, Python=INVALID(Python 이 더 엄격)만 허용되며 테스트가 강제한다.",
+  "divergences": {},
   "issues": {
     "C-TIME-2": "Java OffsetDateTime 은 연도 0000/5자리 이상(+12026)·epoch 253402300800 이상을 받는다. Python datetime 은 0001..9999 만 표현 가능 → 거부. 제안: EC2 validate 에 1 <= year <= 9999 추가.",
     "C-JSON-1": "Jackson 기본값은 중복 키를 허용(마지막 값 채택). ai07 은 파서 차이 공격면을 없애려고 거부. 제안: ContractJson.STRICT 에 JsonParser.Feature.STRICT_DUPLICATE_DETECTION 활성화.",
     "C-JSON-2": "Jackson 은 짝 없는 서러게이트(\\ud800) 문자열을 받는다. ai07(pydantic-core) 은 UTF-8 로 표현 불가한 문자열을 거부. 제안: EC2 validate 에서 Character.isSurrogate 고립 코드 유닛 거부(또는 현 상태 유지 — 정상 트래픽에서 발생 불가)."
+  },
+  "resolved": {
+    "lc.contextItems.0.createdAt.year5": {
+      "issue": "C-TIME-2",
+      "resolvedBy": "EC2 1d6f0435(C-TIME-2·C-JSON-1·C-JSON-2)",
+      "javaVerdictsRecordedAt": "f9c878f5"
+    },
+    "ts.createdAt.year5": {
+      "issue": "C-TIME-2",
+      "resolvedBy": "EC2 1d6f0435(C-TIME-2·C-JSON-1·C-JSON-2)",
+      "javaVerdictsRecordedAt": "f9c878f5"
+    },
+    "lc.contextItems.0.createdAt.year0000": {
+      "issue": "C-TIME-2",
+      "resolvedBy": "EC2 1d6f0435(C-TIME-2·C-JSON-1·C-JSON-2)",
+      "javaVerdictsRecordedAt": "f9c878f5"
+    },
+    "lc.contextItems.0.createdAt.epoch_year10000": {
+      "issue": "C-TIME-2",
+      "resolvedBy": "EC2 1d6f0435(C-TIME-2·C-JSON-1·C-JSON-2)",
+      "javaVerdictsRecordedAt": "f9c878f5"
+    },
+    "lc.raw.duplicate_key_both_valid": {
+      "issue": "C-JSON-1",
+      "resolvedBy": "EC2 1d6f0435(C-TIME-2·C-JSON-1·C-JSON-2)",
+      "javaVerdictsRecordedAt": "f9c878f5"
+    },
+    "lc.raw.duplicate_key_nested_both_valid": {
+      "issue": "C-JSON-1",
+      "resolvedBy": "EC2 1d6f0435(C-TIME-2·C-JSON-1·C-JSON-2)",
+      "javaVerdictsRecordedAt": "f9c878f5"
+    },
+    "lc.raw.lone_surrogate": {
+      "issue": "C-JSON-2",
+      "resolvedBy": "EC2 1d6f0435(C-TIME-2·C-JSON-1·C-JSON-2)",
+      "javaVerdictsRecordedAt": "f9c878f5"
+    }
   }
 }
