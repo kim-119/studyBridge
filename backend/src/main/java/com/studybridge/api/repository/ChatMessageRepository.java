@@ -20,6 +20,9 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
 
     List<ChatMessage> findTop10ByAgentChatRoomIdAndSenderOrderByCreatedAtDesc(Long roomId, String sender);
 
+    /** Learning Memory: 방의 최근 메시지 20건(최신순, id tie-breaker). 소유권은 호출자가 방 소유자로 먼저 확인한다. */
+    List<ChatMessage> findTop20ByAgentChatRoomIdOrderByCreatedAtDescIdDesc(Long roomId);
+
     void deleteByAgentId(Long agentId);
 
     // 멱등 영속화: 같은 방에 같은 eventId(또는 composite dedup 키)의 AI 답변이 이미 있으면 다시 저장하지 않는다.

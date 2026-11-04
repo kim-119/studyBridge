@@ -54,6 +54,49 @@ public class ChatService {
         private final com.studybridge.api.ai.quality.QualityStreamGate qualityStreamGate;
         private final com.studybridge.api.ai.training.TrainingCandidateCollector trainingCollector;
 
+        /**
+         * Learning Memory(learning-context.v1, 기본 OFF). 생성자 시그니처를 바꾸지 않도록 setter 주입 — 없거나 OFF 면 ai07 요청 본문·헤더가
+         * 기존과 바이트 단위로 같다(조립기 호출 0). 추론 시점 컨텍스트일 뿐 QLoRA 가중치 학습(training-sample.v1)과 무관하다.
+         */
+        private com.studybridge.api.ai.memory.LearningMemoryAssembler learningMemory;
+
+        @org.springframework.beans.factory.annotation.Autowired(required = false)
+        public void setLearningMemory(com.studybridge.api.ai.memory.LearningMemoryAssembler learningMemory) {
+                this.learningMemory = learningMemory;
+        }
+
+        /**
+         * 플래그 ON 일 때만 요청 본문에 learningContext 를 넣고 첨부물(X-AI-Scope 헤더 공급자)을 돌려준다. OFF·키 없음·내용 없음·검증 실패면
+         * null 이고 본문은 그대로다(요청은 항상 진행 — 메모리 실패가 채팅을 막지 않는다).
+         */
+        private com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment attachLearningMemory(Map<String, Object> requestBody,
+                        Long userId, Long roomId, ChatDTO.MultiChatRequest request, String requestId) {
+                if (learningMemory == null || !learningMemory.enabled() || userId == null || requestId == null) {
+                        return null;
+                }
+                try {
+                        com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment a = learningMemory.attach(userId, roomId,
+                                        request.getMaterialId(), requestId, request.getMessage());
+                        if (a == null) {
+                                return null;
+                        }
+                        requestBody.put("learningContext", a.body());
+                        return a;
+                } catch (RuntimeException e) {
+                        log.warn("[LEARNING-MEMORY] roomId={} requestId={} 첨부 실패 — learningContext 없이 진행: {}", roomId, requestId,
+                                        e.getClass().getSimpleName());
+                        return null;
+                }
+        }
+
+        /** memory 가 없으면 기존 4-인자 호출 그대로(요청 불변), 있으면 X-AI-Scope 헤더를 시도마다 붙인다. */
+        private Mono<Map<String, Object>> callMultiChat(Long roomId, String requestId, Map<String, Object> body, Duration timeout,
+                        com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment memory) {
+                return memory == null
+                                ? aiFailover.callMultiChat(roomId, requestId, body, timeout)
+                                : aiFailover.callMultiChat(roomId, requestId, body, timeout, memory.headers());
+        }
+
         /** 품질 게이트 ON 여부(테스트 팩토리에서 null 이면 OFF). */
         private boolean qualityGateOn() {
                 return qualityStreamGate != null && qualityStreamGate.enabled();
@@ -454,6 +497,8 @@ public class ChatService {
                 });
 
                 Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request, userId, syncRequestId);
+                final com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment memory =
+                                attachLearningMemory(requestBody, userId, roomId, request, syncRequestId);
                 log.info("chat fastapi payload roomId={} requestId={} keys={} agents={}", roomId, syncRequestId, requestBody.keySet(),
                                 requestBody.get("agents") instanceof List ? ((List<?>) requestBody.get("agents")).size() : 0);
 
@@ -468,8 +513,8 @@ public class ChatService {
                 long faStart = System.currentTimeMillis();
                 try {
                         // PRIMARY→SECONDARY failover 포함 non-stream 호출. 여기는 MVC(Tomcat) 요청 스레드라 block 허용.
-                        response = aiFailover.callMultiChat(roomId, syncRequestId,
-                                        requestBody, Duration.ofSeconds(aiTimeoutSeconds))
+                        response = callMultiChat(roomId, syncRequestId,
+                                        requestBody, Duration.ofSeconds(aiTimeoutSeconds), memory)
                                         .block(Duration.ofSeconds(aiTimeoutSeconds * 2 + 5));
                         log.info("chat fastapi elapsed_ms={} roomId={} timeout_s={}",
                                         System.currentTimeMillis() - faStart, roomId, aiTimeoutSeconds);
@@ -883,6 +928,8 @@ public class ChatService {
 
                 // FastAPI 요청 바디 (블로킹과 동일 로직 재사용; room.getAgents() lazy 접근은 현재 트랜잭션 내)
                 Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request, userId, requestId);
+                final com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment memory =
+                                attachLearningMemory(requestBody, userId, roomId, request, requestId);
 
                 String effectiveLearningMode = normalizeLearningMode(firstNonBlank(
                                 request.getLearningMode(), room.getLearningMode(), "basic"));
@@ -911,8 +958,8 @@ public class ChatService {
                                 : Flux.empty();
 
                 Flux<ServerSentEvent<String>> body = useBasicOrchestration
-                                ? orchestrateBasicStream(roomId, requestId, request, requestBody)
-                                : relayRemoteStream(roomId, requestId, requestBody, request, room);
+                                ? orchestrateBasicStream(roomId, requestId, request, requestBody, memory)
+                                : relayRemoteStream(roomId, requestId, requestBody, request, room, memory);
 
                 final String rid = requestId;
                 final java.util.concurrent.atomic.AtomicBoolean committed = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -943,7 +990,8 @@ public class ChatService {
         //  reactor 체인으로 순차 실행하며 .block() 없이 각 단계 완료 시점에 stage_complete 이벤트를 즉시 emit한다.
         //  1차: 빠른 Ollama 초안(짧은 timeout) → 2차: 1차를 검증/보완 → 3차: 1차·2차에 대한 상호 피드백.
         private Flux<ServerSentEvent<String>> orchestrateBasicStream(Long roomId, String requestId,
-                        ChatDTO.MultiChatRequest request, Map<String, Object> baseBody) {
+                        ChatDTO.MultiChatRequest request, Map<String, Object> baseBody,
+                        com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment memory) {
                 long stage1Timeout = envSeconds("AI_BASIC_STAGE1_TIMEOUT_SECONDS", 30);
                 long stageNTimeout = envSeconds("AI_BASIC_STAGEN_TIMEOUT_SECONDS", 60);
                 // 기본 채팅은 "선택된 에이전트의 최종 답변"만 보여준다는 정책상, 내부 검증(2차)/상호 피드백(3차)은
@@ -970,9 +1018,9 @@ public class ChatService {
 
                         // 1차(primary): 각 에이전트가 자신의 persona/지식수준으로 질문에 직접 답한다(검증·피드백 금지).
                         //  non-stream 호출은 failover 서비스가 PRIMARY→SECONDARY 순으로 시도한다.
-                        Mono<List<Map<String, Object>>> chain = aiFailover
-                                        .callMultiChat(roomId, requestId, stageBody(baseBody, primaryPrompt(question, regenSuffix), 1),
-                                                        Duration.ofSeconds(stage1Timeout))
+                        Mono<List<Map<String, Object>>> chain = callMultiChat(roomId, requestId,
+                                                        stageBody(baseBody, primaryPrompt(question, regenSuffix), 1),
+                                                        Duration.ofSeconds(stage1Timeout), memory)
                                         .map(resp -> extractAnswerRows(resp, 1))
                                         .onErrorResume(e -> {
                                                 log.warn("기본채팅 1차 생성 실패 roomId={} requestId={} err={}", roomId, requestId,
@@ -1001,10 +1049,9 @@ public class ChatService {
                                                 // 1차 답변(들)을 에이전트명과 함께 묶어 2·3차 프롬프트의 검토 대상으로 넣는다.
                                                 String primaryContext = labeledAnswers(primaryRows);
                                                 // 2차(verification): 1차를 사실성/누락/논리 관점에서 검증·지적 (재답변 금지)
-                                                return aiFailover
-                                                                .callMultiChat(roomId, requestId,
+                                                return callMultiChat(roomId, requestId,
                                                                                 stageBody(baseBody, verifyPrompt(question, primaryContext, regenSuffix), 2),
-                                                                                Duration.ofSeconds(stageNTimeout))
+                                                                                Duration.ofSeconds(stageNTimeout), memory)
                                                                 .map(resp -> extractAnswerRows(resp, 2))
                                                                 .onErrorResume(e -> {
                                                                         log.warn("기본채팅 2차 검증 실패 roomId={} requestId={} err={}", roomId, requestId,
@@ -1018,10 +1065,9 @@ public class ChatService {
                                                                         }
                                                                         String verifyContext = labeledAnswers(verifyRows);
                                                                         // 3차(feedback): 1차·2차를 참고한 에이전트 간 상호 피드백(동의/반박/추가관점)
-                                                                        return aiFailover
-                                                                                        .callMultiChat(roomId, requestId,
+                                                                        return callMultiChat(roomId, requestId,
                                                                                                         stageBody(baseBody, feedbackPrompt(question, primaryContext, verifyContext, regenSuffix), 3),
-                                                                                                        Duration.ofSeconds(stageNTimeout))
+                                                                                                        Duration.ofSeconds(stageNTimeout), memory)
                                                                                         .map(resp -> toFeedbackRows(extractAnswerRows(resp, 3)))
                                                                                         .onErrorResume(e -> {
                                                                                                 log.warn("기본채팅 3차 피드백 실패 roomId={} requestId={} err={}", roomId, requestId,
@@ -1408,6 +1454,12 @@ public class ChatService {
         //  block() 없이 리액티브 체인으로 컨트롤러까지 이어진다. 영속화(JDBC)는 boundedElastic 에서 수행한다.
         private Flux<ServerSentEvent<String>> relayRemoteStream(Long roomId, String requestId, Map<String, Object> requestBody,
                         ChatDTO.MultiChatRequest request, AgentChatRoom room) {
+                return relayRemoteStream(roomId, requestId, requestBody, request, room, null);
+        }
+
+        private Flux<ServerSentEvent<String>> relayRemoteStream(Long roomId, String requestId, Map<String, Object> requestBody,
+                        ChatDTO.MultiChatRequest request, AgentChatRoom room,
+                        com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment memory) {
                 final long nonStreamTimeout = resolveAiTimeoutSeconds(
                                 firstNonBlank(request.getLearningMode(), room.getLearningMode()), request.getMode());
                 // 성능 측정: Spring stream open → upstream 첫 이벤트 → 첫 agent_answer → all_complete 지연을 분리해 로깅한다.
@@ -1424,8 +1476,11 @@ public class ChatService {
                 // 리액티브 체인을 끊지 않는다(Flux.create/내부 subscribe 없음): MVC 가 이 Flux 를 구독하고, 브라우저가 끊기면 MVC cancel →
                 //  이 체인 cancel → WebClient 구독 취소(업스트림 소켓 종료) → AI07 [SSE-CANCEL] 절단 감시가 추론을 멈춘다(§16).
                 //  backpressure 도 WebClient 까지 그대로 전파된다(무한 버퍼 없음, §18). 영속화(JDBC)는 boundedElastic 에서 수행한다.
-                Flux<ServerSentEvent<String>> upstream = aiFailover
-                                .streamMultiChat(roomId, requestId, requestBody, Duration.ofSeconds(nonStreamTimeout));
+                // Learning Memory 첨부물이 없으면 기존 4-인자 호출 그대로(요청 바이트·헤더 불변), 있으면 시도마다 X-AI-Scope 를 새로 서명해 붙인다.
+                Flux<ServerSentEvent<String>> upstream = memory == null
+                                ? aiFailover.streamMultiChat(roomId, requestId, requestBody, Duration.ofSeconds(nonStreamTimeout))
+                                : aiFailover.streamMultiChat(roomId, requestId, requestBody, Duration.ofSeconds(nonStreamTimeout),
+                                                memory.headers());
                 if (qualityGateOn()) {
                         // 단일 경계: 영속화/캐시(doOnNext) 보다 앞에서 게이트를 건다 → 거절·미평가 본문은 화면·DB·Redis 어디에도 가지 않는다.
                         // 표시 이름 허용 목록 = 이 방 에이전트 이름(모델이 쓴 문장이 이름 칸으로 새지 않게).
