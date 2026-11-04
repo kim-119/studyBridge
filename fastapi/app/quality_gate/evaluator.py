@@ -177,7 +177,10 @@ async def _evaluate(inp: QualityInput, judge, started: float) -> QualityOutput:
         vs += qv
     if "graph" in prof.validators:
         vs += C.check_graph(inp.proposedOutput)
-    if "plan" in prof.validators:
+    # 계획 구조 검증은 구조화된 계획(plan_json 또는 객체)에만 적용한다. 서술형 코칭(text)은 일정 JSON 이 아니므로
+    # 예전처럼 JSON_SCHEMA_INVALID(HARD)로 무조건 거절하지 않고, 대신 feasibility 를 '검증 불가'로 두어 점수에 넣지 않는다.
+    plan_structured = inp.outputKind == OutputKind.PLAN_JSON or not isinstance(inp.proposedOutput, str)
+    if "plan" in prof.validators and plan_structured:
         vs += C.check_plan(inp.proposedOutput, max_daily_hours=cons.maxDailyHours, deadline=cons.deadline,
                            known_prereqs=cons.knownPrerequisites)
     if "vision" in prof.validators:
@@ -335,7 +338,9 @@ async def _evaluate(inp: QualityInput, judge, started: float) -> QualityOutput:
                 judge_needed = True
         elif name in ("feasibility", "rule_consistency"):
             plan_hard = {c for c in hard_codes if c.startswith("PLAN_") or c == "JSON_SCHEMA_INVALID"}
-            if name == "rule_consistency" and cons.maxDailyHours is None and cons.deadline is None:
+            if "plan" in prof.validators and not plan_structured:
+                dims[name] = (None, "not_applicable")       # 서술형 코칭: 일정 실현 가능성을 결정적으로 증명할 수 없음
+            elif name == "rule_consistency" and cons.maxDailyHours is None and cons.deadline is None:
                 dims[name] = (None, "not_applicable")
             else:
                 major = any(x[0].startswith("PLAN_") and x[1] == "MAJOR" for x in vs)

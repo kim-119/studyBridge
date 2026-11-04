@@ -219,3 +219,21 @@ def test_graph_checker_accepts_graph_builder_from_to_edges_and_rejects_ambiguous
     assert "JSON_SCHEMA_INVALID" in {x[0] for x in fn(bad)}
     dangling = {"nodes": [{"id": "a"}], "edges": [{"from": "a", "to": "zz"}]}
     assert "GRAPH_DANGLING_EDGE" in {x[0] for x in fn(dangling)}
+
+
+def test_planner_text_coaching_is_not_hard_failed_as_json_but_structured_plan_still_checked():
+    def ev(output, kind):
+        E.clear_cache()
+        return run(E.evaluate(QualityInput.model_validate({
+            "schemaVersion": SCHEMA_VERSION, "requestId": "req-plan-000001", "taskType": "PLANNER_COACHING",
+            "outputKind": kind, "originalRequest": "이번 주 자료구조 공부 계획을 조언해줘", "proposedOutput": output})))
+    text = run_text = ("이번 주 자료구조 공부는 배열과 연결 리스트 복습부터 시작하고, 하루에 한 주제씩 예제를 직접 구현해 보세요. "
+                       "주말에는 스택과 큐를 묶어 문제를 풀며 약한 부분을 다시 정리하면 좋습니다.")
+    o = ev(text, "text")
+    codes = {x.code for x in o.violations}
+    assert "JSON_SCHEMA_INVALID" not in codes and not o.hardFail
+    feas = [d for d in o.dimensions if d.name == "feasibility"][0]
+    assert feas.score is None and feas.method == "not_applicable"
+    o2 = ev({"items": [{"title": "배열 복습", "hours": 2}]}, "plan_json")            # 날짜 없는 구조화 계획
+    assert o2.hardFail and "PLAN_DATE_INVALID" in {x.code for x in o2.violations}
+    del run_text
