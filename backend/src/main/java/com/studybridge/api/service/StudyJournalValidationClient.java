@@ -164,7 +164,7 @@ public class StudyJournalValidationClient {
                     .studyRelated(true).pdfGrounded(true).conceptExpanded(false)
                     .confidence(0.5)
                     .reason("학습 자료의 핵심 개념과 직접 연결되는 정리로 확인되었습니다.")
-                    .suggestion("").engine("spring-fallback")
+                    .suggestion("").engine("spring-fallback").localOrigin(true)
                     .build();
         }
 
@@ -179,7 +179,7 @@ public class StudyJournalValidationClient {
         return StudyJournalValidationResult.builder()
                 .decision(decision).category(category).relationType(relationType)
                 .studyRelated(false).pdfGrounded(false).conceptExpanded(false)
-                .confidence(0.0).reason(reason).suggestion(suggestion).engine("spring-fallback")
+                .confidence(0.0).reason(reason).suggestion(suggestion).engine("spring-fallback").localOrigin(true)
                 .build();
     }
 

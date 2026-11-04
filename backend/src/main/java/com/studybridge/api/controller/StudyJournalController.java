@@ -43,6 +43,8 @@ public class StudyJournalController {
                     .relationPath(r.getRelationPath())
                     .reason(r.getReason())
                     .suggestion(r.getSuggestion())
+                    .qualityStatus(r.getQualityStatus())
+                    .qualityRedacted(r.getQualityRedacted())
                     .build();
             return ResponseEntity.unprocessableEntity().body(rejection);
         }

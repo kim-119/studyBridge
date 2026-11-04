@@ -43,6 +43,9 @@ public class StudyJournalDTO {
         private String content;   // 상세 조회 시에만 S3에서 읽어 채움
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
+        // 품질 게이트(게이트 ON 에서만 — NON_NULL 이라 OFF 응답 불변). qualityRedacted=true: 미검증 AI 판정 문구(relationPath)를 가림.
+        private String qualityStatus;
+        private Boolean qualityRedacted;
     }
 
     /** 검증 실패(REQUEST_REVISION/BLOCK) 응답. 원문 미포함. */
@@ -58,5 +61,8 @@ public class StudyJournalDTO {
         private String relationPath;
         private String reason;
         private String suggestion;
+        // 품질 게이트(게이트 ON 에서만). qualityRedacted=true: AI 사유/제안이 평가를 통과하지 못해 Spring 고정 문구로 바꿨다(판정 자체는 그대로).
+        private String qualityStatus;
+        private Boolean qualityRedacted;
     }
 }

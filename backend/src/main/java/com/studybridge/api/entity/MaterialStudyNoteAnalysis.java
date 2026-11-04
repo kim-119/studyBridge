@@ -80,6 +80,10 @@ public class MaterialStudyNoteAnalysis {
     @Column(columnDefinition = "TEXT")
     private String errorMessage;
 
+    // 품질 게이트(Phase D): 분할 평가 전 세그먼트 승인 시에만 APPROVED. 게이트 OFF 생성분·레거시는 null(= 미검증, 게이트 ON 이면 AI 필드 가림).
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 
