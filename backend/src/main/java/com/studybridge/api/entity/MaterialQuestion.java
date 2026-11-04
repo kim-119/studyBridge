@@ -29,6 +29,10 @@ public class MaterialQuestion {
     @Column(columnDefinition = "TEXT")
     private String aiAnswer;
 
+    // 품질 게이트 승인 기록(APPROVED 만, 게이트 OFF 저장분은 null = 미검증). ddl-auto=update 로 nullable 추가.
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 }

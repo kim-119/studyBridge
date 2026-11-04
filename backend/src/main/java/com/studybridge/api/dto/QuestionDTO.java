@@ -19,7 +19,7 @@ public class QuestionDTO {
     }
 
     @Getter
-    @Builder
+    @Builder(toBuilder = true)
     @NoArgsConstructor
     @AllArgsConstructor
     public static class Response {
@@ -45,5 +45,9 @@ public class QuestionDTO {
         private String routeAction;        // DIRECT_REPLY/WARN/BLOCK/CLARIFY/QUIZ_PIPELINE/SUMMARY_PIPELINE/ROADMAP_PIPELINE 등
         private String routeMessage;       // 터미널/경고 시 사용자에게 보여줄 문구
         private Object pipeline;           // QUIZ/SUMMARY/ROADMAP 내부 실행 결과 페이로드
+        // 품질 게이트(response-quality.v1). 게이트 OFF 면 null(기존 응답과 동일). APPROVED 일 때만 aiAnswer 에 AI 답변이 실린다.
+        private String qualityStatus;
+        private Double qualityScore;
+        private Boolean verified;
     }
 }
