@@ -13,6 +13,22 @@ export const RECONNECT_POLICY = {
   maxAttempts: 8,
 };
 
+// 서버 STOMP 인증 계약(Spring StompAuthChannelInterceptor): ERROR 프레임 message 헤더
+//  UNAUTHORIZED → 토큰 없음·위조·만료(강제 갱신 후 재연결, 연속 한도 초과 시 멈춤)
+//  FORBIDDEN    → 그룹 멤버 아님·강퇴/탈퇴·정지·사칭(재연결해도 같으므로 멈춤). 세부 사유는 sb-reason 헤더.
+export const SOCKET_FAILURE_REASON = {
+  FORBIDDEN: 'forbidden',
+  UNAUTHORIZED: 'unauthorized',
+};
+export const MAX_UNAUTHORIZED_RECONNECTS = 3;
+
+export function classifyStompError(frame) {
+  const code = String(frame?.headers?.message || '').trim().toUpperCase();
+  if (code.startsWith('UNAUTHORIZED')) return SOCKET_FAILURE_REASON.UNAUTHORIZED;
+  if (code.startsWith('FORBIDDEN')) return SOCKET_FAILURE_REASON.FORBIDDEN;
+  return null;
+}
+
 export const SOCKJS_HEARTBEAT_MS = 25000;
 export const STALE_CONNECTION_MS = SOCKJS_HEARTBEAT_MS * 2 + 10000;
 export const TOKEN_REFRESH_MARGIN_MS = 60000;
@@ -72,7 +88,13 @@ export const SOCKET_STATUS_LABEL = {
   [SOCKET_STATE.FAILED]: '실시간 연결에 실패했습니다',
 };
 
-export function describeSocketStatus(state, reconnectAttempt = 0) {
+const FAILURE_REASON_LABEL = {
+  [SOCKET_FAILURE_REASON.FORBIDDEN]: '이 그룹의 실시간 채팅·퀴즈에 참여할 권한이 없습니다',
+  [SOCKET_FAILURE_REASON.UNAUTHORIZED]: '로그인이 만료되어 실시간 연결을 멈췄습니다. 다시 로그인해 주세요',
+};
+
+export function describeSocketStatus(state, reconnectAttempt = 0, reason = null) {
+  if (state === SOCKET_STATE.FAILED && FAILURE_REASON_LABEL[reason]) return FAILURE_REASON_LABEL[reason];
   const label = SOCKET_STATUS_LABEL[state] || SOCKET_STATUS_LABEL[SOCKET_STATE.IDLE];
   if (state === SOCKET_STATE.RECONNECTING && reconnectAttempt > 0) {
     return `${label} (${reconnectAttempt}/${RECONNECT_POLICY.maxAttempts})`;
@@ -80,6 +102,7 @@ export function describeSocketStatus(state, reconnectAttempt = 0) {
   return label;
 }
 
-export function canRetryManually(state) {
+export function canRetryManually(state, reason = null) {
+  if (reason === SOCKET_FAILURE_REASON.FORBIDDEN) return false; // 권한이 없으면 다시 눌러도 같은 거부
   return state === SOCKET_STATE.FAILED || state === SOCKET_STATE.RECONNECTING || state === SOCKET_STATE.OFFLINE;
 }

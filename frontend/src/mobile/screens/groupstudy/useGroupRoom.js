@@ -121,7 +121,7 @@ export function useGroupRoom(groupId, { userId, displayName, onSelfRemoved, onPa
       'quiz/question': applySession,
       'quiz/next': applySession,
       'quiz/timer': (payload) => setQuiz((previous) => applyTimerPayload(previous, payload, Date.now())),
-      'quiz/submitted': (payload) => setQuiz((previous) => applySubmittedPayload(previous, payload)),
+      'quiz/submitted': (payload) => setQuiz((previous) => applySubmittedPayload(previous, payload, userId)),
       'quiz/reveal': (payload) => setQuiz((previous) => applyRevealPayload(previous, payload)),
       'quiz/scoreboard': (payload) => setQuiz((previous) => applyScoreboardPayload(previous, payload)),
       'quiz/end': (payload) => setQuiz((previous) => applyEndPayload(previous, payload)),
@@ -196,6 +196,7 @@ export function useGroupRoom(groupId, { userId, displayName, onSelfRemoved, onPa
   return {
     socketState: socket.state,
     socketReconnectAttempt: socket.reconnectAttempt,
+    socketFailureReason: socket.failureReason,
     isSocketConnected: socket.isConnected,
     reconnectSocket: socket.reconnect,
     history: chat.history,

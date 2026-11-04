@@ -104,8 +104,11 @@ export function applyTimerPayload(state, payload, now) {
   return { ...state, deadlineAt: now + payload.remainingSeconds * 1000 };
 }
 
-export function applySubmittedPayload(state, payload) {
+// ack 는 그룹 전체에 방송된다. userId 를 주면 내 ack 만 반영한다 — 다른 참여자의 제출이 내 답안을 잠그거나
+// 선택을 지우지 않게(서버가 ack.userId 를 인증 사용자로 정하므로 신뢰할 수 있다). userId 없는 ack 는 이전 서버 호환.
+export function applySubmittedPayload(state, payload, userId = null) {
   if (!acceptsSession(state, payload)) return state;
+  if (userId != null && payload?.userId != null && String(payload.userId) !== String(userId)) return state;
 
   const currentQuestionId = state.question?.questionId;
   if (payload.questionId && currentQuestionId && Number(payload.questionId) !== Number(currentQuestionId)) {

@@ -13,9 +13,10 @@ async function loadStompLibraries() {
   return { Client };
 }
 
-async function currentAccessToken() {
+// forceRefresh: 직전 연결을 서버가 UNAUTHORIZED 로 거부했다(로컬 exp 로는 유효해 보여도 갱신).
+async function currentAccessToken({ forceRefresh = false } = {}) {
   const token = localStorage.getItem('token');
-  if (!isTokenExpiring(token, Date.now())) return token;
+  if (!forceRefresh && token && !isTokenExpiring(token, Date.now())) return token;
 
   try {
     return await refreshAccessToken();
@@ -41,7 +42,7 @@ function watchNetwork(controller) {
 }
 
 export function useGroupSocket(groupId, { subscriptions, onReconnected }) {
-  const [status, setStatus] = useState({ state: SOCKET_STATE.IDLE, reconnectAttempt: 0 });
+  const [status, setStatus] = useState({ state: SOCKET_STATE.IDLE, reconnectAttempt: 0, reason: null });
   const controllerRef = useRef(null);
   const handlersRef = useRef(subscriptions);
   const onReconnectedRef = useRef(onReconnected);
@@ -82,6 +83,7 @@ export function useGroupSocket(groupId, { subscriptions, onReconnected }) {
   return {
     state: status.state,
     reconnectAttempt: status.reconnectAttempt,
+    failureReason: status.reason ?? null,
     isConnected: status.state === SOCKET_STATE.CONNECTED,
     publish,
     reconnect,
