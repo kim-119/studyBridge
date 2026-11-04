@@ -10,6 +10,7 @@ import asyncio
 import copy
 import json
 import os
+import time
 from dataclasses import asdict, fields
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -36,6 +37,9 @@ class InMemoryTrainingRepository:
         self._events: List[CandidateEvent] = []
         self._manifests: Dict[str, ManifestRecord] = {}
         self._models: Dict[str, ModelCandidateRecord] = {}
+        self._processed: Dict[str, dict] = {}            # 처리 이벤트 원장(테스트용 — 운영은 Postgres PK 가 보장)
+        self._consent_tomb: Dict[str, tuple] = {}
+        self._deletion_tomb: Dict[str, tuple] = {}
         self.fail_reads = False  # 장애 주입(테스트)
 
     def _check(self) -> None:
@@ -160,6 +164,65 @@ class InMemoryTrainingRepository:
             m = self._models[adapter_id]
             m.status = status
             m.notes.append(note)
+
+
+    # ── 처리 이벤트 원장 / tombstone (Phase B3) ─────────────────────────────────────
+    async def claim_event(self, event_id: str, message_type: str, body_sha256: str, *,
+                          lease_seconds: float = 120) -> Tuple[str, Optional[dict]]:
+        async with self._lock:
+            self._check()
+            now = time.time()
+            cur = self._processed.get(event_id)
+            if cur is None:
+                self._processed[event_id] = {"type": message_type, "hash": body_sha256, "status": "PROCESSING",
+                                             "result": {}, "claimed": now}
+                return "CLAIMED", None
+            if cur["hash"] != body_sha256 or cur["type"] != message_type:
+                return "CONFLICT", None
+            if cur["status"] == "DONE":
+                return "DONE", copy.deepcopy(cur["result"])
+            if now - cur["claimed"] > lease_seconds:
+                cur["claimed"] = now
+                return "CLAIMED", None
+            return "IN_PROGRESS", None
+
+    async def complete_event(self, event_id: str, result: dict) -> None:
+        async with self._lock:
+            self._check()
+            cur = self._processed.get(event_id)
+            if cur is not None:
+                cur["status"], cur["result"] = "DONE", copy.deepcopy(result)
+
+    async def release_event(self, event_id: str) -> None:
+        async with self._lock:
+            cur = self._processed.get(event_id)
+            if cur is not None and cur["status"] == "PROCESSING":
+                self._processed.pop(event_id, None)
+
+    async def put_consent_tombstone(self, pk: str, withdrawn_at: datetime, event_id: str) -> datetime:
+        async with self._lock:
+            self._check()
+            cur = self._consent_tomb.get(pk)
+            if cur is None or withdrawn_at > cur[0]:
+                self._consent_tomb[pk] = (withdrawn_at, event_id)
+            return self._consent_tomb[pk][0]
+
+    async def get_consent_tombstone(self, pk: str) -> Optional[datetime]:
+        async with self._lock:
+            self._check()
+            cur = self._consent_tomb.get(pk)
+            return cur[0] if cur else None
+
+    async def put_deletion_tombstone(self, dtid: str, deleted_at: datetime, event_id: str) -> None:
+        async with self._lock:
+            self._check()
+            self._deletion_tomb.setdefault(dtid, (deleted_at, event_id))
+
+    async def get_deletion_tombstone(self, dtid: str) -> Optional[datetime]:
+        async with self._lock:
+            self._check()
+            cur = self._deletion_tomb.get(dtid)
+            return cur[0] if cur else None
 
 
 # ── Postgres(psycopg3 async) ────────────────────────────────────────────────────
@@ -369,6 +432,68 @@ class PostgresTrainingRepository:
         await self._fetch("UPDATE ai.training_model_candidate SET status=%s, notes=array_append(notes, %s) WHERE adapter_id=%s",
                           (status, note, adapter_id))
 
+
+    # ── 처리 이벤트 원장 / tombstone (Phase B3, migrations/003) ──────────────────────────
+    async def claim_event(self, event_id: str, message_type: str, body_sha256: str, *,
+                          lease_seconds: float = 120) -> Tuple[str, Optional[dict]]:
+        """PK 로 원자적 선점. CLAIMED | DONE(result) | IN_PROGRESS | CONFLICT. 오래된 PROCESSING 은 lease 후 인수."""
+        rows = await self._fetch(
+            """INSERT INTO ai.training_processed_event (event_id, message_type, body_sha256, status)
+               VALUES (%s,%s,%s,'PROCESSING') ON CONFLICT (event_id) DO NOTHING RETURNING event_id""",
+            (event_id, message_type, body_sha256))
+        if rows:
+            return "CLAIMED", None
+        rows = await self._fetch(
+            "SELECT message_type, body_sha256, status, result FROM ai.training_processed_event WHERE event_id = %s",
+            (event_id,))
+        if not rows:
+            return "IN_PROGRESS", None          # 경합으로 방금 해제됨 → 호출자가 재시도
+        mtype, h, status, result = rows[0]
+        if h != body_sha256 or mtype != message_type:
+            return "CONFLICT", None
+        if status == "DONE":
+            return "DONE", (result if isinstance(result, dict) else json.loads(result or "{}"))
+        took = await self._fetch(
+            """UPDATE ai.training_processed_event SET claimed_at = now()
+               WHERE event_id = %s AND status = 'PROCESSING' AND claimed_at < now() - make_interval(secs => %s)
+               RETURNING event_id""", (event_id, float(lease_seconds)))
+        return ("CLAIMED", None) if took else ("IN_PROGRESS", None)
+
+    async def complete_event(self, event_id: str, result: dict) -> None:
+        await self._fetch(
+            """UPDATE ai.training_processed_event SET status = 'DONE', result = %s::jsonb, completed_at = now()
+               WHERE event_id = %s""", (json.dumps(result, ensure_ascii=False), event_id))
+
+    async def release_event(self, event_id: str) -> None:
+        await self._fetch("DELETE FROM ai.training_processed_event WHERE event_id = %s AND status = 'PROCESSING'",
+                          (event_id,))
+
+    async def put_consent_tombstone(self, pk: str, withdrawn_at: datetime, event_id: str) -> datetime:
+        rows = await self._fetch(
+            """INSERT INTO ai.training_consent_tombstone (pseudonymous_user_key, withdrawn_at, event_id)
+               VALUES (%s,%s,%s)
+               ON CONFLICT (pseudonymous_user_key) DO UPDATE SET
+                 event_id = CASE WHEN EXCLUDED.withdrawn_at > ai.training_consent_tombstone.withdrawn_at
+                                 THEN EXCLUDED.event_id ELSE ai.training_consent_tombstone.event_id END,
+                 withdrawn_at = GREATEST(ai.training_consent_tombstone.withdrawn_at, EXCLUDED.withdrawn_at),
+                 updated_at = now()
+               RETURNING withdrawn_at""", (pk, withdrawn_at, event_id))
+        return rows[0][0]
+
+    async def get_consent_tombstone(self, pk: str) -> Optional[datetime]:
+        rows = await self._fetch(
+            "SELECT withdrawn_at FROM ai.training_consent_tombstone WHERE pseudonymous_user_key = %s", (pk,))
+        return rows[0][0] if rows else None
+
+    async def put_deletion_tombstone(self, dtid: str, deleted_at: datetime, event_id: str) -> None:
+        await self._fetch(
+            """INSERT INTO ai.training_deletion_tombstone (deletion_tracking_id, deleted_at, event_id)
+               VALUES (%s,%s,%s) ON CONFLICT (deletion_tracking_id) DO NOTHING""", (dtid, deleted_at, event_id))
+
+    async def get_deletion_tombstone(self, dtid: str) -> Optional[datetime]:
+        rows = await self._fetch(
+            "SELECT deleted_at FROM ai.training_deletion_tombstone WHERE deletion_tracking_id = %s", (dtid,))
+        return rows[0][0] if rows else None
 
 _repo = None
 

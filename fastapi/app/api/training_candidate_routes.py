@@ -160,38 +160,131 @@ async def collect_candidate_endpoint(request: CollectCandidateRequest,
     return CollectCandidateResponse(**{k: v for k, v in result.items() if k in CollectCandidateResponse.model_fields})
 
 
-@router.post("/collect-v1", summary="training-sample.v1 수집(서명된 내부 계약, 기본 OFF)")
+_CONSENT_FUTURE_TOLERANCE_S = 300
+
+
+def _lineage_json(status_code: int, res, *, replay: bool = False, extra: dict | None = None) -> JSONResponse:
+    body = {"success": status_code < 400 and not res.status.startswith(("REJECTED", "NOT_FOUND", "EVENT_ID", "IN_PROGRESS")),
+            "status": res.status, "candidate_uuid": res.candidate_id, "state": res.state, "reasons": res.reasons,
+            "invalidated_datasets": res.invalidated_datasets,
+            "retirement_required_adapters": res.retirement_required_adapters, "purged_datasets": res.purged_datasets,
+            # 이미 학습된 가중치에서 샘플을 지웠다고 주장하지 않는다(어댑터는 폐기/재학습 대상으로만 표시).
+            "trainedModelEffect": res.trained_model_effect, "modelWeightsErased": False}
+    if extra:
+        body.update(extra)
+    headers = {"Idempotent-Replay": "true"} if replay else None
+    if status_code == 503:
+        headers = {**(headers or {}), "Retry-After": "5"}
+    return JSONResponse(status_code=status_code, content=body, headers=headers)
+
+
+def _disposition_status(disp: str, res) -> int:
+    if disp == "CONFLICT":
+        return 409
+    if disp in ("IN_PROGRESS", "NOT_FINAL"):
+        return 503                      # 다른 워커 처리 중/저장 보류 → 재시도(409 를 주면 EC2 가 SENT 로 끝낸다)
+    return 200
+
+
+@router.post("/collect-v1", summary="training-sample.v1 수집(본문 서명 + 동의 토큰, 기본 OFF)")
 async def collect_v1(request: Request,
                      x_sig: str | None = Header(default=None, alias="X-AI-Contract-Signature"),
-                     x_ts: str | None = Header(default=None, alias="X-AI-Contract-Timestamp")):
+                     x_ts: str | None = Header(default=None, alias="X-AI-Contract-Timestamp"),
+                     x_consent: str | None = Header(default=None, alias="X-AI-Training-Consent"),
+                     x_request_id: str | None = Header(default=None, alias="X-Request-Id")):
     SERVICE_RATE.check("collect-v1")
     if not _collection_enabled():
         return JSONResponse(status_code=503, content={"success": False, "errorCode": "COLLECTION_DISABLED"})
-    from app.contracts.signing import SignatureError, verify_body
-    from app.contracts.training_sample_v1 import TrainingSampleV1
-    from app.training_pipeline.candidate_service import collect_sample
+    from datetime import datetime, timedelta, timezone
+
+    from app.contracts.jtypes import ContractJsonError, parse_offset_datetime
+    from app.contracts.signing import SignatureError, verify_body, verify_consent_token
+    from app.contracts.training_sample_v1 import parse_sample_json
+    from app.training_pipeline.candidate_service import collect_sample, run_once
+    from app.training_pipeline.control import body_sha256
     raw = await request.body()
     try:
         verify_body(raw, x_sig, x_ts)
     except SignatureError as e:
-        return JSONResponse(status_code=401 if e.code != "SIGNING_KEY_NOT_CONFIGURED" else 503,
+        return JSONResponse(status_code=401 if e.code not in ("SIGNING_KEY_NOT_CONFIGURED", "SIGNING_KEY_REUSED") else 503,
                             content={"success": False, "errorCode": e.code})
     try:
-        sample = TrainingSampleV1.model_validate_json(raw)
+        sample = parse_sample_json(raw)
     except ValidationError as e:
         return JSONResponse(status_code=422, content={"success": False, "errorCode": "CONTRACT_VALIDATION_FAILED",
                                                       "errors": [{"loc": list(x.get("loc", ())), "type": x.get("type")}
                                                                  for x in e.errors()[:20]]})
-    from app.training_pipeline.repository import RepositoryUnavailable
+    except (ContractJsonError, ValueError):
+        return JSONResponse(status_code=422, content={"success": False, "errorCode": "CONTRACT_VALIDATION_FAILED"})
+    if not x_request_id or x_request_id != sample.eventId:
+        return JSONResponse(status_code=400, content={"success": False, "errorCode": "REQUEST_ID_EVENT_MISMATCH"})
+    # 동의 토큰(EC2 가 동의 DB 를 확인한 서명 claim): 용도(typ)·요청(rid=eventId)·주체(sub=가명 키) 바인딩.
     try:
-        res = await collect_sample(_repo(), sample)
+        claim = verify_consent_token(x_consent, expected_request_id=sample.eventId,
+                                     expected_sub=sample.pseudonymousUserKey)
+    except SignatureError as e:
+        return JSONResponse(status_code=503 if e.code in ("SIGNING_KEY_NOT_CONFIGURED", "SIGNING_KEY_REUSED") else 401,
+                            content={"success": False, "errorCode": e.code})
+    try:
+        ct = parse_offset_datetime(claim.consent_timestamp) if claim.consent_timestamp else None
+    except ValueError:
+        ct = None
+    now = datetime.now(timezone.utc)
+    mismatch = None
+    if "MODEL_TRAINING" not in claim.scope or "MODEL_TRAINING" not in sample.trainingEligibility.consentScope:
+        mismatch = "CONSENT_SCOPE_MISSING"
+    elif not sample.trainingEligibility.consentGranted or sample.trainingEligibility.consentWithdrawn:
+        mismatch = "CONSENT_NOT_GRANTED"
+    elif claim.consent_version is None or claim.consent_version != sample.consentVersion:
+        mismatch = "CONSENT_VERSION_MISMATCH"
+    elif claim.deletion_tracking_id != sample.deletionTrackingId:
+        mismatch = "CONSENT_DELETION_ID_MISMATCH"
+    elif ct is None or sample.consentTimestamp is None or ct != sample.consentTimestamp:
+        mismatch = "CONSENT_TIMESTAMP_MISMATCH"
+    elif ct > now + timedelta(seconds=_CONSENT_FUTURE_TOLERANCE_S):
+        mismatch = "CONSENT_TIMESTAMP_IN_FUTURE"     # 로컬 시각을 UTC 로 표기하는 오류(C-TIME-3)도 여기서 드러난다
+    if mismatch:
+        audit_event("training.collect_v1.consent_rejected", actor="service:spring", role="service",
+                    request_id=x_request_id, outcome=mismatch)
+        return JSONResponse(status_code=422, content={"success": False, "errorCode": mismatch})
+    from app.training_pipeline.repository import RepositoryUnavailable
+    repo = _repo()
+
+    async def work():
+        return await collect_sample(repo, sample)
+    try:
+        disp, res = await run_once(repo, event_id=sample.eventId, message_type="SAMPLE", body_sha256=body_sha256(raw),
+                                   work=work)
     except RepositoryUnavailable:
         return JSONResponse(status_code=503, content={"success": False, "errorCode": "TRAINING_REPOSITORY_UNAVAILABLE"})
-    code = 503 if res.status == "DEFERRED" else 200
-    return JSONResponse(status_code=code, content={"success": res.status not in ("DEFERRED",), "status": res.status,
-                                                   "candidateId": res.candidate_id, "state": res.state,
-                                                   "reasons": res.reasons,
-                                                   "invalidatedDatasets": res.invalidated_datasets})
+    code = _disposition_status(disp, res)
+    if res.status == "DEFERRED":
+        code = 503
+    return _lineage_json(code, res, replay=disp == "REPLAY")
+
+
+async def _control(request: Request, expected, x_sig, x_ts, x_request_id, handle):
+    """서명된 training-control.v1 공통 처리: 검증 → DB 원장 1회 처리 → 결과."""
+    from app.training_pipeline.candidate_service import run_once
+    from app.training_pipeline.control import ControlError, body_sha256, verify_control
+    from app.training_pipeline.repository import RepositoryUnavailable
+    raw = await request.body()
+    try:
+        msg = verify_control(raw, signature=x_sig, timestamp=x_ts, request_id=x_request_id, expected=expected)
+    except ControlError as e:
+        audit_event(f"training.control.{expected.value.lower()}.rejected", actor="service:spring", role="service",
+                    request_id=x_request_id, outcome=e.code)
+        return JSONResponse(status_code=e.status, content={"success": False, "errorCode": e.code})
+    repo = _repo()
+    try:
+        disp, res = await run_once(repo, event_id=msg.eventId, message_type=expected.value,
+                                   body_sha256=body_sha256(raw), work=lambda: handle(repo, msg))
+    except RepositoryUnavailable:
+        return JSONResponse(status_code=503, content={"success": False, "errorCode": "TRAINING_REPOSITORY_UNAVAILABLE"})
+    audit_event(f"training.control.{expected.value.lower()}", actor="service:spring", role="service",
+                request_id=x_request_id, outcome=f"{disp}:{res.status}",
+                extra={"datasets": len(res.invalidated_datasets), "adapters": len(res.retirement_required_adapters)})
+    return _lineage_json(_disposition_status(disp, res), res, replay=disp == "REPLAY")
 
 
 async def _resolve_candidate_id(repo, candidate_id, content_hash):
@@ -201,19 +294,24 @@ async def _resolve_candidate_id(repo, candidate_id, content_hash):
     return rec.candidate_id if rec else None
 
 
-@router.post("/feedback", response_model=LineageResponse, summary="사용자 피드백 반영(부정 → 철회 + manifest 무효화)")
-async def feedback(req: FeedbackRequest, x_request_id: str | None = Header(default=None, alias="X-Request-Id")):
+@router.post("/feedback", summary="사용자 피드백 반영(서명된 training-control.v1, 부정 → 철회 + manifest 무효화)")
+async def feedback(request: Request,
+                   x_sig: str | None = Header(default=None, alias="X-AI-Contract-Signature"),
+                   x_ts: str | None = Header(default=None, alias="X-AI-Contract-Timestamp"),
+                   x_request_id: str | None = Header(default=None, alias="X-Request-Id")):
     REVOCATION_RATE.check("feedback")
-    from app.training_pipeline.candidate_service import record_feedback
-    repo = _repo()
-    cid = await _resolve_candidate_id(repo, req.candidateId, req.contentHash)
-    if not cid:
-        return LineageResponse(status="NOT_FOUND")
-    res = await record_feedback(repo, cid, req.score, actor=_service_actor(x_request_id), reason_code=req.reasonCode)
-    return LineageResponse(status=res.status, candidate_uuid=cid, state=res.state, reasons=res.reasons,
-                           invalidated_datasets=res.invalidated_datasets,
-                           retirement_required_adapters=res.retirement_required_adapters,
-                           purged_datasets=res.purged_datasets)
+    from app.training_pipeline.candidate_service import ServiceResult, record_feedback
+    from app.training_pipeline.control import MessageType
+
+    async def handle(repo, msg):
+        rec = await (repo.find_by_event_id(msg.candidateEventId) if msg.candidateEventId
+                     else repo.find_by_content_hash(msg.contentHash))
+        if rec is None:
+            return ServiceResult(status="NOT_FOUND")
+        # 피드백 주체(가명 키)와 후보 소유자가 다르면 '없음'으로 처리(타인 후보 철회 차단)
+        return await record_feedback(repo, rec.candidate_id, msg.score, actor=_service_actor(x_request_id),
+                                     reason_code=msg.reasonCode, expected_user_key=msg.pseudonymousUserKey)
+    return await _control(request, MessageType.FEEDBACK, x_sig, x_ts, x_request_id, handle)
 
 
 @router.post("/correction", response_model=LineageResponse, summary="사용자 수정 답변 등록(검수 대기)")
@@ -227,29 +325,34 @@ async def correction(req: CorrectionRequest, x_request_id: str | None = Header(d
                            invalidated_datasets=res.invalidated_datasets)
 
 
-@router.post("/consent-withdrawal", response_model=LineageResponse, summary="학습 동의 철회(사용자 전체 후보 REVOKED)")
-async def consent_withdrawal(req: ConsentWithdrawalRequest,
+@router.post("/consent-withdrawal", summary="학습 동의 철회(서명된 training-control.v1) — tombstone + 철회 시각 이전 후보 REVOKED")
+async def consent_withdrawal(request: Request,
+                             x_sig: str | None = Header(default=None, alias="X-AI-Contract-Signature"),
+                             x_ts: str | None = Header(default=None, alias="X-AI-Contract-Timestamp"),
                              x_request_id: str | None = Header(default=None, alias="X-Request-Id")):
     REVOCATION_RATE.check("consent")
     from app.training_pipeline.candidate_service import withdraw_consent
-    res = await withdraw_consent(_repo(), req.pseudonymousUserKey, actor=_service_actor(x_request_id))
-    audit_event("training.consent_withdrawal", actor="service:spring", role="service", request_id=x_request_id,
-                outcome=res.status, extra={"count": len(res.invalidated_datasets)})
-    return LineageResponse(status=res.status, invalidated_datasets=res.invalidated_datasets,
-                           retirement_required_adapters=res.retirement_required_adapters,
-                           purged_datasets=res.purged_datasets)
+    from app.training_pipeline.control import MessageType
+
+    async def handle(repo, msg):
+        return await withdraw_consent(repo, msg.pseudonymousUserKey, actor=_service_actor(x_request_id),
+                                      withdrawn_at=msg.issuedAt, event_id=msg.eventId)
+    return await _control(request, MessageType.CONSENT_WITHDRAWAL, x_sig, x_ts, x_request_id, handle)
 
 
-@router.post("/deletion", response_model=LineageResponse, summary="자료 삭제 반영(내용 파기 + lineage 무효화)")
-async def deletion(req: DeletionRequest, x_request_id: str | None = Header(default=None, alias="X-Request-Id")):
+@router.post("/deletion", summary="자료 삭제 반영(서명된 training-control.v1) — tombstone + 내용 파기 + lineage 무효화")
+async def deletion(request: Request,
+                   x_sig: str | None = Header(default=None, alias="X-AI-Contract-Signature"),
+                   x_ts: str | None = Header(default=None, alias="X-AI-Contract-Timestamp"),
+                   x_request_id: str | None = Header(default=None, alias="X-Request-Id")):
     REVOCATION_RATE.check("deletion")
     from app.training_pipeline.candidate_service import delete_by_tracking_id
-    res = await delete_by_tracking_id(_repo(), req.deletionTrackingId, actor=_service_actor(x_request_id))
-    audit_event("training.deletion", actor="service:spring", role="service", request_id=x_request_id,
-                outcome=res.status, extra={"count": len(res.invalidated_datasets)})
-    return LineageResponse(status=res.status, invalidated_datasets=res.invalidated_datasets,
-                           retirement_required_adapters=res.retirement_required_adapters,
-                           purged_datasets=res.purged_datasets)
+    from app.training_pipeline.control import MessageType
+
+    async def handle(repo, msg):
+        return await delete_by_tracking_id(repo, msg.deletionTrackingId, actor=_service_actor(x_request_id),
+                                           deleted_at=msg.issuedAt, event_id=msg.eventId)
+    return await _control(request, MessageType.DELETION, x_sig, x_ts, x_request_id, handle)
 
 
 async def _review(request: ReviewCandidateRequest, principal: AdminPrincipal, decision: str) -> ReviewCandidateResponse:

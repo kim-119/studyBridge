@@ -326,7 +326,9 @@ def test_duplicate_event_replay_applies_once():
     repo = _repo()
     cid = run(cs.collect_sample(repo, make_sample(5))).candidate_id
     dup = make_sample(5, feedback=1).model_copy(update={"eventId": "evt-dup-replay-01"})
-    statuses = [run(cs.collect_sample(repo, dup)).status for _ in range(3)]
+    # Phase B3: 재전송 판정은 DB 원장(run_once) — 프로세스 메모리 캐시가 아니다.
+    statuses = [run(cs.run_once(repo, event_id=dup.eventId, message_type="SAMPLE", body_sha256="d" * 64,
+                                work=lambda: cs.collect_sample(repo, dup)))[1].status for _ in range(3)]
     assert statuses == ["DUPLICATE", "IDEMPOTENT_REPLAY", "IDEMPOTENT_REPLAY"]
     assert run(repo.get(cid)).feedback_history == [1]
 
@@ -371,8 +373,19 @@ def test_repository_db_errors_and_bad_ids_have_stable_contract(monkeypatch):
     repo = PostgresTrainingRepository("postgresql://none:none@127.0.0.1:9/none")
     assert run(repo.get("not-a-uuid")) is None
     set_repository(repo)
-    r = _client().post("/api/training-candidates/consent-withdrawal", headers=service_headers(),
-                       json={"pseudonymousUserKey": PK})
+    # Phase B3: 철회는 서명된 training-control.v1 만 받는다 → 서명이 맞아야 저장소 단계까지 가서 503 이 된다.
+    import time as _t
+    from datetime import datetime as _dt, timezone as _tz
+    from app.contracts import signing as _S
+    monkeypatch.setenv("AI_TRAINING_SAMPLE_SIGNING_KEY", "s" * 40)
+    body = json.dumps({"schemaVersion": "training-control.v1", "typ": "training-control",
+                       "messageType": "CONSENT_WITHDRAWAL", "eventId": "rv-dberr-000001",
+                       "issuedAt": _dt.now(_tz.utc).isoformat(), "pseudonymousUserKey": PK,
+                       "scope": ["MODEL_TRAINING"]}).encode()
+    ts = int(_t.time())
+    h = {**service_headers(), "Content-Type": "application/json", "X-Request-Id": "rv-dberr-000001",
+         "X-AI-Contract-Timestamp": str(ts), "X-AI-Contract-Signature": _S.sign_body_with_key(b"s" * 40, body, ts)}
+    r = _client().post("/api/training-candidates/consent-withdrawal", headers=h, content=body)
     assert r.status_code == 503 and r.json()["errorCode"] == "TRAINING_REPOSITORY_UNAVAILABLE"
     del RepositoryUnavailable
 

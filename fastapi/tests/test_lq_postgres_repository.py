@@ -30,6 +30,7 @@ def repo():
     _sql("DROP SCHEMA IF EXISTS ai CASCADE; CREATE SCHEMA ai;")
     _sql((MIG / "001_training_pipeline_v2.sql").read_text(encoding="utf-8"))
     _sql((MIG / "001_training_pipeline_v2.sql").read_text(encoding="utf-8"))   # 멱등 재적용
+    _sql((MIG / "003_training_control_v1.sql").read_text(encoding="utf-8"))    # Phase B3 tombstone/원장(순서: 001 → 003)
     from app.training_pipeline.repository import PostgresTrainingRepository
     return PostgresTrainingRepository(DSN)
 

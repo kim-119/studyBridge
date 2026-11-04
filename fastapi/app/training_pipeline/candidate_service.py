@@ -6,17 +6,21 @@
 - 부정 피드백/동의 철회/자료 삭제 → 후보 상태 전이 + 그 후보가 포함된 데이터셋 manifest INVALIDATED
   + 해당 manifest 로 학습한 어댑터 후보 RETIREMENT_REQUIRED (가중치에서 '완전 삭제됨'이라고 주장하지 않음).
 - 사용자 수정 답변은 정답으로 바로 쓰지 않고 검수 대기(NEEDS_REVIEW). 검수자가 확인해야 verified_answer 가 된다.
+- (Phase B3) 동의 철회/자료 삭제는 먼저 DB tombstone 을 남긴다 → 이후(또는 경합 중) 도착한 샘플은 저장 거부·즉시 철회.
+  철회는 '철회 시각 이전 동의'로 만든 후보에만 적용한다(재동의 이후 후보는 유지, 소급 확장/소급 철회 없음).
+- 같은 eventId 의 중복 처리는 DB 원장(repo.claim_event)이 막는다 — 프로세스 메모리 캐시에 의존하지 않는다(다중 워커 안전).
 """
 from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.contracts.training_sample_v1 import TrainingSampleV1, VerificationMethod
 from app.training_pipeline import eligibility as elig
-from app.training_pipeline.records import CandidateEvent, CandidateRecord
+from app.training_pipeline.records import CandidateEvent, CandidateRecord, utcnow
 from app.training_pipeline.states import CandidateState, check_transition
 from app.utils import duplicate_checker as dup
 from app.utils.pii_filter import mask_pii, scan_pii
@@ -34,6 +38,49 @@ class ServiceResult:
     invalidated_datasets: List[str] = field(default_factory=list)
     retirement_required_adapters: List[str] = field(default_factory=list)
     purged_datasets: List[str] = field(default_factory=list)
+
+    @property
+    def trained_model_effect(self) -> str:
+        # 학습된 가중치에서 샘플을 지웠다고 주장하지 않는다: 영향받은 어댑터는 '폐기/재학습 필요'로만 표시된다.
+        return "RETIREMENT_REQUIRED_WEIGHTS_NOT_ERASED" if self.retirement_required_adapters else "NO_TRAINED_ADAPTER_AFFECTED"
+
+
+def result_to_dict(r: ServiceResult) -> Dict[str, Any]:
+    d = asdict(r)
+    d["trained_model_effect"] = r.trained_model_effect
+    return d
+
+
+def result_from_dict(d: Dict[str, Any]) -> ServiceResult:
+    keys = {f for f in ServiceResult.__dataclass_fields__}
+    return ServiceResult(**{k: v for k, v in (d or {}).items() if k in keys})
+
+
+async def run_once(repo, *, event_id: str, message_type: str, body_sha256: str,
+                   work: Callable[[], Awaitable[ServiceResult]]) -> Tuple[str, ServiceResult]:
+    """eventId 단위 1회 처리(DB 원장). 반환 (disposition, result):
+    PROCESSED | REPLAY(이전 결과) | CONFLICT(같은 id 다른 본문) | IN_PROGRESS(다른 워커 처리 중) | NOT_FINAL(DEFERRED, 재시도 가능)."""
+    state, prior = await repo.claim_event(event_id, message_type, body_sha256)
+    if state == "DONE":
+        r = result_from_dict(prior)
+        return "REPLAY", ServiceResult(status="IDEMPOTENT_REPLAY", candidate_id=r.candidate_id, state=r.state,
+                                       reasons=list(r.reasons), invalidated_datasets=r.invalidated_datasets,
+                                       retirement_required_adapters=r.retirement_required_adapters,
+                                       purged_datasets=r.purged_datasets)
+    if state == "CONFLICT":
+        return "CONFLICT", ServiceResult(status="EVENT_ID_CONFLICT", reasons=["EVENT_ID_REUSED_WITH_DIFFERENT_BODY"])
+    if state == "IN_PROGRESS":
+        return "IN_PROGRESS", ServiceResult(status="IN_PROGRESS", reasons=["EVENT_BEING_PROCESSED"])
+    try:
+        res = await work()
+    except BaseException:
+        await repo.release_event(event_id)      # 실패한 선점은 풀어 다음 재시도가 다시 처리하게 한다
+        raise
+    if res.status == "DEFERRED":
+        await repo.release_event(event_id)
+        return "NOT_FINAL", res
+    await repo.complete_event(event_id, result_to_dict(res))
+    return "PROCESSED", res
 
 
 @dataclass(frozen=True)
@@ -144,30 +191,14 @@ async def collect_sample(repo, sample: TrainingSampleV1, *, actor: Actor = SYSTE
         return ServiceResult(status="DEFERRED", reasons=["TRAINING_REPOSITORY_UNAVAILABLE"])
 
 
-# 중복(EXACT_DUPLICATE)으로 처리된 eventId 는 행이 새로 생기지 않아 find_by_event_id 로 잡히지 않는다.
-# 서명 본문의 재전송 창(±300s)보다 넉넉한 시간 동안 처리 결과를 기억해 같은 이벤트가 피드백을 반복 적용하지 못하게 한다.
-# (프로세스 로컬 — 운영 FastAPI 는 단일 워커. 다중 워커로 바꾸면 DB 기반 처리 이력으로 옮겨야 한다.)
-_REPLAY_TTL_SECONDS = 900
-_recent_events: Dict[str, tuple] = {}
-
-
-def _remember_event(event_id: str, res: ServiceResult) -> None:
-    import time as _t
-    now = _t.monotonic()
-    if len(_recent_events) > 50_000:
-        for k in [k for k, (exp, _) in _recent_events.items() if exp < now]:
-            _recent_events.pop(k, None)
-    _recent_events[event_id] = (now + _REPLAY_TTL_SECONDS, res)
-
-
-def _recalled_event(event_id: str) -> Optional[ServiceResult]:
-    import time as _t
-    hit = _recent_events.get(event_id)
-    if hit is None or hit[0] < _t.monotonic():
-        return None
-    r = hit[1]
-    return ServiceResult(status="IDEMPOTENT_REPLAY", candidate_id=r.candidate_id, state=r.state,
-                         reasons=list(r.reasons))
+async def _tombstone_reason(repo, sample: TrainingSampleV1) -> Optional[str]:
+    """이 샘플이 철회/삭제된 대상인가(저장 전·후 모두 확인 — 동시 철회 경합 대비)."""
+    if await repo.get_deletion_tombstone(sample.deletionTrackingId) is not None:
+        return "SOURCE_DELETED"
+    t = await repo.get_consent_tombstone(sample.pseudonymousUserKey)
+    if t is not None and (sample.consentTimestamp is None or sample.consentTimestamp <= t):
+        return "CONSENT_WITHDRAWN"
+    return None
 
 
 async def _collect_sample(repo, sample: TrainingSampleV1, *, actor: Actor, task_type: Optional[str],
@@ -176,9 +207,10 @@ async def _collect_sample(repo, sample: TrainingSampleV1, *, actor: Actor, task_
     prior = await repo.find_by_event_id(sample.eventId)
     if prior is not None:
         return ServiceResult(status="IDEMPOTENT_REPLAY", candidate_id=prior.candidate_id, state=prior.state.value)
-    recalled = _recalled_event(sample.eventId)
-    if recalled is not None:
-        return recalled
+    blocked = await _tombstone_reason(repo, sample)
+    if blocked is not None:
+        # 철회/삭제 이후 도착한 샘플(재전송·전송 중 경합 포함)은 저장하지 않는다.
+        return ServiceResult(status="REJECTED_" + blocked, reasons=[blocked])
 
     # 1) 중복 검사 — 실패하면 저장 보류(fail-closed)
     d = await dup.check_duplicate(sample.contentHash, sample.question + "\n" + sample.candidateAnswer, repo)
@@ -193,7 +225,6 @@ async def _collect_sample(repo, sample: TrainingSampleV1, *, actor: Actor, task_
                                        reason_code=sample.feedback.reasonCode)
             res.state, res.reasons = fb.state, res.reasons + fb.reasons
             res.invalidated_datasets, res.retirement_required_adapters = fb.invalidated_datasets, fb.retirement_required_adapters
-        _remember_event(sample.eventId, res)
         return res
     if d.status == dup.NEAR_DUPLICATE:
         res = ServiceResult(status="NEAR_DUPLICATE", candidate_id=d.matched_id, reasons=["NEAR_DUPLICATE"])
@@ -236,14 +267,26 @@ async def _collect_sample(repo, sample: TrainingSampleV1, *, actor: Actor, task_
     if negative and not rec.user_correction:
         reasons.append("NEGATIVE_FEEDBACK_AT_COLLECTION")
     saved = await _transition(repo, saved, target_state, actor, "TRIAGED", reasons or ["AWAITING_VERIFICATION"])
+    # 저장 뒤 재확인: 저장과 동시에 철회/삭제가 처리됐다면(철회 쪽 스캔이 이 행을 못 봤을 수 있음) 여기서 정리한다.
+    late = await _tombstone_reason(repo, sample)
+    if late is not None:
+        res = ServiceResult(status="REJECTED_" + late, candidate_id=saved.candidate_id, reasons=[late, "LATE_TOMBSTONE"])
+        if late == "SOURCE_DELETED":
+            await _destroy(repo, saved, actor, res)
+        else:
+            saved.consent_withdrawn = True
+            saved = await _transition(repo, saved, S.REVOKED, actor, "CONSENT_WITHDRAWN", ["CONSENT_WITHDRAWN"])
+            res.state = saved.state.value
+        return res
     return ServiceResult(status="QUARANTINED" if target_state == S.QUARANTINED else "STORED",
                          candidate_id=saved.candidate_id, state=saved.state.value, reasons=reasons)
 
 
 async def record_feedback(repo, candidate_id: str, score: int, *, actor: Actor,
-                          reason_code: Optional[str] = None) -> ServiceResult:
+                          reason_code: Optional[str] = None, expected_user_key: Optional[str] = None) -> ServiceResult:
     rec = await repo.get(candidate_id)
-    if rec is None:
+    if rec is None or (expected_user_key is not None and rec.pseudonymous_user_key != expected_user_key):
+        # 다른 사용자의 후보는 '없음'과 같게 응답한다(존재 여부 노출·타인 후보 철회 방지).
         return ServiceResult(status="NOT_FOUND")
     rec.feedback_history = (rec.feedback_history or []) + [int(score)]
     rec.feedback_score = int(score)
@@ -354,9 +397,16 @@ async def promote_if_eligible(repo, candidate_id: str, *, actor: Actor) -> Servi
                          candidate_id=candidate_id, state=saved.state.value, reasons=result.reasons)
 
 
-async def withdraw_consent(repo, pseudonymous_user_key: str, *, actor: Actor) -> ServiceResult:
+async def withdraw_consent(repo, pseudonymous_user_key: str, *, actor: Actor,
+                           withdrawn_at: Optional[datetime] = None, event_id: Optional[str] = None) -> ServiceResult:
+    """tombstone(철회 시각) 먼저 → 그 시각 이전 동의로 만든 후보 전부 REVOKED + lineage 무효화.
+    재동의 이후(consentTimestamp > 철회 시각) 후보는 건드리지 않는다. 동의 시각이 없는 후보는 보수적으로 철회."""
     res = ServiceResult(status="CONSENT_WITHDRAWN")
+    effective = await repo.put_consent_tombstone(pseudonymous_user_key, withdrawn_at or utcnow(),
+                                                 event_id or (actor.request_id or "direct"))
     for rec in await repo.list_by(pseudonymous_user_key=pseudonymous_user_key):
+        if rec.consent_timestamp is not None and rec.consent_timestamp > effective:
+            continue
         if rec.state in (S.REVOKED, S.DELETED):
             await _invalidate_lineage(repo, rec.content_hash, "CONSENT_WITHDRAWN", res)   # 재시도 멱등
             continue
@@ -366,17 +416,26 @@ async def withdraw_consent(repo, pseudonymous_user_key: str, *, actor: Actor) ->
     return res
 
 
-async def delete_by_tracking_id(repo, deletion_tracking_id: str, *, actor: Actor) -> ServiceResult:
-    """사용자 자료 삭제: 내용 파기(해시/lineage 만 보존) + manifest 무효화 + 어댑터 retirement 표시."""
+async def _destroy(repo, rec: CandidateRecord, actor: Actor, res: ServiceResult) -> None:
+    if rec.state == S.DELETED:
+        await _invalidate_lineage(repo, rec.content_hash, "SOURCE_DELETED", res)      # 재시도 멱등
+        return
+    rec.question = rec.candidate_answer = ""
+    rec.verified_answer = rec.user_correction = None
+    rec.evidence = []
+    rec.content_destroyed = True
+    saved = await _transition(repo, rec, S.DELETED, actor, "SOURCE_DELETED", ["SOURCE_DELETED"])
+    res.state = saved.state.value
+    await _invalidate_lineage(repo, rec.content_hash, "SOURCE_DELETED", res)
+
+
+async def delete_by_tracking_id(repo, deletion_tracking_id: str, *, actor: Actor,
+                                deleted_at: Optional[datetime] = None, event_id: Optional[str] = None) -> ServiceResult:
+    """사용자 자료 삭제: tombstone 먼저 → 내용 파기(해시/lineage 만 보존) + manifest 무효화 + 어댑터 retirement 표시."""
     res = ServiceResult(status="DELETED")
+    await repo.put_deletion_tombstone(deletion_tracking_id, deleted_at or utcnow(),
+                                      event_id or (actor.request_id or "direct"))
     for rec in await repo.list_by(deletion_tracking_id=deletion_tracking_id):
-        if rec.state == S.DELETED:
-            await _invalidate_lineage(repo, rec.content_hash, "SOURCE_DELETED", res)      # 재시도 멱등
-            continue
-        rec.question = rec.candidate_answer = ""
-        rec.verified_answer = rec.user_correction = None
-        rec.evidence = []
-        rec.content_destroyed = True
-        await _transition(repo, rec, S.DELETED, actor, "SOURCE_DELETED", ["SOURCE_DELETED"])
-        await _invalidate_lineage(repo, rec.content_hash, "SOURCE_DELETED", res)
+        await _destroy(repo, rec, actor, res)
+    res.state = None
     return res

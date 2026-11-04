@@ -128,6 +128,8 @@ def submit(event: ResponseCollectionEvent) -> str:
             code = "SKIPPED_NO_CONSENT"
         elif "MODEL_TRAINING" not in event.consent.scope:
             code = "SKIPPED_CONSENT_SCOPE"
+        elif not (event.consent.sub and event.consent.deletion_tracking_id and event.consent.consent_timestamp):
+            code = "SKIPPED_CONSENT_CLAIM_INCOMPLETE"      # 가명 키/삭제 추적 id/동의 시각 없는 동의는 쓰지 않는다
         elif event.task_type in _PDF_TASKS and not _pdf_evidence_ok(event.evidence):
             code = "SKIPPED_UNGROUNDED_PDF"
         elif _rights_for(event) is None:
@@ -185,9 +187,17 @@ async def _persist(ev: ResponseCollectionEvent) -> str:
         repo = get_repository()
     except RepositoryUnavailable:
         return "FAILED_REPOSITORY_UNAVAILABLE"
+    from app.training_pipeline.candidate_service import run_once
     sample = _to_sample(ev)
-    res = await collect_sample(repo, sample, task_type=ev.task_type.value,
-                               display_quality={"score": ev.quality.score, "qualityStatus": ev.quality.qualityStatus.value})
+    body = sample.model_dump_json().encode()
+
+    async def work():
+        return await collect_sample(repo, sample, task_type=ev.task_type.value,
+                                    display_quality={"score": ev.quality.score,
+                                                     "qualityStatus": ev.quality.qualityStatus.value})
+    # 같은 eventId 를 여러 워커/재시도가 동시에 처리하지 못하게 DB 원장으로 1회 처리한다.
+    disp, res = await run_once(repo, event_id=sample.eventId, message_type="SAMPLE",
+                               body_sha256=hashlib.sha256(body).hexdigest(), work=work)
     return f"RESULT_{res.status}"
 
 

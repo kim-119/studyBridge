@@ -89,11 +89,33 @@ def test_backward_migration_restores_exact_legacy_state(legacy):
     assert set(V2_TABLES) <= _tables()
 
 
+def test_phase_b_migration_order_forward_and_backward_keeps_legacy_exact(legacy):
+    """운영 적용 순서: 001 → 003 (롤백: 004 → 002). 레거시 ai.training_candidate 는 컬럼·행 모두 그대로."""
+    for m in ("001_training_pipeline_v2.sql", "003_training_control_v1.sql", "003_training_control_v1.sql"):
+        _apply(m)
+    assert {"training_processed_event", "training_consent_tombstone", "training_deletion_tombstone"} <= _tables()
+    assert _fingerprint() == legacy
+    _apply("004_rollback_training_control_v1.sql")
+    _apply("002_rollback_training_pipeline_v2.sql")
+    assert _tables() == set(LEGACY_TABLES) and _fingerprint() == legacy
+
+
+def test_missing_003_makes_collection_deferred_not_silently_unchecked(legacy):
+    """003 을 빠뜨리고 001 만 적용하면 tombstone 확인이 불가 → 저장하지 않고 DEFERRED(fail-closed)."""
+    from app.training_pipeline import candidate_service as cs
+    from tests.lq_helpers import make_sample
+    _apply("001_training_pipeline_v2.sql")
+    res = asyncio.run(cs.collect_sample(_repo(), make_sample(7)))
+    assert res.status == "DEFERRED" and res.reasons == ["TRAINING_REPOSITORY_UNAVAILABLE"]
+    assert asyncio.run(_repo().counts_by_state())["COLLECTED"] == 0
+
+
 def test_rollback_refused_once_v2_has_data_and_legacy_untouched(legacy):
     import psycopg
     from app.training_pipeline import candidate_service as cs
     from tests.lq_helpers import make_sample
     _apply("001_training_pipeline_v2.sql")
+    _apply("003_training_control_v1.sql")
     asyncio.run(cs.collect_sample(_repo(), make_sample(3)))
     with pytest.raises(psycopg.Error):
         _apply("002_rollback_training_pipeline_v2.sql")
@@ -106,6 +128,7 @@ def test_store_empty_export_revoke_withdraw_delete_on_legacy_db(legacy, tmp_path
     from app.training_pipeline.records import ModelCandidateRecord
     from tests.lq_helpers import make_sample
     _apply("001_training_pipeline_v2.sql")
+    _apply("003_training_control_v1.sql")
     monkeypatch.setenv("AI_TRAINING_DATASET_DIR", str(tmp_path / "ds"))
     repo = _repo()
     rv = cs.Actor("rev-1", "training_reviewer", "req-pgl-0001")
