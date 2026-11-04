@@ -5,6 +5,10 @@ import os
 os.environ.setdefault("STUDYMATE_REDIS", "off")
 os.environ.setdefault("STUDYMATE_ROLLING_SUMMARY", "off")
 os.environ.setdefault("STUDYMATE_GROUNDING", "off")
+# 레거시 multi-chat 대화기억(app/services/multi_chat_redis_memory.py)은 기본 ON + 기본 주소가 운영 Redis 터널(16379)이다.
+# 2026-11-05: roomId 가 든 stream 테스트가 운영 키 studybridge:multi-chat:memory:room:1 에 RPUSH/LTRIM 한 사고 → 테스트 전체에서 끈다.
+os.environ.setdefault("MULTI_CHAT_REDIS_MEMORY_ENABLED", "false")
+os.environ.setdefault("MULTI_CHAT_REDIS_URL", "redis://127.0.0.1:9/0")
 # 게이트웨이 hermetic: 가짜 transport(tests/studymate_fakes.py)를 설치하지 않은 테스트가 실제 GPU(Ollama)를
 # 호출하지 않게 닫힌 포트로 둔다(2026-09-17: 레거시 테스트가 v2 경로에서 운영 Ollama 를 9분간 점유).
 os.environ.setdefault("STUDYMATE_OLLAMA_BASE_URL", "http://127.0.0.1:9")
