@@ -71,6 +71,19 @@ def _first_nonempty(payload: Dict[str, Any], *keys: str) -> str:
     return ""
 
 
+_SOURCE_TEXT_KEYS = ("sourceText", "source_text", "context", "materialContext", "text")
+_SOURCE_TEXT_PROMPT_CHARS = 3000
+
+
+def _first_nonempty_raw(payload: Dict[str, Any], *keys: str) -> str:
+    """_first_nonempty 와 같은 키를 고르되 요청 원문 문자열 그대로(strip 전) — 근거 오프셋 기준."""
+    for k in keys:
+        v = payload.get(k)
+        if v is not None and str(v).strip():
+            return str(v)
+    return ""
+
+
 def _resolve_answer_index(item: Dict[str, Any], choices: List[str]) -> Optional[int]:
     """다양한 key/형태(answerIndex/correctAnswer 정수·텍스트/answer 텍스트)에서 정답 인덱스 도출."""
     n = len(choices)
@@ -198,7 +211,7 @@ def _build_user_prompt(payload: Dict[str, Any], topic: str, count: int, difficul
         f"## 사용자가 고른 오답(wrongAnswer)\n{wrong_answer or '(없음)'}\n"
         f"## 정답(correctAnswer)\n{correct_answer or '(없음)'}\n"
         f"## 해설(explanation)\n{explanation or '(없음)'}\n"
-        f"## 자료 본문(sourceText)\n{(source_text or '(없음)')[:3000]}\n"
+        f"## 자료 본문(sourceText)\n{(source_text or '(없음)')[:_SOURCE_TEXT_PROMPT_CHARS]}\n"
         f"## 요청 문항 수(requestedCount)\n{count}\n"
         f"## 난이도(difficulty)\n{difficulty or 'basic'}\n\n"
         f"위 근거에 기반해 같은 개념을 다른 맥락으로 묻는 4지선다 유사 문제 {count}개를 만들어라.\n"
@@ -222,7 +235,7 @@ def generate_wrong_note_quiz(payload: Dict[str, Any]) -> Dict[str, Any]:
     wrong_answer = _first_nonempty(payload, "wrongAnswer", "wrong_answer", "userAnswer", "user_answer")
     correct_answer = _first_nonempty(payload, "correctAnswer", "correct_answer", "answer")
     explanation = _first_nonempty(payload, "explanation", "rationale")
-    source_text = _first_nonempty(payload, "sourceText", "source_text", "context", "materialContext", "text")
+    source_text = _first_nonempty(payload, *_SOURCE_TEXT_KEYS)
     difficulty = _first_nonempty(payload, "difficulty") or "basic"
     count = _coerce_count(payload.get("requestedCount") or payload.get("count")
                           or payload.get("numQuestions"), default=3)
@@ -252,6 +265,10 @@ def generate_wrong_note_quiz(payload: Dict[str, Any]) -> Dict[str, Any]:
     user_prompt = _build_user_prompt(
         payload, topic, count, difficulty, original_question,
         wrong_answer, correct_answer, explanation, source_text)
+    # 품질 게이트 재생성 지침(C-RQ-3): attempt>0 + 알려진 위반 코드일 때만(아니면 "" = 프롬프트 불변). 복구 프롬프트도 이 위에 붙는다.
+    from app.quality_gate.hints import regeneration_prompt_block
+    user_prompt += regeneration_prompt_block(payload.get("regenerationAttempt", payload.get("regeneration_attempt")),
+                                             payload.get("regenerationHints", payload.get("regeneration_hints")))
 
     try:
         raw = ask_ollama(
@@ -313,6 +330,12 @@ def generate_wrong_note_quiz(payload: Dict[str, Any]) -> Dict[str, Any]:
             "유사 문제를 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
         )
 
+    # grounding.v1(R1): 원문 = 요청 sourceText 그대로, view = 프롬프트에 넣은 앞부분. 자료 id 가 없으면 근거 0개.
+    from app.services.grounding_attach import attach_question_grounding
+    questions, grounding = attach_question_grounding(
+        questions, _first_nonempty_raw(payload, *_SOURCE_TEXT_KEYS),
+        material_id=payload.get("materialId", payload.get("material_id")),
+        view=source_text[:_SOURCE_TEXT_PROMPT_CHARS])
     return {
         "success": True,
         "source": "ollama",
@@ -320,4 +343,5 @@ def generate_wrong_note_quiz(payload: Dict[str, Any]) -> Dict[str, Any]:
         "topic": topic or original_question[:40] or "유사 문제",
         "difficulty": difficulty,
         "questions": questions,
+        "grounding": grounding,
     }

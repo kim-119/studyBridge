@@ -36,6 +36,7 @@ ROADMAP_TIMEOUT = int(os.getenv("AI_ROADMAP_TIMEOUT_SECONDS", "110"))
 QUIZ_TIMEOUT = int(os.getenv("AI_QUIZ_TIMEOUT_SECONDS", "90"))
 QA_TIMEOUT = int(os.getenv("AI_QA_TIMEOUT_SECONDS", "115"))
 HARD_CAP = int(os.getenv("AI_GLOBAL_TIMEOUT_SECONDS", "120")) - 5
+QA_CONTEXT_CHARS = 6000   # /api/ai/question 프롬프트 문맥 상한(근거 범위와 같아야 한다)
 
 
 def _t(v: int) -> int:
@@ -43,11 +44,18 @@ def _t(v: int) -> int:
 
 
 # ── 요청 모델 (관대하게 — 누락 필드 허용) ─────────────────────────────────────
+# 품질 게이트 재생성(C-RQ-3): 시도 번호 + 직전 평가의 위반 코드. 타입이 틀려도 422 로 막지 않는다(Any → hints 가 정규화).
+_REGEN_ATTEMPT_ALIAS = AliasChoices("regenerationAttempt", "regeneration_attempt")
+_REGEN_HINTS_ALIAS = AliasChoices("regenerationHints", "regeneration_hints")
+
+
 class SummaryReq(BaseModel):
     text: Optional[str] = None
     document_title: Optional[str] = None
     material_id: Optional[int] = None
     s3_file_url: Optional[str] = None
+    regenerationAttempt: Optional[Any] = Field(None, validation_alias=_REGEN_ATTEMPT_ALIAS)
+    regenerationHints: Optional[Any] = Field(None, validation_alias=_REGEN_HINTS_ALIAS)
 
 
 class QuizReq(BaseModel):
@@ -66,6 +74,8 @@ class QuizReq(BaseModel):
     source_mode: Optional[str] = Field(None, validation_alias=AliasChoices("source_mode", "sourceMode"))
     generate_admin_quiz: Optional[bool] = Field(None, validation_alias=AliasChoices("generate_admin_quiz", "admin_quiz", "generateAdminQuiz"))
     s3_file_url: Optional[str] = None
+    regenerationAttempt: Optional[Any] = Field(None, validation_alias=_REGEN_ATTEMPT_ALIAS)
+    regenerationHints: Optional[Any] = Field(None, validation_alias=_REGEN_HINTS_ALIAS)
 
 
 class QuestionReq(BaseModel):
@@ -195,6 +205,9 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
         return {**_fail("PDF_OCR_REQUIRED",
                      "이미지 기반 PDF라 텍스트 추출이 필요합니다. OCR 설정을 켠 뒤 다시 시도해주세요.",
                      text_status=_text_status(ts, 0)), "metadata": {"ocr": ocr_unavailable_status()}}
+    from app.quality_gate.hints import regeneration_meta, regeneration_prompt_block
+    regen_block = regeneration_prompt_block(req.regenerationAttempt, req.regenerationHints)
+    regen_meta = regeneration_meta(req.regenerationAttempt, req.regenerationHints)
     cache = await get_or_build_chunks(req.material_id, req.text)
     chunks = cache["chunks"]
     context = build_summary_context(chunks) or (req.text or "")[:6000]
@@ -204,6 +217,7 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
             document_title=req.document_title or "자료",
             text=context,
             s3_file_url=req.s3_file_url,
+            **({"regeneration_block": regen_block} if regen_block else {}),
         ), timeout=_t(SUMMARY_TIMEOUT))
     except asyncio.TimeoutError:
         return _fail("AI_TIMEOUT", "AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
@@ -226,7 +240,7 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
     elapsed = int((time.time() - started) * 1000)
     logger.info("summary done provider=%s elapsedMs=%s textLen=%s chunks=%s",
                 r.get("provider"), elapsed, ts["textLength"], len(chunks))
-    return {
+    body = {
         "success": True,
         # 하위호환
         "summary": r.get("summary", ""),
@@ -253,6 +267,9 @@ async def ai_summary(req: SummaryReq) -> Dict[str, Any]:
             "extractedTextHash": cache.get("extractedTextHash"),
         },
     }
+    if regen_meta:
+        body["metadata"]["regeneration"] = regen_meta
+    return body
 
 
 # ── POST /api/ai/quiz ─────────────────────────────────────────────────────────
@@ -280,6 +297,7 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
     from app.services.material_ai_manager import validate_extracted_text, ocr_unavailable_status
     from app.services.pdf_quiz_service import generate_pdf_quiz
     from app.services.quiz_difficulty_policy import normalize_difficulty
+    from app.quality_gate.hints import regeneration_meta, regeneration_prompt_block
 
     started = time.time()
     request_id = uuid.uuid4().hex[:12]
@@ -330,6 +348,12 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
         "keywords": req.keywords or [],
         "generate_admin_quiz": bool(req.generate_admin_quiz),
     }
+    # 재생성(attempt>0 + 알려진 위반 코드)일 때만 LLM 프롬프트 끝에 고정 지침을 붙인다. 아니면 키 자체가 없다(프롬프트 불변).
+    # 이 경로에는 결과 캐시가 없어(매 요청 생성) 재생성 시 우회할 캐시도 없다.
+    regen_block = regeneration_prompt_block(req.regenerationAttempt, req.regenerationHints)
+    regen_meta = regeneration_meta(req.regenerationAttempt, req.regenerationHints)
+    if regen_block:
+        pdf_req["_regeneration_block"] = regen_block
 
     from app.services.quiz_contract import (
         MATERIAL_ANSWER_KEY_FIELDS, SCHEMA_VERSION, stable_quiz_id, validate_quiz_contract,
@@ -375,6 +399,8 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
                           request_id, text_status=_text_status(ts, 0),
                           rejectedCount=len(rejects), contractErrors=contract_errors[:10])
     quiz_data = json.dumps(fe_questions, ensure_ascii=False)  # 프론트 parseQuizQuestions가 파싱
+    # grounding.v1(R1): quizData 문자열은 그대로 두고 quizzes 사본에만 evidenceIds 를 붙인다.
+    quizzes, grounding = _material_quiz_grounding(fe_questions, req, pdf_req)
     generated_count = len(fe_questions)
     source = r.get("source") or "AI_REPAIRED"
     fallback_used = source == "DETERMINISTIC_PDF" or timed_out
@@ -394,7 +420,7 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
                 request_id, req.material_id, requested_difficulty, diff_applied, requested_count,
                 generated_count, source, status, len(rejects), (r.get("validation") or {}).get("passed"), elapsed)
 
-    return {
+    body = {
         "success": True,
         "errorCode": None,
         # quiz.v2 (additive) — Spring 은 Map 으로 받으므로 기존 키는 그대로 두고 추가만 한다.
@@ -411,7 +437,7 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
         "rejectedCount": len(rejects),
         "answerKeyFields": list(MATERIAL_ANSWER_KEY_FIELDS),
         "quizData": quiz_data,                 # 하위호환 (Spring이 그대로 저장)
-        "quizzes": fe_questions,               # 확장
+        "quizzes": quizzes,                    # 확장 (+ evidenceIds → grounding.evidence)
         "warnings": [],                        # 사용자 문구는 추가하지 않는다(판별은 status/fallbackUsed)
         # 난이도 메타 — 항상 requested == applied (난이도를 낮추지 않는다).
         "difficulty_requested": requested_difficulty,
@@ -435,7 +461,26 @@ async def ai_quiz(req: QuizReq) -> Dict[str, Any]:
             "documentType": r.get("document_type"),
             "elapsedMs": elapsed,
         },
+        "grounding": grounding,                # grounding.v1 — quote 는 요청 document_text/text 원문 그대로
     }
+    if regen_meta:
+        body["metadata"]["regeneration"] = regen_meta
+    return body
+
+
+def _material_quiz_grounding(fe_questions: List[Dict[str, Any]], req: "QuizReq",
+                             pdf_req: Dict[str, Any]):
+    """문항 사본(+evidenceIds)과 grounding. 원문 = Spring 이 보낸 document_text(없으면 text) 그대로,
+    view = 생성기가 본 PDF 컨텍스트(build_material_context). S3 로 대신 읽은 텍스트는 Spring 원문이 아니므로 근거로 쓰지 않는다."""
+    from app.services.grounding_attach import attach_question_grounding
+    from app.services.pdf_quiz_service import build_material_context
+    original = req.document_text or req.text or ""
+    try:
+        view = build_material_context(pdf_req).get("context") or ""
+    except Exception as e:  # noqa: BLE001
+        logger.warning("material quiz grounding view failed: %s", type(e).__name__)
+        view = original
+    return attach_question_grounding(fe_questions, original, material_id=req.material_id, view=view)
 
 
 # ── POST /api/ai/question ─────────────────────────────────────────────────────
@@ -460,12 +505,16 @@ async def ai_question(req: QuestionReq) -> Dict[str, Any]:
     chunks = cache["chunks"]
     relevant = select_relevant_chunks(question, chunks)
     context = "\n\n".join(f"[chunk {c['chunkIndex']}] {c['content']}" for c in relevant)
+    # grounding.v1(R5-5): 실제로 프롬프트(context[:QA_CONTEXT_CHARS])에 들어간 청크만, 요청 원문(req.text)에서 찾은 구간 그대로.
+    from app.services.grounding_attach import chunk_grounding, prompt_chunk_parts
+    grounding = chunk_grounding(prompt_chunk_parts(relevant, QA_CONTEXT_CHARS), req.text,
+                                material_id=req.material_id)
 
     system = (
         "너는 PDF 문서 기반 Q&A 전문가다. 제공된 문맥에 근거해서만 한국어로 답한다. "
         "문맥에 없는 내용은 '문서 기준으로는 확인되지 않습니다.'라고 명시한다."
     )
-    user = f"## 문맥\n{context[:6000]}\n\n## 질문\n{question}\n\n위 문맥을 근거로 답하라."
+    user = f"## 문맥\n{context[:QA_CONTEXT_CHARS]}\n\n## 질문\n{question}\n\n위 문맥을 근거로 답하라."
 
     def _answer() -> str:
         # 1순위 Ollama/Qwen (내부 GPT fallback 포함)
@@ -512,6 +561,7 @@ async def ai_question(req: QuestionReq) -> Dict[str, Any]:
         "metadata": {"provider": "ollama+gpt", "elapsedMs": elapsed, "chunkCount": len(chunks),
                      "cacheHit": cache["cacheHit"], "cacheBackend": cache["cacheBackend"],
                      "extractedTextHash": cache.get("extractedTextHash")},
+        "grounding": grounding,          # grounding.v1 — 프롬프트에 넣은 청크의 원문 구간(chunkId=m{materialId}-c{chunkIndex})
     }
 
 

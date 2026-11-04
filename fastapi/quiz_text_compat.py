@@ -315,8 +315,10 @@ def generate_quiz_from_text(
     question_type: str = DEFAULT_QUESTION_TYPE,
     material_id: Optional[int] = None,
     request_id: Optional[str] = None,
+    regeneration_block: str = "",
 ) -> Dict[str, Any]:
-    """텍스트 본문 기반 퀴즈 생성. 항상 계약 dict 반환(예외를 던지지 않음)."""
+    """텍스트 본문 기반 퀴즈 생성. 항상 계약 dict 반환(예외를 던지지 않음).
+    regeneration_block: 품질 게이트 재생성 지침(app.quality_gate.hints) — 빈 문자열이면 프롬프트 불변."""
     request_id = request_id or uuid.uuid4().hex[:8]
     text = (text or "").strip()
     difficulty = (difficulty or DEFAULT_DIFFICULTY).strip() or DEFAULT_DIFFICULTY
@@ -339,6 +341,7 @@ def generate_quiz_from_text(
 
     context = text[:QUIZ_MAX_CONTEXT_CHARS]
     system, user = _build_messages(context, title or "", count, difficulty, question_type)
+    user += regeneration_block or ""
 
     started = time.monotonic()
     try:

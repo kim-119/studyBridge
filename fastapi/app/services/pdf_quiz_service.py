@@ -584,6 +584,8 @@ def _build_source_trace(q: Dict[str, Any], ctx: Dict[str, Any], doc_type: str,
 def generate_pdf_quiz(req: Dict[str, Any]) -> Dict[str, Any]:
     """PDF 기반 퀴즈 생성 전체 파이프라인. 동기 함수(asyncio.to_thread 로 감쌀 것)."""
     ctx = build_material_context(req)
+    if req.get("_regeneration_block"):   # 품질 게이트 재생성 지침(C-RQ-3) — 없으면 프롬프트 불변
+        ctx["regeneration_block"] = str(req["_regeneration_block"])
     difficulty = req.get("difficulty") or "normal"
     diff = normalize_difficulty(difficulty)
     # requestedCount 를 절대 임의로 낮추지 않는다. 정책 범위(1~20)로만 clamp.
@@ -836,6 +838,8 @@ def _llm_generate(ctx, doc_type, diff, count, weekly, wiki_context) -> List[Dict
         '"correct_answer": "정답 보기 텍스트", "explanation": "정답 해설", '
         '"wrong_explanations": ["오답해설1","오답해설2","오답해설3"], "concept": "핵심 개념" } ] }'
     )
+    regen = ctx.get("regeneration_block") or ""
+    user += regen
     try:
         # easy/강의계획서 = Qwen 단독. normal/hard general = OpenAI 보정 허용.
         if is_syllabus or diff == "easy":
@@ -845,7 +849,7 @@ def _llm_generate(ctx, doc_type, diff, count, weekly, wiki_context) -> List[Dict
             raw = refiner_llm(
                 "너는 퀴즈 품질 보정자다. 아래 초안의 문장/보기/정답·오답 해설을 다듬되 PDF 근거를 벗어나지 마라. "
                 "JSON 스키마는 그대로 유지하고 마크다운 없이 JSON 으로만 응답한다.",
-                f"## 초안\n{draft}\n\n## 출제 범위\n{scope}", max_tokens=QUIZ_MAX_TOKENS,
+                f"## 초안\n{draft}\n\n## 출제 범위\n{scope}{regen}", max_tokens=QUIZ_MAX_TOKENS,
             ) or draft
     except Exception as e:  # noqa: BLE001
         logger.info("PDF 퀴즈 LLM 생성 실패: %s", e)

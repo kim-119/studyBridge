@@ -37,7 +37,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from openai import OpenAI
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_serializer
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. 환경변수 & 로거
@@ -1211,8 +1211,10 @@ def generate_quiz_from_pdf(
     group_id: Optional[int] = None,
     file_url: Optional[str] = None,
     strict_grounding: bool = True,
+    regeneration_block: str = "",
 ) -> Dict[str, Any]:
-    """S3 PDF 기반 퀴즈 생성. strict_grounding=True면 일반 fallback을 절대 반환하지 않는다."""
+    """S3 PDF 기반 퀴즈 생성. strict_grounding=True면 일반 fallback을 절대 반환하지 않는다.
+    regeneration_block: 품질 게이트 재생성 지침(app.quality_gate.hints) — 빈 문자열이면 프롬프트 불변."""
     count = max(1, min(int(count or 5), 10))
     file_name = file_name or "PDF"
     key_source = s3_key or file_url or ""
@@ -1277,6 +1279,7 @@ def generate_quiz_from_pdf(
     logger.info("[quiz:context] usedContextLength=%s chunkCount=%s", len(pdf_context), chunk_count)
     system = _build_grounded_quiz_system_prompt(count, difficulty, question_type, language)
     user = _build_grounded_quiz_user_prompt(file_name, material_id, group_id, difficulty, count, question_type, pdf_context)
+    user += regeneration_block or ""
 
     valid_questions: List[Dict[str, Any]] = []
     rejected_total = 0
@@ -1333,6 +1336,11 @@ def generate_quiz_from_pdf(
         "usedContextLength": len(pdf_context),
         "questions": final_questions,
     }
+    # grounding.v1(R1): 원문 = 이 서버가 S3 PDF 에서 추출한 텍스트(Spring 은 자기 추출본과 부분 문자열로 대조한다),
+    # view = LLM 에 넣은 발췌(pdf_context). 문항별 evidenceIds 는 sourceSnippet → 최대 겹침 문장 순.
+    from app.services.grounding_attach import attach_question_grounding
+    result["questions"], result["grounding"] = attach_question_grounding(
+        final_questions, pdf_text, material_id=material_id, view=pdf_context)
     if partial:
         result["warning"] = f"요청한 {count}개 중 PDF 근거 검증을 통과한 {len(valid_questions)}개만 반환했습니다."
     return result
@@ -1846,6 +1854,18 @@ class QuizGenerateRequest(BaseModel):
     strictGrounding: bool = Field(True, validation_alias=AliasChoices("strictGrounding", "strict_grounding"), description="PDF 근거 강제 여부")
     sourceName: Optional[str] = Field(None, description="자료 표시명")
     range: Optional[Any] = Field(None, description="자료 범위 호환 필드")
+    # 품질 게이트 재생성(C-RQ-3). 타입이 틀려도 422 로 막지 않는다(Any → app.quality_gate.hints 가 정규화).
+    regenerationAttempt: Optional[Any] = Field(None, validation_alias=AliasChoices("regenerationAttempt", "regeneration_attempt"), description="재생성 시도(1..2)")
+    regenerationHints: Optional[Any] = Field(None, validation_alias=AliasChoices("regenerationHints", "regeneration_hints"), description="직전 평가 위반 코드 목록")
+
+
+def _drop_none_keys(data: Any, keys: Tuple[str, ...]) -> Any:
+    """선택 확장 필드는 값이 없으면 키 자체를 내보내지 않는다(기존 응답 바이트 유지)."""
+    if isinstance(data, dict):
+        for k in keys:
+            if data.get(k) is None:
+                data.pop(k, None)
+    return data
 
 
 class QuizQuestion(BaseModel):
@@ -1861,6 +1881,11 @@ class QuizQuestion(BaseModel):
     questionType: Optional[str] = None
     sourceSnippet: Optional[str] = None
     timeLimitSeconds: int = Field(DEFAULT_QUIZ_TIME_LIMIT_SECONDS)
+    evidenceIds: Optional[List[str]] = Field(None, description="grounding.v1 근거 id(응답 grounding.evidence 참조)")
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_extensions(self, handler):
+        return _drop_none_keys(handler(self), ("evidenceIds",))
 
 
 class QuizGenerateResponse(BaseModel):
@@ -1882,6 +1907,12 @@ class QuizGenerateResponse(BaseModel):
     usedContextLength: Optional[int] = None
     warning: Optional[str] = None
     questions: List[QuizQuestion] = Field(default_factory=list)
+    grounding: Optional[Dict[str, Any]] = Field(None, description="grounding.v1 {schemaVersion, evidence[]}")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="선택 메타(regeneration 등)")
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_extensions(self, handler):
+        return _drop_none_keys(handler(self), ("grounding", "metadata"))
 
 
 class PreviousAnswer(BaseModel):
@@ -2518,9 +2549,17 @@ async def generate_quiz_endpoint(request: QuizGenerateRequest, http_request: Req
         or body.get("questionText") or body.get("sourceText")
         or body.get("source_text") or body.get("explanation")
     )
+    # 품질 게이트 재생성(C-RQ-3): attempt>0 + 알려진 위반 코드일 때만 프롬프트에 고정 지침을 붙인다(아니면 "" = 프롬프트 불변).
+    # 세 하위 경로 모두 결과 캐시가 없어(매 요청 생성) 재생성 시 우회할 캐시도 없다.
+    from app.quality_gate.hints import regeneration_meta, regeneration_prompt_block
+    regen_block = regeneration_prompt_block(request.regenerationAttempt, request.regenerationHints)
+    regen_meta = regeneration_meta(request.regenerationAttempt, request.regenerationHints)
+
     if is_wrong_note or (no_pdf_seed and has_wrongnote_inputs) or (is_group_quiz and no_pdf_seed):
         from app.services.wrong_note_quiz_service import generate_wrong_note_quiz
-        result = await asyncio.to_thread(generate_wrong_note_quiz, body)
+        result = await asyncio.to_thread(generate_wrong_note_quiz, body)   # 재생성 지침은 body 에서 직접 읽는다
+        if regen_meta and result.get("success"):
+            result["metadata"] = {**(result.get("metadata") or {}), "regeneration": regen_meta}
         return JSONResponse(content=result, status_code=200)
 
     # 텍스트 본문 직접 전달 경로 (Spring이 추출 본문을 넘긴 경우)
@@ -2543,7 +2582,17 @@ async def generate_quiz_endpoint(request: QuizGenerateRequest, http_request: Req
             question_type=request.questionType,
             material_id=request.materialId,
             request_id=request_id,
+            **({"regeneration_block": regen_block} if regen_block else {}),
         )
+        if text_result.get("success") and isinstance(text_result.get("quiz"), list):
+            # grounding.v1(R1): 원문 = 요청 text 그대로, view = 생성기에 넣은 본문(strip 후 상한까지).
+            from app.services.grounding_attach import attach_question_grounding
+            from quiz_text_compat import QUIZ_MAX_CONTEXT_CHARS as _TEXT_QUIZ_CONTEXT_CHARS
+            text_result["quiz"], text_result["grounding"] = attach_question_grounding(
+                text_result["quiz"], request.text, material_id=request.materialId,
+                view=request.text.strip()[:_TEXT_QUIZ_CONTEXT_CHARS])
+            if regen_meta:
+                text_result["metadata"] = {**(text_result.get("metadata") or {}), "regeneration": regen_meta}
         status_code = 200 if text_result.get("success") else 422
         return JSONResponse(content=text_result, status_code=status_code)
 
@@ -2568,6 +2617,7 @@ async def generate_quiz_endpoint(request: QuizGenerateRequest, http_request: Req
                 group_id=request.groupId,
                 file_url=request.fileUrl,
                 strict_grounding=True if request.strictGrounding is None else bool(request.strictGrounding),
+                **({"regeneration_block": regen_block} if regen_block else {}),
             ),
             timeout=QUIZ_GENERATION_TIMEOUT_SECONDS,
         )
@@ -2591,6 +2641,8 @@ async def generate_quiz_endpoint(request: QuizGenerateRequest, http_request: Req
             reason=str(e),
         )
 
+    if regen_meta and result.get("success"):
+        result["metadata"] = {**(result.get("metadata") or {}), "regeneration": regen_meta}
     return QuizGenerateResponse(**result)
 
 

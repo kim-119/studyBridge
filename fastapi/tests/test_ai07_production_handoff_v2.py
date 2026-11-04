@@ -272,7 +272,10 @@ def _raw(items):
 def _assert_integrity(body):
     qs = body["quizzes"]
     assert qc.validate_quiz_contract(qs) == []
-    assert json.loads(body["quizData"]) == qs
+    # quizData 문자열은 Phase D 전과 같다 — quizzes 에만 grounding.v1 evidenceIds 가 추가된다.
+    assert json.loads(body["quizData"]) == [{k: v for k, v in q.items() if k != "evidenceIds"} for q in qs]
+    known = {e["evidenceId"] for e in body["grounding"]["evidence"]}
+    assert all(set(q["evidenceIds"]) <= known for q in qs)
     for q in qs:
         assert q["question"].strip() and len(set(q["options"])) == len(q["options"]) and all(o.strip() for o in q["options"])
         idx = q["correctAnswer"]

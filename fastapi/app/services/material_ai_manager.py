@@ -555,9 +555,11 @@ def summarize_document(
     personality: str = "간결_요약형",
     agent_name: str = "요약봇",
     s3_file_url: Optional[str] = None,
+    regeneration_block: str = "",
 ) -> dict:
     """
     PDF 전체 텍스트를 요약한다.
+    regeneration_block: 품질 게이트 재생성 지침(app.quality_gate.hints) — 빈 문자열이면 프롬프트 불변.
     모델 라우팅: Ollama/Qwen 우선 (call_primary_llm 내부에 GPT fallback 포함).
 
     Returns (하위호환 유지):
@@ -579,7 +581,7 @@ def summarize_document(
         "## 보강 설명\n문서에 등장하는 주요 전문 용어나 개념 중 부연 설명이 필요한 것을 3~5개 골라, **반드시 해당 문서의 학술적/실무적 도메인(예: IT, 경영 등)에 맞게** 정의하고 설명한다. (문맥과 무관한 인물, 대중문화, 뉴스 사건은 절대 언급하지 마라.)\n"
         "## 학습 포인트\n3~5개 불릿으로 시험/실습/복습 관점의 포인트를 적는다.\n"
         "## AI 학습 질문\n이 문서를 깊이 이해했는지 점검할 수 있는 질문 3~5개를 불릿으로 적는다."
-    )
+    ) + (regeneration_block or "")
 
     provider = "ollama_qwen"
     used_fallback = False
