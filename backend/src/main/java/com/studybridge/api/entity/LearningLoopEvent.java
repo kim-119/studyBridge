@@ -90,6 +90,11 @@ public class LearningLoopEvent {
     @Column(name = "recommended_review_date")
     private LocalDate recommendedReviewDate;
 
+    // 기록 주체(SERVER/CLIENT). null = 컬럼 도입 전 레거시 행. 클라이언트 기록은 AI 생성물·시스템 기록으로 승격하지 않는다.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "origin", length = 16)
+    private LearningEventOrigin origin;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
