@@ -76,5 +76,13 @@ PROFILES: Dict[TaskType, Profile] = {
 }
 
 
+# 84일 로드맵(전체 또는 EC2 분할 세그먼트). TaskType 을 늘리지 않고(PLANNER_COACHING/plan_json 그대로 — Java 계약 무변경)
+# 출력 모양·evaluationProfile 로 고른다. 세그먼트 밖 내용(주차 간 의존·총 일수)은 Spring 결정적 검사 담당.
+ROADMAP_PROFILE = _P("roadmap_plan", (("schema_validity", 30), ("feasibility", 20), ("material_relevance", 30),
+                                      ("request_fulfillment", 5), ("format", 15)), factual_required=False,
+                     validators=frozenset({"roadmap"}))
+ROADMAP_PROFILE_NAMES = frozenset({"ROADMAP_PLAN", "roadmap_plan", "roadmap_plan.v1"})
+
+
 def get_profile(task: TaskType) -> Profile:
     return PROFILES[task]

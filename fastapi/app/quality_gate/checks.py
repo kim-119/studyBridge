@@ -715,11 +715,47 @@ def check_vision(text: str, evidence: Sequence[Dict[str, Any]]) -> List[V]:
     srcs = {str(e.get("sourceType") or "").upper() for e in evidence}
     if "SCREEN_SHARE" in srcs and "CAMERA" not in srcs and re.search(r"카메라|웹캠|얼굴", text or ""):
         out.append(v("SOURCE_CONFUSION", MAJOR, "공유 화면 근거를 카메라로 서술"))
+    asserted = uncertain_asserted(text, evidence)
+    if asserted:
+        out.append(v("VISION_UNCERTAIN_ASSERTED", MAJOR,
+                     f"판독이 불확실한 관측 {len(asserted)}건을 불확실 표시 없이 단정"))
     return out
 
 
 def has_uncertainty(text: str) -> bool:
     return bool(_UNCERTAIN_RE.search(text or ""))
+
+
+def _is_uncertain_evidence(e: Dict[str, Any]) -> bool:
+    return str(e.get("sourceType") or "").upper().endswith("_UNCERTAIN")
+
+
+def uncertain_asserted(text: str, evidence: Sequence[Dict[str, Any]], min_overlap: int = 8) -> List[str]:
+    """불확실 관측(sourceType *_UNCERTAIN)에만 있는 내용을 담은 답변 문장이 불확실 표현 없이 단정하는 경우의 관측 id.
+    확실한 관측에도 같은 내용이 있으면(교차 확인) 단정해도 된다."""
+    unc = [e for e in evidence if _is_uncertain_evidence(e) and str(e.get("text") or "").strip()]
+    if not unc:
+        return []
+    sure = re.sub(r"\s+", "", " ".join(str(e.get("text") or "") for e in evidence if not _is_uncertain_evidence(e))).lower()
+    hits: List[str] = []
+    for sent in sentences(text) or [text or ""]:
+        if has_uncertainty(sent):
+            continue
+        ns = re.sub(r"\s+", "", sent).lower()
+        for e in unc:
+            q = re.sub(r"\s+", "", str(e.get("text") or "")).lower()
+            frags = [q] if len(q) < min_overlap else [q[i:i + min_overlap] for i in range(0, len(q) - min_overlap + 1, 2)]
+            shared = [f for f in frags if f and f in ns]
+            # 문장이 불확실 관측을 옮겼고, 옮긴 조각의 과반이 확실한 관측으로 교차 확인되지 않으면 '불확실을 단정'으로 본다.
+            if shared and sum(1 for f in shared if f not in sure) * 2 > len(shared):
+                eid = str(e.get("evidenceId") or e.get("chunkId") or "?")
+                if eid not in hits:
+                    hits.append(eid)
+    return hits
+
+
+def has_uncertain_evidence(evidence: Sequence[Dict[str, Any]]) -> bool:
+    return any(_is_uncertain_evidence(e) for e in evidence)
 
 
 # ── 학습메이트 모드 ──────────────────────────────────────────────────────────────

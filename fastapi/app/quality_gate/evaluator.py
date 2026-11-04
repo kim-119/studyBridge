@@ -12,7 +12,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,8 +22,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.contracts.response_quality_v1 import (MINIMUM_SCORE, SCHEMA_VERSION, Dimension, OutputKind, QualityInput, QualityOutput,
                                                QualityStatus, Severity, TaskType, Violation)
 from app.quality_gate import checks as C
+from app.quality_gate import roadmap as R
+from app.quality_gate import segments as SEG
 from app.quality_gate.judge import JudgeUnavailable, model_family
-from app.quality_gate.profiles import get_profile
+from app.quality_gate.profiles import ROADMAP_PROFILE, ROADMAP_PROFILE_NAMES, get_profile
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +39,11 @@ _GENERIC_MAJOR_PENALTY = 3
 _GENERIC_MAJOR_CAP = 15
 
 from app.quality_gate.hints import HINTS  # noqa: E402  (재생성 지침 표는 생성 경로와 공유)
-NON_REGENERABLE = {"SOURCE_SCOPE_VIOLATION", "SOURCE_SCOPE_UNVERIFIED", "FALLBACK_CONTENT", "PII_SCAN_ERROR"}
+NON_REGENERABLE = {"SOURCE_SCOPE_VIOLATION", "SOURCE_SCOPE_UNVERIFIED", "FALLBACK_CONTENT", "PII_SCAN_ERROR",
+                   # 분할 평가 무결성(호출 측 분할·전송 결함 — 재생성으로 고쳐지지 않는다)
+                   "SEGMENT_MARKER_MISSING", "SEGMENT_INDEX_INVALID", "SEGMENT_INDEX_MISMATCH", "SEGMENT_CHECKSUM_MISMATCH",
+                   "SEGMENT_POINTER_INVALID", "SEGMENT_OVERLAP", "SEGMENT_COUNT_CONFLICT", "SEGMENT_DUPLICATE_CONFLICT",
+                   "SEGMENT_INDEX_CONFLICT", "ROADMAP_EVIDENCE_REQUIRED"}
 
 _cache: "OrderedDict[str, QualityOutput]" = OrderedDict()
 _CACHE_MAX = 512
@@ -115,7 +123,19 @@ def clear_cache() -> None:
     _cache.clear()
 
 
+def roadmap_mode(inp: QualityInput) -> bool:
+    """로드맵 프로파일 적용 여부: plan_json 이고 (evaluationProfile 명시 또는 로드맵 전체/세그먼트 모양)."""
+    if inp.outputKind != OutputKind.PLAN_JSON:
+        return False
+    if (inp.evaluationProfile or "") in ROADMAP_PROFILE_NAMES:
+        return True
+    po = inp.proposedOutput
+    return R.is_roadmap_document(po) or (SEG.is_segment_object(po) and R.looks_like_roadmap_segment(po))
+
+
 async def _evaluate(inp: QualityInput, judge, started: float) -> QualityOutput:
+    if roadmap_mode(inp):
+        return _evaluate_roadmap(inp, started)
     prof = get_profile(inp.taskType)
     text = C.text_of(inp.proposedOutput)
     cons = inp.constraints
@@ -126,6 +146,8 @@ async def _evaluate(inp: QualityInput, judge, started: float) -> QualityOutput:
     vs += C.check_empty_truncated(text, finish_reason=cons.finishReason, max_chars=cons.maxChars)
     if any(x[0] == "EMPTY_OUTPUT" for x in vs):
         return _finalize(inp, prof, vs, {}, started, verified=False)
+    if SEG.is_segment_object(inp.proposedOutput) or SEG.parse_marker(inp.originalRequest):
+        vs += SEG.check_segment_integrity(inp.proposedOutput, inp.originalRequest, inp.requestId)[0]
     vs += C.check_failure_markers(text)
     vs += C.check_secret_pii(text, inp.originalRequest, allow_echo=cons.allowPiiEcho)
     vs += C.check_prompt_injection(text, ev_texts, inp.originalRequest)
@@ -320,7 +342,12 @@ async def _evaluate(inp: QualityInput, judge, started: float) -> QualityOutput:
             else:
                 dims[name] = (None, "unverified")
         elif name == "uncertainty_honesty":
-            dims[name] = (1.0 if C.has_uncertainty(text) or disclosure else 0.6, "deterministic")
+            if "VISION_UNCERTAIN_ASSERTED" in codes:
+                dims[name] = (0.0, "evidence")          # 불확실 판독을 단정 — 정직성 0
+            elif "vision" in prof.validators and ev_texts and not C.has_uncertain_evidence(ev):
+                dims[name] = (1.0, "evidence")          # 판독이 모두 확실 — 불확실 표현을 요구하지 않는다
+            else:
+                dims[name] = (1.0 if C.has_uncertainty(text) or disclosure else 0.6, "deterministic")
         elif name == "privacy":
             dims[name] = (0.0 if codes & {"PII_LEAK", "SECRET_LEAK", "INTERNAL_INFO_LEAK"} else 1.0, "deterministic")
         elif name == "scope":
@@ -355,6 +382,70 @@ async def _evaluate(inp: QualityInput, judge, started: float) -> QualityOutput:
     return _finalize(inp, prof, vs, dims, started, verified=verified)
 
 
+_MD_LEFTOVER_RE = re.compile(r"\*\*|`|^\s*#{1,6}\s|<[^>]+>", re.M)
+
+
+def _evaluate_roadmap(inp: QualityInput, started: float) -> QualityOutput:
+    """84일 로드맵(전체 또는 EC2 분할 세그먼트) 평가. 순수 결정적(judge 미사용) — 세그먼트 밖 내용은 추측하지 않는다."""
+    prof = ROADMAP_PROFILE
+    po = inp.proposedOutput
+    cons = inp.constraints
+    ev = [e.model_dump(mode="json") for e in inp.groundingEvidence]
+    ev_texts = [e.text for e in inp.groundingEvidence if e.text and e.text.strip()]
+    req_text = SEG.strip_marker(inp.originalRequest)
+    vs: List[Tuple] = []
+    if SEG.is_segment_object(po) or SEG.parse_marker(inp.originalRequest):
+        vs += SEG.check_segment_integrity(po, inp.originalRequest, inp.requestId)[0]
+    if not isinstance(po, dict):
+        vs.append(C.v("JSON_SCHEMA_INVALID", "HARD", "로드맵 JSON 객체가 아님"))
+        return _finalize(inp, prof, vs, {}, started, verified=False)
+    units, uv = R.extract_units(po)
+    vs += uv
+    text = R.unit_text(units)
+    vs += C.check_empty_truncated(text, finish_reason=cons.finishReason, max_chars=None)
+    if any(x[0] == "EMPTY_OUTPUT" for x in vs) or not units:
+        if not any(x[0] == "EMPTY_OUTPUT" for x in vs):
+            vs.append(C.v("ROADMAP_SEGMENT_EMPTY", "HARD", "평가할 로드맵 단위(헤더·주차·일자)가 없음"))
+        return _finalize(inp, prof, vs, {}, started, verified=False)
+    vs += C.check_failure_markers(text)
+    vs += C.check_secret_pii(text, inp.originalRequest, allow_echo=cons.allowPiiEcho)
+    vs += C.check_prompt_injection(text, ev_texts, req_text)
+    vs += C.check_citations(text, ev, require=False)
+    vs += C.check_scope(ev, cons.allowedMaterialIds, cons.allowedDocumentIds, pdf_task=False)
+    if any(u.kind == "header" and u.field == "success" and u.value is False for u in units):
+        vs.append(C.v("ROADMAP_FAILURE_RESPONSE", "HARD", "실패 응답(success=false)을 로드맵으로 평가할 수 없음"))
+    uv2, stats = R.check_units(units, max_daily_hours=cons.maxDailyHours, deadline=cons.deadline)
+    vs += uv2
+    rel, related, total = R.material_relevance(units, ev_texts, req_text, C.stems)
+    scoped = bool(cons.allowedMaterialIds or cons.allowedDocumentIds)
+    if scoped and not ev_texts and stats["days"]:
+        # 자료 기반 로드맵인데 원문 근거가 없으면 '자료와 관련 있는가'를 확인할 수 없다 → 승인 불가(호출 측 입력 문제, 재생성 무의미).
+        vs.append(C.v("ROADMAP_EVIDENCE_REQUIRED", "HARD", "자료 범위가 지정됐는데 자료 원문 근거가 없음"))
+    if rel is not None and rel < 0.25:
+        vs.append(C.v("ROADMAP_OFF_MATERIAL", "MAJOR", f"자료 원문·요청에 없는 개념의 일자 {total - related}/{total}"))
+    if R.duplicate_day_ratio(units) > 0.5:
+        vs.append(C.v("ROADMAP_DUPLICATE_DAYS", "MAJOR", "같은 제목·목표의 일자가 반복됨"))
+    if _MD_LEFTOVER_RE.search(text):
+        vs.append(C.v("ROADMAP_MARKDOWN_LEFTOVER", "MINOR", "마크다운/태그 기호가 남음"))
+    if R.fallback_declared(units):
+        vs.append(C.v("ROADMAP_DETERMINISTIC_TEMPLATE", "INFO", "결정적 템플릿(LLM 미사용) 로드맵 — 응답에 명시됨"))
+    codes = {x[0] for x in vs}
+    dims: Dict[str, Tuple[Optional[float], str]] = {}
+    dims["schema_validity"] = (0.0 if stats["structureHard"] else max(0.0, 1.0 - 0.25 * stats["structureMajor"]),
+                               "deterministic")
+    dims["feasibility"] = ((None, "not_applicable") if not stats["days"] else
+                           (0.0 if stats["capacityHard"] else 1.0, "deterministic"))
+    dims["material_relevance"] = ((None, "not_applicable") if rel is None else (min(1.0, rel / 0.5), "evidence"))
+    dims["request_fulfillment"] = (0.5 if "SEGMENT_POINTER_UNSUPPORTED" in codes else 1.0, "deterministic")
+    frac = 1.0
+    if codes & {"REASONING_TAG_LEAK", "TRUNCATED_OUTPUT", "JSON_SCHEMA_INVALID"}:
+        frac -= 0.6
+    if codes & {"POSSIBLY_TRUNCATED", "ROADMAP_MARKDOWN_LEFTOVER"}:
+        frac -= 0.3
+    dims["format"] = (max(0.0, frac), "deterministic")
+    return _finalize(inp, prof, vs, dims, started, verified=True)
+
+
 def _finalize(inp: QualityInput, prof, vs: List[Tuple], dims: Dict[str, Tuple[Optional[float], str]],
               started: float, *, verified: bool) -> QualityOutput:
     violations = [Violation(code=c, severity=Severity(s), reason=r, evidenceId=e) for (c, s, r, e) in vs]
@@ -372,7 +463,9 @@ def _finalize(inp: QualityInput, prof, vs: List[Tuple], dims: Dict[str, Tuple[Op
     if verified and den > 0:
         majors = sum(1 for x in violations if x.severity == Severity.MAJOR)
         penalty = min(_GENERIC_MAJOR_CAP, _GENERIC_MAJOR_PENALTY * majors)
-        score = round(max(0.0, 100.0 * num / den - penalty), 1)
+        # 소수 첫째 자리 '내림'(반올림 금지): 원점수 79.95 가 80.0 으로 올라가 승인되는 경계 넘김을 막는다.
+        raw = max(0.0, 100.0 * num / den - penalty)
+        score = math.floor(raw * 10 + 1e-9) / 10
     if not dims:  # EMPTY_OUTPUT 조기 종료
         score = 0.0
         verified = False
