@@ -51,6 +51,10 @@ class AiQualityUserRateLimiterTest {
                 assertTrue(Long.parseLong(limited.getHeader("Retry-After")) >= 1);
                 assertTrue(limited.getContentAsString().contains("AI_QUALITY_RATE_LIMITED"));
                 assertTrue(on.preHandle(req("GET", "/api/timers", "/api/timers"), new MockHttpServletResponse(), null), "비AI 경로 미적용");
+                for (int i = 0; i < 5; i++) {
+                        assertTrue(on.preHandle(req("GET", "/api/review-notes", "/api/review-notes"), new MockHttpServletResponse(), null),
+                                        "저장본 조회만 하는 GATED GET 은 평가를 일으키지 않아 한도 대상 아님");
+                }
 
                 AiQualityGateCoverage off = new AiQualityGateCoverage(AiQualityGateSettings.forTest(false));
                 off.setRateLimiter(new AiQualityUserRateLimiter(1, 1, () -> 0L));

@@ -39,6 +39,9 @@ public class QualityEvaluatorClient {
         }
     }
 
+    /** ai07 limited_route_class(256 * 1024) 와 같은 바이트 상한. */
+    static final int MAX_REQUEST_BYTES = 256 * 1024;
+
     private final WebClient webClient;
     private final AiQualityGateSettings settings;
     private final String apiKey;
@@ -100,6 +103,13 @@ public class QualityEvaluatorClient {
                 halfOpenInFlight.set(false);
             }
             return Mono.just(Result.error("EVALUATOR_INPUT_CONTRACT_INVALID", 0));
+        }
+        // ai07 평가 라우트 본문 상한(256KiB, 바이트). 계약 상한(6만 자)은 문자 수라 한글이면 넘을 수 있다 → 보내기 전에 막는다(413 왕복·슬롯 낭비 방지).
+        if (body.length > MAX_REQUEST_BYTES) {
+            if (trial) {
+                halfOpenInFlight.set(false);
+            }
+            return Mono.just(Result.error("EVALUATOR_INPUT_TOO_LARGE", 0));
         }
         Mono<Result> call = webClient.post()
                 .uri(settings.evaluatePath())

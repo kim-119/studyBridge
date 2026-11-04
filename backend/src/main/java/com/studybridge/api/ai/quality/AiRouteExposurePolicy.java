@@ -57,7 +57,7 @@ public final class AiRouteExposurePolicy {
             Map.entry("POST /api/learning-loop/events", "오답노트 소유권 검증용 조회, 응답 = 이벤트 id"),
             Map.entry("POST /api/learning-loop/review-recommendation", "결정적 복습 간격·날짜 계산(오답노트는 소유권 확인)"),
             Map.entry("POST /api/learning-loop/review-schedule", "할 일 등록 결과(id·날짜). 제목은 요청 값 또는 오답노트 개념명 — 개념명은 오답노트 게이트에서 다룸"),
-            Map.entry("POST /api/materials/upload", "업로드 응답에 AI 텍스트 없음. 백그라운드 학습노트는 GET /api/materials/{materialId}/study-note(BLOCKED)로만 노출"),
+            Map.entry("POST /api/materials/upload", "업로드 응답에 AI 텍스트 없음. 백그라운드 학습노트는 GET /api/materials/{materialId}/study-note(생성 시점 게이트 + 미승인 가림, GATED)로만 노출"),
             Map.entry("PUT /api/materials/{materialId}", "MaterialDTO 에 AI 필드 없음(피드백 조회는 갱신 처리용). 오답노트 자료는 공용 convertToDTO 가 가림"),
             Map.entry("GET /api/materials", "목록은 REVIEW_NOTE 제외 + 공용 convertToDTO 가 오답노트 자료를 가림(ReviewNoteMaterialRedactionTest)"),
             Map.entry("GET /api/materials/items", "보관함 항목은 REVIEW_NOTE 제외 + 공용 convertToDTO 가림"),

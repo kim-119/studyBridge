@@ -24,7 +24,7 @@ import java.util.Map;
  * 게이트 ON 운영 전환 조건 = BLOCKED_WHEN_GATE_ON 0건(인계 문서 Go/No-Go). 이 목록과 실제 컨트롤러 매핑의 일치는
  * AiQualityGateCoverageTest 가 리플렉션으로 검증한다.
  * 등록하지 않은 것(사유): POST /api/materials/upload — 응답에 AI 텍스트가 없다. 업로드 후 백그라운드로 만드는 학습노트는
- *  GET /api/materials/{materialId}/study-note(BLOCKED)로만 노출된다.
+ *  GET /api/materials/{materialId}/study-note(생성 시점 게이트 + 미승인 가림, GATED)로만 노출된다.
  */
 @Slf4j
 @Component
@@ -164,6 +164,14 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
         this.rateLimiter = rateLimiter;
     }
 
+    /** 조회만 하는 GET(저장본 가림)은 평가를 일으키지 않는다 → 한도 대상 아님. 캐시 없으면 생성하는 GET 만 예외로 센다. */
+    static final java.util.Set<String> GENERATING_GETS = java.util.Set.of(
+            "/api/materials/{materialId}/summary", "/api/materials/{materialId}/feedback", "/api/materials/{materialId}/roadmap");
+
+    static boolean consumesEvaluation(Route r) {
+        return !"GET".equalsIgnoreCase(r.method()) || GENERATING_GETS.contains(r.pattern());
+    }
+
     static String userKey(HttpServletRequest request) {
         var auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
         if (auth != null && auth.isAuthenticated() && auth.getName() != null && !"anonymousUser".equals(auth.getName())) {
@@ -210,7 +218,7 @@ public class AiQualityGateCoverage implements HandlerInterceptor {
             return true;
         }
         Route r = match(request);
-        if (r != null && r.status() == Status.GATED && rateLimiter != null) {
+        if (r != null && r.status() == Status.GATED && rateLimiter != null && consumesEvaluation(r)) {
             long wait = rateLimiter.tryAcquire(userKey(request));
             if (wait > 0) {
                 log.warn("[QUALITY-GATE] 사용자별 평가 한도 초과 {} {} retryAfter={}s", request.getMethod(), r.pattern(), wait);

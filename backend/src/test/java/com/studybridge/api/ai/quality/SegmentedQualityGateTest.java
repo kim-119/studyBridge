@@ -206,4 +206,51 @@ class SegmentedQualityGateTest {
                         assertEquals(3, n.get(), "최초 1 + 재생성 2");
                 }
         }
+
+        @Test
+        void generatorExceptionIsAnAttemptAndOpenCircuitSkipsGeneration() throws Exception {
+                AtomicInteger n = new AtomicInteger();
+                try (StubEvaluator stub = new StubEvaluator(in -> Reply.output(in.requestId(), 90, false, "APPROVED"))) {
+                        SegmentedQualityGate.Outcome<JsonNode> o = gate(stub).generateApproved(spec(), (a, prev) -> {
+                                if (n.incrementAndGet() == 1) {
+                                        throw new IllegalStateException("upstream glitch");
+                                }
+                                return roadmap("H" + a);
+                        }, x -> x, weeksPacker(55_000), VALIDATOR);
+                        assertTrue(o.approved(), "생성기 예외는 시도 1회로 세고 다음 시도로");
+                        assertEquals(2, n.get());
+                }
+                try (StubEvaluator stub = new StubEvaluator(in -> new Reply(503, "{}", 0))) {
+                        AiQualityGateSettings s = AiQualityGateSettings.forTest(true);
+                        AiResponseQualityGate g = new AiResponseQualityGate(s, stub.evaluatorClient(s));
+                        for (int i = 0; i < 4; i++) { // forTest 임계 3 → 서킷 열림
+                                g.evaluateOnce(spec(), "req-open-" + i, 0, M.createObjectNode().put("x", i)).block(java.time.Duration.ofSeconds(5));
+                        }
+                        AtomicInteger gens = new AtomicInteger();
+                        SegmentedQualityGate.Outcome<JsonNode> o = new SegmentedQualityGate(g).generateApproved(spec(), (a, prev) -> {
+                                gens.incrementAndGet();
+                                return roadmap("I");
+                        }, x -> x, weeksPacker(55_000), VALIDATOR);
+                        assertFalse(o.approved());
+                        assertEquals(0, gens.get(), "서킷 열림이면 생성(GPU) 0회");
+                }
+        }
+
+        @Test
+        void evaluatorRequestOverByteLimitIsNotSent() throws Exception {
+                try (StubEvaluator stub = new StubEvaluator(in -> Reply.output(in.requestId(), 90, false, "APPROVED"))) {
+                        AiQualityGateSettings s = AiQualityGateSettings.forTest(true);
+                        AiResponseQualityGate g = new AiResponseQualityGate(s, stub.evaluatorClient(s));
+                        // 문자 수 상한(6만) 안이지만 한글 UTF-8 바이트로는 256KiB 초과: 본문 5만 자 + 근거 4.8만 자 ≈ 29만 바이트
+                        AiResponseQualityGate.Spec big = new AiResponseQualityGate.Spec("req-big-0001", ResponseQualityV1.TaskType.PDF_SUMMARY,
+                                        ResponseQualityV1.OutputKind.TEXT, "요약", AiResponseQualityGate.pdfEvidence(1L, "가".repeat(48_000), 4000, 48_000),
+                                        ResponseQualityV1.Constraints.empty(), null);
+                        GateDecision d = g.evaluateOnce(big, "req-big-0001", 0, M.getNodeFactory().textNode("나".repeat(50_000)))
+                                        .block(java.time.Duration.ofSeconds(5));
+                        assertFalse(d.approved());
+                        assertTrue(d.reasonCodes().contains("EVALUATOR_INPUT_TOO_LARGE"), String.valueOf(d.reasonCodes()));
+                        assertEquals(0, stub.requests.size(), "보내지 않는다");
+                }
+        }
 }
+

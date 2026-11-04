@@ -73,6 +73,11 @@ public class AiResponseQualityGate {
         return settings.enabled();
     }
 
+    /** 평가기가 지금 요청을 받는가(서킷 닫힘/반개방). false 면 생성(GPU)부터 하지 않는다. */
+    public boolean acceptingRequests() {
+        return evaluator.acceptingRequests();
+    }
+
     public AiQualityGateSettings settings() {
         return settings;
     }

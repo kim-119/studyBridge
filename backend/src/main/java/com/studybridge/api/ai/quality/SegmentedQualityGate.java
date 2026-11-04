@@ -208,6 +208,10 @@ public final class SegmentedQualityGate {
     /** 생성 + 분할 평가 + 전체 단위 재생성(≤ maxRegenerations). */
     public <T> Outcome<T> generateApproved(AiResponseQualityGate.Spec base, AiResponseQualityGate.Generator<T> generator,
                                            Function<T, JsonNode> toJson, Segmenter segmenter, WholeValidator validator) {
+        if (!gate.acceptingRequests()) {
+            // 서킷 열림: 어차피 노출할 수 없으니 생성(GPU)부터 하지 않는다(AiResponseQualityGate 와 같은 규칙).
+            return new Outcome<>(null, new Result(false, GateDecision.unavailable("EVALUATOR_CIRCUIT_OPEN", 0, 0), null, Map.of(), List.of()));
+        }
         int maxAttempts = 1 + gate.settings().maxRegenerations();
         Result last = null;
         Set<String> seen = new HashSet<>();
@@ -217,6 +221,10 @@ public final class SegmentedQualityGate {
                 draft = generator.generate(attempt, last == null ? null : last.decision());
             } catch (AiResponseQualityGate.StopGeneration e) {
                 return new Outcome<>(null, new Result(false, GateDecision.noDraft(e.getMessage(), attempt + 1), null, Map.of(), List.of()));
+            } catch (RuntimeException e) {
+                log.warn("[QUALITY-GATE] segmented rid={} attempt={} 생성 실패 {}", base.requestId(), attempt, e.getClass().getSimpleName());
+                last = new Result(false, GateDecision.noDraft("GENERATION_FAILED", attempt + 1), null, Map.of(), List.of());
+                continue;
             }
             JsonNode full = draft == null ? null : toJson.apply(draft);
             if (full == null || full.isNull() || full.isMissingNode()) {
