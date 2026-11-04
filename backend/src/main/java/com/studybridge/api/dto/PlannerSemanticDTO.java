@@ -90,5 +90,11 @@ public class PlannerSemanticDTO {
         private String errorCode;                 // null when OK
         private String aiSource;                  // AI07 | FALLBACK
         private Integer narrativeVersion;         // 사용자 노출 문장 규칙 버전(구버전 캐시는 조회 시 문장만 재생성)
+        // 품질 게이트(PLANNER_COACHING) — 응답에만 싣는다(판정 원본은 planners.plan_analysis_quality_status). 게이트 OFF 면 null.
+        private String qualityStatus;
+        private Double qualityScore;
+        private Boolean verified;
+        private Boolean qualityRedacted;          // true = 미검증 저장본이라 분석 본문을 내보내지 않았다
+        private Boolean retryable;
     }
 }

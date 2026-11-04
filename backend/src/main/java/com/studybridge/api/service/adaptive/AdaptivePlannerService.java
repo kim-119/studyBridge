@@ -2,6 +2,10 @@ package com.studybridge.api.service.adaptive;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
+import com.studybridge.api.ai.quality.GateDecision;
+import com.studybridge.api.service.PlannerQualityGateSupport;
 import com.studybridge.api.service.adaptive.AdaptivePlannerContextBuilder.Context;
 import com.studybridge.api.service.adaptive.AdaptivePlannerContextBuilder.ItemInfo;
 import com.studybridge.api.service.adaptive.AdaptiveProposalSigner.Change;
@@ -37,6 +41,11 @@ import java.util.UUID;
  *   <li>반영 후보(changes)는 Spring 이 확정하고 서명 토큰으로 묶는다 — 실제 저장은 사용자가 승인한 뒤 반영 API 에서만 한다.</li>
  * </ol>
  * ai07 은 DB 를 읽거나 바꾸지 않으며, 이 메서드도 아무것도 저장하지 않는다.
+ *
+ * <p>품질 게이트(AI_RESPONSE_QUALITY_GATE_ENABLED, 기본 OFF): 검증을 통과한 추천 본문(result 의 보일 문자열 전체)과 반영 후보 일정을
+ * PLANNER_COACHING(text — 제안이 없는 응답도 같은 명세로 평가해야 하므로 일정 JSON 검사 대상인 plan_json 을 쓰지 않는다. 일정 구조는
+ * 위 결정적 검증이 맡는다, 근거 = 플래너 항목)으로 평가 → 거절 시 재생성 ≤2 → 승인분만 응답하고, 승인된 추천에서만 승인 표식(quality=APPROVED)이
+ * 든 제안 토큰을 발급한다. 거절 422 / 평가 불가 503(AI_QUALITY_REJECTED/UNAVAILABLE, retryable). ai07 오류는 기존 계약 그대로.</p>
  */
 @Slf4j
 @Service
@@ -73,6 +82,18 @@ public class AdaptivePlannerService {
         this.clock = clock;
     }
 
+    private AiResponseQualityGate qualityGate;
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    /** 게이트 ON 여부(반영 API 도 같은 판단을 쓴다). */
+    public boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
+
     public ZoneId zone() {
         return zone;
     }
@@ -107,15 +128,27 @@ public class AdaptivePlannerService {
         log.info("[ADAPTIVE] request requestId={} userId={} plannerId={} mode={} minutes={} items={} quiz={} step={}",
                 requestId, userId, plannerId, ctx.mode(), minutes, ctx.items().size(), ctx.quizResults().size(), ctx.currentStepId());
 
-        JsonNode ai = client.recommend(body, requestId);
+        if (gateOn()) {
+            return recommendGated(userId, plannerId, minutes, today, ctx, body, requestId);
+        }
+        Draft draft = process(ctx, minutes, client.recommend(body, requestId), requestId);
+        String token = draft.changes().isEmpty() ? null
+                : signer.sign(userId, plannerId, ctx.mode(), ctx.currentStepId(), ctx.basisToken(), draft.changes());
+        return output(ctx, plannerId, minutes, today, requestId, draft, token);
+    }
+
+    /** 검증·정리된 추천 1건(응답 본문 + 경고 + 반영 후보). */
+    record Draft(ObjectNode result, List<Map<String, Object>> warnings, List<Change> changes) {}
+
+    private Draft process(Context ctx, int minutes, JsonNode ai, String requestId) {
         ObjectNode result = ai.deepCopy();
         List<Map<String, Object>> warnings = new ArrayList<>();
         validateRecommendation(ctx, minutes, result, requestId);
         sanitizePlans(ctx, minutes, result, warnings, requestId);
-        List<Change> changes = deriveChanges(ctx, result);
-        String token = changes.isEmpty() ? null
-                : signer.sign(userId, plannerId, ctx.mode(), ctx.currentStepId(), ctx.basisToken(), changes);
+        return new Draft(result, warnings, deriveChanges(ctx, result));
+    }
 
+    private Map<String, Object> output(Context ctx, Long plannerId, int minutes, LocalDate today, String requestId, Draft draft, String token) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("requestId", requestId);
         out.put("plannerId", plannerId);
@@ -128,12 +161,93 @@ public class AdaptivePlannerService {
         out.put("items", itemViews(ctx));
         out.put("quiz", Map.of("available", ctx.quiz().available(), "wrongCount", ctx.quiz().wrongCount(),
                 "reviewNoteCount", ctx.quiz().reviewNoteCount()));
-        out.put("result", result);
-        out.put("changes", changeViews(ctx, changes));
+        out.put("result", draft.result());
+        out.put("changes", changeViews(ctx, draft.changes()));
         out.put("proposalToken", token);
         out.put("proposalExpiresInSeconds", token == null ? null : signer.ttl().toSeconds());
-        out.put("warnings", warnings);
+        out.put("warnings", draft.warnings());
         return out;
+    }
+
+    // ───────────────────────── 품질 게이트 ─────────────────────────
+
+    /** result 중 화면에 보이지 않는 전송·식별 필드(평가 대상 아님). */
+    static final Set<String> NON_VISIBLE_RESULT_KEYS = Set.of("contractVersion", "requestId", "mode", "status", "source", "engine",
+            "model", "debug", "timing", "latencyMs", "traceId");
+
+    private Map<String, Object> recommendGated(Long userId, Long plannerId, int minutes, LocalDate today, Context ctx,
+                                               Map<String, Object> body, String requestId) {
+        final AdaptivePlannerException[] upstream = new AdaptivePlannerException[1];
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec("ad-" + requestId, ResponseQualityV1.TaskType.PLANNER_COACHING,
+                ResponseQualityV1.OutputKind.TEXT, coachingRequest(ctx, minutes), itemEvidence(ctx), ResponseQualityV1.Constraints.empty(), null);
+        AiResponseQualityGate.Outcome<Draft> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> {
+            String rid = attempt == 0 ? requestId : requestId + "-r" + attempt;
+            Map<String, Object> b = new LinkedHashMap<>(body);
+            b.put("requestId", rid);
+            try {
+                return process(ctx, minutes, client.recommend(b, rid), rid);
+            } catch (AdaptivePlannerException e) {
+                upstream[0] = e;
+                throw new AiResponseQualityGate.StopGeneration(e.getCode());
+            }
+        }, d -> AiResponseQualityGate.text(visibleText(ctx, d)));
+        if (outcome.value() == null && upstream[0] != null) {
+            throw upstream[0];
+        }
+        if (!outcome.approved()) {
+            GateDecision d = outcome.decision();
+            boolean rejected = !GateDecision.UNAVAILABLE.equals(d.errorCode());
+            log.warn("[ADAPTIVE] quality gate not approved requestId={} code={} attempts={} → 미노출·토큰 미발급", requestId, d.errorCode(), d.attempts());
+            String code = rejected ? GateDecision.REJECTED : GateDecision.UNAVAILABLE;
+            throw new AdaptivePlannerException(rejected ? HttpStatus.UNPROCESSABLE_ENTITY : HttpStatus.SERVICE_UNAVAILABLE, code,
+                    GateDecision.userMessage(code), true, null, null);
+        }
+        Draft draft = outcome.value();
+        String token = draft.changes().isEmpty() ? null
+                : signer.sign(userId, plannerId, ctx.mode(), ctx.currentStepId(), ctx.basisToken(), draft.changes(),
+                PlannerQualityGateSupport.APPROVED);
+        Map<String, Object> out = output(ctx, plannerId, minutes, today, requestId, draft, token);
+        out.put("qualityStatus", PlannerQualityGateSupport.APPROVED);
+        out.put("qualityScore", outcome.decision().score());
+        out.put("verified", true);
+        log.info("[ADAPTIVE] approved requestId={} score={} attempts={} changes={}", requestId, outcome.decision().score(),
+                outcome.decision().attempts(), draft.changes().size());
+        return out;
+    }
+
+    /** 평가 대상 = 추천 본문(result)의 보일 문자열 전체 + 반영 후보 일정(날짜·분·대상 제목). */
+    String visibleText(Context ctx, Draft d) {
+        ObjectNode copy = d.result().deepCopy();
+        NON_VISIBLE_RESULT_KEYS.forEach(copy::remove);
+        StringBuilder b = new StringBuilder(PlannerQualityGateSupport.visibleText(copy));
+        for (Map<String, Object> c : changeViews(ctx, d.changes())) {
+            b.append('\n').append(KIND_RESCHEDULE.equals(c.get("kind"))
+                    ? "일정 변경: " + c.get("title") + " " + c.get("fromDate") + " → " + c.get("toDate")
+                    : "학습 세션: " + c.get("title") + " " + c.get("date") + " " + c.get("minutes") + "분");
+        }
+        for (Map<String, Object> w : d.warnings()) {
+            Object m = w.get("message");
+            if (m != null) b.append('\n').append(m);
+        }
+        return b.toString().trim();
+    }
+
+    private static String coachingRequest(Context ctx, int minutes) {
+        StringBuilder b = new StringBuilder("오늘 ").append(minutes).append("분 동안 할 다음 학습과 학습 활동, 일정 복구 제안을 추천해 주세요. 학습 항목: ");
+        for (ItemInfo i : ctx.index().values()) b.append(i.title() == null ? "" : i.title()).append("; ");
+        return PlannerQualityGateSupport.clip(b.toString(), 7000);
+    }
+
+    /** 근거 = 이 사용자의 플래너 항목(소유권·범위는 컨텍스트 빌더가 확인). */
+    private static List<ResponseQualityV1.GroundingEvidence> itemEvidence(Context ctx) {
+        StringBuilder b = new StringBuilder();
+        for (ItemInfo i : ctx.index().values()) {
+            b.append("- ").append(i.title() == null ? "" : i.title()).append(" | 과목 ").append(i.subject() == null ? "" : i.subject())
+                    .append(" | 상태 ").append(i.status()).append(" | 예정일 ").append(i.scheduledDate()).append(" | 마감 ").append(i.dueDate())
+                    .append(" | 예상 ").append(i.estimatedMinutes()).append("분 | 체크 ").append(i.checklistCompleted()).append('/')
+                    .append(i.checklistTotal()).append('\n');
+        }
+        return PlannerQualityGateSupport.evidence("PLANNER_RECORD", "ad", b.toString(), 4000, 24000);
     }
 
     // ───────────────────────── 응답 검증 ─────────────────────────

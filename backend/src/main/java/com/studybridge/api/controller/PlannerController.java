@@ -178,6 +178,12 @@ public class PlannerController {
             @PathVariable Long plannerId) {
         try {
             return ResponseEntity.ok(plannerSemanticAnalyzer.analyze(userDetails.getId(), plannerId));
+        } catch (com.studybridge.api.exception.AiUpstreamException e) {
+            // 품질 게이트 거절(422 AI_QUALITY_REJECTED)/평가 불가(503 AI_QUALITY_UNAVAILABLE) — 기존 분석은 보존, 초안 본문 없음.
+            log.warn("[planner:plan-analysis] plannerId={} quality gate code={}", plannerId, e.getCode());
+            PlannerSemanticDTO.AnalysisResponse body = errorAnalysis(plannerId, e.getCode(), e.getMessage());
+            body.setRetryable(e.isRetryable());
+            return ResponseEntity.status(e.getStatus()).body(body);
         } catch (PlanAnalysisException e) {
             log.warn("[planner:plan-analysis] plannerId={} errorCode={} msg={}", plannerId, e.getErrorCode(), e.getMessage());
             return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(errorAnalysis(plannerId, e.getErrorCode(), e.getMessage()));
@@ -243,6 +249,8 @@ public class PlannerController {
             @RequestParam(defaultValue = "09:00") String startTime) {
         try {
             return ResponseEntity.ok(plannerScheduleService.schedule(userDetails.getId(), plannerId, startTime));
+        } catch (com.studybridge.api.exception.AiUpstreamException e) {
+            return qualityFailure(e);
         } catch (SecurityException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("message", e.getMessage()));
         } catch (IllegalArgumentException | IllegalStateException e) {
@@ -259,6 +267,8 @@ public class PlannerController {
         String startTime = req != null && req.getStartTime() != null ? req.getStartTime() : "09:00";
         try {
             return ResponseEntity.ok(plannerScheduleService.generatePdf(userDetails.getId(), plannerId, startTime));
+        } catch (com.studybridge.api.exception.AiUpstreamException e) {
+            return qualityFailure(e);
         } catch (SecurityException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("message", e.getMessage()));
         } catch (IllegalArgumentException | IllegalStateException e) {
@@ -268,6 +278,15 @@ public class PlannerController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("message", "시간표 PDF 생성에 실패했습니다. 잠시 후 다시 시도해 주세요."));
         }
+    }
+
+    /** 시간표가 쓸 분석이 품질 게이트를 통과하지 못함(게이트 ON) → 422/503 + 기존 {message} 형태에 code·retryable 추가. 시간표·PDF 미생성. */
+    private ResponseEntity<Map<String, Object>> qualityFailure(com.studybridge.api.exception.AiUpstreamException e) {
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("message", e.getMessage());
+        body.put("errorCode", e.getCode());
+        body.put("retryable", e.isRetryable());
+        return ResponseEntity.status(e.getStatus()).body(body);
     }
 
     private PlannerSemanticDTO.AnalysisResponse errorAnalysis(Long plannerId, String code, String message) {

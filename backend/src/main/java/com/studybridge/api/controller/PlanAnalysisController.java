@@ -30,6 +30,13 @@ public class PlanAnalysisController {
             @PathVariable Long materialId) {
         try {
             return ResponseEntity.ok(planAnalysisService.analyze(userDetails.getId(), materialId));
+        } catch (com.studybridge.api.exception.AiUpstreamException e) {
+            // 품질 게이트 거절(422 AI_QUALITY_REJECTED)/평가 불가(503 AI_QUALITY_UNAVAILABLE) — 기존 분석 보존, 초안 본문 없음.
+            log.warn("[plan-analysis] materialId={} quality gate code={}", materialId, e.getCode());
+            return ResponseEntity.status(e.getStatus())
+                    .body(PlanAnalysisDTO.Response.builder()
+                            .materialId(materialId).empty(true).errorCode(e.getCode())
+                            .summary(e.getMessage()).retryable(e.isRetryable()).build());
         } catch (PlanAnalysisException e) {
             log.warn("[plan-analysis] materialId={} errorCode={} msg={}", materialId, e.getErrorCode(), e.getMessage());
             return ResponseEntity.status(statusFor(e.getErrorCode()))

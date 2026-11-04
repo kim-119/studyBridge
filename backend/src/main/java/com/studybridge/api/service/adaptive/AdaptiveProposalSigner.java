@@ -33,8 +33,14 @@ public class AdaptiveProposalSigner {
     public record Change(String id, String kind, Long plannerId, String date, Integer minutes,
                          String fromDate, String toDate, String source, List<Object> taskIds) {}
 
+    /**
+     * quality = 품질 게이트 승인 표식(APPROVED). 게이트 ON 에서 승인된 추천에서만 싣고 HMAC 범위 안이라 위조할 수 없다.
+     * 게이트 OFF 발급·레거시 토큰은 null(직렬화 생략) — 게이트 ON 반영 API 는 이 표식 없는 토큰을 거부한다.
+     */
     public record Payload(int v, Long userId, Long plannerId, String mode, Long currentStepId, String basis,
-                          long issuedAt, List<Change> changes) {}
+                          long issuedAt, List<Change> changes,
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+                          String quality) {}
 
     private static final int VERSION = 1;
 
@@ -62,7 +68,12 @@ public class AdaptiveProposalSigner {
     }
 
     public String sign(Long userId, Long plannerId, String mode, Long currentStepId, String basis, List<Change> changes) {
-        Payload p = new Payload(VERSION, userId, plannerId, mode, currentStepId, basis, clock.instant().getEpochSecond(), changes);
+        return sign(userId, plannerId, mode, currentStepId, basis, changes, null);
+    }
+
+    /** quality: 품질 게이트 승인 표식(APPROVED) 또는 null. */
+    public String sign(Long userId, Long plannerId, String mode, Long currentStepId, String basis, List<Change> changes, String quality) {
+        Payload p = new Payload(VERSION, userId, plannerId, mode, currentStepId, basis, clock.instant().getEpochSecond(), changes, quality);
         try {
             String body = Base64.getUrlEncoder().withoutPadding().encodeToString(objectMapper.writeValueAsBytes(p));
             return body + "." + mac(body);

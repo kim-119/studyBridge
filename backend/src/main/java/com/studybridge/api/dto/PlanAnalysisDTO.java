@@ -57,6 +57,18 @@ public class PlanAnalysisDTO {
         private PlannerAnalysisData plannerAnalysisData;
         private Progress progress;
         private Meta meta;
+        // 품질 게이트(PLANNER_COACHING) — 게이트 OFF 면 null → JSON 에 나가지 않는다(기존 응답과 동일).
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private String qualityStatus;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Double qualityScore;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean verified;
+        // true = 미검증 AI 분석이라 요약·추천·항목 문구를 고정 문구로 가렸다(항목 id·완료 상태·진행률은 유지).
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean qualityRedacted;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean retryable;
     }
 
     @Data
@@ -158,5 +170,8 @@ public class PlanAnalysisDTO {
         private Long analysisId;
         private List<String> recommendations;
         private String errorCode;
+        // true = 미검증 AI 분석의 추천이라 내보내지 않았다(게이트 ON). 게이트 OFF 면 null.
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean qualityRedacted;
     }
 }

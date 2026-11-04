@@ -2,6 +2,9 @@ package com.studybridge.api.service.recommendation;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
+import com.studybridge.api.ai.quality.GateDecision;
 import com.studybridge.api.dto.LearningRecommendationDTO.AcceptRequest;
 import com.studybridge.api.dto.LearningRecommendationDTO.Item;
 import com.studybridge.api.dto.LearningRecommendationDTO.ListResponse;
@@ -28,8 +31,10 @@ import com.studybridge.api.service.AiRequestGuard;
 import com.studybridge.api.service.MaterialQuizScoreService;
 import com.studybridge.api.service.PlannerNextLearningService;
 import com.studybridge.api.service.PlannerNextLearningService.Completion;
+import com.studybridge.api.service.PlannerQualityGateSupport;
 import com.studybridge.api.service.recommendation.RecommendationCandidate.Evidence;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -65,6 +70,16 @@ import java.util.stream.Collectors;
  * 흐름: 소유권 → Redis 요청 제한/중복 실행 잠금(사용자별 키) → EC2 컨텍스트 수집 → 규칙 후보
  * (+ 플래그 ON 일 때 AI07 후보 → {@link AiCandidateValidator}) → (user_id, dedup_key) 중복 제거 저장 → 목록.
  * 승인은 조건부 UPDATE(GENERATED→ACCEPTED) 1건만 성공하므로 같은 추천으로 플래너가 두 번 생기지 않는다.
+ *
+ * <p>품질 게이트(AI_RESPONSE_QUALITY_GATE_ENABLED, 기본 OFF):
+ * <ul>
+ *   <li>생성: AI 후보 경로(ai.recommendation.enabled)가 켜져 있는데 ai07 응답이 없으면(라우트 미배포 404 등) 규칙 추천으로 조용히 바꾸지 않고
+ *       503 RECOMMENDATION_AI_UNAVAILABLE. 이번에 보일 후보 전체(규칙 후보도 학습노트 키워드·오답노트 제목 등 AI 산출물을 담을 수 있다)의
+ *       제목·사유·확인 사항·근거 라벨을 PLANNER_COACHING(text)으로 평가 → 승인분만 저장(quality_status=APPROVED)·응답.
+ *       후보는 결정적이라 재생성해도 같은 초안 — 1회 평가. 거절 422 / 평가 불가 503, 저장 0(폐기 AI 후보 지표 행도 쓰지 않음).</li>
+ *   <li>재노출(목록·생성 응답의 이전 승인 행·승인/거절/완료 응답): quality_status≠APPROVED 행은 문구를 가린다(qualityRedacted).</li>
+ *   <li>승인(accept): 미검증 추천은 거부(409 RECOMMENDATION_NOT_VERIFIED) — 승인 시 제목·사유가 새 플래너로 복사되기 때문이다.</li>
+ * </ul></p>
  */
 @Slf4j
 @Service
@@ -93,6 +108,16 @@ public class LearningRecommendationService {
     private final AiRequestGuard guard;
     private final AiRecommendationClient aiClient;
     private final ObjectMapper mapper = new ObjectMapper();
+    private AiResponseQualityGate qualityGate;
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    private boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
 
     public LearningRecommendationService(PlannerProgressReader progress, PlannerRepository plannerRepository,
                                          MaterialRepository materialRepository, MaterialQuizRepository quizRepository,
@@ -210,7 +235,10 @@ public class LearningRecommendationService {
             ai = mergeAi(aiClient.request(AiRecommendationClient.PATH_TASK, payload, requestId), requestId,
                     RecommendationCandidate.TASK_TYPES, index, toc, null, null, candidates);
         }
-        List<LearningRecommendation> saved = persist(userId, Source.USER_PLANNER, p.getId(), null, null, candidates, ai.discards, requestId);
+        GateDecision approval = gateOn() ? gate(requestId, MODE_TASK, planRequest(p), planEvidence(p, upcoming),
+                ResponseQualityV1.Constraints.empty(), candidates, out.note(), null, aiClient.enabled() && STATUS_OK(out.status()), ai.used) : null;
+        List<LearningRecommendation> saved = persist(userId, Source.USER_PLANNER, p.getId(), null, null, candidates, ai.discards, requestId,
+                approval);
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("checklistTotal", comp.total());
         context.put("checklistCompleted", comp.completed());
@@ -222,7 +250,7 @@ public class LearningRecommendationService {
         context.put("latestQuizScore", quiz == null ? null : quiz.score);
         context.put("wrongNotes", notes.size());
         context.put("upcomingPlans", upcoming.size());
-        return response(MODE_TASK, out.status(), out.note(), p.getId(), null, saved, userId, context, ai, requestId);
+        return response(MODE_TASK, out.status(), out.note(), p.getId(), null, saved, userId, context, ai, requestId, approval);
     }
 
     // ── 로드맵 플래너: Learning Node ──
@@ -280,8 +308,11 @@ public class LearningRecommendationService {
             nodes.forEach(n -> index.put("ROADMAP_NODE:" + n.key(), new Evidence("ROADMAP_NODE", n.key(), n.title())));
             ai = mergeAi(aiResp, requestId, List.of(RecommendationCandidate.ROADMAP_NODE), index, null, frontier, graphKeys, candidates);
         }
+        GateDecision approval = gateOn() ? gate(requestId, MODE_NODE, planRequest(current), planEvidence(current, nodes.stream()
+                        .map(RoadmapNodeRecommender.NodeInput::title).toList()), ResponseQualityV1.Constraints.empty(), candidates, out.note(), goal,
+                aiClient.enabled(), aiResp.isPresent()) : null;
         List<LearningRecommendation> saved = persist(userId, Source.ROADMAP_PLANNER, current.getId(), null,
-                PlannerProgressReader.roadmapKey(current), candidates, ai.discards, requestId);
+                PlannerProgressReader.roadmapKey(current), candidates, ai.discards, requestId, approval);
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("nodeCount", out.nodeCount());
         context.put("completedCount", out.completedCount());
@@ -289,8 +320,8 @@ public class LearningRecommendationService {
         context.put("graphValid", out.graphValidation().valid());
         context.put("masteryMeasured", false);
         context.put("weightsValidated", false);
-        context.put("roadmapGoal", goal);
-        return response(MODE_NODE, out.status(), out.note(), current.getId(), null, saved, userId, context, ai, requestId);
+        context.put("roadmapGoal", gateOn() && approval == null ? null : goal); // 게이트 ON: 평가된 응답에만 싣는다
+        return response(MODE_NODE, out.status(), out.note(), current.getId(), null, saved, userId, context, ai, requestId, approval);
     }
 
     // ── 문서 기반 ──
@@ -326,7 +357,11 @@ public class LearningRecommendationService {
             ai = mergeAi(aiClient.request(AiRecommendationClient.PATH_DOCUMENT, payload, requestId), requestId,
                     RecommendationCandidate.DOCUMENT_TYPES, index, null, null, null, candidates);
         }
-        List<LearningRecommendation> saved = persist(userId, Source.DOCUMENT, null, m.getMaterialId(), null, candidates, ai.discards, requestId);
+        GateDecision approval = gateOn() ? gate(requestId, MODE_DOCUMENT, documentRequest(m), documentEvidence(m),
+                new ResponseQualityV1.Constraints(List.of(m.getMaterialId()), null, null, null, null, null, null, false, false, null, null,
+                        null, null, null, null), candidates, out.note(), null, aiClient.enabled(), ai.used) : null;
+        List<LearningRecommendation> saved = persist(userId, Source.DOCUMENT, null, m.getMaterialId(), null, candidates, ai.discards, requestId,
+                approval);
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("materialType", ctx.materialType());
         context.put("studyNote", note != null);
@@ -334,7 +369,75 @@ public class LearningRecommendationService {
         context.put("latestQuizScore", quiz == null ? null : quiz.score);
         context.put("wrongNotes", notes.size());
         context.put("plannerLinked", false);
-        return response(MODE_DOCUMENT, out.status(), out.note(), null, m.getMaterialId(), saved, userId, context, ai, requestId);
+        return response(MODE_DOCUMENT, out.status(), out.note(), null, m.getMaterialId(), saved, userId, context, ai, requestId, approval);
+    }
+
+    // ───────────────────────── 품질 게이트 ─────────────────────────
+
+    /**
+     * 게이트 ON 생성 판정. AI 후보 경로가 켜져 있는데 응답이 없으면 명시적 실패(규칙 추천으로 성공 위장 금지).
+     * 보일 후보 전체를 1회 평가 — 승인이면 판정을 돌려주고, 아니면 AiUpstreamException(422/503). 후보가 없으면 평가할 본문이 없어 null.
+     */
+    private GateDecision gate(String requestId, String mode, String request, List<ResponseQualityV1.GroundingEvidence> evidence,
+                              ResponseQualityV1.Constraints constraints, List<RecommendationCandidate> candidates, String note,
+                              String roadmapGoal, boolean aiAttempted, boolean aiResponded) {
+        if (aiAttempted && !aiResponded) {
+            log.warn("[REC] gated: AI 추천 경로 응답 없음 requestId={} mode={} → 명시적 실패(규칙 폴백 없음)", requestId, mode);
+            throw new AiUpstreamException(HttpStatus.SERVICE_UNAVAILABLE, "RECOMMENDATION_AI_UNAVAILABLE",
+                    "AI 추천 서버가 준비되지 않아 추천을 만들지 않았습니다. 잠시 후 다시 시도해 주세요.", requestId, true, null, null);
+        }
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        String text = visibleText(candidates, note, roadmapGoal);
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(requestId, ResponseQualityV1.TaskType.PLANNER_COACHING,
+                ResponseQualityV1.OutputKind.TEXT, request, evidence, constraints, null);
+        AiResponseQualityGate.Outcome<String> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> text,
+                AiResponseQualityGate::text);
+        if (!outcome.approved()) {
+            log.warn("[REC] quality gate not approved requestId={} mode={} code={} attempts={} → 저장 0", requestId, mode,
+                    outcome.decision().errorCode(), outcome.decision().attempts());
+            throw PlannerQualityGateSupport.failure(outcome.decision(), requestId, null);
+        }
+        return outcome.decision();
+    }
+
+    static String visibleText(List<RecommendationCandidate> candidates, String note, String roadmapGoal) {
+        StringBuilder b = new StringBuilder();
+        java.util.function.Consumer<String> line = x -> { if (x != null && !x.isBlank()) b.append(x.trim()).append('\n'); };
+        line.accept(note);
+        line.accept(roadmapGoal);
+        for (RecommendationCandidate c : candidates) {
+            line.accept(c.title());
+            line.accept(c.reason());
+            if (c.verificationRequired()) line.accept(c.verificationNote());
+            if (c.evidence() != null) c.evidence().forEach(e -> line.accept(e.label()));
+        }
+        return b.toString().trim();
+    }
+
+    private static String planRequest(Planner p) {
+        return PlannerQualityGateSupport.clip("다음 학습 플래너의 진행 상황에 맞는 다음 학습 과제를 추천해 주세요. 제목: " + nz(p.getTitle())
+                + " / 과목: " + nz(p.getSubject()) + " / 내용: " + nz(p.getContent()), 7000);
+    }
+
+    /** 근거 = 이 사용자의 플래너(소유권 확인)와 같은 과목·로드맵의 플래너 제목. */
+    private static List<ResponseQualityV1.GroundingEvidence> planEvidence(Planner p, List<String> related) {
+        StringBuilder b = new StringBuilder("제목: ").append(nz(p.getTitle())).append("\n과목: ").append(nz(p.getSubject()))
+                .append("\n내용: ").append(nz(p.getContent())).append("\n관련 학습:\n");
+        for (String r : related) b.append("- ").append(nz(r)).append('\n');
+        return PlannerQualityGateSupport.evidence("PLANNER_RECORD", "p" + p.getId(), b.toString(), 4000, 24000);
+    }
+
+    private static String documentRequest(Material m) {
+        return PlannerQualityGateSupport.clip("다음 학습 자료로 이어서 할 학습 과제를 추천해 주세요. 자료: " + nz(m.getTitle())
+                + " / 키워드: " + nz(m.getKeywords()), 7000);
+    }
+
+    /** 근거 = 이 사용자 자료의 원문(추출 텍스트, 없으면 학습 내용). allowedMaterialIds = 이 자료 하나. */
+    private static List<ResponseQualityV1.GroundingEvidence> documentEvidence(Material m) {
+        String text = m.getExtractedText() != null && !m.getExtractedText().isBlank() ? m.getExtractedText() : m.getLearningContent();
+        return AiResponseQualityGate.pdfEvidence(m.getMaterialId(), text, 4000, 24000);
     }
 
     // ───────────────────────── AI 병합 ─────────────────────────
@@ -366,6 +469,15 @@ public class LearningRecommendationService {
     List<LearningRecommendation> persist(Long userId, Source source, Long plannerId, Long materialId, String roadmapKey,
                                          List<RecommendationCandidate> candidates, List<AiCandidateValidator.Discard> discards,
                                          String requestId) {
+        return persist(userId, source, plannerId, materialId, roadmapKey, candidates, discards, requestId, null);
+    }
+
+    /** approval != null: 게이트 ON 에서 이번 후보 문구가 승인됨 → 새 행·다시 제시하는 행 모두 승인 문구로 저장(quality_status=APPROVED). */
+    List<LearningRecommendation> persist(Long userId, Source source, Long plannerId, Long materialId, String roadmapKey,
+                                         List<RecommendationCandidate> candidates, List<AiCandidateValidator.Discard> discards,
+                                         String requestId, GateDecision approval) {
+        boolean approved = approval != null && approval.approved();
+        String quality = approved ? PlannerQualityGateSupport.APPROVED : null;
         String scope = plannerId != null ? "p" + plannerId : "m" + materialId;
         List<LearningRecommendation> out = new ArrayList<>();
         for (RecommendationCandidate c : candidates) {
@@ -375,6 +487,16 @@ public class LearningRecommendationService {
                 if (existing.getStatus() == Status.GENERATED) {
                     existing.setPresentedCount(existing.getPresentedCount() + 1);
                     existing.setRequestId(requestId); // 마지막으로 제시된 생성 요청
+                    if (approved) {
+                        // 게이트 ON: 다시 제시하는 행도 방금 승인된 문구로 바꿔 저장한다(예전 미검증 문구를 승인된 것처럼 내보내지 않는다).
+                        existing.setTitle(cap(c.title(), 200));
+                        existing.setReason(c.reason());
+                        existing.setEvidenceJson(json(c.evidence()));
+                        existing.setScoreJson(c.score() == null ? null : json(c.score()));
+                        existing.setVerificationRequired(c.verificationRequired());
+                        existing.setVerificationNote(cap(c.verificationNote(), 300));
+                        existing.setQualityStatus(quality);
+                    }
                     out.add(recommendationRepository.save(existing));
                 }
                 // 승인/거절/완료된 후보는 다시 제시하지 않는다.
@@ -388,7 +510,7 @@ public class LearningRecommendationService {
                     .verificationRequired(c.verificationRequired()).verificationNote(cap(c.verificationNote(), 300))
                     .generator(c.generator()).modelProvider(cap(c.modelProvider(), 40)).modelName(cap(c.modelName(), 80))
                     .contractVersion(RecommendationCandidate.AI.equals(c.generator()) ? AiRecommendationClient.CONTRACT_VERSION : null)
-                    .status(Status.GENERATED).dedupKey(dedup).presentedCount(1).requestId(requestId)
+                    .status(Status.GENERATED).dedupKey(dedup).presentedCount(1).requestId(requestId).qualityStatus(quality)
                     .build();
             try {
                 out.add(recommendationRepository.save(r));
@@ -398,7 +520,8 @@ public class LearningRecommendationService {
                         .filter(x -> x.getStatus() == Status.GENERATED).ifPresent(out::add);
             }
         }
-        for (AiCandidateValidator.Discard d : discards) {
+        // 게이트 ON: 폐기된 AI 후보 제목(미승인 초안)은 지표용으로도 저장하지 않는다.
+        for (AiCandidateValidator.Discard d : gateOn() ? List.<AiCandidateValidator.Discard>of() : discards) {
             String dedup = cap(source.name() + ":" + scope + ":discard:" + d.reason() + ":" + TextbookToc.norm(d.title()), 200);
             if (recommendationRepository.findByUserIdAndDedupKey(userId, dedup).isPresent()) continue;
             try {
@@ -424,6 +547,11 @@ public class LearningRecommendationService {
                 .orElseThrow(() -> new NoSuchElementException("추천을 찾을 수 없습니다."));
         if (r.getStatus() == Status.ACCEPTED || r.getStatus() == Status.COMPLETED) return toItem(r);
         if (r.getStatus() != Status.GENERATED) throw new IllegalStateException("이미 거절된 추천은 승인할 수 없습니다.");
+        if (gateOn() && !PlannerQualityGateSupport.approved(r.getQualityStatus())) {
+            // 승인하면 제목·사유가 새 플래너로 복사된다 → 미검증 문구를 플래너로 옮기지 않는다.
+            throw new AiUpstreamException(HttpStatus.CONFLICT, "RECOMMENDATION_NOT_VERIFIED",
+                    "품질 검증 전에 만든 추천이라 승인할 수 없습니다. 추천을 다시 만든 뒤 승인해 주세요.", null, false, null, null);
+        }
         if (r.isVerificationRequired() && (req == null || !req.isAcknowledgeVerification())) {
             throw new IllegalArgumentException("확인이 필요한 추천입니다. 확인 사항을 검토했다고 표시한 뒤 승인해 주세요.");
         }
@@ -607,7 +735,7 @@ public class LearningRecommendationService {
 
     private ListResponse response(String mode, String status, String note, Long plannerId, Long materialId,
                                   List<LearningRecommendation> saved, Long userId, Map<String, Object> context,
-                                  AiMerge ai, String requestId) {
+                                  AiMerge ai, String requestId, GateDecision approval) {
         // 이번에 만든 것 + 이전에 승인된 것(같은 대상)을 함께 보여 준다.
         List<LearningRecommendation> visible = plannerId != null
                 ? recommendationRepository.findByUserIdAndPlannerIdAndStatusInOrderByIdAsc(userId, plannerId, VISIBLE)
@@ -618,7 +746,8 @@ public class LearningRecommendationService {
                 .map(this::toItem).toList();
         String st = "OK".equals(status) && items.isEmpty() ? "EMPTY" : status;
         return ListResponse.builder().mode(mode).status(st).note(note).plannerId(plannerId).materialId(materialId)
-                .items(items).context(context).aiUsed(ai.used).aiDiscarded(ai.discards.size()).requestId(requestId).build();
+                .items(items).context(context).aiUsed(ai.used).aiDiscarded(ai.discards.size()).requestId(requestId)
+                .qualityStatus(approval != null && approval.approved() ? PlannerQualityGateSupport.APPROVED : null).build();
     }
 
     /**
@@ -637,10 +766,33 @@ public class LearningRecommendationService {
     private ListResponse withMaterial(ListResponse r, Long materialId) {
         return ListResponse.builder().mode(r.getMode()).status(r.getStatus()).note(r.getNote()).plannerId(r.getPlannerId())
                 .materialId(materialId).items(r.getItems()).context(r.getContext()).aiUsed(r.isAiUsed())
-                .aiDiscarded(r.getAiDiscarded()).requestId(r.getRequestId()).build();
+                .aiDiscarded(r.getAiDiscarded()).requestId(r.getRequestId()).qualityStatus(r.getQualityStatus()).build();
     }
 
+    static final String REDACTED_TITLE = "품질 검증 전 추천";
+
     Item toItem(LearningRecommendation r) {
+        if (gateOn()) {
+            boolean approved = PlannerQualityGateSupport.approved(r.getQualityStatus());
+            Item.ItemBuilder b = baseItem(r);
+            if (approved) {
+                return b.qualityStatus(PlannerQualityGateSupport.APPROVED).build();
+            }
+            // 미검증 저장 추천: 문구(제목·사유·확인 사항·근거 라벨)만 가린다 — id·유형·상태·점수·연결 id 는 유지.
+            List<Map<String, String>> ev = new ArrayList<>();
+            for (Map<String, String> e : readList(r.getEvidenceJson())) {
+                Map<String, String> m = new LinkedHashMap<>();
+                m.put("type", e.get("type"));
+                m.put("id", e.get("id"));
+                ev.add(m);
+            }
+            return b.title(REDACTED_TITLE).reason(PlannerQualityGateSupport.REDACTED_MESSAGE).verificationNote(null).evidence(ev)
+                    .qualityRedacted(true).build();
+        }
+        return baseItem(r).build();
+    }
+
+    private Item.ItemBuilder baseItem(LearningRecommendation r) {
         return Item.builder()
                 .id(r.getId()).sourceKind(r.getSourceKind().name()).type(r.getRecommendationType())
                 .title(r.getTitle()).reason(r.getReason())
@@ -649,8 +801,7 @@ public class LearningRecommendationService {
                 .generator(r.getGenerator()).modelProvider(r.getModelProvider()).modelName(r.getModelName())
                 .status(r.getStatus().name()).plannerId(r.getPlannerId()).materialId(r.getMaterialId())
                 .targetKey(r.getTargetKey()).acceptedPlannerId(r.getAcceptedPlannerId()).presentedCount(r.getPresentedCount())
-                .createdAt(r.getCreatedAt()).decidedAt(r.getDecidedAt()).completedAt(r.getCompletedAt())
-                .build();
+                .createdAt(r.getCreatedAt()).decidedAt(r.getDecidedAt()).completedAt(r.getCompletedAt());
     }
 
     private Map<String, Evidence> evidenceIndex(List<RecommendationCandidate> candidates) {

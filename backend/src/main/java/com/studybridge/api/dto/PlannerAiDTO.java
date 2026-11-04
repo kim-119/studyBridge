@@ -54,6 +54,18 @@ public class PlannerAiDTO {
         private Boolean usedFallback;         // ai07 미배포/오류 시 로컬 기본 피드백 사용 여부
         private String errorCode;
         private String message;
+        // 품질 게이트(PLANNER_COACHING). 게이트 OFF 면 전부 null → JSON 에 나가지 않는다(기존 응답과 동일).
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private String qualityStatus;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Double qualityScore;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean verified;
+        // true = 미검증 저장본이라 AI 생성 필드를 내보내지 않았다(게이트 ON).
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean qualityRedacted;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean retryable;
     }
 
     @Getter

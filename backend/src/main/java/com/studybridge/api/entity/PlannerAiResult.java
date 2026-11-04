@@ -74,6 +74,14 @@ public class PlannerAiResult {
     @Column(name = "next_actions", columnDefinition = "TEXT")
     private String nextActions;        // JSON 배열 문자열 (다음 학습 행동)
 
+    // 품질 게이트(PLANNER_COACHING): APPROVED 만 기록(게이트 OFF 저장·레거시는 null = 미검증). ddl-auto 가 nullable 컬럼 추가.
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
+    // 이 행이 ai07 응답이 아니라 Spring 결정적 기본 피드백(폴백)인가. null = 레거시(구분 불가). 폴백을 AI 결과로 표기하지 않기 위한 표식.
+    @Column(name = "used_fallback")
+    private Boolean usedFallback;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

@@ -59,6 +59,12 @@ public class AdaptivePlannerApplyService {
 
     public Map<String, Object> apply(Long userId, Long plannerId, String proposalToken, List<String> changeIds) {
         Payload payload = signer.verify(proposalToken, userId, plannerId);
+        if (adaptivePlannerService.gateOn() && !com.studybridge.api.service.PlannerQualityGateSupport.approved(payload.quality())) {
+            // 게이트 ON: 품질 게이트를 통과한 추천에서 발급한 토큰(서명 안 승인 표식)만 반영한다. 게이트 OFF·전환 전 발급 토큰은 쓰지 않는다.
+            log.warn("[ADAPTIVE-APPLY] unverified proposal token rejected userId={} plannerId={}", userId, plannerId);
+            throw new AdaptivePlannerException(HttpStatus.CONFLICT, "ADAPTIVE_PROPOSAL_NOT_VERIFIED",
+                    "품질 검증을 거치지 않은 일정 제안이라 반영하지 않았습니다. 추천을 다시 받은 뒤 반영해 주세요.");
+        }
         Set<String> selected = new LinkedHashSet<>(changeIds == null ? List.of() : changeIds);
         if (selected.isEmpty()) {
             throw new AdaptivePlannerException(HttpStatus.BAD_REQUEST, "ADAPTIVE_NO_CHANGE_SELECTED", "반영할 일정을 하나 이상 선택해 주세요.");
