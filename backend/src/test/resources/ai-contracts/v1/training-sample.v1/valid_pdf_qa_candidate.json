@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "training-sample.v1",
+  "eventId": "evt-ts-000001",
+  "pseudonymousUserKey": "pk_7f3a9c2e1b4d6a8f",
+  "consentVersion": "tc-2026-10",
+  "consentTimestamp": "2026-10-30T12:00:00Z",
+  "sourceKind": "PDF_QA",
+  "sourceRevisionHash": "rev-9b1c",
+  "rightsStatus": "USER_OWNED_VERIFIED",
+  "question": "3-way handshake 의 두 번째 단계는?",
+  "candidateAnswer": "SYN-ACK 이다. 서버가 SYN 에 응답하며 자신의 SYN 을 함께 보낸다.",
+  "verifiedAnswer": null,
+  "verification": null,
+  "evidence": [
+    {
+      "sourceType": "PDF_ORIGINAL",
+      "materialId": 42,
+      "sourceRevisionHash": "rev-9b1c",
+      "page": 12,
+      "chunkId": "m42-c7",
+      "quote": "3-way handshake 는 SYN, SYN-ACK, ACK 세 단계로 연결을 수립한다."
+    }
+  ],
+  "feedback": {
+    "score": 1,
+    "reasonCode": null,
+    "updatedAt": "2026-11-01T10:00:00Z",
+    "history": [
+      1
+    ]
+  },
+  "qualityLabel": "UNLABELED",
+  "qualityEvaluatorVersion": "rqg-1.0.0",
+  "modelName": "qwen3:14b",
+  "modelDigest": "bdbd181c33f2",
+  "promptTemplateVersion": "learning-loop-chat-v1",
+  "contentHash": "da348718ebda14174d0b70657462d41ca766caab570e70436992d6eb75b204ad",
+  "createdAt": "2026-11-01T10:00:00Z",
+  "deletionTrackingId": "del-0000042-a",
+  "retentionPolicy": "TRAINING_CANDIDATE_365D",
+  "trainingEligibility": {
+    "consentGranted": true,
+    "consentScope": [
+      "MODEL_TRAINING"
+    ],
+    "consentWithdrawn": false,
+    "decidedAt": "2026-10-30T12:00:00Z"
+  }
+}

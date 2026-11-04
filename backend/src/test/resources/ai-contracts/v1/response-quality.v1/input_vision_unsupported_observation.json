@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "response-quality.v1",
+  "requestId": "req-rq-0005",
+  "taskType": "VISION_CAPTION",
+  "outputKind": "vision_text",
+  "modelDigest": "bdbd181c33f2",
+  "originalRequest": "화면에 뭐가 있어?",
+  "groundingEvidence": [
+    {
+      "sourceType": "SCREEN_SHARE",
+      "evidenceId": "ocr-1",
+      "text": "Chapter 3 Transport Layer TCP UDP"
+    }
+  ],
+  "constraints": {},
+  "attemptIndex": 0,
+  "evaluationProfile": null,
+  "proposedOutput": "화면에 \"Chapter 5 Network Layer\" 제목과 2024년 시험 일정이 표시되어 있습니다."
+}
