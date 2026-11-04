@@ -51,6 +51,58 @@ public class ChatService {
         private final AiIntegrationService aiIntegrationService;
         private final RedisChatService redisChatService;
         private final AiMultiChatFailoverService aiFailover;
+        private final com.studybridge.api.ai.quality.QualityStreamGate qualityStreamGate;
+        private final com.studybridge.api.ai.training.TrainingCandidateCollector trainingCollector;
+
+        /**
+         * Learning Memory(learning-context.v1, 기본 OFF). 생성자 시그니처를 바꾸지 않도록 setter 주입 — 없거나 OFF 면 ai07 요청 본문·헤더가
+         * 기존과 바이트 단위로 같다(조립기 호출 0). 추론 시점 컨텍스트일 뿐 QLoRA 가중치 학습(training-sample.v1)과 무관하다.
+         */
+        private com.studybridge.api.ai.memory.LearningMemoryAssembler learningMemory;
+
+        @org.springframework.beans.factory.annotation.Autowired(required = false)
+        public void setLearningMemory(com.studybridge.api.ai.memory.LearningMemoryAssembler learningMemory) {
+                this.learningMemory = learningMemory;
+        }
+
+        /**
+         * 플래그 ON 일 때만 요청 본문에 learningContext 를 넣고 첨부물(X-AI-Scope 헤더 공급자)을 돌려준다. OFF·키 없음·내용 없음·검증 실패면
+         * null 이고 본문은 그대로다(요청은 항상 진행 — 메모리 실패가 채팅을 막지 않는다).
+         */
+        private com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment attachLearningMemory(Map<String, Object> requestBody,
+                        Long userId, Long roomId, ChatDTO.MultiChatRequest request, String requestId) {
+                if (learningMemory == null || !learningMemory.enabled() || userId == null || requestId == null) {
+                        return null;
+                }
+                try {
+                        com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment a = learningMemory.attach(userId, roomId,
+                                        request.getMaterialId(), requestId, request.getMessage());
+                        if (a == null) {
+                                return null;
+                        }
+                        requestBody.put("learningContext", a.body());
+                        return a;
+                } catch (RuntimeException e) {
+                        log.warn("[LEARNING-MEMORY] roomId={} requestId={} 첨부 실패 — learningContext 없이 진행: {}", roomId, requestId,
+                                        e.getClass().getSimpleName());
+                        return null;
+                }
+        }
+
+        /** memory 가 없으면 기존 4-인자 호출 그대로(요청 불변), 있으면 X-AI-Scope 헤더를 시도마다 붙인다. */
+        private Mono<Map<String, Object>> callMultiChat(Long roomId, String requestId, Map<String, Object> body, Duration timeout,
+                        com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment memory) {
+                return memory == null
+                                ? aiFailover.callMultiChat(roomId, requestId, body, timeout)
+                                : aiFailover.callMultiChat(roomId, requestId, body, timeout, memory.headers());
+        }
+
+        /** 품질 게이트 ON 여부(테스트 팩토리에서 null 이면 OFF). */
+        private boolean qualityGateOn() {
+                return qualityStreamGate != null && qualityStreamGate.enabled();
+        }
+
+        static final String QUALITY_REDACTED_TEXT = "(품질 검증 이전에 생성된 AI 답변이라 표시하지 않습니다.)";
 
         // 답변 길이 사실상 무제한 정책: 본문을 자르지 않으며, FastAPI에 큰 상한을 힌트로 전달한다.
         //  서버 안정성 위한 넉넉한 상수(잘림 방지용 상한). 실제 트림은 어디서도 하지 않는다.
@@ -138,6 +190,10 @@ public class ChatService {
                                                 Map<String, Object> prev = new LinkedHashMap<>();
                                                 prev.put("agentName", msg.getAgent() != null ? msg.getAgent().getName() : "AI");
                                                 prev.put("answer", msg.getContent());
+                                                prev.put("role", "ASSISTANT");
+                                                if (msg.getQualityStatus() != null) {
+                                                        prev.put("qualityStatus", msg.getQualityStatus());
+                                                }
                                                 Map<String, Object> ps = parseProcessSteps(msg.getProcessStepsJson());
                                                 if (ps != null) {
                                                         prev.put("processSteps", ps);
@@ -148,6 +204,7 @@ public class ChatService {
                                                         .answer(msg.getContent())
                                                         .role("ASSISTANT")
                                                         .agentId(msg.getAgent() != null ? msg.getAgent().getId() : null)
+                                                        .qualityStatus(msg.getQualityStatus())
                                                         .build());
                                                 return prev;
                                         })
@@ -162,6 +219,9 @@ public class ChatService {
                                                 map.put("role", h.getRole());
                                                 if (h.getAgentId() != null) {
                                                         map.put("agentId", h.getAgentId());
+                                                }
+                                                if (h.getQualityStatus() != null) {
+                                                        map.put("qualityStatus", h.getQualityStatus());
                                                 }
                                                 return map;
                                         })
@@ -208,6 +268,9 @@ public class ChatService {
                 //  직전에 저장한 "이번 질문" USER 항목까지 이전 대화로 실려 갔다 → 최근 N건으로 자르고 이번 질문 echo 는 제외한다.
                 previousAnswers = trimPreviousAnswers(previousAnswers, request.getMessage(),
                                 (int) envSeconds("AI_PREVIOUS_ANSWERS_MAX", 20));
+                // Learning Memory 신뢰 규칙: 게이트 ON 이면 승인되지 않은(레거시/거절) AI 답변은 다음 추론의 대화 맥락으로 넣지 않는다.
+                //  qualityStatus 는 Spring 내부 판단용 — ai07 로는 보내지 않는다(요청 계약 불변).
+                previousAnswers = filterTrustedPreviousAnswers(previousAnswers, qualityGateOn());
 
                 log.info("[CHAT REQUEST] mode={} messageLength={} agents.size={} previousAnswers={}",
                                 firstNonBlank(request.getMode(), agentsList.size() > 1 ? "multi_agent_discussion" : "single_answer"),
@@ -434,6 +497,8 @@ public class ChatService {
                 });
 
                 Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request, userId, syncRequestId);
+                final com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment memory =
+                                attachLearningMemory(requestBody, userId, roomId, request, syncRequestId);
                 log.info("chat fastapi payload roomId={} requestId={} keys={} agents={}", roomId, syncRequestId, requestBody.keySet(),
                                 requestBody.get("agents") instanceof List ? ((List<?>) requestBody.get("agents")).size() : 0);
 
@@ -448,8 +513,8 @@ public class ChatService {
                 long faStart = System.currentTimeMillis();
                 try {
                         // PRIMARY→SECONDARY failover 포함 non-stream 호출. 여기는 MVC(Tomcat) 요청 스레드라 block 허용.
-                        response = aiFailover.callMultiChat(roomId, syncRequestId,
-                                        requestBody, Duration.ofSeconds(aiTimeoutSeconds))
+                        response = callMultiChat(roomId, syncRequestId,
+                                        requestBody, Duration.ofSeconds(aiTimeoutSeconds), memory)
                                         .block(Duration.ofSeconds(aiTimeoutSeconds * 2 + 5));
                         log.info("chat fastapi elapsed_ms={} roomId={} timeout_s={}",
                                         System.currentTimeMillis() - faStart, roomId, aiTimeoutSeconds);
@@ -475,6 +540,18 @@ public class ChatService {
                                         .errorMessage("AI 서버와 통신 중 오류가 발생했습니다. FastAPI 서버 상태를 확인해주세요.")
                                         .replies(java.util.Collections.emptyList())
                                         .build();
+                }
+
+                // ── 품질 게이트 ON: 영속화·응답 구성 "앞"에서 non-stream 응답 전체를 스트림과 같은 규칙(QualityStreamGate 의 all_complete
+                //  재구성: answers[]/messages[] 메시지 단위 평가, 그 밖의 본문성 필드는 한 덩어리 평가 후 승인 시에만)으로 거른다.
+                //  이후 코드는 승인분만 남은 response 만 본다 → 거절·미평가 초안은 응답·DB·Redis 어디에도 가지 않는다.
+                final boolean gateOn = qualityGateOn();
+                if (gateOn) {
+                        NonStreamGated g = gateNonStreamResponse(response, syncRequestId, request, room);
+                        if (g.failure() != null) {
+                                return g.failure();
+                        }
+                        response = g.response();
                 }
 
                 List<ChatDTO.AgentReply> replies = new java.util.ArrayList<>();
@@ -567,7 +644,8 @@ public class ChatService {
                                         Map<String, Object> identity = AgentProfileContract.identityOf(messageMap);
                                         AnswerMeta meta = new AnswerMeta(syncRequestId, respTurnId, dedupKey, (Integer) identity.get("agentIndex"),
                                                         str(messageMap.get("round")), str(identity.get("status")), respMode,
-                                                        str(identity.get("personalityKey")), str(identity.get("knowledgeLevelKey")));
+                                                        str(identity.get("personalityKey")), str(identity.get("knowledgeLevelKey")),
+                                                        gateOn ? "APPROVED" : null);
                                         if (dedupKey == null || !chatMessageRepository.existsByAgentChatRoomIdAndEventId(roomId, dedupKey)) {
                                                 saveRoomMessage(room, targetAgent, aiContent, "AI", processStepsJson, meta);
                                         } else {
@@ -613,7 +691,18 @@ public class ChatService {
                                 // 응답 identity 보존: agentId → 이름 → null. 배열 index/첫 번째 교수 폴백 금지.
                                 Agent targetAgent = resolveResponseAgent(room.getAgents(), answerMap.get("agentId"), agentName);
 
-                                saveRoomMessage(room, targetAgent, aiAnswer, "AI", processStepsJson);
+                                if (gateOn) {
+                                        // 게이트가 승인해 다시 만든 답변만 남아 있다 → APPROVED 로 영속(빈 본문은 저장하지 않는다).
+                                        if (aiAnswer.isBlank() && answerMap.get("content") != null) {
+                                                aiAnswer = answerMap.get("content").toString();
+                                        }
+                                        if (!aiAnswer.isBlank()) {
+                                                saveRoomMessage(room, targetAgent, aiAnswer, "AI", processStepsJson,
+                                                                new AnswerMeta(syncRequestId, null, null, null, null, null, null, null, null, "APPROVED"));
+                                        }
+                                } else {
+                                        saveRoomMessage(room, targetAgent, aiAnswer, "AI", processStepsJson);
+                                }
 
                                 if (targetAgent != null) {
                                         replies.add(buildReplyWithMeta(targetAgent.getId(), targetAgent.getName(), aiAnswer,
@@ -677,7 +766,110 @@ public class ChatService {
                                 .processSteps(processSteps)
                                 .stages(stages)
                                 .personalityValidationSummary(personalityValidationSummary)
+                                // 게이트 ON 일 때만(OFF 는 null → 직렬화되지 않음): 실린 본문은 전부 승인분, 거절분은 agentErrors(고정 문구)로.
+                                .qualityStatus(gateOn ? "APPROVED" : null)
+                                .agentErrors(gateOn ? nonEmptyList(response, "agentErrors") : null)
+                                .qualityRedactedFields(gateOn ? nonEmptyList(response, "qualityRedactedFields") : null)
                                 .build();
+        }
+
+        // ── non-stream 품질 게이트(Phase D, 개인 학습메이트 POST /api/agent-rooms/{roomId}/chat) ─────────────────────────────
+
+        /** 게이트 결과: response = 승인분만 남은 응답(QualityStreamGate all_complete 재구성), failure = 그대로 돌려줄 실패 DTO. */
+        record NonStreamGated(Map<String, Object> response, ChatDTO.MultiChatResponse failure) { }
+
+        /** 승인되지 않으면 화면에 싣지 않는 non-stream 본문성 필드(answers/messages 밖) — 하나라도 승인돼 남아 있으면 빈 응답이 아니다. */
+        private static final List<String> NON_STREAM_BODY_KEYS = List.of("processSteps", "finalSynthesis", "debateSummary", "debateStages",
+                        "socraticSteps", "simulationStages", "initialAnswers", "peerFeedbacks", "revisedAnswers", "debateResult",
+                        "debatePositions", "stages", "topic");
+
+        NonStreamGated gateNonStreamResponse(Map<String, Object> response, String requestId, ChatDTO.MultiChatRequest request,
+                        AgentChatRoom room) {
+                if (response == null || response.isEmpty()) {
+                        return new NonStreamGated(null, qualityFailure(com.studybridge.api.ai.quality.GateDecision.REJECTED, null));
+                }
+                int candidates = sizeOf(response.get("answers")) + sizeOf(response.get("messages"));
+                java.util.Set<String> names = room.getAgents() == null ? java.util.Set.of()
+                                : room.getAgents().stream().filter(java.util.Objects::nonNull).map(Agent::getName)
+                                                .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+                com.studybridge.api.ai.quality.QualityStreamGate.Context ctx = new com.studybridge.api.ai.quality.QualityStreamGate.Context(
+                                requestId, com.studybridge.api.ai.quality.QualityStreamGate.taskTypeForLearningMode(
+                                                firstNonBlank(request.getLearningMode(), room.getLearningMode(), "basic")),
+                                request.getMessage(), com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints.empty(), names);
+                Map<String, Object> gated = null;
+                try {
+                        String json = objectMapper.writeValueAsString(response);
+                        // 평가는 concatMap 으로 순차(answers → messages → 부가 필드) — 평가 1회 상한(기본 8s+대기 2s)을 넉넉히 덮는다. 초과 = 평가 불가.
+                        Duration limit = Duration.ofSeconds(Math.min(600L, 15L * (candidates + 1) + 10L));
+                        List<ServerSentEvent<String>> out = qualityStreamGate.gate(Flux.just(sse("all_complete", json)), ctx)
+                                        .collectList().block(limit);
+                        if (out != null) {
+                                for (ServerSentEvent<String> ev : out) {
+                                        if ("all_complete".equals(ev.event()) && ev.data() != null) {
+                                                gated = objectMapper.readValue(ev.data(), new TypeReference<Map<String, Object>>() {});
+                                        }
+                                }
+                        }
+                } catch (Exception e) {
+                        log.warn("[QUALITY-GATE] non-stream rid={} 평가 실패({}) — 답변 미노출", requestId, e.getClass().getSimpleName());
+                }
+                if (gated == null) {
+                        return new NonStreamGated(null, qualityFailure(com.studybridge.api.ai.quality.GateDecision.UNAVAILABLE, null));
+                }
+                // all_complete 재구성은 answers/messages 키를 항상 만든다 → 원 응답의 구조(어느 목록이 있었는지)를 그대로 따른다
+                //  (chatWithRoom 은 messages 키 유무로 분기하므로, answers 만 있던 응답이 빈 messages 경로로 빠지지 않게).
+                for (String k : List.of("answers", "messages")) {
+                        if (!(response.get(k) instanceof List)) {
+                                gated.remove(k);
+                        }
+                }
+                List<Object> agentErrors = nonEmptyList(gated, "agentErrors");
+                boolean anyMessage = sizeOf(gated.get("answers")) + sizeOf(gated.get("messages")) > 0;
+                final Map<String, Object> approvedResp = gated;
+                boolean anyStructured = NON_STREAM_BODY_KEYS.stream().anyMatch(k -> hasValue(approvedResp, k));
+                if (anyMessage || anyStructured) {
+                        log.info("[QUALITY-GATE] non-stream rid={} 승인 answers={} messages={} 거절/평가불가={}", requestId,
+                                        sizeOf(gated.get("answers")), sizeOf(gated.get("messages")), agentErrors == null ? 0 : agentErrors.size());
+                        return new NonStreamGated(gated, null);
+                }
+                if (candidates == 0 && !gated.containsKey("qualityRedactedFields") && gated.get("code") instanceof String) {
+                        // 모드 가드(NON_LEARNING_INPUT 등) 응답: AI 본문 없이 코드/상태만 — 가드 문구(message)는 게이트가 버렸다.
+                        return new NonStreamGated(gated, null);
+                }
+                boolean unavailable = agentErrors != null && agentErrors.stream().anyMatch(o -> o instanceof Map<?, ?> m
+                                && "QUALITY_UNAVAILABLE".equals(m.get("code")));
+                String code = unavailable ? com.studybridge.api.ai.quality.GateDecision.UNAVAILABLE
+                                : com.studybridge.api.ai.quality.GateDecision.REJECTED;
+                log.info("[QUALITY-GATE] non-stream rid={} 승인 본문 0건(후보 {}) → {} (저장하지 않음)", requestId, candidates, code);
+                return new NonStreamGated(null, qualityFailure(code, agentErrors));
+        }
+
+        private static boolean hasValue(Map<String, Object> m, String key) {
+                Object v = m.get(key);
+                return v != null && !(v instanceof String s && s.isBlank()) && !(v instanceof List<?> l && l.isEmpty())
+                                && !(v instanceof Map<?, ?> mm && mm.isEmpty());
+        }
+
+        private static ChatDTO.MultiChatResponse qualityFailure(String code, List<Object> agentErrors) {
+                boolean unavailable = com.studybridge.api.ai.quality.GateDecision.UNAVAILABLE.equals(code);
+                return ChatDTO.MultiChatResponse.builder()
+                                .success(false)
+                                .errorCode(code)
+                                .errorMessage(com.studybridge.api.ai.quality.GateDecision.userMessage(code))
+                                .qualityStatus(unavailable ? "VALIDATION_ERROR" : "REJECTED")
+                                .retryable(Boolean.TRUE)
+                                .agentErrors(agentErrors)
+                                .replies(java.util.Collections.emptyList())
+                                .build();
+        }
+
+        private static int sizeOf(Object v) {
+                return v instanceof List<?> l ? l.size() : 0;
+        }
+
+        @SuppressWarnings("unchecked")
+        private static List<Object> nonEmptyList(Map<String, Object> m, String key) {
+                return m != null && m.get(key) instanceof List<?> l && !l.isEmpty() ? (List<Object>) l : null;
         }
 
         // 멀티 에이전트 채팅 — 1차/2차/3차 단계별 SSE 스트리밍.
@@ -732,10 +924,12 @@ public class ChatService {
                         handleLearningMateRouted((event, json) -> routed.add(sse(event, json)), route, userId, request);
                         return Flux.fromIterable(routed);
                 }
-                final String routeWarning = route.isWarn() ? route.userMessage() : null;
+                final String routeWarning = route.isWarn() ? routeUserMessage(route) : null;
 
                 // FastAPI 요청 바디 (블로킹과 동일 로직 재사용; room.getAgents() lazy 접근은 현재 트랜잭션 내)
                 Map<String, Object> requestBody = buildFastApiRequestBody(room, roomId, request, userId, requestId);
+                final com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment memory =
+                                attachLearningMemory(requestBody, userId, roomId, request, requestId);
 
                 String effectiveLearningMode = normalizeLearningMode(firstNonBlank(
                                 request.getLearningMode(), room.getLearningMode(), "basic"));
@@ -749,8 +943,9 @@ public class ChatService {
                 // AI07 v2(basic_v2 파이프라인)는 단일 에이전트 basic 도 같은 SSE 계약(turn_start/agent_start/agent_answer/all_complete/done,
                 //  eventId/turnId/agentCoverage)으로 스트리밍한다 → 기본은 모두 relayRemoteStream 으로 중계한다(stream/non-stream 의미 동일).
                 //  Spring 자체 1차/2차/3차 오케스트레이션(non-stream 3회 호출)은 AI_BASIC_INTERNAL_STAGES_ENABLED=true 일 때만 유지한다(레거시).
+                // 품질 게이트 ON 이면 Spring 내부 1차/2차/3차(게이트 전에 영속화) 경로를 쓰지 않는다 → 항상 게이트 경계를 지나는 relay.
                 boolean useBasicOrchestration = "basic".equals(effectiveLearningMode) && agentCount <= 1
-                                && envBool("AI_BASIC_INTERNAL_STAGES_ENABLED", false);
+                                && envBool("AI_BASIC_INTERNAL_STAGES_ENABLED", false) && !qualityGateOn();
 
                 log.info("[CHAT ROUTE] roomId={} requestId={} effectiveLearningMode={} effectiveMode={} agents.size={} targetAgentId={} fastapiPayload.mode={} fastapiPayload.learningMode={} route={}",
                                 roomId, requestId, effectiveLearningMode, fapiMode, agentCount, requestBody.get("targetAgentId"), fapiMode, fapiLearningMode,
@@ -763,8 +958,8 @@ public class ChatService {
                                 : Flux.empty();
 
                 Flux<ServerSentEvent<String>> body = useBasicOrchestration
-                                ? orchestrateBasicStream(roomId, requestId, request, requestBody)
-                                : relayRemoteStream(roomId, requestId, requestBody, request, room);
+                                ? orchestrateBasicStream(roomId, requestId, request, requestBody, memory)
+                                : relayRemoteStream(roomId, requestId, requestBody, request, room, memory);
 
                 final String rid = requestId;
                 final java.util.concurrent.atomic.AtomicBoolean committed = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -795,7 +990,8 @@ public class ChatService {
         //  reactor 체인으로 순차 실행하며 .block() 없이 각 단계 완료 시점에 stage_complete 이벤트를 즉시 emit한다.
         //  1차: 빠른 Ollama 초안(짧은 timeout) → 2차: 1차를 검증/보완 → 3차: 1차·2차에 대한 상호 피드백.
         private Flux<ServerSentEvent<String>> orchestrateBasicStream(Long roomId, String requestId,
-                        ChatDTO.MultiChatRequest request, Map<String, Object> baseBody) {
+                        ChatDTO.MultiChatRequest request, Map<String, Object> baseBody,
+                        com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment memory) {
                 long stage1Timeout = envSeconds("AI_BASIC_STAGE1_TIMEOUT_SECONDS", 30);
                 long stageNTimeout = envSeconds("AI_BASIC_STAGEN_TIMEOUT_SECONDS", 60);
                 // 기본 채팅은 "선택된 에이전트의 최종 답변"만 보여준다는 정책상, 내부 검증(2차)/상호 피드백(3차)은
@@ -822,9 +1018,9 @@ public class ChatService {
 
                         // 1차(primary): 각 에이전트가 자신의 persona/지식수준으로 질문에 직접 답한다(검증·피드백 금지).
                         //  non-stream 호출은 failover 서비스가 PRIMARY→SECONDARY 순으로 시도한다.
-                        Mono<List<Map<String, Object>>> chain = aiFailover
-                                        .callMultiChat(roomId, requestId, stageBody(baseBody, primaryPrompt(question, regenSuffix), 1),
-                                                        Duration.ofSeconds(stage1Timeout))
+                        Mono<List<Map<String, Object>>> chain = callMultiChat(roomId, requestId,
+                                                        stageBody(baseBody, primaryPrompt(question, regenSuffix), 1),
+                                                        Duration.ofSeconds(stage1Timeout), memory)
                                         .map(resp -> extractAnswerRows(resp, 1))
                                         .onErrorResume(e -> {
                                                 log.warn("기본채팅 1차 생성 실패 roomId={} requestId={} err={}", roomId, requestId,
@@ -853,10 +1049,9 @@ public class ChatService {
                                                 // 1차 답변(들)을 에이전트명과 함께 묶어 2·3차 프롬프트의 검토 대상으로 넣는다.
                                                 String primaryContext = labeledAnswers(primaryRows);
                                                 // 2차(verification): 1차를 사실성/누락/논리 관점에서 검증·지적 (재답변 금지)
-                                                return aiFailover
-                                                                .callMultiChat(roomId, requestId,
+                                                return callMultiChat(roomId, requestId,
                                                                                 stageBody(baseBody, verifyPrompt(question, primaryContext, regenSuffix), 2),
-                                                                                Duration.ofSeconds(stageNTimeout))
+                                                                                Duration.ofSeconds(stageNTimeout), memory)
                                                                 .map(resp -> extractAnswerRows(resp, 2))
                                                                 .onErrorResume(e -> {
                                                                         log.warn("기본채팅 2차 검증 실패 roomId={} requestId={} err={}", roomId, requestId,
@@ -870,10 +1065,9 @@ public class ChatService {
                                                                         }
                                                                         String verifyContext = labeledAnswers(verifyRows);
                                                                         // 3차(feedback): 1차·2차를 참고한 에이전트 간 상호 피드백(동의/반박/추가관점)
-                                                                        return aiFailover
-                                                                                        .callMultiChat(roomId, requestId,
+                                                                        return callMultiChat(roomId, requestId,
                                                                                                         stageBody(baseBody, feedbackPrompt(question, primaryContext, verifyContext, regenSuffix), 3),
-                                                                                                        Duration.ofSeconds(stageNTimeout))
+                                                                                                        Duration.ofSeconds(stageNTimeout), memory)
                                                                                         .map(resp -> toFeedbackRows(extractAnswerRows(resp, 3)))
                                                                                         .onErrorResume(e -> {
                                                                                                 log.warn("기본채팅 3차 피드백 실패 roomId={} requestId={} err={}", roomId, requestId,
@@ -1124,6 +1318,49 @@ public class ChatService {
                 }
         }
 
+        /**
+         * 라우팅 안내 문구. ai07 라우터의 directReply/clarify/warning 은 LLM 이 쓴 문장일 수 있으므로
+         * 품질 게이트 ON 이면 노출하지 않고 Spring 고정 문구로 바꾼다(게이트 OFF 면 기존 그대로).
+         */
+        private String routeUserMessage(IntentDTO.RouteResult route) {
+                if (!qualityGateOn()) {
+                        return route.userMessage();
+                }
+                IntentDTO.RouteAction a = route.getAction();
+                if (a == IntentDTO.RouteAction.BLOCK) {
+                        return "처리할 수 없는 요청입니다. 학습과 관련된 질문을 입력해 주세요.";
+                }
+                if (a == IntentDTO.RouteAction.CLARIFY) {
+                        return "질문을 조금 더 구체적으로 알려 주세요.";
+                }
+                if (a == IntentDTO.RouteAction.DIRECT_REPLY) {
+                        return "안녕하세요! 공부하면서 궁금한 점을 질문해 주세요.";
+                }
+                return "질문 의도를 확인하며 답변을 준비합니다.";
+        }
+
+        /**
+         * 게이트 ON 에서 라우터 파이프라인을 실행해도 되는가 = 그 생성 경로가 레지스트리(AiQualityGateCoverage.ROUTES)에서 GATED 인가.
+         *  퀴즈 = POST /api/materials/{materialId}/quiz, 요약 = GET .../summary, 로드맵 = GET .../roadmap(아직 BLOCKED → 막힘).
+         */
+        static boolean pipelineGenerationGated(IntentDTO.RouteAction action) {
+                if (action == null) {
+                        return false;
+                }
+                String pattern = switch (action) {
+                        case QUIZ_PIPELINE -> "POST /api/materials/{materialId}/quiz";
+                        case SUMMARY_PIPELINE -> "GET /api/materials/{materialId}/summary";
+                        case ROADMAP_PIPELINE -> "GET /api/materials/{materialId}/roadmap";
+                        default -> null;
+                };
+                if (pattern == null) {
+                        return false;
+                }
+                return com.studybridge.api.ai.quality.AiQualityGateCoverage.ROUTES.stream()
+                                .anyMatch(r -> pattern.equals(r.method() + " " + r.pattern())
+                                                && r.status() == com.studybridge.api.ai.quality.AiQualityGateCoverage.Status.GATED);
+        }
+
         // ── Intent Router: 학습메이트 라우팅 ──────────────────────────────────────────
         private Map<String, Object> learningMateContext(Long roomId, ChatDTO.MultiChatRequest request) {
                 Map<String, Object> ctx = new LinkedHashMap<>();
@@ -1148,6 +1385,16 @@ public class ChatService {
                                 } else {
                                         Object payload = null;
                                         String msg;
+                                        if (qualityGateOn() && !pipelineGenerationGated(route.getAction())) {
+                                                // 게이트 ON: 생성 경로가 레지스트리에서 GATED 가 아닌 파이프라인(현재 로드맵)은 AI 결과를 싣지 않는다.
+                                                //  요약·퀴즈는 AiIntegrationService 안에서 게이트를 거친다(GET summary / POST quiz = GATED).
+                                                safeSend(out, "route_message", Map.of("type", "route_message", "routeAction", route.actionName(),
+                                                                "errorCode", com.studybridge.api.ai.quality.GateDecision.NOT_WIRED,
+                                                                "message", com.studybridge.api.ai.quality.GateDecision.userMessage(
+                                                                                com.studybridge.api.ai.quality.GateDecision.NOT_WIRED)));
+                                                safeSend(out, "all_complete", Map.of("type", "all_complete", "routed", true));
+                                                return;
+                                        }
                                         switch (route.getAction()) {
                                                 case QUIZ_PIPELINE:
                                                         payload = aiIntegrationService.generateQuiz(userId, materialId,
@@ -1160,18 +1407,39 @@ public class ChatService {
                                                         payload = aiIntegrationService.getRoadmap(userId, materialId);
                                                         msg = "학습 로드맵을 불러왔습니다."; break;
                                                 default:
-                                                        msg = route.userMessage();
+                                                        msg = routeUserMessage(route);
+                                        }
+                                        if (qualityGateOn() && payload instanceof QuizDTO.Response quiz
+                                                        && !"APPROVED".equals(quiz.getQualityStatus())) {
+                                                // 게이트 ON + 퀴즈 미승인(거절/평가 불가/생성 실패): 성공 문구·빈 퀴즈를 싣지 않고 명시적 실패로 알린다.
+                                                String code = quiz.getErrorCode() != null ? quiz.getErrorCode()
+                                                                : com.studybridge.api.ai.quality.GateDecision.REJECTED;
+                                                boolean qualityCode = com.studybridge.api.ai.quality.GateDecision.REJECTED.equals(code)
+                                                                || com.studybridge.api.ai.quality.GateDecision.UNAVAILABLE.equals(code);
+                                                Map<String, Object> fail = new LinkedHashMap<>();
+                                                fail.put("type", "route_message");
+                                                fail.put("routeAction", route.actionName());
+                                                fail.put("errorCode", code);
+                                                fail.put("retryable", Boolean.TRUE);
+                                                fail.put("message", qualityCode ? com.studybridge.api.ai.quality.GateDecision.userMessage(code)
+                                                                : "문제를 만들지 못했습니다. 잠시 후 다시 시도해 주세요.");
+                                                safeSend(out, "route_message", fail);
+                                                safeSend(out, "all_complete", Map.of("type", "all_complete", "routed", true));
+                                                return;
                                         }
                                         Map<String, Object> data = new LinkedHashMap<>();
                                         data.put("type", "route_pipeline");
                                         data.put("routeAction", route.actionName());
                                         data.put("message", msg);
                                         if (payload != null) data.put("pipeline", payload);
+                                        if (qualityGateOn() && payload instanceof QuizDTO.Response) {
+                                                data.put("qualityStatus", "APPROVED");
+                                        }
                                         safeSend(out, "route_pipeline", data);
                                 }
                         } else { // terminal: DIRECT_REPLY/BLOCK/CLARIFY
                                 safeSend(out, "route_message", Map.of("type", "route_message",
-                                                "routeAction", route.actionName(), "message", route.userMessage()));
+                                                "routeAction", route.actionName(), "message", routeUserMessage(route)));
                         }
                         safeSend(out, "all_complete", Map.of("type", "all_complete", "routed", true));
                 } catch (Exception e) {
@@ -1186,6 +1454,12 @@ public class ChatService {
         //  block() 없이 리액티브 체인으로 컨트롤러까지 이어진다. 영속화(JDBC)는 boundedElastic 에서 수행한다.
         private Flux<ServerSentEvent<String>> relayRemoteStream(Long roomId, String requestId, Map<String, Object> requestBody,
                         ChatDTO.MultiChatRequest request, AgentChatRoom room) {
+                return relayRemoteStream(roomId, requestId, requestBody, request, room, null);
+        }
+
+        private Flux<ServerSentEvent<String>> relayRemoteStream(Long roomId, String requestId, Map<String, Object> requestBody,
+                        ChatDTO.MultiChatRequest request, AgentChatRoom room,
+                        com.studybridge.api.ai.memory.LearningMemoryAssembler.Attachment memory) {
                 final long nonStreamTimeout = resolveAiTimeoutSeconds(
                                 firstNonBlank(request.getLearningMode(), room.getLearningMode()), request.getMode());
                 // 성능 측정: Spring stream open → upstream 첫 이벤트 → 첫 agent_answer → all_complete 지연을 분리해 로깅한다.
@@ -1196,12 +1470,29 @@ public class ChatService {
                 final java.util.concurrent.atomic.AtomicReference<String> turnIdRef = new java.util.concurrent.atomic.AtomicReference<>(null);
                 // 취소(브라우저 절단/Stop/새 질문/모드·방 전환) 시점까지 받은 성공 답변 — 이미 사용자에게 보인 답변은 잃지 않는다.
                 final List<String> receivedAnswers = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+                // 학습 후보 수집용 소유자 id(프록시 getId 는 초기화 없음 — 스트림 콜백은 트랜잭션 밖).
+                final Long ownerId = room.getUser() != null ? room.getUser().getId() : null;
 
                 // 리액티브 체인을 끊지 않는다(Flux.create/내부 subscribe 없음): MVC 가 이 Flux 를 구독하고, 브라우저가 끊기면 MVC cancel →
                 //  이 체인 cancel → WebClient 구독 취소(업스트림 소켓 종료) → AI07 [SSE-CANCEL] 절단 감시가 추론을 멈춘다(§16).
                 //  backpressure 도 WebClient 까지 그대로 전파된다(무한 버퍼 없음, §18). 영속화(JDBC)는 boundedElastic 에서 수행한다.
-                return aiFailover
-                                .streamMultiChat(roomId, requestId, requestBody, Duration.ofSeconds(nonStreamTimeout))
+                // Learning Memory 첨부물이 없으면 기존 4-인자 호출 그대로(요청 바이트·헤더 불변), 있으면 시도마다 X-AI-Scope 를 새로 서명해 붙인다.
+                Flux<ServerSentEvent<String>> upstream = memory == null
+                                ? aiFailover.streamMultiChat(roomId, requestId, requestBody, Duration.ofSeconds(nonStreamTimeout))
+                                : aiFailover.streamMultiChat(roomId, requestId, requestBody, Duration.ofSeconds(nonStreamTimeout),
+                                                memory.headers());
+                if (qualityGateOn()) {
+                        // 단일 경계: 영속화/캐시(doOnNext) 보다 앞에서 게이트를 건다 → 거절·미평가 본문은 화면·DB·Redis 어디에도 가지 않는다.
+                        // 표시 이름 허용 목록 = 이 방 에이전트 이름(모델이 쓴 문장이 이름 칸으로 새지 않게).
+                        java.util.Set<String> names = room.getAgents() == null ? java.util.Set.of()
+                                        : room.getAgents().stream().filter(java.util.Objects::nonNull).map(Agent::getName)
+                                                        .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+                        upstream = qualityStreamGate.gate(upstream, new com.studybridge.api.ai.quality.QualityStreamGate.Context(requestId,
+                                        com.studybridge.api.ai.quality.QualityStreamGate.taskTypeForLearningMode(
+                                                        firstNonBlank(request.getLearningMode(), room.getLearningMode(), "basic")),
+                                        request.getMessage(), com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints.empty(), names));
+                }
+                return upstream
                                 .publishOn(Schedulers.boundedElastic())
                                 .doOnNext(ev -> {
                                         String event = ev.event() != null ? ev.event() : "message";
@@ -1225,6 +1516,7 @@ public class ChatService {
                                                 // FastAPI 이벤트는 필드 변형 없이 그대로 중계하고, all_complete 만 별도 트랜잭션으로 영속화한다(멱등).
                                                 if (persisted.compareAndSet(false, true)) {
                                                         persistStreamedAnswers(roomId, ev.data(), requestId);
+                                                        collectApprovedAnswers(ownerId, requestId, request, room, ev.data());
                                                 }
                                         }
                                 })
@@ -1238,6 +1530,40 @@ public class ChatService {
                                                                 persistPartialAnswers(roomId, requestId, turnIdRef.get(), snapshot));
                                         }
                                 });
+        }
+
+        /**
+         * 게이트가 승인한 답변 → 학습 후보(동의·플래그는 수집기가 판단). 게이트 OFF 면 승인 표시가 없으므로 아무것도 하지 않는다.
+         * 사용자 응답·영속화와 독립(예외 무시).
+         */
+        private void collectApprovedAnswers(Long ownerId, String requestId, ChatDTO.MultiChatRequest request, AgentChatRoom room,
+                        String allCompleteJson) {
+                if (!qualityGateOn() || trainingCollector == null || ownerId == null) {
+                        return;
+                }
+                try {
+                        Map<String, Object> resp = objectMapper.readValue(allCompleteJson, new TypeReference<Map<String, Object>>() {});
+                        if (!(resp.get("answers") instanceof List<?> answers)) {
+                                return;
+                        }
+                        com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType task =
+                                        com.studybridge.api.ai.quality.QualityStreamGate.taskTypeForLearningMode(
+                                                        firstNonBlank(request.getLearningMode(), room.getLearningMode(), "basic"));
+                        for (Object o : answers) {
+                                if (o instanceof Map<?, ?> a && "APPROVED".equals(a.get("qualityStatus"))) {
+                                        Object text = a.get("answer") != null ? a.get("answer") : a.get("content");
+                                        trainingCollector.onApproved(new com.studybridge.api.ai.training.TrainingCandidateCollector.Candidate(
+                                                        ownerId, task, requestId, request.getMessage(), text != null ? text.toString() : null,
+                                                        request.getMaterialId(), List.of(),
+                                                        new com.studybridge.api.ai.quality.GateDecision(true,
+                                                                        com.studybridge.api.ai.contract.v1.ResponseQualityV1.QualityStatus.APPROVED,
+                                                                        null, null, List.of(), null, null, 1, 0),
+                                                        null, "studymate-sse-2"));
+                                }
+                        }
+                } catch (Exception e) {
+                        log.warn("[TRAINING-COLLECT] roomId={} requestId={} 수집 생략: {}", room.getId(), requestId, e.getClass().getSimpleName());
+                }
         }
 
         private String extractString(String json, String key) {
@@ -1287,7 +1613,12 @@ public class ChatService {
 
         /** 영속화 메타(AI07 SSE 계약). content 는 담지 않는다. */
         record AnswerMeta(String requestId, String turnId, String eventId, Integer agentIndex, String stage, String status,
-                        String mode, String personalityKey, String knowledgeLevelKey) { }
+                        String mode, String personalityKey, String knowledgeLevelKey, String qualityStatus) {
+                AnswerMeta(String requestId, String turnId, String eventId, Integer agentIndex, String stage, String status,
+                                String mode, String personalityKey, String knowledgeLevelKey) {
+                        this(requestId, turnId, eventId, agentIndex, stage, status, mode, personalityKey, knowledgeLevelKey, null);
+                }
+        }
 
         /**
          * AI07 answers[] 1건의 멱등 키. eventId 가 있으면 그대로, 없으면 안전한 composite(turnId:agentId:stage:displayOrder).
@@ -1354,9 +1685,11 @@ public class ChatService {
                         }
                         String dedupKey = dedupKeyOf(a, turnId, rid, i);
                         Map<String, Object> identity = AgentProfileContract.identityOf(a);
+                        // 게이트가 승인해 다시 만든 답변만 qualityStatus=APPROVED 를 갖는다(상류 ai07 의 qualityStatus 는 게이트가 버림).
+                        String approved = qualityGateOn() && "APPROVED".equals(a.get("qualityStatus")) ? "APPROVED" : null;
                         AnswerMeta meta = new AnswerMeta(rid, turnId, dedupKey, (Integer) identity.get("agentIndex"),
                                         str(a.get("stage") != null ? a.get("stage") : a.get("stageType")), str(identity.get("status")), mode,
-                                        str(identity.get("personalityKey")), str(identity.get("knowledgeLevelKey")));
+                                        str(identity.get("personalityKey")), str(identity.get("knowledgeLevelKey")), approved);
                         String agentName = String.valueOf(a.getOrDefault("agentName", "AI"));
                         Boolean stored = transactionTemplate.execute(status -> {
                                 AgentChatRoom room = agentChatRoomRepository.findById(roomId).orElse(null);
@@ -1392,15 +1725,20 @@ public class ChatService {
                 if (userId == null || room.getUser() == null || !room.getUser().getId().equals(userId)) {
                         throw new SecurityException("해당 채팅방에 접근할 권한이 없습니다.");
                 }
+                final boolean gateOn = qualityGateOn();
                 return chatMessageRepository.findByAgentChatRoomIdOrderByCreatedAtAscIdAsc(roomId).stream()
-                                .map(msg -> ChatDTO.MessageResponse.builder()
+                                .map(msg -> {
+                                        boolean redact = gateOn && !"USER".equals(msg.getSender()) && !"APPROVED".equals(msg.getQualityStatus());
+                                        return ChatDTO.MessageResponse.builder()
                                                 .id(msg.getId())
-                                                .content(msg.getContent())
+                                                .content(redact ? QUALITY_REDACTED_TEXT : msg.getContent())
+                                                .qualityStatus(msg.getQualityStatus())
+                                                .qualityRedacted(redact ? Boolean.TRUE : null)
                                                 .sender(msg.getSender())
                                                 .senderName(msg.getAgent() != null ? msg.getAgent().getName() : null)
                                                 .agentId(msg.getAgent() != null ? msg.getAgent().getId() : null)
                                                 .createdAt(msg.getCreatedAt())
-                                                .processSteps(parseProcessSteps(msg.getProcessStepsJson()))
+                                                .processSteps(redact ? null : parseProcessSteps(msg.getProcessStepsJson()))
                                                 .requestId(msg.getRequestId())
                                                 .turnId(msg.getTurnId())
                                                 .eventId(msg.getEventId())
@@ -1412,7 +1750,8 @@ public class ChatService {
                                                 .knowledgeLevelKey(msg.getKnowledgeLevelKey())
                                                 // 가상 작성자(debate-consensus/시스템)는 agent 가 없는 AI 행 — 프론트가 교수 카드가 아닌 시스템 작성자로 렌더.
                                                 .authorKind("USER".equals(msg.getSender()) ? "USER" : (msg.getAgent() != null ? "AGENT" : "VIRTUAL"))
-                                                .build())
+                                                .build();
+                                })
                                 .collect(Collectors.toList());
         }
 
@@ -1499,6 +1838,31 @@ public class ChatService {
         }
 
         /**
+         * 다음 추론에 넣을 대화 맥락 정리(Learning Memory 신뢰 규칙).
+         *  · 게이트 ON: ASSISTANT 항목 중 qualityStatus=APPROVED 가 아닌 것(레거시/거절)은 제외 — 과거 AI 오답 재주입 방지.
+         *  · 항상: qualityStatus 는 Spring 내부 판단용이므로 ai07 로 보내는 항목에서 제거한다(요청 계약 불변).
+         */
+        static List<Map<String, Object>> filterTrustedPreviousAnswers(List<Map<String, Object>> previousAnswers, boolean gateOn) {
+                if (previousAnswers == null || previousAnswers.isEmpty()) {
+                        return previousAnswers == null ? java.util.Collections.emptyList() : previousAnswers;
+                }
+                List<Map<String, Object>> out = new java.util.ArrayList<>();
+                for (Map<String, Object> m : previousAnswers) {
+                        if (m == null) {
+                                continue;
+                        }
+                        boolean assistant = !"USER".equalsIgnoreCase(String.valueOf(m.get("role")));
+                        if (gateOn && assistant && !"APPROVED".equals(m.get("qualityStatus"))) {
+                                continue;
+                        }
+                        Map<String, Object> copy = new LinkedHashMap<>(m);
+                        copy.remove("qualityStatus");
+                        out.add(copy);
+                }
+                return out;
+        }
+
+        /**
          * ai07 로 보낼 previousAnswers 를 정리한다.
          *  · 마지막 항목이 이번 질문과 같은 USER 항목이면 제외한다(chatStream 은 USER 를 먼저 저장하므로 캐시 끝에 항상 이번 질문이 붙는다).
          *  · 최근 max 건만 남긴다(max ≤ 0 이면 전부 유지). 순서(오래된 → 최신)는 보존.
@@ -1537,7 +1901,8 @@ public class ChatService {
                 if (meta != null) {
                         b.requestId(meta.requestId()).turnId(meta.turnId()).eventId(meta.eventId()).agentIndex(meta.agentIndex())
                                         .stage(meta.stage()).status(meta.status()).mode(meta.mode())
-                                        .personalityKey(meta.personalityKey()).knowledgeLevelKey(meta.knowledgeLevelKey());
+                                        .personalityKey(meta.personalityKey()).knowledgeLevelKey(meta.knowledgeLevelKey())
+                                        .qualityStatus(meta.qualityStatus());
                 }
                 ChatMessage message = b.build();
                 chatMessageRepository.save(message);
@@ -1548,6 +1913,7 @@ public class ChatService {
                                 .answer(content)
                                 .role("USER".equals(sender) ? "USER" : "ASSISTANT")
                                 .agentId(agent != null ? agent.getId() : null)
+                                .qualityStatus(meta != null ? meta.qualityStatus() : null)
                                 .build());
         }
 

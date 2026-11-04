@@ -1,6 +1,10 @@
 package com.studybridge.api.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
+import com.studybridge.api.ai.quality.GateDecision;
 import com.studybridge.api.dto.FeedbackDTO;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialFeedback;
@@ -8,6 +12,7 @@ import com.studybridge.api.exception.AiUpstreamException;
 import com.studybridge.api.repository.MaterialFeedbackRepository;
 import com.studybridge.api.repository.MaterialRepository;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -26,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 자료보관함(학습일지) AI 피드백 조회·생성·재생성.
@@ -44,6 +50,11 @@ import java.util.UUID;
  *   <li>성공 시에만 짧은 트랜잭션으로 같은 행을 갱신(upsert). 삭제 후 재삽입하지 않는다.</li>
  * </ol>
  * 피드백 생성은 secondary(EC2 :8000, OpenAI 경로)로 failover 하지 않는다 — 유료 API 를 새로 쓰게 되므로 기존 정책(primary 단독)을 유지한다.
+ *
+ * <p>품질 게이트(AI_RESPONSE_QUALITY_GATE_ENABLED, 기본 OFF — Phase C 연결): 생성 → response-quality.v1(GENERAL_EXPLANATION,
+ * 자료 원문 근거) → 거절 시 최대 2회 재생성 → 승인분만 저장(quality_status=APPROVED). 거절/평가 불가는 기존 피드백을 덮어쓰지 않고
+ * AI_QUALITY_REJECTED(422)/AI_QUALITY_UNAVAILABLE(503) 오류로 끝난다. 게이트 ON 에서 미승인(레거시) 저장본은 노출하지 않고 새로 만든다
+ * (거절 직후 120초는 재생성하지 않음 — 조회마다 생성 3회가 반복되는 부하 방지). 게이트 OFF 는 기존 동작과 같다.</p>
  */
 @Slf4j
 @Service
@@ -67,6 +78,18 @@ public class MaterialFeedbackService {
     private final Duration timeout;
     private final boolean conceptReviewEnabled;
     private final ObjectMapper mapper = new ObjectMapper();
+    private AiResponseQualityGate qualityGate;
+    private final Map<Long, Long> gateCooldownUntil = new ConcurrentHashMap<>();
+    static final long GATE_REJECT_COOLDOWN_MS = 120_000;
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    private boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
 
     public MaterialFeedbackService(MaterialRepository materialRepository,
                                    MaterialFeedbackRepository feedbackRepository,
@@ -88,6 +111,7 @@ public class MaterialFeedbackService {
     public FeedbackDTO get(Long userId, Long materialId) {
         Material material = owned(userId, materialId);
         return feedbackRepository.findByMaterial_MaterialId(materialId)
+                .filter(fb -> !gateOn() || "APPROVED".equals(fb.getQualityStatus())) // 게이트 ON: 미승인(레거시) 저장본 재노출 금지
                 .map(fb -> toDto(fb, null))
                 .orElseGet(() -> generate(userId, material));
     }
@@ -109,9 +133,12 @@ public class MaterialFeedbackService {
         }
         long started = System.currentTimeMillis();
         try {
+            if (gateOn()) {
+                return generateGated(material, text, requestId, started);
+            }
             Map<String, Object> response = call(text, requestId);
             Parsed parsed = parse(response, requestId);
-            FeedbackDTO saved = save(material, parsed.data());
+            FeedbackDTO saved = save(material, parsed.data(), null);
             log.info("[FEEDBACK] saved materialId={} userId={} requestId={} structured={} elapsedMs={}",
                     material.getMaterialId(), userId, requestId, parsed.structured(), System.currentTimeMillis() - started);
             return FeedbackDTO.builder()
@@ -125,6 +152,85 @@ public class MaterialFeedbackService {
             throw e;
         } finally {
             guard.release(lock);
+        }
+    }
+
+    /** 게이트 경로(요약과 같은 규칙). 생성 자체가 실패하면 재생성하지 않고 기존 실패 계약(AiUpstreamException)을 그대로 던진다. */
+    private FeedbackDTO generateGated(Material material, String text, String requestId, long started) {
+        Long mid = material.getMaterialId();
+        Long until = gateCooldownUntil.get(mid);
+        if (until != null && until > System.currentTimeMillis()) {
+            throw qualityFailure(GateDecision.REJECTED, requestId, null);
+        }
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(requestId, ResponseQualityV1.TaskType.GENERAL_EXPLANATION,
+                ResponseQualityV1.OutputKind.TEXT,
+                "다음 학습 내용에 대한 학습 피드백(강점·보완점·다음 행동)을 작성해 주세요: " + (material.getTitle() != null ? material.getTitle() : ""),
+                AiResponseQualityGate.pdfEvidence(mid, text, 4000, 48000),
+                new ResponseQualityV1.Constraints(List.of(mid), null, null, null, null, null, null, false, false, null, null, null, null,
+                        null, null), null);
+        final AiUpstreamException[] upstream = new AiUpstreamException[1];
+        AiResponseQualityGate.Outcome<Parsed> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> {
+            try {
+                return parse(call(text, attempt == 0 ? requestId : requestId + "-r" + attempt), requestId);
+            } catch (AiUpstreamException e) {
+                upstream[0] = e;
+                throw new AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+            }
+        }, p -> AiResponseQualityGate.text(visibleText(p.data())));
+        if (upstream[0] != null && outcome.value() == null) {
+            throw upstream[0];
+        }
+        if (!outcome.approved()) {
+            if (GateDecision.REJECTED.equals(outcome.decision().errorCode())) {
+                gateCooldownUntil.put(mid, System.currentTimeMillis() + GATE_REJECT_COOLDOWN_MS);
+            }
+            log.warn("[FEEDBACK] quality gate not approved materialId={} requestId={} code={} attempts={} → 기존 피드백 보존(미노출)",
+                    mid, requestId, outcome.decision().errorCode(), outcome.decision().attempts());
+            throw qualityFailure(outcome.decision().errorCode(), requestId, outcome.decision());
+        }
+        gateCooldownUntil.remove(mid);
+        FeedbackDTO saved = save(material, outcome.value().data(), outcome.decision());
+        log.info("[FEEDBACK] saved(gated) materialId={} requestId={} score={} attempts={} elapsedMs={}", mid, requestId,
+                outcome.decision().score(), outcome.decision().attempts(), System.currentTimeMillis() - started);
+        return FeedbackDTO.builder().feedbackId(saved.getFeedbackId()).materialId(saved.getMaterialId()).feedbackData(saved.getFeedbackData())
+                .createdAt(saved.getCreatedAt()).updatedAt(saved.getUpdatedAt()).requestId(requestId)
+                .provider(outcome.value().provider()).model(outcome.value().model())
+                .qualityStatus("APPROVED").qualityScore(outcome.decision().score()).verified(true).build();
+    }
+
+    private static AiUpstreamException qualityFailure(String code, String requestId, GateDecision d) {
+        boolean rejected = GateDecision.REJECTED.equals(code);
+        return new AiUpstreamException(rejected ? HttpStatus.UNPROCESSABLE_ENTITY : HttpStatus.SERVICE_UNAVAILABLE, code,
+                GateDecision.userMessage(code) + " 기존 피드백은 유지됩니다.", requestId, true, null, null);
+    }
+
+    /** 평가 대상 = 사용자에게 보일 모든 문자열(구조화 JSON 의 모든 문자열 잎 — 키 이름 제외). */
+    String visibleText(String data) {
+        if (data == null) {
+            return "";
+        }
+        try {
+            JsonNode n = mapper.readTree(data);
+            if (n != null && (n.isObject() || n.isArray())) {
+                StringBuilder b = new StringBuilder();
+                collect(n, b);
+                return b.toString().trim();
+            }
+        } catch (Exception ignored) {
+            // 평문 피드백
+        }
+        return data;
+    }
+
+    private static void collect(JsonNode n, StringBuilder b) {
+        if (n.isTextual()) {
+            if (!n.asText().isBlank()) {
+                b.append(n.asText()).append('\n');
+            }
+        } else if (n.isContainerNode()) {
+            n.elements().forEachRemaining(x -> collect(x, b));
+        } else if (n.isNumber() || n.isBoolean()) {
+            b.append(n.asText()).append('\n');
         }
     }
 
@@ -229,24 +335,27 @@ public class MaterialFeedbackService {
 
     // ───────────────────────── 저장(upsert) ─────────────────────────
 
-    private FeedbackDTO save(Material material, String data) {
+    private FeedbackDTO save(Material material, String data, GateDecision approval) {
         Long materialId = material.getMaterialId();
         try {
-            return tx.execute(status -> upsert(material, data));
+            return tx.execute(status -> upsert(material, data, approval));
         } catch (DataIntegrityViolationException race) {
             // 동시 최초 생성(잠금 fail-open 등)으로 다른 요청이 먼저 insert → 같은 행을 갱신한다.
             log.info("[FEEDBACK] concurrent insert detected materialId={} → update existing row", materialId);
-            return tx.execute(status -> upsert(material, data));
+            return tx.execute(status -> upsert(material, data, approval));
         }
     }
 
-    private FeedbackDTO upsert(Material material, String data) {
+    private FeedbackDTO upsert(Material material, String data, GateDecision approval) {
         MaterialFeedback fb = feedbackRepository.findByMaterial_MaterialId(material.getMaterialId()).orElse(null);
         if (fb == null) {
             fb = MaterialFeedback.builder().material(material).feedbackData(data).build();
         } else {
             fb.setFeedbackData(data);
         }
+        // 게이트 OFF 저장은 판정 없음(null) — 나중에 게이트를 켜면 미검증으로 취급된다.
+        fb.setQualityStatus(approval != null && approval.approved() ? "APPROVED" : null);
+        fb.setQualityScore(approval != null && approval.approved() ? approval.score() : null);
         fb = feedbackRepository.saveAndFlush(fb);
         return toDto(fb, null);
     }

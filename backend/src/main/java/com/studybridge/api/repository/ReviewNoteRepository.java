@@ -9,7 +9,13 @@ import java.util.Optional;
 public interface ReviewNoteRepository extends JpaRepository<ReviewNote, Long> {
     List<ReviewNote> findByUserIdOrderByCreatedAtDesc(Long userId);
 
+    /** Learning Memory: 사용자 최근 오답노트 20건(사용자 격리). */
+    List<ReviewNote> findTop20ByUserIdOrderByCreatedAtDesc(Long userId);
+
     /** AI 학습 내비게이터: 로드맵 출처 자료로 푼 최근 퀴즈의 오답노트(사용자 격리). */
     List<ReviewNote> findTop5ByUserIdAndSourceMaterialIdOrderByCreatedAtDesc(Long userId, Long sourceMaterialId);
     Optional<ReviewNote> findByReviewNoteIdAndUserId(Long reviewNoteId, Long userId);
+
+    /** 자료보관함 노출용 Material(REVIEW_NOTE) → 원 오답노트(품질 판정 확인용, 사용자 격리). */
+    Optional<ReviewNote> findFirstByArchiveMaterialIdAndUserId(Long archiveMaterialId, Long userId);
 }

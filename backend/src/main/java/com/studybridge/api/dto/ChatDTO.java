@@ -36,6 +36,9 @@ public class ChatDTO {
         private String personalityKey;
         private String knowledgeLevelKey;
         private String authorKind;
+        // 품질 게이트 ON 에서 미검증(레거시) AI 답변은 본문을 가리고 true 로 표시한다.
+        private String qualityStatus;
+        private Boolean qualityRedacted;
     }
 
     @Getter
@@ -210,6 +213,15 @@ public class ChatDTO {
         private String scenarioType;
         private String difficulty;
         private Integer choiceCount;
+        // ── Spring 품질 게이트(ON 일 때만 값이 있다 — null 이면 직렬화하지 않아 게이트 OFF 응답 형태는 그대로) ──
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private String qualityStatus;                 // APPROVED(실린 본문 전부 승인) | REJECTED | VALIDATION_ERROR(실패 시)
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean retryable;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private List<Object> agentErrors;             // 거절/평가 불가 메시지(식별자 + 고정 안내 문구만)
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private List<Object> qualityRedactedFields;   // 승인되지 않아 뺀 부가 필드 이름(processSteps 등)
     }
 
     @Getter

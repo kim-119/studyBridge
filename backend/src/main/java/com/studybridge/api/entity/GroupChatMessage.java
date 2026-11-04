@@ -35,6 +35,10 @@ public class GroupChatMessage {
     @Column(columnDefinition = "TEXT", nullable = false)
     private String content;
 
+    // Spring 품질 게이트 판정(APPROVED 만 기록, AI 행 전용). null = 게이트 OFF 시기/레거시/사용자 행 → 게이트 ON 에서 AI 행은 미검증으로 취급.
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

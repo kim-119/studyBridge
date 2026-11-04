@@ -34,4 +34,11 @@ public class MaterialFeedback {
     @UpdateTimestamp
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
+    /** 품질 게이트 판정(APPROVED 만 게이트 ON 에서 노출). NULL = 게이트 도입 전/OFF 에서 저장된 레거시 행. nullable 신규 컬럼. */
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
+    @Column(name = "quality_score")
+    private Double qualityScore;
 }

@@ -2,6 +2,9 @@ package com.studybridge.api.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
+import com.studybridge.api.ai.quality.GateDecision;
 import com.studybridge.api.dto.PlannerAiDTO;
 import com.studybridge.api.entity.Planner;
 import com.studybridge.api.entity.PlannerAiResult;
@@ -9,6 +12,7 @@ import com.studybridge.api.repository.PlannerAiResultRepository;
 import com.studybridge.api.repository.PlannerRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,6 +29,12 @@ import java.util.regex.Pattern;
  *  - 브라우저 → Spring(/api/planners/{id}/ai-assist) → FastAPI(/api/ai/planner/assist).
  *  - ai07 미배포/오류 시에도 죽지 않고 로컬 기본 피드백(graceful fallback)을 생성한다.
  *  - 사용자 원본 메모(planner.tmi)는 절대 덮어쓰지 않는다. AI 결과만 PlannerAiResult에 보관한다.
+ *  - 폴백(로컬 기본 피드백)은 AI 결과가 아니다 → used_fallback=true 로 저장하고 조회 시 usedFallback=true 로 표기한다
+ *    (예전: 저장본 조회가 항상 usedFallback=false 라 폴백도 AI 로 표기됐다).
+ *  - 품질 게이트(AI_RESPONSE_QUALITY_GATE_ENABLED, 기본 OFF): ai07 응답의 보일 문자열 전체를 PLANNER_COACHING(text, 근거 = 플래너 입력)으로
+ *    평가 → 거절 시 재생성 ≤2 → 승인분만 저장(quality_status=APPROVED)·응답. 거절/평가 불가는 success=false + AI_QUALITY_REJECTED/UNAVAILABLE
+ *    (기존 저장본 보존). ai07 첫 호출 자체가 실패하면 기존 계약대로 결정적 기본 피드백(usedFallback=true, AI 아님).
+ *    게이트 ON 조회는 승인 저장본·폴백 저장본만 보이고, 미검증(레거시) AI 저장본은 가린다(qualityRedacted).
  */
 @Slf4j
 @Service
@@ -40,6 +50,17 @@ public class PlannerAiService {
 
     @Value("${ai.server.fastapi.planner-expand-timeout-seconds:120}")
     private long assistTimeoutSeconds;
+
+    private AiResponseQualityGate qualityGate;
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    private boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
 
     // ---------- 공통 ----------
 
@@ -191,13 +212,14 @@ public class PlannerAiService {
     @Transactional
     public PlannerAiDTO.AssistResponse assist(Long userId, Long plannerId) {
         Planner planner = getOwnedPlanner(userId, plannerId);
+        if (gateOn()) {
+            return assistGated(planner);
+        }
 
         Map response = null;
         boolean unavailable = false;
         try {
-            response = fastApiWebClient.post().uri("/api/ai/planner/assist")
-                    .bodyValue(assistBody(planner)).retrieve().bodyToMono(Map.class)
-                    .block(Duration.ofSeconds(assistTimeoutSeconds));
+            response = callAssist(planner);
         } catch (Exception e) {
             log.warn("[planner:assist:fail] plannerId={} msg={}", plannerId, e.getMessage());
             unavailable = true;
@@ -208,26 +230,123 @@ public class PlannerAiService {
             // graceful fallback — ai07 미배포/오류여도 로컬 기본 피드백을 만든다.
             result = buildFallback(planner);
         } else {
-            result = PlannerAiDTO.AssistResponse.builder()
-                    .success(true).plannerId(plannerId)
-                    .aiSummary(str(response, "aiSummary"))
-                    .refinedGoal(str(response, "refinedGoal"))
-                    .taskBreakdown(strList(response, "taskBreakdown"))
-                    .timeFeedback(str(response, "timeFeedback") != null
-                            ? str(response, "timeFeedback") : buildTimeFeedback(planner))
-                    .strengths(strList(response, "strengths"))
-                    .concerns(strList(response, "concerns"))
-                    .recommendations(strList(response, "recommendations"))
-                    .nextActions(strList(response, "nextActions"))
-                    .usedFallback(false)
-                    .build();
+            result = fromAi(planner, response);
         }
 
-        save(plannerId, result);
+        save(plannerId, result, null);
         return result;
     }
 
-    private void save(Long plannerId, PlannerAiDTO.AssistResponse r) {
+    private Map callAssist(Planner planner) {
+        return fastApiWebClient.post().uri("/api/ai/planner/assist")
+                .bodyValue(assistBody(planner)).retrieve().bodyToMono(Map.class)
+                .block(Duration.ofSeconds(assistTimeoutSeconds));
+    }
+
+    private PlannerAiDTO.AssistResponse fromAi(Planner planner, Map response) {
+        return PlannerAiDTO.AssistResponse.builder()
+                .success(true).plannerId(planner.getId())
+                .aiSummary(str(response, "aiSummary"))
+                .refinedGoal(str(response, "refinedGoal"))
+                .taskBreakdown(strList(response, "taskBreakdown"))
+                .timeFeedback(str(response, "timeFeedback") != null
+                        ? str(response, "timeFeedback") : buildTimeFeedback(planner))
+                .strengths(strList(response, "strengths"))
+                .concerns(strList(response, "concerns"))
+                .recommendations(strList(response, "recommendations"))
+                .nextActions(strList(response, "nextActions"))
+                .usedFallback(false)
+                .build();
+    }
+
+    /**
+     * 게이트 경로. 생성(ai07) → 보일 문자열 전체 평가 → 거절 시 재생성(≤2, 재생성 중 ai07 실패는 즉시 중단) → 승인분만 저장·응답.
+     * 첫 호출부터 ai07 이 실패하면 기존 계약(결정적 기본 피드백, AI 아님)을 그대로 쓴다 — 평가할 AI 본문이 없다.
+     */
+    private PlannerAiDTO.AssistResponse assistGated(Planner planner) {
+        Long plannerId = planner.getId();
+        String requestId = "pa-" + UUID.randomUUID();
+        final boolean[] firstCallFailed = {false};
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(requestId, ResponseQualityV1.TaskType.PLANNER_COACHING,
+                ResponseQualityV1.OutputKind.TEXT, coachingRequest(planner), plannerEvidence(planner),
+                ResponseQualityV1.Constraints.empty(), null);
+        AiResponseQualityGate.Outcome<PlannerAiDTO.AssistResponse> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> {
+            Map response;
+            try {
+                response = callAssist(planner);
+            } catch (Exception e) {
+                log.warn("[planner:assist:fail] plannerId={} attempt={} msg={}", plannerId, attempt, e.getMessage());
+                response = null;
+            }
+            if (response == null || isFailure(response)) {
+                if (attempt == 0) firstCallFailed[0] = true;
+                throw new AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+            }
+            return fromAi(planner, response);
+        }, r -> AiResponseQualityGate.text(visibleText(r)));
+
+        if (outcome.value() == null && firstCallFailed[0]) {
+            PlannerAiDTO.AssistResponse fallback = buildFallback(planner);
+            save(plannerId, fallback, null);
+            log.info("[planner:assist] gated: ai07 unavailable → 결정적 기본 피드백(usedFallback=true, AI 아님) plannerId={}", plannerId);
+            return fallback;
+        }
+        if (!outcome.approved()) {
+            GateDecision d = outcome.decision();
+            log.warn("[planner:assist] quality gate not approved plannerId={} requestId={} code={} attempts={} → 기존 저장본 보존(미노출)",
+                    plannerId, requestId, d.errorCode(), d.attempts());
+            String code = GateDecision.UNAVAILABLE.equals(d.errorCode()) ? GateDecision.UNAVAILABLE : GateDecision.REJECTED;
+            return PlannerAiDTO.AssistResponse.builder()
+                    .success(false).plannerId(plannerId)
+                    .errorCode(code).message(GateDecision.userMessage(code) + " 기존 피드백은 유지됩니다.")
+                    .qualityStatus(d.qualityStatus().name()).verified(false).retryable(true)
+                    .build();
+        }
+        PlannerAiDTO.AssistResponse ok = outcome.value();
+        save(plannerId, ok, outcome.decision());
+        log.info("[planner:assist] saved(gated) plannerId={} requestId={} score={} attempts={}", plannerId, requestId,
+                outcome.decision().score(), outcome.decision().attempts());
+        return PlannerAiDTO.AssistResponse.builder()
+                .success(true).plannerId(plannerId)
+                .aiSummary(ok.getAiSummary()).refinedGoal(ok.getRefinedGoal()).taskBreakdown(ok.getTaskBreakdown())
+                .timeFeedback(ok.getTimeFeedback()).strengths(ok.getStrengths()).concerns(ok.getConcerns())
+                .recommendations(ok.getRecommendations()).nextActions(ok.getNextActions()).usedFallback(false)
+                .qualityStatus(PlannerQualityGateSupport.APPROVED).qualityScore(outcome.decision().score()).verified(true)
+                .build();
+    }
+
+    /** 평가 대상 = 화면에 보일 모든 문자열(요약·목표·할 일·시간 피드백·장점·우려·권장·다음 행동). */
+    static String visibleText(PlannerAiDTO.AssistResponse r) {
+        StringBuilder b = new StringBuilder();
+        for (String s : new String[]{r.getAiSummary(), r.getRefinedGoal(), r.getTimeFeedback()}) {
+            if (s != null && !s.isBlank()) b.append(s.trim()).append('\n');
+        }
+        for (List<String> l : List.of(nn(r.getTaskBreakdown()), nn(r.getStrengths()), nn(r.getConcerns()),
+                nn(r.getRecommendations()), nn(r.getNextActions()))) {
+            for (String s : l) if (s != null && !s.isBlank()) b.append(s.trim()).append('\n');
+        }
+        return b.toString().trim();
+    }
+
+    private static List<String> nn(List<String> l) { return l == null ? List.of() : l; }
+
+    private String coachingRequest(Planner p) {
+        return PlannerQualityGateSupport.clip("다음 학습 플래너를 실행 가능한 계획으로 정리하고 시간 진행 상태 피드백, 장점·우려사항·권장사항, "
+                + "다음 학습 행동을 제안해 주세요. 제목: " + nz(p.getTitle()) + " / 과목: " + nz(p.getSubject())
+                + " / 학습 목표: " + nz(p.getContent()) + " / 할 일·메모: " + nz(p.getTmi())
+                + " / 목표 시간: " + nz(p.getGoalTime()) + " / 실제 학습 시간: " + nz(p.getNetStudyTime()), 7000);
+    }
+
+    /** 근거 = 이 사용자의 플래너 입력(소유권 확인 후). 다른 사용자 자료는 쓰지 않는다. */
+    private List<ResponseQualityV1.GroundingEvidence> plannerEvidence(Planner p) {
+        String text = "제목: " + nz(p.getTitle()) + "\n과목: " + nz(p.getSubject()) + "\n날짜: " + buildDate(p)
+                + "\n학습 목표: " + nz(p.getContent()) + "\n할 일·메모: " + nz(p.getTmi())
+                + "\n목표 시간: " + nz(p.getGoalTime()) + "\n실제 학습 시간: " + nz(p.getNetStudyTime())
+                + "\n우선순위: " + nz(p.getPriority()) + "\n마감: " + nz(p.getDDay());
+        return PlannerQualityGateSupport.evidence("PLANNER_RECORD", "p" + p.getId(), text, 4000, 24000);
+    }
+
+    private void save(Long plannerId, PlannerAiDTO.AssistResponse r, GateDecision approval) {
         PlannerAiResult entity = plannerAiResultRepository.findByPlannerId(plannerId)
                 .orElseGet(() -> PlannerAiResult.builder().plannerId(plannerId).build());
         entity.setAiSummary(r.getAiSummary());
@@ -240,6 +359,9 @@ public class PlannerAiService {
         feedback.put("recommendations", r.getRecommendations());
         entity.setAiFeedback(toJson(feedback));
         entity.setNextActions(toJson(r.getNextActions()));
+        // 승인 판정이 있을 때만 APPROVED. 게이트 OFF 저장·폴백은 null(폴백은 used_fallback 으로 구분한다).
+        entity.setQualityStatus(approval != null && approval.approved() ? PlannerQualityGateSupport.APPROVED : null);
+        entity.setUsedFallback(Boolean.TRUE.equals(r.getUsedFallback()));
         plannerAiResultRepository.save(entity);
     }
 
@@ -292,23 +414,37 @@ public class PlannerAiService {
                 .build();
     }
 
-    /** 저장된 AI 피드백 조회. 없으면 success=null. */
+    /**
+     * 저장된 AI 피드백 조회. 없으면 success=null.
+     * usedFallback 은 저장 시 표식(used_fallback)을 따른다 — 결정적 기본 피드백을 AI 결과로 표기하지 않는다(레거시 null = false).
+     * 게이트 ON: 승인(APPROVED) 저장본과 폴백 저장본만 보이고, 미검증 AI 저장본은 success=null + qualityRedacted=true 로 가린다.
+     */
     public PlannerAiDTO.AssistResponse getAiResult(Long userId, Long plannerId) {
         getOwnedPlanner(userId, plannerId);
-        return plannerAiResultRepository.findByPlannerId(plannerId)
-                .filter(r -> r.getAiSummary() != null || r.getRefinedGoal() != null || r.getTaskBreakdown() != null)
-                .map(r -> PlannerAiDTO.AssistResponse.builder()
-                        .success(true).plannerId(plannerId)
-                        .aiSummary(r.getAiSummary())
-                        .refinedGoal(r.getRefinedGoal())
-                        .taskBreakdown(listFromJson(r.getTaskBreakdown()))
-                        .timeFeedback(r.getTimeFeedback())
-                        .strengths(listFromJsonKey(r.getAiFeedback(), "strengths"))
-                        .concerns(listFromJsonKey(r.getAiFeedback(), "concerns"))
-                        .recommendations(listFromJsonKey(r.getAiFeedback(), "recommendations"))
-                        .nextActions(listFromJson(r.getNextActions()))
-                        .usedFallback(false)
-                        .build())
-                .orElse(PlannerAiDTO.AssistResponse.builder().success(null).plannerId(plannerId).build());
+        Optional<PlannerAiResult> row = plannerAiResultRepository.findByPlannerId(plannerId)
+                .filter(r -> r.getAiSummary() != null || r.getRefinedGoal() != null || r.getTaskBreakdown() != null);
+        if (row.isEmpty()) {
+            return PlannerAiDTO.AssistResponse.builder().success(null).plannerId(plannerId).build();
+        }
+        PlannerAiResult r = row.get();
+        boolean fallback = Boolean.TRUE.equals(r.getUsedFallback());
+        boolean approved = PlannerQualityGateSupport.approved(r.getQualityStatus());
+        if (gateOn() && !fallback && !approved) {
+            return PlannerAiDTO.AssistResponse.builder().success(null).plannerId(plannerId)
+                    .qualityRedacted(true).message(PlannerQualityGateSupport.REDACTED_MESSAGE).build();
+        }
+        return PlannerAiDTO.AssistResponse.builder()
+                .success(true).plannerId(plannerId)
+                .aiSummary(r.getAiSummary())
+                .refinedGoal(r.getRefinedGoal())
+                .taskBreakdown(listFromJson(r.getTaskBreakdown()))
+                .timeFeedback(r.getTimeFeedback())
+                .strengths(listFromJsonKey(r.getAiFeedback(), "strengths"))
+                .concerns(listFromJsonKey(r.getAiFeedback(), "concerns"))
+                .recommendations(listFromJsonKey(r.getAiFeedback(), "recommendations"))
+                .nextActions(listFromJson(r.getNextActions()))
+                .usedFallback(fallback)
+                .qualityStatus(gateOn() && approved ? PlannerQualityGateSupport.APPROVED : null)
+                .build();
     }
 }

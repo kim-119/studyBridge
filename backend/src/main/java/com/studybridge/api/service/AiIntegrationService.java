@@ -48,6 +48,12 @@ public class AiIntegrationService {
         private final MaterialQuizService materialQuizService;
         // PRIMARY(ai07) → SECONDARY(EC2 hot-standby) 공통 failover. 현재는 /api/ai/quiz 에만 적용.
         private final AiFailoverExecutor aiFailoverExecutor;
+        // Global Response Quality Gate(기본 OFF). null(테스트) 이면 OFF.
+        private final com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate;
+        private final com.studybridge.api.ai.training.TrainingCandidateCollector trainingCollector;
+        /** 게이트 거절 직후 같은 자료 요약을 반복 GET 마다 재생성(GPU 3회)하지 않도록 잠시 실패 결과를 돌려준다. */
+        private final java.util.Map<Long, Long> summaryGateCooldownUntil = new java.util.concurrent.ConcurrentHashMap<>();
+        private static final long SUMMARY_GATE_COOLDOWN_MS = 120_000;
 
         // 키워드 정의 호출 타임아웃 (env 제어, 하드코딩 금지)
         @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.keyword-define-timeout-seconds:60}")
@@ -83,6 +89,10 @@ public class AiIntegrationService {
                 meta.put("keywords", keywords != null ? keywords : java.util.Collections.emptyList());
                 reqBody.put("metadata", meta);
 
+                if (qualityGateOn()) {
+                        return classifyBeforeSaveGated(reqBody, fileName, mimeType, selectedTypeAi, title, keywords);
+                }
+
                 try {
                         Map<String, Object> resp = fastApiWebClient.post().uri("/api/ai/material/classify")
                                         .bodyValue(reqBody)
@@ -114,6 +124,97 @@ public class AiIntegrationService {
                 out.put("allowedActions", ai.getOrDefault("allowed_actions", java.util.Collections.emptyList()));
                 out.put("capabilityHint", ai.getOrDefault("capability_hint", java.util.Collections.emptyMap()));
                 return out;
+        }
+
+        /**
+         * 게이트 경로(Phase D): ai07 분류 응답 중 사용자에게 보이는 문자열(안내 문구·판단 근거(reason, LLM 자유 텍스트)·선택지 라벨 등 전부)을
+         * GENERAL_EXPLANATION/text 로 평가 → 거절 시 재분류 ≤2 → 승인분만 응답. 근거 = 분류기가 실제로 본 입력(파일명·MIME·제목·키워드 —
+         * Spring 은 본문을 보내지 않는다). ai07 호출 자체가 실패하면 기존과 같은 Spring 고정 폴백(AI 문구 없음, 저장 차단 금지).
+         * 거절/평가 불가 = success:false + errorCode AI_QUALITY_REJECTED/UNAVAILABLE(추천 유형·사유 미포함 — 화면은 선택 유형으로 진행).
+         */
+        @SuppressWarnings("unchecked")
+        private Map<String, Object> classifyBeforeSaveGated(Map<String, Object> reqBody, String fileName, String mimeType, String selectedTypeAi,
+                        String title, java.util.List<String> keywords) {
+                String rid = "cls-" + java.util.UUID.randomUUID().toString().substring(0, 12);
+                String input = "파일명: " + (fileName != null ? fileName : "") + "\nMIME: " + (mimeType != null ? mimeType : "")
+                                + "\n사용자 입력 제목: " + (title != null ? title : "")
+                                + "\n사용자 입력 키워드: " + (keywords != null ? String.join(", ", keywords) : "")
+                                + "\n사용자가 선택한 유형: " + selectedTypeAi
+                                + "\n(분류기에는 파일 본문 추출 텍스트가 전달되지 않았다)";
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Spec spec = new com.studybridge.api.ai.quality.AiResponseQualityGate.Spec(
+                                rid, com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.GENERAL_EXPLANATION,
+                                com.studybridge.api.ai.contract.v1.ResponseQualityV1.OutputKind.TEXT,
+                                "업로드할 파일이 학습PDF·플래너·오답노트·학습일지 중 어떤 유형인지 판별하고, 판단 근거와 안내 문구를 사용자에게 설명해 주세요"
+                                                + "(선택한 유형: " + selectedTypeAi + ").",
+                                List.of(new com.studybridge.api.ai.contract.v1.ResponseQualityV1.GroundingEvidence(null, "USER_INPUT", null, null, null, null,
+                                                "classify-input", input.length() > 4000 ? input.substring(0, 4000) : input)),
+                                com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints.empty(), null);
+                final boolean[] upstreamDown = new boolean[1];
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Outcome<Map<String, Object>> outcome = qualityGate.generateApproved(spec,
+                                (attempt, previous) -> {
+                                        Map<String, Object> resp;
+                                        try {
+                                                resp = fastApiWebClient.post().uri("/api/ai/material/classify")
+                                                                .bodyValue(reqBody).retrieve().bodyToMono(Map.class)
+                                                                .timeout(Duration.ofSeconds(20)).block();
+                                        } catch (Exception e) {
+                                                log.warn("[classify-before-save] ai07 호출 실패(gated) attempt={}: {}", attempt, e.getMessage());
+                                                resp = null;
+                                        }
+                                        if (resp == null) {
+                                                upstreamDown[0] = true;
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        return toClassifyResponse(resp, selectedTypeAi);
+                                }, r -> com.studybridge.api.ai.quality.AiResponseQualityGate.text(classifyVisibleText(r)));
+                if (outcome.approved()) {
+                        Map<String, Object> out = new LinkedHashMap<>(outcome.value());
+                        out.put("qualityStatus", "APPROVED");
+                        out.put("qualityScore", outcome.decision().score());
+                        out.put("verified", true);
+                        return out;
+                }
+                if (upstreamDown[0] && outcome.decision().attempts() <= 1) {
+                        return classifyFallback(selectedTypeAi); // AI 문구 없는 Spring 고정 응답(기존 장애 계약)
+                }
+                com.studybridge.api.ai.quality.GateDecision d = outcome.decision();
+                log.info("[QUALITY-GATE] classify-before-save rid={} 미승인 status={} codes={} attempts={}", rid, d.qualityStatus(), d.reasonCodes(),
+                                d.attempts());
+                Map<String, Object> fail = new LinkedHashMap<>(d.failureBody(rid));
+                fail.put("selectedType", selectedTypeAi);
+                return fail;
+        }
+
+        /** 분류 응답의 사용자 노출 문자열 전부(안내 문구·근거·선택지 라벨·유형 코드·기능 힌트의 문자열 값). 숫자/불리언은 제외. */
+        String classifyVisibleText(Map<String, Object> response) {
+                if (response == null) {
+                        return null;
+                }
+                StringBuilder sb = new StringBuilder();
+                for (String k : List.of("userMessage", "reason")) {
+                        Object v = response.get(k);
+                        if (v != null && !v.toString().isBlank()) sb.append(v.toString().strip()).append('\n');
+                }
+                for (Map.Entry<String, Object> e : response.entrySet()) {
+                        if (!"userMessage".equals(e.getKey()) && !"reason".equals(e.getKey())) {
+                                appendAllStrings(sb, e.getValue());
+                        }
+                }
+                String t = sb.toString().strip();
+                return t.isEmpty() ? null : t;
+        }
+
+        /** 깊이 제한 없이 모든 문자열 잎(JSON 으로 받은 Map/List 는 순환이 없다) — 평가에서 빠지는 노출 문자열이 없게. */
+        private static void appendAllStrings(StringBuilder sb, Object v) {
+                if (v instanceof String str) {
+                        if (!str.isBlank()) {
+                                sb.append(str.strip()).append('\n');
+                        }
+                } else if (v instanceof Map<?, ?> m) {
+                        m.values().forEach(x -> appendAllStrings(sb, x));
+                } else if (v instanceof java.util.Collection<?> c) {
+                        c.forEach(x -> appendAllStrings(sb, x));
+                }
         }
 
         private Map<String, Object> classifyFallback(String selectedTypeAi) {
@@ -205,9 +306,23 @@ public class AiIntegrationService {
         public SummaryDTO getSummary(Long userId, Long materialId) {
                 Material material = getMaterialSafely(userId, materialId);
                 assertPdfAnalyzable(material, "요약");
+                // 게이트 ON: 승인 기록이 없는 저장 요약(레거시/게이트 OFF 시기)은 재노출하지 않고 게이트를 거쳐 다시 만든다.
                 return summaryRepository.findByMaterial_MaterialId(materialId)
-                                .map(summary -> isSummaryUsable(summary) ? summaryDtoFromEntity(material, summary) : generateSummary(material))
+                                .map(summary -> isSummaryUsable(summary) && (!qualityGateOn() || "APPROVED".equals(summary.getQualityStatus()))
+                                                ? withQuality(summaryDtoFromEntity(material, summary), summary)
+                                                : generateSummary(material))
                                 .orElseGet(() -> generateSummary(material));
+        }
+
+        private boolean qualityGateOn() {
+                return qualityGate != null && qualityGate.enabled();
+        }
+
+        private SummaryDTO withQuality(SummaryDTO dto, MaterialSummary summary) {
+                if (!qualityGateOn()) {
+                        return dto;
+                }
+                return dto.toBuilder().qualityStatus(summary.getQualityStatus()).qualityScore(summary.getQualityScore()).verified(true).build();
         }
 
         /** FastAPI 호출 예외를 사용자 친화 메시지로 변환한다 (timeout 구분). */
@@ -410,6 +525,65 @@ public class AiIntegrationService {
 
 
         private RoadmapDTO roadmapDtoFromEntity(Material material, Roadmap roadmap) {
+                // 게이트 ON: 승인 기록 + AI 본문 체크섬 일치(진행 상태 제외)일 때만 AI 본문 노출. 레거시(steps/tasks)·게이트 OFF 저장본은 가린다.
+                if (qualityGateOn()) {
+                        if (!MaterialRoadmapQualityGate.displayable(roadmap.getQualityStatus(), roadmap.getQualityChecksum(), roadmap.getRoadmapJson())) {
+                                return redactedRoadmapDto(material, roadmap);
+                        }
+                        return approvedRoadmapDto(material, roadmap);
+                }
+                return roadmapDtoFromEntityUngated(material, roadmap);
+        }
+
+        private RoadmapDTO approvedRoadmapDto(Material material, Roadmap roadmap) {
+                return roadmapDtoFromEntityUngated(material, roadmap).toBuilder()
+                                .title(approvedRoadmapTitle(roadmap)).qualityStatus("APPROVED").verified(true).build();
+        }
+
+        /** 승인 범위 = 표시 범위: 제목도 체크섬에 묶인 roadmap_json 의 title 을 쓴다(없으면 생성 시 넣은 Spring 고정 제목 컬럼). */
+        private static String approvedRoadmapTitle(Roadmap roadmap) {
+                com.fasterxml.jackson.databind.JsonNode n = MaterialRoadmapQualityGate.parse(roadmap.getRoadmapJson());
+                com.fasterxml.jackson.databind.JsonNode t = n == null ? null : n.get("title");
+                return t != null && t.isTextual() && !t.asText().isBlank() ? t.asText() : roadmap.getTitle();
+        }
+
+        /** 미승인/레거시/체크섬 불일치 저장본: AI 본문(제목·목표·과제·질문 등)은 빼고 구조와 사용자 진행 상태만. */
+        private RoadmapDTO redactedRoadmapDto(Material material, Roadmap roadmap) {
+                boolean hasJson = roadmap.getRoadmapJson() != null && !roadmap.getRoadmapJson().isBlank();
+                List<RoadmapDTO.RoadmapStepDTO> steps = hasJson ? null : roadmap.getSteps().stream()
+                                .map(step -> RoadmapDTO.RoadmapStepDTO.builder()
+                                                .stepId(step.getStepId())
+                                                .stepOrder(step.getStepOrder())
+                                                .tasks(step.getTasks().stream()
+                                                                .map(task -> RoadmapDTO.RoadmapTaskDTO.builder()
+                                                                                .taskId(task.getTaskId())
+                                                                                .taskOrder(task.getTaskOrder())
+                                                                                .isCompleted(task.getIsCompleted())
+                                                                                .qualityRedacted(true)
+                                                                                .build())
+                                                                .collect(Collectors.toList()))
+                                                .build())
+                                .collect(Collectors.toList());
+                Object data = hasJson ? MaterialRoadmapQualityGate.redactedData(MaterialRoadmapQualityGate.parse(roadmap.getRoadmapJson()))
+                                : java.util.Collections.singletonMap("qualityRedacted", true);
+                return RoadmapDTO.builder()
+                                .roadmapId(roadmap.getRoadmapId())
+                                .materialId(material.getMaterialId())
+                                .title(MaterialRoadmapQualityGate.REDACTED_TITLE)
+                                .steps(steps)
+                                .roadmapData(data)
+                                .totalWeeks(12)
+                                .success(true)
+                                .message(MaterialRoadmapQualityGate.REDACTED_MESSAGE)
+                                .retryable(true)
+                                .textStatus(textStatusFor(material, getTextToAnalyze(material)))
+                                .qualityStatus(roadmap.getQualityStatus())
+                                .verified(false)
+                                .qualityRedacted(true)
+                                .build();
+        }
+
+        private RoadmapDTO roadmapDtoFromEntityUngated(Material material, Roadmap roadmap) {
                 // 신(新) 84일 구조: roadmapJson이 있으면 weeks[].days[]를 그대로 복원해 반환한다.
                 if (roadmap.getRoadmapJson() != null && !roadmap.getRoadmapJson().isBlank()) {
                         try {
@@ -605,16 +779,12 @@ public class AiIntegrationService {
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
                         return summaryFailure(material, "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
                 }
-
-                Map<String, Object> requestBody = Map.of(
-                                "material_id", material.getMaterialId(),
-                                "document_title", material.getTitle(),
-                                "text", textToAnalyze,
-                                "s3_file_url", material.getS3FileUrl() != null ? material.getS3FileUrl() : "");
+                if (qualityGateOn()) {
+                        return generateSummaryGated(material, textToAnalyze);
+                }
                 Map response;
                 try {
-                        response = fastApiWebClient.post().uri("/api/ai/summary")
-                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block(Duration.ofSeconds(125));
+                        response = callSummaryAi(material, textToAnalyze, 0, null);
                 } catch (Exception e) {
                         return summaryFailure(material, isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
                 }
@@ -622,7 +792,125 @@ public class AiIntegrationService {
                 if (isAiFailure(response)) {
                         return summaryFailure(material, aiStr(response, "errorCode"), aiStr(response, "message"), aiBool(response, "retryable", true), response);
                 }
+                return persistSummary(material, response, null);
+        }
 
+        /** ai07 /api/ai/summary 1회 호출. regenerationAttempt/regenerationHints 는 현재 ai07 SummaryReq 가 무시하는 선택 필드(인계 C-RQ-3). */
+        private Map callSummaryAi(Material material, String textToAnalyze, int attempt,
+                        com.studybridge.api.ai.quality.GateDecision previous) {
+                Map<String, Object> requestBody = new LinkedHashMap<>();
+                requestBody.put("material_id", material.getMaterialId());
+                requestBody.put("document_title", material.getTitle());
+                requestBody.put("text", textToAnalyze);
+                requestBody.put("s3_file_url", material.getS3FileUrl() != null ? material.getS3FileUrl() : "");
+                if (attempt > 0) {
+                        requestBody.put("regenerationAttempt", attempt);
+                        requestBody.put("regenerationHints", previous != null ? previous.reasonCodes() : List.of());
+                }
+                return fastApiWebClient.post().uri("/api/ai/summary")
+                                .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block(Duration.ofSeconds(125));
+        }
+
+        /**
+         * 게이트 경로: 생성 → response-quality.v1(PDF_SUMMARY, PDF 원문 근거) → 거절 시 최대 2회 재생성 → 승인분만 저장.
+         * 거절/평가 불가면 기존 요약을 덮어쓰지 않고 실패 DTO(qualityStatus/errorCode/retryable)만 돌려준다.
+         * ai07 생성 자체가 실패(타임아웃/success=false)하면 재생성하지 않고 기존 실패 계약 그대로 돌려준다(부하 3배 방지).
+         */
+        private SummaryDTO generateSummaryGated(Material material, String textToAnalyze) {
+                Long mid = material.getMaterialId();
+                Long until = summaryGateCooldownUntil.get(mid);
+                if (until != null && until > System.currentTimeMillis()) {
+                        return summaryFailure(material, com.studybridge.api.ai.quality.GateDecision.REJECTED,
+                                        com.studybridge.api.ai.quality.GateDecision.userMessage(com.studybridge.api.ai.quality.GateDecision.REJECTED),
+                                        true, null).toBuilder().qualityStatus("REJECTED").verified(false).build();
+                }
+                String rid = "sum-" + mid + "-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+                com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints constraints =
+                                new com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints(List.of(mid), null, null, null, null,
+                                                null, null, false, false, null, null, null, null, null, null);
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Spec spec = new com.studybridge.api.ai.quality.AiResponseQualityGate.Spec(
+                                rid, com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.PDF_SUMMARY,
+                                com.studybridge.api.ai.contract.v1.ResponseQualityV1.OutputKind.TEXT,
+                                "다음 학습 자료를 요약해 주세요: " + (material.getTitle() != null ? material.getTitle() : ""),
+                                com.studybridge.api.ai.quality.AiResponseQualityGate.pdfEvidence(mid, textToAnalyze, 4000, 48000), constraints, null);
+                final SummaryDTO[] upstreamFailure = new SummaryDTO[1];
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Outcome<Map> outcome = qualityGate.generateApproved(spec,
+                                (attempt, previous) -> {
+                                        Map response;
+                                        try {
+                                                response = callSummaryAi(material, textToAnalyze, attempt, previous);
+                                        } catch (Exception e) {
+                                                upstreamFailure[0] = summaryFailure(material, isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        if (isAiFailure(response)) {
+                                                upstreamFailure[0] = summaryFailure(material, aiStr(response, "errorCode"), aiStr(response, "message"),
+                                                                aiBool(response, "retryable", true), response);
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        return response;
+                                }, r -> com.studybridge.api.ai.quality.AiResponseQualityGate.text(summaryVisibleText(r)));
+                if (outcome.approved()) {
+                        summaryGateCooldownUntil.remove(mid);
+                        SummaryDTO saved = persistSummary(material, outcome.value(), outcome.decision());
+                        if (trainingCollector != null) {
+                                // 학습 후보(동의·플래그·권리 판단은 수집기). 근거 = 평가에 쓴 PDF 원문 앞부분 인용(최대 3개).
+                                List<com.studybridge.api.ai.contract.v1.TrainingSampleV1.Evidence> ev = spec.evidence().stream().limit(3)
+                                                .map(g -> new com.studybridge.api.ai.contract.v1.TrainingSampleV1.Evidence("PDF_ORIGINAL",
+                                                                mid, null, null, null, g.chunkId(),
+                                                                g.text() != null && g.text().length() > 4000 ? g.text().substring(0, 4000) : g.text()))
+                                                .toList();
+                                trainingCollector.onApproved(new com.studybridge.api.ai.training.TrainingCandidateCollector.Candidate(
+                                                material.getUserId(), com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.PDF_SUMMARY, rid,
+                                                spec.originalRequest(), summaryVisibleText(outcome.value()), mid, ev, outcome.decision(),
+                                                aiMetaStr(outcome.value(), "model"), "material-summary-v1"));
+                        }
+                        return saved;
+                }
+                if (upstreamFailure[0] != null && outcome.decision().attempts() <= 1) {
+                        return upstreamFailure[0];
+                }
+                com.studybridge.api.ai.quality.GateDecision d = outcome.decision();
+                if (d.qualityStatus() == com.studybridge.api.ai.contract.v1.ResponseQualityV1.QualityStatus.REJECTED) {
+                        summaryGateCooldownUntil.put(mid, System.currentTimeMillis() + SUMMARY_GATE_COOLDOWN_MS);
+                }
+                log.info("[QUALITY-GATE] summary materialId={} 미승인 status={} codes={} — 기존 요약 유지", mid, d.qualityStatus(), d.reasonCodes());
+                return summaryFailure(material, d.errorCode(), com.studybridge.api.ai.quality.GateDecision.userMessage(d.errorCode()), true, null)
+                                .toBuilder().qualityStatus(d.qualityStatus().name()).verified(false).build();
+        }
+
+        /** 사용자에게 보이는 요약 본문 전부(평가 대상). 화면에 나가는 필드를 빠짐없이 모은다. */
+        @SuppressWarnings("unchecked")
+        String summaryVisibleText(Map response) {
+                if (response == null) {
+                        return null;
+                }
+                StringBuilder sb = new StringBuilder();
+                // 저장(coreContents envelope)·응답 DTO 에 실리는 본문 필드 전부 — 하나라도 빠지면 미평가 텍스트가 APPROVED 로 저장된다.
+                for (String k : List.of("overview", "summary", "key_points", "keywords", "sections", "coreContents", "gpt_raw", "message",
+                                "learningPoints", "practicePoints", "studyQuestions")) {
+                        appendStrings(sb, response.get(k), 0);
+                }
+                String t = sb.toString().strip();
+                return t.isEmpty() ? null : t;
+        }
+
+        private void appendStrings(StringBuilder sb, Object v, int depth) {
+                if (v == null || depth > 5) {
+                        return;
+                }
+                if (v instanceof String str) {
+                        if (!str.isBlank()) {
+                                sb.append(str.strip()).append('\n');
+                        }
+                } else if (v instanceof Map<?, ?> m) {
+                        m.values().forEach(x -> appendStrings(sb, x, depth + 1));
+                } else if (v instanceof java.util.Collection<?> c) {
+                        c.forEach(x -> appendStrings(sb, x, depth + 1));
+                }
+        }
+
+        private SummaryDTO persistSummary(Material material, Map response, com.studybridge.api.ai.quality.GateDecision approval) {
                 String overview = response != null && response.get("overview") != null && !response.get("overview").toString().isBlank()
                                 ? response.get("overview").toString()
                                 : (aiStr(response, "summary") != null ? aiStr(response, "summary") : "");
@@ -631,6 +919,8 @@ public class AiIntegrationService {
                                 .orElseGet(() -> MaterialSummary.builder().material(material).build());
                 summary.setOverview(overview);
                 summary.setCoreContents(coreContents);
+                summary.setQualityStatus(approval != null ? "APPROVED" : null);
+                summary.setQualityScore(approval != null ? approval.score() : null);
                 summary = summaryRepository.save(summary);
 
                 // 학습 왕복 루프: 요약 생성 기록(다음 AI 질문의 컨텍스트 후보)
@@ -669,6 +959,9 @@ public class AiIntegrationService {
                                 .elapsedMs(aiMetaLong(response, "elapsedMs"))
                                 .usedFallback(aiMetaBool(response, "usedFallback"))
                                 .cacheHit(aiMetaBool(response, "cacheHit"))
+                                .qualityStatus(approval != null ? "APPROVED" : null)
+                                .qualityScore(approval != null ? approval.score() : null)
+                                .verified(approval != null ? Boolean.TRUE : null)
                                 .build();
         }
 
@@ -678,21 +971,33 @@ public class AiIntegrationService {
         public List<QuizDTO.Response> getQuizzes(Long userId, Long materialId) {
                 Material material = getMaterialSafely(userId, materialId);
                 assertPdfAnalyzable(material, "퀴즈/문제 생성");
+                boolean gate = qualityGateOn();
                 return quizRepository.findByMaterial_MaterialIdOrderByCreatedAtDesc(materialId)
                                 .stream()
-                                .map(quiz -> QuizDTO.Response.builder()
+                                .map(quiz -> {
+                                        // 게이트 ON: 승인 기록(quality_status=APPROVED)이 없는 저장 퀴즈는 문항·보기(AI 생성 필드)를 가린다.
+                                        // 식별자·점수 기록(lastResult 의 점수/선택 답안)은 유지하고, lastResult 의 해설은 MaterialQuizService 가 가린다.
+                                        boolean hide = gate && !"APPROVED".equals(quiz.getQualityStatus());
+                                        List<QuizDTO.PublicQuestion> questions = MaterialQuizService.toPublicQuestions(quiz.getQuizId(), quiz.getQuizData());
+                                        return QuizDTO.Response.builder()
                                                 .quizId(quiz.getQuizId())
                                                 .materialId(materialId)
                                                 .difficulty(quiz.getDifficulty())
                                                 .questionCount(quiz.getQuestionCount())
                                                 .pageRange(quiz.getPageRange())
                                                 // 공개 DTO: 정답 키/원문 quizData 는 브라우저로 내보내지 않는다(MaterialQuizService 가 서버 채점).
-                                                .questions(MaterialQuizService.toPublicQuestions(quiz.getQuizId(), quiz.getQuizData()))
+                                                .questions(hide ? MaterialQuizService.redactPublicQuestions(questions) : questions)
                                                 .lastResult(materialQuizService.latestResultOrNull(quiz, userId))
                                                 .createdAt(quiz.getCreatedAt())
                                                 .success(true)
                                                 .textStatus(textStatusFor(material, getTextToAnalyze(material)))
-                                                .build())
+                                                // 게이트 OFF: 전부 null(기존 응답과 동일)
+                                                .qualityStatus(gate ? quiz.getQualityStatus() : null)
+                                                .qualityScore(gate && !hide ? quiz.getQualityScore() : null)
+                                                .verified(gate ? !hide : null)
+                                                .qualityRedacted(hide ? Boolean.TRUE : null)
+                                                .build();
+                                })
                                 .collect(Collectors.toList());
         }
 
@@ -753,6 +1058,27 @@ public class AiIntegrationService {
                 log.info("[AI_QUIZ_PDF_BASED] materialId={} difficulty={} sourceMode=PDF_BASED hasDocumentText={} hasSummary={} hasCoreContentText={} hasDetailedContentText={} count={}",
                                 material.getMaterialId(), quizDifficulty, isNotBlank(documentText), isNotBlank(summaryText), isNotBlank(coreContentText), isNotBlank(detailedContentText), request.getQuestionCount());
 
+                if (qualityGateOn()) {
+                        return generateQuizGated(material, request, requestBody, documentText, requestedCount, appliedCount, quizDifficulty, quizT0);
+                }
+                QuizDraft draft = callQuizAi(material, request, requestBody, quizDifficulty, quizT0);
+                if (draft.failure() != null) {
+                        return draft.failure();
+                }
+                return persistQuiz(material, request, draft, requestedCount, appliedCount, quizDifficulty, quizT0, null);
+        }
+
+        /** ai07 /api/ai/quiz 1회 호출 결과. failure != null 이면 기존 실패 DTO(저장하지 않음), 아니면 계약 검증을 통과한 초안. */
+        private record QuizDraft(AiMaterialQuizDTO.Response ai, AiMaterialQuizContract.Result contract, String upstream,
+                        QuizDTO.Response failure) {
+                static QuizDraft failed(QuizDTO.Response failure) {
+                        return new QuizDraft(null, null, null, failure);
+                }
+        }
+
+        /** ai07 호출(PRIMARY → SECONDARY failover) + Spring 계약 검증. 게이트 OFF/ON 이 같은 생성 경로를 쓴다. */
+        private QuizDraft callQuizAi(Material material, QuizDTO.Request request, Map<String, Object> requestBody,
+                        String quizDifficulty, long quizT0) {
                 // AI07 FINAL CONTRACT(quiz.v2): HTTP 는 항상 200, 성공 여부는 success. Map 대신 typed DTO 로 받는다.
                 // PRIMARY → SECONDARY failover: 전송 실패/timeout/404/5xx 와 "200 + success=false + retryable 일시 실패(AI_TIMEOUT 등)" 만
                 // 다음 업스트림으로 넘기고, PDF_TEXT_INSUFFICIENT 같은 domain 실패는 그대로 반환한다(AiMaterialQuizContract.transientFailureCode).
@@ -773,7 +1099,7 @@ public class AiIntegrationService {
                         String __code = isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR";
                         log.warn("[AI_QUIZ_PDF_BASED] result=FAIL materialId={} difficulty={} sourceMode=PDF_BASED error_code={} elapsedMs={}",
                                         material.getMaterialId(), quizDifficulty, __code, System.currentTimeMillis() - quizT0);
-                        return quizFailure(material, request, __code, null, true, null);
+                        return QuizDraft.failed(quizFailure(material, request, __code, null, true, null));
                 }
 
                 // 구조화 실패 판정: success=false / status=FAILED 는 HTTP 200 이어도 실패다.
@@ -781,7 +1107,7 @@ public class AiIntegrationService {
                 if (failureCode != null) {
                         log.warn("[AI_QUIZ_PDF_BASED] result=AI_FAIL materialId={} difficulty={} sourceMode=PDF_BASED statusCode=200 error_code={} status={} elapsedMs={}",
                                         material.getMaterialId(), quizDifficulty, failureCode, ai != null ? ai.getStatus() : null, System.currentTimeMillis() - quizT0);
-                        return quizFailureTyped(material, request, failureCode, ai);
+                        return QuizDraft.failed(quizFailureTyped(material, request, failureCode, ai));
                 }
 
                 // Spring 측 방어 검증(외부 boundary): 불일치 문항은 거절, 통과 문항만 저장/노출.
@@ -793,13 +1119,111 @@ public class AiIntegrationService {
                 if (contract.getAccepted().isEmpty()) {
                         log.warn("[AI_QUIZ_PDF_BASED] result=AI_FAIL materialId={} error_code=QUIZ_CONTRACT_INVALID accepted=0 elapsedMs={}",
                                         material.getMaterialId(), System.currentTimeMillis() - quizT0);
-                        return quizFailureTyped(material, request, "QUIZ_CONTRACT_INVALID", ai);
+                        return QuizDraft.failed(quizFailureTyped(material, request, "QUIZ_CONTRACT_INVALID", ai));
                 }
+                return new QuizDraft(ai, contract, aiUpstream, null);
+        }
+
+        /**
+         * 게이트 경로(PDF_QUIZ / quiz_json): 생성 → 사용자에게 보일 문항·보기·정답·해설 전부를 평가 → 거절 시 최대 2회 재생성 → 승인분만 저장.
+         * 근거 = 자료 원문(getTextToAnalyze) 청크(PDF_ORIGINAL, allowedMaterialIds=[이 자료]). 거절/평가 불가면 저장하지 않고
+         * 실패 DTO(success=false, errorCode AI_QUALITY_REJECTED/UNAVAILABLE, retryable=true)만 돌려준다 — 기존 퀴즈는 그대로.
+         * 생성 자체가 실패하면(ai07 실패·계약 위반) 재생성하지 않고 기존 실패 DTO 를 그대로 돌려준다(부하 3배 방지). failover 는 매 시도 동일.
+         */
+        private QuizDTO.Response generateQuizGated(Material material, QuizDTO.Request request, Map<String, Object> requestBody,
+                        String documentText, Integer requestedCount, int appliedCount, String quizDifficulty, long quizT0) {
+                Long mid = material.getMaterialId();
+                String rid = "quiz-" + mid + "-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+                com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints constraints =
+                                new com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints(List.of(mid), null, appliedCount,
+                                                AiMaterialQuizContract.OPTION_COUNT, null, null, null, false, false, null, null, null, null, null, null);
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Spec spec = new com.studybridge.api.ai.quality.AiResponseQualityGate.Spec(
+                                rid, com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.PDF_QUIZ,
+                                com.studybridge.api.ai.contract.v1.ResponseQualityV1.OutputKind.QUIZ_JSON,
+                                "다음 학습 자료 원문에 근거한 " + quizDifficulty + " 난이도 4지선다 객관식 퀴즈 " + appliedCount
+                                                + "문항(정답·해설 포함)을 만들어 주세요: " + (material.getTitle() != null ? material.getTitle() : ""),
+                                com.studybridge.api.ai.quality.AiResponseQualityGate.pdfEvidence(mid, documentText, 4000, 48000), constraints, null);
+                final QuizDTO.Response[] upstreamFailure = new QuizDTO.Response[1];
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Outcome<QuizDraft> outcome = qualityGate.generateApproved(spec,
+                                (attempt, previous) -> {
+                                        Map<String, Object> body = requestBody;
+                                        if (attempt > 0) {
+                                                // ai07 QuizReq 는 extra="ignore" — 모르는 필드는 무시된다(재생성 힌트 수용은 인계 C-RQ-3).
+                                                body = new LinkedHashMap<>(requestBody);
+                                                body.put("regenerationAttempt", attempt);
+                                                body.put("regenerationHints", previous != null ? previous.reasonCodes() : List.of());
+                                        }
+                                        QuizDraft d = callQuizAi(material, request, body, quizDifficulty, quizT0);
+                                        if (d.failure() != null) {
+                                                upstreamFailure[0] = d.failure();
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        return d;
+                                }, d -> quizProposedOutput(d.contract().getAccepted()));
+                if (outcome.approved()) {
+                        return persistQuiz(material, request, outcome.value(), requestedCount, appliedCount, quizDifficulty, quizT0, outcome.decision());
+                }
+                com.studybridge.api.ai.quality.GateDecision d = outcome.decision();
+                if (upstreamFailure[0] != null && d.attempts() <= 1) {
+                        return upstreamFailure[0]; // 첫 생성부터 실패 — 평가할 초안이 없었다(기존 실패 계약 그대로)
+                }
+                log.info("[QUALITY-GATE] quiz materialId={} rid={} 미승인 status={} codes={} attempts={} — 저장하지 않음(기존 퀴즈 유지)",
+                                mid, rid, d.qualityStatus(), d.reasonCodes(), d.attempts());
+                return QuizDTO.Response.builder()
+                                .materialId(mid)
+                                .difficulty(request != null ? request.getDifficulty() : null)
+                                .questionCount(request != null ? request.getQuestionCount() : null)
+                                .requestedCount(requestedCount)
+                                .appliedCount(appliedCount)
+                                .pageRange(request != null ? request.getPageRange() : null)
+                                .questions(java.util.Collections.emptyList())
+                                .success(false)
+                                .status(AiMaterialQuizDTO.STATUS_FAILED)
+                                .errorCode(d.errorCode())
+                                .message(com.studybridge.api.ai.quality.GateDecision.userMessage(d.errorCode()))
+                                .retryable(true)
+                                .textStatus(textStatusFor(material, documentText))
+                                .qualityStatus(d.qualityStatus().name())
+                                .qualityScore(d.score())
+                                .verified(false)
+                                .build();
+        }
+
+        /**
+         * 평가 대상(quiz_json) = 저장·노출될 모든 AI 생성 문자열: 문항, 보기 4개, 정답(0-based answerIndex), 해설, 오답 해설, 문항 난이도 라벨.
+         * ai07 check_quiz 계약({"questions":[{question, options, answerIndex, explanation}]}) 그대로 — answerIndex 는 0-based int 로만 보낸다.
+         * sourceTrace 는 화면에 나가지 않는 출제 근거 메타데이터라 넣지 않는다.
+         */
+        com.fasterxml.jackson.databind.JsonNode quizProposedOutput(List<AiMaterialQuizDTO.Question> accepted) {
+                com.fasterxml.jackson.databind.node.ObjectNode root = AI_OBJECT_MAPPER.createObjectNode();
+                com.fasterxml.jackson.databind.node.ArrayNode qs = root.putArray("questions");
+                for (AiMaterialQuizDTO.Question q : accepted) {
+                        com.fasterxml.jackson.databind.node.ObjectNode n = qs.addObject();
+                        n.put("question", q.getQuestion());
+                        com.fasterxml.jackson.databind.node.ArrayNode opts = n.putArray("options");
+                        if (q.getOptions() != null) q.getOptions().forEach(opts::add);
+                        if (q.getCorrectAnswer() != null) n.put("answerIndex", q.getCorrectAnswer().intValue());
+                        n.put("explanation", q.getExplanation() != null ? q.getExplanation() : "");
+                        if (q.getWrongExplanations() != null && !q.getWrongExplanations().isEmpty()) {
+                                com.fasterxml.jackson.databind.node.ArrayNode w = n.putArray("wrongExplanations");
+                                q.getWrongExplanations().forEach(w::add);
+                        }
+                        if (q.getDifficulty() != null) n.put("difficulty", q.getDifficulty());
+                }
+                return root;
+        }
+
+        /** 계약 검증 통과 초안 저장 + 공개 DTO. approval != null 이면 게이트 승인본(quality_status=APPROVED). */
+        private QuizDTO.Response persistQuiz(Material material, QuizDTO.Request request, QuizDraft draft, Integer requestedCount,
+                        int appliedCount, String quizDifficulty, long quizT0, com.studybridge.api.ai.quality.GateDecision approval) {
+                Long materialId = material.getMaterialId();
+                AiMaterialQuizDTO.Response ai = draft.ai();
+                AiMaterialQuizContract.Result contract = draft.contract();
                 boolean degradedFallback = AiMaterialQuizContract.isDegradedFallback(ai);
                 boolean partial = AiMaterialQuizContract.isPartial(ai) || contract.rejectedCount() > 0;
 
                 log.info("[AI_QUIZ_PDF_BASED] result=OK materialId={} difficulty={} sourceMode=PDF_BASED upstream={} applied={} status={} schema={} generated={} accepted={} degradedFallback={} partial={} elapsedMs={}",
-                                material.getMaterialId(), quizDifficulty, aiUpstream, ai.getDifficultyApplied(), ai.getStatus(), ai.getSchemaVersion(),
+                                material.getMaterialId(), quizDifficulty, draft.upstream(), ai.getDifficultyApplied(), ai.getStatus(), ai.getSchemaVersion(),
                                 ai.getGeneratedCount(), contract.getAccepted().size(), degradedFallback, partial, System.currentTimeMillis() - quizT0);
 
                 // 내부 저장: 검증 통과 문항(정답 포함)만 quiz_data 에 보관한다. 원문 quizData 문자열은 그대로 쓰지 않는다(거절 문항 제외).
@@ -816,6 +1240,9 @@ public class AiIntegrationService {
                                 .questionCount(contract.getAccepted().size())
                                 .pageRange(request.getPageRange())
                                 .quizData(generatedQuizJson)
+                                // 게이트 OFF 저장은 판정 없음(null) — 나중에 게이트를 켜면 미검증으로 취급돼 AI 생성 필드가 가려진다.
+                                .qualityStatus(approval != null && approval.approved() ? "APPROVED" : null)
+                                .qualityScore(approval != null && approval.approved() ? approval.score() : null)
                                 .build();
                 quiz = quizRepository.save(quiz);
 
@@ -870,6 +1297,9 @@ public class AiIntegrationService {
                                 .elapsedMs(metaLong(ai.getMetadata(), "elapsedMs"))
                                 .usedFallback(degradedFallback)
                                 .cacheHit(metaBool(ai.getMetadata(), "cacheHit"))
+                                .qualityStatus(approval != null ? "APPROVED" : null)
+                                .qualityScore(approval != null ? approval.score() : null)
+                                .verified(approval != null ? Boolean.TRUE : null)
                                 .build();
         }
 
@@ -959,17 +1389,24 @@ public class AiIntegrationService {
                 IntentDTO.RouteResult route = intentRouterService.route(
                                 request.getUserQuestion(), "archive_chat",
                                 java.util.Map.of("materialId", materialId));
+                // 게이트 ON: 원격 라우터(LLM)가 만든 directReply/warning 문구는 평가 대상이 아니므로 Spring 고정 문구로 바꾼다.
+                boolean gated = qualityGateOn();
                 if (route.isTerminal()) {
-                        return routedQuestionResponse(material, request.getUserQuestion(), route.actionName(), route.userMessage(), null);
+                        return routedQuestionResponse(material, request.getUserQuestion(), route.actionName(),
+                                        gated ? questionRouteTemplate(route) : route.userMessage(), null);
                 }
                 if (route.isPipeline()) {
-                        return runArchivePipeline(userId, materialId, material, request, route);
+                        return gated ? runArchivePipelineGated(userId, materialId, material, request, route)
+                                        : runArchivePipeline(userId, materialId, material, request, route);
                 }
-                String routeWarning = route.isWarn() ? route.userMessage() : null;
+                String routeWarning = route.isWarn() ? (gated ? questionRouteTemplate(route) : route.userMessage()) : null;
 
                 String textToAnalyze = getTextToAnalyze(material);
                 if (textToAnalyze == null || textToAnalyze.isBlank()) {
                         return questionFailure(material, request.getUserQuestion(), "PDF_TEXT_EMPTY", "PDF에서 추출된 텍스트가 없습니다. 다시 분석을 시도해주세요.", true, null);
+                }
+                if (gated) {
+                        return askQuestionGated(material, request.getUserQuestion(), textToAnalyze, route, routeWarning);
                 }
 
                 Map<String, Object> requestBody = Map.of(
@@ -1026,6 +1463,195 @@ public class AiIntegrationService {
                                 .routeAction(route.actionName())
                                 .routeMessage(routeWarning)
                                 .build();
+        }
+
+        // ── 자료 질문 품질 게이트(PDF_QA) ─────────────────────────────────────────────
+        /**
+         * 게이트 경로: /api/ai/question 생성 → response-quality.v1(PDF_QA, 이 사용자 자료 원문 근거) → 거절 시 최대 2회 재생성
+         * → 승인 답변만 저장(material_questions.quality_status=APPROVED)·응답. 거절/평가 불가는 저장 없이 questionFailure 계약
+         * (success=false, errorCode=AI_QUALITY_REJECTED/AI_QUALITY_UNAVAILABLE, retryable=true)으로 끝난다.
+         * ai07 생성 자체 실패(타임아웃/success=false/빈 답변)는 재생성하지 않고 기존 실패 계약 그대로 돌려준다.
+         * 근거: ai07 은 usedChunks 인덱스만 주고 청크 본문을 주지 않으므로 Spring 이 가진 자료 원문에서 질문 관련 구간을 고른다.
+         */
+        private QuestionDTO.Response askQuestionGated(Material material, String userQuestion, String textToAnalyze,
+                        IntentDTO.RouteResult route, String routeWarning) {
+                Long mid = material.getMaterialId();
+                String rid = "qa-" + mid + "-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+                com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints constraints =
+                                new com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints(List.of(mid), null, null, null, null,
+                                                null, null, false, false, null, null, null, null, null, null);
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Spec spec = new com.studybridge.api.ai.quality.AiResponseQualityGate.Spec(
+                                rid, com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.PDF_QA,
+                                com.studybridge.api.ai.contract.v1.ResponseQualityV1.OutputKind.TEXT,
+                                userQuestion == null ? "" : userQuestion,
+                                questionEvidence(mid, textToAnalyze, userQuestion), constraints, null);
+                final QuestionDTO.Response[] upstreamFailure = new QuestionDTO.Response[1];
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Outcome<Map> outcome = qualityGate.generateApproved(spec,
+                                (attempt, previous) -> {
+                                        Map response;
+                                        try {
+                                                response = callQuestionAi(mid, textToAnalyze, userQuestion);
+                                        } catch (Exception e) {
+                                                upstreamFailure[0] = questionFailure(material, userQuestion, isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR", null, true, null);
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        if (isAiFailure(response)) {
+                                                upstreamFailure[0] = questionFailure(material, userQuestion, aiStr(response, "errorCode"), aiStr(response, "message"),
+                                                                aiBool(response, "retryable", true), response);
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        if (questionAnswerOf(response) == null) {
+                                                // 기존 OFF 경로의 "답변을 가져오지 못했습니다." 자리표시 답변은 저장·노출하지 않는다.
+                                                upstreamFailure[0] = questionFailure(material, userQuestion, "AI_RESPONSE_INVALID",
+                                                                "AI 응답에 답변이 없습니다. 잠시 후 다시 시도해주세요.", true, null);
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        return response;
+                                }, r -> com.studybridge.api.ai.quality.AiResponseQualityGate.text(questionAnswerOf(r)));
+                if (outcome.approved()) {
+                        Map response = outcome.value();
+                        MaterialQuestion question = questionRepository.save(MaterialQuestion.builder()
+                                        .material(material)
+                                        .userQuestion(userQuestion)
+                                        .aiAnswer(questionAnswerOf(response))
+                                        .qualityStatus("APPROVED")
+                                        .build());
+                        return QuestionDTO.Response.builder()
+                                        .questionId(question.getQuestionId())
+                                        .materialId(mid)
+                                        .userQuestion(question.getUserQuestion())
+                                        .aiAnswer(question.getAiAnswer())
+                                        .createdAt(question.getCreatedAt())
+                                        .success(true)
+                                        .textStatus(aiMap(response, "textStatus"))
+                                        .warnings(aiWarnings(response))
+                                        .metadata(aiMap(response, "metadata"))
+                                        .provider(aiMetaStr(response, "provider"))
+                                        .model(aiMetaStr(response, "model"))
+                                        .elapsedMs(aiMetaLong(response, "elapsedMs"))
+                                        .usedFallback(aiMetaBool(response, "usedFallback"))
+                                        .cacheHit(aiMetaBool(response, "cacheHit"))
+                                        .routeAction(route.actionName())
+                                        .routeMessage(routeWarning)
+                                        .qualityStatus("APPROVED")
+                                        .qualityScore(outcome.decision().score())
+                                        .verified(true)
+                                        .build();
+                }
+                if (upstreamFailure[0] != null && outcome.decision().attempts() <= 1) {
+                        return upstreamFailure[0];
+                }
+                com.studybridge.api.ai.quality.GateDecision d = outcome.decision();
+                log.info("[QUALITY-GATE] question materialId={} rid={} 미승인 status={} codes={} — 저장·노출 안 함", mid, rid,
+                                d.qualityStatus(), d.reasonCodes());
+                return questionFailure(material, userQuestion, d.errorCode(),
+                                com.studybridge.api.ai.quality.GateDecision.userMessage(d.errorCode()), true, null)
+                                .toBuilder().qualityStatus(d.qualityStatus().name()).verified(false).routeAction(route.actionName()).build();
+        }
+
+        @SuppressWarnings("rawtypes")
+        private Map callQuestionAi(Long materialId, String textToAnalyze, String userQuestion) {
+                Map<String, Object> requestBody = Map.of(
+                                "material_id", materialId,
+                                "text", textToAnalyze,
+                                "question", userQuestion == null ? "" : userQuestion);
+                return fastApiWebClient.post().uri("/api/ai/question").bodyValue(requestBody).retrieve().bodyToMono(Map.class)
+                                .block(Duration.ofSeconds(125));
+        }
+
+        /** 사용자에게 보일 AI 답변(=평가 대상 전부). 없거나 비면 null. */
+        @SuppressWarnings("rawtypes")
+        static String questionAnswerOf(Map response) {
+                Object a = response == null ? null : response.get("answer");
+                String s = a == null ? null : a.toString();
+                return s == null || s.isBlank() ? null : s;
+        }
+
+        /**
+         * PDF_QA 근거: 이 자료(소유권 확인 끝난 material) 원문. 48,000자 이하면 전부, 넘으면 4,000자 구간 중 질문 핵심어가 많이 든
+         * 12개(문서 순서 유지)만 보낸다. 근거 밖 내용으로 답했다면 평가기가 근거 미지지로 판정한다(Spring 이 임의 승인하지 않음).
+         */
+        static List<com.studybridge.api.ai.contract.v1.ResponseQualityV1.GroundingEvidence> questionEvidence(Long materialId, String text,
+                        String question) {
+                final int chunk = 4000;
+                final int total = 48000;
+                if (text == null || text.isBlank() || text.length() <= total) {
+                        return com.studybridge.api.ai.quality.AiResponseQualityGate.pdfEvidence(materialId, text, chunk, total);
+                }
+                java.util.Set<String> terms = new java.util.LinkedHashSet<>();
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("[가-힣A-Za-z0-9+#_.-]{2,}").matcher(question == null ? "" : question);
+                while (m.find()) {
+                        String t = m.group().toLowerCase();
+                        terms.add(t);
+                        if (t.length() >= 3) {
+                                terms.add(t.substring(0, t.length() - 1)); // 조사/어미 하나 떼기(연결은 → 연결)
+                        }
+                }
+                int windows = (text.length() + chunk - 1) / chunk;
+                List<int[]> scored = new ArrayList<>();
+                for (int i = 0; i < windows; i++) {
+                        String w = text.substring(i * chunk, Math.min(text.length(), (i + 1) * chunk)).toLowerCase();
+                        int score = 0;
+                        for (String t : terms) {
+                                if (w.contains(t)) {
+                                        score++;
+                                }
+                        }
+                        scored.add(new int[]{i, score});
+                }
+                scored.sort((a, b) -> a[1] != b[1] ? Integer.compare(b[1], a[1]) : Integer.compare(a[0], b[0]));
+                List<Integer> picked = scored.stream().limit(total / chunk).map(x -> x[0]).sorted().toList();
+                List<com.studybridge.api.ai.contract.v1.ResponseQualityV1.GroundingEvidence> out = new ArrayList<>();
+                for (int i : picked) {
+                        out.add(new com.studybridge.api.ai.contract.v1.ResponseQualityV1.GroundingEvidence(null, "PDF_ORIGINAL", materialId,
+                                        null, null, null, "m" + materialId + "-c" + i,
+                                        text.substring(i * chunk, Math.min(text.length(), (i + 1) * chunk))));
+                }
+                return out;
+        }
+
+        /** 게이트 ON 터미널/경고 문구: 라우터 응답 텍스트를 버리고 행동(action)별 Spring 고정 문구만 쓴다. */
+        private static String questionRouteTemplate(IntentDTO.RouteResult route) {
+                return IntentDTO.RouteResult.builder().action(route.getAction()).build().userMessage();
+        }
+
+        /**
+         * 게이트 ON 파이프라인: 내부 파이프라인이 레지스트리에서 GATED 인 경우에만 실행한다(BLOCKED 파이프라인 결과를 이 GATED 경로로
+         * 우회 노출하지 않는다). 파이프라인 결과가 실패(success=false — 품질 거절 포함)면 성공 문구로 감싸지 않고 실패로 돌려준다.
+         */
+        private QuestionDTO.Response runArchivePipelineGated(Long userId, Long materialId, Material material,
+                        QuestionDTO.Request request, IntentDTO.RouteResult route) {
+                String[] target = switch (route.getAction()) {
+                        case QUIZ_PIPELINE -> new String[]{"POST", "/api/materials/{materialId}/quiz"};
+                        case SUMMARY_PIPELINE -> new String[]{"GET", "/api/materials/{materialId}/summary"};
+                        case ROADMAP_PIPELINE -> new String[]{"GET", "/api/materials/{materialId}/roadmap"};
+                        default -> null;
+                };
+                if (target == null) {
+                        return routedQuestionResponse(material, request.getUserQuestion(), route.actionName(), questionRouteTemplate(route), null);
+                }
+                boolean pipelineGated = com.studybridge.api.ai.quality.AiQualityGateCoverage.ROUTES.stream()
+                                .anyMatch(r -> r.method().equals(target[0]) && r.pattern().equals(target[1])
+                                                && r.status() == com.studybridge.api.ai.quality.AiQualityGateCoverage.Status.GATED);
+                if (!pipelineGated) {
+                        log.info("[QUALITY-GATE] question pipeline {} → {} {} 미연결(BLOCKED) — 실행하지 않음", route.actionName(), target[0], target[1]);
+                        return questionFailure(material, request.getUserQuestion(), com.studybridge.api.ai.quality.GateDecision.NOT_WIRED,
+                                        com.studybridge.api.ai.quality.GateDecision.userMessage(com.studybridge.api.ai.quality.GateDecision.NOT_WIRED),
+                                        false, null).toBuilder().routeAction(route.actionName()).verified(false).build();
+                }
+                QuestionDTO.Response r = runArchivePipeline(userId, materialId, material, request, route);
+                Object p = r.getPipeline();
+                Boolean ok = p instanceof SummaryDTO s ? s.getSuccess() : p instanceof QuizDTO.Response q ? q.getSuccess()
+                                : p instanceof RoadmapDTO rd ? rd.getSuccess() : null;
+                if (Boolean.FALSE.equals(ok)) {
+                        String code = p instanceof SummaryDTO s ? s.getErrorCode() : p instanceof QuizDTO.Response q ? q.getErrorCode()
+                                        : ((RoadmapDTO) p).getErrorCode();
+                        String msg = p instanceof SummaryDTO s ? s.getMessage() : p instanceof QuizDTO.Response q ? q.getMessage()
+                                        : ((RoadmapDTO) p).getMessage();
+                        return questionFailure(material, request.getUserQuestion(), code, msg, true, null)
+                                        .toBuilder().routeAction(route.actionName()).pipeline(p).verified(false).build();
+                }
+                return r;
         }
 
         // ── Intent Router: 자료보관함 라우팅 헬퍼 ────────────────────────────────────
@@ -1168,6 +1794,10 @@ public class AiIntegrationService {
                 requestBody.put("weeks", ROADMAP_TOTAL_WEEKS);
                 requestBody.put("days_per_week", ROADMAP_DAYS_PER_WEEK);
 
+                if (qualityGateOn()) {
+                        return generateRoadmapGated(material, textToAnalyze, requestBody, roadmapLevel, replaceExisting);
+                }
+
                 long t0 = System.currentTimeMillis();
                 Map response;
                 try {
@@ -1236,6 +1866,153 @@ public class AiIntegrationService {
                                 roadmapFallbackUsed ? "metadata_noise" : "none");
 
                 return roadmapDtoFromJson(material, roadmap, response);
+        }
+
+        /** 게이트 경로 생성 초안: 저장할 JSON 문자열 그대로(체크섬·표시가 같은 직렬화를 쓰도록) + 제목. */
+        private record RoadmapDraft(String roadmapJson, String title) { }
+
+        /** GET(자동 생성) 경로에서 거절 직후 같은 자료를 조회마다 84일 재생성(최대 180초 × 3)하지 않도록 잠시 실패를 돌려준다. */
+        private final java.util.Map<Long, Long> roadmapGateCooldownUntil = new java.util.concurrent.ConcurrentHashMap<>();
+        private static final long ROADMAP_GATE_COOLDOWN_MS = 120_000;
+
+        /**
+         * 게이트 경로(Phase D): 생성 → 84일 결정적 전체 검사 + 분할 평가(PLANNER_COACHING/plan_json, 주차 묶음 세그먼트, 자료 원문 근거)
+         * → 거절 시 전체 재생성(≤2, 평가기가 계획 형태 자체를 인식하지 못하는 판정이면 즉시 중단) → 전 세그먼트 승인분만 저장
+         * (quality_status=APPROVED, quality_checksum=매니페스트 fullChecksum). 거절/평가 불가는 기존 로드맵을 지우거나 덮어쓰지 않고
+         * 실패 DTO(errorCode AI_QUALITY_REJECTED/AI_QUALITY_UNAVAILABLE, retryable)만 돌려준다. ai07 생성 실패는 기존 실패 계약 그대로.
+         */
+        private RoadmapDTO generateRoadmapGated(Material material, String textToAnalyze, Map<String, Object> requestBody, String level,
+                        boolean replaceExisting) {
+                Long mid = material.getMaterialId();
+                Long until = roadmapGateCooldownUntil.get(mid);
+                if (!replaceExisting && until != null && until > System.currentTimeMillis()) {
+                        return roadmapQualityFailure(material, com.studybridge.api.ai.quality.GateDecision.REJECTED, "REJECTED", false);
+                }
+                String rid = "roadmap-" + mid + "-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Spec spec = new com.studybridge.api.ai.quality.AiResponseQualityGate.Spec(
+                                rid, com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.PLANNER_COACHING,
+                                com.studybridge.api.ai.contract.v1.ResponseQualityV1.OutputKind.PLAN_JSON,
+                                "학습 자료 '" + (material.getTitle() != null ? material.getTitle() : "") + "' 를 기반으로 12주 × 7일(총 84일) 학습 로드맵을 "
+                                                + "주차·일자별 목표와 과제로 만들어 주세요(난이도 " + level + ").",
+                                com.studybridge.api.ai.quality.AiResponseQualityGate.pdfEvidence(mid, textToAnalyze, 4000, 16000),
+                                new com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints(List.of(mid), null, null, null, null, null, null,
+                                                false, false, null, null, null, null, null, null), null);
+                final RoadmapDTO[] upstreamFailure = new RoadmapDTO[1];
+                final String[] stopCode = new String[1];
+                com.studybridge.api.ai.quality.SegmentedQualityGate.Outcome<RoadmapDraft> outcome =
+                                new com.studybridge.api.ai.quality.SegmentedQualityGate(qualityGate).generateApproved(spec, (attempt, previous) -> {
+                                        if (previous != null && previous.reasonCodes() != null && previous.reasonCodes().stream()
+                                                        .anyMatch(MaterialRoadmapQualityGate.NON_REGENERABLE_CODES::contains)) {
+                                                stopCode[0] = "EVALUATOR_PLAN_SHAPE_UNSUPPORTED";
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration(stopCode[0]);
+                                        }
+                                        RoadmapDraft d;
+                                        try {
+                                                d = callRoadmapDraft(material, requestBody, upstreamFailure);
+                                        } catch (RuntimeException e) {
+                                                upstreamFailure[0] = roadmapFailure(material, "ROADMAP_GENERATION_FAILED",
+                                                                "로드맵 데이터 처리 중 오류가 발생했습니다. 다시 시도해주세요.", true, null);
+                                                d = null;
+                                        }
+                                        if (d == null) {
+                                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                                        }
+                                        return d;
+                                }, d -> MaterialRoadmapQualityGate.aiBody(MaterialRoadmapQualityGate.parse(d.roadmapJson())),
+                                                MaterialRoadmapQualityGate.segmenter(MaterialRoadmapQualityGate.SEGMENT_BUDGET_CHARS),
+                                                MaterialRoadmapQualityGate.VALIDATOR);
+                if (!outcome.approved()) {
+                        if (upstreamFailure[0] != null && outcome.result() != null && outcome.result().decision() != null
+                                        && outcome.result().decision().attempts() <= 1) {
+                                return upstreamFailure[0]; // 첫 생성부터 ai07 실패 → 기존 실패 계약(재생성·평가 없음)
+                        }
+                        com.studybridge.api.ai.quality.GateDecision d = outcome.result() != null ? outcome.result().decision() : null;
+                        String code = d != null && d.errorCode() != null ? d.errorCode() : com.studybridge.api.ai.quality.GateDecision.REJECTED;
+                        String status = d != null && d.qualityStatus() != null ? d.qualityStatus().name() : "REJECTED";
+                        if (!replaceExisting && com.studybridge.api.ai.quality.GateDecision.REJECTED.equals(code)) {
+                                roadmapGateCooldownUntil.put(mid, System.currentTimeMillis() + ROADMAP_GATE_COOLDOWN_MS);
+                        }
+                        log.warn("[QUALITY-GATE] roadmap materialId={} rid={} 미승인 code={} status={} reasons={} violations={} stop={} — 기존 로드맵 유지",
+                                        mid, rid, code, status, d != null ? d.reasonCodes() : null,
+                                        outcome.result() != null ? outcome.result().violations() : null, stopCode[0]);
+                        return roadmapQualityFailure(material, code, status, replaceExisting);
+                }
+                roadmapGateCooldownUntil.remove(mid);
+                RoadmapDraft draft = outcome.value();
+                Map<String, Object> data;
+                try {
+                        data = AI_OBJECT_MAPPER.readValue(draft.roadmapJson(), new TypeReference<Map<String, Object>>() {});
+                } catch (Exception e) {
+                        return roadmapFailure(material, "ROADMAP_GENERATION_FAILED", "로드맵 데이터 처리 중 오류가 발생했습니다. 다시 시도해주세요.", true, null);
+                }
+                if (replaceExisting) {
+                        roadmapRepository.findByMaterial_MaterialId(mid).ifPresent(roadmapRepository::delete);
+                        roadmapRepository.flush();
+                }
+                Roadmap roadmap = Roadmap.builder()
+                                .material(material)
+                                .userId(material.getUserId())
+                                .title(draft.title())
+                                .roadmapJson(draft.roadmapJson())
+                                .qualityStatus("APPROVED")
+                                .qualityChecksum(outcome.result().manifest().fullChecksum())
+                                .build();
+                try {
+                        roadmap = roadmapRepository.save(roadmap);
+                } catch (Exception e) {
+                        log.error("[roadmap:fail] code=ROADMAP_SAVE_FAILED materialId={} message={}", mid, e.getMessage(), e);
+                        return roadmapFailure(material, "ROADMAP_GENERATION_FAILED", "주차별 로드맵 저장 중 오류가 발생했습니다. 다시 시도해주세요.", true, null);
+                }
+                log.info("[QUALITY-GATE] roadmap materialId={} rid={} approved segments={} score={} attempts={}", mid, rid,
+                                outcome.result().manifest().segments().size(), outcome.result().decision().score(), outcome.result().decision().attempts());
+                return roadmapDtoFromJson(material, roadmap, data).toBuilder()
+                                .qualityStatus("APPROVED").qualityScore(outcome.result().decision().score()).verified(true).build();
+        }
+
+        private RoadmapDTO roadmapQualityFailure(Material material, String code, String status, boolean keptExisting) {
+                return roadmapFailure(material, code, com.studybridge.api.ai.quality.GateDecision.userMessage(code)
+                                + (keptExisting ? " 기존 로드맵은 유지됩니다." : ""), true, null)
+                                .toBuilder().qualityStatus(status).verified(false).build();
+        }
+
+        /** ai07 84일 생성 1회 + 기존과 같은 구조 검증·노이즈 정제·직렬화. 실패면 upstreamFailure 에 기존 실패 DTO 를 남기고 null. */
+        private RoadmapDraft callRoadmapDraft(Material material, Map<String, Object> requestBody, RoadmapDTO[] upstreamFailure) {
+                long t0 = System.currentTimeMillis();
+                Map response;
+                try {
+                        response = fastApiWebClient.post().uri("/api/ai/roadmap/generate")
+                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class)
+                                        .block(Duration.ofSeconds(roadmapTimeoutSeconds));
+                } catch (Exception e) {
+                        String code = isTimeout(e) ? "AI_TIMEOUT" : "UNKNOWN_ERROR";
+                        logRoadmapFailure(material.getMaterialId(), code, e.getMessage(), null, null, System.currentTimeMillis() - t0);
+                        upstreamFailure[0] = roadmapFailure(material, code, null, true, null);
+                        return null;
+                }
+                if (isAiFailure(response)) {
+                        String code = aiStr(response, "errorCode");
+                        logRoadmapFailure(material.getMaterialId(), code, aiStr(response, "message"), roadmapValidationReason(response), response,
+                                        System.currentTimeMillis() - t0);
+                        upstreamFailure[0] = roadmapFailure(material, code, aiStr(response, "message"), aiBool(response, "retryable", true), response);
+                        return null;
+                }
+                String invalid = roadmapStructureInvalidReason(response);
+                if (invalid != null) {
+                        logRoadmapFailure(material.getMaterialId(), "ROADMAP_VALIDATE_FAILED", "84일 구조 검증 실패", invalid, response,
+                                        System.currentTimeMillis() - t0);
+                        // 게이트 경로: 구조가 깨진 초안(미평가)의 warnings/metadata 를 실패 응답에 싣지 않는다.
+                        upstreamFailure[0] = roadmapFailure(material, "ROADMAP_VALIDATE_FAILED",
+                                        "84일(12주 × 7일) 로드맵 구조 검증에 실패했습니다. 다시 시도해주세요.", true, null);
+                        return null;
+                }
+                String title = response.get("title") != null ? response.get("title").toString() : "AI 생성 학습 로드맵";
+                sanitizeRoadmapNoise(response, material);
+                try {
+                        return new RoadmapDraft(AI_OBJECT_MAPPER.writeValueAsString(response), title);
+                } catch (Exception e) {
+                        upstreamFailure[0] = roadmapFailure(material, "ROADMAP_GENERATION_FAILED", "로드맵 데이터 처리 중 오류가 발생했습니다. 다시 시도해주세요.", true, null);
+                        return null;
+                }
         }
         // C. ai07 로드맵 검증 사유 추출 (없으면 null)
         @SuppressWarnings("unchecked")
@@ -1539,6 +2316,13 @@ public class AiIntegrationService {
                 } catch (Exception e) {
                         throw new IllegalStateException("로드맵 저장에 실패했습니다.");
                 }
+                if (qualityGateOn()) {
+                        // 진행 상태(completed)는 체크섬 밖 → 승인 로드맵은 토글 후에도 그대로 승인. 미승인/레거시는 응답에서 AI 본문을 가린다.
+                        return MaterialRoadmapQualityGate.displayable(roadmap.getQualityStatus(), roadmap.getQualityChecksum(), roadmap.getRoadmapJson())
+                                        ? roadmapDtoFromJson(material, roadmap, data).toBuilder().title(approvedRoadmapTitle(roadmap))
+                                                        .qualityStatus("APPROVED").verified(true).build()
+                                        : redactedRoadmapDto(material, roadmap);
+                }
                 return roadmapDtoFromJson(material, roadmap, data);
         }
 
@@ -1559,11 +2343,14 @@ public class AiIntegrationService {
                 task.setIsCompleted(!task.getIsCompleted());
                 roadmapTaskRepository.save(task);
 
+                // 게이트 ON: steps/tasks(레거시) 문구는 분할 평가·체크섬 범위 밖(승인 기록 없음) → 과제 문구만 가리고 진행 상태는 돌려준다.
+                boolean hide = qualityGateOn();
                 return RoadmapDTO.RoadmapTaskDTO.builder()
                                 .taskId(task.getTaskId())
                                 .taskOrder(task.getTaskOrder())
-                                .content(task.getContent())
+                                .content(hide ? null : task.getContent())
                                 .isCompleted(task.getIsCompleted())
+                                .qualityRedacted(hide ? Boolean.TRUE : null)
                                 .build();
         }
 
@@ -1586,6 +2373,10 @@ public class AiIntegrationService {
                         if (text != null && !text.isBlank()) context = text.substring(0, Math.min(text.length(), 1500));
                 }
                 if (context != null && !context.isBlank()) requestBody.put("context", context);
+
+                if (qualityGateOn()) {
+                        return defineKeywordGated(material, request, requestBody);
+                }
 
                 Map response;
                 try {
@@ -1625,6 +2416,118 @@ public class AiIntegrationService {
                                 .relatedConcepts(aiStringList(response, "relatedConcepts"))
                                 .sourceUsed(aiStr(response, "sourceUsed"))
                                 .wikiUrl(aiStr(response, "wikiUrl"))
+                                .build();
+        }
+
+        // ── 품질 게이트(Phase D — material): 키워드 정의 ─────────────────────────────────────────
+
+        /** ai07 키워드 정의 1회 호출. 실패(예외·success=false)면 기존과 같은 실패 DTO 를 failure[0] 에 남기고 null. */
+        @SuppressWarnings("unchecked")
+        private Map callKeywordDefine(Map<String, Object> requestBody, KeywordDefineDTO.Response[] failure) {
+                Map response;
+                try {
+                        response = fastApiWebClient.post().uri("/api/ai/keyword/define")
+                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class)
+                                        .block(Duration.ofSeconds(keywordDefineTimeoutSeconds));
+                } catch (Exception e) {
+                        boolean unavailable = (e instanceof org.springframework.web.reactive.function.client.WebClientResponseException
+                                        && ((org.springframework.web.reactive.function.client.WebClientResponseException) e).getStatusCode().value() == 404)
+                                        || String.valueOf(e.getMessage()).toLowerCase().contains("not found")
+                                        || (e.getCause() instanceof java.net.ConnectException);
+                        failure[0] = KeywordDefineDTO.Response.builder()
+                                        .success(false)
+                                        .errorCode(unavailable ? "AI_ROUTE_NOT_AVAILABLE" : "AI_ERROR")
+                                        .message(unavailable
+                                                        ? "AI 서버의 키워드 정의 기능이 아직 배포되지 않았습니다. 잠시 후 다시 시도해주세요."
+                                                        : "키워드 정의 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
+                                        .build();
+                        return null;
+                }
+                if (response == null || Boolean.FALSE.equals(response.get("success"))) {
+                        failure[0] = KeywordDefineDTO.Response.builder()
+                                        .success(false)
+                                        .errorCode(aiStr(response, "errorCode"))
+                                        .message(aiStr(response, "message") != null ? aiStr(response, "message") : "개념 정의 생성에 실패했습니다.")
+                                        .build();
+                        return null;
+                }
+                return response;
+        }
+
+        /** 사용자에게 보이는 키워드 정의 문자열 전부(평가 대상 = 응답 DTO 에 실리는 필드 전부). */
+        String keywordVisibleText(Map response) {
+                StringBuilder sb = new StringBuilder();
+                for (String k : List.of("name", "shortDefinition", "detailedDefinition", "importance")) {
+                        String v = aiStr(response, k);
+                        if (v != null && !v.isBlank()) sb.append(v.strip()).append('\n');
+                }
+                List<String> ex = aiStringList(response, "examples");
+                if (ex != null && !ex.isEmpty()) sb.append("예시: ").append(String.join(" / ", ex)).append('\n');
+                List<String> rel = aiStringList(response, "relatedConcepts");
+                if (rel != null && !rel.isEmpty()) sb.append("관련 개념: ").append(String.join(", ", rel)).append('\n');
+                String src = aiStr(response, "sourceUsed");
+                if (src != null && !src.isBlank()) sb.append("출처 유형: ").append(src.strip()).append('\n');
+                String url = aiStr(response, "wikiUrl");
+                if (url != null && !url.isBlank()) sb.append("링크: ").append(url.strip()).append('\n');
+                String t = sb.toString().strip();
+                return t.isEmpty() ? null : t;
+        }
+
+        /**
+         * 게이트 경로: 생성 → response-quality.v1(GENERAL_EXPLANATION/text, 근거 = 자료 원문, allowedMaterialIds=[자료]) → 거절 시 재생성 ≤2
+         * → 승인 정의만 응답(저장 없음). 거절/평가 불가 = success:false + errorCode AI_QUALITY_REJECTED/UNAVAILABLE + retryable(초안 미포함).
+         * ai07 생성 자체가 처음부터 실패하면 기존 실패 응답 그대로(평가·재생성 없음). 근거는 클라이언트가 보낸 context 가 아니라 Spring 이 가진 자료 원문.
+         */
+        private KeywordDefineDTO.Response defineKeywordGated(Material material, KeywordDefineDTO.Request request, Map<String, Object> requestBody) {
+                Long mid = material.getMaterialId();
+                String rid = "kw-" + mid + "-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Spec spec = new com.studybridge.api.ai.quality.AiResponseQualityGate.Spec(
+                                rid, com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.GENERAL_EXPLANATION,
+                                com.studybridge.api.ai.contract.v1.ResponseQualityV1.OutputKind.TEXT,
+                                "학습 자료 '" + (material.getTitle() != null ? material.getTitle() : "") + "' 맥락에서 핵심 키워드 '" + request.getKeyword()
+                                                + "' 의 개념 정의·중요성·예시·관련 개념을 설명해 주세요(수준: "
+                                                + (request.getLevel() != null ? request.getLevel() : "undergraduate") + ").",
+                                com.studybridge.api.ai.quality.AiResponseQualityGate.pdfEvidence(mid, getTextToAnalyze(material), 4000, 24000),
+                                new com.studybridge.api.ai.contract.v1.ResponseQualityV1.Constraints(List.of(mid), null, null, null, null, null, null,
+                                                false, false, null, null, null, null, null, null), null);
+                final KeywordDefineDTO.Response[] failure = new KeywordDefineDTO.Response[1];
+                com.studybridge.api.ai.quality.AiResponseQualityGate.Outcome<Map> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> {
+                        Map r = callKeywordDefine(requestBody, failure);
+                        if (r == null) {
+                                throw new com.studybridge.api.ai.quality.AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                        }
+                        return r;
+                }, r -> com.studybridge.api.ai.quality.AiResponseQualityGate.text(keywordVisibleText(r)));
+                if (!outcome.approved()) {
+                        if (failure[0] != null && outcome.decision().attempts() <= 1) {
+                                return failure[0];
+                        }
+                        com.studybridge.api.ai.quality.GateDecision d = outcome.decision();
+                        log.info("[QUALITY-GATE] keyword-define materialId={} rid={} 미승인 status={} codes={} attempts={}", mid, rid,
+                                        d.qualityStatus(), d.reasonCodes(), d.attempts());
+                        return KeywordDefineDTO.Response.builder()
+                                        .success(false)
+                                        .errorCode(d.errorCode())
+                                        .message(com.studybridge.api.ai.quality.GateDecision.userMessage(d.errorCode()))
+                                        .retryable(true)
+                                        .qualityStatus(d.qualityStatus().name())
+                                        .verified(false)
+                                        .build();
+                }
+                Map response = outcome.value();
+                return KeywordDefineDTO.Response.builder()
+                                .success(true)
+                                .name(aiStr(response, "name"))
+                                .shortDefinition(aiStr(response, "shortDefinition"))
+                                .detailedDefinition(aiStr(response, "detailedDefinition"))
+                                .importance(aiStr(response, "importance"))
+                                .examples(aiStringList(response, "examples"))
+                                .relatedConcepts(aiStringList(response, "relatedConcepts"))
+                                .sourceUsed(aiStr(response, "sourceUsed"))
+                                .wikiUrl(aiStr(response, "wikiUrl"))
+                                .qualityStatus("APPROVED")
+                                .qualityScore(outcome.decision().score())
+                                .verified(true)
                                 .build();
         }
 }

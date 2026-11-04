@@ -106,6 +106,16 @@ public class QuizDTO {
         private Boolean cacheHit;
         // 이 사용자의 최근 서버 채점 결과(있으면). 목록 재진입 시 점수 표시용.
         private ResultResponse lastResult;
+        // 품질 게이트(response-quality.v1, PDF_QUIZ). 게이트 OFF 면 전부 null → JSON 에 나가지 않는다(기존 응답과 동일).
+        // qualityRedacted=true 면 미검증 저장본이라 문항·보기·해설(AI 생성 필드)을 고정 문구로 가렸다는 뜻이다.
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private String qualityStatus;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Double qualityScore;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean verified;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean qualityRedacted;
     }
 
     /** 제출: 답안만. 클라이언트가 보내는 score/correctCount/isCorrect 류 필드는 존재하지 않는다. */
@@ -158,6 +168,9 @@ public class QuizDTO {
         private Boolean duplicate;       // 같은 답안의 짧은 시간 내 재전송 → 응시 횟수에 넣지 않음
         @Builder.Default
         private List<QuestionResult> results = new ArrayList<>();
+        // 게이트 ON + 미검증 퀴즈: 해설(AI 생성)만 가렸다. 점수·정답 보기 id·선택 답안(결정적 채점·사용자 기록)은 그대로다. 게이트 OFF 면 null.
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean qualityRedacted;
     }
 
     @Getter
@@ -231,5 +244,12 @@ public class QuizDTO {
         @Builder.Default
         private List<PublicQuestion> questions = new ArrayList<>();
         private ResultResponse lastResult;
+        // 품질 게이트 — Response 와 같은 의미(게이트 OFF 면 null, JSON 미출력).
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private String qualityStatus;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean verified;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean qualityRedacted;
     }
 }

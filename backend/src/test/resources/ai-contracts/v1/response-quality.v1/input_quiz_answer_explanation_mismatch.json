@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "response-quality.v1",
+  "requestId": "req-rq-0003",
+  "taskType": "PDF_QUIZ",
+  "outputKind": "quiz_json",
+  "modelDigest": "bdbd181c33f2",
+  "originalRequest": "TCP 핸드셰이크 퀴즈 1문항",
+  "groundingEvidence": [
+    {
+      "sourceType": "PDF_ORIGINAL",
+      "materialId": 42,
+      "sourceRevisionHash": "rev-9b1c",
+      "page": 12,
+      "chunkId": "m42-c7",
+      "text": "TCP 연결은 1981년 RFC 793 에서 정의되었다. 3-way handshake 는 SYN, SYN-ACK, ACK 세 단계로 연결을 수립한다. 연결 해제에는 4단계가 필요하다."
+    }
+  ],
+  "constraints": {
+    "allowedMaterialIds": [
+      42
+    ],
+    "expectedQuestionCount": 1,
+    "expectedOptionCount": 4
+  },
+  "attemptIndex": 0,
+  "evaluationProfile": null,
+  "proposedOutput": {
+    "questions": [
+      {
+        "question": "3-way handshake 의 두 번째 단계는?",
+        "options": [
+          "SYN",
+          "SYN-ACK",
+          "ACK",
+          "FIN"
+        ],
+        "answerIndex": 1,
+        "explanation": "정답은 ③ ACK 이다. 세 단계는 SYN, SYN-ACK, ACK 이다."
+      }
+    ]
+  }
+}

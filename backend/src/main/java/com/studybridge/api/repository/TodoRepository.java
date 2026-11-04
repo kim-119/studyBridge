@@ -10,6 +10,10 @@ import java.util.List;
 public interface TodoRepository extends JpaRepository<Todo, Long> {
     List<Todo> findByUserId(Long userId);
 
+    /** Learning Memory: 미완료이면서 마감이 from 이후인 할 일(가까운 순 20건, 사용자 격리). */
+    List<Todo> findTop20ByUserIdAndCompletedFalseAndEndDateGreaterThanEqualOrderByEndDateAsc(Long userId,
+            java.time.LocalDateTime from);
+
     // 출처 기반 idempotent 조회(같은 사용자·같은 출처·같은 날짜 → 기존 row 재사용)
     java.util.Optional<Todo> findFirstByUserIdAndSourceTypeAndSourceIdAndScheduleDateOrderByIdAsc(
             Long userId, String sourceType, Long sourceId, java.time.LocalDate scheduleDate);

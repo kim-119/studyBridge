@@ -96,6 +96,19 @@ class MaterialFeedbackServiceTest {
     }
 
     @Test
+    void egressBlockedAiUnavailable_isExplicitFailure_notSavedAsFeedback() {
+        // ai07 PR #116 B6: 외부 전송 차단 + 로컬 실패 시 예전 success:true 안내문 대신 success:false AI_UNAVAILABLE.
+        ai.body = "{\"success\":false,\"errorCode\":\"AI_UNAVAILABLE\",\"retryable\":true}";
+
+        AiUpstreamException e = assertThrows(AiUpstreamException.class, () -> service.regenerate(USER, MATERIAL));
+
+        assertEquals("AI_GENERATION_FAILED", e.getCode());
+        assertEquals("AI_UNAVAILABLE", e.getUpstreamCode());
+        assertEquals("기존 피드백", existing.getFeedbackData(), "안내문을 피드백으로 저장하지 않는다");
+        verify(feedbacks, never()).saveAndFlush(any());
+    }
+
+    @Test
     void aiTimeoutCode_mapsTo504() {
         ai.body = "{\"success\":false,\"errorCode\":\"AI_TIMEOUT\",\"retryable\":true}";
         AiUpstreamException e = assertThrows(AiUpstreamException.class, () -> service.regenerate(USER, MATERIAL));

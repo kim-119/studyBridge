@@ -39,6 +39,30 @@ public class MaterialService {
     private final PlannerService plannerService;
     private final MaterialQuizScoreService materialQuizScoreService;
     private final com.studybridge.api.repository.MaterialGroupShareRepository materialGroupShareRepository;
+    private final com.studybridge.api.ai.training.TrainingCandidateCollector trainingCollector;
+
+    // Phase D: 오답노트 자료(REVIEW_NOTE)는 ReviewNote 의 AI 해설 PDF·본문 사본 → 게이트 ON 에서 노트 미승인이면 가린다(우회 노출 차단).
+    private com.studybridge.api.ai.quality.AiQualityGateSettings qualityGateSettings;
+    private com.studybridge.api.repository.ReviewNoteRepository reviewNoteRepository;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setQualityGateSupport(com.studybridge.api.ai.quality.AiQualityGateSettings settings,
+                                      com.studybridge.api.repository.ReviewNoteRepository reviewNotes) {
+        this.qualityGateSettings = settings;
+        this.reviewNoteRepository = reviewNotes;
+    }
+
+    /** 게이트 ON + 오답노트 자료 + 원 노트가 APPROVED 아님(또는 못 찾음) → 가림 대상. 게이트 OFF·다른 자료는 false. */
+    boolean redactUnapprovedReviewNote(Material material) {
+        if (material.getMaterialType() != MaterialType.REVIEW_NOTE || qualityGateSettings == null || !qualityGateSettings.enabled()) {
+            return false;
+        }
+        if (reviewNoteRepository == null) {
+            return true; // fail-closed
+        }
+        return reviewNoteRepository.findFirstByArchiveMaterialIdAndUserId(material.getMaterialId(), material.getUserId())
+                .map(n -> !"APPROVED".equals(n.getQualityStatus())).orElse(true);
+    }
 
     @Transactional
     public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords,
@@ -253,6 +277,10 @@ public class MaterialService {
         materialRepository.delete(material);
         materialGroupShareRepository.deleteByMaterialId(material.getMaterialId());
         materialQuizScoreService.deleteForQuizzes(quizIds);
+        // 학습 후보: 이 자료에서 파생된 미전송 후보 파기 + (동의 이력이 있으면) ai07 파기 요청 적재. 실패해도 삭제는 진행.
+        if (trainingCollector != null) {
+            trainingCollector.onMaterialDeleted(userId, materialId);
+        }
 
         if (s3Key != null && !s3Key.isBlank()) {
             runAfterCommit(() -> {
@@ -415,6 +443,10 @@ public class MaterialService {
     }
 
     private MaterialDTO convertToDTO(Material material) {
+        if (redactUnapprovedReviewNote(material)) {
+            // AI 해설이 든 PDF URL·본문 사본을 내보내지 않는다(제목·식별자·업로드 정보는 유지).
+            return baseDTO(material).learningContent(null).nextPlan(null).s3PresignedUrl(null).qualityRedacted(true).build();
+        }
         String presignedUrl = null;
         String plannerPdfS3Key = null;
         if (material.getMaterialType() == MaterialType.PLANNER) {
@@ -445,6 +477,9 @@ public class MaterialService {
 
     // S3 없이 기본 정보만 반환 (fallback)
     private MaterialDTO convertToDTOWithoutS3(Material material) {
+        if (redactUnapprovedReviewNote(material)) {
+            return baseDTO(material).learningContent(null).nextPlan(null).s3PresignedUrl(null).qualityRedacted(true).build();
+        }
         return baseDTO(material).s3PresignedUrl(null).build();
     }
 

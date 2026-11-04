@@ -26,6 +26,7 @@ import ScreenShareStage, { ScreenShareNotice } from './groupstudy/ScreenShareSta
 import ScreenSharePrepDialog from './groupstudy/ScreenSharePrepDialog';
 import ScreenAiPanel from './groupstudy/ScreenAiPanel';
 import { SCREEN_AI_CONSENT_SIGNAL } from '../utils/screenAi';
+import { isQualityFailureFrame, qualityFailureMessage } from '../utils/aiQualityDisplay';
 import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, lockScreenResolution, findVideoSender, SCREEN_SHARE_LIMIT, screenShareLimitMessage, screenShareAvailability } from '../utils/screenShare';
 import { SCREEN_RECEIPT_SIGNAL, buildReceipt, parseReceipt, healthFromPeerState } from '../utils/screenReceipt';
 import RemoteAudioSink from './groupstudy/RemoteAudioSink';
@@ -2694,6 +2695,24 @@ export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, s
                 setIf('scenarioId', parsed.scenarioId ?? parsed.scenario_id);
                 const ti = parsed.turnIndex ?? parsed.turn_index;
                 if (typeof ti === 'number') cur.turnIndex = ti;
+              }
+
+              // 품질 게이트(Spring) 거절/평가 불가: 본문 없이 고정 안내만 온다 → "응답 없음" 대신 품질 안내를 보여 준다.
+              if (isQualityFailureFrame(parsed)) {
+                gotRenderableAnswer = true;
+                setAiMessages(prev => {
+                  if (!isActive()) return prev;
+                  return [...prev, {
+                    id: `quality-${requestId}-${prev.length}`,
+                    requestId,
+                    isUser: false,
+                    senderName: 'System',
+                    content: qualityFailureMessage(parsed),
+                    isError: true,
+                    createdAt: new Date().toISOString(),
+                  }];
+                });
+                continue;
               }
 
               // Intent Router 라우팅 이벤트: 안내(route_message)/경고(route_notice)를 AI 말풍선으로 표시.

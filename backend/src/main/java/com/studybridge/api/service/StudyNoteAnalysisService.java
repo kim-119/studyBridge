@@ -2,6 +2,10 @@ package com.studybridge.api.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
+import com.studybridge.api.ai.quality.GateDecision;
+import com.studybridge.api.ai.quality.SegmentedQualityGate;
 import com.studybridge.api.dto.StudyNoteAnalysisDTO;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialStudyNoteAnalysis;
@@ -10,6 +14,7 @@ import com.studybridge.api.repository.MaterialRepository;
 import com.studybridge.api.repository.MaterialStudyNoteAnalysisRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -64,6 +69,25 @@ public class StudyNoteAnalysisService {
     @Value("${ai.study-note.timeout-seconds:120}")
     private long timeoutSeconds;
 
+    // Global Response Quality Gate(기본 OFF). 생성자 시그니처를 바꾸지 않도록 setter 주입(없으면 OFF).
+    private AiResponseQualityGate qualityGate;
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    private boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
+
+    /** 세그먼트 예산(문자). ai07 본문 256KB 제한 안에 한글(UTF-8 3바이트) 세그먼트 + 근거가 들어가도록. */
+    static final int NOTE_SEGMENT_BUDGET_CHARS = 20_000;
+    static final int NOTE_EVIDENCE_MAX_CHARS = 16_000;
+    static final String REDACTED_MESSAGE = "AI 핵심 요약 노트가 품질 검증을 통과한 기록이 없어 내용을 표시하지 않았습니다.";
+    static final String GATE_REJECTED_MESSAGE = "AI 핵심 요약 노트가 품질 기준을 통과하지 못해 저장하지 않았습니다.";
+    static final String GATE_UNAVAILABLE_MESSAGE = "지금은 AI 핵심 요약 노트의 품질을 확인할 수 없어 저장하지 않았습니다.";
+
     // 분석 대상 여부: 파일 기반(PDF)만. 오답노트/학습일지/플래너는 대상 아님.
     private boolean isAnalyzable(Material m) {
         return m != null && m.getMaterialType() == MaterialType.PDF;
@@ -112,10 +136,25 @@ public class StudyNoteAnalysisService {
             return;
         }
 
+        String prevStatus = row.getStatus();
+        String prevQuality = row.getQualityStatus();
         row.setStatus("RUNNING");
         row.setDisclaimer(DISCLAIMER);
         row.setErrorMessage(null);
         repository.save(row);
+
+        if (gateOn()) {
+            try {
+                analyzeGated(material, row, text, prevStatus, prevQuality);
+            } catch (Exception e) {
+                // 예기치 못한 오류도 초안 없이 끝낸다(RUNNING 고착 방지). 이전 승인 노트가 있으면 그대로 둔다.
+                row.setStatus("APPROVED".equals(prevQuality) && "SUCCESS".equals(prevStatus) ? "SUCCESS" : "FAILED");
+                row.setErrorMessage("SUCCESS".equals(row.getStatus()) ? null : "AI 핵심 요약 노트를 생성하지 못했습니다.");
+                repository.save(row);
+                log.warn("[STUDY_NOTE] gated FAILED materialId={} err={}", materialId, e.getClass().getSimpleName());
+            }
+            return;
+        }
 
         try {
             // ai07 major-analysis/note 는 LLM/위키/타임아웃/빈 입력에도 200 + 구조화 fallback 을 반환한다.
@@ -130,6 +169,7 @@ public class StudyNoteAnalysisService {
             row.setFallbackReason(fallback ? "INSUFFICIENT_INPUT" : null);
             row.setStatus("SUCCESS");
             row.setErrorMessage(null);
+            row.setQualityStatus(null); // 게이트 OFF 생성분 = 미검증(나중에 게이트를 켜면 가림)
             repository.save(row);
             log.info("[STUDY_NOTE] SUCCESS materialId={} domain={} coreObject={} fallback={}",
                     materialId, row.getDomain(), row.getCoreObject(), fallback);
@@ -184,7 +224,218 @@ public class StudyNoteAnalysisService {
             analyzeAsync(materialId);
             return placeholder(materialId, "RUNNING");
         }
-        return toDTO(row);
+        return display(row);
+    }
+
+    /** 게이트 ON: 승인 기록(quality_status=APPROVED)이 없는 행은 AI 필드를 가린다(식별자·상태·고정 고지만). OFF 는 기존 그대로. */
+    private StudyNoteAnalysisDTO display(MaterialStudyNoteAnalysis r) {
+        if (!gateOn()) {
+            return toDTO(r);
+        }
+        if ("APPROVED".equals(r.getQualityStatus())) {
+            return toDTOBuilder(r).qualityStatus("APPROVED").build();
+        }
+        boolean success = "SUCCESS".equals(r.getStatus());
+        return StudyNoteAnalysisDTO.builder()
+                .materialId(r.getMaterialId())
+                // 미검증 SUCCESS 는 SUCCESS 로 내보내지 않는다(화면이 SUCCESS 일 때만 노트를 렌더) — 기존 요약 폴백이 보이게.
+                .status(success ? "UNVERIFIED" : r.getStatus())
+                .mode(MODE)
+                .disclaimer(DISCLAIMER)
+                .fallback(false)
+                .keywords(List.of()).coreContents(List.of()).detailedCoreContents(List.of())
+                .pageSummaries(List.of())
+                .studyPoints(List.of()).aiStudyQuestions(List.of()).wikiSummaries(List.of())
+                .limitations(List.of())
+                .errorMessage(success ? REDACTED_MESSAGE : r.getErrorMessage())
+                .qualityStatus(r.getQualityStatus())
+                .qualityRedacted(hasAiContent(r) ? Boolean.TRUE : null)
+                .build();
+    }
+
+    private static boolean hasAiContent(MaterialStudyNoteAnalysis r) {
+        return r.getDomain() != null || r.getCoreObject() != null || r.getDocumentOverview() != null
+                || nonEmptyJson(r.getKeywordsJson()) || nonEmptyJson(r.getCoreContentsJson()) || nonEmptyJson(r.getDetailedCoreContentsJson())
+                || nonEmptyJson(r.getPageSummariesJson()) || nonEmptyJson(r.getStudyPointsJson()) || nonEmptyJson(r.getAiStudyQuestionsJson())
+                || nonEmptyJson(r.getWikiSummariesJson());
+    }
+
+    private static boolean nonEmptyJson(String json) {
+        return json != null && !json.isBlank() && !"[]".equals(json.trim());
+    }
+
+    // ── 품질 게이트 생성 경로(Phase D) ─────────────────────────────────────────
+
+    /**
+     * 생성 → 사용자에게 보일 노트 전체(toDTO 로 표시되는 AI 필드 전부)를 분할 평가(GENERAL_EXPLANATION/text, 근거 = 자료 원문 페이지별 —
+     * ai07 는 페이지 근거를 주지 않는다) → 거절 시 재생성 ≤2 → 전 세그먼트 승인분만 행에 반영(quality_status=APPROVED).
+     * 거절/평가 불가면 초안을 저장하지 않는다: 이전에 승인된 노트가 있으면 그대로 두고(SUCCESS 복원), 없으면 FAILED + 고정 사유.
+     */
+    private void analyzeGated(Material material, MaterialStudyNoteAnalysis row, String text, String prevStatus, String prevQuality) {
+        Long materialId = material.getMaterialId();
+        String rid = "note-" + materialId + "-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(rid, ResponseQualityV1.TaskType.GENERAL_EXPLANATION,
+                ResponseQualityV1.OutputKind.TEXT,
+                "학습 자료 '" + nz(material.getTitle()) + "' 의 핵심 내용을 전공 분야·핵심 객체 중심 학습 노트(개요·핵심 내용·페이지별 요약·"
+                        + "학습 포인트·예상 질문)로 시험 대비용으로 정리해 주세요.",
+                pageEvidence(materialId, text, NOTE_EVIDENCE_MAX_CHARS),
+                new ResponseQualityV1.Constraints(List.of(materialId), null, null, null, null, null, null, false, false, null, null, null, null,
+                        null, null), null);
+        SegmentedQualityGate.Outcome<MaterialStudyNoteAnalysis> outcome = new SegmentedQualityGate(qualityGate).generateApproved(spec,
+                (attempt, previous) -> {
+                    JsonNode json;
+                    try {
+                        json = callMajorAnalysis(material);
+                    } catch (Exception e) {
+                        log.warn("[STUDY_NOTE] gated 생성 실패 materialId={} attempt={} err={}", materialId, attempt, e.getClass().getSimpleName());
+                        throw new AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                    }
+                    if (json == null) {
+                        throw new AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+                    }
+                    MaterialStudyNoteAnalysis cand = MaterialStudyNoteAnalysis.builder()
+                            .materialId(materialId).userId(material.getUserId()).status("SUCCESS").disclaimer(DISCLAIMER).build();
+                    applyJson(cand, json);
+                    boolean fallback = "GENERAL".equalsIgnoreCase(nz(cand.getDomain())) && isEmptyJsonArray(cand.getKeywordsJson());
+                    cand.setFallback(fallback);
+                    cand.setFallbackReason(fallback ? "INSUFFICIENT_INPUT" : null);
+                    return cand;
+                }, cand -> visibleJson(toDTO(cand)), noteSegmenter(NOTE_SEGMENT_BUDGET_CHARS), null);
+        if (outcome.approved()) {
+            MaterialStudyNoteAnalysis c = outcome.value();
+            copyNote(c, row);
+            row.setStatus("SUCCESS");
+            row.setErrorMessage(null);
+            row.setQualityStatus("APPROVED");
+            repository.save(row);
+            log.info("[STUDY_NOTE] SUCCESS(gated) materialId={} rid={} segments={} score={} attempts={}", materialId, rid,
+                    outcome.result().manifest().segments().size(), outcome.result().decision().score(), outcome.result().decision().attempts());
+            return;
+        }
+        GateDecision d = outcome.result() != null ? outcome.result().decision() : null;
+        String code = d != null ? d.errorCode() : GateDecision.REJECTED;
+        if ("APPROVED".equals(prevQuality) && "SUCCESS".equals(prevStatus)) {
+            row.setStatus("SUCCESS"); // 이전 승인 노트 유지(덮어쓰지 않음)
+            row.setErrorMessage(null);
+        } else {
+            row.setStatus("FAILED");
+            row.setErrorMessage(GateDecision.UNAVAILABLE.equals(code) ? GATE_UNAVAILABLE_MESSAGE : GATE_REJECTED_MESSAGE);
+        }
+        repository.save(row);
+        log.warn("[STUDY_NOTE] gated 미승인 materialId={} rid={} code={} reasons={} violations={} → 초안 미저장", materialId, rid, code,
+                d != null ? d.reasonCodes() : null, outcome.result() != null ? outcome.result().violations() : null);
+    }
+
+    private static void copyNote(MaterialStudyNoteAnalysis from, MaterialStudyNoteAnalysis to) {
+        to.setFallback(from.getFallback());
+        to.setFallbackReason(from.getFallbackReason());
+        to.setDomain(from.getDomain());
+        to.setDomainLabel(from.getDomainLabel());
+        to.setCoreObject(from.getCoreObject());
+        to.setCoreObjectLabel(from.getCoreObjectLabel());
+        to.setDisclaimer(from.getDisclaimer());
+        to.setDocumentOverview(from.getDocumentOverview());
+        to.setKeywordsJson(from.getKeywordsJson());
+        to.setCoreContentsJson(from.getCoreContentsJson());
+        to.setDetailedCoreContentsJson(from.getDetailedCoreContentsJson());
+        to.setPageSummariesJson(from.getPageSummariesJson());
+        to.setStudyPointsJson(from.getStudyPointsJson());
+        to.setAiStudyQuestionsJson(from.getAiStudyQuestionsJson());
+        to.setWikiSummariesJson(from.getWikiSummariesJson());
+        to.setLimitationsJson(from.getLimitationsJson());
+    }
+
+    /** 평가 대상 = 화면에 나가는 AI 필드 전부(표시 변환 toDTO 를 거친 값 그대로). 상태·모드 같은 서버 메타는 제외. */
+    static JsonNode visibleJson(StudyNoteAnalysisDTO dto) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("domain", dto.getDomain());
+        m.put("domainLabel", dto.getDomainLabel());
+        m.put("coreObject", dto.getCoreObject());
+        m.put("coreObjectLabel", dto.getCoreObjectLabel());
+        m.put("disclaimer", dto.getDisclaimer());
+        m.put("documentOverview", dto.getDocumentOverview());
+        m.put("keywords", dto.getKeywords());
+        m.put("coreContents", dto.getCoreContents());
+        m.put("detailedCoreContents", dto.getDetailedCoreContents());
+        m.put("pageSummaries", dto.getPageSummaries());
+        m.put("studyPoints", dto.getStudyPoints());
+        m.put("aiStudyQuestions", dto.getAiStudyQuestions());
+        m.put("wikiSummaries", dto.getWikiSummaries());
+        m.put("limitations", dto.getLimitations());
+        return MAPPER.valueToTree(m);
+    }
+
+    /** 최상위 스칼라 필드와 배열 원소를 순서대로 예산 이하 세그먼트로 묶는다(JSON Pointer, 결정적). */
+    static SegmentedQualityGate.Segmenter noteSegmenter(int budget) {
+        return full -> {
+            List<String> units = new ArrayList<>();
+            List<Integer> sizes = new ArrayList<>();
+            for (java.util.Iterator<Map.Entry<String, JsonNode>> it = full.fields(); it.hasNext(); ) {
+                Map.Entry<String, JsonNode> e = it.next();
+                String p = "/" + e.getKey().replace("~", "~0").replace("/", "~1");
+                JsonNode v = e.getValue();
+                if (v.isArray() && v.size() > 0) {
+                    for (int i = 0; i < v.size(); i++) {
+                        units.add(p + "/" + i);
+                        sizes.add(v.get(i).toString().length() + p.length() + 8);
+                    }
+                } else {
+                    units.add(p);
+                    sizes.add(v.toString().length() + p.length() + 4);
+                }
+            }
+            List<SegmentedQualityGate.SegmentPlan> out = new ArrayList<>();
+            List<String> cur = new ArrayList<>();
+            int size = 0;
+            for (int u = 0; u < units.size(); u++) {
+                if (!cur.isEmpty() && size + sizes.get(u) > budget) {
+                    out.add(new SegmentedQualityGate.SegmentPlan("n" + out.size(), List.copyOf(cur)));
+                    cur.clear();
+                    size = 0;
+                }
+                cur.add(units.get(u));
+                size += sizes.get(u);
+            }
+            if (!cur.isEmpty()) {
+                out.add(new SegmentedQualityGate.SegmentPlan("n" + out.size(), List.copyOf(cur)));
+            }
+            return out;
+        };
+    }
+
+    /**
+     * 자료 원문 근거(PDF_ORIGINAL, 이 자료만). 추출기가 넣은 form-feed(\f) 페이지 경계가 있으면 ai07 에 보낸 pageTexts 와 같은 번호로
+     * 페이지 근거를 만든다(페이지당 균등 예산, 최대 32개). 경계가 없으면 앞에서부터 청크. 원문을 넘는 부분은 근거 없음(보수적 판정).
+     */
+    static List<ResponseQualityV1.GroundingEvidence> pageEvidence(Long materialId, String text, int maxTotal) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        String[] parts = text.split("\f");
+        if (parts.length <= 1) {
+            return AiResponseQualityGate.pdfEvidence(materialId, text, 4000, maxTotal);
+        }
+        List<int[]> pages = new ArrayList<>(); // [pageNo, partIndex]
+        for (int i = 0, page = 1; i < parts.length; i++, page++) {
+            if (parts[i] != null && !parts[i].isBlank()) {
+                pages.add(new int[]{page, i});
+            }
+        }
+        int n = Math.min(pages.size(), ResponseQualityV1.MAX_EVIDENCE_ITEMS);
+        if (n == 0) {
+            return List.of();
+        }
+        int per = Math.max(200, Math.min(ResponseQualityV1.MAX_EVIDENCE_CHARS, maxTotal / n));
+        List<ResponseQualityV1.GroundingEvidence> out = new ArrayList<>();
+        int total = 0;
+        for (int k = 0; k < n && total < maxTotal; k++) {
+            String body = parts[pages.get(k)[1]].strip();
+            String chunk = body.length() > per ? body.substring(0, per) : body;
+            out.add(new ResponseQualityV1.GroundingEvidence(null, "PDF_ORIGINAL", materialId, null, null, pages.get(k)[0],
+                    "m" + materialId + "-p" + pages.get(k)[0], chunk));
+            total += chunk.length();
+        }
+        return out;
     }
 
     private StudyNoteAnalysisDTO placeholder(Long materialId, String status) {
@@ -354,6 +605,11 @@ public class StudyNoteAnalysisService {
     // ── DTO 변환(JSON → 파싱된 리스트/객체) ──────────────────────────────
     @SuppressWarnings({"rawtypes", "unchecked"})
     private StudyNoteAnalysisDTO toDTO(MaterialStudyNoteAnalysis r) {
+        return toDTOBuilder(r).build();
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private StudyNoteAnalysisDTO.StudyNoteAnalysisDTOBuilder toDTOBuilder(MaterialStudyNoteAnalysis r) {
         return StudyNoteAnalysisDTO.builder()
                 .materialId(r.getMaterialId())
                 .status(r.getStatus())
@@ -374,8 +630,7 @@ public class StudyNoteAnalysisService {
                 .aiStudyQuestions(strList(r.getAiStudyQuestionsJson()))
                 .wikiSummaries(mapList(r.getWikiSummariesJson()))
                 .limitations(strList(r.getLimitationsJson()))
-                .errorMessage(r.getErrorMessage())
-                .build();
+                .errorMessage(r.getErrorMessage());
     }
 
     private List<String> strList(String json) {

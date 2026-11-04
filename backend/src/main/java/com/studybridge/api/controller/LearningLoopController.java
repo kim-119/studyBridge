@@ -1,6 +1,5 @@
 package com.studybridge.api.controller;
 
-import com.studybridge.api.entity.LearningEventType;
 import com.studybridge.api.entity.LearningLoopEvent;
 import com.studybridge.api.entity.LearningSourceType;
 import com.studybridge.api.security.domain.CustomUserDetails;
@@ -48,35 +47,27 @@ public class LearningLoopController {
                 learningLoopService.queryEvents(userDetails.getId(), materialId, documentId, st, sourceId, limit));
     }
 
+    /**
+     * 클라이언트 이벤트 기록. 서버가 생성하는 사실(AI 답변/요약/퀴즈 결과/오답/일정)은 기록할 수 없다.
+     *  · 허용 타입: LearningLoopService.CLIENT_WRITABLE_TYPES(USER_FEEDBACK_SAVED, STUDY_LOG_CREATED)
+     *  · AI 출력/채점/출처 필드를 보내면 400, 서버 전용 타입은 403, 남의 자료/플래너/오답노트 id 는 403, 메모 4000자 초과 413.
+     *  · 저장 행은 origin=CLIENT → 다음 AI 컨텍스트에서 사용자 주장(메모)으로만 쓰인다.
+     */
     @PostMapping("/events")
     public ResponseEntity<Map<String, Object>> record(
             @AuthenticationPrincipal CustomUserDetails userDetails,
-            @RequestBody Map<String, Object> body) {
-        LearningEventType type = parseEventType(str(body, "eventType"));
-        if (type == null) {
-            return ResponseEntity.badRequest().body(Map.of("error", "eventType is required/invalid"));
+            @RequestBody(required = false) Map<String, Object> body) {
+        Map<String, Object> b = body != null ? body : Map.of();
+        try {
+            LearningLoopEvent saved = learningLoopService.recordClientEvent(userDetails.getId(),
+                    new LearningLoopService.ClientEventRequest(str(b, "eventType"), lng(b, "materialId"),
+                            lng(b, "plannerId"), lng(b, "wrongNoteId"), str(b, "userMemo"), str(b, "userAction"),
+                            b.keySet()));
+            return ResponseEntity.ok(Map.of("id", saved.getId(), "saved", true, "origin", "CLIENT"));
+        } catch (LearningLoopService.ClientEventRejected e) {
+            return ResponseEntity.status(e.status()).body(Map.of("saved", false, "errorCode", e.errorCode(),
+                    "message", e.getMessage()));
         }
-        LearningLoopEvent event = LearningLoopEvent.builder()
-                .userId(userDetails.getId())
-                .eventType(type)
-                .sourceType(parseSource(str(body, "sourceType")))
-                .sourceId(lng(body, "sourceId"))
-                .materialId(lng(body, "materialId"))
-                .documentId(lng(body, "documentId"))
-                .roomId(lng(body, "roomId"))
-                .plannerId(lng(body, "plannerId"))
-                .wrongNoteId(lng(body, "wrongNoteId"))
-                .quizId(lng(body, "quizId"))
-                .questionId(lng(body, "questionId"))
-                .inputText(str(body, "inputText"))
-                .aiOutputSummary(str(body, "aiOutputSummary"))
-                .aiOutputJson(str(body, "aiOutputJson"))
-                .userAction(str(body, "userAction"))
-                .userMemo(str(body, "userMemo"))
-                .difficulty(str(body, "difficulty"))
-                .build();
-        Long id = learningLoopService.recordSafe(event);
-        return ResponseEntity.ok(Map.of("id", id == null ? -1 : id, "saved", id != null));
     }
 
     @GetMapping("/context")
@@ -115,31 +106,22 @@ public class LearningLoopController {
         return ResponseEntity.status(r.created() ? HttpStatus.CREATED : HttpStatus.OK).body(r.toMap());
     }
 
+    /** 학습 이벤트 → 학습일지 연결(사용자 입력이므로 origin=CLIENT, 자료·원 이벤트 소유권 검증). */
     @PostMapping("/study-log")
     public ResponseEntity<Map<String, Object>> studyLog(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @RequestBody(required = false) Map<String, Object> body) {
-        LearningLoopEvent event = LearningLoopEvent.builder()
-                .userId(userDetails.getId())
-                .eventType(LearningEventType.STUDY_LOG_CREATED)
-                .sourceType(LearningSourceType.STUDY_LOG)
-                .sourceId(lng(body, "eventId"))
-                .materialId(lng(body, "materialId"))
-                .aiOutputSummary(str(body, "title"))
-                .userMemo(str(body, "content"))
-                .userAction("STUDY_LOG_LINKED")
-                .build();
-        Long id = learningLoopService.recordSafe(event);
-        return ResponseEntity.ok(Map.of("id", id == null ? -1 : id, "saved", id != null));
+        try {
+            LearningLoopEvent saved = learningLoopService.recordStudyLog(userDetails.getId(), lng(body, "eventId"),
+                    lng(body, "materialId"), str(body, "title"), str(body, "content"));
+            return ResponseEntity.ok(Map.of("id", saved.getId(), "saved", true));
+        } catch (LearningLoopService.ClientEventRejected e) {
+            return ResponseEntity.status(e.status()).body(Map.of("id", -1, "saved", false, "errorCode", e.errorCode(),
+                    "message", e.getMessage()));
+        }
     }
 
     // ---------------- 파싱 헬퍼 ----------------
-    private LearningEventType parseEventType(String v) {
-        if (v == null || v.isBlank()) return null;
-        try { return LearningEventType.valueOf(v.trim().toUpperCase()); }
-        catch (Exception e) { return null; }
-    }
-
     private LearningSourceType parseSource(String v) {
         if (v == null || v.isBlank()) return null;
         try { return LearningSourceType.valueOf(v.trim().toUpperCase()); }

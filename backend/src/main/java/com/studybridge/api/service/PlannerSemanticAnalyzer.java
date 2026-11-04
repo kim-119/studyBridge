@@ -2,6 +2,8 @@ package com.studybridge.api.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
 import com.studybridge.api.dto.PlannerSemanticDTO;
 import com.studybridge.api.dto.PlannerSemanticDTO.*;
 import com.studybridge.api.entity.Planner;
@@ -9,6 +11,7 @@ import com.studybridge.api.repository.PlannerRepository;
 import com.studybridge.api.util.LearningConceptValidator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +34,12 @@ import java.util.*;
  *    선행 개념 시간은 targetMinutes 에 절대 포함되지 않는다(includedInPlanTime=false).
  *  - tasks: 실제 플래너/로드맵 day 의 학습 활동(순서·식별자 authoritative).
  *  - flow: tasks 의 학습 활동 순서(권장시간 합 = targetMinutes). prerequisites 를 복사하거나 섞지 않는다.
+ *
+ * <p>품질 게이트(AI_RESPONSE_QUALITY_GATE_ENABLED, 기본 OFF): 조립한 분석의 보일 문자열 전체(요약·정합성·task 제목·설명·이유·학습 순서·
+ * 선행 개념·경고·권장 분)를 PLANNER_COACHING(text — 일정 JSON 이 아니므로 ai07 은 일정 구조 검사를 하지 않는다, 근거 = 플래너/로드맵 입력)으로
+ * 평가 → 거절 시 재생성 ≤2 → 승인분만 캐시(planners.plan_analysis_quality_status=APPROVED)·응답. 거절/평가 불가는 AiUpstreamException
+ * (422/503, 기존 캐시 보존). 로드맵 플래너의 task 는 AI 로드맵 원문에서 오므로 AI07 폴백(FALLBACK) 분석도 같은 평가를 거친다.
+ * 게이트 ON 조회·시간표(ensure)는 승인 캐시만 쓴다 — 미검증(레거시·문장 재생성 필요) 캐시는 가리고, 시간표는 승인 분석을 새로 만든다.</p>
  */
 @Slf4j
 @Service
@@ -51,6 +60,17 @@ public class PlannerSemanticAnalyzer {
     @Value("${ai.server.fastapi.planner-expand-timeout-seconds:120}")
     private long timeoutSeconds;
 
+    private AiResponseQualityGate qualityGate;
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    private boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
+
     // 타입별 기본 학습시간 가중치(AI 제안 시간이 없을 때 사용). 실습/분석에 더 큰 비중.
     private static final Map<TaskType, Integer> TYPE_WEIGHT = Map.of(
             TaskType.CONCEPT, 10, TaskType.PRACTICE, 15, TaskType.ANALYSIS, 13,
@@ -61,14 +81,28 @@ public class PlannerSemanticAnalyzer {
 
     // ---------------- public API ----------------
 
-    /** 분석 생성/재생성. 소유권 검증 → 구조화 → AI07 → 검증/정규화 → 캐시. */
+    /** 분석 생성/재생성. 소유권 검증 → 구조화 → AI07 → 검증/정규화 → (게이트 ON: 품질 평가) → 캐시. */
     @Transactional
     public AnalysisResponse analyze(Long userId, Long plannerId) {
         Planner planner = context.owned(userId, plannerId);
         Request req = context.build(planner);                 // 비어 있으면 PlanAnalysisException 발생
         String fingerprint = context.fingerprint(req);
+        if (gateOn()) {
+            return analyzeGated(planner, req, fingerprint);
+        }
 
         JsonNode ai = callAi(req);
+        AnalysisResponse resp = assemble(planner, req, fingerprint, ai);
+        store(planner, resp, false);
+
+        log.info("[planner:semantic] plannerId={} sourceType={} tasks={} target={} total={} aiSource={}",
+                plannerId, req.getSourceType(), resp.getTasks().size(), req.getTargetMinutes(), resp.getTotalRecommendedMinutes(),
+                resp.getAiSource());
+        return resp;
+    }
+
+    /** AI 응답(없으면 결정적 폴백)으로 분석 응답을 조립한다(저장 없음). */
+    private AnalysisResponse assemble(Planner planner, Request req, String fingerprint, JsonNode ai) {
         boolean fromAi = ai != null && !ai.path("tasks").isMissingNode();
 
         List<Task> tasks = buildTasks(req, ai);
@@ -78,7 +112,7 @@ public class PlannerSemanticAnalyzer {
         int total = 0;
         for (int i = 0; i < tasks.size(); i++) { tasks.get(i).setRecommendedMinutes(minutes.get(i)); total += minutes.get(i); }
 
-        AnalysisResponse resp = AnalysisResponse.builder()
+        return AnalysisResponse.builder()
                 .plannerId(planner.getId())
                 .title(req.getTitle())
                 .subject(blankToNull(req.getSubject()))
@@ -100,23 +134,123 @@ public class PlannerSemanticAnalyzer {
                 .aiSource(fromAi ? "AI07" : "FALLBACK")
                 .narrativeVersion(NARRATIVE_VERSION)
                 .build();
+    }
 
-        try { planner.setPlanAnalysisJson(json.writeValueAsString(resp)); planners.save(planner); }
-        catch (Exception e) { log.warn("[planner:semantic] 캐시 저장 실패 plannerId={}: {}", plannerId, e.getMessage()); }
+    /** 캐시 저장. 판정(APPROVED)은 승인된 결과에만 기록하고, 그 외 저장은 미검증(null)으로 둔다. 응답 전용 품질 필드는 캐시에 넣지 않는다. */
+    private void store(Planner planner, AnalysisResponse resp, boolean approved) {
+        try {
+            planner.setPlanAnalysisJson(json.writeValueAsString(resp));
+            planner.setPlanAnalysisQualityStatus(approved ? PlannerQualityGateSupport.APPROVED : null);
+            planners.save(planner);
+        } catch (Exception e) {
+            log.warn("[planner:semantic] 캐시 저장 실패 plannerId={}: {}", planner.getId(), e.getMessage());
+        }
+    }
 
-        log.info("[planner:semantic] plannerId={} sourceType={} tasks={} target={} total={} aiSource={}",
-                plannerId, req.getSourceType(), tasks.size(), target, total, resp.getAiSource());
+    /** 게이트 경로: 생성(AI07, 실패 시 결정적 폴백) → 보일 문자열 평가 → 재생성 ≤2 → 승인분만 캐시·응답. 미승인은 명시적 실패. */
+    private AnalysisResponse analyzeGated(Planner planner, Request req, String fingerprint) {
+        String requestId = "ps-" + java.util.UUID.randomUUID();
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(requestId, ResponseQualityV1.TaskType.PLANNER_COACHING,
+                ResponseQualityV1.OutputKind.TEXT, analysisRequest(req), analysisEvidence(req), ResponseQualityV1.Constraints.empty(), null);
+        AiResponseQualityGate.Outcome<AnalysisResponse> outcome = qualityGate.generateApproved(spec,
+                (attempt, previous) -> assemble(planner, req, fingerprint, callAi(req)),
+                r -> AiResponseQualityGate.text(visibleText(r)));
+        if (!outcome.approved()) {
+            log.warn("[planner:semantic] quality gate not approved plannerId={} requestId={} code={} attempts={} → 기존 캐시 보존(미노출)",
+                    planner.getId(), requestId, outcome.decision().errorCode(), outcome.decision().attempts());
+            throw PlannerQualityGateSupport.failure(outcome.decision(), requestId, "기존 분석은 유지됩니다.");
+        }
+        AnalysisResponse resp = outcome.value();
+        store(planner, resp, true);
+        resp.setQualityStatus(PlannerQualityGateSupport.APPROVED);
+        resp.setQualityScore(outcome.decision().score());
+        resp.setVerified(Boolean.TRUE);
+        log.info("[planner:semantic] saved(gated) plannerId={} tasks={} aiSource={} score={} attempts={}", planner.getId(),
+                resp.getTasks().size(), resp.getAiSource(), outcome.decision().score(), outcome.decision().attempts());
         return resp;
     }
+
+    /** 평가 대상 = 화면·시간표·PDF 에 보일 모든 문자열(식별자·지문·출처 표식 제외). */
+    static String visibleText(AnalysisResponse r) {
+        StringBuilder b = new StringBuilder();
+        line(b, r.getTitle());
+        line(b, r.getSubject());
+        line(b, r.getLearningGoal());
+        if (r.getTargetMinutes() != null) line(b, "목표 학습 시간 " + r.getTargetMinutes() + "분");
+        line(b, r.getSummary());
+        PlanGoalAlignment g = r.getGoalAlignment();
+        if (g != null) {
+            line(b, g.getSummary());
+            line(b, g.getReason());
+            if (g.getIssues() != null) g.getIssues().forEach(i -> line(b, i));
+        }
+        if (r.getPrerequisites() != null) for (Prerequisite p : r.getPrerequisites()) { line(b, p.getName()); line(b, p.getReason()); }
+        if (r.getTasks() != null) {
+            for (Task t : r.getTasks()) {
+                line(b, t.getTitle() + (t.getRecommendedMinutes() == null ? "" : " (" + (t.getType() == null ? "학습" : typeLabel(t.getType())) + ", " + t.getRecommendedMinutes() + "분)"));
+                line(b, t.getDescription());
+                if (t.getGoalAlignment() != null) line(b, t.getGoalAlignment().getReason());
+                line(b, t.getWhyImportant());
+                if (t.getPrerequisites() != null) for (Prerequisite p : t.getPrerequisites()) { line(b, p.getName()); line(b, p.getReason()); }
+                if (t.getLearningSequence() != null) t.getLearningSequence().forEach(s -> line(b, s));
+            }
+        }
+        if (r.getWarnings() != null) r.getWarnings().forEach(w -> line(b, w));
+        return b.toString().trim();
+    }
+
+    private static void line(StringBuilder b, String s) {
+        if (s != null && !s.isBlank()) b.append(s.trim()).append('\n');
+    }
+
+    private static String analysisRequest(Request req) {
+        StringBuilder b = new StringBuilder("다음 학습 플래너의 학습 활동을 분석해 목표 정합성, 활동별 중요성·학습 순서, 선행 개념, 권장 학습 시간을 제안해 주세요. ");
+        b.append("제목: ").append(nzs(req.getTitle())).append(" / 과목: ").append(nzs(req.getSubject()))
+                .append(" / 학습 목표: ").append(nzs(req.getLearningGoal())).append(" / 학습 활동: ");
+        for (InputItem t : req.getDetailTasks() == null ? List.<InputItem>of() : req.getDetailTasks()) b.append(nzs(t.getTitle())).append("; ");
+        return PlannerQualityGateSupport.clip(b.toString(), 7000);
+    }
+
+    /** 근거 = 이 플래너(소유권 확인)의 입력과 연결된 로드맵 day 정규화 결과(AI07 에 보낸 것과 같은 컨텍스트). */
+    private List<ResponseQualityV1.GroundingEvidence> analysisEvidence(Request req) {
+        StringBuilder b = new StringBuilder();
+        b.append("제목: ").append(nzs(req.getTitle())).append("\n과목: ").append(nzs(req.getSubject()))
+                .append("\n학습 목표: ").append(nzs(req.getLearningGoal())).append("\n내용: ").append(nzs(req.getContent()))
+                .append("\n메모: ").append(nzs(req.getMemo())).append("\n학습 활동:\n");
+        for (InputItem t : req.getDetailTasks() == null ? List.<InputItem>of() : req.getDetailTasks()) {
+            b.append("- ").append(nzs(t.getTitle())).append(t.getDescription() == null || t.getDescription().isBlank() ? "" : ": " + t.getDescription()).append('\n');
+        }
+        if (req.getCoreConcepts() != null && !req.getCoreConcepts().isEmpty()) b.append("핵심 개념: ").append(String.join(", ", req.getCoreConcepts())).append('\n');
+        if (req.getPriorConcepts() != null && !req.getPriorConcepts().isEmpty()) b.append("앞서 다룬 개념: ").append(String.join(", ", req.getPriorConcepts())).append('\n');
+        return PlannerQualityGateSupport.evidence("PLANNER_RECORD", "p" + req.getPlannerId(), b.toString(), 4000, 32000);
+    }
+
+    private static String nzs(String s) { return s == null ? "" : s; }
 
     /**
      * 캐시된 분석 조회(없으면 empty). 플래너 의미가 바뀌면 stale=true 로 재분석을 안내.
      * 문장 규칙이 바뀐 구버전 캐시는 여기서 문장만 재생성해 저장한다(쓰기 필요).
+     * 게이트 ON: 승인 캐시만 보인다. 미검증 캐시(레거시·게이트 OFF 저장·문장 규칙이 바뀐 승인본)는 empty + qualityRedacted 로 가린다.
      */
     @Transactional
     public AnalysisResponse get(Long userId, Long plannerId) {
         Planner planner = context.owned(userId, plannerId);
-        AnalysisResponse cached = renarrateIfOutdated(planner, read(planner.getPlanAnalysisJson()));
+        AnalysisResponse cached;
+        if (gateOn()) {
+            AnalysisResponse raw = read(planner.getPlanAnalysisJson());
+            if (raw == null) {
+                return AnalysisResponse.builder().plannerId(plannerId).title(planner.getTitle()).empty(true).build();
+            }
+            if (!PlannerQualityGateSupport.approved(planner.getPlanAnalysisQualityStatus())
+                    || !Objects.equals(raw.getNarrativeVersion(), NARRATIVE_VERSION)) {
+                return redacted(planner);
+            }
+            cached = raw;
+            cached.setQualityStatus(PlannerQualityGateSupport.APPROVED);
+            cached.setVerified(Boolean.TRUE);
+        } else {
+            cached = renarrateIfOutdated(planner, read(planner.getPlanAnalysisJson()));
+        }
         if (cached == null) {
             return AnalysisResponse.builder().plannerId(plannerId).title(planner.getTitle()).empty(true).build();
         }
@@ -125,10 +259,27 @@ public class PlannerSemanticAnalyzer {
         return cached;
     }
 
-    /** 시간표/PDF 생성이 사용할 최신 분석. 캐시가 없으면 즉시 1회 분석해 생성한다. */
+    private static AnalysisResponse redacted(Planner planner) {
+        return AnalysisResponse.builder().plannerId(planner.getId()).title(planner.getTitle()).empty(true)
+                .summary(PlannerQualityGateSupport.REDACTED_MESSAGE).qualityRedacted(true).build();
+    }
+
+    /**
+     * 시간표/PDF 생성이 사용할 최신 분석. 캐시가 없으면 즉시 1회 분석해 생성한다.
+     * 게이트 ON: 승인 캐시(현재 문장 규칙)만 재사용하고, 아니면 게이트 경로로 새로 만든다(미승인이면 예외 — 시간표도 만들지 않는다).
+     */
     @Transactional
     public AnalysisResponse ensure(Long userId, Long plannerId) {
         Planner planner = context.owned(userId, plannerId);
+        if (gateOn()) {
+            AnalysisResponse cached = PlannerQualityGateSupport.approved(planner.getPlanAnalysisQualityStatus())
+                    ? read(planner.getPlanAnalysisJson()) : null;
+            if (cached != null && Objects.equals(cached.getNarrativeVersion(), NARRATIVE_VERSION)
+                    && cached.getTasks() != null && !cached.getTasks().isEmpty()) {
+                return cached;
+            }
+            return analyze(userId, plannerId);
+        }
         AnalysisResponse cached = renarrateIfOutdated(planner, read(planner.getPlanAnalysisJson()));
         if (cached != null && cached.getTasks() != null && !cached.getTasks().isEmpty()) return cached;
         return analyze(userId, plannerId);
@@ -196,7 +347,8 @@ public class PlannerSemanticAnalyzer {
         }
         cached.setNarrativeVersion(NARRATIVE_VERSION);
 
-        try { planner.setPlanAnalysisJson(json.writeValueAsString(cached)); planners.save(planner); }
+        // 문장을 다시 만든 캐시는 평가받은 본문과 다르다 → 승인 판정을 지운다(게이트 ON 에서 미검증으로 취급).
+        try { planner.setPlanAnalysisJson(json.writeValueAsString(cached)); planner.setPlanAnalysisQualityStatus(null); planners.save(planner); }
         catch (Exception e) { log.warn("[planner:semantic] 구버전 캐시 문장 재생성 저장 실패 plannerId={}: {}", planner.getId(), e.getMessage()); }
         log.info("[planner:semantic] 구버전 캐시 문장 재생성 plannerId={} tasks={}", planner.getId(), tasks.size());
         return cached;

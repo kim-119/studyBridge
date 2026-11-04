@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 @Getter
-@Builder
+@Builder(toBuilder = true)
 @NoArgsConstructor
 @AllArgsConstructor
 public class SummaryDTO {
@@ -39,4 +39,8 @@ public class SummaryDTO {
     private Long elapsedMs;
     private Boolean usedFallback;
     private Boolean cacheHit;
+    // 품질 게이트(response-quality.v1). 게이트 OFF 면 null(기존 응답과 동일). APPROVED 일 때만 본문이 실린다.
+    private String qualityStatus;
+    private Double qualityScore;
+    private Boolean verified;
 }

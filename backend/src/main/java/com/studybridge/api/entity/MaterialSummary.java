@@ -29,6 +29,13 @@ public class MaterialSummary {
     @Column(columnDefinition = "TEXT")
     private String coreContents;
 
+    // Spring 품질 게이트 판정. APPROVED 만 기록(null = 게이트 OFF 시기/레거시 → 게이트 ON 에서는 캐시 재노출 금지, 재생성).
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
+    @Column(name = "quality_score")
+    private Double qualityScore;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 }

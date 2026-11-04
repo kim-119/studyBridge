@@ -46,7 +46,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         
-                .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll().requestMatchers("/api/users/register", "/api/users/login", "/api/users/refresh", "/api/users/password-reset/**", "/error", "/temp-materials/**", "/ws-group/**", "/api/banners/main", "/api/test/**").permitAll()
+                .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll().requestMatchers("/api/users/register", "/api/users/login", "/api/users/refresh", "/api/users/password-reset/**", "/error", "/temp-materials/**", "/ws-group/**", "/api/banners/main").permitAll()
                         // Android 앱 자체 배포 공개 read-only 엔드포인트(버전 메타데이터·APK 302). 개인정보 없음. GET 만 허용.
                         .requestMatchers(HttpMethod.GET, "/api/app/version", "/api/app/downloads/android/*").permitAll()
 

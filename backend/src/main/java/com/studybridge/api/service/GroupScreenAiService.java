@@ -1,6 +1,10 @@
 package com.studybridge.api.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
+import com.studybridge.api.ai.quality.GateDecision;
+import com.studybridge.api.ai.quality.QualityEvaluatorClient;
 import com.studybridge.api.dto.ScreenAiDTO.AnalyzeRequest;
 import com.studybridge.api.entity.GroupStudyMemberStatus;
 import com.studybridge.api.entity.User;
@@ -11,6 +15,7 @@ import com.studybridge.api.service.VideoConnectionMetadata.Kind;
 import com.studybridge.api.service.VisionUpstreamClient.VisionCall;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -86,6 +91,28 @@ public class GroupScreenAiService {
      * 번지지 않게 한다. 동시 해제 수는 진행 중인 비전 요청 수(전용 연결 풀 + 대기열)를 넘지 않는다.
      */
     private final Scheduler cleanupScheduler = Schedulers.newBoundedElastic(4, 1000, "screen-ai-cleanup", 60, true);
+
+    /** 품질 게이트(response-quality.v1, VISION_CAPTION). 생성자 시그니처 보존을 위해 setter 주입 — null 이면 게이트 OFF. */
+    private AiResponseQualityGate qualityGate;
+    /** 평가기 서킷 상태 확인용(열려 있으면 VLM 추론 자체를 하지 않는다 — 어차피 노출할 수 없다). */
+    private QualityEvaluatorClient qualityEvaluator;
+
+    /** 재생성으로 해결되지 않는 거절 사유: ai07 은 판독 근거(관찰)를 응답에 싣지 않는다(인계 5.3) → 재생성해도 근거가 생기지 않는다. */
+    static final Set<String> NO_REGENERATION_CODES = Set.of("VISION_NO_OBSERVATION_EVIDENCE");
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    @Autowired(required = false)
+    public void setQualityEvaluator(QualityEvaluatorClient qualityEvaluator) {
+        this.qualityEvaluator = qualityEvaluator;
+    }
+
+    private boolean qualityGateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
 
     public GroupScreenAiService(GroupVideoCallService videoCallService,
                                 OpenViduService openVidu,
@@ -209,7 +236,8 @@ public class GroupScreenAiService {
         String mime = ScreenAiImageValidator.normalizeMime(req.mime() == null ? ScreenAiImageValidator.JPEG : req.mime());
         ScreenAiImageValidator.ValidatedImage image = ScreenAiImageValidator.validate(req.image(), mime, imageLimits);
 
-        AiRequestGuard.Lock lock = guard.tryLock(AiRequestGuard.lockKey(FEATURE, userId, "inflight"), upstream.timeout().plusSeconds(30));
+        final boolean gateOn = qualityGateOn();
+        AiRequestGuard.Lock lock = guard.tryLock(AiRequestGuard.lockKey(FEATURE, userId, "inflight"), lockTtl(gateOn));
         if (!lock.acquired()) {
             throw new ScreenAiException(HttpStatus.TOO_MANY_REQUESTS, "SCREEN_AI_IN_PROGRESS",
                     "이전 화면 분석이 아직 진행 중입니다. 끝난 뒤 다시 질문해 주세요.", true, 3);
@@ -244,7 +272,10 @@ public class GroupScreenAiService {
                 requestId, groupId, userId, share.sharerUserId(), share.connectionId(), image.width(), image.height(), image.bytes(),
                 question.length());
 
-        Mono<Map<String, Object>> call$ = upstream.analyze(call).map(r -> {
+        // 게이트 ON: VLM 답변을 평가해 승인된 것만 응답한다(거절·평가 불가 = SCREEN_AI_QUALITY_* 명시 실패, 답변 본문 미노출).
+        Mono<VisionOutcome> outcome$ = gateOn ? gatedAnalyze(call) : upstream.analyze(call).map(r -> new VisionOutcome(r, null));
+        Mono<Map<String, Object>> call$ = outcome$.map(o -> {
+            VisionUpstreamClient.VisionResult r = o.result();
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("requestId", requestId);
             body.put("clientRequestId", clientRequestId);
@@ -267,6 +298,11 @@ public class GroupScreenAiService {
             body.put("queueWaitMs", r.queueWaitMs());
             body.put("inferenceMs", r.inferenceMs());
             body.put("analyzedAt", clock.millis());
+            if (o.decision() != null) {
+                body.put("qualityStatus", "APPROVED");
+                body.put("qualityScore", o.decision().score());
+                body.put("verified", Boolean.TRUE);
+            }
             return body;
         });
         // 취소 신호가 먼저 오면 firstWithSignal 이 ai07 호출을 구독 해제한다 → WebClient 연결 종료 → ai07 추론 취소.
@@ -282,6 +318,85 @@ public class GroupScreenAiService {
                             requestId, groupId, userId, outcome.get(), sig, clock.millis() - startedAt);
                     releaseLockOnce(lock, lockReleased, requestId);
                 });
+    }
+
+    // ───────────────────────────── 품질 게이트(VISION_CAPTION) ─────────────────────────────
+
+    record VisionOutcome(VisionUpstreamClient.VisionResult result, GateDecision decision) {}
+
+    /** 사용자별 진행 중 잠금 TTL: 게이트 ON 이면 재생성(최대 2회)·평가 시간까지 덮는다(잠금이 처리 도중 풀려 동시 요청이 끼지 않게). */
+    Duration lockTtl(boolean gateOn) {
+        if (!gateOn) return upstream.timeout().plusSeconds(30);
+        int attempts = 1 + qualityGate.settings().maxRegenerations();
+        long evalMs = qualityGate.settings().evaluateTimeoutMs() + qualityGate.settings().queueWaitMs() + 2000;
+        return upstream.timeout().multipliedBy(attempts).plusMillis(evalMs * attempts).plusSeconds(30);
+    }
+
+    /**
+     * 생성 → 평가(VISION_CAPTION / vision_text, 근거 없음 — ai07 이 판독 근거를 돌려주지 않는다) → 거절 시 재생성(최대 settings.maxRegenerations).
+     * AiResponseQualityGate.generateApproved 와 같은 규칙을 리액티브로 따른다(이벤트 루프를 막지 않고, 취소 시 진행 중 VLM/평가 호출도 끊긴다):
+     *  평가기 장애(VALIDATION_ERROR) = 즉시 중단, 같은 초안 반복 = 중단, 재생성 중 상류 실패 = 중단(직전 판정으로 실패), 근거 부재 거절 = 재생성 안 함,
+     *  다음 시도가 기존 단일 호출 시간 상한을 넘길 것으로 보이면 재생성 안 함.
+     *  첫 생성의 상류 오류는 기존 SCREEN_AI_* 오류 그대로. 서킷 열림이면 VLM 을 부르지 않는다.
+     */
+    Mono<VisionOutcome> gatedAnalyze(VisionCall call) {
+        if (qualityEvaluator != null && !qualityEvaluator.acceptingRequests()) {
+            return Mono.error(qualityFailure(GateDecision.unavailable("EVALUATOR_CIRCUIT_OPEN", 0, 0)));
+        }
+        return visionAttempt(call, 0, null, ConcurrentHashMap.newKeySet(), clock.millis());
+    }
+
+    private Mono<VisionOutcome> visionAttempt(VisionCall base, int attempt, GateDecision previous, Set<String> seenDrafts, long startedAt) {
+        VisionCall c = attempt == 0 ? base : new VisionCall(base.requestId() + "-r" + attempt, base.groupId(), base.streamId(),
+                base.sharerUserId(), base.askerUserId(), base.question(), base.imageBase64(), base.mime());
+        Mono<VisionUpstreamClient.VisionResult> gen = upstream.analyze(c);
+        if (attempt > 0) {
+            gen = gen.onErrorResume(e -> !(e instanceof ScreenAiException se && "SCREEN_AI_CANCELLED".equals(se.getCode())),
+                    e -> Mono.error(qualityFailure(previous)));
+        }
+        return gen.flatMap(r -> {
+            String answer = r.answer();
+            if (!seenDrafts.add(answer)) {
+                return Mono.error(qualityFailure(GateDecision.noDraft("IDENTICAL_DRAFT_REPEATED", attempt + 1)));
+            }
+            String model = r.model() != null && r.model().length() <= 128 ? r.model() : null;
+            AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(base.requestId(), ResponseQualityV1.TaskType.VISION_CAPTION,
+                    ResponseQualityV1.OutputKind.VISION_TEXT, base.question(), List.of(), ResponseQualityV1.Constraints.empty(), model);
+            return qualityGate.evaluateOnce(spec, base.requestId() + ".qv" + attempt, attempt, AiResponseQualityGate.text(answer))
+                    .onErrorResume(e -> Mono.just(GateDecision.unavailable("EVALUATOR_EXCEPTION", attempt + 1, 0)))
+                    .flatMap(d -> {
+                        if (d.approved()) {
+                            return Mono.just(new VisionOutcome(r, d));
+                        }
+                        // 시간 예산: 지금까지의 시도 평균만큼 한 번 더 걸려도 기존 단일 호출 상한(ai.vision.timeout-seconds) 안이어야 재생성한다
+                        //  (브라우저 대기 상한 SCREEN_AI_TIMEOUT_MS 는 이 상한 기준 — 재생성 때문에 클라이언트 타임아웃으로 끝나지 않게).
+                        long elapsed = Math.max(0, clock.millis() - startedAt);
+                        boolean overBudget = elapsed + elapsed / (attempt + 1) > upstream.timeout().toMillis();
+                        boolean stop = d.qualityStatus() == ResponseQualityV1.QualityStatus.VALIDATION_ERROR
+                                || attempt >= qualityGate.settings().maxRegenerations()
+                                || d.reasonCodes().stream().anyMatch(NO_REGENERATION_CODES::contains)
+                                || overBudget;
+                        log.info("[SCREEN-AI] quality requestId={} attempt={} status={} score={} codes={} elapsedMs={} next={}", base.requestId(),
+                                attempt, d.qualityStatus(), d.score(), d.reasonCodes(), elapsed, stop ? "STOP" : "REGENERATE");
+                        return stop ? Mono.<VisionOutcome>error(qualityFailure(d))
+                                : visionAttempt(base, attempt + 1, d, seenDrafts, startedAt);
+                    });
+        });
+    }
+
+    /** 품질 거절/평가 불가 → SCREEN_AI_* 오류 형식({status, code, message, retryable, details}). 답변 본문·평가 사유 원문은 싣지 않는다. */
+    static ScreenAiException qualityFailure(GateDecision d) {
+        boolean unavailable = d.qualityStatus() == ResponseQualityV1.QualityStatus.VALIDATION_ERROR;
+        String errorCode = unavailable ? GateDecision.UNAVAILABLE : GateDecision.REJECTED;
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("errorCode", errorCode);
+        details.put("qualityStatus", d.qualityStatus().name());
+        details.put("verified", Boolean.FALSE);
+        details.put("attempts", d.attempts());
+        if (d.reasonCodes() != null && !d.reasonCodes().isEmpty()) details.put("reasonCodes", d.reasonCodes());
+        return new ScreenAiException(unavailable ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.UNPROCESSABLE_ENTITY,
+                unavailable ? "SCREEN_AI_QUALITY_UNAVAILABLE" : "SCREEN_AI_QUALITY_REJECTED",
+                GateDecision.userMessage(errorCode), true, unavailable ? 10 : null, details);
     }
 
     /**
