@@ -2775,6 +2775,7 @@ async def multi_chat_endpoint(request: MultiChatRequest, http_request: Request):
         if _rejected is not None:
             return _rejected
         _rt = _SR.new_runtime_for(_req, getattr(_req, "requestId", None))
+        _req = _SR.attach_learning_context(_req, _rt, http_request.headers)  # Phase D R3(기본 OFF)
         try:
             from app.services import multi_chat_redis_memory as _MEM
             _req, _ = await _MEM.attach_memory_to_request(_req)

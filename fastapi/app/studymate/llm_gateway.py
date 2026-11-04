@@ -196,6 +196,17 @@ def _ns_to_ms(v: Any) -> Optional[int]:
         return None
 
 
+def _with_learning_context(req: LLMRequest) -> LLMRequest:
+    """Phase D R3 단일 주입 지점: 요청 런타임에 적용된 learning-context 가 있으면 에이전트 답변 태스크(render/repair/engine)의
+    user 메시지 앞에 데이터 블록을 붙인다. 없거나(기본 OFF) 오류면 req 그대로(같은 객체)."""
+    try:
+        from app.studymate import learning_context_intake as LCI
+        return LCI.apply_to_llm_request(req)
+    except Exception as e:  # 메모리 주입 실패가 생성을 막지 않는다
+        logger.warning("[LLM] learning context skipped task=%s: %s", req.task, type(e).__name__)
+        return req
+
+
 def generate(
     req: LLMRequest,
     *,
@@ -225,6 +236,7 @@ def generate(
     if fault == "model_missing":
         raise LLMModelNotFound("fault injection: model missing")
 
+    req = _with_learning_context(req)
     body = _payload(req)
     # AI Gateway(기본 off): 슬롯 대기는 이 호출의 남은 예산(hard_deadline) 안에서, 취소 토큰을 존중한다.
     # 멀티에이전트의 에이전트별 순차 호출도 각각 슬롯을 받으므로 동시성 한도를 우회하지 못한다.
