@@ -50,6 +50,7 @@ public class AiIntegrationService {
         private final AiFailoverExecutor aiFailoverExecutor;
         // Global Response Quality Gate(기본 OFF). null(테스트) 이면 OFF.
         private final com.studybridge.api.ai.quality.AiResponseQualityGate qualityGate;
+        private final com.studybridge.api.ai.training.TrainingCandidateCollector trainingCollector;
 
         // 키워드 정의 호출 타임아웃 (env 제어, 하드코딩 금지)
         @org.springframework.beans.factory.annotation.Value("${ai.server.fastapi.keyword-define-timeout-seconds:60}")
@@ -687,7 +688,20 @@ public class AiIntegrationService {
                                         return response;
                                 }, r -> com.studybridge.api.ai.quality.AiResponseQualityGate.text(summaryVisibleText(r)));
                 if (outcome.approved()) {
-                        return persistSummary(material, outcome.value(), outcome.decision());
+                        SummaryDTO saved = persistSummary(material, outcome.value(), outcome.decision());
+                        if (trainingCollector != null) {
+                                // 학습 후보(동의·플래그·권리 판단은 수집기). 근거 = 평가에 쓴 PDF 원문 앞부분 인용(최대 3개).
+                                List<com.studybridge.api.ai.contract.v1.TrainingSampleV1.Evidence> ev = spec.evidence().stream().limit(3)
+                                                .map(g -> new com.studybridge.api.ai.contract.v1.TrainingSampleV1.Evidence("PDF_ORIGINAL",
+                                                                mid, null, null, null, g.chunkId(),
+                                                                g.text() != null && g.text().length() > 4000 ? g.text().substring(0, 4000) : g.text()))
+                                                .toList();
+                                trainingCollector.onApproved(new com.studybridge.api.ai.training.TrainingCandidateCollector.Candidate(
+                                                material.getUserId(), com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType.PDF_SUMMARY, rid,
+                                                spec.originalRequest(), summaryVisibleText(outcome.value()), mid, ev, outcome.decision(),
+                                                aiMetaStr(outcome.value(), "model"), "material-summary-v1"));
+                        }
+                        return saved;
                 }
                 if (upstreamFailure[0] != null && outcome.decision().attempts() <= 1) {
                         return upstreamFailure[0];

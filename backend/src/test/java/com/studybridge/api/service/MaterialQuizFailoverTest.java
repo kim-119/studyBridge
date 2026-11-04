@@ -85,7 +85,7 @@ class MaterialQuizFailoverTest {
         return new AiIntegrationService(materials, summaries, quizRepository,
                 mock(MaterialMemoRepository.class), mock(MaterialQuestionRepository.class), mock(RoadmapRepository.class),
                 mock(RoadmapTaskRepository.class), p, mock(IntentRouterService.class), mock(LearningLoopService.class),
-                mock(MaterialQuizService.class), new AiFailoverExecutor(ups), null);
+                mock(MaterialQuizService.class), new AiFailoverExecutor(ups), null, null);
     }
 
     private static QuizDTO.Request req() {

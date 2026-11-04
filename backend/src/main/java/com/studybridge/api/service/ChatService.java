@@ -52,6 +52,7 @@ public class ChatService {
         private final RedisChatService redisChatService;
         private final AiMultiChatFailoverService aiFailover;
         private final com.studybridge.api.ai.quality.QualityStreamGate qualityStreamGate;
+        private final com.studybridge.api.ai.training.TrainingCandidateCollector trainingCollector;
 
         /** 품질 게이트 ON 여부(테스트 팩토리에서 null 이면 OFF). */
         private boolean qualityGateOn() {
@@ -1225,6 +1226,8 @@ public class ChatService {
                 final java.util.concurrent.atomic.AtomicReference<String> turnIdRef = new java.util.concurrent.atomic.AtomicReference<>(null);
                 // 취소(브라우저 절단/Stop/새 질문/모드·방 전환) 시점까지 받은 성공 답변 — 이미 사용자에게 보인 답변은 잃지 않는다.
                 final List<String> receivedAnswers = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+                // 학습 후보 수집용 소유자 id(프록시 getId 는 초기화 없음 — 스트림 콜백은 트랜잭션 밖).
+                final Long ownerId = room.getUser() != null ? room.getUser().getId() : null;
 
                 // 리액티브 체인을 끊지 않는다(Flux.create/내부 subscribe 없음): MVC 가 이 Flux 를 구독하고, 브라우저가 끊기면 MVC cancel →
                 //  이 체인 cancel → WebClient 구독 취소(업스트림 소켓 종료) → AI07 [SSE-CANCEL] 절단 감시가 추론을 멈춘다(§16).
@@ -1262,6 +1265,7 @@ public class ChatService {
                                                 // FastAPI 이벤트는 필드 변형 없이 그대로 중계하고, all_complete 만 별도 트랜잭션으로 영속화한다(멱등).
                                                 if (persisted.compareAndSet(false, true)) {
                                                         persistStreamedAnswers(roomId, ev.data(), requestId);
+                                                        collectApprovedAnswers(ownerId, requestId, request, room, ev.data());
                                                 }
                                         }
                                 })
@@ -1275,6 +1279,40 @@ public class ChatService {
                                                                 persistPartialAnswers(roomId, requestId, turnIdRef.get(), snapshot));
                                         }
                                 });
+        }
+
+        /**
+         * 게이트가 승인한 답변 → 학습 후보(동의·플래그는 수집기가 판단). 게이트 OFF 면 승인 표시가 없으므로 아무것도 하지 않는다.
+         * 사용자 응답·영속화와 독립(예외 무시).
+         */
+        private void collectApprovedAnswers(Long ownerId, String requestId, ChatDTO.MultiChatRequest request, AgentChatRoom room,
+                        String allCompleteJson) {
+                if (!qualityGateOn() || trainingCollector == null || ownerId == null) {
+                        return;
+                }
+                try {
+                        Map<String, Object> resp = objectMapper.readValue(allCompleteJson, new TypeReference<Map<String, Object>>() {});
+                        if (!(resp.get("answers") instanceof List<?> answers)) {
+                                return;
+                        }
+                        com.studybridge.api.ai.contract.v1.ResponseQualityV1.TaskType task =
+                                        com.studybridge.api.ai.quality.QualityStreamGate.taskTypeForLearningMode(
+                                                        firstNonBlank(request.getLearningMode(), room.getLearningMode(), "basic"));
+                        for (Object o : answers) {
+                                if (o instanceof Map<?, ?> a && "APPROVED".equals(a.get("qualityStatus"))) {
+                                        Object text = a.get("answer") != null ? a.get("answer") : a.get("content");
+                                        trainingCollector.onApproved(new com.studybridge.api.ai.training.TrainingCandidateCollector.Candidate(
+                                                        ownerId, task, requestId, request.getMessage(), text != null ? text.toString() : null,
+                                                        request.getMaterialId(), List.of(),
+                                                        new com.studybridge.api.ai.quality.GateDecision(true,
+                                                                        com.studybridge.api.ai.contract.v1.ResponseQualityV1.QualityStatus.APPROVED,
+                                                                        null, null, List.of(), null, null, 1, 0),
+                                                        null, "studymate-sse-2"));
+                                }
+                        }
+                } catch (Exception e) {
+                        log.warn("[TRAINING-COLLECT] roomId={} requestId={} 수집 생략: {}", room.getId(), requestId, e.getClass().getSimpleName());
+                }
         }
 
         private String extractString(String json, String key) {

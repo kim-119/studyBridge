@@ -60,6 +60,8 @@ class MaterialSummaryQualityGateTest {
         volatile IntFunction<String> evaluatorPolicy; // 평가 순번 → 응답 JSON(null 이면 503)
         volatile boolean summaryFails;
         MaterialSummaryRepository summaries;
+        final com.studybridge.api.ai.training.TrainingCandidateCollector collector =
+                        org.mockito.Mockito.mock(com.studybridge.api.ai.training.TrainingCandidateCollector.class);
 
         @BeforeEach
         void up() throws Exception {
@@ -114,7 +116,7 @@ class MaterialSummaryQualityGateTest {
                 return new AiIntegrationService(materials, summaries, mock(MaterialQuizRepository.class), mock(MaterialMemoRepository.class),
                                 mock(MaterialQuestionRepository.class), mock(RoadmapRepository.class), mock(RoadmapTaskRepository.class), wc,
                                 mock(IntentRouterService.class), mock(LearningLoopService.class), mock(MaterialQuizService.class),
-                                new AiFailoverExecutor(ups), gate);
+                                new AiFailoverExecutor(ups), gate, collector);
         }
 
         MaterialSummary saved() {

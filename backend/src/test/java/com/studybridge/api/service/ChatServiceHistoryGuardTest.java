@@ -24,7 +24,7 @@ import static org.mockito.Mockito.*;
 class ChatServiceHistoryGuardTest {
 
     private static ChatService service(AgentChatRoomRepository rooms, ChatMessageRepository messages) {
-        return new ChatService(rooms, messages, null, null, new com.fasterxml.jackson.databind.ObjectMapper(), null, null, null, null, null);
+        return new ChatService(rooms, messages, null, null, new com.fasterxml.jackson.databind.ObjectMapper(), null, null, null, null, null, null);
     }
 
     private static AgentChatRoom room(long roomId, long ownerId) {

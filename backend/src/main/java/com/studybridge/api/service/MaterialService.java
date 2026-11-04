@@ -39,6 +39,7 @@ public class MaterialService {
     private final PlannerService plannerService;
     private final MaterialQuizScoreService materialQuizScoreService;
     private final com.studybridge.api.repository.MaterialGroupShareRepository materialGroupShareRepository;
+    private final com.studybridge.api.ai.training.TrainingCandidateCollector trainingCollector;
 
     @Transactional
     public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords,
@@ -253,6 +254,10 @@ public class MaterialService {
         materialRepository.delete(material);
         materialGroupShareRepository.deleteByMaterialId(material.getMaterialId());
         materialQuizScoreService.deleteForQuizzes(quizIds);
+        // 학습 후보: 이 자료에서 파생된 미전송 후보 파기 + (동의 이력이 있으면) ai07 파기 요청 적재. 실패해도 삭제는 진행.
+        if (trainingCollector != null) {
+            trainingCollector.onMaterialDeleted(userId, materialId);
+        }
 
         if (s3Key != null && !s3Key.isBlank()) {
             runAfterCommit(() -> {

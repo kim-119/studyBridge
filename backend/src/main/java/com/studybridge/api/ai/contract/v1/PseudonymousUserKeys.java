@@ -23,6 +23,13 @@ public class PseudonymousUserKeys {
         this.keys = keys;
     }
 
+    /** 용도별 파생 식별자(소문자 hex 24자 — ai07 식별자 정규식 [A-Za-z0-9._:-] 안). domain 으로 분리돼 가명 키와 연결되지 않는다. */
+    public String derive(String domain, long id) {
+        byte[] mac = AiContractSigning.hmac(keys.key(AiSigningKeys.Purpose.PSEUDONYM),
+                ("studybridge:" + domain + ":v1:" + id).getBytes(StandardCharsets.UTF_8));
+        return java.util.HexFormat.of().formatHex(mac).substring(0, 24);
+    }
+
     public String of(long userId) {
         byte[] mac = AiContractSigning.hmac(keys.key(AiSigningKeys.Purpose.PSEUDONYM),
                 (DOMAIN + userId).getBytes(StandardCharsets.UTF_8));
