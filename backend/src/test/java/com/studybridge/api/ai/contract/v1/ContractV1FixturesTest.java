@@ -83,12 +83,9 @@ class ContractV1FixturesTest {
                                 open.put(e.getKey(), e.getValue().get("openIssue").asText());
                         }
                 });
-                // ai07 이 맞추면 ai07Observed 를 갱신하고 이 목록에서 뺀다(계약 불일치 = FAIL 로 관리).
-                assertEquals(Map.of(
-                                "learning-context.v1/ec2_invalid_request_id_trailing_newline.json", "C-ID-1",
-                                "learning-context.v1/ec2_invalid_string_material_id.json", "C-TYPE-1",
-                                "response-quality.v1/ec2_invalid_output_score_above_100.json", "C-RQ-2",
-                                "training-sample.v1/ec2_invalid_naive_datetime.json", "C-TIME-1"), open);
+                // 2026-11-04 ai07 d7346fc6 에서 C-ID-1/C-TYPE-1/C-RQ-2/C-TIME-1 해소(crosscheck fixtures=30 mismatches=0).
+                // 새 불일치가 생기면 openIssue 를 달고 여기 목록에 추가한다(계약 불일치 = FAIL 로 관리, 숨기지 않음).
+                assertEquals(Map.of(), open);
         }
 
         @Test

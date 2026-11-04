@@ -8,7 +8,8 @@ import java.util.List;
  * response-quality.v1 — 사용자 노출 AI 생성물의 품질 게이트 입력/출력(EC2 canonical).
  *
  * 승인(사용자 노출 허용)의 유일한 판정 함수는 {@link #isDisplayable(Output, String)} 이다:
- *   success && verified && qualityStatus==APPROVED && score!=null && 80<=score<=100 && minimumScore==80
+ *   validate(output) 통과 && success && verified && qualityStatus==APPROVED && score!=null && 80<=score<=100
+ *   && minimumScore ∈ {null, 80}(승인 기준은 항상 Spring 상수 80 — 평가기가 보낸 값으로 낮출 수 없다)
  *   && hardFail==false && HARD 위반 없음 && mandatoryValidatorsPassed!=false && requestId 일치
  * score 는 자체 rubric 점수이며 "정답일 확률 80%" 가 아니다(보정되지 않음).
  */
@@ -171,7 +172,9 @@ public final class ResponseQualityV1 {
      * 사용자 노출 가능 판정의 유일한 진입점. null/평가 실패/requestId 불일치/스키마 불일치는 모두 false(fail-closed).
      */
     public static boolean isDisplayable(Output o, String expectedRequestId) {
+        // 수신 경로가 이미 validate 했더라도 여기서 다시 한다(계약 위반 출력은 어떤 경로로 들어와도 노출 불가).
         return o != null
+                && validate(o).ok()
                 && SCHEMA_VERSION.equals(o.schemaVersion())
                 && expectedRequestId != null && expectedRequestId.equals(o.requestId())
                 && o.qualityStatus() == QualityStatus.APPROVED

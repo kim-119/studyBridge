@@ -87,6 +87,10 @@ public record TrainingSampleV1(
         v.check(s.candidateAnswer() == null || ContractJson.len(s.candidateAnswer()) >= 1, "candidateAnswer:min_length");
         v.maxLen(s.candidateAnswer(), 12000, "candidateAnswer");
         v.maxLen(s.verifiedAnswer(), 12000, "verifiedAnswer");
+        // 생성 경로(파싱을 거치지 않음)에도 같은 경계: 고립 서러게이트(C-JSON-2)·연도 범위(C-TIME-2).
+        v.check(!ContractJson.hasLoneSurrogate(s.question()) && !ContractJson.hasLoneSurrogate(s.candidateAnswer())
+                && !ContractJson.hasLoneSurrogate(s.verifiedAnswer()), "text:lone_surrogate");
+        v.check(ContractJson.yearInRange(s.consentTimestamp()) && ContractJson.yearInRange(s.createdAt()), "datetime:year_range");
         if (s.verification() != null) {
             v.required(s.verification().method(), "verification.method");
             v.maxLen(s.verification().reviewerId(), 64, "verification.reviewerId");

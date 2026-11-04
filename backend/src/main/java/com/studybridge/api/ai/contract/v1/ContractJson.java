@@ -1,15 +1,25 @@
 package com.studybridge.api.ai.contract.v1;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.core.StreamReadFeature;
+import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.cfg.CoercionAction;
 import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
+import com.fasterxml.jackson.databind.deser.std.StdScalarDeserializer;
+import com.fasterxml.jackson.databind.deser.std.StringDeserializer;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.type.LogicalType;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.datatype.jsr310.deser.InstantDeserializer;
 
+import java.io.IOException;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
@@ -20,11 +30,23 @@ import java.util.regex.Pattern;
  *    (EC2 canonical: JSON 타입 엄격. ai07 Pydantic lax 모드는 "42"→42 를 받아들인다 → 인계 C-TYPE-1)
  *  · 길이는 Python len() 과 같게 코드포인트 수로 센다.
  *  · 식별자 정규식은 전체 일치(끝 개행 불허 — Python '$' 는 끝 개행을 허용하므로 ai07 은 '\Z' 로 맞출 것, 인계 C-ID-1).
+ *  · 중복 키 거부(C-JSON-1): Jackson 기본값(마지막 값 채택)은 파서마다 다른 값을 보게 만드는 공격면 → STRICT_DUPLICATE_DETECTION.
+ *  · 고립 서러게이트 거부(C-JSON-2): UTF-8 로 표현할 수 없는 문자열("\ud800")은 Python 과 같이 계약 위반.
+ *  · 시각 연도 0001..9999(C-TIME-2): Python datetime 표현 범위. 오프셋은 보존해 파싱하고(문자열에 적힌 그대로) 그 연도를 본다
+ *    — ai07 jtypes 와 같은 기준. epoch 숫자는 UTC 기준 연도.
  */
 public final class ContractJson {
 
+    public static final int MIN_YEAR = 1;
+    public static final int MAX_YEAR = 9999;
+
     public static final ObjectMapper STRICT = JsonMapper.builder()
             .addModule(new JavaTimeModule())
+            .addModule(new SimpleModule("contract-v1-strict")
+                    .addDeserializer(String.class, new NoLoneSurrogateStringDeserializer())
+                    .addDeserializer(OffsetDateTime.class, new BoundedOffsetDateTimeDeserializer()))
+            .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+            .disable(DeserializationFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
             .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
@@ -50,6 +72,61 @@ public final class ContractJson {
     public static final Pattern HEX64 = Pattern.compile("[0-9a-f]{64}");
 
     private ContractJson() {
+    }
+
+    /** 짝이 맞지 않는 UTF-16 서러게이트가 있으면 true(UTF-8 인코딩 불가 — Java getBytes 는 '?' 로 바꿔 서명·해시가 어긋난다). */
+    public static boolean hasLoneSurrogate(String s) {
+        if (s == null) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 >= s.length() || !Character.isLowSurrogate(s.charAt(i + 1))) {
+                    return true;
+                }
+                i++;
+            } else if (Character.isLowSurrogate(c)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static boolean yearInRange(OffsetDateTime t) {
+        return t == null || (t.getYear() >= MIN_YEAR && t.getYear() <= MAX_YEAR);
+    }
+
+    static final class NoLoneSurrogateStringDeserializer extends StdScalarDeserializer<String> {
+        NoLoneSurrogateStringDeserializer() {
+            super(String.class);
+        }
+
+        @Override
+        public String deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+            String v = StringDeserializer.instance.deserialize(p, ctxt);
+            if (hasLoneSurrogate(v)) {
+                return (String) ctxt.handleWeirdStringValue(String.class, "lone surrogate", "string is not valid Unicode (C-JSON-2)");
+            }
+            return v;
+        }
+    }
+
+    static final class BoundedOffsetDateTimeDeserializer extends StdScalarDeserializer<OffsetDateTime> {
+        BoundedOffsetDateTimeDeserializer() {
+            super(OffsetDateTime.class);
+        }
+
+        @Override
+        public OffsetDateTime deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+            JsonToken t = p.currentToken();
+            OffsetDateTime v = InstantDeserializer.OFFSET_DATE_TIME.deserialize(p, ctxt);
+            if (!yearInRange(v)) {
+                return (OffsetDateTime) ctxt.handleWeirdStringValue(OffsetDateTime.class, String.valueOf(t),
+                        "year outside 0001..9999 (C-TIME-2)");
+            }
+            return v;
+        }
     }
 
     public static int len(String s) {

@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
  * 교차 언어 서명 벡터(signing-vectors.v1, ai07 Python/OpenSSL/JVM 4/4 산출)를 Spring 구현으로 회귀 고정한다.
  *  · 본문 서명은 원시 바이트 그대로 — 재직렬화된 본문(한글 \\u 이스케이프)은 SIGNATURE_INVALID.
  *  · Java 발급 토큰이 Python 발급 토큰과 문자 단위로 같다(CanonicalJson = json.dumps(sort_keys, compact, ensure_ascii)).
- *  · canonical 오버라이드: scope 토큰을 consent 로 쓰면 CONSENT_TOKEN_TYPE_INVALID(ai07 은 EXPIRED — C-SIG-1).
+ *  · scope 토큰을 consent 로 쓰면 CONSENT_TOKEN_TYPE_INVALID(C-SIG-1 — ai07 d7346fc6 에서 벡터 기대값도 같게 갱신, 오버라이드 없음).
  */
 class AiContractSigningVectorsTest {
 
@@ -72,15 +72,14 @@ class AiContractSigningVectorsTest {
         }
 
         @Test
-        void consentTokenVectorsWithCanonicalOverride() throws Exception {
+        void consentTokenVectorsMatchWithoutOverride() throws Exception {
                 JsonNode v = vectors();
                 byte[] k = key(v, "AI_TRAINING_CONSENT_SIGNING_KEY");
-                Map<String, String> canonical = Map.of("scope_token_as_consent", "CONSENT_TOKEN_TYPE_INVALID");
                 for (JsonNode c : v.get("consentToken")) {
                         String name = c.get("name").asText();
                         String got = outcome(() -> AiContractSigning.verifyConsentToken(k, c.get("token").asText(),
                                         c.get("requestId").asText(), null, c.get("verifyAt").asLong()));
-                        assertEquals(canonical.getOrDefault(name, c.get("expect").asText()), got, name);
+                        assertEquals(c.get("expect").asText(), got, name);
                 }
         }
 
