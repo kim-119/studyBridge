@@ -4,8 +4,11 @@ import com.studybridge.api.dto.AdminDTO;
 import com.studybridge.api.dto.GroupStudyReportDTO;
 import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.UserRepository;
+import com.studybridge.api.security.stomp.UserAccessRevokedEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,12 +18,26 @@ import java.time.LocalDateTime;
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
-public class AdminService {
+public class AdminService implements ApplicationEventPublisherAware {
 
     private final UserRepository userRepository;
     private final BlogService blogService;
     private final GroupStudyReportService groupStudyReportService;
     private final GroupStudyService groupStudyService;
+
+    // 정지된 사용자의 열린 실시간(STOMP) 세션을 닫는다. 재연결은 CONNECT 계정 상태 검사에서 거부된다.
+    private ApplicationEventPublisher eventPublisher;
+
+    @Override
+    public void setApplicationEventPublisher(ApplicationEventPublisher applicationEventPublisher) {
+        this.eventPublisher = applicationEventPublisher;
+    }
+
+    private void publishAccountRevoked(Long userId) {
+        if (eventPublisher != null && userId != null) {
+            eventPublisher.publishEvent(new UserAccessRevokedEvent(userId));
+        }
+    }
 
     // 유저 일시 정지 (SUSPEND)
     @Transactional
@@ -37,6 +54,7 @@ public class AdminService {
         user.setSuspensionReason(request.getReason());
         user.setSuspensionMemo(request.getMemo());
         userRepository.save(user);
+        publishAccountRevoked(userId);
 
         log.info("[관리자 제재] 유저 일시정지 완료. 대상: {}, 기간: {}일, 정지만료: {}, 사유: {}", 
                 user.getDisplayName(), request.getDays(), user.getSuspensionEndDate(), request.getReason());
@@ -65,6 +83,7 @@ public class AdminService {
         user.setSuspensionReason(request.getReason());
         user.setSuspensionMemo(request.getMemo());
         userRepository.save(user);
+        publishAccountRevoked(userId);
 
         log.info("[관리자 제재] 유저 영구정지 완료. 대상: {}, 사유: {}", user.getDisplayName(), request.getReason());
 

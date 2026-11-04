@@ -1,6 +1,7 @@
 package com.studybridge.api.controller;
 
 import com.studybridge.api.dto.GroupStudySocketDTO;
+import com.studybridge.api.security.stomp.StompPrincipal;
 import com.studybridge.api.service.GroupStudyQuizSessionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,60 +13,92 @@ import org.springframework.stereotype.Controller;
 
 import com.studybridge.api.entity.GroupChatMessage;
 import com.studybridge.api.entity.GroupStudy;
+import com.studybridge.api.entity.User;
 import com.studybridge.api.repository.GroupChatMessageRepository;
 import com.studybridge.api.repository.GroupStudyRepository;
+import com.studybridge.api.repository.UserRepository;
+
+import java.security.Principal;
 import java.time.LocalDateTime;
 
+/**
+ * 그룹스터디 STOMP 핸들러. 보낸 사람은 항상 CONNECT 때 JWT 로 인증한 {@link StompPrincipal} 이다.
+ * payload 의 userId/senderId/senderName 은 식별·권한에 쓰지 않는다(인터셉터가 다른 사용자 ID 를 담은 프레임은 이미 거부했다).
+ * 채팅 본문은 운영 로그에 남기지 않는다(길이만 기록).
+ */
 @Controller
 @RequiredArgsConstructor
 @Slf4j
 public class GroupStudySocketController {
 
+    static final int MAX_CHAT_LENGTH = 5000;
+
     private final SimpMessagingTemplate messagingTemplate;
     private final GroupStudyQuizSessionService quizSessionService;
     private final GroupChatMessageRepository groupChatMessageRepository;
     private final GroupStudyRepository groupStudyRepository;
+    private final UserRepository userRepository;
 
     @MessageMapping("/group/{groupId}/chat")
     public void broadcastGroupChat(
             @DestinationVariable Long groupId,
-            @Payload GroupStudySocketDTO.ChatPayload payload) {
+            @Payload GroupStudySocketDTO.ChatPayload payload,
+            Principal principal) {
 
-        log.info("Received chat on websocket. groupId={}, sender={}, text={}", groupId, payload.getSenderName(),
-                payload.getContent());
-        payload.setTimestamp(LocalDateTime.now().toString());
-
-        GroupStudy groupStudy = groupStudyRepository.findById(groupId).orElse(null);
-        if (groupStudy != null) {
-            groupChatMessageRepository.save(GroupChatMessage.builder()
-                .groupStudy(groupStudy)
-                .senderName(payload.getSenderName())
-                .senderId(payload.getSenderId() != null ? payload.getSenderId() : "UNKNOWN")
-                .content(payload.getContent())
-                .role("USER")
-                .build());
+        StompPrincipal sender = StompPrincipal.require(principal);
+        String content = payload == null ? null : payload.getContent();
+        if (content == null || content.isBlank()) {
+            log.info("Group chat ignored (empty). groupId={}, senderId={}", groupId, sender.userId());
+            return;
+        }
+        if (content.length() > MAX_CHAT_LENGTH) {
+            log.warn("Group chat rejected (too long). groupId={}, senderId={}, length={}", groupId, sender.userId(), content.length());
+            return;
         }
 
-        messagingTemplate.convertAndSend("/topic/group/" + groupId + "/chat", payload);
+        GroupStudy groupStudy = groupStudyRepository.findById(groupId).orElse(null);
+        if (groupStudy == null) {
+            log.warn("Group chat ignored (group not found). groupId={}, senderId={}", groupId, sender.userId());
+            return;
+        }
+
+        GroupStudySocketDTO.ChatPayload outbound = new GroupStudySocketDTO.ChatPayload(
+                String.valueOf(sender.userId()),
+                resolveSenderName(sender.userId()),
+                content,
+                LocalDateTime.now().toString());
+
+        groupChatMessageRepository.save(GroupChatMessage.builder()
+                .groupStudy(groupStudy)
+                .senderName(outbound.getSenderName())
+                .senderId(outbound.getSenderId())
+                .content(content)
+                .role("USER")
+                .build());
+
+        log.info("Group chat relayed. groupId={}, senderId={}, length={}", groupId, sender.userId(), content.length());
+        messagingTemplate.convertAndSend("/topic/group/" + groupId + "/chat", outbound);
     }
 
     @MessageMapping("/group/{groupId}/quiz/start")
     public void startQuiz(
             @DestinationVariable Long groupId,
-            @Payload GroupStudySocketDTO.QuizStartPayload payload) {
+            @Payload GroupStudySocketDTO.QuizStartPayload payload,
+            Principal principal) {
 
-        log.info("Group member triggered quiz play. groupId={}, quizId={}, userId={}", groupId,
-                payload.getQuizId(), payload.getUserId());
+        Long userId = StompPrincipal.require(principal).userId();
+        Long quizId = payload == null ? null : payload.getQuizId();
+        log.info("Group member triggered quiz play. groupId={}, quizId={}, userId={}", groupId, quizId, userId);
         try {
-            quizSessionService.startQuiz(groupId, payload.getQuizId(), payload.getUserId());
+            quizSessionService.startQuiz(groupId, quizId, userId);
         } catch (Exception e) {
-            log.warn("Quiz start rejected. groupId={}, quizId={}, userId={}, reason={}", groupId, payload.getQuizId(),
-                    payload.getUserId(), e.getMessage(), e);
+            log.warn("Quiz start rejected. groupId={}, quizId={}, userId={}, reason={}", groupId, quizId,
+                    userId, e.getMessage(), e);
             // 실패를 조용히 삼키지 않고 프론트에 명확한 에러를 알려, placeholder/0초 화면 대신 에러를 표시하게 한다.
             messagingTemplate.convertAndSend("/topic/group/" + groupId + "/quiz/error",
                     GroupStudySocketDTO.QuizErrorPayload.builder()
-                            .quizId(payload.getQuizId())
-                            .userId(payload.getUserId())
+                            .quizId(quizId)
+                            .userId(userId)
                             .message(resolveQuizStartError(e))
                             .occurredAt(LocalDateTime.now())
                             .build());
@@ -89,13 +122,29 @@ public class GroupStudySocketController {
     @MessageMapping("/group/{groupId}/quiz/submit")
     public void submitAnswer(
             @DestinationVariable Long groupId,
-            @Payload GroupStudySocketDTO.AnswerSubmitPayload payload) {
+            @Payload GroupStudySocketDTO.AnswerSubmitPayload payload,
+            Principal principal) {
 
+        Long userId = StompPrincipal.require(principal).userId();
+        if (payload == null) {
+            log.warn("Quiz answer rejected (empty payload). groupId={}, userId={}", groupId, userId);
+            return;
+        }
+        // 채점·저장 대상은 인증 사용자다. (payload.userId 는 인터셉터에서 같은 값임을 확인했거나 비어 있다.)
+        payload.setUserId(userId);
         try {
             quizSessionService.submitAnswer(groupId, payload);
         } catch (Exception e) {
             log.warn("Quiz answer rejected. groupId={}, userId={}, questionId={}, reason={}", groupId,
-                    payload.getUserId(), payload.getQuestionId(), e.getMessage());
+                    userId, payload.getQuestionId(), e.getMessage());
         }
+    }
+
+    // 웹 StudyRoom 의 표시 이름 규칙(displayName → User_{id})과 같다. 클라이언트가 보낸 senderName 은 쓰지 않는다.
+    private String resolveSenderName(long userId) {
+        return userRepository.findById(userId)
+                .map(User::getDisplayName)
+                .filter(name -> name != null && !name.isBlank())
+                .orElse("User_" + userId);
     }
 }

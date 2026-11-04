@@ -10,8 +10,11 @@ import com.studybridge.api.repository.GroupStudyQuizSessionAnswerRepository;
 import com.studybridge.api.repository.GroupStudyQuizSessionRepository;
 import com.studybridge.api.repository.GroupStudyRepository;
 import com.studybridge.api.repository.UserRepository;
+import com.studybridge.api.security.stomp.GroupAccessRevokedEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -31,7 +34,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @Slf4j
 @Transactional(readOnly = true)
-public class GroupStudyService {
+public class GroupStudyService implements ApplicationEventPublisherAware {
 
     private final GroupStudyRepository groupStudyRepository;
     private final GroupStudyMemberRepository groupStudyMemberRepository;
@@ -43,6 +46,21 @@ public class GroupStudyService {
     private final UserRepository userRepository;
     private final S3Service s3Service;
     private final GroupRankingService rankingService;
+
+    // 탈퇴·강퇴·그룹 삭제 뒤 열린 실시간(STOMP) 구독을 닫기 위한 이벤트 발행기. 생성자를 바꾸지 않도록 Aware 로 주입한다
+    //  (단위 테스트가 생성자를 직접 호출한다 — 그때는 null 이고 이벤트를 건너뛴다).
+    private ApplicationEventPublisher eventPublisher;
+
+    @Override
+    public void setApplicationEventPublisher(ApplicationEventPublisher applicationEventPublisher) {
+        this.eventPublisher = applicationEventPublisher;
+    }
+
+    private void publishAccessRevoked(GroupAccessRevokedEvent event) {
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(event);
+        }
+    }
 
     // 그룹스터디 생성. 방장이 자동 가입 처리됨
     @Transactional
@@ -414,6 +432,7 @@ public class GroupStudyService {
         deleteCoverImageQuietly(coverImageKey);
         // Redis 랭킹 키 정리 — 내부에서 예외를 삼키므로 Redis 장애로 그룹 삭제가 실패하지 않는다.
         rankingService.clearRanking(groupId);
+        publishAccessRevoked(GroupAccessRevokedEvent.groupDeleted(groupId));
         log.info("Group study deleted successfully. groupId={}, deletedBy={}", groupId, userId);
     }
 
@@ -439,6 +458,7 @@ public class GroupStudyService {
         deleteCoverImageQuietly(coverImageKey);
         // Redis 랭킹 키 정리 — 내부에서 예외를 삼키므로 Redis 장애로 그룹 삭제가 실패하지 않는다.
         rankingService.clearRanking(groupId);
+        publishAccessRevoked(GroupAccessRevokedEvent.groupDeleted(groupId));
         log.info("Group study force-deleted successfully by admin. groupId={}", groupId);
     }
 
@@ -626,6 +646,7 @@ public class GroupStudyService {
             groupStudyMemberRepository.delete(member);
             groupStudy.setCurrentCount(groupStudy.getCurrentCount() - 1);
             groupStudyRepository.save(groupStudy);
+            publishAccessRevoked(GroupAccessRevokedEvent.left(groupId, userId));
             log.info("Voluntarily left group study. userId={}, groupId={}", userId, groupId);
             return;
         }
@@ -729,6 +750,7 @@ public class GroupStudyService {
         groupStudyMemberRepository.delete(member);
         groupStudy.setCurrentCount(groupStudy.getCurrentCount() - 1);
         groupStudyRepository.save(groupStudy);
+        publishAccessRevoked(GroupAccessRevokedEvent.kicked(groupId, memberUserId));
 
         log.info("Member kicked successfully. groupId={}, kickedMemberUserId={}", groupId, memberUserId);
     }
