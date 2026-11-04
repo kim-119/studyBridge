@@ -1,5 +1,5 @@
 {
- "status": "PROPOSED_BY_AI07_PENDING_EC2_CANONICAL",
+ "status": "CANONICAL_EC2_V1",
  "algorithm": "HMAC-SHA256",
  "keys": {
   "AI_SCOPE_SIGNING_KEY": "TEST-ONLY-scope-key-0123456789abcdefABCDEF",
@@ -143,7 +143,7 @@
    "token": "eyJkb2N1bWVudElkcyI6W10sImV4cCI6MTc5Mzc1MDUyMCwiaWF0IjoxNzkzNzUwNDAwLCJtYXRlcmlhbElkcyI6WzcsNDJdLCJyaWQiOiJyZXEtdmVjdG9yLTAwMDAwMSIsInN1YiI6InBrX3ZlY3Rvcl91c2VyXzAwMDAwMSIsInR5cCI6ImFpLXNjb3BlIiwidiI6MX0.io492gP-DDzX7cvglFFVnqG3Va-zYx9ZCbjSwmXpOXA",
    "requestId": "req-vector-000001",
    "verifyAt": 1793750405,
-   "expect": "CONSENT_TOKEN_EXPIRED"
+   "expect": "CONSENT_TOKEN_TYPE_INVALID"
   },
   {
    "name": "signed_with_scope_key",

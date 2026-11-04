@@ -17,7 +17,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.contracts.response_quality_v1 import (MINIMUM_SCORE, Dimension, OutputKind, QualityInput, QualityOutput,
+from app.contracts.response_quality_v1 import (MINIMUM_SCORE, SCHEMA_VERSION, Dimension, OutputKind, QualityInput, QualityOutput,
                                                QualityStatus, Severity, TaskType, Violation)
 from app.quality_gate import checks as C
 from app.quality_gate.judge import JudgeUnavailable, model_family
@@ -78,6 +78,11 @@ _cache: "OrderedDict[str, QualityOutput]" = OrderedDict()
 _CACHE_MAX = 512
 
 
+def _latency_ms(started: float) -> int:
+    # Java Integer 범위로 고정(EC2 는 범위 밖 latencyMs 를 EVALUATOR_OUTPUT_CONTRACT_INVALID 로 거부한다).
+    return max(0, min(2 ** 31 - 1, int((time.time() - started) * 1000)))
+
+
 def _cache_key(inp: QualityInput) -> str:
     body = json.dumps({"t": inp.taskType.value, "k": inp.outputKind.value, "o": inp.proposedOutput,
                        "q": inp.originalRequest, "e": [e.model_dump(mode="json") for e in inp.groundingEvidence],
@@ -87,11 +92,13 @@ def _cache_key(inp: QualityInput) -> str:
 
 
 def _error_output(inp: QualityInput, code: str, started: float) -> QualityOutput:
-    return QualityOutput(requestId=inp.requestId, taskType=inp.taskType, success=False, verified=False,
-                         qualityStatus=QualityStatus.VALIDATION_ERROR, score=None, hardFail=False,
+    return QualityOutput(schemaVersion=SCHEMA_VERSION, requestId=inp.requestId, taskType=inp.taskType, success=False,
+                         verified=False, qualityStatus=QualityStatus.VALIDATION_ERROR, score=None,
+                         minimumScore=MINIMUM_SCORE, hardFail=False,
                          violations=[Violation(code=code, severity=Severity.MAJOR, reason="평가를 완료하지 못함 — 승인 불가")],
                          evaluatorVersion=EVALUATOR_VERSION, modelDigest=inp.modelDigest,
-                         latencyMs=int((time.time() - started) * 1000))
+                         latencyMs=_latency_ms(started),
+                         mandatoryValidatorsPassed=False)  # 검증기를 끝까지 돌리지 못함 = 통과 아님(C-RQ-1)
 
 
 async def evaluate(inp: QualityInput, *, judge=None, timeout_s: Optional[float] = None) -> QualityOutput:
@@ -101,7 +108,7 @@ async def evaluate(inp: QualityInput, *, judge=None, timeout_s: Optional[float] 
     hit = _cache.get(key)
     if hit is not None:
         _cache.move_to_end(key)
-        return hit.model_copy(update={"requestId": inp.requestId, "latencyMs": int((time.time() - started) * 1000)})
+        return hit.model_copy(update={"requestId": inp.requestId, "latencyMs": _latency_ms(started)})
     try:
         out = await asyncio.wait_for(_evaluate(inp, judge, started), timeout=timeout_s)
     except asyncio.TimeoutError:
@@ -388,7 +395,9 @@ def _finalize(inp: QualityInput, prof, vs: List[Tuple], dims: Dict[str, Tuple[Op
     hints = None
     if status != QualityStatus.APPROVED:
         hints = list(dict.fromkeys(HINTS[x.code] for x in violations if x.code in HINTS))[:8] or None
-    return QualityOutput(requestId=inp.requestId, taskType=inp.taskType, success=True, verified=verified,
-                         qualityStatus=status, score=score, hardFail=hard, violations=violations,
-                         dimensions=dim_models, regenerationHints=hints, evaluatorVersion=EVALUATOR_VERSION,
-                         modelDigest=inp.modelDigest, latencyMs=int((time.time() - started) * 1000))
+    # C-RQ-1: 필수 검증기(빈 출력/잘림/비밀·PII/주입/범위/스키마/수식/인용 위조 등)의 실패는 전부 HARD 로 보고된다.
+    return QualityOutput(schemaVersion=SCHEMA_VERSION, requestId=inp.requestId, taskType=inp.taskType, success=True,
+                         verified=verified, qualityStatus=status, score=score, minimumScore=MINIMUM_SCORE, hardFail=hard,
+                         violations=violations, dimensions=dim_models, regenerationHints=hints,
+                         evaluatorVersion=EVALUATOR_VERSION, modelDigest=inp.modelDigest,
+                         latencyMs=_latency_ms(started), mandatoryValidatorsPassed=not hard)

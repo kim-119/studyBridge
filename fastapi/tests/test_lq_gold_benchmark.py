@@ -28,8 +28,8 @@ def _item(i, label="ACCEPT", status="HUMAN_REVIEWED", doc=None, **kw):
     return GB.GoldItem.model_validate(base)
 
 
-def _q(approved, score):
-    return QualityOutput(requestId="req-gold-00001", taskType="GENERAL_EXPLANATION", success=approved, verified=approved,
+def _q(approved, score, rid="req-gold-00001"):
+    return QualityOutput(schemaVersion="response-quality.v1", requestId=rid, taskType="GENERAL_EXPLANATION", success=approved, verified=approved,
                          qualityStatus="APPROVED" if approved else "REJECTED", score=score, hardFail=False,
                          evaluatorVersion="t")
 
@@ -92,7 +92,7 @@ def test_measured_only_with_enough_reviewed_items_and_reports_ci_and_false_appro
         i = int(inp.requestId.split("-")[-1])
         expected_accept = i % 2 == 1
         approved = expected_accept if i % 40 else not expected_accept      # 40개마다 1개 오판
-        return _q(approved, 90.0 if approved else 40.0)
+        return _q(approved, 90.0 if approved else 40.0, inp.requestId)
     rep = run(GB.run_benchmark(items, fake))
     assert rep.measurementStatus == "MEASURED", rep.reasons
     o = rep.overall
@@ -108,7 +108,7 @@ def test_boundary_band_items_are_reevaluated_under_perturbation():
     async def fake(inp):
         calls["n"] += 1
         base = isinstance(inp.proposedOutput, str) and not inp.proposedOutput.endswith(("\n", "바랍니다."))
-        return _q(base, 80.0 if base else 79.0)                             # 변형하면 79 → 승인 뒤집힘
+        return _q(base, 80.0 if base else 79.0, inp.requestId)              # 변형하면 79 → 승인 뒤집힘
     rep = run(GB.run_benchmark(items, fake))
     assert rep.boundary["items"] == 4 and rep.boundary["trials"] == 16 and rep.boundary["flips"] >= 8
     assert rep.boundary["flipRate"] is not None and calls["n"] == 4 + 16

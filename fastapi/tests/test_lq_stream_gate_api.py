@@ -29,8 +29,8 @@ async def _source(events):
 
 
 def _eval_factory():
-    async def evaluate_message(key, text, msg):
-        q = QualityInput.model_validate({"schemaVersion": SCHEMA_VERSION, "requestId": f"req-stream-{abs(hash(key)) % 10**8:08d}",
+    async def evaluate_message(key, text, msg, rid):
+        q = QualityInput.model_validate({"schemaVersion": SCHEMA_VERSION, "requestId": rid,
                                          "taskType": "PDF_QA", "outputKind": "agent_message",
                                          "originalRequest": "3-way handshake 단계는?", "proposedOutput": text,
                                          "groundingEvidence": EV, "constraints": {"allowedMaterialIds": [42]}})

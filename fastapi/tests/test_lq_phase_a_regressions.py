@@ -70,7 +70,7 @@ def test_contradiction_checks_are_bounded():
 def test_evaluate_returns_quickly_and_does_not_stall_loop():
     t = time.time()
     o = run(E.evaluate(q("MATH_SOLUTION", "원주율은 약 3.14159265358979323846264338 입니다", req="원주율 값"), timeout_s=1.0))
-    assert time.time() - t < 1.0 and not is_displayable(o)
+    assert time.time() - t < 1.0 and not is_displayable(o, o.requestId)
 
 
 # ── 2. 품질 게이트 우회 ──────────────────────────────────────────────────────
@@ -80,7 +80,8 @@ def test_evaluate_returns_quickly_and_does_not_stall_loop():
 ])
 def test_disclosure_token_inside_assertion_is_not_a_disclosure(task, out):
     assert not C.is_no_claim_disclosure(out)
-    assert not is_displayable(run(E.evaluate(q(task, out))))
+    o = run(E.evaluate(q(task, out)))
+    assert not is_displayable(o, o.requestId)
 
 
 @pytest.mark.parametrize("out", [
@@ -101,14 +102,14 @@ def test_quiz_wrong_answer_key_with_restated_explanation_is_rejected():
                                "answerIndex": idx, "explanation": "이진 탐색은 정렬된 배열에서 탐색 범위를 절반씩 줄이는 알고리즘이다."}]}
     ok = run(E.evaluate(q("PDF_QUIZ", quiz(0), ev, {"allowedMaterialIds": [7], "expectedQuestionCount": 1}, kind="quiz_json")))
     bad = run(E.evaluate(q("PDF_QUIZ", quiz(1), ev, {"allowedMaterialIds": [7], "expectedQuestionCount": 1}, kind="quiz_json")))
-    assert is_displayable(ok) and not is_displayable(bad)
+    assert is_displayable(ok, ok.requestId) and not is_displayable(bad, bad.requestId)
     assert "QUIZ_ANSWER_EXPLANATION_MISMATCH" in {v.code for v in bad.violations}
 
 
 def test_quarantine_level_pii_is_not_shown():
     o = run(E.evaluate(q("GENERAL_EXPLANATION", "1조 담당자는 학번: 20231234 이고 주소는 서울 강남구 테헤란로 123 입니다.",
                          req="1조 담당자 알려줘")))
-    assert not is_displayable(o) and "PII_LEAK" in {v.code for v in o.violations}
+    assert not is_displayable(o, o.requestId) and "PII_LEAK" in {v.code for v in o.violations}
 
 
 def test_learning_loop_system_scalar_is_evaluated(monkeypatch):
@@ -354,7 +355,7 @@ def test_pdf_task_with_pasted_or_derived_context_is_not_rights_verified(monkeypa
     from app.contracts.signing import ConsentClaim
     from app.training_pipeline import collection_hook as ch
     monkeypatch.setenv("AI_TRAINING_COLLECTION_ENABLED", "true")
-    qo = QualityOutput(requestId="req-col-000002", taskType="PDF_SUMMARY", success=True, verified=True,
+    qo = QualityOutput(schemaVersion="response-quality.v1", requestId="req-col-000002", taskType="PDF_SUMMARY", success=True, verified=True,
                        qualityStatus="APPROVED", score=90.0, hardFail=False, evaluatorVersion="rqg-1.0.0")
     c = ConsentClaim(sub=PK, consent_version="v", consent_timestamp="2026-10-30T00:00:00Z", scope=frozenset({"MODEL_TRAINING"}),
                      rights={"42": "USER_OWNED_VERIFIED"}, deletion_tracking_id="del-00000002", request_id="req-col-000002")
@@ -390,4 +391,4 @@ def test_polite_negation_contradicting_source_is_rejected():
     for out in ("TCP 는 연결 지향 프로토콜이 아닙니다.", "TCP 는 연결 지향 프로토콜이 아님.", "TCP 는 연결 지향이 아닌 프로토콜이다."):
         E.clear_cache()
         o = run(E.evaluate(q("PDF_QA", out, tcp, {"allowedMaterialIds": [42]}, "TCP 는 어떤 프로토콜?")))
-        assert not is_displayable(o), out
+        assert not is_displayable(o, o.requestId), out

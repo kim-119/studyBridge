@@ -157,7 +157,7 @@ def test_scope_header_enables_scoped_rag(client, monkeypatch, rag_calls):
 # ── 수집 훅: 조건 미충족은 저장 안 함, 실패는 응답에 영향 없음 ─────────────────────────
 def _approved_quality():
     from app.contracts.response_quality_v1 import QualityOutput
-    return QualityOutput(requestId="req-collect-0001", taskType="GENERAL_EXPLANATION", success=True, verified=True,
+    return QualityOutput(schemaVersion="response-quality.v1", requestId="req-collect-0001", taskType="GENERAL_EXPLANATION", success=True, verified=True,
                          qualityStatus="APPROVED", score=90.0, hardFail=False, evaluatorVersion="rqg-1.0.0")
 
 

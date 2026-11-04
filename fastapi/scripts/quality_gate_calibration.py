@@ -122,7 +122,7 @@ async def main(out_path: str):
         t = time.perf_counter()
         o = await E.evaluate(inp)
         lat.append((time.perf_counter() - t) * 1000)
-        ok = is_displayable(o)
+        ok = is_displayable(o, inp.requestId)
         d = per[cat]
         d["n"] += 1
         d["approved"] += int(ok)

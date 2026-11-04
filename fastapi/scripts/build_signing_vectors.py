@@ -48,7 +48,7 @@ def main():
                  "dtid": "del-vector-000001", "rid": "req-vector-000001", "iat": NOW, "exp": NOW + 120}
     good_scope, good_consent = token(sk, scope_p), token(ck, consent_p)
     vec = {
-        "status": "PROPOSED_BY_AI07_PENDING_EC2_CANONICAL", "algorithm": "HMAC-SHA256", "keys": KEYS,
+        "status": "CANONICAL_EC2_V1", "algorithm": "HMAC-SHA256", "keys": KEYS,
         "note": "TEST-ONLY keys. raw-bytes signing; verifier must not re-serialize JSON.",
         "bodySignature": [
             {"name": "utf8_korean_newline", "timestamp": NOW, "bodyBase64": base64.b64encode(body_ko).decode(),
@@ -85,7 +85,7 @@ def main():
             {"name": "rid_mismatch", "token": good_consent, "requestId": "req-vector-000009", "verifyAt": NOW + 5,
              "expect": "CONSENT_REQUEST_MISMATCH"},
             {"name": "scope_token_as_consent", "token": token(ck, scope_p), "requestId": "req-vector-000001",
-             "verifyAt": NOW + 5, "expect": "CONSENT_TOKEN_EXPIRED"},
+             "verifyAt": NOW + 5, "expect": "CONSENT_TOKEN_TYPE_INVALID"},
             {"name": "signed_with_scope_key", "token": token(sk, consent_p), "requestId": "req-vector-000001",
              "verifyAt": NOW + 5, "expect": "CONSENT_TOKEN_INVALID"},
         ],

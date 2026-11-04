@@ -1,11 +1,12 @@
 {
-  "status": "PROPOSED_BY_AI07_PENDING_EC2_CANONICAL",
+  "status": "CANONICAL_EC2_V1",
   "owner": "EC2 (Spring)",
-  "note": "EC2 가 canonical fixture 를 확정하면 이 디렉터리를 EC2 파일로 교체하고 tests/test_contracts_v1.py 를 그대로 재실행한다.",
+  "note": "EC2 canonical. 기대 결과는 expectations.json(canonical) — ai07 관측값과 다른 항목은 openIssue 로 추적한다. ai07 test_meta_marks_ec2_as_owner 의 PROPOSED 단정은 갱신 필요.",
   "contracts": [
     "learning-context.v1",
     "response-quality.v1",
     "training-sample.v1"
   ],
-  "createdAt": "2026-11-04"
+  "createdAt": "2026-11-04",
+  "canonicalizedAt": "2026-11-04"
 }

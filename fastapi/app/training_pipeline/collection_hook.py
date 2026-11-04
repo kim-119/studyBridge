@@ -122,7 +122,7 @@ def submit(event: ResponseCollectionEvent) -> str:
     try:
         if not collection_enabled():
             code = "SKIPPED_DISABLED"
-        elif not is_displayable(event.quality):
+        elif not is_displayable(event.quality, event.request_id):
             code = "SKIPPED_NOT_APPROVED"
         elif event.consent is None:
             code = "SKIPPED_NO_CONSENT"

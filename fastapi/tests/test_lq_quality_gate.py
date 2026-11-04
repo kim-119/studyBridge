@@ -50,30 +50,32 @@ def test_score_79_rejected_80_approved_100_approved():
     from app.contracts.response_quality_v1 import TaskType as T
     o80 = _final(T.GENERAL_EXPLANATION, {"factual_correctness": 0.8, "grounding": 0.8, "request_fulfillment": 0.8,
                                          "logical_consistency": 0.8, "format": 0.8})
-    assert o80.score == 80.0 and o80.qualityStatus == QualityStatus.APPROVED and is_displayable(o80)
+    assert o80.score == 80.0 and o80.qualityStatus == QualityStatus.APPROVED and is_displayable(o80, o80.requestId)
     o79 = _final(T.GENERAL_EXPLANATION, {"factual_correctness": 23 / 30, "grounding": 0.8, "request_fulfillment": 0.8,
                                          "logical_consistency": 0.8, "format": 0.8})
-    assert o79.score == 79.0 and o79.qualityStatus == QualityStatus.REJECTED and not is_displayable(o79)
+    assert o79.score == 79.0 and o79.qualityStatus == QualityStatus.REJECTED and not is_displayable(o79, o79.requestId)
     o100 = _final(T.GENERAL_EXPLANATION, {})
-    assert o100.score == 100.0 and is_displayable(o100)
+    assert o100.score == 100.0 and is_displayable(o100, o100.requestId)
 
 
 def test_high_score_with_hard_fail_is_rejected():
     from app.contracts.response_quality_v1 import TaskType as T
     o = _final(T.GENERAL_EXPLANATION, {"format": 0.5}, vs=[("SECRET_LEAK", "HARD", "x", None)])
-    assert o.score == 95.0 and o.hardFail and o.qualityStatus == QualityStatus.REJECTED and not is_displayable(o)
+    assert o.score == 95.0 and o.hardFail and o.qualityStatus == QualityStatus.REJECTED and not is_displayable(o, o.requestId)
 
 
 def test_unverified_has_no_score_and_cannot_approve():
     from app.contracts.response_quality_v1 import TaskType as T
     o = _final(T.GENERAL_EXPLANATION, {}, verified=False)
-    assert o.score is None and not o.verified and not is_displayable(o)
+    assert o.score is None and not o.verified and not is_displayable(o, o.requestId)
 
 
 def test_contract_refuses_approved_that_violates_invariant():
     with pytest.raises(Exception):
         QualityOutput.model_validate(fixture("response-quality.v1", "invalid_output_approved_with_hardfail.json"))
-    assert is_displayable(QualityOutput.model_validate(fixture("response-quality.v1", "output_approved_shape.json")))
+    shape = QualityOutput.model_validate(fixture("response-quality.v1", "output_approved_shape.json"))
+    assert is_displayable(shape, "req-rq-0001")
+    assert not is_displayable(shape, "req-rq-0002") and not is_displayable(shape, None)   # 다른 요청 판정 재사용 금지
 
 
 def test_profiles_sum_to_100():
@@ -220,7 +222,7 @@ def test_failed_verifier_yields_validation_error_not_approval():
     j = FakeJudge(exc=JudgeUnavailable("timeout"))
     o = run(E.evaluate(inp("GENERAL_EXPLANATION", "SSH 는 원격 접속을 암호화하는 프로토콜이다.", evidence=[], constraints={},
                            req="SSH 가 뭐야?"), judge=j))
-    assert o.qualityStatus == QualityStatus.VALIDATION_ERROR and not o.success and not is_displayable(o)
+    assert o.qualityStatus == QualityStatus.VALIDATION_ERROR and not o.success and not is_displayable(o, o.requestId)
 
 
 def test_same_family_judge_is_flagged_and_capped():
@@ -244,7 +246,7 @@ def test_evaluator_internal_error_never_approves(monkeypatch):
         raise RuntimeError("bug")
     monkeypatch.setattr(E, "_evaluate", boom)
     o = run(E.evaluate(inp(output="x")))
-    assert o.qualityStatus == QualityStatus.VALIDATION_ERROR and not is_displayable(o)
+    assert o.qualityStatus == QualityStatus.VALIDATION_ERROR and not is_displayable(o, o.requestId)
 
 
 # ── 재생성: 최초 1 + 최대 2회, 85점 승인, 2회 실패 거절, 반복 초안 중단 ─────────────────

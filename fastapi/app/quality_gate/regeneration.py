@@ -103,12 +103,13 @@ async def run_quality_gated_generation(
             outcome.status = QualityStatus.REJECTED
             return outcome
         seen.add(h)
-        ev = await evaluate(build_input(draft, attempt), judge=judge)
+        inp = build_input(draft, attempt)
+        ev = await evaluate(inp, judge=judge)
         outcome.final_evaluation = ev
         outcome.trace.append({"attempt": attempt, "status": ev.qualityStatus.value, "score": ev.score,
                               "hardFail": ev.hardFail, "codes": sorted({v.code for v in ev.violations})[:12],
                               "latencyMs": ev.latencyMs})
-        if is_displayable(ev):
+        if is_displayable(ev, inp.requestId):   # 이 시도의 requestId 에 대한 판정만 승인으로 인정
             outcome.status, outcome.output = QualityStatus.APPROVED, draft
             return outcome
         if ev.qualityStatus == QualityStatus.VALIDATION_ERROR:

@@ -271,9 +271,10 @@ async def run_benchmark(items: List[GoldItem], evaluate: Callable[[Any], Awaitab
     leak = leakage_report(items, split)
     results: List[ItemResult] = []
     for it in items:
-        o = await evaluate(_quality_input(it, it.proposedOutput))
+        qi = _quality_input(it, it.proposedOutput)
+        o = await evaluate(qi)
         r = ItemResult(itemId=it.itemId, domain=it.domain, split=split[it.itemId], expected=it.expectedLabel,
-                       approved=bool(is_displayable(o)), status=o.qualityStatus.value, score=o.score,
+                       approved=bool(is_displayable(o, qi.requestId)), status=o.qualityStatus.value, score=o.score,
                        hardCodes=sorted({v.code for v in o.violations if v.severity == Severity.HARD}),
                        reviewStatus=it.review.status.value, generatorFamily=it.generatorFamily,
                        judgeVerdict=next((d.method for d in o.dimensions if (d.method or "").startswith("judge")), None)
@@ -281,8 +282,9 @@ async def run_benchmark(items: List[GoldItem], evaluate: Callable[[Any], Awaitab
         if o.score is not None and boundary_band[0] <= o.score <= boundary_band[1] and isinstance(it.proposedOutput, str):
             flips = 0
             for k in range(len(_PERTURB)):
-                o2 = await evaluate(_quality_input(it, _perturb(it.proposedOutput, k)))
-                flips += int(bool(is_displayable(o2)) != r.approved)
+                qi2 = _quality_input(it, _perturb(it.proposedOutput, k))
+                o2 = await evaluate(qi2)
+                flips += int(bool(is_displayable(o2, qi2.requestId)) != r.approved)
             r.boundaryFlips, r.boundaryTrials = flips, len(_PERTURB)
         results.append(r)
 

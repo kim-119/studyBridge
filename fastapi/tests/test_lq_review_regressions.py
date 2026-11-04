@@ -42,7 +42,7 @@ def _clear():
 ])
 def test_disclosure_phrase_does_not_launder_claims(task, text):
     o = run(E.evaluate(q(task, text, req="TCP 혼잡제어 설명")))
-    assert not is_displayable(o) and not o.verified
+    assert not is_displayable(o, o.requestId) and not o.verified
 
 
 def test_short_answer_contradicting_korean_numeral_is_rejected():
@@ -53,7 +53,7 @@ def test_short_answer_contradicting_korean_numeral_is_rejected():
 
 def test_answer_with_no_checkable_claim_is_not_auto_supported():
     o = run(E.evaluate(q("PDF_QA", "네.", EV, {"allowedMaterialIds": [42]}, "TCP 연결 단계는?")))
-    assert not is_displayable(o)
+    assert not is_displayable(o, o.requestId)
 
 
 def test_sse_gate_never_forwards_unapproved_sidecar_text():
@@ -66,9 +66,9 @@ def test_sse_gate_never_forwards_unapproved_sidecar_text():
                                                  "followUps": ["XLEAK-list"]}}
         yield {"event": "all_complete", "answer": "XLEAK-top", "data": {"finalAnswer": "XLEAK-final", "turnId": "t1"}}
 
-    async def ev(key, text, msg):
+    async def ev(key, text, msg, rid):
         return await E.evaluate(QualityInput.model_validate({
-            "schemaVersion": SCHEMA_VERSION, "requestId": "req-sse-00001", "taskType": "PDF_QA", "outputKind": "agent_message",
+            "schemaVersion": SCHEMA_VERSION, "requestId": rid, "taskType": "PDF_QA", "outputKind": "agent_message",
             "originalRequest": "3-way handshake 단계는?", "proposedOutput": text, "groundingEvidence": EV,
             "constraints": {"allowedMaterialIds": [42]}}))
 
@@ -185,7 +185,7 @@ def test_non_pdf_answer_using_derived_context_is_not_labeled_rights_clean(monkey
     from app.contracts.signing import ConsentClaim
     from app.training_pipeline import collection_hook as ch
     monkeypatch.setenv("AI_TRAINING_COLLECTION_ENABLED", "true")
-    qo = QualityOutput(requestId="req-col-000001", taskType="GENERAL_EXPLANATION", success=True, verified=True,
+    qo = QualityOutput(schemaVersion="response-quality.v1", requestId="req-col-000001", taskType="GENERAL_EXPLANATION", success=True, verified=True,
                        qualityStatus="APPROVED", score=90.0, hardFail=False, evaluatorVersion="rqg-1.0.0")
     c = ConsentClaim(sub=PK, consent_version="v", consent_timestamp="2026-10-30T00:00:00Z", scope=frozenset({"MODEL_TRAINING"}),
                      rights={}, deletion_tracking_id="del-00000001", request_id="req-col-000001")

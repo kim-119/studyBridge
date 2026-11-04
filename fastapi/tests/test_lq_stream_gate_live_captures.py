@@ -32,17 +32,17 @@ def _is_sse(rec):
     return "event-stream" in rec["contentType"]
 
 
-def _q(ok):
-    return QualityOutput(requestId="req-live-000001", taskType="STUDYMATE_BASIC", success=ok, verified=ok,
+def _q(ok, rid="req-live-000001"):
+    return QualityOutput(schemaVersion="response-quality.v1", requestId=rid, taskType="STUDYMATE_BASIC", success=ok, verified=ok,
                          qualityStatus="APPROVED" if ok else "REJECTED", score=90.0 if ok else 10.0, hardFail=not ok,
                          evaluatorVersion="test")
 
 
-async def _approve(key, text, msg):
-    return _q(True)
+async def _approve(key, text, msg, rid):
+    return _q(True, rid)
 
 
-async def _deny(key, text, msg):
+async def _deny(key, text, msg, rid):
     return _q(False)
 
 
@@ -163,9 +163,9 @@ def test_real_evaluator_blocks_secret_in_live_studymate_answer():
     assert "sk-proj-" in rec["raw"]          # 미게이트 원본에는 실제로 실려 있다
     E.clear_cache()
 
-    async def ev(key, text, msg):
+    async def ev(key, text, msg, rid):
         return await E.evaluate(QualityInput.model_validate({
-            "schemaVersion": SCHEMA_VERSION, "requestId": "req-live-studymate-01", "taskType": "STUDYMATE_BASIC",
+            "schemaVersion": SCHEMA_VERSION, "requestId": rid, "taskType": "STUDYMATE_BASIC",
             "outputKind": "agent_message", "originalRequest": rec["request"]["message"], "proposedOutput": text,
             "groundingEvidence": [], "constraints": {}}))
     frames = _wire(rec, ev)

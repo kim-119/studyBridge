@@ -27,9 +27,9 @@ async def _collect(g):
     return [e async for e in g]
 
 
-def _q(ok: bool, codes=()):
+def _q(ok: bool, codes=(), rid="req-hard-000001"):
     from app.contracts.response_quality_v1 import Severity, Violation
-    return QualityOutput(requestId="req-hard-000001", taskType="GENERAL_EXPLANATION", success=ok, verified=ok,
+    return QualityOutput(schemaVersion="response-quality.v1", requestId=rid, taskType="GENERAL_EXPLANATION", success=ok, verified=ok,
                          qualityStatus="APPROVED" if ok else "REJECTED", score=90.0 if ok else 40.0, hardFail=not ok,
                          evaluatorVersion="test",
                          violations=[Violation(code=c, severity=Severity.HARD, reason="test") for c in codes])
@@ -38,9 +38,9 @@ def _q(ok: bool, codes=()):
 def approve_if(pred):
     calls = []
 
-    async def ev(key, text, msg):
+    async def ev(key, text, msg, rid):
         calls.append((key, text))
-        return _q(pred(text), () if pred(text) else ("TEST_REJECT",))
+        return _q(pred(text), () if pred(text) else ("TEST_REJECT",), rid)
     ev.calls = calls
     return ev
 
@@ -71,10 +71,10 @@ def test_error_code_that_is_not_a_code_is_replaced():
 
 
 def test_evaluator_exception_is_validation_error_and_stream_continues():
-    async def boom(key, text, msg):
+    async def boom(key, text, msg, rid):
         if "첫" in text:
             raise RuntimeError("evaluator down")
-        return _q(True)
+        return _q(True, (), rid)
     out = gate([{"event": "agent_answer", "data": {"agentId": "a", "content": "첫 답"}},
                 {"event": "agent_answer", "data": {"agentId": "b", "content": "둘째 답"}},
                 {"event": "done", "data": {}}], boom)
@@ -84,7 +84,7 @@ def test_evaluator_exception_is_validation_error_and_stream_continues():
 
 
 def test_evaluator_timeout_is_validation_error():
-    async def slow(key, text, msg):
+    async def slow(key, text, msg, rid):
         await asyncio.sleep(5)
         return _q(True)
     out = gate([{"event": "agent_answer", "data": {"content": "답"}}], slow,
@@ -206,7 +206,7 @@ def test_consumer_close_and_task_cancel_close_the_upstream():
         await g.aclose()
 
     async def cancel_during_eval():
-        async def hang(key, text, msg):
+        async def hang(key, text, msg, rid):
             await asyncio.sleep(10)
 
         async def up2():
@@ -231,9 +231,9 @@ def test_concurrent_streams_do_not_share_state():
         evs.append({"event": "agent_answer", "data": {"agentId": "b", "content": f"S{i}-OK" if i % 2 else f"S{i}-NO"}})
         evs.append({"event": "done", "data": {}})
 
-        async def ev(key, text, msg):
+        async def ev(key, text, msg, rid):
             await asyncio.sleep(random.random() / 100)
-            return _q(text.endswith("OK") or text.startswith(f"S{i}-S{i}"))
+            return _q(text.endswith("OK") or text.startswith(f"S{i}-S{i}"), (), rid)
         return i, await _collect(gate_event_stream(_src(evs), ev))
 
     async def go():

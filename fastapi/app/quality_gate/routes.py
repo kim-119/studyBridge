@@ -11,10 +11,11 @@ import asyncio
 import logging
 import os
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from app.contracts.jtypes import ContractJsonError, loads_contract
 from app.contracts.response_quality_v1 import QualityInput, output_to_dict
 from app.core.request_guards import IdempotencyCache, RateLimiter, limited_route_class
 from app.core.security import verify_internal_token
@@ -47,11 +48,16 @@ def _err(status: int, code: str, **extra) -> JSONResponse:
 
 
 @router.post("/api/ai/quality/evaluate", summary="AI 생성물 품질 평가(response-quality.v1, 내부 전용)")
-async def evaluate_endpoint(body: dict, x_caller_id: str | None = Header(default=None, alias="X-Caller-Id")):
+async def evaluate_endpoint(request: Request, x_caller_id: str | None = Header(default=None, alias="X-Caller-Id")):
     if not api_enabled():
         return _err(503, "FEATURE_DISABLED")
     # 호출자는 모두 같은 내부 키를 쓰므로 X-Caller-Id(자기 주장)로 버킷을 나누지 않는다 → 전역 버킷.
     RATE.check("evaluate")
+    # 원시 바이트를 EC2 Jackson STRICT 와 같은 규칙으로 해석한다(NaN/중복 키/뒤따르는 토큰 거부, 암묵 변환 금지).
+    try:
+        body = loads_contract(await request.body())
+    except ContractJsonError:
+        return _err(422, "CONTRACT_VALIDATION_FAILED", errors=[{"loc": ["body"], "type": "json_invalid"}])
     try:
         inp = QualityInput.model_validate(body)
     except ValidationError as e:

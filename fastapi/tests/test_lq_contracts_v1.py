@@ -1,6 +1,7 @@
 """EC2 계약 fixture 기반 contract test (learning-context.v1 / response-quality.v1 / training-sample.v1 + 서명).
 
-fixtures/_meta.json status=PROPOSED_BY_AI07_PENDING_EC2_CANONICAL — EC2 가 canonical 파일로 교체하면 그대로 재실행.
+fixtures/_meta.json status=CANONICAL_EC2_V1 — EC2 fixture 를 그대로 복사했다(판정 정본은 expectations.json,
+전수 비교는 tests/test_lq_contract_differential.py).
 """
 import json
 from datetime import datetime, timezone
@@ -24,10 +25,10 @@ def test_every_fixture_matches_expectation(sub, model):
     files = sorted((FIXTURES / sub).glob("*.json"))
     assert files
     for f in files:
-        if f.name.startswith("output_") or f.name.startswith("legacy_") or f.name.startswith("invalid_output"):
+        if f.name.startswith(("output_", "legacy_", "invalid_output", "ec2_valid_output", "ec2_invalid_output")):
             continue
         data = json.loads(f.read_text(encoding="utf-8"))
-        if f.name.startswith("invalid_"):
+        if f.name.startswith(("invalid_", "ec2_invalid_")):
             with pytest.raises(ValidationError):
                 model.model_validate(data)
         else:
@@ -36,7 +37,7 @@ def test_every_fixture_matches_expectation(sub, model):
 
 def test_meta_marks_ec2_as_owner():
     meta = json.loads((FIXTURES / "_meta.json").read_text(encoding="utf-8"))
-    assert meta["owner"].startswith("EC2") and meta["status"].startswith("PROPOSED")
+    assert meta["owner"].startswith("EC2") and meta["status"] == "CANONICAL_EC2_V1"
 
 
 def test_trust_is_capped_by_source_type():

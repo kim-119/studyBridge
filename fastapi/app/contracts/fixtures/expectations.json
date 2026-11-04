@@ -1,0 +1,183 @@
+{
+ "status": "CANONICAL_EC2_V1",
+ "owner": "EC2 (Spring)",
+ "source": "ai07 PR #116 feature/learning-loop-ai07 @ a4bd8fac69884405555ab839e8e1d547ac5d7672 (fixtures copied verbatim) + ec2_* edge cases",
+ "canonicalizedAt": "2026-11-04",
+ "rules": {
+  "jsonTypes": "strict: no string->number coercion, unknown fields rejected (C-TYPE-1)",
+  "identifiers": "full match, no trailing newline (Python must use \\Z or fullmatch) (C-ID-1)",
+  "score": "0 <= score <= 100; APPROVED requires 80 <= score <= 100 (C-RQ-2)",
+  "datetimes": "ISO-8601 with offset (Z) required (C-TIME-1)",
+  "lengths": "code points (Python len)",
+  "mandatoryValidatorsPassed": "optional bool in response-quality.v1 output; false => not displayable (C-RQ-1)"
+ },
+ "fixtures": {
+  "learning-context.v1/ec2_invalid_request_id_trailing_newline.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "VALID",
+   "openIssue": "C-ID-1"
+  },
+  "learning-context.v1/ec2_invalid_string_material_id.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "VALID",
+   "openIssue": "C-TYPE-1"
+  },
+  "learning-context.v1/ec2_valid_trust_overclaim_is_capped.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID"
+  },
+  "learning-context.v1/invalid_pdf_without_provenance.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID"
+  },
+  "learning-context.v1/invalid_raw_numeric_user_id.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID"
+  },
+  "learning-context.v1/invalid_schema_version.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID"
+  },
+  "learning-context.v1/invalid_system_role.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID"
+  },
+  "learning-context.v1/invalid_unknown_field.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID"
+  },
+  "learning-context.v1/invalid_used_sources_unknown.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID"
+  },
+  "learning-context.v1/valid_minimal.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID"
+  },
+  "learning-context.v1/valid_pdf_and_history.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID"
+  },
+  "response-quality.v1/ec2_invalid_output_approved_79.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID",
+   "model": "output"
+  },
+  "response-quality.v1/ec2_invalid_output_score_above_100.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "VALID",
+   "model": "output",
+   "openIssue": "C-RQ-2"
+  },
+  "response-quality.v1/ec2_valid_output_approved_80.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID",
+   "model": "output"
+  },
+  "response-quality.v1/input_math_incorrect.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID",
+   "model": "input"
+  },
+  "response-quality.v1/input_pdf_summary_contradiction.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID",
+   "model": "input"
+  },
+  "response-quality.v1/input_pdf_summary_faithful.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID",
+   "model": "input"
+  },
+  "response-quality.v1/input_quiz_answer_explanation_mismatch.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID",
+   "model": "input"
+  },
+  "response-quality.v1/input_vision_unsupported_observation.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID",
+   "model": "input"
+  },
+  "response-quality.v1/invalid_output_approved_with_hardfail.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID",
+   "model": "output"
+  },
+  "response-quality.v1/invalid_unknown_constraint.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID",
+   "model": "input"
+  },
+  "response-quality.v1/output_approved_shape.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID",
+   "model": "output"
+  },
+  "training-sample.v1/ec2_invalid_naive_datetime.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "VALID",
+   "openIssue": "C-TIME-1"
+  },
+  "training-sample.v1/ec2_invalid_numeric_event_id.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID"
+  },
+  "training-sample.v1/invalid_content_hash_mismatch.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID"
+  },
+  "training-sample.v1/invalid_direct_identifier.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID"
+  },
+  "training-sample.v1/invalid_unknown_field.json": {
+   "canonical": "INVALID",
+   "ai07Observed": "INVALID"
+  },
+  "training-sample.v1/valid_pdf_qa_candidate.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID"
+  },
+  "training-sample.v1/valid_same_qa_negative_feedback.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID"
+  },
+  "training-sample.v1/valid_third_party_unverified.json": {
+   "canonical": "VALID",
+   "ai07Observed": "VALID"
+  }
+ },
+ "signing": {
+  "vectors": "signing-vectors.v1.json (ai07 PROPOSED, verbatim)",
+  "canonicalOverrides": {
+   "consentToken/scope_token_as_consent": {
+    "ai07Observed": "CONSENT_TOKEN_EXPIRED",
+    "canonical": "CONSENT_TOKEN_TYPE_INVALID",
+    "openIssue": "C-SIG-1"
+   }
+  }
+ },
+ "contentHash": {
+  "ascii": {
+   "question": "Q",
+   "answer": "A",
+   "hash": "0e763cb8dc8bf6d8f2db144edf99031e207461aa8178afdec7142f3bf184c272"
+  },
+  "nbsp_fullwidth": {
+   "question": "TCP  핸드셰이크　단계",
+   "answer": "ＳＹＮ　ＡＣＫ",
+   "hash": "04b8767c6b100c0bb7353f73730e2e0f9f94579b7d2384472c9795afdf3735a4"
+  },
+  "separators_1c_1f": {
+   "question": "a\u001cb\u001d c",
+   "answer": "  x\u001fy\n\n",
+   "hash": "0674bc4c3af351077a3f680bdce0692293c68d7beb10ec5d571ab8976279d0fb"
+  },
+  "emoji_ogham": {
+   "question": "😀 끝",
+   "answer": "줄 바꿈 ",
+   "hash": "fbedd5285dc0ae168d49c44231534b7a64049da2f8b27c29040422850b01ba14"
+  }
+ }
+}

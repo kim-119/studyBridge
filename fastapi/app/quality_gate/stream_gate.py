@@ -21,6 +21,7 @@ import asyncio
 import hashlib
 import json
 import re
+import secrets
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Union
 
@@ -200,15 +201,30 @@ class _Msg:
     delta_field: str = "content"
 
 
+_RID_SCOPE_RE = re.compile(r"[A-Za-z0-9._:\-]{1,100}")
+
+
+def _rid_scope(request_id: Optional[str]) -> str:
+    # 평가 requestId = <scope>.<n> (response-quality.v1 의 [A-Za-z0-9._:-]{8,128}). 호출자 id 가 형식에 맞지 않으면 새로 만든다.
+    if request_id and _RID_SCOPE_RE.fullmatch(request_id):
+        return request_id
+    return "sg-" + secrets.token_hex(8)
+
+
 async def gate_event_stream(
     source: AsyncIterator[Dict[str, Any]],
-    evaluate_message: Callable[[str, str, Dict[str, Any]], Awaitable[QualityOutput]],
+    evaluate_message: Callable[[str, str, Dict[str, Any], str], Awaitable[QualityOutput]],
     *,
     on_approved: Optional[Callable[[str, str, QualityOutput], Awaitable[None]]] = None,
     policy: StreamGatePolicy = DEFAULT_POLICY,
+    request_id: Optional[str] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """이벤트 dict({'event': type, 'data': {...}}) 스트림을 품질 게이트로 감싼다.
-    게이트가 만든 이벤트(quality_rejected/error/승인 본문)는 원 스트림의 직렬화 스타일(data.type / data.event)을 따른다."""
+    게이트가 만든 이벤트(quality_rejected/error/승인 본문)는 원 스트림의 직렬화 스타일(data.type / data.event)을 따른다.
+
+    evaluate_message(key, text, src, eval_request_id) 는 반드시 eval_request_id 를 QualityInput.requestId 로 써야 한다.
+    게이트는 돌아온 판정의 requestId 가 자신이 준 값과 다르면 승인으로 보지 않는다(EC2 isDisplayable 과 같은 바인딩).
+    같은 본문의 판정은 이 스트림(요청) 안에서만 재사용한다 — 스트림 간 공유 없음."""
     style: Dict[str, Optional[str]] = {"v": None}
 
     async def tap():
@@ -216,7 +232,8 @@ async def gate_event_stream(
             if style["v"] is None and ev.get("_style"):
                 style["v"] = ev["_style"]
             yield ev
-    core = _gate_core(tap(), evaluate_message, on_approved, policy, getattr(source, "aclose", None))
+    core = _gate_core(tap(), evaluate_message, on_approved, policy, getattr(source, "aclose", None),
+                      _rid_scope(request_id))
     try:
         async for o in core:
             if style["v"] and "_style" not in o:
@@ -226,12 +243,14 @@ async def gate_event_stream(
         await core.aclose()
 
 
-async def _gate_core(source, evaluate_message, on_approved, policy: StreamGatePolicy, close_upstream
-                     ) -> AsyncIterator[Dict[str, Any]]:
+async def _gate_core(source, evaluate_message, on_approved, policy: StreamGatePolicy, close_upstream,
+                     rid_scope: str) -> AsyncIterator[Dict[str, Any]]:
     msgs: Dict[str, _Msg] = {}
     order: List[str] = []
     emitted: set = set()
-    verdicts: Dict[str, QualityOutput] = {}
+    verdicts: Dict[str, tuple] = {}          # 본문 해시 → (QualityOutput, 평가 requestId) — 요청(스트림) 범위 재사용
+    seq = {"n": 0}
+    stats = {"evaluations": 0, "reused": 0}
     total = {"chars": 0}
 
     def _drop(key: str) -> Optional[_Msg]:
@@ -283,19 +302,23 @@ async def _gate_core(source, evaluate_message, on_approved, policy: StreamGatePo
     async def _verdict(key: str, text: str, src: Dict[str, Any]):
         """(QualityOutput|None, 거절 이벤트|None). 같은 본문은 한 번만 평가."""
         h = hashlib.sha256(text.encode()).hexdigest()
-        q = verdicts.get(h)
-        if q is not None:
-            return q, None
+        hit = verdicts.get(h)
+        if hit is not None:
+            stats["reused"] += 1
+            return hit, None
+        seq["n"] += 1
+        rid = f"{rid_scope}.{seq['n']}"
+        stats["evaluations"] += 1
         try:
-            q = await asyncio.wait_for(evaluate_message(key, text, src), timeout=policy.evaluate_timeout_s)
+            q = await asyncio.wait_for(evaluate_message(key, text, src, rid), timeout=policy.evaluate_timeout_s)
         except asyncio.TimeoutError:
             return None, _reject(key, src, "VALIDATION_ERROR", ["EVALUATOR_TIMEOUT"])
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
             return None, _reject(key, src, "VALIDATION_ERROR", ["EVALUATOR_ERROR"])
-        verdicts[h] = q
-        return q, None
+        verdicts[h] = (q, rid)
+        return verdicts[h], None
 
     async def _aggregate(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """all_complete.answers[]/messages[] 를 '승인된 항목만'으로 다시 만든다(없으면 None).
@@ -314,8 +337,9 @@ async def _gate_core(source, evaluate_message, on_approved, policy: StreamGatePo
                 text = _joined(texts)
                 if not text.strip() or len(text) > policy.max_message_chars:
                     continue
-                q, _rej = await _verdict(f"{_key({'data': item})}#{f}", text, {"data": item})
-                if q is not None and is_displayable(q):
+                qr, _rej = await _verdict(f"{_key({'data': item})}#{f}", text, {"data": item})
+                q = qr[0] if qr else None
+                if qr is not None and is_displayable(*qr):
                     keep.append({**_ids_only(item), **texts,
                                  "quality": {"qualityStatus": q.qualityStatus.value, "score": q.score,
                                              "evaluatorVersion": q.evaluatorVersion}})
@@ -349,11 +373,12 @@ async def _gate_core(source, evaluate_message, on_approved, policy: StreamGatePo
             return                                         # 같은 메시지 재전송은 한 번만 평가/노출
         emitted.add((key, h))
         # 같은 본문(예: partial → complete 최종본)은 재평가하지 않는다. 평가 실패/타임아웃 = 미검증 = 노출 금지.
-        q, rej = await _verdict(key, text, final or src)
+        qr, rej = await _verdict(key, text, final or src)
         if rej is not None:
             yield rej
             return
-        if not is_displayable(q):
+        q = qr[0]
+        if not is_displayable(*qr):
             yield _reject(key, src, q.qualityStatus.value, [v.code for v in q.violations], q.score, q.hardFail)
             return
         if on_approved is not None:
@@ -566,17 +591,19 @@ def to_ndjson(ev: Dict[str, Any]) -> str:
 
 
 async def wrap_sse_stream(chunks: AsyncIterator[Union[str, bytes]], evaluate_message, *, on_approved=None,
-                          policy: StreamGatePolicy = DEFAULT_POLICY) -> AsyncIterator[str]:
+                          policy: StreamGatePolicy = DEFAULT_POLICY, request_id: Optional[str] = None) -> AsyncIterator[str]:
     """StreamingResponse(media_type='text/event-stream') 의 본문 생성기를 그대로 감싼다."""
-    async for ev in gate_event_stream(parse_sse(chunks), evaluate_message, on_approved=on_approved, policy=policy):
+    async for ev in gate_event_stream(parse_sse(chunks), evaluate_message, on_approved=on_approved, policy=policy,
+                                      request_id=request_id):
         s = to_sse(ev)
         if s:
             yield s
 
 
 async def wrap_ndjson_stream(chunks: AsyncIterator[Union[str, bytes]], evaluate_message, *, on_approved=None,
-                             policy: StreamGatePolicy = DEFAULT_POLICY) -> AsyncIterator[str]:
-    async for ev in gate_event_stream(parse_ndjson(chunks), evaluate_message, on_approved=on_approved, policy=policy):
+                             policy: StreamGatePolicy = DEFAULT_POLICY, request_id: Optional[str] = None) -> AsyncIterator[str]:
+    async for ev in gate_event_stream(parse_ndjson(chunks), evaluate_message, on_approved=on_approved, policy=policy,
+                                      request_id=request_id):
         s = to_ndjson(ev)
         if s:
             yield s
