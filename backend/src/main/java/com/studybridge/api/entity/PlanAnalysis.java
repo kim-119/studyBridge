@@ -48,6 +48,13 @@ public class PlanAnalysis {
     @Column(name = "planner_analysis_json", columnDefinition = "TEXT")
     private String plannerAnalysisJson;
 
+    /**
+     * 품질 게이트 판정(PLANNER_COACHING). APPROVED 만 기록. AI 분석 행(planner_analysis_json 있음)이 null 이면 미검증 →
+     * 게이트 ON 에서 요약·추천·항목 문구를 가린다. PDF 결정적 분석 행(planner_analysis_json 없음)은 AI 본문이 없어 판정 대상이 아니다.
+     */
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

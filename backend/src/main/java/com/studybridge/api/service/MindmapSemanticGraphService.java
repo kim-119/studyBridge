@@ -1,6 +1,11 @@
 package com.studybridge.api.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
 import com.studybridge.api.dto.MindMapAiDTO;
 import com.studybridge.api.dto.MindMapAiDTO.MindMapAiRequest;
 import com.studybridge.api.dto.MindMapAiDTO.MindMapAiResponse;
@@ -15,6 +20,7 @@ import com.studybridge.api.entity.AgentChatRoom;
 import com.studybridge.api.exception.AiUpstreamException;
 import com.studybridge.api.repository.AgentChatRoomRepository;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.http.HttpStatus;
@@ -32,6 +38,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * 학습메이트 답변 → AI07 Semantic MindMap 릴레이 + 캐시 (AI07 FINAL CONTRACT mindmap.semantic.v1).
@@ -43,6 +50,10 @@ import java.util.Set;
  *   <li>상태: 200 OK/DEGRADED 는 200 으로 내려준다(DEGRADED 는 렌더 가능 + 사유 표시). AI07 422/500/504 FAILED 는
  *       {@link AiUpstreamException} 으로 실제 HTTP 상태(422/502/504)로 내려주고, 어디서도 토큰/키워드 폴백 그래프를 만들지 않는다.</li>
  *   <li>개념 노드는 AI07 nodes 만, 관계는 AI07 edges(relation/relationKey) 그대로, 교수는 sourceNodes/provenanceEdges 레이어.</li>
+ *   <li>품질 게이트(AI_RESPONSE_QUALITY_GATE_ENABLED, 기본 OFF): 정규화한 그래프(개념·별칭·설명·관계명·출처)를
+ *       response-quality.v1(SEMANTIC_GRAPH/graph_json, 근거 = 요청 답변 원문)로 평가 → 거절 시 최대 2회 재생성 → 승인분만 응답·캐시.
+ *       게이트 ON 캐시는 별도 키({@code studybridge:mindmap:semantic:q1:...})에 승인 표식(qualityStatus=APPROVED)과 함께만 쓰고 읽는다
+ *       — 게이트 OFF/레거시 키의 미검증 그래프는 게이트 ON 에서 노출되지 않는다. 거절 422 / 평가 불가 503(AiUpstreamException).</li>
  * </ul>
  */
 @Slf4j
@@ -50,6 +61,8 @@ import java.util.Set;
 public class MindmapSemanticGraphService {
 
     static final String CACHE_KEY_PREFIX = "studybridge:mindmap:semantic:%d:%s";
+    /** 게이트 ON 전용 캐시 키(승인분만). 레거시 키와 분리해 미검증 그래프가 섞이지 않게 한다. */
+    static final String GATED_CACHE_KEY_PREFIX = "studybridge:mindmap:semantic:q1:%d:%s";
 
     private final AgentChatRoomRepository agentChatRoomRepository;
     private final RedisTemplate<String, Object> redisTemplate;
@@ -67,6 +80,17 @@ public class MindmapSemanticGraphService {
         this.upstream = upstream;
         this.objectMapper = objectMapper;
         this.cacheTtl = Duration.ofHours(Math.max(1, cacheTtlHours));
+    }
+
+    private AiResponseQualityGate qualityGate;
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    private boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
     }
 
     public Response semanticGraph(Long userId, MindmapSemanticGraphDTO.Request request) {
@@ -89,8 +113,11 @@ public class MindmapSemanticGraphService {
         }
 
         String fp = fingerprint(question, answers);
-        String cacheKey = String.format(CACHE_KEY_PREFIX, request.getRoomId(), fp);
         boolean force = Boolean.TRUE.equals(request.getForceRefresh());
+        if (gateOn()) {
+            return semanticGraphGated(request.getRoomId(), question, answers, fp, force);
+        }
+        String cacheKey = String.format(CACHE_KEY_PREFIX, request.getRoomId(), fp);
         if (!force) {
             Response cached = readCache(cacheKey);
             if (cached != null) {
@@ -119,6 +146,109 @@ public class MindmapSemanticGraphService {
                 normalized.getSources().size(), normalized.getRejectedCount(), System.currentTimeMillis() - t0);
         writeCache(cacheKey, normalized);
         return normalized;
+    }
+
+    // ── 품질 게이트 경로 ────────────────────────────────────────────────────
+
+    /** 게이트 ON: 승인 캐시만 재사용 → 생성·정규화 → SEMANTIC_GRAPH 평가(재생성 ≤2) → 승인분만 응답·캐시. 업스트림 실패는 기존 계약 그대로. */
+    private Response semanticGraphGated(Long roomId, String question, List<AnswerSource> answers, String fp, boolean force) {
+        String key = String.format(GATED_CACHE_KEY_PREFIX, roomId, fp);
+        if (!force) {
+            Response cached = readCache(key);
+            if (cached != null && PlannerQualityGateSupport.approved(cached.getQualityStatus())) {
+                cached.setCached(true);
+                cached.setFingerprint(fp);
+                log.info("[MINDMAP_SEMANTIC] gated cache hit roomId={} fp={}", roomId, fp);
+                return cached;
+            }
+        }
+        String requestId = "mm-" + UUID.randomUUID();
+        MindMapAiRequest aiRequest = buildUpstreamRequest(question, answers);
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(requestId, ResponseQualityV1.TaskType.SEMANTIC_GRAPH,
+                ResponseQualityV1.OutputKind.GRAPH_JSON,
+                "다음 질문과 교수 답변에 나온 핵심 개념과 개념 사이 관계를 의미 그래프로 정리해 주세요. 질문: " + question,
+                answerEvidence(answers), ResponseQualityV1.Constraints.empty(), null);
+        final AiUpstreamException[] upstreamFailure = new AiUpstreamException[1];
+        long t0 = System.currentTimeMillis();
+        AiResponseQualityGate.Outcome<Response> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> {
+            try {
+                return normalize(upstream.semanticGraph(aiRequest), fp);
+            } catch (SemanticGraphUpstream.UpstreamException e) {
+                upstreamFailure[0] = toHttpFailure(e);
+            } catch (AiUpstreamException e) {
+                upstreamFailure[0] = e;
+            }
+            throw new AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+        }, this::graphJson);
+        if (outcome.value() == null && upstreamFailure[0] != null) {
+            log.warn("[MINDMAP_SEMANTIC] gated result=FAILED roomId={} fp={} code={} elapsedMs={}", roomId, fp,
+                    upstreamFailure[0].getCode(), System.currentTimeMillis() - t0);
+            throw upstreamFailure[0];
+        }
+        if (!outcome.approved()) {
+            log.warn("[MINDMAP_SEMANTIC] quality gate not approved roomId={} fp={} code={} attempts={} → 미노출·미캐시",
+                    roomId, fp, outcome.decision().errorCode(), outcome.decision().attempts());
+            throw PlannerQualityGateSupport.failure(outcome.decision(), requestId, null);
+        }
+        Response approved = outcome.value();
+        approved.setQualityStatus(PlannerQualityGateSupport.APPROVED);
+        approved.setQualityScore(outcome.decision().score());
+        approved.setVerified(Boolean.TRUE);
+        log.info("[MINDMAP_SEMANTIC] gated result={} roomId={} fp={} score={} attempts={} concepts={} relations={} elapsedMs={}",
+                approved.getStatus(), roomId, fp, outcome.decision().score(), outcome.decision().attempts(),
+                approved.getConcepts().size(), approved.getRelations().size(), System.currentTimeMillis() - t0);
+        writeCache(key, approved);
+        return approved;
+    }
+
+    /** 평가 근거 = 그래프를 만든 교수 답변 원문(방 소유권은 위에서 확인). 총량 48,000자. */
+    static List<ResponseQualityV1.GroundingEvidence> answerEvidence(List<AnswerSource> answers) {
+        List<ResponseQualityV1.GroundingEvidence> out = new ArrayList<>();
+        int i = 0;
+        for (AnswerSource a : answers) {
+            String who = a.getAgentName() == null || a.getAgentName().isBlank() ? "" : "[" + a.getAgentName().trim() + "] ";
+            PlannerQualityGateSupport.appendEvidence(out, "CHAT_ANSWER", "a" + (i++), who + a.getContent(), 4000, 48000);
+        }
+        return out;
+    }
+
+    /** proposedOutput(graph_json) = 사용자에게 보일 그래프 전체: 개념(라벨·별칭·표면형·설명)·출처 노드 + 관계·출처 간선(관계명). */
+    JsonNode graphJson(Response r) {
+        ObjectNode root = objectMapper.createObjectNode();
+        ArrayNode nodes = root.putArray("nodes");
+        for (Concept c : nn(r.getConcepts())) {
+            ObjectNode n = nodes.addObject();
+            n.put("id", "c:" + c.getId());
+            n.put("label", c.getLabel());
+            n.put("level", c.getLevelName());
+            if (c.getParentId() != null) n.put("parent", "c:" + c.getParentId());
+            ArrayNode al = n.putArray("aliases");
+            nn(c.getAliases()).forEach(al::add);
+            ArrayNode sf = n.putArray("surfaceForms");
+            nn(c.getSurfaceForms()).forEach(sf::add);
+            if (c.getDescription() != null) n.put("description", c.getDescription());
+        }
+        for (Source s : nn(r.getSources())) {
+            ObjectNode n = nodes.addObject();
+            n.put("id", "s:" + s.getId());
+            n.put("label", s.getLabel());
+            if (s.getAgentName() != null) n.put("agentName", s.getAgentName());
+        }
+        ArrayNode edges = root.putArray("edges");
+        for (Relation e : nn(r.getRelations())) {
+            ObjectNode n = edges.addObject();
+            n.put("from", "c:" + e.getFrom());
+            n.put("to", "c:" + e.getTo());
+            n.put("relation", firstNonBlank(e.getLabel(), e.getRelationKey(), ""));
+            if (e.getRelationKey() != null) n.put("relationKey", e.getRelationKey());
+        }
+        for (Provenance p : nn(r.getProvenance())) {
+            ObjectNode n = edges.addObject();
+            n.put("from", "s:" + p.getFrom());
+            n.put("to", "c:" + p.getTo());
+            n.put("relation", firstNonBlank(p.getLabel(), "출처"));
+        }
+        return root;
     }
 
     // ── 요청 ────────────────────────────────────────────────────────────────

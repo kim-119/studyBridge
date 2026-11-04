@@ -80,6 +80,13 @@ public class MindmapSemanticGraphDTO {
         private List<Source> sources = new ArrayList<>();
         @Builder.Default
         private List<Provenance> provenance = new ArrayList<>();
+        // 품질 게이트(SEMANTIC_GRAPH). 게이트 OFF 면 null → JSON 에 나가지 않는다(기존 응답과 동일). 게이트 ON 캐시 값의 승인 표식이기도 하다.
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private String qualityStatus;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Double qualityScore;
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean verified;
     }
 
     /** 개념 노드. level: 0=core, 1=primary, 2=secondary(이후는 2로 clamp). */

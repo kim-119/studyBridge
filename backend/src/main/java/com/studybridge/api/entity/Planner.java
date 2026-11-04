@@ -55,6 +55,10 @@ public class Planner {
     @Column(name = "plan_analysis_json", columnDefinition = "TEXT")
     private String planAnalysisJson;
 
+    // plan_analysis_json 의 품질 게이트 판정(PLANNER_COACHING). APPROVED 만 기록 — 게이트 OFF 저장·레거시·문장 재생성본은 null(미검증).
+    @Column(name = "plan_analysis_quality_status", length = 24)
+    private String planAnalysisQualityStatus;
+
     // 표시용 날짜 구성요소 (7번 이미지 플래너 상단)
     private Integer year;
     private Integer month;

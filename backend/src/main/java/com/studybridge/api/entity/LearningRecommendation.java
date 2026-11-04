@@ -121,6 +121,10 @@ public class LearningRecommendation {
     @Column(name = "request_id", length = 64)
     private String requestId;
 
+    /** 품질 게이트(PLANNER_COACHING) 판정. APPROVED 만 기록 — 게이트 OFF 생성·레거시는 null(게이트 ON 에서 제목·사유·근거 문구를 가림). */
+    @Column(name = "quality_status", length = 24)
+    private String qualityStatus;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

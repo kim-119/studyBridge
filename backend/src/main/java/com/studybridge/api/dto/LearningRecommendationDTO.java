@@ -40,6 +40,12 @@ public class LearningRecommendationDTO {
         private LocalDateTime createdAt;
         private LocalDateTime decidedAt;
         private LocalDateTime completedAt;
+        // 품질 게이트 — 게이트 OFF 면 null → JSON 에 나가지 않는다(기존 응답과 동일).
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private String qualityStatus;
+        // true = 미검증 저장 추천이라 제목·사유·확인 사항·근거 라벨을 가렸다(id·상태·유형·점수는 유지).
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private Boolean qualityRedacted;
     }
 
     @Getter
@@ -60,6 +66,9 @@ public class LearningRecommendationDTO {
         private boolean aiUsed;
         private int aiDiscarded;
         private String requestId;
+        // 품질 게이트 — 이번 생성분 판정(APPROVED). 게이트 OFF·조회 응답은 null.
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        private String qualityStatus;
     }
 
     @Getter

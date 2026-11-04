@@ -2,6 +2,9 @@ package com.studybridge.api.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.studybridge.api.ai.contract.v1.ResponseQualityV1;
+import com.studybridge.api.ai.quality.AiResponseQualityGate;
+import com.studybridge.api.ai.quality.GateDecision;
 import com.studybridge.api.dto.PlanAnalysisDTO;
 import com.studybridge.api.entity.Material;
 import com.studybridge.api.entity.MaterialType;
@@ -14,6 +17,7 @@ import com.studybridge.api.repository.PlanAnalysisRepository;
 import com.studybridge.api.repository.PlannerRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -31,6 +35,12 @@ import java.util.stream.Collectors;
  * AI 계획 분석.
  *  - PDF 자료: 기존 deterministic 분석기(PlanTextAnalyzer) 유지
  *  - PLANNER 자료: Planner DB 구조화 데이터를 FastAPI /api/ai/planner/analyze 로 전송
+ *
+ * 품질 게이트(AI_RESPONSE_QUALITY_GATE_ENABLED, 기본 OFF): PLANNER 자료의 AI 분석은 보일 문자열 전체(요약·키워드·일정·체크리스트·
+ * 문제점·개선 행동·다음 추천 등)를 PLANNER_COACHING(text, 근거 = 플래너 입력)으로 평가 → 거절 시 재생성 ≤2 → 승인분만 저장
+ * (plan_analysis.quality_status=APPROVED). 거절/평가 불가는 AiUpstreamException(422/503) 이고 기존 분석을 지우지 않는다.
+ * 조회·항목 변경·추천 응답은 게이트 ON 에서 미검증 AI 분석의 AI 문구를 가린다(항목 id·완료 상태·진행률 유지).
+ * PDF 결정적 분석(PlanTextAnalyzer, planner_analysis_json 없음)은 AI 본문이 없어 게이트 대상이 아니다.
  */
 @Slf4j
 @Service
@@ -48,6 +58,28 @@ public class PlanAnalysisService {
     private final PlanTextAnalyzer analyzer;
     private final WebClient fastApiWebClient;
     private final ObjectMapper objectMapper;
+
+    static final String REDACTED_ITEM_TEXT = "품질 검증 전 항목";
+    private AiResponseQualityGate qualityGate;
+
+    @Autowired(required = false)
+    public void setQualityGate(AiResponseQualityGate qualityGate) {
+        this.qualityGate = qualityGate;
+    }
+
+    private boolean gateOn() {
+        return qualityGate != null && qualityGate.enabled();
+    }
+
+    /** AI 분석 행인가(/api/ai/planner/analyze 결과 — 항상 planner_analysis_json 을 쓴다). PDF 결정적 분석은 false. */
+    static boolean aiAnalysis(PlanAnalysis a) {
+        return a.getPlannerAnalysisJson() != null;
+    }
+
+    /** 게이트 ON + 미검증 AI 분석 → 사용자에게 AI 문구를 보이지 않는다. */
+    private boolean unverified(PlanAnalysis a) {
+        return gateOn() && aiAnalysis(a) && !PlannerQualityGateSupport.approved(a.getQualityStatus());
+    }
 
     // ---------------- 분석 생성/재생성 ----------------
     @Transactional
@@ -161,6 +193,9 @@ public class PlanAnalysisService {
                 requestId, material.getMaterialId(), material.getMaterialType(), source.plannerId(), source.title(),
                 taskLines.size(), scheduleLines.size(), contentLength, PLANNER_ANALYZE_PATH);
 
+        if (gateOn()) {
+            return analyzePlannerGated(userId, material, source, body, taskLines, scheduleLines, contentLength, requestId, started);
+        }
         FastApiResult fastApi = callPlannerAnalyze(body);
         log.info("[plan-analysis] reqId={} materialId={} materialType={} plannerId={} fastApiEndpoint={} fastApiStatus={}",
                 requestId, material.getMaterialId(), material.getMaterialType(), source.plannerId(),
@@ -171,6 +206,14 @@ public class PlanAnalysisService {
         }
 
         PlanAnalysisDTO.PlannerAnalysisData plannerData = toPlannerAnalysisData(source, fastApi.body());
+        return persistPlanner(userId, material, source, plannerData, taskLines, scheduleLines, contentLength, requestId, started,
+                fastApi.status(), null);
+    }
+
+    private PlanAnalysisDTO.Response persistPlanner(Long userId, Material material, PlannerAnalysisSource source,
+                                                    PlanAnalysisDTO.PlannerAnalysisData plannerData, List<String> taskLines,
+                                                    List<String> scheduleLines, int contentLength, String requestId, long started,
+                                                    int fastApiStatus, GateDecision approval) {
         clearPrevious(userId, material.getMaterialId());
 
         List<ItemSpec> specs = plannerItems(plannerData);
@@ -182,6 +225,7 @@ public class PlanAnalysisService {
                 .summary(plannerData.getAiFeedback())
                 .recommendation(String.join("\n", safeList(plannerData.getNextRecommendations())))
                 .plannerAnalysisJson(writeJson(plannerData))
+                .qualityStatus(approval != null && approval.approved() ? PlannerQualityGateSupport.APPROVED : null)
                 .build());
 
         List<PlanAnalysisItem> saved = saveItems(analysis.getId(), specs);
@@ -203,9 +247,83 @@ public class PlanAnalysisService {
                 .elapsedMs(elapsedMs)
                 .requestId(requestId)
                 .fastApiEndpoint(PLANNER_ANALYZE_PATH)
-                .fastApiResponseStatus(fastApi.status())
+                .fastApiResponseStatus(fastApiStatus)
                 .build());
+        if (approval != null && approval.approved()) {
+            resp.setQualityStatus(PlannerQualityGateSupport.APPROVED);
+            resp.setQualityScore(approval.score());
+            resp.setVerified(Boolean.TRUE);
+        }
         return resp;
+    }
+
+    /**
+     * 게이트 경로: 생성 → 보일 문자열 평가 → 재생성 ≤2 → 승인분만 저장. 이전 분석은 승인 뒤에만 지운다(미승인이면 기존 분석 보존).
+     * ai07 생성 실패는 기존 계약(PLAN_ANALYSIS_SAVE_FAILED) 그대로.
+     */
+    private PlanAnalysisDTO.Response analyzePlannerGated(Long userId, Material material, PlannerAnalysisSource source,
+                                                         Map<String, Object> body, List<String> taskLines, List<String> scheduleLines,
+                                                         int contentLength, String requestId, long started) {
+        String gateRequestId = "plan-" + requestId;
+        final boolean[] upstreamFailed = {false};
+        final int[] lastStatus = {0};
+        AiResponseQualityGate.Spec spec = new AiResponseQualityGate.Spec(gateRequestId, ResponseQualityV1.TaskType.PLANNER_COACHING,
+                ResponseQualityV1.OutputKind.TEXT, plannerAnalysisRequest(source, taskLines),
+                plannerEvidence(source, taskLines, scheduleLines), ResponseQualityV1.Constraints.empty(), null);
+        AiResponseQualityGate.Outcome<PlanAnalysisDTO.PlannerAnalysisData> outcome = qualityGate.generateApproved(spec, (attempt, previous) -> {
+            FastApiResult r = callPlannerAnalyze(body);
+            lastStatus[0] = r.status();
+            if (r.status() >= 400 || r.body() == null) {
+                upstreamFailed[0] = true;
+                throw new AiResponseQualityGate.StopGeneration("GENERATION_FAILED");
+            }
+            return toPlannerAnalysisData(source, r.body());
+        }, d -> AiResponseQualityGate.text(visibleText(d)));
+        if (outcome.value() == null && upstreamFailed[0]) {
+            throw new PlanAnalysisException("PLAN_ANALYSIS_SAVE_FAILED", "플래너 AI 분석에 실패했습니다.");
+        }
+        if (!outcome.approved()) {
+            log.warn("[plan-analysis] reqId={} materialId={} quality gate not approved code={} attempts={} → 기존 분석 보존(미노출)",
+                    requestId, material.getMaterialId(), outcome.decision().errorCode(), outcome.decision().attempts());
+            throw PlannerQualityGateSupport.failure(outcome.decision(), gateRequestId, "기존 분석은 유지됩니다.");
+        }
+        log.info("[plan-analysis] reqId={} materialId={} plannerId={} saved(gated) score={} attempts={}", requestId,
+                material.getMaterialId(), source.plannerId(), outcome.decision().score(), outcome.decision().attempts());
+        return persistPlanner(userId, material, source, outcome.value(), taskLines, scheduleLines, contentLength, requestId, started,
+                lastStatus[0], outcome.decision());
+    }
+
+    /** 평가 대상 = 저장·노출되는 AI 분석의 모든 문자열(체크리스트·일정 항목 = 저장되는 항목 문구 포함). */
+    static String visibleText(PlanAnalysisDTO.PlannerAnalysisData d) {
+        StringBuilder b = new StringBuilder();
+        java.util.function.Consumer<String> line = x -> { if (x != null && !x.isBlank()) b.append(x.trim()).append('\n'); };
+        line.accept(d.getTitle());
+        line.accept(d.getLearningGoal());
+        line.accept(d.getAiFeedback());
+        line.accept(d.getBalanceAssessment());
+        line.accept(d.getMessage());
+        for (List<String> l : java.util.Arrays.asList(d.getKeywords(), d.getSchedule(), d.getChecklist(), d.getScheduleAnalysis(),
+                d.getProblemPoints(), d.getImprovementActions(), d.getNextRecommendations(), d.getUnfinishedItems())) {
+            if (l != null) l.forEach(line);
+        }
+        return b.toString().trim();
+    }
+
+    private static String plannerAnalysisRequest(PlannerAnalysisSource source, List<String> taskLines) {
+        return PlannerQualityGateSupport.clip("다음 학습 플래너의 일정·할 일을 분석해 문제점, 학습량 균형, 개선 행동, 다음 학습 추천과 체크리스트를 정리해 주세요. "
+                + "제목: " + source.title() + " / 과목: " + source.subject() + " / 학습 목표: " + source.content()
+                + " / 할 일: " + String.join("; ", taskLines), 7000);
+    }
+
+    /** 근거 = 이 사용자의 플래너 입력(소유권 확인된 플래너 또는 보관 스냅샷). */
+    private static List<ResponseQualityV1.GroundingEvidence> plannerEvidence(PlannerAnalysisSource source, List<String> taskLines,
+                                                                             List<String> scheduleLines) {
+        String text = "제목: " + source.title() + "\n과목: " + source.subject() + "\n날짜: " + source.date()
+                + "\n학습 목표: " + source.content() + "\n메모: " + source.tmi() + "\n목표 시간: " + source.goalTime()
+                + "\n실제 학습 시간: " + source.netStudyTime() + "\n마감: " + source.dDay()
+                + "\n할 일:\n" + String.join("\n", taskLines) + "\n집중 시간대:\n" + String.join("\n", scheduleLines);
+        return PlannerQualityGateSupport.evidence("PLANNER_RECORD", "pl" + (source.plannerId() == null ? "x" : source.plannerId()),
+                text, 4000, 32000);
     }
 
     // ---------------- 분석 조회 ----------------
@@ -220,7 +338,7 @@ public class PlanAnalysisService {
         }
         List<PlanAnalysisItem> items = itemRepository.findByAnalysisIdOrderByOrderIndexAsc(analysis.getId());
         List<String> recs = splitRecommendation(analysis.getRecommendation());
-        return buildResponse(analysis, items, recs);
+        return view(analysis, items, recs);
     }
 
     // ---------------- 항목 상태 변경 (체크/지우기) ----------------
@@ -243,7 +361,7 @@ public class PlanAnalysisService {
         itemRepository.save(item);
 
         List<PlanAnalysisItem> items = itemRepository.findByAnalysisIdOrderByOrderIndexAsc(analysis.getId());
-        return buildResponse(analysis, items, splitRecommendation(analysis.getRecommendation()));
+        return view(analysis, items, splitRecommendation(analysis.getRecommendation()));
     }
 
     // ---------------- 다음 학습 추천 ----------------
@@ -252,6 +370,11 @@ public class PlanAnalysisService {
         PlanAnalysis analysis = analysisRepository.findTopByUserIdAndMaterialIdOrderByIdDesc(userId, materialId)
                 .orElseThrow(() -> new PlanAnalysisException("PLAN_ANALYSIS_TEXT_EMPTY", "먼저 AI 계획 분석을 실행해 주세요."));
 
+        if (unverified(analysis)) {
+            // 게이트 ON + 미검증 AI 분석: AI 추천도, AI 항목 문구로 만든 규칙 추천도 내보내지 않는다(저장 변경 없음).
+            return PlanAnalysisDTO.RecommendationResponse.builder()
+                    .analysisId(analysis.getId()).recommendations(List.of()).qualityRedacted(true).build();
+        }
         if ("PLANNER".equalsIgnoreCase(analysis.getSourceType())) {
             PlanAnalysisDTO.PlannerAnalysisData plannerData = readPlannerAnalysisData(analysis.getPlannerAnalysisJson());
             List<String> recs = plannerData != null ? safeList(plannerData.getNextRecommendations()) : List.of();
@@ -498,6 +621,34 @@ public class PlanAnalysisService {
                 .limit(MAX_RECOMMENDATIONS)
                 .map(i -> "다음에는 ‘" + i.getText() + "’ 부분을 먼저 정리하세요.")
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 저장본 재노출 응답. 게이트 ON + 미검증 AI 분석이면 AI 문구(요약·추천·AI 원본 데이터·항목 문구)만 가린다 —
+     * 항목 id·순서·완료/숨김 상태·진행률(사용자 기록)은 그대로. 승인 분석은 qualityStatus=APPROVED 를 싣는다.
+     */
+    private PlanAnalysisDTO.Response view(PlanAnalysis analysis, List<PlanAnalysisItem> items, List<String> recs) {
+        PlanAnalysisDTO.Response r = buildResponse(analysis, items, recs);
+        if (!gateOn() || !aiAnalysis(analysis)) {
+            return r;
+        }
+        if (PlannerQualityGateSupport.approved(analysis.getQualityStatus())) {
+            r.setQualityStatus(PlannerQualityGateSupport.APPROVED);
+            r.setVerified(Boolean.TRUE);
+            return r;
+        }
+        r.setSummary(PlannerQualityGateSupport.REDACTED_MESSAGE);
+        r.setRecommendation(null);
+        r.setRecommendations(List.of());
+        r.setPlannerAnalysisData(null);
+        if (r.getItems() != null) {
+            for (PlanAnalysisDTO.Item i : r.getItems()) {
+                i.setText(REDACTED_ITEM_TEXT);
+                i.setSourceText(null);
+            }
+        }
+        r.setQualityRedacted(Boolean.TRUE);
+        return r;
     }
 
     private PlanAnalysisDTO.Response buildResponse(PlanAnalysis analysis, List<PlanAnalysisItem> allItems, List<String> recs) {
