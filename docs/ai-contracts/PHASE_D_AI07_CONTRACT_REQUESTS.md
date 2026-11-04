@@ -53,6 +53,21 @@ ai07 에 필요한 것:
 - 프롬프트 주입 방어: 컨텍스트 본문은 데이터 블록으로만 넣고 지시문으로 해석하지 않는다.
 - 이것은 추론 시점 메모리다. QLoRA 가중치 학습과 무관하다(학습 후보는 training-sample.v1 경로만).
 
+## R5. 영역 연결 중 확인된 ai07 쪽 차단 요인(Phase D, EC2 실측·코드 확인)
+
+| # | 경로 | 현재 ai07 동작(d7346fc6) | 결과(게이트 ON) | 필요한 변경 |
+|---|---|---|---|---|
+| R5-1 | 로드맵 `/api/ai/roadmap/generate` | `checks.check_plan` 이 `items/plan/tasks` 배열·항목별 `date` 를 기대. 84일 로드맵은 `weeks[].days[].tasks[].estimated_minutes`(date 없음), 세그먼트는 `{"/weeks/0": …}` | 모든 세그먼트 PLAN_EMPTY(HARD) → 승인 0% → Spring 은 4개 경로 BLOCKED 유지 | R2 의 ROADMAP_PLAN 프로파일(세그먼트 객체·로드맵 스키마 인식) |
+| R5-2 | 화면 AI `/api/ai/vision/analyze` | 판독(관찰) 근거를 응답에서 제거 | `VISION_NO_OBSERVATION_EVIDENCE` HARD 로 대부분 거절(명시적 실패, 노출 없음) | R1 `observations[]`(마스킹) |
+| R5-3 | 학습메이트 SSE(STUDYMATE_*) | judge OFF 에서 결정적 평가만으로는 대화형 답변을 승인하지 않음(격리 E2E: default·socratic 실캡처 승인 0) | 게이트 ON 이면 학습메이트 답변 전부 QUALITY_REJECTED | judge(GPU) 운영 결정 또는 대화형 프로파일의 결정적 승인 기준 합의 |
+| R5-4 | 퀴즈 `/api/ai/quiz`, `/quiz/generate`, 리뷰·유사문제·오답 | `regenerationAttempt/regenerationHints` 무시 | 재생성 = 같은 요청 재전송(개선 확률 낮음) | 힌트 반영(C-RQ-3) |
+| R5-5 | `/api/ai/question` | usedChunks 인덱스만 | Spring 이 키워드로 근거 구간 추정 | R1 청크 본문·chunkId |
+| R5-6 | `/api/ai/major-analysis/note` | 페이지 근거 없음 | Spring 이 원문을 페이지별(최대 32)로 나눠 근거 전송 — 33쪽 이후 인용은 HARD 가능 | 섹션별 pageRefs + 구절 |
+| R5-7 | `/api/ai/material/classify` | 본문 없이(extracted_text "") 판단, 사유 자유 텍스트 | 사유 평가 시 근거 부족 거절 잦음 | 사유를 enum 코드로 → Spring EXEMPT 가능 |
+| R5-8 | `/api/ai/study-journal/validate` | 사유·제안·연결 경로 자유 텍스트 | 저장마다 평가 1회 | 코드 + 구조화 개념 경로 |
+| R5-9 | 평가 API 본문 상한 | 256KiB(바이트) vs 계약 proposedOutput 6만 자(문자) | 한글 3바이트 → 계약 안이어도 413 가능(Spring 은 사전 차단: EVALUATOR_INPUT_TOO_LARGE) | 계약을 바이트 기준으로 통일하거나 상한 상향 |
+| R5-10 | 결정적 폴백 결과 | 리뷰 계열이 폴백도 `error_code=null` 로 반환 | LLM 결과와 구분 불가 → 평가 비용 낭비 | 폴백 표식(`origin: "DETERMINISTIC_FALLBACK"`) |
+
 ## R4. 기타
 - 에이전트별 재생성 API(선택): SSE 게이트에서 거절된 에이전트만 다시 생성. 없으면 사용자 재시도만 가능(현재).
 - `known-divergences.v1.json` 비우기 + `java-verdicts.v1.jsonl` 재생성(EC2 head 기준 605/605).
