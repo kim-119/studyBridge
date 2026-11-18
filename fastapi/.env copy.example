@@ -95,7 +95,7 @@ REDIS_URL=redis://capstone-redis:6379/0
 # 내부 API 인증 (Spring Boot ↔ FastAPI)
 # 미설정 시 개발 모드 (인증 스킵)
 # ============================================================
-AI_SERVER_API_KEY=studybridge-internal-secret
+AI_SERVER_API_KEY=change-me-shared-secret-between-spring-and-fastapi
 
 # ============================================================
 # Qwen vLLM 서버 — 사용 안 함 (Ollama로 대체됨)
