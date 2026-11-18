@@ -6,19 +6,15 @@ import { useBackDismiss } from '../../platform/useBackDismiss';
 import MemoTab from './tabs/MemoTab';
 import QuestionTab from './tabs/QuestionTab';
 import QuizTab from './tabs/QuizTab';
+import RankingTab from './tabs/RankingTab';
 import RoadmapTab from './tabs/RoadmapTab';
 import SummaryTab from './tabs/SummaryTab';
+import { documentTabs } from './materialRankingModel';
 import { isExtractionFailed } from './useExtractionPolling';
 
-const DOCUMENT_TABS = [
-  { key: 'summary', label: '요약' },
-  { key: 'quiz', label: '퀴즈' },
-  { key: 'roadmap', label: '로드맵' },
-  { key: 'memo', label: '메모' },
-  { key: 'question', label: 'AI 질문' },
-];
+const DOCUMENT_TABS = documentTabs();
 
-const AI_TAB_KEYS = new Set(['summary', 'quiz', 'question']);
+const AI_TAB_KEYS = new Set(['summary', 'quiz', 'ranking', 'question']);
 
 function ExtractionFailedNotice() {
   return (
@@ -44,6 +40,8 @@ export default function DocumentMaterialTabs({ material }) {
     switch (activeTab) {
       case 'quiz':
         return <QuizTab material={material} />;
+      case 'ranking':
+        return <RankingTab key={materialId} material={material} />;
       case 'roadmap':
         return <RoadmapTab materialId={materialId} />;
       case 'memo':

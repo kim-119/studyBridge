@@ -6,7 +6,9 @@ import TextField from '../../components/TextField';
 import MobileScreen from '../../shell/MobileScreen';
 import { groupService } from '../../../services/api';
 import { useSubmit } from '../../data/useAsync';
+import { STUDY_TYPES, TARGET_STUDY_MINUTES_DEFAULT } from '../../../utils/groupStudy.js';
 import CoverImagePicker, { INITIAL_COVER, resolveCoverUpload } from './CoverImagePicker';
+import GroupSettingsSection from './GroupSettingsSection';
 import {
   CAPACITY_MAX,
   CAPACITY_MIN,
@@ -28,6 +30,12 @@ function createInitialForm() {
     capacity: DEFAULT_CAPACITY,
     isPublic: true,
     ...defaultStudyPeriod(new Date()),
+    studyType: STUDY_TYPES.GENERAL,
+    targetStudyMinutes: TARGET_STUDY_MINUTES_DEFAULT,
+    joinQuestionEnabled: false,
+    joinQuestion: '',
+    nicknameRuleEnabled: false,
+    nicknameRule: '',
   };
 }
 
@@ -44,7 +52,7 @@ function VisibilitySection({ isPublic, onChange }) {
         </button>
       </div>
       <p className="mobile-field__hint">
-        {isPublic ? '누구나 검색하여 바로 참여할 수 있습니다.' : '방장의 승인을 받은 사람만 참여할 수 있습니다.'}
+        {isPublic ? '누구나 검색하여 바로 참여할 수 있습니다.' : '방장이 보낸 초대 링크로만 참여할 수 있습니다.'}
         {' '}공개 여부는 만든 후 변경할 수 없습니다.
       </p>
     </section>
@@ -161,6 +169,8 @@ export default function GroupCreateScreen() {
           />
           <TagInput tags={form.tags} onChange={(tags) => setField('tags', tags)} />
         </section>
+
+        <GroupSettingsSection form={form} error={errors.settings} onChange={setField} />
 
         <section className="mobile-card mobile-section">
           <h2 className="mobile-section__title">커버 이미지</h2>

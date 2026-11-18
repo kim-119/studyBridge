@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   BarChart3,
+  BellRing,
   BookMarked,
   CalendarDays,
   CalendarRange,
@@ -13,6 +14,7 @@ import { useNavigate } from 'react-router-dom';
 import ListRow from '../components/ListRow';
 import MobileScreen from '../shell/MobileScreen';
 import { useAuth } from '../../hooks/useAuth';
+import { isNativeStudyAvailable, openNativeReminderSettings } from '../platform/nativeStudy';
 
 const MENU_ITEMS = [
   { label: '플래너', path: '/planner', icon: <CalendarDays size={20} /> },
@@ -57,6 +59,20 @@ export default function MoreScreen() {
             <ListRow icon={icon} title={label} onClick={() => navigate(path)} />
           </li>
         ))}
+
+        {isNativeStudyAvailable() && (
+          <li>
+            <ListRow
+              icon={<BellRing size={20} />}
+              title="학습 알림 설정"
+              onClick={() => {
+                openNativeReminderSettings().catch((error) => {
+                  console.warn('[more] 학습 알림 설정 화면을 열지 못했습니다.', error);
+                });
+              }}
+            />
+          </li>
+        )}
 
         <li>
           <ListRow

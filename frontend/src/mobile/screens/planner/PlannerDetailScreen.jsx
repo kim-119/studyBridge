@@ -1,26 +1,26 @@
 import React, { useState } from 'react';
-import { CalendarPlus, CheckCircle2, Circle, Download, PencilLine, Trash2 } from 'lucide-react';
+import { Archive, CalendarPlus, CheckCircle2, Circle, Download, PencilLine, Trash2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import BottomSheet from '../../components/BottomSheet';
 import Button from '../../components/Button';
 import ScreenState from '../../components/ScreenState';
-import SubTabs from '../../components/SubTabs';
 import MobileScreen from '../../shell/MobileScreen';
 import { plannerService, todoService } from '../../../services/api';
 import { useAuth } from '../../../hooks/useAuth';
 import { useAsync, useSubmit } from '../../data/useAsync';
 import { extractDownloadUrl } from '../../platform/downloadUrl';
 import { openExternalUrl } from '../../platform/externalLink';
-import PlannerNextLearningCard from './PlannerNextLearningCard';
-import PlannerPlanAnalysisSection from './PlannerPlanAnalysisSection';
 import TimeTableGrid from './TimeTableGrid';
-import { findLinkedSchedule, formatMinutes, formatPlannerDate, toPlannerDetail } from './plannerAdapter';
-
-const DETAIL_TABS = [
-  { key: 'planner', label: '플래너' },
-  { key: 'analysis', label: 'AI 계획 분석' },
-  { key: 'next', label: '다음 학습' },
-];
+import { materialDetailPath } from '../archive/archiveNavigation';
+import {
+  ARCHIVE_ERROR_MESSAGES,
+  archiveActionLabel,
+  archivedMaterialIdOf,
+  findLinkedSchedule,
+  formatMinutes,
+  formatPlannerDate,
+  toPlannerDetail,
+} from './plannerAdapter';
 
 function PlannerFields({ planner }) {
   const fields = [
@@ -83,7 +83,6 @@ export default function PlannerDetailScreen() {
   const { plannerId } = useParams();
   const navigate = useNavigate();
   const { userId } = useAuth();
-  const [activeTab, setActiveTab] = useState(DETAIL_TABS[0].key);
   const [isDeleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   const planner = useAsync(
@@ -111,6 +110,15 @@ export default function PlannerDetailScreen() {
     await openExternalUrl(url);
   });
 
+  // 기존 서버 보관 API 재사용: 소유권 검증·중복 저장 시 같은 항목 갱신·미리보기 PDF 생성은 서버가 맡는다.
+  const archivePlanner = useSubmit(
+    async () => {
+      const materialId = archivedMaterialIdOf(await plannerService.archive(plannerId));
+      navigate(materialDetailPath(materialId), { state: { notice: '자료보관함에 저장했습니다.' } });
+    },
+    { errorMessages: ARCHIVE_ERROR_MESSAGES }
+  );
+
   const removePlanner = useSubmit(async () => {
     await plannerService.deletePlanner(plannerId);
     navigate('/planner', { replace: true });
@@ -121,9 +129,10 @@ export default function PlannerDetailScreen() {
     registerSchedule.errorMessage ||
     toggleCompletion.errorMessage ||
     downloadPdf.errorMessage ||
+    archivePlanner.errorMessage ||
     removePlanner.errorMessage;
 
-  const renderPlannerTab = () => (
+  const renderPlannerContent = () => (
     <>
       <section className="mobile-card mobile-section">
         {data.roadmapLabel && <p className="mobile-card__meta">{data.roadmapLabel}</p>}
@@ -169,6 +178,15 @@ export default function PlannerDetailScreen() {
           PDF
         </Button>
 
+        <Button
+          variant="secondary"
+          isLoading={archivePlanner.isSubmitting}
+          onClick={() => archivePlanner.submit().catch(() => {})}
+        >
+          <Archive size={16} />
+          {archiveActionLabel(data)}
+        </Button>
+
         <Button variant="ghost" onClick={() => setDeleteConfirmOpen(true)}>
           <Trash2 size={16} />
           삭제
@@ -179,21 +197,10 @@ export default function PlannerDetailScreen() {
     </>
   );
 
-  const renderActiveTab = () => {
-    if (activeTab === 'analysis') return <PlannerPlanAnalysisSection plannerId={plannerId} />;
-    if (activeTab === 'next') return <PlannerNextLearningCard plannerId={plannerId} />;
-    return renderPlannerTab();
-  };
-
   return (
     <MobileScreen title={data?.title || '플래너'} showBackButton>
       <ScreenState query={planner} loadingLabel="플래너를 불러오는 중입니다">
-        {data && (
-          <>
-            <SubTabs tabs={DETAIL_TABS} activeKey={activeTab} onChange={setActiveTab} />
-            {renderActiveTab()}
-          </>
-        )}
+        {data && renderPlannerContent()}
       </ScreenState>
 
       <BottomSheet

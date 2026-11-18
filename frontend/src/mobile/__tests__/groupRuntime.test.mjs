@@ -68,7 +68,7 @@ function createServer({ materials = [], quizzes = [] } = {}) {
   };
 
   Object.assign(api.groupService, {
-    getGroupDetail: async () => ({ id: Number(GROUP_ID), title: '알고리즘 스터디', leaderId: LEADER_ID, capacity: 4, currentCount: 2 }),
+    getGroupDetail: async () => ({ id: Number(GROUP_ID), title: '알고리즘 스터디', leaderId: LEADER_ID, capacity: 4, currentCount: 2, studyType: 'CAM' }),
     getMembers: async () => [
       { userId: LEADER_ID, displayName: '방장' },
       { userId: MEMBER_ID, displayName: '멤버' },

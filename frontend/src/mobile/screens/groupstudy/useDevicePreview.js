@@ -96,7 +96,7 @@ export function useCameraPreview({ isEnabled, facingMode }) {
       .catch((error) => {
         if (!isMounted) return;
         setStatus(DEVICE_STATUS.ERROR);
-        setErrorMessage(describeDeviceError(error) || '카메라를 불러오지 못했습니다.');
+        setErrorMessage(describeDeviceError(error, 'camera') || '카메라를 불러오지 못했습니다.');
       });
 
     return () => {
@@ -167,7 +167,7 @@ export function useMicrophoneLevel({ isEnabled }) {
       .catch((error) => {
         if (!isMounted) return;
         setStatus(DEVICE_STATUS.ERROR);
-        setErrorMessage(describeDeviceError(error) || '마이크를 불러오지 못했습니다.');
+        setErrorMessage(describeDeviceError(error, 'microphone') || '마이크를 불러오지 못했습니다.');
       });
 
     return () => {

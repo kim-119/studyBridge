@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { groupService } from '../../../services/api';
-import {
-  forceSecureWebSocketTransport,
-  parseConnectionMetadata,
-  resolveIceServers,
-} from '../../../utils/webrtc/iceServers';
+import { forceSecureWebSocketTransport, resolveIceServers } from '../../../utils/webrtc/iceServers';
 import { describeApiError } from '../../data/useAsync';
 import { registerAppStateChange } from '../../platform/nativeShell';
 import {
@@ -14,7 +10,9 @@ import {
   stopVoiceSession,
 } from '../../platform/mediaSession';
 import { FACING_MODE, acquireCameraTrack, describeDeviceError, oppositeFacingMode } from './cameraTrack';
-import { buildConnectionData, describeConnection } from './groupStudyModel';
+import { parseConnectionIdentity } from './connectionIdentity';
+import { isOwnScreenConnection } from './screenShareModel';
+import { buildConnectionData } from './groupStudyModel';
 import {
   DEVICE_TOGGLE,
   INITIAL_MEDIA_STATE,
@@ -23,6 +21,7 @@ import {
   mediaSessionReducer,
   planDeviceToggle,
   planLocalMedia,
+  mediaPermissionRequest,
   publishAttempts,
   resolvePermissionGrants,
   withoutCamera,
@@ -60,11 +59,12 @@ async function resolveCameraTrack(handoffTrack, facingMode) {
   return acquireCameraTrack(facingMode);
 }
 
-async function requestGrants(wantsAnyDevice) {
-  if (!wantsAnyDevice) return { camera: false, microphone: false };
+async function requestGrants({ wantsCamera, wantsMicrophone }) {
+  if (!wantsCamera && !wantsMicrophone) return { camera: false, microphone: false };
 
   try {
-    return resolvePermissionGrants(await requestMediaPermissions());
+    const request = mediaPermissionRequest({ wantsCamera, wantsMicrophone });
+    return resolvePermissionGrants(await requestMediaPermissions(request));
   } catch (error) {
     console.warn('카메라·마이크 권한을 확인하지 못했습니다.', error);
     return { camera: false, microphone: false };
@@ -72,8 +72,8 @@ async function requestGrants(wantsAnyDevice) {
 }
 
 function remoteIdentity(connection) {
-  const identity = describeConnection(parseConnectionMetadata(connection));
-  return { userId: identity.userId, name: identity.name || '참여자' };
+  const identity = parseConnectionIdentity(connection);
+  return { userId: identity.userId, name: identity.name || '참여자', connectionKind: identity.kind };
 }
 
 async function initPublisher(openVidu, attempt, cameraTrack) {
@@ -155,6 +155,7 @@ export function useVideoSession(groupId, { userId, displayName }) {
   const joinRef = useRef(null);
   const joinOptionsRef = useRef({ cameraOn: false, micOn: false, facingMode: FACING_MODE.FRONT });
   const cameraBeforeBackgroundRef = useRef(false);
+  const iceServersRef = useRef([]);
 
   const setNotice = useCallback((message) => dispatch({ type: MEDIA_ACTION.NOTICE_CHANGED, message }), []);
 
@@ -206,30 +207,46 @@ export function useVideoSession(groupId, { userId, displayName }) {
   const registerSessionEvents = useCallback(
     (session) => {
       const isOwnConnection = (connectionId) => connectionId === session.connection?.connectionId;
+      // 내 화면공유(SCREEN, 내 PRIMARY 소유)는 네이티브가 송출한다 → 다시 받아 보지 않는다(대역폭·중복 타일 방지).
+      const isOwnScreen = (connection) =>
+        isOwnScreenConnection(parseConnectionIdentity(connection), session.connection?.connectionId);
 
       session.on('connectionCreated', (event) => {
         const connectionId = event.connection?.connectionId;
-        if (!connectionId || isOwnConnection(connectionId)) return;
-        upsertRemote(connectionId, { ...remoteIdentity(event.connection), streamManager: null, cameraOn: false, micOn: false });
+        if (!connectionId || isOwnConnection(connectionId) || isOwnScreen(event.connection)) return;
+        upsertRemote(connectionId, {
+          ...remoteIdentity(event.connection),
+          streamManager: null,
+          cameraOn: false,
+          micOn: false,
+          screenOn: false,
+        });
       });
 
       session.on('streamCreated', (event) => {
+        if (isOwnScreen(event.stream.connection)) return;
         const subscriber = session.subscribe(event.stream, undefined);
         upsertRemote(event.stream.connection.connectionId, {
           ...remoteIdentity(event.stream.connection),
-          ...describeStreamMedia(event.stream),
+          ...describeStreamMedia(event.stream, parseConnectionIdentity(event.stream.connection)),
           streamManager: subscriber,
         });
       });
 
       session.on('streamPropertyChanged', (event) => {
         const connectionId = event.stream?.connection?.connectionId;
-        if (!connectionId || isOwnConnection(connectionId)) return;
-        upsertRemote(connectionId, describeStreamMedia(event.stream));
+        if (!connectionId || isOwnConnection(connectionId) || isOwnScreen(event.stream.connection)) return;
+        upsertRemote(connectionId, describeStreamMedia(event.stream, parseConnectionIdentity(event.stream.connection)));
       });
 
       session.on('streamDestroyed', (event) => {
-        upsertRemote(event.stream.connection.connectionId, { streamManager: null, cameraOn: false, micOn: false });
+        if (isOwnScreen(event.stream.connection)) return;
+        upsertRemote(event.stream.connection.connectionId, {
+          streamManager: null,
+          cameraOn: false,
+          micOn: false,
+          screenOn: false,
+        });
       });
 
       session.on('connectionDestroyed', (event) => {
@@ -272,7 +289,7 @@ export function useVideoSession(groupId, { userId, displayName }) {
         return;
       }
 
-      const grants = await requestGrants(wantsCamera || wantsMicrophone);
+      const grants = await requestGrants({ wantsCamera, wantsMicrophone });
       let plan = planLocalMedia({ wantsCamera, wantsMicrophone, grants });
       let cameraTrack = null;
 
@@ -281,7 +298,7 @@ export function useVideoSession(groupId, { userId, displayName }) {
           cameraTrack = await resolveCameraTrack(handoffTrack, cameraFacing);
         } catch (error) {
           console.warn('카메라 트랙을 가져오지 못했습니다.', error);
-          plan = withoutCamera(plan, describeDeviceError(error) || CAMERA_OPEN_FAILED);
+          plan = withoutCamera(plan, describeDeviceError(error, 'camera') || CAMERA_OPEN_FAILED);
         }
       } else {
         stopTrack(handoffTrack);
@@ -320,7 +337,8 @@ export function useVideoSession(groupId, { userId, displayName }) {
 
     const openVidu = new OpenVidu();
     forceSecureWebSocketTransport(openVidu);
-    openVidu.setAdvancedConfiguration({ iceServers: resolveIceServers(tokenResponse) });
+    iceServersRef.current = resolveIceServers(tokenResponse);
+    openVidu.setAdvancedConfiguration({ iceServers: iceServersRef.current });
 
     const session = openVidu.initSession();
     openViduRef.current = openVidu;
@@ -455,7 +473,7 @@ export function useVideoSession(groupId, { userId, displayName }) {
       rememberDeviceState({ facingMode: nextFacing });
     } catch (error) {
       console.warn('카메라 전환에 실패했습니다.', error);
-      setNotice(describeDeviceError(error) || '카메라를 전환하지 못했습니다.');
+      setNotice(describeDeviceError(error, 'camera') || '카메라를 전환하지 못했습니다.');
     } finally {
       setSwitchingCamera(false);
     }
@@ -512,5 +530,8 @@ export function useVideoSession(groupId, { userId, displayName }) {
     toggleSpeakerphone,
     switchCamera,
     removeParticipantsByUserId: removeRemotesByUserId,
+    // 네이티브 화면공유(SCREEN)를 이 PRIMARY 연결에 귀속시키고 같은 ICE(TURN) 설정을 쓰기 위한 조회용.
+    getPrimaryConnectionId: () => sessionRef.current?.connection?.connectionId || null,
+    getIceServers: () => iceServersRef.current,
   };
 }

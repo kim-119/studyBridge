@@ -1,15 +1,23 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
-import { groupService, timerService } from '../../../../services/api';
-import { describeApiError, useAsync } from '../../../data/useAsync';
+import { groupService } from '../../../../services/api';
+import { useAsync } from '../../../data/useAsync';
 import { FACING_MODE } from '../cameraTrack';
+import { isCamStudy } from '../../../../utils/groupStudy.js';
 import { isGroupLeader } from '../groupStudyModel';
 import { MEDIA_PHASE, describeMediaStatus } from '../mediaJoinModel';
-import { buildLocalTile, buildParticipantTiles, indexMemberPhotos } from '../participantTileModel';
+import {
+  buildLocalTile,
+  buildParticipantTiles,
+  countDistinctParticipants,
+  indexMemberPhotos,
+} from '../participantTileModel';
 import { isQuizActive } from '../quizSessionModel';
 import { SOCKET_STATE, canRetryManually, describeSocketStatus } from '../socketConnectionModel';
 import { useGroupAiChat } from '../useGroupAiChat';
 import { useGroupRoom } from '../useGroupRoom';
+import { canStopShare, describeSharePhase } from '../screenShareModel';
+import { useNativeScreenShare } from '../useNativeScreenShare';
 import ChatPanel from './ChatPanel';
 import FullscreenParticipant from './FullscreenParticipant';
 import MaterialViewer from './MaterialViewer';
@@ -25,8 +33,8 @@ import StudyResourcesPanel from './StudyResourcesPanel';
 import { ROOM_PANEL, useRoomOverlay } from './useRoomOverlay';
 
 const PANEL_GROUPS = [
-  [ROOM_PANEL.CHAT, ROOM_PANEL.AI],
-  [ROOM_PANEL.MATERIALS, ROOM_PANEL.QUIZ],
+  [ROOM_PANEL.CHAT, ROOM_PANEL.AI, ROOM_PANEL.SCREEN_AI],
+  [ROOM_PANEL.MATERIALS, ROOM_PANEL.QUIZ, ROOM_PANEL.RANKING],
 ];
 
 function isSamePanelGroup(currentPanel, requestedPanel) {
@@ -42,18 +50,6 @@ function useUnreadChat(chatCount, isHistoryLoaded, isChatOpen) {
   }, [chatCount, isChatOpen, isHistoryLoaded, seenCount]);
 
   return seenCount !== null && chatCount > seenCount;
-}
-
-function useGroupTimerSync(groupId) {
-  const [errorMessage, setErrorMessage] = useState(null);
-
-  useEffect(() => {
-    timerService.syncTimer(groupId).catch((error) => {
-      setErrorMessage(`그룹 타이머 동기화에 실패했습니다. ${describeApiError(error)}`);
-    });
-  }, [groupId]);
-
-  return { errorMessage, dismiss: () => setErrorMessage(null) };
 }
 
 function useParticipantTiles({ session, members, userId, displayName, myPhotoUrl }) {
@@ -133,7 +129,6 @@ export default function StudyRoomView({
   onDisbanded,
 }) {
   const overlay = useRoomOverlay();
-  const timerSync = useGroupTimerSync(groupId);
 
   const members = useAsync(() => groupService.getMembers(groupId), [groupId]);
   const materials = useAsync(() => groupService.getGroupMaterials(groupId), [groupId]);
@@ -150,6 +145,7 @@ export default function StudyRoomView({
   });
 
   const ai = useGroupAiChat(groupId, { displayName, historyMessages: room.aiHistory });
+  const screenShare = useNativeScreenShare({ groupId, userId, displayName, session });
 
   const participants = useParticipantTiles({ session, members, userId, displayName, myPhotoUrl });
   const onlineUserIds = new Set(participants.map((participant) => String(participant.userId)));
@@ -160,9 +156,16 @@ export default function StudyRoomView({
     (material) => String(material.id) === overlay.viewerMaterialId
   );
 
+  const isParticipantsOpen = overlay.panel === ROOM_PANEL.PARTICIPANTS;
+  useEffect(() => {
+    if (isParticipantsOpen) members.reload().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isParticipantsOpen]);
+
   const isChatOpen = overlay.panel === ROOM_PANEL.CHAT;
   const hasUnreadChat = useUnreadChat(room.chatMessages.length, room.history.isSuccess, isChatOpen);
   const isLeader = isGroupLeader(group.data, userId);
+  const allowsCamera = isCamStudy(group.data?.studyType);
   const isMirrored = (participant) => participant.isMe && session.facingMode === FACING_MODE.FRONT;
   const showsQuizErrorNotice = Boolean(room.quizError) && !isQuizActive(room.quiz) && overlay.panel !== ROOM_PANEL.QUIZ;
 
@@ -177,7 +180,15 @@ export default function StudyRoomView({
   const renderPanel = () => {
     switch (overlay.panel) {
       case ROOM_PANEL.MENU:
-        return <RoomMenu session={session} onOpenPanel={overlay.openPanel} onClose={overlay.close} />;
+        return (
+          <RoomMenu
+            session={session}
+            screenShare={screenShare}
+            allowsCamera={allowsCamera}
+            onOpenPanel={overlay.openPanel}
+            onClose={overlay.close}
+          />
+        );
       case ROOM_PANEL.SETTINGS:
         return (
           <SettingsPanel
@@ -190,9 +201,12 @@ export default function StudyRoomView({
         );
       case ROOM_PANEL.CHAT:
       case ROOM_PANEL.AI:
+      case ROOM_PANEL.SCREEN_AI:
         return (
           <ChatPanel
             activeTab={overlay.panel}
+            groupId={groupId}
+            remoteParticipants={session.remoteParticipants}
             room={room}
             ai={ai}
             userId={userId}
@@ -204,6 +218,7 @@ export default function StudyRoomView({
         return (
           <ParticipantsPanel
             groupId={groupId}
+            group={group.data}
             members={members}
             isLeader={isLeader}
             userId={userId}
@@ -213,6 +228,7 @@ export default function StudyRoomView({
         );
       case ROOM_PANEL.MATERIALS:
       case ROOM_PANEL.QUIZ:
+      case ROOM_PANEL.RANKING:
         return (
           <StudyResourcesPanel
             groupId={groupId}
@@ -236,7 +252,7 @@ export default function StudyRoomView({
       <RoomHeader
         title={group.data?.title || '그룹스터디'}
         enteredAt={enteredAt}
-        participantCount={participants.length}
+        participantCount={countDistinctParticipants(participants)}
         socketState={room.socketState}
         onOpenMenu={() => togglePanel(ROOM_PANEL.MENU)}
         onLeave={onLeave}
@@ -250,7 +266,13 @@ export default function StudyRoomView({
         onDismiss={session.dismissNotice}
       />
       <RoomNotice message={room.chatRecoveryError} tone="error" />
-      <RoomNotice message={timerSync.errorMessage} onDismiss={timerSync.dismiss} />
+      <RoomNotice
+        message={describeSharePhase(screenShare.phase)}
+        dataAttributes={{ 'data-room-notice': 'screen-share', 'data-share-phase': screenShare.phase }}
+        actionLabel={canStopShare(screenShare.phase) ? '공유 중지' : null}
+        onAction={screenShare.stop}
+      />
+      <RoomNotice message={screenShare.notice} tone="error" onDismiss={screenShare.dismissNotice} />
       {showsQuizErrorNotice && <RoomNotice message={room.quizError} onDismiss={room.clearQuizError} />}
 
       <RoomSectionBoundary sectionName="화상 화면">
@@ -272,6 +294,7 @@ export default function StudyRoomView({
 
       <RoomControlBar
         session={session}
+        allowsCamera={allowsCamera}
         activePanel={overlay.panel}
         hasUnreadChat={hasUnreadChat}
         onOpenPanel={togglePanel}

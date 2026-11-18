@@ -54,3 +54,97 @@
     white-space: pre;
   }
 }
+
+.mobile-participant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-basic);
+  min-width: 0;
+}
+
+.mobile-participant__card {
+  min-width: 0;
+}
+
+.mobile-participant__name-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mobile-participant__name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.mobile-participant__me {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mobile-participant__name-line .mobile-group-badge {
+  flex: 0 0 auto;
+}
+
+.mobile-participant__stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mobile-participant__presence {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mobile-participant__presence::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #9CA3AF;
+}
+
+.mobile-participant__presence.is-online {
+  color: var(--color-primary-hover);
+}
+
+.mobile-participant__presence.is-online::before {
+  background-color: #22C55E;
+}
+
+.mobile-participant__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 화면 분석: 영역 선택 스냅샷(가로 스크롤 없이 패널 폭에 맞춤) */
+.mobile-screen-ai__snapshot {
+  position: relative;
+  width: 100%;
+  touch-action: none;
+  user-select: none;
+}
+
+.mobile-screen-ai__snapshot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+.mobile-screen-ai__selection {
+  position: absolute;
+  border: 2px solid var(--color-primary, #22c55e);
+  background-color: rgba(34, 197, 94, 0.15);
+  pointer-events: none;
+}
