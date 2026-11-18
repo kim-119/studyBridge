@@ -36,6 +36,8 @@ const { default: GroupDetailScreen } = await importMobileModule('screens/groupst
 const mountedRenderers = [];
 const realDateNow = Date.now;
 const realAxiosPost = axios.post;
+const apiClient = api.default;
+const realApiAdapter = apiClient.defaults.adapter;
 
 async function renderElement(element) {
   const renderer = await renderHarnessElement(element);
@@ -96,20 +98,39 @@ function pdfMaterial(id, title) {
 }
 
 function acceptUploadAt(server, { createdQuiz }) {
-  axios.post = async (url, formData, config) => {
+  const accept = (url, formData, config) => {
     server.calls.upload.push({ url, formData, config });
     const material = { ...pdfMaterial(301, formData.get('title')), originalFileName: formData.get('file').name };
     server.materials = [material, ...server.materials];
     if (createdQuiz) server.quizzes = [createdQuiz, ...server.quizzes];
-    return { data: material };
+    return material;
+  };
+  // 업로드 구현은 전역 axios.post(구 구현) 또는 공통 api 인스턴스(401 refresh 포함, LLM-clean 구현)
+  // 어느 쪽이든 실제 HTTP 요청(절대 URL·FormData·Authorization)을 같은 기준으로 검증한다.
+  axios.post = async (url, formData, config) => ({ data: accept(url, formData, config) });
+  apiClient.defaults.adapter = async (config) => {
+    if (String(config.method).toLowerCase() !== 'post' || !String(config.url).includes('/materials/upload-quiz')) {
+      return realApiAdapter(config);
+    }
+    const url = /^https?:/.test(config.url) ? config.url : `${config.baseURL || ''}${config.url}`;
+    const data = accept(url, config.data, { headers: { Authorization: config.headers?.Authorization } });
+    return { data, status: 200, statusText: 'OK', headers: {}, config, request: {} };
   };
 }
 
 function rejectUploadWith(status, message) {
-  axios.post = async () => {
+  const reject = (config) => {
     const error = new Error('Request failed');
-    error.response = { status, data: { status, message } };
+    error.config = config;
+    error.response = { status, data: { status, message }, headers: {}, config };
     throw error;
+  };
+  axios.post = async () => reject({});
+  apiClient.defaults.adapter = async (config) => {
+    if (String(config.method).toLowerCase() !== 'post' || !String(config.url).includes('/materials/upload-quiz')) {
+      return realApiAdapter(config);
+    }
+    return reject(config);
   };
 }
 
@@ -190,6 +211,7 @@ test.afterEach(async () => {
   await unmountAll();
   Date.now = realDateNow;
   axios.post = realAxiosPost;
+  apiClient.defaults.adapter = realApiAdapter;
   resetTask(groupMaterialUploadTaskKey(GROUP_ID));
   resetTask(groupQuizTaskKey(GROUP_ID));
   localStorage.clear();
