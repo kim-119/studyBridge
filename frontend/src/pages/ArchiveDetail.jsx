@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlignLeft, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, XCircle, Circle, Settings, ChevronRight, ChevronLeft, X, Trash2, Sparkles, ListChecks, ArrowRight, FileText, BarChart3, Brain, CalendarPlus, Award, RotateCcw, Copy } from 'lucide-react';
+import { ArrowLeft, AlignLeft, Compass, HelpCircle, Map, MessageSquare, Edit3, Image, Download, Send, CheckCircle2, XCircle, Circle, Settings, ChevronRight, ChevronLeft, X, Trash2, Sparkles, ListChecks, ArrowRight, FileText, BarChart3, Brain, CalendarPlus, Award, RotateCcw, Copy } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { AI_TIMEOUT_MS, materialService, reviewNoteService, plannerService, planAnalysisService } from '../services/api';
 import SummarySectionCard from '../components/SummarySectionCard';
@@ -10,7 +10,9 @@ import MaterialPdfViewer from '../components/archive/MaterialPdfViewer';
 import ObsidianArchiveGraphViewer from '../components/graph/ObsidianArchiveGraphViewer';
 import ReviewNoteLearningEntry from '../components/review-note/ReviewNoteLearningEntry';
 import PlannerPlanAnalysisPanel from '../components/planner/PlannerPlanAnalysisPanel';
-import NextLearningCard from '../components/planner/NextLearningCard';
+import AiLearningNavigator from '../components/planner/AiLearningNavigator';
+import LearningRecommendationPanel from '../components/planner/LearningRecommendationPanel';
+import PlanDiagnosisCard from '../components/planner/PlanDiagnosisCard';
 import { sanitizeMarkdownText, sanitizeList } from '../utils/markdown';
 import { cleanLearningOrNull, filterLearningList } from '../utils/learningContent';
 
@@ -594,6 +596,16 @@ function AnalyzingProgress() {
 // AI 질문 기록 영속화 — materialId별 localStorage 저장/복구
 const CHAT_INTRO = '업로드한 자료를 바탕으로 궁금한 점을 질문해보세요.';
 const chatStorageKey = (mid) => `studybridge:material-chat:${mid}`;
+
+const LearningToolCard = ({ icon, title, right, children }) => (
+      <div className="glass-panel animate-fade-in" style={{ padding: '22px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', gap: '8px' }}>
+          <h3 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>{icon} {title}</h3>
+          {right}
+        </div>
+        {children}
+      </div>
+    );
 
 export default function ArchiveDetail() {
   const { type, id } = useParams();
@@ -1862,29 +1874,12 @@ export default function ArchiveDetail() {
     patchPlanItem(item.id, { completed: true, hidden: true });
   };
 
-  // 다음 학습 추천 재생성 (미완료 항목 기반)
-  const handleNextRecommend = async () => {
-    const materialId = material?.materialId || id;
-    if (!materialId) return;
-    if (!planAnalysis) { await handlePlannerAnalyze(); return; }
-    try {
-      setPlanLoading(true);
-      const res = await planAnalysisService.recommend(materialId);
-      setPlanAnalysis((prev) => prev ? { ...prev, recommendations: res.recommendations } : prev);
-    } catch (e) {
-      console.warn('다음 학습 추천 실패:', e);
-    } finally {
-      setPlanLoading(false);
-    }
-  };
-
   // ===== 우측 학습 도구(3탭) — plan_analysis(서버 DB) 기반 렌더 =====
   const renderLearningToolPanel = () => {
     const pa = planAnalysis;
     const progress = pa?.progress || { totalCount: 0, completedCount: 0, hiddenCount: 0, visibleCount: 0, percent: 0 };
     const allItems = Array.isArray(pa?.items) ? pa.items : [];
     const visibleItems = allItems.filter((it) => !it.hidden);
-    const recommendations = Array.isArray(pa?.recommendations) ? pa.recommendations : [];
     const plannerData = pa?.plannerAnalysisData || null;
 
     // 코드/패키지명이 깨지지 않게: 단어 내부(특히 CJK) 분절 금지 + 넘칠 때만 줄바꿈 + 전체 tooltip
@@ -1893,15 +1888,7 @@ export default function ArchiveDetail() {
       ? (it.pageNumber ? `PDF p.${it.pageNumber}` : 'PDF')
       : it.sourceType === 'PLANNER' ? 'Planner' : (it.sourceType || '출처');
 
-    const Card = ({ icon, title, right, children }) => (
-      <div className="glass-panel animate-fade-in" style={{ padding: '22px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', gap: '8px' }}>
-          <h3 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>{icon} {title}</h3>
-          {right}
-        </div>
-        {children}
-      </div>
-    );
+
     const ProgressBar = ({ percent }) => (
       <div style={{ height: '12px', borderRadius: '999px', background: '#E5E7EB', overflow: 'hidden' }}>
         <div style={{ width: `${percent}%`, height: '100%', background: 'linear-gradient(90deg,#22C55E,#15803D)', transition: 'width 0.4s' }} />
@@ -1914,46 +1901,31 @@ export default function ArchiveDetail() {
     );
     const wrap = (children) => (<div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px' }}>{children}</div>);
 
-    // ── 다음 학습 추천 ──
-    // 위: DB 기반 결정적 추천(같은 로드맵의 다음 week/day · 같은 과목의 다음 사용자 플래너, AI 호출 없음, 클릭 시에만 이동).
-    // 아래: 기존 AI 계획 분석에서 나온 추천 목록(유지).
+    // ── AI 학습 내비게이터(ai07 적응형 학습 엔진) ──
+    // 로드맵 플래너 = 현재 단계 코칭(15·30·60분), 수기 플래너 = AI 다음 학습. 예전 "다음 예정 계획 / 학습 추천" 화면을 대체한다.
+    //  일정 복구·나눠 하기는 제안이며 [일정에 반영] 확인 후에만 저장된다. (계획 진단·체크리스트는 'AI 계획 분석' 탭 그대로)
     if (plannerDetailView === 'next') {
       return wrap(
-        <>
-        <NextLearningCard
+        <AiLearningNavigator
           plannerId={material?.plannerId ?? null}
-          onOpen={(next) => {
-            if (next?.nextMaterialId != null) navigate(`/archive/pdf/${next.nextMaterialId}`);
-            else if (next?.nextPlannerId != null) navigate('/planner', { state: { openPlannerId: next.nextPlannerId } });
-          }}
+          onOpenPlanner={(pid) => navigate('/planner', pid != null ? { state: { openPlannerId: pid } } : undefined)}
+          onOpenChecklist={() => setPlannerDetailView('analysis')}
+          onOpenSchedule={() => navigate('/weekly-schedule')}
         />
-        <Card icon={<ArrowRight size={17} color="#15803D" />} title="AI 계획 분석 기반 추천"
-          right={<button className="btn-outline" style={{ width: 'auto', padding: '6px 12px', fontSize: '12px' }} onClick={handleNextRecommend} disabled={planLoading}>새로 추천</button>}>
-          {!pa ? (
-            <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. ‘AI 계획 분석’을 먼저 실행하세요.</p>
-          ) : recommendations.length === 0 ? (
-            <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>미완료 항목이 없습니다. 모든 학습을 완료했어요! 🎉</p>
-          ) : (
-            <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {recommendations.map((r, i) => <li key={i} style={{ fontSize: '14px', color: 'var(--color-text-main)', ...codeSafe }} title={r}>{r}</li>)}
-            </ul>
-          )}
-        </Card>
-        </>
       );
     }
 
     // ── 메모 (materialId 기준 영속, 기존 /api/materials/{id}/memo 재사용) ──
     if (plannerDetailView === 'memo') {
       return wrap(
-        <Card icon={<Edit3 size={17} color="#15803D" />} title="메모">
+        <LearningToolCard icon={<Edit3 size={17} color="#15803D" />} title="메모">
           <textarea value={plannerMemoText} onChange={(e) => setPlannerMemoText(e.target.value)}
             placeholder="이 자료/플래너에 대한 메모를 남기세요. (자료별로 저장되어 새로고침 후에도 유지됩니다)"
             style={{ width: '100%', minHeight: '200px', boxSizing: 'border-box', borderRadius: '12px', border: '1px solid var(--color-border)', padding: '12px', fontSize: '14px', lineHeight: 1.6, resize: 'vertical' }} />
           <button className="btn-primary" style={{ marginTop: '12px', width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handleSavePlannerMemo} disabled={isSavingPlannerMemo}>
             {isSavingPlannerMemo ? '저장 중…' : '메모 저장'}
           </button>
-        </Card>
+        </LearningToolCard>
       );
     }
 
@@ -1963,8 +1935,9 @@ export default function ArchiveDetail() {
       return wrap(
         <>
           <PlannerPlanAnalysisPanel plannerId={material.plannerId} />
+          <PlanDiagnosisCard plannerId={material.plannerId} />
           {pa && (
-            <Card icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
+            <LearningToolCard icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
               {visibleItems.length === 0 ? (
                 <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>표시할 항목이 없습니다. (모두 완료/숨김 처리됨)</p>
               ) : (
@@ -1985,53 +1958,53 @@ export default function ArchiveDetail() {
                   ))}
                 </div>
               )}
-            </Card>
+            </LearningToolCard>
           )}
         </>
       );
     }
     if (planLoading && !pa) {
       return wrap(
-        <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석 중…">
+        <LearningToolCard icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석 중…">
           <p style={{ margin: '0 0 12px', fontSize: '14px', color: 'var(--color-text-muted)' }}>PDF/플래너 문장을 분석 중입니다.</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {[0, 1, 2].map((i) => (<div key={i} style={{ height: '14px', borderRadius: '6px', background: 'linear-gradient(90deg,#F3F4F6,#E5E7EB,#F3F4F6)', backgroundSize: '200% 100%', animation: 'pulse 1.4s ease-in-out infinite' }} />))}
           </div>
-        </Card>
+        </LearningToolCard>
       );
     }
     if (planError) {
       return wrap(
-        <Card icon={<Sparkles size={17} color="#EF4444" />} title="AI 계획 분석">
+        <LearningToolCard icon={<Sparkles size={17} color="#EF4444" />} title="AI 계획 분석">
           <div style={{ borderRadius: '12px', border: '1px solid #FECACA', background: '#FEF2F2', padding: '14px', marginBottom: '14px' }}>
             <div style={{ fontWeight: 700, color: '#B91C1C', fontSize: '14px' }}>{planError.message}</div>
             <div style={{ fontSize: '12px', color: '#9CA3AF', marginTop: '4px' }}>{planError.errorCode}</div>
           </div>
           <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze}>다시 시도</button>
-        </Card>
+        </LearningToolCard>
       );
     }
     if (!pa) {
       return wrap(
-        <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석">
+        <LearningToolCard icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석">
           <p style={{ margin: '0 0 14px', fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. AI 계획 분석을 눌러 PDF/플래너 문장을 체크리스트로 만들어 보세요.</p>
           <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze} disabled={planLoading}>
             <Sparkles size={16} /> AI 계획 분석
           </button>
-        </Card>
+        </LearningToolCard>
       );
     }
     return wrap(
       <>
-        <Card icon={<AlignLeft size={17} color="var(--color-primary)" />} title="요약 / 핵심 학습 흐름" right={reanalyzeBtn}>
+        <LearningToolCard icon={<AlignLeft size={17} color="var(--color-primary)" />} title="요약 / 핵심 학습 흐름" right={reanalyzeBtn}>
           <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-main)', ...codeSafe }}>{pa.summary}</p>
           <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '13px' }}>
             <span style={{ color: 'var(--color-text-muted)' }}>진행률</span><b style={{ color: '#15803D' }}>{progress.percent}% ({progress.completedCount}/{progress.totalCount})</b>
           </div>
           <ProgressBar percent={progress.percent} />
-        </Card>
+        </LearningToolCard>
         {plannerData && (
-          <Card icon={<BarChart3 size={17} color="#0F766E" />} title="일정 분석 / 균형 진단">
+          <LearningToolCard icon={<BarChart3 size={17} color="#0F766E" />} title="일정 분석 / 균형 진단">
             {Array.isArray(plannerData.scheduleAnalysis) && plannerData.scheduleAnalysis.length > 0 && (
               <div style={{ marginBottom: '14px' }}>
                 <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: '6px' }}>일정 분석</div>
@@ -2062,9 +2035,9 @@ export default function ArchiveDetail() {
                 </ul>
               </div>
             )}
-          </Card>
+          </LearningToolCard>
         )}
-        <Card icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
+        <LearningToolCard icon={<ListChecks size={17} color="#15803D" />} title={`문장 단위 체크리스트 (${visibleItems.filter((i) => i.completed).length}/${visibleItems.length})`}>
           {visibleItems.length === 0 ? (
             <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>표시할 항목이 없습니다. (모두 완료/숨김 처리됨)</p>
           ) : (
@@ -2085,208 +2058,15 @@ export default function ArchiveDetail() {
               ))}
             </div>
           )}
-        </Card>
+        </LearningToolCard>
       </>
     );
   };
 
   const renderPlannerRightPanel = () => {
-    // 3탭(AI 계획 분석 / 다음 학습 추천 / 메모)은 renderLearningToolPanel 에서 렌더
-    if (['analysis', 'next', 'memo'].includes(plannerDetailView)) {
-      return renderLearningToolPanel();
-    }
-    const overview = getSummaryOverview(summaryData);
-    const keywords = getSummaryKeywords(summaryData);
-    const sections = getSummarySections(summaryData);
-    const goals = sanitizeList(getSummaryStringList(summaryData, 'learningPoints'));
-    const nextActions = sanitizeList(
-      getSummaryStringList(summaryData, 'studyQuestions').length
-        ? getSummaryStringList(summaryData, 'studyQuestions')
-        : getSummaryStringList(summaryData, 'practicePoints')
-    );
-    const hasAnalysis = !!(overview || keywords.length || sections.length || goals.length || nextActions.length);
-
-    const Card = ({ icon, title, children }) => (
-      <div className="glass-panel animate-fade-in" style={{ padding: '22px' }}>
-        <h3 style={{ margin: '0 0 14px', fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-main)' }}>
-          {icon} {title}
-        </h3>
-        {children}
-      </div>
-    );
-
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px' }}>
-        {/* 저장된 플래너 기반 안내 (먼저 저장 유도 금지) */}
-        <div style={{ borderRadius: '14px', border: '1px solid #DCFCE7', background: '#F0FDF4', padding: '14px 16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, fontSize: '15px', color: '#15803D' }}>
-            <Sparkles size={17} /> AI 피드백 및 다음 학습 추천
-          </div>
-          <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#3F6212', lineHeight: 1.6 }}>
-            저장된 플래너 자료를 기반으로 AI가 학습 계획을 정리하고 다음 행동을 추천합니다.
-          </p>
-        </div>
-
-        {(() => {
-          // 로드맵 일(日) 데이터 — 체크리스트/진행률 뷰에서 사용
-          const allDays = (roadmapSteps || []).flatMap((s) => (s.days || []).map((d) => ({ ...d, week: Number(s.stepOrder) })));
-          const doneDays = allDays.filter((d) => d.completed).length;
-          const progressPct = allDays.length ? Math.round((doneDays / allDays.length) * 100) : 0;
-
-          // ── 체크리스트 보기 ──
-          if (plannerDetailView === 'checklist') {
-            if (allDays.length === 0) return (
-              <Card icon={<ListChecks size={17} color="var(--color-primary)" />} title="체크리스트">
-                <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 체크리스트로 만들 일정/로드맵이 없습니다. ‘일정/로드맵 보기’에서 먼저 로드맵을 생성하세요.</p>
-              </Card>
-            );
-            return (
-              <Card icon={<ListChecks size={17} color="#15803D" />} title={`체크리스트 (${doneDays}/${allDays.length} 완료)`}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '60vh', overflowY: 'auto' }}>
-                  {allDays.map((d, i) => (
-                    <button key={i} onClick={() => handleToggleDay(d.week, d.dayIndex)}
-                      style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', textAlign: 'left', border: '1px solid var(--color-border)', background: d.completed ? '#F0FDF4' : '#fff', borderRadius: '10px', padding: '10px 12px', cursor: 'pointer', width: '100%' }}>
-                      {d.completed ? <CheckCircle2 size={18} color="#16A34A" style={{ flexShrink: 0, marginTop: '1px' }} /> : <Circle size={18} color="#9CA3AF" style={{ flexShrink: 0, marginTop: '1px' }} />}
-                      <span style={{ flex: 1, fontSize: '13.5px', lineHeight: 1.5, color: 'var(--color-text-main)', textDecoration: d.completed ? 'line-through' : 'none', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
-                        <b>{d.week}주 {d.dayLabel || `${d.dayIndex}일차`}</b> · {d.title || '학습'}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </Card>
-            );
-          }
-
-          // ── 진행률 보기 ──
-          if (plannerDetailView === 'progress') {
-            return (
-              <Card icon={<BarChart3 size={17} color="#15803D" />} title="진행률">
-                {allDays.length === 0 ? (
-                  <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>진행률을 계산할 일정/로드맵이 없습니다.</p>
-                ) : (
-                  <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px', color: 'var(--color-text-main)' }}>
-                      <span>전체 진행률</span><b style={{ color: '#15803D' }}>{progressPct}% ({doneDays}/{allDays.length}일)</b>
-                    </div>
-                    <div style={{ height: '12px', borderRadius: '999px', background: '#E5E7EB', overflow: 'hidden' }}>
-                      <div style={{ width: `${progressPct}%`, height: '100%', background: 'linear-gradient(90deg,#22C55E,#15803D)', transition: 'width 0.4s' }} />
-                    </div>
-                    <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      {(roadmapSteps || []).map((s, i) => {
-                        const wd = s.days || []; const wdone = wd.filter((d) => d.completed).length;
-                        const wpct = wd.length ? Math.round((wdone / wd.length) * 100) : 0;
-                        return (
-                          <div key={i} style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
-                            <span style={{ display: 'inline-block', width: '70px' }}>{s.stepOrder}주차</span>
-                            <span style={{ color: wpct === 100 ? '#15803D' : 'var(--color-text-main)' }}>{wdone}/{wd.length}일 ({wpct}%)</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-              </Card>
-            );
-          }
-
-          // ── 다음 학습 추천 보기 ──
-          if (plannerDetailView === 'next') {
-            return nextActions.length > 0 ? (
-              <Card icon={<ArrowRight size={17} color="#15803D" />} title="다음 학습 추천">
-                <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {nextActions.map((a, i) => <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{a}</li>)}
-                </ul>
-              </Card>
-            ) : (
-              <Card icon={<ArrowRight size={17} color="var(--color-primary)" />} title="다음 학습 추천">
-                <p style={{ margin: '0 0 14px', fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 추천이 없습니다. ‘AI 계획 분석’을 눌러 생성하세요.</p>
-                <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze}>AI 계획 분석</button>
-              </Card>
-            );
-          }
-
-          // ── 일정/로드맵 보기 ──
-          if (plannerDetailView === 'roadmap') {
-            return (roadmapSteps && roadmapSteps.length > 0) ? (
-              <Card icon={<Map size={17} color="var(--color-primary)" />} title="일정 / 로드맵">
-                <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '60vh', overflowY: 'auto' }}>
-                  {roadmapSteps.slice(0, 84).map((s, i) => (
-                    <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>
-                      {s.title || s.label || s.task || s.content || `단계 ${i + 1}`}
-                    </li>
-                  ))}
-                </ul>
-              </Card>
-            ) : (
-              <Card icon={<Map size={17} color="var(--color-primary)" />} title="일정 / 로드맵">
-                <p style={{ margin: 0, fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 등록된 일정/로드맵이 없습니다. 좌측 PDF 원문에서 계획을 확인하세요.</p>
-              </Card>
-            );
-          }
-
-          // ── 학습계획 보기(기본 'plan') — AI 분석 결과 ──
-          if (summaryLoading && !hasAnalysis) return (
-            <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석 중…">
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {[0, 1, 2].map((i) => (
-                  <div key={i} style={{ height: '14px', borderRadius: '6px', background: 'linear-gradient(90deg,#F3F4F6,#E5E7EB,#F3F4F6)', backgroundSize: '200% 100%', animation: 'pulse 1.4s ease-in-out infinite' }} />
-                ))}
-              </div>
-            </Card>
-          );
-          if (!hasAnalysis) return (
-            <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="AI 계획 분석">
-              <p style={{ margin: '0 0 14px', fontSize: '14px', color: 'var(--color-text-muted)' }}>아직 분석 결과가 없습니다. AI 계획 분석을 눌러 생성하세요.</p>
-              <button className="btn-primary" style={{ width: 'auto', padding: '10px 18px', borderRadius: '12px', fontWeight: 'bold' }} onClick={handlePlannerAnalyze}>AI 계획 분석</button>
-            </Card>
-          );
-          return (
-            <>
-              {overview && (
-                <Card icon={<AlignLeft size={17} color="var(--color-primary)" />} title="문서 개요 / 학습계획">
-                  <p style={{ margin: 0, fontSize: '14.5px', lineHeight: 1.7, color: 'var(--color-text-main)', whiteSpace: 'pre-wrap' }}>{overview}</p>
-                </Card>
-              )}
-              {keywords.length > 0 && (
-                <Card icon={<Sparkles size={17} color="var(--color-primary)" />} title="핵심 키워드">
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                    {keywords.map((kw) => (
-                      <span key={kw} className="tag" style={{ backgroundColor: '#F3F4F6', color: 'var(--color-text-main)' }}>#{String(kw).trim()}</span>
-                    ))}
-                  </div>
-                </Card>
-              )}
-              {goals.length > 0 && (
-                <Card icon={<CheckCircle2 size={17} color="#15803D" />} title="학습 목표">
-                  <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {goals.map((g, i) => <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{g}</li>)}
-                  </ul>
-                </Card>
-              )}
-              {sections.length > 0 && (
-                <Card icon={<ListChecks size={17} color="#15803D" />} title="AI 정리 계획 / 피드백">
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {sections.slice(0, 12).map((s, i) => (
-                      <div key={i}>
-                        <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: '4px' }}>{s.title}</div>
-                        <p style={{ margin: 0, fontSize: '13.5px', lineHeight: 1.65, color: 'var(--color-text-muted)', whiteSpace: 'pre-wrap' }}>{s.content}</p>
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              )}
-              {nextActions.length > 0 && (
-                <Card icon={<ArrowRight size={17} color="#15803D" />} title="다음 학습 추천">
-                  <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {nextActions.map((a, i) => <li key={i} style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--color-text-main)' }}>{a}</li>)}
-                  </ul>
-                </Card>
-              )}
-            </>
-          );
-        })()}
-      </div>
-    );
+    // 3탭(AI 계획 분석 / AI 학습 내비게이터 / 메모)은 renderLearningToolPanel 에서 렌더한다. plannerDetailView 는 이 세 값만 가진다
+    // (예전 체크리스트·진행률·일정/로드맵·학습계획 보기는 진입 버튼이 없어 제거).
+    return renderLearningToolPanel();
   };
 
   // ---------------- 렌더링 도우미 ----------------
@@ -3421,6 +3201,14 @@ export default function ArchiveDetail() {
             </div>
         );
       }
+      // 문서 기반 다음 학습(원본 플래너 없는 PDF) — 개념 복습·실습·심화·오답 복습. 로드맵 단계로 표현하지 않는다.
+      case 'next':
+        return (
+          <div className="animate-fade-in" style={{ paddingBottom: '32px' }}>
+            <LearningRecommendationPanel materialId={material?.materialId ?? (id ? Number(id) : null)}
+              onOpenPlanner={(pid) => navigate('/planner', { state: { openPlannerId: pid } })} />
+          </div>
+        );
       default:
         return null;
     }
@@ -3495,7 +3283,7 @@ export default function ArchiveDetail() {
   }
 
   return (
-      <div className="archive-detail-container animate-fade-in">
+      <div className="archive-detail-container animate-fade-in" data-detail-type={type}>
         <style dangerouslySetInnerHTML={{__html: `
         .archive-detail-container, .archive-detail-container * {
           box-sizing: border-box;
@@ -3511,7 +3299,7 @@ export default function ArchiveDetail() {
                   {material.title || material.originalFileName}
                 </span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexShrink: 0 }}>
+              <div className="archive-action-right" style={{ display: 'flex', alignItems: 'center', gap: '16px', flexShrink: 0 }}>
                 {/* 뷰어 너비 (모바일은 세로 스택이라 무의미 → CSS로 숨김) */}
                 <div className="archive-viewer-width" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                   <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginRight: '4px' }}>뷰어 너비:</span>
@@ -3540,7 +3328,7 @@ export default function ArchiveDetail() {
                   /* 우측 학습 도구: AI 계획 분석 / 다음 학습 추천 / 메모 (보조 버튼·중복 진행률 제거) */
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     <button className={`archive-action-btn ${plannerDetailView === 'analysis' ? 'active' : ''}`} onClick={() => setPlannerDetailView('analysis')}><Sparkles size={16} /> AI 계획 분석</button>
-                    <button className={`archive-action-btn ${plannerDetailView === 'next' ? 'active' : ''}`} onClick={() => setPlannerDetailView('next')}><ArrowRight size={16} /> 다음 학습 추천</button>
+                    <button className={`archive-action-btn ${plannerDetailView === 'next' ? 'active' : ''}`} onClick={() => setPlannerDetailView('next')}><Compass size={16} /> AI 학습 내비게이터</button>
                     <button className={`archive-action-btn ${plannerDetailView === 'memo' ? 'active' : ''}`} onClick={() => setPlannerDetailView('memo')}><Edit3 size={16} /> 메모</button>
                   </div>
                 ) : (
@@ -3550,6 +3338,7 @@ export default function ArchiveDetail() {
                     <button className={`archive-action-btn ${activePdfTool === 'roadmap' ? 'active' : ''}`} onClick={() => setActivePdfTool('roadmap')}><Map size={16} /> 주차별 로드맵</button>
                     <button className={`archive-action-btn ${activePdfTool === 'memo' ? 'active' : ''}`} onClick={() => setActivePdfTool('memo')}><Edit3 size={16} /> 메모</button>
                     <button className={`archive-action-btn ${activePdfTool === 'chat' ? 'active' : ''}`} onClick={() => setActivePdfTool('chat')}><MessageSquare size={16} /> AI 질문</button>
+                    <button className={`archive-action-btn ${activePdfTool === 'next' ? 'active' : ''}`} onClick={() => setActivePdfTool('next')}><ArrowRight size={16} /> 다음 학습</button>
                   </div>
                 )}
                 {/* 삭제 버튼 */}
@@ -3561,14 +3350,17 @@ export default function ArchiveDetail() {
         )}
 
         {type === 'journal' && (
-            <div style={{ padding: '16px 24px', backgroundColor: 'white', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none' }} onClick={() => navigate('/archive')}>
-                <ArrowLeft size={18} /> 목록
-              </button>
-              <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none', color: '#EF4444' }} onClick={handleDeleteMaterial}>
-                <Trash2 size={18} /> 삭제
-              </button>
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
+            /* 학습일지 상단: 데스크톱은 [목록][삭제][제목] 한 줄, ≤768px 는 제목 행 위 / 액션 행 아래(index.css .archive-journal-head) */
+            <div className="archive-journal-head" style={{ padding: '16px 24px', backgroundColor: 'white', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <div className="archive-journal-actions" style={{ display: 'flex', alignItems: 'center', gap: '16px', flexShrink: 0 }}>
+                <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none' }} onClick={() => navigate('/archive')}>
+                  <ArrowLeft size={18} /> 목록
+                </button>
+                <button className="btn-outline" style={{ width: 'auto', padding: '8px 16px', border: 'none', color: '#EF4444' }} onClick={handleDeleteMaterial}>
+                  <Trash2 size={18} /> 삭제
+                </button>
+              </div>
+              <div className="archive-journal-title" style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <h2 style={{ margin: 0, fontSize: '18px' }}>{material.title}</h2>
                 <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
                   {material.studyDate || (material.uploadedAt ? material.uploadedAt.split('T')[0] : '')} • 학습일지

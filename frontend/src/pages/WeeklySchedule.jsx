@@ -3,6 +3,7 @@ import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import { useAuth } from '../hooks/useAuth';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { todoService } from '../services/api';
 
 /**
@@ -18,6 +19,8 @@ const eventColors = ['#DDF5E3', '#D9F0FF', '#FDF0D5', '#EEE3FF', '#E6FFF4'];
 const PLANNER_PREFIX = '[플래너]';
 const isPlannerTodo = (t) => t?.sourceType === 'PLANNER' || (typeof t?.text === 'string' && t.text.startsWith(PLANNER_PREFIX));
 const isReviewTodo = (t) => t?.sourceType === 'REVIEW_NOTE';
+// AI 학습 내비게이터에서 사용자가 승인해 반영한 학습 세션(source_id = 플래너 id).
+const isAdaptiveTodo = (t) => t?.sourceType === 'ADAPTIVE_SESSION';
 const displayTodoText = (text) =>
   (typeof text === 'string' && text.startsWith(PLANNER_PREFIX)) ? text.slice(PLANNER_PREFIX.length).trim() : text;
 
@@ -28,6 +31,9 @@ function toDateStr(d) {
 
 export default function WeeklySchedule() {
   const { userId } = useAuth();
+  // ≤768px: 7열 셀이 43~53px 라 제목 텍스트를 읽을 수 없으므로 일정을 점(dot)으로만 표시하고(정보 밀도 축소),
+  // 선택한 날짜의 상세는 아래 Todo 패널이 그대로 담당한다. height 는 고정 650px 대신 내용 높이(auto).
+  const isMobile = useIsMobile();
   const [todos, setTodos] = useState([]);
   const [selectedDate, setSelectedDate] = useState(toDateStr(new Date()));
   const [selectedEndDate, setSelectedEndDate] = useState('');
@@ -133,10 +139,22 @@ export default function WeeklySchedule() {
             headerToolbar={{ left: 'prev,next today', center: 'title', right: 'dayGridMonth,dayGridWeek' }}
             buttonText={{ today: '오늘', month: '월', week: '주' }}
             locale="ko"
-            height="650px"
-            views={{ dayGridMonth: { dayMaxEvents: 3 }, dayGridWeek: { dayMaxEvents: false } }}
+            height={isMobile ? 'auto' : '650px'}
+            eventDisplay={isMobile ? 'list-item' : 'auto'}
+            moreLinkContent={isMobile ? (arg) => `+${arg.num}` : undefined}
+            views={{ dayGridMonth: { dayMaxEvents: 3 }, dayGridWeek: { dayMaxEvents: isMobile ? 3 : false } }}
             eventContent={(arg) => {
               const isCompleted = arg.event.extendedProps.completed;
+              if (isMobile) {
+                return (
+                  <span
+                    className={`ws-event-dot${isCompleted ? ' completed' : ''}`}
+                    style={{ backgroundColor: arg.event.borderColor === '#86EFAC' ? '#22C55E' : '#60A5FA' }}
+                    title={arg.event.title}
+                    aria-label={arg.event.title}
+                  />
+                );
+              }
               return (
                 <div style={{ width: '100%', textDecoration: isCompleted ? 'line-through' : 'none', color: isCompleted ? '#9CA3AF' : 'inherit', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
                   {arg.event.title}
@@ -158,7 +176,7 @@ export default function WeeklySchedule() {
         {/* 우측 날짜별 Todo 패널 */}
         <div className="glass-panel todo-section animate-fade-in">
           {/* 등록된 Todo 개수 카드 */}
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+          <div className="ws-todo-stats" style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
             <div style={{ flex: 1, backgroundColor: '#ECFDF3', border: '1px solid #BBF7D0', borderRadius: '12px', padding: '12px' }}>
               <div style={{ fontSize: '12px', color: '#15803D', fontWeight: 700 }}>이 날짜 할 일</div>
               <div style={{ fontSize: '22px', fontWeight: 900, color: '#15803D' }}>{filteredTodos.length}<span style={{ fontSize: '13px', fontWeight: 600 }}> 개</span></div>
@@ -169,26 +187,26 @@ export default function WeeklySchedule() {
             </div>
           </div>
 
-          <div style={{ backgroundColor: '#fff', border: '1px solid var(--color-border)', borderRadius: '10px', padding: '10px 12px', marginBottom: '12px' }}>
+          <div className="ws-date-card" style={{ backgroundColor: '#fff', border: '1px solid var(--color-border)', borderRadius: '10px', padding: '10px 12px', marginBottom: '12px' }}>
             <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>선택한 날짜</div>
             <div style={{ fontSize: '15px', fontWeight: 800, color: '#111827' }}>{selectedDate || '캘린더에서 날짜를 선택하세요.'}</div>
           </div>
 
           {selectedDate && (
-            <div style={{ marginBottom: '12px' }}>
+            <div className="ws-enddate" style={{ marginBottom: '12px' }}>
               <label style={{ fontSize: '13px', color: 'var(--color-text-muted)', display: 'block', marginBottom: '4px' }}>종료 날짜(선택)</label>
               <input type="date" value={selectedEndDate} onChange={(e) => setSelectedEndDate(e.target.value)} min={selectedDate} className="input-field" style={{ marginBottom: 0 }} />
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+          <div className="ws-add-row">
             <input className="input-field" value={todoText} onChange={(e) => setTodoText(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleAddTodo(); }}
               placeholder="할 일을 입력하세요" disabled={!selectedDate || !userId} />
             <button className="btn-primary" onClick={handleAddTodo} style={{ width: '80px', flexShrink: 0 }} disabled={!selectedDate || !userId}>추가</button>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '420px', overflowY: 'auto' }}>
+          <div className="ws-todo-list" style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '420px', overflowY: 'auto' }}>
             {userId && selectedDate && filteredTodos.length > 0 ? (
               filteredTodos.map((todo) => (
                 <div key={todo.id} className={`todo-item ${todo.completed ? 'completed' : ''}`}>
@@ -196,6 +214,9 @@ export default function WeeklySchedule() {
                   <span className="todo-text">
                     {isReviewTodo(todo) && (
                       <span style={{ display: 'inline-block', marginRight: '6px', padding: '1px 7px', borderRadius: '999px', backgroundColor: '#FEE2E2', color: '#B91C1C', fontSize: '11px', fontWeight: 700, verticalAlign: 'middle' }}>복습</span>
+                    )}
+                    {isAdaptiveTodo(todo) && (
+                      <span style={{ display: 'inline-block', marginRight: '6px', padding: '1px 7px', borderRadius: '999px', backgroundColor: '#EDE9FE', color: '#6D28D9', fontSize: '11px', fontWeight: 700, verticalAlign: 'middle' }}>AI 학습</span>
                     )}
                     {isPlannerTodo(todo) && (
                       <span style={{ display: 'inline-block', marginRight: '6px', padding: '1px 7px', borderRadius: '999px', backgroundColor: '#DCFCE7', color: '#15803D', fontSize: '11px', fontWeight: 700, verticalAlign: 'middle' }}>플래너</span>

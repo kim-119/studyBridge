@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { authService } from '../services/api';
 
 export const normalizeUser = (raw) => ({
   ...raw,
@@ -10,6 +11,14 @@ export const normalizeUser = (raw) => ({
   photoUrl: raw.photoUrl || raw.photo_url || '',
   role: raw.role || 'USER'
 });
+
+const isExhibitUser = () => {
+  try {
+    return JSON.parse(localStorage.getItem('user') || 'null')?.exhibitAccount === true;
+  } catch (e) {
+    return false;
+  }
+};
 
 export function useAuth() {
   const [user, setUser] = useState(() => {
@@ -44,6 +53,8 @@ export function useAuth() {
   };
 
   const logout = () => {
+    // 체험 계정은 서버의 이 기기 세션 슬롯을 반환한다(토큰을 지우기 전에). 일반 사용자는 기존대로 로컬 정리만 한다.
+    if (isExhibitUser()) authService.releaseExhibitSession();
     localStorage.removeItem('user');
     localStorage.removeItem('userId');
     localStorage.removeItem('userEmail');

@@ -1,0 +1,342 @@
+# ============================================================
+# 전 학문 도메인별 박사 수준 depth profile
+# domain_classifier 결과에 따라 depth verifier가 이 파일을 참조한다.
+# ============================================================
+
+# 공통 academic rubric (domain profile이 없는 경우 사용)
+default_academic_rubric:
+  depth_axes:
+    - "개념 정의"
+    - "이론적 배경"
+    - "방법론"
+    - "한계"
+    - "적용"
+  doctoral_expectations:
+    - "엄밀한 개념 구분"
+    - "이론적 배경 및 근거"
+    - "방법론적 한계"
+    - "반례 또는 예외 가능성"
+    - "논쟁점 또는 대안 관점"
+  min_depth_coverage: 0.65
+
+domains:
+  mathematics:
+    depth_axes:
+      - "정의"
+      - "정리 또는 명제"
+      - "증명 아이디어"
+      - "예제"
+      - "반례"
+      - "응용"
+    doctoral_expectations:
+      - "엄밀한 정의"
+      - "필요조건/충분조건 구분"
+      - "증명 전략"
+      - "일반화 가능성"
+      - "반례 또는 경계 조건"
+    min_depth_coverage: 0.70
+
+  physics:
+    depth_axes:
+      - "물리적 직관"
+      - "수식 모델"
+      - "가정"
+      - "근사"
+      - "실험적 검증"
+      - "한계"
+    doctoral_expectations:
+      - "모델의 가정"
+      - "수학적 공식화"
+      - "보존 법칙 또는 대칭성"
+      - "근사 조건"
+      - "실험/관측과의 관계"
+    min_depth_coverage: 0.65
+
+  chemistry:
+    depth_axes:
+      - "구조"
+      - "반응 기작"
+      - "열역학/동역학"
+      - "실험 조건"
+      - "응용"
+      - "한계"
+    doctoral_expectations:
+      - "분자 수준 기작"
+      - "열역학적 관계"
+      - "반응 조건 및 선택성"
+      - "부반응 또는 예외"
+      - "실험적 근거"
+    min_depth_coverage: 0.65
+
+  biology:
+    depth_axes:
+      - "구조"
+      - "기능"
+      - "기작"
+      - "진화적 의미"
+      - "실험 근거"
+      - "예외"
+    doctoral_expectations:
+      - "분자/세포/개체 수준의 연결"
+      - "기작 중심 설명"
+      - "실험 설계 또는 근거"
+      - "상반된 연구 결과 가능성"
+      - "생물학적 변이와 예외"
+    min_depth_coverage: 0.65
+
+  psychology:
+    depth_axes:
+      - "개념 정의"
+      - "이론"
+      - "실험/측정"
+      - "개인차"
+      - "한계"
+      - "윤리"
+    doctoral_expectations:
+      - "주요 이론 간 비교"
+      - "측정 타당도/신뢰도"
+      - "실험 설계"
+      - "상관과 인과 구분"
+      - "문화/개인차 고려"
+    min_depth_coverage: 0.65
+
+  philosophy:
+    depth_axes:
+      - "개념 분석"
+      - "논증 구조"
+      - "반론"
+      - "학파/사상가"
+      - "전제"
+      - "귀결"
+    doctoral_expectations:
+      - "논증의 전제와 결론 분리"
+      - "반례 구성"
+      - "개념적 구분"
+      - "사상사적 맥락"
+      - "메타 수준 비판"
+    min_depth_coverage: 0.60
+
+  economics:
+    depth_axes:
+      - "모형"
+      - "가정"
+      - "인센티브"
+      - "균형"
+      - "실증 근거"
+      - "정책 함의"
+    doctoral_expectations:
+      - "모형의 가정"
+      - "내생성/식별 문제"
+      - "균형 개념"
+      - "효율성과 형평성 trade-off"
+      - "실증 분석 한계"
+    min_depth_coverage: 0.65
+
+  law:
+    depth_axes:
+      - "법적 개념"
+      - "요건"
+      - "판례/조문"
+      - "해석론"
+      - "사안 적용"
+      - "한계"
+    doctoral_expectations:
+      - "요건사실 구조"
+      - "해석론 비교"
+      - "판례 법리"
+      - "반대 견해"
+      - "사안 포섭"
+    high_stakes_policy: "educational_only"
+    min_depth_coverage: 0.65
+
+  medicine_health:
+    depth_axes:
+      - "기전"
+      - "증상/징후"
+      - "근거 수준"
+      - "진단/치료 원칙"
+      - "위험 신호"
+      - "한계"
+    doctoral_expectations:
+      - "병태생리"
+      - "근거 수준"
+      - "감별 개념"
+      - "임상적 불확실성"
+      - "전문가 상담 필요성"
+    high_stakes_policy: "educational_only"
+    min_depth_coverage: 0.65
+
+  computer_science:
+    depth_axes:
+      - "정의"
+      - "내부 구조"
+      - "알고리즘/아키텍처"
+      - "복잡도"
+      - "트레이드오프"
+      - "운영/보안"
+    doctoral_expectations:
+      - "내부 메커니즘"
+      - "설계 철학"
+      - "복잡도 또는 성능"
+      - "한계와 예외"
+      - "실제 구현 고려"
+    min_depth_coverage: 0.65
+
+  education:
+    depth_axes:
+      - "이론적 배경"
+      - "교육 목표"
+      - "방법론"
+      - "평가"
+      - "학습자 변인"
+      - "한계"
+    doctoral_expectations:
+      - "교육 이론 간 비교"
+      - "학습 설계 원리"
+      - "평가 타당도"
+      - "개인차 및 학습자 다양성"
+      - "실증 연구 근거"
+    min_depth_coverage: 0.60
+
+  sociology:
+    depth_axes:
+      - "사회 구조"
+      - "이론"
+      - "연구 방법"
+      - "집단 역학"
+      - "맥락"
+      - "한계"
+    doctoral_expectations:
+      - "주요 사회학 이론 비교"
+      - "연구 방법론 선택 근거"
+      - "권력/계층/불평등 관점"
+      - "사회 변화 메커니즘"
+      - "거시/미시 연결"
+    min_depth_coverage: 0.60
+
+  history:
+    depth_axes:
+      - "시대적 맥락"
+      - "원인"
+      - "사건/인물"
+      - "결과"
+      - "해석론"
+      - "사료 비판"
+    doctoral_expectations:
+      - "1차/2차 사료 구분"
+      - "다양한 역사해석 비교"
+      - "인과관계 분석"
+      - "수정주의 또는 대안 해석"
+      - "사료 편향 가능성"
+    min_depth_coverage: 0.60
+
+  literature:
+    depth_axes:
+      - "텍스트 분석"
+      - "작가/시대 맥락"
+      - "문학 이론"
+      - "언어/형식"
+      - "주제"
+      - "해석"
+    doctoral_expectations:
+      - "문학 이론 적용"
+      - "텍스트 내/외적 근거"
+      - "다층적 해석 가능성"
+      - "작가 의도 vs 독자 수용"
+      - "비교문학 관점"
+    min_depth_coverage: 0.60
+
+  linguistics:
+    depth_axes:
+      - "언어 구조"
+      - "이론"
+      - "데이터/코퍼스"
+      - "보편성/개별성"
+      - "언어 변화"
+      - "한계"
+    doctoral_expectations:
+      - "통사/의미/음운 층위 구분"
+      - "언어 이론 간 비교"
+      - "코퍼스 근거"
+      - "언어 보편성과 예외"
+      - "통시/공시 관점"
+    min_depth_coverage: 0.60
+
+  art_design:
+    depth_axes:
+      - "조형 원리"
+      - "사조/운동"
+      - "작가/작품 맥락"
+      - "비평 이론"
+      - "사회적 맥락"
+      - "해석"
+    doctoral_expectations:
+      - "미학 이론 적용"
+      - "사조 간 비교"
+      - "조형 언어 분석"
+      - "사회/문화적 맥락"
+      - "비평적 관점 다양성"
+    min_depth_coverage: 0.55
+
+  engineering:
+    depth_axes:
+      - "설계 원리"
+      - "재료/공정"
+      - "성능 분석"
+      - "안전성"
+      - "비용/효율"
+      - "표준"
+    doctoral_expectations:
+      - "설계 제약 조건"
+      - "재료/공정 선택 근거"
+      - "고장 모드 분석"
+      - "안전 마진 및 기준"
+      - "최적화 트레이드오프"
+    min_depth_coverage: 0.65
+
+  environment:
+    depth_axes:
+      - "시스템 관점"
+      - "원인"
+      - "영향"
+      - "정책"
+      - "불확실성"
+      - "대안"
+    doctoral_expectations:
+      - "생태계 상호작용"
+      - "과학적 불확실성 인정"
+      - "정책 함의"
+      - "이해관계자 분석"
+      - "시스템 복잡성"
+    min_depth_coverage: 0.60
+
+  business:
+    depth_axes:
+      - "비즈니스 모델"
+      - "시장 분석"
+      - "전략"
+      - "재무"
+      - "리스크"
+      - "의사결정"
+    doctoral_expectations:
+      - "전략 이론 적용"
+      - "시장 실패 및 불완전 경쟁"
+      - "리스크 분석"
+      - "가치 창출 메커니즘"
+      - "실증 사례 근거"
+    min_depth_coverage: 0.60
+
+  general_study:
+    depth_axes:
+      - "개념 정의"
+      - "이론적 배경"
+      - "방법론"
+      - "한계"
+      - "적용"
+    doctoral_expectations:
+      - "엄밀한 개념 구분"
+      - "이론적 배경 및 근거"
+      - "방법론적 한계"
+      - "반례 또는 예외 가능성"
+      - "논쟁점"
+    min_depth_coverage: 0.60

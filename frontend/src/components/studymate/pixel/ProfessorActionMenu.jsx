@@ -32,7 +32,7 @@ export default function ProfessorActionMenu({ role, name, tagline, innerRef, sty
             className={`professor-action-menu-btn act-${item.key}`}
             onClick={() => handlers[item.key]?.(role)}
           >
-            <span aria-hidden="true">{item.icon}</span> {item.label}
+            <span aria-hidden="true" className="sb-emoji">{item.icon}</span> {item.label}
           </button>
         ))}
       </div>

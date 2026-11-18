@@ -1,0 +1,24 @@
+# 제안(미설치): /etc/systemd/system/ollama.service.d/20-studybridge-tuning.conf
+# 적용은 승인 후: sudo cp ... && sudo systemctl daemon-reload && sudo systemctl restart ollama
+# 롤백: sudo rm 위 파일 && sudo systemctl daemon-reload && sudo systemctl restart ollama
+#
+# 근거(2026-10-27 ai07 실측, 격리 인스턴스 :11436 = 같은 바이너리 0.24.0 + 같은 qwen3:14b Q4_K_M, num_ctx 8192):
+#   지원 확인  0.24.0 server config 에 OLLAMA_NUM_PARALLEL / OLLAMA_KV_CACHE_TYPE / OLLAMA_FLASH_ATTENTION 존재,
+#              로드 로그 Parallel:2 KvSize:16384 KvCacheType:q8_0 FlashAttention:Enabled 확인
+#   Flash Attention  0.24.0 은 qwen3 에 자동 활성(환경변수 false 인 운영 데몬도 FlashAttention:Enabled) → 아래 값은 명시용.
+#                    KV q8_0 은 FA 가 켜져 있어야 적용된다.
+#   VRAM(size_vram)  P1 f16 10304MiB / P2 f16 11608MiB / P2 q8_0 10472MiB
+#   단건 decode      90.7 / 90.5 / 88.3 tok/s (짧은 출력, q8 약 2.6% 느림)
+#   정답 채점 18문항(수학·코드 출력·한국어·5천 토큰 needle)  P1 f16 12/18, P2 f16 12/18(P1 과 응답 바이트 동일),
+#                    P2 q8 14/18 — P1 이 맞고 q8 이 틀린 문항 0개(열화 미검출, 표본 작음)
+#   10명 혼합(게이트웨이 slots=2)  멀티에이전트 p50 P1 34.8~42.9s → P2 q8 16.3~17.4s, 첫 토큰 19~27s → 0.1~0.9s
+#                    P2 f16 은 KV 1.1GB 가 더 커서 비전 VL 이 3/37 레이어만 GPU(q8 은 18/37) → 비전 p50 62.8s vs 42~50s
+#   20명 혼합  멀티에이전트 p50 70.4s → 28.6s, 첫 토큰 51.7s → 2.6s, makespan 92.2s → 86.3s, 20/20 성공(1회)
+# 반드시 함께 바꿀 것: FastAPI 의 AI_GW_TEXT_SLOTS=2 (게이트웨이 슬롯 = Ollama 병렬도)
+[Service]
+Environment=OLLAMA_NUM_PARALLEL=2
+Environment=OLLAMA_FLASH_ATTENTION=1
+Environment=OLLAMA_KV_CACHE_TYPE=q8_0
+Environment=OLLAMA_MAX_LOADED_MODELS=1
+Environment=OLLAMA_KEEP_ALIVE=30m
+Environment=OLLAMA_MAX_QUEUE=64

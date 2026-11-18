@@ -17,6 +17,12 @@ export const MATERIAL_UPLOAD_TIMEOUT_MS = Number(
   import.meta.env.VITE_MATERIAL_UPLOAD_TIMEOUT_MS || 60000
 );
 
+// AI 화면 분석 전용 timeout. 서버(ai.vision.timeout-seconds 260s)가 구조화된 타임아웃 오류를 먼저 돌려주도록 그보다 조금 길게 둔다.
+export const SCREEN_AI_TIMEOUT_MS = Number(import.meta.env.VITE_SCREEN_AI_TIMEOUT_MS || 280000);
+
+// AI 학습 내비게이터 전용 timeout. Spring 응답 상한(ai.planner.adaptive.timeout-seconds 45s) + 429/503 1회 재시도 여유.
+export const ADAPTIVE_TIMEOUT_MS = Number(import.meta.env.VITE_ADAPTIVE_TIMEOUT_MS || 60000);
+
 // 퀴즈/로드맵 생성 전용 timeout(90초). 초과 시 axios가 ECONNABORTED 로 끊고,
 //  화면은 catch → deterministic fallback 으로 전환한다(무한 "생성 중" 방지, 90초 UX 보장).
 export const AI_FALLBACK_TIMEOUT_MS = Number(
@@ -55,6 +61,15 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+// ── multipart(FormData) 업로드는 반드시 공통 `api` 인스턴스로 보낸다 ─────────────────────
+//  · 이유: 토큰 만료 시 401 → /api/users/refresh → 재시도 가 응답 인터셉터(아래)에 있어서,
+//    raw `axios.post` + 수동 Authorization 으로 우회하면 갱신 없이 "Request failed with status code 401" 로 끝난다.
+//  · Content-Type 을 명시하는 이유: `api` 기본 헤더가 application/json 이라 axios 1.x transformRequest 가
+//    FormData 를 JSON(formDataToJSON) 으로 직렬화해 파일이 사라진다. 'multipart/form-data' 로 덮어쓰면
+//    브라우저 어댑터(resolveConfig)가 FormData 에 한해 Content-Type 을 제거하고 브라우저가 boundary 를 붙인다.
+//    (재시도 시에도 같은 FormData/헤더가 다시 흘러 boundary 가 새로 생성된다 — 하드코딩 boundary 금지.)
+export const MULTIPART_HEADERS = Object.freeze({ 'Content-Type': 'multipart/form-data' });
 
 const fastApi = axios.create({
   baseURL: FASTAPI_BASE_URL,
@@ -618,7 +633,7 @@ export const authService = {
       const res = await api.get('/api/users/profile');
       return res.data;
     } catch (err) {
-      throw err.response?.data || { message: '프로필 조회 실패' };
+      throw err;
     }
   },
 
@@ -627,7 +642,7 @@ export const authService = {
       const res = await api.put('/api/users/profile', profileData);
       return res.data;
     } catch (err) {
-      throw err.response?.data || { message: '프로필 업데이트 실패' };
+      throw err;
     }
   },
 
@@ -636,14 +651,9 @@ export const authService = {
       const formData = new FormData();
       formData.append('file', file);
 
-      const token = localStorage.getItem('token');
-
-      const res = await axios.post(`${API_BASE_URL}/api/users/profile/image`, formData, {
+      const res = await api.post('/api/users/profile/image', formData, {
         timeout: AI_TIMEOUT_MS,
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        headers: MULTIPART_HEADERS,
       });
 
       return res.data;
@@ -659,6 +669,25 @@ export const authService = {
     } catch (err) {
       throw err.response?.data || { message: '비밀번호 변경 실패' };
     }
+  },
+
+  // 체험 계정(test1~test4) 로그아웃: 이 기기의 서버 세션 슬롯만 반환한다(같은 계정으로 접속한 다른 기기는 유지).
+  //  토큰을 지우기 직전에 부르고 결과를 기다리지 않는다. 실패해도 서버가 유휴 만료로 슬롯을 반환한다.
+  releaseExhibitSession: () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      fetch(`${API_BASE_URL}/api/users/logout`, {
+        method: 'POST',
+        keepalive: true,
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    } catch (e) { /* best-effort */ }
+  },
+
+  // 체험 계정 세션 유지 ping. 슬롯이 반환된 기기면 401 → 공통 인터셉터가 갱신 실패 → 로그아웃 처리한다.
+  exhibitKeepalive: async () => {
+    await api.post('/api/users/session/keepalive');
   },
 
   verifyPassword: async (credentials) => {
@@ -782,15 +811,41 @@ export const roomService = {
   },
 };
 
+// 공부 세션 heartbeat 간격(초). 서버(TimerService.HEARTBEAT_INTERVAL_SECONDS)와 동일. 서버는 90초 무응답 시 마지막 heartbeat 시각으로 종료한다.
+export const STUDY_HEARTBEAT_INTERVAL_MS = 30 * 1000;
+
 export const timerService = {
-  startTimer: async (userId, startTime) => {
-    const res = await api.post('/api/timers/start', { startTime });
+  // 서버 시각이 source of truth. startTime 은 하위 호환용으로만 보낸다. supportsHeartbeat=true → 비정상 종료 시 서버 fallback 대상.
+  startTimer: async (userId, startTime, groupStudyId = null) => {
+    const res = await api.post('/api/timers/start', { startTime, groupStudyId, supportsHeartbeat: true });
     return res.data;
   },
 
-  endTimer: async (userId, endTime, durationSeconds) => {
-    const res = await api.post('/api/timers/end', { endTime, durationSeconds });
-    return res.data;
+  // 30초마다 호출: 진행분이 서버 출석 원장에 즉시 반영된다. 활성 세션 없으면 204(null).
+  heartbeat: async () => {
+    const res = await api.post('/api/timers/heartbeat');
+    return res.status === 204 ? null : res.data;
+  },
+
+  // 멱등 종료. endTime/durationSeconds 는 서버가 무시(하위 호환 필드), reason 은 로그용.
+  endTimer: async (userId, endTime, durationSeconds, reason = 'USER_STOP') => {
+    const res = await api.post('/api/timers/end', { endTime, durationSeconds, reason });
+    return res.status === 204 ? null : res.data;
+  },
+
+  // 페이지 이탈(pagehide/unmount)용 graceful stop: keepalive 로 언로드 중에도 요청이 살아남는다(sendBeacon 은 Authorization 헤더를 못 붙임).
+  // 실패해도 서버 heartbeat fallback 이 최대 30초 오차로 복구하므로 결과를 기다리지 않는다.
+  endTimerKeepalive: (reason = 'PAGE_HIDE') => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      fetch(`${API_BASE_URL}/api/timers/end`, {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ reason }),
+      }).catch(() => {});
+    } catch (e) { /* best-effort */ }
   },
 
   getCurrentSession: async (userId) => {
@@ -803,8 +858,9 @@ export const timerService = {
     return res.data;
   },
 
+  // 그룹 방 입장: 이 그룹의 공부 세션 보장(없으면 시작, 다른 컨텍스트 세션은 서버가 종료 후 교체)
   syncTimer: async (groupId) => {
-    const res = await api.post(`/api/timers/sync/${groupId}`);
+    const res = await api.post(`/api/timers/sync/${groupId}?heartbeat=true`);
     return res.data;
   },
 };
@@ -901,13 +957,9 @@ export const materialService = {
 
     formData.append('file', file);
 
-    const token = localStorage.getItem('token');
-
-    const res = await axios.post(`${API_BASE_URL}/api/materials/upload`, formData, {
+    const res = await api.post('/api/materials/upload', formData, {
       timeout: MATERIAL_UPLOAD_TIMEOUT_MS,
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: MULTIPART_HEADERS,
     });
 
     return res.data;
@@ -920,10 +972,9 @@ export const materialService = {
     if (title) formData.append('title', title);
     if (keywords) formData.append('keywords', keywords);
     formData.append('file', file);
-    const token = localStorage.getItem('token');
-    const res = await axios.post(`${API_BASE_URL}/api/materials/classify-before-save`, formData, {
+    const res = await api.post('/api/materials/classify-before-save', formData, {
       timeout: 30000,
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: MULTIPART_HEADERS,
     });
     return res.data;
   },
@@ -1009,11 +1060,6 @@ export const materialService = {
   // 서버 채점: 답안(questionId/selectedOptionId)만 보낸다. 점수는 서버가 결정해 Redis 에 저장한다.
   submitQuiz: async (materialId, quizId, answers) => {
     const res = await api.post(`/api/materials/${materialId}/quiz/${quizId}/submit`, { answers });
-    return res.data;
-  },
-
-  getQuizScore: async (materialId, quizId) => {
-    const res = await api.get(`/api/materials/${materialId}/quiz/${quizId}/score`);
     return res.data;
   },
 
@@ -1232,6 +1278,40 @@ export const groupService = {
     return res.data;
   },
 
+  // ── 비공개 그룹 초대 링크(방장 전용 관리 + 링크 수락) ──
+  createInvitation: async (groupId, body = {}) => {
+    const res = await api.post(`/api/groups/${groupId}/invitations`, body);
+    return res.data;
+  },
+  getActiveInvitations: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/invitations/active`);
+    return res.data;
+  },
+  revokeInvitation: async (groupId, invitationId) => {
+    const res = await api.delete(`/api/groups/${groupId}/invitations/${invitationId}`);
+    return res.data;
+  },
+  previewInvite: async (token) => {
+    const res = await api.get(`/api/groups/invite/${encodeURIComponent(token)}`);
+    return res.data;
+  },
+  acceptInvite: async (token, body = {}) => {
+    const res = await api.post(`/api/groups/invite/${encodeURIComponent(token)}/accept`, body);
+    return res.data;
+  },
+
+  // 그룹 퀴즈 랭킹(RDS 정본 집계, 멤버 전용): 순위/닉네임/점수/정답률/정답 수
+  getQuizRanking: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/stats/quiz-ranking`);
+    return res.data;
+  },
+
+  // 본인 그룹 닉네임 설정/변경 (닉네임 규칙 ON 그룹은 빈 값으로 해제 불가 — 서버 검증)
+  updateMyNickname: async (groupId, nickname) => {
+    const res = await api.put(`/api/groups/${groupId}/members/me/nickname`, { nickname });
+    return res.data;
+  },
+
   kickMember: async (groupId, memberUserId) => {
     const res = await api.delete(`/api/groups/${groupId}/members/${memberUserId}`);
     return res.data;
@@ -1242,8 +1322,52 @@ export const groupService = {
     return res.data;
   },
 
-  getVideoToken: async (id) => {
-    const res = await api.post(`/api/groups/${id}/video/token`);
+  // PRIMARY(음성·카메라) 토큰. hint = { clientInstanceId, deviceType } — 서버가 serverData(검증된 userId/kind)에 기록한다.
+  getVideoToken: async (id, hint) => {
+    const res = await api.post(`/api/groups/${id}/video/token`, hint || undefined);
+    return res.data;
+  },
+
+  // 화면공유(SCREEN) 전용 토큰. body = { primaryConnectionId, clientInstanceId, deviceType } — 내 active PRIMARY 에 귀속.
+  getScreenShareToken: async (id, body) => {
+    const res = await api.post(`/api/groups/${id}/video/screen-token`, body);
+    return res.data;
+  },
+
+  // 내 화면공유 Connection 서버측 종료(멱등). 클라이언트 disconnect 가 유실됐을 때의 안전망.
+  stopScreenShare: async (id, connectionId) => {
+    const res = await api.delete(`/api/groups/${id}/video/screen/${encodeURIComponent(connectionId)}`);
+    return res.data;
+  },
+
+  // 실시간 접속 Source of Truth(OpenVidu active Connection). ghost 정리·참여 인원 검증용.
+  getVideoConnections: async (id) => {
+    const res = await api.get(`/api/groups/${id}/video/connections`);
+    return res.data;
+  },
+
+  // ── AI 화면 분석(화면공유 프레임 1장 + 질문 → Spring → ai07 Vision) ──
+  // 지금 분석할 수 있는 화면공유 목록 + 공유자 동의(aiConsent)·분석 가능(analyzable) 여부.
+  getScreenAiShares: async (id) => {
+    const res = await api.get(`/api/groups/${id}/screen-ai/shares`);
+    return res.data;
+  },
+
+  // 내 화면공유의 AI 분석 허용/철회(공유자 본인만).
+  setScreenAiConsent: async (id, connectionId, allowed) => {
+    const res = await api.put(`/api/groups/${id}/screen-ai/shares/${encodeURIComponent(connectionId)}/consent`, { allowed: !!allowed });
+    return res.data;
+  },
+
+  // body = { connectionId, streamId, question, image(Base64 JPEG), mime, clientRequestId }. 서버 상한(기본 260s)보다 조금 길게 기다린다.
+  analyzeScreen: async (id, body, { signal } = {}) => {
+    const res = await api.post(`/api/groups/${id}/screen-ai/analyze`, body, { signal, timeout: SCREEN_AI_TIMEOUT_MS });
+    return res.data;
+  },
+
+  // 진행 중인 내 분석 취소(멱등) — 서버가 ai07 연결을 끊어 추론도 멈춘다.
+  cancelScreenAnalysis: async (id, clientRequestId) => {
+    const res = await api.delete(`/api/groups/${id}/screen-ai/analyze/${encodeURIComponent(clientRequestId)}`);
     return res.data;
   },
 
@@ -1254,17 +1378,10 @@ export const groupService = {
     if (options.questionCount != null) formData.append('questionCount', String(options.questionCount));
     if (options.timeLimitSeconds != null) formData.append('timeLimitSeconds', String(options.timeLimitSeconds));
 
-    const token = localStorage.getItem('token');
-    const res = await axios.post(
-      `${API_BASE_URL}/api/groups/${groupId}/materials/upload-quiz`,
-      formData,
-      {
-        timeout: AI_TIMEOUT_MS,
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-      }
-    );
+    const res = await api.post(`/api/groups/${groupId}/materials/upload-quiz`, formData, {
+      timeout: AI_TIMEOUT_MS,
+      headers: MULTIPART_HEADERS,
+    });
 
     return res.data;
   },
@@ -1311,8 +1428,9 @@ export const groupService = {
 };
 
 export const knowledgeService = {
-  getPosts: async () => {
-    const res = await api.get('/api/blogs');
+  // sort: 'latest'(기본) | 'popular' | 'oldest' — 서버 정렬(GET /api/blogs?sort=)
+  getPosts: async (sort = 'latest') => {
+    const res = await api.get('/api/blogs', { params: { sort } });
     return res.data;
   },
 
@@ -1334,14 +1452,9 @@ export const knowledgeService = {
       formData.append('pdf', pdfFile);
     }
 
-    const token = localStorage.getItem('token');
-
-    const res = await axios.post(`${API_BASE_URL}/api/blogs`, formData, {
+    const res = await api.post('/api/blogs', formData, {
       timeout: AI_TIMEOUT_MS,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: MULTIPART_HEADERS,
     });
 
     return res.data;
@@ -1377,14 +1490,9 @@ export const knowledgeService = {
     formData.append('clearImage', clearImage);
     formData.append('clearPdf', clearPdf);
 
-    const token = localStorage.getItem('token');
-
-    const res = await axios.put(`${API_BASE_URL}/api/blogs/${blogId}`, formData, {
+    const res = await api.put(`/api/blogs/${blogId}`, formData, {
       timeout: AI_TIMEOUT_MS,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: MULTIPART_HEADERS,
     });
 
     return res.data;
@@ -1395,10 +1503,11 @@ export const knowledgeService = {
     return res.data;
   },
 
-  searchPosts: async (keyword) => {
+  searchPosts: async (keyword, sort = 'latest') => {
     const res = await api.get('/api/blogs/search', {
       params: {
         keyword,
+        sort,
       },
     });
 
@@ -1555,6 +1664,18 @@ export const plannerService = {
     const res = await api.get(`/api/planners/${id}/download-url`);
     return res.data;
   },
+  // AI 학습 내비게이터(ai07 적응형 학습 엔진). 로드맵 → 현재 단계 코칭, 수기 → 다음 학습. 저장 없음.
+  //  body: { availableMinutes: 15|30|60, useLlm?, currentStepId? }  → { mode, plannerType, result, items, changes, proposalToken, ... }
+  //  서버 응답 상한 45초 + 재시도 여유 → 60초. signal 로 이전 요청을 취소한다.
+  getAdaptiveNavigator: async (plannerId, body, { signal } = {}) => {
+    const res = await api.post(`/api/planners/${plannerId}/adaptive`, body, { signal, timeout: ADAPTIVE_TIMEOUT_MS });
+    return res.data;
+  },
+  // 승인한 일정 제안만 반영(주간 일정 세션 추가 / 수기 플래너 예정일 변경). body: { proposalToken, changeIds: [...] }
+  applyAdaptiveProposal: async (plannerId, body) => {
+    const res = await api.post(`/api/planners/${plannerId}/adaptive/apply`, body, { timeout: 30000 });
+    return res.data;
+  },
   deletePlanner: async (id) => {
     const res = await api.delete(`/api/planners/${id}`);
     return res.data;
@@ -1603,6 +1724,30 @@ export const plannerService = {
 };
 
 // AI 계획 분석(PDF/플래너 문장 단위 학습 진행) 서비스. 모두 Spring(/api) 경유.
+// 학습 추천(사용자 플래너 Learning Task / 로드맵 Learning Node / 문서 기반) + 계획 진단(Optimization Strategy).
+//  - 생성(POST)은 EC2 규칙(+플래그 ON 시 AI07 후보 검증)으로 후보를 만들고, 승인해야만 플래너에 등록된다.
+//  - 오류 본문: { status, code, message, retryable, requestId } (409 *_IN_PROGRESS, 429 RATE_LIMITED 등)
+export const recommendationService = {
+  listForPlanner: async (plannerId) => (await api.get(`/api/planners/${plannerId}/recommendations`)).data,
+  generateForPlanner: async (plannerId) =>
+    (await api.post(`/api/planners/${plannerId}/recommendations`, {}, { timeout: AI_TIMEOUT_MS })).data,
+  listForMaterial: async (materialId) => (await api.get(`/api/materials/${materialId}/recommendations`)).data,
+  generateForMaterial: async (materialId) =>
+    (await api.post(`/api/materials/${materialId}/recommendations`, {}, { timeout: AI_TIMEOUT_MS })).data,
+  accept: async (id, { plannerDate = null, acknowledgeVerification = false } = {}) =>
+    (await api.post(`/api/recommendations/${id}/accept`, { plannerDate, acknowledgeVerification })).data,
+  reject: async (id) => (await api.post(`/api/recommendations/${id}/reject`, {})).data,
+  complete: async (id) => (await api.post(`/api/recommendations/${id}/complete`, {})).data,
+  metrics: async () => (await api.get('/api/recommendations/metrics')).data,
+  // A(가용)/W(작업량)/D(부족량) + 마감 창·과부하·선수관계·일정 중복. dailyAvailableMinutes 없으면 A·D 미계산.
+  diagnosis: async (plannerId, { dailyAvailableMinutes = null, deadline = null } = {}) => {
+    const params = {};
+    if (dailyAvailableMinutes != null && dailyAvailableMinutes !== '') params.dailyAvailableMinutes = dailyAvailableMinutes;
+    if (deadline) params.deadline = deadline;
+    return (await api.get(`/api/planners/${plannerId}/diagnosis`, { params })).data;
+  },
+};
+
 export const planAnalysisService = {
   // 분석 생성/재생성 (PDF/플래너 텍스트 → 문장/행동 단위 체크리스트)
   analyze: async (materialId) => {
@@ -1773,3 +1918,7 @@ export const learningMateService = {
 };
 
 export default api;
+
+export const myReportService = {
+  list: async (source, page = 0) => (await api.get('/api/reports/me', { params: { source, page, size: 20 } })).data,
+};

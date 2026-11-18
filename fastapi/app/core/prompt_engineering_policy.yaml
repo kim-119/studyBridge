@@ -1,0 +1,53 @@
+# ============================================================
+# 프롬프트 엔지니어링 전략 정책
+# prompt_example_selector.py가 이 파일을 참조한다.
+# ============================================================
+
+prompting:
+  default:
+    strategy: "zero_shot"
+
+  quiz_generation:
+    strategy: "one_shot"
+    example_file: "quiz_generation_example.md"
+
+  socratic:
+    strategy: "few_shot"
+    example_file: "socratic_followup_examples.md"
+    max_examples: 2
+
+  debate:
+    strategy: "few_shot"
+    example_file: "debate_mode_examples.md"
+    max_examples: 2
+
+  doctoral_depth:
+    strategy: "few_shot"
+    example_file: "doctoral_answer_depth_examples.md"
+    max_examples: 2
+
+  personality_alignment:
+    strategy: "few_shot"
+    example_file: "personality_style_examples.md"
+    max_examples: 2
+
+
+# ── 지식수준별 기본 전략 ──────────────────────────────────
+level_strategy:
+  입문: "zero_shot"
+  학사: "zero_shot"
+  석사: "zero_shot"
+  박사: "few_shot"
+  전문가: "few_shot"
+
+
+# ── 모드별 기본 전략 ─────────────────────────────────────
+mode_strategy:
+  default: "zero_shot"
+  tikitaka: "zero_shot"
+  debate: "few_shot"
+  socratic: "few_shot"
+
+
+# ── 최대 few-shot 토큰 예산 ──────────────────────────────
+max_example_tokens: 800

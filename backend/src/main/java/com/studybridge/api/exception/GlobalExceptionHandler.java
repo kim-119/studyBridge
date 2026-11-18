@@ -107,6 +107,25 @@ public class GlobalExceptionHandler {
         return builder.body(payload);
     }
 
+    // 자료 퀴즈 접근 오류(코드 포함) — 기존 {status, message} 에 code 만 더한다(하위 호환).
+    @ExceptionHandler({QuizAccessException.NotFound.class, QuizAccessException.Forbidden.class, QuizAccessException.BadRequest.class})
+    public ResponseEntity<Map<String, Object>> handleQuizAccess(RuntimeException ex) {
+        QuizAccessException.Coded c = (QuizAccessException.Coded) ex;
+        ResponseEntity<Map<String, Object>> r = body(c.getStatus(), ex.getMessage());
+        r.getBody().put("code", c.getCode());
+        return r;
+    }
+
+    // 자료 퀴즈 랭킹 저장소(Redis) 장애 → 503 RANKING_UNAVAILABLE. 채점 API 는 이 예외를 던지지 않는다.
+    @ExceptionHandler(com.studybridge.api.service.MaterialQuizScoreService.RankingUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleRankingUnavailable(
+            com.studybridge.api.service.MaterialQuizScoreService.RankingUnavailableException ex) {
+        log.warn("Quiz ranking unavailable: {}", ex.getMessage());
+        ResponseEntity<Map<String, Object>> r = body(HttpStatus.SERVICE_UNAVAILABLE, "랭킹을 잠시 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.");
+        r.getBody().put("code", "RANKING_UNAVAILABLE");
+        return r;
+    }
+
     // 권한 없음(서비스 계층에서 던지는 SecurityException) → 403
     @ExceptionHandler(SecurityException.class)
     public ResponseEntity<Map<String, Object>> handleForbidden(SecurityException ex) {

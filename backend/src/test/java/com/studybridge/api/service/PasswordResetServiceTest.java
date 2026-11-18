@@ -396,6 +396,37 @@ class PasswordResetServiceTest {
         return sent;
     }
 
+    @Test // 2026-11-04 장애: 본문 전송 뒤 SMTP 응답 지연 → 메일은 도착했는데 번호가 저장되지 않아 검증 불가였다
+    void sendCode_acceptanceUnconfirmed_storesMailedCode_soDeliveredMailStillVerifies() {
+        List<String> sent = new ArrayList<>();
+        org.mockito.Mockito.doAnswer(inv -> {
+            sent.add(inv.getArgument(1));
+            throw new PasswordResetMailService.AcceptanceUnconfirmed();
+        }).when(mailService).sendVerificationCode(anyString(), anyString(), anyLong());
+        PasswordResetDTO.Response res = service.sendCode(EMAIL, "1.1.1.1");
+        assertEquals(1, sent.size());
+        assertEquals(sent.get(0), storedCode(), "도착했을 수 있는 메일의 번호를 저장");
+        assertEquals(60L, redis.getExpire("password-reset:cooldown:" + EMAIL, TimeUnit.SECONDS), "재요청은 cooldown 뒤");
+        assertFalse(values.containsKey("password-reset:sending:" + EMAIL), "잠금 해제");
+        assertEquals(300L, res.getExpiresInSeconds(), "응답 형태는 일반 발송과 같다(계정 열거 방지)");
+        service.verifyCode(EMAIL, sent.get(0));
+    }
+
+    @Test
+    void sendCode_definiteMailFailure_storesNothing_andIs503() {
+        org.mockito.Mockito.doThrow(new PasswordResetException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                Reason.MAIL_SEND_FAILED, "x")).when(mailService).sendVerificationCode(anyString(), anyString(), anyLong());
+        expect(Reason.MAIL_SEND_FAILED, () -> service.sendCode(EMAIL, "1.1.1.1"));
+        assertNull(storedCode());
+        assertFalse(values.containsKey("password-reset:sending:" + EMAIL));
+    }
+
+    @Test
+    void sendingLock_outlastsWorstCaseSmtpDuration() {
+        // connect 5s + read 10s x (인사·EHLO·STARTTLS·EHLO·AUTH·MAIL·RCPT·DATA·종료) + write 10s, 연결 단계 재시도 1회
+        assertTrue(PasswordResetService.SENDING_LOCK_SECONDS >= 110, "잠금이 SMTP 최악 지연보다 먼저 풀리면 동시 발송이 가능하다");
+    }
+
     @Test // TEST 1
     void initialSend_redisCodeEqualsMailedCode() {
         List<String> sent = captureSentCodes();

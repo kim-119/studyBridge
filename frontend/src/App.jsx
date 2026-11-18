@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { authService } from './services/api';
+import { isRejectedSession } from './utils/authSession';
 
 import Navbar from './components/Navbar';
 import Login from './pages/Login';
@@ -11,8 +12,8 @@ import Dashboard from './pages/Dashboard';
 import MyPage from './pages/MyPage';
 import AdminPage from './pages/AdminPage';
 import StudyMate from './pages/StudyMate';
-import LearningMate from './pages/LearningMate';
 import GroupStudy from './pages/GroupStudy';
+import GroupInvitePage from './pages/GroupInvitePage';
 import Archive from './pages/Archive';
 import ArchiveDetail from './pages/ArchiveDetail';
 import Knowledge from './pages/Knowledge';
@@ -22,6 +23,16 @@ import WeeklySchedule from './pages/WeeklySchedule';
 import Planner from './pages/Planner';
 import ReviewNotesPage from './pages/ReviewNotesPage';
 import ObsidianPage from './pages/ObsidianPage';
+import AppDownload from './pages/AppDownload';
+const DEFAULT_TITLE = '스터디브릿지(StudyBridge) | AI 기반 통합 학습 플랫폼';
+const EXHIBIT_KEEPALIVE_MS = 60_000;
+const PAGE_TITLES = {
+  '/login': '로그인 | 스터디브릿지(StudyBridge)',
+  '/register': '회원가입 | 스터디브릿지(StudyBridge)',
+  '/forgot-password': '비밀번호 찾기 | 스터디브릿지(StudyBridge)',
+  '/app': 'Android 앱 다운로드 | 스터디브릿지(StudyBridge)',
+};
+
 function PrivateRoute({ children }) {
   const { isLoggedIn } = useAuth();
   const location = useLocation();
@@ -36,14 +47,26 @@ function AdminRoute({ children }) {
 }
 
 function App() {
-  const { logout, updateUser } = useAuth();
+  const { user, logout, updateUser } = useAuth();
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const location = useLocation();
   const isAdminRoute = location.pathname.startsWith('/admin');
 
+  // 공개 경로별 문서 제목(검색 결과·탭 표시). canonical/noindex 는 nginx 가 서버 응답에서 처리한다(ops/nginx/studybridge-seo.conf).
   useEffect(() => {
+    document.title = PAGE_TITLES[location.pathname.replace(/\/+$/, '') || '/'] || DEFAULT_TITLE;
+  }, [location.pathname]);
+
+  // 체험 계정: 화면을 열어 둔 동안 1분마다 세션 유지 ping — 서버는 요청이 30분 없으면 그 기기 슬롯을 반환한다(창을 닫고 떠난 기기).
+  useEffect(() => {
+    if (!user?.exhibitAccount) return undefined;
+    const timer = setInterval(() => { authService.exhibitKeepalive().catch(() => {}); }, EXHIBIT_KEEPALIVE_MS);
+    return () => clearInterval(timer);
+  }, [user?.exhibitAccount]);
+
+  useEffect(() => {
+    let active = true;
     const initAuth = async () => {
-      const storedUser = localStorage.getItem("user");
       const userId = localStorage.getItem("userId");
       const token = localStorage.getItem("token");
 
@@ -56,6 +79,7 @@ function App() {
       try {
         if (userId) {
           const profile = await authService.getProfile(userId);
+          if (!active) return;
           if (profile.status === 'BANNED' || profile.status === 'SUSPENDED' || (profile.suspensionEndDate && new Date(profile.suspensionEndDate) > new Date())) {
             console.warn('제재된 계정입니다. 자동 로그아웃됩니다.');
             logout();
@@ -64,17 +88,21 @@ function App() {
           }
           updateUser(profile);
         } else {
-          throw new Error('유효한 사용자 ID가 없습니다.');
+          logout();
         }
       } catch (e) {
-        console.warn('기존 로그인 세션이 유효하지 않습니다. 자동 로그아웃됩니다.');
-        logout();
+        if (active && isRejectedSession(e)) {
+          logout();
+        } else if (active) {
+          console.warn('프로필 조회 연결이 중단되었습니다. 기존 로그인 정보를 유지합니다.');
+        }
       } finally {
-        setIsAuthChecking(false);
+        if (active) setIsAuthChecking(false);
       }
     };
 
     initAuth();
+    return () => { active = false; };
   }, []);
 
   if (isAuthChecking) {
@@ -83,12 +111,14 @@ function App() {
 
   // Hide Navbar and top padding for Archive Detail pages to make it full screen
   const hideNavbar = location.pathname.includes('/archive/pdf/') || location.pathname.includes('/archive/journal/') || location.pathname.includes('/archive/reviewNote/') || location.pathname.includes('/archive/mindmap/');
+  // /app: Android APK 다운로드 전용 단일 페이지 — 네비/상단 여백 없이 독립 렌더(공개, 로그인 불필요)
+  const isAppDownloadRoute = location.pathname === '/app';
 
   return (
     <div className={isAdminRoute ? "" : "app-container"} style={isAdminRoute ? { width: '100%', height: '100vh', overflow: 'hidden' } : {}}>
-      {(!isAdminRoute && !hideNavbar) && <Navbar />}
+      {(!isAdminRoute && !hideNavbar && !isAppDownloadRoute) && <Navbar />}
 
-      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : { paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
+      <main style={isAdminRoute ? { height: '100vh', display: 'flex' } : isAppDownloadRoute ? { paddingTop: '0', height: 'auto' } : { paddingTop: hideNavbar ? '0' : '80px', height: hideNavbar ? '100vh' : 'auto' }}>
         <Routes>
           {/* 메인페이지: 누구나 접근 가능 */}
           <Route path="/" element={<Dashboard />} />
@@ -97,6 +127,8 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
+          {/* Android APK 다운로드 페이지: 누구나 접근 가능(SPA 폴백 전에 명시 라우트로 고정) */}
+          <Route path="/app" element={<AppDownload />} />
 
           {/* 로그인 필요 페이지 */}
           <Route
@@ -110,8 +142,11 @@ function App() {
 
           <Route path="/admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
           <Route path="/studymate" element={<PrivateRoute><StudyMate /></PrivateRoute>} />
-          <Route path="/learning-mate" element={<PrivateRoute><LearningMate /></PrivateRoute>} />
+          {/* 레거시 /learning-mate(질문형 학습메이트 중복 화면)는 canonical 학습메이트(/studymate)로 영구 이동 */}
+          <Route path="/learning-mate" element={<Navigate to="/studymate" replace />} />
           <Route path="/groupstudy" element={<PrivateRoute><GroupStudy /></PrivateRoute>} />
+          {/* 비공개 그룹 초대 링크(데스크톱/모바일/앱 동일 경로). 비로그인은 PrivateRoute 가 state.from 으로 로그인 후 복귀 */}
+          <Route path="/groups/invite/:token" element={<PrivateRoute><GroupInvitePage /></PrivateRoute>} />
           <Route path="/archive" element={<PrivateRoute><Archive /></PrivateRoute>} />
           <Route path="/archive/:type/:id" element={<PrivateRoute><ArchiveDetail /></PrivateRoute>} />
           <Route path="/review-notes" element={<PrivateRoute><ReviewNotesPage /></PrivateRoute>} />

@@ -29,7 +29,7 @@ export default function MainBanner() {
   const showLogoImage = Boolean(mainLogoUrl) && !logoError;
 
   return (
-    <section className="mx-auto max-w-6xl px-6 py-16">
+    <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
       <div className="grid items-center gap-12 md:grid-cols-2">
         {/* Left */}
         <div>

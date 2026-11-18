@@ -1,0 +1,74 @@
+{
+  "_comment": "자동 재학습 파이프라인 설정. autoTrain/autoDeploy는 기본 false (명시적으로 켜야 함).",
+
+  "autoRetrainEnabled": false,
+  "schedule": "0 3 * * 0",
+
+  "autoTrain": false,
+  "autoDeploy": false,
+  "canaryDeploy": true,
+  "rollbackOnFailure": true,
+
+  "readinessGate": {
+    "minValidatedSamples": 300,
+    "minAverageQualityScore": 0.80,
+    "maxDuplicationRate": 0.30,
+    "requireSafetyPass": true,
+    "maxPiiDetected": 0,
+    "maxSecretDetected": 0,
+    "minRagGroundingScore": 0.75,
+    "minPersonalityScore": 0.75,
+    "minKnowledgeLevelScore": 0.75,
+    "gpuRequired": true
+  },
+
+  "datasetConfig": {
+    "maxTrainSamples": 5000,
+    "maxValidSamples": 500,
+    "maxTestSamples": 500,
+    "recentDataRatio": 0.60,
+    "highQualityLegacyRatio": 0.30,
+    "edgeCaseRatio": 0.10,
+    "trainSplit": 0.80,
+    "validSplit": 0.10,
+    "testSplit": 0.10,
+    "maxActiveDatasets": 5
+  },
+
+  "trainingArgs": {
+    "modelName": "Qwen/Qwen2.5-14B-Instruct",
+    "maxSeqLength": 2048,
+    "numTrainEpochs": 1,
+    "perDeviceTrainBatchSize": 1,
+    "gradientAccumulationSteps": 8,
+    "learningRate": 0.0002,
+    "loraR": 16,
+    "loraAlpha": 32,
+    "loraDropout": 0.05,
+    "loadIn4bit": true
+  },
+
+  "evaluationGate": {
+    "minQualityScoreDelta": -0.02,
+    "minPersonalityScoreDelta": -0.02,
+    "minKnowledgeLevelScoreDelta": -0.02,
+    "minRagGroundingScoreDelta": -0.03,
+    "maxHallucinationRateDelta": 0.05,
+    "maxErrorRateDelta": 0.05
+  },
+
+  "modelPaths": {
+    "baseModel": "models/qlora/base",
+    "candidateDir": "models/qlora/candidate",
+    "productionDir": "models/qlora/production",
+    "rollbackDir": "models/qlora/rollback"
+  },
+
+  "exportDir": "training_exports",
+  "registryFile": "models/qlora/registry.json",
+
+  "notifications": {
+    "logToFile": true,
+    "logFile": "logs/auto_retrain.log"
+  }
+}

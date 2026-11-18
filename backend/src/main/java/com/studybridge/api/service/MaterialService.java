@@ -38,6 +38,7 @@ public class MaterialService {
     private final StudyNoteAnalysisService studyNoteAnalysisService;
     private final PlannerService plannerService;
     private final MaterialQuizScoreService materialQuizScoreService;
+    private final com.studybridge.api.repository.MaterialGroupShareRepository materialGroupShareRepository;
 
     @Transactional
     public MaterialDTO uploadAndSaveMaterial(Long userId, String title, MaterialType type, String keywords,
@@ -250,6 +251,7 @@ public class MaterialService {
         String s3Key = (material.getMaterialType() != MaterialType.STUDY_LOG) ? material.getStoredFileName() : null;
 
         materialRepository.delete(material);
+        materialGroupShareRepository.deleteByMaterialId(material.getMaterialId());
         materialQuizScoreService.deleteForQuizzes(quizIds);
 
         if (s3Key != null && !s3Key.isBlank()) {

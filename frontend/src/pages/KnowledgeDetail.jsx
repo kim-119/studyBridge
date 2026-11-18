@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Heart, MessageSquare, Share2, FileText, Download, User, Flag, X, Pencil, Image as ImageIcon, Check } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { knowledgeService } from '../services/api';
+import { userFacingMessage } from '../utils/userFacingError';
 
 const REPORT_REASONS = [
   { value: 'SPAM', label: '스팸/광고' },
@@ -180,7 +181,7 @@ export default function KnowledgeDetail() {
       setShowEditModal(false);
     } catch (error) {
       console.error("Failed to update post:", error);
-      alert(error.response?.data?.message || "글 수정에 실패했습니다.");
+      alert(userFacingMessage(error, '글 수정에 실패했습니다.', { context: 'upload' }));
     } finally {
       setEditSubmitting(false);
     }
@@ -263,9 +264,9 @@ export default function KnowledgeDetail() {
     <div style={{ backgroundColor: '#F9FAFB', minHeight: '100vh', paddingBottom: '80px', fontFamily: '"Malgun Gothic", "맑은 고딕", sans-serif' }}>
       
       {/* 썸네일 헤더 영역 (모바일에선 과하게 크지 않도록 clamp) */}
-      <div style={{ width: '100%', height: 'clamp(220px, 45vw, 400px)', position: 'relative', overflow: 'hidden' }}>
-        <img src={getThumbnail()} alt={post.title} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: 'brightness(0.6)' }} />
-        <div style={{ position: 'absolute', top: '40px', left: '0', right: '0', maxWidth: '800px', margin: '0 auto', padding: '0 20px', zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="kn-hero" style={{ width: '100%', height: 'clamp(220px, 45vw, 400px)', position: 'relative', overflow: 'hidden' }}>
+        <img className="kn-hero-img" src={getThumbnail()} alt={post.title} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: 'brightness(0.6)' }} />
+        <div className="kn-hero-topbar" style={{ position: 'absolute', top: '40px', left: '0', right: '0', maxWidth: '800px', margin: '0 auto', padding: '0 20px', zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <button 
             onClick={() => navigate('/knowledge')}
             style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.2)', backdropFilter: 'blur(4px)', color: 'white', border: '1px solid rgba(255,255,255,0.3)', padding: '10px 16px', borderRadius: '12px', cursor: 'pointer', fontWeight: '600', transition: '0.2s' }}
@@ -303,7 +304,7 @@ export default function KnowledgeDetail() {
             </div>
           )}
         </div>
-        <div style={{ position: 'absolute', bottom: '40px', left: '0', right: '0', maxWidth: '800px', margin: '0 auto', padding: '0 20px', color: 'white', zIndex: 10 }}>
+        <div className="kn-hero-title" style={{ position: 'absolute', bottom: '40px', left: '0', right: '0', maxWidth: '800px', margin: '0 auto', padding: '0 20px', color: 'white', zIndex: 10 }}>
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
             {hashtags.map(tag => (
               <span key={tag} style={{ backgroundColor: '#60C95A', padding: '4px 12px', borderRadius: '16px', fontSize: '14px', fontWeight: 'bold' }}>{tag}</span>
@@ -378,7 +379,7 @@ export default function KnowledgeDetail() {
           )}
 
           {/* 액션 버튼 */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '48px' }}>
+          <div className="kn-detail-actions" style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginTop: '48px', flexWrap: 'wrap' }}>
             <button 
               onClick={handleLike}
               style={{ padding: '12px 32px', display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: isLiked ? '#FEE2E2' : 'white', border: isLiked ? '2px solid #EF4444' : '2px solid #E5E7EB', color: isLiked ? '#EF4444' : '#4B5563', borderRadius: '40px', fontSize: '16px', fontWeight: '700', cursor: 'pointer', transition: 'all 0.2s' }}

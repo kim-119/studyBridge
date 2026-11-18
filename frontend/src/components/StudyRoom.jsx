@@ -1,15 +1,39 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Users, User, X, MicOff, Video, VideoOff, Maximize, Minimize, Gift, UserPlus,
   Settings, MessageSquare, Calendar, ClipboardList, Mic,
   Search, AlertTriangle, Play, RefreshCw, VolumeX, Volume2, Monitor, Edit2, Send, Check,
-  Upload, Download, FileText, MessageCircle, Trash2
+  Upload, Download, FileText, MessageCircle, Trash2, Timer, MonitorUp, MonitorOff
 } from 'lucide-react';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { OpenVidu } from 'openvidu-browser';
 import { useAuth } from '../hooks/useAuth';
-import { groupService, timerService, inquiryService } from '../services/api';
+import { groupService, timerService, inquiryService, STUDY_HEARTBEAT_INTERVAL_MS } from '../services/api';
+import GroupInvitePanel from './groupstudy/GroupInvitePanel';
+import GroupQuizRankingTable from './groupstudy/GroupQuizRankingTable';
+import { studyTypeLabel, formatTargetMinutes, isCamStudy, resolveParticipantAvatar, resolveLeaderConsoleSections } from '../utils/groupStudy';
+import { anchorFromSession, elapsedSecondsFrom, formatHMS } from '../utils/studyTimer';
+import { toUserFacingError, userFacingMessage } from '../utils/userFacingError';
+import { retryBlockedPlayback } from '../utils/mediaAutoplay';
+import {
+  CONNECTION_KIND, parseConnectionMetadata, getClientInstanceId, detectDeviceType, deviceLabel,
+  installEarlyLeaveGuard, purgeTombstonedConnections, planReconcile, deriveRoomPresence,
+} from '../utils/videoConnection';
+import ProfileParticipantTile from './groupstudy/ProfileParticipantTile';
+import ScreenShareStage, { ScreenShareNotice } from './groupstudy/ScreenShareStage';
+import ScreenSharePrepDialog from './groupstudy/ScreenSharePrepDialog';
+import ScreenAiPanel from './groupstudy/ScreenAiPanel';
+import { SCREEN_AI_CONSENT_SIGNAL } from '../utils/screenAi';
+import { SCREEN_SHARE_MODES, resolveShareMode, buildDisplayMediaHints, withDisplayMediaHints, describeCaptureSurface, lockScreenResolution, findVideoSender, SCREEN_SHARE_LIMIT, screenShareLimitMessage, screenShareAvailability } from '../utils/screenShare';
+import { SCREEN_RECEIPT_SIGNAL, buildReceipt, parseReceipt, healthFromPeerState } from '../utils/screenReceipt';
+import RemoteAudioSink from './groupstudy/RemoteAudioSink';
+import { useVideoPlayback } from '../hooks/useVideoPlayback';
+import { useMediaLinkHealth } from '../hooks/useMediaLinkHealth';
+import { VIDEO_PLAYBACK } from '../utils/videoPlayback';
+import { MEDIA_LINK, describeMediaIssue, recordSubscribeResult } from '../utils/mediaHealth';
+import { isTrackForSelectedCamera } from '../utils/cameraSelection';
 
 // 토론 섹션(1차 의견/서로 피드백/보완 답변)을 "에이전트별 독립 카드"로 재그룹핑한다.
 // - 기존 렌더는 섹션 중심(한 카드에 모든 에이전트가 섞임)이라 에이전트별 사고가 구분되지 않았다.
@@ -159,8 +183,6 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
   const videoRef = React.useRef(null);
   const [isSpeaking, setIsSpeaking] = React.useState(false);
   const [micLevel, setMicLevel] = React.useState(0);
-  // 실제 비디오 element가 재생을 시작했는지. attach 직후 잠깐은 false → "카메라 연결 중…" 표시.
-  const [videoPlaying, setVideoPlaying] = React.useState(false);
 
   // 발화 상태 변화를 부모로 끌어올려 참여자 목록 등 다른 UI에서도 동일하게 표시한다.
   useEffect(() => {
@@ -174,11 +196,6 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
     };
   }, [speakerId, onSpeakingChange]);
 
-  // 스트림이 바뀌면 재생 준비 상태 초기화(새 트랙 attach 대기).
-  useEffect(() => {
-    setVideoPlaying(false);
-  }, [stream]);
-
   // 실제 살아있는 video track 유무를 직접 확인한다. isCamOn(켜짐 의도)만 보고 판단하지 않는다.
   //  - 트랙이 진짜 없을 때만 avatar로 떨어진다.
   //  - 트랙이 있는데 아직 재생 전이면 avatar 대신 "카메라 연결 중…"을 보여준다.
@@ -190,7 +207,6 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
   // 게이트하면 "리렌더 트리거 없음 → 영구 avatar" 교착이 생겨 상대 캠이 끝까지 안 보인다.
   const hasOpenViduManager = !!(streamManager && typeof streamManager.addVideoElement === 'function');
   const showVideo = !!(isCamOn && (hasOpenViduManager || (stream && hasLiveVideoTrack)));
-  const showConnecting = showVideo && !videoPlaying;
 
   // 렌더 후 ref가 생겼을 때 미디어를 video element에 연결한다(타일 remount/스트림 교체 대응).
   //  · OpenVidu streamManager(publisher/subscriber)가 있으면 addVideoElement로 attach해 attach 누락을 방지한다.
@@ -210,6 +226,38 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
       v.srcObject = stream;
     }
   }, [streamManager, stream, showVideo]);
+
+  // 오버레이는 <video> 의 실제 재생 상태로만 정한다(hooks/useVideoPlayback). 스트림 참조가 바뀌어도 초기화하지 않으므로
+  // 이미 재생 중인 요소(openvidu 재-attach 는 srcObject 가 같으면 아무것도 안 해 playing 이벤트가 다시 오지 않음)를 덮지 않는다.
+  const streamId = streamManager?.stream?.streamId || null;
+  const playback = useVideoPlayback(videoRef, showVideo, stream || streamManager, `${isLocal ? 'local' : 'remote'}:${streamId || '-'}`);
+  // 프레임이 없을 때 원인 구분(utils/mediaHealth): ICE 지연·실패·복구 중·패킷 없음(상대 송출 문제)·디코딩 없음.
+  //  · 원격은 재생 전이거나 멈춘 동안만 측정한다. 내 송출은 미리보기가 재생돼도 서버로 안 나갈 수 있어 카메라가 켜진 동안 계속 본다.
+  //  · '다시 연결' = 이 스트림의 PeerConnection 만 재협상(stream.reconnect) — 세션·다른 참여자 연결은 그대로.
+  const linkWatch = showVideo && hasOpenViduManager && (isLocal || playback !== VIDEO_PLAYBACK.PLAYING);
+  const media = useMediaLinkHealth(hasOpenViduManager ? streamManager : null, { enabled: linkWatch, direction: isLocal ? 'outbound' : 'inbound' });
+  const issue = linkWatch ? describeMediaIssue(media.link, { isLocal, autoAttempts: media.autoAttempts }) : null;
+  const reconnectAction = issue?.action === 'reconnect' && !media.busy ? { action: '다시 연결', onAction: () => { media.reconnect(); }, actionTestId: 'video-feed-reconnect' } : {};
+  const overlay = !showVideo || playback === VIDEO_PLAYBACK.PLAYING ? null
+    : playback === VIDEO_PLAYBACK.ENDED ? { text: isLocal ? '카메라 연결이 끊겼어요' : '영상 연결이 끊겼어요', short: '연결 끊김', bg: 'rgba(30,41,59,0.7)' }
+    // 자동재생 차단: 눌러야 재생된다(소리를 끄고 몰래 재생하지 않는다). 한 번 누르면 막힌 영상·소리를 모두 다시 재생한다.
+    : playback === VIDEO_PLAYBACK.BLOCKED ? { text: '브라우저가 자동 재생을 막았어요', short: '자동 재생 차단', action: isLocal ? '영상 재생' : '영상·소리 재생', onAction: () => { retryBlockedPlayback(); }, actionTestId: 'video-feed-play', bg: 'rgba(30,41,59,0.85)' }
+    // 전송 경로 문제가 확인되면 '연결 중'/'멈췄어요' 대신 원인을 보여준다(내 송출 문제는 미리보기를 가리지 않고 아래 배지로).
+    : !isLocal && issue ? { text: issue.text, short: issue.short, hint: issue.hint, ...reconnectAction, bg: 'rgba(30,41,59,0.85)' }
+    : playback === VIDEO_PLAYBACK.STALLED ? { text: '영상이 멈췄어요 · 다시 받는 중…', short: '멈춤 · 다시 받는 중', bg: 'rgba(30,41,59,0.6)' }
+    : { text: '카메라 연결 중…', short: '연결 중…', bg: 'rgba(30,41,59,0.85)' };
+  const sendBadge = isLocal && issue ? { text: issue.text, short: issue.short, ...reconnectAction } : null;
+
+  // 패킷이 디코딩되는데도 요소가 프레임을 못 받으면 요소의 srcObject 가 현재 스트림과 어긋난 것(재마운트·재연결 경합) → 다시 붙인다.
+  useEffect(() => {
+    if (isLocal || media.link !== MEDIA_LINK.FLOWING || playback !== VIDEO_PLAYBACK.WAITING) return;
+    const v = videoRef.current;
+    let current = null;
+    try { current = streamManager?.stream?.getMediaStream?.() || null; } catch (e) { current = null; }
+    if (!v || !current || v.srcObject === current) return;
+    console.warn('[StudyRoomOV] video:resync', { streamId, hadSrcObject: !!v.srcObject });
+    try { streamManager.addVideoElement(v); } catch (e) { v.srcObject = current; }
+  }, [isLocal, media.link, playback, streamManager, streamId]);
 
   // 로컬/원격 오디오 입력 레벨 측정 → 말하는 중 표시 + 입력 레벨 바(실제 입력 감지 여부 가시화).
   useEffect(() => {
@@ -317,6 +365,8 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
             <User size={32} color="#9CA3AF" />
           </div>
         )}
+        {/* 영상 element 가 없는 동안에도 원격 음성은 재생되어야 한다(addVideoElement 미호출 시 OpenVidu 는 소리를 내지 않는다). */}
+        {!isLocal && streamManager && <RemoteAudioSink streamManager={streamManager} stream={stream} />}
         {micMeter}
         {nameTag}
       </div>
@@ -330,14 +380,34 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
         autoPlay
         playsInline
         muted={isMuted}
-        onPlaying={() => setVideoPlaying(true)}
-        onLoadedData={() => setVideoPlaying(true)}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
       />
-      {showConnecting && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', backgroundColor: 'rgba(30,41,59,0.85)', color: '#CBD5E1', zIndex: 4 }}>
-          <Video size={28} color="#60A5FA" />
-          <span style={{ fontSize: '13px', fontWeight: 600 }}>카메라 연결 중…</span>
+      {/* 안내 레이어는 타일 크기 기준으로 축약된다(index.css .video-feed-overlay container query — 모바일 3열 썸네일 대응). */}
+      {overlay && (
+        <div className="video-feed-overlay" data-testid="video-feed-overlay" data-playback={playback} data-link={media.link || ''} title={overlay.text} style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '0 12px', overflow: 'hidden', textAlign: 'center', backgroundColor: overlay.bg, color: '#CBD5E1', zIndex: 4 }}>
+          <Video className="video-feed-overlay__icon" size={28} color="#60A5FA" />
+          <span className="video-feed-overlay__text" style={{ fontSize: '13px', fontWeight: 600 }}>{overlay.text}</span>
+          {overlay.short && <span className="video-feed-overlay__short" style={{ display: 'none', fontSize: '11px', fontWeight: 600 }}>{overlay.short}</span>}
+          {overlay.hint && <span className="video-feed-overlay__hint" style={{ fontSize: '11px', color: '#94A3B8' }}>{overlay.hint}</span>}
+          {overlay.action && (
+            <button type="button" className="video-feed-overlay__btn" data-testid={overlay.actionTestId} onClick={overlay.onAction} style={{ padding: '6px 14px', borderRadius: '999px', border: 'none', backgroundColor: '#3B82F6', color: '#FFFFFF', fontSize: '13px', fontWeight: 700, cursor: 'pointer' }}>
+              {overlay.action}
+            </button>
+          )}
+        </div>
+      )}
+      {sendBadge && (
+        <div className="video-feed-badge-layer" style={{ position: 'absolute', inset: 0, zIndex: 7, pointerEvents: 'none' }}>
+          <div className="video-feed-badge" data-testid="video-feed-send-badge" data-link={media.link || ''} title={sendBadge.text} style={{ position: 'absolute', left: '8px', right: '8px', bottom: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '5px 10px', borderRadius: '10px', backgroundColor: 'rgba(15, 23, 42, 0.78)', border: '1px solid rgba(248,113,113,0.45)', color: '#FECACA', fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap', pointerEvents: 'auto' }}>
+            <AlertTriangle size={13} color="#F87171" style={{ flexShrink: 0 }} />
+            <span className="video-feed-badge__text" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{sendBadge.text}</span>
+            {sendBadge.short && <span className="video-feed-badge__short" style={{ display: 'none', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sendBadge.short}</span>}
+            {sendBadge.action && (
+              <button type="button" className="video-feed-badge__btn" data-testid={sendBadge.actionTestId} onClick={sendBadge.onAction} style={{ flexShrink: 0, padding: '3px 10px', borderRadius: '999px', border: 'none', backgroundColor: '#3B82F6', color: '#FFFFFF', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>
+                {sendBadge.action}
+              </button>
+            )}
+          </div>
         </div>
       )}
       {!isMicOn && (
@@ -351,8 +421,19 @@ function VideoFeed({ stream, streamManager, isLocal, displayName, isMuted, isCam
   );
 }
 
-export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn, initialVideoOn, handoffVideoTrack }) {
+export default function StudyRoom({ study, onClose: closeRoom, selectedCamera, selectedMic, sessionAvatar, initialMicOn, initialVideoOn, handoffVideoTrack }) {
+  const onClose = async () => {
+    try {
+      await timerService.endTimer(null, null, null, 'ROOM_LEAVE');
+      closeRoom?.();
+    } catch {
+      showAlert('종료 실패', '학습 시간을 저장하지 못했습니다. 연결을 확인하고 다시 나가 주세요.');
+    }
+  };
+
   const { userId, user } = useAuth();
+  // 서버 studyType(GroupStudyType) 기준: GENERAL 은 카메라 기능(송출/타일/토글/권한)이 전혀 없다. 음성(마이크)만 사용한다.
+  const isCam = isCamStudy(study?.studyType);
 
   const formatSecondsToStudyTime = (secs) => {
     if (!secs && secs !== 0) return '-';
@@ -379,7 +460,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const [activeTab, setActiveTab] = useState('chat');
   // 입장 전 미리보기에서 사용자가 선택한 카메라/마이크 ON/OFF 상태를 그대로 이어받는다(상태 불일치 방지).
   const [isMicOn, setIsMicOn] = useState(typeof initialMicOn === 'boolean' ? initialMicOn : false);
-  const [isVideoOn, setIsVideoOn] = useState(typeof initialVideoOn === 'boolean' ? initialVideoOn : true);
+  const [isVideoOn, setIsVideoOn] = useState(isCam ? (typeof initialVideoOn === 'boolean' ? initialVideoOn : true) : false);
   const [showSettings, setShowSettings] = useState(false);
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [showRoomManageModal, setShowRoomManageModal] = useState(false);
@@ -400,6 +481,24 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
   // 채팅 전용 드로어(왼쪽 사이드바 말풍선 아이콘으로 열고 닫음). 닫아도 메시지 상태는 상위 컴포넌트에 보존된다.
   const [showChatDrawer, setShowChatDrawer] = useState(false);
+  // 채팅 드로어 포털 대상(룸 루트 고정 오버레이). callback ref 로 마운트 직후 렌더에 반영된다.
+  const [roomRootEl, setRoomRootEl] = useState(null);
+  // [iOS 키보드] iOS WebKit 은 키보드가 열려도 layout viewport(innerHeight)를 줄이지 않고 visual viewport 만 줄인다.
+  //  → bottom:0 고정 드로어의 입력창이 키보드 아래로 숨는다. 드로어가 열려 있을 때만 가려진 높이를 bottom 으로 보정한다.
+  //  데스크톱/Android(키보드 시 layout viewport 자체가 줄어듦)에서는 inset 이 0 이라 변화 없음.
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  useEffect(() => {
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (!showChatDrawer || !vv) { setKeyboardInset(0); return undefined; }
+    const update = () => {
+      const inset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      setKeyboardInset(inset > 80 ? inset : 0); // 주소창 높이 변화(수십 px)는 무시, 키보드만 반영
+    };
+    update();
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
+  }, [showChatDrawer]);
   // [표시 전용] 모바일 레이아웃 분기 플래그. OpenVidu 세션/퍼블리시/구독 로직과 무관하며
   // 화면 너비 변화에만 반응한다(리사이즈 외 어떤 미디어 동작도 트리거하지 않음).
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 768);
@@ -489,10 +588,52 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   //  · mediaByConnectionId: connectionId → publisher/subscriber streamManager(미디어)만 보관.
   const [activeConnections, setActiveConnections] = useState({});
   const [mediaByConnectionId, setMediaByConnectionId] = useState({});
+  // 비동기 콜백(reconcile 등)이 최신 연결 맵을 읽기 위한 미러(setState 업데이터 안에서 부수효과를 내지 않기 위함).
+  const activeConnectionsRef = React.useRef(activeConnections);
+  useEffect(() => { activeConnectionsRef.current = activeConnections; }, [activeConnections]);
   // joinSession 중복 실행 방지(openvidu WebSocket 중복 생성 차단).
   const joinInFlightRef = React.useRef(false);
   const joinedRoomKeyRef = React.useRef(null);
+  // join 세대(Generation). effect 재실행/언마운트로 세대가 바뀌면 이전 세대의 비동기 connect 결과·이벤트는 무시하고
+  //  이미 열린 세션은 즉시 disconnect 한다(cleanup 이 connect 도중 실행되면 openvidu-browser 의 disconnect 는 no-op 이라
+  //  ping 을 계속 보내는 살아있는 유령 연결이 남는다).
+  const ovGenerationRef = React.useRef(0);
+  // 네트워크 단절로 세션이 끊기면(networkDisconnect) 새 토큰으로 다시 join 하기 위한 트리거.
+  const [ovRejoinNonce, setOvRejoinNonce] = useState(0);
+  const ovRejoinAttemptsRef = React.useRef(0);
+  // 탭 인스턴스 id(새로고침해도 유지) — 서버 serverData.instanceId 로 기록된다(표시/진단용, 권한 판단에 쓰지 않음).
+  const clientInstanceIdRef = React.useRef(null);
+  if (!clientInstanceIdRef.current) clientInstanceIdRef.current = getClientInstanceId();
   const publisherRef = React.useRef(null);
+  // ── 화면공유: PRIMARY(음성·카메라)와 별도인 SCREEN Connection(OpenVidu 2.x 는 Connection 당 Publisher 1개) ──
+  const screenSessionRef = React.useRef(null);
+  const screenPublisherRef = React.useRef(null);
+  // 화면공유 해상도 고정 주기 확인 타이머(스트림 재연결로 PC 가 바뀌면 다시 건다). teardownScreenShare 가 정리한다.
+  const screenResolutionGuardRef = React.useRef(null);
+  const myScreenConnIdRef = React.useRef(null);
+  const screenShareBusyRef = React.useRef(false);
+  const [screenShareStatus, setScreenShareStatus] = useState('idle'); // idle | starting | live
+  // 송출 단계·건강 상태(UI 표시용). 수신 성공은 시청자 receipt(screenReceipts)로만 판단한다 — Publisher 생성·미리보기는 수신 증거가 아니다.
+  const [screenStartStep, setScreenStartStep] = useState('capture'); // capture(선택창) | connect(토큰·connect·publish)
+  const [screenHealth, setScreenHealth] = useState('connecting'); // connecting | ok | unstable | reconnecting | failed
+  const [screenLiveSince, setScreenLiveSince] = useState(null);
+  const [screenReceipts, setScreenReceipts] = useState({}); // 시청자 PRIMARY connectionId → { userKey, phase, hidden, stats, at }
+  const screenReceiptPhaseRef = React.useRef(new Map());
+  const [screenEnded, setScreenEnded] = useState(null); // { why, at } — 공유 종료 직후 잠깐 안내
+  const [selectedScreenId, setSelectedScreenId] = useState(null);
+  // 공유 시작 전 안내(공유 대상·모드·소리). 실제 선택창은 안내의 [공유할 화면 선택] 클릭(사용자 제스처)으로만 연다.
+  const [showSharePrep, setShowSharePrep] = useState(false);
+  // 방별 동시 화면공유 상한(서버 값이 오면 갱신). 최종 판정은 서버 — 이 값은 선택창을 열기 전 안내용.
+  const [screenShareLimit, setScreenShareLimit] = useState(SCREEN_SHARE_LIMIT);
+  const [shareMode, setShareMode] = useState('document');
+  const [shareAudio, setShareAudio] = useState(true);
+  // AI 화면 분석: 공유 시작 전 '다른 참여자의 AI 분석 허용'(기본 꺼짐, opt-in) · 이 탭 공유의 서버 동의 상태 · 다른 사람 동의 변경 신호.
+  //  동의의 Source of Truth 는 서버(PUT /screen-ai/shares/{cid}/consent). OpenVidu 시그널은 다시 읽으라는 알림일 뿐이다.
+  const [shareAiConsent, setShareAiConsent] = useState(false);
+  const [myScreenAiConsent, setMyScreenAiConsent] = useState({ connectionId: null, allowed: false, busy: false });
+  const [screenAiConsentNonce, setScreenAiConsentNonce] = useState(0);
+  // 송출은 getDisplayMedia 가 있는 브라우저(PC Chrome/Edge/Firefox/Safari)만. 모바일 브라우저·웹뷰는 대부분 없음 → 시청만.
+  const screenShareSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
   // OpenVidu 인스턴스 ref — view-only/송출 실패 상태에서 사용자 제스처로 Publisher를 재생성할 때 재사용한다.
   const OVRef = React.useRef(null);
   const [ovError, setOvError] = useState('');
@@ -517,34 +658,20 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   const canUseGroupQuizMaterials = Boolean(myMember || members.some(m => Number(m.userId) === Number(userId)));
   const myDisplayName = user?.displayName || user?.nickname || `User_${userId}`;
 
-  // OpenVidu subscriber의 connection.data에서 userId를 안전하게 추출한다.
-  const parseSubscriberUserId = (sub) => {
-    try {
-      return JSON.parse(sub.stream.connection.data).userId;
-    } catch (e) {
-      return null;
-    }
-  };
+  // OpenVidu connection.data("clientData%/%serverData")에서 식별(serverData: userId/kind/owner)·표시(clientData) 메타데이터를 추출한다.
+  //  GENERAL 참가자 visual identity(avatarMode/avatarUrl/avatarValue)는 clientData 에서 온다.
+  const parseConnectionData = (connection) => parseConnectionMetadata(connection?.data);
+  const parseSubscriberUserId = (sub) => parseConnectionData(sub?.stream?.connection).userId;
 
-  // OpenVidu connection.data(JSON 또는 "clientData%/%serverData" 포맷)에서 메타데이터를 안전 추출한다.
-  const parseConnectionData = (connection) => {
-    const raw = connection?.data;
-    const tryParse = (s) => {
-      try { const d = JSON.parse(s); return d && typeof d === 'object' ? d : null; }
-      catch (e) { return null; }
-    };
-    let d = raw ? tryParse(raw) : null;
-    if (!d && typeof raw === 'string' && raw.includes('%/%')) {
-      for (const part of raw.split('%/%')) { d = tryParse(part); if (d) break; }
-    }
-    d = d || {};
-    return {
-      userId: d.userId ?? null,
-      name: d.clientData || d.name || d.nickname || null,
-      micOn: d.micOn,
-      cameraOn: d.cameraOn,
-    };
-  };
+  // 방 관리 모달 섹션 노출(프리조인 방장 콘솔과 같은 규칙): 대기자 명단 = 승인 정책 or 실제 대기자, 초대 = 비공개.
+  const roomLeaderSections = resolveLeaderConsoleSections(study, applications.length);
+
+  // 서버 members(presigned photoUrl) 를 userId 로 빠르게 찾기 위한 맵(GENERAL 프로필 타일 2순위 소스).
+  const memberByUserId = React.useMemo(() => {
+    const map = {};
+    for (const m of members) if (m?.userId != null) map[String(m.userId)] = m;
+    return map;
+  }, [members]);
 
   // 강퇴/퇴장된 유저를 참가자 목록과 화상 타일(subscribers)에서 한 번에 제거한다.
   const removeParticipantEverywhere = (targetUserId) => {
@@ -590,94 +717,96 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   };
 
   // ─────────────────────────────────────────────────────────────────────────
-  // presence(참여자) ↔ media(OpenVidu stream) 분리.
-  //   · 타일은 "참여자 presence" 기준으로 렌더한다(카메라/마이크가 둘 다 꺼져 stream이 없어도 타일 유지).
-  //   · publisher/subscriber(streamManager)는 타일에 붙는 optional media이다.
-  //   · subscribers는 connectionId→streamManager(미디어)만 보관한다(presence 아님).
+  // 참가자 모델(Group Member ≠ Active User ≠ Connection ≠ Media Stream).
+  //   · members           : DB 그룹 회원(JOINED). 실시간 접속 여부와 무관 → 인원 수로 쓰지 않는다.
+  //   · activeConnections : OpenVidu 에 실제 접속한 Connection(connectionId 키). kind=PRIMARY(음성·카메라, 기기마다 1개)
+  //                         | SCREEN(화면공유, ownerConnectionId 로 사용자에 귀속).
+  //   · mediaByConnectionId: connectionId → publisher/subscriber(streamManager).
+  //   · roomPresence      : 참여 인원 = PRIMARY 의 고유 userId 수(+나). 화면공유·두 번째 기기는 인원을 늘리지 않는다.
   // ─────────────────────────────────────────────────────────────────────────
-
-  // 원격 미디어를 userId로 매칭하기 위한 보조 맵(connection.data의 userId 기준).
-  const mediaByUserId = React.useMemo(() => {
-    const map = {};
-    for (const sub of Object.values(subscribers)) {
-      const uid = parseSubscriberUserId(sub);
-      if (uid != null) map[String(uid)] = sub;
-    }
-    return map;
-  }, [subscribers]);
-
-  // 화상 타일 목록 = (서버 members presence) ∪ (members에 아직 없는 원격 미디어 참가자) ∪ (항상 내 타일).
-  //   stream 유무와 무관하게 참여자는 타일로 보인다. 새 참가자가 members 갱신 전 publish해도 타일이 생긴다.
-  const tileParticipants = React.useMemo(() => {
-    const byKey = new Map();
-
-    // 1) 서버 presence(members)
-    for (const m of members) {
-      if (m?.userId == null) continue;
-      const key = String(m.userId);
-      byKey.set(key, {
-        userId: m.userId,
-        displayName: m.displayName,
-        photoUrl: m.photoUrl || null,
-        role: m.role,
-        connectionId: null,
-        isMe: Number(m.userId) === Number(userId),
-      });
-    }
-
-    // 2) 내 타일 보장(members fetch 전이라도 내 화면은 항상 보인다)
-    if (!byKey.has(String(userId))) {
-      byKey.set(String(userId), {
-        userId,
-        displayName: myDisplayName,
-        photoUrl: user?.photoUrl || user?.photo_url || null,
-        role: 'ME',
-        connectionId: null,
-        isMe: true,
-      });
-    }
-
-    // 3) members에 아직 없는 원격 미디어 참가자(connection metadata로 타일 생성)
-    for (const [connectionId, sub] of Object.entries(subscribers)) {
-      let uid = null;
-      let nm = null;
-      try {
-        const d = JSON.parse(sub.stream.connection.data);
-        uid = d.userId ?? null;
-        nm = d.clientData || d.name || d.nickname || null;
-      } catch (e) { /* metadata 파싱 실패 시 connectionId fallback */ }
-      const key = String(uid != null ? uid : connectionId);
-      if (!byKey.has(key)) {
-        byKey.set(key, {
-          userId: uid,
-          displayName: nm || '참여자',
-          photoUrl: null,
-          role: null,
-          connectionId,
-          isMe: false,
-        });
-      }
-    }
-
-    // 내 타일을 맨 앞에 둔다.
-    const list = Array.from(byKey.values());
-    list.sort((a, b) => (a.isMe ? 0 : 1) - (b.isMe ? 0 : 1));
-    return list;
-  }, [members, subscribers, userId, myDisplayName, user]);
-
-  // 타일/미디어 카운트 가시화(디버깅).
-  useEffect(() => {
-    console.info('[StudyRoomOV] tile:render-count', {
-      participants: tileParticipants.length,
-      media: Object.keys(subscribers).length + (publisher ? 1 : 0),
-    });
-  }, [tileParticipants.length, subscribers, publisher]);
+  const roomPresence = React.useMemo(() => deriveRoomPresence(activeConnections, userId), [activeConnections, userId]);
 
   // 메인 그리드 단일 소스(activeConnections / mediaByConnectionId) 카운트 가시화.
   useEffect(() => {
-    console.info('[StudyRoomOV] activeConnections:count', { count: Object.keys(activeConnections).length });
-    console.info('[StudyRoomOV] mediaByConnectionId:count', { count: Object.keys(mediaByConnectionId).length });
-  }, [activeConnections, mediaByConnectionId]);
+    console.info('[StudyRoomOV] presence', {
+      connections: Object.keys(activeConnections).length,
+      media: Object.keys(mediaByConnectionId).length,
+      activeUsers: roomPresence.participantCount,
+      screens: roomPresence.screens.length,
+    });
+  }, [activeConnections, mediaByConnectionId, roomPresence]);
+
+  // 화면공유 목록(스트림이 붙은 SCREEN 연결만, 시작 순). 공유자 이름은 소유 PRIMARY(=같은 사람) 기준.
+  const screenShares = React.useMemo(() => roomPresence.screens
+    .map(([cid, c]) => {
+      const owner = c.ownerConnectionId ? activeConnections[c.ownerConnectionId] : null;
+      const sm = mediaByConnectionId[cid] || null;
+      const isMine = !!c.isMine;
+      const isMyOtherDevice = !isMine && c.userId != null && String(c.userId) === String(userId);
+      const baseName = owner?.name || c.name || '참여자';
+      return {
+        connectionId: cid,
+        userId: c.userId,
+        name: isMyOtherDevice ? `${baseName} (내 ${deviceLabel(owner?.deviceType)})` : baseName,
+        isMine,
+        // 내 공유(이 탭) 또는 내 다른 기기의 공유: 라이브 화면 대신 상태 카드(이 화면이 공유 대상에 보이면 무한 거울이 생긴다).
+        isOwnUser: isMine || isMyOtherDevice,
+        surface: isMine ? (c.surface || null) : null,
+        streamManager: sm,
+        hasAudio: isMine ? !!c.hasAudio : !!sm?.stream?.hasAudio,
+        connectedAt: c.connectedAt || 0,
+      };
+    })
+    .filter(sh => sh.streamManager)
+    .sort((a, b) => a.connectedAt - b.connectedAt), [roomPresence, activeConnections, mediaByConnectionId, userId]);
+  const sharingUserKeys = React.useMemo(() => new Set(screenShares.map(sh => String(sh.userId))), [screenShares]);
+
+  // 내 화면공유의 시청 대상 = 다른 사용자의 PRIMARY 연결(고유 userId 단위). 나 자신·내 다른 기기는 수신 확인 대상이 아니다.
+  //  serverData 가 없는 레거시 연결은 확인 신호를 검증할 수 없으므로 연결 단위로 넣어 "확인 불가"로 보이게 한다(시청자 없음으로 숨기지 않음).
+  const screenViewers = React.useMemo(() => {
+    const byUser = new Map();
+    for (const [cid, c] of roomPresence.primary) {
+      if (c.isMe || (c.userId !== null && c.userId !== undefined && String(c.userId) === String(userId))) continue;
+      const key = c.userId === null || c.userId === undefined ? `conn:${cid}` : String(c.userId);
+      const v = byUser.get(key) || { userKey: key, name: c.name || '참여자', deviceType: c.deviceType || 'UNKNOWN', connectionIds: [], since: Infinity };
+      v.connectionIds.push(cid);
+      v.since = Math.min(v.since, Number(c.connectedAt) || 0);
+      byUser.set(key, v);
+    }
+    return [...byUser.values()];
+  }, [roomPresence, userId]);
+  const ownScreenShare = React.useMemo(
+    () => ({ status: screenShareStatus, step: screenStartStep, health: screenHealth, liveSince: screenLiveSince }),
+    [screenShareStatus, screenStartStep, screenHealth, screenLiveSince],
+  );
+  useEffect(() => {
+    if (screenShareStatus === 'idle') return;
+    console.info('[StudyRoomOV] screen:phase', { status: screenShareStatus, step: screenStartStep, health: screenHealth });
+  }, [screenShareStatus, screenStartStep, screenHealth]);
+  useEffect(() => {
+    if (!screenEnded) return undefined;
+    const t = setTimeout(() => setScreenEnded(null), 6000);
+    return () => clearTimeout(t);
+  }, [screenEnded]);
+
+  // 시청자 → 송출자 수신 확인: 기존 OpenVidu 세션 시그널로 그 화면공유 Connection 한 곳에만 보낸다(새 WebRTC 연결·서버 API·폴링 없음).
+  const sendScreenReceipt = useCallback((screenConnection, payload) => {
+    const s = sessionRef.current;
+    if (!s?.connection || !screenConnection?.connectionId) return;
+    s.signal({ type: SCREEN_RECEIPT_SIGNAL, to: [screenConnection], data: buildReceipt(payload) }).catch(() => { /* 공유가 막 끝났거나 세션이 바뀜 */ });
+  }, []);
+  const sendScreenReceiptRef = React.useRef(sendScreenReceipt);
+  sendScreenReceiptRef.current = sendScreenReceipt;
+
+  // 새 화면공유가 시작되면 그 화면으로 포커스(스터디: 방금 공유한 화면을 바로 본다). 보던 공유가 끝나면 남은 최신 공유로.
+  const seenScreenIdsRef = React.useRef(new Set());
+  useEffect(() => {
+    const ids = screenShares.map(sh => sh.connectionId);
+    const fresh = ids.filter(id => !seenScreenIdsRef.current.has(id));
+    seenScreenIdsRef.current = new Set(ids);
+    if (fresh.length) setSelectedScreenId(fresh[fresh.length - 1]);
+    else if (selectedScreenId && !ids.includes(selectedScreenId)) setSelectedScreenId(ids[ids.length - 1] || null);
+  }, [screenShares, selectedScreenId]);
 
   const formatShortDateTime = (value) => {
     if (!value) return '-';
@@ -732,6 +861,19 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     }
   };
 
+  // 방 안 모든 그룹 요청의 groupId 단일 출처는 `study.id`(GroupStudy 가 서버 목록을 normalizeGroup 으로 정규화한 객체).
+  //  그룹이 해체되면 서버는 방에 아무 이벤트도 보내지 않아(deleteGroupStudy 에 브로드캐스트 없음) 열린 방은 죽은 id 를 계속 쓴다
+  //  → 자료/퀴즈/업로드가 전부 404 "Group study not found with ID: N". 한 번만 안내하고 방을 닫아 목록으로 돌려보낸다.
+  const groupGoneRef = React.useRef(false);
+  const handleGroupGone = (err) => {
+    if (groupGoneRef.current) return true;
+    groupGoneRef.current = true;
+    showAlert('스터디를 찾을 수 없음', '스터디 정보를 찾을 수 없습니다. 스터디가 해체되었거나 더 이상 접근할 수 없어 방을 닫습니다.', () => onClose?.());
+    return true;
+  };
+  // 그룹 404 면 방 닫기 처리 후 true, 아니면 false(호출자가 일반 오류 안내).
+  const guardGroupError = (err) => (toUserFacingError(err, { context: 'room' }).groupNotFound ? handleGroupGone(err) : false);
+
   const loadGroupMaterials = async () => {
     if (!study?.id) return;
     try {
@@ -739,6 +881,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
       setGroupMaterials(data || []);
     } catch (err) {
       console.error('Failed to load group materials', err);
+      guardGroupError(err);
     }
   };
 
@@ -749,6 +892,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
       setGroupQuizzes(data || []);
     } catch (err) {
       console.error('Failed to load group quizzes', err);
+      guardGroupError(err);
     }
   };
 
@@ -958,17 +1102,24 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     stopPublisherTracksSafely(publisherRef.current);
 
     // 카메라+마이크 → 실패 시 오디오 전용 순으로 시도(사용자 제스처라 권한 프롬프트가 다시 뜬다).
-    const ladder = [
-      { publishVideo: true,  tag: 'av' },
-      { publishVideo: false, tag: 'audio-only' },
-    ];
+    // GENERAL 은 카메라 단계를 만들지 않는다(video:false 고정, 카메라 권한 요청 없음).
+    const baseLadder = isCam
+      ? [
+        { publishVideo: true,  tag: 'av' },
+        { publishVideo: false, tag: 'audio-only' },
+      ]
+      : [{ publishVideo: false, tag: 'audio-only' }];
+    // 입장 준비에서 고른 마이크를 우선 쓰고(stale 이면 실패) 기본 마이크로 한 번 더 시도한다.
+    const ladder = selectedMic
+      ? [...baseLadder.map(st => ({ ...st, audioSource: selectedMic, tag: `${st.tag}-selected-mic` })), ...baseLadder.map(st => ({ ...st, audioSource: undefined }))]
+      : baseLadder.map(st => ({ ...st, audioSource: undefined }));
     let pub = null;
     let lastErr = null;
     for (const step of ladder) {
       try {
         console.log('[OV_MEDIA_INIT_START]', step.tag);
         pub = await OV.initPublisherAsync(undefined, {
-          audioSource: undefined,
+          audioSource: step.audioSource,
           videoSource: step.publishVideo ? undefined : false,
           publishAudio: true,
           publishVideo: step.publishVideo,
@@ -1030,6 +1181,250 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     console.info('[StudyRoomOV] republish:success', { connectionId: myConnId || null });
   };
 
+  // ── 화면공유 정리: 내 SCREEN Connection 종료 + 캡처 트랙 정지 + 로컬 상태 제거(카메라·마이크 PRIMARY 는 그대로) ──
+  //  notifyServer: 화면공유 WS 가 이미 끊겼을 수 있는 경우(브라우저 '공유 중지', 사용자 중지) 서버측 종료 API 를 안전망으로 호출.
+  const teardownScreenShare = (why, { notifyServer = false } = {}) => {
+    const sess = screenSessionRef.current;
+    const pub = screenPublisherRef.current;
+    const cid = myScreenConnIdRef.current;
+    clearInterval(screenResolutionGuardRef.current);
+    screenResolutionGuardRef.current = null;
+    screenSessionRef.current = null;
+    screenPublisherRef.current = null;
+    myScreenConnIdRef.current = null;
+    try { sess?.disconnect(); } catch (e) { /* ignore */ }
+    try { pub?.stream?.getMediaStream?.()?.getTracks?.().forEach((t) => { try { t.stop(); } catch (err) { /* ignore */ } }); } catch (e) { /* ignore */ }
+    if (cid) {
+      const drop = (prev) => { if (!(cid in prev)) return prev; const next = { ...prev }; delete next[cid]; return next; };
+      setActiveConnections(drop);
+      setMediaByConnectionId(drop);
+      if (notifyServer && study?.id) groupService.stopScreenShare(study.id, cid).catch(() => { /* 이미 종료됨 */ });
+    }
+    setScreenShareStatus('idle');
+    setScreenReceipts({});
+    screenReceiptPhaseRef.current = new Map();
+    setScreenLiveSince(null);
+    setMyScreenAiConsent({ connectionId: null, allowed: false, busy: false }); // 동의는 그 SCREEN Connection 에만 묶여 함께 사라진다
+    setScreenHealth('connecting');
+    if (sess || cid) {
+      console.info('[StudyRoomOV] screen:stopped', { why, connectionId: cid || null });
+      setScreenEnded({ why, at: Date.now() });
+    }
+  };
+  const teardownScreenShareRef = React.useRef(teardownScreenShare);
+  teardownScreenShareRef.current = teardownScreenShare;
+
+  // 내 화면공유의 AI 분석 허용/철회 → 서버 저장 후 방 전체에 '동의 바뀜' 시그널(받은 쪽은 서버 목록을 다시 읽는다).
+  const toggleMyScreenAiConsent = async (allowed) => {
+    const cid = myScreenConnIdRef.current;
+    if (!cid || !study?.id) return;
+    setMyScreenAiConsent(prev => ({ connectionId: cid, allowed: prev.connectionId === cid ? prev.allowed : false, busy: true }));
+    try {
+      const res = await groupService.setScreenAiConsent(study.id, cid, allowed);
+      if (myScreenConnIdRef.current !== cid) return;
+      const next = !!res?.aiConsent;
+      setMyScreenAiConsent({ connectionId: cid, allowed: next, busy: false });
+      sessionRef.current?.signal({ type: SCREEN_AI_CONSENT_SIGNAL, data: JSON.stringify({ connectionId: cid, allowed: next }) }).catch(() => { /* 세션 교체 중 */ });
+      console.info('[StudyRoomOV] screen:ai-consent', { connectionId: cid, allowed: next });
+    } catch (e) {
+      if (myScreenConnIdRef.current === cid) setMyScreenAiConsent(prev => ({ ...prev, busy: false }));
+      setOvNotice(e?.response?.data?.message || 'AI 분석 허용 설정을 바꾸지 못했습니다. 잠시 후 다시 시도해주세요.');
+    }
+  };
+  const toggleMyScreenAiConsentRef = React.useRef(toggleMyScreenAiConsent);
+  toggleMyScreenAiConsentRef.current = toggleMyScreenAiConsent;
+
+  // 공유 버튼: 이미 다른 사람이 상한만큼 공유 중이면 선택창을 열지 않고 안내한다(서버가 최종 판정 — 경쟁 시 서버 409 로 같은 안내).
+  const screenSlots = screenShareAvailability(roomPresence.screens, userId, screenShareLimit);
+  const requestScreenShare = () => {
+    if (screenSlots.full) { setOvNotice(screenShareLimitMessage(screenSlots.limit)); return; }
+    setShowSharePrep(true);
+  };
+
+  // ── 화면공유 시작(Discord 스타일): 화면 선택 → SCREEN 토큰 → 별도 세션 connect → publish ──
+  const startScreenShare = async ({ mode = 'document', withAudio = true, aiConsent = false } = {}) => {
+    if (screenShareBusyRef.current || screenSessionRef.current) return;
+    const shareModeKey = resolveShareMode(mode);
+    const primary = sessionRef.current;
+    const primaryConnectionId = primary?.connection?.connectionId;
+    if (!primaryConnectionId) { setOvNotice('화상 연결이 준비된 뒤 화면을 공유할 수 있습니다.'); return; }
+    if (!screenShareSupported) {
+      setOvNotice('이 브라우저(기기)에서는 화면 공유를 할 수 없습니다. PC의 Chrome·Edge·Firefox·Safari에서 공유할 수 있습니다(시청은 모든 기기에서 가능).');
+      return;
+    }
+    screenShareBusyRef.current = true;
+    setScreenShareStatus('starting');
+    setScreenStartStep('capture');
+    setScreenHealth('connecting');
+    setScreenEnded(null);
+    let sess = null;
+    let pub = null;
+    let screenPc = null;
+    let grant = null;
+    const fail = (code) => Object.assign(new Error(code), { code });
+    try {
+      const OVs = new OpenVidu();
+      forceOpenViduWssTransport(OVs);
+      try { OVs.setAdvancedConfiguration({ iceServers: STUDYBRIDGE_TURN_ICE_SERVERS }); } catch (e) { /* ignore */ }
+      // 1) 브라우저 화면 선택창(브라우저 탭 / 애플리케이션 창 / 전체 화면 — 실제 범위는 OS·브라우저가 정함). 사용자가 고르기 전엔 토큰을 만들지 않는다.
+      //    videoSource 'screen' → typeOfVideo=SCREEN, contentHint=detail(코드·PPT 글자 선명도 우선), getDisplayMedia 에 해상도 제약 없음(원본 해상도·비율, 잘림 없음).
+      //    audioSource 'screen' = 공유 대상의 소리(탭/시스템 — 선택창에서 사용자가 체크). 마이크는 절대 섞지 않는다(마이크는 PRIMARY 가 송출 → 중복 없음).
+      //    선택창 힌트(표준 getDisplayMedia 옵션)는 OpenVidu 호출 순간에만 더한다: 지금 탭(회의 화면) 제외, 공유 중 대상 전환 허용.
+      //    재귀 캡처는 힌트만으로 완전히 막을 수 없으므로(전체 화면·무시하는 브라우저) 내 공유는 라이브 미리보기 대신 상태 카드로 보여준다.
+      const initPub = (audio) => withDisplayMediaHints(navigator.mediaDevices, buildDisplayMediaHints({ withAudio: audio }), () => OVs.initPublisherAsync(undefined, {
+        videoSource: 'screen',
+        audioSource: audio ? 'screen' : false,
+        publishVideo: true,
+        publishAudio: audio,
+        mirror: false,
+        insertMode: 'APPEND',
+      }));
+      try {
+        pub = await initPub(withAudio);
+      } catch (e) {
+        // 사용자가 취소/거부(NotAllowedError) → 종료. 그 외(화면 소리 캡처를 지원하지 않는 브라우저의 TypeError 등) → 소리 없이 한 번 더.
+        if (/NotAllowed|Permission denied|denied/i.test(String(e?.message || e))) throw fail('SCREEN_CAPTURE_DENIED');
+        if (!withAudio) throw e;
+        pub = await initPub(false);
+      }
+      setScreenStartStep('connect');
+      const ms = pub.stream?.getMediaStream?.();
+      const screenTrack = ms?.getVideoTracks?.()[0];
+      // 모드 contentHint(문서 detail | 영상 motion)는 publish·해상도 고정 뒤에 건다(아래). 여기서는 OpenVidu 가 넣은 detail 그대로 publish 한다.
+      const surfaceInfo = { ...describeCaptureSurface(screenTrack?.getSettings?.()), modeLabel: SCREEN_SHARE_MODES[shareModeKey].label };
+      const hasAudio = !!ms && ms.getAudioTracks().length > 0;
+      if (!hasAudio) {
+        // 선택창에서 '오디오 공유'를 끈 경우: 오디오 없음으로 정정해야 서버/시청자가 빈 오디오 트랙을 기대하지 않는다.
+        try {
+          pub.properties.audioSource = false;
+          pub.properties.publishAudio = false;
+          pub.stream.outboundStreamOpts.publisherProperties.audioSource = false;
+          pub.stream.hasAudio = false;
+        } catch (e) { /* ignore */ }
+      }
+      // 브라우저의 '공유 중지' 버튼/공유 대상 창 닫힘 → track ended → 화면공유만 종료(카메라·마이크 유지).
+      ms?.getVideoTracks?.()[0]?.addEventListener('ended', () => teardownScreenShareRef.current?.('track-ended', { notifyServer: true }), { once: true });
+      if (sessionRef.current !== primary || !primary.connection) throw fail('PRIMARY_CHANGED');
+
+      // 2) 서버가 내 PRIMARY 소유를 검증하고 SCREEN 토큰 발급(serverData kind=SCREEN, ownerConnectionId=내 PRIMARY).
+      grant = await groupService.getScreenShareToken(study.id, {
+        primaryConnectionId,
+        clientInstanceId: clientInstanceIdRef.current,
+        deviceType: detectDeviceType(),
+      });
+      if (Number.isInteger(grant?.screenShareLimit)) setScreenShareLimit(grant.screenShareLimit);
+      sess = OVs.initSession();
+      sess.on('sessionDisconnected', (ev) => {
+        if (screenSessionRef.current === sess) teardownScreenShareRef.current?.(`disconnected:${ev?.reason || ''}`);
+      });
+      // 송출 건강 상태: 미디어 서버와의 PeerConnection 상태 + 화면공유 세션 WS 재연결(openvidu-browser 표준 이벤트).
+      const peerState = (pc) => pc?.connectionState || ({ connected: 'connected', completed: 'connected', checking: 'connecting', disconnected: 'disconnected', failed: 'failed' }[pc?.iceConnectionState] || 'new');
+      const syncHealth = () => { if (screenSessionRef.current === sess) setScreenHealth(screenPc ? healthFromPeerState(peerState(screenPc)) : 'ok'); };
+      sess.on('reconnecting', () => { if (screenSessionRef.current === sess) setScreenHealth('reconnecting'); });
+      sess.on('reconnected', syncHealth);
+      // 수신 확인(receipt): 시청자가 이 SCREEN Connection 으로 보낸 시그널. event.from 은 OpenVidu 서버가 채운 보낸 사람이라
+      //  위조할 수 없고, 그 Connection 의 serverData(Spring 발급)로 "다른 사용자의 PRIMARY" 인지 확인한 것만 받는다.
+      const acceptingReceipts = () => screenSessionRef.current === sess || (screenShareBusyRef.current && !screenSessionRef.current);
+      sess.on(`signal:${SCREEN_RECEIPT_SIGNAL}`, (ev) => {
+        const fromId = ev?.from?.connectionId;
+        if (!fromId || !acceptingReceipts()) return;
+        const meta = parseConnectionMetadata(ev.from.data);
+        if (!meta.verified || meta.kind !== CONNECTION_KIND.PRIMARY || !meta.userKey || meta.userKey === String(userId)) return;
+        const r = parseReceipt(ev.data);
+        if (!r) return;
+        if (screenReceiptPhaseRef.current.get(fromId) !== r.phase) {
+          screenReceiptPhaseRef.current.set(fromId, r.phase);
+          console.info('[StudyRoomOV] screen:rx', { from: fromId, userId: meta.userId, phase: r.phase, w: r.stats?.w ?? null, h: r.stats?.h ?? null });
+        }
+        setScreenReceipts(prev => ({ ...prev, [fromId]: { userKey: meta.userKey, phase: r.phase, hidden: r.hidden, stats: r.stats, at: Date.now() } }));
+      });
+      // 시청자가 나가면 그 연결의 보고를 지운다(남은 보고로 "재생 중"이 남지 않게).
+      sess.on('connectionDestroyed', (ev) => {
+        const id = ev?.connection?.connectionId;
+        if (!id) return;
+        screenReceiptPhaseRef.current.delete(id);
+        setScreenReceipts(prev => { if (!prev[id]) return prev; const next = { ...prev }; delete next[id]; return next; });
+      });
+      // 화면공유 세션은 송출 전용: streamCreated 를 구독하지 않는다(다른 사람 미디어를 두 번 받지 않음).
+      await sess.connect(grant.token, JSON.stringify({ userId, clientData: myDisplayName, kind: CONNECTION_KIND.SCREEN }));
+      if (sessionRef.current !== primary) throw fail('PRIMARY_CHANGED');
+      await sess.publish(pub);
+
+      const cid = sess.connection?.connectionId || grant.connectionId;
+      screenSessionRef.current = sess;
+      screenPublisherRef.current = pub;
+      myScreenConnIdRef.current = cid;
+      try { screenPc = pub.stream?.getRTCPeerConnection?.() || null; } catch (err) { screenPc = null; }
+      // 해상도 고정(문서·영상 공통, utils/screenShare lockScreenResolution). openvidu-browser 는 createOffer 때 contentHint 가 detail 이
+      //  아니면 'balanced' 를 넣어 해상도를 줄이므로, 모드 contentHint 는 detail 로 publish 하고 고정한 뒤에 바꾼다.
+      const resolutionLock = await lockScreenResolution(findVideoSender(screenPc));
+      if (screenPublisherRef.current !== pub) return; // 고정하는 사이 공유가 끝났다(teardown 이 상태를 이미 정리했다)
+      if (screenTrack) { try { screenTrack.contentHint = SCREEN_SHARE_MODES[shareModeKey].contentHint; } catch (e) { /* 미지원 브라우저 */ } }
+      // ICE 실패 뒤 openvidu-browser 가 스트림을 재연결하면 새 PC 의 createOffer 가 다시 'balanced' 를 넣는다 → 주기적으로 다시 건다(맞으면 아무것도 안 함).
+      clearInterval(screenResolutionGuardRef.current);
+      screenResolutionGuardRef.current = setInterval(async () => {
+        if (screenPublisherRef.current !== pub) return;
+        let pc = null;
+        try { pc = pub.stream?.getRTCPeerConnection?.() || null; } catch (err) { pc = null; }
+        const r = await lockScreenResolution(findVideoSender(pc));
+        if (r.changed) console.info('[StudyRoomOV] screen:resolution-relocked', { connectionId: cid });
+      }, 3000);
+      screenPc?.addEventListener?.('connectionstatechange', syncHealth);
+      screenPc?.addEventListener?.('iceconnectionstatechange', syncHealth);
+      syncHealth();
+      setScreenReceipts({});
+      screenReceiptPhaseRef.current = new Map();
+      setScreenLiveSince(Date.now());
+      setMediaByConnectionId(prev => ({ ...prev, [cid]: pub }));
+      setActiveConnections(prev => ({
+        ...prev,
+        [cid]: {
+          ...(prev[cid] || {}),
+          connectionId: cid,
+          userId,
+          name: myDisplayName,
+          kind: CONNECTION_KIND.SCREEN,
+          ownerConnectionId: primaryConnectionId,
+          verified: true,
+          isMine: true,
+          hasAudio,
+          surface: surfaceInfo,
+          connectedAt: prev[cid]?.connectedAt || Date.now(),
+        },
+      }));
+      setSelectedScreenId(cid);
+      setScreenShareStatus('live');
+      setOvNotice('');
+      if (aiConsent) toggleMyScreenAiConsentRef.current?.(true); // 공유 안내에서 'AI 분석 허용'을 켠 경우
+      console.info('[StudyRoomOV] screen:live', { connectionId: cid, hasAudio, typeOfVideo: pub.stream?.typeOfVideo || null, mode: shareModeKey, surface: surfaceInfo.surface, resolution: surfaceInfo.resolution, contentHint: screenTrack?.contentHint || null, degradation: resolutionLock.applied });
+    } catch (e) {
+      clearInterval(screenResolutionGuardRef.current);
+      screenResolutionGuardRef.current = null;
+      try { sess?.disconnect(); } catch (err) { /* ignore */ }
+      try { pub?.stream?.getMediaStream?.()?.getTracks?.().forEach((t) => t.stop()); } catch (err) { /* ignore */ }
+      // 승인은 받았지만 공유를 시작하지 못했다 → 서버의 슬롯 예약(pending SCREEN Connection)을 바로 돌려준다(서버 TTL 은 안전망).
+      if (grant?.connectionId && study?.id) groupService.stopScreenShare(study.id, grant.connectionId).catch(() => { /* 이미 정리됨 */ });
+      setScreenShareStatus('idle');
+      const code = e?.code || e?.response?.data?.code || e?.name;
+      const serverLimit = e?.response?.data?.details?.limit;
+      if (code === 'SCREEN_SHARE_LIMIT_REACHED' && Number.isInteger(serverLimit)) setScreenShareLimit(serverLimit);
+      const notice = {
+        SCREEN_CAPTURE_DENIED: '화면 공유가 취소되었거나 권한이 허용되지 않았습니다.',
+        SCREEN_SHARE_LIMIT_REACHED: e?.response?.data?.message || screenShareLimitMessage(Number.isInteger(serverLimit) ? serverLimit : screenShareLimit),
+        SCREEN_START_IN_PROGRESS: e?.response?.data?.message || '다른 기기(탭)에서 화면공유를 시작하고 있습니다. 잠시 후 다시 시도해주세요.',
+        SCREEN_ADMISSION_BUSY: e?.response?.data?.message || '화면공유 요청이 몰려 처리하지 못했습니다. 잠시 후 다시 시도해주세요.',
+        SCREEN_ALREADY_ACTIVE: e?.response?.data?.message || '이미 화면을 공유하고 있습니다.',
+        PRIMARY_NOT_ACTIVE: '화상 연결이 준비된 뒤 다시 시도해주세요.',
+        PRIMARY_CHANGED: '화상 연결이 다시 연결되어 화면 공유를 취소했습니다. 다시 시도해주세요.',
+        SCREEN_SHARING_NOT_SUPPORTED: '이 브라우저에서는 화면 공유를 지원하지 않습니다.',
+      }[code] || '화면 공유를 시작하지 못했습니다. 잠시 후 다시 시도해주세요.';
+      setOvNotice(notice);
+      console.warn('[StudyRoomOV] screen:start-failed', { code: code || null, message: String(e?.message || e).slice(0, 160) });
+    } finally {
+      screenShareBusyRef.current = false;
+    }
+  };
+
   // 1. OpenVidu Video Call Lifecycle
   useEffect(() => {
     if (!study?.id || !userId) return;
@@ -1037,9 +1432,96 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     let OVInstance = null;
     let sessionInstance = null;
     let isMounted = true;
+    // 이 effect 실행의 세대. cleanup 이 끝나면(혹은 다음 세대가 시작되면) 이 세대의 비동기 결과는 전부 버린다.
+    const gen = ++ovGenerationRef.current;
+    const isStale = () => !isMounted || gen !== ovGenerationRef.current;
+    // join 완료 전에 도착한 participantLeft/Evicted(=서버가 이미 지운 ghost) 기록. connect 전에 설치한다.
+    let leaveGuard = { tombstones: new Set(), isTombstoned: () => false };
+    // 서버 serverData 기준 "내 PRIMARY 소유의 SCREEN" 판정(사용자 이름으로 판단하지 않는다).
+    const isOwnScreen = (meta) => meta.kind === CONNECTION_KIND.SCREEN && meta.verified && meta.userKey === String(userId)
+      && !!meta.ownerConnectionId && meta.ownerConnectionId === sessionInstance?.connection?.connectionId;
+    let reconcileTimers = [];
+    let reconcileInterval = null;
+    let reconcileDisabled = false;
+    let reconcileInFlight = false;
+    let intentionalLeave = false;
 
     // 방+사용자 단위 join 식별자. 같은 방에 이미 접속했으면 재실행을 무시한다.
     const roomKey = `${study?.id || study?.groupId || study?.roomId}:${userId || 'anon'}`;
+
+    // 서버(OpenVidu active Connection)를 기준으로 로컬 원격 연결을 맞춘다 = ghost 타일의 최종 안전망.
+    //  · fetch 이전부터 알던 원격 연결 중 서버 목록에 없는 것만 지운다(planReconcile).
+    //  · 서버가 내 연결을 모르면(이미 퇴장 처리됨) 새 토큰으로 다시 join 한다.
+    const reconcileWithServer = async (why) => {
+      if (reconcileDisabled || reconcileInFlight || isStale() || !sessionInstance?.connection) return;
+      reconcileInFlight = true;
+      const fetchStartedAt = Date.now();
+      try {
+        const data = await groupService.getVideoConnections(study.id);
+        if (isStale() || !Array.isArray(data?.connections)) return;
+        if (Number.isInteger(data.screenShareLimit) && data.screenShareLimit > 0) setScreenShareLimit(data.screenShareLimit);
+        const serverIds = data.connections.map(c => c.connectionId);
+        const myConnId = sessionInstance.connection?.connectionId;
+        if (myConnId && !serverIds.includes(myConnId)) {
+          console.warn('[StudyRoomOV] reconcile:self-missing → rejoin', { why, myConnId });
+          scheduleRejoin('self-missing');
+          return;
+        }
+        ovRejoinAttemptsRef.current = 0;
+        const prune = planReconcile(activeConnectionsRef.current, serverIds, fetchStartedAt);
+        if (prune.length === 0) return;
+        console.warn('[StudyRoomOV] reconcile:prune-ghost', { why, prune });
+        purgeTombstonedConnections(sessionInstance, prune);
+        const drop = (prev) => {
+          if (!prune.some(id => id in prev)) return prev;
+          const next = { ...prev };
+          prune.forEach(id => { delete next[id]; });
+          return next;
+        };
+        setActiveConnections(drop);
+        setMediaByConnectionId(drop);
+        setSubscribers(drop);
+      } catch (e) {
+        const st = e?.response?.status;
+        // 구버전 백엔드(엔드포인트 없음)와 함께 배포돼도 동작하도록 조용히 끈다.
+        if (st === 404 || st === 405) reconcileDisabled = true;
+        console.warn('[StudyRoomOV] reconcile:failed', { why, status: st ?? null });
+      } finally {
+        reconcileInFlight = false;
+      }
+    };
+
+    // 네트워크 단절로 세션을 잃으면(재연결 유예 초과) 새 토큰으로 다시 join 한다(최대 5회, 지수 backoff).
+    let rejoinScheduled = false; // 세대당 1회(reconcile 과 sessionDisconnected 가 동시에 감지해도 재입장은 한 번)
+    const scheduleRejoin = (why) => {
+      if (isStale() || intentionalLeave || rejoinScheduled) return;
+      rejoinScheduled = true;
+      const attempt = ovRejoinAttemptsRef.current + 1;
+      if (attempt > 5) {
+        setOvNotice('화상 연결이 끊어졌습니다. 방을 나갔다가 다시 입장해주세요.');
+        return;
+      }
+      ovRejoinAttemptsRef.current = attempt;
+      const delay = Math.min(15000, 1000 * 2 ** (attempt - 1));
+      console.warn('[StudyRoomOV] rejoin:scheduled', { why, attempt, delay });
+      setOvNotice('화상 연결이 끊어져 다시 연결하는 중입니다…');
+      reconcileTimers.push(setTimeout(() => { if (!isStale()) setOvRejoinNonce(n => n + 1); }, delay));
+    };
+
+    // 새로고침/탭 닫기/페이지 이동: React cleanup 은 실행되지 않으므로 leaveRoom 을 직접 보낸다.
+    //  (보내지 않으면 서버가 이전 연결을 ~10초 유지해 재입장한 화면에 영구 ghost 가 생긴다 — sbdiag 재현으로 확인)
+    const leaveOnPageHide = () => {
+      intentionalLeave = true;
+      teardownScreenShareRef.current?.('pagehide'); // 화면공유 Connection 도 같은 이유로 즉시 leaveRoom
+      try { sessionInstance?.disconnect(); } catch (e) { /* ignore */ }
+      stopPublisherTracksSafely(publisherRef.current);
+    };
+    const rejoinOnBfcacheRestore = (e) => { if (e.persisted) window.location.reload(); };
+    const reconcileOnVisible = () => { if (document.visibilityState === 'visible') reconcileWithServer('visible'); };
+    // beforeunload 는 쓰지 않는다(이탈 확인 대화상자에서 '머무르기'를 눌러도 이미 끊긴다). pagehide 는 실제 언로드 때만 온다.
+    window.addEventListener('pagehide', leaveOnPageHide);
+    window.addEventListener('pageshow', rejoinOnBfcacheRestore);
+    document.addEventListener('visibilitychange', reconcileOnVisible);
 
     async function joinSession() {
       // ── 중복 실행 방지(openvidu WebSocket 8개+ 중복 생성 차단) ──
@@ -1063,8 +1545,12 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         // F. 재입장 시작 전 직전 publisher track을 확실히 정지(이전 카메라 점유 해제 → NotReadableError 예방).
         stopPublisherTracksSafely(publisherRef.current);
 
-        let { token } = await groupService.getVideoToken(study.id);
-        if (!isMounted) return;
+        // 서버가 serverData 에 검증된 userId/kind 를 기록한다(clientInstanceId·deviceType 은 표시/진단용 힌트).
+        let { token } = await groupService.getVideoToken(study.id, {
+          clientInstanceId: clientInstanceIdRef.current,
+          deviceType: detectDeviceType(),
+        });
+        if (isStale()) return;
 
         // OpenVidu token은 서버가 발급한 문자열을 그대로 사용한다.
         token = toSecureWsToken(token);
@@ -1079,18 +1565,29 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         }
         OVRef.current = OVInstance; // view-only 복구(재발행) 시 동일 인스턴스 재사용
         sessionInstance = OVInstance.initSession();
-        console.info('[StudyRoomOV] session:init');
+        leaveGuard = installEarlyLeaveGuard(sessionInstance);
+        console.info('[StudyRoomOV] session:init', { gen });
 
         // 새 연결 생성(미디어 publish 여부와 무관) → presence 갱신.
         //   카메라/마이크가 둘 다 꺼져 streamCreated가 없는 참가자도 members 재조회로 타일에 보이게 한다.
+        // 다른 참여자가 자기 화면의 AI 분석 허용을 바꿨다 → AI 화면 분석 탭이 서버 목록을 다시 읽는다(내용은 신뢰하지 않음).
+        sessionInstance.on(`signal:${SCREEN_AI_CONSENT_SIGNAL}`, () => { if (!isStale()) setScreenAiConsentNonce(n => n + 1); });
+
         sessionInstance.on('connectionCreated', (event) => {
-          if (!isMounted) return;
+          if (isStale()) return;
           const connection = event.connection;
           const connectionId = connection?.connectionId;
           if (!connectionId) return;
           // 내 연결(session.connection)은 connect:success에서 isMe로 보정하므로 여기선 제외.
           if (sessionInstance.connection && connectionId === sessionInstance.connection.connectionId) return;
+          // 서버가 join 처리 중 이미 제거한 ghost(join 응답에만 남아 있음) → 타일을 만들지 않는다.
+          if (leaveGuard.isTombstoned(connectionId)) {
+            console.warn('[StudyRoomOV] connectionCreated:ghost-skip', { connectionId });
+            return;
+          }
           const meta = parseConnectionData(connection);
+          // 내 화면공유 Connection(서버 검증 owner = 내 PRIMARY) — 타일·구독 대상이 아니다(미리보기는 로컬 publisher).
+          const isMine = isOwnScreen(meta);
           // 메인 그리드 단일 소스(activeConnections)에 실제 접속자만 추가.
           setActiveConnections(prev => ({
             ...prev,
@@ -1099,35 +1596,63 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               connectionId,
               userId: meta.userId ?? prev[connectionId]?.userId ?? null,
               name: meta.name || prev[connectionId]?.name || '참여자',
+              kind: meta.kind,
+              ownerConnectionId: meta.ownerConnectionId,
+              deviceType: meta.deviceType,
+              verified: meta.verified,
+              isMine: isMine || prev[connectionId]?.isMine || false,
               isMe: false,
               micOn: meta.micOn ?? prev[connectionId]?.micOn ?? false,
               cameraOn: meta.cameraOn ?? prev[connectionId]?.cameraOn ?? false,
+              avatarMode: meta.avatarMode ?? prev[connectionId]?.avatarMode ?? null,
+              avatarUrl: meta.avatarUrl ?? prev[connectionId]?.avatarUrl ?? null,
+              avatarValue: meta.avatarValue ?? prev[connectionId]?.avatarValue ?? null,
               connectedAt: prev[connectionId]?.connectedAt || Date.now(),
             },
           }));
-          console.info('[StudyRoomOV] connectionCreated', { connectionId, userId: meta.userId ?? null });
+          console.info('[StudyRoomOV] connectionCreated', { connectionId, userId: meta.userId ?? null, kind: meta.kind, verified: meta.verified });
           // 우측 참여자 목록(presence)만 갱신 — OpenVidu 재입장과 무관(joinedRoomKeyRef 가드).
           loadMembersRef.current?.();
         });
 
         // streamCreated: subscriber 생성 → media(streamManager) 저장 + 해당 connection을 activeConnections에 보정.
         sessionInstance.on('streamCreated', (event) => {
-          if (!isMounted) return;
+          if (isStale()) return;
           const connection = event.stream.connection;
           const connectionId = connection.connectionId;
           const streamId = event.stream.streamId;
+          // ghost 의 stream 은 구독하지 않는다(서버엔 이미 없음 → "user could not be found" 오류만 난다).
+          if (leaveGuard.isTombstoned(connectionId)) {
+            console.warn('[StudyRoomOV] streamCreated:ghost-skip', { connectionId, streamId });
+            return;
+          }
           const meta = parseConnectionData(connection);
-          const subscriber = sessionInstance.subscribe(event.stream, undefined);
+          // 내 화면공유 스트림은 구독하지 않는다(내 공유 화면 소리가 다시 들리는 중복·대역폭 낭비 방지).
+          if (isOwnScreen(meta)) {
+            console.info('[StudyRoomOV] streamCreated:own-screen-skip', { connectionId, streamId });
+            return;
+          }
+          // 다른 사람의 화면공유: 구독(WebRTC 협상) 완료를 송출자에게 알린다(phase=subscribed — 아직 '재생 중'이라는 뜻은 아님).
+          const isRemoteScreen = meta.kind === CONNECTION_KIND.SCREEN && meta.verified && meta.userKey !== String(userId);
+          const subscribeStartedAt = performance.now();
+          // 구독 협상(receiveVideoFrom) 결과를 남긴다 — 실패를 버리면 타일이 원인 없이 '카메라 연결 중…' 으로 남는다(utils/mediaHealth 가 읽음).
+          const subscriber = sessionInstance.subscribe(event.stream, undefined, (err) => {
+            const ms = Math.round(performance.now() - subscribeStartedAt);
+            if (err) console.warn('[StudyRoomOV] subscribe:failed', { connectionId, streamId, ms, name: err?.name, message: String(err?.message || err).slice(0, 200) });
+            else console.info('[StudyRoomOV] subscribe:ok', { connectionId, streamId, ms, hasVideo: event.stream.hasVideo, videoActive: event.stream.videoActive });
+            if (!isStale()) recordSubscribeResult(subscriber, err || null);
+            if (!err && isRemoteScreen && !isStale()) sendScreenReceiptRef.current?.(event.stream.connection, { phase: 'subscribed' });
+          });
           // 원격 미디어가 실제 재생을 시작하면(streamPlaying) mediaStream/track이 채워진다.
           // 저장된 subscriber 객체는 참조가 그대로라 React가 리렌더하지 않으므로, 여기서 새 참조로
           // state를 bump해 VideoFeed가 채워진 mediaStream(오디오 미터·연결중 해제)을 반영하게 한다.
           subscriber.on('streamPlaying', () => {
-            if (!isMounted) return;
+            if (isStale()) return;
             console.info('[StudyRoomOV] streamPlaying', { connectionId });
             setMediaByConnectionId(prev => (prev[connectionId] ? { ...prev } : prev));
             setSubscribers(prev => (prev[connectionId] ? { ...prev } : prev));
           });
-          console.info('[StudyRoomOV] streamCreated', { connectionId, streamId, userId: meta.userId ?? null });
+          console.info('[StudyRoomOV] streamCreated', { connectionId, streamId, userId: meta.userId ?? null, kind: meta.kind, typeOfVideo: event.stream.typeOfVideo });
           // 메인 그리드 단일 소스 보정(members 갱신 전 publish해도 타일이 생긴다).
           setActiveConnections(prev => ({
             ...prev,
@@ -1136,8 +1661,15 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               connectionId,
               userId: meta.userId ?? prev[connectionId]?.userId ?? null,
               name: meta.name || prev[connectionId]?.name || '참여자',
+              kind: meta.kind,
+              ownerConnectionId: meta.ownerConnectionId,
+              deviceType: meta.deviceType,
+              verified: meta.verified,
               isMe: false,
               cameraOn: true,
+              avatarMode: meta.avatarMode ?? prev[connectionId]?.avatarMode ?? null,
+              avatarUrl: meta.avatarUrl ?? prev[connectionId]?.avatarUrl ?? null,
+              avatarValue: meta.avatarValue ?? prev[connectionId]?.avatarValue ?? null,
               connectedAt: prev[connectionId]?.connectedAt || Date.now(),
             },
           }));
@@ -1149,7 +1681,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
         // streamDestroyed: activeConnections(타일)는 유지하고 media(streamManager)만 제거한다.
         sessionInstance.on('streamDestroyed', (event) => {
-          if (!isMounted) return;
+          if (isStale()) return;
           const connectionId = event.stream.connection.connectionId;
           const streamId = event.stream.streamId;
           console.info('[StudyRoomOV] streamDestroyed', { connectionId, streamId });
@@ -1176,9 +1708,13 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
         // connectionDestroyed: 해당 연결을 activeConnections(타일)·media에서 모두 제거한다(실제 퇴장).
         sessionInstance.on('connectionDestroyed', (event) => {
-          if (!isMounted) return;
+          if (isStale()) return;
           const connectionId = event.connection.connectionId;
-          console.info('[StudyRoomOV] connectionDestroyed', { connectionId });
+          console.info('[StudyRoomOV] connectionDestroyed', { connectionId, reason: event.reason || null });
+          // 서버가 내 화면공유 Connection 을 없앴다(재연결 실패 후 축출 등) → 화면공유 세션도 정리해 "공유 중" 상태가 남지 않게 한다.
+          if (connectionId && connectionId === myScreenConnIdRef.current) {
+            teardownScreenShareRef.current?.(`server-evicted:${event.reason || ''}`);
+          }
           setMediaByConnectionId(prev => {
             if (!prev[connectionId]) return prev;
             const next = { ...prev };
@@ -1202,20 +1738,62 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         // 원격 참가자가 카메라/마이크를 끄거나 켜면(videoActive/audioActive 변경) 즉시 리렌더하여
         // avatar fallback 전환과 마이크 상태 아이콘이 실시간으로 반영되게 한다.
         sessionInstance.on('streamPropertyChanged', (event) => {
-          if (!isMounted) return;
+          if (isStale()) return;
           // 새 객체 참조로 리렌더 트리거 (stream 객체의 최신 active 값 반영).
           setMediaByConnectionId(prev => ({ ...prev }));
           setSubscribers(prev => ({ ...prev }));
         });
 
+        // ICE_CONNECTION_FAILED/DISCONNECTED(origin=Stream), NO_STREAM_PLAYING_EVENT(origin=Subscriber) 등 — 어느 스트림인지 함께 남긴다.
         sessionInstance.on('exception', (exception) => {
-          console.warn('[StudyRoomOV] exception', { name: exception?.name, message: exception?.message });
+          const origin = exception?.origin;
+          const originStream = origin?.streamId ? origin : (origin?.stream || null);
+          console.warn('[StudyRoomOV] exception', {
+            name: exception?.name,
+            message: exception?.message,
+            streamId: originStream?.streamId || null,
+            connectionId: originStream?.connection?.connectionId || null,
+          });
         });
 
-        const connectionData = JSON.stringify({ userId: userId, clientData: myDisplayName });
+        // WS 일시 단절: openvidu-browser 가 같은 Connection 으로 자동 재연결(서버 유예 ~10초)한다. 성공하면 서버 기준으로 다시 맞춘다.
+        sessionInstance.on('reconnecting', () => {
+          if (isStale()) return;
+          console.warn('[StudyRoomOV] ws:reconnecting');
+          setOvNotice('네트워크가 불안정해 화상 연결을 복구하는 중입니다…');
+        });
+        sessionInstance.on('reconnected', () => {
+          if (isStale()) return;
+          console.info('[StudyRoomOV] ws:reconnected');
+          setOvNotice('');
+          reconcileWithServer('reconnected');
+        });
+        // 유예를 넘겨 세션을 잃으면(networkDisconnect/nodeCrashed) 새 토큰으로 재입장한다. 의도적 퇴장·강퇴는 재입장하지 않는다.
+        sessionInstance.on('sessionDisconnected', (event) => {
+          if (isStale() || intentionalLeave) return;
+          console.warn('[StudyRoomOV] sessionDisconnected', { reason: event?.reason || null });
+          if (event?.reason === 'networkDisconnect' || event?.reason === 'nodeCrashed') scheduleRejoin(event.reason);
+        });
+
+        // GENERAL: 이번 입장에서 고른 프로필(avatarMode/avatarUrl)을 metadata 로 전파해 다른 참가자가 같은 identity 를 본다.
+        const connectionData = JSON.stringify({
+          userId: userId,
+          clientData: myDisplayName,
+          ...(sessionAvatar?.mode ? { avatarMode: sessionAvatar.mode } : {}),
+          ...(sessionAvatar?.mode === 'upload' && sessionAvatar.url ? { avatarUrl: sessionAvatar.url } : {}),
+          ...(sessionAvatar?.mode === 'emoji' && sessionAvatar.value ? { avatarValue: sessionAvatar.value } : {}),
+        });
         console.info('[StudyRoomOV] listeners:registered-before-connect');
         await sessionInstance.connect(token, connectionData);
-        if (!isMounted) return;
+        if (isStale()) {
+          // connect 도중 cleanup 이 실행됐다(그때의 disconnect 는 no-op) → 지금 끊지 않으면 살아있는 유령 연결이 남는다.
+          console.warn('[StudyRoomOV] connect:stale-generation → disconnect', { gen });
+          try { sessionInstance.disconnect(); } catch (e) { /* ignore */ }
+          return;
+        }
+        // join 응답에 섞여 들어온 ghost(서버가 이미 제거)를 라이브러리 내부 맵에서도 걷어낸다.
+        const purged = purgeTombstonedConnections(sessionInstance, leaveGuard.tombstones);
+        if (purged.length) console.warn('[StudyRoomOV] join:ghost-purged', { purged });
 
         const myConnectionId = sessionInstance.connection?.connectionId;
         setSession(sessionInstance);
@@ -1239,11 +1817,16 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
             },
           }));
         }
-        console.info('[StudyRoomOV] connect:success', { connectionId: myConnectionId || null });
+        console.info('[StudyRoomOV] connect:success', { connectionId: myConnectionId || null, gen });
+        // 서버 기준 정합성 확인: 직후 1회(남은 ghost 정리) + 지연 1회 + 주기(30초).
+        reconcileTimers.push(setTimeout(() => reconcileWithServer('post-join'), 1500));
+        reconcileTimers.push(setTimeout(() => reconcileWithServer('post-join-late'), 8000));
+        reconcileInterval = setInterval(() => reconcileWithServer('interval'), 30000);
 
         // 프리뷰 트랙을 그대로 넘겨받았으면(handoff) 카메라를 재획득하지 않으므로 릴리즈 대기가 불필요하다.
         // handoff가 없을 때만, 이전 프리뷰가 카메라를 완전히 릴리즈할 시간을 확보(800ms)해 NotReadableError를 예방한다.
-        const hasHandoff = !!(handoffVideoTrack && handoffVideoTrack.readyState === 'live');
+        // 고른 카메라(selectedCamera)의 트랙이 아니면 handoff 를 쓰지 않는다(아래에서 정지) — 이전 카메라로 송출되는 것 방지.
+        const hasHandoff = isTrackForSelectedCamera(handoffVideoTrack, selectedCamera);
         if (!hasHandoff) {
           await new Promise(resolve => setTimeout(resolve, 800));
           if (!isMounted) return;
@@ -1252,26 +1835,33 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         // ── 장치 유효성 사전 검증 (stale deviceId / 장치 부재 방어) ──
         // 선택된 카메라 deviceId가 현재 실제 장치 목록에 없으면 stale로 간주해 기본 카메라로 떨어뜨린다.
         let videoDeviceId = selectedCamera || undefined;
-        let hasAnyVideo = true;
+        // 입장 준비에서 고른 마이크(deviceId). 실제 장치 목록에 없으면 기본 마이크로 떨어뜨린다.
+        let audioDeviceId = selectedMic || undefined;
+        let hasAnyVideo = isCam; // GENERAL 은 카메라 장치를 아예 고려하지 않는다(카메라 권한 요청 금지)
         let hasAnyAudio = true;
         try {
           const devices = await navigator.mediaDevices.enumerateDevices();
           const videoInputs = devices.filter(d => d.kind === 'videoinput');
           const audioInputs = devices.filter(d => d.kind === 'audioinput');
-          hasAnyVideo = videoInputs.length > 0;
+          hasAnyVideo = isCam && videoInputs.length > 0;
           hasAnyAudio = audioInputs.length > 0;
           if (videoDeviceId && !videoInputs.some(d => d.deviceId === videoDeviceId)) {
             console.warn('[StudyRoom] 선택 카메라가 stale → 기본 카메라로 대체. id=', String(videoDeviceId).slice(0, 4) + '****');
             videoDeviceId = undefined;
           }
-          console.log('[StudyRoom] 장치 점검 video=%d audio=%d', videoInputs.length, audioInputs.length);
+          if (audioDeviceId && !audioInputs.some(d => d.deviceId === audioDeviceId)) {
+            console.warn('[StudyRoom] 선택 마이크가 stale → 기본 마이크로 대체. id=', String(audioDeviceId).slice(0, 4) + '****');
+            audioDeviceId = undefined;
+          }
+          console.log('[StudyRoom] 장치 점검 studyType=%s video=%d audio=%d', isCam ? 'CAM' : 'GENERAL', videoInputs.length, audioInputs.length);
         } catch (enumErr) {
           console.warn('[StudyRoom] enumerateDevices 실패, 기본값으로 진행', enumErr?.name || enumErr);
         }
+        if (!isCam) videoDeviceId = undefined;
 
         // 사용자 의도(토글)와 실제 장치 존재 여부를 합쳐 송출 가능 여부를 계산한다.
         const effectiveAudio = Boolean(hasAnyAudio && isMicOn !== false);
-        const effectiveVideo = Boolean(hasAnyVideo && isVideoOn !== false);
+        const effectiveVideo = Boolean(isCam && hasAnyVideo && isVideoOn !== false);
         console.info('[StudyRoomOV] device availability', {
           hasAudioInput: hasAnyAudio,
           hasVideoInput: hasAnyVideo,
@@ -1288,7 +1878,10 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           setIsVideoOn(false);
           setPublisher(null);
           setOvError('');
-          setOvNotice('보기 전용으로 입장했습니다. 마이크/카메라 장치를 연결하거나 권한을 허용하면 송출할 수 있습니다.');
+          // GENERAL: 마이크가 없어도 입장은 허용(듣기 전용). CAM: 기존 문구 유지.
+          setOvNotice(isCam
+            ? '보기 전용으로 입장했습니다. 마이크/카메라 장치를 연결하거나 권한을 허용하면 송출할 수 있습니다.'
+            : '마이크 없음 — 듣기 전용으로 입장했습니다. 마이크를 연결하거나 권한을 허용하면 말할 수 있습니다.');
           return;
         }
 
@@ -1313,7 +1906,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         //   6) view-only (아래 publisherInstance 없음 분기에서 처리)
         // audioSource/videoSource가 동시에 false인 조합은 만들지 않는다(둘 다 없을 땐 위에서 이미 return).
         // 카메라 단계는 마이크가 있으면 함께 송출(audio=undefined), 없으면 video-only(audio=false).
-        const camAudio = hasAnyAudio ? undefined : false;
+        const camAudio = hasAnyAudio ? audioDeviceId : false; // undefined = 기본 마이크, string = 선택 마이크
         const videoLadder = [
           { v: videoDeviceId, resolution: '1280x720', frameRate: 30, tag: 'selected-720p30', usesSelected: !!videoDeviceId },
           { v: undefined,     resolution: '1280x720', frameRate: 30, tag: 'default-720p30' },
@@ -1324,7 +1917,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         if (hasAnyVideo) {
           for (const step of videoLadder) attempts.push({ ...step, a: camAudio });
         }
-        if (hasAnyAudio) attempts.push({ v: false, a: undefined, resolution: '640x480', frameRate: 30, tag: 'audio-only' });
+        if (hasAnyAudio) {
+          // 선택 마이크 → (실패 시) 기본 마이크 순. GENERAL 은 이 audio-only 단계만 존재한다(video:false, 카메라 권한 요청 없음).
+          if (audioDeviceId) attempts.push({ v: false, a: audioDeviceId, resolution: '640x480', frameRate: 30, tag: 'audio-only-selected-mic' });
+          attempts.push({ v: false, a: undefined, resolution: '640x480', frameRate: 30, tag: 'audio-only' });
+        }
 
         let publisherInstance = null;
         let chosen = null;
@@ -1356,10 +1953,10 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         // ── 0순위: 프리뷰에서 clone해 넘겨받은 live 카메라 트랙을 publisher videoSource로 그대로 사용 ──
         //   프리뷰 stop → 같은 deviceId 재획득 시 일부 장치가 "정지 프레임"을 반환하는 freeze를 근절한다.
         //   (오디오는 fresh로 획득. 실패 시 아래 카메라 재획득 ladder로 폴백)
-        if (hasHandoff && hasAnyVideo && isVideoOn !== false) {
+        if (isCam && hasHandoff && hasAnyVideo && isVideoOn !== false) {
           console.log('[StudyRoom] fallback 시도 tag=preview-handoff');
           const handoffPub = await tryInit({
-            audioSource: (hasAnyAudio && isMicOn) ? undefined : false,
+            audioSource: (hasAnyAudio && isMicOn) ? audioDeviceId : false,
             videoSource: handoffVideoTrack,
             publishAudio: Boolean(hasAnyAudio && isMicOn),
             publishVideo: isVideoOn !== false,
@@ -1369,7 +1966,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           if (!isMounted) { if (handoffPub) handoffPub.dispose(); return; }
           if (handoffPub) {
             publisherInstance = handoffPub;
-            chosen = { v: handoffVideoTrack, a: (hasAnyAudio && isMicOn) ? undefined : false, tag: 'preview-handoff' };
+            chosen = { v: handoffVideoTrack, a: (hasAnyAudio && isMicOn) ? audioDeviceId : false, tag: 'preview-handoff' };
             console.log('[StudyRoom] publisher 성공 단계=preview-handoff');
           } else {
             console.warn('[StudyRoom] preview-handoff 실패 → 카메라 재획득 ladder로 폴백');
@@ -1450,7 +2047,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         if (noVideo && noAudio) {
           setOvNotice('사용 가능한 카메라/마이크가 없어 시청 모드로 입장했습니다.');
         } else if (noVideo) {
-          setOvNotice('카메라 장치를 찾을 수 없어 오디오만 사용합니다.');
+          // GENERAL 은 원래 오디오 전용이므로 안내하지 않는다.
+          setOvNotice(isCam ? '카메라 장치를 찾을 수 없어 오디오만 사용합니다.' : '');
         } else if (noAudio) {
           setOvNotice('마이크 장치를 찾을 수 없어 음소거 상태로 입장했습니다.');
         } else {
@@ -1492,7 +2090,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         }
       } finally {
         // 성공/실패/조기 return 무엇이든 in-flight 플래그는 반드시 해제(다음 정상 join 허용).
-        joinInFlightRef.current = false;
+        //  단, 이미 다음 세대가 시작됐다면 그 세대의 플래그를 건드리지 않는다.
+        if (gen === ovGenerationRef.current) joinInFlightRef.current = false;
       }
     }
 
@@ -1500,14 +2099,23 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
     return () => {
       isMounted = false;
+      intentionalLeave = true;
+      reconcileTimers.forEach(clearTimeout);
+      reconcileTimers = [];
+      if (reconcileInterval) clearInterval(reconcileInterval);
+      window.removeEventListener('pagehide', leaveOnPageHide);
+      window.removeEventListener('pageshow', rejoinOnBfcacheRestore);
+      document.removeEventListener('visibilitychange', reconcileOnVisible);
+      // 화면공유는 PRIMARY 에 귀속된다 → 방 퇴장·재입장(세대 교체) 시 함께 종료(서버는 orphan 도 정리).
+      teardownScreenShareRef.current?.('room-cleanup');
       cleanupOpenVidu(sessionInstance);
     };
 
-    // joinSession은 방 id / 사용자 id 변화에만 재실행한다.
+    // joinSession은 방 id / 사용자 id 변화(또는 네트워크 단절 후 재입장 트리거)에만 재실행한다.
     // members/subscribers/publisher/activeConnections/mediaByConnectionId는 의도적으로 deps에서 제외한다
     // (presence 갱신·미디어 추가가 OpenVidu 재입장으로 이어지면 안 됨 → WebSocket 1개 유지).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [study?.id, userId]);
+  }, [study?.id, userId, ovRejoinNonce]);
 
   // 방장 강제 해체: 존재하지 않던 updateStudyStatus(상태변경) 대신 실제 삭제 API(deleteGroup)를
   // 호출한다. 성공하면 onClose로 방을 빠져나와 목록으로 복귀한다.
@@ -1869,7 +2477,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
       await Promise.all([loadGroupMaterials(), loadGroupQuizzes()]);
       showAlert('완료', `이 PDF로 ${sanitizedQuizCount()}문제(문제당 ${sanitizedQuizSeconds()}초) 퀴즈를 생성했습니다.`);
     } catch (err) {
-      showAlert('오류', err.response?.data?.message || '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      if (guardGroupError(err)) return;
+      showAlert('오류', userFacingMessage(err, '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.'));
     } finally {
       setIsGeneratingQuiz(null);
     }
@@ -1884,7 +2493,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
       await loadGroupQuizzes();
       showAlert('완료', '해당 자료로 새 퀴즈를 생성했습니다.');
     } catch (err) {
-      showAlert('오류', err.response?.data?.message || '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      if (guardGroupError(err)) return;
+      showAlert('오류', userFacingMessage(err, '퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해주세요.'));
     } finally {
       setRegeneratingMaterialId(null);
     }
@@ -1944,9 +2554,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
         });
       }
     } catch (err) {
-      const message = err.response?.data?.message || err.message || 'PDF 등록/퀴즈 생성에 실패했습니다.';
-      setQuizUploadError(message);
-      showAlert('오류', message);
+      // 원본(axios "Request failed with status code 401" 등)은 userFacingError 가 console.error 로 남긴다.
+      const facing = toUserFacingError(err, { context: 'upload', fallback: 'PDF 등록/퀴즈 생성에 실패했습니다.' });
+      if (facing.groupNotFound) { handleGroupGone(err); return; }
+      setQuizUploadError(facing.message);
+      showAlert('오류', facing.message);
     } finally {
       setIsUploadingQuizPdf(false);
     }
@@ -2005,6 +2617,9 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
     const token = localStorage.getItem('token');
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    // 이번 요청에서 화면에 표시할 답변(에이전트/토론/라우팅 안내)을 하나라도 받았는지.
+    // 스트림이 답변 없이 끝나면(연결이 중간에 끊김 등) 말없이 끝내지 않고 아래에서 복구/안내한다.
+    let gotRenderableAnswer = false;
     try {
       const response = await fetch(`/api/groups/${study.id}/chats/stream`, {
         method: 'POST',
@@ -2086,6 +2701,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               if (parsed.type === 'route_message' || parsed.type === 'route_notice') {
                 const msgText = parsed.message || '';
                 if (msgText) {
+                  gotRenderableAnswer = true;
                   setAiMessages(prev => {
                     if (!isActive()) return prev;
                     return [...prev, {
@@ -2106,6 +2722,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               // 토론 모드: debate_section 이벤트는 일반 agent 메시지로 합치지 않고
               // requestId로 식별되는 단 하나의 debate 말풍선에 섹션별로 upsert한다.
               if (parsed.section || parsed.type === 'debate_section') {
+                gotRenderableAnswer = true;
                 const { section, items, content } = parsed;
                 if (import.meta.env.DEV) console.debug('[AI-SSE] debate_section', { requestId, section, count: items?.length });
                 setAiMessages(prev => {
@@ -2133,6 +2750,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               }
 
               if (parsed.agentName && parsed.content) {
+                gotRenderableAnswer = true;
                 setAiMessages(prev => {
                   if (!isActive()) return prev;
                   // 이번 요청(requestId)·같은 에이전트(senderName)의 기존 말풍선을 "위치와 무관하게" 찾아 이어붙인다.
@@ -2168,6 +2786,41 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           }
         }
       }
+      // 스트림이 답변 없이 끝났다 → 서버는 토론을 DB 에 저장하므로 이력을 다시 읽어 복원하고,
+      // 그래도 없으면 패널을 유지한 채 오류 안내를 남긴다(조용히 빈 화면으로 끝내지 않음).
+      if (!gotRenderableAnswer && isActive()) {
+        let restored = false;
+        // 서버는 스트림 완료 직후 저장하므로 첫 조회가 저장보다 빠를 수 있다 → 짧게 한 번 더 시도.
+        for (let attempt = 0; attempt < 2 && !restored && isActive(); attempt++) {
+          if (attempt > 0) await new Promise(r => setTimeout(r, 1500));
+          try {
+            const hres = await fetch(`/api/groups/${study.id}/chats/history`, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
+            if (hres.ok && isActive()) {
+              const data = await hres.json();
+              const aiHistory = (Array.isArray(data) ? data : []).filter(m => m.isAi || m.isAiQuery).map(m => ({
+                senderName: m.senderName,
+                content: m.content,
+                isUser: m.isAiQuery || (m.senderId && String(m.senderId) === String(userId)),
+              }));
+              // 이번 질문이 저장돼 있고 그 뒤에 답변이 있을 때만 복원(이전 턴의 답변으로 오판하지 않는다).
+              let qIdx = -1;
+              aiHistory.forEach((m, i) => { if (m.isUser && String(m.content || '').trim() === String(userMsg).trim()) qIdx = i; });
+              if (qIdx !== -1 && aiHistory.slice(qIdx + 1).some(m => !m.isUser && String(m.content || '').trim())) {
+                setAiMessages(aiHistory); restored = true;
+              }
+            }
+          } catch (e) { /* 아래 안내로 대체 */ }
+        }
+        if (!restored && isActive()) {
+          setAiMessages(prev => [...prev, {
+            id: `empty-${requestId}`,
+            senderName: 'System',
+            content: 'AI 응답을 받지 못했습니다. 잠시 후 다시 질문해 주세요.',
+            isUser: false,
+            isError: true,
+          }]);
+        }
+      }
     } catch (err) {
       // 새 요청/언마운트로 인한 정상 중단은 메시지를 남기지 않는다.
       if (err?.name === 'AbortError') return;
@@ -2193,14 +2846,46 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     }
   };
 
+  // 실시간 학습 타이머(표시 전용): 서버 세션 응답을 앵커로 삼아 1초마다 경과를 그린다(저장/통계는 서버 heartbeat 원장).
+  //  · 입장 sync 응답(기존 세션이면 resumed=true) → 새로고침/재입장 시 실제 경과로 복원. heartbeat 응답마다 앵커 보정.
+  const [timerAnchor, setTimerAnchor] = useState(null);
+  const [, refreshTimerDisplay] = useState(0);
+  const elapsedSeconds = elapsedSecondsFrom(timerAnchor);
+  useEffect(() => {
+    if (!timerAnchor) return undefined;
+    const t = setInterval(() => refreshTimerDisplay(tick => tick + 1), 1000);
+    return () => clearInterval(t);
+  }, [timerAnchor]);
+
   useEffect(() => {
     if (study?.id) {
       loadMembers();
       loadApplications();
       timerService.syncTimer(study.id)
-        .then(() => console.log('Timer synced with group study room'))
+        .then((session) => { const a = anchorFromSession(session); setTimerAnchor(a); console.info('[StudyRoomTimer] sync', { sessionId: session?.id ?? null, resumed: session?.resumed ?? null, elapsed: a ? elapsedSecondsFrom(a) : null }); })
         .catch(err => console.error('Failed to sync timer:', err));
     }
+  }, [study?.id, userId]);
+
+  // 그룹 공부 세션 내구성(2계층): 30초 heartbeat(서버가 진행분을 출석 원장에 크레딧) + 이탈 시 graceful stop.
+  //  · 명시적 퇴장에서 종료. 새로고침은 세션 유지, 비정상 종료는 기존 reaper가 처리.
+  //  · 어느 경로가 유실돼도 서버 reaper 가 마지막 heartbeat 시각으로 종료한다(오차 ≤ 30초).
+  useEffect(() => {
+    if (!study?.id || !userId) return undefined;
+    const interval = setInterval(() => {
+      timerService.heartbeat()
+        .then(async (session) => {
+          const active = session || await timerService.syncTimer(study.id);
+          if (active?.groupStudyId != null && Number(active.groupStudyId) !== Number(study.id)) { setTimerAnchor(null); return; }
+          setTimerAnchor(anchorFromSession(active));
+        })
+        .catch(() => {});
+    }, STUDY_HEARTBEAT_INTERVAL_MS);
+    // Refresh/close leaves the active session resumable; existing server reaper handles missing heartbeats.
+    return () => {
+      clearInterval(interval);
+
+    };
   }, [study?.id, userId]);
 
   // 커스텀 모달 상태
@@ -2227,12 +2912,13 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
     setCustomAlert({ isOpen: true, title, message, type: 'prompt', inputPlaceholder, inputValue: '', onConfirm: (val) => { setCustomAlert(prev => ({ ...prev, isOpen: false })); onConfirm(val); }, onCancel: () => setCustomAlert(prev => ({ ...prev, isOpen: false })) });
   };
 
-  // 실제 참여자 목록(members) 길이 = 상단/사이드바에 표시할 입장 인원. mock/maxMembers/capacity 사용 안 함.
-  const participantCount = members.length;
+  // 입장 인원 = 지금 OpenVidu 에 접속한 고유 userId 수(PRIMARY 기준, 나 포함). DB 회원 수(members.length)가 아니다.
+  //  같은 사람이 PC+Android 로 들어와도 1명, 화면공유 Connection 은 인원에 더하지 않는다.
+  const participantCount = roomPresence.participantCount;
 
-  // 메인 화상 그리드 단일 소스: OpenVidu에 실제 접속한 connection만(빈 슬롯은 정원에서 차감).
+  // 메인 화상 그리드 단일 소스: OpenVidu에 실제 접속한 PRIMARY connection만(빈 슬롯은 정원에서 차감).
   const MAX_TILES = study?.maxMembers || 16;
-  const activeConnectionEntries = Object.entries(activeConnections);
+  const activeConnectionEntries = roomPresence.primary;
   const emptySlotCount = Math.max(0, MAX_TILES - activeConnectionEntries.length);
 
   // [표시 전용] 모바일 speaker-large 레이아웃에서 크게 보일 메인 타일의 connectionId.
@@ -2291,7 +2977,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
   }, [aiMessages, aiChatStorageKey]);
 
   return (
-    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, backgroundColor: '#0B0F19', display: 'flex', flexDirection: 'column', color: 'white', fontFamily: "'Inter', sans-serif" }}>
+    <div ref={setRoomRootEl} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, backgroundColor: '#0B0F19', display: 'flex', flexDirection: 'column', color: 'white', fontFamily: "'Inter', sans-serif" }}>
       <style>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 6px;
@@ -2323,6 +3009,15 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           color: transparent;
           user-select: none;
         }
+        /* 화면공유 중: 참가자 타일을 가로 필름스트립으로 축소(스테이지가 메인). 모바일(≤768) index.css 3열 규칙보다 우선. */
+        .room-video-grid.room-video-grid--filmstrip {
+          display: flex !important; flex-wrap: nowrap; overflow-x: auto; gap: 12px !important; height: auto !important; padding-bottom: 4px;
+        }
+        .room-video-grid--filmstrip > .room-tile { flex: 0 0 220px; min-width: 0; }
+        .room-video-grid--filmstrip > .room-empty-slot { display: none !important; }
+        @media (max-width: 768px) {
+          .room-video-grid--filmstrip > .room-tile { flex-basis: 132px; }
+        }
       `}</style>
 
       {/* Header - Glassmorphic Dark */}
@@ -2345,6 +3040,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#60A5FA', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
                 <Users size={14} /> {participantCount}명 입장
               </div>
+              {/* 실시간 학습 타이머: 서버 세션 기준 경과(HH:MM:SS). GENERAL/CAM 공통, 데스크톱/모바일 공통 */}
+              <div className="room-timer" data-testid="room-timer" data-active={timerAnchor ? 'true' : 'false'} title="이 방에서의 학습 시간(서버 세션 기준)" style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: 'rgba(34, 197, 94, 0.12)', color: timerAnchor ? '#86EFAC' : '#9CA3AF', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '700', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                <Timer size={14} />
+                <span data-testid="room-timer-value">{formatHMS(elapsedSeconds)}</span>
+              </div>
             </div>
           </div>
 
@@ -2354,9 +3054,26 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               <div onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsMicOn(!isMicOn); } }} style={{ display: 'flex', alignItems: 'center' }} title={!publisher ? '마이크 권한 허용 후 송출 시작' : (isMicOn ? '마이크 끄기' : '마이크 켜기')}>
                 {isMicOn ? <Mic size={18} color="#D1D5DB" cursor="pointer" /> : <MicOff size={18} color="#F87171" cursor="pointer" />}
               </div>
-              <div onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsVideoOn(!isVideoOn); } }} style={{ display: 'flex', alignItems: 'center' }} title={!publisher ? '카메라 권한 허용 후 송출 시작' : (isVideoOn ? '카메라 끄기' : '카메라 켜기')}>
-                {isVideoOn ? <Video size={18} color="#D1D5DB" cursor="pointer" /> : <VideoOff size={18} color="#F87171" cursor="pointer" />}
-              </div>
+              {isCam && (
+                <div onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsVideoOn(!isVideoOn); } }} style={{ display: 'flex', alignItems: 'center' }} title={!publisher ? '카메라 권한 허용 후 송출 시작' : (isVideoOn ? '카메라 끄기' : '카메라 켜기')}>
+                  {isVideoOn ? <Video size={18} color="#D1D5DB" cursor="pointer" /> : <VideoOff size={18} color="#F87171" cursor="pointer" />}
+                </div>
+              )}
+              {screenShareSupported && (
+                <button
+                  type="button"
+                  data-testid="screen-share-toggle"
+                  data-status={screenShareStatus}
+                  aria-label={screenShareStatus === 'live' ? '화면 공유 중지' : '화면 공유'}
+                  data-slots-full={screenShareStatus !== 'live' && screenSlots.full ? 'true' : 'false'}
+                  title={screenShareStatus === 'live' ? '화면 공유 중지' : (screenShareStatus === 'starting' ? '화면 공유 준비 중…' : (screenSlots.full ? screenShareLimitMessage(screenSlots.limit) : '화면 공유'))}
+                  disabled={screenShareStatus === 'starting' || !session}
+                  onClick={() => (screenShareStatus === 'live' ? teardownScreenShare('user', { notifyServer: true }) : requestScreenShare())}
+                  style={{ display: 'flex', alignItems: 'center', background: 'none', border: 'none', padding: 0, cursor: 'pointer', opacity: (screenShareStatus === 'starting' || !session) ? 0.45 : 1 }}
+                >
+                  {screenShareStatus === 'live' ? <MonitorOff size={18} color="#60A5FA" /> : <MonitorUp size={18} color="#D1D5DB" />}
+                </button>
+              )}
               <Settings size={18} color="#D1D5DB" cursor="pointer" onClick={() => setShowSettings(true)} />
             </div>
 
@@ -2364,14 +3081,14 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <Maximize size={18} color="#9CA3AF" cursor="pointer" onClick={() => setIsCamFullScreen(true)} />
-              <div
+              <button aria-label="나가기"
                 onClick={onClose}
-                style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: 'rgba(239, 68, 68, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'all 0.2s' }}
+                style={{ border: 'none', width: '44px', height: '44px', borderRadius: '50%', backgroundColor: 'rgba(239, 68, 68, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'all 0.2s' }}
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.2)'}
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)'}
               >
                 <X size={16} color="#EF4444" />
-              </div>
+              </button>
             </div>
           </div>
         </div>
@@ -2383,9 +3100,22 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
           <button onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsMicOn(!isMicOn); } }} aria-label={isMicOn ? '마이크 끄기' : '마이크 켜기'}>
             {isMicOn ? <Mic size={22} color="#E5E7EB" /> : <MicOff size={22} color="#F87171" />}
           </button>
-          <button onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsVideoOn(!isVideoOn); } }} aria-label={isVideoOn ? '카메라 끄기' : '카메라 켜기'}>
-            {isVideoOn ? <Video size={22} color="#E5E7EB" /> : <VideoOff size={22} color="#F87171" />}
-          </button>
+          {isCam && (
+            <button onClick={() => { if (!publisher) { republishLocalMedia(); } else { setIsVideoOn(!isVideoOn); } }} aria-label={isVideoOn ? '카메라 끄기' : '카메라 켜기'}>
+              {isVideoOn ? <Video size={22} color="#E5E7EB" /> : <VideoOff size={22} color="#F87171" />}
+            </button>
+          )}
+          {screenShareSupported && (
+            <button
+              data-testid="screen-share-toggle-mobile"
+              data-slots-full={screenShareStatus !== 'live' && screenSlots.full ? 'true' : 'false'}
+              disabled={screenShareStatus === 'starting' || !session}
+              onClick={() => (screenShareStatus === 'live' ? teardownScreenShare('user', { notifyServer: true }) : requestScreenShare())}
+              aria-label={screenShareStatus === 'live' ? '화면 공유 중지' : '화면 공유'}
+            >
+              {screenShareStatus === 'live' ? <MonitorOff size={22} color="#60A5FA" /> : <MonitorUp size={22} color="#E5E7EB" />}
+            </button>
+          )}
           <button onClick={() => setShowChatDrawer(v => !v)} aria-label="채팅">
             <MessageCircle size={22} color={showChatDrawer ? '#60A5FA' : '#E5E7EB'} />
           </button>
@@ -2465,7 +3195,46 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
             </div>
           )}
 
-          <div className="room-video-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', height: '100%', alignContent: 'start' }}>
+          {/* 공유 안내는 채팅 드로어처럼 룸 루트에 포털(스크롤 컨테이너 안 fixed 는 iOS WebKit 이 잘라낸다). */}
+          {showSharePrep && (() => {
+            const dialog = (
+              <ScreenSharePrepDialog
+                mode={shareMode}
+                withAudio={shareAudio}
+                onModeChange={setShareMode}
+                onAudioChange={setShareAudio}
+                aiConsent={shareAiConsent}
+                onAiConsentChange={setShareAiConsent}
+                onCancel={() => setShowSharePrep(false)}
+                onConfirm={() => { setShowSharePrep(false); startScreenShare({ mode: shareMode, withAudio: shareAudio, aiConsent: shareAiConsent }); }}
+              />
+            );
+            return roomRootEl ? createPortal(dialog, roomRootEl) : dialog;
+          })()}
+
+          {/* 화면공유 준비 단계(선택창·서버 연결)와 종료 직후 안내 — 스테이지가 아직/이미 없을 때. */}
+          {screenShareStatus === 'starting' && <ScreenShareNotice phase={screenStartStep === 'capture' ? 'capturing' : 'connecting'} />}
+          {screenShareStatus === 'idle' && screenEnded && <ScreenShareNotice phase="ended" why={screenEnded.why} onDismiss={() => setScreenEnded(null)} />}
+
+          {/* 화면공유 메인 스테이지: 공유가 있으면 크게, 참가자 타일은 아래 필름스트립으로 축소(마이크·채팅은 그대로). */}
+          {screenShares.length > 0 && (
+            <ScreenShareStage
+              shares={screenShares}
+              selectedId={selectedScreenId}
+              onSelect={setSelectedScreenId}
+              onStopMine={() => teardownScreenShare('user', { notifyServer: true })}
+              isMobile={isMobile}
+              ownShare={ownScreenShare}
+              viewers={screenViewers}
+              receipts={screenReceipts}
+              onReceipt={sendScreenReceipt}
+              portalTarget={roomRootEl}
+              aiConsent={myScreenAiConsent}
+              onToggleAiConsent={toggleMyScreenAiConsent}
+            />
+          )}
+
+          <div className={`room-video-grid${screenShares.length > 0 ? ' room-video-grid--filmstrip' : ''}`} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', height: screenShares.length > 0 ? 'auto' : '100%', alignContent: 'start' }}>
 
             {/* 참가자 타일: 메인 그리드는 오직 activeConnections(OpenVidu 실제 접속)만 렌더한다.
                 · DB members/study.members/participants는 절대 source로 쓰지 않는다(미입장 멤버 타일 방지).
@@ -2477,14 +3246,54 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               // 원격은 실제 트랙 active 값, 로컬(나)은 토글 의도로 표시(avatar/video 전환 일관성 유지).
               const camOn = isMe ? isVideoOn : (streamManager ? !!streamManager.stream.videoActive : false);
               const micOn = isMe ? isMicOn : (streamManager ? !!streamManager.stream.audioActive : false);
-              const photoUrl = participant.photoUrl || (isMe ? (user?.photoUrl || user?.photo_url || null) : null);
+              const memberPhoto = participant.userId != null ? (memberByUserId[String(participant.userId)]?.photoUrl || null) : null;
+              const photoUrl = participant.photoUrl || memberPhoto || (isMe ? (user?.photoUrl || user?.photo_url || null) : null);
+              const baseName = participant.name || (isMe ? myDisplayName : '참여자');
+              // 같은 회원의 다른 기기(PC+Android 동시 접속)는 정상 다중 기기: 타일은 기기별로, 이름에 기기를 붙인다(인원은 1명).
+              const isMyOtherDevice = !isMe && participant.userId != null && String(participant.userId) === String(userId);
+              const participantName = isMe
+                ? baseName
+                : isMyOtherDevice
+                  ? `${baseName} (내 ${deviceLabel(participant.deviceType)})`
+                  : (participant.multiDevice ? `${baseName} · ${deviceLabel(participant.deviceType)}` : baseName);
+              if (!isCam) {
+                // GENERAL: 카메라 타일/video track 없이 [프로필 이미지] 닉네임 마이크 상태 로만 표현한다.
+                //  우선순위: 이번 입장 선택(upload/default) > 계정 프로필(members presigned) > 기본 아바타.
+                const avatar = isMe
+                  ? resolveParticipantAvatar({ avatarMode: sessionAvatar?.mode || null, avatarValue: sessionAvatar?.value || null, avatarUrl: sessionAvatar?.localUrl || sessionAvatar?.url || null, profilePhotoUrl: user?.photoUrl || user?.photo_url || null })
+                  : resolveParticipantAvatar({ avatarMode: participant.avatarMode || null, avatarValue: participant.avatarValue || null, avatarUrl: participant.avatarUrl || null, profilePhotoUrl: memberPhoto || participant.photoUrl || null });
+                // 업로드 presigned URL(1시간) 만료 등으로 이미지 로드가 실패하면 계정 프로필로 폴백한다.
+                const fallbackUrl = isMe ? (user?.photoUrl || user?.photo_url || null) : (memberPhoto || null);
+                return (
+                  <div key={connectionId} className={`room-tile ${connectionId === mainConnectionId ? 'room-tile--main' : 'room-tile--thumb'}`} style={{ position: 'relative' }}>
+                    <ProfileParticipantTile
+                      avatar={avatar}
+                      fallbackUrl={avatar.url !== fallbackUrl ? fallbackUrl : null}
+                      displayName={participantName}
+                      isLocal={isMe}
+                      isMicOn={micOn}
+                      stream={stream}
+                      streamManager={streamManager}
+                      speakerId={participant.userId}
+                      onSpeakingChange={handleSpeakingChange}
+                    />
+                    {isMe && ovError && (
+                      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', color: '#FCA5A5', padding: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', zIndex: 10, borderRadius: '16px' }}>
+                        <AlertTriangle size={32} color="#EF4444" style={{ marginBottom: '8px' }} />
+                        <div style={{ fontSize: '14px', fontWeight: 'bold' }}>마이크 연결 실패</div>
+                        <div style={{ fontSize: '12px', marginTop: '4px', wordBreak: 'break-all' }}>{ovError}</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              }
               return (
                 <div key={connectionId} className={`room-tile ${connectionId === mainConnectionId ? 'room-tile--main' : 'room-tile--thumb'}`} style={{ position: 'relative' }}>
                   <VideoFeed
                     stream={stream}
                     streamManager={streamManager}
                     isLocal={isMe}
-                    displayName={participant.name || (isMe ? myDisplayName : '참여자')}
+                    displayName={participantName}
                     isMuted={isMe}
                     isCamOn={camOn}
                     isMicOn={micOn}
@@ -2525,7 +3334,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <div style={{ fontSize: '14px', fontWeight: '700', color: '#F3F4F6', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   참여자 목록
-                  <span style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#60A5FA', padding: '2px 8px', borderRadius: '10px', fontSize: '12px' }}>{participantCount}명</span>
+                  <span style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#60A5FA', padding: '2px 8px', borderRadius: '10px', fontSize: '12px' }}>{participantCount}/{members.length}</span>
                 </div>
                 <div style={{ padding: '6px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '8px', cursor: 'pointer' }}>
                   <Search size={14} color="#9CA3AF" />
@@ -2533,8 +3342,12 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {members.map(member => {
+                {/* DB 회원(members) 목록 + 실시간 접속 여부(roomPresence). 접속 중인 회원을 위로 정렬한다. */}
+                {[...members]
+                  .sort((a, b) => Number(roomPresence.activeUserKeys.has(String(b.userId))) - Number(roomPresence.activeUserKeys.has(String(a.userId))))
+                  .map(member => {
                   const isMe = Number(member.userId) === Number(userId);
+                  const isOnline = isMe || roomPresence.activeUserKeys.has(String(member.userId));
                   let isUserMicOn = false;
                   let isUserVideoOn = false;
 
@@ -2542,13 +3355,10 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                     isUserMicOn = isMicOn;
                     isUserVideoOn = isVideoOn;
                   } else {
+                    // 화면공유(SCREEN) 스트림이 아닌 PRIMARY(음성·카메라) 스트림으로만 판단한다.
                     const sub = Object.values(subscribers).find(s => {
-                      try {
-                        const connData = JSON.parse(s.stream.connection.data);
-                        return Number(connData.userId) === Number(member.userId);
-                      } catch (e) {
-                        return false;
-                      }
+                      const meta = parseConnectionData(s?.stream?.connection);
+                      return meta.kind === CONNECTION_KIND.PRIMARY && meta.userKey === String(member.userId);
                     });
                     if (sub) {
                       isUserMicOn = sub.stream.audioActive;
@@ -2563,7 +3373,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                     : {};
 
                   return (
-                    <div key={member.userId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px', borderRadius: '12px', backgroundColor: 'rgba(255,255,255,0.02)' }}>
+                    <div key={member.userId} data-online={isOnline ? 'true' : 'false'} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px', borderRadius: '12px', backgroundColor: 'rgba(255,255,255,0.02)', opacity: isOnline ? 1 : 0.45 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                         {member.photoUrl ? (
                           <img
@@ -2579,6 +3389,12 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                         <span style={{ fontSize: '13px', color: '#E5E7EB', fontWeight: '500' }}>
                           {member.displayName} {isMe ? '(나)' : ''}
                         </span>
+                        {!isOnline && <span style={{ fontSize: '11px', color: '#9CA3AF' }}>오프라인</span>}
+                        {sharingUserKeys.has(String(member.userId)) && (
+                          <span title="화면 공유 중" style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', fontSize: '11px', color: '#93C5FD' }}>
+                            <Monitor size={12} /> 공유 중
+                          </span>
+                        )}
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                         {isUserVideoOn ? (
@@ -2620,7 +3436,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                   </div>
                 </div>
 
-                {/* 가입 신청 대기자 */}
+                {/* 가입 신청 대기자: 승인 정책이거나 실제 대기자가 있을 때만 렌더(DOM 미생성) */}
+                {roomLeaderSections.showPendingMembers && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
                   <div style={{ fontSize: '12px', fontWeight: '600', color: '#E5E7EB', display: 'flex', justifyContent: 'space-between' }}>
                     가입 신청 대기자 명단 ({applications.length})
@@ -2639,6 +3456,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                     )}
                   </div>
                 </div>
+                )}
 
                 {/* 관리 버튼 */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -2664,14 +3482,20 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
             </div>
 
             {/* === 채팅 드로어 (왼쪽 사이드바 말풍선으로 토글) === */}
+            {/* [iOS WebKit] 드로어는 룸 루트(고정 오버레이)로 포털 렌더링한다. 모바일에서 .room-body 가 overflow-y:auto 스크롤
+                컨테이너가 되는데, iOS Safari/Chrome(WebKit)은 그 안의 position:fixed 자손을 스크롤 레이어에 잘라/묶어
+                일반 채팅·AI 채팅 드로어가 보이지 않았다. 루트 직계 자식이면 스크롤러 밖이라 엔진과 무관하게 뷰포트 고정이다.
+                z-index 맥락(컨트롤바 96 > 드로어 95 > 백드롭 90)·상태·핸들러는 그대로다. */}
+            {roomRootEl && createPortal(<>
             {showChatDrawer && (
               <div
                 onClick={() => setShowChatDrawer(false)}
                 style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)', zIndex: 90 }}
               />
             )}
-            <div style={{
-              position: 'fixed', top: 0, right: 0, bottom: 0,
+            <div className="room-chat-drawer" data-testid="room-chat-drawer" data-open={showChatDrawer ? 'true' : 'false'} style={{
+              position: 'fixed', top: 0, right: 0, bottom: keyboardInset,
+              ...(keyboardInset > 0 ? { paddingBottom: 0 } : {}),
               width: 'min(100vw, 480px)',
               transform: showChatDrawer ? 'translateX(0)' : 'translateX(110%)',
               transition: 'transform 0.25s ease',
@@ -2726,9 +3550,32 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                 >
                   AI 질문
                 </button>
+                <button
+                  data-testid="chat-tab-screen-ai"
+                  onClick={() => setChatTab('screen-ai')}
+                  style={{
+                    padding: '14px 0',
+                    border: 'none',
+                    background: 'none',
+                    color: chatTab === 'screen-ai' ? '#3B82F6' : '#9CA3AF',
+                    borderBottom: chatTab === 'screen-ai' ? '2px solid #3B82F6' : '2px solid transparent',
+                    fontSize: '14px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    outline: 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px'
+                  }}
+                >
+                  AI 화면 분석
+                  {screenShares.length > 0 && (
+                    <span style={{ backgroundColor: 'rgba(59,130,246,0.25)', color: '#BFDBFE', borderRadius: '10px', fontSize: '11px', fontWeight: 800, padding: '0 6px' }}>{screenShares.length}</span>
+                  )}
+                </button>
               </div>
 
-              {chatTab === 'normal' ? (
+              {chatTab === 'screen-ai' ? null : chatTab === 'normal' ? (
                 <>
                   <div className="custom-scrollbar" style={{ flex: 1, minHeight: 0, padding: '20px', overflowY: 'auto', overscrollBehavior: 'contain', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {/* Notice Box */}
@@ -2764,7 +3611,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                           <div style={{ backgroundColor: 'rgba(30, 41, 59, 0.7)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '12px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
                               <div style={{ color: '#F3F4F6', fontSize: '13px', fontWeight: '800' }}>공유 PDF 자료</div>
-                              <button onClick={loadGroupMaterials} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', padding: 0 }} title="새로고침">
+                              <button className="sb-icon-btn" aria-label="자료 새로고침" onClick={loadGroupMaterials} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', padding: 0 }} title="새로고침">
                                 <RefreshCw size={14} />
                               </button>
                             </div>
@@ -2817,7 +3664,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                           <div style={{ backgroundColor: 'rgba(30, 41, 59, 0.7)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '12px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
                               <div style={{ color: '#F3F4F6', fontSize: '13px', fontWeight: '800' }}>생성된 퀴즈</div>
-                              <button onClick={loadGroupQuizzes} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', padding: 0 }} title="새로고침">
+                              <button className="sb-icon-btn" aria-label="퀴즈 새로고침" onClick={loadGroupQuizzes} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', padding: 0 }} title="새로고침">
                                 <RefreshCw size={14} />
                               </button>
                             </div>
@@ -2898,6 +3745,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                         style={{ flex: 1, border: 'none', outline: 'none', fontSize: '13px', color: '#F3F4F6', backgroundColor: 'transparent', height: '20px', lineHeight: '20px', padding: 0, margin: 0 }}
                       />
                       <button
+                        className="sb-icon-btn-send"
+                        aria-label="메시지 전송"
                         onClick={handleSendChat}
                         style={{ background: 'linear-gradient(135deg, #22C55E, #16A34A)', border: 'none', width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginLeft: '8px', boxShadow: '0 2px 8px rgba(34, 197, 94, 0.3)' }}
                       >
@@ -2934,7 +3783,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                           <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignSelf: 'flex-start', maxWidth: '95%', width: '100%' }}>
                             <span style={{ fontSize: '11px', color: '#A5B4FC', display: 'flex', alignItems: 'center', gap: '4px' }}>
                               <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#6366F1' }} />
-                              🤖 AI 토론
+                              <span className="sb-emoji sb-emoji-sm" aria-hidden="true">🤖</span> AI 토론
                             </span>
                             {/* 에이전트별 독립 카드: 각 카드에는 해당 에이전트의 답변/피드백만 들어간다. */}
                             {agentCards.map((card, ci) => {
@@ -3055,7 +3904,21 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                   </div>
                 </>
               )}
+              {/* AI 화면 분석: 탭을 바꿔도 진행 중인 분석·답변이 유지되도록 숨김 상태로 계속 마운트한다(방을 나가면 사라짐). */}
+              <div style={{ display: chatTab === 'screen-ai' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
+                <ScreenAiPanel
+                  groupId={study?.id}
+                  shares={screenShares}
+                  stageSelectedId={selectedScreenId}
+                  onFocusShare={setSelectedScreenId}
+                  visible={showChatDrawer && chatTab === 'screen-ai'}
+                  consentNonce={screenAiConsentNonce}
+                  myConsent={myScreenAiConsent}
+                  onToggleMyConsent={toggleMyScreenAiConsent}
+                />
+              </div>
             </div>
+            </>, roomRootEl)}
           </div>
         )}
 
@@ -3071,17 +3934,19 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              {/* 카메라 설정 */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#9CA3AF', marginBottom: '8px' }}>
-                  <Video size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>카메라</span>
+              {/* 카메라 설정(CAM 전용) */}
+              {isCam && (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#9CA3AF', marginBottom: '8px' }}>
+                    <Video size={16} /> <span style={{ fontSize: '14px', fontWeight: '600' }}>카메라</span>
+                  </div>
+                  <div style={{ backgroundColor: '#0F172A', borderRadius: '12px', padding: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <select disabled style={{ width: '100%', backgroundColor: 'transparent', border: 'none', outline: 'none', color: '#9CA3AF', fontSize: '14px', cursor: 'not-allowed' }}>
+                      <option value="cam1" style={{ backgroundColor: '#1E293B' }}>카메라 변경은 입장 전 미리보기에서 가능합니다.</option>
+                    </select>
+                  </div>
                 </div>
-                <div style={{ backgroundColor: '#0F172A', borderRadius: '12px', padding: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <select disabled style={{ width: '100%', backgroundColor: 'transparent', border: 'none', outline: 'none', color: '#9CA3AF', fontSize: '14px', cursor: 'not-allowed' }}>
-                    <option value="cam1" style={{ backgroundColor: '#1E293B' }}>카메라 변경은 입장 전 미리보기에서 가능합니다.</option>
-                  </select>
-                </div>
-              </div>
+              )}
 
               {/* 마이크 설정 */}
               <div>
@@ -3138,7 +4003,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
             {/* Content Area */}
             <div className="custom-scrollbar" style={{ flex: 1, padding: '0', overflowY: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+              <table className="room-manage-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: '#9CA3AF', fontSize: '13px' }}>
                     <th style={{ padding: '16px 32px', fontWeight: '500' }}>이름</th>
@@ -3178,25 +4043,28 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
       {/* 방 관리 (설정) 모달 */}
       {showRoomManageModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000 }}>
-          <div style={{ backgroundColor: '#0F172A', borderRadius: '16px', width: '800px', maxWidth: '90vw', height: '720px', maxHeight: '90vh', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideUp 0.3s ease-out' }}>
+        <div className="sb-modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000 }}>
+          <div className="sb-modal sb-modal-dark" data-testid="room-manage-modal" style={{ backgroundColor: '#0F172A', borderRadius: '16px', width: '800px', maxWidth: '90vw', height: '720px', maxHeight: '90vh', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideUp 0.3s ease-out' }}>
 
             {/* Header Tabs */}
-            <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: '#1E293B', padding: '0 8px' }}>
+            <div className="sb-modal-head sb-modal-tabs" style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: '#1E293B', padding: '0 8px' }}>
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: roomManageTab === 'settings' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'settings' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setRoomManageTab('settings')}
               >
                 방 관리 (설정)
               </div>
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: roomManageTab === 'members' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'members' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setRoomManageTab('members')}
               >
                 멤버 관리
               </div>
-              {study?.isPrivate && (
+              {(roomLeaderSections.showInviteManagement || roomLeaderSections.showPendingMembers) && (
                 <div
+                  className="sb-modal-tab"
                   style={{ padding: '16px 24px', borderBottom: roomManageTab === 'applications' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'applications' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s', display: 'flex', alignItems: 'center', gap: '6px' }}
                   onClick={() => setRoomManageTab('applications')}
                 >
@@ -3204,24 +4072,32 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                 </div>
               )}
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: roomManageTab === 'quiz' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'quiz' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setRoomManageTab('quiz')}
               >
                 실시간 퀴즈
               </div>
+              <div
+                className="sb-modal-tab"
+                style={{ padding: '16px 24px', borderBottom: roomManageTab === 'ranking' ? '2px solid #3B82F6' : '2px solid transparent', color: roomManageTab === 'ranking' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s', whiteSpace: 'nowrap' }}
+                onClick={() => setRoomManageTab('ranking')}
+              >
+                퀴즈 랭킹
+              </div>
               <div style={{ flex: 1 }} />
-              <div style={{ padding: '0 20px', cursor: 'pointer' }} onClick={() => setShowRoomManageModal(false)}>
+              <div className="sb-modal-close sb-icon-btn" role="button" aria-label="방 관리 닫기" style={{ padding: '0 20px', cursor: 'pointer' }} onClick={() => setShowRoomManageModal(false)}>
                 <X size={20} color="#9CA3AF" />
               </div>
             </div>
 
             {/* Content Area */}
-            <div className="custom-scrollbar" style={{ flex: 1, padding: '24px 32px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div className="custom-scrollbar sb-modal-body" style={{ flex: 1, padding: '24px 32px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
               {roomManageTab === 'settings' ? (
                 <>
                   {/* 해시태그 */}
-                  <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
+                  <div className="sb-modal-row" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>해시태그</div>
                     <div style={{ flex: 1, paddingRight: '4px' }}>
                       <input type="text" placeholder="스터디를 대표하는 키워드를 입력하세요. (최대 3개)" style={{ width: '100%', boxSizing: 'border-box', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }} />
@@ -3229,7 +4105,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                   </div>
 
                   {/* 기간 */}
-                  <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
+                  <div className="sb-modal-row" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>기간</div>
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -3242,19 +4118,23 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                   </div>
 
                   {/* 목표시간 */}
-                  <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
-                    <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>목표시간</div>
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <select style={{ backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }}>
-                        <option>매일</option>
-                      </select>
-                      <input type="number" defaultValue={1} style={{ width: '80px', backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px', outline: 'none' }} />
+                  <div className="sb-modal-row" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
+                    <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>스터디 방식 · 목표</div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <div style={{ backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px' }}>{studyTypeLabel(study?.studyType)}</div>
+                        <div style={{ backgroundColor: '#1E293B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '8px 16px', color: '#F3F4F6', fontSize: '14px' }}>매일 {formatTargetMinutes(study?.targetStudyMinutes)}</div>
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#9CA3AF' }}>
+                        가입 질문 {study?.joinQuestionEnabled ? `ON — "${study.joinQuestion}"` : 'OFF'} · 닉네임 규칙 {study?.nicknameRuleEnabled ? `ON — ${study.nicknameRule}` : 'OFF'}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#9CA3AF' }}>* 변경은 입장 준비 화면의 방장 관리 → "스터디 설정 수정"에서 할 수 있습니다.</div>
                     </div>
                   </div>
 
 
                   {/* 초기 장치 설정 */}
-                  <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
+                  <div className="sb-modal-row" style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '24px' }}>
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '4px' }}>초기 장치 설정</div>
                     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
@@ -3270,7 +4150,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                   </div>
 
                   {/* 스터디 공지사항 */}
-                  <div style={{ display: 'flex' }}>
+                  <div className="sb-modal-row" style={{ display: 'flex' }}>
                     <div style={{ width: '160px', color: '#E5E7EB', fontWeight: '600', fontSize: '14px', paddingTop: '8px' }}>스터디 공지사항</div>
                     <div style={{ flex: 1, paddingRight: '4px' }}>
                       <textarea
@@ -3284,7 +4164,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                 </>
               ) : roomManageTab === 'members' ? (
                 <div style={{ width: '100%', overflowX: 'auto', padding: '8px 0' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                  <table className="room-manage-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: '#9CA3AF', fontSize: '13px', fontWeight: '500' }}>
                         <th style={{ padding: '12px 16px', fontWeight: '500' }}>이름</th>
@@ -3355,6 +4235,8 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                     </tbody>
                   </table>
                 </div>
+              ) : roomManageTab === 'ranking' ? (
+                <GroupQuizRankingTable groupId={study.id} variant="dark" userId={userId} />
               ) : roomManageTab === 'quiz' ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '8px 0' }}>
                   <div style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '20px' }}>
@@ -3394,7 +4276,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             <label style={{ color: '#CBD5E1', fontSize: '12px', fontWeight: '700' }}>문제당 시간</label>
-                            <div style={{ display: 'flex', gap: '6px' }}>
+                            <div className="sb-chip-row" style={{ display: 'flex', gap: '6px' }}>
                               {[10, 15, 20, 30, 60].map((sec) => {
                                 const active = Number(quizPerQuestionSeconds) === sec;
                                 return (
@@ -3451,7 +4333,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                         <div style={{ marginTop: '12px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '16px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
                             <div style={{ color: '#F3F4F6', fontSize: '13px', fontWeight: '800' }}>기존 등록된 PDF 자료 (클릭하여 퀴즈 생성)</div>
-                            <button onClick={loadGroupMaterials} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', padding: 0 }} title="새로고침">
+                            <button className="sb-icon-btn" aria-label="자료 새로고침" onClick={loadGroupMaterials} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', padding: 0 }} title="새로고침">
                               <RefreshCw size={13} /> 새로고침
                             </button>
                           </div>
@@ -3501,7 +4383,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#6EE7B7', fontSize: '14px', fontWeight: '800' }}>
                             <Play size={16} /> 2. 실시간 퀴즈 시작
                           </div>
-                          <button onClick={loadGroupQuizzes} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }} title="새로고침">
+                          <button className="sb-icon-btn" aria-label="퀴즈 새로고침" onClick={loadGroupQuizzes} style={{ background: 'none', border: 'none', color: '#93C5FD', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }} title="새로고침">
                             <RefreshCw size={13} /> 새로고침
                           </button>
                         </div>
@@ -3573,27 +4455,11 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                 </div>
               ) : (
                 <div style={{ width: '100%', overflowX: 'auto', padding: '8px 0' }}>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
-                    <button
-                      style={{ padding: '8px 16px', backgroundColor: '#22C55E', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', transition: '0.2s', boxShadow: '0 4px 12px rgba(34,197,94,0.3)' }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#16A34A'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#22C55E'}
-                      onClick={() => {
-                        showPrompt('멤버 초대', '초대할 사용자의 이메일을 입력하세요:', '예: user@example.com', (email) => {
-                          if (email) {
-                            if (email.includes('@')) {
-                              showAlert('초대 완료', `${email} 님에게 스터디 초대장을 발송했습니다!`);
-                            } else {
-                              showAlert('오류', '올바른 이메일 형식이 아닙니다.');
-                            }
-                          }
-                        });
-                      }}
-                    >
-                      <UserPlus size={14} /> 멤버 초대하기
-                    </button>
+                  {/* 비공개 스터디 초대 링크(방장 전용 — 서버가 403 검증). 이전의 이메일 prompt 가짜 초대는 제거. */}
+                  <div style={{ marginBottom: '16px' }}>
+                    <GroupInvitePanel groupId={study.id} variant="dark" onNotify={showAlert} />
                   </div>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                  <table className="room-manage-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: '#9CA3AF', fontSize: '13px', fontWeight: '500' }}>
                         <th style={{ padding: '12px 16px', fontWeight: '500', width: '20%' }}>신청자</th>
@@ -3615,6 +4481,14 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
                           </td>
                           <td style={{ padding: '16px', color: '#E5E7EB', fontSize: '13px', lineHeight: '1.5' }}>
                             {app.introduction || <span style={{ fontStyle: 'italic', color: '#9CA3AF' }}>(메시지 없음)</span>}
+                            {app.joinAnswer && (
+                              <div style={{ marginTop: '6px', color: '#CBD5E1' }}>
+                                <span style={{ color: '#9CA3AF' }}>Q. {app.joinQuestion || '가입 질문'}</span><br />A. {app.joinAnswer}
+                              </div>
+                            )}
+                            {app.nickname && (
+                              <div style={{ marginTop: '4px', color: '#CBD5E1' }}><span style={{ color: '#9CA3AF' }}>그룹 닉네임</span> {app.nickname}</div>
+                            )}
                           </td>
                           <td style={{ padding: '16px', color: '#9CA3AF', fontSize: '13px' }}>
                             {app.createdAt ? new Date(app.createdAt).toLocaleDateString() : '-'}
@@ -3674,7 +4548,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
             </div>
 
             {/* Save Button */}
-            <div style={{ padding: '24px 32px', display: 'flex', justifyContent: 'flex-end', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+            <div className="sb-modal-foot" style={{ padding: '24px 32px', display: 'flex', justifyContent: 'flex-end', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
               <button
                 style={{ padding: '8px 24px', backgroundColor: '#22C55E', color: 'white', borderRadius: '8px', border: 'none', fontWeight: '600', cursor: 'pointer', boxShadow: '0 4px 12px rgba(34,197,94,0.3)', transition: '0.2s' }}
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#16A34A'}
@@ -3690,36 +4564,38 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
 
       {/* 관리자 신고/문의 관리 모달 */}
       {showAdminReportModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000 }}>
-          <div style={{ backgroundColor: '#0F172A', borderRadius: '16px', width: '800px', maxWidth: '90vw', height: 'auto', maxHeight: '90vh', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideUp 0.3s ease-out' }}>
+        <div className="sb-modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000 }}>
+          <div className="sb-modal sb-modal-dark" data-testid="admin-report-modal" style={{ backgroundColor: '#0F172A', borderRadius: '16px', width: '800px', maxWidth: '90vw', height: 'auto', maxHeight: '90vh', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideUp 0.3s ease-out' }}>
 
             {/* Header Tabs */}
-            <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: '#1E293B', padding: '0 8px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '16px 24px', color: '#60A5FA', fontWeight: '700', fontSize: '15px' }}>
+            <div className="sb-modal-head sb-modal-tabs" style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: '#1E293B', padding: '0 8px' }}>
+              <div className="sb-modal-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '16px 24px', color: '#60A5FA', fontWeight: '700', fontSize: '15px' }}>
                 <MessageSquare size={18} />
                 문의 및 신고하기
               </div>
-              <div style={{ width: '1px', height: '20px', backgroundColor: 'rgba(255,255,255,0.1)', margin: '0 16px' }} />
+              <div className="sb-modal-tab-divider" style={{ width: '1px', height: '20px', backgroundColor: 'rgba(255,255,255,0.1)', margin: '0 16px' }} />
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: adminReportTab === 'inquiry' ? '2px solid #60A5FA' : '2px solid transparent', color: adminReportTab === 'inquiry' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setAdminReportTab('inquiry')}
               >
                 1:1 문의
               </div>
               <div
+                className="sb-modal-tab"
                 style={{ padding: '16px 24px', borderBottom: adminReportTab === 'report' ? '2px solid #EF4444' : '2px solid transparent', color: adminReportTab === 'report' ? '#F3F4F6' : '#9CA3AF', fontWeight: '700', fontSize: '15px', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setAdminReportTab('report')}
               >
                 유저 신고
               </div>
               <div style={{ flex: 1 }} />
-              <div style={{ padding: '0 20px', cursor: 'pointer' }} onClick={() => setShowAdminReportModal(false)}>
+              <div className="sb-modal-close sb-icon-btn" role="button" aria-label="문의 및 신고 닫기" style={{ padding: '0 20px', cursor: 'pointer' }} onClick={() => setShowAdminReportModal(false)}>
                 <X size={20} color="#9CA3AF" />
               </div>
             </div>
 
             {/* Content Area */}
-            <div className="custom-scrollbar" style={{ flex: 1, padding: '32px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div className="custom-scrollbar sb-modal-body" style={{ flex: 1, padding: '32px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
               {adminReportTab === 'inquiry' ? (
                 <>
                   {/* 문의 카테고리 */}
@@ -3806,7 +4682,7 @@ export default function StudyRoom({ study, onClose, selectedCamera, initialMicOn
             </div>
 
             {/* Submit Button Area */}
-            <div style={{ padding: '24px 32px', display: 'flex', justifyContent: 'flex-end', gap: '12px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+            <div className="sb-modal-foot" style={{ padding: '24px 32px', display: 'flex', justifyContent: 'flex-end', gap: '12px', backgroundColor: '#0F172A', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
               <button
                 style={{ padding: '10px 24px', backgroundColor: 'transparent', color: '#9CA3AF', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)', fontWeight: '600', cursor: 'pointer', transition: '0.2s' }}
                 onClick={() => setShowAdminReportModal(false)}
