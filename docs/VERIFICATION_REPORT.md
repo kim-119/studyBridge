@@ -26,6 +26,8 @@
 | Android | 모바일 단위 테스트(통합 브랜치) | **550/550 PASS** |
 | Android | GitHub Actions `StudyBridge Android CI` (동일 트리 `b0da9427`) | success (2026-11-02 실행 기록) |
 | Android | 로컬 Gradle Debug 빌드 / `cap sync` | **미실행** (§3.3) |
+| Android | PR #122 GitHub Actions `Mobile bundle and debug APK` (`cap sync`·Gradle `testDebugUnitTest`·`lintDebug`·`assembleDebug`·화면공유 APK 검증, 헤드 `2daff22b`) | **PASS** |
+| CI | PR #121 `ci.yml` 전체(백엔드 빌드·테스트, 프론트, FastAPI, Docker 이미지 빌드, 헤드 `9b82f7c5`) | **PASS** (1차 실행은 Maven Central `429 Too Many Requests`로 백엔드 잡 실패 → 실패 잡 재실행 후 통과) |
 | Android | 실기기 설치·동작 | **미실행** — 검증 환경에 Android 기기 없음 |
 | Android | 서명 Release 빌드 | **미실행** — keystore는 GitHub Secrets에만 존재 |
 | 보안 | 통합 트리 비밀값 정규식 스캔 | 신규 노출 없음, 기존 예시 파일 1건 교체 (§4) |

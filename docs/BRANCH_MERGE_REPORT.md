@@ -109,7 +109,9 @@
 | 모바일 테스트 (android 통합) | 550/550 PASS |
 | FastAPI compileall / pytest | PASS / 1506 pass·27 fail·4 error (LLM-clean과 동일한 기존 실패) |
 | docker compose config | PASS |
-| Android Gradle·실기기·서명 빌드 | 미실행(사유: 디스크 95%, Node 22 없음, 기기·keystore 없음) — PR #122의 Android CI로 확인 필요 |
+| Android Gradle Debug 빌드·단위 테스트·lint | PR #122 Android CI PASS (로컬은 디스크 95%·Node 22 부재로 미실행) |
+| Android 실기기·서명 Release 빌드 | 미실행(기기·keystore 없음) |
+| PR #121 GitHub CI(`ci.yml` 전 잡) | PASS (1차 Maven Central 429 → 재실행 통과) |
 
 ## 5. 품질 기준 점검
 
@@ -201,8 +203,8 @@
 revert 절차는 문서화했으나 실제 리허설은 수행하지 않았습니다.
 
 ## 9. 최종 승인 대기 항목
-1. PR #121(`integration/llm-clean-to-main` → `main`) 병합 — CI 결과 확인 후
-2. PR #122(`integration/android-features-to-main` → `android-main`) 병합 — Android CI(Gradle) 결과 확인 후
+1. PR #121(`integration/llm-clean-to-main` → `main`) 병합 — CI 통과 확인됨
+2. PR #122(`integration/android-features-to-main` → `android-main`) 병합 — Android CI 통과 확인됨, 실기기 확인 권장
 3. 기존 PR #107(LLM-clean → main) 종료 여부 — #121이 같은 목적을 안전하게 대체
 4. **노출 자격증명 폐기·재발급(§7.2)** — 운영 서비스 영향이 있어 일정 협의 필요
 5. 운영 배포 트리거 `LLM-clean` → `main` 전환(§6.3) — 별도 계획 PR
