@@ -235,6 +235,36 @@ public class S3Service {
                 .bucket(bucket).key(key).build()).asByteArray();
     }
 
+    /** 객체가 없으면(NoSuchKey/404) empty. 그 외 S3 오류는 그대로 전파한다. (Android 릴리즈 메타데이터 등 "부재가 정상" 인 조회용) */
+    public java.util.Optional<byte[]> downloadBytesIfExists(String key) {
+        if (key == null || key.isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        try {
+            return java.util.Optional.of(downloadBytes(key));
+        } catch (NoSuchKeyException e) {
+            return java.util.Optional.empty();
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404) {
+                return java.util.Optional.empty();
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 임의 콘텐츠 타입/TTL 의 다운로드(attachment) presigned URL.
+     * 기존 getDownloadPresignedUrl(key, fileName) 은 PDF 전용(15분)이라 동작을 바꾸지 않고 일반화 메서드를 추가한다.
+     */
+    public String getDownloadPresignedUrl(String key, String fileName, String contentType, Duration ttl) {
+        String disposition = org.springframework.http.ContentDisposition.attachment()
+                .filename(fileName, java.nio.charset.StandardCharsets.UTF_8).build().toString();
+        return s3Presigner.presignGetObject(GetObjectPresignRequest.builder()
+                .signatureDuration(ttl)
+                .getObjectRequest(b -> b.bucket(bucket).key(key).responseContentType(contentType)
+                        .responseContentDisposition(disposition)).build()).url().toString();
+    }
+
     public String getDownloadPresignedUrl(String key, String fileName) {
         String disposition = org.springframework.http.ContentDisposition.attachment()
                 .filename(fileName, java.nio.charset.StandardCharsets.UTF_8).build().toString();

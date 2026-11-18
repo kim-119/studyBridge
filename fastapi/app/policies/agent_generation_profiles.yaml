@@ -1,0 +1,126 @@
+# StudyMate 성격별 "생성 수치 전략" 기본값 (SSOT).
+#
+# 역할 분리 원칙:
+#   - env(.env)        : 운영/배포에서 바꾸는 최종 override 값 (AGENT_{KEY}_{FIELD})
+#   - 이 YAML          : 성격별 수치 "기본값" (env가 없을 때 적용되는 값)
+#   - agent_settings.py: 이 YAML을 읽고 env로 override (env > YAML > 코드 DEFAULT)
+#
+# 왜 필요한가:
+#   과거에는 성격별 기본값이 코드에 없어, 배포 .env에 AGENT_CREATIVE_* 등이
+#   빠지면 모든 성격이 generic 기본값(temperature 0.55)으로 떨어져 답변이 평범해졌다.
+#   이 파일이 있으면 env가 없어도 성격별 차등이 보장된다.
+#
+# 키는 정규 영문 키: friendly/critical/logical/creative/concise/professional/sardonic/custom
+# (프론트 라벨 "독특함/4차원/창의형" → creative 로 normalize 된다.)
+#
+# 필드:
+#   temperature/top_p/top_k/repeat_penalty/presence_penalty/frequency_penalty : LLM 샘플링
+#   그 외(strictness/creativity/verbosity/empathy/directness/example_density/
+#         metaphor_density/critique_density/structure_rigidity/...) : 검증기(휴리스틱) 기대치
+
+# 독특함 / 4차원 강사 (프론트 "독특함/4차원/창의형" → creative)
+creative:
+  temperature: 0.85
+  top_p: 0.95
+  top_k: 50
+  repeat_penalty: 1.08
+  creativity: 0.95
+  metaphor_density: 0.92
+  directness: 0.45
+  verbosity: 0.78
+  structure_rigidity: 0.45
+  critique_density: 0.2
+  example_density: 0.75
+  empathy: 0.55
+
+# 냉소적 / 츤데레 코치 (프론트 "냉소적" → sardonic)
+sardonic:
+  temperature: 0.55
+  top_p: 0.88
+  top_k: 40
+  repeat_penalty: 1.10
+  strictness: 0.92
+  critique_density: 0.9
+  directness: 0.88
+  empathy: 0.35
+  verbosity: 0.6
+  metaphor_density: 0.25
+  structure_rigidity: 0.6
+
+# 비판적 분석형 (프론트 "솔직함/비판형" → critical)
+critical:
+  temperature: 0.5
+  top_p: 0.85
+  top_k: 40
+  repeat_penalty: 1.08
+  strictness: 0.9
+  critique_density: 0.85
+  directness: 0.85
+  empathy: 0.45
+  verbosity: 0.65
+  metaphor_density: 0.25
+  structure_rigidity: 0.6
+
+# 논리형 (프론트 "논리형" → logical)
+logical:
+  temperature: 0.35
+  top_p: 0.82
+  top_k: 35
+  repeat_penalty: 1.06
+  structure_rigidity: 0.95
+  directness: 0.7
+  verbosity: 0.7
+  critique_density: 0.4
+  metaphor_density: 0.15
+  empathy: 0.35
+
+# 전문적 (프론트 "전문적" → professional)
+professional:
+  temperature: 0.42
+  top_p: 0.86
+  top_k: 40
+  repeat_penalty: 1.05
+  structure_rigidity: 0.88
+  directness: 0.75
+  verbosity: 0.76
+  critique_density: 0.5
+  metaphor_density: 0.2
+  empathy: 0.4
+
+# 간결형 (프론트 "효율적/간결형" → concise)
+concise:
+  temperature: 0.32
+  top_p: 0.8
+  top_k: 30
+  repeat_penalty: 1.08
+  verbosity: 0.28
+  directness: 0.95
+  structure_rigidity: 0.8
+  critique_density: 0.3
+  metaphor_density: 0.1
+  empathy: 0.35
+
+# 친절형 (프론트 "친근함/친절형" → friendly)
+friendly:
+  temperature: 0.62
+  top_p: 0.9
+  top_k: 40
+  repeat_penalty: 1.05
+  empathy: 0.92
+  example_density: 0.82
+  verbosity: 0.72
+  metaphor_density: 0.45
+  directness: 0.4
+  critique_density: 0.3
+  structure_rigidity: 0.45
+
+# 직접입력형 (customPrompt 우선) — 중립 기본값
+custom:
+  temperature: 0.6
+  top_p: 0.9
+  top_k: 40
+  repeat_penalty: 1.08
+  verbosity: 0.6
+  metaphor_density: 0.4
+  critique_density: 0.5
+  structure_rigidity: 0.5

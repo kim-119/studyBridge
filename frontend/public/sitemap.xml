@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 공개(로그인 불필요) 대표 URL 만. 모바일(m.) URL 은 canonical 로 apex 에 귀속되므로 넣지 않는다.
+     목록은 ops/nginx/studybridge-seo.conf 의 $sb_seo_path 허용 경로와 일치해야 한다. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://studybridge.co.kr/</loc></url>
+  <url><loc>https://studybridge.co.kr/app</loc></url>
+  <url><loc>https://studybridge.co.kr/login</loc></url>
+  <url><loc>https://studybridge.co.kr/register</loc></url>
+</urlset>

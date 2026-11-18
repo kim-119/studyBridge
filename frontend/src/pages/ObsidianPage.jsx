@@ -160,8 +160,9 @@ export default function ObsidianPage() {
 
         <div style={{ padding: '0 16px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ position: 'relative' }}>
-            <Search size={15} color="#9ca3af" style={{ position: 'absolute', left: 10, top: 9 }} />
+            <Search size={15} color="#9ca3af" className="sb-search-icon sb-search-icon-abs" style={{ position: 'absolute', left: 10, top: 9 }} />
             <input
+              className="sb-search-field-abs"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="방 검색 (제목·교수·태그)"
@@ -173,7 +174,7 @@ export default function ObsidianPage() {
             <select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="방 정렬" style={{ flex: 1, fontSize: 12, padding: '6px 8px', border: '1px solid #e5e7eb', borderRadius: 8 }}>
               {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
-            <button type="button" onClick={loadRooms} title="새로고침" style={{ padding: 7, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer' }}>
+            <button type="button" onClick={loadRooms} title="새로고침" aria-label="방 목록 새로고침" className="obsp-refresh" style={{ padding: 7, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer' }}>
               <RefreshCw size={14} color="#6b7280" />
             </button>
           </div>
@@ -241,7 +242,7 @@ export default function ObsidianPage() {
         {selectedRoomId == null ? (
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: '#64748b' }}>
             <Network size={48} color="#312e81" />
-            <div style={{ fontSize: 15 }}>왼쪽에서 학습메이트 방을 선택하면 채팅 로그 기반 지식 그래프를 볼 수 있어요.</div>
+            <div style={{ fontSize: 15, textAlign: 'center', padding: '0 24px', maxWidth: '100%', boxSizing: 'border-box' }}>왼쪽에서 학습메이트 방을 선택하면 채팅 로그 기반 지식 그래프를 볼 수 있어요.</div>
           </div>
         ) : graphState === 'loading' ? (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 14 }}>채팅 로그를 그래프로 변환하는 중…</div>

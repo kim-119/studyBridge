@@ -1,0 +1,20 @@
+# 비전 전용 Ollama(0.40.11, qwen3-vl:4b-instruct) — systemd 사용자 유닛 (sudo 불필요, linger 로 부팅 시 기동)
+# 설치:  cp scripts/ollama-vision.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#        systemctl --user enable --now ollama-vision
+# 중지/롤백: systemctl --user disable --now ollama-vision
+# 시스템 Ollama(:11434, 0.24.0, qwen3:14b)와는 별개 프로세스이며 VRAM 을 서로 조율하지 않는다.
+[Unit]
+Description=StudyBridge vision Ollama (qwen3-vl) on 127.0.0.1:11435
+
+[Service]
+Environment=OLLAMA_HOST=127.0.0.1:11435
+Environment=OLLAMA_MODELS=%h/ollama-vision/models
+Environment=OLLAMA_MAX_LOADED_MODELS=1
+Environment=OLLAMA_NUM_PARALLEL=1
+Environment=OLLAMA_KEEP_ALIVE=2m
+ExecStart=%h/ollama-vision/bin/ollama serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

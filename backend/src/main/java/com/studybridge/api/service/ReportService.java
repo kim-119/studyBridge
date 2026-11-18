@@ -4,6 +4,7 @@ import com.studybridge.api.dto.ReportDTO;
 import com.studybridge.api.entity.*;
 import com.studybridge.api.repository.BlogCommentRepository;
 import com.studybridge.api.repository.BlogRepository;
+import com.studybridge.api.repository.GroupStudyReportRepository;
 import com.studybridge.api.repository.ReportRepository;
 import com.studybridge.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -24,6 +26,15 @@ public class ReportService {
     private final UserRepository userRepository;
     private final BlogRepository blogRepository;
     private final BlogCommentRepository blogCommentRepository;
+    private final GroupStudyReportRepository groupStudyReportRepository;
+
+    static final String SOURCE_KNOWLEDGE = "KNOWLEDGE";
+    static final String SOURCE_GROUP = "GROUP";
+    static final String LABEL_DELETED_POST = "삭제된 게시글";
+    static final String LABEL_DELETED_COMMENT = "삭제된 댓글";
+    static final String LABEL_WITHDRAWN_USER = "탈퇴한 사용자";
+    static final String LABEL_UNKNOWN_GROUP = "삭제된 스터디";
+    private static final int COMMENT_SNIPPET_LENGTH = 30;
 
     // 유저 신고 등록
     @Transactional
@@ -120,6 +131,98 @@ public class ReportService {
         return reportRepository.findAllByOrderByCreatedAtDesc().stream()
                 .map(this::convertToDTO)
                 .collect(Collectors.toList());
+    }
+
+    // 내 신고 내역: 지식보드 신고(reports) + 그룹스터디 유저 신고(group_study_reports) 를 합쳐 최신순.
+    //  reporterId 는 컨트롤러가 principal 에서 꺼낸 값만 들어온다(클라이언트 userId 미수용).
+    public List<ReportDTO.MyReportResponse> getMyReports(Long reporterId, String source, int page, int size) {
+        var pageable = org.springframework.data.domain.PageRequest.of(Math.max(0, page), Math.max(1, Math.min(50, size)));
+        if ("GROUP".equals(source)) {
+            return groupStudyReportRepository.findByReporter_IdOrderByCreatedAtDesc(reporterId, pageable)
+                    .stream().map(this::toMyReport).toList();
+        }
+        return reportRepository.findByReporter_IdOrderByCreatedAtDesc(reporterId, pageable)
+                .stream().map(this::toMyReport).toList();
+    }
+
+    // 지연 로딩 대상이 이미 삭제됐거나(EntityNotFound) null 이면 대체 라벨로 떨어뜨린다.
+    private static String safeSummary(Supplier<String> supplier, String fallback) {
+        try {
+            String value = supplier.get();
+            return (value == null || value.isBlank()) ? fallback : value;
+        } catch (RuntimeException e) {
+            return fallback;
+        }
+    }
+
+    private static Long safeId(Supplier<Long> supplier) {
+        try {
+            return supplier.get();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    static String commentSnippet(String content) {
+        if (content == null) return null;
+        String trimmed = content.strip();
+        return trimmed.length() > COMMENT_SNIPPET_LENGTH ? trimmed.substring(0, COMMENT_SNIPPET_LENGTH) + "..." : trimmed;
+    }
+
+    private ReportDTO.MyReportResponse toMyReport(Report report) {
+        ReportType type = report.getReportType();
+        String summary;
+        Long targetId;
+        if (type == ReportType.USER) {
+            targetId = report.getReportedUser() == null ? null : safeId(() -> report.getReportedUser().getId());
+            summary = report.getReportedUser() == null ? LABEL_WITHDRAWN_USER
+                    : safeSummary(() -> report.getReportedUser().getDisplayName(), LABEL_WITHDRAWN_USER);
+        } else if (type == ReportType.POST) {
+            targetId = report.getReportedBlog() == null ? null : safeId(() -> report.getReportedBlog().getBlogId());
+            summary = report.getReportedBlog() == null ? LABEL_DELETED_POST
+                    : safeSummary(() -> report.getReportedBlog().getTitle(), LABEL_DELETED_POST);
+        } else {
+            targetId = report.getReportedComment() == null ? null : safeId(() -> report.getReportedComment().getCommentId());
+            summary = report.getReportedComment() == null ? LABEL_DELETED_COMMENT
+                    : safeSummary(() -> commentSnippet(report.getReportedComment().getContent()), LABEL_DELETED_COMMENT);
+        }
+        boolean available = targetId != null
+                && !LABEL_DELETED_POST.equals(summary) && !LABEL_DELETED_COMMENT.equals(summary) && !LABEL_WITHDRAWN_USER.equals(summary);
+        return ReportDTO.MyReportResponse.builder()
+                .reportId(report.getReportId())
+                .source(SOURCE_KNOWLEDGE)
+                .targetType(type == null ? null : type.name())
+                .targetId(targetId)
+                .targetSummary(summary)
+                .targetAvailable(available)
+                .reason(report.getReason())
+                .details(report.getDetails())
+                .status(report.getStatus())
+                .createdAt(report.getCreatedAt())
+                .build();
+    }
+
+    private ReportDTO.MyReportResponse toMyReport(GroupStudyReport report) {
+        Long targetId = report.getReportedUser() == null ? null : safeId(() -> report.getReportedUser().getId());
+        String summary = report.getReportedUser() == null ? LABEL_WITHDRAWN_USER
+                : safeSummary(() -> report.getReportedUser().getDisplayName(), LABEL_WITHDRAWN_USER);
+        Long groupId = report.getGroupStudy() == null ? null : safeId(() -> report.getGroupStudy().getId());
+        String groupTitle = report.getGroupStudy() == null ? LABEL_UNKNOWN_GROUP
+                : safeSummary(() -> report.getGroupStudy().getTitle(), LABEL_UNKNOWN_GROUP);
+        return ReportDTO.MyReportResponse.builder()
+                .reportId(report.getId())
+                .source(SOURCE_GROUP)
+                .targetType(ReportType.USER.name())
+                .targetId(targetId)
+                .targetSummary(summary)
+                .targetAvailable(targetId != null && !LABEL_WITHDRAWN_USER.equals(summary))
+                .groupId(groupId)
+                .groupTitle(groupTitle)
+                .reason(null)
+                .details(report.getReason())
+                .status(null)
+                .createdAt(report.getCreatedAt())
+                .build();
     }
 
     // 신고 상태 처리 (RESOLVED / REJECTED)

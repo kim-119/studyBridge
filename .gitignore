@@ -58,11 +58,8 @@ android/key.properties
 .claude/
 CLAUDE.md
 
-# outside the Android branch scope (kept locally, not tracked here)
-/docs/
-/fastapi/
-/ops/
-/scripts/
+# NOTE: main 은 full-stack(웹·백엔드·AI·Android) 통합 브랜치다.
+# android-main 브랜치에서만 docs/ fastapi/ ops/ scripts/ 를 범위 밖으로 제외한다.
 
 # studybridge_ft model artifacts
 studybridge-ft/

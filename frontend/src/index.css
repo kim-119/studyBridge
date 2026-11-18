@@ -35,6 +35,22 @@
   /* 추가 액션 버튼 색상 (Danger) */
   --color-danger: #EF4444;
 
+  /* ── 아이콘 스케일 토큰(UI 아이콘 = lucide-react / UI 이모지 = Unicode). 프로필 이모지는 별도 토큰.
+     데스크톱은 기존 size 값을 유지하고, ≤768px 모바일 레이어(아래 "모바일 아이콘 스케일 시스템")가 이 토큰으로 정규화한다. */
+  --sb-icon-xs: 14px;   /* 아주 작은 상태표시/보조 indicator */
+  --sb-icon-sm: 15px;   /* badge / chip (공개방·비공개방·일반/캠 스터디) */
+  --sb-icon-md: 16px;   /* metadata (인원·목표·그룹장·날짜·출석률·평균 공부) */
+  --sb-icon-lg: 18px;   /* 일반 버튼 / 입력창 action */
+  --sb-icon-nav: 20px;  /* 주요 navigation action / 모달 닫기 / 검색 */
+  --sb-icon-xl: 24px;   /* hamburger / primary navigation / 독립된 큰 action */
+  --sb-icon-stroke: 1.8;
+  --sb-emoji-sm: 15px;  /* badge emoji */
+  --sb-emoji-md: 16px;  /* metadata emoji */
+  --sb-emoji-lg: 18px;  /* button emoji */
+  --sb-emoji-profile-picker: 30px;  /* 프로필 선택기 항목 (28~32) */
+  --sb-emoji-profile-preview: 56px; /* 선택된 프로필 preview, 모바일 (48~64) */
+  --sb-emoji-profile-avatar: 38px;  /* 참가자 아바타 (32~48) */
+
   /* 반경 (Radius) */
   --radius-btn: 8px;
   --radius-input: 8px;
@@ -520,6 +536,13 @@ a {
 .dashboard-page .todo-item.completed .todo-text {
   color: var(--color-text-muted);
   text-decoration: line-through;
+}
+
+/* 주간 일정: 할 일 입력 행([입력][추가]). 데스크톱 flex(기존 인라인 스타일과 동일) / ≤768px 는 grid 로 재배치 */
+.ws-add-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
 }
 
 /* FullCalendar Custom Styles */
@@ -1617,6 +1640,21 @@ a {
   .room-tile--main { grid-column: 1 / -1 !important; order: -1; }
   .room-empty-slot { display: none !important; }
 
+  /* 룸 헤더: 로고/구분선/상단 미디어 pill(하단 컨트롤바와 중복)은 숨기고, 제목은 말줄임 + 인원 배지 한 줄 */
+  .room-header > div:first-child { gap: 8px !important; min-width: 0; flex: 1 1 auto; }
+  .room-header > div:first-child > .sb-logo,
+  .room-header > div:first-child > div:first-child,
+  .room-header > div:first-child > div:nth-child(2) { display: none !important; }
+  .room-header > div:first-child > div:last-child { min-width: 0; flex: 1 1 auto; gap: 8px !important; }
+  .room-header h1 { font-size: 14px !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .room-header > div:first-child > div:last-child > div { white-space: nowrap; flex-shrink: 0; }
+  .room-header > div:last-child { gap: 8px !important; flex-shrink: 0; }
+  .room-header > div:last-child > div:first-child,
+  .room-header > div:last-child > div:nth-child(2) { display: none !important; }
+  /* 방 관리 모달의 멤버/통계 표: 좁은 폭에서 열이 뭉개지지 않게 최소 폭 + 가로 스크롤 */
+  .room-manage-table { min-width: 520px; }
+  div:has(> .room-manage-table) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
   /* 하단 고정 컨트롤 바(마이크/카메라/채팅/나가기) */
   .room-mobile-controlbar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 96;
@@ -1631,6 +1669,19 @@ a {
     display: flex; align-items: center; justify-content: center; cursor: pointer;
   }
   .room-mobile-controlbar .room-mobile-leave { background: rgba(239,68,68,0.18); }
+}
+
+/* 영상 타일(StudyRoom VideoFeed) 안내 축약 — 기준은 화면 폭이 아니라 타일 크기(모바일 3열 썸네일 ≈117×66px).
+   오버레이·배지 레이어는 absolute inset:0 이라 container 지정이 타일 레이아웃에 영향을 주지 않는다.
+   container query 미지원 브라우저는 기본(전체 문구)을 그대로 보여준다(축약 문구는 inline display:none). */
+.video-feed-overlay, .video-feed-badge-layer { container-type: size; }
+@container (max-height: 150px) { .video-feed-overlay__icon { display: none; } }
+@container (max-height: 120px) { .video-feed-overlay__hint { display: none; } }
+@container (max-width: 220px) or (max-height: 90px) {
+  .video-feed-overlay__text, .video-feed-badge__text { display: none; }
+  .video-feed-overlay__short, .video-feed-badge__short { display: inline !important; }
+  .video-feed-overlay__btn, .video-feed-badge__btn { padding: 2px 8px !important; font-size: 11px !important; }
+  .video-feed-badge { top: 50% !important; bottom: auto !important; left: 4px !important; right: 4px !important; transform: translateY(-50%); flex-wrap: wrap; row-gap: 2px; white-space: normal !important; padding: 3px 6px !important; gap: 4px !important; font-size: 11px !important; }
 }
 
 .panel-resizer-bar:hover div div {
@@ -1809,6 +1860,8 @@ a {
     font-size: 1.15rem;
     text-align: center;
   }
+  /* 주 보기 7열 헤더("10. 4.(일)")가 좁은 폭에서 뭉개지지 않게 축소 */
+  .fc .fc-col-header-cell-cushion { font-size: 12px; padding: 4px 2px; }
   .dashboard-page .calendar-container,
   .dashboard-page .todo-section {
     padding: 14px;
@@ -1844,4 +1897,503 @@ a {
 }
 @keyframes sb-spin {
   to { transform: rotate(360deg); }
+}
+
+/* =========================================
+   그룹스터디 운영 정책/지표 UI (2026-09-30)
+   ※ 기존 토큰(--color-*, --radius-*, --space-*)만 사용. 새 팔레트/폰트 없음.
+   ========================================= */
+/* 생성/수정 폼: 라벨(120px) + 컨트롤 가로 배치, 모바일에서는 세로 스택 */
+.gs-form-row { display: flex; gap: var(--space-lg); }
+.gs-form-label { width: 120px; flex-shrink: 0; font-weight: 600; color: #374151; display: flex; align-items: flex-start; padding-top: 10px; line-height: 1.4; }
+.gs-form-label .gs-required { color: var(--color-danger); margin-left: 4px; }
+.gs-form-control { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.gs-form-hint { color: var(--color-text-muted); font-size: 13px; line-height: 1.5; }
+.gs-section-title { font-size: 15px; font-weight: 700; color: var(--color-text-main); margin: 0; padding-bottom: 10px; border-bottom: 1px solid var(--color-border); }
+.gs-create-panel { padding: 50px 70px; }
+
+/* 토글 스위치 (role=switch) */
+.gs-toggle { position: relative; width: 44px; height: 24px; border-radius: 24px; border: none; padding: 0; cursor: pointer; background-color: var(--color-border); transition: background-color 0.2s; flex-shrink: 0; }
+.gs-toggle[aria-checked="true"] { background-color: var(--color-primary); }
+.gs-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+.gs-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.gs-toggle-knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background-color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.15); transition: left 0.2s; }
+.gs-toggle[aria-checked="true"] .gs-toggle-knob { left: 22px; }
+.gs-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-input); background-color: var(--color-bg-card); min-height: 48px; box-sizing: border-box; }
+.gs-toggle-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.gs-toggle-row-title { font-size: 14px; font-weight: 600; color: var(--color-text-main); }
+.gs-toggle-row-desc { font-size: 12px; color: var(--color-text-muted); }
+
+/* 세그먼트(스터디 방식) & 시간 칩(목표시간) */
+.gs-segment { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.gs-segment-option { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--color-border-input); border-radius: var(--radius-input); background-color: var(--color-bg-card); cursor: pointer; text-align: left; font: inherit; color: var(--color-text-main); transition: border-color 0.2s, background-color 0.2s; min-height: 44px; }
+.gs-segment-option[aria-pressed="true"] { border-color: var(--color-primary); background-color: rgba(96, 201, 90, 0.08); }
+.gs-segment-option:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.gs-segment-option-title { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+.gs-segment-option-desc { font-size: 12px; color: var(--color-text-muted); line-height: 1.4; }
+.gs-chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
+.gs-chip { height: 40px; min-width: 64px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--color-border-input); background-color: var(--color-bg-card); color: var(--color-text-main); font-size: 14px; font-weight: 600; cursor: pointer; transition: border-color 0.2s, background-color 0.2s, color 0.2s; }
+.gs-chip[aria-pressed="true"] { border-color: var(--color-primary); background-color: var(--color-primary); color: #fff; }
+.gs-chip:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.gs-textarea { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 1px solid var(--color-border-input); border-radius: var(--radius-input); font: inherit; font-size: 14px; color: var(--color-text-main); resize: vertical; min-height: 72px; background-color: var(--color-bg-card); }
+.gs-textarea:focus, .gs-input:focus { outline: none; border-color: var(--color-primary); }
+.gs-input { width: 100%; box-sizing: border-box; height: 44px; padding: 0 14px; border: 1px solid var(--color-border-input); border-radius: var(--radius-input); font: inherit; font-size: 14px; color: var(--color-text-main); background-color: var(--color-bg-card); }
+.gs-counter { font-size: 12px; color: var(--color-text-placeholder); text-align: right; }
+
+/* 그룹 프로필(대표 이미지 + 기본 아이콘 폴백) */
+.gs-profile { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.gs-profile-avatar { width: 72px; height: 72px; border-radius: 16px; overflow: hidden; background-color: var(--color-secondary); display: flex; align-items: center; justify-content: center; flex-shrink: 0; border: 1px solid var(--color-border); }
+.gs-profile-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gs-profile-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.gs-profile-actions .btn-outline, .gs-profile-actions .btn-primary { width: auto; height: 36px; padding: 0 14px; font-size: 13px; }
+
+/* 카드 활동 지표 */
+.gs-card-badges { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 24px); }
+.gs-badge { display: inline-flex; align-items: center; gap: 4px; padding: 5px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; color: #fff; backdrop-filter: blur(4px); box-shadow: 0 2px 10px rgba(0,0,0,0.1); white-space: nowrap; }
+.gs-badge-type { background-color: rgba(17, 24, 39, 0.72); }
+.gs-badge-type.is-cam { background-color: rgba(96, 201, 90, 0.92); }
+.gs-card-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 13px; color: #374151; margin-bottom: 12px; }
+.gs-card-meta span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.gs-card-meta strong { font-weight: 700; color: var(--color-text-main); }
+.gs-card-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+.gs-stat { background-color: var(--color-bg-base); border-radius: var(--radius-btn); padding: 10px 12px; min-width: 0; }
+.gs-stat-label { font-size: 11px; color: var(--color-text-muted); margin-bottom: 2px; display: flex; align-items: center; gap: 4px; }
+.gs-stat-value { font-size: 15px; font-weight: 700; color: var(--color-text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gs-card-date { font-size: 12px; color: var(--color-text-placeholder); margin-bottom: 12px; }
+
+/* 수정 모달 */
+.gs-modal { background-color: var(--color-bg-card); border-radius: var(--radius-card); width: 100%; max-width: 640px; max-height: calc(100vh - 32px); display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); animation: slideUp 0.3s ease-out; }
+.gs-modal-header { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--color-border); }
+.gs-modal-header h2 { margin: 0; font-size: 18px; }
+.gs-modal-body { padding: 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 28px; }
+.gs-modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 24px; border-top: 1px solid var(--color-border); background-color: #F9FAFB; }
+.gs-modal-footer .btn-outline, .gs-modal-footer .btn-primary { width: auto; min-width: 96px; padding: 0 18px; }
+.gs-modal-footer .btn-primary { background-color: #22C55E; }
+
+/* 가입 모달 내 정책 안내 */
+.gs-join-block { margin-bottom: 20px; }
+.gs-join-question { background-color: rgba(96, 201, 90, 0.08); border: 1px solid rgba(96, 201, 90, 0.35); border-radius: var(--radius-btn); padding: 10px 12px; font-size: 13px; color: var(--color-text-main); font-weight: 600; margin-bottom: 8px; word-break: keep-all; }
+.gs-policy-list { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #374151; }
+.gs-policy-list span:first-child { color: var(--color-text-muted); margin-right: 6px; }
+
+@media (max-width: 768px) {
+  .gs-create-panel { padding: 24px 18px !important; gap: 24px !important; }
+  .gs-form-row { flex-direction: column; gap: 8px; }
+  .gs-form-label { width: auto; padding-top: 0; }
+  .gs-segment { grid-template-columns: 1fr; }
+  .gs-form-fixed { width: 100% !important; }
+  .gs-modal { max-height: calc(100dvh - 24px); }
+  .gs-modal-body { padding: 18px 16px; gap: 22px; }
+  .gs-modal-footer { padding: 12px 16px; }
+  .gs-modal-footer .btn-outline, .gs-modal-footer .btn-primary { flex: 1; }
+}
+
+/* =========================================
+   모바일 웹 9차: 공통 토대 보강(≤768px)
+   ※ 데스크톱(>768px)은 이 블록 밖이라 완전히 불변. 별도 모바일 라우트/컴포넌트 없이
+     동일 URL·동일 API 위에 presentation 만 재배치한다.
+   ========================================= */
+@media (max-width: 768px) {
+  /* 버튼/탭 라벨이 한글 음절 단위로 꺾이지 않게(넘칠 땐 강제 줄바꿈 허용) */
+  button, .btn-primary, .btn-outline, .archive-tab, .dashboard-tab { word-break: keep-all; overflow-wrap: anywhere; }
+  /* 긴 이메일/URL 이 컨테이너를 밀어내지 않게 */
+  a, p, li, td, th { overflow-wrap: anywhere; }
+
+  /* 자료보관함 상단 탭: inline-flex 고정 라벨 폭 → 풀폭 균등 + 한 줄 유지 */
+  .archive-tabs { display: flex; width: 100%; box-sizing: border-box; }
+  .archive-tab { flex: 1 1 0; min-width: 0; padding: 10px 8px; font-size: 14px; white-space: nowrap; }
+
+  /* 자료 상세 액션바: 우측 도구 그룹(인라인 flex-shrink:0)이 641px 로 넘쳐 화면이 가로로 밀리던 문제 →
+     제목 행 아래로 내리고, AI 도구 칩은 왼쪽 정렬로 줄바꿈(2줄) + 삭제 버튼 고정 */
+  .archive-action-bar { flex-wrap: wrap; }
+  .archive-action-right {
+    flex-shrink: 1 !important;
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    gap: 8px !important;
+  }
+  .archive-action-right .archive-tools {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .archive-action-right .archive-action-btn { white-space: nowrap; flex-shrink: 0; }
+  .archive-action-right > .btn-outline { flex-shrink: 0; white-space: nowrap; }
+
+  /* 채팅 말풍선: 75% 폭 제한 → 풀폭, 긴 코드/표/이미지는 말풍선 안에서 가로 스크롤 */
+  .chat-history { padding: 14px 12px; }
+  .chat-bubble-container { max-width: 100%; min-width: 0; }
+  .chat-bubble { max-width: 100%; min-width: 0; box-sizing: border-box; overflow-x: auto; }
+  .chat-bubble pre, .chat-bubble table, .chat-bubble img { max-width: 100%; }
+  .chat-bubble code { overflow-wrap: anywhere; }
+
+  /* 지식공유 상세: 액션 버튼 3개가 세로로 찌그러지던 문제 → 한 줄 라벨 + 줄바꿈 배치 */
+  .kn-detail-actions button { white-space: nowrap; padding-left: 18px !important; padding-right: 18px !important; }
+
+  /* 공통 모달: 고정 폭/높이가 화면을 넘지 않게 */
+  .modal-content { max-width: calc(100vw - 32px) !important; max-height: 90dvh; overflow-y: auto; box-sizing: border-box; }
+}
+
+/* =========================================
+   모바일 웹 10차: 모바일 웹 진입점(m.studybridge.co.kr) 공통 결함 수정(≤768px)
+   ※ 데스크톱(>768px)은 이 블록 밖이라 완전히 불변. 별도 모바일 라우트/컴포넌트 없음.
+   근거: Playwright chromium/webkit × 6 뷰포트 × 전체 라우트 DOM 계측(src/__tests__/mobile/).
+   ========================================= */
+@media (max-width: 768px) {
+  /* [MW10-1] iOS Safari 입력 자동 확대 방지.
+     font-size < 16px 인 input/select/textarea 에 포커스하면 Safari 가 페이지를 확대(zoom)하고
+     확대가 풀리지 않아 이후 화면이 가로로 밀린다(전 라우트 107/228 케이스에서 16px 미만 입력 감지:
+     Login 13.33px 기본값, .input-field 14px, 채팅 입력 등). 인라인 style 의 fontSize 도 덮어야 하므로 !important. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* [MW10-2] safe-area 대응. index.html viewport 에 viewport-fit=cover 를 추가했으므로
+     노치/홈 인디케이터 기기에서 env() 가 실제 값을 갖는다(그 전엔 항상 0 → .room-mobile-controlbar 의 기존
+     env(safe-area-inset-bottom) 패딩이 무효였다). 가로 모드 노치 영역은 페이지 좌우 패딩으로 피하고,
+     하단 고정 입력/작업영역 컨테이너는 홈 인디케이터만큼 바닥 여백을 둔다. 인셋이 0 인 기기/브라우저에선 변화 없음. */
+  body {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  .container-workspace,
+  .archive-detail-container,
+  .room-right-sidebar {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* [MW10-3] 최소 터치 영역. 텍스트 링크(16px 높이: 로그인 '비밀번호를 잊으셨나요?'/'회원가입'),
+     자료 상세 태그 버튼(21px), 학습메이트 패널 토글(25px 폭)이 손가락 터치에 너무 작다.
+     기능·배치는 그대로 두고 패딩/최소 치수만 보강한다. */
+  button.tag { min-height: 32px; padding-top: 6px; padding-bottom: 6px; }
+  .pane-toggle { min-width: 32px; }
+  .auth-inline-link { display: inline-block; padding: 6px 2px; margin: -6px -2px; }
+
+  /* [MW10-4] 학습리포트 주간 통계 행(총 시간/평균 시간/집중 요일/내일 예측): 인라인 flex-wrap:nowrap 4열이
+     375px 에서 라벨·값이 서로 겹치고 잘림(webkit/chromium 공통) → 2열 줄바꿈. 세로 구분선(장식)은 2열에서 의미가 없어 숨김. */
+  .sr-weekly-stats { flex-wrap: wrap !important; row-gap: 14px; }
+  .sr-weekly-stats > div[style*="flex: 1"] { flex: 1 1 calc(50% - 8px) !important; }
+  .sr-weekly-stats-divider { display: none; }
+
+  /* [MW10-5] 마이페이지 '나의 1:1 문의 내역' 제목과 '새 문의하기' 버튼이 한 줄에서 겹침 → 줄바꿈 허용 */
+  .mp-inquiry-head { flex-wrap: wrap; gap: 10px; }
+
+  /* [MW10-7] 지식공유 상세 히어로: 220px 고정 높이 안에 absolute 상단바('목록으로'/수정/삭제)와 하단 제목 블록이
+     겹쳐 '목록으로' 버튼이 태그 칩·제목에 덮였다(webkit/chromium 공통) → 모바일은 흐름 배치(상단바 → 제목), 배경 이미지는 뒤에 깔림 */
+  .kn-hero { height: auto !important; min-height: 220px; display: flex; flex-direction: column; }
+  .kn-hero-img { position: absolute; inset: 0; height: 100% !important; }
+  .kn-hero-topbar { position: relative !important; top: auto !important; width: 100%; padding: 16px 16px 0 !important; flex-wrap: wrap; gap: 8px; }
+  .kn-hero-title { position: relative !important; bottom: auto !important; width: 100%; padding: 20px 16px 24px !important; margin-top: auto !important; }
+  .kn-hero-title h1 { font-size: 26px !important; overflow-wrap: anywhere; }
+  .kn-hero-title > div:last-child { flex-wrap: wrap; row-gap: 6px; }
+
+  /* [MW10-8] 그룹 룸 채팅 드로어(fixed, z-index 95, bottom:0)의 메시지 입력창이 모바일 하단 고정 컨트롤바(z-index 96, 64px+safe-area)에
+     덮여 chromium/webkit 모두에서 탭이 불가능했다 → 드로어 바닥에 컨트롤바 높이만큼 여백을 둬 입력창을 바 위로 올린다. */
+  .room-chat-drawer { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); box-sizing: border-box; }
+}
+
+/* =========================================
+   GENERAL 입장 준비 — 프로필 이모지 선택기(모달 / ≤768px 바텀시트). 색은 기존 토큰만 사용.
+   ========================================= */
+.sb-emoji-picker-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 10001; padding: 20px; box-sizing: border-box; }
+.sb-emoji-picker { width: 100%; max-width: 420px; max-height: 90vh; display: flex; flex-direction: column; background-color: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: 16px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05); padding: 20px; box-sizing: border-box; overflow: hidden; }
+.sb-emoji-picker-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.sb-emoji-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; overflow-y: auto; padding: 2px; }
+.sb-emoji-option { position: relative; aspect-ratio: 1 / 1; min-height: 44px; display: flex; align-items: center; justify-content: center; font-size: var(--sb-emoji-profile-picker); line-height: 1; border-radius: var(--radius-btn); border: 1px solid var(--color-border); background-color: var(--color-bg-card); cursor: pointer; padding: 0; transition: background-color 0.15s ease, border-color 0.15s ease; }
+.sb-emoji-option:hover { background-color: var(--color-secondary); }
+.sb-emoji-option.is-selected { border: 2px solid var(--color-primary); background-color: rgba(96, 201, 90, 0.12); }
+.sb-emoji-check { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border-radius: 50%; background-color: var(--color-primary); color: #FFFFFF; display: flex; align-items: center; justify-content: center; }
+.sb-emoji-picker-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
+@media (max-width: 768px) {
+  .sb-emoji-picker-overlay { align-items: flex-end; padding: 0; }
+  .sb-emoji-picker { max-width: none; border-radius: 16px 16px 0 0; max-height: 80vh; padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px)); }
+  .sb-emoji-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+  .sb-emoji-option { font-size: 28px; min-height: 46px; }
+  .sb-emoji-picker-footer .btn-primary { width: 100%; }
+}
+
+/* =========================================
+   UI 이모지 유틸: Unicode 이모지는 브라우저/OS 마다 glyph metrics 가 달라(특히 WebKit) 컨테이너 크기·font-size·line-height 를 명시한다.
+   버튼/배지 높이를 이모지가 결정하지 않도록 고정 박스 + flex-shrink:0. 프로필 이모지(picker/preview/avatar)는 별도 스케일.
+   ========================================= */
+.sb-emoji { display: inline-flex; align-items: center; justify-content: center; width: var(--sb-icon-md); height: var(--sb-icon-md); font-size: var(--sb-emoji-md); line-height: 1; flex: 0 0 auto; vertical-align: middle; }
+.sb-emoji-sm { width: var(--sb-icon-sm); height: var(--sb-icon-sm); font-size: var(--sb-emoji-sm); }
+.sb-emoji-lg { width: var(--sb-icon-lg); height: var(--sb-icon-lg); font-size: var(--sb-emoji-lg); }
+.sb-emoji-option { font-size: var(--sb-emoji-profile-picker); }
+
+/* =========================================
+   모바일 아이콘 스케일 시스템 (≤768px, 기존 breakpoint). Chromium/WebKit 공통 — 엔진별 분기 없음.
+   · 대상은 lucide-react UI 아이콘(svg.lucide)뿐. 차트/마인드맵/로고/QR/이미지/OpenVidu 영상 UI 는 해당 class 가 없어 영향 없음.
+   · 일러스트 용도의 큰 아이콘(width ≥ 32: 빈 상태·아바타 fallback·오류 오버레이)은 건드리지 않는다.
+   · lucide 는 width/height 를 presentation attribute 로 내리므로 CSS 가 우선한다(컴포넌트 fork 없음).
+   ========================================= */
+@media (max-width: 768px) {
+  svg.lucide { flex-shrink: 0; stroke-width: var(--sb-icon-stroke); }
+  /* XS/SM: 10~13 → 14 (배지·상태표시 하한. 텍스트보다 작아 보이지 않게) */
+  svg.lucide[width="10"], svg.lucide[width="11"], svg.lucide[width="12"], svg.lucide[width="13"] { width: var(--sb-icon-xs); height: var(--sb-icon-xs); }
+  /* MD: 17 → 16 */
+  svg.lucide[width="17"] { width: var(--sb-icon-md); height: var(--sb-icon-md); }
+  /* LG: 19 → 18 */
+  svg.lucide[width="19"] { width: var(--sb-icon-lg); height: var(--sb-icon-lg); }
+  /* NAV: 20~23 → 20, 24~30 → 20 (모달 닫기·헤더 action·입력창 action·하단 내비) */
+  svg.lucide[width="21"], svg.lucide[width="22"], svg.lucide[width="23"],
+  svg.lucide[width="24"], svg.lucide[width="25"], svg.lucide[width="26"], svg.lucide[width="27"], svg.lucide[width="28"], svg.lucide[width="29"], svg.lucide[width="30"] { width: var(--sb-icon-nav); height: var(--sb-icon-nav); }
+  /* XL: hamburger / primary navigation 만 24 유지(터치 영역은 버튼이 44px 이상 확보) */
+  .sb-icon-xl svg.lucide { width: var(--sb-icon-xl); height: var(--sb-icon-xl); }
+
+  /* 시맨틱 컨텍스트(그룹스터디 목록/카드): 아이콘은 "작은 보조 아이콘" — 텍스트 캡하이트 이하로.
+     badge/chip(공개방·비공개방·일반/캠·필터 칩·인원 오버레이) = 14, metadata(목표·인원·그룹장) = 16, metric card(출석률·평균 공부) = 16 */
+  .gs-badge svg.lucide, .gs-card-badges svg.lucide, .gs-filter-chip svg.lucide, .gs-card-members svg.lucide { width: var(--sb-icon-xs); height: var(--sb-icon-xs); }
+  .gs-card-meta svg.lucide, .gs-stat-label svg.lucide { width: var(--sb-icon-md); height: var(--sb-icon-md); }
+  /* badge compact: 높이 28 / 좌우 10 / gap 4 / 글자 13 — 아이콘이 높이를 결정하지 않게 line-height 1 + svg block */
+  .gs-badge { gap: 4px; padding: 0 10px; font-size: 13px; line-height: 1; height: 28px; min-height: 28px; box-sizing: border-box; }
+  .gs-card-badges { gap: 6px; }
+  .gs-filter-chip { gap: 5px !important; padding: 7px 14px !important; font-size: 13px !important; line-height: 1 !important; min-height: 32px; box-sizing: border-box; }
+  .gs-card-members { gap: 4px !important; font-size: 13px !important; }
+  .gs-card-meta { gap: 4px 10px; }
+  .gs-card-meta span, .gs-stat-label { gap: 5px; }
+  .gs-stat-label { font-size: 12px; line-height: 1.2; }
+  /* 아이콘이 줄 높이를 키우지 않게 */
+  .gs-card-meta svg.lucide, .gs-stat-label svg.lucide, .gs-badge svg.lucide, .gs-filter-chip svg.lucide, .gs-card-members svg.lucide { display: block; }
+
+  /* 접근성: 아이콘은 작아져도 icon-only 버튼 터치 영역은 유지/확대(자료보관함 더보기 28→40, 학습메이트 패널 토글 32→44) */
+  .doc-more { width: 40px; height: 40px; }
+  .pane-toggle { min-width: 44px; min-height: 44px; }
+  .obsp-refresh { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  /* 룸 실시간 학습 타이머 칩: 헤더 안 compact(영상/프로필/채팅 비가림, fixed 아님) */
+  .room-timer { font-size: 12px !important; padding: 3px 8px !important; }
+  .room-timer svg.lucide { width: var(--sb-icon-xs); height: var(--sb-icon-xs); }
+  /* icon-only 버튼 공통 터치 영역(아이콘 크기와 분리): 모달/프리조인/콘솔/피커 닫기, 룸 새로고침 */
+  .sb-icon-btn { min-width: 44px; min-height: 44px; display: inline-flex !important; align-items: center; justify-content: center; box-sizing: border-box; }
+  /* 룸 채팅 전송(32px 원형) → 40px */
+  .sb-icon-btn-send { width: 40px !important; height: 40px !important; min-width: 40px; flex: 0 0 40px; }
+
+  /* 프로필 이모지는 별도 스케일(축소 대상 아님): picker 28px(위 .sb-emoji-picker 모바일 블록), preview 56px(112px 원), 참가자 아바타 38px */
+  [data-testid="prejoin-avatar-preview"] .sb-profile-preview { width: 112px !important; height: 112px !important; box-sizing: border-box; font-size: var(--sb-emoji-profile-preview) !important; }
+  [data-testid="prejoin-avatar-preview"] .sb-profile-preview svg.lucide { width: 56px; height: 56px; }
+}
+
+/* =========================================
+   모바일 모달 시스템(≤768px) — TRACK B. 데스크톱(>768px)은 이 블록 밖이라 불변.
+   · 로직/마크업 구조는 그대로 두고 className 만 추가해 공통 정책을 적용한다:
+     .sb-modal-overlay / .sb-modal / .sb-modal-head / .sb-modal-body / .sb-modal-foot (+ .sb-modal-tabs/.sb-modal-tab/.sb-modal-row)
+   · 대상: StudyMate "새 AI 그룹 스터디 생성"(.sb-modal-aig), StudyRoom 방 관리·문의/신고(.sb-modal-dark),
+     GroupStudy 상세·방장 콘솔, GroupEditModal(.gs-modal). 이모지 바텀시트(.sb-emoji-picker)는 기존 정책 유지.
+   · 인라인 style(width 800px / height 720px / maxHeight 90vh / padding 24~32px)을 덮어야 하는 속성만 !important.
+   ========================================= */
+.sb-aig-nav-compact { display: none; } /* 모바일 전용 컴팩트 ‹ › (아래 ≤768px 블록에서 표시) */
+
+@media (max-width: 768px) {
+  /* ---- 골격: overlay / box / head / body / foot ---- */
+  .sb-modal-overlay { padding: 0 !important; box-sizing: border-box; align-items: center !important; justify-content: center !important; }
+  .sb-modal {
+    width: calc(100vw - 24px) !important;
+    max-width: 440px !important;
+    margin-inline: 12px;
+    height: auto !important;
+    max-height: 88vh !important;
+    max-height: calc(88dvh - env(safe-area-inset-bottom, 0px)) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    box-sizing: border-box;
+    overflow: hidden !important;
+  }
+  /* body 가 없는 단일 스크롤 박스(방장 관리 콘솔)는 박스 자체가 세로 스크롤 */
+  .sb-modal:not(:has(.sb-modal-body)) { overflow-x: hidden !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }
+  .sb-modal-head { flex-shrink: 0; }
+  .sb-modal-body { flex: 1 1 auto !important; min-height: 0; overflow-y: auto !important; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+  .sb-modal-foot { flex-shrink: 0; }
+
+  /* ---- 탭 스트립: 한글 라벨이 음절 단위로 세로 꺾이던 원인 = flex 자식의 기본 flex-shrink:1 + 글자 사이 줄바꿈 허용.
+          → 줄바꿈 금지 + 축소 금지 + 스트립 가로 스크롤. 닫기(X)는 sticky 로 항상 오른쪽에 보이게. ---- */
+  .sb-modal-tabs { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: none; padding: 0 4px !important; }
+  .sb-modal-tabs::-webkit-scrollbar { display: none; }
+  .sb-modal-tabs > * { flex-shrink: 0; white-space: nowrap; word-break: keep-all; }
+  .sb-modal-tab { padding: 12px 10px !important; font-size: 14px !important; min-height: 44px; display: flex; align-items: center; box-sizing: border-box; }
+  .sb-modal-tabs .sb-modal-title { padding: 12px 6px 12px 8px !important; font-size: 15px !important; }
+  .sb-modal-tabs .sb-modal-title svg.lucide { display: none; } /* 장식 아이콘: 360px 에서 스트립이 한 화면에 들어가도록 */
+  .sb-modal-tab-divider { margin: 0 4px !important; }
+  .sb-modal-tabs .sb-modal-close { position: sticky; right: 0; margin-left: auto; padding: 0 8px !important; background-color: #1E293B; }
+
+  /* ---- 폼: 1열 + 입력 풀폭 ---- */
+  .sb-modal input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  .sb-modal select,
+  .sb-modal textarea { max-width: 100%; min-width: 0; box-sizing: border-box; }
+  .sb-modal select, .sb-modal textarea { width: 100%; }
+  .sb-modal-row { flex-direction: column !important; gap: 8px; }
+  .sb-modal-row > div:first-child { width: auto !important; padding-top: 0 !important; }
+
+  /* ---- 타이포(모바일): 제목 18 / 섹션 15~16 / 라벨 13~14 / 본문 12~14 / 버튼 14~16 ---- */
+  .sb-modal-title, .sb-modal-head h2, .sb-modal-head h3 { font-size: 18px !important; word-break: keep-all; }
+  .sb-modal label { font-size: 13px !important; word-break: keep-all; }
+  .sb-modal-foot button, .gs-modal-footer button { white-space: nowrap; word-break: keep-all; font-size: 15px; }
+
+  /* ---- 다크(스터디룸) 모달 여백 ---- */
+  .sb-modal-dark .sb-modal-body { padding: 16px !important; gap: 18px !important; }
+  .sb-modal-dark .sb-modal-foot { padding: 12px 16px !important; gap: 10px !important; }
+  .sb-modal-dark .sb-modal-foot button { flex: 1 1 0; min-width: 0; min-height: 44px; padding: 10px 12px !important; }
+  .sb-modal-dark .sb-modal-row > div:first-child { font-size: 13px !important; }
+  /* 칩 행(문제당 시간 10초/15초…): flex 축소로 "10|초" 세로 꺾임 → 줄바꿈 허용 + 칩은 한 줄 */
+  .sb-chip-row { flex-wrap: wrap; }
+  .sb-chip-row > button { white-space: nowrap; word-break: keep-all; flex-shrink: 0; }
+
+  /* ---- 그룹스터디 상세 모달 ---- */
+  [data-testid="gs-detail-modal"] .sb-modal-body { padding: 16px !important; }
+  [data-testid="gs-detail-modal"] .sb-modal-foot button { min-height: 48px; font-size: 15px !important; }
+
+  /* ---- 방장 관리 콘솔(단일 스크롤) ---- */
+  [data-testid="leader-console-modal"] { padding: 16px !important; gap: 18px !important; }
+
+  /* ---- AI 그룹 스터디 생성 모달: 좌우 큰 화살표 열 제거 → 푸터 컴팩트 ‹ ›(44px 터치, 18px 아이콘), 카드가 거의 전폭 사용 ---- */
+  .sb-modal.sb-modal-aig { padding: 14px 16px !important; }
+  .sb-modal-aig .sb-aig-nav-col { display: none !important; } /* 인라인 display:flex 를 덮는다 */
+  .sb-modal-aig .sb-aig-nav-row { gap: 0 !important; }
+  .sb-modal-aig .sb-modal-body { padding-right: 0 !important; }
+  .sb-modal-aig .sb-aig-grid2 { grid-template-columns: 1fr !important; }
+  .sb-modal-aig .sb-aig-steps button { font-size: 12px !important; padding: 5px 9px !important; }
+  .sb-modal-aig .sb-modal-foot { gap: 8px !important; }
+  .sb-modal-aig .sb-modal-foot .btn-outline { flex: 0 0 auto !important; width: auto !important; min-width: 60px; padding: 0 14px; }
+  .sb-modal-aig .sb-modal-foot .btn-primary { flex: 1 1 auto !important; min-width: 0; padding: 0 10px; }
+  .sb-aig-nav-compact {
+    display: inline-flex !important; align-items: center; justify-content: center;
+    width: 44px; height: 44px; flex: 0 0 44px; padding: 0;
+    border: 1px solid var(--color-border); border-radius: var(--radius-btn); background-color: var(--color-bg-card);
+    color: var(--color-primary); cursor: pointer;
+  }
+  .sb-aig-nav-compact:disabled { opacity: 0.35; cursor: not-allowed; }
+  .sb-modal-aig button[aria-label="에이전트 줄이기"], .sb-modal-aig button[aria-label="에이전트 늘리기"] { width: 36px !important; height: 36px !important; }
+  .sb-aig-nav-compact svg.lucide { width: var(--sb-icon-lg); height: var(--sb-icon-lg); }
+
+  /* ---- 검색 입력 아이콘 공통(그룹스터디/지식공유/마인드맵 …): 18px, stroke 1.8, 세로 중앙 ---- */
+  svg.lucide.sb-search-icon { width: var(--sb-icon-lg); height: var(--sb-icon-lg); stroke-width: var(--sb-icon-stroke); flex-shrink: 0; }
+  svg.lucide.sb-search-icon-abs { top: 50% !important; transform: translateY(-50%); }
+  .sb-search-field-abs { padding-left: 36px !important; }
+
+  /* ---- 페이지 좌우 패딩 16px 정규화(카드/모달은 자체 토큰 유지) ---- */
+  .container-main { padding: 16px; }
+  .kn-page { padding: 16px !important; } /* 지식공유: clamp(16px,4vw,40px) → 모바일 16px 고정 */
+  .rn-page, .sr-page { padding: 16px !important; } /* 오답노트/학습리포트: 인라인 24px → 16px */
+  .mypage-page { padding: 24px 16px !important; } /* 마이페이지: 인라인 40px 5% → 좌우 16px */
+  .kn-page { min-height: calc(100dvh - 80px) !important; } /* 인라인 100vh 폴백 유지(dvh 미지원 시 이 선언만 무시됨) */
+  main:has(> .archive-detail-container) { height: 100dvh !important; } /* 자료 상세 전용 main(App.jsx 인라인 100vh) */
+  .gs-create-panel { padding: 20px 16px !important; }
+  .gs-create-title { font-size: 20px !important; }
+
+  /* ---- 전체 높이 컨테이너: vh 폴백 + dvh ---- */
+  .mindmap-layout { min-height: calc(100vh - 80px); min-height: calc(100dvh - 80px); }
+  .layout-split { height: calc(100vh - 120px); height: calc(100dvh - 120px); }
+
+  /* ---- 탭/칩 라벨은 항상 한 줄(본문 텍스트는 일반 줄바꿈 유지) ---- */
+  [role="tab"], .archive-tab, .dashboard-tab, .gs-filter-chip, .gs-badge, .gs-form-label { white-space: nowrap; word-break: keep-all; }
+}
+
+/* =========================================
+   모바일 웹 ADDON-UI: 주간 일정(날짜 입력/캘린더 7열) + 학습일지 상세 1열 (≤768px)
+   ※ 데스크톱(>768px)은 이 블록 밖이라 불변. viewport 기반 규칙만 사용(UA/기기명 분기 없음).
+   ========================================= */
+@media (max-width: 768px) {
+  /* [WS-1] 종료 날짜 input[type=date]: iOS Safari 의 날짜 컨트롤은 고유(intrinsic) 폭을 가져 width:100% 를 무시하고
+     카드 밖으로 넘친다(그리드 1fr 아이템의 min-width:auto 가 고유 폭만큼 열을 넓힘). → 1열(minmax(0,1fr)) + 모든
+     래퍼/입력 min-width:0 + appearance 제거로 폭을 카드 안에 고정한다. */
+  .dashboard-page .main-grid { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-page .calendar-container,
+  .dashboard-page .todo-section { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+  .dashboard-page .todo-section { display: flex; flex-direction: column; }
+  .dashboard-page .todo-section > * { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+  .ws-todo-stats > * { min-width: 0; }
+  .ws-date-card, .ws-enddate { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+  .ws-enddate .input-field,
+  .ws-enddate input[type="date"] {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    -webkit-appearance: none;
+    appearance: none;
+    text-align: left;
+  }
+  .ws-enddate input[type="date"]::-webkit-date-and-time-value { text-align: left; min-height: 1.4em; }
+  .ws-add-row { display: grid; grid-template-columns: minmax(0, 1fr) 80px; gap: 8px; width: 100%; max-width: 100%; min-width: 0; }
+  .ws-add-row > .input-field { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+  .ws-add-row > .btn-primary { width: 100% !important; min-width: 0; }
+  .ws-todo-list { min-width: 0; }
+  .dashboard-page .todo-item { min-width: 0; }
+  .dashboard-page .todo-item .todo-text { min-width: 0; overflow-wrap: anywhere; }
+
+  /* [WS-2] FullCalendar dayGrid: 항상 정확히 7열(고정 셀 폭 없음, 테이블 100% + fixed 레이아웃), 페이지 가로 넘침 없음.
+     일정은 점(dot)만 가로로 나열(제목 텍스트는 셀 43~53px 에서 판독 불가 → 아래 날짜 상세 패널이 담당). */
+  .dashboard-page .calendar-container { padding: 12px 8px; overflow: hidden; }
+  .dashboard-page .fc { width: 100%; max-width: 100%; min-width: 0; }
+  .dashboard-page .fc .fc-view-harness { min-width: 0; }
+  .dashboard-page .fc .fc-scrollgrid,
+  .dashboard-page .fc .fc-scrollgrid-sync-table,
+  .dashboard-page .fc .fc-col-header,
+  .dashboard-page .fc .fc-daygrid-body { width: 100% !important; min-width: 0 !important; max-width: 100%; table-layout: fixed; }
+  .dashboard-page .fc .fc-scrollgrid-sync-table col,
+  .dashboard-page .fc .fc-col-header col,
+  .dashboard-page .fc .fc-daygrid-body col { width: auto !important; }
+  .dashboard-page .fc .fc-col-header-cell,
+  .dashboard-page .fc .fc-daygrid-day { width: calc(100% / 7); min-width: 0; max-width: calc(100% / 7); }
+  .dashboard-page .fc .fc-col-header-cell-cushion { font-size: 12px; padding: 6px 0 !important; white-space: nowrap; }
+  .dashboard-page .fc .fc-daygrid-day-top { flex-direction: row; justify-content: flex-start; }
+  .dashboard-page .fc .fc-daygrid-day-number { font-size: 13px; padding: 3px 4px; line-height: 1.2; min-width: 0; }
+  .dashboard-page .fc .fc-daygrid-day-frame { min-height: 44px; }
+  .dashboard-page .fc .fc-daygrid-day-events {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 3px;
+    margin: 0; padding: 0 3px 4px; min-height: 12px; min-width: 0;
+  }
+  .dashboard-page .fc .fc-daygrid-event-harness { margin: 0 !important; width: auto; }
+  .dashboard-page .fc .fc-daygrid-event-harness-abs { position: static !important; width: auto; }
+  .dashboard-page .fc .fc-daygrid-event { margin: 0 !important; padding: 0 !important; border: none !important; background: transparent !important; box-shadow: none !important; }
+  .dashboard-page .fc .fc-daygrid-event:hover { transform: none; }
+  .dashboard-page .fc .fc-daygrid-dot-event { padding: 0 !important; }
+  .dashboard-page .fc .fc-daygrid-event .fc-daygrid-event-dot,
+  .dashboard-page .fc .fc-daygrid-event .fc-event-time,
+  .dashboard-page .fc .fc-daygrid-event .fc-event-title { display: none !important; }
+  .ws-event-dot { display: inline-block; width: 7px; height: 7px; border-radius: 999px; flex-shrink: 0; }
+  .ws-event-dot.completed { opacity: 0.45; }
+  .dashboard-page .fc .fc-daygrid-more-link { font-size: 10px; line-height: 1; padding: 0 2px; margin: 0; white-space: nowrap; }
+  .dashboard-page .fc .fc-daygrid-day-bottom { margin: 0; padding: 0; font-size: 10px; min-width: 0; }
+  .dashboard-page .fc .fc-popover { max-width: calc(100vw - 24px); }
+  .dashboard-page .fc .fc-toolbar-chunk { min-width: 0; }
+  .dashboard-page .fc .fc-button { padding: 6px 10px; font-size: 13px; }
+
+  /* [JR-1] 학습일지 상세(/archive/journal/:id): 좌(본문 50%)/우(AI 요약·피드백 50%) 분할이 ≤440px 에서 둘 다 좁아
+     압축되던 문제 → 1열 세로 흐름 [제목/상단 정보] → [학습일지 상세: 핵심 키워드·학습 내용·다음 학습 계획(학습 기록)]
+     → [AI 요약/피드백]. 액션(목록/삭제)은 제목 아래 행으로. PDF 상세용 좌패널 고정 높이(58vh)는 학습일지에 적용하지 않는다. */
+  .archive-detail-container[data-detail-type="journal"] .archive-split-view {
+    display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; align-content: start;
+    overflow-y: auto; overflow-x: hidden;
+  }
+  .archive-detail-container[data-detail-type="journal"] .archive-left-panel,
+  .archive-detail-container[data-detail-type="journal"] .archive-right-panel {
+    width: 100% !important; max-width: 100%; min-width: 0; height: auto !important;
+    flex: none !important; overflow: visible !important; padding: 16px; box-sizing: border-box;
+  }
+  .archive-detail-container[data-detail-type="journal"] .archive-left-panel { border-right: none; border-bottom: 1px solid var(--color-border); }
+  .archive-detail-container[data-detail-type="journal"] .archive-right-panel { border-left: none !important; }
+  .archive-detail-container[data-detail-type="journal"] .archive-left-panel > .glass-panel,
+  .archive-detail-container[data-detail-type="journal"] .archive-right-panel .glass-panel {
+    width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; padding: 18px 16px !important;
+  }
+  .archive-detail-container[data-detail-type="journal"] .archive-left-panel p,
+  .archive-detail-container[data-detail-type="journal"] .archive-right-panel p { overflow-wrap: anywhere; min-width: 0; }
+  .archive-journal-head { flex-wrap: wrap; padding: 12px 16px !important; gap: 10px !important; }
+  .archive-journal-head .archive-journal-title { order: 1; width: 100%; min-width: 0; }
+  .archive-journal-head .archive-journal-title h2 { font-size: 17px; line-height: 1.3; overflow-wrap: anywhere; }
+  .archive-journal-head .archive-journal-actions { order: 2; width: 100%; min-width: 0; gap: 8px !important; }
+  .archive-journal-head .archive-journal-actions .btn-outline { padding: 8px 12px !important; }
+}
+
+/* 학습일지 상세 모달(자료보관함): ≤768px 에서는 좌(내용)/우(AI 요약·피드백) 2단을 세로로 쌓는다.
+   2단 그대로면 390px 에서 우측 칼럼이 ~100px 로 좁아져 피드백·재생성 오류 안내가 한 글자씩 줄바꿈된다. */
+@media (max-width: 768px) {
+  .sb-journal-body { flex-direction: column !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }
+  .sb-journal-body > .sb-journal-pane { flex: none !important; padding: 16px !important; overflow: visible !important; }
+  .sb-journal-body > .sb-journal-left { border-right: none !important; border-bottom: 1px solid var(--color-border); }
 }

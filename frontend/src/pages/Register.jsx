@@ -177,7 +177,7 @@ export default function Register() {
 
         <div style={styles.footer}>
           <span>이미 계정이 있으신가요?</span>
-          <Link to="/login" style={{ fontWeight: '600' }}>로그인</Link>
+          <Link to="/login" className="auth-inline-link" style={{ fontWeight: '600' }}>로그인</Link>
         </div>
       </div>
 

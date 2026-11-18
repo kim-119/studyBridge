@@ -104,6 +104,53 @@ ai:
     # ai07 라우터가 비활성/장애(미배포 404)일 때 EC2 로컬 결정적 분류기로 폴백:
     #   인사/자기소개/잡담→DIRECT_REPLY, 욕설/공격성→BLOCK, 그 외 학습질문→PROCEED.
     local-fallback-enabled: ${AI_INTENT_ROUTER_LOCAL_FALLBACK_ENABLED:true}
+  # 자료보관함 AI 피드백(MaterialFeedbackService). 재생성은 같은 행 갱신, 실패 시 기존 피드백 보존.
+  #  concept-review-enabled: AI07 concept_review_v1 섹션(개념 정확성/오개념/누락/심화/검증 실습) 요청 — AI07 준비 전 OFF.
+  feedback:
+    timeout-seconds: ${AI_FEEDBACK_TIMEOUT_SECONDS:125}
+    concept-review-enabled: ${AI_FEEDBACK_CONCEPT_REVIEW_ENABLED:false}
+  # 학습 추천 AI07 후보 생성(AI_RECOMMENDATION_CONTRACT_V1). OFF 면 EC2 규칙 추천만 사용. AI07 라우트 배포·계약 검증 후 ON.
+  recommendation:
+    enabled: ${AI_RECOMMENDATION_ENABLED:false}
+    timeout-seconds: ${AI_RECOMMENDATION_TIMEOUT_SECONDS:30}
+  # AI 학습 내비게이터(AdaptivePlannerService → ai07 POST /api/ai/planner/adaptive, PRIMARY 전용·failover 없음).
+  #  계약 fastapi/docs/planner/적응형_학습엔진_API_연동계약.md. timeout-seconds 는 ai07 요청 예산 30s + 여유(≥40, 다른 AI 타임아웃과 별개).
+  #  proposal-secret 이 비면 기동마다 무작위 키 — 재기동 전 받은 일정 제안은 만료(다시 계산)된다.
+  planner:
+    adaptive:
+      path: ${AI_ADAPTIVE_PLANNER_PATH:/api/ai/planner/adaptive}
+      timeout-seconds: ${AI_ADAPTIVE_PLANNER_TIMEOUT_SECONDS:45}
+      retry-max-wait-seconds: ${AI_ADAPTIVE_PLANNER_RETRY_MAX_WAIT_SECONDS:3}
+      timezone: ${AI_ADAPTIVE_PLANNER_TIMEZONE:Asia/Seoul}
+      proposal-ttl-minutes: ${AI_ADAPTIVE_PLANNER_PROPOSAL_TTL_MINUTES:30}
+      proposal-secret: ${AI_ADAPTIVE_PLANNER_PROPOSAL_SECRET:}
+      pool:
+        max-connections: ${AI_ADAPTIVE_PLANNER_POOL_MAX_CONNECTIONS:8}
+        pending-acquire-max: ${AI_ADAPTIVE_PLANNER_POOL_PENDING_ACQUIRE_MAX:16}
+        acquire-timeout-seconds: ${AI_ADAPTIVE_PLANNER_POOL_ACQUIRE_TIMEOUT_SECONDS:5}
+        max-idle-seconds: ${AI_ADAPTIVE_PLANNER_POOL_MAX_IDLE_SECONDS:4}
+  # 그룹스터디 화면공유 AI 분석(GroupScreenAiService → ai07 POST /api/ai/vision/analyze, PRIMARY 전용·failover 없음).
+  #  timeout-seconds: ai07 최악 대기 120+30s + 추론 90s 보다 길게(≥250). 공용 FASTAPI_TIMEOUT(180s)과 별개.
+  vision:
+    enabled: ${AI_VISION_ENABLED:true}
+    path: ${AI_VISION_PATH:/api/ai/vision/analyze}
+    timeout-seconds: ${AI_VISION_TIMEOUT_SECONDS:260}
+    max-body-bytes: ${AI_VISION_MAX_BODY_BYTES:2097152}
+    max-image-bytes: ${AI_VISION_MAX_IMAGE_BYTES:1048576}
+    max-long-side: ${AI_VISION_MAX_LONG_SIDE:1280}
+    min-side: ${AI_VISION_MIN_SIDE:32}
+    max-question-chars: ${AI_VISION_MAX_QUESTION_CHARS:1000}
+    consent-ttl-hours: ${AI_VISION_CONSENT_TTL_HOURS:12}
+    rate-limit:
+      per-user-per-minute: ${AI_VISION_RATE_PER_USER_PER_MINUTE:6}
+      per-group-per-minute: ${AI_VISION_RATE_PER_GROUP_PER_MINUTE:30}
+    # 비전 전용 HTTP 연결 풀(다른 AI 호출의 reactor-netty 전역 풀과 분리). 산정 근거는 WebClientConfig 주석.
+    #  acquire-timeout-seconds(연결 획득 대기) 와 timeout-seconds(AI 응답) 는 별개다.
+    pool:
+      max-connections: ${AI_VISION_POOL_MAX_CONNECTIONS:2}
+      pending-acquire-max: ${AI_VISION_POOL_PENDING_ACQUIRE_MAX:8}
+      acquire-timeout-seconds: ${AI_VISION_POOL_ACQUIRE_TIMEOUT_SECONDS:45}
+      max-idle-seconds: ${AI_VISION_POOL_MAX_IDLE_SECONDS:4}
 
 cloud:
   aws:
@@ -121,8 +168,33 @@ external-api:
     timeout: ${FASTAPI_TIMEOUT:30000}
 
 jwt:
-  secret: ${JWT_SECRET:studybridge_super_secret_key_for_jwt_token_generation_2026_spring_boot_3_security_6}
+  secret: ${JWT_SECRET}
   expiration-ms: ${JWT_EXPIRATION_MS:1800000}
+
+# 전시 방문객용 체험 계정(ExhibitAccountProperties). 로그인 ID = 별칭(test1) 또는 별칭@email-domain.
+#  · 계정당 동시 접속 max-sessions-per-account 대(기기별 Redis 세션 슬롯). 일반 사용자 인증 정책과 무관.
+#  · 요청이 session-idle-minutes 동안 없으면 슬롯 반환, session-max-hours 후 재로그인.
+#  · 기동 시 없는 계정만 생성(있으면 변경하지 않음). 전시 종료 후 비활성화는 관리자 정지(ban) — 재기동해도 되살아나지 않는다.
+exhibit:
+  accounts: ${EXHIBIT_ACCOUNTS:test1,test2,test3,test4}
+  email-domain: ${EXHIBIT_EMAIL_DOMAIN:studybridge.co.kr}
+  provision-on-startup: ${EXHIBIT_PROVISION_ON_STARTUP:true}
+  initial-password: ${EXHIBIT_INITIAL_PASSWORD:1234}
+  max-sessions-per-account: ${EXHIBIT_MAX_SESSIONS_PER_ACCOUNT:2}
+  session-idle-minutes: ${EXHIBIT_SESSION_IDLE_MINUTES:30}
+  session-max-hours: ${EXHIBIT_SESSION_MAX_HOURS:12}
+
+# Android 앱 자체 배포(APK). 원천은 S3 {s3-prefix}latest/version.json — 서버 재배포 없이 릴리즈 스크립트가 갱신한다.
+#  · 버킷은 cloud.aws.s3.bucket(비공개) 공유. 다운로드는 /downloads/android/* → Spring 302 presigned(presign-minutes).
+#  · public-base-url 은 응답 downloadUrl 의 단일 출처(메타데이터 값보다 우선).
+app:
+  android:
+    release:
+      s3-prefix: ${ANDROID_RELEASE_S3_PREFIX:android/}
+      public-base-url: ${ANDROID_RELEASE_PUBLIC_BASE_URL:https://studybridge.co.kr}
+      package-name: ${ANDROID_RELEASE_PACKAGE_NAME:kr.co.studybridge.app}
+      metadata-cache-seconds: ${ANDROID_RELEASE_METADATA_CACHE_SECONDS:30}
+      presign-minutes: ${ANDROID_RELEASE_PRESIGN_MINUTES:15}
 
 # 메인 배너 설정. 외부 이미지 원본 URL과 MCP 토큰은 서버 설정/환경변수로만 관리한다(프론트 노출 금지).
 banner:

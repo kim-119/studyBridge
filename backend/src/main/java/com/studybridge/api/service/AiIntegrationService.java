@@ -37,7 +37,6 @@ public class AiIntegrationService {
 
         private final MaterialRepository materialRepository;
         private final MaterialSummaryRepository summaryRepository;
-        private final MaterialFeedbackRepository feedbackRepository;
         private final MaterialQuizRepository quizRepository;
         private final MaterialMemoRepository memoRepository;
         private final MaterialQuestionRepository questionRepository;
@@ -673,79 +672,7 @@ public class AiIntegrationService {
                                 .build();
         }
 
-        // 피드백 가져오기 (없으면 FastAPI 호출하여 생성)
-        @Transactional
-        public FeedbackDTO getFeedback(Long userId, Long materialId) {
-                Material material = getMaterialSafely(userId, materialId);
-                return feedbackRepository.findByMaterial_MaterialId(materialId)
-                                .map(feedback -> FeedbackDTO.builder()
-                                                .feedbackId(feedback.getFeedbackId())
-                                                .materialId(materialId)
-                                                .feedbackData(feedback.getFeedbackData())
-                                                .createdAt(feedback.getCreatedAt())
-                                                .build())
-                                .orElseGet(() -> generateFeedback(material));
-        }
-
-        // L. 균형 잡힌 피드백 다시 생성 — 기존 피드백 삭제 후 balanced 모드로 재생성
-        @Transactional
-        public FeedbackDTO regenerateFeedback(Long userId, Long materialId) {
-                Material material = getMaterialSafely(userId, materialId);
-                feedbackRepository.findByMaterial_MaterialId(materialId).ifPresent(feedbackRepository::delete);
-                feedbackRepository.flush();
-                return generateFeedback(material);
-        }
-
-        private FeedbackDTO generateFeedback(Material material) {
-                String textToAnalyze = getTextToAnalyze(material);
-                if (textToAnalyze == null || textToAnalyze.isBlank()) {
-                        throw new IllegalArgumentException("학습 내용 또는 추출된 텍스트가 없어 피드백을 생성할 수 없습니다.");
-                }
-
-                // J/K. 균형 잡힌 피드백 요청(장점/권장/우려 각 8개 이상 + 마크다운 제거). ai07이 지원하면 구조화 응답.
-                Map<String, Object> requestBody = new LinkedHashMap<>();
-                requestBody.put("content", textToAnalyze);
-                requestBody.put("feedback_mode", "balanced");
-                requestBody.put("min_strengths", 8);
-                requestBody.put("min_recommendations", 8);
-                requestBody.put("min_concerns", 8);
-                requestBody.put("sanitize_markdown", true);
-                Map response;
-                try {
-                        response = fastApiWebClient.post().uri("/api/ai/feedback")
-                                        .bodyValue(requestBody).retrieve().bodyToMono(Map.class).block(Duration.ofSeconds(125));
-                } catch (Exception e) {
-                        throw aiError("피드백", e);
-                }
-
-                // J/K. ai07이 구조화 피드백(strengths/recommendations/concerns 등)을 주면 응답 전체를 JSON으로 보존,
-                //      아니면 기존 문자열(feedbackData) 보존. 프론트가 두 형태를 모두 sanitize/파싱한다.
-                String feedbackData;
-                boolean structured = response != null && (response.containsKey("strengths")
-                                || response.containsKey("recommendations") || response.containsKey("concerns")
-                                || response.containsKey("feedback_balance") || response.containsKey("summary"));
-                if (structured) {
-                        feedbackData = toJson(response, "{}");
-                } else if (response != null && response.containsKey("feedbackData")) {
-                        feedbackData = response.get("feedbackData").toString();
-                } else if (response != null && response.containsKey("feedback")) {
-                        feedbackData = response.get("feedback").toString();
-                } else {
-                        feedbackData = "피드백 생성 실패";
-                }
-                MaterialFeedback feedback = MaterialFeedback.builder()
-                                .material(material)
-                                .feedbackData(feedbackData)
-                                .build();
-                feedback = feedbackRepository.save(feedback);
-
-                return FeedbackDTO.builder()
-                                .feedbackId(feedback.getFeedbackId())
-                                .materialId(material.getMaterialId())
-                                .feedbackData(feedback.getFeedbackData())
-                                .createdAt(feedback.getCreatedAt())
-                                .build();
-        }
+        // 피드백 조회/생성/재생성은 MaterialFeedbackService 로 이전(2026-10-13 재생성 unique 위반 P0).
 
         // 퀴즈 목록 조회
         public List<QuizDTO.Response> getQuizzes(Long userId, Long materialId) {

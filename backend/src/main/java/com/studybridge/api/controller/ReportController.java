@@ -57,6 +57,20 @@ public class ReportController {
         return ResponseEntity.ok(response);
     }
 
+    // 내 신고 내역 조회 (지식보드 게시글/댓글/유저 신고 + 그룹스터디 유저 신고, 최신순)
+    //  신고자는 principal 에서만 결정한다 — 클라이언트 userId 파라미터는 받지 않는다.
+    @GetMapping("/me")
+    public ResponseEntity<List<ReportDTO.MyReportResponse>> myReports(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestParam(defaultValue = "KNOWLEDGE") String source,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        if (userDetails == null) {
+            return ResponseEntity.status(401).build();
+        }
+        return ResponseEntity.ok(reportService.getMyReports(userDetails.getId(), source, page, size));
+    }
+
     // 신고 내역 목록 조회
     @GetMapping
     public ResponseEntity<List<ReportDTO.Response>> listReports(

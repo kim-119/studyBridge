@@ -154,6 +154,8 @@ public class QuizDTO {
         private Integer attempt;         // 누적 제출 횟수(재응시 허용, 최신이 덮어씀)
         private LocalDateTime submittedAt;
         private Boolean persisted;       // Redis 저장 성공 여부(장애 시 false, 점수는 그대로 반환)
+        private Integer bestScore;       // 이 사용자의 최고점(랭킹 기준). 저장 실패 시 null
+        private Boolean duplicate;       // 같은 답안의 짧은 시간 내 재전송 → 응시 횟수에 넣지 않음
         @Builder.Default
         private List<QuestionResult> results = new ArrayList<>();
     }
@@ -174,5 +176,60 @@ public class QuizDTO {
         @Builder.Default
         private List<String> correctOptionIds = new ArrayList<>(); // 제출 이후에만 공개
         private String explanation;                                 // 제출 이후에만 공개
+    }
+
+    /**
+     * 퀴즈별 랭킹(GET /api/materials/{materialId}/quiz/{quizId}/ranking). Android 계약 frontend/docs/material-quiz-ranking-contract.md §5.
+     * 사용자 식별자(userId·email·프로필 URL)는 싣지 않는다. isMe 는 서버가 JWT 로 계산한다.
+     */
+    @Getter
+    @Setter
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class RankingResponse {
+        private Long materialId;
+        private Long quizId;
+        private String rankingPolicy;        // BEST_SCORE
+        private Integer totalQuestions;      // 채점 가능 문항 수
+        private Long totalParticipants;
+        private LocalDateTime generatedAt;
+        @Builder.Default
+        private List<RankingEntry> entries = new ArrayList<>();
+        private RankingEntry me;             // 미응시면 null
+    }
+
+    @Getter
+    @Setter
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class RankingEntry {
+        private Integer rank;                // 경쟁 순위(1,1,3)
+        private String nickname;
+        private Integer score;               // 최고점
+        private Integer correctCount;        // 최고점 달성 시 정답 수
+        private Integer totalQuestions;
+        private Integer attemptCount;
+        private LocalDateTime achievedAt;    // 최고점 달성 시각
+        @com.fasterxml.jackson.annotation.JsonProperty("isMe")
+        private Boolean isMe;
+    }
+
+    /** 그룹에 공유된 자료의 퀴즈 목록(공개 문항만 + 요청자의 최근 결과). */
+    @Getter
+    @Setter
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class SharedQuiz {
+        private Long quizId;
+        private Long materialId;
+        private String difficulty;
+        private Integer questionCount;
+        private LocalDateTime createdAt;
+        @Builder.Default
+        private List<PublicQuestion> questions = new ArrayList<>();
+        private ResultResponse lastResult;
     }
 }

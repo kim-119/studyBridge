@@ -25,6 +25,7 @@ public class MaterialController {
     private final com.studybridge.api.service.AiIntegrationService aiIntegrationService;
     private final com.studybridge.api.service.StudyNoteAnalysisService studyNoteAnalysisService;
     private final com.studybridge.api.service.MaterialQuizService materialQuizService;
+    private final com.studybridge.api.service.MaterialFeedbackService materialFeedbackService;
 
     // 학습일지 생성
     @PostMapping("/log")
@@ -180,7 +181,7 @@ public class MaterialController {
     public ResponseEntity<com.studybridge.api.dto.FeedbackDTO> getFeedback(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long materialId) {
-        return ResponseEntity.ok(aiIntegrationService.getFeedback(userDetails.getId(), materialId));
+        return ResponseEntity.ok(materialFeedbackService.get(userDetails.getId(), materialId));
     }
 
     // 균형 잡힌 피드백 다시 생성 (L)
@@ -188,7 +189,7 @@ public class MaterialController {
     public ResponseEntity<com.studybridge.api.dto.FeedbackDTO> regenerateFeedback(
             @AuthenticationPrincipal CustomUserDetails userDetails,
             @PathVariable Long materialId) {
-        return ResponseEntity.ok(aiIntegrationService.regenerateFeedback(userDetails.getId(), materialId));
+        return ResponseEntity.ok(materialFeedbackService.regenerate(userDetails.getId(), materialId));
     }
 
     @GetMapping("/{materialId}/memo")
@@ -237,6 +238,27 @@ public class MaterialController {
             @PathVariable Long materialId,
             @PathVariable Long quizId) {
         return ResponseEntity.ok(materialQuizService.latestResult(userDetails.getId(), materialId, quizId));
+    }
+
+    /**
+     * 퀴즈별 랭킹(최고점·경쟁 순위). 권한 = 응시 권한(소유자 또는 공유 그룹 멤버). limit 1~100(기본 50).
+     * 오류 {status, code, message}: 404 QUIZ_NOT_FOUND/MATERIAL_NOT_FOUND, 403 FORBIDDEN, 400 INVALID_LIMIT, 503 RANKING_UNAVAILABLE.
+     */
+    @GetMapping("/{materialId}/quiz/{quizId}/ranking")
+    public ResponseEntity<com.studybridge.api.dto.QuizDTO.RankingResponse> getQuizRanking(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId,
+            @PathVariable Long quizId,
+            @RequestParam(required = false) Integer limit) {
+        return ResponseEntity.ok(materialQuizService.ranking(userDetails.getId(), materialId, quizId, limit));
+    }
+
+    /** 그룹에 공유된 자료의 퀴즈 목록(공유 그룹 멤버·소유자). 정답 키 없는 공개 문항 + 요청자의 최근 결과. */
+    @GetMapping("/{materialId}/shared-quizzes")
+    public ResponseEntity<List<com.studybridge.api.dto.QuizDTO.SharedQuiz>> getSharedQuizzes(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long materialId) {
+        return ResponseEntity.ok(materialQuizService.sharedQuizzes(userDetails.getId(), materialId));
     }
 
     @DeleteMapping("/{materialId}/quiz/{quizId}")

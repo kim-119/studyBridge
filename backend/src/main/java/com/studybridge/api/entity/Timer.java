@@ -11,7 +11,10 @@ import org.hibernate.annotations.UpdateTimestamp;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "timers")
+@Table(name = "timers", indexes = {
+        @Index(name = "ix_timers_user_status", columnList = "user_id, status"),
+        @Index(name = "ix_timers_group_start", columnList = "group_study_id, start_time")
+})
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -39,6 +42,15 @@ public class Timer {
 
     @Column(name = "group_study_id")
     private Long groupStudyId; // 연동된 그룹스터디 ID
+
+    // 마지막 heartbeat(서버 시각). null = heartbeat 를 보내지 않는 구 클라이언트 세션(reaper 의 timeout 대상 아님).
+    // 이 시각까지의 공부시간은 이미 group_study_attendances 에 크레딧돼 있다("credited until").
+    @Column(name = "last_heartbeat_at")
+    private LocalDateTime lastHeartbeatAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "end_reason", length = 30)
+    private TimerEndReason endReason;
 
     @CreationTimestamp
     @Column(nullable = false, updatable = false)

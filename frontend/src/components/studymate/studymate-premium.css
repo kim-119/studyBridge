@@ -1677,6 +1677,8 @@
 
 /* 모바일: 좌/우 패널이 채팅을 밀어내지 않고 오버레이로 뜨도록(채팅은 항상 풀폭) */
 @media (max-width: 768px) {
+  /* 모바일 브라우저 주소창 변화에 맞춰 작업영역 높이를 동적 뷰포트로(미지원 브라우저는 vh 폴백) */
+  .container-workspace { height: calc(100vh - 80px); height: calc(100dvh - 80px); }
   .layout-3-panel { position: relative; }
   .pane-left,
   .pane-right {
@@ -1685,12 +1687,32 @@
     bottom: 0;
     z-index: 50;
     flex: 0 0 auto;
-    width: min(85vw, 320px);
+    /* 우측 패널은 인라인 width:320px 이라 !important 로 덮는다 */
+    width: min(85vw, 320px) !important;
     max-width: 85vw;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
   }
   .pane-left { left: 0; }
   .pane-right { right: 0; }
-  .pane-center { width: 100%; }
+  .pane-center { width: 100%; min-width: 0; }
+  /* 빈 상태의 장식용 absolute 글로우가 좁은 폭에서 바깥으로 삐져나오지 않게 */
+  .pane-center .empty-state { overflow: hidden; }
+  /* 열린 패널 바깥을 탭하면 닫히는 백드롭(StudyMate.jsx 가 모바일에서만 렌더) */
+  .pane-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 49;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: rgba(17, 24, 39, 0.35);
+    cursor: pointer;
+  }
+  /* 패널이 열려 있는 동안엔 가장자리 토글을 숨긴다(패널 폭과 겹침 방지, 닫기는 백드롭으로) */
+  .pane-toggle.is-open { display: none !important; }
+  /* 채팅/교수님들과 대화/마인드맵 3탭이 한 줄에 들어가도록 축소 */
+  .study-view-tabs .view-tab-btn { padding: 9px 6px; font-size: 12px; gap: 5px; white-space: nowrap; }
+  .chat-input-premium { padding-left: 12px; }
 }
 
 

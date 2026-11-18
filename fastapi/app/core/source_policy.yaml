@@ -1,0 +1,138 @@
+# ============================================================
+# 소스 라우팅 정책
+# academic_source_router.py가 이 파일을 참조한다.
+# ============================================================
+
+sources:
+  rag:
+    enabled: true
+    priority: 1
+
+  wikipedia:
+    enabled: true
+    priority: 3
+
+  tavily:
+    enabled: true
+    priority: 4
+
+  openalex:
+    enabled_env: OPENALEX_ENABLED
+    api_key_env: OPENALEX_API_KEY
+    base_url_env: OPENALEX_BASE_URL
+    only_for_knowledge_level: "박사"
+    min_publication_date_env: OPENALEX_MIN_PUBLICATION_DATE
+    min_publication_date_default: "2020-01-01"
+    expose_to_user_default: false
+    per_page_env: OPENALEX_PER_PAGE
+    per_page_default: 3
+    sort_env: OPENALEX_SORT
+    sort_default: "cited_by_count:desc"
+    timeout_env: OPENALEX_TIMEOUT_SECONDS
+    timeout_default: 8
+
+
+# ── 도메인별 소스 라우팅 ──────────────────────────────────
+domain_source_routing:
+  mathematics:
+    primary: ["rag", "wikipedia"]
+    doctoral_extra: ["openalex"]
+
+  physics:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  chemistry:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  biology:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  psychology:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  philosophy:
+    primary: ["rag", "wikipedia"]
+    doctoral_extra: ["openalex"]
+
+  economics:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  law:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+    high_stakes_policy: "educational_only"
+
+  medicine_health:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+    high_stakes_policy: "educational_only"
+
+  computer_science:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  education:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  sociology:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  history:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  literature:
+    primary: ["rag", "wikipedia"]
+    doctoral_extra: ["openalex"]
+
+  linguistics:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  art_design:
+    primary: ["rag", "wikipedia"]
+    doctoral_extra: ["openalex"]
+
+  engineering:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  environment:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  business:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  general_study:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+  unknown:
+    primary: ["rag", "wikipedia", "tavily"]
+    doctoral_extra: ["openalex"]
+
+
+# ── source leakage 금지 표현 ──────────────────────────────
+leakage_guard:
+  forbidden_phrases:
+    - "OpenAlex"
+    - "논문에서 발췌"
+    - "2020년 이후 논문"
+    - "최근 논문에 따르면"
+    - "인용 수"
+    - "DOI:"
+    - "doi.org"
+    - "학술 문헌에 따르면"
+    - "발표된 연구에 따르면"
+    - "피인용 횟수"
+    - "arXiv"
+  max_rewrite_attempts: 1

@@ -42,6 +42,10 @@ public class GroupStudyMember {
     @Column(nullable = false)
     private Integer points = 0; // 그룹 내에서 획득한 포인트 (퀴즈 게임용)
 
+    // 그룹 내 별칭(닉네임 규칙 ON 인 그룹에서 가입 시 입력). null 이면 사용자 표시명을 그대로 쓴다.
+    @Column(name = "nickname", length = 30)
+    private String nickname;
+
     @CreationTimestamp
     @Column(name = "joined_at", updatable = false)
     private LocalDateTime joinedAt;

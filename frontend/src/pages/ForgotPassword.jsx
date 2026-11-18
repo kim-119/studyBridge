@@ -442,7 +442,7 @@ export default function ForgotPassword() {
         )}
 
         <p style={{ textAlign: 'center', marginTop: '20px', color: 'var(--color-text-muted)' }}>
-          <Link to="/login" style={{ color: 'var(--color-primary)', fontWeight: '600', textDecoration: 'none' }}>
+          <Link to="/login" className="auth-inline-link" style={{ color: 'var(--color-primary)', fontWeight: '600', textDecoration: 'none' }}>
             로그인으로 돌아가기
           </Link>
         </p>

@@ -8,7 +8,11 @@ import org.hibernate.annotations.UpdateTimestamp;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "group_study_quiz_sessions")
+// 랭킹/재구축 집계(GroupStudyQuizSessionAnswerRepository.aggregate*)와 세션 조회가 group_study_id 로 필터하므로 인덱스를 둔다.
+// 답안 쪽은 기존 unique(session_id, user_id, question_id) 의 선행 컬럼 session_id 로 조인된다.
+@Table(name = "group_study_quiz_sessions", indexes = {
+        @Index(name = "ix_gsq_sessions_group_created", columnList = "group_study_id, created_at")
+})
 @Getter
 @Setter
 @NoArgsConstructor

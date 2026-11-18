@@ -766,7 +766,7 @@ export default function Planner() {
             <section className="rounded-[20px] border border-[#E5E7EB] bg-white p-5 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
               <div className="mb-3 flex items-center gap-2 text-[14px] font-extrabold text-[#111827]">
                 <Layers size={16} strokeWidth={2.2} style={{ color: GREEN_DARK }} /> 내 학습 요약
-                <span className="rounded-full bg-[#F4FBF2] px-2 py-0.5 text-[11px] font-bold text-[#15803D]">{tabLabel} 플래너</span>
+                <span className="whitespace-nowrap rounded-full bg-[#F4FBF2] px-2 py-0.5 text-[11px] font-bold text-[#15803D]">{tabLabel} 플래너</span>
               </div>
               <div className="grid grid-cols-3 gap-2.5">
                 <SummaryStat label={`${tabLabel} 플래너`} value={`${summary.total}개`} />

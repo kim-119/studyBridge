@@ -12,6 +12,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.mail.MailAuthenticationException;
+import org.springframework.mail.MailSendException;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
 
@@ -106,14 +108,117 @@ public class PasswordResetMailService {
             alternative.addBodyPart(textPart);
             alternative.addBodyPart(htmlPart);
             message.setContent(alternative);
-            mailSender.send(message);
-            log.info("[password-reset] 인증메일 발송 완료 to={}", mask(toEmail));
+            deliver(message, toEmail);
+        } catch (PasswordResetException | AcceptanceUnconfirmed e) {
+            throw e;
         } catch (Exception e) {
-            // 메시지에 SMTP 응답만 남기고 인증번호/비밀번호는 포함하지 않는다.
+            // 메시지 구성 실패 등. 메시지에 SMTP 응답만 남기고 인증번호/비밀번호는 포함하지 않는다.
             log.error("[password-reset] 인증메일 발송 실패 to={} host={}:{} cause={}",
                     mask(toEmail), smtpHost, smtpPort, summarize(e));
-            throw new PasswordResetException(HttpStatus.SERVICE_UNAVAILABLE, PasswordResetException.Reason.MAIL_SEND_FAILED,
-                    "인증메일 발송에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+            throw sendFailed();
+        }
+    }
+
+    /**
+     * SMTP 가 메시지를 받았는지 확인하지 못함(본문까지 보낸 뒤 응답 대기 시간 초과 등) — 메일이 실제로 도착했을 수 있다.
+     * 호출자(PasswordResetService)는 이 경우 인증번호를 저장해 도착한 메일의 번호가 검증되게 한다(2026-11-04 장애 대응).
+     */
+    public static final class AcceptanceUnconfirmed extends RuntimeException {
+        public AcceptanceUnconfirmed() {
+            super("SMTP acceptance unconfirmed", null, false, false);
+        }
+    }
+
+    /** 연결 단계(접속·EHLO·STARTTLS·AUTH) 일시 오류 재시도 횟수 포함 총 시도. 이 단계 실패는 메일이 나가지 않았으므로 중복 발송이 없다. */
+    static final int MAX_CONNECT_ATTEMPTS = 2;
+    static final long CONNECT_RETRY_BACKOFF_MS = 500;
+
+    /**
+     * 2026-11-04 장애 근거: smtp.gmail.com:587 이 4분 동안 응답을 늦게 줘 연결 단계 3건·전송 단계 2건이 Read timed out 으로 실패했다.
+     *  · 연결 단계(Spring: "Mail server connection failed") 일시 오류 → 새 연결로 1회 재시도.
+     *  · 전송 단계 응답 시간 초과 → 수락 여부 불명(도착했을 수 있음) → AcceptanceUnconfirmed.
+     *  · 인증 실패·수신자 거절 등 확정 오류 → MAIL_SEND_FAILED(503). 성공 위장 금지.
+     */
+    void deliver(MimeMessage message, String toEmail) {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                mailSender.send(message);
+                log.info("[password-reset] 인증메일 발송 완료 to={}{}", mask(toEmail), attempt > 1 ? " (재시도 " + attempt + "회차)" : "");
+                return;
+            } catch (MailAuthenticationException e) {
+                log.error("[password-reset] SMTP 인증 실패(계정·앱 비밀번호 확인 필요) to={} host={}:{} cause={}",
+                        mask(toEmail), smtpHost, smtpPort, summarize(e));
+                throw sendFailed();
+            } catch (MailSendException e) {
+                boolean connectPhase = isConnectPhase(e);
+                if (connectPhase && attempt < MAX_CONNECT_ATTEMPTS && isTransientNetwork(e)) {
+                    log.warn("[password-reset] SMTP 연결 단계 일시 오류 — 재시도 to={} host={}:{} attempt={} cause={}",
+                            mask(toEmail), smtpHost, smtpPort, attempt, summarize(e));
+                    sleepQuietly(CONNECT_RETRY_BACKOFF_MS);
+                    continue;
+                }
+                if (!connectPhase && hasCause(e, java.net.SocketTimeoutException.class)) {
+                    log.warn("[password-reset] SMTP 전송 단계 응답 시간 초과 — 수락 여부 불명(도착 가능), 인증번호는 저장 to={} host={}:{}",
+                            mask(toEmail), smtpHost, smtpPort);
+                    throw new AcceptanceUnconfirmed();
+                }
+                log.error("[password-reset] 인증메일 발송 실패 to={} host={}:{} phase={} attempt={} cause={}",
+                        mask(toEmail), smtpHost, smtpPort, connectPhase ? "connect" : "send", attempt, summarize(e));
+                throw sendFailed();
+            } catch (RuntimeException e) {
+                log.error("[password-reset] 인증메일 발송 실패 to={} host={}:{} cause={}", mask(toEmail), smtpHost, smtpPort, summarize(e));
+                throw sendFailed();
+            }
+        }
+    }
+
+    private static PasswordResetException sendFailed() {
+        return new PasswordResetException(HttpStatus.SERVICE_UNAVAILABLE, PasswordResetException.Reason.MAIL_SEND_FAILED,
+                "인증메일 발송에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+    }
+
+    /** Spring JavaMailSenderImpl: 접속·인증 단계 실패는 "Mail server connection failed" 로 감싼다(전송 단계는 "Failed messages"). */
+    static boolean isConnectPhase(MailSendException e) {
+        return e.getMessage() != null && e.getMessage().startsWith("Mail server connection failed");
+    }
+
+    static boolean isTransientNetwork(Throwable e) {
+        return hasCause(e, java.net.SocketTimeoutException.class) || hasCause(e, java.net.ConnectException.class)
+                || hasCause(e, java.net.UnknownHostException.class) || hasCause(e, java.net.NoRouteToHostException.class)
+                || hasCause(e, javax.net.ssl.SSLException.class);
+    }
+
+    /** cause 사슬 + MailSendException 의 메시지별 예외 + MessagingException.getNextException 까지 따라간다. */
+    static boolean hasCause(Throwable e, Class<? extends Throwable> type) {
+        java.util.ArrayDeque<Throwable> q = new java.util.ArrayDeque<>();
+        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        q.add(e);
+        while (!q.isEmpty()) {
+            Throwable t = q.poll();
+            if (t == null || !seen.add(t)) {
+                continue;
+            }
+            if (type.isInstance(t)) {
+                return true;
+            }
+            if (t.getCause() != null) {
+                q.add(t.getCause());
+            }
+            if (t instanceof jakarta.mail.MessagingException me && me.getNextException() != null) {
+                q.add(me.getNextException());
+            }
+            if (t instanceof MailSendException mse) {
+                q.addAll(java.util.Arrays.asList(mse.getMessageExceptions()));
+            }
+        }
+        return false;
+    }
+
+    private static void sleepQuietly(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
         }
     }
 
