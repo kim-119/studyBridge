@@ -18,17 +18,14 @@ const DEVICE_STATUS_LABEL = {
   [DEVICE_STATUS.ERROR]: '사용 불가',
 };
 
-function DeviceStatusRow({ icon, label, status, errorMessage, children }) {
+function DeviceStatusChip({ icon, label, status, children }) {
   return (
-    <li className="mobile-prejoin__device">
-      <span className="mobile-prejoin__device-icon">{icon}</span>
-      <span className="mobile-prejoin__device-body">
-        <span className="mobile-prejoin__device-name">{label}</span>
-        <span className={`mobile-prejoin__device-status is-${status}`}>
-          {errorMessage || DEVICE_STATUS_LABEL[status]}
-        </span>
-        {children}
+    <li className={`mobile-prejoin__status is-${status}`}>
+      {icon}
+      <span>
+        {label} {DEVICE_STATUS_LABEL[status]}
       </span>
+      {children}
     </li>
   );
 }
@@ -133,26 +130,21 @@ export default function VideoPreJoin({ groupTitle, onJoin }) {
         </button>
       </div>
 
-      <ul className="mobile-prejoin__devices">
-        <DeviceStatusRow
-          icon={<Video size={18} />}
-          label={facingMode === FACING_MODE.FRONT ? '카메라 (전면)' : '카메라 (후면)'}
+      <ul className="mobile-prejoin__statuses">
+        <DeviceStatusChip
+          icon={<Video size={14} />}
+          label={facingMode === FACING_MODE.FRONT ? '전면 카메라' : '후면 카메라'}
           status={camera.status}
-          errorMessage={camera.errorMessage}
         />
-        <DeviceStatusRow
-          icon={<Mic size={18} />}
-          label="마이크"
-          status={microphone.status}
-          errorMessage={microphone.errorMessage}
-        >
+        <DeviceStatusChip icon={<Mic size={14} />} label="마이크" status={microphone.status}>
           {microphone.status === DEVICE_STATUS.READY && (
             <span className="mobile-prejoin__meter" aria-label={`입력 레벨 ${microphone.level}`}>
               <span style={{ width: `${microphone.level}%` }} />
             </span>
           )}
-        </DeviceStatusRow>
+        </DeviceStatusChip>
       </ul>
+      {microphone.errorMessage && <p className="mobile-field__error">{microphone.errorMessage}</p>}
 
       <p className="mobile-field__hint mobile-prejoin__entry-mode">{describeEntryMode({ isCameraOn, isMicOn })}</p>
 

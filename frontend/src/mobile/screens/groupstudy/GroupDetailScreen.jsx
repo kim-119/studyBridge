@@ -11,40 +11,32 @@ import { useAsync, useSubmit } from '../../data/useAsync';
 import ConfirmAction from './ConfirmAction';
 import GroupInfoCard from './GroupInfoCard';
 import LeaderConsole from './LeaderConsole';
-import { DEFAULT_COVER_IMAGE_URL, MEMBERSHIP, resolveMembership } from './groupStudyModel';
-
-const PRIVATE_APPLY_DEFAULT_MESSAGE = '안녕하세요! 가입 신청합니다.';
-const PUBLIC_JOIN_MESSAGE = '공개 스터디 바로 참가';
+import { JOIN_ANSWER_MAX_LENGTH, NICKNAME_MAX_LENGTH } from '../../../utils/groupStudy.js';
+import {
+  DEFAULT_COVER_IMAGE_URL,
+  GUEST_JOIN_MODE,
+  MEMBERSHIP,
+  buildJoinRequest,
+  describeGuestJoin,
+  resolveMembership,
+} from './groupStudyModel';
 
 function serverMessageOf(action) {
   return action.error?.response?.data?.message || action.errorMessage;
 }
 
 function GuestActions({ group, onJoined }) {
-  const [introduction, setIntroduction] = useState('');
-  const [hasApplied, setApplied] = useState(false);
-  const isFull = Number(group.currentCount) >= Number(group.capacity);
+  const [joinAnswer, setJoinAnswer] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [inputError, setInputError] = useState(null);
+  const guestJoin = describeGuestJoin(group);
 
-  const apply = useSubmit(async () => {
-    if (group.isPublic) {
-      await groupService.applyGroup(group.id, { introduction: PUBLIC_JOIN_MESSAGE });
-      await onJoined();
-      return;
-    }
-
-    await groupService.applyGroup(group.id, {
-      introduction: introduction.trim() || PRIVATE_APPLY_DEFAULT_MESSAGE,
-    });
-    setApplied(true);
+  const apply = useSubmit(async (payload) => {
+    await groupService.applyGroup(group.id, payload);
+    await onJoined();
   });
 
-  if (hasApplied) {
-    return (
-      <p className="mobile-notice">신청 완료! 방장의 승인을 기다려주세요. 승인되면 스터디룸에 입장할 수 있습니다.</p>
-    );
-  }
-
-  if (isFull) {
+  if (guestJoin.mode === GUEST_JOIN_MODE.FULL) {
     return (
       <Button fullWidth disabled>
         정원이 마감되었습니다
@@ -52,21 +44,47 @@ function GuestActions({ group, onJoined }) {
     );
   }
 
+  if (guestJoin.mode === GUEST_JOIN_MODE.INVITE_ONLY) {
+    return <p className="mobile-notice">비공개 스터디는 방장의 초대 링크로만 참여할 수 있습니다.</p>;
+  }
+
+  const join = () => {
+    const request = buildJoinRequest(group, { joinAnswer, nickname });
+    setInputError(request.error || null);
+    if (request.error) return;
+    apply.submit(request.payload).catch(() => {});
+  };
+
   return (
     <section className="mobile-section">
-      {!group.isPublic && (
+      {guestJoin.joinQuestion !== null && (
+        <>
+          <p className="mobile-paragraph">
+            <strong>가입 질문</strong> {guestJoin.joinQuestion}
+          </p>
+          <TextField
+            as="textarea"
+            label="가입 질문 답변"
+            value={joinAnswer}
+            maxLength={JOIN_ANSWER_MAX_LENGTH}
+            onChange={(event) => setJoinAnswer(event.target.value)}
+          />
+        </>
+      )}
+      {guestJoin.nicknameRule !== null && (
         <TextField
-          as="textarea"
-          label="방장에게 보낼 참가 신청 메시지 (선택)"
-          value={introduction}
-          placeholder="자기소개나 각오 등 방장에게 어필할 메시지를 남겨보세요!"
-          onChange={(event) => setIntroduction(event.target.value)}
+          label="그룹 닉네임"
+          hint={`닉네임 규칙: ${guestJoin.nicknameRule}`}
+          value={nickname}
+          maxLength={NICKNAME_MAX_LENGTH}
+          onChange={(event) => setNickname(event.target.value)}
         />
       )}
-      <Button fullWidth isLoading={apply.isSubmitting} onClick={() => apply.submit().catch(() => {})}>
-        {group.isPublic ? '바로 참여하기' : '참가 신청'}
+      <Button fullWidth isLoading={apply.isSubmitting} onClick={join}>
+        바로 참여하기
       </Button>
-      {apply.error && <p className="mobile-auth__error">{serverMessageOf(apply)}</p>}
+      {inputError && <p className="mobile-auth__error">{inputError}</p>}
+      {!inputError && apply.error && <p className="mobile-auth__error">{serverMessageOf(apply)}</p>}
     </section>
   );
 }

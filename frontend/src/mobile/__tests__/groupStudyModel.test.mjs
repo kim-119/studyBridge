@@ -7,7 +7,6 @@ import {
   buildConnectionData,
   countStudyDays,
   describeCardAction,
-  describeConnection,
   describeMemberEvent,
   resolveMembership,
   selectVisibleGroups,
@@ -16,6 +15,7 @@ import {
   validateCoverImageFile,
   validateCreateForm,
 } from '../screens/groupstudy/groupStudyModel.js';
+import { parseConnectionIdentity } from '../screens/groupstudy/connectionIdentity.js';
 
 const VALID_FORM = {
   title: '알고리즘 스터디',
@@ -25,6 +25,12 @@ const VALID_FORM = {
   endDate: '2026-12-31',
   capacity: 10,
   isPublic: false,
+  studyType: 'GENERAL',
+  targetStudyMinutes: 240,
+  joinQuestionEnabled: false,
+  joinQuestion: '',
+  nicknameRuleEnabled: false,
+  nicknameRule: '',
 };
 
 test('백엔드 CreateRequest 제약과 같은 기준으로 생성 폼을 검증한다', () => {
@@ -100,7 +106,7 @@ test('커버 이미지가 없으면 웹 기본 이미지를 쓰고, 정원이 �
   const [full, mine] = selectVisibleGroups(GROUPS, { userId: 7, visibility: VISIBILITY.PUBLIC, keyword: '' });
   assert.equal(full.coverUrl, 'https://s3/cover.png');
   assert.equal(mine.coverUrl, DEFAULT_COVER_IMAGE_URL);
-  assert.deepEqual(describeCardAction(full), { label: '정원 마감', disabled: true });
+  assert.deepEqual(describeCardAction(full, 'guest'), { label: '정원 마감', disabled: true, target: 'detail' });
   assert.equal(describeCardAction(mine).label, '내 스터디');
 });
 
@@ -115,9 +121,11 @@ test('멤버십은 방장, 가입 멤버, 비회원으로 구분한다', () => {
 test('OpenVidu 연결 데이터는 웹과 같은 {userId, clientData} 형식이고 양방향으로 이름을 읽는다', () => {
   const data = JSON.parse(buildConnectionData('7', '김민서'));
   assert.deepEqual(data, { userId: '7', clientData: '김민서' });
-  assert.deepEqual(describeConnection(data), { userId: '7', name: '김민서' });
-  assert.equal(describeConnection({ name: '구버전' }).name, '구버전');
-  assert.equal(describeConnection({}).name, null);
+  const identity = parseConnectionIdentity(JSON.stringify(data));
+  assert.equal(identity.userId, '7');
+  assert.equal(identity.name, '김민서');
+  assert.equal(parseConnectionIdentity(JSON.stringify({ name: '구버전' })).name, '구버전');
+  assert.equal(parseConnectionIdentity('').name, null);
 });
 
 test('채팅 이력은 일반 채팅과 AI 대화로 나뉜다', () => {

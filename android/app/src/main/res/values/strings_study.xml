@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="studybridge_api_base_url" translatable="false">https://studybridge.co.kr</string>
+
+    <string name="study_channel_session_name">학습 상태</string>
+    <string name="study_channel_session_description">공부 중인 상태와 학습 동작 결과를 보여줍니다.</string>
+    <string name="study_channel_reminder_description">설정한 시간에 학습 알림을 보냅니다.</string>
+    <string name="study_channel_reminder_sound_vibration_name">학습 알림 (소리·진동)</string>
+    <string name="study_channel_reminder_sound_name">학습 알림 (소리)</string>
+    <string name="study_channel_reminder_vibration_name">학습 알림 (진동)</string>
+    <string name="study_channel_reminder_silent_name">학습 알림 (무음)</string>
+
+    <string name="study_notification_studying_text">공부를 시작했습니다. 학습 시작: %1$s</string>
+    <string name="study_notification_studying_subtext">공부 중</string>
+    <string name="study_notification_reminder_text">지금 공부를 시작해 볼까요?</string>
+
+    <string name="study_action_start">공부 시작</string>
+    <string name="study_action_stop">공부 종료</string>
+    <string name="study_action_snooze">10분 뒤 알림</string>
+    <string name="study_action_open_app">앱에서 열기</string>
+
+    <string name="study_feedback_stopped">공부를 종료했습니다. 학습 시간이 기록되었습니다.</string>
+    <string name="study_feedback_not_studying">진행 중인 공부가 없습니다.</string>
+    <string name="study_feedback_group_active">그룹 스터디가 진행 중입니다. 스터디룸에서 확인해 주세요.</string>
+    <string name="study_feedback_login_required">로그인 확인이 필요합니다. 눌러서 앱을 열면 요청한 동작을 이어서 처리합니다.</string>
+    <string name="study_feedback_network">네트워크에 연결할 수 없어 처리하지 못했습니다.</string>
+    <string name="study_feedback_server">서버가 응답하지 않아 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.</string>
+    <string name="study_feedback_busy">이전 요청을 처리하고 있습니다.</string>
+
+    <string name="study_tile_label">StudyBridge 공부</string>
+
+    <string name="study_widget_description">오늘 공부시간과 공부 시작·종료 버튼</string>
+    <string name="study_widget_logo_description">StudyBridge 앱 열기</string>
+    <string name="study_widget_today_placeholder">오늘 공부 기록 확인 중</string>
+    <string name="study_widget_status_placeholder">공부를 시작해 보세요</string>
+
+    <string name="reminder_settings_title">학습 알림 설정</string>
+    <string name="reminder_add_title">학습 알람 추가</string>
+    <string name="reminder_edit_title">학습 알람 수정</string>
+    <string name="reminder_add">알람 추가</string>
+    <string name="reminder_empty">등록된 학습 알람이 없습니다.\n알람 추가를 눌러 공부할 시간을 정해 보세요.</string>
+    <string name="reminder_signed_out">StudyBridge 앱에 로그인한 뒤 학습 알림을 설정할 수 있습니다.</string>
+    <string name="reminder_section_permissions">알림 상태</string>
+    <string name="reminder_section_list">학습 알람</string>
+    <string name="reminder_section_shortcuts">빠른 설정·홈 화면 바로가기</string>
+    <string name="reminder_notification_allowed">알림이 허용되어 있습니다.</string>
+    <string name="reminder_notification_blocked">알림이 꺼져 있어 학습 알림이 표시되지 않습니다.</string>
+    <string name="reminder_notification_permission">알림 허용</string>
+    <string name="reminder_exact_alarm_allowed">정해진 시각에 정확히 알립니다.</string>
+    <string name="reminder_exact_alarm_inexact">정확한 알람이 허용되지 않아 알림이 최대 1시간까지 늦게 올 수 있습니다.</string>
+    <string name="reminder_exact_alarm_permission">정확한 알람 허용</string>
+    <string name="reminder_exact_alarm_unavailable">이 기기에서는 정확한 알람 설정 화면을 열 수 없습니다.</string>
+    <string name="reminder_tile_guide_button">빠른 설정 패널에 공부 시작·종료 버튼을 추가할 수 있습니다.</string>
+    <string name="reminder_tile_guide_manual">상단 바를 두 번 내려 연필(편집) 버튼을 누른 뒤 \'StudyBridge 공부\' 타일을 끌어다 놓으면 추가됩니다.</string>
+    <string name="reminder_add_tile">빠른 설정에 추가</string>
+    <string name="reminder_widget_guide_button">홈 화면에 오늘 공부시간과 공부 시작·종료 버튼을 두는 위젯을 추가할 수 있습니다.</string>
+    <string name="reminder_widget_guide_manual">홈 화면을 길게 누른 뒤 위젯 목록에서 StudyBridge 공부 위젯을 추가해 주세요.</string>
+    <string name="reminder_add_widget">홈 화면에 위젯 추가</string>
+    <string name="reminder_tile_added">빠른 설정에 공부 버튼을 추가했습니다.</string>
+    <string name="reminder_tile_already_added">이미 빠른 설정에 추가되어 있습니다.</string>
+    <string name="reminder_tile_not_added">빠른 설정에 추가하지 않았습니다.</string>
+
+    <string name="reminder_edit">수정</string>
+    <string name="reminder_delete">삭제</string>
+    <string name="reminder_cancel">취소</string>
+    <string name="reminder_save">저장</string>
+    <string name="reminder_delete_title">알람 삭제</string>
+    <string name="reminder_delete_message">\'%1$s\' 알람을 삭제할까요?</string>
+    <string name="reminder_enabled_on">알림 켜짐</string>
+    <string name="reminder_enabled_off">알림 꺼짐</string>
+
+    <string name="reminder_title_label">알림 문구</string>
+    <string name="reminder_title_hint">공부할 시간이에요</string>
+    <string name="reminder_title_too_long">알림 문구는 %1$d자 이하로 입력해 주세요.</string>
+    <string name="reminder_time_label">알림 시간</string>
+    <string name="reminder_pick_time">시간 선택</string>
+    <string name="reminder_use_24_hour">24시간 형식으로 표시</string>
+    <string name="reminder_time_invalid">알림 시간을 다시 선택해 주세요.</string>
+    <string name="reminder_repeat_label">반복 요일 (선택하지 않으면 한 번만 알립니다)</string>
+    <string name="reminder_day_monday">월</string>
+    <string name="reminder_day_tuesday">화</string>
+    <string name="reminder_day_wednesday">수</string>
+    <string name="reminder_day_thursday">목</string>
+    <string name="reminder_day_friday">금</string>
+    <string name="reminder_day_saturday">토</string>
+    <string name="reminder_day_sunday">일</string>
+    <string name="reminder_enabled_label">알림 사용</string>
+    <string name="reminder_alert_label">소리·진동</string>
+    <string name="reminder_alert_sound_vibration">소리와 진동</string>
+    <string name="reminder_alert_sound">소리만</string>
+    <string name="reminder_alert_vibration">진동만</string>
+    <string name="reminder_alert_silent">무음</string>
+    <string name="reminder_alert_hint">알림음 종류와 세부 설정은 Android 알림 설정에서 바꿀 수 있습니다.</string>
+    <string name="reminder_channel_settings">Android 알림 설정 열기</string>
+
+    <string name="reminder_scheduled_exact">다음 알림: %1$s</string>
+    <string name="reminder_scheduled_inexact">다음 알림: %1$s (정확한 알람이 허용되지 않아 늦게 울릴 수 있음)</string>
+    <string name="reminder_saved_disabled">알람을 저장했습니다. 알림은 꺼져 있습니다.</string>
+    <string name="reminder_schedule_failed">알람을 저장했지만 예약하지 못했습니다.</string>
+</resources>

@@ -9,9 +9,9 @@ export async function checkMediaPermissions() {
   return StudyBridgeMedia.checkMediaPermissions();
 }
 
-export async function requestMediaPermissions() {
+export async function requestMediaPermissions({ camera = true, microphone = true } = {}) {
   if (!Capacitor.isNativePlatform()) return WEB_FALLBACK;
-  return StudyBridgeMedia.requestMediaPermissions();
+  return StudyBridgeMedia.requestMediaPermissions({ camera, microphone });
 }
 
 export async function startVoiceSession({ speakerphone = true } = {}) {

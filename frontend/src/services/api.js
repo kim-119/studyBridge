@@ -23,6 +23,9 @@ export const AI_FALLBACK_TIMEOUT_MS = Number(
   import.meta.env.VITE_AI_FALLBACK_TIMEOUT_MS || 90000
 );
 
+// AI 학습 내비게이터 전용 timeout. Spring 응답 상한(ai.planner.adaptive.timeout-seconds 45s) + 429/503 1회 재시도 여유.
+export const ADAPTIVE_TIMEOUT_MS = Number(import.meta.env.VITE_ADAPTIVE_TIMEOUT_MS || 60000);
+
 const hostname =
   typeof window !== 'undefined'
     ? window.location.hostname === 'localhost'
@@ -783,13 +786,22 @@ export const roomService = {
 };
 
 export const timerService = {
-  startTimer: async (userId, startTime) => {
-    const res = await api.post('/api/timers/start', { startTime });
+  // supportsHeartbeat=true 는 호출자가 30초 heartbeat 를 보낼 때만 켠다(서버는 heartbeat 가 끊기면 마지막 heartbeat 시각으로 자동 종료).
+  startTimer: async (userId, startTime, { supportsHeartbeat = false } = {}) => {
+    const body = supportsHeartbeat ? { startTime, supportsHeartbeat: true } : { startTime };
+    const res = await api.post('/api/timers/start', body);
     return res.data;
   },
 
-  endTimer: async (userId, endTime, durationSeconds) => {
-    const res = await api.post('/api/timers/end', { endTime, durationSeconds });
+  // 활성 세션 없음 → 204(빈 응답)
+  heartbeat: async () => {
+    const res = await api.post('/api/timers/heartbeat');
+    return res.data || null;
+  },
+
+  endTimer: async (userId, endTime, durationSeconds, reason) => {
+    const body = reason ? { endTime, durationSeconds, reason } : { endTime, durationSeconds };
+    const res = await api.post('/api/timers/end', body);
     return res.data;
   },
 
@@ -1017,6 +1029,18 @@ export const materialService = {
     return res.data;
   },
 
+  // 퀴즈별 랭킹(서버가 최고점·경쟁 순위를 계산). 오류 본문 {status, code, message}.
+  getQuizRanking: async (materialId, quizId, { limit = 50 } = {}) => {
+    const res = await api.get(`/api/materials/${materialId}/quiz/${quizId}/ranking`, { params: { limit } });
+    return res.data;
+  },
+
+  // 그룹에 공유된 자료의 퀴즈 목록(공유 그룹 멤버·소유자). 정답 키 없는 공개 문항 + 내 최근 결과.
+  getSharedQuizzes: async (materialId) => {
+    const res = await api.get(`/api/materials/${materialId}/shared-quizzes`);
+    return res.data;
+  },
+
   deleteQuiz: async (materialId, quizId) => {
     const res = await api.delete(`/api/materials/${materialId}/quiz/${quizId}`);
     return res.data;
@@ -1131,6 +1155,33 @@ export const folderService = {
 };
 
 export const groupService = {
+  // 화면공유 AI 분석(EC2 → ai07 VLM). 오류 본문 {status, code, message, retryable[, retryAfterSeconds]}.
+  getScreenAiShares: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/screen-ai/shares`);
+    return res.data;
+  },
+
+  setScreenAiConsent: async (groupId, connectionId, allowed) => {
+    const res = await api.put(`/api/groups/${groupId}/screen-ai/shares/${connectionId}/consent`, { allowed });
+    return res.data;
+  },
+
+  analyzeScreen: async (groupId, body, { signal, timeoutMs } = {}) => {
+    const res = await api.post(`/api/groups/${groupId}/screen-ai/analyze`, body, { signal, timeout: timeoutMs });
+    return res.data;
+  },
+
+  cancelScreenAnalysis: async (groupId, clientRequestId) => {
+    const res = await api.delete(`/api/groups/${groupId}/screen-ai/analyze/${clientRequestId}`);
+    return res.data;
+  },
+
+  // 이 그룹에 공유된 PDF 자료(그룹 멤버만). [{ materialId, title, ownerNickname, quizCount, sharedAt, mine }]
+  getSharedMaterials: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/shared-materials`);
+    return res.data;
+  },
+
   getGroups: async () => {
     const res = await api.get('/api/groups');
     return res.data;
@@ -1244,6 +1295,30 @@ export const groupService = {
 
   getVideoToken: async (id) => {
     const res = await api.post(`/api/groups/${id}/video/token`);
+    return res.data;
+  },
+
+  // 화면공유(SCREEN) 토큰. 내 active PRIMARY Connection 에 귀속, 사용자당 1개·그룹당 서버 한도(기본 2).
+  // 오류 code: NOT_GROUP_MEMBER · CONNECTION_OWNER_MISMATCH · INVALID_CONNECTION_ID · PRIMARY_NOT_ACTIVE
+  //           · SCREEN_ALREADY_ACTIVE · SCREEN_START_IN_PROGRESS · SCREEN_SHARE_LIMIT_REACHED
+  getScreenShareToken: async (groupId, { primaryConnectionId, clientInstanceId, deviceType }) => {
+    const res = await api.post(`/api/groups/${groupId}/video/screen-token`, {
+      primaryConnectionId,
+      clientInstanceId,
+      deviceType,
+    });
+    return res.data;
+  },
+
+  // 내 화면공유 Connection 서버측 종료(멱등) — 연결이 이미 끊겼어도 슬롯을 확실히 돌려준다.
+  stopScreenShare: async (groupId, connectionId) => {
+    const res = await api.delete(`/api/groups/${groupId}/video/screen/${connectionId}`);
+    return res.data;
+  },
+
+  // 실시간 접속 Source of Truth: { screenShareCount, screenShareLimit, connections[{ kind, userId, ... }] }
+  getVideoConnections: async (groupId) => {
+    const res = await api.get(`/api/groups/${groupId}/video/connections`);
     return res.data;
   },
 
@@ -1549,6 +1624,18 @@ export const plannerService = {
   //     nextPlannerId, nextMaterialId, title, subject, plannerDate, roadmapWeek, roadmapDay, reason }
   getNextLearning: async (plannerId) => {
     const res = await api.get(`/api/planners/${plannerId}/next-learning`);
+    return res.data;
+  },
+  // AI 학습 내비게이터(ai07 적응형 학습 엔진). 로드맵 → 현재 단계 코칭, 수기 → 다음 학습. 저장 없음.
+  //  body: { availableMinutes: 15|30|60, useLlm?, currentStepId? }  → { mode, plannerType, result, items, changes, proposalToken, ... }
+  //  서버 응답 상한 45초 + 재시도 여유 → 60초. signal 로 이전 요청을 취소한다.
+  getAdaptiveNavigator: async (plannerId, body, { signal } = {}) => {
+    const res = await api.post(`/api/planners/${plannerId}/adaptive`, body, { signal, timeout: ADAPTIVE_TIMEOUT_MS });
+    return res.data;
+  },
+  // 승인한 일정 제안만 반영(주간 일정 세션 추가 / 수기 플래너 예정일 변경). body: { proposalToken, changeIds: [...] }
+  applyAdaptiveProposal: async (plannerId, body) => {
+    const res = await api.post(`/api/planners/${plannerId}/adaptive/apply`, body, { timeout: 30000 });
     return res.data;
   },
   getDownloadUrl: async (id) => {

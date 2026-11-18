@@ -275,3 +275,21 @@ export function findLinkedSchedule(todos, plannerId) {
     ) || null
   );
 }
+
+// POST /api/planners/{id}/archive 응답(PlannerDTO.Response)의 materialId = 자료보관함 항목. 재저장은 서버가 같은 항목을 갱신한다.
+export function archivedMaterialIdOf(response) {
+  const materialId = Number(response?.materialId);
+  if (!Number.isInteger(materialId) || materialId <= 0) {
+    throw new Error('자료보관함 항목 정보를 받지 못했습니다. 자료보관함에서 저장 여부를 확인해주세요.');
+  }
+  return materialId;
+}
+
+export const ARCHIVE_ERROR_MESSAGES = {
+  403: '내 플래너만 자료보관함에 저장할 수 있습니다.',
+  404: '플래너를 찾을 수 없습니다. 삭제되었을 수 있습니다.',
+};
+
+export function archiveActionLabel(planner) {
+  return planner?.materialId ? '자료보관함 갱신' : '자료보관함에 저장';
+}

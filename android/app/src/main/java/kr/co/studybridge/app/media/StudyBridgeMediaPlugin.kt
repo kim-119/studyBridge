@@ -10,8 +10,6 @@ import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
 
-private const val CAMERA_ALIAS = "camera"
-private const val MICROPHONE_ALIAS = "microphone"
 private const val MEDIA_PERMISSION_CALLBACK = "onMediaPermissionResult"
 
 @CapacitorPlugin(
@@ -32,16 +30,19 @@ class StudyBridgeMediaPlugin : Plugin() {
 
     @PluginMethod
     fun requestMediaPermissions(call: PluginCall) {
-        if (isGranted(CAMERA_ALIAS) && isGranted(MICROPHONE_ALIAS)) {
+        val aliases = mediaPermissionAliasesToRequest(
+            wantsCamera = call.getBoolean(CAMERA_ALIAS, true) ?: true,
+            wantsMicrophone = call.getBoolean(MICROPHONE_ALIAS, true) ?: true,
+            cameraGranted = isGranted(CAMERA_ALIAS),
+            microphoneGranted = isGranted(MICROPHONE_ALIAS)
+        )
+
+        if (aliases.isEmpty()) {
             call.resolve(currentPermissionState())
             return
         }
 
-        requestPermissionForAliases(
-            arrayOf(CAMERA_ALIAS, MICROPHONE_ALIAS),
-            call,
-            MEDIA_PERMISSION_CALLBACK
-        )
+        requestPermissionForAliases(aliases, call, MEDIA_PERMISSION_CALLBACK)
     }
 
     @PermissionCallback
