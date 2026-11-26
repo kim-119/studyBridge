@@ -343,5 +343,4 @@ VITE_API_BASE_URL=http://localhost:8080 npm run dev   # http://localhost:3000
 | 고병준 | 백엔드, 관리자·신고·문의, 그룹스터디·타이머 |
 
 **지도교수**: 김기종 교수
-
-> 담당 영역은 Notion "개발 일정" 보드의 담당자·태그 기록을 기준으로 정리했습니다.
+**PM교수**: 김동신 교수
